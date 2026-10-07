@@ -31,3 +31,6 @@ egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 
 [lints]
 workspace = true
+
+[build-dependencies]
+serde_json = { workspace = true }

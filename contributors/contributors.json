@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "repo": "storytold/soundcraft",
+  "branch": "main",
+  "head": "3597f895cc49ad795650839c1eeeeac0f88e2aa9",
+  "head_date": "2026-10-07T18:45:52Z",
+  "commits": 49,
+  "unattributed_commits": 0,
+  "contributors": [
+    {
+      "login": "echelon",
+      "display_name": "Brandon Thomas",
+      "real_name": "Brandon Thomas",
+      "prs": 1,
+      "commits": 49,
+      "lines_added": 78099,
+      "lines_deleted": 1928,
+      "binary_added": 23,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-06T00:08:04Z",
+      "last_commit": "2026-10-07T18:45:52Z"
+    }
+  ],
+  "models": [
+    {
+      "id": "anthropic/claude-opus/5.5",
+      "company": "Anthropic",
+      "model": "Claude Opus",
+      "version": "5.5",
+      "commits": 47,
+      "lines_added": 78091,
+      "lines_deleted": 1927
+    }
+  ]
+}

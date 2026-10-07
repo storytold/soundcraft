@@ -5,6 +5,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod control;
+pub mod credits;
 pub mod dialogs;
 pub mod edit_window;
 pub mod extra_windows;
