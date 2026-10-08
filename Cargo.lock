@@ -3544,6 +3544,7 @@ dependencies = [
  "soundcraft-time",
  "soundcraft-video",
  "soundcraft-vst3-host",
+ "toml",
 ]
 
 [[package]]

@@ -34,3 +34,4 @@ workspace = true
 
 [build-dependencies]
 serde_json = { workspace = true }
+toml = "1"
