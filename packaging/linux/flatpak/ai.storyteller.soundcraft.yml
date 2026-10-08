@@ -8,6 +8,9 @@
 #   flatpak run ai.storyteller.soundcraft
 #
 # For Flathub, replace the `dir` source with a `git` source pinned to a release tag and commit.
+# ai.storyteller.soundcraft.bundle.yml repackages the release tarball into the .flatpak attached
+# to each GitHub release; keep runtime-version, finish-args and add-extensions identical in both
+# (packaging-lint checks this).
 #
 # Audio: cpal talks to ALSA. alsa-lib (headers in the Sdk, the library in the Platform) and its
 # PulseAudio plugin ship with the freedesktop runtime, which routes ALSA through the PulseAudio
@@ -20,16 +23,42 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
 command: soundcraft
 finish-args:
-  - --share=ipc
+  # Display: Wayland first; X11 only when no Wayland compositor is running.
   - --socket=wayland
   - --socket=fallback-x11
+  # X11 shared memory (MIT-SHM). Without it the X11 fallback is slow or fails.
+  - --share=ipc
+  # GPU access for the wgpu UI (Vulkan, or GL as a fallback).
   - --device=dri
-  # Playback and recording (ALSA through the PulseAudio/PipeWire socket).
+  # Playback and recording. cpal talks to ALSA; the runtime's alsa-lib routes ALSA through its
+  # PulseAudio plugin to this socket, which PipeWire's pulse server provides on modern desktops
+  # (and PulseAudio itself on older ones). Deliberately not granted: --device=all (raw /dev/snd
+  # for direct ALSA hardware access, which would bypass the sound server) and JACK, which
+  # SoundCraft doesn't use (cpal's jack feature is off; there is no live MIDI I/O either).
   - --socket=pulseaudio
-  # Open/Save dialogs use the file-chooser portal (rfd), and drag-and-drop uses the document
-  # portal, so broad filesystem access isn't needed. Music is granted for sessions and their
+  # Open/Save dialogs use the file-chooser portal (rfd) and drag-and-drop the document portal,
+  # so broad filesystem access isn't needed. Music is granted for sessions and their
   # "Audio Files" folders opened by path from the command line.
   - --filesystem=xdg-music
+  # VST3 and CLAP plugin hosts. The per-user plugin folders the hosts scan, read-only.
+  # System folders (/usr/lib/vst3, /usr/lib/clap) aren't reachable from the sandbox, and plugins
+  # there are linked against the host's libraries rather than the runtime's; sandboxed plugins
+  # come from Flatpak extensions instead (add-extensions below), found through these paths.
+  - --filesystem=~/.vst3:ro
+  - --filesystem=~/.clap:ro
+  - --env=VST3_PATH=/app/extensions/Plugins/vst3
+  - --env=CLAP_PATH=/app/extensions/Plugins/clap
+# Flathub's shared audio-plugin extension point (org.freedesktop.LinuxAudio.Plugins.*, the one
+# Ardour, Bitwig and friends use). Optional: nothing is downloaded unless the user installs a
+# plugin extension; merge-dirs lets every installed one appear under .../Plugins/{vst3,clap}.
+add-extensions:
+  org.freedesktop.LinuxAudio.Plugins:
+    directory: extensions/Plugins
+    version: '25.08'
+    add-ld-path: lib
+    merge-dirs: vst3;clap
+    subdirectories: true
+    no-autodownload: true
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
 modules:
@@ -51,6 +80,8 @@ modules:
         install -d /app/share/metainfo;
         sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$(date -u +%Y-%m-%d)/"
         packaging/linux/ai.storyteller.soundcraft.metainfo.xml.in > /app/share/metainfo/ai.storyteller.soundcraft.metainfo.xml
+      # Mount point for the plugin extensions (add-extensions).
+      - install -d /app/extensions/Plugins
     sources:
       - type: dir
         path: ../../..

@@ -35,9 +35,10 @@ After the draft is published, the workflow refuses to touch that version again, 
 
 **Test runs:** *Actions → Release → Run workflow* runs the whole pipeline by hand. The optional
 `version` input (such as `0.2.0-rc.1`) overrides `Cargo.toml` for that run only. The jobs apply it
-with `cargo xtask version set` before building, so the binaries report it too. The run still needs
-the `release` environment, which only the `release` branch can use, so pick that branch in the
-dialog.
+with `cargo xtask version set` before building, so the binaries report it too. Only the signing
+jobs (macOS, Windows) and the draft-release job use the `release` environment, which only the
+`release` branch can use. On any other branch the run is a dry run: Linux, Flatpak, FreeBSD and
+web build and are checked, the signing jobs are refused, and no release is drafted.
 
 ## What gets built
 
@@ -49,11 +50,14 @@ dialog.
 | Windows 11 ARM64 | `soundcraft-<v>-windows-arm64.msi`, `soundcraft-<v>-windows-arm64-portable.zip` | `windows-latest` (cross-compiled; `windows-arm64.yml` installs and runs it on ARM64) |
 | Linux x86_64 | `soundcraft-<v>-linux-x86_64.{AppImage,deb,rpm,tar.gz}` | `ubuntu-22.04` |
 | Linux aarch64 | `soundcraft-<v>-linux-aarch64.{AppImage,deb,rpm,tar.gz}` | `ubuntu-22.04-arm` |
+| AppImage updates | `soundcraft-<v>-linux-{x86_64,aarch64}.AppImage.zsync` | with the AppImage |
+| Flatpak x86_64, aarch64 | `soundcraft-<v>-linux-{x86_64,aarch64}.flatpak` | `ubuntu-24.04`, `ubuntu-24.04-arm` (repackages the Linux tarball) |
 | FreeBSD 14 x86_64 | `soundcraft-<v>-freebsd-x86_64.tar.gz` (a `/usr/local` tree) | FreeBSD 14.3 VM on `ubuntu-latest` |
 | Web | `soundcraft-web-<v>.zip` (static site; see [`packaging/web/README.md`](../packaging/web/README.md)) | `ubuntu-latest` |
 
-The Flatpak manifest (`packaging/linux/flatpak/ai.storyteller.soundcraft.yml`) is kept ready for a
-Flathub submission and validated in CI, but not built there (see Linux below).
+The from-source Flatpak manifest (`packaging/linux/flatpak/ai.storyteller.soundcraft.yml`) is
+kept ready for a Flathub submission; the release's `.flatpak` bundles come from
+`ai.storyteller.soundcraft.bundle.yml` (see Linux below).
 
 ### Audio libraries
 
@@ -68,7 +72,8 @@ plugins), and WebAudio in the browser.
   routes ALSA to the OSS `sound(4)` devices. Without a device the player falls back to its
   silent clock, so the transport still runs.
 - **Flatpak**: alsa-lib and its PulseAudio plugin come with the freedesktop runtime; the
-  manifest grants `--socket=pulseaudio`.
+  manifests grant `--socket=pulseaudio` (PipeWire's pulse server answers on it). No raw ALSA
+  devices and no JACK: SoundCraft doesn't use either.
 - **Web**: browsers start audio only after a user gesture, so the first click in the page may be
   needed before sound plays. The web build has no recording.
 
@@ -131,14 +136,24 @@ Locally on Windows: `dotnet tool install -g wix --version 5.0.2`, then
 MIDI), hicolor icons from 16 px to 512 px plus a scalable SVG, AppStream metainfo, and a
 shared-mime-info file declaring `application/x-soundcraft-session` (`*.scraft`).
 
-- **AppImage** (maintained `AppImage/appimagetool`, static runtime: no libfuse2 needed).
+- **AppImage** (maintained `AppImage/appimagetool`, static runtime: no libfuse2 needed). Each
+  embeds the update information
+  `gh-releases-zsync|storytold|soundcraft|latest|soundcraft-*-linux-<arch>.AppImage.zsync`, and
+  the `.zsync` next to it (written when `zsyncmake` from the `zsync` package is installed, as in
+  CI) lets AppImageUpdate fetch only the changed blocks of the newest non-pre-release.
 - **.deb** and **.rpm** by [nfpm](https://nfpm.goreleaser.com/) from one `nfpm.yaml`; the
   `postinst.sh` hook refreshes the desktop, MIME and icon caches.
 - **.tar.gz** for people who manage their own `/opt` or `~/.local`.
-- **Flatpak**: `packaging/linux/flatpak/ai.storyteller.soundcraft.yml` builds from source on the
-  freedesktop 25.08 runtime with Wayland/X11, `dri`, PulseAudio and `xdg-music`; other files go
-  through the portals. A real build needs vendored crates (`cargo-sources.json` from
-  `flatpak-cargo-generator.py`); the commands are in the manifest's header.
+- **Flatpak**: the `flatpak` job runs `packaging/linux/flatpak-bundle.sh` on the Linux job's
+  tarball (no Rust build) with `flatpak/ai.storyteller.soundcraft.bundle.yml`, then installs the
+  bundle and runs `soundcraft-cli --version` in the sandbox. Install with
+  `flatpak install --user soundcraft-<v>-linux-<arch>.flatpak`. Both manifests use the freedesktop
+  25.08 runtime with Wayland/X11, `dri`, PulseAudio and `xdg-music`; other files go through the
+  portals. For the VST3 and CLAP hosts they grant `~/.vst3` and `~/.clap` read-only and mount
+  Flathub's `org.freedesktop.LinuxAudio.Plugins` extensions (pointed to by `VST3_PATH` and
+  `CLAP_PATH`); system plugin folders aren't visible in the sandbox.
+  `ai.storyteller.soundcraft.yml` builds from source for Flathub and needs vendored crates
+  (`cargo-sources.json` from `flatpak-cargo-generator.py`); the commands are in its header.
 
 Binaries are built on Ubuntu 22.04 and need **glibc ≥ 2.35**. X11, Wayland, xkbcommon, Vulkan
 and EGL are loaded at runtime, so the packages declare them as dependencies or recommendations.
@@ -164,8 +179,8 @@ through WebAudio.
 ## Secrets
 
 All secrets live in the repository's **`release` environment** (*Settings → Environments →
-release*), restricted to the `release` branch. Every job in `release.yml` declares
-`environment: release`. Each secret is optional: if one is missing, that platform's artifacts
+release*), restricted to the `release` branch. Only the jobs that sign (macOS, Windows) and the
+draft-release job declare `environment: release`; the others get no secrets. Each secret is optional: if one is missing, that platform's artifacts
 are unsigned and the run shows a `::warning::`. Scripts never echo secret values; certificates
 are written with `umask 077` and deleted in `always()`/`finally` steps.
 
@@ -197,5 +212,5 @@ those tools. `apps/soundcraft/src/main.rs` sets the runtime window/Dock/taskbar 
 
 `.github/workflows/packaging-lint.yml` runs in seconds on any change to `packaging/`, the
 workflows or the icons: actionlint, shellcheck, a PowerShell parse, xmllint (WiX, plists,
-AppStream, MIME), `desktop-file-validate`, `appstreamcli validate`, and a YAML check of the
-Flatpak manifest.
+AppStream, MIME), `desktop-file-validate`, `appstreamcli validate`, and a check that the two
+Flatpak manifests agree on runtime, finish-args and plugin extensions.

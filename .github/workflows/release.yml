@@ -1,9 +1,11 @@
 # Release pipeline: every push to `release` builds signed installers for every platform and
 # creates or updates the draft GitHub Release "SoundCraft v<version>". See docs/releasing.md.
 #
-# All jobs run in the `release` environment (restricted to the `release` branch), which holds
-# the signing secrets. Every secret is optional: missing ones produce unsigned artifacts and a
-# warning, never a failed build.
+# The jobs that sign (macOS, Windows) and the one that drafts the release run in the `release`
+# environment (restricted to the `release` branch), which holds the signing secrets. Every secret
+# is optional: missing ones produce unsigned artifacts and a warning, never a failed build. The
+# other jobs sign nothing and get no secrets, so a dispatch on any branch builds and checks them
+# (a dry run); the signed jobs are refused there, and so the draft release is skipped.
 name: Release
 
 on:
@@ -35,7 +37,7 @@ jobs:
   version:
     name: version
     runs-on: ubuntu-latest
-    environment: release
+    # No `environment: release`: this job reads no secrets (and gates every other job).
     outputs:
       version: ${{ steps.v.outputs.version }}
       date: ${{ steps.v.outputs.date }}
@@ -157,7 +159,7 @@ jobs:
     # The oldest GitHub-hosted image, so the binaries only need glibc >= 2.35 (Ubuntu 22.04+,
     # Debian 12+, Fedora 36+, RHEL 10). See docs/releasing.md.
     runs-on: ${{ matrix.runner }}
-    environment: release
+    # No `environment: release`: this job signs nothing, so it gets no release secrets.
     strategy:
       fail-fast: false
       matrix:
@@ -176,7 +178,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev \
             libasound2-dev pkg-config \
-            desktop-file-utils appstream python3-yaml
+            desktop-file-utils appstream python3-yaml zsync
           curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
             "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${{ matrix.deb }}.deb"
           sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
@@ -200,11 +202,52 @@ jobs:
           for appimage in dist/release/*.AppImage; do
             chmod +x "$appimage"
             APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --version
+            # Update information is embedded, and the .zsync for delta updates sits beside it.
+            "$appimage" --appimage-updateinformation | grep -F 'gh-releases-zsync|storytold|soundcraft|latest|soundcraft-*-linux-${{ matrix.arch }}.AppImage.zsync'
+            test -s "$appimage.zsync"
           done
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux-${{ matrix.arch }}
           path: dist/release/*
+          if-no-files-found: error
+
+  flatpak:
+    name: Flatpak ${{ matrix.arch }}
+    needs: [version, linux]
+    # Repackages the Linux job's tarball (the same binaries as the AppImage/deb/rpm); no Rust
+    # build here. 24.04 for a newer flatpak-builder (1.4) than 22.04 ships.
+    runs-on: ${{ matrix.runner }}
+    # No `environment: release`: this job signs nothing, so it gets no release secrets.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    env:
+      SOUNDCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      SOUNDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/linux
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update
+          # librsvg2-common: the SVG pixbuf loader. flatpak-builder runs the host's
+          # `appstreamcli compose`, which renders the scalable icon and fails without it.
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common
+          # Ubuntu 24.04's AppArmor blocks the unprivileged user namespaces bubblewrap needs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Build the Flatpak bundle
+        run: packaging/linux/flatpak-bundle.sh "dist/linux/soundcraft-$SOUNDCRAFT_VERSION-linux-${{ matrix.arch }}.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-flatpak-${{ matrix.arch }}
+          path: dist/release/*.flatpak
           if-no-files-found: error
 
   freebsd:
@@ -213,7 +256,7 @@ jobs:
     # GitHub has no FreeBSD runners: build in a FreeBSD 14.3 VM (same image as freebsd.yml).
     runs-on: ubuntu-latest
     timeout-minutes: 150
-    environment: release
+    # No `environment: release`: this job signs nothing, so it gets no release secrets.
     env:
       SOUNDCRAFT_VERSION: ${{ needs.version.outputs.version }}
       SOUNDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
@@ -253,7 +296,7 @@ jobs:
     name: Web (wasm)
     needs: version
     runs-on: ubuntu-latest
-    environment: release
+    # No `environment: release`: this job signs nothing, so it gets no release secrets.
     env:
       SOUNDCRAFT_VERSION: ${{ needs.version.outputs.version }}
       SOUNDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
@@ -284,7 +327,8 @@ jobs:
 
   release:
     name: Draft GitHub Release
-    needs: [version, macos, windows, linux, freebsd, web]
+    # Needs the signed jobs, which only run on the `release` branch: a branch dispatch never drafts.
+    needs: [version, macos, windows, linux, flatpak, freebsd, web]
     runs-on: ubuntu-latest
     environment: release
     permissions:
