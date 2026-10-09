@@ -329,6 +329,7 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
                     && let Ok(mut st) = serde_json::from_value::<crate::UiState>(v.clone())
                 {
                     st.configurations = app.ui.configurations.clone();
+                    st.theme = app.ui.theme;
                     st.show_configurations = true;
                     app.ui = st;
                 }

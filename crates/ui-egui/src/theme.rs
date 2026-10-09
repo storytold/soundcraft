@@ -1,29 +1,30 @@
 //! Design tokens. Colours were chosen by eye to give a dark, studio-style look; they are ours.
 
 use egui::{Color32, FontFamily, FontId};
-use std::sync::{
-    OnceLock,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-static LIGHT_THEME: AtomicBool = AtomicBool::new(true);
-static SYSTEM_LIGHT: OnceLock<bool> = OnceLock::new();
+/// Whether the Light palette is active. Dark is the default (the incumbent is dark-only).
+static LIGHT_THEME: AtomicBool = AtomicBool::new(false);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The operating system's appearance, asked once off the UI thread.
+static SYSTEM: AtomicU8 = AtomicU8::new(SYSTEM_UNKNOWN);
+const SYSTEM_UNKNOWN: u8 = 0;
+const SYSTEM_ASKING: u8 = 1;
+const SYSTEM_DARK: u8 = 2;
+const SYSTEM_LIGHT: u8 = 3;
+
+/// The Appearance setting (`ui.theme {mode}`). Dark by default; System and Light are opt-in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
     System,
     Light,
+    #[default]
     Dark,
 }
 
-impl Default for ThemeMode {
-    fn default() -> Self {
-        Self::System
-    }
-}
-
 impl ThemeMode {
-    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+    pub const ALL: [Self; 3] = [Self::Dark, Self::Light, Self::System];
 
     pub const fn label(self) -> &'static str {
         match self {
@@ -31,6 +32,19 @@ impl ThemeMode {
             Self::Light => "Light",
             Self::Dark => "Dark",
         }
+    }
+
+    /// The id used in `ui.theme {"mode": …}` and in the saved UI prefs.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.id().eq_ignore_ascii_case(s.trim()))
     }
 }
 
@@ -208,27 +222,56 @@ impl Tokens {
     };
 
     pub fn current() -> Tokens {
-        if LIGHT_THEME.load(Ordering::Relaxed) { Self::LIGHT } else { Self::DARK }
+        if is_light() { Self::LIGHT } else { Self::DARK }
     }
 }
 
-fn system_is_light() -> bool {
-    *SYSTEM_LIGHT.get_or_init(|| match dark_light::detect() {
-        Ok(dark_light::Mode::Light) => true,
-        Ok(dark_light::Mode::Dark) => false,
-        Ok(dark_light::Mode::Unspecified) | Err(_) => false,
-    })
+/// Whether the Light palette is the active one.
+pub fn is_light() -> bool {
+    LIGHT_THEME.load(Ordering::Relaxed)
 }
 
-pub fn set_mode(mode: ThemeMode) {
-    LIGHT_THEME.store(
-        match mode {
-            ThemeMode::System => system_is_light(),
-            ThemeMode::Light => true,
-            ThemeMode::Dark => false,
-        },
-        Ordering::Relaxed,
-    );
+/// Whether `mode` resolves to the Light palette right now. Never blocks.
+pub fn wants_light(ctx: &egui::Context, mode: ThemeMode) -> bool {
+    match mode {
+        ThemeMode::Light => true,
+        ThemeMode::Dark => false,
+        ThemeMode::System => system_is_light(ctx),
+    }
+}
+
+/// Forget the cached system appearance so the next System lookup asks again.
+pub fn refresh_system() {
+    let _ = SYSTEM.compare_exchange(SYSTEM_DARK, SYSTEM_UNKNOWN, Ordering::Relaxed, Ordering::Relaxed);
+    let _ = SYSTEM.compare_exchange(SYSTEM_LIGHT, SYSTEM_UNKNOWN, Ordering::Relaxed, Ordering::Relaxed);
+}
+
+/// The OS appearance. The query (a D-Bus call on Linux) runs once on a background thread; until it
+/// answers this reports dark, and `ctx` is repainted when the answer arrives.
+#[cfg(not(target_arch = "wasm32"))]
+fn system_is_light(ctx: &egui::Context) -> bool {
+    if SYSTEM.compare_exchange(SYSTEM_UNKNOWN, SYSTEM_ASKING, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new().name("soundcraft-theme".into()).spawn(move || {
+            let light = matches!(dark_light::detect(), Ok(dark_light::Mode::Light));
+            SYSTEM.store(if light { SYSTEM_LIGHT } else { SYSTEM_DARK }, Ordering::Relaxed);
+            ctx.request_repaint();
+        });
+        if spawned.is_err() {
+            SYSTEM.store(SYSTEM_DARK, Ordering::Relaxed);
+        }
+    }
+    SYSTEM.load(Ordering::Relaxed) == SYSTEM_LIGHT
+}
+
+/// On the web the query is a synchronous `matchMedia` lookup (no threads there).
+#[cfg(target_arch = "wasm32")]
+fn system_is_light(_ctx: &egui::Context) -> bool {
+    if SYSTEM.compare_exchange(SYSTEM_UNKNOWN, SYSTEM_ASKING, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+        let light = matches!(dark_light::detect(), Ok(dark_light::Mode::Light));
+        SYSTEM.store(if light { SYSTEM_LIGHT } else { SYSTEM_DARK }, Ordering::Relaxed);
+    }
+    SYSTEM.load(Ordering::Relaxed) == SYSTEM_LIGHT
 }
 
 /// Track colours tinted for clip bodies.
@@ -257,11 +300,11 @@ pub fn mono(size: f32) -> FontId {
     FontId::new(size, FontFamily::Monospace)
 }
 
-/// Apply visuals to the context.
-pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
-    set_mode(mode);
+/// Make `light` (or dark) the active palette and apply its visuals. Call only when it changes.
+pub fn apply(ctx: &egui::Context, light: bool) {
+    LIGHT_THEME.store(light, Ordering::Relaxed);
     let t = Tokens::current();
-    let mut v = if LIGHT_THEME.load(Ordering::Relaxed) { egui::Visuals::light() } else { egui::Visuals::dark() };
+    let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
     v.panel_fill = t.panel_bg;
     v.window_fill = t.panel_bg2;
     v.extreme_bg_color = t.slot_bg;
@@ -280,4 +323,44 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
         s.spacing.button_padding = egui::vec2(6.0, 2.0);
         s.interaction.tooltip_delay = 0.4;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Services, SoundApp, UiState};
+    use serde_json::json;
+
+    #[test]
+    fn dark_is_the_default() {
+        assert_eq!(ThemeMode::default(), ThemeMode::Dark);
+        assert_eq!(UiState::default().theme, ThemeMode::Dark);
+        // Prefs saved before the setting existed load as Dark.
+        let old: UiState = serde_json::from_value(json!({"show_tracks_list": true})).unwrap_or_default();
+        assert_eq!(old.theme, ThemeMode::Dark);
+    }
+
+    #[test]
+    fn modes_round_trip_through_prefs() {
+        for mode in ThemeMode::ALL {
+            assert_eq!(ThemeMode::parse(mode.id()), Some(mode));
+            let ui = UiState { theme: mode, ..UiState::default() };
+            let back: UiState = serde_json::from_value(serde_json::to_value(&ui).unwrap_or_default()).unwrap_or_default();
+            assert_eq!(back.theme, mode);
+        }
+        assert_eq!(ThemeMode::parse(" Light "), Some(ThemeMode::Light));
+        assert_eq!(ThemeMode::parse("sepia"), None);
+    }
+
+    #[test]
+    fn theme_command_sets_and_reports_the_mode() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        assert_eq!(app.run("ui.theme", json!({})), Ok(json!({"mode": "dark"})));
+        assert_eq!(app.run("ui.theme", json!({"mode": "light"})), Ok(json!({"mode": "light"})));
+        assert_eq!(app.ui.theme, ThemeMode::Light);
+        assert!(app.run("ui.theme", json!({"mode": "sepia"})).is_err());
+        assert_eq!(app.ui.theme, ThemeMode::Light);
+        assert_eq!(app.run("ui.theme", json!({"mode": "system"})), Ok(json!({"mode": "system"})));
+        assert!(crate::menus::UI_COMMANDS.iter().any(|c| c.0 == "ui.theme"));
+    }
 }

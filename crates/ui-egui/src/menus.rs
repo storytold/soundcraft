@@ -44,7 +44,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.config_update", "Update Active Configuration", "Window > Configurations > Update Active Configuration", None),
     ("window.config_auto_update", "Auto-Update Active Configuration", "Window > Configurations > Auto-Update Active Configuration", None),
     ("window.renderer", "Renderer", "Window > Renderer", None),
-    ("window.ui_customization", "Appearance", "Setup > Appearance", None),
+    ("window.ui_customization", "UI Customization", "Window > UI Customization", None),
     ("window.arrange_tile", "Tile", "Window > Arrange > Tile", None),
     ("window.arrange_tile_h", "Tile Horizontal", "Window > Arrange > Tile Horizontal", None),
     ("window.arrange_tile_v", "Tile Vertical", "Window > Arrange > Tile Vertical", None),
@@ -67,6 +67,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("ui.new_tracks_dialog", "New Tracks…", "", None),
     ("ui.bounce_dialog", "Bounce Mix…", "", None),
     ("ui.set", "Set UI State", "", None),
+    ("ui.theme", "Appearance", "", None),
 ];
 
 /// Extra catalog mappings handled by the UI layer.
@@ -509,6 +510,19 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         "ui.bounce_dialog" => {
             let _ = app.dialogs.open_for_command(&app.engine, "file.bounce_mix");
             json!({})
+        }
+        "ui.theme" => {
+            let Some(mode) = p.get("mode").and_then(Value::as_str) else {
+                return Some(Ok(json!({"mode": app.ui.theme.id()})));
+            };
+            let Some(mode) = crate::theme::ThemeMode::parse(mode) else {
+                return Some(Err(format!("unknown theme `{mode}` (system, light or dark)")));
+            };
+            if mode == crate::theme::ThemeMode::System {
+                crate::theme::refresh_system();
+            }
+            app.ui.theme = mode;
+            json!({"mode": mode.id()})
         }
         "ui.set" => match serde_json::to_value(&app.ui) {
             Ok(mut cur) => {

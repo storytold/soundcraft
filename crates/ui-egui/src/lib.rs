@@ -94,6 +94,8 @@ pub struct UiState {
     pub video_burn_in: bool,
     pub workspace_dir: String,
     pub configurations: Vec<(String, Value)>,
+    /// Appearance (`ui.theme`): dark by default, light or follow the system on request.
+    pub theme: theme::ThemeMode,
 }
 
 impl Default for UiState {
@@ -142,6 +144,7 @@ impl Default for UiState {
             video_burn_in: false,
             workspace_dir: String::new(),
             configurations: Vec::new(),
+            theme: theme::ThemeMode::Dark,
         }
     }
 }
@@ -218,6 +221,8 @@ pub struct SoundApp {
     last_rev: u64,
     fonts_ready: bool,
     fonts_installed: bool,
+    /// The palette last applied to the context (light?), so visuals are set only on a change.
+    theme_applied: Option<bool>,
     /// Transport simulation when there is no player (tests, offscreen renders).
     sim: Option<(Samples, Option<Samples>, Option<Range>)>,
     pub quit_requested: bool,
@@ -262,6 +267,7 @@ impl SoundApp {
             last_rev: 0,
             fonts_ready: false,
             fonts_installed: false,
+            theme_applied: None,
             sim: None,
             quit_requested: false,
             arrange_request: false,
@@ -685,7 +691,11 @@ impl SoundApp {
                 ctx.request_repaint();
             }
         }
-        theme::apply(ctx, self.extra.theme_mode);
+        let light = theme::wants_light(ctx, self.ui.theme);
+        if self.theme_applied != Some(light) || theme::is_light() != light {
+            theme::apply(ctx, light);
+            self.theme_applied = Some(light);
+        }
         let now = ctx.input(|i| i.time);
         let dt = self.last_frame.map_or(1.0 / 60.0, |t| (now - t) as f32).clamp(0.0, 0.25);
         self.last_frame = Some(now);
