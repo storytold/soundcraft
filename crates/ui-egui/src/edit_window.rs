@@ -63,7 +63,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
             .show(ui, |ui| crate::midi_editor::show(app, ui));
     }
     if app.ui.show_universe {
-        egui::Panel::top("universe").exact_size(64.0).frame(egui::Frame::NONE.fill(Color32::from_rgb(18, 18, 19))).show(ui, |ui| universe(app, ui));
+        egui::Panel::top("universe").exact_size(64.0).frame(egui::Frame::NONE.fill(Tokens::current().universe_bg)).show(ui, |ui| universe(app, ui));
     }
     if app.ui.show_tracks_list {
         egui::Panel::left("tracks_list")
@@ -101,7 +101,7 @@ fn universe(app: &mut SoundApp, ui: &mut Ui) {
     let tlw = app.edit_layout.timeline[2] - app.edit_layout.timeline[0];
     let vis1 = vis0 + (f64::from(tlw.max(100.0)) * s.edit.zoom.samples_per_px) as f32 / total;
     let vr = Rect::from_min_max(pos2(r.min.x + vis0 * r.width(), r.min.y - 2.0), pos2(r.min.x + vis1.min(1.0) * r.width(), r.max.y + 2.0));
-    ui.painter().rect_stroke(vr, 2.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Outside);
+    ui.painter().rect_stroke(vr, 2.0, Stroke::new(1.5, Tokens::current().universe_view), StrokeKind::Outside);
     if app.is_playing() {
         let x = r.min.x + app.position() as f32 / total * r.width();
         ui.painter().line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(1.0, Tokens::current().playhead));
@@ -472,7 +472,7 @@ fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect, rulers: &[
                         col,
                         Stroke::NONE,
                     ));
-                    painter.text(pos2(x + 8.0, row.center().y), Align2::LEFT_CENTER, &m.name, bold(11.0), Color32::from_rgb(236, 236, 236));
+                    painter.text(pos2(x + 8.0, row.center().y), Align2::LEFT_CENTER, &m.name, bold(11.0), t.marker_text);
                 }
                 // Click on the marker ruler: recall a marker; double-click adds one.
                 let resp = ui.interact(row, ui.id().with(("marker_ruler", lane)), Sense::click());
@@ -628,7 +628,7 @@ fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect, tl: Rect) 
     let main_h = track.height.points();
     let lane = Rect::from_min_max(pos2(tl.min.x, row.min.y), pos2(tl.max.x, row.min.y + main_h));
     // Header background.
-    ui.painter().rect_filled(head, 0.0, if selected { Color32::from_rgb(52, 58, 66) } else { t.panel_bg2 });
+    ui.painter().rect_filled(head, 0.0, if selected { t.header_selected } else { t.panel_bg2 });
     ui.painter().rect_filled(Rect::from_min_size(head.min, vec2(5.0, head.height())), 0.0, rgb(track.color));
     ui.painter().line_segment([pos2(head.min.x, row.max.y + 0.5), pos2(tl.max.x, row.max.y + 0.5)], Stroke::new(1.0, t.border));
     track_header(app, ui, &track, head, selected);
@@ -679,7 +679,7 @@ fn playlist_lanes(app: &mut SoundApp, ui: &mut Ui, track: &Track, row: Rect, mai
         }
         let lane = Rect::from_min_max(pos2(tl.min.x, y), pos2(tl.max.x, y + LANE_H));
         let head = Rect::from_min_max(pos2(row.min.x + 12.0, y), pos2(tl.min.x, y + LANE_H));
-        ui.painter().rect_filled(lane, 0.0, Color32::from_rgb(30, 30, 31));
+        ui.painter().rect_filled(lane, 0.0, t.playlist_lane);
         ui.painter().text(pos2(head.min.x + 4.0, head.center().y), Align2::LEFT_CENTER, &pl.name, regular(10.5), t.text_dim);
         let painter = ui.painter().with_clip_rect(lane.intersect(ui.clip_rect()));
         for c in &pl.clips {

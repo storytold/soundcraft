@@ -87,7 +87,7 @@ pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response 
     }
     let c = r.center();
     let rad = size * 0.42;
-    ui.painter().circle(c, rad, Color32::from_rgb(26, 26, 28), Stroke::new(1.0, Color32::from_rgb(90, 90, 94)));
+    ui.painter().circle(c, rad, t.knob_bg, Stroke::new(1.0, t.knob_ring));
     let n = 24;
     let start = std::f32::consts::PI * 0.75;
     let sweep = std::f32::consts::PI * 1.5;
@@ -104,7 +104,7 @@ pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response 
     let (a0, a1) = if at < mid { (at, mid) } else { (mid, at) };
     ui.painter().add(egui::Shape::line(arc(a0, a1), Stroke::new(2.0, t.counter_text)));
     let tip_pos = c + vec2(at.cos(), at.sin()) * rad * 0.85;
-    ui.painter().line_segment([c, tip_pos], Stroke::new(2.0, Color32::from_rgb(230, 230, 230)));
+    ui.painter().line_segment([c, tip_pos], Stroke::new(2.0, t.knob_pointer));
     resp.on_hover_text(tip)
 }
 
@@ -121,7 +121,7 @@ pub fn pan_text(v: f32) -> String {
 /// Vertical peak meter with green/yellow/red zones; values are linear peaks.
 pub fn meter(ui: &Ui, r: Rect, level: f32, hold: f32, clip: bool) {
     let t = Tokens::current();
-    ui.painter().rect_filled(r, 0.0, Color32::from_rgb(8, 8, 8));
+    ui.painter().rect_filled(r, 0.0, t.meter_bg);
     let pos = |v: f32| -> f32 {
         let db = if v <= 1e-6 { -80.0 } else { 20.0 * v.log10() };
         meter_pos(db)
@@ -151,7 +151,7 @@ pub fn meter(ui: &Ui, r: Rect, level: f32, hold: f32, clip: bool) {
         );
     }
     let clip_r = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + 2.5));
-    ui.painter().rect_filled(clip_r, 0.0, if clip { t.meter_red } else { Color32::from_rgb(60, 20, 20) });
+    ui.painter().rect_filled(clip_r, 0.0, if clip { t.meter_red } else { t.meter_clip_off });
 }
 
 /// dB → 0..1 meter position (logarithmic-ish scale like hardware meters).

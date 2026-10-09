@@ -26,16 +26,11 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
         for (id, name, shown, color, sel) in tracks {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::click());
             if sel {
-                ui.painter().rect_filled(r, 0.0, Color32::from_rgb(52, 70, 96));
+                ui.painter().rect_filled(r, 0.0, t.row_selected);
             }
             let dot = Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(8.0, 8.0));
             let dresp = ui.interact(dot.expand(3.0), ui.id().with(("vis", id)), Sense::click());
-            ui.painter().circle(
-                dot.center(),
-                3.5,
-                if shown { Color32::from_rgb(200, 200, 200) } else { Color32::TRANSPARENT },
-                Stroke::new(1.0, t.text_dim),
-            );
+            ui.painter().circle(dot.center(), 3.5, if shown { t.visible_dot } else { Color32::TRANSPARENT }, Stroke::new(1.0, t.text_dim));
             if dresp.clicked() {
                 let _ = app.run("track.hide", json!({"tracks": [id], "hidden": shown}));
             }
@@ -150,7 +145,7 @@ pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
                 }
             }
             if !whole && id.is_some_and(|i| selected.contains(&i)) {
-                ui.painter().rect_filled(r, 0.0, Color32::from_rgb(52, 70, 96));
+                ui.painter().rect_filled(r, 0.0, t.row_selected);
             }
             ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 4.0), vec2(9.0, 9.0)), 1.0, rgb(color));
             ui.painter().with_clip_rect(r).text(
@@ -275,8 +270,9 @@ fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
         let s = app.engine.session();
         let txt = format_position(app.position(), s.edit.main_counter, s.sample_rate, &s.tempo, s.frame_rate, s.timecode_start);
         let r = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(r, 4.0, Color32::BLACK);
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, txt, mono((r.height() * 0.6).clamp(20.0, 120.0)), Tokens::current().counter_text);
+        let t = Tokens::current();
+        ui.painter().rect_filled(r, 4.0, t.big_counter_bg);
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, txt, mono((r.height() * 0.6).clamp(20.0, 120.0)), t.counter_text);
     });
     app.ui.show_big_counter = open;
 }

@@ -13,7 +13,7 @@ pub const HEIGHT: f32 = 78.0;
 fn group(ui: &mut Ui, w: f32, h: f32, add: impl FnOnce(&mut Ui, Rect)) {
     let t = Tokens::current();
     let (r, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
-    ui.painter().rect(r, CornerRadius::same(4), t.toolbar_group, Stroke::new(1.0, Color32::from_rgb(8, 8, 8)), StrokeKind::Inside);
+    ui.painter().rect(r, CornerRadius::same(4), t.toolbar_group, Stroke::new(1.0, t.group_border), StrokeKind::Inside);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink(5.0)).layout(egui::Layout::left_to_right(egui::Align::Min)));
     add(&mut child, r);
 }
@@ -54,7 +54,7 @@ fn edit_modes(app: &mut SoundApp, ui: &mut Ui) {
             let cell = Rect::from_min_size(pos2(inner.min.x + cw * cx as f32, inner.min.y + ch * cy as f32), vec2(cw, ch)).shrink(1.0);
             let resp = ui.interact(cell, ui.id().with(("mode", label)), Sense::click());
             let on = cur == m || (m == EditMode::Grid && cur == EditMode::GridRelative);
-            ui.painter().rect_filled(cell, 1.0, if on { t.mode_on } else { Color32::from_rgb(20, 36, 22) });
+            ui.painter().rect_filled(cell, 1.0, if on { t.mode_on } else { t.mode_off });
             let txt = if m == EditMode::Grid && cur == EditMode::GridRelative { "REL GRID" } else { label };
             ui.painter().text(cell.center(), Align2::CENTER_CENTER, txt, bold(10.5), if on { t.mode_on_text } else { t.mode_off_text });
             if resp.clicked() {
@@ -142,7 +142,7 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             let bx1 = bx0 + 38.0 * 3.0 - 2.0;
             let bracket = Rect::from_min_max(pos2(bx0 - 2.0, r.min.y + 1.0), pos2(bx1 + 2.0, r.min.y + 5.0));
             let resp = ui.interact(bracket.expand2(vec2(0.0, 2.0)), ui.id().with("smart"), Sense::click());
-            ui.painter().rect_filled(bracket, 1.0, if cur == Tool::Smart { t.accent } else { Color32::from_rgb(64, 64, 66) });
+            ui.painter().rect_filled(bracket, 1.0, if cur == Tool::Smart { t.accent } else { t.tool_bracket_off });
             if resp.on_hover_text("Smart Tool (F6+F7 / F7+F8)").clicked() {
                 let _ = app.run("edit.tool", json!({"tool": "smart"}));
             }
@@ -184,7 +184,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     };
     let pos = app.position();
     let (r, _) = ui.allocate_exact_size(vec2(318.0, 64.0), Sense::hover());
-    ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, Color32::from_rgb(50, 50, 50)), StrokeKind::Inside);
+    ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
     let main_r = Rect::from_min_max(r.min, pos2(r.min.x + 180.0, r.min.y + 44.0));
     let txt = fmt_pos(app, pos, main_fmt);
     ui.painter().text(pos2(main_r.max.x - 18.0, main_r.center().y), Align2::RIGHT_CENTER, txt, mono(26.0), t.counter_text);
@@ -211,8 +211,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     }
     // Sub counter row.
     let y = r.max.y - 11.0;
-    ui.painter()
-        .line_segment([pos2(r.min.x + 6.0, r.max.y - 21.0), pos2(r.max.x - 6.0, r.max.y - 21.0)], Stroke::new(1.0, Color32::from_rgb(40, 40, 40)));
+    ui.painter().line_segment([pos2(r.min.x + 6.0, r.max.y - 21.0), pos2(r.max.x - 6.0, r.max.y - 21.0)], Stroke::new(1.0, t.counter_rule));
     ui.painter().text(pos2(r.min.x + 10.0, y), Align2::LEFT_CENTER, "Sub", regular(11.0), t.counter_label);
     ui.painter().text(pos2(r.min.x + 150.0, y), Align2::RIGHT_CENTER, fmt_pos(app, pos, sub_fmt), mono(11.0), t.counter_text);
     let st = if app.engine.is_dirty() { "modified" } else { "saved" };
@@ -227,9 +226,9 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
         (e.grid, e.nudge, e.grid_lines)
     };
     let (r, _) = ui.allocate_exact_size(vec2(170.0, 64.0), Sense::hover());
-    ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, Color32::from_rgb(50, 50, 50)), StrokeKind::Inside);
+    ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
     let gl = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 8.0), vec2(48.0, 16.0));
-    ui.painter().rect_filled(gl, 1.0, if lines { t.mode_on } else { Color32::from_rgb(30, 50, 32) });
+    ui.painter().rect_filled(gl, 1.0, if lines { t.mode_on } else { t.counter_off });
     ui.painter().text(gl.center(), Align2::CENTER_CENTER, "Grid", bold(11.0), if lines { t.mode_on_text } else { t.mode_off_text });
     if ui.interact(gl, ui.id().with("grid_lines"), Sense::click()).on_hover_text("Show grid lines").clicked() {
         let _ = app.run("view.grid_lines", json!({}));
@@ -359,9 +358,9 @@ fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
         (s.tempo.tempo_at_tick(tick), format!("{}/{}", m.numerator, m.denominator), s.edit.countoff, s.edit.click, s.edit.countoff_bars)
     };
     let (r, _) = ui.allocate_exact_size(vec2(150.0, 64.0), Sense::hover());
-    ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, Color32::from_rgb(50, 50, 50)), StrokeKind::Inside);
+    ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
     let co = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 6.0), vec2(64.0, 15.0));
-    ui.painter().rect_filled(co, 1.0, if countoff { t.mode_on } else { Color32::from_rgb(30, 50, 32) });
+    ui.painter().rect_filled(co, 1.0, if countoff { t.mode_on } else { t.counter_off });
     ui.painter().text(co.center(), Align2::CENTER_CENTER, "Count Off", bold(10.0), if countoff { t.mode_on_text } else { t.mode_off_text });
     if ui.interact(co, ui.id().with("countoff"), Sense::click()).clicked() {
         let _ = app.run("options.countoff", json!({}));

@@ -104,6 +104,58 @@ pub struct Tokens {
     pub strip_section: Color32,
     pub slot_bg: Color32,
     pub automation_line: Color32,
+    /// Menu bar background.
+    pub menu_bar: Color32,
+    /// Outline of toolbar groups.
+    pub group_border: Color32,
+    /// Edit-mode cell, not selected.
+    pub mode_off: Color32,
+    /// Counter-panel toggle (Grid, Count Off), off.
+    pub counter_off: Color32,
+    /// Outline of the counter panels.
+    pub counter_border: Color32,
+    /// Divider inside the counter panels.
+    pub counter_rule: Color32,
+    /// Smart-tool bracket, off.
+    pub tool_bracket_off: Color32,
+    /// Selected row in the Tracks, Groups and Clips lists.
+    pub row_selected: Color32,
+    /// Track-visible dot in the Tracks list.
+    pub visible_dot: Color32,
+    /// Big Counter background.
+    pub big_counter_bg: Color32,
+    /// Edit-window track header, selected.
+    pub header_selected: Color32,
+    /// Mix-window strip, selected.
+    pub strip_selected: Color32,
+    /// Marker names on the marker ruler.
+    pub marker_text: Color32,
+    /// Alternate-playlist lanes.
+    pub playlist_lane: Color32,
+    /// Universe overview background.
+    pub universe_bg: Color32,
+    /// Universe visible-area outline.
+    pub universe_view: Color32,
+    /// Meter background.
+    pub meter_bg: Color32,
+    /// Meter clip indicator, not clipped.
+    pub meter_clip_off: Color32,
+    /// Pan knob body.
+    pub knob_bg: Color32,
+    /// Pan knob outline.
+    pub knob_ring: Color32,
+    /// Pan knob pointer.
+    pub knob_pointer: Color32,
+    /// Mix insert slot holding a plugin.
+    pub insert_on: Color32,
+    /// Mix insert slot, bypassed.
+    pub insert_bypass: Color32,
+    /// Mix send slot in use.
+    pub send_on: Color32,
+    /// Mix insert/send slot outline.
+    pub slot_border: Color32,
+    /// Mix-window section captions (INSERTS A-E, I/O…).
+    pub section_label: Color32,
 }
 
 impl Tokens {
@@ -162,6 +214,32 @@ impl Tokens {
         strip_section: Color32::from_rgb(36, 36, 38),
         slot_bg: Color32::from_rgb(28, 28, 29),
         automation_line: Color32::from_rgb(240, 240, 240),
+        menu_bar: Color32::from_rgb(22, 22, 23),
+        group_border: Color32::from_rgb(8, 8, 8),
+        mode_off: Color32::from_rgb(20, 36, 22),
+        counter_off: Color32::from_rgb(30, 50, 32),
+        counter_border: Color32::from_rgb(50, 50, 50),
+        counter_rule: Color32::from_rgb(40, 40, 40),
+        tool_bracket_off: Color32::from_rgb(64, 64, 66),
+        row_selected: Color32::from_rgb(52, 70, 96),
+        visible_dot: Color32::from_rgb(200, 200, 200),
+        big_counter_bg: Color32::from_rgb(0, 0, 0),
+        header_selected: Color32::from_rgb(52, 58, 66),
+        strip_selected: Color32::from_rgb(54, 58, 64),
+        marker_text: Color32::from_rgb(236, 236, 236),
+        playlist_lane: Color32::from_rgb(30, 30, 31),
+        universe_bg: Color32::from_rgb(18, 18, 19),
+        universe_view: Color32::from_rgb(255, 255, 255),
+        meter_bg: Color32::from_rgb(8, 8, 8),
+        meter_clip_off: Color32::from_rgb(60, 20, 20),
+        knob_bg: Color32::from_rgb(26, 26, 28),
+        knob_ring: Color32::from_rgb(90, 90, 94),
+        knob_pointer: Color32::from_rgb(230, 230, 230),
+        insert_on: Color32::from_rgb(52, 62, 80),
+        insert_bypass: Color32::from_rgb(70, 56, 30),
+        send_on: Color32::from_rgb(46, 66, 56),
+        slot_border: Color32::from_rgb(16, 16, 16),
+        section_label: Color32::from_rgb(200, 200, 200),
     };
 
     pub const LIGHT: Tokens = Tokens {
@@ -219,6 +297,32 @@ impl Tokens {
         strip_section: Color32::from_rgb(244, 245, 247),
         slot_bg: Color32::from_rgb(248, 249, 251),
         automation_line: Color32::from_rgb(40, 42, 48),
+        menu_bar: Color32::from_rgb(222, 224, 229),
+        group_border: Color32::from_rgb(190, 193, 200),
+        mode_off: Color32::from_rgb(236, 240, 237),
+        counter_off: Color32::from_rgb(214, 230, 217),
+        counter_border: Color32::from_rgb(190, 193, 200),
+        counter_rule: Color32::from_rgb(204, 207, 213),
+        tool_bracket_off: Color32::from_rgb(200, 203, 210),
+        row_selected: Color32::from_rgb(198, 216, 240),
+        visible_dot: Color32::from_rgb(110, 113, 120),
+        big_counter_bg: Color32::from_rgb(224, 226, 231),
+        header_selected: Color32::from_rgb(206, 219, 238),
+        strip_selected: Color32::from_rgb(206, 219, 238),
+        marker_text: Color32::from_rgb(35, 36, 40),
+        playlist_lane: Color32::from_rgb(232, 234, 238),
+        universe_bg: Color32::from_rgb(228, 230, 234),
+        universe_view: Color32::from_rgb(40, 42, 48),
+        meter_bg: Color32::from_rgb(196, 199, 206),
+        meter_clip_off: Color32::from_rgb(232, 200, 198),
+        knob_bg: Color32::from_rgb(252, 252, 253),
+        knob_ring: Color32::from_rgb(150, 154, 162),
+        knob_pointer: Color32::from_rgb(40, 42, 48),
+        insert_on: Color32::from_rgb(206, 218, 236),
+        insert_bypass: Color32::from_rgb(240, 222, 186),
+        send_on: Color32::from_rgb(204, 230, 214),
+        slot_border: Color32::from_rgb(175, 179, 187),
+        section_label: Color32::from_rgb(95, 98, 106),
     };
 
     pub fn current() -> Tokens {
@@ -280,6 +384,15 @@ pub fn clip_colors(rgb: [u8; 3], selected: bool) -> (Color32, Color32, Color32) 
     let k = if selected { 0.95 } else { 0.62 };
     let body = Color32::from_rgb((f32::from(r) * k) as u8, (f32::from(g) * k) as u8, (f32::from(b) * k) as u8);
     let bar = Color32::from_rgb((f32::from(r) * 0.9) as u8, (f32::from(g) * 0.9) as u8, (f32::from(b) * 0.9) as u8);
+    if is_light() {
+        // A paler body and a waveform in a deep shade of the clip's own colour.
+        let tint = |c: u8, k: f32| (f32::from(c) + (255.0 - f32::from(c)) * k) as u8;
+        let k = if selected { 0.2 } else { 0.45 };
+        let body = Color32::from_rgb(tint(r, k), tint(g, k), tint(b, k));
+        let d = if selected { 0.22 } else { 0.32 };
+        let wave = Color32::from_rgb((f32::from(r) * d) as u8, (f32::from(g) * d) as u8, (f32::from(b) * d) as u8);
+        return (body, bar, wave);
+    }
     let wave = if selected { Color32::from_rgb(20, 20, 24) } else { Color32::from_rgb(12, 12, 14) };
     (body, bar, wave)
 }
