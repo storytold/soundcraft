@@ -76,7 +76,7 @@ pub fn parse_id(id: &str) -> Option<[u8; 16]> {
 }
 
 /// One plugin found by a scan.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Vst3Descriptor {
     /// SoundCraft id: `vst3:<class_id>`.
     pub id: String,
@@ -138,6 +138,11 @@ mod api {
     pub fn shutdown() {
         ffi::exit_modules();
     }
+    pub fn scan_child(read: impl FnOnce() -> i32) -> ! {
+        #[cfg(target_os = "macos")]
+        ffi::background_only();
+        ffi::_exit(read())
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -146,6 +151,9 @@ mod api {
 
     pub fn scan() -> Vec<Vst3Descriptor> {
         Vec::new()
+    }
+    pub fn scan_child(read: impl FnOnce() -> i32) -> ! {
+        std::process::exit(read())
     }
     pub fn rescan() -> Vec<Vst3Descriptor> {
         Vec::new()
@@ -169,10 +177,15 @@ mod api {
 }
 
 /// Every plugin in the standard VST3 folders, `VST3_PATH` and folders added with
-/// [`add_search_dir`]. Scanned on first call (loads each binary and reads its factory, but
-/// creates no plugin instances), then cached in memory.
+/// [`add_search_dir`]. Scanned on first call, in child processes, then cached in memory.
 pub fn scan() -> Vec<Vst3Descriptor> {
     api::scan()
+}
+
+/// Runs a plugin-scan child's `read` as a background process (no Dock icon), then ends the process
+/// with its exit code, skipping exit handlers and static destructors: no plugin teardown runs.
+pub fn scan_child(read: impl FnOnce() -> i32) -> ! {
+    api::scan_child(read)
 }
 
 /// Forgets the cached scan (and remembered failures) and scans again.
@@ -186,7 +199,7 @@ pub fn add_search_dir(dir: &Path) -> usize {
     api::add_search_dir(dir)
 }
 
-/// Scans the given folders without touching the cache.
+/// Scans the given folders without keeping the result in memory.
 pub fn scan_paths(dirs: &[PathBuf]) -> Vec<Vst3Descriptor> {
     api::scan_paths(dirs)
 }
@@ -286,7 +299,6 @@ mod tests {
         for f in ["garbage.vst3", "empty.vst3", "Bundle.vst3", "NoBinary.vst3", "missing.vst3"] {
             assert!(load_bundle(&d.join(f)).is_err(), "{f}");
         }
-        assert!(scan_paths(std::slice::from_ref(&d)).is_empty());
         let missing = "vst3:00000000000000000000000000000000";
         assert!(create(missing).is_none());
         assert!(plugin_info(missing).is_none());

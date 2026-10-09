@@ -57,16 +57,9 @@ pub fn load_bundle(path: &Path) -> Result<Vec<Vst3Descriptor>, Vst3Error> {
 /// given id wins.
 pub fn scan_paths(dirs: &[PathBuf]) -> Vec<Vst3Descriptor> {
     let mut out: Vec<Vst3Descriptor> = Vec::new();
-    for path in paths::find_bundles(dirs) {
-        match load_bundle(&path) {
-            Ok(ds) => {
-                for d in ds {
-                    if !out.iter().any(|o| o.id == d.id) {
-                        out.push(d);
-                    }
-                }
-            }
-            Err(e) => log::warn!("{e}"),
+    for d in soundcraft_plugin_scan::probe("vst3", &paths::find_bundles(dirs), load_bundle) {
+        if !out.iter().any(|o| o.id == d.id) {
+            out.push(d);
         }
     }
     out.sort_by_key(|d| d.name.to_lowercase());
@@ -91,6 +84,7 @@ pub fn rescan() -> Vec<Vst3Descriptor> {
     let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
     r.scanned = None;
     r.failed.clear();
+    soundcraft_plugin_scan::forget("vst3");
     ensure_scanned(&mut r).clone()
 }
 

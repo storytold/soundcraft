@@ -53,16 +53,9 @@ pub fn load_bundle(path: &Path) -> Result<Vec<ClapDescriptor>, ClapError> {
 /// given id wins.
 pub fn scan_paths(dirs: &[PathBuf]) -> Vec<ClapDescriptor> {
     let mut out: Vec<ClapDescriptor> = Vec::new();
-    for path in paths::find_bundles(dirs) {
-        match load_bundle(&path) {
-            Ok(ds) => {
-                for d in ds {
-                    if !out.iter().any(|o| o.id == d.id) {
-                        out.push(d);
-                    }
-                }
-            }
-            Err(e) => log::warn!("{e}"),
+    for d in soundcraft_plugin_scan::probe("clap", &paths::find_bundles(dirs), load_bundle) {
+        if !out.iter().any(|o| o.id == d.id) {
+            out.push(d);
         }
     }
     out.sort_by_key(|d| d.name.to_lowercase());
@@ -87,6 +80,7 @@ pub fn rescan() -> Vec<ClapDescriptor> {
     let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
     r.scanned = None;
     r.failed.clear();
+    soundcraft_plugin_scan::forget("clap");
     ensure_scanned(&mut r).clone()
 }
 

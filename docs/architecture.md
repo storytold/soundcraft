@@ -5,7 +5,7 @@ Nothing below the UI knows about egui, so the interface can be replaced.
 
 ```
 L0  time        audio-io        midi            (standalone: no workspace deps)
-L1  dsp         clap-host                       (plugins; clap-host is the only unsafe crate)
+L1  dsp         plugin-scan     clap-host · vst3-host · au-host   (plugins; the hosts isolate the unsafe FFI)
 L2  model                                       (the session document)
 L3  mix                                         (the mix engine)
 L4  engine      playback                        (commands, undo, I/O · audio devices)
@@ -46,6 +46,19 @@ there can ask `on_audio_thread()` before doing anything that blocks; the desktop
 so a `log::` record from the audio thread (a stream error, a full synth event queue, a hosted
 plugin's failed `process`, a CLAP plugin's own log call) is kept without waiting and written later
 by the UI thread (see README › Logs).
+
+## Third-party plugins
+
+CLAP, VST3 and Audio Unit plugins are hosted by `clap-host`, `vst3-host` and `au-host`, which keep
+all `unsafe` code in their `ffi` modules. Reading what a plugin file holds means running its
+code, so scanning happens out of process (`plugin-scan`): the app starts a copy of itself
+(`--scan-plugin <format> <path>`) for each file, a few at a time; the child prints what the file
+holds and exits without running the plugin's teardown code. A plugin that crashes, throws or
+hangs costs only its child, and is listed by `engine.plugin_scan_failures` and under the plugin
+menus. Results are cached per user by file fingerprint, so only new or updated plugins are read
+again, and only the plugins the user inserts are ever loaded into the app. Audio Units are listed
+from the system's component registry, which runs no plugin code. Scanning stays off until an app
+turns it on (`soundcraft_engine::plugins`), so tests and tools never load the machine's plugins.
 
 ## Agent control
 

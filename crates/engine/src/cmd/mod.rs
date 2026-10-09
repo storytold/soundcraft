@@ -22,6 +22,7 @@ mod midi;
 mod mix;
 mod more_util;
 mod options;
+mod plugin_scan;
 mod plugin_state;
 mod query;
 mod setup_more;
@@ -123,6 +124,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(surround::specs());
         v.extend(plugin_state::specs());
         v.extend(instrument::specs());
+        v.extend(plugin_scan::specs());
         v.extend(video::specs());
         v
     })
