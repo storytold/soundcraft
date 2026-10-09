@@ -88,6 +88,12 @@ fn info(args: &[String]) -> ExitCode {
         if let Err(err) = soundcraft_engine::io::open_session(&mut e, path) {
             return fail(err);
         }
+        // Report missing media from `open_session` on stderr before any JSON.
+        if !e.messages.is_empty() {
+            for m in &e.messages {
+                eprintln!("soundcraft-cli: {m}");
+            }
+        }
         outln!("{}", soundcraft_engine::inspect::session_text(&e));
         return ExitCode::SUCCESS;
     }
@@ -149,6 +155,11 @@ fn load_engine(args: &[String]) -> Result<Engine, String> {
     if let Some(p) = arg_value(args, "--in") {
         let mut e = Engine::default();
         soundcraft_engine::io::open_session(&mut e, &p).map_err(|e| e.to_string())?;
+        if !e.messages.is_empty() {
+            for m in &e.messages {
+                eprintln!("soundcraft-cli: {m}");
+            }
+        }
         Ok(e)
     } else if args.iter().any(|a| a == "--demo" || a == "--sample") {
         Ok(soundcraft_engine::demo::demo_engine())
@@ -158,6 +169,11 @@ fn load_engine(args: &[String]) -> Result<Engine, String> {
 }
 
 fn finish(e: &mut Engine, args: &[String]) -> ExitCode {
+    if !e.messages.is_empty() {
+        for m in &e.messages {
+            eprintln!("soundcraft-cli: {m}");
+        }
+    }
     if let Some(out) = arg_value(args, "--bounce") {
         let mut p = json!({"path": out});
         if let Some(s) = arg_value(args, "--start") {
