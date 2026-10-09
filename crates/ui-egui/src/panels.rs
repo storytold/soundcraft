@@ -7,7 +7,7 @@ use serde_json::json;
 use soundcraft_time::format_position;
 
 fn panel_header(ui: &mut Ui, title: &str) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
     ui.painter().rect_filled(r, 0.0, t.panel_bg2);
     ui.painter().text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, title, bold(11.5), t.header_text);
@@ -15,7 +15,7 @@ fn panel_header(ui: &mut Ui, title: &str) {
 }
 
 pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let total = ui.available_height();
     panel_header(ui, "TRACKS");
     let tracks: Vec<(u64, String, bool, [u8; 3], bool)> = {
@@ -103,7 +103,7 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
 }
 
 pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     panel_header(ui, "CLIPS");
     let items: Vec<(Option<u64>, String, bool, [u8; 3])> = {
         let s = app.engine.session();
@@ -186,7 +186,7 @@ fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     egui::Window::new("Transport").open(&mut open).resizable(false).default_pos(pos2(400.0, 500.0)).show(ctx, |ui| {
         let flags = app.engine.session().edit.flags.clone();
         let expanded = flags.contains("view.transport.expanded");
@@ -276,7 +276,7 @@ fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
         let txt = format_position(app.position(), s.edit.main_counter, s.sample_rate, &s.tempo, s.frame_rate, s.timecode_start);
         let r = ui.available_rect_before_wrap();
         ui.painter().rect_filled(r, 4.0, Color32::BLACK);
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, txt, mono((r.height() * 0.6).clamp(20.0, 120.0)), Tokens::DARK.counter_text);
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, txt, mono((r.height() * 0.6).clamp(20.0, 120.0)), Tokens::current().counter_text);
     });
     app.ui.show_big_counter = open;
 }
@@ -362,7 +362,7 @@ fn undo_history(app: &mut SoundApp, ctx: &egui::Context) {
                 }
             }
             if let Some(r) = app.engine.redo_label() {
-                ui.label(egui::RichText::new(format!("(redo) {r}")).italics().color(Tokens::DARK.text_dim));
+                ui.label(egui::RichText::new(format!("(redo) {r}")).italics().color(Tokens::current().text_dim));
             }
         });
     });
@@ -387,7 +387,7 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
             .default_pos(egui::pos2(ctx.content_rect().width() - 380.0, 120.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&ins.preset).color(Tokens::DARK.text_dim));
+                    ui.label(egui::RichText::new(&ins.preset).color(Tokens::current().text_dim));
                     let label = if ins.bypass { "BYPASSED" } else { "Bypass" };
                     if ui.button(label).clicked() {
                         let _ = app.run("mix.insert_bypass", json!({"track": tid.0, "slot": slot}));
@@ -462,7 +462,7 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
 }
 
 fn eq_curve(ui: &mut Ui, id: &str, ins: &soundcraft_model::Insert) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width().max(300.0), 110.0), Sense::hover());
     ui.painter().rect_filled(r, 4.0, Color32::from_rgb(14, 18, 22));
     let n = 160;

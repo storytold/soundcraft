@@ -50,7 +50,7 @@ pub fn track_height(t: &Track) -> f32 {
 }
 
 pub fn show(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     egui::Panel::top("edit_toolbar").exact_size(toolbar::HEIGHT).frame(egui::Frame::NONE.fill(t.toolbar_bg)).show(ui, |ui| toolbar::show(app, ui));
     egui::Panel::bottom("edit_status").exact_size(22.0).frame(egui::Frame::NONE.fill(t.toolbar_bg)).show(ui, |ui| status_bar(app, ui));
     egui::Panel::bottom("lower_dock_tabs").exact_size(22.0).frame(egui::Frame::NONE.fill(t.panel_bg2)).show(ui, |ui| dock_tabs(app, ui));
@@ -104,7 +104,7 @@ fn universe(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().rect_stroke(vr, 2.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Outside);
     if app.is_playing() {
         let x = r.min.x + app.position() as f32 / total * r.width();
-        ui.painter().line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(1.0, Tokens::DARK.playhead));
+        ui.painter().line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(1.0, Tokens::current().playhead));
     }
     let resp = ui.interact(r, ui.id().with("universe"), Sense::click_and_drag());
     if let Some(p) = resp.interact_pointer_pos()
@@ -117,7 +117,7 @@ fn universe(app: &mut SoundApp, ui: &mut Ui) {
 }
 
 fn dock_tabs(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let r = ui.max_rect();
     let mut x = r.min.x + 10.0;
     for (label, on, id) in [
@@ -139,7 +139,7 @@ fn dock_tabs(app: &mut SoundApp, ui: &mut Ui) {
 }
 
 fn status_bar(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let r = ui.max_rect();
     let s = app.engine.session();
     let left = format!(
@@ -166,7 +166,7 @@ fn status_bar(app: &mut SoundApp, ui: &mut Ui) {
 }
 
 fn main_area(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let full = ui.max_rect();
     let rulers: Vec<String> = app.engine.session().edit.rulers.clone();
     let mut rulers = rulers;
@@ -251,7 +251,7 @@ fn folder_collapsed(s: &Session, t: &Track) -> bool {
 }
 
 fn hscrollbar(app: &mut SoundApp, ui: &mut Ui, sb: Rect, tl: Rect) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     ui.painter().rect_filled(sb, 0.0, t.panel_bg);
     let s = app.engine.session();
     let total = (s.content_end() + s.sample_rate.samples(30.0)).max(1) as f64;
@@ -349,7 +349,7 @@ fn nice_step(spp: f64, sr: f64, min_px: f64) -> i64 {
 }
 
 fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect, rulers: &[String]) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let s = app.engine.session().clone();
     ui.painter().rect_filled(area, 0.0, t.ruler_bg);
     let view = Range::new(sample_at(&s, tl, tl.min.x), sample_at(&s, tl, tl.max.x));
@@ -516,7 +516,7 @@ fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect, rulers: &[
 }
 
 fn timebase_ruler(_ui: &Ui, painter: &egui::Painter, s: &Session, tl: Rect, row: Rect, view: Range, f: TimeFormat, bottom: bool) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let sr = s.sample_rate;
     let spp = s.edit.zoom.samples_per_px;
     let mut marks: Vec<(Samples, bool)> = Vec::new();
@@ -615,7 +615,7 @@ fn timebase_ruler(_ui: &Ui, painter: &egui::Painter, s: &Session, tl: Rect, row:
 // ---- track rows ------------------------------------------------------------------------------
 
 fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect, tl: Rect) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let s = app.engine.session();
     let Some(track) = s.track(id).cloned() else { return };
     let selected = s.edit.selected_tracks.contains(&id);
@@ -670,7 +670,7 @@ fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect, tl: Rect) 
 
 /// Alternate playlists as lanes under the main one; clicking a clip promotes it (comping).
 fn playlist_lanes(app: &mut SoundApp, ui: &mut Ui, track: &Track, row: Rect, main_h: f32, tl: Rect) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let s = app.engine.session().clone();
     let mut y = row.min.y + main_h;
     for (i, pl) in track.playlists.iter().enumerate() {
@@ -708,7 +708,7 @@ fn playlist_lanes(app: &mut SoundApp, ui: &mut Ui, track: &Track, row: Rect, mai
 }
 
 fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, selected: bool) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let id = track.id;
     // Drag the bottom edge to resize (snaps to the height presets).
     let edge = Rect::from_min_max(pos2(head.min.x, head.max.y - 4.0), pos2(head.max.x, head.max.y + 2.0));
@@ -778,7 +778,7 @@ fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, sele
             .unwrap_or(p.y);
         ui.ctx()
             .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("reorder")))
-            .line_segment([pos2(head.min.x, line_y), pos2(head.max.x + 600.0, line_y)], Stroke::new(3.0, Tokens::DARK.accent));
+            .line_segment([pos2(head.min.x, line_y), pos2(head.max.x + 600.0, line_y)], Stroke::new(3.0, Tokens::current().accent));
     }
     if nresp.drag_stopped()
         && let Some(p) = ui.ctx().pointer_latest_pos()
@@ -919,7 +919,7 @@ fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, sele
 
 /// One optional Edit-window column for a track (I/O, inserts, sends, comments).
 fn header_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, col: &str, r: Rect) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     ui.painter().rect_filled(r, 0.0, t.panel_bg);
     ui.painter().line_segment([pos2(r.min.x, r.min.y), pos2(r.min.x, r.max.y)], Stroke::new(1.0, t.border));
     let line_h = 15.0;
@@ -1062,7 +1062,7 @@ fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
 }
 
 fn grid_lines(painter: &egui::Painter, s: &Session, tl: Rect, lane: Rect) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let view = Range::new(sample_at(s, tl, tl.min.x).max(0), sample_at(s, tl, tl.max.x));
     let sr = s.sample_rate;
     // Bar lines always; grid lines when enabled and dense enough.
@@ -1301,7 +1301,7 @@ fn draw_clip(app: &SoundApp, painter: &egui::Painter, s: &Session, track: &Track
 }
 
 fn draw_automation(painter: &egui::Painter, s: &Session, track: &Track, p: &AutoParam, tl: Rect, lane: Rect) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let (lo, hi, _) = p.range();
     let (lo, hi) = if matches!(p, AutoParam::Volume | AutoParam::SendLevel(_)) {
         (-60.0f32, 12.0f32)
@@ -1381,7 +1381,7 @@ fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, 
         let _ = app.run("clip.place_source", json!({"source": src.0, "track": track.id.0, "at": at}));
     }
     if resp.dnd_hover_payload::<crate::DragSource>().is_some() {
-        ui.painter().rect_stroke(lane, 0.0, Stroke::new(2.0, Tokens::DARK.accent), StrokeKind::Inside);
+        ui.painter().rect_stroke(lane, 0.0, Stroke::new(2.0, Tokens::current().accent), StrokeKind::Inside);
     }
     let s = app.engine.session().clone();
     let tool = s.edit.tool;
@@ -1681,7 +1681,7 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
 
 /// Selection overlay, insertion point and playhead across rulers and tracks.
 fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let mut scroll_to: Option<Samples> = None;
     let s = app.engine.session();
     let painter = ui.painter().with_clip_rect(area);

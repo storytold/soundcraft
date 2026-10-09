@@ -66,10 +66,10 @@ fn result_line(ui: &mut egui::Ui, r: &Result<Value, String>) {
     match r {
         Ok(v) => {
             let s = v.to_string();
-            ui.label(egui::RichText::new(if s.len() > 160 { format!("{}…", &s[..160]) } else { s }).small().color(Tokens::DARK.counter_text));
+            ui.label(egui::RichText::new(if s.len() > 160 { format!("{}…", &s[..160]) } else { s }).small().color(Tokens::current().counter_text));
         }
         Err(e) => {
-            ui.label(egui::RichText::new(e).small().color(Tokens::DARK.rec));
+            ui.label(egui::RichText::new(e).small().color(Tokens::current().rec));
         }
     }
 }

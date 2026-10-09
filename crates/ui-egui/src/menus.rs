@@ -179,7 +179,7 @@ fn tree() -> Vec<MenuNode> {
 }
 
 pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
-    let t = crate::theme::Tokens::DARK;
+    let t = crate::theme::Tokens::current();
     egui::Panel::top("menu_bar")
         .exact_size(24.0)
         .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(22, 22, 23)).inner_margin(egui::Margin::symmetric(8, 2)))

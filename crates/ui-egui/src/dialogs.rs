@@ -258,7 +258,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     ui.label(
                         egui::RichText::new("Bounces the edit selection, or the whole session when nothing is selected.")
                             .small()
-                            .color(Tokens::DARK.text_dim),
+                            .color(Tokens::current().text_dim),
                     );
                     if buttons(ui, "Bounce", enter) {
                         let p = std::path::Path::new(path.as_str()).with_extension(if format == "aiff" { "aif" } else { format.as_str() });
@@ -415,7 +415,7 @@ fn buttons(ui: &mut egui::Ui, ok: &str, enter: bool) -> bool {
         if ui.button("Cancel").clicked() {
             ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::new("dlg_cancel"), true));
         }
-        if ui.add(egui::Button::new(egui::RichText::new(ok).strong()).fill(Tokens::DARK.accent)).clicked() {
+        if ui.add(egui::Button::new(egui::RichText::new(ok).strong()).fill(Tokens::current().accent)).clicked() {
             pressed = true;
         }
     });

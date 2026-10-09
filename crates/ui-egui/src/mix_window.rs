@@ -15,7 +15,7 @@ pub fn strip_width(narrow: bool) -> f32 {
 }
 
 pub fn show(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     if app.ui.show_tracks_list {
         egui::Panel::left("mix_tracks_list")
             .exact_size(168.0)
@@ -97,7 +97,7 @@ fn route_name(app: &SoundApp, r: &Route) -> String {
 }
 
 fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapshot>) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let Some(track) = app.engine.session().track(id).cloned() else { return };
     let narrow = app.ui.narrow_mix;
     let w = strip_width(narrow);
@@ -402,7 +402,7 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
 }
 
 fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let id = track.id;
     let ins = track.mixer.inserts.get(slot).cloned().flatten();
     let resp = ui.interact(r, ui.id().with(("ins", id.0, slot)), Sense::click());
@@ -507,7 +507,7 @@ pub fn plugin_info(id: &str) -> Option<&'static soundcraft_dsp::PluginInfo> {
 }
 
 fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let id = track.id;
     let snd = track.mixer.sends.get(slot).cloned().flatten();
     let resp = ui.interact(r, ui.id().with(("snd", id.0, slot)), Sense::click_and_drag());

@@ -17,6 +17,7 @@ pub struct ExtraState {
     pub auto_update_config: bool,
     pub ui_scale: f32,
     pub reduce_motion: bool,
+    pub light_theme: bool,
     pub tooltips: bool,
     last_auto_update: f64,
     applied: Option<(f32, bool)>,
@@ -30,6 +31,7 @@ impl Default for ExtraState {
             auto_update_config: false,
             ui_scale: 1.0,
             reduce_motion: false,
+            light_theme: false,
             tooltips: true,
             last_auto_update: 0.0,
             applied: None,
@@ -59,6 +61,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
 }
 
 fn apply_customization(app: &mut SoundApp, ctx: &egui::Context) {
+    crate::theme::set_light(app.extra.light_theme);
+    crate::theme::apply(ctx);
     let want = (app.extra.ui_scale.clamp(0.75, 1.5), app.extra.reduce_motion);
     if app.extra.applied == Some(want) {
         return;
@@ -87,7 +91,7 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let fmt = app.engine.session().main_format();
     let peaks: Vec<f32> = app.player.as_ref().map(|p| p.meters().main.peaks).unwrap_or_default();
     let objects: Vec<(String, f32, f32, f32)> = app
@@ -161,6 +165,9 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                 ui.label("Reduce motion");
                 ui.checkbox(&mut app.extra.reduce_motion, "");
                 ui.end_row();
+                ui.label("Light theme");
+                ui.checkbox(&mut app.extra.light_theme, "");
+                ui.end_row();
                 ui.label("Auto-update configuration");
                 ui.checkbox(&mut app.extra.auto_update_config, "");
                 ui.end_row();
@@ -168,6 +175,7 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
             if ui.button("Reset").clicked() {
                 app.extra.ui_scale = 1.0;
                 app.extra.reduce_motion = false;
+                app.extra.light_theme = false;
             }
         });
     app.extra.show_ui_customization = open;
