@@ -417,7 +417,7 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                 if instrument {
                     // The parameter commands address insert slots: an instrument is played and
                     // edited in its own editor.
-                    ui.label(egui::RichText::new("Load and edit sounds in the plugin's own editor.").color(Tokens::DARK.text_dim));
+                    ui.label(egui::RichText::new("Load and edit sounds in the plugin's own editor.").color(Tokens::current().text_dim));
                     return;
                 }
                 if info.id == "eq_7band" || info.id == "eq_1band" {
