@@ -185,10 +185,7 @@ fn elastic(e: &mut Engine, p: &Value) -> Result<Value> {
         let elastic = s.track(t).and_then(|x| x.elastic.clone()).filter(|a| a != "varispeed");
         // Start from the unwarped original if this clip was warped before.
         let key = |k: &str| format!("elastic.{}.{k}", id.0);
-        let orig = match (s.edit.values.get(&key("src")), s.edit.values.get(&key("off")), s.edit.values.get(&key("len"))) {
-            (Some(src), Some(off), Some(len)) => Some((soundcraft_model::SourceId(*src as u64), *off as i64, *len as i64)),
-            _ => None,
-        };
+        let orig = warp_original(s, *id);
         let mut base = c.clone();
         if let Some((src, off, len)) = orig {
             base.content = soundcraft_model::ClipContent::Audio { source: src, offset: off };
@@ -229,12 +226,12 @@ fn remove_warp(e: &mut Engine, p: &Value) -> Result<Value> {
     let mut n = 0;
     for id in &ids {
         let key = |k: &str| format!("elastic.{}.{k}", id.0);
-        let orig = (s.edit.values.get(&key("src")).copied(), s.edit.values.get(&key("off")).copied(), s.edit.values.get(&key("len")).copied());
+        let orig = warp_original(s, *id);
         if let Some(c) = s.find_clip_mut(*id) {
             c.stretch = 1.0;
-            if let (Some(src), Some(off), Some(len)) = orig {
-                c.content = soundcraft_model::ClipContent::Audio { source: soundcraft_model::SourceId(src as u64), offset: off as i64 };
-                c.length = (len as i64).max(1);
+            if let Some((src, off, len)) = orig {
+                c.content = soundcraft_model::ClipContent::Audio { source: src, offset: off };
+                c.length = len.max(1);
                 c.fade_out.len = c.fade_out.len.min(c.length);
                 n += 1;
             }
@@ -244,6 +241,14 @@ fn remove_warp(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     Ok(json!({"restored": n}))
+}
+
+/// The audio a warped clip was rendered from, while that file is still in the session.
+fn warp_original(s: &soundcraft_model::Session, id: ClipId) -> Option<(soundcraft_model::SourceId, Samples, Samples)> {
+    let v = |k: &str| s.edit.values.get(&format!("elastic.{}.{k}", id.0)).copied();
+    let src = soundcraft_model::SourceId(v("src")? as u64);
+    s.source(src)?;
+    Some((src, v("off")? as i64, v("len")? as i64))
 }
 
 fn flag(e: &mut Engine, p: &Value, get: fn(&soundcraft_model::Clip) -> bool, set: fn(&mut soundcraft_model::Clip, bool)) -> Result<Value> {
@@ -371,6 +376,20 @@ mod tests {
         assert!((c.length as f64 - len0 as f64 * 0.5).abs() < 2.0);
         e.execute("clip.remove_warp", &json!({"clips": [cid]})).unwrap();
         assert_eq!(e.session().find_clip(ClipId(cid)).unwrap().1.length, len0);
+    }
+
+    #[test]
+    fn remove_warp_keeps_the_audio_when_the_original_file_is_gone() {
+        let mut e = crate::demo::demo_engine();
+        let pad = e.session().track_by_name("Pad").map(|t| t.id).unwrap();
+        e.execute("track.elastic", &json!({"track": pad, "algorithm": "polyphonic"})).unwrap();
+        let clip = e.session().track(pad).unwrap().clips()[0].clone();
+        e.execute("clip.elastic_properties", &json!({"clips": [clip.id], "ratio": 1.5})).unwrap();
+        e.execute("clip.clear", &json!({"sources": [clip.source()]})).unwrap();
+        let r = e.execute("clip.remove_warp", &json!({"clips": [clip.id]})).unwrap();
+        assert_eq!(r["restored"], 0);
+        let src = e.session().find_clip(clip.id).and_then(|(_, c)| c.source()).unwrap();
+        assert!(e.session().source(src).is_some());
     }
 
     #[test]

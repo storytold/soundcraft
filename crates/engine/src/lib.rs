@@ -227,7 +227,7 @@ impl Engine {
         if let Err(reason) = (spec.enabled)(self) {
             // A call that names its targets (tracks, clips, a range) does not need a selection;
             // the command itself validates them.
-            let names_targets = ["track", "tracks", "clip", "clips", "start", "end", "at"].iter().any(|k| params.get(k).is_some());
+            let names_targets = ["track", "tracks", "clip", "clips", "sources", "start", "end", "at"].iter().any(|k| params.get(k).is_some());
             if !names_targets {
                 return Err(EngineError::Disabled(id.to_string(), reason));
             }
