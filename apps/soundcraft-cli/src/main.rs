@@ -37,6 +37,12 @@ fn fail(msg: impl std::fmt::Display) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// Parse a JSON parameter string. Malformed JSON is an error (never silently `{}`), while an
+/// omitted argument is fine — the caller decides the default.
+fn parse_params(p: &str) -> Result<Value, ExitCode> {
+    serde_json::from_str::<Value>(p).map_err(|err| fail(format!("bad JSON: {err}")))
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = args.first().cloned() else {
@@ -192,7 +198,7 @@ fn run(args: &[String]) -> ExitCode {
             && let Some(spec) = args.get(i + 1)
         {
             let (id, params) = match spec.split_once('=') {
-                Some((id, p)) => (id.to_string(), serde_json::from_str::<Value>(p).unwrap_or(json!({}))),
+                Some((id, p)) => (id.to_string(), parse_params(p)?),
                 None => (spec.clone(), json!({})),
             };
             match e.execute(&id, &params) {
@@ -273,7 +279,10 @@ fn app(args: &[String]) -> ExitCode {
         .map(|(_, a)| a)
         .collect();
     let Some(method) = positional.first() else { return fail("app [--port P] METHOD [JSON]") };
-    let params = positional.get(1).and_then(|p| serde_json::from_str::<Value>(p).ok()).unwrap_or(json!({}));
+    let params = match positional.get(1) {
+        Some(p) => parse_params(p)?,
+        None => json!({}),
+    };
     let mut r = Remote::new(&port);
     // A bare command id is shorthand for engine.execute.
     let (m, p) = if method.contains('.')
