@@ -11,6 +11,7 @@ default-run = "soundcraft"
 workspace = true
 
 [dependencies]
+sys-locale = "0.3"
 soundcraft-engine.workspace = true
 soundcraft-ui-egui.workspace = true
 soundcraft-playback.workspace = true

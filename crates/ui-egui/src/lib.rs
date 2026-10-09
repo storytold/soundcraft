@@ -10,6 +10,7 @@ pub mod dialogs;
 pub mod edit_window;
 pub mod extra_windows;
 pub mod fonts;
+pub mod i18n;
 pub mod icons;
 pub mod menus;
 pub mod midi_editor;
@@ -47,6 +48,7 @@ pub enum MainWindow {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct UiState {
+    pub language: i18n::Language,
     pub window: MainWindow,
     pub show_tracks_list: bool,
     pub show_clip_list: bool,
@@ -102,6 +104,7 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         UiState {
+            language: i18n::Language::default(),
             window: MainWindow::Edit,
             show_tracks_list: true,
             show_clip_list: true,
@@ -193,6 +196,8 @@ pub enum Gesture {
 }
 
 pub struct SoundApp {
+    /// The shell's OS/browser locale; changing the UI language never changes a session.
+    pub system_locale: Option<String>,
     pub engine: Engine,
     pub player: Option<Player>,
     /// Input capture, opened on first record.
@@ -256,6 +261,7 @@ fn automation_step_due(pos: Samples, last: Samples, step: Samples) -> bool {
 impl SoundApp {
     pub fn new(engine: Engine, player: Option<Player>, services: Services) -> Self {
         SoundApp {
+            system_locale: None,
             engine,
             player,
             recorder: None,
@@ -398,12 +404,16 @@ impl SoundApp {
     fn start_recording(&mut self) {
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
         if !armed {
-            self.ui.status = "Record-enable a track first (the red button in its header).".into();
+            self.ui.status = i18n::translate(
+                self.ui.language.resolve(self.system_locale.as_deref()),
+                "Record-enable a track first (the red button in its header).",
+            )
+            .into();
             return;
         }
         self.ensure_input();
         if self.recorder.is_none() {
-            self.ui.status = "Cannot record: no audio input device".into();
+            self.ui.status = i18n::translate(self.ui.language.resolve(self.system_locale.as_deref()), "Cannot record: no audio input device").into();
             return;
         }
         if let Some(p) = &self.player {
@@ -517,7 +527,7 @@ impl SoundApp {
             }
             Err(e) => {
                 self.recorder_failed = true;
-                self.ui.status = format!("No audio input: {e}");
+                self.ui.status = crate::i18n::render("No audio input: {e}", &[("{e}", e.to_string())]);
             }
         }
     }
@@ -553,7 +563,7 @@ impl SoundApp {
                     made += 1;
                 }
             }
-            self.ui.status = format!("Loop-recorded {made} take(s)");
+            self.ui.status = crate::i18n::render("Loop-recorded {made} take(s)", &[("{made}", made.to_string())]);
             return;
         }
         match soundcraft_engine::io::add_recording(&mut self.engine, self.record_start, take.channels, rate) {
@@ -567,7 +577,7 @@ impl SoundApp {
                         "record",
                     );
                 }
-                self.ui.status = format!("Recorded {} clip(s)", ids.len());
+                self.ui.status = crate::i18n::render("Recorded {0} clip(s)", &[("{0}", (ids.len()).to_string())]);
             }
             Err(e) => self.ui.status = e.to_string(),
         }
@@ -750,6 +760,7 @@ impl SoundApp {
 
     /// Per-frame logic: control channel, transport, document sync.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        let _language = i18n::enter(self.ui.language.resolve(self.system_locale.as_deref()));
         // Fonts set now take effect next frame, so draw only from the frame after.
         if !self.fonts_ready {
             if self.fonts_installed {
@@ -837,6 +848,7 @@ impl SoundApp {
 
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        let _language = i18n::enter(self.ui.language.resolve(self.system_locale.as_deref()));
         let ctx = ui.ctx().clone();
         // The integration creates this Ui before logic resolves the current frame's palette.
         ui.set_style(ctx.global_style());

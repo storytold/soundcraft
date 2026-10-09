@@ -5,6 +5,7 @@
 //! meter map, and the clef split at middle C.
 
 use crate::SoundApp;
+use crate::i18n::tr;
 use crate::theme::{bold, regular};
 use egui::{Align2, Color32, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
 use soundcraft_model::ClipContent;
@@ -38,9 +39,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new("Score Editor").open(&mut open).default_size(vec2(900.0, 340.0)).show(ctx, |ui| {
+    egui::Window::new(tr("Score Editor")).id(egui::Id::new("Score Editor")).open(&mut open).default_size(vec2(900.0, 340.0)).show(ctx, |ui| {
         let Some(cid) = crate::midi_editor::target_clip(app) else {
-            ui.label("Select a MIDI clip or MIDI track.");
+            ui.label(tr("Select a MIDI clip or MIDI track."));
             return;
         };
         let s = app.engine.session();
@@ -141,7 +142,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 }
             }
         });
-        ui.label(egui::RichText::new("Notation view of the MIDI clip; edit notes in the MIDI Editor or Event List.").small());
+        ui.label(egui::RichText::new(tr("Notation view of the MIDI clip; edit notes in the MIDI Editor or Event List.")).small());
     });
     app.ui.show_score = open;
 }

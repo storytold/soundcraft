@@ -55,7 +55,10 @@ impl eframe::App for App {
                 "{}{} — SoundCraft — {}",
                 self.0.engine.session().name,
                 if self.0.engine.is_dirty() { " *" } else { "" },
-                if self.0.ui.window == soundcraft_ui_egui::MainWindow::Edit { "Edit" } else { "Mix" }
+                soundcraft_ui_egui::i18n::translate(
+                    self.0.ui.language.resolve(self.0.system_locale.as_deref()),
+                    if self.0.ui.window == soundcraft_ui_egui::MainWindow::Edit { "Edit" } else { "Mix" }
+                )
             )
         } else {
             format!("{} — SoundCraft", self.0.engine.session().name)
@@ -242,6 +245,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             let player = if no_audio { None } else { Some(soundcraft_playback::Player::new(Arc::new(engine.session().clone()))) };
             let mut app = SoundApp::new(engine, player, services());
+            app.system_locale = sys_locale::get_locale();
             app.autosave_dir = prefs_path().and_then(|p| p.parent().map(|d| d.join("Autosave")));
             app.preset_dir = prefs_path().and_then(|p| p.parent().map(|d| d.join("Presets")));
             if let Some(ui) = load_prefs() {

@@ -19,7 +19,7 @@ pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &st
     let col = if on { Color32::WHITE } else { t.text };
     let s = r.height().min(r.width()) * 0.78;
     icons::draw(ui.painter(), Rect::from_center_size(r.center(), vec2(s, s)), icon, col);
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::tr(tip))
 }
 
 /// Square text toggle used for S / M / I / record etc.
@@ -36,7 +36,7 @@ pub fn text_toggle(ui: &mut Ui, size: egui::Vec2, text: &str, on: bool, on_color
     ui.painter().rect(r, CornerRadius::same(2), fill, Stroke::new(1.0, t.button_border), StrokeKind::Inside);
     let col = if on { t.text_dark } else { t.text };
     ui.painter().text(r.center(), Align2::CENTER_CENTER, text, bold((size.y * 0.62).clamp(8.0, 13.0)), col);
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::tr(tip))
 }
 
 /// Record-enable button (red dot).
@@ -52,7 +52,7 @@ pub fn rec_toggle(ui: &mut Ui, size: egui::Vec2, on: bool, tip: &str) -> Respons
     };
     ui.painter().rect(r, CornerRadius::same(2), fill, Stroke::new(1.0, t.button_border), StrokeKind::Inside);
     ui.painter().circle_filled(r.center(), size.y * 0.24, if on { Color32::WHITE } else { Color32::from_rgb(190, 190, 190) });
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::tr(tip))
 }
 
 /// A dropdown-looking selector box. Returns the response (caller opens a menu on click).
@@ -105,7 +105,7 @@ pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response 
     ui.painter().add(egui::Shape::line(arc(a0, a1), Stroke::new(2.0, t.counter_text)));
     let tip_pos = c + vec2(at.cos(), at.sin()) * rad * 0.85;
     ui.painter().line_segment([c, tip_pos], Stroke::new(2.0, t.knob_pointer));
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::tr(tip))
 }
 
 /// Format a pan value like a console: "<45", "0", "45>".
@@ -193,7 +193,7 @@ pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id) -> Option<f32> {
     for mark in [12.0f32, 6.0, 0.0, -5.0, -10.0, -15.0, -20.0, -30.0, -40.0, -60.0] {
         let y = slot.max.y - slot.height() * soundcraft_model::fader_db_to_pos(mark);
         ui.painter().line_segment([pos2(r.min.x + 2.0, y), pos2(slot.min.x - 3.0, y)], Stroke::new(1.0, Color32::from_rgb(110, 110, 110)));
-        ui.painter().text(pos2(r.min.x, y), Align2::LEFT_CENTER, format!("{}", mark.abs()), regular(8.0), Color32::from_rgb(150, 150, 150));
+        ui.painter().text(pos2(r.min.x, y), Align2::LEFT_CENTER, (mark.abs()).to_string(), regular(8.0), Color32::from_rgb(150, 150, 150));
     }
     let pos = soundcraft_model::fader_db_to_pos(db);
     let y = slot.max.y - slot.height() * pos;
@@ -304,7 +304,7 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
     }
     painter.circle(pp, 5.0, t.counter_text, Stroke::new(1.0, Color32::BLACK));
     let tip = "Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence";
-    let _ = resp.on_hover_text(tip);
+    let _ = resp.on_hover_text(crate::i18n::tr(tip));
     // Sliders below: divergence, then elevation for height formats.
     let mut sliders: Vec<(&str, f32, u8)> = vec![("div", div, 0)];
     if let Some(z) = z {
