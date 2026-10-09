@@ -44,6 +44,7 @@ cpal = "0.16"
 egui = "0.36"
 eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"
+dark-light = "3"
 rfd = "0.17"
 image = { version = "0.25", default-features = false, features = ["png"] }
 

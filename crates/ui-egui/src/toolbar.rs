@@ -11,7 +11,7 @@ use soundcraft_time::{TimeFormat, format_length, format_position};
 pub const HEIGHT: f32 = 78.0;
 
 fn group(ui: &mut Ui, w: f32, h: f32, add: impl FnOnce(&mut Ui, Rect)) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let (r, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
     ui.painter().rect(r, CornerRadius::same(4), t.toolbar_group, Stroke::new(1.0, Color32::from_rgb(8, 8, 8)), StrokeKind::Inside);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink(5.0)).layout(egui::Layout::left_to_right(egui::Align::Min)));
@@ -19,7 +19,7 @@ fn group(ui: &mut Ui, w: f32, h: f32, add: impl FnOnce(&mut Ui, Rect)) {
 }
 
 pub fn show(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let full = ui.max_rect();
     ui.painter().rect_filled(full, 0.0, t.toolbar_bg);
     ui.add_space(4.0);
@@ -38,7 +38,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
 }
 
 fn edit_modes(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let cur = app.engine.session().edit.edit_mode;
     group(ui, 112.0, 52.0, |ui, r| {
         let inner = r.shrink(6.0);
@@ -114,7 +114,7 @@ fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
 }
 
 fn tools(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let cur = app.engine.session().edit.tool;
     group(ui, 268.0 + 38.0, 52.0, |ui, r| {
         ui.vertical(|ui| {
@@ -177,7 +177,7 @@ fn fmt_pos(app: &SoundApp, at: i64, f: TimeFormat) -> String {
 }
 
 fn counters(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let (main_fmt, sub_fmt, sel) = {
         let s = app.engine.session();
         (s.edit.main_counter, s.edit.sub_counter.unwrap_or(TimeFormat::Samples), s.edit.selection)
@@ -221,7 +221,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
 }
 
 fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let (grid, nudge, lines) = {
         let e = &app.engine.session().edit;
         (e.grid, e.nudge, e.grid_lines)
@@ -272,7 +272,7 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str) {
 }
 
 fn transport(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let playing = app.is_playing();
     let recording = app.engine.transport.recording;
     let looped = app.engine.session().edit.loop_playback;
@@ -288,18 +288,6 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                 ui.painter().rect(
                     r,
                     CornerRadius::same(3),
-                    if resp.hovered() { t.button_hi } else { t.button },
-                    Stroke::new(1.0, t.button_border),
-                    StrokeKind::Inside,
-                );
-                icons::draw(ui.painter(), r.shrink(5.0), "stop", if playing { t.text } else { t.accent });
-                if resp.on_hover_text("Stop (Space)").clicked() {
-                    let _ = app.run("transport.stop", json!({}));
-                }
-                let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
-                ui.painter().rect(
-                    r,
-                    CornerRadius::same(3),
                     if playing {
                         Color32::from_rgb(40, 90, 50)
                     } else if resp.hovered() {
@@ -310,9 +298,9 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                     Stroke::new(1.0, t.button_border),
                     StrokeKind::Inside,
                 );
-                icons::draw(ui.painter(), r.shrink(5.0), "play", if playing { Color32::from_rgb(120, 255, 140) } else { t.counter_text });
-                if resp.on_hover_text("Play (Space)").clicked() {
-                    let _ = app.run("transport.play", json!({}));
+                icons::draw(ui.painter(), r.shrink(5.0), if playing { "stop" } else { "play" }, if playing { Color32::from_rgb(120, 255, 140) } else { t.counter_text });
+                if resp.on_hover_text("Play/Stop (Space)").clicked() {
+                    let _ = app.run(if playing { "transport.pause" } else { "transport.play" }, json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 ui.painter().rect(
@@ -351,7 +339,7 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
 }
 
 fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let (bpm, meter, countoff, click, bars) = {
         let s = app.engine.session();
         let tick = s.tempo.samples_to_ticks(app.position(), s.sample_rate);

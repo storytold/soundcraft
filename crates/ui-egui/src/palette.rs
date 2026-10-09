@@ -62,7 +62,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     if !app.ui.show_search {
         return;
     }
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let mut run: Option<String> = None;
     let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
     egui::Window::new("Search")

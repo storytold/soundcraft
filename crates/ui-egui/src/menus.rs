@@ -44,7 +44,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.config_update", "Update Active Configuration", "Window > Configurations > Update Active Configuration", None),
     ("window.config_auto_update", "Auto-Update Active Configuration", "Window > Configurations > Auto-Update Active Configuration", None),
     ("window.renderer", "Renderer", "Window > Renderer", None),
-    ("window.ui_customization", "UI Customization", "Window > UI Customization", None),
+    ("window.ui_customization", "Appearance", "Setup > Appearance", None),
     ("window.arrange_tile", "Tile", "Window > Arrange > Tile", None),
     ("window.arrange_tile_h", "Tile Horizontal", "Window > Arrange > Tile Horizontal", None),
     ("window.arrange_tile_v", "Tile Vertical", "Window > Arrange > Tile Vertical", None),
@@ -153,37 +153,43 @@ struct MenuNode {
     children: Vec<MenuNode>,
 }
 
+fn insert_path(roots: &mut Vec<MenuNode>, line: &str) {
+    let parts: Vec<&str> = line.split(" > ").collect();
+    let mut level = roots;
+    let mut path = String::new();
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            path.push_str(" > ");
+        }
+        path.push_str(p);
+        let idx = match level.iter().position(|n| n.label == *p) {
+            Some(i) => i,
+            None => {
+                level.push(MenuNode { label: p.to_string(), path: path.clone(), children: Vec::new() });
+                level.len() - 1
+            }
+        };
+        let Some(node) = level.get_mut(idx) else { break };
+        level = &mut node.children;
+    }
+}
+
 fn tree() -> Vec<MenuNode> {
     let mut roots: Vec<MenuNode> = Vec::new();
     for line in catalog::catalog() {
-        let parts: Vec<&str> = line.split(" > ").collect();
-        let mut level = &mut roots;
-        let mut path = String::new();
-        for (i, p) in parts.iter().enumerate() {
-            if i > 0 {
-                path.push_str(" > ");
-            }
-            path.push_str(p);
-            let idx = match level.iter().position(|n| n.label == *p) {
-                Some(i) => i,
-                None => {
-                    level.push(MenuNode { label: p.to_string(), path: path.clone(), children: Vec::new() });
-                    level.len() - 1
-                }
-            };
-            let Some(node) = level.get_mut(idx) else { break };
-            level = &mut node.children;
-        }
+        insert_path(&mut roots, line);
+    }
+    for (path, _) in MENU_WINDOWS {
+        insert_path(&mut roots, path);
     }
     roots
 }
 
 pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
-    let t = crate::theme::Tokens::DARK;
-    egui::Panel::top("menu_bar")
-        .exact_size(24.0)
-        .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(22, 22, 23)).inner_margin(egui::Margin::symmetric(8, 2)))
-        .show(ui, |ui| {
+    let t = crate::theme::Tokens::current();
+    egui::Panel::top("menu_bar").exact_size(24.0).frame(egui::Frame::NONE.fill(t.toolbar_bg).inner_margin(egui::Margin::symmetric(8, 2))).show(
+        ui,
+        |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("SoundCraft", |ui| {
                     if ui.button("About SoundCraft").clicked() {
@@ -219,7 +225,8 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                     ui.label(egui::RichText::new(title).color(t.text_dim));
                 });
             });
-        });
+        },
+    );
 }
 
 fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str, &str)]) {
@@ -338,6 +345,7 @@ fn params_for(path: &str, id: &str) -> Value {
 
 /// Menu items that open a SoundCraft window when clicked (programmatic calls still run the command).
 const MENU_WINDOWS: &[(&str, &str)] = &[
+    ("Setup > Appearance", "window.ui_customization"),
     ("Setup > Hardware...", "window.playback_engine"),
     ("Setup > Playback Engine...", "window.playback_engine"),
     ("Setup > I/O...", "window.io_setup"),

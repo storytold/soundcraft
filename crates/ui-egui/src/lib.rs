@@ -339,6 +339,21 @@ impl SoundApp {
         }
     }
 
+    fn pause_play(&mut self) {
+        if !self.engine.transport.playing {
+            return;
+        }
+        if let Some(p) = &self.player {
+            p.stop();
+        }
+        self.sim = None;
+        self.engine.transport.playing = false;
+        let pos = self.engine.transport.position;
+        let session = self.engine.session_mut();
+        session.edit.playhead = pos;
+        session.edit.selection = Range::point(pos);
+    }
+
     fn start_recording(&mut self) {
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
         if !armed {
@@ -591,7 +606,8 @@ impl SoundApp {
                         self.play_from_selection();
                     }
                 }
-                TransportRequest::Stop | TransportRequest::Pause => self.stop_play(),
+                TransportRequest::Stop => self.stop_play(),
+                TransportRequest::Pause => self.pause_play(),
                 TransportRequest::TogglePlay => {
                     if self.is_playing() {
                         self.stop_play();
@@ -681,11 +697,11 @@ impl SoundApp {
                 self.fonts_ready = true;
             } else {
                 fonts::install(ctx);
-                theme::apply(ctx);
                 self.fonts_installed = true;
                 ctx.request_repaint();
             }
         }
+        theme::apply(ctx, self.extra.theme_mode);
         let now = ctx.input(|i| i.time);
         let dt = self.last_frame.map_or(1.0 / 60.0, |t| (now - t) as f32).clamp(0.0, 0.25);
         self.last_frame = Some(now);

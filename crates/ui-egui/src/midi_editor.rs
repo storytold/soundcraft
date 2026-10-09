@@ -56,7 +56,7 @@ fn is_black(p: i32) -> bool {
 }
 
 pub fn show(app: &mut SoundApp, ui: &mut Ui) {
-    let t = Tokens::DARK;
+    let t = Tokens::current();
     let full = ui.max_rect();
     ui.painter().rect_filled(full, 0.0, t.panel_bg);
     let header = Rect::from_min_size(full.min, vec2(full.width(), 22.0));
