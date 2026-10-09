@@ -423,20 +423,35 @@ pub fn commit_track(e: &mut Engine, t: TrackId) -> Result<Option<TrackId>> {
     Ok(Some(nt))
 }
 
-pub fn export_clips(e: &Engine, ids: &[soundcraft_model::ClipId], dir: &str) -> Result<usize> {
+pub fn export_clips(e: &Engine, ids: &[soundcraft_model::ClipId], dir: &str) -> Result<Vec<String>> {
     let s = e.session();
     std::fs::create_dir_all(dir).map_err(|err| EngineError::Io(format!("{dir}: {err}")))?;
-    let mut n = 0;
+    let mut written = Vec::new();
     for id in ids {
         let Some((t, c)) = s.find_clip(*id) else { continue };
         let audio = soundcraft_mix::render_clips(s, t, c.range());
         let buf = AudioBuffer { sample_rate: s.sample_rate.hz(), channels: audio };
         let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).map_err(|err| EngineError::Io(err.to_string()))?;
-        let path = Path::new(dir).join(format!("{}.wav", sanitize_name(&c.name)));
-        std::fs::write(&path, bytes).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))?;
-        n += 1;
+        written.push(write_new_file(Path::new(dir), &sanitize_name(&c.name), "wav", &bytes)?);
     }
-    Ok(n)
+    Ok(written)
+}
+
+/// Writes `<stem>.<ext>` in `dir`, or `<stem> 2.<ext>`, `<stem> 3.<ext>`… when taken; never overwrites.
+fn write_new_file(dir: &Path, stem: &str, ext: &str, bytes: &[u8]) -> Result<String> {
+    use std::io::Write;
+    for k in 1..=10_000 {
+        let path = dir.join(if k == 1 { format!("{stem}.{ext}") } else { format!("{stem} {k}.{ext}") });
+        match std::fs::File::create_new(&path) {
+            Ok(mut f) => {
+                f.write_all(bytes).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))?;
+                return Ok(path.to_string_lossy().into_owned());
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(EngineError::Io(format!("{}: {err}", path.display()))),
+        }
+    }
+    Err(EngineError::Io(format!("{}: no free file name for {stem}.{ext}", dir.display())))
 }
 
 pub fn sanitize_name(n: &str) -> String {
@@ -627,5 +642,39 @@ mod stem_tests {
         let n = r["files"].as_array().map_or(0, Vec::len);
         assert_eq!(n, 7, "{r}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod clip_export_tests {
+    use serde_json::json;
+
+    #[test]
+    fn exports_the_selected_clips_and_refuses_an_empty_selection() {
+        let mut e = crate::demo::demo_engine();
+        let dir = std::env::temp_dir().join(format!("soundcraft-clips-{}", std::process::id()));
+        let p = json!({"dir": dir.to_string_lossy()});
+        e.execute("edit.select_none", &json!({})).unwrap();
+        assert!(e.execute("file.export_clips", &p).is_err());
+        e.execute("edit.select", &json!({"tracks": ["Kick"], "start": {"seconds": 10.0}, "end": {"seconds": 11.0}})).unwrap();
+        let r = e.execute("file.export_clips", &p).unwrap();
+        let files = std::fs::read_dir(&dir).map_or(0, Iterator::count);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(files >= 1 && r["written"] == files, "{r}, {files} files");
+    }
+
+    #[test]
+    fn clips_with_the_same_name_never_overwrite_a_file() {
+        let mut e = crate::demo::demo_engine();
+        let dir = std::env::temp_dir().join(format!("soundcraft-clip-names-{}", std::process::id()));
+        let p = json!({"dir": dir.to_string_lossy()});
+        e.execute("edit.select", &json!({"tracks": ["Kick"], "start": {"seconds": 0.0}, "end": {"seconds": 120.0}})).unwrap();
+        e.execute("file.export_clips", &p).unwrap();
+        e.execute("file.export_clips", &p).unwrap();
+        let mut names: Vec<String> =
+            std::fs::read_dir(&dir).map(|d| d.filter_map(|f| f.ok()?.file_name().into_string().ok()).collect()).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        names.sort();
+        assert_eq!(names, ["Kick 2.wav", "Kick 3.wav", "Kick 4.wav", "Kick 5.wav", "Kick 6.wav", "Kick.wav"]);
     }
 }

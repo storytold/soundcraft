@@ -109,11 +109,14 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"text": text}))
         }),
-        cmd!(noundo "file.export_clips", "Export Clips as Files...", [], None, "{dir, clips?, format?: wav}", always, |e, p| {
+        cmd!(noundo "file.export_clips", "Export Clips as Files...", [], Some("Cmd+Shift+K"), "{dir, clips?, format?: wav}", always, |e, p| {
             let dir = str_param(p, "dir").ok_or_else(|| bad("file.export_clips", "`dir` required"))?.to_string();
             let ids = clip_ids_param(e, p);
-            let n = crate::io::export_clips(e, &ids, &dir)?;
-            Ok(json!({"written": n}))
+            if ids.is_empty() {
+                return Err(bad("file.export_clips", "no clips selected"));
+            }
+            let files = crate::io::export_clips(e, &ids, &dir)?;
+            Ok(json!({"written": files.len(), "dir": dir, "files": files}))
         }),
         cmd!(noundo "file.export_selected_tracks_as_session", "Selected Tracks as New Session...", ["File", "Export"], None, "{path, tracks?}", has_selection, |e, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("file.export_selected_tracks_as_session", "`path` required"))?.to_string();

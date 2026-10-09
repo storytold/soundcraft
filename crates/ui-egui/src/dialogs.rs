@@ -291,8 +291,16 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     if let Some(pick) = &app.services.pick_open
                         && cmd != "session.save_as"
                         && cmd != "session.save_copy"
+                        && key != "dir"
                         && ui.button("Browse…").clicked()
                         && let Some(p) = pick(cmd, &[])
+                    {
+                        *path = p;
+                    }
+                    if let Some(pick) = &app.services.pick_folder
+                        && key == "dir"
+                        && ui.button("Browse…").clicked()
+                        && let Some(p) = pick(path)
                     {
                         *path = p;
                     }
@@ -412,8 +420,12 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     }
     if let Some((cmd, params)) = action {
         keep = false;
-        if let Err(e) = app.run(&cmd, params) {
-            app.ui.status = e;
+        match app.run(&cmd, params) {
+            Ok(v) if cmd == "file.export_clips" => {
+                app.ui.status = format!("Exported {} clip(s) to {}", v["written"], v["dir"].as_str().unwrap_or_default());
+            }
+            Ok(_) => {}
+            Err(e) => app.ui.status = e,
         }
     }
     if keep {
