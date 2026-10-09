@@ -180,10 +180,9 @@ fn tree() -> Vec<MenuNode> {
 
 pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::current();
-    egui::Panel::top("menu_bar")
-        .exact_size(24.0)
-        .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(22, 22, 23)).inner_margin(egui::Margin::symmetric(8, 2)))
-        .show(ui, |ui| {
+    egui::Panel::top("menu_bar").exact_size(24.0).frame(egui::Frame::NONE.fill(t.toolbar_bg).inner_margin(egui::Margin::symmetric(8, 2))).show(
+        ui,
+        |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("SoundCraft", |ui| {
                     if ui.button("About SoundCraft").clicked() {
@@ -219,7 +218,8 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                     ui.label(egui::RichText::new(title).color(t.text_dim));
                 });
             });
-        });
+        },
+    );
 }
 
 fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str, &str)]) {
