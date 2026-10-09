@@ -681,11 +681,11 @@ impl SoundApp {
                 self.fonts_ready = true;
             } else {
                 fonts::install(ctx);
-                theme::apply(ctx);
                 self.fonts_installed = true;
                 ctx.request_repaint();
             }
         }
+        theme::apply(ctx, self.extra.theme_mode);
         let now = ctx.input(|i| i.time);
         let dt = self.last_frame.map_or(1.0 / 60.0, |t| (now - t) as f32).clamp(0.0, 0.25);
         self.last_frame = Some(now);

@@ -44,7 +44,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.config_update", "Update Active Configuration", "Window > Configurations > Update Active Configuration", None),
     ("window.config_auto_update", "Auto-Update Active Configuration", "Window > Configurations > Auto-Update Active Configuration", None),
     ("window.renderer", "Renderer", "Window > Renderer", None),
-    ("window.ui_customization", "UI Customization", "Window > UI Customization", None),
+    ("window.ui_customization", "Appearance", "Setup > Appearance", None),
     ("window.arrange_tile", "Tile", "Window > Arrange > Tile", None),
     ("window.arrange_tile_h", "Tile Horizontal", "Window > Arrange > Tile Horizontal", None),
     ("window.arrange_tile_v", "Tile Vertical", "Window > Arrange > Tile Vertical", None),

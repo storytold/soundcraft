@@ -1,9 +1,38 @@
 //! Design tokens. Colours were chosen by eye to give a dark, studio-style look; they are ours.
 
 use egui::{Color32, FontFamily, FontId};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 
-static LIGHT_THEME: AtomicBool = AtomicBool::new(false);
+static LIGHT_THEME: AtomicBool = AtomicBool::new(true);
+static SYSTEM_LIGHT: OnceLock<bool> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeMode {
+    System,
+    Light,
+    Dark,
+}
+
+impl Default for ThemeMode {
+    fn default() -> Self {
+        Self::System
+    }
+}
+
+impl ThemeMode {
+    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::System => "System",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Tokens {
@@ -183,8 +212,23 @@ impl Tokens {
     }
 }
 
-pub fn set_light(enabled: bool) {
-    LIGHT_THEME.store(enabled, Ordering::Relaxed);
+fn system_is_light() -> bool {
+    *SYSTEM_LIGHT.get_or_init(|| match dark_light::detect() {
+        Ok(dark_light::Mode::Light) => true,
+        Ok(dark_light::Mode::Dark) => false,
+        Ok(dark_light::Mode::Unspecified) | Err(_) => false,
+    })
+}
+
+pub fn set_mode(mode: ThemeMode) {
+    LIGHT_THEME.store(
+        match mode {
+            ThemeMode::System => system_is_light(),
+            ThemeMode::Light => true,
+            ThemeMode::Dark => false,
+        },
+        Ordering::Relaxed,
+    );
 }
 
 /// Track colours tinted for clip bodies.
@@ -214,7 +258,8 @@ pub fn mono(size: f32) -> FontId {
 }
 
 /// Apply visuals to the context.
-pub fn apply(ctx: &egui::Context) {
+pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
+    set_mode(mode);
     let t = Tokens::current();
     let mut v = if LIGHT_THEME.load(Ordering::Relaxed) { egui::Visuals::light() } else { egui::Visuals::dark() };
     v.panel_fill = t.panel_bg;

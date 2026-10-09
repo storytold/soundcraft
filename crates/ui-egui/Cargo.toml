@@ -21,6 +21,7 @@ soundcraft-engine.workspace = true
 soundcraft-playback.workspace = true
 soundcraft-video.workspace = true
 egui.workspace = true
+dark-light.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
