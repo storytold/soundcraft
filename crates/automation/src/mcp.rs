@@ -2,7 +2,7 @@
 
 use crate::Backend;
 use serde_json::{Value, json};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Write, stderr};
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 const SUPPORTED: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
