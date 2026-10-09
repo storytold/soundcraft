@@ -439,6 +439,12 @@ impl MixEngine {
         self.main.len()
     }
 
+    /// Channels of the bus with `id` as of the last render block, or `None` if there is no such bus.
+    /// The returned slice is valid until the next `render`/`sync`.
+    pub fn bus_channels(&self, id: soundcraft_model::BusId) -> Option<&[Vec<f32>]> {
+        self.busses.get(&id).map(|b| b.buf.as_slice())
+    }
+
     /// Reset all plugin state (on stop / seek).
     pub fn reset(&mut self) {
         for s in self.strips.values_mut() {
@@ -1531,6 +1537,60 @@ pub fn render_range(s: &Session, range: Range, block: usize) -> Vec<Vec<f32>> {
         }
     }
     out
+}
+
+/// Offline render of a specific bus over `range` (planar, in the bus's own format).
+/// The mix's delay-compensation latency is removed. Returns `None` if the bus doesn't exist.
+pub fn render_bus(s: &Session, bus_id: soundcraft_model::BusId, range: Range, block: usize) -> Option<(Vec<Vec<f32>>, ChannelFormat)> {
+    let bus = s.bus(bus_id)?;
+    let nch = bus.format.channels().max(1).clamp(1, MAX_CHANNELS);
+    let len = usize::try_from(range.len().max(0)).unwrap_or(0).min(MAX_RENDER_SAMPLES / nch);
+    if len == 0 {
+        return Some((vec![vec![0.0f32; 0]; nch], bus.format));
+    }
+    let sr = s.sample_rate.as_f64() as f32;
+    // Probe the latency with one block.
+    let latency = {
+        let mut probe = MixEngine::new(sr, block);
+        let b = probe.max_block();
+        let mut tmp = vec![vec![0.0f32; b]; nch];
+        probe.render(s, range.start, b.min(len.max(1)), &mut tmp);
+        probe.take_retired(); // drop any plugin instances created during the probe
+        probe.latency
+    };
+    let total = len.saturating_add(latency);
+    let mut out = vec![vec![0.0f32; total]; nch];
+    let mut eng = MixEngine::new(sr, block);
+    let b = eng.max_block();
+    let mut main_tmp = vec![vec![0.0f32; b]; main_channels(s)];
+    let mut done = 0usize;
+    while done < total {
+        let n = (total - done).min(b);
+        eng.render(s, range.start + done as i64, n, &mut main_tmp);
+        // After `render`, the engine's internal bus buffers contain `latency` extra samples at the start
+        // that must be dropped to align with the main mix's latency compensation.
+        if let Some(bus_buf) = eng.bus_channels(bus_id) {
+            for c in 0..nch {
+                if let (Some(dst), Some(src)) = (out.get_mut(c), bus_buf.get(c)) {
+                    // Drop latency samples, then copy up to `n` samples.
+                    let src_start = latency.min(src.len());
+                    let available = src.len().saturating_sub(src_start);
+                    let to_copy = n.min(available).min(dst.len().saturating_sub(done));
+                    if to_copy > 0 {
+                        dst[done..done + to_copy].copy_from_slice(&src[src_start..src_start + to_copy]);
+                    }
+                }
+            }
+        }
+        done += n;
+    }
+    eng.take_retired(); // drop plugin instances before leaving
+    if latency > 0 {
+        for c in &mut out {
+            c.drain(..latency.min(c.len()));
+        }
+    }
+    Some((out, bus.format))
 }
 
 /// ITU-R BS.775 stereo fold-down of planar audio in `fmt` (C and surrounds at -3 dB, LFE dropped;
