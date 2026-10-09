@@ -211,17 +211,46 @@ pub fn export_midi(e: &Engine) -> Result<Vec<u8>> {
 
 /// Render the main mix. Returns the encoded file and (peak dBFS, integrated LUFS).
 pub fn bounce_bytes(e: &Engine, r: Range, opts: &EncodeOptions, normalize: bool) -> Result<(Vec<u8>, (f32, f32, f32))> {
-    bounce_bytes_with(e, r, opts, normalize, false)
+    bounce_bytes_with(e, r, opts, normalize, false, None)
 }
 
-/// Render the main mix in its own format (every main channel, SMPTE/WAV order, with the WAV
-/// speaker mask of the main format), or an ITU stereo fold-down when `fold_stereo`.
-pub fn bounce_bytes_with(e: &Engine, r: Range, opts: &EncodeOptions, normalize: bool, fold_stereo: bool) -> Result<(Vec<u8>, (f32, f32, f32))> {
+/// Render the main mix or a bus in its own format (every channel, SMPTE/WAV order, with the WAV
+/// speaker mask of the format), or an ITU stereo fold-down when `fold_stereo`.
+pub fn bounce_bytes_with(e: &Engine, r: Range, opts: &EncodeOptions, normalize: bool, fold_stereo: bool, source: Option<String>) -> Result<(Vec<u8>, (f32, f32, f32))> {
     let s = e.session();
     if r.len() > s.sample_rate.samples(4.0 * 3600.0) {
         return Err(EngineError::BadParams("file.bounce_mix".into(), "bounces are limited to 4 hours".into()));
     }
-    let (mut ch, fmt) = render_main(s, r, fold_stereo);
+    let (ch, fmt) = match source {
+        // When `source` is specified, try to render that bus.
+        Some(source_name) => {
+            // Find the bus by name.
+            let bus_id = s.busses.iter()
+                .find(|b| b.name.eq_ignore_ascii_case(&source_name))
+                .map(|b| b.id);
+            match bus_id {
+                Some(id) => match soundcraft_mix::render_bus(s, id, r, 1024) {
+                    Some((bus_ch, bus_fmt)) => {
+                        // Success: we have the bus channels and its format.
+                        (bus_ch, bus_fmt)
+                    }
+                    None => {
+                        // Bus exists but rendering failed (should not happen offline).
+                        return Err(EngineError::Io(format!("failed to render bus '{source_name}'")));
+                    }
+                }
+                None => {
+                    // Named bus not found: error.
+                    return Err(EngineError::BadParams("file.bounce_mix".into(), format!("unknown bus '{source_name}'")));
+                }
+            }
+        }
+        None => {
+            // No source specified: render the main mix.
+            let (main_ch, main_fmt) = render_main(s, r, fold_stereo);
+            (main_ch, main_fmt)
+        }
+    };
     if normalize {
         soundcraft_dsp::offline::normalize(&mut ch, -0.1, false);
     }
