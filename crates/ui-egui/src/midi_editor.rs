@@ -15,7 +15,7 @@ const VEL_H: f32 = 64.0;
 pub struct MidiEditorState {
     pub selected: Vec<usize>,
     pub drag: Option<NoteDrag>,
-    pub top_pitch: i32,
+    pub scroll: f32,
     pub clip: Option<ClipId>,
     /// Rubber-band selection start (screen position).
     pub band: Option<egui::Pos2>,
@@ -127,28 +127,27 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     let vel = Rect::from_min_max(pos2(roll.min.x, roll.max.y + 4.0), pos2(roll.max.x, full.max.y - 2.0));
     // Vertical range: centre on the notes the first time.
     let rows = (roll.height() / ROW_H).floor() as i32;
-    if app.midi.top_pitch == 0 || app.midi.clip != Some(cid) {
+    if app.midi.clip != Some(cid) {
         let hi = sequence.notes.iter().map(|n| i32::from(n.pitch)).max().unwrap_or(72);
         let lo = sequence.notes.iter().map(|n| i32::from(n.pitch)).min().unwrap_or(48);
-        let mid = (hi + lo) / 2;
-        app.midi.top_pitch = (mid + rows / 2).clamp(rows.min(127), 127);
+        app.midi.scroll = (127 - (hi + lo) / 2 - rows / 2) as f32 * ROW_H;
         app.midi.clip = Some(cid);
     }
     if ui.rect_contains_pointer(roll) {
-        let dy = ui.input(|i| i.smooth_scroll_delta.y);
-        if dy.abs() > 0.5 {
-            app.midi.top_pitch = (app.midi.top_pitch + (dy / ROW_H).round() as i32).clamp(rows.min(127), 127);
-        }
+        app.midi.scroll -= ui.input(|i| i.smooth_scroll_delta.y);
     }
-    let top = app.midi.top_pitch;
+    app.midi.scroll = app.midi.scroll.clamp(0.0, (128.0 * ROW_H - roll.height()).max(0.0));
+    let scroll = app.midi.scroll;
     let px_per_tick = roll.width() / len_ticks as f32;
     let x_of = |tick: i64| roll.min.x + tick as f32 * px_per_tick;
-    let y_of = |pitch: i32| roll.min.y + (top - pitch) as f32 * ROW_H;
+    let y_of = |pitch: i32| roll.min.y + (127 - pitch) as f32 * ROW_H - scroll;
+    let pitch_at = |y: f32| 127 - ((y - roll.min.y + scroll) / ROW_H).floor() as i32;
     let painter = ui.painter().with_clip_rect(roll.union(keys));
     // Background rows and keys.
-    for r in 0..=rows {
+    let top = pitch_at(roll.min.y);
+    for r in 0..=rows + 1 {
         let pitch = top - r;
-        let y = roll.min.y + r as f32 * ROW_H;
+        let y = y_of(pitch);
         let row = Rect::from_min_size(pos2(roll.min.x, y), vec2(roll.width(), ROW_H));
         painter.rect_filled(row, 0.0, if is_black(pitch) { Color32::from_rgb(30, 30, 32) } else { Color32::from_rgb(40, 40, 42) });
         let key = Rect::from_min_size(pos2(keys.min.x, y), vec2(KEY_W - 2.0, ROW_H - 1.0));
@@ -288,7 +287,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
                 // Audition on the instrument would go here (needs a live MIDI input path).
             }
             None => {
-                let pitch = (top - ((p.y - roll.min.y) / ROW_H).floor() as i32).clamp(0, 127);
+                let pitch = pitch_at(p.y).clamp(0, 127);
                 let start = (((p.x - roll.min.x) / px_per_tick) as i64 / grid_ticks) * grid_ticks;
                 let _ = app.run(
                     "midi.note_add",

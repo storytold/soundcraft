@@ -16,7 +16,7 @@ pub mod io;
 pub mod score;
 
 use serde_json::{Value, json};
-use soundcraft_model::{Clip, Session, TrackId};
+use soundcraft_model::{Clip, Session, TrackId, ZoomState};
 use soundcraft_time::Samples;
 use std::sync::Arc;
 
@@ -108,7 +108,7 @@ pub struct Engine {
     pub journal: Vec<(String, Value)>,
     /// Path of the session file, if saved.
     pub path: Option<String>,
-    /// Revision counter; bumps on every document change (UI caches key on it).
+    /// Revision counter; bumps on every document change but zoom/scroll (UI caches key on it).
     pub revision: u64,
     dirty: bool,
     /// Gesture key for undo coalescing (see `execute_merged`).
@@ -156,6 +156,12 @@ impl Engine {
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         Arc::make_mut(&mut self.doc)
+    }
+
+    /// Like `session_mut`, for `edit.zoom` only and without bumping `revision`.
+    pub fn zoom_mut(&mut self) -> &mut ZoomState {
+        self.dirty = true;
+        &mut Arc::make_mut(&mut self.doc).edit.zoom
     }
 
     /// Replace the whole document (open / new); clears history.
@@ -227,7 +233,6 @@ impl Engine {
     /// Run a command by id. Never panics: escaped panics become `EngineError::Internal` and the
     /// document is restored.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
-        self.merge_key = None;
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         if let Err(reason) = (spec.enabled)(self) {
             // A call that names its targets (tracks, clips, a range) does not need a selection;
@@ -237,6 +242,10 @@ impl Engine {
                 return Err(EngineError::Disabled(id.to_string(), reason));
             }
         }
+        if spec.view {
+            return self.execute_view(spec, params);
+        }
+        self.merge_key = None;
         let before = Arc::clone(&self.doc);
         let rev = self.revision;
         let dirty = self.dirty;
@@ -244,12 +253,10 @@ impl Engine {
         let result = match result {
             Ok(r) => r,
             Err(p) => {
-                let msg =
-                    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into());
                 self.doc = before;
                 self.revision = rev.wrapping_add(1);
                 self.dirty = dirty;
-                return Err(EngineError::Internal(id.to_string(), msg));
+                return Err(EngineError::Internal(id.to_string(), panic_message(&*p)));
             }
         };
         match result {
@@ -272,6 +279,16 @@ impl Engine {
                 Err(e)
             }
         }
+    }
+
+    fn execute_view(&mut self, spec: &CommandSpec, params: &Value) -> Result<Value> {
+        let zoom = self.doc.edit.zoom;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, params)))
+            .unwrap_or_else(|p| Err(EngineError::Internal(spec.id.to_string(), panic_message(&*p))));
+        if result.is_err() && self.doc.edit.zoom != zoom {
+            Arc::make_mut(&mut self.doc).edit.zoom = zoom;
+        }
+        result
     }
 
     /// Execute as part of a continuous gesture (fader drag, knob turn, slider): consecutive calls
@@ -327,6 +344,10 @@ fn install_panic_hook() {
             prev(info);
         }));
     });
+}
+
+fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
 }
 
 #[cfg(test)]

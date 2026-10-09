@@ -107,7 +107,8 @@ where things are.
   Scrubber tools; cut, copy, paste, duplicate, repeat, shift, insert silence, separate (at
   selection, on grid, at transients), heal, consolidate, strip silence, nudge; fades and
   crossfades in five shapes, drawn straight from the clip corners; playlists with comping lanes;
-  clip gain lines; edit groups; single-key Commands Focus shortcuts; undo for everything.
+  clip gain lines; edit groups; single-key Commands Focus shortcuts; trackpad scrolling that
+  follows your fingers and pinch-to-zoom around the pointer; undo for everything.
 - **Mixing:** fader and pan with automation, pre/post sends, busses, aux inputs, master faders,
   VCA masters, routing folders, solo modes, mute and solo groups, phase invert and trim, clip
   effects, and automatic plugin delay compensation.

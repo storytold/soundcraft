@@ -44,6 +44,8 @@ pub struct EditLayout {
     pub last_scroll: Samples,
     /// Follow target issued by the last overlay frame (`None` when none).
     pub last_follow_to: Option<Samples>,
+    #[serde(skip)]
+    pub scroll_carry: f64,
 }
 
 pub fn x_of(s: &Session, tl: Rect, at: Samples) -> f32 {
@@ -195,23 +197,7 @@ fn main_area(app: &mut SoundApp, ui: &mut Ui) {
     let rulers_rect = Rect::from_min_max(pos2(full.min.x, full.min.y), pos2(full.max.x, full.min.y + rulers_h));
     app.edit_layout.timeline = [tl.min.x, tl.min.y, tl.max.x, tl.max.y];
     ui.painter().rect_filled(full, 0.0, t.window_bg);
-    // Wheel: vertical scroll tracks, shift/horizontal scroll timeline, cmd = zoom.
-    let hovered = ui.rect_contains_pointer(Rect::from_min_max(pos2(full.min.x, tl.min.y), full.max));
-    if hovered {
-        let (delta, mods) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers));
-        if mods.command && delta.y.abs() > 0.0 {
-            let id = if delta.y > 0.0 { "view.zoom_in" } else { "view.zoom_out" };
-            let _ = app.run(id, json!({}));
-        } else {
-            let dx = if mods.shift { delta.y } else { delta.x };
-            if dx.abs() > 0.0 {
-                let _ = app.engine.execute("view.scroll", &json!({"by_px": -dx}));
-            }
-            if !mods.shift && delta.y.abs() > 0.0 {
-                app.edit_layout.scroll_y = (app.edit_layout.scroll_y - delta.y).clamp(0.0, (app.edit_layout.content_h - tl.height() + 40.0).max(0.0));
-            }
-        }
-    }
+    scroll_and_zoom(app, ui, full, tl);
     draw_rulers(app, ui, rulers_rect, tl, &rulers);
     // Tracks.
     let ids: Vec<TrackId> =
@@ -262,12 +248,39 @@ fn folder_collapsed(s: &Session, t: &Track) -> bool {
     t.folder.and_then(|f| s.track(f)).is_some_and(|f| !f.folder_open)
 }
 
+fn scroll_and_zoom(app: &mut SoundApp, ui: &Ui, area: Rect, tl: Rect) {
+    let (delta, zoom, pointer) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
+    let Some(p) = pointer.filter(|_| tl.is_positive() && ui.rect_contains_pointer(area)) else { return };
+    if zoom != 1.0 {
+        let _ = app.engine.execute("view.zoom_by", &json!({"factor": zoom, "x": p.x.clamp(tl.min.x, tl.max.x) - tl.min.x}));
+    }
+    if delta.x != 0.0 {
+        pan(app, -f64::from(delta.x));
+    }
+    if delta.y != 0.0 {
+        app.edit_layout.scroll_y = (app.edit_layout.scroll_y - delta.y).clamp(0.0, (app.edit_layout.content_h - tl.height() + 40.0).max(0.0));
+    }
+}
+
+fn pan(app: &mut SoundApp, px: f64) {
+    let z = app.engine.session().edit.zoom;
+    let want = (z.scroll as f64 + app.edit_layout.scroll_carry + px * z.samples_per_px).clamp(0.0, soundcraft_engine::cmd::MAX_POSITION as f64);
+    if want.is_nan() {
+        return;
+    }
+    let to = soundcraft_time::to_samples(want);
+    app.edit_layout.scroll_carry = want - to as f64;
+    if to != z.scroll {
+        let _ = app.engine.execute("view.scroll", &json!({"to": to}));
+    }
+}
+
 fn hscrollbar(app: &mut SoundApp, ui: &mut Ui, sb: Rect, tl: Rect) {
     let t = Tokens::current();
     ui.painter().rect_filled(sb, 0.0, t.panel_bg);
     let s = app.engine.session();
-    let total = (s.content_end() + s.sample_rate.samples(30.0)).max(1) as f64;
     let vis = f64::from(tl.width()) * s.edit.zoom.samples_per_px;
+    let total = (s.content_end().saturating_add(s.sample_rate.samples(30.0)).max(1) as f64).max(s.edit.zoom.scroll as f64 + vis);
     let frac = (vis / total).clamp(0.02, 1.0) as f32;
     let off = (s.edit.zoom.scroll as f64 / total).clamp(0.0, 1.0) as f32;
     let thumb = Rect::from_min_size(pos2(sb.min.x + sb.width() * off, sb.min.y + 3.0), vec2((sb.width() * frac).max(24.0), sb.height() - 6.0));
@@ -276,7 +289,7 @@ fn hscrollbar(app: &mut SoundApp, ui: &mut Ui, sb: Rect, tl: Rect) {
     if resp.dragged() {
         let dx = resp.drag_delta().x / sb.width();
         let by_px = f64::from(dx) * total / s.edit.zoom.samples_per_px;
-        let _ = app.engine.execute("view.scroll", &json!({"by_px": by_px}));
+        pan(app, by_px);
     }
 }
 

@@ -51,6 +51,8 @@ pub struct CommandSpec {
     pub run: Run,
     pub journal: bool,
     pub undoable: bool,
+    /// Only touches `edit.zoom`, through `Engine::zoom_mut`.
+    pub view: bool,
 }
 
 /// Serializable description of a command.
@@ -80,18 +82,16 @@ impl CommandSpec {
     }
 }
 
-/// `cmd!(id, label, [menu…], shortcut, params, enabled, run)`; `query`/`noundo` variants.
+/// `cmd!(id, label, [menu…], shortcut, params, enabled, run)`; `query`/`noundo`/`view` variants.
 #[macro_export]
 macro_rules! cmd {
-    (query $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: false, undoable: false }
+    (query $($t:tt)*) => { $crate::cmd!(@spec false, false, false; $($t)*) };
+    (noundo $($t:tt)*) => { $crate::cmd!(@spec true, false, false; $($t)*) };
+    (view $($t:tt)*) => { $crate::cmd!(@spec false, false, true; $($t)*) };
+    (@spec $journal:literal, $undoable:literal, $view:literal; $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
+        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: $journal, undoable: $undoable, view: $view }
     };
-    (noundo $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: false }
-    };
-    ($id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: true }
-    };
+    ($id:literal, $($t:tt)*) => { $crate::cmd!(@spec true, true, false; $id, $($t)*) };
 }
 
 pub fn command_specs() -> &'static [CommandSpec] {
