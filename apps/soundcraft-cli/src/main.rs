@@ -127,7 +127,8 @@ fn convert(args: &[String]) -> ExitCode {
     let format = match out_ext.as_str() {
         "aif" | "aiff" => soundcraft_audio_io::FileFormat::Aiff,
         "flac" => soundcraft_audio_io::FileFormat::Flac,
-        _ => soundcraft_audio_io::FileFormat::Wav,
+        "wav" => soundcraft_audio_io::FileFormat::Wav,
+        other => return fail(format!("unsupported output format: {other} (supported: wav, aiff, flac)")),
     };
     let bit_depth = match arg_value(args, "--bit-depth").as_deref() {
         Some("16") => soundcraft_audio_io::BitDepth::Int16,
