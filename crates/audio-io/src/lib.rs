@@ -20,6 +20,7 @@ mod symph;
 mod wav;
 
 pub use buffer::AudioBuffer;
+pub use wav::DiskWavReader;
 
 /// Errors from probing, decoding and encoding.
 #[derive(Debug, thiserror::Error)]
