@@ -359,3 +359,21 @@ fn step_marker(e: &mut Engine, dir: i64) -> Result<Value> {
     e.transport_requests.push(crate::TransportRequest::Locate(t));
     Ok(json!({"at": t}))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::demo::demo_engine;
+    use serde_json::json;
+
+    /// The tempo-ruler dialog runs `event.tempo` with `bpm` and `at`; the change must land at that position.
+    #[test]
+    fn tempo_change_at_position_is_applied() {
+        let mut e = demo_engine();
+        let sr = e.session().sample_rate;
+        let at = sr.samples(4.0);
+        e.execute("event.tempo", &json!({"bpm": 133.5, "at": at})).unwrap();
+        let s = e.session();
+        let tick = s.tempo.samples_to_ticks(at, s.sample_rate);
+        assert!((s.tempo.tempo_at_tick(tick) - 133.5).abs() < 1e-9);
+    }
+}

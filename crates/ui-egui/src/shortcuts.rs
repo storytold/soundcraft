@@ -41,8 +41,17 @@ pub fn parse(s: &str) -> Option<(Modifiers, Key)> {
     key.map(|k| (m, k))
 }
 
-fn mods_match(want: Modifiers, got: Modifiers) -> bool {
-    want.command == got.command && want.shift == got.shift && want.alt == got.alt && (want.ctrl == got.ctrl || got.mac_cmd)
+/// Whether the held modifiers `got` fire a shortcut that asks for `want`.
+fn mods_match(want: Modifiers, got: Modifiers, mac: bool) -> bool {
+    // Off macOS egui reports Ctrl as both `ctrl` and `command`: Ctrl is the shortcut's Cmd, and a shortcut's
+    // Ctrl (the Mac Control key) has no key of its own there, so Ctrl+X is Cut, not Cmd+Ctrl+X.
+    let ctrl = if mac { want.ctrl == got.ctrl } else { !want.ctrl };
+    want.command == got.command && want.shift == got.shift && want.alt == got.alt && ctrl
+}
+
+/// Cmd+Ctrl+S opens Search. Off macOS Ctrl+S is Save (Cmd+S), so Search is reached from the Window menu.
+fn search_chord(m: Modifiers, mac: bool) -> bool {
+    mac && m.command && m.ctrl
 }
 
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
@@ -58,12 +67,14 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
             })
             .collect()
     });
+    // Cmd and Ctrl are separate keys only on macOS (asked at runtime so the web build in a Mac browser agrees).
+    let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     for (key, mods) in events {
-        if fixed(app, key, mods) {
+        if fixed(app, key, mods, mac) {
             continue;
         }
         let hit =
-            soundcraft_engine::command_specs().iter().find(|c| c.shortcut.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods)));
+            soundcraft_engine::command_specs().iter().find(|c| c.shortcut.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)));
         if let Some(c) = hit {
             let id = c.id;
             if crate::menus::invoke_shortcut_dialog(app, id) {
@@ -75,7 +86,7 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
 }
 
 /// Keys with context-dependent meaning. Returns true when handled.
-fn fixed(app: &mut SoundApp, key: Key, m: Modifiers) -> bool {
+fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
     let plain = !m.command && !m.alt && !m.ctrl && !m.shift;
     match key {
         Key::Space if !m.command && !m.alt => {
@@ -87,7 +98,7 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers) -> bool {
             let _ = app.run("transport.record", json!({}));
             true
         }
-        Key::S if m.command && m.ctrl => {
+        Key::S if search_chord(m, mac) => {
             let _ = app.run("window.search", json!({}));
             true
         }
@@ -225,5 +236,40 @@ fn tab_clip(app: &mut SoundApp, back: bool) {
     let next = if back { edges.iter().rev().find(|e| **e < at).copied() } else { edges.iter().find(|e| **e > at).copied() };
     if let Some(n) = next {
         let _ = app.run("transport.locate", json!({"at": n}));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mods_match, parse, search_chord};
+    use egui::Modifiers;
+
+    /// Ctrl held on Windows or Linux, as egui reports it.
+    const PC_CTRL: Modifiers = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+    /// Cmd held on macOS.
+    const MAC_CMD: Modifiers = Modifiers { mac_cmd: true, command: true, ..Modifiers::NONE };
+
+    fn want(s: &str) -> Modifiers {
+        parse(s).map(|(m, _)| m).unwrap()
+    }
+
+    #[test]
+    fn ctrl_is_cmd_off_macos() {
+        assert!(mods_match(want("Cmd+S"), PC_CTRL, false));
+        assert!(mods_match(want("Cmd+Shift+N"), Modifiers { shift: true, ..PC_CTRL }, false));
+        assert!(mods_match(want("Cmd+X"), PC_CTRL, false));
+        assert!(!mods_match(want("Cmd+Ctrl+X"), PC_CTRL, false));
+        assert!(!mods_match(want("Cmd+S"), Modifiers::NONE, false));
+        assert!(!search_chord(PC_CTRL, false));
+    }
+
+    #[test]
+    fn cmd_and_ctrl_stay_apart_on_macos() {
+        assert!(mods_match(want("Cmd+S"), MAC_CMD, true));
+        assert!(!mods_match(want("Cmd+S"), Modifiers::CTRL, true));
+        assert!(mods_match(want("Cmd+Ctrl+X"), Modifiers { ctrl: true, ..MAC_CMD }, true));
+        assert!(!mods_match(want("Cmd+X"), Modifiers { ctrl: true, ..MAC_CMD }, true), "Cmd+Ctrl+X is not Cut");
+        assert!(!search_chord(MAC_CMD, true));
+        assert!(search_chord(Modifiers { ctrl: true, ..MAC_CMD }, true));
     }
 }

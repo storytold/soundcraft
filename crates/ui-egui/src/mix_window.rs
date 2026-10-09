@@ -140,8 +140,9 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         let sr = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 16.0), vec2(inner_w - 4.0, 15.0));
         let slot = track.mixer.inserts.iter().position(|i| i.as_ref().is_some_and(|i| plugin_info(&i.plugin).is_some_and(|p| p.is_instrument)));
         match slot {
+            _ if track.kind == TrackKind::Instrument => instrument_slot(app, ui, &track, sr),
             Some(k) => insert_slot(app, ui, &track, k, sr),
-            None if matches!(track.kind, TrackKind::Instrument | TrackKind::Midi) => {
+            None if track.kind == TrackKind::Midi => {
                 ui.painter().text(sr.center(), Align2::CENTER_CENTER, "MIDI in: all", regular(9.0), t.text_dim);
             }
             None => {}
@@ -401,6 +402,32 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     ui.painter().line_segment([pos2(r.max.x, r.min.y), pos2(r.max.x, r.max.y)], Stroke::new(1.0, t.border));
 }
 
+/// An instrument track's INSTRUMENT row: click opens a hosted instrument's plugin window,
+/// right-click (or click, when none is set) picks another instrument.
+fn instrument_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
+    let t = Tokens::DARK;
+    let (id, slot) = (track.id, soundcraft_mix::INSTRUMENT_SLOT);
+    let ins = track.instrument.as_ref();
+    let info = ins.and_then(|i| plugin_info(&i.plugin));
+    let resp = ui.interact(r, ui.id().with(("instrument", id.0)), Sense::click());
+    let fill = if info.is_some() { Color32::from_rgb(52, 62, 80) } else { t.slot_bg };
+    ui.painter().rect(
+        r,
+        CornerRadius::same(2),
+        if resp.hovered() { fill.gamma_multiply(1.3) } else { fill },
+        Stroke::new(1.0, Color32::from_rgb(16, 16, 16)),
+        StrokeKind::Inside,
+    );
+    ui.painter().with_clip_rect(r).text(r.center(), Align2::CENTER_CENTER, info.map_or("no instrument", |p| p.short_name), regular(10.5), t.text);
+    let hosted = ins.is_some_and(|i| soundcraft_mix::is_third_party(&i.plugin));
+    if resp.clicked() && hosted && !app.ui.plugin_windows.contains(&(id, slot)) {
+        app.ui.plugin_windows.push((id, slot));
+    }
+    let menu_resp = if hosted { resp.clone().on_hover_text("Click: open instrument · right-click: change") } else { resp.clone() };
+    let popup = if hosted { egui::Popup::context_menu(&menu_resp) } else { egui::Popup::menu(&menu_resp) };
+    popup.show(|ui| instrument_menu(app, ui, id));
+}
+
 fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
     let t = Tokens::current();
     let id = track.id;
@@ -457,44 +484,114 @@ pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, oc
             }
         });
     }
-    // Third-party CLAP plugins (scanned once, cached by soundcraft-clap-host).
+    if let Some(plugin) = hosted_menus(ui, false)
+        && let Err(e) = app.run("mix.insert", json!({"track": id.0, "slot": slot, "plugin": plugin}))
+    {
+        app.ui.status = e;
+    }
+}
+
+/// The instrument picker of an instrument track: its instrument's editor, then the built-in,
+/// CLAP, VST3 and Audio Units instruments.
+pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
+    let slot = soundcraft_mix::INSTRUMENT_SLOT;
+    let current = app.engine.session().track(id).and_then(|t| t.instrument.clone());
+    if let Some(info) = current.as_ref().and_then(|i| plugin_info(&i.plugin)) {
+        ui.label(egui::RichText::new(info.name).strong());
+        if let Some(p) = &app.player
+            && p.has_editor(id, slot)
+        {
+            if p.editor_open(id, slot) {
+                if ui.button("Close Plugin Editor").clicked() {
+                    p.close_editor(id, slot);
+                }
+            } else if ui.button("Open Plugin Editor").clicked()
+                && let Err(e) = p.open_editor(id, slot)
+            {
+                app.ui.status = format!("{}: {e}", info.name);
+            }
+        }
+        ui.separator();
+    }
+    let mut picked = None;
+    ui.menu_button("Built-in", |ui| {
+        for p in soundcraft_dsp::plugins().iter().filter(|p| p.is_instrument) {
+            if ui.button(p.name).clicked() {
+                picked = Some(p.id.to_string());
+            }
+        }
+    });
+    if let Some(p) = hosted_menus(ui, true) {
+        picked = Some(p);
+    }
+    if let Some(plugin) = picked
+        && let Err(e) = app.run("mix.instrument", json!({"track": id.0, "plugin": plugin}))
+    {
+        app.ui.status = e;
+    }
+}
+
+/// A hosted plugin as the plugin menus list it.
+struct MenuPlugin {
+    id: String,
+    name: String,
+    vendor: String,
+}
+
+/// The CLAP, VST3 and (on macOS) Audio Units submenus, of effects or of instruments; returns the
+/// id picked. Each format is scanned the first time its submenu opens, then cached by its host.
+fn hosted_menus(ui: &mut Ui, instruments: bool) -> Option<String> {
+    let mut picked = None;
     ui.menu_button("CLAP", |ui| {
-        let found: Vec<_> = soundcraft_clap_host::scan().into_iter().filter(|d| !d.is_instrument).collect();
-        if found.is_empty() {
-            ui.label("No CLAP plugins found");
-        }
-        for d in found {
-            if ui.button(format!("{} ({})", d.name, d.vendor)).clicked() {
-                let _ = app.run("mix.insert", json!({"track": id.0, "slot": slot, "plugin": d.id}));
-            }
+        let list = soundcraft_clap_host::scan().into_iter().filter(|d| d.is_instrument == instruments);
+        if let Some(p) = vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), "No CLAP plugins found") {
+            picked = Some(p);
         }
     });
-    // Third-party VST3 plugins (scanned once, cached by soundcraft-vst3-host).
     ui.menu_button("VST3", |ui| {
-        let found: Vec<_> = soundcraft_vst3_host::scan().into_iter().filter(|d| !d.is_instrument).collect();
-        if found.is_empty() {
-            ui.label("No VST3 plugins found");
-        }
-        for d in found {
-            if ui.button(format!("{} ({})", d.name, d.vendor)).clicked() {
-                let _ = app.run("mix.insert", json!({"track": id.0, "slot": slot, "plugin": d.id}));
-            }
+        let list = soundcraft_vst3_host::scan().into_iter().filter(|d| d.is_instrument == instruments);
+        if let Some(p) = vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), "No VST3 plugins found") {
+            picked = Some(p);
         }
     });
-    // Audio Units (macOS; scanned once, cached by soundcraft-au-host).
     if cfg!(target_os = "macos") {
         ui.menu_button("Audio Units", |ui| {
-            let found: Vec<_> = soundcraft_au_host::scan().into_iter().filter(|d| !d.is_instrument).collect();
-            if found.is_empty() {
-                ui.label("No Audio Units found");
-            }
-            for d in found {
-                if ui.button(format!("{} ({})", d.name, d.vendor)).clicked() {
-                    let _ = app.run("mix.insert", json!({"track": id.0, "slot": slot, "plugin": d.id}));
-                }
+            let list = soundcraft_au_host::scan().into_iter().filter(|d| d.is_instrument == instruments);
+            if let Some(p) = vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), "No Audio Units found")
+            {
+                picked = Some(p);
             }
         });
     }
+    picked
+}
+
+/// One submenu per vendor (as Pro Tools lists plug-ins by manufacturer), each list scrolling
+/// within the screen so that every plugin stays reachable however many are installed.
+fn vendor_menus(ui: &mut Ui, mut list: Vec<MenuPlugin>, none: &str) -> Option<String> {
+    if list.is_empty() {
+        ui.label(none);
+        return None;
+    }
+    list.sort_by_cached_key(|p| (p.vendor.to_lowercase(), p.name.to_lowercase()));
+    let mut vendors: Vec<&str> = list.iter().map(|p| p.vendor.as_str()).collect();
+    vendors.dedup();
+    let max_h = (ui.ctx().content_rect().height() - 80.0).max(160.0);
+    let mut picked = None;
+    egui::ScrollArea::vertical().id_salt("vendors").max_height(max_h).show(ui, |ui| {
+        for v in vendors {
+            ui.menu_button(if v.is_empty() { "Unknown vendor" } else { v }, |ui| {
+                egui::ScrollArea::vertical().id_salt("plugins").max_height(max_h).show(ui, |ui| {
+                    for p in list.iter().filter(|p| p.vendor == v) {
+                        if ui.button(&p.name).clicked() {
+                            picked = Some(p.id.clone());
+                        }
+                    }
+                });
+            });
+        }
+    });
+    picked
 }
 
 /// A built-in plugin's description, else a hosted CLAP (`clap:<id>`), VST3 (`vst3:<class id>`) or

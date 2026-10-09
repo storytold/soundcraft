@@ -148,10 +148,11 @@ const DIALOG_COMMANDS: &[&str] = &[
     "edit.strip_silence",
 ];
 
-struct MenuNode {
-    label: String,
-    path: String,
-    children: Vec<MenuNode>,
+/// Shared menu hierarchy for egui and native desktop hosts.
+pub struct MenuNode {
+    pub label: String,
+    pub path: String,
+    pub children: Vec<MenuNode>,
 }
 
 fn insert_path(roots: &mut Vec<MenuNode>, line: &str) {
@@ -175,7 +176,7 @@ fn insert_path(roots: &mut Vec<MenuNode>, line: &str) {
     }
 }
 
-fn tree() -> Vec<MenuNode> {
+pub fn tree() -> Vec<MenuNode> {
     let mut roots: Vec<MenuNode> = Vec::new();
     for line in catalog::catalog() {
         insert_path(&mut roots, line);
@@ -239,13 +240,8 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
         });
         return;
     }
-    let id = catalog::implemented_by(&n.path, extra).or_else(|| MENU_WINDOWS.iter().find(|(p, _)| *p == n.path).map(|(_, w)| w.to_string()));
-    let enabled = match id.as_deref() {
-        Some(i) if i.starts_with("window.") || i.starts_with("view.mix_section") || i == "audiosuite.process" => true,
-        Some(i) => soundcraft_engine::find_command(i).is_some_and(|c| (c.enabled)(&app.engine).is_ok()),
-        None => false,
-    };
-    let checked = checked_state(app, &n.path, id.as_deref());
+    let id = command_for_path(&n.path, extra);
+    let (enabled, checked) = item_state(app, &n.path, id.as_deref());
     let label = if checked { format!("✔ {}", n.label) } else { n.label.clone() };
     let shortcut = id.as_deref().and_then(soundcraft_engine::find_command).and_then(|c| c.shortcut).unwrap_or("");
     let btn = egui::Button::new(label).shortcut_text(shortcut);
@@ -255,6 +251,21 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
         invoke_menu(app, &id, &n.path);
         ui.close();
     }
+}
+
+/// Resolve the command behind a menu leaf, including UI dialog overrides.
+pub fn command_for_path(path: &str, extra: &[(&str, &str)]) -> Option<String> {
+    catalog::implemented_by(path, extra).or_else(|| MENU_WINDOWS.iter().find(|(p, _)| *p == path).map(|(_, w)| w.to_string()))
+}
+
+/// Enabled and checked state shared by all menu presentations.
+pub fn item_state(app: &SoundApp, path: &str, id: Option<&str>) -> (bool, bool) {
+    let enabled = match id {
+        Some(i) if i.starts_with("window.") || i.starts_with("view.mix_section") || i == "audiosuite.process" => true,
+        Some(i) => soundcraft_engine::find_command(i).is_some_and(|c| (c.enabled)(&app.engine).is_ok()),
+        None => false,
+    };
+    (enabled, checked_state(app, path, id))
 }
 
 fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {

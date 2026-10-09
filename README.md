@@ -158,6 +158,28 @@ Useful shortcuts: <kbd>Space</kbd> play/stop, <kbd>⌘</kbd><kbd>=</kbd> Mix/Edi
 separate, <kbd>⌘</kbd><kbd>D</kbd> duplicate, <kbd>Enter</kbd> new marker, <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd>
 new tracks. **Setup › Keyboard Shortcuts** lists them all.
 
+### Logs
+
+The desktop app writes its `log` records to standard error and to `logs/soundcraft.log` in the
+settings directory, beside `ui.json`, `Autosave/` and `Presets/` (Linux `~/.config/soundcraft/logs/`,
+or `$XDG_CONFIG_HOME/soundcraft/logs/`; macOS `~/Library/Application Support/SoundCraft/logs/`;
+Windows `%APPDATA%\SoundCraft\logs\`). A start from a desktop menu or the Dock has no terminal, so
+this file is what to attach to a bug report: the engine's panic report, audio devices that failed to
+open or broke, plugins that refused their stored state, CLAP plugins' own messages and files that
+failed to open land there. Each launch moves the previous log to `soundcraft.1.log` (and that one to
+`soundcraft.2.log`), so the log of a run that crashed survives the next start. The file stops
+growing at 16 MiB. `--version` writes no file, and runs with `SOUNDCRAFT_NO_PREFS` log to standard
+error only.
+
+| Variable | Effect |
+|---|---|
+| `RUST_LOG` | Log levels for standard error and the log file. Default: `info` for SoundCraft's own crates, `warn` for everything else. env_logger-style directives replace that, e.g. `RUST_LOG=debug`, `RUST_LOG=warn,soundcraft_mix=trace` or `RUST_LOG=info,wgpu_core=warn`; a directive ending in `*` covers every target starting with it (`soundcraft*=debug`). |
+| `SOUNDCRAFT_NO_PREFS` | No preferences read or written and no log file (agents' test runs). |
+
+The realtime audio thread never writes a record itself: the logger keeps the first one it logs
+(without waiting or allocating), counts the rest, and the UI thread writes them. The logger is
+`apps/soundcraft/src/logging.rs`. The web app logs to the browser console instead.
+
 ## For agents and scripts
 
 Everything you can click is also a command with an id and JSON parameters, and the same commands
@@ -227,6 +249,21 @@ very welcome, in the issues or on Discord.
 | x86 (32-bit) | `soundcraft-<ver>-windows-x86.msi` | `soundcraft-<ver>-windows-x86-portable.zip` |
 
 Installers and executables are code-signed.
+
+**If the app doesn't open on Windows:** the desktop app initializes only DirectX 12 by default.
+Letting wgpu also create an OpenGL instance can crash some graphics drivers (AMD's
+`atio6axx.dll`) before the window appears, so the app would flash in Task Manager and quit.
+`WGPU_BACKEND` overrides the default for troubleshooting (for example `dx12` or `vulkan`). In
+PowerShell, from the folder containing the executable:
+
+```powershell
+$env:WGPU_BACKEND = "vulkan"
+& .\soundcraft.exe
+Remove-Item Env:WGPU_BACKEND                     # restore the default for later launches
+```
+
+An explicit `gl` override can bring the driver crash back on affected systems. The macOS, Linux
+and web backend defaults are unchanged.
 
 ### macOS
 

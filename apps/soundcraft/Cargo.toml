@@ -25,3 +25,6 @@ rfd.workspace = true
 [build-dependencies]
 # Icon + VERSIONINFO for soundcraft.exe; build.rs only uses it when the target is Windows.
 winresource = "0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.19.2", default-features = false }

@@ -369,26 +369,33 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
     let wins = app.ui.plugin_windows.clone();
     let mut keep = Vec::new();
     for (tid, slot) in wins {
-        let Some((tname, ins)) =
-            app.engine.session().track(tid).and_then(|t| t.mixer.inserts.get(slot).cloned().flatten().map(|i| (t.name.clone(), i)))
-        else {
+        // The instrument slot (an instrument track's instrument) or an insert slot.
+        let instrument = slot == soundcraft_mix::INSTRUMENT_SLOT;
+        let Some((tname, ins)) = app.engine.session().track(tid).and_then(|t| {
+            let ins = if instrument { t.instrument.clone() } else { t.mixer.inserts.get(slot).cloned().flatten() };
+            ins.map(|i| (t.name.clone(), i))
+        }) else {
             continue;
         };
         let Some(info) = crate::mix_window::plugin_info(&ins.plugin) else { continue };
+        let place = if instrument { "instrument".to_string() } else { char::from(b'a'.saturating_add(slot as u8)).to_string() };
         let mut open = true;
-        egui::Window::new(format!("{tname} · {} · {}", (b'a' + slot as u8) as char, info.name))
+        egui::Window::new(format!("{tname} · {place} · {}", info.name))
             .id(egui::Id::new(("plugin", tid.0, slot)))
             .open(&mut open)
             .default_width(340.0)
             .default_pos(egui::pos2(ctx.content_rect().width() - 380.0, 120.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&ins.preset).color(Tokens::current().text_dim));
-                    let label = if ins.bypass { "BYPASSED" } else { "Bypass" };
-                    if ui.button(label).clicked() {
-                        let _ = app.run("mix.insert_bypass", json!({"track": tid.0, "slot": slot}));
+                    // Bypass and presets act on insert slots.
+                    if !instrument {
+                        ui.label(egui::RichText::new(&ins.preset).color(Tokens::current().text_dim));
+                        let label = if ins.bypass { "BYPASSED" } else { "Bypass" };
+                        if ui.button(label).clicked() {
+                            let _ = app.run("mix.insert_bypass", json!({"track": tid.0, "slot": slot}));
+                        }
+                        ui.menu_button("Presets ▾", |ui| preset_menu(app, ui, tid, slot, info, &ins));
                     }
-                    ui.menu_button("Presets ▾", |ui| preset_menu(app, ui, tid, slot, info, &ins));
                     if soundcraft_mix::is_third_party(&ins.plugin) {
                         let open = app.player.as_ref().is_some_and(|p| p.editor_open(tid, slot));
                         let available = app.player.as_ref().is_some_and(|p| p.has_editor(tid, slot));
@@ -407,6 +414,12 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                         }
                     }
                 });
+                if instrument {
+                    // The parameter commands address insert slots: an instrument is played and
+                    // edited in its own editor.
+                    ui.label(egui::RichText::new("Load and edit sounds in the plugin's own editor.").color(Tokens::DARK.text_dim));
+                    return;
+                }
                 if info.id == "eq_7band" || info.id == "eq_1band" {
                     eq_curve(ui, info.id, &ins);
                 }

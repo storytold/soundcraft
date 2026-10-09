@@ -23,6 +23,13 @@ use std::sync::Arc;
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
 pub use soundcraft_model as model;
 
+/// Shuts the third-party plugin hosts down, running the module exit of every plugin binary they
+/// loaded. Call it at the end of `main`, once every plugin instance (mixer, player) is gone: a
+/// plugin that has been used can crash when its module exit only runs from an exit handler.
+pub fn shutdown_plugin_hosts() {
+    soundcraft_vst3_host::shutdown();
+}
+
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum EngineError {
     #[error("unknown command `{0}`")]

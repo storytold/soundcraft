@@ -15,11 +15,12 @@
 #![allow(clippy::unnecessary_cast)]
 
 use crate::{Vst3Error, scan};
-use std::collections::HashMap;
-use std::ffi::{c_char, c_void};
+use std::ffi::{c_char, c_int, c_void};
+use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, TryLockError, mpsc};
+use std::time::Duration;
 use vst3::Steinberg::Vst::{self as sv};
 use vst3::Steinberg::Vst::{
     IAudioProcessorTrait, IComponentHandlerTrait, IComponentTrait, IConnectionPointTrait, IEditControllerTrait, IEventListTrait,
@@ -96,19 +97,106 @@ pub(crate) struct RawClass {
 
 /// A loaded VST3 binary and its plugin factory. Loaded binaries are cached for the life of the
 /// process (see [`Bundle::load`]): plugin code must never be unmapped while an instance may run,
-/// and VST3 modules are not required to support being re-entered after their exit function.
+/// and VST3 modules are not required to support being re-entered after their exit function, which
+/// therefore runs once, at process exit (see [`exit_modules`]).
 pub(crate) struct Bundle {
     factory: ComPtr<sb::IPluginFactory>,
-    // Dropped last: the library must outlive the factory pointer.
-    _lib: libloading::Library,
+    /// The module exit matching the entry that ran at load (`bundleExit`, `ExitDll`, `ModuleExit`).
+    exit: Option<ModuleExit>,
+    /// The thread that ran the module entry, and so must run the exit.
+    entered_on: EntryThread,
+    /// Set when plugin objects were leaked on purpose (see [`EditorLink::kill`]): the module exit
+    /// must not run while any of its objects are alive.
+    leaked: AtomicBool,
+    // Never closed: code stays mapped for the process lifetime, even after the module exit.
+    _lib: ManuallyDrop<libloading::Library>,
 }
 
-fn loaded() -> &'static Mutex<HashMap<PathBuf, Arc<Bundle>>> {
-    static L: OnceLock<Mutex<HashMap<PathBuf, Arc<Bundle>>>> = OnceLock::new();
-    L.get_or_init(|| Mutex::new(HashMap::new()))
+/// Loaded binaries, oldest first (module exits run newest first, the reverse of loading).
+fn loaded() -> &'static Mutex<Vec<(PathBuf, Arc<Bundle>)>> {
+    static L: OnceLock<Mutex<Vec<(PathBuf, Arc<Bundle>)>>> = OnceLock::new();
+    L.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Set once the module exits have run: loading another module after that is refused.
+static MODULES_EXITED: AtomicBool = AtomicBool::new(false);
+
+/// Where a module's entry ran. Its exit must run on the same thread: Qt-based modules tie their
+/// application object to it (Native Instruments' Massive X crashes in `bundleExit` on another
+/// thread). Modules wanted on the main thread are entered there; any other thread's requests go
+/// to the module thread, because the asking thread may be gone by the time the process exits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EntryThread {
+    Main,
+    Modules,
+}
+
+/// Whether this is the main thread. Not for exit handlers, where `std::thread::current` panics
+/// (its thread-local data is gone by then): compare [`os_thread`] with [`MAIN_OS_THREAD`] there.
+fn on_main_thread() -> bool {
+    std::thread::current().name() == Some("main")
+}
+
+/// The OS id of the main thread, recorded when it loads a module (0 until then).
+static MAIN_OS_THREAD: AtomicUsize = AtomicUsize::new(0);
+
+/// The OS id of the calling thread, which (unlike `std::thread::current`) exit handlers can use.
+fn os_thread() -> usize {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn pthread_self() -> usize;
+        }
+        // SAFETY: `pthread_self` takes no arguments and cannot fail; `pthread_t` is an integer or
+        // a pointer of pointer size on the Unix systems SoundCraft builds for.
+        unsafe { pthread_self() }
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentThreadId() -> u32;
+        }
+        // SAFETY: `GetCurrentThreadId` takes no arguments and cannot fail.
+        unsafe { GetCurrentThreadId() as usize }
+    }
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
+/// The module thread (started on first use): it runs jobs until the process exits.
+fn module_thread() -> Option<&'static mpsc::Sender<Job>> {
+    static TX: OnceLock<Option<mpsc::Sender<Job>>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Job>();
+        let spawned = std::thread::Builder::new().name("vst3-modules".into()).spawn(move || {
+            while let Ok(job) = rx.recv() {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+            }
+        });
+        spawned.ok().map(|_| tx)
+    })
+    .as_ref()
+}
+
+/// Runs `f` on the module thread and waits for its result (at most `timeout`, when given).
+fn on_module_thread<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static, timeout: Option<Duration>) -> Option<R> {
+    let (rtx, rrx) = mpsc::sync_channel(1);
+    module_thread()?
+        .send(Box::new(move || {
+            let _ = rtx.send(f());
+        }))
+        .ok()?;
+    match timeout {
+        Some(t) => rrx.recv_timeout(t).ok(),
+        None => rrx.recv().ok(),
+    }
 }
 
 type GetFactory = unsafe extern "system" fn() -> *mut sb::IPluginFactory;
+/// `bundleExit` (macOS), `ExitDll` (Windows) or `ModuleExit` (Linux/BSD). `extern "system"` is the
+/// C ABI everywhere except 32-bit Windows, where it is the `PLUGIN_API` (stdcall) `ExitDll` uses.
+type ModuleExit = unsafe extern "system" fn() -> bool;
 
 #[cfg(target_os = "macos")]
 mod cf {
@@ -123,7 +211,8 @@ mod cf {
 
 /// Opens the shared library and runs the platform module entry (`bundleEntry` with a
 /// `CFBundleRef` on macOS, `InitDll` on Windows, `ModuleEntry` with the `dlopen` handle on Linux).
-fn open_library(bundle: &Path, exe: &Path) -> Result<libloading::Library, String> {
+/// Also returns the matching module exit, when the entry ran and the module exports one.
+fn open_library(bundle: &Path, exe: &Path) -> Result<(libloading::Library, Option<ModuleExit>), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         use libloading::os::unix::{Library as UnixLib, RTLD_LOCAL, RTLD_NOW};
@@ -136,20 +225,25 @@ fn open_library(bundle: &Path, exe: &Path) -> Result<libloading::Library, String
         let raw = lib.into_raw();
         // SAFETY: `raw` is the handle we just took out of `lib`; it is rewrapped right away.
         let lib = unsafe { UnixLib::from_raw(raw) };
+        let mut exit = None;
         if let Some(f) = entry {
             // SAFETY: called once, with the module's own `dlopen` handle, as the spec requires.
             if !unsafe { f(raw) } {
                 return Err("ModuleEntry failed".into());
             }
+            // SAFETY: `ModuleExit` is the VST3-mandated Linux exit with this signature; the
+            // pointer stays valid because loaded modules are never unmapped.
+            exit = unsafe { lib.get::<ModuleExit>(b"ModuleExit\0") }.ok().map(|s| *s);
         }
         let _ = bundle;
-        Ok(lib.into())
+        Ok((lib.into(), exit))
     }
     #[cfg(not(all(unix, not(target_os = "macos"))))]
     {
         // SAFETY: loading a shared library runs its static initialisers. That is inherent to
         // hosting plugins; we only load files found in VST3 plugin folders or named explicitly.
         let lib = unsafe { libloading::Library::new(exe) }.map_err(|e| e.to_string())?;
+        let mut exit: Option<ModuleExit> = None;
         #[cfg(windows)]
         {
             let _ = bundle;
@@ -160,6 +254,9 @@ fn open_library(bundle: &Path, exe: &Path) -> Result<libloading::Library, String
                 if !unsafe { f() } {
                     return Err("InitDll failed".into());
                 }
+                // SAFETY: `ExitDll` is the VST3-mandated Windows exit with this signature; the
+                // pointer stays valid because loaded modules are never unmapped.
+                exit = unsafe { lib.get::<ModuleExit>(b"ExitDll\0") }.ok().map(|s| *s);
             }
         }
         #[cfg(target_os = "macos")]
@@ -198,39 +295,143 @@ fn open_library(bundle: &Path, exe: &Path) -> Result<libloading::Library, String
                 if !unsafe { f(cfbundle) } {
                     return Err("bundleEntry failed".into());
                 }
+                // SAFETY: `bundleExit`/`BundleExit` is the VST3-mandated macOS exit with this
+                // signature; the pointer stays valid because loaded modules are never unmapped.
+                exit = unsafe { lib.get::<ModuleExit>(b"bundleExit\0") }
+                    .or_else(|_| {
+                        // SAFETY: as above (older SDKs export the capitalised name).
+                        unsafe { lib.get::<ModuleExit>(b"BundleExit\0") }
+                    })
+                    .ok()
+                    .map(|s| *s);
             }
         }
-        Ok(lib)
+        Ok((lib, exit))
+    }
+}
+
+/// Runs the module exits at process exit, newest module first, each on the thread that ran its
+/// entry. VST3 modules expect their exit before their static destructors run, and some crash in
+/// those destructors without it (seen with Steinberg's HALion Sonic, after a plain scan). A module
+/// with a live instance or leaked objects keeps running and is not exited, and so is one entered
+/// on the main thread when the process exits from another thread. Runs once; later loads are
+/// refused.
+pub(crate) fn exit_modules() {
+    if MODULES_EXITED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let mut cache = match loaded().try_lock() {
+        Ok(g) => g,
+        Err(TryLockError::Poisoned(p)) => p.into_inner(),
+        // Another thread is loading a module right now: leave every module as it is.
+        Err(TryLockError::WouldBlock) => return,
+    };
+    let main = MAIN_OS_THREAD.load(Ordering::Acquire) == os_thread();
+    let (mut kept, mut here, mut there) = (Vec::new(), Vec::new(), Vec::new());
+    while let Some((path, b)) = cache.pop() {
+        if b.leaked.load(Ordering::Acquire) || (b.entered_on == EntryThread::Main && !main) {
+            kept.push((path, b));
+            continue;
+        }
+        match Arc::try_unwrap(b) {
+            Ok(bundle) if bundle.entered_on == EntryThread::Main => here.push(bundle),
+            Ok(bundle) => there.push(bundle),
+            Err(b) => kept.push((path, b)),
+        }
+    }
+    kept.reverse();
+    *cache = kept;
+    drop(cache);
+    here.into_iter().for_each(Bundle::exit);
+    if !there.is_empty() {
+        // Bounded: a module thread stuck inside a plugin must not hang the process exit.
+        let _ = on_module_thread(move || there.into_iter().for_each(Bundle::exit), Some(Duration::from_secs(5)));
+    }
+}
+
+/// Registers [`exit_modules`] to run at process exit. Exit handlers run in reverse order of
+/// registration, C++ static destructors included, so registering again after each module load
+/// puts the exits ahead of the destructors of every module loaded so far.
+fn register_exit_hook() {
+    unsafe extern "C" {
+        fn atexit(f: extern "C" fn()) -> c_int;
+    }
+    extern "C" fn hook() {
+        // Nothing may unwind out of an exit handler.
+        let _ = std::panic::catch_unwind(exit_modules);
+    }
+    // SAFETY: `atexit` is the C library function with this signature; `hook` is a plain function
+    // of this binary, so it lives as long as the process.
+    if unsafe { atexit(hook) } != 0 {
+        log::warn!("vst3: cannot register the module exit handler");
     }
 }
 
 impl Bundle {
     /// Loads (once per path, then cached for the life of the process) a `.vst3`.
     pub fn load(path: &Path) -> Result<Arc<Bundle>, Vst3Error> {
-        let mut map = loaded().lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(b) = map.get(path) {
+        let mut cache = loaded().lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, b)) = cache.iter().find(|(p, _)| p == path) {
             return Ok(b.clone());
         }
-        let b = Arc::new(Bundle::open(path)?);
-        map.insert(path.to_path_buf(), b.clone());
+        let err = |m: &str| Vst3Error::Load(path.display().to_string(), m.to_string());
+        if MODULES_EXITED.load(Ordering::Acquire) {
+            return Err(err("plugin hosting has shut down"));
+        }
+        let b = if on_main_thread() {
+            MAIN_OS_THREAD.store(os_thread(), Ordering::Release);
+            Bundle::open(path, EntryThread::Main)?
+        } else {
+            let p = path.to_path_buf();
+            on_module_thread(move || Bundle::open(&p, EntryThread::Modules), None).ok_or_else(|| err("the module thread is not running"))??
+        };
+        let b = Arc::new(b);
+        cache.push((path.to_path_buf(), b.clone()));
+        // After every new module, so that the exits run before its static destructors.
+        register_exit_hook();
         Ok(b)
     }
 
-    fn open(path: &Path) -> Result<Bundle, Vst3Error> {
+    fn open(path: &Path, entered_on: EntryThread) -> Result<Bundle, Vst3Error> {
         let err = |m: String| Vst3Error::Load(path.display().to_string(), m);
         let exe = scan::bundle_binary(path).ok_or_else(|| err("no loadable binary".into()))?;
-        let lib = open_library(path, &exe).map_err(err)?;
+        let (lib, exit) = open_library(path, &exe).map_err(err)?;
+        // The module entry ran: balance it before giving up on the module.
+        let fail = |m: String| {
+            if let Some(f) = exit {
+                // SAFETY: balanced with the entry that ran in `open_library`; no plugin object exists.
+                unsafe { f() };
+            }
+            err(m)
+        };
         // SAFETY: `GetPluginFactory` is the VST3-mandated export with this signature.
         let get = match unsafe { lib.get::<GetFactory>(b"GetPluginFactory\0") } {
             Ok(sym) => *sym,
-            Err(e) => return Err(err(format!("not a VST3 plugin: {e}"))),
+            Err(e) => return Err(fail(format!("not a VST3 plugin: {e}"))),
         };
         // SAFETY: the module is loaded and its entry function (if any) has run.
         let raw = unsafe { get() };
         // SAFETY: a non-null result is a factory pointer with one reference owned by the caller
         // (VST3 contract), which the `ComPtr` takes over.
-        let factory = unsafe { ComPtr::from_raw(raw) }.ok_or_else(|| err("GetPluginFactory returned null".into()))?;
-        Ok(Bundle { factory, _lib: lib })
+        let factory = unsafe { ComPtr::from_raw(raw) }.ok_or_else(|| fail("GetPluginFactory returned null".into()))?;
+        Ok(Bundle { factory, exit, entered_on, leaked: AtomicBool::new(false), _lib: ManuallyDrop::new(lib) })
+    }
+
+    /// Releases the factory, then runs the module exit, as the VST3 SDK's own host does.
+    fn exit(self) {
+        let Bundle { factory, exit, .. } = self;
+        drop(factory);
+        if let Some(f) = exit {
+            // SAFETY: balanced with the entry that ran when the module was loaded; called once
+            // (`self` is consumed), after every instance is gone (each holds an `Arc` to the
+            // bundle) and the factory released. The code stays mapped (`_lib` is never closed).
+            unsafe { f() };
+        }
+    }
+
+    /// Plugin objects of this module were leaked on purpose: never run its module exit.
+    pub fn mark_leaked(&self) {
+        self.leaked.store(true, Ordering::Release);
     }
 
     /// The vendor from the factory info (fallback for classes without one).
@@ -330,7 +531,7 @@ impl Bundle {
             editor: Arc::new(EditorLink::default()),
             component,
             host,
-            _bundle: self.clone(),
+            bundle: self.clone(),
         };
         let processor = inst.component.cast::<sv::IAudioProcessor>().ok_or_else(|| err("no IAudioProcessor"))?;
         inst.processor = Some(processor);
@@ -894,7 +1095,7 @@ pub(crate) struct Instance {
     // and host objects are released, and the bundle (which keeps the code mapped) goes last.
     component: ComPtr<sv::IComponent>,
     host: ComWrapper<HostContext>,
-    _bundle: Arc<Bundle>,
+    bundle: Arc<Bundle>,
 }
 
 // SAFETY: an `Instance` is used through `&mut self` only, so calls into the plugin are always
@@ -1260,7 +1461,9 @@ impl Instance {
 impl Drop for Instance {
     fn drop(&mut self) {
         // Close any editor and cut its handles off before the controller goes away.
-        self.editor.kill();
+        if self.editor.kill() {
+            self.bundle.mark_leaked();
+        }
         self.shutdown();
         if let Some((a, b)) = self.connections.take() {
             // SAFETY: the pair was connected in `instantiate`; disconnect before terminating.
@@ -1515,8 +1718,10 @@ impl EditorLink {
     }
 
     /// Called by the instance before it terminates: closes the editor and cuts the handles off.
-    fn kill(&self) {
+    /// Returns whether plugin objects had to be leaked.
+    fn kill(&self) -> bool {
         let mut g = self.lock();
+        let mut leaked = false;
         if g.view.is_some() || g.window.is_some() {
             if window::on_main_thread() {
                 EditorLink::teardown(&mut g);
@@ -1525,6 +1730,7 @@ impl EditorLink {
                 log::warn!("vst3: editor still open while its plugin is destroyed off the main thread");
                 if let Some(v) = g.view.take() {
                     std::mem::forget(v);
+                    leaked = true;
                 }
                 // `HostWindow` has no destructor: dropping it leaks its retain on purpose.
                 g.window = None;
@@ -1534,6 +1740,7 @@ impl EditorLink {
             }
         }
         g.controller = None;
+        leaked
     }
 }
 

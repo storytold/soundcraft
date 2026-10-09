@@ -50,13 +50,14 @@ impl Recorder {
         let config = cfg.config();
         let shared = Arc::new(Shared { armed: AtomicBool::new(false), data: Mutex::new(Vec::new()) });
         let sh = Arc::clone(&shared);
-        let monitor = InputRing::new(usize::from(config.channels));
+        let monitor = InputRing::new(usize::from(config.channels), config.sample_rate.0);
         let mon = Arc::clone(&monitor);
         let mut backlog: Vec<f32> = Vec::new();
         let stream = device
             .build_input_stream(
                 &config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    crate::mark_audio_thread();
                     mon.push(data);
                     if !sh.armed.load(Ordering::Relaxed) {
                         backlog.clear();
@@ -72,7 +73,11 @@ impl Recorder {
                         backlog.extend_from_slice(data);
                     }
                 },
-                |e| log::warn!("input stream error: {e}"),
+                |e| {
+                    // Possibly the audio thread (see `crate::mark_audio_thread`).
+                    crate::mark_audio_thread();
+                    log::warn!("input stream error: {e}");
+                },
                 None,
             )
             .map_err(|e| e.to_string())?;
@@ -140,47 +145,133 @@ mod tests {
     }
 }
 
+/// Ring state behind the lock: interleaved input frames at the input device's rate, plus the
+/// fractional read position (in input frames) of the next output sample.
+struct RingState {
+    data: std::collections::VecDeque<f32>,
+    phase: f64,
+}
+
 /// A small interleaved FIFO from the input callback to the output callback, for input
 /// monitoring. Both sides only `try_lock`; it holds at most ~0.5 s and drops the oldest frames.
-#[derive(Default)]
+/// The input device may run at a different rate than the session, so the reader converts
+/// rates with linear interpolation (cheap, allocation-free, fine for monitoring).
 pub struct InputRing {
-    data: Mutex<std::collections::VecDeque<f32>>,
+    state: Mutex<RingState>,
     pub channels: std::sync::atomic::AtomicUsize,
+    /// Input device sample rate in Hz (0 when unknown, which reads as "same as the session").
+    rate: u32,
+    /// Most samples kept: half a second of input, or 24 000 frames when the rate is unknown.
+    cap: usize,
 }
 
 impl InputRing {
-    pub fn new(channels: usize) -> Arc<InputRing> {
+    pub fn new(channels: usize, rate: u32) -> Arc<InputRing> {
+        let ch = channels.max(1);
+        let frames = if rate == 0 { 24_000 } else { rate as usize / 2 };
         Arc::new(InputRing {
-            data: Mutex::new(std::collections::VecDeque::with_capacity(48_000 * channels.max(1))),
-            channels: std::sync::atomic::AtomicUsize::new(channels.max(1)),
+            state: Mutex::new(RingState { data: std::collections::VecDeque::with_capacity(rate.max(48_000) as usize * ch), phase: 0.0 }),
+            channels: std::sync::atomic::AtomicUsize::new(ch),
+            rate,
+            cap: frames * ch,
         })
     }
 
     pub fn push(&self, samples: &[f32]) {
-        if let Ok(mut d) = self.data.try_lock() {
-            let cap = 24_000 * self.channels.load(Ordering::Relaxed).max(1);
-            d.extend(samples.iter().copied());
-            while d.len() > cap {
-                d.pop_front();
+        if let Ok(mut s) = self.state.try_lock() {
+            s.data.extend(samples.iter().copied());
+            while s.data.len() > self.cap {
+                s.data.pop_front();
             }
         }
     }
 
-    /// Fill `out` (planar) with up to `frames` frames; missing frames are silence.
-    pub fn pop_into(&self, out: &mut [Vec<f32>], frames: usize) {
+    /// Fill `out` (planar, at `session_rate`) with up to `frames` frames, converting from the
+    /// input rate. Missing frames are silence.
+    pub fn pop_into(&self, out: &mut [Vec<f32>], frames: usize, session_rate: u32) {
         let ch = self.channels.load(Ordering::Relaxed).max(1);
         for c in out.iter_mut() {
             c.iter_mut().take(frames).for_each(|x| *x = 0.0);
         }
-        let Ok(mut d) = self.data.try_lock() else { return };
-        let avail = (d.len() / ch).min(frames);
-        for f in 0..avail {
+        let Ok(mut s) = self.state.try_lock() else { return };
+        // Input frames consumed per output frame.
+        let step = if self.rate == 0 || session_rate == 0 { 1.0 } else { f64::from(self.rate) / f64::from(session_rate) };
+        for f in 0..frames {
+            // Drop input frames we have moved past; keep the one at `phase` and the next one.
+            while s.phase >= 1.0 && s.data.len() >= 2 * ch {
+                s.data.drain(..ch);
+                s.phase -= 1.0;
+            }
+            if s.phase >= 1.0 || s.data.len() < 2 * ch {
+                break;
+            }
+            let fr = s.phase as f32;
             for c in 0..ch {
-                let v = d.pop_front().unwrap_or(0.0);
+                let a = s.data.get(c).copied().unwrap_or(0.0);
+                let b = s.data.get(ch + c).copied().unwrap_or(a);
                 if let Some(x) = out.get_mut(c).and_then(|o| o.get_mut(f)) {
-                    *x = v;
+                    *x = a + (b - a) * fr;
                 }
             }
+            s.phase += step;
         }
+    }
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use super::InputRing;
+
+    /// A 1 kHz sine recorded at 16 kHz must come out as a 1 kHz sine at 48 kHz, across calls.
+    #[test]
+    fn monitor_converts_input_rate_to_session_rate() {
+        let ring = InputRing::new(1, 16_000);
+        let input: Vec<f32> = (0..4_000).map(|i| (2.0 * std::f64::consts::PI * 1_000.0 * f64::from(i) / 16_000.0).sin() as f32).collect();
+        ring.push(&input);
+        let mut out = vec![vec![0.0f32; 48]];
+        let mut k = 0usize;
+        for _ in 0..10 {
+            ring.pop_into(&mut out, 48, 48_000);
+            for v in &out[0] {
+                let want = (2.0 * std::f64::consts::PI * 1_000.0 * k as f64 / 48_000.0).sin() as f32;
+                assert!((v - want).abs() < 0.05, "sample {k}: got {v}, want {want}");
+                k += 1;
+            }
+        }
+    }
+
+    /// Input faster than the session (96 kHz into 48 kHz): every other frame is read, in order.
+    #[test]
+    fn monitor_decimates_when_input_is_faster() {
+        let ring = InputRing::new(1, 96_000);
+        let input: Vec<f32> = (0..1_000).map(|i| i as f32).collect();
+        ring.push(&input);
+        let mut out = vec![vec![0.0f32; 100]];
+        ring.pop_into(&mut out, 100, 48_000);
+        for (k, v) in out[0].iter().enumerate() {
+            assert_eq!(*v, (2 * k) as f32, "output {k}");
+        }
+    }
+
+    /// Same rate: samples pass through unchanged.
+    #[test]
+    fn monitor_passes_through_at_equal_rates() {
+        let ring = InputRing::new(2, 48_000);
+        let input: Vec<f32> = (0..200).map(|i| i as f32).collect();
+        ring.push(&input);
+        let mut out = vec![vec![0.0f32; 50], vec![0.0f32; 50]];
+        ring.pop_into(&mut out, 50, 48_000);
+        assert_eq!(out[0][0], 0.0);
+        assert_eq!(out[1][0], 1.0);
+        assert_eq!(out[0][49], 98.0);
+    }
+
+    /// Nothing buffered: silence, not stale data.
+    #[test]
+    fn monitor_underrun_is_silence() {
+        let ring = InputRing::new(1, 16_000);
+        let mut out = vec![vec![1.0f32; 16]];
+        ring.pop_into(&mut out, 16, 48_000);
+        assert!(out[0].iter().all(|v| *v == 0.0));
     }
 }

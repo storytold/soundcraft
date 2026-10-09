@@ -110,10 +110,6 @@ fn drums(sr: f64, frames: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
     (k, s, h)
 }
 
-fn midi_hz(n: f64) -> f64 {
-    440.0 * 2f64.powf((n - 69.0) / 12.0)
-}
-
 /// Chord roots per bar (A minor, F, C, G progression), as MIDI notes.
 const PROG: [[u8; 4]; 4] = [[57, 60, 64, 69], [53, 57, 60, 65], [48, 52, 55, 60], [55, 59, 62, 67]];
 
@@ -127,7 +123,7 @@ fn bass(sr: f64, frames: usize) -> Vec<f32> {
         for (eighth, semi, beats) in pattern {
             let at = bar * beat * 4 + eighth * beat / 2;
             let len = (beats * beat as f64) as usize;
-            let f = midi_hz(root + semi);
+            let f = soundcraft_dsp::midi_to_hz(root + semi);
             let mut ph = 0.0f64;
             for i in 0..len {
                 let Some(o) = out.get_mut(at + i) else { break };
@@ -152,7 +148,7 @@ fn pad(sr: f64, frames: usize) -> (Vec<f32>, Vec<f32>) {
         let chord = PROG[bar % 4];
         let at = bar * bar_len;
         for (vi, n) in chord.iter().enumerate() {
-            let f = midi_hz(f64::from(*n) + 12.0);
+            let f = soundcraft_dsp::midi_to_hz(f64::from(*n) + 12.0);
             for (side, buf) in [(-1.0f64, &mut l), (1.0, &mut r)] {
                 let det = 1.0 + side * 0.0035 * (vi as f64 + 1.0);
                 let mut ph = vi as f64 * 0.17;

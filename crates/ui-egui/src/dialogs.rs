@@ -6,6 +6,7 @@ use egui::{Align2, vec2};
 use serde_json::{Value, json};
 use soundcraft_engine::Engine;
 use soundcraft_model::{ClipId, TrackId};
+use soundcraft_time::Samples;
 
 #[derive(Debug, Clone)]
 pub enum Dialog {
@@ -16,6 +17,7 @@ pub enum Dialog {
     RenameClip { id: ClipId, name: String },
     PathPrompt { cmd: String, title: String, path: String, key: String },
     Number { cmd: String, title: String, key: String, value: f64, suffix: String },
+    TempoChange { at: Samples, bpm: f64 }, // from double-clicking the tempo ruler
     Fades { shape: String },
     StripSilence { threshold: f64, min_ms: f64, pre_ms: f64, post_ms: f64 },
     Group { name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
@@ -38,6 +40,7 @@ impl Dialogs {
             Dialog::RenameClip { .. } => "rename_clip",
             Dialog::PathPrompt { .. } => "path",
             Dialog::Number { .. } => "number",
+            Dialog::TempoChange { .. } => "tempo_change",
             Dialog::Fades { .. } => "fades",
             Dialog::StripSilence { .. } => "strip_silence",
             Dialog::Group { .. } => "group",
@@ -167,6 +170,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::RenameTrack { .. } => "Rename Track",
         Dialog::RenameClip { .. } => "Rename Clip",
         Dialog::PathPrompt { title, .. } | Dialog::Number { title, .. } => title.as_str(),
+        Dialog::TempoChange { .. } => "Tempo Change (BPM)",
         Dialog::Fades { .. } => "Fades",
         Dialog::StripSilence { .. } => "Strip Silence",
         Dialog::Group { .. } => "Create Group",
@@ -315,6 +319,16 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         action = Some((cmd.clone(), v));
                     }
                 }
+                Dialog::TempoChange { at, bpm } => {
+                    ui.horizontal(|ui| {
+                        // Same limits the engine enforces (time crate `valid_bpm`).
+                        ui.add(egui::DragValue::new(bpm).speed(0.1).range(5.0..=1000.0));
+                        ui.label("bpm");
+                    });
+                    if buttons(ui, "OK", enter) {
+                        action = Some(tempo_change_action(*at, *bpm));
+                    }
+                }
                 Dialog::Fades { shape } => {
                     for s in soundcraft_model::FadeShape::ALL {
                         ui.radio_value(shape, s.label().to_lowercase(), s.label());
@@ -422,6 +436,11 @@ fn buttons(ui: &mut egui::Ui, ok: &str, enter: bool) -> bool {
     pressed
 }
 
+/// The command the tempo-change dialog runs on OK.
+fn tempo_change_action(at: Samples, bpm: f64) -> (String, Value) {
+    ("event.tempo".into(), json!({"bpm": bpm, "at": at}))
+}
+
 fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
     let Some(process) = app.ui.audiosuite.clone() else { return };
     let mut open = true;
@@ -494,5 +513,13 @@ mod tests {
         assert!(!takes_path("edit.copy"));
         assert!(d.open_for_command(&e, "file.score_setup"));
         assert!(matches!(d.open, Some(Dialog::ScoreSetup { bars_per_system: 4, .. })));
+    }
+
+    #[test]
+    fn tempo_change_dialog_runs_a_real_command_at_its_position() {
+        let (cmd, params) = tempo_change_action(96_000, 133.5);
+        assert!(soundcraft_engine::command_specs().iter().any(|c| c.id == cmd), "{cmd} is not a command");
+        assert_eq!(params["at"], 96_000);
+        assert_eq!(params["bpm"], 133.5);
     }
 }

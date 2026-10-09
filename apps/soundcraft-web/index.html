@@ -15,6 +15,27 @@
 </head>
 <body>
   <canvas id="soundcraft_canvas"></canvas>
+  <script>
+    // cpal (wasm) builds the output stream at startup, before any user gesture, so the
+    // WebAudio AudioContext stays 'suspended': no audio is heard and the transport clock
+    // (driven by the audio callback) never advances. Capture the AudioContext cpal creates
+    // and resume it on the first user gesture. Runs before the wasm module is instantiated.
+    (function () {
+      var Orig = window.AudioContext || window.webkitAudioContext;
+      if (!Orig) return;
+      var ctxs = [];
+      function Wrapped(opts) { var c = new Orig(opts); ctxs.push(c); return c; }
+      Wrapped.prototype = Orig.prototype;
+      window.AudioContext = Wrapped;
+      if (window.webkitAudioContext) window.webkitAudioContext = Wrapped;
+      function resumeAll() {
+        ctxs.forEach(function (c) { if (c.state === 'suspended') { c.resume().catch(function () {}); } });
+      }
+      ['pointerdown', 'mousedown', 'touchstart', 'keydown'].forEach(function (ev) {
+        window.addEventListener(ev, resumeAll, { capture: true });
+      });
+    })();
+  </script>
   <div id="soundcraft_loading">Loading SoundCraft&hellip;</div>
 </body>
 </html>

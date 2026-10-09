@@ -9,3 +9,4 @@ plan/
 /target-*/
 /craft-fonts/
 plans/
+.DS_Store

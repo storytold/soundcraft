@@ -135,6 +135,9 @@ mod api {
     pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
         registry::plugin_info(id)
     }
+    pub fn shutdown() {
+        ffi::exit_modules();
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -162,6 +165,7 @@ mod api {
     pub fn plugin_info(_id: &str) -> Option<&'static PluginInfo> {
         None
     }
+    pub fn shutdown() {}
 }
 
 /// Every plugin in the standard VST3 folders, `VST3_PATH` and folders added with
@@ -185,6 +189,15 @@ pub fn add_search_dir(dir: &Path) -> usize {
 /// Scans the given folders without touching the cache.
 pub fn scan_paths(dirs: &[PathBuf]) -> Vec<Vst3Descriptor> {
     api::scan_paths(dirs)
+}
+
+/// Shuts plugin hosting down: runs the module exit of every loaded binary that has no live
+/// instance left, each on the thread that loaded it; later loads fail. Call it on the main
+/// thread once the plugin instances are gone, before the process exits. Without it the exits
+/// run from an exit handler, by which time some plugins have already torn down state they need
+/// (HALion Sonic crashes in its module exit after it has been used).
+pub fn shutdown() {
+    api::shutdown()
 }
 
 /// The audio module classes in one `.vst3` bundle or file.

@@ -16,6 +16,7 @@ mod edit_more;
 mod event;
 mod event_more;
 mod file;
+mod instrument;
 mod midi;
 mod mix;
 mod more_util;
@@ -119,6 +120,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(vst3::specs());
         v.extend(surround::specs());
         v.extend(plugin_state::specs());
+        v.extend(instrument::specs());
         v.extend(video::specs());
         v
     })

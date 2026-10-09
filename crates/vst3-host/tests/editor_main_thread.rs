@@ -9,7 +9,12 @@ fn main() {
     let dir = common::fixture_dir();
     let gain = soundcraft_vst3_host::scan_paths(&[dir.to_path_buf()]).into_iter().find(|d| d.name == "Fixture Gain").expect("fixture").id;
     let mut p = soundcraft_vst3_host::instantiate_plugin(&gain).expect("instantiate");
-    assert_eq!(p.editor_size(), Ok((320, 240)));
+    // Editor windows are hosted on macOS only; elsewhere the probe reports "unsupported".
+    if cfg!(target_os = "macos") {
+        assert_eq!(p.editor_size(), Ok((320, 240)));
+    } else {
+        assert!(p.editor_size().is_err());
+    }
     let mut ed = soundcraft_dsp::Plugin::editor(&mut p).expect("editor handle");
     assert!(!ed.is_open());
     assert_eq!(ed.idle().len(), 1, "the fixture's setup edit");

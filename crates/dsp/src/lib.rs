@@ -278,6 +278,11 @@ pub fn gain_to_db(g: f32) -> f32 {
     (20.0 * a.log10()).max(MIN_DB)
 }
 
+/// MIDI note number to frequency in Hz (equal temperament, A4 = note 69 = 440 Hz).
+pub fn midi_to_hz(note: f64) -> f64 {
+    440.0 * 2f64.powf((note - 69.0) / 12.0)
+}
+
 #[cfg(test)]
 mod trait_default_tests {
     use super::*;

@@ -44,7 +44,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
     let rest: Vec<String> = args.iter().skip(1).cloned().collect();
-    match cmd.as_str() {
+    let code = match cmd.as_str() {
         "--version" | "-V" | "version" => {
             outln!("SoundCraft CLI {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -69,7 +69,10 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         other => fail(format!("unknown subcommand `{other}`")),
-    }
+    };
+    // The subcommand's engine and its plugin instances are gone by now.
+    soundcraft_engine::shutdown_plugin_hosts();
+    code
 }
 
 fn info(args: &[String]) -> ExitCode {

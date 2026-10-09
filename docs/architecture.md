@@ -41,6 +41,12 @@ process in parallel; plugin delay compensation aligns every path. The same engin
 bounces offline (`render_range`) and realtime playback (`soundcraft_playback::Player`, which owns
 it on the audio thread and receives new session snapshots through a channel).
 
+The cpal callbacks mark their thread (`soundcraft_playback::mark_audio_thread`). Code that may run
+there can ask `on_audio_thread()` before doing anything that blocks; the desktop app's logger does,
+so a `log::` record from the audio thread (a stream error, a full synth event queue, a hosted
+plugin's failed `process`, a CLAP plugin's own log call) is kept without waiting and written later
+by the UI thread (see README › Logs).
+
 ## Agent control
 
 The desktop app's control channel (JSON lines over TCP) exposes engine commands, inspection,

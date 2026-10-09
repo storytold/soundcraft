@@ -11,12 +11,15 @@
 //!   its edit controller). No audio input, one stereo output, one event input; every output
 //!   sample is the velocity of the held note (sample-accurate), 0 when none.
 //!
+//! The module checks the host's module lifecycle the way real plugins depend on it (see "module
+//! lifecycle" below) and aborts the process when it is broken.
+//!
 //! Test code: panics are fine here, the host must survive anything anyway.
 
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
-use std::ffi::{c_char, c_void};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::ffi::{c_char, c_int, c_void};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
 use vst3::{Class, ComRef, ComWrapper, uid};
@@ -64,6 +67,7 @@ struct GainProcessor {
     /// Normalized gain (plain = 2 × normalized).
     gain: AtomicU64,
     arrangement: AtomicU64,
+    _live: Live,
 }
 
 impl Class for GainProcessor {
@@ -209,10 +213,12 @@ impl IAudioProcessorTrait for GainProcessor {
 struct GainController {
     gain: AtomicU64,
     freq: AtomicU64,
+    _live: Live,
 }
 
 struct View {
     attached: std::sync::atomic::AtomicBool,
+    _live: Live,
 }
 
 impl Class for View {
@@ -396,7 +402,7 @@ impl IEditControllerTrait for GainController {
         if name.is_null() || unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes() != b"editor" {
             return std::ptr::null_mut();
         }
-        match ComWrapper::new(View { attached: std::sync::atomic::AtomicBool::new(false) }).to_com_ptr::<IPlugView>() {
+        match ComWrapper::new(View { attached: std::sync::atomic::AtomicBool::new(false), _live: Live::new(&OBJECTS) }).to_com_ptr::<IPlugView>() {
             Some(p) => p.into_raw(),
             None => std::ptr::null_mut(),
         }
@@ -407,6 +413,7 @@ impl IEditControllerTrait for GainController {
 
 struct Synth {
     level: AtomicU32,
+    _live: Live,
 }
 
 impl Class for Synth {
@@ -582,7 +589,9 @@ impl IEditControllerTrait for Synth {
 
 // ---- factory -------------------------------------------------------------------------------
 
-struct Factory;
+struct Factory {
+    _live: Live,
+}
 
 impl Class for Factory {
     type Interfaces = (IPluginFactory2,);
@@ -616,13 +625,24 @@ impl IPluginFactoryTrait for Factory {
         kResultOk
     }
     unsafe fn createInstance(&self, cid: FIDString, iid: FIDString, obj: *mut *mut c_void) -> tresult {
+        set_up_late_state();
         let cid = unsafe { *(cid as *const TUID) };
         let unknown = if cid == GAIN_CID {
-            ComWrapper::new(GainProcessor { gain: AtomicU64::new(0.25f64.to_bits()), arrangement: AtomicU64::new(SpeakerArr::kStereo) }).to_com_ptr::<FUnknown>()
+            ComWrapper::new(GainProcessor {
+                gain: AtomicU64::new(0.25f64.to_bits()),
+                arrangement: AtomicU64::new(SpeakerArr::kStereo),
+                _live: Live::new(&OBJECTS),
+            })
+            .to_com_ptr::<FUnknown>()
         } else if cid == GAIN_CTRL_CID {
-            ComWrapper::new(GainController { gain: AtomicU64::new(0.5f64.to_bits()), freq: AtomicU64::new(0.5f64.to_bits()) }).to_com_ptr::<FUnknown>()
+            ComWrapper::new(GainController {
+                gain: AtomicU64::new(0.5f64.to_bits()),
+                freq: AtomicU64::new(0.5f64.to_bits()),
+                _live: Live::new(&OBJECTS),
+            })
+            .to_com_ptr::<FUnknown>()
         } else if cid == SYNTH_CID {
-            ComWrapper::new(Synth { level: AtomicU32::new(0) }).to_com_ptr::<FUnknown>()
+            ComWrapper::new(Synth { level: AtomicU32::new(0), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
         } else {
             None
         };
@@ -653,45 +673,160 @@ impl IPluginFactory2Trait for Factory {
     }
 }
 
+// ---- module lifecycle ----------------------------------------------------------------------
+//
+// The contract real plugins rely on: the host runs the module exit once the factory and every
+// plugin object are released, on the thread that ran the module entry, and before the process
+// tears down the module's statics. Breaking it ends the process with status 3, much as real
+// plugins crash (HALion Sonic segfaults in its static destructors when the module exit never ran,
+// and in its module exit when that runs from an exit handler after it was used; Massive X in its
+// module exit when that runs on another thread than the entry).
+
+/// Module entries minus module exits (they nest, as in the VST3 SDK).
+static ENTERED: AtomicI64 = AtomicI64::new(0);
+/// The OS thread that ran the outermost module entry.
+static ENTRY_THREAD: AtomicUsize = AtomicUsize::new(0);
+/// Factories handed out and not yet released.
+static FACTORIES: AtomicI64 = AtomicI64::new(0);
+/// Plugin objects alive: components, controllers, views.
+static OBJECTS: AtomicI64 = AtomicI64::new(0);
+static TEARDOWN_REGISTERED: AtomicBool = AtomicBool::new(false);
+/// With `VST3_FIXTURE_LATE_STATE` set, the first plugin made sets up state that the process exit
+/// tears down, like a static a real plugin initialises lazily; the module exit needs it.
+static LATE_STATE_REGISTERED: AtomicBool = AtomicBool::new(false);
+static LATE_STATE_GONE: AtomicBool = AtomicBool::new(false);
+
+unsafe extern "C" {
+    fn atexit(f: extern "C" fn()) -> c_int;
+    fn _exit(status: c_int) -> !;
+}
+
+/// Counts itself in one of the counters above for as long as it exists.
+struct Live(&'static AtomicI64);
+
+impl Live {
+    fn new(counter: &'static AtomicI64) -> Live {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Live(counter)
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Ends the process at once with status 3 (no crash report: one test expects this).
+fn violation(what: &str) -> ! {
+    eprintln!("vst3-fixture: host contract violation: {what}");
+    unsafe { _exit(3) }
+}
+
+/// The OS id of the calling thread (`std::thread::current` is gone in exit handlers).
+fn os_thread() -> usize {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn pthread_self() -> usize;
+        }
+        unsafe { pthread_self() }
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentThreadId() -> u32;
+        }
+        unsafe { GetCurrentThreadId() as usize }
+    }
+}
+
+fn module_entry() -> bool {
+    if ENTERED.fetch_add(1, Ordering::SeqCst) == 0 {
+        ENTRY_THREAD.store(os_thread(), Ordering::SeqCst);
+    }
+    if !TEARDOWN_REGISTERED.swap(true, Ordering::SeqCst) {
+        unsafe { atexit(static_teardown) };
+    }
+    true
+}
+
+/// Called whenever the factory makes a plugin object.
+fn set_up_late_state() {
+    if std::env::var_os("VST3_FIXTURE_LATE_STATE").is_some() && !LATE_STATE_REGISTERED.swap(true, Ordering::SeqCst) {
+        unsafe { atexit(late_state_teardown) };
+    }
+}
+
+extern "C" fn late_state_teardown() {
+    LATE_STATE_GONE.store(true, Ordering::SeqCst);
+}
+
+fn module_exit() -> bool {
+    let left = ENTERED.fetch_sub(1, Ordering::SeqCst) - 1;
+    if left < 0 {
+        violation("module exit without a module entry");
+    }
+    let (factories, objects) = (FACTORIES.load(Ordering::SeqCst), OBJECTS.load(Ordering::SeqCst));
+    if left == 0 && (factories != 0 || objects != 0) {
+        violation(&format!("module exit with {factories} factories and {objects} plugin objects alive"));
+    }
+    if left == 0 && os_thread() != ENTRY_THREAD.load(Ordering::SeqCst) {
+        violation("module exit on another thread than the module entry");
+    }
+    if LATE_STATE_GONE.load(Ordering::SeqCst) {
+        violation("module exit after the process exit tore down state the module set up while in use");
+    }
+    true
+}
+
+/// Stands in for the C++ static destructors a real module registers while it loads.
+extern "C" fn static_teardown() {
+    if ENTERED.load(Ordering::SeqCst) > 0 && OBJECTS.load(Ordering::SeqCst) == 0 {
+        violation("static teardown of a module that is not in use but was never exited");
+    }
+}
+
 #[cfg(target_os = "windows")]
 #[unsafe(no_mangle)]
 extern "system" fn InitDll() -> bool {
-    true
+    module_entry()
 }
 
 #[cfg(target_os = "windows")]
 #[unsafe(no_mangle)]
 extern "system" fn ExitDll() -> bool {
-    true
+    module_exit()
 }
 
 #[cfg(target_os = "macos")]
 #[unsafe(no_mangle)]
 extern "C" fn bundleEntry(bundle: *mut c_void) -> bool {
-    !bundle.is_null()
+    !bundle.is_null() && module_entry()
 }
 
 #[cfg(target_os = "macos")]
 #[unsafe(no_mangle)]
 extern "C" fn bundleExit() -> bool {
-    true
+    module_exit()
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 #[unsafe(no_mangle)]
 extern "C" fn ModuleEntry(handle: *mut c_void) -> bool {
-    !handle.is_null()
+    !handle.is_null() && module_entry()
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 #[unsafe(no_mangle)]
 extern "C" fn ModuleExit() -> bool {
-    true
+    module_exit()
 }
 
 #[unsafe(no_mangle)]
 extern "system" fn GetPluginFactory() -> *mut IPluginFactory {
-    match ComWrapper::new(Factory).to_com_ptr::<IPluginFactory>() {
+    match ComWrapper::new(Factory { _live: Live::new(&FACTORIES) }).to_com_ptr::<IPluginFactory>() {
         Some(p) => p.into_raw(),
         None => std::ptr::null_mut(),
     }

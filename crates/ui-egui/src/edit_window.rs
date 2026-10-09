@@ -32,6 +32,18 @@ pub struct EditLayout {
     pub rows: Vec<(u64, [f32; 4])>,
     pub scroll_y: f32,
     pub content_h: f32,
+    /// Follow-hold: the view was moved by something other than the playhead
+    /// follow (a manual pan, scrollbar, universe jump, or programmatic
+    /// scroll) during playback, so timeline auto-scroll stays paused until
+    /// the playhead is scrolled back into view (or the transport
+    /// stops/starts, or a scrolling mode is re-selected). Lets the timeline
+    /// be inspected anywhere while playing.
+    pub follow_hold: bool,
+    /// Session `zoom.scroll` seen by the last overlay frame, for telling our
+    /// own follow jumps apart from outside view moves.
+    pub last_scroll: Samples,
+    /// Follow target issued by the last overlay frame (`None` when none).
+    pub last_follow_to: Option<Samples>,
 }
 
 pub fn x_of(s: &Session, tl: Rect, at: Samples) -> f32 {
@@ -372,13 +384,7 @@ fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect, rulers: &[
                 {
                     let at = snap(&s, sample_at(&s, tl, p.x).max(0));
                     let bpm = s.tempo.tempo_at_tick(s.tempo.samples_to_ticks(at, sr));
-                    app.dialogs.open = Some(crate::dialogs::Dialog::Number {
-                        cmd: format!("event.tempo@{at}"),
-                        title: "Tempo Change (BPM)".into(),
-                        key: "bpm".into(),
-                        value: bpm,
-                        suffix: "bpm".into(),
-                    });
+                    app.dialogs.open = Some(crate::dialogs::Dialog::TempoChange { at, bpm });
                 }
                 let mut last_label = f32::MIN;
                 for ev in s.tempo.tempos() {
@@ -833,7 +839,15 @@ fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, sele
         TrackKind::Video => "VIDEO",
     };
     if !kind_label.is_empty() {
-        ui.painter().text(pos2(pl_r.max.x + 4.0, name_r.center().y), Align2::LEFT_CENTER, kind_label, bold(9.0), t.text_dim);
+        let kr = ui.painter().text(pos2(pl_r.max.x + 4.0, name_r.center().y), Align2::LEFT_CENTER, kind_label, bold(9.0), t.text_dim);
+        if track.kind == TrackKind::Instrument {
+            // The instrument picker (and the instrument's editor) behind the INST label.
+            let name = track.instrument.as_ref().and_then(|i| crate::mix_window::plugin_info(&i.plugin)).map_or("none", |p| p.name);
+            let resp = ui
+                .interact(kr.expand(3.0), ui.id().with(("instrument", id.0)), Sense::click())
+                .on_hover_text(format!("Instrument: {name} (click to change or open its editor)"));
+            egui::Popup::menu(&resp).show(|ui| crate::mix_window::instrument_menu(app, ui, id));
+        }
     }
     if h < 30.0 {
         return;
@@ -1372,6 +1386,20 @@ fn clip_at(track: &Track, at: Samples) -> Option<&Clip> {
 fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, tl: Rect) {
     let id = ui.id().with(("lane", track.id.0));
     let resp = ui.interact(lane, id, Sense::click_and_drag());
+    // The clip menu is attached before the early return below: once the menu is open the pointer
+    // is over the popup, the lane has no hover position, and the rest of this function bails out.
+    // The clip is remembered at the right-click so the menu keeps its target while it is used.
+    let menu_clip_id = id.with("menu_clip");
+    if resp.secondary_clicked() {
+        let clip = resp.interact_pointer_pos().and_then(|p| {
+            let s = app.engine.session();
+            clip_at(track, sample_at(s, tl, p.x).max(0)).map(|c| c.id)
+        });
+        ui.ctx().data_mut(|d| d.insert_temp(menu_clip_id, clip));
+    }
+    // The clip may have been removed or moved since the right-click; only use it if it still exists.
+    let menu_clip = ui.ctx().data(|d| d.get_temp::<Option<ClipId>>(menu_clip_id)).flatten().filter(|c| track.clips().iter().any(|x| x.id == *c));
+    resp.context_menu(|ui| clip_context_menu(app, ui, menu_clip));
     // Audio files dropped from the Clip List.
     if let Some(src) = resp.dnd_release_payload::<crate::DragSource>()
         && let Some(p) = ui.ctx().pointer_latest_pos()
@@ -1613,7 +1641,6 @@ fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, 
     {
         let _ = app.run("edit.select", json!({"clips": [c.id.0]}));
     }
-    resp.context_menu(|ui| clip_context_menu(app, ui, hit.as_ref().map(|c| c.id)));
 }
 
 fn automation_id(p: &AutoParam) -> String {
@@ -1679,7 +1706,44 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
     }
 }
 
+/// Next follow state after observing one frame: `(hold, follow_to)`.
+///
+/// The view is ours to move only while nothing else moved it: when the
+/// session scroll differs from both the last seen value and our own last
+/// follow target, something else (a manual pan, scrollbar, universe jump,
+/// or programmatic scroll) took over, so the follow pauses (`hold`) and no
+/// jump is issued. Stopping, or scrolling back to the playhead, clears the
+/// hold. Only `page`/`continuous`/`center` ever issue follow jumps while
+/// playing; `none`/`after_playback` leave the view alone.
+fn follow_update(
+    playing: bool,
+    mode_follow: bool,
+    playhead_visible: bool,
+    cur: Samples,
+    last_scroll: Samples,
+    last_follow_to: Option<Samples>,
+    hold: bool,
+    pos: Samples,
+) -> (bool, Option<Samples>) {
+    if !playing || playhead_visible {
+        return (false, None);
+    }
+    if cur != last_scroll && Some(cur) != last_follow_to {
+        return (mode_follow, None);
+    }
+    if hold || !mode_follow {
+        return (hold, None);
+    }
+    (false, Some(pos))
+}
+
 /// Selection overlay, insertion point and playhead across rulers and tracks.
+/// While playing, auto-scroll keeps the playhead in view for the follow
+/// modes (`page`/`continuous`/`center`) — but any outside view move (a manual
+/// pan, scrollbar, universe jump, or programmatic scroll) pauses it, so the
+/// timeline can be inspected anywhere during playback. Scrolling back to the
+/// playhead, stopping/starting, or re-selecting a scrolling mode resumes the
+/// follow. `none` and `after_playback` never scroll during playback.
 fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
     let t = Tokens::current();
     let mut scroll_to: Option<Samples> = None;
@@ -1721,10 +1785,18 @@ fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
     if app.is_playing() {
         let x = x_of(s, tl, app.position());
         painter.line_segment([pos2(x, area.min.y), pos2(x, area.max.y)], Stroke::new(1.5, t.playhead));
-        // Page scrolling.
-        if s.edit.scrolling != "none" && (x > tl.max.x || x < tl.min.x) {
-            scroll_to = Some(app.position());
-        }
+        // Session reads first (owned copies), then the layout mutation: the
+        // two borrow disjoint fields.
+        let pos = app.position();
+        let cur = s.edit.zoom.scroll;
+        let mode_follow = matches!(s.edit.scrolling.as_str(), "page" | "continuous" | "center");
+        let visible = x >= tl.min.x && x <= tl.max.x;
+        let layout = &mut app.edit_layout;
+        let (hold, follow_to) = follow_update(true, mode_follow, visible, cur, layout.last_scroll, layout.last_follow_to, layout.follow_hold, pos);
+        layout.follow_hold = hold;
+        layout.last_scroll = cur;
+        layout.last_follow_to = follow_to;
+        scroll_to = follow_to;
     }
     // Ghost of a clip move.
     if let Some(Gesture::MoveClips { clips, delta, to_track, .. }) = &app.gesture {
@@ -1761,5 +1833,49 @@ fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
     }
     if let Some(at) = scroll_to {
         let _ = app.engine.execute("view.scroll", &json!({"to": at}));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::follow_update;
+
+    #[test]
+    fn follow_jumps_to_offscreen_playhead_while_playing() {
+        // Steady view, follow mode, playhead left the screen: jump to it.
+        assert_eq!(follow_update(true, true, false, 1_000, 1_000, None, false, 96_000), (false, Some(96_000)));
+    }
+
+    #[test]
+    fn follow_leaves_onscreen_playhead_alone() {
+        assert_eq!(follow_update(true, true, true, 1_000, 1_000, None, false, 96_000), (false, None));
+    }
+
+    #[test]
+    fn follow_never_scrolls_when_stopped_nor_in_free_modes() {
+        assert_eq!(follow_update(false, true, false, 1_000, 1_000, None, false, 96_000), (false, None));
+        // `none`/`after_playback` never follow, even with a steady view.
+        assert_eq!(follow_update(true, false, false, 1_000, 1_000, None, false, 96_000), (false, None));
+        assert_eq!(follow_update(true, false, false, 9_000, 1_000, None, false, 96_000), (false, None));
+    }
+
+    #[test]
+    fn outside_view_move_pauses_the_follow() {
+        // The view moved and it was not our own jump: pause, no jump.
+        assert_eq!(follow_update(true, true, false, 9_000, 1_000, None, false, 96_000), (true, None));
+        // A held view stays held while it sits still elsewhere.
+        assert_eq!(follow_update(true, true, false, 9_000, 9_000, None, true, 96_000), (true, None));
+    }
+
+    #[test]
+    fn own_follow_jump_is_not_mistaken_for_a_takeover() {
+        // The scroll equals the target we issued last frame: keep following.
+        assert_eq!(follow_update(true, true, false, 96_000, 1_000, Some(96_000), false, 97_000), (false, Some(97_000)));
+    }
+
+    #[test]
+    fn hold_clears_when_playhead_returns_or_transport_stops() {
+        assert_eq!(follow_update(true, true, true, 9_000, 9_000, None, true, 96_000), (false, None));
+        assert_eq!(follow_update(false, true, false, 9_000, 9_000, None, true, 96_000), (false, None));
     }
 }

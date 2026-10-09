@@ -13,12 +13,12 @@ pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("soundcraft: control server failed to bind 127.0.0.1:{port}: {e}");
+            log::error!("control server failed to bind 127.0.0.1:{port}: {e}");
             return rx;
         }
     };
     let actual = listener.local_addr().map(|a| a.port()).unwrap_or(port);
-    eprintln!("soundcraft: control server listening on 127.0.0.1:{actual}");
+    log::info!("control server listening on 127.0.0.1:{actual}");
     println!("SOUNDCRAFT_CONTROL_PORT={actual}");
     let spawned = std::thread::Builder::new().name("soundcraft-control".into()).spawn(move || {
         for stream in listener.incoming().flatten() {
@@ -28,7 +28,7 @@ pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
         }
     });
     if let Err(e) = spawned {
-        eprintln!("soundcraft: control thread failed: {e}");
+        log::error!("control thread failed: {e}");
     }
     rx
 }

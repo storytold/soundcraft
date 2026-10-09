@@ -35,6 +35,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 const BLOCK: usize = 512;
 
+/// The realtime audio thread marker lives in the mix engine, which carries it into the strips it
+/// renders on worker threads; the cpal callbacks here set it.
+pub use soundcraft_mix::{mark_audio_thread, on_audio_thread};
+
 /// Meter values for the UI.
 #[derive(Debug, Clone, Default)]
 pub struct MeterSnapshot {
@@ -99,6 +103,7 @@ struct AudioState {
 fn new_engine(sr: f32) -> MixEngine {
     let mut m = MixEngine::new(sr, BLOCK);
     m.set_external_instances(true);
+    m.metronome = true;
     m
 }
 
@@ -222,7 +227,7 @@ impl AudioState {
             if self.mix.input.len() != ch {
                 self.mix.input = vec![vec![0.0; BLOCK]; ch];
             }
-            ring.pop_into(&mut self.mix.input, n);
+            ring.pop_into(&mut self.mix.input, n, self.session.sample_rate.hz());
         }
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
@@ -390,11 +395,19 @@ impl Player {
                 let rate = config.sample_rate.0;
                 let channels = usize::from(config.channels);
                 let mut state = AudioState::new(rx, Arc::clone(&shared), session, f64::from(rate), gtx);
-                let err_fn = |e: cpal::StreamError| log::warn!("audio stream error: {e}");
+                // cpal may call this on the audio thread (on ALSA in a loop while the device
+                // stays broken): marked, so the logger hands the record off instead of writing it.
+                let err_fn = |e: cpal::StreamError| {
+                    mark_audio_thread();
+                    log::warn!("audio stream error: {e}");
+                };
                 use cpal::traits::{DeviceTrait, StreamTrait};
                 match device.build_output_stream(
                     &config,
-                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| state.fill(data, channels),
+                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                        mark_audio_thread();
+                        state.fill(data, channels);
+                    },
                     err_fn,
                     None,
                 ) {
