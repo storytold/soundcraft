@@ -1,5 +1,5 @@
 use soundcraft_audio_io::{
-    AudioBuffer, BitDepth, BwfInfo, EncodeOptions, FileFormat, SampleFormat, decode, detect_format, encode, encode_wav_rf64, probe,
+    AudioBuffer, BitDepth, BwfInfo, EncodeOptions, FileFormat, SampleFormat, decode, detect_format, encode, encode_wav_rf64, probe, wav_float_header,
 };
 
 fn sine(sr: u32, channels: usize, frames: usize) -> AudioBuffer {
@@ -267,4 +267,20 @@ fn multichannel_wav_speaker_masks() {
     let o16 = EncodeOptions { bit_depth: BitDepth::Int16, ..opts };
     let bytes = soundcraft_audio_io::encode_with_channel_mask(&buf(2), &o16, 0x3).unwrap();
     assert_eq!(soundcraft_audio_io::wav_channel_mask(&bytes), None);
+}
+
+#[test]
+fn float_wav_header_is_rewritten_in_place_as_the_file_grows() {
+    let take = sine(48_000, 2, 1_000);
+    let mut file = wav_float_header(2, 48_000, 0).unwrap();
+    let len = file.len();
+    file.extend(take.interleaved().iter().flat_map(|s| s.to_le_bytes()));
+    assert_eq!(decode(&file, None).unwrap().1.frames(), 1_000);
+    file[..len].copy_from_slice(&wav_float_header(2, 48_000, 600).unwrap());
+    assert_eq!(decode(&file, None).unwrap().1.frames(), 600);
+    file[..len].copy_from_slice(&wav_float_header(2, 48_000, 1_000).unwrap());
+    assert_eq!(file, encode(&take, &EncodeOptions { bit_depth: BitDepth::Float32, ..EncodeOptions::default() }).unwrap());
+    let big = wav_float_header(2, 48_000, 600_000_000).unwrap();
+    assert_eq!((&big[..4], big.len()), (&b"RF64"[..], len));
+    assert!(wav_float_header(0, 48_000, 0).is_err());
 }

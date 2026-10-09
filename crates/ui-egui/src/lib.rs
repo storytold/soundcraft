@@ -402,17 +402,14 @@ impl SoundApp {
             return;
         }
         self.ensure_input();
-        if self.recorder.is_none() {
-            self.ui.status = "Cannot record: no audio input device".into();
+        if let Err(err) = self.arm_recorder() {
+            self.ui.status = format!("Cannot record: {err}");
             return;
         }
         if let Some(p) = &self.player {
             p.set_recording(true);
         }
         let already_playing = self.is_playing();
-        if let Some(r) = &self.recorder {
-            r.arm();
-        }
         self.engine.transport.recording = true;
         if already_playing {
             // Punch in on the fly at the current playhead.
@@ -436,6 +433,19 @@ impl SoundApp {
             let end = (!sel.is_empty()).then_some(sel.end + post);
             self.start_play(from, end, None);
         }
+    }
+
+    /// Arm the input for the record-enabled tracks; a session never saved records into its
+    /// autosave folder.
+    fn arm_recorder(&mut self) -> Result<(), String> {
+        let name = soundcraft_engine::io::sanitize_name(&self.engine.session().name);
+        let unsaved_dir = self.autosave_dir.as_ref().map_or_else(std::env::temp_dir, |d| d.join(name));
+        let Some(r) = &mut self.recorder else { return Err("no audio input device".into()) };
+        let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels);
+        if plan.is_empty() {
+            return Err("no audio track is record-enabled".into());
+        }
+        r.arm(plan)
     }
 
     /// Reads every live third-party plugin's state from the audio engine and stores it on its
@@ -527,49 +537,26 @@ impl SoundApp {
         if let Some(p) = &self.player {
             p.set_recording(false);
         }
-        let Some(r) = &self.recorder else { return };
-        let take = r.take();
-        let rate = take.sample_rate;
+        let Some(r) = &mut self.recorder else { return };
+        let (takes, problem) = r.finish();
+        let tracks = takes.len().max(1);
         let sel = self.engine.session().edit.selection;
-        if self.engine.session().edit.loop_record && !sel.is_empty() {
-            // Split the capture into one take per loop pass; each pass gets its own playlist.
-            let pass = usize::try_from(soundcraft_time::to_samples(sel.len() as f64 * f64::from(rate) / self.engine.session().sample_rate.as_f64()))
-                .unwrap_or(0)
-                .max(1);
-            let total = take.channels.first().map_or(0, Vec::len);
-            let passes = total.div_ceil(pass).max(1);
-            let mut made = 0;
-            for k in 0..passes {
-                let chunk: Vec<Vec<f32>> =
-                    take.channels.iter().map(|c| c.get(k * pass..((k + 1) * pass).min(c.len())).map(<[f32]>::to_vec).unwrap_or_default()).collect();
-                if chunk.first().is_none_or(|c| c.len() < pass / 8) {
-                    continue;
-                }
-                if made > 0 {
-                    let armed: Vec<u64> = self.engine.session().tracks.iter().filter(|t| t.mixer.record_arm).map(|t| t.id.0).collect();
-                    let _ = self.engine.execute("track.playlist_new", &serde_json::json!({"tracks": armed}));
-                }
-                if soundcraft_engine::io::add_recording(&mut self.engine, sel.start, chunk, rate).is_ok() {
-                    made += 1;
-                }
-            }
-            self.ui.status = format!("Loop-recorded {made} take(s)");
-            return;
+        let looped = self.engine.session().edit.loop_record && !sel.is_empty();
+        let (start, pass) = if looped { (sel.start, Some(sel.len())) } else { (self.record_start, None) };
+        let ids = soundcraft_engine::io::add_recording(&mut self.engine, start, takes, pass);
+        if let Some(p) = self.punch.take() {
+            // Keep only the punch range of each new take (merged into the Record undo step).
+            let clip_ids: Vec<u64> = ids.iter().map(|c| c.0).collect();
+            let _ = self.engine.execute_merged(
+                "edit.trim_to_fill_selection",
+                &serde_json::json!({"clips": clip_ids, "start": p.start, "end": p.end}),
+                "record",
+            );
         }
-        match soundcraft_engine::io::add_recording(&mut self.engine, self.record_start, take.channels, rate) {
-            Ok(ids) => {
-                if let Some(p) = self.punch.take() {
-                    // Keep only the punch range of each new take (merged into the Record undo step).
-                    let clip_ids: Vec<u64> = ids.iter().map(|c| c.0).collect();
-                    let _ = self.engine.execute_merged(
-                        "edit.trim_to_fill_selection",
-                        &serde_json::json!({"clips": clip_ids, "start": p.start, "end": p.end}),
-                        "record",
-                    );
-                }
-                self.ui.status = format!("Recorded {} clip(s)", ids.len());
-            }
-            Err(e) => self.ui.status = e.to_string(),
+        self.ui.status = if looped { format!("Loop-recorded {} take(s)", ids.len() / tracks) } else { format!("Recorded {} clip(s)", ids.len()) };
+        if let Some(p) = problem {
+            log::warn!("recording: {p}");
+            self.ui.status = format!("{} ({p})", self.ui.status);
         }
     }
 
