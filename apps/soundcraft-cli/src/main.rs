@@ -50,7 +50,10 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "--help" | "-h" | "help" => {
-            outln!("{}", include_str!("main.rs").lines().skip(3).take(14).map(|l| l.trim_start_matches("//! ")).collect::<Vec<_>>().join("\n"));
+            // The usage is the doc block's fenced region: skip the first doc lines (module title +
+            // opening ```text), then take lines up to (not including) the closing fence.
+            let usage = include_str!("main.rs").lines().skip_while(|l| !l.starts_with("//! ```text")).skip(1).take_while(|l| !l.starts_with("//! ```")).map(|l| l.trim_start_matches("//! ")).collect::<Vec<_>>().join("\n");
+            outln!("{usage}");
             ExitCode::SUCCESS
         }
         "info" => info(&rest),
