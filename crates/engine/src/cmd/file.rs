@@ -11,8 +11,13 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "session.new", "New...", ["File"], Some("Cmd+N"), "{name?: 'Untitled', sample_rate?: 48000, bit_depth?: 24, template?: blank|demo}", always, new_session),
         cmd!(noundo "session.open", "Open Session...", ["File"], Some("Cmd+O"), "{path}", always, |e, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("session.open", "`path` required"))?.to_string();
-            crate::io::open_session(e, &path)?;
-            Ok(json!({"name": e.session().name, "tracks": e.session().tracks.len()}))
+            let missing = crate::io::open_session(e, &path)?;
+            if !missing.is_empty() {
+                for m in &missing {
+                    e.message(format!("missing media: {m}"));
+                }
+            }
+            Ok(json!({"name": e.session().name, "tracks": e.session().tracks.len(), "missing_files": missing}))
         }),
         cmd!(noundo "session.close", "Close Session", ["File"], Some("Cmd+Shift+W"), "{}", always, |e, _| { e.replace_session(Session::default()); e.path = None; Ok(json!({})) }),
         cmd!(noundo "session.save", "Save Session", ["File"], Some("Cmd+S"), "{path?}", always, |e, p| {
@@ -232,6 +237,7 @@ fn bounce(e: &mut Engine, p: &Value) -> Result<Value> {
     let path = str_param(p, "path").ok_or_else(|| bad("file.bounce_mix", "`path` required"))?.to_string();
     let r = range_param(e, "file.bounce_mix", p)?;
     let r = if r.is_empty() { soundcraft_time::Range::new(0, e.session().content_end().max(1)) } else { r };
+    let source = str_param(p, "source").map(|s| s.to_string());
     let ext = std::path::Path::new(&path).extension().and_then(|x| x.to_str()).unwrap_or("wav").to_ascii_lowercase();
     let format = match str_param(p, "format").unwrap_or(ext.as_str()) {
         "aif" | "aiff" => soundcraft_audio_io::FileFormat::Aiff,
@@ -246,7 +252,7 @@ fn bounce(e: &mut Engine, p: &Value) -> Result<Value> {
     let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: bool_or(p, "dither", true), bwf: None };
     let normalize = bool_or(p, "normalize", false);
     let fold = fold_down_param(p, "file.bounce_mix")?;
-    let (bytes, stats) = crate::io::bounce_bytes_with(e, r, &opts, normalize, fold)?;
+    let (bytes, stats) = crate::io::bounce_bytes_with(e, r, &opts, normalize, fold, source)?;
     std::fs::write(&path, &bytes).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
     Ok(
         json!({"path": path, "bytes": bytes.len(), "seconds": e.session().sample_rate.seconds(r.len()), "peak_db": stats.0, "lufs": stats.1, "true_peak_db": stats.2}),
