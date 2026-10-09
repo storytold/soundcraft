@@ -94,6 +94,9 @@ plugins), and WebAudio in the browser.
 - **Notarization:** the app is zipped and sent with `xcrun notarytool submit --wait`, then the
   ticket is stapled to the app. The app goes on a DMG (`hdiutil`, with an `Applications` link).
   The DMG is signed, notarized and stapled too.
+  Its Finder window (background, icon size and positions) comes from
+  [`packaging/macos/dmg/`](../packaging/macos/dmg/README.md), and its volume is named `SoundCraft`
+  without the version, which the window's background needs; the DMG file name keeps the version.
 - **CLI:** the universal `soundcraft-cli` is signed with the hardened runtime, zipped and
   notarized.
 
