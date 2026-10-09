@@ -79,7 +79,13 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers) -> bool {
     let plain = !m.command && !m.alt && !m.ctrl && !m.shift;
     match key {
         Key::Space if !m.command && !m.alt => {
-            let id = if m.shift { "transport.half_speed" } else { "transport.toggle" };
+            let id = if m.shift {
+                "transport.half_speed"
+            } else if app.is_playing() {
+                "transport.pause"
+            } else {
+                "transport.play"
+            };
             let _ = app.run(id, json!({}));
             true
         }
