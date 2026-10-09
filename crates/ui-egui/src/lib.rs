@@ -395,6 +395,21 @@ impl SoundApp {
         self.edit_layout.follow_hold = false;
     }
 
+    fn pause_play(&mut self) {
+        if !self.engine.transport.playing {
+            return;
+        }
+        if let Some(p) = &self.player {
+            p.stop();
+        }
+        self.sim = None;
+        self.engine.transport.playing = false;
+        let pos = self.engine.transport.position;
+        let session = self.engine.session_mut();
+        session.edit.playhead = pos;
+        session.edit.selection = Range::point(pos);
+    }
+
     fn start_recording(&mut self) {
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
         if !armed {
@@ -647,7 +662,8 @@ impl SoundApp {
                         self.play_from_selection();
                     }
                 }
-                TransportRequest::Stop | TransportRequest::Pause => self.stop_play(),
+                TransportRequest::Stop => self.stop_play(),
+                TransportRequest::Pause => self.pause_play(),
                 TransportRequest::TogglePlay => {
                     if self.is_playing() {
                         self.stop_play();
