@@ -15,6 +15,9 @@ enum InsertDrag {
     Slot(TrackId, usize),
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TrackDrag(TrackId);
+
 fn copy_drop(app: &mut SoundApp, from: InsertDrag, target: TrackId, to_slot: Option<usize>) {
     match from {
         InsertDrag::Chain(id) if id != target => {
@@ -74,6 +77,19 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
                     && let Some(payload) = egui::DragAndDrop::take_payload::<InsertDrag>(ui.ctx())
                 {
                     copy_drop(app, *payload, *target, None);
+                }
+                // A channel name can also be dragged onto a routing folder or its members.
+                if ui.input(|i| i.pointer.any_released())
+                    && let Some(p) = ui.ctx().pointer_latest_pos()
+                    && let Some((target, _)) = drop_targets.iter().find(|(_, rect)| rect.contains(p))
+                    && let Some(payload) = egui::DragAndDrop::take_payload::<TrackDrag>(ui.ctx())
+                {
+                    let folder = app.engine.session().track(*target).and_then(|t| {
+                        if t.kind == TrackKind::Folder { Some(t.id) } else { t.folder }
+                    });
+                    if let Some(folder) = folder.filter(|fid| *fid != payload.0) {
+                        let _ = app.run("track.folder_assign", json!({"tracks": [payload.0.0], "folder": folder.0}));
+                    }
                 }
             });
         });
@@ -450,7 +466,8 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         StrokeKind::Inside,
     );
     ui.painter().with_clip_rect(nr).text(nr.center(), Align2::CENTER_CENTER, &track.name, bold(12.0), t.text_dark);
-    let nresp = ui.interact(nr, ui.id().with(("strip_name", id.0)), Sense::click());
+    let nresp = ui.interact(nr, ui.id().with(("strip_name", id.0)), Sense::click_and_drag());
+    nresp.dnd_set_drag_payload(TrackDrag(id));
     if nresp.clicked() {
         let _ = app.run("edit.select", json!({"tracks": [id.0]}));
     }
