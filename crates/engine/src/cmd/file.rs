@@ -233,6 +233,17 @@ fn import_audio_target(e: &Engine, p: &Value) -> Result<Option<TrackId>> {
     selected.map(Some).ok_or_else(|| bad("file.import_audio", "`new_tracks: false` needs `track` or a selected audio track"))
 }
 
+/// `source` omitted or `main` is the main mix. Any other name is a bus, and an unknown bus is an error.
+fn bounce_bus(e: &Engine, p: &Value) -> Result<Option<soundcraft_model::BusId>> {
+    let Some(name) = str_param(p, "source").map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if name.eq_ignore_ascii_case("main") {
+        return Ok(None);
+    }
+    e.session().bus_by_name(name).map(|b| Some(b.id)).ok_or_else(|| bad("file.bounce_mix", format!("unknown bus `{name}`")))
+}
+
 /// `fold_down: "stereo"` bounces an ITU stereo fold-down of a surround mix.
 fn fold_down_param(p: &Value, id: &str) -> Result<bool> {
     match str_param(p, "fold_down").map(str::trim) {
@@ -259,7 +270,8 @@ fn bounce(e: &mut Engine, p: &Value) -> Result<Value> {
     let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: bool_or(p, "dither", true), bwf: None };
     let normalize = bool_or(p, "normalize", false);
     let fold = fold_down_param(p, "file.bounce_mix")?;
-    let (bytes, stats) = crate::io::bounce_bytes_with(e, r, &opts, normalize, fold)?;
+    let bus = bounce_bus(e, p)?;
+    let (bytes, stats) = crate::io::bounce_source(e, r, &opts, normalize, fold, bus)?;
     std::fs::write(&path, &bytes).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
     Ok(
         json!({"path": path, "bytes": bytes.len(), "seconds": e.session().sample_rate.seconds(r.len()), "peak_db": stats.0, "lufs": stats.1, "true_peak_db": stats.2}),
@@ -361,6 +373,53 @@ mod tests {
         }
         let ok = dir.join("mix.flac");
         assert!(e.execute("file.bounce_mix", &json!({"path": ok.to_string_lossy(), "start": 0, "end": 480})).is_ok());
+        assert!(std::fs::remove_dir_all(&dir).is_ok());
+    }
+
+    #[test]
+    fn bounce_source_renders_the_named_bus() {
+        let dir = std::env::temp_dir().join(format!("sc-bounce-source-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = tone_wav(&dir, "tone.wav");
+        let mut e = Engine::default();
+        e.execute("file.import_audio", &json!({"path": wav})).unwrap();
+        let stem = e.session_mut().add_bus("Stem", ChannelFormat::Stereo);
+        e.session_mut().add_bus("Empty", ChannelFormat::Stereo);
+        let track = e.session().tracks[0].id;
+        {
+            let tr = e.session_mut().track_mut(track).unwrap();
+            let mut send = soundcraft_model::SendSlot::new(soundcraft_model::Route::Bus(stem));
+            send.level_db = -12.0;
+            tr.mixer.sends[0] = Some(send);
+        }
+        let bounce = |e: &mut Engine, name: &str, source: Option<&str>| {
+            let path = dir.join(name);
+            let mut params = json!({"path": path.to_string_lossy(), "start": 0, "end": 4800, "bit_depth": "32f", "dither": false});
+            if let Some(source) = source {
+                params["source"] = json!(source);
+            }
+            let value = e.execute("file.bounce_mix", &params).unwrap();
+            let peak = value.get("peak_db").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+            (std::fs::read(&path).unwrap(), peak)
+        };
+        let (main_bytes, main_peak) = bounce(&mut e, "main.wav", None);
+        let (named_main, named_peak) = bounce(&mut e, "named-main.wav", Some("main"));
+        let (stem_bytes, stem_peak) = bounce(&mut e, "stem.wav", Some("STEM"));
+        let (empty_bytes, empty_peak) = bounce(&mut e, "empty.wav", Some("Empty"));
+        assert_eq!(main_bytes, named_main);
+        assert!((main_peak - named_peak).abs() < 1e-4, "{main_peak} vs {named_peak}");
+        assert!(main_peak > -20.0, "{main_peak}");
+        assert_ne!(stem_bytes, main_bytes);
+        assert!(main_peak - stem_peak > 6.0 && main_peak - stem_peak < 18.0, "main {main_peak} stem {stem_peak}");
+        assert_ne!(empty_bytes, main_bytes);
+        assert!(empty_peak < -100.0, "{empty_peak}");
+        let missing = dir.join("missing.wav");
+        let err = e
+            .execute("file.bounce_mix", &json!({"path": missing.to_string_lossy(), "source": "NoSuchBus", "start": 0, "end": 4800, "dither": false}))
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown bus"), "{err}");
+        assert!(!missing.exists());
         assert!(std::fs::remove_dir_all(&dir).is_ok());
     }
 

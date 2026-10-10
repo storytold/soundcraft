@@ -293,6 +293,11 @@ pub struct MixEngine {
     order: Vec<usize>,
     /// Current total compensation delay (samples) of the mix.
     pub latency: usize,
+    /// Delay already applied to audio written onto busses: the slowest track insert.
+    /// A bus render drops this so the bus lines up with the timeline. The extra delay
+    /// that lines direct outputs up with aux returns stays in `latency` and is removed
+    /// only from the main mix.
+    track_latency: usize,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
     pub input: Vec<Vec<f32>>,
     /// Transport stopped: only monitored inputs sound (no clips).
@@ -363,6 +368,7 @@ impl MixEngine {
             synced: (0, 0, 0),
             order: Vec::new(),
             latency: 0,
+            track_latency: 0,
             input: Vec::new(),
             monitor_only: false,
             recording: false,
@@ -593,6 +599,7 @@ impl MixEngine {
         let lmax_t = if pdc { work.iter().map(|(_, st)| st.latency).max().unwrap_or(0) } else { 0 };
         let lmax_a =
             if pdc { self.strips.iter().filter(|(id, _)| s.track(**id).is_some_and(is_aux)).map(|(_, st)| st.latency).max().unwrap_or(0) } else { 0 };
+        self.track_latency = lmax_t;
         self.latency = lmax_t + lmax_a;
         for (t, st) in work.iter_mut() {
             let ch = st.buf.len();
@@ -677,6 +684,24 @@ impl MixEngine {
             }
         }
         self.main_meter.measure(&self.main, frames, 0.0);
+    }
+
+    /// Copy one rendered block of `bus` into `out`. A missing bus stays silent.
+    fn copy_bus(&self, bus: BusId, frames: usize, out: &mut [Vec<f32>]) {
+        for o in out.iter_mut() {
+            for x in o.iter_mut().take(frames) {
+                *x = 0.0;
+            }
+        }
+        let Some(src) = self.busses.get(&bus) else { return };
+        for (o, c) in out.iter_mut().zip(src.buf.iter()) {
+            for i in 0..frames {
+                let v = c.get(i).copied().unwrap_or(0.0);
+                if let Some(d) = o.get_mut(i) {
+                    *d = if v.is_finite() { v } else { 0.0 };
+                }
+            }
+        }
     }
 
     /// Send, meter and pan a processed strip into the busses / main mix.
@@ -1640,6 +1665,46 @@ pub fn render_range(s: &Session, range: Range, block: usize) -> Vec<Vec<f32>> {
     out
 }
 
+/// Offline render of one bus over `range` (planar, the bus format's channel count).
+/// Track-insert compensation is removed, so a bus fed by tracks lines up with the timeline.
+/// An unknown bus is silent.
+pub fn render_bus(s: &Session, bus: BusId, range: Range, block: usize) -> Vec<Vec<f32>> {
+    let nch = s.bus(bus).map(|b| b.format.channels()).unwrap_or(0);
+    if nch == 0 {
+        return Vec::new();
+    }
+    let len = usize::try_from(range.len().max(0)).unwrap_or(0).min(MAX_RENDER_SAMPLES / nch);
+    let latency = {
+        let mut probe = MixEngine::new(s.sample_rate.as_f64() as f32, block);
+        let b = probe.max_block();
+        probe.render(s, range.start, b.min(len.max(1)), &mut []);
+        probe.track_latency
+    };
+    let total = len.saturating_add(latency);
+    let mut out = vec![vec![0.0f32; total]; nch];
+    let mut eng = MixEngine::new(s.sample_rate.as_f64() as f32, block);
+    let b = eng.max_block();
+    let mut tmp = vec![vec![0.0f32; b]; nch];
+    let mut done = 0usize;
+    while done < total {
+        let n = (total - done).min(b);
+        eng.render(s, range.start + done as i64, n, &mut []);
+        eng.copy_bus(bus, n, &mut tmp);
+        for (o, t) in out.iter_mut().zip(tmp.iter()) {
+            if let (Some(d), Some(sr)) = (o.get_mut(done..done + n), t.get(..n)) {
+                d.copy_from_slice(sr);
+            }
+        }
+        done += n;
+    }
+    if latency > 0 {
+        for c in &mut out {
+            c.drain(..latency.min(c.len()));
+        }
+    }
+    out
+}
+
 /// ITU-R BS.775 stereo fold-down of planar audio in `fmt` (C and surrounds at -3 dB, LFE dropped;
 /// Ambisonics play their W channel). Mono/stereo input is returned unchanged.
 pub fn fold_down_stereo(fmt: ChannelFormat, ch: &[Vec<f32>]) -> Vec<Vec<f32>> {
@@ -1877,6 +1942,20 @@ mod tests {
         }
         let out = render_range(&s, Range::new(0, 4800), 512);
         assert!(out[0][1000] > 0.1, "aux should carry the send: {}", out[0][1000]);
+    }
+
+    #[test]
+    fn render_bus_is_the_bus_not_the_main_mix() {
+        let (mut s, t) = session_with_dc(0.5, 4800);
+        let stem = s.add_bus("Stem", ChannelFormat::Stereo);
+        let empty = s.add_bus("Empty", ChannelFormat::Stereo);
+        s.track_mut(t).unwrap().mixer.output = Route::Bus(stem);
+        let main = render_range(&s, Range::new(0, 4800), 512);
+        let bus = render_bus(&s, stem, Range::new(0, 4800), 512);
+        let silent = render_bus(&s, empty, Range::new(0, 4800), 512);
+        assert!(main[0][1000].abs() < 1e-4, "main should not carry a track routed to the bus: {}", main[0][1000]);
+        assert!(bus[0][1000].abs() > 0.1, "bus should carry the track: {}", bus[0][1000]);
+        assert!(silent.iter().all(|c| c.iter().all(|x| x.abs() < 1e-6)));
     }
 
     #[test]
