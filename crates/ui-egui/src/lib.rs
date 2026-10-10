@@ -731,6 +731,9 @@ impl SoundApp {
 
     /// Per-frame logic: control channel, transport, document sync.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        if ctx.current_pass_index() > 0 {
+            return;
+        }
         // Fonts set now take effect next frame, so draw only from the frame after.
         if !self.fonts_ready {
             if self.fonts_installed {
@@ -747,8 +750,7 @@ impl SoundApp {
             self.theme_applied = Some(light);
         }
         let now = ctx.input(|i| i.time);
-        let dt = self.last_frame.map_or(1.0 / 60.0, |t| (now - t) as f32).clamp(0.0, 0.25);
-        self.last_frame = Some(now);
+        let dt = self.last_frame.replace(now).map_or(1.0 / 60.0, |t| (now - t) as f32).clamp(0.0, 0.25);
         self.frame_ms = self.frame_ms * 0.9 + dt * 1000.0 * 0.1;
         control::drain(self, ctx);
         self.apply_editor_edits();
