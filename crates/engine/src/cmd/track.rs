@@ -391,6 +391,12 @@ fn move_to_folder(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.move_to_new_folder", p)?;
     let name = str_param(p, "name").map(str::to_string);
     let s = e.session_mut();
+    for id in &tracks {
+        let tr = s.track(*id).ok_or_else(|| bad("track.move_to_new_folder", "track not found"))?;
+        if matches!(tr.kind, TrackKind::Folder | TrackKind::Master | TrackKind::Vca | TrackKind::Video) {
+            return Err(bad("track.move_to_new_folder", "only audio, instrument, MIDI and aux tracks can join a bus folder"));
+        }
+    }
     let first_idx = tracks.iter().filter_map(|t| s.track_index(*t)).min().unwrap_or(0);
     let fid = s.add_track(TrackKind::Folder, ChannelFormat::Stereo, Some(name.as_deref().unwrap_or("Folder")));
     // Place the folder above its first member.
@@ -404,11 +410,17 @@ fn move_to_folder(e: &mut Engine, p: &Value) -> Result<Value> {
     if let Some(f) = s.track_mut(fid) {
         f.mixer.input = Route::Bus(bus);
     }
+    let mut moved = Vec::new();
     for t in &tracks {
-        if let Some(tr) = s.track_mut(*t) {
-            tr.folder = Some(fid);
-            tr.mixer.output = Route::Bus(bus);
+        if let Some(i) = s.track_index(*t) {
+            moved.push(s.tracks.remove(i));
         }
+    }
+    let at = s.track_index(fid).map_or(s.tracks.len(), |i| i + 1);
+    for (offset, mut tr) in moved.into_iter().enumerate() {
+        tr.folder = Some(fid);
+        tr.mixer.output = Route::Bus(bus);
+        s.tracks.insert(at + offset, tr);
     }
     Ok(json!({"folder": fid, "bus": bus}))
 }
@@ -421,13 +433,17 @@ fn folder_assign(e: &mut Engine, p: &Value) -> Result<Value> {
     if target.kind != TrackKind::Folder {
         return Err(bad("track.folder_assign", "target is not a routing folder"));
     }
-    let Route::Bus(bus) = target.mixer.input else {
-        return Err(bad("track.folder_assign", "folder has no input bus"));
+    let bus = match &target.mixer.input {
+        Route::Bus(id) => *id,
+        _ => return Err(bad("track.folder_assign", "folder has no input bus")),
     };
     for id in &tracks {
         let tr = s.track(*id).ok_or_else(|| bad("track.folder_assign", "source track not found"))?;
         if matches!(tr.kind, TrackKind::Folder | TrackKind::Master | TrackKind::Vca | TrackKind::Video) {
             return Err(bad("track.folder_assign", "only audio, instrument, MIDI and aux tracks can join a bus folder"));
+        }
+        if tr.mixer.input == Route::Bus(bus) {
+            return Err(bad("track.folder_assign", "routing would feed a bus into itself"));
         }
     }
     let mut moved = Vec::new();
