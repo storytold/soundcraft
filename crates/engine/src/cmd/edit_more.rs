@@ -277,6 +277,10 @@ fn nonempty_range(e: &Engine, p: &Value, id: &str) -> Result<Range> {
     if r.is_empty() { Err(bad(id, "the selection is empty")) } else { Ok(r) }
 }
 
+pub(super) fn cut_all_automation(e: &mut Engine, p: &Value) -> Result<Value> {
+    auto_copy(e, p, Lanes::All, true, "edit.cut_all_automation")
+}
+
 fn auto_copy(e: &mut Engine, p: &Value, which: Lanes, cut: bool, id: &str) -> Result<Value> {
     let tracks = tracks_required(e, id, p)?;
     let r = nonempty_range(e, p, id)?;
@@ -995,6 +999,21 @@ mod tests {
         e.execute("edit.snap_previous", &json!({"clips": [ids[0].0, ids[1].0]})).unwrap();
         assert_eq!(e.session().track(t).unwrap().clips().len(), 3);
         assert_eq!(starts(&e, t), vec![0, 100, 1000]);
+    }
+
+    #[test]
+    fn cut_all_automation_can_be_pasted() {
+        let (mut e, t, _) = session_with_clips(&[(0, 1000)]);
+        e.execute("automation.set_point", &json!({"track": t.0, "param": "volume", "at": 100, "value": -6.0})).unwrap();
+        e.execute("automation.set_point", &json!({"track": t.0, "param": "volume", "at": 400, "value": -12.0})).unwrap();
+        let cut = e.execute("edit.cut_all_automation", &json!({"start": 50, "end": 250})).unwrap();
+        assert!(cut["lanes"].as_u64().unwrap() >= 1, "{cut}");
+        assert!(e.clipboard.automation.iter().any(|lanes| !lanes.is_empty()));
+        let lane = e.session().track(t).unwrap().lane(&AutoParam::Volume).unwrap().clone();
+        assert!(lane.points.iter().all(|p| p.at != 100), "the cut point is gone: {:?}", lane.points);
+        e.execute("edit.paste_to_current_automation", &json!({"at": 1000})).unwrap();
+        let vol = e.session().track(t).unwrap().lane(&AutoParam::Volume).unwrap().clone();
+        assert!(vol.points.iter().any(|p| p.at >= 1000 && (p.value + 6.0).abs() < 1e-2), "paste wrote nothing at -6 dB: {:?}", vol.points);
     }
 
     #[test]
