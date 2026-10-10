@@ -11,6 +11,21 @@ use std::sync::Arc;
 /// Largest import we accept (samples per channel × channels), ~4 GiB of f32.
 const MAX_IMPORT_SAMPLES: usize = 1 << 30;
 
+/// A relative `Audio Files/` path no other source in `s` already uses.
+fn unique_audio_rel(s: &Session, stem: &str) -> String {
+    let stem = sanitize_name(stem);
+    let mut path = format!("Audio Files/{stem}.wav");
+    let mut n = 2u32;
+    while s.sources.iter().any(|src| src.path == path) {
+        path = format!("Audio Files/{stem}-{n}.wav");
+        n = n.saturating_add(1);
+        if n > 10_000 {
+            break;
+        }
+    }
+    path
+}
+
 /// Register decoded audio as a new source. Resamples to the session rate if needed.
 pub fn add_source(s: &mut Session, name: &str, mut buf: AudioBuffer, path: Option<&str>, format: FileFormat) -> SourceId {
     let sr = s.sample_rate.hz();
@@ -20,10 +35,14 @@ pub fn add_source(s: &mut Session, name: &str, mut buf: AudioBuffer, path: Optio
     }
     let id = SourceId(s.alloc());
     let stem = Path::new(name).file_stem().and_then(|x| x.to_str()).unwrap_or(name).to_string();
+    let stored = match path {
+        Some(p) => p.to_string(),
+        None => unique_audio_rel(s, &stem),
+    };
     s.sources.push(Source {
         id,
         name: stem.clone(),
-        path: path.map_or_else(|| format!("Audio Files/{stem}.wav"), str::to_string),
+        path: stored,
         channels: u16::try_from(buf.num_channels()).unwrap_or(u16::MAX),
         frames: buf.frames() as u64,
         sample_rate: sr,
@@ -471,10 +490,13 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
     let audio_dir = dir.join("Audio Files");
     let mut s = session.clone();
     let mut written = 0;
-    for src in &mut s.sources {
+    let shared_paths: Vec<bool> =
+        s.sources.iter().enumerate().map(|(i, src)| s.sources.iter().enumerate().any(|(j, other)| j != i && other.path == src.path)).collect();
+    for (i, src) in s.sources.iter_mut().enumerate() {
         let rel_target = format!("Audio Files/{}.wav", sanitize_name(&src.name));
         let exists_rel = !Path::new(&src.path).is_absolute() && dir.join(&src.path).exists();
-        if exists_rel && !src.unsaved {
+        let shared = shared_paths.get(i).copied().unwrap_or(false);
+        if exists_rel && !src.unsaved && !shared {
             continue;
         }
         let Some(audio) = s.pool.get(src.id) else { continue };
@@ -490,7 +512,7 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
             }
         } else {
             let mut k = 1;
-            while dir.join(&target).exists() && !(exists_rel && target == src.path) {
+            while dir.join(&target).exists() && !(exists_rel && target == src.path && !shared) {
                 target = format!("Audio Files/{}_{k:02}.wav", sanitize_name(&src.name));
                 k += 1;
                 if k > 999 {
@@ -611,6 +633,28 @@ mod save_tests {
         let mut r = Engine::default();
         open_session(&mut r, &p).unwrap();
         assert_eq!(r.session().track_by_name("Kick").unwrap().mixer.volume_db, -7.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_gives_sources_that_share_a_path_their_own_files() {
+        let mut s = Session::default();
+        let loud = AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 64]] };
+        let quiet = AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0; 64]] };
+        add_source(&mut s, "tone", loud, Some("Audio Files/tone.wav"), FileFormat::Wav);
+        add_source(&mut s, "tone", quiet, Some("Audio Files/tone.wav"), FileFormat::Wav);
+        let mut e = Engine::new(s);
+        let dir = std::env::temp_dir().join(format!("soundcraft-shared-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Shared.scraft");
+        save_session(&mut e, &path.to_string_lossy()).unwrap();
+        let paths: Vec<_> = e.session().sources.iter().map(|src| src.path.clone()).collect();
+        assert_eq!(paths.len(), 2);
+        assert_ne!(paths[0], paths[1], "{paths:?}");
+        let a = std::fs::read(dir.join(&paths[0])).unwrap();
+        let b = std::fs::read(dir.join(&paths[1])).unwrap();
+        assert_ne!(a, b);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
