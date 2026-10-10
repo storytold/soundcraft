@@ -56,7 +56,7 @@ pub fn import_audio_bytes(e: &mut Engine, name: &str, bytes: &[u8], path: Option
         Some(t) => t,
         None => {
             let stem = Path::new(name).file_stem().and_then(|x| x.to_str()).unwrap_or("Audio").to_string();
-            s.add_track(TrackKind::Audio, ChannelFormat::for_channels(channels.min(2)), Some(&stem))
+            s.add_track(TrackKind::Audio, ChannelFormat::for_channels(channels), Some(&stem))
         }
     };
     let cid = s.new_clip_id();
