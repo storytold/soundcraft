@@ -160,6 +160,9 @@ pub struct EditState {
     /// Clips explicitly selected (Grabber selection).
     #[serde(default)]
     pub selected_clips: Vec<ClipId>,
+    /// Audio files selected in the Clip List.
+    #[serde(default)]
+    pub selected_sources: Vec<SourceId>,
     /// Playhead position when stopped.
     pub playhead: Samples,
     pub grid: GridValue,
@@ -234,6 +237,7 @@ impl Default for EditState {
             selection: Range::default(),
             selected_tracks: Vec::new(),
             selected_clips: Vec::new(),
+            selected_sources: Vec::new(),
             playhead: 0,
             grid: GridValue::default(),
             nudge: GridValue::Seconds(1.0),
@@ -397,6 +401,15 @@ impl Session {
 
     pub fn find_clip_mut(&mut self, id: ClipId) -> Option<&mut Clip> {
         self.tracks.iter_mut().find_map(|t| t.playlist_mut().and_then(|p| p.clip_mut(id)))
+    }
+
+    /// Clips on every playlist, alternates included.
+    pub fn all_clips(&self) -> impl Iterator<Item = &Clip> {
+        self.tracks.iter().flat_map(|t| t.playlists.iter().flat_map(|p| &p.clips))
+    }
+
+    pub fn clips_using(&self, src: SourceId) -> impl Iterator<Item = &Clip> {
+        self.all_clips().filter(move |c| c.source() == Some(src))
     }
 
     /// End of the last clip on any track (session length).

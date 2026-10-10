@@ -5,7 +5,7 @@ use crate::theme::{Tokens, bold};
 use egui::{Align2, vec2};
 use serde_json::{Value, json};
 use soundcraft_engine::Engine;
-use soundcraft_model::{ClipId, TrackId};
+use soundcraft_model::{ClipId, Session, SourceId, TrackId};
 use soundcraft_time::Samples;
 
 #[derive(Debug, Clone)]
@@ -15,6 +15,7 @@ pub enum Dialog {
     Bounce { path: String, format: String, bit_depth: String, normalize: bool },
     RenameTrack { id: TrackId, name: String },
     RenameClip { id: ClipId, name: String },
+    ClearClips { clips: Vec<ClipId>, sources: Vec<SourceId>, message: String },
     PathPrompt { cmd: String, title: String, path: String, key: String },
     Number { cmd: String, title: String, key: String, value: f64, suffix: String },
     TempoChange { at: Samples, bpm: f64 }, // from double-clicking the tempo ruler
@@ -38,6 +39,7 @@ impl Dialogs {
             Dialog::Bounce { .. } => "bounce",
             Dialog::RenameTrack { .. } => "rename_track",
             Dialog::RenameClip { .. } => "rename_clip",
+            Dialog::ClearClips { .. } => "clear_clips",
             Dialog::PathPrompt { .. } => "path",
             Dialog::Number { .. } => "number",
             Dialog::TempoChange { .. } => "tempo_change",
@@ -57,11 +59,22 @@ impl Dialogs {
         self.open = Some(Dialog::RenameClip { id, name: name.to_string() });
     }
 
+    /// Clip List › Clear: confirm before clips and files leave the session. False when there is nothing to clear.
+    pub fn open_clear(&mut self, e: &Engine, clips: Vec<ClipId>, sources: Vec<SourceId>) -> bool {
+        let Some(message) = clear_message(e.session(), &clips, &sources) else { return false };
+        self.open = Some(Dialog::ClearClips { clips, sources, message });
+        true
+    }
+
     /// Open the dialog for a command; false when the command has no dialog.
     pub fn open_for_command(&mut self, e: &Engine, id: &str) -> bool {
         let home = default_dir();
         let name = e.session().name.clone();
         self.open = Some(match id {
+            "clip.clear" => {
+                let ed = &e.session().edit;
+                return self.open_clear(e, ed.selected_clips.clone(), ed.selected_sources.clone());
+            }
             "track.new" => {
                 Dialog::NewTracks { count: 1, format: "Mono".into(), kind: "audio".into(), timebase: "samples".into(), name: "Audio".into() }
             }
@@ -146,6 +159,41 @@ fn path_dialog(id: &str, home: &str, name: &str) -> Option<Dialog> {
     Some(Dialog::PathPrompt { cmd: id.into(), title, path, key: key.into() })
 }
 
+fn clear_message(s: &Session, clips: &[ClipId], sources: &[SourceId]) -> Option<String> {
+    let listed: std::collections::BTreeSet<ClipId> = clips.iter().copied().collect();
+    let names: Vec<&str> = s.tracks.iter().flat_map(|t| t.clips()).filter(|c| listed.contains(&c.id)).map(|c| c.name.as_str()).collect();
+    let files: Vec<_> = sources.iter().filter_map(|id| s.source(*id)).collect();
+    let count = |n: usize, what: &str| if n == 1 { format!("1 {what}") } else { format!("{n} {what}s") };
+    let what = match (names.as_slice(), files.as_slice()) {
+        ([], []) => return None,
+        ([name], []) => format!("the clip \"{name}\""),
+        ([], [f]) => format!("the file \"{}\"", f.name),
+        (c, []) => count(c.len(), "clip"),
+        ([], f) => count(f.len(), "file"),
+        (c, f) => format!("{} and {}", count(c.len(), "clip"), count(f.len(), "file")),
+    };
+    let mut text = format!("Remove {what} from the session?");
+    let used: Vec<(&str, usize)> =
+        files.iter().map(|f| (f.name.as_str(), s.clips_using(f.id).filter(|c| !listed.contains(&c.id)).count())).filter(|(_, n)| *n > 0).collect();
+    let n: usize = used.iter().map(|u| u.1).sum();
+    let users = if n == 1 {
+        "a clip on the timeline, which is removed too.".to_string()
+    } else {
+        format!("{n} clips on the timeline, which are removed too.")
+    };
+    match used.as_slice() {
+        [] => {}
+        [_] if files.len() == 1 => text += &format!(" It is used by {users}"),
+        u if u.len() == files.len() => text += &format!(" They are used by {users}"),
+        [(name, _)] => text += &format!(" \"{name}\" is used by {users}"),
+        many => text += &format!(" {} of the files are used by {users}", many.len()),
+    }
+    if !files.is_empty() && files.iter().all(|f| !f.unsaved) {
+        text += if files.len() == 1 { " The file stays on disk." } else { " The files stay on disk." };
+    }
+    Some(text)
+}
+
 fn default_dir() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -169,6 +217,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::Bounce { .. } => "Bounce Mix",
         Dialog::RenameTrack { .. } => "Rename Track",
         Dialog::RenameClip { .. } => "Rename Clip",
+        Dialog::ClearClips { .. } => "Clear",
         Dialog::PathPrompt { title, .. } | Dialog::Number { title, .. } => title.as_str(),
         Dialog::TempoChange { .. } => "Tempo Change (BPM)",
         Dialog::Fades { .. } => "Fades",
@@ -284,6 +333,13 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     r.request_focus();
                     if buttons(ui, "OK", enter) {
                         action = Some(("clip.rename".into(), json!({"clip": id.0, "name": name})));
+                    }
+                }
+                Dialog::ClearClips { clips, sources, message } => {
+                    ui.set_max_width(340.0);
+                    ui.label(message.as_str());
+                    if buttons(ui, "Remove", enter) {
+                        action = Some(("clip.clear".into(), json!({"clips": clips, "sources": sources, "with_clips": true})));
                     }
                 }
                 Dialog::PathPrompt { cmd, path, key, .. } => {
@@ -521,5 +577,37 @@ mod tests {
         assert!(soundcraft_engine::command_specs().iter().any(|c| c.id == cmd), "{cmd} is not a command");
         assert_eq!(params["at"], 96_000);
         assert_eq!(params["bpm"], 133.5);
+    }
+
+    #[test]
+    fn clear_always_asks_and_names_the_timeline_clips_that_go_too() {
+        let mut e = soundcraft_engine::demo::demo_engine();
+        let file = |e: &Engine, name: &str| e.session().sources.iter().find(|f| f.name == name).map(|f| f.id).unwrap();
+        let (kick, hats) = (file(&e, "Kick"), file(&e, "Hats"));
+        let kick_clips: Vec<ClipId> = e.session().clips_using(kick).map(|c| c.id).collect();
+        let snare = e.session().track_by_name("Snare").unwrap().clips()[0].id;
+        let message = |d: &Dialogs| match &d.open {
+            Some(Dialog::ClearClips { message, .. }) => message.clone(),
+            other => panic!("{other:?}"),
+        };
+        let mut d = Dialogs::default();
+        assert!(!d.open_for_command(&e, "clip.clear"));
+        e.execute("edit.select", &json!({"clips": [snare]})).unwrap();
+        assert!(d.open_for_command(&e, "clip.clear"));
+        assert_eq!(message(&d), "Remove the clip \"Snare\" from the session?");
+        e.execute("edit.select", &json!({"sources": [kick]})).unwrap();
+        assert!(d.open_for_command(&e, "clip.clear"));
+        assert!(matches!(&d.open, Some(Dialog::ClearClips { clips, sources, .. }) if clips.is_empty() && *sources == vec![kick]));
+        assert_eq!(message(&d), "Remove the file \"Kick\" from the session? It is used by 3 clips on the timeline, which are removed too.");
+        assert!(d.open_clear(&e, kick_clips.clone(), vec![kick]));
+        assert_eq!(message(&d), "Remove 3 clips and 1 file from the session?");
+        assert!(d.open_clear(&e, kick_clips, vec![kick, hats]));
+        assert_eq!(message(&d), "Remove 3 clips and 2 files from the session? \"Hats\" is used by a clip on the timeline, which is removed too.");
+        e.session_mut().sources.iter_mut().for_each(|f| f.unsaved = false);
+        assert!(d.open_clear(&e, vec![], vec![kick, hats]));
+        assert_eq!(
+            message(&d),
+            "Remove 2 files from the session? They are used by 4 clips on the timeline, which are removed too. The files stay on disk."
+        );
     }
 }
