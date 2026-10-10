@@ -19,6 +19,9 @@ egui.workspace = true
 serde_json.workspace = true
 log.workspace = true
 
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+winit = { version = "0.30", default-features = false, features = ["x11"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd.workspace = true
 
