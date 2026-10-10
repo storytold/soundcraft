@@ -8,6 +8,7 @@
 //! - `ui.menu.list`, `ui.menu.invoke {path: "Track > New..." | id}` (menu-style: may open dialogs)
 //! - `ui.click {x,y,button?,count?,mods?}`, `ui.move {x,y}`, `ui.drag {x,y,to_x,to_y,steps?}`
 //! - `ui.key {key, cmd?, shift?, alt?, ctrl?}`, `ui.text {text}`
+//! - `ui.scroll {x,y,dx?,dy?,phase?,cmd?,shift?}`, `ui.zoom {x,y,factor}` (trackpad input)
 //! - `ui.screenshot {path?}` (PNG; base64 when no path), `ui.set {...UiState fields}`
 //! - `app.quit`
 
@@ -148,6 +149,46 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
         },
         "ui.move" => {
             app.synthetic.push(egui::Event::PointerMoved(egui::pos2(f("x"), f("y"))));
+            ok(json!({}))
+        }
+        "ui.scroll" | "ui.zoom" => {
+            let number = |key: &str, default: f64| {
+                p.get(key).map_or(Some(default), Value::as_f64).filter(|v| v.is_finite() && v.abs() <= 1_000_000.0).map(|v| v as f32)
+            };
+            let (Some(x), Some(y)) = (number("x", 0.0), number("y", 0.0)) else {
+                return Some(err("gesture coordinates must be finite numbers within ±1000000"));
+            };
+            let mut events = vec![egui::Event::PointerMoved(egui::pos2(x, y))];
+            if req.method == "ui.zoom" {
+                let Some(factor) = number("factor", 1.0).filter(|f| (0.01..=100.0).contains(f)) else {
+                    return Some(err("zoom factor must be between 0.01 and 100"));
+                };
+                events.push(egui::Event::Zoom(factor));
+            } else {
+                let (Some(dx), Some(dy)) = (number("dx", 0.0), number("dy", 0.0)) else {
+                    return Some(err("scroll deltas must be finite numbers within ±1000000"));
+                };
+                let m = mods(p);
+                let wheel = |phase, delta| egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, phase, modifiers: m };
+                match p.get("phase").and_then(Value::as_str) {
+                    None => {
+                        events.push(wheel(egui::TouchPhase::Start, egui::Vec2::ZERO));
+                        events.push(wheel(egui::TouchPhase::Move, egui::vec2(dx, dy)));
+                        events.push(wheel(egui::TouchPhase::End, egui::Vec2::ZERO));
+                    }
+                    Some(phase) => {
+                        let phase = match phase {
+                            "start" => egui::TouchPhase::Start,
+                            "move" => egui::TouchPhase::Move,
+                            "end" => egui::TouchPhase::End,
+                            "cancel" => egui::TouchPhase::Cancel,
+                            _ => return Some(err("scroll phase must be start, move, end, or cancel")),
+                        };
+                        events.push(wheel(phase, egui::vec2(dx, dy)));
+                    }
+                }
+            }
+            app.synthetic.extend(events);
             ok(json!({}))
         }
         "ui.click" => {
@@ -300,6 +341,24 @@ pub fn base64(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn malformed_gestures_do_not_queue_partial_input() {
+        use super::*;
+        let ctx = egui::Context::default();
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        for (method, params) in [
+            ("ui.zoom", json!({"factor": 0})),
+            ("ui.zoom", json!({"x": 1e300, "factor": 2})),
+            ("ui.scroll", json!({"phase": "invalid"})),
+            ("ui.scroll", json!({"dy": "NaN"})),
+        ] {
+            let (request, _) = ControlRequest::new(method, params);
+            let result = handle(&mut app, &ctx, &request).unwrap();
+            assert_eq!(result["ok"], false);
+            assert!(app.synthetic.is_empty());
+        }
+    }
+
     #[test]
     fn base64_known() {
         assert_eq!(super::base64(b"Man"), "TWFu");

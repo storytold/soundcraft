@@ -31,6 +31,7 @@ mod track_more;
 mod transport;
 mod video;
 mod view;
+mod view_gestures;
 mod view_more;
 mod vst3;
 
@@ -102,6 +103,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(edit::specs());
         v.extend(edit_more::specs());
         v.extend(view::specs());
+        v.extend(view_gestures::specs());
         v.extend(track::specs());
         v.extend(clip::specs());
         v.extend(event::specs());

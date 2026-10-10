@@ -195,23 +195,8 @@ fn main_area(app: &mut SoundApp, ui: &mut Ui) {
     let rulers_rect = Rect::from_min_max(pos2(full.min.x, full.min.y), pos2(full.max.x, full.min.y + rulers_h));
     app.edit_layout.timeline = [tl.min.x, tl.min.y, tl.max.x, tl.max.y];
     ui.painter().rect_filled(full, 0.0, t.window_bg);
-    // Wheel: vertical scroll tracks, shift/horizontal scroll timeline, cmd = zoom.
-    let hovered = ui.rect_contains_pointer(Rect::from_min_max(pos2(full.min.x, tl.min.y), full.max));
-    if hovered {
-        let (delta, mods) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers));
-        if mods.command && delta.y.abs() > 0.0 {
-            let id = if delta.y > 0.0 { "view.zoom_in" } else { "view.zoom_out" };
-            let _ = app.run(id, json!({}));
-        } else {
-            let dx = if mods.shift { delta.y } else { delta.x };
-            if dx.abs() > 0.0 {
-                let _ = app.engine.execute("view.scroll", &json!({"by_px": -dx}));
-            }
-            if !mods.shift && delta.y.abs() > 0.0 {
-                app.edit_layout.scroll_y = (app.edit_layout.scroll_y - delta.y).clamp(0.0, (app.edit_layout.content_h - tl.height() + 40.0).max(0.0));
-            }
-        }
-    }
+    // Include the rulers and headers; only the hovered editor consumes its gestures.
+    trackpad(app, ui, full, tl);
     draw_rulers(app, ui, rulers_rect, tl, &rulers);
     // Tracks.
     let ids: Vec<TrackId> =
@@ -255,6 +240,32 @@ fn main_area(app: &mut SoundApp, ui: &mut Ui) {
         if resp.dragged() {
             app.edit_layout.scroll_y = (app.edit_layout.scroll_y + resp.drag_delta().y / frac).clamp(0.0, (content_h - tl.height() + 40.0).max(0.0));
         }
+    }
+}
+
+fn trackpad(app: &mut SoundApp, ui: &mut Ui, full: Rect, tl: Rect) {
+    if !ui.rect_contains_pointer(full) {
+        return;
+    }
+    let (delta, factor, pointer, scrolling) = ui.input(|i| (i.translation_delta(), i.zoom_delta(), i.pointer.hover_pos(), i.is_scrolling()));
+    if factor.is_finite() && factor > 0.0 && (factor - 1.0).abs() > f32::EPSILON {
+        let anchor_px = pointer.map_or(tl.width() * 0.5, |p| (p.x - tl.min.x).clamp(0.0, tl.width().max(0.0)));
+        let _ = app.run("view.zoom_at", json!({"factor": factor, "anchor_px": anchor_px}));
+        app.edit_layout.follow_hold = true;
+    } else {
+        // egui already maps Shift+vertical scrolling onto X. Do not map it a second time.
+        if delta.x.is_finite() && delta.x != 0.0 {
+            let _ = app.run("view.scroll", json!({"by_px": -delta.x}));
+            app.edit_layout.follow_hold = true;
+        }
+        if delta.y.is_finite() && delta.y != 0.0 {
+            app.edit_layout.scroll_y = (app.edit_layout.scroll_y - delta.y).clamp(0.0, (app.edit_layout.content_h - tl.height() + 40.0).max(0.0));
+        }
+    }
+    ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+    // Keep processing smoothed wheel input and the native momentum stream after finger release.
+    if scrolling {
+        ui.ctx().request_repaint();
     }
 }
 

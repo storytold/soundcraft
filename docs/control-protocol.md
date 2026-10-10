@@ -38,12 +38,26 @@ Errors: `{"id": 1, "ok": false, "error": "bad parameters for `mix.volume`: no tr
 | `ui.click` | `{x, y, button?, count?, cmd?, shift?, alt?, ctrl?}` | Synthetic click (window points). |
 | `ui.drag` | `{x, y, to_x, to_y, steps?}` | Synthetic drag with the primary button. |
 | `ui.move` | `{x, y}` | Move the pointer. |
+| `ui.scroll` | `{x, y, dx?, dy?, phase?, cmd?, shift?, alt?, ctrl?}` | Trackpad scrolling in window points. Positive deltas move content right/down. Omit `phase` for a complete gesture; use `start`, `move`, `end`, `cancel` for a sequence, including momentum. |
+| `ui.zoom` | `{x, y, factor}` | Pinch at a window position; factor > 1 zooms in, < 1 zooms out (0.01–100). |
 | `ui.key` | `{key, cmd?, shift?, alt?, ctrl?}` | Key press (`Space`, `Enter`, `A`, `F7`, `=`…). |
 | `ui.text` | `{text}` | Type text into the focused field. |
 | `ui.screenshot` | `{path?}` | PNG of the window (base64 in `png_base64` when no path). |
 | `app.quit` | `{}` | Quit. |
 
 ## Positions and references
+
+In the Edit window, two-finger scrolling pans the timeline horizontally and the tracks vertically,
+including when the pointer is over a ruler or track header. Pinching zooms the timeline continuously
+around the pointer, preserving the sample underneath it within the zoom and timeline-start limits.
+Shift+scroll pans horizontally; Cmd+scroll (Ctrl off macOS) uses the same anchored zoom.
+Natural scroll direction and momentum come from the platform's input stream. Moving the timeline
+away from the playhead during playback pauses automatic following until the playhead is brought
+back into view or the scrolling mode is reselected.
+
+Agents can also call `view.zoom_at {"factor": 1.25, "anchor_px": 200}` through `engine.execute`;
+`anchor_px` is measured from the timeline's left edge. `ui.scroll` and `ui.zoom` exercise the actual
+pointer-input path, while `view.scroll` and `view.zoom_at` directly control saved view state.
 
 - Tracks: id (number) or name (`"Kick"`).
 - Clips: id (from `session.inspect`).

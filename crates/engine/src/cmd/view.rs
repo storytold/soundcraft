@@ -47,7 +47,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let by = f64_or(p, "by_px", 0.0);
             let s = e.session_mut();
             let spp = s.edit.zoom.samples_per_px;
-            s.edit.zoom.scroll = to.unwrap_or(s.edit.zoom.scroll + soundcraft_time::to_samples(by * spp)).max(0);
+            s.edit.zoom.scroll = to.unwrap_or_else(|| s.edit.zoom.scroll.saturating_add(soundcraft_time::to_samples(by * spp))).max(0);
             Ok(json!({"scroll": s.edit.zoom.scroll}))
         }),
         cmd!(noundo "view.waveform_zoom", "Waveform Zoom", [], Some("Cmd+Alt+[ / ]"), "{factor?: 2 | value}", always, |e, p| {
