@@ -98,7 +98,8 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(noundo "file.export_midi", "MIDI...", ["File", "Export"], None, "{path, tracks?}", always, |e, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("file.export_midi", "`path` required"))?.to_string();
-            let bytes = crate::io::export_midi(e)?;
+            let only = if p.get("tracks").is_some() || p.get("track").is_some() { Some(tracks_param(e, "file.export_midi", p)?) } else { None };
+            let bytes = crate::io::export_midi(e, only.as_deref())?;
             std::fs::write(&path, &bytes).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
         }),
@@ -388,6 +389,62 @@ mod tests {
         let mut r = Engine::default();
         let res = r.execute("session.open", &json!({"path": path})).unwrap();
         assert!(res["missing"].as_array().is_some_and(|m| !m.is_empty()), "{res}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    fn midi_engine() -> Engine {
+        use soundcraft_midi::{CtrlEvent, CtrlKind, Note, Sequence};
+        use soundcraft_model::{ChannelFormat, Clip, TrackKind};
+        let mut s = Session::default();
+        let keys = s.add_track(TrackKind::Midi, ChannelFormat::Mono, Some("Keys"));
+        let drums = s.add_track(TrackKind::Midi, ChannelFormat::Mono, Some("Drums"));
+        let _audio = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Room"));
+        let mut keys_seq = Sequence::default();
+        keys_seq.notes.push(Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 480 });
+        keys_seq.ctrls.push(CtrlEvent { tick: 10, channel: 0, kind: CtrlKind::Cc(7), value: 90 });
+        let mut drum_seq = Sequence::default();
+        drum_seq.notes.push(Note { pitch: 36, velocity: 110, release_velocity: 64, channel: 9, start: 0, length: 120 });
+        drum_seq.ctrls.push(CtrlEvent { tick: 20, channel: 9, kind: CtrlKind::Cc(11), value: 40 });
+        let a = s.new_clip_id();
+        let b = s.new_clip_id();
+        crate::edit::place_clip(&mut s, keys, Clip::midi(a, "Keys", 0, 48_000, keys_seq));
+        crate::edit::place_clip(&mut s, drums, Clip::midi(b, "Drums", 0, 48_000, drum_seq));
+        Engine::new(s)
+    }
+
+    fn cc_numbers(bytes: &[u8]) -> Vec<(String, u8, i32)> {
+        let smf = soundcraft_midi::read_smf(bytes).unwrap();
+        let mut out = Vec::new();
+        for t in &smf.tracks {
+            for c in &t.sequence.ctrls {
+                if let soundcraft_midi::CtrlKind::Cc(n) = c.kind {
+                    out.push((t.name.clone(), n, c.value));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn midi_export_keeps_controllers_and_honours_tracks() {
+        let mut e = midi_engine();
+        let dir = std::env::temp_dir().join(format!("sc-midi-export-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let all = dir.join("all.mid");
+        e.execute("file.export_midi", &json!({"path": all.to_string_lossy()})).unwrap();
+        let ctrls = cc_numbers(&std::fs::read(&all).unwrap());
+        assert!(ctrls.iter().any(|(n, cc, v)| n == "Keys" && *cc == 7 && *v == 90), "{ctrls:?}");
+        assert!(ctrls.iter().any(|(n, cc, v)| n == "Drums" && *cc == 11 && *v == 40), "{ctrls:?}");
+        assert!(ctrls.iter().all(|(n, _, _)| n != "Room"));
+
+        let keys = dir.join("keys.mid");
+        e.execute("file.export_midi", &json!({"path": keys.to_string_lossy(), "tracks": ["Keys"]})).unwrap();
+        let ctrls = cc_numbers(&std::fs::read(&keys).unwrap());
+        assert_eq!(ctrls.len(), 1, "{ctrls:?}");
+        assert_eq!(ctrls[0].0, "Keys");
+
+        let err = e.execute("file.export_midi", &json!({"path": dir.join("nope.mid").to_string_lossy(), "tracks": ["Room"]})).unwrap_err();
+        assert!(err.to_string().contains("none of the requested tracks hold MIDI"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
