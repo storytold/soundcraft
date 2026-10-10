@@ -107,8 +107,12 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
         nc.name = new_name;
         nc.content = ClipContent::Audio { source: src, offset: 0 };
         nc.length = i64::try_from(frames).unwrap_or(nc.length);
-        nc.gain_db = 0.0;
-        nc.gain_env.clear();
+        // Invert and Duplicate are phase/copy operations. The clip's gain stays a clip gain,
+        // the same way its fades stay editable. Other processes bake a new file at unity gain.
+        if !matches!(name.as_str(), "invert" | "duplicate") {
+            nc.gain_db = 0.0;
+            nc.gain_env.clear();
+        }
         if let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) {
             pl.clips.retain(|c| c.id != id);
         }
@@ -121,4 +125,44 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
 fn short(n: &str) -> String {
     let s: String = n.split('_').map(|w| w.chars().take(4).collect::<String>()).collect::<Vec<_>>().join("");
     s.chars().take(8).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soundcraft_audio_io::AudioBuffer;
+    use soundcraft_model::{ChannelFormat, Session, TrackKind};
+
+    fn gained_clip() -> (crate::Engine, soundcraft_model::ClipId) {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Tone"));
+        let buf = AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 64]] };
+        let src = crate::io::add_source(&mut s, "tone", buf, None, FileFormat::Wav);
+        let id = s.new_clip_id();
+        let mut c = Clip::audio(id, "tone", src, 0, 0, 64);
+        c.gain_db = -6.0;
+        c.gain_env = vec![(0, 0.0), (32, -12.0)];
+        crate::edit::place_clip(&mut s, t, c);
+        s.edit.selected_clips = vec![id];
+        (crate::Engine::new(s), id)
+    }
+
+    #[test]
+    fn invert_and_duplicate_keep_clip_gain() {
+        let (mut e, id) = gained_clip();
+        e.execute("audiosuite.process", &json!({"process": "invert", "clips": [id.0]})).unwrap();
+        let c = e.session().tracks[0].clips()[0].clone();
+        assert!((c.gain_db + 6.0).abs() < 1e-6, "{}", c.gain_db);
+        assert_eq!(c.gain_env, vec![(0, 0.0), (32, -12.0)]);
+        let sample = e.session().pool.get(c.source().unwrap()).unwrap().buffer.channels[0][0];
+        assert!((sample + 0.5).abs() < 1e-3, "invert flips the file and leaves the gain on the clip, got {sample}");
+
+        let (mut e, id) = gained_clip();
+        e.execute("audiosuite.process", &json!({"process": "duplicate", "clips": [id.0]})).unwrap();
+        let c = e.session().tracks[0].clips()[0].clone();
+        assert!((c.gain_db + 6.0).abs() < 1e-6, "{}", c.gain_db);
+        assert_eq!(c.gain_env, vec![(0, 0.0), (32, -12.0)]);
+        let sample = e.session().pool.get(c.source().unwrap()).unwrap().buffer.channels[0][0];
+        assert!((sample - 0.5).abs() < 1e-3, "duplicate keeps the file level and the clip gain, got {sample}");
+    }
 }
