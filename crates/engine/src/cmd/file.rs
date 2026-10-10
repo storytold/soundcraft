@@ -27,9 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(noundo "session.save_copy", "Save Session Copy In...", ["File"], None, "{path}", always, |e, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("session.save_copy", "`path` required"))?.to_string();
-            let keep = e.path.clone();
-            let written = crate::io::save_session(e, &path)?;
-            e.path = keep;
+            let written = crate::io::save_session_copy(e, &path)?;
             Ok(json!({"path": path, "audio_files_written": written}))
         }),
         cmd!(noundo "session.save_template", "Save As Template...", ["File"], None, "{path}", always, |e, p| {
@@ -452,6 +450,35 @@ mod tests {
         let a = std::fs::read(&files[0]).unwrap();
         let b = std::fs::read(&files[1]).unwrap();
         assert_ne!(a, b, "the second consolidation replaced the first file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_copy_leaves_the_open_session_alone() {
+        let (mut e, _) = tone_engine();
+        let dir = std::env::temp_dir().join(format!("sc-save-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("Original.scraft");
+        e.execute("session.save_as", &json!({"path": original.to_string_lossy()})).unwrap();
+        e.execute("track.new", &json!({"count": 1, "name": "Extra", "format": "mono"})).unwrap();
+        assert!(e.is_dirty());
+        let copy_dir = dir.join("copy");
+        std::fs::create_dir_all(&copy_dir).unwrap();
+        let copy = copy_dir.join("Copy.scraft");
+        e.execute("session.save_copy", &json!({"path": copy.to_string_lossy()})).unwrap();
+        assert_eq!(e.path.as_deref(), Some(original.to_string_lossy().as_ref()));
+        assert_eq!(e.session().name, "Original");
+        assert!(e.is_dirty());
+        assert_eq!(e.session().tracks.len(), 2);
+
+        let mut from_original = Engine::default();
+        from_original.execute("session.open", &json!({"path": original.to_string_lossy()})).unwrap();
+        assert_eq!(from_original.session().tracks.len(), 1);
+        let mut from_copy = Engine::default();
+        from_copy.execute("session.open", &json!({"path": copy.to_string_lossy()})).unwrap();
+        assert_eq!(from_copy.session().tracks.len(), 2);
+        assert!(from_copy.session().track_by_name("Extra").is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
