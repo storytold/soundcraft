@@ -113,7 +113,7 @@ fn main() {
                 step(&mut harness);
                 if let Ok(r) = reply.try_recv() {
                     let s = r.to_string();
-                    println!("{}", if s.len() > 300 { &s[..300] } else { &s });
+                    println!("{}", reply_preview(&s));
                     break;
                 }
             }
@@ -126,4 +126,18 @@ fn main() {
         step(&mut harness);
     }
     shoot(&mut harness, &out);
+}
+
+fn reply_preview(text: &str) -> String {
+    text.chars().take(300).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reply_preview_preserves_utf8_boundaries() {
+        let text = format!("x{}", "เสียงร้อง".repeat(100));
+        assert_eq!(super::reply_preview(&text), text.chars().take(300).collect::<String>());
+        assert_eq!(super::reply_preview("เสียงร้อง"), "เสียงร้อง");
+    }
 }

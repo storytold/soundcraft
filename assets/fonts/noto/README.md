@@ -1,0 +1,40 @@
+# Bundled noto fonts
+
+Unmodified fonts from the Noto Project Authors, licensed under SIL Open Font
+License 1.1 (see `OFL.txt`, also embedded in About SoundCraft).
+
+Upstream: https://github.com/notofonts/noto-fonts/tree/ffebf8c1ee449e544955a7e813c54f9b73848eac
+
+| File | SHA-256 | Source |
+|---|---|---|
+| `NotoSansArabic-Regular.ttf` | `ceea25b464a656dc3b26849bab9356740401af62aedf1bfa8b7f0d9b75925b1b` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf |
+| `NotoSansArabic-Bold.ttf` | `ed2711b387750ae991b6a980b8dd16fdd65e6702b97e9f52adf3a8edf09ef4df` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansArabic/NotoSansArabic-Bold.ttf |
+| `NotoSansHebrew-Regular.ttf` | `a7fa16fffb27bedb060a0866267c29e9859aeb9c21cc33f5b3aaf6eb062eca85` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansHebrew/NotoSansHebrew-Regular.ttf |
+| `NotoSansHebrew-Bold.ttf` | `a30243d1c625eaf63bb889f036fe9de97e81d9248976f89e6e4252f9668c832e` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansHebrew/NotoSansHebrew-Bold.ttf |
+| `NotoSansDevanagari-Regular.ttf` | `385e78e6359a9d88a0f243d53b1209d7548361ba2194e2b9ec779bcaa7e8949d` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Regular.ttf |
+| `NotoSansDevanagari-Bold.ttf` | `19cc835a064c4af63e3c20feb54f5bf51dc25ffa52c0f493a23904572af8b26e` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Bold.ttf |
+| `NotoSansBengali-Regular.ttf` | `6300c5370cd688b0641343de4c786de6d412bb6c578d129dae75e93a0322dcab` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansBengali/NotoSansBengali-Regular.ttf |
+| `NotoSansBengali-Bold.ttf` | `7ad632c41ae1ac0931bfffb703470df0fd03e76bcb78f1fcd023d35fbed5ea8e` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansBengali/NotoSansBengali-Bold.ttf |
+| `NotoSansGujarati-Regular.ttf` | `8d5c22d7b729ef2839e6d1fe2cde77b2d083907be3659bca63676baa76e01fd6` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansGujarati/NotoSansGujarati-Regular.ttf |
+| `NotoSansGujarati-Bold.ttf` | `dfa02697acd99735fab0082a0387ff7c2c9288227e80c0d277479cf29dd4cb4e` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansGujarati/NotoSansGujarati-Bold.ttf |
+| `NotoSansGurmukhi-Regular.ttf` | `bbde4d85fdfb998eff6921cb2c7a9a7924a1c95560a6aa9a06172530e4f596da` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansGurmukhi/NotoSansGurmukhi-Regular.ttf |
+| `NotoSansGurmukhi-Bold.ttf` | `3330d107d9756f6d43091a520fcbc0105176fb970fa7e23d5e84e602c968bb75` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansGurmukhi/NotoSansGurmukhi-Bold.ttf |
+| `NotoSansOriya-Regular.ttf` | `b8d8bd784b9d09c0668233437359913c93a3a83bf37d92ecde859e2bc728a0e0` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansOriya/NotoSansOriya-Regular.ttf |
+| `NotoSansOriya-Bold.ttf` | `c0d1eb7ecdeafc860c04066d1d22f6406645a5c165c469d527762cd76b05453f` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansOriya/NotoSansOriya-Bold.ttf |
+| `NotoSansTamil-Regular.ttf` | `6532db33b8b264abe3a098a40619feb489b5ddf5ab1d2b46e72b51eeb548001b` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansTamil/NotoSansTamil-Regular.ttf |
+| `NotoSansTamil-Bold.ttf` | `61ccb56bafc7f8316644b91a91ebb3a878c238238ac14cb6ea2f19fa01e9d504` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf |
+| `NotoSansTelugu-Regular.ttf` | `2c05072e8018a9be1cb0582953d9edf9a0cf129cdfb74e611de763b09c411f7f` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansTelugu/NotoSansTelugu-Regular.ttf |
+| `NotoSansTelugu-Bold.ttf` | `e7c717097993e71944ef221f520a9d79db05e9c7652f4b037e1801c96379ca22` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansTelugu/NotoSansTelugu-Bold.ttf |
+| `NotoSansKannada-Regular.ttf` | `5c804033c57f2c2844b1cd425f45b9a78d81d2f71bf358351b24258ebe168aea` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansKannada/NotoSansKannada-Regular.ttf |
+| `NotoSansKannada-Bold.ttf` | `9eb680d4160918e4bf1e63183932c363d105548c05e0a5013f873ca56d781127` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansKannada/NotoSansKannada-Bold.ttf |
+| `NotoSansMalayalam-Regular.ttf` | `42eb462ff13e820ebbeaaec4e7b426bd1de145d02cef8b634f5a3efd376b513c` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansMalayalam/NotoSansMalayalam-Regular.ttf |
+| `NotoSansMalayalam-Bold.ttf` | `bcc3ec37c2675a952fc336a5483c53f2f7e417c958b668cfeda170dc51bd998e` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansMalayalam/NotoSansMalayalam-Bold.ttf |
+| `NotoSansOlChiki-Regular.ttf` | `8aa3fe0d4cafc878023061ff4db4de90a4334153716d7b69d60e9a2c8e06e18d` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansOlChiki/NotoSansOlChiki-Regular.ttf |
+| `NotoSansOlChiki-Bold.ttf` | `fbbe90147815d422c3bb9e104d224caea5ef87e7e1fc81571752ed5bf5a4fb14` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansOlChiki/NotoSansOlChiki-Bold.ttf |
+| `NotoSansMeeteiMayek-Regular.ttf` | `b68597a00e21d3ad873f937f36552d63f1cbad457f251ab1c3654e41d5dc24fa` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansMeeteiMayek/NotoSansMeeteiMayek-Regular.ttf |
+| `NotoSansMeeteiMayek-Bold.ttf` | `0b3119baddf7f4011a438fbc7a7985259a696f8dc308202f06869b059c481382` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansMeeteiMayek/NotoSansMeeteiMayek-Bold.ttf |
+| `NotoSansSinhala-Regular.ttf` | `a966549310b2d3046ba25bbeef11985428ff9356fa656fd6118bc90fb82df031` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansSinhala/NotoSansSinhala-Regular.ttf |
+| `NotoSansSinhala-Bold.ttf` | `2b31c8080247f4c144db137f473bb6a2d3f7cf36d1a1a0a8bdfad2f26c15d6d4` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansSinhala/NotoSansSinhala-Bold.ttf |
+| `NotoSerifTibetan-Regular.ttf` | `3dd3876c670008cef5e29a79392fc8874d9bb9e349fc54755b2861c050c0fd7c` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSerifTibetan/NotoSerifTibetan-Regular.ttf |
+| `NotoSerifTibetan-Bold.ttf` | `7bc1625088a1058a0cf7f77918ab87b1a97ea685cbf46daf161d57ea740f106d` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSerifTibetan/NotoSerifTibetan-Bold.ttf |
+| `OFL.txt` | `0dab92d0544f7b233403f14b84a663bdbfa746982eda629e7f4f9ffe1b036feb` | https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/LICENSE |

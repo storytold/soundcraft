@@ -521,6 +521,22 @@ fn about(app: &mut SoundApp, ctx: &egui::Context) {
                 ui.label("Dual-licensed MIT OR Apache-2.0. Made with Rust and egui.");
                 ui.hyperlink_to("getartcraft.com/apps/soundcraft", "https://getartcraft.com/apps/soundcraft");
                 ui.hyperlink_to("Join us on Discord", "https://discord.gg/artcraft");
+                ui.collapsing("Bundled font licenses", |ui| {
+                    for (name, license) in [
+                        ("Noto Sans Thai", include_str!("../../../assets/fonts/noto-sans-thai/OFL.txt")),
+                        ("Noto Arabic, Hebrew and Indic fonts", include_str!("../../../assets/fonts/noto/OFL.txt")),
+                        ("Noto Sans CJK", include_str!("../../../assets/fonts/noto-cjk/OFL.txt")),
+                    ] {
+                        ui.collapsing(name, |ui| {
+                            egui::ScrollArea::vertical().id_salt(name).max_height(180.0).show(ui, |ui| {
+                                if name == "Noto Sans CJK" {
+                                    ui.label(include_str!("../../../assets/fonts/noto-cjk/COPYRIGHT.txt"));
+                                }
+                                ui.label(license);
+                            });
+                        });
+                    }
+                });
             }
         }
     });

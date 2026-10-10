@@ -1,0 +1,7 @@
+Copyright notice embedded in the unmodified Noto Sans CJK font files:
+
+© 2014-2021 Adobe (http://www.adobe.com/).
+
+Noto is a trademark of Google Inc.
+
+These fonts are openly licensed under the SIL Open Font License 1.1; see OFL.txt.
