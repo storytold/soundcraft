@@ -1,5 +1,7 @@
 //! macOS system menu bar. All actions use the same menu dispatch as the egui host.
-use muda::{CheckMenuItem, Menu, MenuEvent, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use objc2::MainThreadMarker;
+use objc2_app_kit::NSApplication;
 use soundcraft_ui_egui::{SoundApp, menus};
 use std::sync::mpsc::{Receiver, channel};
 
@@ -36,8 +38,9 @@ impl NativeMenu {
         app_menu.append(&PredefinedMenuItem::separator())?;
         app_menu.append(&PredefinedMenuItem::services(None))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
-        app_menu.append(&PredefinedMenuItem::hide(Some("Hide SoundCraft")))?;
-        app_menu.append(&PredefinedMenuItem::hide_others(None))?;
+        // muda's own Hide items take ⌘H and ⌥⌘H, which are Heal Separation and Copy to Send.
+        app_menu.append(&MenuItem::with_id("hide", "Hide SoundCraft", true, None))?;
+        app_menu.append(&MenuItem::with_id("hide_others", "Hide Others", true, None))?;
         app_menu.append(&PredefinedMenuItem::show_all(None))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
         native.add_item(app, &app_menu, "Quit SoundCraft", "", Some("app.quit".into()))?;
@@ -82,7 +85,12 @@ impl NativeMenu {
         while let Ok(event) = self.events.try_recv() {
             // A click changes state (and Cocoa flips the item's check mark): sync on the next pass.
             self.last_sync = None;
-            if let Some(entry) = self.entries.iter().find(|e| e.item.id() == &event.id)
+            if (event.id == "hide" || event.id == "hide_others")
+                && let Some(mtm) = MainThreadMarker::new()
+            {
+                let ns = NSApplication::sharedApplication(mtm);
+                if event.id == "hide" { ns.hide(None) } else { ns.hideOtherApplications(None) }
+            } else if let Some(entry) = self.entries.iter().find(|e| e.item.id() == &event.id)
                 && let Some(command) = &entry.command
                 && menus::item_state(app, &entry.path, Some(command)).0
             {
