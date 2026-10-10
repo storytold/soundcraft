@@ -622,6 +622,11 @@ impl Player {
         self.shared.speed.store(v, Ordering::Relaxed);
     }
 
+    /// Playback rate last requested, 1.0 at full speed.
+    pub fn speed(&self) -> f32 {
+        self.shared.speed.load(Ordering::Relaxed) as f32 / 1000.0
+    }
+
     pub fn position(&self) -> Samples {
         self.shared.position.load(Ordering::Relaxed)
     }
