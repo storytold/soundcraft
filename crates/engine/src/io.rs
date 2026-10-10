@@ -199,8 +199,8 @@ pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: b
     Ok(out)
 }
 
-/// Export all MIDI clips as a format-1 SMF.
-pub fn export_midi(e: &Engine) -> Result<Vec<u8>> {
+/// Export MIDI clips as a format-1 SMF. `only` limits the file to those tracks.
+pub fn export_midi(e: &Engine, only: Option<&[TrackId]>) -> Result<Vec<u8>> {
     let s = e.session();
     let mut smf = soundcraft_midi::Smf {
         format: 1,
@@ -210,15 +210,24 @@ pub fn export_midi(e: &Engine) -> Result<Vec<u8>> {
         markers: s.markers.iter().map(|m| (s.tempo.samples_to_ticks(m.start, s.sample_rate), m.name.clone())).collect(),
         key_sigs: Vec::new(),
     };
-    for t in s.tracks.iter().filter(|t| t.kind.is_midi()) {
+    let chosen: Vec<_> = s.tracks.iter().filter(|t| t.kind.is_midi() && only.is_none_or(|ids| ids.contains(&t.id))).collect();
+    if only.is_some() && chosen.is_empty() {
+        return Err(EngineError::BadParams("file.export_midi".into(), "none of the requested tracks hold MIDI".into()));
+    }
+    for t in chosen {
         let mut seq = soundcraft_midi::Sequence::default();
         for c in t.clips() {
             if let ClipContent::Midi { sequence } = &c.content {
                 let base = s.tempo.samples_to_ticks(c.start, s.sample_rate);
                 for n in &sequence.notes {
                     let mut n = *n;
-                    n.start += base;
+                    n.start = n.start.saturating_add(base);
                     seq.notes.push(n);
+                }
+                for ev in &sequence.ctrls {
+                    let mut ev = *ev;
+                    ev.tick = ev.tick.saturating_add(base);
+                    seq.ctrls.push(ev);
                 }
             }
         }
