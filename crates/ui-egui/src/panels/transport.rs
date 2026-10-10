@@ -1,4 +1,5 @@
 use super::{Align2, Rect, Sense, SoundApp, Tokens, json, mono, pos2, vec2};
+use crate::i18n::tr;
 
 pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_transport;
@@ -6,7 +7,7 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     let t = Tokens::current();
-    egui::Window::new("Transport").open(&mut open).resizable(false).default_pos(pos2(400.0, 500.0)).show(ctx, |ui| {
+    egui::Window::new(tr("Transport")).open(&mut open).resizable(false).default_pos(pos2(400.0, 500.0)).show(ctx, |ui| {
         let flags = app.engine.session().edit.flags.clone();
         let expanded = flags.contains("view.transport.expanded");
         ui.horizontal(|ui| {
@@ -50,14 +51,14 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
         if expanded {
             let e = s.edit.clone();
             egui::Grid::new("tx_exp").num_columns(4).show(ui, |ui| {
-                ui.label("Start");
+                ui.label(tr("Start"));
                 ui.label(egui::RichText::new(fmt(e.selection.start)).font(mono(11.0)));
-                ui.label("Pre-roll");
+                ui.label(tr("Pre-roll"));
                 ui.label(egui::RichText::new(format!("{:.2} s", s.sample_rate.seconds(e.pre_roll))).font(mono(11.0)));
                 ui.end_row();
-                ui.label("End");
+                ui.label(tr("End"));
                 ui.label(egui::RichText::new(fmt(e.selection.end)).font(mono(11.0)));
-                ui.label("Post-roll");
+                ui.label(tr("Post-roll"));
                 ui.label(egui::RichText::new(format!("{:.2} s", s.sample_rate.seconds(e.post_roll))).font(mono(11.0)));
                 ui.end_row();
             });
@@ -69,11 +70,11 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
             };
             ui.horizontal(|ui| {
                 for (label, on, cmd) in [
-                    ("Click", click, "options.click"),
-                    ("Count Off", countoff, "options.countoff"),
-                    ("MIDI Merge", merge, "options.midi_merge"),
-                    ("Loop Rec", loop_rec, "options.loop_record"),
-                    ("Pre/Post", prepost, "options.pre_post_roll"),
+                    (tr("Click"), click, "options.click"),
+                    (tr("Count Off"), countoff, "options.countoff"),
+                    (tr("MIDI Merge"), merge, "options.midi_merge"),
+                    (tr("Loop Rec"), loop_rec, "options.loop_record"),
+                    (tr("Pre/Post"), prepost, "options.pre_post_roll"),
                 ] {
                     if ui.selectable_label(on, label).clicked() {
                         let _ = app.run(cmd, json!({}));
@@ -94,7 +95,7 @@ pub(super) fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new("Big Counter").open(&mut open).default_size(vec2(520.0, 110.0)).show(ctx, |ui| {
+    egui::Window::new(tr("Big Counter")).open(&mut open).default_size(vec2(520.0, 110.0)).show(ctx, |ui| {
         let s = app.engine.session();
         let txt = s.format_position(app.position(), s.edit.main_counter);
         let r = ui.available_rect_before_wrap();

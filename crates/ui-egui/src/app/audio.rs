@@ -1,4 +1,5 @@
 use super::{MeterDisplay, OutputTrouble, Player, SoundApp, Trouble};
+use crate::i18n;
 
 impl SoundApp {
     /// Whether the meters are live: while playing, and while armed or input-monitored tracks are heard.
@@ -46,7 +47,7 @@ impl SoundApp {
             }
             Err(e) => {
                 self.recorder_failed = true;
-                self.ui.status = format!("No audio input: {e}");
+                self.ui.status = i18n::trf("No audio input: {}", &[&e]);
             }
         }
     }
@@ -58,24 +59,27 @@ impl SoundApp {
         let name = p.device_name.clone();
         let (cause, then) = match trouble {
             OutputTrouble::Bug => (
-                "the audio engine hit an internal error (see the log)".to_string(),
+                i18n::tr("the audio engine hit an internal error (see the log)").to_string(),
                 "Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft.",
             ),
             OutputTrouble::Gone => {
-                (format!("“{name}” is unavailable"), "Check the audio device, then use Reconnect audio device in Setup › Playback Engine.")
+                (i18n::trf("“{}” is unavailable", &[&name]), "Check the audio device, then use Reconnect audio device in Setup › Playback Engine.")
             }
-            OutputTrouble::Stalled => (format!("“{name}” stopped asking for audio"), "Use Reconnect audio device in Setup › Playback Engine."),
+            OutputTrouble::Stalled => {
+                (i18n::trf("“{}” stopped asking for audio", &[&name]), "Use Reconnect audio device in Setup › Playback Engine.")
+            }
         };
+        let then = i18n::tr(then);
         let (recording, playing) = (self.engine.transport.recording, self.engine.transport.playing);
         if recording || playing {
             self.stop_play();
         }
         self.ui.status = if recording {
-            format!("Recording stopped: {cause}. The take is kept up to there. {then}")
+            i18n::trf("Recording stopped: {}. The take is kept up to there. {}", &[&cause, &then])
         } else if playing {
-            format!("Playback stopped: {cause}. {then}")
+            i18n::trf("Playback stopped: {}. {}", &[&cause, &then])
         } else {
-            format!("Audio output: {cause}. {then}")
+            i18n::trf("Audio output: {}. {}", &[&cause, &then])
         };
     }
 
@@ -88,7 +92,7 @@ impl SoundApp {
             let lost = r.lost_ms();
             if recording && lost > self.lost_shown {
                 self.lost_shown = lost;
-                self.ui.status = format!("The disk is too slow: this take has lost {lost} ms of input so far.");
+                self.ui.status = i18n::trf("The disk is too slow: this take has lost {} ms of input so far.", &[&lost]);
             }
             return;
         };
@@ -103,10 +107,11 @@ impl SoundApp {
             }
             Trouble::Disk(what) => (what, "Check the disk, then record again."),
         };
+        let (what, then) = (i18n::tr(&what), i18n::tr(then));
         self.ui.status = if recording {
-            format!("Recording stopped: {what}. The take is kept up to there. {then}")
+            i18n::trf("Recording stopped: {}. The take is kept up to there. {}", &[&what, &then])
         } else {
-            format!("Audio input: {what}. {then}")
+            i18n::trf("Audio input: {}. {}", &[&what, &then])
         };
     }
 

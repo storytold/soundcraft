@@ -1,6 +1,6 @@
 //! Search: a command palette over every engine and UI command (Window › Search, Cmd+Ctrl+S).
-
 use crate::SoundApp;
+use crate::i18n::tr;
 use crate::theme::{Tokens, mono};
 use egui::{Align2, Key, vec2};
 
@@ -15,17 +15,22 @@ struct Entry {
     label: String,
     path: String,
     shortcut: String,
+    /// Label and menu path in the interface language (search matches both languages).
+    shown_label: String,
+    shown_path: String,
+}
+
+impl Entry {
+    fn new(id: &str, label: &str, path: String, shortcut: Option<&str>) -> Self {
+        let shown_path = path.split(" › ").map(tr).collect::<Vec<_>>().join(" › ");
+        Entry { id: id.into(), label: label.into(), shown_label: tr(label).into(), path, shown_path, shortcut: shortcut.unwrap_or("").into() }
+    }
 }
 
 fn entries() -> Vec<Entry> {
-    let mut v: Vec<Entry> = soundcraft_engine::command_specs()
-        .iter()
-        .map(|c| Entry {
-            id: c.id.to_string(), label: c.label.to_string(), path: c.menu.join(" › "), shortcut: c.shortcut.unwrap_or("").to_string()
-        })
-        .collect();
+    let mut v: Vec<Entry> = soundcraft_engine::command_specs().iter().map(|c| Entry::new(c.id, c.label, c.menu.join(" › "), c.shortcut)).collect();
     for (id, label, path, sc) in crate::menus::UI_COMMANDS {
-        v.push(Entry { id: id.to_string(), label: label.to_string(), path: path.replace(" > ", " › "), shortcut: sc.unwrap_or("").to_string() });
+        v.push(Entry::new(id, label, path.replace(" > ", " › "), *sc));
     }
     v
 }
@@ -65,20 +70,23 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let t = Tokens::current();
     let mut run: Option<String> = None;
     let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
-    egui::Window::new("Search")
+    egui::Window::new(tr("Search"))
         .collapsible(false)
         .resizable(false)
         .title_bar(false)
         .anchor(Align2::CENTER_TOP, vec2(0.0, 90.0))
         .fixed_size(vec2(560.0, 380.0))
         .show(ctx, |ui| {
-            let r = ui
-                .add(egui::TextEdit::singleline(&mut app.palette.query).hint_text("Search commands…").desired_width(f32::INFINITY).font(mono(15.0)));
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut app.palette.query).hint_text(tr("Search commands…")).desired_width(f32::INFINITY).font(mono(15.0)),
+            );
             r.request_focus();
             let q = app.palette.query.trim().to_string();
-            let mut hits: Vec<(i32, Entry)> =
-                entries().into_iter().filter_map(|e| score(&format!("{} {} {}", e.label, e.path, e.id), &q).map(|s| (s, e))).collect();
-            hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.label.cmp(&b.1.label)));
+            let mut hits: Vec<(i32, Entry)> = entries()
+                .into_iter()
+                .filter_map(|e| score(&format!("{} {} {} {} {}", e.shown_label, e.label, e.shown_path, e.path, e.id), &q).map(|s| (s, e)))
+                .collect();
+            hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.shown_label.cmp(&b.1.shown_label)));
             hits.truncate(14);
             let (down, up, enter) = ctx.input(|i| (i.key_pressed(Key::ArrowDown), i.key_pressed(Key::ArrowUp), i.key_pressed(Key::Enter)));
             if down {
@@ -92,8 +100,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             for (i, (_, e)) in hits.iter().enumerate() {
                 let sel = i == app.palette.selected;
                 let resp = ui.horizontal(|ui| {
-                    let l = ui.selectable_label(sel, &e.label);
-                    ui.label(egui::RichText::new(&e.path).small().color(t.text_dim));
+                    let l = ui.selectable_label(sel, &e.shown_label);
+                    ui.label(egui::RichText::new(&e.shown_path).small().color(t.text_dim));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let sc = crate::shortcuts::shortcut_label(&e.shortcut, ctx.os().is_mac());
                         ui.label(egui::RichText::new(sc).font(mono(10.0)).color(t.text_dim));
