@@ -539,4 +539,28 @@ mod tests {
         assert!(err.to_string().contains("none of the requested tracks hold MIDI"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn import_surround_creates_a_matching_track() {
+        let channels: Vec<Vec<f32>> = (0..6).map(|ch| vec![0.1 * (ch as f32 + 1.0); 32]).collect();
+        let buf = AudioBuffer { sample_rate: 48_000, channels };
+        let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).unwrap();
+        let mut e = Engine::default();
+        let v = crate::io::import_audio_bytes(&mut e, "bed.wav", &bytes, None, None, 0).unwrap();
+        assert_eq!(v["channels"], 6);
+        assert_eq!(e.session().tracks.len(), 1);
+        assert_eq!(e.session().tracks[0].format, ChannelFormat::Surround51);
+        let src = e.session().sources[0].id;
+        let audio = e.session().pool.get(src).unwrap();
+        assert_eq!(audio.buffer.channels.len(), 6);
+        assert!((audio.buffer.channels[5][0] - 0.6).abs() < 1e-3);
+
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"name": "Bed", "format": "5.1"})).unwrap();
+        let id = e.session().tracks[0].id;
+        crate::io::import_audio_bytes(&mut e, "bed.wav", &bytes, None, Some(id), 0).unwrap();
+        assert_eq!(e.session().tracks.len(), 1);
+        assert_eq!(e.session().tracks[0].format, ChannelFormat::Surround51);
+        assert_eq!(e.session().tracks[0].clips().len(), 1);
+    }
 }
