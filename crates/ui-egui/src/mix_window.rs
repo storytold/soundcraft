@@ -8,6 +8,29 @@ use crate::{SoundApp, panels};
 use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
 use soundcraft_model::{ChannelFormat, Route, SurroundPan, Track, TrackId, TrackKind};
+
+#[derive(Debug, Clone, Copy)]
+enum InsertDrag {
+    Chain(TrackId),
+    Slot(TrackId, usize),
+}
+
+fn copy_drop(app: &mut SoundApp, from: InsertDrag, target: TrackId, to_slot: Option<usize>) {
+    match from {
+        InsertDrag::Chain(id) if id != target => {
+            let _ = app.run("mix.insert_chain_copy", json!({"from_track": id.0, "to_track": target.0}));
+        }
+        InsertDrag::Slot(id, slot) if id != target || to_slot != Some(slot) => {
+            let mut p = json!({"from_track": id.0, "from_slot": slot, "to_track": target.0});
+            if let Some(to) = to_slot {
+                p["to_slot"] = json!(to);
+            }
+            let _ = app.run("mix.insert_copy", p);
+        }
+        _ => {}
+    }
+}
+
 use soundcraft_playback::MeterSnapshot;
 
 pub fn strip_width(narrow: bool) -> f32 {
@@ -23,7 +46,13 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
             .show(ui, |ui| panels::tracks_and_groups(app, ui));
     }
     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.window_bg)).show(ui, |ui| {
-        let ids: Vec<TrackId> = app.engine.session().tracks.iter().filter(|x| !x.hidden && x.kind != TrackKind::Video).map(|x| x.id).collect();
+        let ids: Vec<TrackId> = {
+            let s = app.engine.session();
+            s.tracks.iter()
+                .filter(|x| !x.hidden && x.kind != TrackKind::Video)
+                .filter(|x| x.folder.and_then(|f| s.track(f)).is_none_or(|f| f.folder_open))
+                .map(|x| x.id).collect()
+        };
         // Per-channel peaks for multichannel meters (read once per frame).
         let snap = app
             .player
@@ -33,8 +62,18 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
         egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 1.0;
+                let mut drop_targets = Vec::new();
                 for id in ids {
-                    strip(app, ui, id, snap.as_ref());
+                    strip(app, ui, id, snap.as_ref(), &mut drop_targets);
+                }
+                // Dropping on the body of a strip appends one insert or replaces its entire chain.
+                // Individual insert slots consume their drops first, preserving the requested slot.
+                if ui.input(|i| i.pointer.any_released())
+                    && let Some(p) = ui.ctx().pointer_latest_pos()
+                    && let Some((target, _)) = drop_targets.iter().find(|(_, rect)| rect.contains(p))
+                    && let Some(payload) = egui::DragAndDrop::take_payload::<InsertDrag>(ui.ctx())
+                {
+                    copy_drop(app, *payload, *target, None);
                 }
             });
         });
@@ -96,18 +135,29 @@ fn route_name(app: &SoundApp, r: &Route) -> String {
     }
 }
 
-fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapshot>) {
+fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapshot>, drop_targets: &mut Vec<(TrackId, Rect)>) {
     let t = Tokens::current();
     let Some(track) = app.engine.session().track(id).cloned() else { return };
     let narrow = app.ui.narrow_mix;
     let w = strip_width(narrow);
     let h = ui.available_height().max(560.0);
     let (r, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+    drop_targets.push((id, r));
     let selected = app.engine.session().edit.selected_tracks.contains(&id);
     ui.painter().rect_filled(r, 0.0, if selected { t.strip_selected } else { t.strip_bg });
     let mut y = r.min.y + 4.0;
     let inner_w = w - 8.0;
     let x0 = r.min.x + 4.0;
+    // A narrow handle above every strip copies its full insert chain and plugin states.
+    let handle = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 12.0));
+    let handle_resp = ui.interact(handle, ui.id().with(("chain_drag", id.0)), Sense::click_and_drag());
+    handle_resp.dnd_set_drag_payload(InsertDrag::Chain(id));
+    ui.painter().line_segment(
+        [pos2(handle.center().x - 12.0, handle.center().y), pos2(handle.center().x + 12.0, handle.center().y)],
+        Stroke::new(3.0, if handle_resp.hovered() { t.accent } else { t.text_dim }),
+    );
+    handle_resp.on_hover_text("Drag to another channel to copy all inserts and settings");
+    y += 16.0;
     let views = app.ui.mix_views.clone();
     let has = |v: &str| views.iter().any(|x| x == v);
     let all = has("all");
@@ -379,7 +429,18 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         TrackKind::Folder => "folder",
         TrackKind::Video => "video",
     };
-    ui.painter().text(pos2(vr.center().x, vr.max.y + 9.0), Align2::CENTER_CENTER, kind, regular(9.5), t.text_dim);
+    let kind_rect = Rect::from_min_size(pos2(x0, vr.max.y + 1.0), vec2(inner_w, 16.0));
+    if track.kind == TrackKind::Folder {
+        let resp = ui.interact(kind_rect, ui.id().with(("mix_folder", id.0)), Sense::click());
+        if resp.clicked() {
+            let _ = app.run("track.folder_toggle", json!({"track": id.0}));
+        }
+        ui.painter().text(kind_rect.center(), Align2::CENTER_CENTER,
+            if track.folder_open { "▼ folder" } else { "▶ folder" }, regular(9.5), t.text_dim);
+        resp.on_hover_text("Expand or collapse the bus folder");
+    } else {
+        ui.painter().text(kind_rect.center(), Align2::CENTER_CENTER, kind, regular(9.5), t.text_dim);
+    }
     let nr = Rect::from_min_size(pos2(x0, r.max.y - 26.0), vec2(inner_w, 18.0));
     ui.painter().rect(
         nr,
@@ -432,7 +493,13 @@ fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: R
     let t = Tokens::current();
     let id = track.id;
     let ins = track.mixer.inserts.get(slot).cloned().flatten();
-    let resp = ui.interact(r, ui.id().with(("ins", id.0, slot)), Sense::click());
+    let resp = ui.interact(r, ui.id().with(("ins", id.0, slot)), Sense::click_and_drag());
+    if ins.is_some() {
+        resp.dnd_set_drag_payload(InsertDrag::Slot(id, slot));
+    }
+    if let Some(payload) = resp.dnd_release_payload::<InsertDrag>() {
+        copy_drop(app, *payload, id, Some(slot));
+    }
     let fill = match &ins {
         Some(i) if i.bypass => t.insert_bypass,
         Some(_) => t.insert_on,
@@ -454,7 +521,7 @@ fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: R
     if resp.clicked() && ins.is_some() && !app.ui.plugin_windows.contains(&(id, slot)) {
         app.ui.plugin_windows.push((id, slot));
     }
-    let menu_resp = if ins.is_none() { resp.clone() } else { resp.clone().on_hover_text("Click: open plugin · right-click: change") };
+    let menu_resp = if ins.is_none() { resp.clone() } else { resp.clone().on_hover_text("Click: open · drag: copy to another track · right-click: change") };
     let popup = if ins.is_none() { egui::Popup::menu(&menu_resp) } else { egui::Popup::context_menu(&menu_resp) };
     popup.show(|ui| plugin_menu(app, ui, id, slot, ins.is_some()));
 }
