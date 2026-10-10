@@ -107,7 +107,12 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
             };
             if let Some(arr) = list.as_array_mut() {
                 for (id, label, path, sc) in crate::menus::UI_COMMANDS {
-                    arr.push(json!({"id": id, "label": label, "menu": path, "shortcut": sc, "enabled": true, "params": "{}"}));
+                    let params = match *id {
+                        "ui.midi_scroll" => "{by_px?: 0, by_y_px?: 0} — pan time/pitch in window points",
+                        "ui.midi_zoom_at" => "{factor?: 1, anchor_px?: centre} — zoom around the anchor measured from the piano roll's left edge",
+                        _ => "{}",
+                    };
+                    arr.push(json!({"id": id, "label": label, "menu": path, "shortcut": sc, "enabled": true, "params": params}));
                 }
             }
             ok(list)
@@ -119,6 +124,10 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
         "ui.inspect" => {
             let mut v = app.inspect(ctx);
             v["edit_layout"] = json!(app.edit_layout);
+            v["midi_layout"] = json!({
+                "clip": app.midi.clip, "roll": app.midi.roll, "velocity": app.midi.velocity,
+                "zoom": app.midi.zoom, "scroll_ticks": app.midi.scroll_ticks, "top_pitch": app.midi.top_pitch,
+            });
             ok(v)
         }
         "ui.menu.list" => ok(json!(

@@ -24,6 +24,9 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.close", "Close Window", "Window > Close Window", Some("Cmd+W")),
     ("window.hide_floating", "Hide All Floating Windows", "Window > Hide All Floating Windows", Some("Cmd+Ctrl+W")),
     ("window.midi_editor", "MIDI Editor", "Window > MIDI Editor", None),
+    ("ui.midi_scroll", "Scroll MIDI Editor", "", None),
+    ("ui.midi_zoom_at", "Zoom MIDI Editor at Cursor", "", None),
+    ("ui.midi_fit", "Fit MIDI Clip", "", None),
     ("window.universe", "Universe", "View > Other Displays > Universe", None),
     ("window.video", "Video", "Window > Video", Some("Cmd+9")),
     ("window.video_universe", "Video Universe", "Window > Video Universe", None),
@@ -406,6 +409,9 @@ fn wants_dialog(id: &str) -> bool {
 
 /// Handle UI-layer commands. Returns None when `id` is not a UI command.
 pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    if matches!(id, "ui.midi_scroll" | "ui.midi_zoom_at" | "ui.midi_fit") {
+        return Some(crate::midi_editor::view_command(app, id, p));
+    }
     if let Some(v) = crate::extra_windows::run(app, id, p) {
         return Some(Ok(v));
     }
