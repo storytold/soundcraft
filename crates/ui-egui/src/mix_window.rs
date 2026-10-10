@@ -708,19 +708,44 @@ fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rec
             ui.painter().circle_filled(pos2(r.min.x + 6.0, r.center().y), 1.5, t.text_dim);
         }
     }
-    let popup = if snd.is_none() { egui::Popup::menu(&resp) } else { egui::Popup::context_menu(&resp) };
-    popup.show(|ui| {
-        if snd.is_some() && ui.button("no send").clicked() {
-            let _ = app.run("mix.send_remove", json!({"track": id.0, "slot": slot}));
+    egui::Popup::menu(&resp).show(|ui| {
+        if let Some(s) = &snd {
+            if ui.button(if s.pre_fader { "Pre-fader ✓" } else { "Post-fader ✓" }).clicked() {
+                let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "pre_fader": !s.pre_fader}));
+            }
+            if ui.button(if s.mute { "Unmute send" } else { "Mute send" }).clicked() {
+                let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "mute": !s.mute}));
+            }
+            if ui.button("Remove send").clicked() {
+                let _ = app.run("mix.send_remove", json!({"track": id.0, "slot": slot}));
+            }
+            ui.separator();
+        }
+        // Return tracks (auxes and folder buses) are displayed by their channel names.
+        let returns: Vec<(String, String)> = app.engine.session().tracks.iter()
+            .filter(|t| matches!(t.kind, TrackKind::Aux | TrackKind::Folder))
+            .filter_map(|t| match t.mixer.input {
+                Route::Bus(bus) => app.engine.session().bus(bus).map(|b| (t.name.clone(), b.name.clone())),
+                _ => None,
+            }).collect();
+        if !returns.is_empty() {
+            ui.label("Send to channel");
+            for (name, bus) in &returns {
+                if ui.button(name).on_hover_text(bus).clicked() {
+                    let _ = app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": bus}));
+                }
+            }
+            ui.separator();
         }
         let busses: Vec<String> = app.engine.session().busses.iter().map(|b| b.name.clone()).collect();
-        for b in busses {
-            if ui.button(&b).clicked() {
-                let _ = app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": b}));
+        ui.menu_button("Other buses", |ui| {
+            for b in &busses {
+                if ui.button(b).clicked() {
+                    let _ = app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": b}));
+                }
             }
-        }
-        ui.separator();
-        if ui.button("new bus...").clicked() {
+        });
+        if ui.button("New bus...").clicked() {
             let n = app.engine.session().busses.len() + 1;
             let _ = app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": format!("Bus {n}")}));
         }
