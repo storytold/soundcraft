@@ -123,6 +123,21 @@ fn beat_detective(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_beat_detective = open;
 }
 
+/// Command the Tempo Operations Apply button sends. Stretch uses `factor = start / end`
+/// so a lower end BPM lengthens the selection (`event.tempo_stretch` has no `end_bpm`).
+pub(crate) fn tempo_ops_apply(curve: &str, start_bpm: f64, end_bpm: f64) -> (&'static str, Value) {
+    let start = if start_bpm.is_finite() { start_bpm.max(1.0) } else { 1.0 };
+    let end = if end_bpm.is_finite() { end_bpm.max(1.0) } else { 1.0 };
+    match curve {
+        "constant" => ("event.tempo_constant", json!({"bpm": start_bpm})),
+        "parabolic" => ("event.tempo_parabolic", json!({"start_bpm": start_bpm, "end_bpm": end_bpm})),
+        "s-curve" => ("event.tempo_s_curve", json!({"start_bpm": start_bpm, "end_bpm": end_bpm})),
+        "scale" => ("event.tempo_scale", json!({"factor": end / start})),
+        "stretch" => ("event.tempo_stretch", json!({"factor": start / end})),
+        _ => ("event.tempo_linear", json!({"start_bpm": start_bpm, "end_bpm": end_bpm})),
+    }
+}
+
 fn tempo_ops(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_tempo_ops;
     if !open {
@@ -136,16 +151,14 @@ fn tempo_ops(app: &mut SoundApp, ctx: &egui::Context) {
         });
         ui.add(egui::DragValue::new(&mut app.ops.tempo_start).range(5.0..=999.0).prefix("start bpm "));
         ui.add(egui::DragValue::new(&mut app.ops.tempo_end).range(5.0..=999.0).prefix("end bpm "));
-        ui.label(egui::RichText::new("Applies across the edit selection (constant: at the insertion point; scale: factor = end / start).").small());
+        ui.label(
+            egui::RichText::new(
+                "Applies across the edit selection (constant: at the insertion point; scale: factor = end / start; stretch: factor = start / end).",
+            )
+            .small(),
+        );
         if ui.button(egui::RichText::new("Apply").strong()).clicked() {
-            let (id, p) = match app.ops.tempo_curve.as_str() {
-                "constant" => ("event.tempo_constant", json!({"bpm": app.ops.tempo_start})),
-                "parabolic" => ("event.tempo_parabolic", json!({"start_bpm": app.ops.tempo_start, "end_bpm": app.ops.tempo_end})),
-                "s-curve" => ("event.tempo_s_curve", json!({"start_bpm": app.ops.tempo_start, "end_bpm": app.ops.tempo_end})),
-                "scale" => ("event.tempo_scale", json!({"factor": app.ops.tempo_end / app.ops.tempo_start.max(1.0)})),
-                "stretch" => ("event.tempo_stretch", json!({"end_bpm": app.ops.tempo_end})),
-                _ => ("event.tempo_linear", json!({"start_bpm": app.ops.tempo_start, "end_bpm": app.ops.tempo_end})),
-            };
+            let (id, p) = tempo_ops_apply(&app.ops.tempo_curve, app.ops.tempo_start, app.ops.tempo_end);
             let r = app.run(id, p);
             result_line(ui, &r);
         }
@@ -273,4 +286,26 @@ fn rtp(app: &mut SoundApp, ctx: &egui::Context) {
         });
     });
     app.ui.show_rtp = open;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stretch_uses_start_over_end_and_scale_uses_end_over_start() {
+        let (id, p) = tempo_ops_apply("stretch", 120.0, 60.0);
+        assert_eq!(id, "event.tempo_stretch");
+        assert!((p["factor"].as_f64().unwrap() - 2.0).abs() < 1e-9, "{p}");
+        let (_, p) = tempo_ops_apply("stretch", 120.0, 120.0);
+        assert!((p["factor"].as_f64().unwrap() - 1.0).abs() < 1e-9, "{p}");
+        let (id, p) = tempo_ops_apply("scale", 120.0, 60.0);
+        assert_eq!(id, "event.tempo_scale");
+        assert!((p["factor"].as_f64().unwrap() - 0.5).abs() < 1e-9, "{p}");
+        let (_, p) = tempo_ops_apply("stretch", f64::NAN, f64::INFINITY);
+        assert!((p["factor"].as_f64().unwrap() - 1.0).abs() < 1e-9, "{p}");
+        let (id, p) = tempo_ops_apply("linear", 100.0, 140.0);
+        assert_eq!(id, "event.tempo_linear");
+        assert_eq!(p["end_bpm"], 140.0);
+    }
 }
