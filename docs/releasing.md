@@ -50,6 +50,7 @@ web build and are checked, the signing jobs are refused, and no release is draft
 | Windows 11 ARM64 | `soundcraft-<v>-windows-arm64.msi`, `soundcraft-<v>-windows-arm64-portable.zip` | `windows-latest` (cross-compiled; `windows-arm64.yml` installs and runs it on ARM64) |
 | Linux x86_64 | `soundcraft-<v>-linux-x86_64.{AppImage,deb,rpm,tar.gz}` | `ubuntu-22.04` |
 | Linux aarch64 | `soundcraft-<v>-linux-aarch64.{AppImage,deb,rpm,tar.gz}` | `ubuntu-22.04-arm` |
+| Linux riscv64 | `soundcraft-<v>-linux-riscv64.tar.gz` | cross-compiled on `ubuntu-26.04` |
 | AppImage updates | `soundcraft-<v>-linux-{x86_64,aarch64}.AppImage.zsync` | with the AppImage |
 | Flatpak x86_64, aarch64 | `soundcraft-<v>-linux-{x86_64,aarch64}.flatpak` | `ubuntu-24.04`, `ubuntu-24.04-arm` (repackages the Linux tarball) |
 | FreeBSD 14 x86_64 | `soundcraft-<v>-freebsd-x86_64.tar.gz` (a `/usr/local` tree) | FreeBSD 14.3 VM on `ubuntu-latest` |
