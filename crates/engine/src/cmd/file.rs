@@ -27,9 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(noundo "session.save_copy", "Save Session Copy In...", ["File"], None, "{path}", always, |e, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("session.save_copy", "`path` required"))?.to_string();
-            let keep = e.path.clone();
-            let written = crate::io::save_session(e, &path)?;
-            e.path = keep;
+            let written = crate::io::save_session_copy(e, &path)?;
             Ok(json!({"path": path, "audio_files_written": written}))
         }),
         cmd!(noundo "session.save_template", "Save As Template...", ["File"], None, "{path}", always, |e, p| {
@@ -388,6 +386,48 @@ mod tests {
         let mut r = Engine::default();
         let res = r.execute("session.open", &json!({"path": path})).unwrap();
         assert!(res["missing"].as_array().is_some_and(|m| !m.is_empty()), "{res}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn tone_engine() -> (Engine, u64) {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"count": 1, "name": "Tone", "format": "mono"})).unwrap();
+        let track = e.session().tracks[0].id;
+        let tone: Vec<f32> = (0..4_800).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+        let buf = AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+        let src = crate::io::add_source(e.session_mut(), "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let id = e.session_mut().new_clip_id();
+        crate::edit::place_clip(e.session_mut(), track, soundcraft_model::Clip::audio(id, "tone", src, 0, 0, 4_800));
+        e.session_mut().edit.selected_tracks = vec![track];
+        (e, track.0)
+    }
+
+    #[test]
+    fn save_copy_leaves_the_open_session_alone() {
+        let (mut e, _) = tone_engine();
+        let dir = std::env::temp_dir().join(format!("sc-save-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("Original.scraft");
+        e.execute("session.save_as", &json!({"path": original.to_string_lossy()})).unwrap();
+        e.execute("track.new", &json!({"count": 1, "name": "Extra", "format": "mono"})).unwrap();
+        assert!(e.is_dirty());
+        let copy_dir = dir.join("copy");
+        std::fs::create_dir_all(&copy_dir).unwrap();
+        let copy = copy_dir.join("Copy.scraft");
+        e.execute("session.save_copy", &json!({"path": copy.to_string_lossy()})).unwrap();
+        assert_eq!(e.path.as_deref(), Some(original.to_string_lossy().as_ref()));
+        assert_eq!(e.session().name, "Original");
+        assert!(e.is_dirty());
+        assert_eq!(e.session().tracks.len(), 2);
+
+        let mut from_original = Engine::default();
+        from_original.execute("session.open", &json!({"path": original.to_string_lossy()})).unwrap();
+        assert_eq!(from_original.session().tracks.len(), 1);
+        let mut from_copy = Engine::default();
+        from_copy.execute("session.open", &json!({"path": copy.to_string_lossy()})).unwrap();
+        assert_eq!(from_copy.session().tracks.len(), 2);
+        assert!(from_copy.session().track_by_name("Extra").is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

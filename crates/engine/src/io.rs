@@ -462,6 +462,12 @@ pub fn save_copy(e: &Engine, path: &str) -> Result<usize> {
     write_session(e.session(), path, true).map(|(_, n, _)| n)
 }
 
+/// File › Save Session Copy In: a normal session folder that does not rename, retarget or
+/// clean the session that stays open.
+pub fn save_session_copy(e: &Engine, path: &str) -> Result<usize> {
+    write_session(e.session(), path, false).map(|(_, n, _)| n)
+}
+
 /// Write `session` to `path`; returns the session with updated media paths, the number of audio
 /// files written and the final path.
 fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Session, usize, PathBuf)> {
