@@ -198,6 +198,11 @@ type GetFactory = unsafe extern "system" fn() -> *mut sb::IPluginFactory;
 /// C ABI everywhere except 32-bit Windows, where it is the `PLUGIN_API` (stdcall) `ExitDll` uses.
 type ModuleExit = unsafe extern "system" fn() -> bool;
 
+// SAFETY: `_exit` (POSIX and the MSVC runtime) takes any status and has no preconditions.
+unsafe extern "C" {
+    pub safe fn _exit(status: std::ffi::c_int) -> !;
+}
+
 #[cfg(target_os = "macos")]
 mod cf {
     use std::ffi::c_void;
@@ -206,6 +211,32 @@ mod cf {
         pub fn CFURLCreateFromFileSystemRepresentation(alloc: *const c_void, buf: *const u8, len: isize, is_dir: u8) -> *const c_void;
         pub fn CFBundleCreate(alloc: *const c_void, url: *const c_void) -> *mut c_void;
         pub fn CFRelease(cf: *const c_void);
+        pub fn CFBundleGetMainBundle() -> *mut c_void;
+        pub fn CFBundleGetInfoDictionary(bundle: *mut c_void) -> *mut c_void;
+        pub fn CFDictionarySetValue(dict: *mut c_void, key: *const c_void, value: *const c_void);
+        pub fn CFStringCreateWithBytes(alloc: *const c_void, bytes: *const u8, len: isize, encoding: u32, external: u8) -> *const c_void;
+        pub static kCFBooleanTrue: *const c_void;
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn background_only() {
+    const UTF8: u32 = 0x0800_0100;
+    const KEY: &[u8] = b"LSBackgroundOnly";
+    // SAFETY: plain CoreFoundation calls, nulls checked. The main bundle's Info dictionary is mutable
+    // and LaunchServices reads it at registration (long-standing, undocumented); our key is released.
+    unsafe {
+        let bundle = cf::CFBundleGetMainBundle();
+        let info = if bundle.is_null() { std::ptr::null_mut() } else { cf::CFBundleGetInfoDictionary(bundle) };
+        if info.is_null() {
+            return;
+        }
+        let key = cf::CFStringCreateWithBytes(std::ptr::null(), KEY.as_ptr(), KEY.len() as isize, UTF8, 0);
+        if key.is_null() {
+            return;
+        }
+        cf::CFDictionarySetValue(info, key, cf::kCFBooleanTrue);
+        cf::CFRelease(key);
     }
 }
 

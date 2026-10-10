@@ -49,6 +49,7 @@ fn help_text() -> String {
 }
 
 fn main() -> ExitCode {
+    soundcraft_engine::plugins::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = args.first().cloned() else {
         eprintln!("usage: soundcraft-cli <info|convert|run|script|commands|describe|app|mcp|parity|plugins> …  (see --help)");

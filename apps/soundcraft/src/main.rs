@@ -182,6 +182,7 @@ fn main() -> eframe::Result {
     // First, so every start-up record (and the engine's panic hook, installed with the first
     // Engine) is captured; see `logging`.
     let logger = logging::install();
+    soundcraft_engine::plugins::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("SoundCraft {}", env!("CARGO_PKG_VERSION"));

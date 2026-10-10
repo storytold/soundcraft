@@ -547,7 +547,11 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
 static FACTORY: clap_plugin_factory =
     clap_plugin_factory { get_plugin_count: Some(factory_count), get_plugin_descriptor: Some(factory_desc), create_plugin: Some(factory_create) };
 
-unsafe extern "C" fn entry_init(_path: *const c_char) -> bool {
+unsafe extern "C" fn entry_init(path: *const c_char) -> bool {
+    // SAFETY: the host passes the plugin's path as a NUL-terminated string (or null).
+    if !path.is_null() && unsafe { CStr::from_ptr(path) }.to_string_lossy().contains("CrashOnLoad") {
+        std::process::exit(86);
+    }
     true
 }
 unsafe extern "C" fn entry_deinit() {}

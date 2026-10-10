@@ -13,6 +13,7 @@ pub mod demo;
 pub mod edit;
 pub mod inspect;
 pub mod io;
+pub mod plugins;
 pub mod score;
 
 use serde_json::{Value, json};

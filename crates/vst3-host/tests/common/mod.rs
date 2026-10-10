@@ -35,6 +35,7 @@ pub fn fixture_dir() -> &'static Path {
         let bin = dir.join("vendor/Fixture.vst3/Contents").join(folder);
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::copy(&built, bin.join(exe)).unwrap();
+        soundcraft_plugin_scan::in_process();
         assert_eq!(soundcraft_vst3_host::add_search_dir(&dir), 2);
         dir
     })

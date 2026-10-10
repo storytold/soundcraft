@@ -547,12 +547,14 @@ fn hosted_menus(ui: &mut Ui, instruments: bool) -> Option<String> {
         if let Some(p) = vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), "No CLAP plugins found") {
             picked = Some(p);
         }
+        scan_failures_note(ui, "clap");
     });
     ui.menu_button("VST3", |ui| {
         let list = soundcraft_vst3_host::scan().into_iter().filter(|d| d.is_instrument == instruments);
         if let Some(p) = vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), "No VST3 plugins found") {
             picked = Some(p);
         }
+        scan_failures_note(ui, "vst3");
     });
     if cfg!(target_os = "macos") {
         ui.menu_button("Audio Units", |ui| {
@@ -592,6 +594,17 @@ fn vendor_menus(ui: &mut Ui, mut list: Vec<MenuPlugin>, none: &str) -> Option<St
         }
     });
     picked
+}
+
+fn scan_failures_note(ui: &mut Ui, format: &str) {
+    let failed = soundcraft_plugin_scan::failures().into_iter().filter(|(f, ..)| f == format);
+    let why: Vec<String> = failed.map(|(_, p, why)| format!("{}: {why}", p.file_name().unwrap_or(p.as_os_str()).to_string_lossy())).collect();
+    if why.is_empty() {
+        return;
+    }
+    ui.separator();
+    let n = if why.len() == 1 { "1 plugin file".to_string() } else { format!("{} plugin files", why.len()) };
+    ui.weak(format!("{n} could not be loaded")).on_hover_text(why.join("\n"));
 }
 
 /// A built-in plugin's description, else a hosted CLAP (`clap:<id>`), VST3 (`vst3:<class id>`) or

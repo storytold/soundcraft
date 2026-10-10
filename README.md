@@ -97,7 +97,7 @@ where things are.
   </tr>
   <tr>
     <td><b>Notation.</b> A Score Editor for MIDI tracks, MusicXML export for Sibelius and other notation programs, and printable engraved scores.</td>
-    <td><b>Your plugins too.</b> CLAP, VST3 and Audio Units, with their own editors, their state saved in the session, and every instance created off the audio thread.</td>
+    <td><b>Your plugins too.</b> CLAP, VST3 and Audio Units, with their own editors, their state saved in the session, and every instance created off the audio thread. Plugins are scanned in separate processes, so one that crashes can't take SoundCraft down.</td>
   </tr>
 </table>
 
