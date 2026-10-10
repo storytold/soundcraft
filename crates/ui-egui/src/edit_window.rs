@@ -114,10 +114,8 @@ fn universe(app: &mut SoundApp, ui: &mut Ui) {
     let vis1 = vis0 + (f64::from(tlw.max(100.0)) * s.edit.zoom.samples_per_px) as f32 / total;
     let vr = Rect::from_min_max(pos2(r.min.x + vis0 * r.width(), r.min.y - 2.0), pos2(r.min.x + vis1.min(1.0) * r.width(), r.max.y + 2.0));
     ui.painter().rect_stroke(vr, 2.0, Stroke::new(1.5, Tokens::current().universe_view), StrokeKind::Outside);
-    if app.is_playing() {
-        let x = r.min.x + app.position() as f32 / total * r.width();
-        ui.painter().line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(1.0, Tokens::current().playhead));
-    }
+    let x = r.min.x + app.position() as f32 / total * r.width();
+    ui.painter().line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(1.0, Tokens::current().playhead));
     let resp = ui.interact(r, ui.id().with("universe"), Sense::click_and_drag());
     if let Some(p) = resp.interact_pointer_pos()
         && (resp.clicked() || resp.dragged())
@@ -1805,7 +1803,8 @@ fn follow_update(
     (false, Some(pos))
 }
 
-/// Selection overlay, insertion point and playhead across rulers and tracks.
+/// Selection overlay and persistent playhead across rulers and tracks.
+/// When stopped, the playhead marks the edit insertion; while playing it follows the transport.
 /// While playing, auto-scroll keeps the playhead in view for the follow
 /// modes (`page`/`continuous`/`center`) — but any outside view move (a manual
 /// pan, scrollbar, universe jump, or programmatic scroll) pauses it, so the
@@ -1838,21 +1837,10 @@ fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
                 Stroke::NONE,
             ));
         }
-    } else if !app.is_playing() {
-        let x = x_of(s, tl, sel.start);
-        let blink = (ui.input(|i| i.time) * 2.0) as i64 % 2 == 0;
-        if blink {
-            for (_, r) in &app.edit_layout.rows {
-                if s.edit.selected_tracks.iter().any(|_| true) {
-                    painter.line_segment([pos2(x, r[1].max(tl.min.y)), pos2(x, r[3])], Stroke::new(1.0, t.insertion));
-                }
-            }
-        }
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
     }
+    let x = x_of(s, tl, app.position());
+    painter.line_segment([pos2(x, area.min.y), pos2(x, area.max.y)], Stroke::new(1.5, t.playhead));
     if app.is_playing() {
-        let x = x_of(s, tl, app.position());
-        painter.line_segment([pos2(x, area.min.y), pos2(x, area.max.y)], Stroke::new(1.5, t.playhead));
         // Session reads first (owned copies), then the layout mutation: the
         // two borrow disjoint fields.
         let pos = app.position();
@@ -1906,7 +1894,37 @@ fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::follow_update;
+    use super::{follow_update, overlay};
+
+    #[test]
+    fn playhead_spans_the_timeline_when_stopped_or_playing() {
+        use crate::{Services, SoundApp};
+        use egui::{Rect, Shape, pos2};
+        use soundcraft_time::Range;
+
+        for (playing, selection) in [(false, Range::point(30_000)), (false, Range::new(30_000, 60_000)), (true, Range::point(30_000))] {
+            for time in [0.0, 0.75] {
+                // No tracks or track selection: the line must still span the entire timeline.
+                let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+                app.engine.session_mut().edit.selection = selection;
+                app.engine.session_mut().edit.zoom.samples_per_px = 1_000.0;
+                app.engine.transport.playing = playing;
+                app.engine.transport.position = 80_000;
+                let tl = Rect::from_min_max(pos2(100.0, 100.0), pos2(900.0, 500.0));
+                let area = Rect::from_min_max(pos2(100.0, 50.0), tl.max);
+                let ctx = egui::Context::default();
+                let mut output = ctx.run_ui(egui::RawInput { time: Some(time), ..Default::default() }, |ui| overlay(&mut app, ui, tl, area));
+                let x = if playing { 180.0 } else { 130.0 };
+                let has_playhead = output.shapes.iter().any(|s| {
+                    matches!(&s.shape, Shape::LineSegment { points, stroke }
+                        if *points == [pos2(x, area.min.y), pos2(x, area.max.y)] && stroke.width == 1.5)
+                });
+                output.textures_delta.clear();
+                assert!(has_playhead, "playing={playing}, selection={selection:?}, time={time}");
+                assert_eq!(app.engine.session().edit.zoom.scroll, 0);
+            }
+        }
+    }
 
     #[test]
     fn follow_jumps_to_offscreen_playhead_while_playing() {
