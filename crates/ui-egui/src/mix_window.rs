@@ -723,9 +723,9 @@ fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rec
         }
         // Return tracks (auxes and folder buses) are displayed by their channel names.
         let returns: Vec<(String, String)> = app.engine.session().tracks.iter()
-            .filter(|t| matches!(t.kind, TrackKind::Aux | TrackKind::Folder))
-            .filter_map(|t| match t.mixer.input {
-                Route::Bus(bus) => app.engine.session().bus(bus).map(|b| (t.name.clone(), b.name.clone())),
+            .filter(|t| t.id != id && matches!(t.kind, TrackKind::Aux | TrackKind::Folder))
+            .filter_map(|t| match &t.mixer.input {
+                Route::Bus(bus) => app.engine.session().bus(*bus).map(|b| (t.name.clone(), b.name.clone())),
                 _ => None,
             }).collect();
         if !returns.is_empty() {
@@ -771,15 +771,14 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
     }
     ui.separator();
     let busses: Vec<String> = app.engine.session().busses.iter().map(|b| b.name.clone()).collect();
-    ui.menu_button("bus", |ui| {
-        for b in &busses {
-            if ui.button(b).clicked() {
-                let _ = app.run(cmd, json!({"track": id.0, key: b}));
-            }
+    ui.label(if input { "Bus inputs" } else { "Output to bus or folder" });
+    for b in &busses {
+        if ui.button(b).clicked() {
+            let _ = app.run(cmd, json!({"track": id.0, key: b}));
         }
-        if ui.button("new bus...").clicked() {
-            let n = busses.len() + 1;
-            let _ = app.run(cmd, json!({"track": id.0, key: format!("Bus {n}")}));
-        }
-    });
+    }
+    if ui.button("New bus...").clicked() {
+        let n = busses.len() + 1;
+        let _ = app.run(cmd, json!({"track": id.0, key: format!("Bus {n}")}));
+    }
 }
