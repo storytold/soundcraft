@@ -303,7 +303,7 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
         painter.circle(pp, 5.0 + div * half, Color32::from_rgba_unmultiplied(80, 160, 230, 28), Stroke::new(1.0, Color32::from_rgb(70, 130, 190)));
     }
     painter.circle(pp, 5.0, t.counter_text, Stroke::new(1.0, Color32::BLACK));
-    let tip = "Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence";
+    let tip = crate::i18n::tr("Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence");
     let _ = resp.on_hover_text(tip);
     // Sliders below: divergence, then elevation for height formats.
     let mut sliders: Vec<(&str, f32, u8)> = vec![("div", div, 0)];
@@ -329,7 +329,7 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
         if sresp.double_clicked() {
             edit = Some(if kind == 0 { PannerEdit::Divergence(0.0) } else { PannerEdit::Height(0.0) });
         }
-        let _ = sresp.on_hover_text(if kind == 0 { "Divergence (0 = point source)" } else { "Elevation (height speakers)" });
+        let _ = sresp.on_hover_text(crate::i18n::tr(if kind == 0 { "Divergence (0 = point source)" } else { "Elevation (height speakers)" }));
     }
     edit
 }
