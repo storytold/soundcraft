@@ -390,4 +390,42 @@ mod tests {
         assert!(res["missing"].as_array().is_some_and(|m| !m.is_empty()), "{res}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+    fn tone_engine() -> (Engine, u64) {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"count": 1, "name": "Tone", "format": "mono"})).unwrap();
+        let track = e.session().tracks[0].id;
+        let tone: Vec<f32> = (0..4_800).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+        let buf = AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+        let src = crate::io::add_source(e.session_mut(), "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let id = e.session_mut().new_clip_id();
+        crate::edit::place_clip(e.session_mut(), track, soundcraft_model::Clip::audio(id, "tone", src, 0, 0, 4_800));
+        e.session_mut().edit.selected_tracks = vec![track];
+        (e, track.0)
+    }
+
+    #[test]
+    fn repeated_consolidate_keeps_distinct_audio_files() {
+        let (mut e, track) = tone_engine();
+        e.execute("edit.consolidate", &json!({"track": track, "start": 0, "end": 4800})).unwrap();
+        let cid = e.session().tracks[0].clips()[0].id;
+        e.execute("clip.gain", &json!({"clip": cid.0, "db": -24.0})).unwrap();
+        e.execute("edit.consolidate", &json!({"track": track, "start": 0, "end": 4800})).unwrap();
+        let consolidated: Vec<_> = e.session().sources.iter().filter(|s| s.name.contains("consolidated")).map(|s| s.path.clone()).collect();
+        assert_eq!(consolidated.len(), 2, "{consolidated:?}");
+        assert_ne!(consolidated[0], consolidated[1]);
+
+        let dir = std::env::temp_dir().join(format!("sc-consolidate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Tone.scraft");
+        e.execute("session.save_as", &json!({"path": path.to_string_lossy()})).unwrap();
+        let mut opened = Engine::default();
+        opened.execute("session.open", &json!({"path": path.to_string_lossy()})).unwrap();
+        let files: Vec<_> = opened.session().sources.iter().filter(|s| s.name.contains("consolidated")).map(|s| dir.join(&s.path)).collect();
+        assert_eq!(files.len(), 2, "{:?}", opened.session().sources);
+        let a = std::fs::read(&files[0]).unwrap();
+        let b = std::fs::read(&files[1]).unwrap();
+        assert_ne!(a, b, "the second consolidation replaced the first file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
