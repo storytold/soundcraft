@@ -638,3 +638,39 @@ fn copy_to_send(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     Ok(json!({}))
 }
+
+#[cfg(test)]
+mod insert_copy_tests {
+    use super::*;
+
+    #[test]
+    fn one_insert_and_chain_copy_keep_parameters_bypass_and_state() {
+        let mut e = crate::demo::demo_engine();
+        let src = e.session().track_by_name("Kick").map(|t| t.id).unwrap();
+        let dst = e.session().track_by_name("Snare").map(|t| t.id).unwrap();
+        let mut ins = Insert::new("eq_7band");
+        ins.params.insert("gain".to_string(), 4.5);
+        ins.bypass = true;
+        ins.preset = "Custom".to_string();
+        ins.set_state_bytes(&[1, 2, 3, 4, 5]);
+        e.session_mut().track_mut(src).unwrap().mixer.inserts[0] = Some(ins.clone());
+        e.session_mut().track_mut(dst).unwrap().mixer.inserts[3] = None;
+        e.execute("mix.insert_copy", &json!({"from_track": src.0, "from_slot": 0, "to_track": dst.0, "to_slot": 3})).unwrap();
+        assert_eq!(e.session().track(dst).unwrap().mixer.inserts[3], Some(ins.clone()));
+
+        e.execute("mix.insert_chain_copy", &json!({"from_track": src.0, "to_track": dst.0})).unwrap();
+        assert_eq!(e.session().track(dst).unwrap().mixer.inserts, e.session().track(src).unwrap().mixer.inserts);
+        assert_eq!(e.session().track(dst).unwrap().mixer.inserts[0], Some(ins));
+    }
+
+    #[test]
+    fn empty_and_missing_insert_copy_fail_without_mutating_destination() {
+        let mut e = crate::demo::demo_engine();
+        let src = e.session().track_by_name("Kick").map(|t| t.id).unwrap();
+        let dst = e.session().track_by_name("Bass").map(|t| t.id).unwrap();
+        e.session_mut().track_mut(src).unwrap().mixer.inserts[7] = None;
+        let before = e.session().track(dst).unwrap().mixer.inserts.clone();
+        assert!(e.execute("mix.insert_copy", &json!({"from_track": src.0, "from_slot": 7, "to_track": dst.0})).is_err());
+        assert_eq!(e.session().track(dst).unwrap().mixer.inserts, before);
+    }
+}
