@@ -358,6 +358,8 @@ impl SoundApp {
 
     fn stop_play(&mut self) {
         if let Some(p) = &self.player {
+            // Half-speed is a separate command. Stop must not leave that rate for the next Play.
+            p.set_speed(1.0);
             p.stop();
         }
         if self.engine.transport.recording {
@@ -908,5 +910,44 @@ mod tests {
     #[test]
     fn automation_write_fires_after_loop_wrap() {
         assert!(automation_step_due(0, 1_000_000, 960));
+    }
+
+    #[test]
+    fn ordinary_play_after_stop_is_full_speed() {
+        use serde_json::json;
+        let engine = soundcraft_engine::Engine::default();
+        let player = soundcraft_playback::Player::new(engine.session_arc());
+        let mut app = super::SoundApp::new(engine, Some(player), super::Services::default());
+        app.engine.execute("edit.select", &json!({"start": 0, "end": 48000})).unwrap();
+        app.engine.execute("options.loop_playback", &json!({"value": true})).unwrap();
+        app.engine.execute("options.pre_post_roll", &json!({"value": false})).unwrap();
+        let speed = |app: &super::SoundApp| app.player.as_ref().map(|p| p.speed()).unwrap_or(0.0);
+        assert!((speed(&app) - 1.0).abs() < 1e-3);
+
+        app.engine.execute("transport.half_speed", &json!({})).unwrap();
+        app.handle_transport(1.0 / 60.0);
+        assert!(app.is_playing());
+        assert!((speed(&app) - 0.5).abs() < 1e-3, "half-speed playback");
+
+        app.engine.execute("transport.stop", &json!({})).unwrap();
+        app.handle_transport(1.0 / 60.0);
+        assert!(!app.is_playing());
+        assert!((speed(&app) - 1.0).abs() < 1e-3, "stop restores full speed");
+
+        app.engine.execute("transport.play", &json!({})).unwrap();
+        app.handle_transport(1.0 / 60.0);
+        assert!(app.is_playing());
+        assert!((speed(&app) - 1.0).abs() < 1e-3, "ordinary play stays at full speed");
+
+        app.engine.execute("transport.stop", &json!({})).unwrap();
+        app.handle_transport(1.0 / 60.0);
+        app.engine.execute("options.loop_playback", &json!({"value": false})).unwrap();
+        app.engine.execute("transport.half_speed", &json!({})).unwrap();
+        app.handle_transport(1.0 / 60.0);
+        assert!((speed(&app) - 0.5).abs() < 1e-3);
+        app.player.as_ref().unwrap().stop();
+        app.handle_transport(1.0 / 60.0);
+        assert!(!app.is_playing());
+        assert!((speed(&app) - 1.0).abs() < 1e-3, "a half-speed pass that ends on its own restores full speed");
     }
 }
