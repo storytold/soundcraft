@@ -436,15 +436,15 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
     };
     let r = match id {
         "window.mix" => {
-            app.ui.window = MainWindow::Mix;
+            crate::main_windows::activate(app, MainWindow::Mix);
             json!({"window": "mix"})
         }
         "window.edit" => {
-            app.ui.window = MainWindow::Edit;
+            crate::main_windows::activate(app, MainWindow::Edit);
             json!({"window": "edit"})
         }
         "window.toggle_mix_edit" => {
-            app.ui.window = if app.ui.window == MainWindow::Edit { MainWindow::Mix } else { MainWindow::Edit };
+            crate::main_windows::activate(app, app.ui.window.other());
             json!({"window": app.ui.window})
         }
         "window.transport" => toggle(&mut app.ui.show_transport),
@@ -508,12 +508,23 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             json!({"configurations": app.ui.configurations.len()})
         }
         "window.arrange_tile" | "window.arrange_tile_h" | "window.arrange_tile_v" | "window.arrange_cascade" => {
-            app.arrange_request = true;
+            use crate::main_windows::Arrangement;
+            let arrangement = match id {
+                "window.arrange_tile_h" => Arrangement::Horizontal,
+                "window.arrange_tile_v" => Arrangement::Vertical,
+                "window.arrange_cascade" => Arrangement::Cascade,
+                _ => Arrangement::Tile,
+            };
+            crate::main_windows::arrange(app, arrangement);
             json!({})
         }
         "window.universe" => toggle(&mut app.ui.show_universe),
         "window.video" => toggle(&mut app.ui.show_video),
         "window.video_universe" => toggle(&mut app.ui.show_video_universe),
+        "window.close" if app.ui.both_windows => {
+            crate::main_windows::request_close(app);
+            json!({})
+        }
         "window.close" | "window.hide_floating" => {
             app.ui.show_transport = false;
             app.ui.show_big_counter = false;

@@ -55,6 +55,8 @@ fn search_chord(m: Modifiers, mac: bool) -> bool {
 }
 
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
+    // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
+    ctx.options_mut(|o| o.zoom_with_keyboard = false);
     if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() {
         return;
     }
@@ -71,6 +73,13 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     for (key, mods) in events {
         if fixed(app, key, mods, mac) {
+            continue;
+        }
+        if let Some((id, _, _, _)) = crate::menus::UI_COMMANDS
+            .iter()
+            .find(|(_, _, _, shortcut)| shortcut.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
+        {
+            let _ = app.run(id, json!({}));
             continue;
         }
         let hit =

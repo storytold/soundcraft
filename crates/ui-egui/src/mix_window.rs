@@ -30,7 +30,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
             .as_ref()
             .filter(|_| app.engine.transport.playing || app.engine.session().tracks.iter().any(|t| t.mixer.input_monitor))
             .map(|p| p.meters());
-        egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::both().id_salt("mix_strips").auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 1.0;
                 for id in ids {

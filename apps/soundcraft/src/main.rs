@@ -48,19 +48,6 @@ impl eframe::App for App {
         if self.0.quit_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        // With the system menu bar there is no egui bar showing the window and dirty state, so the
-        // title carries them; elsewhere the egui menu bar already does.
-        let title = if self.0.native_menu_bar {
-            format!(
-                "{}{} — SoundCraft — {}",
-                self.0.engine.session().name,
-                if self.0.engine.is_dirty() { " *" } else { "" },
-                if self.0.ui.window == soundcraft_ui_egui::MainWindow::Edit { "Edit" } else { "Mix" }
-            )
-        } else {
-            format!("{} — SoundCraft", self.0.engine.session().name)
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.0.raw_input_hook(raw);

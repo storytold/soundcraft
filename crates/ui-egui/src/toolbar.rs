@@ -22,18 +22,20 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let full = ui.max_rect();
     ui.painter().rect_filled(full, 0.0, t.toolbar_bg);
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.add_space(8.0);
-        ui.spacing_mut().item_spacing.x = 8.0;
-        edit_modes(app, ui);
-        zoom_group(app, ui);
-        tools(app, ui);
-        counters(app, ui);
-        grid_nudge(app, ui);
-        transport(app, ui);
-        tempo_meter(app, ui);
-        output_meter(app, ui);
+    egui::ScrollArea::horizontal().id_salt("edit_toolbar_scroll").auto_shrink([false, false]).show(ui, |ui| {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.spacing_mut().item_spacing.x = 8.0;
+            edit_modes(app, ui);
+            zoom_group(app, ui);
+            tools(app, ui);
+            counters(app, ui);
+            grid_nudge(app, ui);
+            transport(app, ui);
+            tempo_meter(app, ui);
+            output_meter(app, ui);
+        });
     });
 }
 

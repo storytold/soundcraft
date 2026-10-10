@@ -11,6 +11,7 @@ pub mod edit_window;
 pub mod extra_windows;
 pub mod fonts;
 pub mod icons;
+pub mod main_windows;
 pub mod menus;
 pub mod midi_editor;
 pub mod mix_window;
@@ -43,11 +44,29 @@ pub enum MainWindow {
     Mix,
 }
 
+impl MainWindow {
+    pub fn other(self) -> Self {
+        match self {
+            Self::Edit => Self::Mix,
+            Self::Mix => Self::Edit,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Edit => "Edit",
+            Self::Mix => "Mix",
+        }
+    }
+}
+
 /// UI state (serde, so agents can read and set it).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct UiState {
     pub window: MainWindow,
+    /// Both main windows share one session; `window` identifies the active one.
+    pub both_windows: bool,
     pub show_tracks_list: bool,
     pub show_clip_list: bool,
     pub show_transport: bool,
@@ -103,6 +122,7 @@ impl Default for UiState {
     fn default() -> Self {
         UiState {
             window: MainWindow::Edit,
+            both_windows: false,
             show_tracks_list: true,
             show_clip_list: true,
             show_transport: false,
@@ -232,8 +252,7 @@ pub struct SoundApp {
     /// Transport simulation when there is no player (tests, offscreen renders).
     sim: Option<(Samples, Option<Samples>, Option<Range>)>,
     pub quit_requested: bool,
-    /// Reset floating-window positions next frame (Window › Arrange).
-    pub arrange_request: bool,
+    pub main_windows: main_windows::WindowState,
     /// Tracks whose automation was touched during this pass (Touch/Latch writing).
     touched: std::collections::HashSet<TrackId>,
     last_write_at: Samples,
@@ -288,7 +307,7 @@ impl SoundApp {
             theme_applied: None,
             sim: None,
             quit_requested: false,
-            arrange_request: false,
+            main_windows: main_windows::WindowState::default(),
             touched: std::collections::HashSet::new(),
             last_write_at: i64::MIN,
             frame_ms: 0.0,
@@ -750,6 +769,7 @@ impl SoundApp {
 
     /// Per-frame logic: control channel, transport, document sync.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        main_windows::handle_root_close(self, ctx);
         // Fonts set now take effect next frame, so draw only from the frame after.
         if !self.fonts_ready {
             if self.fonts_installed {
@@ -770,6 +790,7 @@ impl SoundApp {
         self.last_frame = Some(now);
         self.frame_ms = self.frame_ms * 0.9 + dt * 1000.0 * 0.1;
         control::drain(self, ctx);
+        main_windows::process_requests(self, ctx);
         self.apply_editor_edits();
         if !ctx.input(|i| i.pointer.any_down()) {
             if matches!(self.gesture, Some(Gesture::Fader { .. })) {
@@ -844,26 +865,18 @@ impl SoundApp {
             ctx.request_repaint();
             return;
         }
-        if self.arrange_request {
-            self.arrange_request = false;
-            ctx.memory_mut(|m| m.reset_areas());
-        }
-        shortcuts::handle(self, &ctx);
-        if !self.native_menu_bar {
-            menus::menu_bar(self, ui);
-        }
-        match self.ui.window {
-            MainWindow::Edit => edit_window::show(self, ui),
-            MainWindow::Mix => mix_window::show(self, ui),
-        }
-        panels::floating(self, &ctx);
-        windows::show(self, &ctx);
-        video_window::show(self, &ctx);
-        ops_windows::show(self, &ctx);
-        extra_windows::show(self, &ctx);
-        score_editor::show(self, &ctx);
-        palette::show(self, &ctx);
-        dialogs::show(self, &ctx);
+        main_windows::show(self, ui);
+    }
+
+    pub(crate) fn floating_ui(&mut self, ctx: &egui::Context) {
+        panels::floating(self, ctx);
+        windows::show(self, ctx);
+        video_window::show(self, ctx);
+        ops_windows::show(self, ctx);
+        extra_windows::show(self, ctx);
+        score_editor::show(self, ctx);
+        palette::show(self, ctx);
+        dialogs::show(self, ctx);
     }
 
     /// UI state as JSON (control channel `ui.inspect`).
@@ -871,6 +884,7 @@ impl SoundApp {
         let size = ctx.content_rect().size();
         json!({
             "ui": self.ui,
+            "main_windows": self.main_windows.inspect(self),
             "window_size": [size.x, size.y],
             "playing": self.is_playing(),
             "position": self.position(),

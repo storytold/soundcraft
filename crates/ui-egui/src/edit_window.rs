@@ -77,13 +77,15 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     if app.ui.show_universe {
         egui::Panel::top("universe").exact_size(64.0).frame(egui::Frame::NONE.fill(Tokens::current().universe_bg)).show(ui, |ui| universe(app, ui));
     }
-    if app.ui.show_tracks_list {
+    // Preserve a usable timeline when the main window is tiled narrowly.
+    // These preferences remain enabled and the lists return when it grows.
+    if app.ui.show_tracks_list && ui.available_width() >= HEADER_W + 76.0 + 168.0 {
         egui::Panel::left("tracks_list")
             .exact_size(168.0)
             .frame(egui::Frame::NONE.fill(t.panel_bg))
             .show(ui, |ui| panels::tracks_and_groups(app, ui));
     }
-    if app.ui.show_clip_list {
+    if app.ui.show_clip_list && ui.available_width() >= HEADER_W + 76.0 + 230.0 {
         egui::Panel::right("clip_list").exact_size(230.0).frame(egui::Frame::NONE.fill(t.panel_bg)).show(ui, |ui| panels::clip_list(app, ui));
     }
     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.window_bg)).show(ui, |ui| main_area(app, ui));
@@ -189,7 +191,14 @@ fn main_area(app: &mut SoundApp, ui: &mut Ui) {
     }
     let rulers_h = rulers.iter().map(|r| ruler_height(r)).sum::<f32>() + 6.0;
     let hscroll_h = 14.0;
-    let hw = header_width(app.engine.session());
+    let column_count = ((full.width() - HEADER_W - 76.0).max(0.0) / COLUMN_W).floor();
+    let hw = (HEADER_W + COLUMN_W * column_count.min(edit_columns(app.engine.session()).len() as f32)).min((full.width() - 76.0).max(0.0));
+    if full.height() <= rulers_h + hscroll_h || full.width() <= 12.0 {
+        app.edit_layout.timeline = [full.min.x, full.min.y, full.min.x, full.min.y];
+        app.edit_layout.rows.clear();
+        ui.painter().text(full.center(), Align2::CENTER_CENTER, "Expand the Edit window to show the timeline.", regular(11.0), t.text_dim);
+        return;
+    }
     let header = Rect::from_min_max(full.min, pos2(full.min.x + hw, full.max.y - hscroll_h));
     let tl = Rect::from_min_max(pos2(full.min.x + hw, full.min.y + rulers_h), pos2(full.max.x - 12.0, full.max.y - hscroll_h));
     let rulers_rect = Rect::from_min_max(pos2(full.min.x, full.min.y), pos2(full.max.x, full.min.y + rulers_h));
@@ -625,10 +634,13 @@ fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect, tl: Rect) 
     let s = app.engine.session();
     let Some(track) = s.track(id).cloned() else { return };
     let selected = s.edit.selected_tracks.contains(&id);
-    let head = Rect::from_min_max(row.min, pos2(row.min.x + HEADER_W, row.max.y));
+    let head = Rect::from_min_max(row.min, pos2((row.min.x + HEADER_W).min(tl.min.x), row.max.y));
     let cols = edit_columns(app.engine.session());
     for (i, c) in cols.iter().enumerate() {
         let cr = Rect::from_min_size(pos2(head.max.x + i as f32 * COLUMN_W, row.min.y), vec2(COLUMN_W, row.height()));
+        if cr.max.x > tl.min.x + 0.1 {
+            break;
+        }
         header_column(app, ui, &track, c, cr);
     }
     let main_h = track.height.points();
