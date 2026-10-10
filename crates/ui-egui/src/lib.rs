@@ -156,6 +156,7 @@ impl Default for UiState {
 pub struct Services {
     pub pick_open: Option<Box<dyn Fn(&str, &[&str]) -> Option<String>>>,
     pub pick_save: Option<Box<dyn Fn(&str, &str) -> Option<String>>>,
+    pub pick_folder: Option<Box<dyn Fn(&str) -> Option<String>>>,
 }
 
 /// File-system-safe folder name for a plugin id (`clap:com.x.y` → `clap_com.x.y`).

@@ -165,6 +165,9 @@ fn services() -> Services {
             }
             d.save_file().map(|p| p.to_string_lossy().into_owned())
         })),
+        pick_folder: Some(Box::new(|start: &str| {
+            rfd::FileDialog::new().set_directory(start).pick_folder().map(|p| p.to_string_lossy().into_owned())
+        })),
     }
 }
 
