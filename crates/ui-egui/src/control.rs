@@ -7,6 +7,7 @@
 //! - `engine.commands {filter?}`, `engine.parity`, `session.inspect {detail?}`, `ui.inspect`
 //! - `ui.menu.list`, `ui.menu.invoke {path: "Track > New..." | id}` (menu-style: may open dialogs)
 //! - `ui.click {x,y,button?,count?,mods?}`, `ui.move {x,y}`, `ui.drag {x,y,to_x,to_y,steps?}`
+//! - `ui.scroll {x,y,dx?,dy?,unit?,steps?,mods?}` (trackpad swipe or wheel), `ui.zoom {x,y,factor,steps?}` (pinch)
 //! - `ui.key {key, cmd?, shift?, alt?, ctrl?}`, `ui.text {text}`
 //! - `ui.screenshot {path?}` (PNG; base64 when no path), `ui.set {...UiState fields}`
 //! - `app.quit`
@@ -91,6 +92,8 @@ fn mods(p: &Value) -> egui::Modifiers {
 fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Option<Value> {
     let p = &req.params;
     let f = |k: &str| p.get(k).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    let pos = egui::pos2(f("x"), f("y"));
+    let steps = p.get("steps").and_then(Value::as_u64).unwrap_or(8).clamp(1, 200);
     Some(match req.method.as_str() {
         "engine.execute" | "command" => {
             let id = p.get("command").or_else(|| p.get("id")).and_then(Value::as_str).unwrap_or("");
@@ -147,11 +150,10 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
             Err(e) => err(e),
         },
         "ui.move" => {
-            app.synthetic.push(egui::Event::PointerMoved(egui::pos2(f("x"), f("y"))));
+            app.synthetic.push(egui::Event::PointerMoved(pos));
             ok(json!({}))
         }
         "ui.click" => {
-            let pos = egui::pos2(f("x"), f("y"));
             let button = match p.get("button").and_then(Value::as_str) {
                 Some("right") | Some("secondary") => egui::PointerButton::Secondary,
                 _ => egui::PointerButton::Primary,
@@ -166,9 +168,7 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
             ok(json!({}))
         }
         "ui.drag" => {
-            let a = egui::pos2(f("x"), f("y"));
-            let b = egui::pos2(f("to_x"), f("to_y"));
-            let steps = p.get("steps").and_then(Value::as_u64).unwrap_or(8).clamp(1, 200);
+            let (a, b) = (pos, egui::pos2(f("to_x"), f("to_y")));
             let m = mods(p);
             app.synthetic.push(egui::Event::PointerMoved(a));
             app.synthetic.push(egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: m });
@@ -177,6 +177,27 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
                 app.synthetic.push(egui::Event::PointerMoved(a + (b - a) * k));
             }
             app.synthetic.push(egui::Event::PointerButton { pos: b, button: egui::PointerButton::Primary, pressed: false, modifiers: m });
+            ok(json!({}))
+        }
+        "ui.scroll" => {
+            let line = p.get("unit").and_then(Value::as_str) == Some("line");
+            let unit = if line { egui::MouseWheelUnit::Line } else { egui::MouseWheelUnit::Point };
+            let d = |k: &str| f(k).clamp(-100_000.0, 100_000.0) / steps as f32;
+            let (delta, modifiers) = (egui::vec2(d("dx"), d("dy")), mods(p));
+            let wheel = |phase, delta| egui::Event::MouseWheel { unit, delta, phase, modifiers };
+            app.synthetic.push(egui::Event::PointerMoved(pos));
+            app.synthetic.extend((!line).then(|| wheel(egui::TouchPhase::Start, egui::Vec2::ZERO)));
+            app.synthetic.extend((0..steps).map(|_| wheel(egui::TouchPhase::Move, delta)));
+            app.synthetic.extend((!line).then(|| wheel(egui::TouchPhase::End, egui::Vec2::ZERO)));
+            ok(json!({}))
+        }
+        "ui.zoom" => {
+            let Some(factor) = p.get("factor").and_then(Value::as_f64).filter(|v| *v > 0.0) else {
+                return Some(err("ui.zoom needs a positive factor (> 1 zooms in)"));
+            };
+            let each = factor.clamp(1e-3, 1e3).powf(1.0 / steps as f64) as f32;
+            app.synthetic.push(egui::Event::PointerMoved(pos));
+            app.synthetic.extend((0..steps).map(|_| egui::Event::Zoom(each)));
             ok(json!({}))
         }
         "ui.key" => {

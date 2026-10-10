@@ -17,6 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
         run: insert_state,
         journal: false,
         undoable: false,
+        view: false,
     }]
 }
 
