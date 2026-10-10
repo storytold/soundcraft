@@ -16,7 +16,8 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             new_track
         ),
-        cmd!("track.group", "Group...", ["Track"], Some("Cmd+G"), "{name?, tracks?, edit?: true, mix?: true}", has_selection, group),
+        cmd!("track.group", "Group...", ["Track"], None, "{name?, tracks?, edit?: true, mix?: true}", has_selection, group),
+        cmd!("track.bus_folder", "Create Bus Folder", ["Track"], Some("Cmd+G"), "{tracks?, name?}", has_selection, move_to_folder),
         cmd!("track.ungroup", "Delete Group", [], None, "{group: id|name}", always, delete_group),
         cmd!("track.group_toggle", "Toggle Group Active", [], None, "{group: id|name}", always, toggle_group),
         cmd!(
@@ -69,6 +70,7 @@ pub fn specs() -> Vec<CommandSpec> {
         )),
         cmd!("track.pin", "Pin Track", [], None, "{tracks?}", has_selection, |e, p| flag(e, p, "track.pin", |t, v| t.pinned = v, |t| t.pinned)),
         cmd!("track.move", "Move Track", [], None, "{track, to: index}", has_tracks, move_track),
+        cmd!("track.folder_assign", "Move into Bus Folder", [], None, "{tracks?, folder: track id|name}", has_tracks, folder_assign),
         cmd!("track.freeze", "Freeze", ["Track"], None, "{tracks?}", has_selection, |e, p| flag(
             e,
             p,
@@ -405,12 +407,43 @@ fn move_to_folder(e: &mut Engine, p: &Value) -> Result<Value> {
     for t in &tracks {
         if let Some(tr) = s.track_mut(*t) {
             tr.folder = Some(fid);
-            if tr.mixer.output == Route::Main {
-                tr.mixer.output = Route::Bus(bus);
-            }
+            tr.mixer.output = Route::Bus(bus);
         }
     }
     Ok(json!({"folder": fid, "bus": bus}))
+}
+
+fn folder_assign(e: &mut Engine, p: &Value) -> Result<Value> {
+    let folder = track_param(e, "track.folder_assign", p, "folder")?.ok_or_else(|| bad("track.folder_assign", "`folder` required"))?;
+    let tracks = tracks_required(e, "track.folder_assign", p)?;
+    let s = e.session_mut();
+    let target = s.track(folder).ok_or_else(|| bad("track.folder_assign", "folder not found"))?;
+    if target.kind != TrackKind::Folder {
+        return Err(bad("track.folder_assign", "target is not a routing folder"));
+    }
+    let Route::Bus(bus) = target.mixer.input else {
+        return Err(bad("track.folder_assign", "folder has no input bus"));
+    };
+    for id in &tracks {
+        let tr = s.track(*id).ok_or_else(|| bad("track.folder_assign", "source track not found"))?;
+        if matches!(tr.kind, TrackKind::Folder | TrackKind::Master | TrackKind::Vca | TrackKind::Video) {
+            return Err(bad("track.folder_assign", "only audio, instrument, MIDI and aux tracks can join a bus folder"));
+        }
+    }
+    let mut moved = Vec::new();
+    for id in &tracks {
+        if let Some(i) = s.track_index(*id) {
+            moved.push(s.tracks.remove(i));
+        }
+    }
+    let at = s.tracks.iter().enumerate().filter(|(_, t)| t.id == folder || t.folder == Some(folder))
+        .map(|(i, _)| i + 1).max().ok_or_else(|| bad("track.folder_assign", "folder not found"))?;
+    for (offset, mut tr) in moved.into_iter().enumerate() {
+        tr.folder = Some(folder);
+        tr.mixer.output = Route::Bus(bus);
+        s.tracks.insert(at + offset, tr);
+    }
+    Ok(json!({"folder": folder, "tracks": tracks}))
 }
 
 fn change_width(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -679,5 +712,21 @@ mod tests {
         let kick = s.track_by_name("Kick").unwrap();
         assert!(matches!(kick.mixer.output, Route::Bus(_)));
         assert!(s.tracks.iter().any(|t| t.kind == TrackKind::Folder && t.mixer.input == kick.mixer.output));
+    }
+
+    #[test]
+    fn bus_folder_accepts_track_and_routes_through_its_fader() {
+        let mut e = crate::demo::demo_engine();
+        let r = e.execute("track.bus_folder", &json!({"tracks": ["Kick", "Snare"], "name": "Drums"})).unwrap();
+        let fid = r["folder"].as_u64().unwrap();
+        e.execute("track.folder_assign", &json!({"tracks": ["Bass"], "folder": fid})).unwrap();
+        let s = e.session();
+        let folder = s.track(soundcraft_model::TrackId(fid)).unwrap();
+        let bass = s.track_by_name("Bass").unwrap();
+        assert_eq!(bass.folder, Some(folder.id));
+        assert_eq!(bass.mixer.output, folder.mixer.input);
+        assert_eq!(folder.mixer.output, Route::Main);
+        assert!(e.execute("mix.volume", &json!({"track": fid, "db": -9.0})).is_ok());
+        assert_eq!(e.session().track(folder.id).unwrap().mixer.volume_db, -9.0);
     }
 }
