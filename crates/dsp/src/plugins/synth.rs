@@ -97,7 +97,7 @@ const VOICES: usize = 16;
 const SILENT: f32 = 1.0e-5;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Stage {
+pub(crate) enum Stage {
     Idle,
     Attack,
     Decay,
@@ -107,13 +107,13 @@ enum Stage {
 
 /// Linear-attack, exponential decay/release ADSR. Times are "to -60 dB" for decay/release.
 #[derive(Debug, Clone, Copy)]
-struct Adsr {
-    stage: Stage,
-    level: f32,
+pub(crate) struct Adsr {
+    pub(crate) stage: Stage,
+    pub(crate) level: f32,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct AdsrRates {
+pub(crate) struct AdsrRates {
     attack: f32,
     decay: f32,
     sustain: f32,
@@ -121,29 +121,29 @@ struct AdsrRates {
 }
 
 impl AdsrRates {
-    fn new(a_ms: f32, d_ms: f32, s: f32, r_ms: f32, sr: f32) -> Self {
+    pub(crate) fn new(a_ms: f32, d_ms: f32, s: f32, r_ms: f32, sr: f32) -> Self {
         let exp60 = |ms: f32| (0.001f32.ln() / ms_to_samples(ms, sr).max(1.0)).exp();
         Self { attack: 1.0 / ms_to_samples(a_ms, sr).max(1.0), decay: exp60(d_ms), sustain: s.clamp(0.0, 1.0), release: exp60(r_ms) }
     }
 }
 
 impl Adsr {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self { stage: Stage::Idle, level: 0.0 }
     }
 
-    fn gate_on(&mut self) {
+    pub(crate) fn gate_on(&mut self) {
         self.stage = Stage::Attack;
     }
 
-    fn gate_off(&mut self) {
+    pub(crate) fn gate_off(&mut self) {
         if self.stage != Stage::Idle {
             self.stage = Stage::Release;
         }
     }
 
     #[inline]
-    fn next(&mut self, r: &AdsrRates) -> f32 {
+    pub(crate) fn next(&mut self, r: &AdsrRates) -> f32 {
         match self.stage {
             Stage::Idle => self.level = 0.0,
             Stage::Attack => {

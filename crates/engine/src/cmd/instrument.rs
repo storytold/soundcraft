@@ -8,15 +8,26 @@ use serde_json::json;
 use soundcraft_model::{Insert, TrackKind};
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![cmd!(
-        "mix.instrument",
-        "Set Instrument",
-        [],
-        None,
-        "{track?, plugin: id} — an instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id",
-        has_selection,
-        set_instrument
-    )]
+    vec![
+        cmd!(
+            "mix.instrument",
+            "Set Instrument",
+            [],
+            None,
+            "{track?, plugin: id} — an instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id",
+            has_selection,
+            set_instrument
+        ),
+        cmd!(
+            "mix.instrument_param",
+            "Set Instrument Parameter",
+            [],
+            None,
+            "{track?, param, value}: one parameter of an instrument track's built-in instrument (clamped into range)",
+            has_selection,
+            set_instrument_param
+        ),
+    ]
 }
 
 fn set_instrument(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -37,6 +48,20 @@ fn set_instrument(e: &mut Engine, p: &Value) -> Result<Value> {
         tr.instrument = Some(ins);
     }
     Ok(json!({"track": t, "plugin": info.id}))
+}
+
+fn set_instrument_param(e: &mut Engine, p: &Value) -> Result<Value> {
+    let id = "mix.instrument_param";
+    let param = str_param(p, "param").ok_or_else(|| bad(id, "`param` required"))?.to_string();
+    let value = p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(id, "`value` must be a number"))? as f32;
+    let t = tracks_required(e, id, p)?.first().copied().ok_or_else(|| bad(id, "no track"))?;
+    let ins = e.session_mut().track_mut(t).and_then(|tr| tr.instrument.as_mut()).ok_or_else(|| bad(id, "the track has no instrument"))?;
+    // Hosted instruments keep their parameters in their own state.
+    let info = soundcraft_dsp::plugin_info(&ins.plugin).ok_or_else(|| bad(id, format!("`{}` is not a built-in instrument", ins.plugin)))?;
+    let pi = info.param(&param).ok_or_else(|| bad(id, format!("`{}` has no parameter `{param}`", info.id)))?;
+    let v = pi.clamp(value);
+    ins.params.insert(param.clone(), v);
+    Ok(json!({"track": t, "param": param, "value": v}))
 }
 
 #[cfg(test)]
@@ -66,6 +91,24 @@ mod tests {
         assert_eq!(params, soundcraft_dsp::plugin_info("drum_synth").map(|p| p.params.len()), "every parameter at its default");
         e.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(instrument_of(&e, t).as_deref(), Some("subtractive_synth"));
+    }
+
+    #[test]
+    fn sets_a_built_in_instruments_parameters() {
+        let mut e = Engine::default();
+        let t = track(&mut e, "instrument");
+        let r = e.execute("mix.instrument_param", &json!({"track": t.0, "param": "cutoff", "value": 5000})).unwrap();
+        assert_eq!(r["value"], 5000.0);
+        let r = e.execute("mix.instrument_param", &json!({"track": t.0, "param": "cutoff", "value": 1.0e9})).unwrap();
+        assert_eq!(r["value"], 20000.0, "clamped");
+        let v = e.session().track(t).and_then(|tr| tr.instrument.as_ref()).and_then(|i| i.params.get("cutoff").copied());
+        assert_eq!(v, Some(20000.0));
+        assert!(e.execute("mix.instrument_param", &json!({"track": t.0, "param": "nope", "value": 1})).is_err());
+        assert!(e.execute("mix.instrument_param", &json!({"track": t.0, "param": "cutoff"})).is_err());
+        assert!(e.execute("mix.instrument_param", &json!({"track": t.0, "param": "cutoff", "value": "loud"})).is_err());
+        let audio = track(&mut e, "audio");
+        assert!(e.execute("mix.instrument_param", &json!({"track": audio.0, "param": "cutoff", "value": 1})).is_err());
+        e.execute("edit.undo", &json!({})).unwrap();
     }
 
     #[test]

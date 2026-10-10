@@ -1,7 +1,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 //! SoundCraft DSP.
 //!
-//! Realtime plugins (EQ, dynamics, reverb, delay, modulation, harmonic, pitch, utilities and two
+//! Realtime plugins (EQ, dynamics, reverb, delay, modulation, harmonic, pitch, utilities and three
 //! instruments), metering (peak, RMS, ITU-R BS.1770 loudness), spectrum analysis and offline
 //! AudioSuite-style whole-buffer processing.
 //!
@@ -27,6 +27,8 @@ mod util;
 pub use offline::FadeShape;
 pub use osc::Waveform;
 pub use plugins::eq::{eq1_response, eq7_response};
+
+use std::sync::Arc;
 
 /// Plugin category, used to group the insert menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -197,6 +199,13 @@ pub trait Plugin: Send {
     fn note_on(&mut self, _offset: usize, _note: u8, _velocity: u8) {}
     fn note_off(&mut self, _offset: usize, _note: u8) {}
     fn all_notes_off(&mut self) {}
+    /// Sample-playing instruments (the Sampler): the recorded audio to play, `None` to clear it.
+    /// `false` when the plugin does not play samples. Does not allocate; sounding voices stop.
+    /// The previous sample is dropped here, so hosts keep their own reference to it (the
+    /// session's source pool does) to keep deallocation off the audio thread.
+    fn set_sample(&mut self, _sample: Option<Arc<dyn SampleSource>>) -> bool {
+        false
+    }
     /// The plugin's complete internal state as an opaque blob (third-party plugins), for saving
     /// in the session. `None` when the plugin has no state beyond its parameters (built-ins) or
     /// the plugin refused. May allocate: never call it in steady-state audio processing.
@@ -238,6 +247,40 @@ pub trait PluginEditor: Send {
     /// Tells the editor that a parameter changed elsewhere (generic editor, automation), so the
     /// GUI shows it. Values are in SoundCraft units.
     fn set_param(&mut self, _id: &str, _value: f32) {}
+}
+
+/// Recorded audio a sample-playing instrument reads: planar `f32` at its own sample rate (the
+/// instrument converts rates as it plays). Implementations must be cheap to read from the audio
+/// thread: no locks, no I/O.
+pub trait SampleSource: Send + Sync {
+    /// Sample rate of the audio in Hz.
+    fn sample_rate(&self) -> f32;
+    fn num_channels(&self) -> usize;
+    /// One channel's frames (`None` past the last channel).
+    fn channel(&self, ch: usize) -> Option<&[f32]>;
+    /// Frames per channel (the shortest channel, so every index below it is readable).
+    fn frames(&self) -> usize {
+        (0..self.num_channels()).filter_map(|c| self.channel(c)).map(<[f32]>::len).min().unwrap_or(0)
+    }
+}
+
+/// A sample held in memory (tests, generated audio).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SampleBuffer {
+    pub sample_rate: f32,
+    pub channels: Vec<Vec<f32>>,
+}
+
+impl SampleSource for SampleBuffer {
+    fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+    fn num_channels(&self) -> usize {
+        self.channels.len()
+    }
+    fn channel(&self, ch: usize) -> Option<&[f32]> {
+        self.channels.get(ch).map(Vec::as_slice)
+    }
 }
 
 /// The plugin registry.
@@ -297,5 +340,22 @@ mod trait_default_tests {
             p.close_editor();
             assert!(p.editor().is_none(), "{}", info.id);
         }
+    }
+
+    #[test]
+    fn only_the_sampler_takes_samples() {
+        for info in plugins() {
+            let mut p = create(info.id).unwrap();
+            let s: Arc<dyn SampleSource> = Arc::new(SampleBuffer { sample_rate: 48_000.0, channels: vec![vec![0.0; 16]] });
+            assert_eq!(p.set_sample(Some(s)), info.id == "sampler", "{}", info.id);
+            assert_eq!(p.set_sample(None), info.id == "sampler", "{}", info.id);
+        }
+    }
+
+    #[test]
+    fn sample_buffer_frames_is_the_shortest_channel() {
+        let s = SampleBuffer { sample_rate: 44_100.0, channels: vec![vec![0.0; 10], vec![0.0; 7]] };
+        assert_eq!(s.frames(), 7);
+        assert_eq!(SampleBuffer::default().frames(), 0);
     }
 }
