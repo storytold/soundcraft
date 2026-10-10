@@ -3,6 +3,7 @@
 
 use crate::pcm::{PcmKind, Quantizer, clamp_float, deinterleave, le_u16, le_u32, le_u64, tag, validate_buffer};
 use crate::{AudioBuffer, AudioError, AudioInfo, BitDepth, BwfInfo, FileFormat, Result, SampleFormat};
+use std::io::{Read, Seek, SeekFrom};
 
 const WAVE_FORMAT_PCM: u16 = 1;
 const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
@@ -17,6 +18,54 @@ pub(crate) struct WavLayout {
     pub kind: PcmKind,
     pub data_start: usize,
     pub data_len: usize,
+}
+
+/// A bounded, file-backed PCM WAV reader. It keeps only the requested interleaved window in
+/// memory; compressed WAV variants continue to use the existing decoder path.
+pub struct DiskWavReader {
+    file: std::fs::File,
+    layout: WavLayout,
+    block: usize,
+}
+
+impl DiskWavReader {
+    /// Open a native PCM/float WAV without decoding the recording into one large allocation.
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let mut file = std::fs::File::open(path).map_err(|e| AudioError::Malformed(e.to_string()))?;
+        let len = file.metadata().map_err(|e| AudioError::Malformed(e.to_string()))?.len();
+        let header_len = usize::try_from(len.min(1024 * 1024)).map_err(|_| AudioError::TooLarge("WAV header is too large".into()))?;
+        let mut header = vec![0; header_len];
+        file.read_exact(&mut header).map_err(|e| AudioError::Malformed(e.to_string()))?;
+        let WavParse::Native(mut layout) = parse(&header)? else {
+            return Err(AudioError::Unsupported("disk streaming currently supports native PCM/float WAV only".into()));
+        };
+        let available = len.saturating_sub(layout.data_start as u64);
+        layout.data_len = usize::try_from(available).unwrap_or(usize::MAX);
+        let block = layout
+            .kind
+            .bytes()
+            .checked_mul(usize::from(layout.info.channels))
+            .ok_or_else(|| AudioError::Malformed("WAV block size overflow".into()))?;
+        layout.info.frames = (layout.data_len / block) as u64;
+        Ok(Self { file, layout, block })
+    }
+
+    pub fn info(&self) -> &AudioInfo {
+        &self.layout.info
+    }
+
+    /// Read at most `frames` starting at `start`, returning planar samples.
+    pub fn read_frames(&mut self, start: u64, frames: usize) -> Result<AudioBuffer> {
+        let start_frame = start.min(self.layout.info.frames);
+        let count = frames.min((self.layout.info.frames - start_frame) as usize);
+        let bytes = count.checked_mul(self.block).ok_or_else(|| AudioError::TooLarge("requested audio window is too large".into()))?;
+        let offset = (self.layout.data_start as u64).saturating_add(start_frame.saturating_mul(self.block as u64));
+        self.file.seek(SeekFrom::Start(offset)).map_err(|e| AudioError::Malformed(e.to_string()))?;
+        let mut data = vec![0; bytes];
+        self.file.read_exact(&mut data).map_err(|e| AudioError::Malformed(e.to_string()))?;
+        let channels = deinterleave(&data, self.layout.kind, usize::from(self.layout.info.channels), count as u64)?;
+        Ok(AudioBuffer { sample_rate: self.layout.info.sample_rate, channels })
+    }
 }
 
 /// Outcome of parsing a WAV header.
