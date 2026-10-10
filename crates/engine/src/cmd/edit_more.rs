@@ -663,8 +663,10 @@ fn snap(e: &mut Engine, p: &Value, next: bool) -> Result<Value> {
     let mut moved = 0;
     for (id, _) in order {
         let Some((t, c)) = s.find_clip(id).map(|(t, c)| (t, c.clone())) else { continue };
-        let others =
-            s.track(t).map(|tr| tr.clips().iter().filter(|x| x.id != id && !ids.contains(&x.id)).cloned().collect::<Vec<_>>()).unwrap_or_default();
+        // Selected neighbours are real destinations. Ignoring them made Snap to Next
+        // pile every selected clip onto the same later clip, and Snap to Previous
+        // leave the gap between the selected clips in place.
+        let others = s.track(t).map(|tr| tr.clips().iter().filter(|x| x.id != id).cloned().collect::<Vec<_>>()).unwrap_or_default();
         let delta = if next {
             others.iter().filter(|x| x.start >= c.end()).map(|x| x.start).min().map(|st| st - c.end())
         } else {
@@ -980,6 +982,19 @@ mod tests {
         assert_eq!(starts(&e, t), vec![0, 100, 1000]);
         e.execute("edit.snap_next", &json!({"clip": ids[1].0})).unwrap();
         assert_eq!(starts(&e, t), vec![0, 900, 1000]);
+    }
+
+    #[test]
+    fn snap_selected_neighbours_keeps_both_clips() {
+        let (mut e, t, ids) = session_with_clips(&[(0, 100), (300, 100), (1000, 100)]);
+        e.execute("edit.snap_next", &json!({"clips": [ids[0].0, ids[1].0]})).unwrap();
+        assert_eq!(e.session().track(t).unwrap().clips().len(), 3);
+        assert_eq!(starts(&e, t), vec![800, 900, 1000]);
+
+        let (mut e, t, ids) = session_with_clips(&[(0, 100), (300, 100), (1000, 100)]);
+        e.execute("edit.snap_previous", &json!({"clips": [ids[0].0, ids[1].0]})).unwrap();
+        assert_eq!(e.session().track(t).unwrap().clips().len(), 3);
+        assert_eq!(starts(&e, t), vec![0, 100, 1000]);
     }
 
     #[test]
