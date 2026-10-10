@@ -362,4 +362,69 @@ mod tests {
         assert_eq!(c.length, 18_000);
         assert_ne!(c.source(), Some(src));
     }
+
+    fn peak_from(ch: &[f32], start: usize) -> f32 {
+        ch.get(start..).unwrap_or(&[]).iter().fold(0.0f32, |m, x| m.max(x.abs()))
+    }
+
+    fn max_abs_diff(a: &[Vec<f32>], b: &[Vec<f32>]) -> f32 {
+        a.iter().zip(b.iter()).flat_map(|(x, y)| x.iter().zip(y.iter()).map(|(p, q)| (p - q).abs())).fold(0.0f32, f32::max)
+    }
+
+    /// Gain and effects renders bake the current varispeed. The clip must not keep stretching the result.
+    #[test]
+    fn render_preserves_stretched_audio() {
+        for command in ["clip.gain_render", "clip.effects_render"] {
+            for ratio in [0.5_f64, 1.0, 2.0] {
+                let mut s = Session::default();
+                let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+                let tone: Vec<f32> = (0..9_600).map(|i| (i as f32 * 0.05).sin() * 0.4).collect();
+                let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+                let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+                let id = s.new_clip_id();
+                crate::edit::place_clip(&mut s, t, Clip::audio(id, "tone", src, 0, 0, 9_600));
+                s.edit.selected_clips = vec![id];
+                let mut e = Engine::new(s);
+                e.execute("clip.gain", &json!({"clip": id.0, "db": -6.0})).unwrap();
+                e.execute("clip.conform_to_tempo", &json!({"clip": id.0, "source_bpm": 120.0 * ratio})).unwrap();
+                if command == "clip.effects_render" {
+                    e.execute("clip.effects_set", &json!({"clip": id.0, "params": {"gain": 3.0}})).unwrap();
+                }
+                let range = e.session().find_clip(id).unwrap().1.range();
+                let before = soundcraft_mix::render_clips(e.session(), t, range);
+                e.execute(command, &json!({"clip": id.0})).unwrap();
+                let c = e.session().find_clip(id).unwrap().1.clone();
+                assert!((c.stretch - 1.0).abs() < 1e-9, "{command} ratio {ratio} left stretch {}", c.stretch);
+                assert_eq!(c.gain_db, 0.0);
+                let after = soundcraft_mix::render_clips(e.session(), t, range);
+                let diff = max_abs_diff(&before, &after);
+                assert!(diff < 1e-5, "{command} ratio {ratio} changed the audio by {diff}");
+                if ratio < 1.0 {
+                    let tail = before.first().map(|ch| peak_from(ch, ch.len() / 2)).unwrap_or(0.0);
+                    assert!(tail > 0.02, "{command} conformed tail was silent before render: {tail}");
+                }
+            }
+        }
+
+        // Varispeed on a non-elastic track does not change the clip length. Render still matches it.
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let tone: Vec<f32> = (0..9_600).map(|i| (i as f32 * 0.05).sin() * 0.4).collect();
+        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let id = s.new_clip_id();
+        crate::edit::place_clip(&mut s, t, Clip::audio(id, "tone", src, 0, 0, 9_600));
+        s.edit.selected_clips = vec![id];
+        let mut e = Engine::new(s);
+        e.execute("clip.elastic_properties", &json!({"clip": id.0, "ratio": 0.5})).unwrap();
+        e.execute("clip.gain", &json!({"clip": id.0, "db": -6.0})).unwrap();
+        let range = e.session().find_clip(id).unwrap().1.range();
+        let before = soundcraft_mix::render_clips(e.session(), t, range);
+        e.execute("clip.gain_render", &json!({"clip": id.0})).unwrap();
+        let c = e.session().find_clip(id).unwrap().1.clone();
+        assert_eq!(c.length, 9_600);
+        assert!((c.stretch - 1.0).abs() < 1e-9);
+        let after = soundcraft_mix::render_clips(e.session(), t, range);
+        assert!(max_abs_diff(&before, &after) < 1e-5);
+    }
 }
