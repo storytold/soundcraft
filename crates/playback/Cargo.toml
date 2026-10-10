@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 soundcraft-time.workspace = true
+soundcraft-audio-io.workspace = true
 soundcraft-model.workspace = true
 soundcraft-mix.workspace = true
 soundcraft-dsp.workspace = true
@@ -19,9 +20,6 @@ cpal.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 cpal = { workspace = true, features = ["wasm-bindgen"] }
-
-[dev-dependencies]
-soundcraft-audio-io.workspace = true
 
 [lints]
 workspace = true

@@ -1,22 +1,78 @@
 //! Audio input capture for recording.
 //!
-//! A [`Recorder`] opens the default input device and appends interleaved samples to a shared
-//! buffer while armed. The callback only `try_lock`s; if the UI thread holds the lock the block is
-//! kept in a small local backlog and appended next time, so nothing blocks the audio thread.
+//! A [`Recorder`] opens the default input device. While armed, the input callback copies each
+//! block into a preallocated lock-free ring (it never locks or allocates), and a writer thread
+//! streams the ring into one WAV file per take, rewriting the header every second so a crash leaves
+//! a playable file.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::fs::File;
+use std::io::{Seek, SeekFrom, Write};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-/// Captured audio: planar f32 at `sample_rate`.
-#[derive(Debug, Clone, Default)]
-pub struct Take {
-    pub sample_rate: u32,
-    pub channels: Vec<Vec<f32>>,
+use soundcraft_model::TrackId;
+
+/// What [`Recorder::finish`] returns: the takes that hold audio and the first problem met.
+pub type Takes = (Vec<(TrackId, PathBuf)>, Option<String>);
+
+const RING_SECONDS: usize = 4;
+
+/// Single-producer single-consumer FIFO of samples (input callback → writer thread). The slots
+/// are atomics, so it needs no lock and no `unsafe`.
+struct CaptureRing {
+    slots: Box<[AtomicU32]>,
+    mask: usize,
+    head: AtomicUsize,
+    tail: AtomicUsize,
+}
+
+impl CaptureRing {
+    fn new(capacity: usize) -> CaptureRing {
+        let n = capacity.max(2).next_power_of_two();
+        CaptureRing { slots: (0..n).map(|_| AtomicU32::new(0)).collect(), mask: n - 1, head: AtomicUsize::new(0), tail: AtomicUsize::new(0) }
+    }
+
+    /// Queue up to `n` samples (`sample(i)` is the i-th); returns how many fit.
+    fn push(&self, n: usize, sample: impl Fn(usize) -> f32) -> usize {
+        let head = self.head.load(Ordering::Relaxed);
+        let n = n.min(self.slots.len().saturating_sub(head.wrapping_sub(self.tail.load(Ordering::Acquire))));
+        for i in 0..n {
+            if let Some(slot) = self.slots.get(head.wrapping_add(i) & self.mask) {
+                slot.store(sample(i).to_bits(), Ordering::Relaxed);
+            }
+        }
+        self.head.store(head.wrapping_add(n), Ordering::Release);
+        n
+    }
+
+    fn pop_all(&self, out: &mut Vec<f32>) {
+        let (tail, head) = (self.tail.load(Ordering::Relaxed), self.head.load(Ordering::Acquire));
+        out.extend(
+            (0..head.wrapping_sub(tail))
+                .map(|i| self.slots.get(tail.wrapping_add(i) & self.mask).map_or(0.0, |s| f32::from_bits(s.load(Ordering::Relaxed)))),
+        );
+        self.tail.store(head, Ordering::Release);
+    }
 }
 
 struct Shared {
     armed: AtomicBool,
-    data: Mutex<Vec<f32>>,
+    ring: CaptureRing,
+    /// Samples lost while the ring was full.
+    dropped: AtomicUsize,
+}
+
+impl Shared {
+    /// The input callback's work while armed. Samples that don't fit are owed (`owed`) and queued
+    /// as silence before the next block, so the take keeps its timing.
+    fn capture(&self, data: &[f32], owed: &mut usize) {
+        *owed -= self.ring.push(*owed, |_| 0.0);
+        let kept = if *owed == 0 { self.ring.push(data.len(), |i| data.get(i).copied().unwrap_or(0.0)) } else { 0 };
+        *owed = owed.saturating_add(data.len() - kept);
+        self.dropped.fetch_add(data.len() - kept, Ordering::Relaxed);
+    }
 }
 
 pub struct Recorder {
@@ -28,11 +84,8 @@ pub struct Recorder {
     pub device_name: String,
     pub sample_rate: u32,
     pub channels: usize,
+    writer: Option<std::thread::JoinHandle<Takes>>,
 }
-
-/// Cap: one hour of 8-channel 192 kHz audio; 64 Mi samples (256 MB of f32) on 32-bit targets
-/// (wasm32, i686), where the 64-bit product doesn't fit in `usize`.
-const MAX_SAMPLES: usize = if usize::BITS >= 64 { (3600u64 * 192_000 * 8) as usize } else { 64 << 20 };
 
 impl Recorder {
     /// Open the default input device. Errors when there is none (the caller shows a message).
@@ -48,29 +101,23 @@ impl Recorder {
             return Err(format!("unsupported input sample format {:?}", cfg.sample_format()));
         }
         let config = cfg.config();
-        let shared = Arc::new(Shared { armed: AtomicBool::new(false), data: Mutex::new(Vec::new()) });
+        let channels = usize::from(config.channels).max(1);
+        let ring = CaptureRing::new((config.sample_rate.0 as usize).saturating_mul(channels * RING_SECONDS).min(1 << 25));
+        let shared = Arc::new(Shared { armed: AtomicBool::new(false), ring, dropped: AtomicUsize::new(0) });
         let sh = Arc::clone(&shared);
         let monitor = InputRing::new(usize::from(config.channels), config.sample_rate.0);
         let mon = Arc::clone(&monitor);
-        let mut backlog: Vec<f32> = Vec::new();
+        let mut owed = 0;
         let stream = device
             .build_input_stream(
                 &config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     crate::mark_audio_thread();
                     mon.push(data);
-                    if !sh.armed.load(Ordering::Relaxed) {
-                        backlog.clear();
-                        return;
-                    }
-                    if let Ok(mut d) = sh.data.try_lock() {
-                        if d.len() < MAX_SAMPLES {
-                            d.extend_from_slice(&backlog);
-                            d.extend_from_slice(data);
-                        }
-                        backlog.clear();
-                    } else if backlog.len() < 1 << 20 {
-                        backlog.extend_from_slice(data);
+                    if sh.armed.load(Ordering::Acquire) {
+                        sh.capture(data, &mut owed);
+                    } else {
+                        owed = 0;
                     }
                 },
                 |e| {
@@ -82,14 +129,7 @@ impl Recorder {
             )
             .map_err(|e| e.to_string())?;
         stream.play().map_err(|e| e.to_string())?;
-        Ok(Recorder {
-            monitor,
-            shared,
-            _stream: Some(stream),
-            device_name: name,
-            sample_rate: config.sample_rate.0,
-            channels: usize::from(config.channels).max(1),
-        })
+        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate.0, channels, writer: None })
     }
 
     #[cfg(target_os = "freebsd")]
@@ -97,51 +137,171 @@ impl Recorder {
         Err("recording is not supported on this platform yet".into())
     }
 
-    /// Start capturing (clears any previous take).
-    pub fn arm(&self) {
-        self.shared.data.lock().unwrap_or_else(PoisonError::into_inner).clear();
-        self.shared.armed.store(true, Ordering::Relaxed);
+    /// Create each take's file and start recording into them: a track's take records the given
+    /// input channels into a new file.
+    pub fn arm(&mut self, takes: Vec<(TrackId, Vec<usize>, PathBuf)>) -> Result<(), String> {
+        if self.writer.is_some() {
+            return Err("already recording".into());
+        }
+        let takes =
+            takes.into_iter().map(|(id, inputs, path)| TakeWriter::create(id, inputs, path, self.sample_rate)).collect::<Result<Vec<_>, _>>()?;
+        let ring = &self.shared.ring;
+        ring.tail.store(ring.head.load(Ordering::Acquire), Ordering::Release);
+        self.shared.armed.store(true, Ordering::Release);
+        let (shared, channels) = (Arc::clone(&self.shared), self.channels);
+        match std::thread::Builder::new().name("take writer".into()).spawn(move || write_takes(&shared, takes, channels)) {
+            Ok(w) => self.writer = Some(w),
+            Err(e) => {
+                self.shared.armed.store(false, Ordering::Release);
+                return Err(e.to_string());
+            }
+        }
+        Ok(())
     }
 
-    pub fn is_armed(&self) -> bool {
-        self.shared.armed.load(Ordering::Relaxed)
-    }
-
-    /// Stop capturing and return the take.
-    pub fn take(&self) -> Take {
-        self.shared.armed.store(false, Ordering::Relaxed);
-        let data = std::mem::take(&mut *self.shared.data.lock().unwrap_or_else(PoisonError::into_inner));
-        deinterleave(&data, self.channels, self.sample_rate)
-    }
-
-    /// Samples captured so far (per channel).
-    pub fn captured_frames(&self) -> usize {
-        self.shared.data.try_lock().map_or(0, |d| d.len() / self.channels.max(1))
+    pub fn finish(&mut self) -> Takes {
+        self.shared.armed.store(false, Ordering::Release);
+        let (takes, problem) = self.writer.take().and_then(|w| w.join().ok()).unwrap_or_default();
+        let lost = self.shared.dropped.swap(0, Ordering::Relaxed) / self.channels.max(1);
+        let slow =
+            (lost > 0).then(|| format!("{} ms of input lost: the disk was too slow", lost.saturating_mul(1000) / self.sample_rate.max(1) as usize));
+        (takes, problem.or(slow))
     }
 }
 
-pub fn deinterleave(data: &[f32], channels: usize, sample_rate: u32) -> Take {
-    let ch = channels.max(1);
-    let frames = data.len() / ch;
-    let mut out = vec![Vec::with_capacity(frames); ch];
-    for frame in data.chunks_exact(ch) {
-        for (c, v) in frame.iter().enumerate() {
-            if let Some(o) = out.get_mut(c) {
-                o.push(*v);
-            }
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+fn write_takes(shared: &Shared, mut takes: Vec<TakeWriter>, channels: usize) -> Takes {
+    let (mut block, mut header_written) = (Vec::new(), Instant::now());
+    loop {
+        let stopping = !shared.armed.load(Ordering::Acquire);
+        block.clear();
+        shared.ring.pop_all(&mut block);
+        takes.iter_mut().for_each(|t| t.write(&block, channels));
+        if stopping {
+            break;
+        }
+        if header_written.elapsed() >= Duration::from_secs(1) {
+            header_written = Instant::now();
+            takes.iter_mut().for_each(TakeWriter::write_header);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let (mut done, mut problem) = (Vec::new(), None);
+    for mut t in takes {
+        t.write_header();
+        if t.frames == 0 {
+            let _ = std::fs::remove_file(&t.path);
+        } else {
+            done.push((t.id, t.path));
+        }
+        problem = problem.or(t.error);
+    }
+    (done, problem)
+}
+
+/// One take's file. After an error it stops writing; its header keeps covering what was written.
+struct TakeWriter {
+    id: TrackId,
+    inputs: Vec<usize>,
+    path: PathBuf,
+    file: File,
+    rate: u32,
+    frames: u64,
+    error: Option<String>,
+}
+
+impl TakeWriter {
+    fn create(id: TrackId, inputs: Vec<usize>, path: PathBuf, rate: u32) -> Result<TakeWriter, String> {
+        let file = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| File::create_new(&path));
+        let file = file.map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut take = TakeWriter { id, inputs, path, file, rate, frames: 0, error: None };
+        take.write_header();
+        take.error.take().map_or(Ok(take), Err)
+    }
+
+    /// Append this take's channels of `block` (interleaved, `channels` wide).
+    fn write(&mut self, block: &[f32], channels: usize) {
+        let channels = channels.max(1);
+        if self.error.is_some() {
+            return;
+        }
+        let bytes: Vec<u8> = block
+            .chunks_exact(channels)
+            .flat_map(|f| self.inputs.iter().flat_map(move |&i| f.get(i).copied().unwrap_or(0.0).to_le_bytes()))
+            .collect();
+        match self.file.write_all(&bytes) {
+            Ok(()) => self.frames += (block.len() / channels) as u64,
+            Err(e) => self.fail(e),
         }
     }
-    Take { sample_rate, channels: out }
+
+    fn write_header(&mut self) {
+        let header = match soundcraft_audio_io::wav_float_header(self.inputs.len(), self.rate, self.frames) {
+            Ok(h) => h,
+            Err(e) => return self.fail(e),
+        };
+        let f = &mut self.file;
+        if let Err(e) = f.seek(SeekFrom::Start(0)).and_then(|_| f.write_all(&header)).and_then(|()| f.seek(SeekFrom::End(0))) {
+            self.fail(e);
+        }
+    }
+
+    fn fail(&mut self, e: impl std::fmt::Display) {
+        self.error.get_or_insert_with(|| format!("{}: {e}", self.path.display()));
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn decode(path: &PathBuf) -> Vec<Vec<f32>> {
+        soundcraft_audio_io::decode(&std::fs::read(path).unwrap(), None).unwrap().1.channels
+    }
+
     #[test]
-    fn deinterleaves() {
-        let t = super::deinterleave(&[1.0, 2.0, 3.0, 4.0, 5.0], 2, 48_000);
-        assert_eq!(t.channels, vec![vec![1.0, 3.0], vec![2.0, 4.0]]);
-        let t = super::deinterleave(&[], 0, 48_000);
-        assert_eq!(t.channels.len(), 1);
+    fn a_full_ring_owes_the_lost_samples_as_silence() {
+        let shared = Shared { armed: AtomicBool::new(true), ring: CaptureRing::new(8), dropped: AtomicUsize::new(0) };
+        let (mut owed, mut out) = (0, Vec::new());
+        shared.capture(&[1.0; 6], &mut owed);
+        shared.capture(&[2.0; 4], &mut owed);
+        shared.ring.pop_all(&mut out);
+        shared.capture(&[3.0; 2], &mut owed);
+        shared.ring.pop_all(&mut out);
+        assert_eq!(out, [vec![1.0; 6], vec![2.0; 2], vec![0.0; 2], vec![3.0; 2]].concat());
+        assert_eq!((owed, shared.dropped.load(Ordering::Relaxed)), (0, 2));
+    }
+
+    #[test]
+    fn takes_stream_into_their_files() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-takes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let gtr = TakeWriter::create(TrackId(1), vec![1, 2], dir.join("Gtr_01.wav"), 48_000).unwrap();
+        let mut vox = TakeWriter::create(TrackId(2), vec![0], dir.join("Vox_01.wav"), 48_000).unwrap();
+        assert!(TakeWriter::create(TrackId(3), vec![0], dir.join("Vox_01.wav"), 48_000).is_err(), "never overwrites a file");
+        vox.write(&[0.5; 300], 3);
+        vox.write_header();
+        vox.write(&[0.25; 150], 3);
+        assert_eq!(decode(&dir.join("Vox_01.wav"))[0].len(), 100, "the header covers what it has seen");
+
+        let shared = Arc::new(Shared { armed: AtomicBool::new(true), ring: CaptureRing::new(1 << 16), dropped: AtomicUsize::new(0) });
+        let sh = Arc::clone(&shared);
+        let writer = std::thread::spawn(move || write_takes(&sh, vec![gtr, vox], 3));
+        let input: Vec<f32> = (0..3 * 4_800).map(|i| i as f32 / 20_000.0).collect();
+        let mut owed = 0;
+        input.chunks(3 * 480).for_each(|block| shared.capture(block, &mut owed));
+        shared.armed.store(false, Ordering::Release);
+        let (done, problem) = writer.join().unwrap();
+        let channel = |c: usize| input.iter().skip(c).step_by(3).copied().collect::<Vec<f32>>();
+        assert_eq!((done.len(), problem), (2, None));
+        assert_eq!(decode(&done[0].1), vec![channel(1), channel(2)]);
+        assert_eq!(decode(&done[1].1), vec![[vec![0.5; 100], vec![0.25; 50], channel(0)].concat()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

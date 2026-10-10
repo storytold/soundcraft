@@ -477,6 +477,11 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
         if exists_rel && !src.unsaved {
             continue;
         }
+        let in_folder = Path::new(&src.path).strip_prefix(&audio_dir).ok().and_then(Path::to_str).map(str::to_string);
+        if let Some(f) = in_folder.filter(|_| !src.unsaved && Path::new(&src.path).is_file()) {
+            src.path = format!("Audio Files/{f}");
+            continue;
+        }
         let Some(audio) = s.pool.get(src.id) else { continue };
         std::fs::create_dir_all(&audio_dir).map_err(|err| EngineError::Io(format!("{}: {err}", audio_dir.display())))?;
         let mut target = rel_target.clone();
@@ -548,17 +553,14 @@ pub fn open_session(e: &mut Engine, path: &str) -> Result<Vec<String>> {
     Ok(missing)
 }
 
-/// Turn a recorded take into clips on the record-armed tracks (one undo step: "Record").
-/// `channels` is the planar input capture at `rate`; each track takes the input channels its
-/// input route names ("In 3" → channel 2), defaulting to the first channels.
-pub fn add_recording(e: &mut Engine, start: Samples, channels: Vec<Vec<f32>>, rate: u32) -> Result<Vec<soundcraft_model::ClipId>> {
-    let frames = channels.first().map_or(0, Vec::len);
-    if frames == 0 {
-        return Ok(Vec::new());
-    }
-    let armed: Vec<(TrackId, usize, usize, String)> = e
-        .session()
-        .tracks
+/// The record-enabled audio tracks, each with the input channels it records (those its input
+/// route names, "In 3" → 2, wrapped to the device's `input_channels`) and a new take file
+/// `<track>_<NN>.wav` in the `Audio Files` of the session's folder (`unsaved_dir` until it is saved).
+pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<(TrackId, Vec<usize>, PathBuf)> {
+    let dir = e.path.as_deref().and_then(|p| Path::new(p).parent()).unwrap_or(unsaved_dir);
+    let s = e.session();
+    let take_no = s.sources.len() + 1;
+    s.tracks
         .iter()
         .filter(|t| t.mixer.record_arm && t.kind == TrackKind::Audio && !t.inactive)
         .map(|t| {
@@ -568,28 +570,118 @@ pub fn add_recording(e: &mut Engine, start: Samples, channels: Vec<Vec<f32>>, ra
                 }
                 _ => 0,
             };
-            (t.id, first, t.channels(), t.name.clone())
+            let inputs = (0..t.channels()).map(|k| first.saturating_add(k) % input_channels.max(1)).collect();
+            let file = |n: usize| dir.join("Audio Files").join(format!("{}_{n:02}.wav", sanitize_name(&t.name)));
+            let path = (take_no..take_no + 1_000).map(file).find(|p| !p.exists()).unwrap_or_else(|| file(take_no));
+            (t.id, inputs, path)
         })
-        .collect();
-    if armed.is_empty() {
-        return Err(EngineError::BadParams("record".into(), "no tracks are record-enabled".into()));
-    }
+        .collect()
+}
+
+/// Turn recorded take files into clips at `start`, as one undo step ("Record"); each file is the
+/// source of its clips. With `pass` (loop recording), a take becomes one clip per pass (at most
+/// 1000), each pass after the first on a new playlist.
+pub fn add_recording(e: &mut Engine, start: Samples, takes: Vec<(TrackId, PathBuf)>, pass: Option<Samples>) -> Vec<soundcraft_model::ClipId> {
     let before = e.session_arc();
     let mut out = Vec::new();
-    let take_no = e.session().sources.len() + 1;
-    for (tid, first, n, name) in armed {
-        let chans: Vec<Vec<f32>> = (0..n).map(|k| channels.get((first + k) % channels.len().max(1)).cloned().unwrap_or_default()).collect();
-        let buf = AudioBuffer { sample_rate: rate, channels: chans };
-        let clip_name = format!("{name}_{take_no:02}");
+    for (tid, path) in takes {
+        let read = std::fs::read(&path).map_err(|x| x.to_string()).and_then(|b| soundcraft_audio_io::decode(&b, None).map_err(|x| x.to_string()));
+        let Ok((_, buf)) = read.inspect_err(|err| e.message(format!("{}: {err}", path.display()))) else { continue };
         let s = e.session_mut();
-        let src = add_source(s, &clip_name, buf, None, FileFormat::Wav);
-        let len = s.source(src).map_or(0, |x| i64::try_from(x.frames).unwrap_or(0));
-        let cid = s.new_clip_id();
-        crate::edit::place_clip(s, tid, Clip::audio(cid, clip_name, src, 0, start, len));
-        out.push(cid);
+        if s.track(tid).is_none() {
+            continue;
+        }
+        let resampled = buf.sample_rate != s.sample_rate.hz();
+        let name = path.file_stem().and_then(|x| x.to_str()).unwrap_or("Take");
+        let src = add_source(s, name, buf, Some(&path.to_string_lossy()), FileFormat::Wav);
+        let Some(x) = s.sources.last_mut() else { continue };
+        x.unsaved = resampled;
+        let len = i64::try_from(x.frames).unwrap_or(0);
+        let pass = pass.unwrap_or(len).max(1);
+        for offset in (0..len).step_by(usize::try_from(pass).unwrap_or(usize::MAX)).take(1_000) {
+            let n = pass.min(len - offset);
+            if offset > 0 && n < pass / 8 {
+                break;
+            }
+            if offset > 0
+                && let Some(t) = s.track_mut(tid)
+            {
+                t.playlists.push(soundcraft_model::Playlist::new(format!("{}.{:02}", t.name, t.playlists.len() + 1)));
+                t.active_playlist = t.playlists.len() - 1;
+            }
+            let cid = s.new_clip_id();
+            crate::edit::place_clip(s, tid, Clip::audio(cid, name, src, offset, start, n));
+            out.push(cid);
+        }
     }
-    e.push_undo("Record", before);
-    Ok(out)
+    if !out.is_empty() {
+        e.push_undo("Record", before);
+    }
+    out
+}
+
+#[cfg(test)]
+mod record_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn armed(e: &mut Engine, name: &str, format: &str, input: &str) -> TrackId {
+        let id = e.execute("track.new", &json!({"name": name, "format": format})).unwrap()["tracks"][0].as_u64().unwrap();
+        e.execute("track.input", &json!({"tracks": [id], "input": input})).unwrap();
+        e.execute("mix.record_arm", &json!({"tracks": [id], "value": true})).unwrap();
+        TrackId(id)
+    }
+
+    fn write_take(path: &Path, frames: usize) {
+        let mut bytes = soundcraft_audio_io::wav_float_header(1, 48_000, frames as u64).unwrap();
+        bytes.extend((0..frames).flat_map(|i| (i as f32 / frames as f32 - 0.5).to_le_bytes()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn armed_tracks_get_new_take_files_used_in_place() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-takes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut e = Engine::default();
+        let vox = armed(&mut e, "Vox", "mono", "In 2");
+        let gtr = armed(&mut e, "Gtr", "stereo", "In 3-4");
+        write_take(&dir.join("Audio Files/Vox_01.wav"), 10);
+        let plan = plan_takes(&e, &dir, 4);
+        assert_eq!(plan, vec![(vox, vec![1], dir.join("Audio Files/Vox_02.wav")), (gtr, vec![2, 3], dir.join("Audio Files/Gtr_01.wav"))]);
+        assert_eq!(plan_takes(&e, &dir, 2)[1].1, vec![0, 1]);
+
+        let session = dir.join("Song.scraft").to_string_lossy().into_owned();
+        e.execute("session.save_as", &json!({"path": session})).unwrap();
+        write_take(&plan[0].2, 4_800);
+        let clips = add_recording(&mut e, 96_000, vec![(vox, plan[0].2.clone())], None);
+        let clip = e.session().find_clip(clips[0]).unwrap().1.clone();
+        assert_eq!((clip.start, clip.length), (96_000, 4_800));
+        assert_eq!(save_session(&mut e, &session).unwrap(), 0);
+        let src = e.session().sources.last().unwrap().clone();
+        assert_eq!((src.name.as_str(), src.path.as_str(), src.unsaved, src.frames), ("Vox_02", "Audio Files/Vox_02.wav", false, 4_800));
+        e.execute("edit.undo", &json!({})).unwrap();
+        assert!(e.session().find_clip(clips[0]).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_loop_take_becomes_one_clip_per_pass_and_autosaves_in_place() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-loop-take-{}", std::process::id()));
+        let path = dir.join("Audio Files/Vox_01.wav");
+        write_take(&path, 1_050);
+        let mut e = Engine::default();
+        let vox = armed(&mut e, "Vox", "mono", "In 1");
+        assert_eq!(add_recording(&mut e, 1_000, vec![(vox, path.clone())], Some(400)).len(), 3);
+        assert_eq!(save_copy(&e, &dir.join("Untitled.scraft").to_string_lossy()).unwrap(), 0);
+        let t = e.session().track(vox).unwrap();
+        let passes: Vec<_> = t.playlists.iter().flat_map(|p| p.clips.iter().map(|c| (c.source_offset(), c.start, c.length))).collect();
+        assert_eq!(passes, vec![(0, 1_000, 400), (400, 1_000, 400), (800, 1_000, 250)]);
+        assert_eq!((t.active_playlist, t.playlists[2].name.as_str()), (2, "Vox.03"));
+        e.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(e.session().track(vox).unwrap().playlists.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
