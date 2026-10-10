@@ -587,9 +587,17 @@ impl MixEngine {
         let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
         run_strips(&mut work, |(t, st)| process_strip(s, t, st, &busses, &live_in, pos, frames, any_solo));
         self.busses = busses;
-        // Delay compensation: align every strip to the slowest; direct-to-main outputs also wait
-        // for the slowest aux return (aux latencies are from the previous block; they are stable).
+        // Delay compensation: align every strip to the slowest. Direct-to-main outputs also wait
+        // for the slowest aux return. Aux latency has to be read before those outputs are routed,
+        // or the first block (and a one-block bounce probe) still sees zero.
         let pdc = s.edit.delay_compensation;
+        if pdc {
+            for t in s.tracks.iter().filter(|t| is_aux(t) && !t.inactive) {
+                if let Some(st) = self.strips.get_mut(&t.id) {
+                    note_insert_latency(t, st, pos);
+                }
+            }
+        }
         let lmax_t = if pdc { work.iter().map(|(_, st)| st.latency).max().unwrap_or(0) } else { 0 };
         let lmax_a =
             if pdc { self.strips.iter().filter(|(id, _)| s.track(**id).is_some_and(is_aux)).map(|(_, st)| st.latency).max().unwrap_or(0) } else { 0 };
@@ -1276,6 +1284,20 @@ fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mu
             }
         }
     }
+}
+
+/// Record insert latency without processing audio, so this block can compensate for it.
+fn note_insert_latency(t: &Track, strip: &mut Strip, pos: Samples) {
+    let mut latency = 0usize;
+    for (i, ins) in t.mixer.inserts.iter().enumerate() {
+        let (Some(ins), Some(Some(slot))) = (ins, strip.plugins.get_mut(i)) else { continue };
+        if !ins.active || ins.bypass {
+            continue;
+        }
+        apply_params(slot, ins, t, i, pos);
+        latency = latency.saturating_add(slot.plugin.latency());
+    }
+    strip.latency = latency;
 }
 
 fn apply_params(slot: &mut PluginSlot, ins: &soundcraft_model::Insert, t: &Track, i: usize, pos: Samples) {
@@ -2055,6 +2077,53 @@ mod tests {
         s.edit.delay_compensation = false;
         let out = render_range(&s, Range::new(0, 8000), 512);
         assert_ne!(argmax(&out[0]), argmax(&out[1]));
+    }
+
+    fn impulse_at(ch: &[f32]) -> Vec<usize> {
+        ch.iter().enumerate().filter(|(_, v)| v.abs() > 1e-4).map(|(i, _)| i).collect()
+    }
+
+    /// An aux insert's lookahead is part of the mix latency on the first block, not the block after.
+    #[test]
+    fn delay_compensation_aligns_an_aux_insert() {
+        let mut s = Session::default();
+        let n = 8192;
+        let mut left = vec![0.0f32; n];
+        for at in [0usize, 2048, 8000] {
+            left[at] = 0.25;
+        }
+        s.pool.insert(SourceId(901), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![left.clone(), left] })));
+        let bus = s.add_bus("Test Bus", ChannelFormat::Stereo);
+        let source = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, Some("Source"));
+        let aux = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, Some("Return"));
+        let cid = s.new_clip_id();
+        s.track_mut(source).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "impulses", SourceId(901), 0, 0, n as i64));
+        s.track_mut(source).unwrap().mixer.output = Route::Bus(bus);
+        s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
+        let render = |s: &Session, start: i64, end: i64| render_range(s, Range::new(start, end), 1024);
+        let control = render(&s, 0, n as i64);
+        assert_eq!(impulse_at(&control[0]), vec![0, 2048, 8000]);
+        assert_eq!(impulse_at(&control[1]), impulse_at(&control[0]));
+
+        let mut comp = Insert::new("compressor");
+        comp.params.insert("lookahead".into(), 5.0);
+        comp.params.insert("ratio".into(), 1.0);
+        s.track_mut(source).unwrap().mixer.inserts[0] = Some(comp.clone());
+        let on_source = render(&s, 0, n as i64);
+        assert_eq!(impulse_at(&on_source[0]), impulse_at(&control[0]));
+
+        s.track_mut(source).unwrap().mixer.inserts[0] = None;
+        s.track_mut(aux).unwrap().mixer.inserts[0] = Some(comp);
+        let on_aux = render(&s, 0, n as i64);
+        assert_eq!(impulse_at(&on_aux[0]), vec![0, 2048, 8000], "aux lookahead must stay inside the bounce");
+        assert_eq!(impulse_at(&on_aux[1]), impulse_at(&on_aux[0]));
+        assert!((on_aux[0][8000] - 0.25).abs() < 1e-3, "{}", on_aux[0][8000]);
+        let partial = render(&s, 2048, 3072);
+        assert_eq!(impulse_at(&partial[0]), vec![0]);
+
+        s.track_mut(aux).unwrap().mixer.inserts[0].as_mut().unwrap().params.insert("lookahead".into(), 0.0);
+        let zero = render(&s, 0, n as i64);
+        assert_eq!(impulse_at(&zero[0]), impulse_at(&control[0]));
     }
 
     #[test]
