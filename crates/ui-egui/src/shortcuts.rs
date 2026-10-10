@@ -137,8 +137,12 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             let _ = app.run("edit.nudge", json!({"direction": dir}));
             true
         }
-        Key::Tab if plain || m.alt => {
-            // Tab to next clip boundary (or transient when enabled).
+        Key::Tab if plain => {
+            let _ = app.run("window.toggle_mix_edit", json!({}));
+            true
+        }
+        Key::Tab if m.alt && !m.command && !m.ctrl && !m.shift => {
+            // Alt+Tab retains backwards clip navigation.
             let s = app.engine.session();
             let at = s.edit.selection.start;
             let back = m.alt;
