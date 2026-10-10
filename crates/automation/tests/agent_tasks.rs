@@ -135,3 +135,39 @@ fn errors_are_reported_not_panics() {
     let r = rpc(&mut s, 2, "tools/call", json!({"name": "screenshot", "arguments": {}}));
     assert_eq!(r["result"]["isError"], true);
 }
+
+#[test]
+fn batch_keep_going_still_sets_is_error_on_partial_failure() {
+    let mut s = Server::new(Headless::new(Engine::default()));
+    let r = rpc(
+        &mut s,
+        1,
+        "tools/call",
+        json!({"name": "batch", "arguments": {"keep_going": true, "calls": [
+            {"command": "track.new", "params": {"count": 1, "name": "Kept"}},
+            {"command": "mix.volume", "params": {"track": "Nope", "db": -6}},
+            {"command": "track.new", "params": {"count": 1, "name": "After"}},
+        ]}}),
+    );
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    let text = r["result"]["content"][0]["text"].as_str().unwrap();
+    let results: Value = serde_json::from_str(text).unwrap();
+    let arr = results.as_array().unwrap();
+    assert_eq!(arr.len(), 3, "{results}");
+    assert_eq!(arr[0]["ok"], true);
+    assert_eq!(arr[1]["ok"], false);
+    assert_eq!(arr[2]["ok"], true);
+    let sess = session(&mut s);
+    assert!(sess["tracks"].as_array().unwrap().iter().any(|t| t["name"] == "Kept"));
+    assert!(sess["tracks"].as_array().unwrap().iter().any(|t| t["name"] == "After"));
+}
+
+#[test]
+fn batch_rejects_non_array_calls() {
+    let mut s = Server::new(Headless::new(Engine::default()));
+    let r = rpc(&mut s, 1, "tools/call", json!({"name": "batch", "arguments": {"calls": {"command": "track.new"}}}));
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    let text = r["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("`calls` must be an array"), "{text}");
+    assert_eq!(session(&mut s)["tracks"].as_array().unwrap().len(), 0);
+}
