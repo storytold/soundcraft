@@ -297,7 +297,12 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                     Stroke::new(1.0, t.button_border),
                     StrokeKind::Inside,
                 );
-                icons::draw(ui.painter(), r.shrink(5.0), if playing { "stop" } else { "play" }, if playing { Color32::from_rgb(120, 255, 140) } else { t.counter_text });
+                icons::draw(
+                    ui.painter(),
+                    r.shrink(5.0),
+                    if playing { "stop" } else { "play" },
+                    if playing { Color32::from_rgb(120, 255, 140) } else { t.counter_text },
+                );
                 if resp.on_hover_text("Play/Stop (Space)").clicked() {
                     let _ = app.run(if playing { "transport.pause" } else { "transport.play" }, json!({}));
                 }

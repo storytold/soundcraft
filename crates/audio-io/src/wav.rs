@@ -2,8 +2,8 @@
 //! specification, `bext` per EBU Tech 3285, `ds64` per EBU Tech 3306).
 
 use crate::pcm::{PcmKind, Quantizer, clamp_float, deinterleave, le_u16, le_u32, le_u64, tag, validate_buffer};
-use std::io::{Read, Seek, SeekFrom};
 use crate::{AudioBuffer, AudioError, AudioInfo, BitDepth, BwfInfo, FileFormat, Result, SampleFormat};
+use std::io::{Read, Seek, SeekFrom};
 
 const WAVE_FORMAT_PCM: u16 = 1;
 const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
@@ -41,12 +41,18 @@ impl DiskWavReader {
         };
         let available = len.saturating_sub(layout.data_start as u64);
         layout.data_len = usize::try_from(available).unwrap_or(usize::MAX);
-        let block = layout.kind.bytes().checked_mul(usize::from(layout.info.channels)).ok_or_else(|| AudioError::Malformed("WAV block size overflow".into()))?;
+        let block = layout
+            .kind
+            .bytes()
+            .checked_mul(usize::from(layout.info.channels))
+            .ok_or_else(|| AudioError::Malformed("WAV block size overflow".into()))?;
         layout.info.frames = (layout.data_len / block) as u64;
         Ok(Self { file, layout, block })
     }
 
-    pub fn info(&self) -> &AudioInfo { &self.layout.info }
+    pub fn info(&self) -> &AudioInfo {
+        &self.layout.info
+    }
 
     /// Read at most `frames` starting at `start`, returning planar samples.
     pub fn read_frames(&mut self, start: u64, frames: usize) -> Result<AudioBuffer> {
