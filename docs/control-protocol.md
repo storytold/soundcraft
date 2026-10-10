@@ -72,3 +72,8 @@ the native or web integration at launch and on later frames, while the saved cho
 When the integration cannot report an appearance, System uses Dark. Manual Light and Dark stay
 fixed when the OS appearance changes. An offscreen render without `--system-theme` supplies no
 OS appearance and therefore resolves System to Dark.
+
+The interface language defaults to English. `ui.language {"lang":"fr"}` (or `"es"`, `"en"`) switches
+it, and `ui.language {}` reports the current one; the choice is saved with the UI prefs and is also
+offered under Setup › Appearance. Only what is drawn is translated: command ids, menu paths
+(`ui.menu.invoke`), parameters, results and error messages stay in English in every language.

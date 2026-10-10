@@ -10,6 +10,7 @@ pub mod dialogs;
 pub mod edit_window;
 pub mod extra_windows;
 pub mod fonts;
+pub mod i18n;
 pub mod icons;
 pub mod menus;
 pub mod midi_editor;
@@ -97,6 +98,8 @@ pub struct UiState {
     pub configurations: Vec<(String, Value)>,
     /// Appearance (`ui.theme`): dark by default, light or follow the system on request.
     pub theme: theme::ThemeMode,
+    /// Interface language (`ui.language`): English by default.
+    pub language: i18n::Language,
 }
 
 impl Default for UiState {
@@ -147,6 +150,7 @@ impl Default for UiState {
             workspace_dir: String::new(),
             configurations: Vec::new(),
             theme: theme::ThemeMode::Dark,
+            language: i18n::Language::En,
         }
     }
 }
@@ -398,12 +402,12 @@ impl SoundApp {
     fn start_recording(&mut self) {
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
         if !armed {
-            self.ui.status = "Record-enable a track first (the red button in its header).".into();
+            self.ui.status = i18n::tr("Record-enable a track first (the red button in its header).").into();
             return;
         }
         self.ensure_input();
         if self.recorder.is_none() {
-            self.ui.status = "Cannot record: no audio input device".into();
+            self.ui.status = i18n::tr("Cannot record: no audio input device").into();
             return;
         }
         if let Some(p) = &self.player {
@@ -517,7 +521,7 @@ impl SoundApp {
             }
             Err(e) => {
                 self.recorder_failed = true;
-                self.ui.status = format!("No audio input: {e}");
+                self.ui.status = i18n::trf("No audio input: {}", &[&e]);
             }
         }
     }
@@ -553,7 +557,7 @@ impl SoundApp {
                     made += 1;
                 }
             }
-            self.ui.status = format!("Loop-recorded {made} take(s)");
+            self.ui.status = i18n::trf("Loop-recorded {} take(s)", &[&made]);
             return;
         }
         match soundcraft_engine::io::add_recording(&mut self.engine, self.record_start, take.channels, rate) {
@@ -567,7 +571,7 @@ impl SoundApp {
                         "record",
                     );
                 }
-                self.ui.status = format!("Recorded {} clip(s)", ids.len());
+                self.ui.status = i18n::trf("Recorded {} clip(s)", &[&ids.len()]);
             }
             Err(e) => self.ui.status = e.to_string(),
         }
@@ -760,6 +764,7 @@ impl SoundApp {
                 ctx.request_repaint();
             }
         }
+        i18n::set(self.ui.language);
         let light = theme::wants_light(ctx, self.ui.theme);
         if self.theme_applied != Some(light) || theme::is_light() != light {
             theme::apply(ctx, light);
