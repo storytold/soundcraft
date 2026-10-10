@@ -446,11 +446,11 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
                 let r = ui.text_edit_singleline(&mut edit);
                 ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
                 if r.lost_focus() && edit != name {
-                    let _ = app.run("mix.bus_rename", json!({"bus": name, "name": edit}));
+                    let _ = app.run("setup.io", json!({"action": "rename_bus", "name": name, "new_name": edit}));
                 }
                 ui.label(fmt);
                 if ui.small_button("Delete").clicked() {
-                    let _ = app.run("mix.bus_delete", json!({"bus": name}));
+                    let _ = app.run("setup.io", json!({"action": "delete_bus", "name": name}));
                 }
                 ui.end_row();
             }
