@@ -3,7 +3,7 @@
 use crate::{Engine, EngineError, Result};
 use serde_json::{Value, json};
 use soundcraft_audio_io::{AudioBuffer, EncodeOptions, FileFormat};
-use soundcraft_model::{ChannelFormat, Clip, ClipContent, Session, Source, SourceAudio, SourceId, TrackId, TrackKind};
+use soundcraft_model::{BusId, ChannelFormat, Clip, ClipContent, Session, Source, SourceAudio, SourceId, TrackId, TrackKind};
 use soundcraft_time::{Range, Samples};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -217,11 +217,23 @@ pub fn bounce_bytes(e: &Engine, r: Range, opts: &EncodeOptions, normalize: bool)
 /// Render the main mix in its own format (every main channel, SMPTE/WAV order, with the WAV
 /// speaker mask of the main format), or an ITU stereo fold-down when `fold_stereo`.
 pub fn bounce_bytes_with(e: &Engine, r: Range, opts: &EncodeOptions, normalize: bool, fold_stereo: bool) -> Result<(Vec<u8>, (f32, f32, f32))> {
+    bounce_source(e, r, opts, normalize, fold_stereo, None)
+}
+
+/// [`bounce_bytes_with`] for the main mix, or for `bus` when one is named.
+pub fn bounce_source(
+    e: &Engine,
+    r: Range,
+    opts: &EncodeOptions,
+    normalize: bool,
+    fold_stereo: bool,
+    bus: Option<BusId>,
+) -> Result<(Vec<u8>, (f32, f32, f32))> {
     let s = e.session();
     if r.len() > s.sample_rate.samples(4.0 * 3600.0) {
         return Err(EngineError::BadParams("file.bounce_mix".into(), "bounces are limited to 4 hours".into()));
     }
-    let (mut ch, fmt) = render_main(s, r, fold_stereo);
+    let (mut ch, fmt) = render_bounce(s, r, fold_stereo, bus);
     if normalize {
         soundcraft_dsp::offline::normalize(&mut ch, -0.1, false);
     }
@@ -238,8 +250,19 @@ pub fn bounce_bytes_with(e: &Engine, r: Range, opts: &EncodeOptions, normalize: 
 
 /// The main mix over `r` and its format (folded to stereo on request).
 fn render_main(s: &Session, r: Range, fold_stereo: bool) -> (Vec<Vec<f32>>, ChannelFormat) {
-    let ch = soundcraft_mix::render_range(s, r, 1024);
-    let fmt = if ch.len() <= 2 { ChannelFormat::Stereo } else { s.main_format() };
+    render_bounce(s, r, fold_stereo, None)
+}
+
+/// The main mix, or one bus, over `r`.
+fn render_bounce(s: &Session, r: Range, fold_stereo: bool, bus: Option<BusId>) -> (Vec<Vec<f32>>, ChannelFormat) {
+    let (ch, fmt) = if let Some(id) = bus {
+        let fmt = s.bus(id).map(|b| b.format).unwrap_or(ChannelFormat::Stereo);
+        (soundcraft_mix::render_bus(s, id, r, 1024), fmt)
+    } else {
+        let ch = soundcraft_mix::render_range(s, r, 1024);
+        let fmt = if ch.len() <= 2 { ChannelFormat::Stereo } else { s.main_format() };
+        (ch, fmt)
+    };
     if fold_stereo && ch.len() > 2 { (soundcraft_mix::fold_down_stereo(fmt, &ch), ChannelFormat::Stereo) } else { (ch, fmt) }
 }
 
