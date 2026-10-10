@@ -534,25 +534,88 @@ fn write_current(e: &mut Engine, p: &Value, all: bool) -> Result<Value> {
     Ok(json!({}))
 }
 
+/// Clip-gain envelope value in dB. An empty envelope contributes nothing, and the last point holds.
+fn env_db(env: &[(i64, f32)], at: i64) -> f32 {
+    let mut prev: Option<(i64, f32)> = None;
+    for &(t, v) in env {
+        if t >= at {
+            return match prev {
+                Some((pt, pv)) if t > pt => pv + (v - pv) * ((at - pt) as f32 / (t - pt) as f32),
+                _ => v,
+            };
+        }
+        prev = Some((t, v));
+    }
+    prev.map_or(0.0, |(_, v)| v)
+}
+
 fn vol_to_clip_gain(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "automation.volume_to_clip_gain", p)?;
     let r = range_param(e, "automation.volume_to_clip_gain", p)?;
     let s = e.session_mut();
     for t in &tracks {
         let Some(tr) = s.track_mut(*t) else { continue };
-        let lane = tr.lane(&AutoParam::Volume).cloned();
+        let Some(lane) = tr.lane(&AutoParam::Volume).cloned().filter(|l| !l.points.is_empty()) else { continue };
         let base = tr.mixer.volume_db;
-        let Some(lane) = lane else { continue };
+        let delta = |at: i64| lane.value_at(at, base) - base;
         if let Some(pl) = tr.playlist_mut() {
             for c in pl.clips.iter_mut().filter(|c| c.range().overlaps(&r)) {
-                let mut env: Vec<(i64, f32)> =
-                    lane.points.iter().filter(|pt| c.range().contains(pt.at)).map(|pt| (pt.at - c.start, pt.value - base)).collect();
-                env.insert(0, (0, lane.value_at(c.start, base) - base));
-                env.push((c.length, lane.value_at(c.end(), base) - base));
+                let sel0 = r.start.max(c.start);
+                let sel1 = r.end.min(c.end());
+                if sel1 <= sel0 {
+                    continue;
+                }
+                let rel = |at: i64| at - c.start;
+                let rel0 = rel(sel0);
+                let rel1 = rel(sel1);
+                // Later writes win, so the selection anchors replace any point they land on.
+                let mut pts: Vec<(i64, f32)> =
+                    c.gain_env.iter().copied().filter(|&(at, _)| at < rel0.saturating_sub(1) || (sel1 < c.end() && at > rel1)).collect();
+                if rel0 > 0 {
+                    pts.push((rel0 - 1, env_db(&c.gain_env, rel0 - 1)));
+                }
+                pts.push((rel0, env_db(&c.gain_env, rel0) + delta(sel0)));
+                for pt in lane.points.iter().filter(|pt| pt.at > sel0 && pt.at < sel1) {
+                    let at = rel(pt.at);
+                    pts.push((at, env_db(&c.gain_env, at) + delta(pt.at)));
+                }
+                if sel1 - 1 > sel0 {
+                    let at = rel(sel1 - 1);
+                    pts.push((at, env_db(&c.gain_env, at) + delta(sel1 - 1)));
+                }
+                if sel1 < c.end() {
+                    pts.push((rel1, env_db(&c.gain_env, rel1)));
+                }
+                pts.sort_by_key(|p| p.0);
+                let mut env = Vec::new();
+                for p in pts {
+                    if env.last().is_some_and(|q: &(i64, f32)| q.0 == p.0) {
+                        env.pop();
+                    }
+                    env.push(p);
+                }
                 c.gain_env = env;
             }
         }
-        tr.lane_mut(&AutoParam::Volume).clear_range(r.start, r.end);
+        let covers_all = lane.points.iter().all(|pt| pt.at >= r.start && pt.at < r.end);
+        let lane_m = tr.lane_mut(&AutoParam::Volume);
+        if covers_all {
+            lane_m.clear_range(r.start, r.end);
+        } else {
+            // Hold the fader across the selection and anchor the samples on either side, so the
+            // curve outside does not interpolate through the gap or keep the old level inside.
+            let before = (r.start > 0).then(|| lane.value_at(r.start - 1, base));
+            let after = lane.value_at(r.end, base);
+            lane_m.clear_range(r.start, r.end);
+            if let Some(v) = before {
+                lane_m.set_point(r.start - 1, v);
+            }
+            lane_m.set_point(r.start, base);
+            if r.end - 1 > r.start {
+                lane_m.set_point(r.end - 1, base);
+            }
+            lane_m.set_point(r.end, after);
+        }
     }
     Ok(json!({}))
 }
@@ -605,4 +668,94 @@ fn copy_to_send(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     Ok(json!({}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soundcraft_audio_io::AudioBuffer;
+    use soundcraft_model::{ChannelFormat, Clip, SourceAudio, SourceId, TrackKind};
+    use soundcraft_time::Range;
+    use std::sync::Arc;
+
+    fn rms_db(before: &[f32], after: &[f32]) -> f32 {
+        let energy = |xs: &[f32]| xs.iter().map(|x| x * x).sum::<f32>() / xs.len().max(1) as f32;
+        10.0 * (energy(after).max(1e-20) / energy(before).max(1e-20)).log10()
+    }
+
+    fn tone_session(points: &[(i64, f32)]) -> (Engine, TrackId) {
+        let mut s = Session::default();
+        let n = 8192;
+        let tone: Vec<f32> = (0..n).map(|i| (i as f32 * 0.07).sin() * 0.25).collect();
+        s.pool.insert(SourceId(910), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![tone] })));
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Tone"));
+        let id = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "tone", SourceId(910), 0, 0, n));
+        s.track_mut(t).unwrap().mixer.volume_db = -3.0;
+        for &(at, value) in points {
+            s.track_mut(t).unwrap().lane_mut(&AutoParam::Volume).set_point(at, value);
+        }
+        s.edit.selected_tracks = vec![t];
+        s.edit.selection = Range::new(2048, 6144);
+        (Engine::new(s), t)
+    }
+
+    fn rendered(s: &Session) -> Vec<f32> {
+        soundcraft_mix::render_range(s, Range::new(0, 8192), 1024).into_iter().next().unwrap_or_default()
+    }
+
+    fn convert(e: &mut Engine, t: TrackId, start: i64, end: i64) {
+        e.session_mut().edit.selection = Range::new(start, end);
+        e.execute("automation.volume_to_clip_gain", &json!({"track": t.0, "start": start, "end": end})).unwrap();
+    }
+
+    #[test]
+    fn partial_volume_to_clip_gain_keeps_each_region() {
+        let points = [(0, -6.0), (2048, -6.0), (4096, -6.0), (6144, -6.0), (8192, -6.0)];
+        let (mut e, t) = tone_session(&points);
+        let before = rendered(e.session());
+        convert(&mut e, t, 2048, 6144);
+        let after = rendered(e.session());
+        for (start, end) in [(0, 2048), (2048, 6144), (6144, 8192)] {
+            let delta = rms_db(&before[start..end], &after[start..end]);
+            assert!(delta.abs() < 0.02, "constant {start}..{end} changed by {delta} dB");
+        }
+        let tr = e.session().track(t).unwrap();
+        assert!((tr.mixer.volume_db + 3.0).abs() < 1e-5);
+        let lane = tr.lane(&AutoParam::Volume).unwrap();
+        assert!((lane.value_at(100, 0.0) + 6.0).abs() < 1e-3);
+        assert!((lane.value_at(3000, 0.0) + 3.0).abs() < 1e-3);
+        assert!((lane.value_at(7000, 0.0) + 6.0).abs() < 1e-3);
+
+        let (mut e, t) = tone_session(&[]);
+        let before = rendered(e.session());
+        convert(&mut e, t, 2048, 6144);
+        let after = rendered(e.session());
+        let diff = before.iter().zip(&after).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(diff < 1e-5, "no lane changed a sample by {diff}");
+
+        let (mut e, t) = tone_session(&points);
+        let before = rendered(e.session());
+        convert(&mut e, t, 0, 8193);
+        let after = rendered(e.session());
+        let diff = before.iter().zip(&after).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(diff < 1e-4, "full selection changed a sample by {diff}");
+        assert!(e.session().track(t).unwrap().lane(&AutoParam::Volume).is_none_or(|l| l.points.is_empty()));
+
+        for points in [
+            [(0, -12.0), (2048, -9.0), (4096, -6.0), (6144, -3.0), (8192, 0.0)],
+            [(0, -12.0), (2048, -6.0), (4096, -12.0), (6144, -6.0), (8192, -12.0)],
+        ] {
+            let (mut e, t) = tone_session(&points);
+            let before = rendered(e.session());
+            convert(&mut e, t, 2048, 6144);
+            let after = rendered(e.session());
+            for (start, end) in [(0, 2048), (6144, 8192)] {
+                let delta = rms_db(&before[start..end], &after[start..end]);
+                assert!(delta.abs() < 0.02, "outside {start}..{end} changed by {delta} dB for {points:?}");
+            }
+            let delta = rms_db(&before[2048..6144], &after[2048..6144]);
+            assert!(delta.abs() < 0.15, "inside changed by {delta} dB for {points:?}");
+        }
+    }
 }
