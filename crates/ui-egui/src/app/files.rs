@@ -1,4 +1,5 @@
 use super::{SoundApp, midi_editor};
+use crate::i18n;
 
 impl SoundApp {
     /// The open document was replaced outside [`Self::run`] (Recover, a session the browser read
@@ -34,7 +35,7 @@ impl SoundApp {
     /// plugins' own state reaches the session every two minutes (`autosave`).
     pub(super) fn autosave_changes(&mut self) {
         if let Some(e) = self.autosaver.as_ref().and_then(soundcraft_engine::autosave::Autosaver::failure) {
-            self.ui.status = format!("Autosave failed: {e}");
+            self.ui.status = i18n::trf("Autosave failed: {}", &[&e]);
         }
         if self.autosave_dir.is_none() || self.engine.revision == self.autosaved_rev {
             return;
@@ -60,7 +61,7 @@ impl SoundApp {
         let Some(w) = &self.autosaver else { return false };
         let written = w.flush();
         if let Err(e) = &written {
-            self.ui.status = format!("Autosave failed: {e}");
+            self.ui.status = i18n::trf("Autosave failed: {}", &[&e]);
         }
         written.is_ok()
     }
@@ -105,16 +106,16 @@ impl SoundApp {
         self.panic_rev = self.engine.revision;
         let saved = self.engine.is_dirty() && self.write_autosave();
         self.ui.status = if saved {
-            "SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft.".into()
+            i18n::tr("SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft.").into()
         } else {
-            "SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe.".into()
+            i18n::tr("SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe.").into()
         };
     }
 
     /// Replace the open session with unsaved work an earlier run left behind.
     pub fn recover(&mut self, left: &soundcraft_engine::autosave::Leftover) {
         if self.engine.transport.recording {
-            self.ui.status = "Stop recording before recovering other work.".into();
+            self.ui.status = i18n::tr("Stop recording before recovering other work.").into();
             return;
         }
         self.close_autosave();
@@ -125,11 +126,11 @@ impl SoundApp {
                     soundcraft_engine::autosave::discard(left);
                 }
                 self.ui.status = match missing.len() {
-                    0 => format!("Recovered “{}”. Save it to keep the changes.", left.name),
-                    n => format!("Recovered “{}”, but {n} audio file(s) are missing. Save it to keep the changes.", left.name),
+                    0 => i18n::trf("Recovered “{}”. Save it to keep the changes.", &[&left.name]),
+                    n => i18n::trf("Recovered “{}”, but {} audio file(s) are missing. Save it to keep the changes.", &[&left.name, &n]),
                 };
             }
-            Err(e) => self.ui.status = format!("Couldn't recover “{}”: {e}", left.name),
+            Err(e) => self.ui.status = i18n::trf("Couldn't recover “{}”: {}", &[&left.name, &e]),
         }
     }
 

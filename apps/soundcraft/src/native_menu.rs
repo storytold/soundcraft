@@ -2,11 +2,14 @@
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSApplication;
+use soundcraft_ui_egui::i18n::{self, Language, tr};
 use soundcraft_ui_egui::{SoundApp, menus};
 use std::sync::mpsc::{Receiver, channel};
 
 struct Entry {
     item: CheckMenuItem,
+    /// English label; shown through `tr`.
+    label: String,
     command: Option<String>,
     path: String,
     enabled: bool,
@@ -16,6 +19,10 @@ struct Entry {
 pub struct NativeMenu {
     menu: Menu,
     entries: Vec<Entry>,
+    /// Submenus with their English labels, retitled when the language changes.
+    submenus: Vec<(Submenu, String)>,
+    /// The language the labels are currently shown in.
+    language: Language,
     events: Receiver<MenuEvent>,
     /// When `sync` last walked the entries; see `SYNC_EVERY`.
     last_sync: Option<std::time::Instant>,
@@ -30,7 +37,8 @@ impl NativeMenu {
     pub fn new(app: &SoundApp, ctx: &egui::Context) -> muda::Result<Self> {
         let menu = Menu::new();
         let (tx, events) = channel();
-        let mut native = Self { menu, entries: Vec::new(), events, last_sync: None };
+        i18n::set(app.ui.language);
+        let mut native = Self { menu, entries: Vec::new(), submenus: Vec::new(), language: app.ui.language, events, last_sync: None };
         let app_menu = Submenu::new("SoundCraft", true);
         native.add_item(app, &app_menu, "About SoundCraft", "", Some("window.about".into()))?;
         native.add_item(app, &app_menu, "Session Info", "", Some("window.session_info".into()))?;
@@ -39,8 +47,8 @@ impl NativeMenu {
         app_menu.append(&PredefinedMenuItem::services(None))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
         // muda's own Hide items take ⌘H and ⌥⌘H, which are Heal Separation and Copy to Send.
-        app_menu.append(&MenuItem::with_id("hide", "Hide SoundCraft", true, None))?;
-        app_menu.append(&MenuItem::with_id("hide_others", "Hide Others", true, None))?;
+        app_menu.append(&MenuItem::with_id("hide", tr("Hide SoundCraft"), true, None))?;
+        app_menu.append(&MenuItem::with_id("hide_others", tr("Hide Others"), true, None))?;
         app_menu.append(&PredefinedMenuItem::show_all(None))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
         native.add_item(app, &app_menu, "Quit SoundCraft", "", Some("app.quit".into()))?;
@@ -61,7 +69,8 @@ impl NativeMenu {
     }
 
     fn add_branch(&mut self, app: &SoundApp, node: &menus::MenuNode, aliases: &[(&str, &str)]) -> muda::Result<Submenu> {
-        let submenu = Submenu::new(&node.label, true);
+        let submenu = Submenu::new(tr(&node.label), true);
+        self.submenus.push((submenu.clone(), node.label.clone()));
         for child in &node.children {
             if child.children.is_empty() {
                 self.add_item(app, &submenu, &child.label, &child.path, menus::command_for_path(&child.path, aliases))?;
@@ -75,9 +84,9 @@ impl NativeMenu {
     fn add_item(&mut self, app: &SoundApp, parent: &Submenu, label: &str, path: &str, command: Option<String>) -> muda::Result<()> {
         let (enabled, checked) = menus::item_state(app, path, command.as_deref());
         // egui owns keyboard shortcuts, so a key press is dispatched only once.
-        let item = CheckMenuItem::new(label, enabled, checked, None);
+        let item = CheckMenuItem::new(tr(label), enabled, checked, None);
         parent.append(&item)?;
-        self.entries.push(Entry { item, command, path: path.into(), enabled, checked });
+        self.entries.push(Entry { item, label: label.into(), command, path: path.into(), enabled, checked });
         Ok(())
     }
 
@@ -111,6 +120,16 @@ impl NativeMenu {
             return;
         }
         self.last_sync = Some(now);
+        if app.ui.language != self.language {
+            self.language = app.ui.language;
+            i18n::set(self.language);
+            for (submenu, label) in &self.submenus {
+                submenu.set_text(tr(label));
+            }
+            for entry in &self.entries {
+                entry.item.set_text(tr(&entry.label));
+            }
+        }
         for entry in &mut self.entries {
             let (enabled, checked) = menus::item_state(app, &entry.path, entry.command.as_deref());
             if let Some(label) = menus::live_label(app, entry.command.as_deref())

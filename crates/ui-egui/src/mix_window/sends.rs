@@ -5,6 +5,7 @@ use super::{
     Align2, Rect, Route, Sense, SoundApp, Stroke, StrokeKind, Tokens, Track, TrackId, TrackKind, Ui, db_text, fader, json, pan_knob, pan_text, pos2,
     regular, text_toggle, vec2,
 };
+use crate::i18n::{tr, trf};
 use craft_ui::combo::Menu;
 
 /// Draw one send slot: the route area picks a destination, while the level area opens or edits the send level.
@@ -50,9 +51,9 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
                 let _ =
                     app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
             }
-            let _ = level_resp.clone().on_hover_text(format!(
-                "Send {which} to {name}: {} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options",
-                db_text(s.level_db)
+            let _ = level_resp.clone().on_hover_text(trf(
+                "Send {} to {}: {} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options",
+                &[&which, &name, &db_text(s.level_db)],
             ));
             level_resp.context_menu(|ui| send_options_menu(app, ui, id, slot, s));
         }
@@ -99,15 +100,15 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     ui.add_space(((ui.available_width() - 62.0) / 2.0).max(0.0));
-                    if text_toggle(ui, vec2(36.0, 18.0), "PRE", send.pre_fader, t.accent, "Pre-fader").clicked() {
+                    if text_toggle(ui, vec2(36.0, 18.0), "PRE", send.pre_fader, t.accent, tr("Pre-fader")).clicked() {
                         let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "pre_fader": !send.pre_fader}));
                     }
-                    if text_toggle(ui, vec2(22.0, 18.0), "M", send.mute, t.mute, "Mute send").clicked() {
+                    if text_toggle(ui, vec2(22.0, 18.0), "M", send.mute, t.mute, tr("Mute send")).clicked() {
                         let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "mute": !send.mute}));
                     }
                 });
                 let mut pan = send.pan;
-                pan_knob(ui, 32.0, &mut pan, "Send pan (drag; double-click centres)");
+                pan_knob(ui, 32.0, &mut pan, tr("Send pan (drag; double-click centres)"));
                 if (pan - send.pan).abs() > f32::EPSILON {
                     let _ = app.engine.execute_merged(
                         "mix.send_level",
@@ -117,7 +118,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                 }
                 ui.label(egui::RichText::new(pan_text(send.pan)).color(t.counter_text).small());
                 let (fr, fresp) = ui.allocate_exact_size(vec2(56.0, 220.0), Sense::hover());
-                fresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, "Send level"));
+                fresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, tr("Send level")));
                 // Distinct from the strip's "Send A level for <track>" icon and from the slot's "Send level", so a
                 // label query while the window is open still picks one node.
                 if let Some(db) = fader(ui, fr, send.level_db, ui.scope_id().with("send_fader"), "Send level fader") {
@@ -156,9 +157,9 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
 /// Secondary controls live behind the amount readout, separate from the bus selector like Logic.
 fn send_options_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, send: &soundcraft_model::SendSlot) {
     ui.set_min_width(230.0);
-    ui.strong(format!("Send {} · {}", (b'A' + slot as u8) as char, route_name(app, &send.target)));
+    ui.strong(trf("Send {} · {}", &[&((b'A' + slot as u8) as char), &route_name(app, &send.target)]));
     let mut db = send.level_db.max(-60.0);
-    if ui.add(egui::Slider::new(&mut db, -60.0..=12.0).text("Level").suffix(" dB")).changed() {
+    if ui.add(egui::Slider::new(&mut db, -60.0..=12.0).text(tr("Level")).suffix(tr(" dB"))).changed() {
         let _ = app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
     }
     send_level_scale(ui, send.level_db);
@@ -177,23 +178,23 @@ fn send_options_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, 
         }
     });
     let mut pan = send.pan;
-    if ui.add(egui::Slider::new(&mut pan, -1.0..=1.0).text("Pan")).changed() {
+    if ui.add(egui::Slider::new(&mut pan, -1.0..=1.0).text(tr("Pan"))).changed() {
         let _ = app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "pan": pan}), &format!("send-pan:{}:{slot}", id.0));
     }
     ui.horizontal(|ui| {
         let mut mute = send.mute;
-        if crate::widgets::checkbox(ui, &mut mute, "Mute").changed() {
+        if crate::widgets::checkbox(ui, &mut mute, tr("Mute")).changed() {
             let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "mute": mute}));
         }
         let mut pre = send.pre_fader;
-        if crate::widgets::checkbox(ui, &mut pre, "Pre-fader").changed() {
+        if crate::widgets::checkbox(ui, &mut pre, tr("Pre-fader")).changed() {
             let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "pre_fader": pre}));
         }
     });
     if let Route::Bus(bus) = send.target
         && let Some(aux) =
             app.engine.session().tracks.iter().find(|t| t.kind == TrackKind::Aux && t.mixer.input == Route::Bus(bus)).map(|t| (t.id, t.name.clone()))
-        && ui.button("Rename bus…").clicked()
+        && ui.button(tr("Rename bus…")).clicked()
     {
         app.dialogs.open_rename_track(aux.0, &aux.1);
         ui.close();
@@ -343,18 +344,18 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
         match &current {
             Some((_, name)) => {
                 ui.horizontal(|ui| {
-                    ui.strong(format!("Send {which}"));
+                    ui.strong(trf("Send {}", &[&which]));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(name).color(Tokens::current().counter_text));
                     });
                 });
-                ui.label(egui::RichText::new("DESTINATION").size(8.0).color(Tokens::current().text_dim));
+                ui.label(egui::RichText::new(tr("DESTINATION")).size(8.0).color(Tokens::current().text_dim));
             }
             None => {
-                ui.strong(format!("Send {which} · Choose destination"));
+                ui.strong(trf("Send {} · Choose destination", &[&which]));
             }
         }
-        let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), "Search buses…");
+        let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), tr("Search buses…"));
         let visible: Vec<_> = busses.iter().filter(|bus| search.matches(&bus.name)).collect();
         (search, visible)
     };
@@ -376,11 +377,11 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
             })
         },
         |ui| {
-            if ui.button("new bus...").clicked() {
+            if ui.button(tr("new bus...")).clicked() {
                 ui.close();
                 return Some(SendFooter::NewBus);
             }
-            if has_send && ui.button("Remove send").clicked() {
+            if has_send && ui.button(tr("Remove send")).clicked() {
                 ui.close();
                 return Some(SendFooter::RemoveSend);
             }

@@ -1,4 +1,5 @@
 use super::{Arc, ClipId, Dialog, SoundApp, StripNames, Tokens, TrackId, Value, json, vec2};
+use crate::i18n::{tr, trf};
 
 /// What Strip keeps on each track: the Strip Silence rectangles.
 pub type StripRects = Arc<Vec<(TrackId, Vec<soundcraft_time::Range>)>>;
@@ -139,23 +140,23 @@ pub(super) const AUTO_NAME_LABELS: [&str; 2] = ["Starting Number", "Number of Pl
 pub(super) fn strip_name_fields(ui: &mut egui::Ui, names: &mut StripNames, labels: [&str; 2]) {
     let [number, zeros] = labels;
     egui::Grid::new("strip_names").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
-        let name = ui.label("Name");
+        let name = ui.label(tr("Name"));
         ui.text_edit_singleline(&mut names.name).labelled_by(name.id);
         ui.end_row();
-        let number = ui.label(number);
+        let number = ui.label(tr(number));
         ui.add(egui::DragValue::new(&mut names.number).range(0..=StripNames::MAX_NUMBER)).labelled_by(number.id);
         ui.end_row();
-        let zeros = ui.label(zeros);
+        let zeros = ui.label(tr(zeros));
         ui.add(egui::DragValue::new(&mut names.zeros).range(0..=StripNames::MAX_ZEROS)).labelled_by(zeros.id);
         ui.end_row();
-        let suffix = ui.label("Suffix");
+        let suffix = ui.label(tr("Suffix"));
         ui.text_edit_singleline(&mut names.suffix).labelled_by(suffix.id);
         ui.end_row();
     });
     let example = if names.name.trim().is_empty() {
-        "Without a name, the clips keep their names.".to_string()
+        tr("Without a name, the clips keep their names.").to_string()
     } else {
-        format!("First clip: {}", names.clip_name(0))
+        trf("First clip: {}", &[&names.clip_name(0)])
     };
     ui.label(egui::RichText::new(example).small().color(Tokens::current().text_dim));
 }

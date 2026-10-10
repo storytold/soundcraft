@@ -4,26 +4,27 @@ use super::{
     Align2, Color32, GridValue, NoteValue, Range, Rect, Samples, Sense, Session, Shape, SoundApp, Stroke, TimeFormat, Tokens, Ui, bold,
     format_position, json, pos2, regular, rgb, vec2,
 };
+use crate::i18n::tr;
 
 // ---- rulers ----------------------------------------------------------------------------------
 
 fn ruler_label(id: &str) -> &'static str {
     match id {
-        "bars_beats" => "Bars|Beats",
-        "min_secs" => "Min:Secs",
-        "timecode" => "Timecode",
-        "feet_frames" => "Feet+Frames",
-        "samples" => "Samples",
-        "tempo" => "Tempo",
-        "meter" => "Meter",
-        "markers" => "Markers",
-        "key" => "Key",
-        "chords" => "Chords",
-        "timecode2" => "Timecode 2",
-        "markers2" => "Markers 2",
-        "markers3" => "Markers 3",
-        "markers4" => "Markers 4",
-        "markers5" => "Markers 5",
+        "bars_beats" => tr("Bars|Beats"),
+        "min_secs" => tr("Min:Secs"),
+        "timecode" => tr("Timecode"),
+        "feet_frames" => tr("Feet+Frames"),
+        "samples" => tr("Samples"),
+        "tempo" => tr("Tempo"),
+        "meter" => tr("Meter"),
+        "markers" => tr("Markers"),
+        "key" => tr("Key"),
+        "chords" => tr("Chords"),
+        "timecode2" => tr("Timecode 2"),
+        "markers2" => tr("Markers 2"),
+        "markers3" => tr("Markers 3"),
+        "markers4" => tr("Markers 4"),
+        "markers5" => tr("Markers 5"),
         "tempo_editor" => "",
         _ => "",
     }
@@ -151,7 +152,13 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
             "key" => {
                 painter.rect_filled(row, 0.0, Color32::from_rgb(64, 52, 88));
                 if s.key_signatures.is_empty() {
-                    painter.text(pos2(tl.min.x + 6.0, row.center().y), Align2::LEFT_CENTER, "C major", bold(11.0), Color32::from_rgb(220, 214, 236));
+                    painter.text(
+                        pos2(tl.min.x + 6.0, row.center().y),
+                        Align2::LEFT_CENTER,
+                        tr("C major"),
+                        bold(11.0),
+                        Color32::from_rgb(220, 214, 236),
+                    );
                 }
                 for (at, k) in &s.key_signatures {
                     let x = x_of(&s, tl, *at);
@@ -373,7 +380,7 @@ pub(super) fn column_titles(ui: &Ui, rulers: Rect, cols: &[Column]) {
     ui.painter().vline(end - 0.5, row.y_range(), line);
     for &(_, _, title, w) in cols {
         ui.painter().vline(x + 0.5, row.y_range(), line);
-        ui.painter().text(pos2(x + w / 2.0, row.center().y), Align2::CENTER_CENTER, title, bold(10.0), t.section_label);
+        ui.painter().text(pos2(x + w / 2.0, row.center().y), Align2::CENTER_CENTER, tr(title), bold(10.0), t.section_label);
         x += w;
     }
 }
@@ -382,21 +389,21 @@ pub(super) fn column_titles(ui: &Ui, rulers: Rect, cols: &[Column]) {
 pub(super) fn views_button(app: &mut SoundApp, ui: &mut Ui, rulers: Rect) {
     let r = Rect::from_min_size(rulers.min + vec2(6.0, 5.0), vec2(50.0, 18.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
-    let resp = crate::widgets::selector_box(&mut child, r.width(), r.height(), "Views", Tokens::current().text);
+    let resp = crate::widgets::selector_box(&mut child, r.width(), r.height(), tr("Views"), Tokens::current().text);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, child.is_enabled(), "Views"));
-    let resp = resp.on_hover_text("Columns beside the track headers: inserts, sends, I/O…");
+    let resp = resp.on_hover_text(tr("Columns beside the track headers: inserts, sends, I/O…"));
     egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         let shown = edit_columns(app.engine.session());
         for (id, label, _, _) in COLUMNS {
-            if ui.add(egui::Button::new(label).selected(shown.iter().any(|c| c.0 == id))).clicked() {
+            if ui.add(egui::Button::new(tr(label)).selected(shown.iter().any(|c| c.0 == id))).clicked() {
                 let _ = app.run(&format!("view.edit_{id}"), json!({}));
             }
         }
         ui.separator();
-        if ui.button("All").clicked() {
+        if ui.button(tr("All")).clicked() {
             let _ = app.run("view.edit_all", json!({}));
         }
-        if ui.button("Minimal").clicked() {
+        if ui.button(tr("Minimal")).clicked() {
             let _ = app.run("view.edit_minimal", json!({}));
         }
     });
