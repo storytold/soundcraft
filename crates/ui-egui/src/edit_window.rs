@@ -919,7 +919,7 @@ fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, sele
     // Volume readout and inserts summary.
     let info = format!("vol {}  pan {}", crate::widgets::db_text(m.volume_db), m.pan.first().map_or("-".into(), |p| crate::widgets::pan_text(*p)));
     ui.painter().text(pos2(view_r.max.x + 8.0, view_r.center().y), Align2::LEFT_CENTER, info, regular(10.0), t.text_dim);
-    let ins: Vec<&str> = m.inserts.iter().flatten().filter_map(|i| soundcraft_dsp::plugin_info(&i.plugin).map(|p| p.short_name)).collect();
+    let ins: Vec<&str> = m.inserts.iter().flatten().filter_map(|i| crate::mix_window::plugin_info(&i.plugin).map(|p| p.short_name)).collect();
     if !ins.is_empty() {
         ui.painter().with_clip_rect(Rect::from_min_max(pos2(am_r.max.x + 6.0, am_r.min.y), pos2(head.max.x - 20.0, am_r.max.y))).text(
             pos2(am_r.max.x + 8.0, am_r.center().y),
@@ -959,17 +959,10 @@ fn header_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, col: &str, r: R
             }
         }
         "inserts_ae" | "inserts_fj" => {
+            // The Mix window's slots, so plugins can be added, opened and changed from here too.
             let off = if col == "inserts_ae" { 0 } else { 5 };
             for i in 0..5.min(rows) {
-                let name = track
-                    .mixer
-                    .inserts
-                    .get(off + i)
-                    .cloned()
-                    .flatten()
-                    .and_then(|x| soundcraft_dsp::plugin_info(&x.plugin).map(|p| p.name))
-                    .unwrap_or("");
-                text(ui, item(i), name, t.text);
+                crate::mix_window::insert_slot(app, ui, track, off + i, item(i));
             }
         }
         "sends_ae" | "sends_fj" => {

@@ -428,7 +428,9 @@ fn instrument_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
     popup.show(|ui| instrument_menu(app, ui, id));
 }
 
-fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
+/// One insert slot, in a Mix window strip or an Edit window Inserts column: click an empty slot to
+/// pick a plugin, an occupied one to open it; right-click to bypass, remove or change it.
+pub fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
     let t = Tokens::current();
     let id = track.id;
     let ins = track.mixer.inserts.get(slot).cloned().flatten();
