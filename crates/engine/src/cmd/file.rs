@@ -390,4 +390,42 @@ mod tests {
         assert!(res["missing"].as_array().is_some_and(|m| !m.is_empty()), "{res}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    fn tone_engine() -> (Engine, u64) {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"count": 1, "name": "Tone", "format": "mono"})).unwrap();
+        let track = e.session().tracks[0].id;
+        let tone: Vec<f32> = (0..4_800).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+        let buf = AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+        let src = crate::io::add_source(e.session_mut(), "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let id = e.session_mut().new_clip_id();
+        crate::edit::place_clip(e.session_mut(), track, soundcraft_model::Clip::audio(id, "tone", src, 0, 0, 4_800));
+        e.session_mut().edit.selected_tracks = vec![track];
+        (e, track.0)
+    }
+
+    #[test]
+    fn same_named_clips_export_as_separate_files() {
+        let (mut e, track) = tone_engine();
+        let first = e.session().tracks[0].clips()[0].id;
+        let src = e.session().tracks[0].clips()[0].source().unwrap();
+        let second = e.session_mut().new_clip_id();
+        crate::edit::place_clip(
+            e.session_mut(),
+            soundcraft_model::TrackId(track),
+            soundcraft_model::Clip::audio(second, "tone", src, 0, 10_000, 4_800),
+        );
+        for id in [first, second] {
+            e.session_mut().find_clip_mut(id).unwrap().name = "Take".into();
+        }
+        let dir = std::env::temp_dir().join(format!("sc-export-clips-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let n = e.execute("file.export_clips", &json!({"dir": dir.to_string_lossy(), "clips": [first.0, second.0]})).unwrap();
+        assert_eq!(n["written"], 2);
+        let mut wavs: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        wavs.sort();
+        assert_eq!(wavs, vec!["Take-2.wav".to_string(), "Take.wav".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

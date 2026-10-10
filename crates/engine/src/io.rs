@@ -432,7 +432,16 @@ pub fn export_clips(e: &Engine, ids: &[soundcraft_model::ClipId], dir: &str) -> 
         let audio = soundcraft_mix::render_clips(s, t, c.range());
         let buf = AudioBuffer { sample_rate: s.sample_rate.hz(), channels: audio };
         let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).map_err(|err| EngineError::Io(err.to_string()))?;
-        let path = Path::new(dir).join(format!("{}.wav", sanitize_name(&c.name)));
+        let stem = sanitize_name(&c.name);
+        let mut path = Path::new(dir).join(format!("{stem}.wav"));
+        let mut k = 2u32;
+        while path.exists() {
+            path = Path::new(dir).join(format!("{stem}-{k}.wav"));
+            k = k.saturating_add(1);
+            if k > 10_000 {
+                return Err(EngineError::Io(format!("{dir}: too many files named {stem}")));
+            }
+        }
         std::fs::write(&path, bytes).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))?;
         n += 1;
     }
