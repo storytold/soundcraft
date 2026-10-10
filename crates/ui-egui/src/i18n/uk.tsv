@@ -1,0 +1,1321 @@
+ dB	 дБ
+ ms	 мс
+ s	 с
+% of all commits	% усіх комітів
+(redo) {r}	(повторити) {r}
++ Marker	+ Маркер
++ Selection	+ Виділення
+-inf dB	−∞ дБ
+1	1
+1 bar	1 такт
+1 frame	1 кадр
+1 msec	1 мс
+1 second	1 секунда
+1/16 note	1/16 ноти
+1/2 note	1/2 ноти
+1/32 note	1/32 ноти
+1/4 note	1/4 ноти
+1/64 note	1/64 ноти
+1/8 note	1/8 ноти
+10 msec	10 мс
+100 msec	100 мс
+100 samples	100 відліків
+12	12
+12 dB/oct	12 дБ/окт.
+16	16
+16-bit	16-бітний
+18 dB/oct	18 дБ/окт.
+1st Order Ambisonics	Амбісоніка 1-го порядку
+2	2
+20	20
+24	24
+24 dB/oct	24 дБ/окт.
+24-bit	24-бітний
+2nd Order Ambisonics	Амбісоніка 2-го порядку
+3	3
+32-bit float	32-бітний з рухомою комою
+3rd Order Ambisonics	Амбісоніка 3-го порядку
+4	4
+4th Order Ambisonics	Амбісоніка 4-го порядку
+5	5
+5.0	5.0
+5.0.2	5.0.2
+5.0.4	5.0.4
+5.1	5.1
+5.1.2	5.1.2
+5.1.4	5.1.4
+512 samples (resampled to the device rate when they differ)	512 відліків (із передискретизацією до частоти пристрою, якщо вона відрізняється)
+5th Order Ambisonics	Амбісоніка 5-го порядку
+6	6
+6 dB/oct	6 дБ/окт.
+6.0	6.0
+6.1	6.1
+6th Order Ambisonics	Амбісоніка 6-го порядку
+7.0	7.0
+7.0 SDDS	7.0 SDDS
+7.0.2	7.0.2
+7.0.4	7.0.4
+7.0.6	7.0.6
+7.1	7.1
+7.1 SDDS	7.1 SDDS
+7.1.2	7.1.2
+7.1.4	7.1.4
+7.1.6	7.1.6
+7th Order Ambisonics	Амбісоніка 7-го порядку
+8	8
+9.0.4	9.0.4
+9.0.6	9.0.6
+9.1.4	9.1.4
+9.1.6	9.1.6
+<ALL>	<УСІ>
+<factory default>	<заводські налаштування>
+@{0}: {1} PRs, {2} commits, +{3} / −{4} lines (Δ {5}), +{6} / −{7} binary assets, {8} – {9}	@{0}: PR: {1}, комітів: {2}, рядків: +{3} / −{4} (Δ {5}), двійкових ресурсів: +{6} / −{7}, {8} – {9}
+AFL (After Fader Listen)	AFL (прослуховування після регулятора)
+ARA Note Overlay	Накладання нот ARA
+ARA Plugins	Модулі ARA
+AUX	ДОПОМ.
+Ableton Link	Ableton Link
+About	Про програму
+About SoundCraft	Про SoundCraft
+Activate HEAT	Увімкнути HEAT
+Active plugin instances: {plugins}	Активних екземплярів модулів: {plugins}
+Add	Додати
+Add Automation Breakpoint	Додати точку автоматизації
+Add Key Change...	Додати зміну тональності…
+Add MIDI Note	Додати ноту MIDI
+Add Note	Додати ноту
+After Playback	Після відтворення
+All	Усі
+All Automation	Уся автоматизація
+All MIDI Notes Off	Вимкнути всі ноти MIDI
+All Marker Rulers	Усі лінійки маркерів
+Amp Attack	Атака підсилювача
+Amp Decay	Спад підсилювача
+Amp Release	Згасання підсилювача після відпускання
+Amp Sustain	Рівень утримання підсилювача
+An open-source digital audio workstation from the ArtCraft team.	Цифрова звукова робоча станція з відкритим кодом від команди ArtCraft.
+Analyses the edit selection on the selected tracks.	Аналізує виділений фрагмент на вибраних доріжках.
+Analyze	Аналізувати
+Applies across the edit selection (constant: at the insertion point; scale: factor = end / start; stretch: factor = start / end).	Застосовується до виділення (сталий темп: у позиції вставлення; масштаб: коефіцієнт = кінець / початок; розтягнення: коефіцієнт = початок / кінець).
+Applies to the selected MIDI clips (or those under the selection).	Застосовується до вибраних кліпів MIDI або кліпів під виділенням.
+Apply	Застосувати
+Apply to selected tracks (Shift: selected clips)	Застосувати до вибраних доріжок (Shift: вибрані кліпи)
+Arrange	Упорядкувати
+Assign Send	Призначити надсилання
+Assign to VCA	Призначити до VCA
+Asymmetry	Асиметрія
+At Selection	За виділенням
+At Transients	За перехідними процесами
+Attack	Атака
+Audio	Аудіо
+Audio Track	Аудіодоріжка
+Audio as MIDI	Аудіо як MIDI
+Audio files	Аудіофайли
+Audio...	Аудіо…
+Audio: {0}	Аудіо: {0}
+AudioSuite	AudioSuite
+AudioSuite Process	Обробка AudioSuite
+AudioSuite · {title}	AudioSuite · {title}
+Auto-Spot Clips	Автоматично розміщувати кліпи
+Auto-Update Active Configuration	Автоматично оновлювати активну конфігурацію
+Auto-update configuration	Автоматично оновлювати конфігурацію
+Automation	Автоматизація
+Automation Follows Edit	Автоматизація слідує за редагуванням
+Automation Mode	Режим автоматизації
+Automation Trim	Коригування
+Aux Input	Допоміжний вхід
+BED	ОСНОВА
+BF-76	BF-76
+BYPASSED	ОБХІД
+Band Pass	Смуговий
+Bars per system	Тактів у системі
+Bars|Beats	Такти|Долі
+Beat Detective	Аналізатор ритму
+Big Counter	Великий лічильник
+Binary assets added	Додані двійкові ресурси
+Binary assets removed	Видалені двійкові ресурси
+Bit Depth	Розрядність
+Bit depth	Розрядність
+Bounce	Експортувати мікс
+Bounce Mix	Експорт міксу
+Bounce Mix...	Експорт міксу…
+Bounce Mix…	Експорт міксу…
+Bounce Stems...	Експортувати групи доріжок…
+Bounce...	Експортувати мікс…
+Bounces the edit selection, or the whole session when nothing is selected.	Експортує виділення або весь сеанс, якщо нічого не вибрано.
+Bring to Front	На передній план
+Browse…	Огляд…
+Busses	Шини
+Bypass	Обхід
+Bypass Insert	Обійти ефект
+Bypass Inserts	Обійти ефекти
+C	C
+C major	До мажор
+CLIPS	КЛІПИ
+Calibration Mode	Режим калібрування
+Can't Redo	Немає дії для повторення
+Can't Undo	Немає дії для скасування
+Cancel	Скасувати
+Cannot record: no audio input device	Запис неможливий: немає пристрою аудіовходу
+Capture...	Зберегти групу…
+Cascade	Каскад
+Ceiling	Верхня межа
+Center	Центр
+Center Playhead	Позиція відтворення по центру
+Change Duration...	Змінити тривалість…
+Change Edit to Match Timeline	Узгодити виділення редагування з виділенням часу
+Change Meter...	Змінити музичний розмір…
+Change Timeline to Match Edit	Узгодити виділення часу з виділенням редагування
+Change Track Width	Змінити кількість каналів доріжки
+Change Velocity...	Змінити силу натискання…
+Channel Name	Назва каналу
+Channel Strip	Канальний модуль
+Chord Symbols	Позначення акордів
+Chords	Акорди
+Chorus	Хорус
+Clear	Очистити
+Clear All Clip Indicators	Скинути всі індикатори перевантаження
+Clear All Mutes	Увімкнути звук усіх доріжок
+Clear All Solos	Вимкнути соло всіх доріжок
+Clear Automation	Очистити автоматизацію
+Clear Special	Спеціальне очищення
+Clear Trim Automation	Очистити автоматизацію коригування
+Click	Метроном
+Click a take (or the selection) to promote it to the main playlist	Клацніть дубль або виділення, щоб перенести його до основного списку відтворення
+Click keys to step-enter notes into the selected MIDI clip at the insertion point.	Клацайте клавіші, щоб покроково вводити ноти у вибраний кліп MIDI в позиції вставлення.
+Click/Countoff...	Метроном/Відлік…
+Click: open plugin · right-click: change	Клацання: відкрити модуль · праве клацання: змінити
+Clip	Кліп
+Clip Color	Колір кліпу
+Clip Effects	Ефекти кліпу
+Clip Effects Status	Стан ефектів кліпу
+Clip Gain	Підсилення кліпу
+Nudge Clip Gain Up	Збільшити підсилення кліпу на крок
+Nudge Clip Gain Down	Зменшити підсилення кліпу на крок
+Clip Gain Info	Відомості про підсилення кліпу
+Clip Gain Line	Лінія підсилення кліпу
+Clip Groups...	Групи кліпів…
+Clip List	Список кліпів
+Clip effects gain (dB)	Підсилення ефектів кліпу (дБ)
+Clip end pad ms	Запас у кінці кліпу, мс
+Clip start pad ms	Запас на початку кліпу, мс
+Clips	Кліпи
+Close All Workspaces	Закрити всі робочі області
+Close Plugin Editor	Закрити редактор модуля
+Close Session	Закрити сеанс
+Close Window	Закрити вікно
+Closed Hat Decay	Спад закритої тарілки
+Coalesce Clip Gain to Volume Automation	Об’єднати підсилення кліпу з автоматизацією гучності
+Coalesce Pan Guide Automation	Об’єднати автоматизацію напрямної панорами
+Coalesce Trim Automation	Об’єднати автоматизацію коригування
+Coalesce VCA Controller Automation	Об’єднати автоматизацію контролера VCA
+Coalesce Volume Automation to Clip Gain	Об’єднати автоматизацію гучності з підсиленням кліпу
+Collaboration	Спільна робота
+Color Palette	Колірна палітра
+Commands Keyboard Focus (single-key editing)	Фокус клавіатури на командах (редагування однією клавішею)
+Comments	Коментарі
+Commit...	Рендеринг доріжки…
+Commits	Коміти
+Comp	Компр.
+Comp Attack	Атака компресора
+Comp Makeup	Компенсація підсилення компресора
+Comp Ratio	Коефіцієнт компресора
+Comp Release	Відновлення компресора
+Comp Thresh	Поріг компресора
+Company	Компанія
+Composer	Композитор
+Composite Playlist	Зведений список відтворення
+Compressor/Limiter	Компресор/лімітер
+Configurations	Конфігурації
+Conform to Tempo	Узгодити з темпом
+Consolidate	Об’єднати в один кліп
+Constant...	Сталий…
+Continuous	Безперервне
+Contributors	Учасники
+Convert Aux to Routing Folder	Перетворити допоміжний вхід на теку маршрутизації
+Convert Clip Gain to Volume Automation	Перетворити підсилення кліпу на автоматизацію гучності
+Convert Volume Automation to Clip Gain	Перетворити автоматизацію гучності на підсилення кліпу
+Copy	Копіювати
+Copy Selection to...	Копіювати виділення до…
+Copy Special	Спеціальне копіювання
+Copy to Send...	Копіювати до надсилання…
+Copy/Move Indicators	Індикатори копіювання/переміщення
+Could not save the preset	Не вдалося зберегти налаштування
+Count	Кількість
+Count Off	Відлік
+Counters	Лічильники
+Create	Створити
+Create Click Track	Створити доріжку метронома
+Create Group	Створити групу
+Create...	Створити…
+Cs	Cs
+Current Feet+Frames Position...	Поточна позиція у футах і кадрах…
+Current Time	Поточний час
+Current Timecode Position...	Поточна позиція часового коду…
+Curve	Крива
+Cut	Вирізати
+Cut Special	Спеціальне вирізання
+Cut Time...	Вирізати час…
+Cutoff	Частота зрізу
+Cymbal Decay	Спад тарілки
+D-Verb	D-Verb
+DC Offset Removal	Усунення постійної складової
+DC Rmv	Без DC
+Dashboard...	Панель керування…
+De-Esser	Усунення шиплячих
+DeEss	Шиплячі
+Decay	Спад
+Default	Типова
+Delay	Затримка
+Delay (ticks)	Затримка (імпульси)
+Delay Compensation	Компенсація затримки
+Delay compensation	Компенсація затримки
+Delete	Видалити
+Delete Group	Видалити групу
+Delete Memory Location	Видалити збережену позицію
+Delete Notes	Видалити ноти
+Delete Unused Playlists	Видалити невикористані списки відтворення
+Delete Unused...	Видалити невикористані…
+Depth	Глибина
+Deselect All	Скасувати все виділення
+Designate as Target Playlist	Призначити цільовим списком відтворення
+Destructive Record	Запис із перезаписом
+DestructivePunch	DestructivePunch
+Device rate	Частота пристрою
+Diffusion	Дифузія
+Disable	Вимкнути
+Disk Allocation...	Розподіл дискового простору…
+Disk Usage	Використання диска
+Display name	Відображуване ім’я
+Display on All Channels	Показувати на всіх каналах
+Dither	Дизеринг
+Divergence (0 = point source)	Розсіювання (0 = точкове джерело)
+Double Edit	Збільшити виділення вдвічі
+Double-click to import audio/MIDI at the insertion point or open a session.	Подвійне клацання імпортує аудіо/MIDI в позиції вставлення або відкриває сеанс.
+Drive	Перевантаження
+Dropped Video Frame Indicator	Індикатор пропущених відеокадрів
+Drum Synth	Синтезатор ударних
+Drums	Ударні
+Dual-licensed MIT OR Apache-2.0. Made with Rust and egui.	Подвійна ліцензія MIT OR Apache-2.0. Створено за допомогою Rust та egui.
+Duplicate	Дублювати
+Duplicate Dolby Atmos Plugin Automation to Pan Automation	Дублювати автоматизацію модуля Dolby Atmos до автоматизації панорами
+Duplicate Pan Automation to Dolby Atmos Plugin Automation	Дублювати автоматизацію панорами до автоматизації модуля Dolby Atmos
+Duplicate Playlist	Дублювати список відтворення
+Duplicate and Extend Edit	Дублювати й розширити виділення
+Duplicate of Main Playlist	Копія основного списку відтворення
+Duplicate...	Дублювати…
+Duration %	Тривалість, %
+Dyn3 Compressor/Limiter	Dyn3 Компресор/лімітер
+Dyn3 De-Esser	Dyn3 Усунення шиплячих
+Dyn3 Expander/Gate	Dyn3 Експандер/гейт
+Dynamic Transport	Динамічне керування відтворенням
+Dynamics	Динаміка
+EQ	Еквалайзер
+EQ 1-Band	1-смуговий еквалайзер
+EQ 7-Band	7-смуговий еквалайзер
+EQ Curve	Крива еквалайзера
+EQ1	Екв. 1
+EQ3 1-Band	EQ3 1-Band
+EQ3 7-Band	EQ3 7-Band
+EQ7	Екв. 7
+Edit	Редагування
+Edit Lock/Unlock	Заблокувати/розблокувати редагування
+Edit Memory Location	Редагувати збережену позицію
+Edit Mode	Режим редагування
+Edit Note	Редагувати ноту
+Edit Tool	Інструмент редагування
+Edit Window Scrolling	Прокручування вікна редагування
+Edit Window Views	Вигляд вікна редагування
+Edit group	Група редагування
+Edit/Tool Mode Keyboard Lock	Заблокувати перемикання режиму/інструмента клавіатурою
+Elastic Audio	Розтягування аудіо
+Elastic Properties	Властивості розтягування
+Elevation (height speakers)	Висота (верхні гучномовці)
+Eleven Lite	Eleven Lite
+Enable	Увімкнути
+Enabled parameters	Увімкнені параметри
+End	Кінець
+End to Fill Selection	Кінець до межі виділення
+End to Insertion	Кінець до позиції вставлення
+Equal Power	Рівна потужність
+Event	Подія
+Expanded	Розгорнутий
+Expanded Sends	Розгорнуті надсилання
+Expander/Gate	Експандер/гейт
+Exponential	Експоненційний
+Export	Експорт
+Export Clip Groups...	Експортувати групи кліпів…
+Export Clips as Files...	Експортувати кліпи як файли…
+Extend Edit Down	Розширити виділення вниз
+Extend Edit Down to Members	Розширити виділення вниз до учасників групи
+Extend Edit Selection To Marker Lane Above	Розширити виділення до смуги маркерів вище
+Extend Edit Selection To Marker Lane Below	Розширити виділення до смуги маркерів нижче
+Extend Edit Up	Розширити виділення вгору
+Extend Edit Up to Members	Розширити виділення вгору до учасників групи
+External Timecode Offset...	Зсув зовнішнього часового коду…
+Extract Chords from Selection	Видобути акорди з виділення
+Extract MIDI to New Track	Видобути MIDI до нової доріжки
+Extreme	Найбільша
+FOLDER	ТЕКА
+Fade to End	Плавний перехід до кінця
+Fade to Start	Плавний перехід до початку
+Fades	Плавні переходи
+Fast Forward	Перемотати вперед
+Feedback	Зворотний зв’язок
+Feet+Frames	Фути+Кадри
+File	Файл
+Fill Window With Session	Умістити сеанс у вікні
+Fill window with session (Alt+A)	Умістити сеанс у вікні (Alt+A)
+Filter Attack	Атака фільтра
+Filter Decay	Спад фільтра
+Filter Env	Обвідна фільтра
+Filter Release	Згасання фільтра після відпускання
+Filter Sustain	Рівень утримання фільтра
+Find Talent	Пошук учасників
+Fine	Точне налаштування
+First	Перший
+First commit	Перший коміт
+Fit	Умістити
+Flanger	Фленджер
+Flatten Performance...	Застосувати параметри виконання…
+Folder Lines	Лінії теки
+Format	Формат
+Format Time	Формат часу
+Frames: {frames}	Кадрів: {frames}
+Freeze	Заморозити
+Freq	Частота
+Frequency	Частота
+Full Wave	Обидві півхвилі
+G major	Соль мажор
+GRID	СІТКА
+GROUPS	ГРУПИ
+Gain	Підсилення
+Gate	Гейт
+Gate Range	Діапазон гейта
+Gate Release	Відновлення гейта
+Gate Thresh	Поріг гейта
+Get Info...	Відомості…
+Glide	Плавний перехід
+Glide Pan Only	Плавно змінити лише панораму
+Glide to All Enabled	Плавно змінити всі увімкнені параметри
+Glide to Current	Плавно змінити поточний параметр
+Go to End	У кінець
+Go to End (End)	У кінець (End)
+Go to Next Marker	До наступного маркера
+Go to Previous Marker	До попереднього маркера
+Grab bag	Хмара імен
+Grabber	Переміщення
+Grid	Сітка
+Grid Relative	Відносна сітка
+Grid Value	Крок сітки
+Group	Група
+Group...	Згрупувати…
+HEAT	HEAT
+HF Damping	Затухання ВЧ
+HF Freq	Частота ВЧ
+HF Gain	Підсилення ВЧ
+HF Q	Добротність ВЧ
+HMF Freq	Частота ВСЧ
+HMF Gain	Підсилення ВСЧ
+HMF Q	Добротність ВСЧ
+HPF	Фільтр ВЧ
+HPF Freq	Частота фільтра ВЧ
+HPF Slope	Крутість фільтра ВЧ
+Half Wave	Одна півхвиля
+Half-Speed Playback	Відтворення з половинною швидкістю
+Halve Edit	Зменшити виділення вдвічі
+Hardware...	Обладнання…
+Harmonic	Гармоніки
+Heal Separation	З’єднати розділені кліпи
+Hide	Приховати
+Hide All Floating Windows	Приховати всі рухомі вікна
+Hide Track	Приховати доріжку
+High Freq	Частота ВЧ
+High Gain	Підсилення ВЧ
+High Pass	Високочастотний
+High Shelf	Поличний ВЧ
+Hold	Утримання
+Hz	Гц
+I / O	ВХІД / ВИХІД
+I/O	Вхід/Вихід
+I/O Setup	Налаштування входів/виходів
+I/O...	Входи/виходи…
+INSERTS A-E	ЕФЕКТИ A–E
+INSERTS F-J	ЕФЕКТИ F–J
+INST	ІНСТР.
+INSTRUMENT	ІНСТРУМЕНТ
+Identify Beat...	Визначити ритм…
+Identify Beat: selection is	Визначення ритму: кількість тактів у виділенні
+Identify Sync Point	Визначити точку синхронізації
+Import	Імпорт
+Import Audio	Імпортувати аудіо
+Import MIDI	Імпортувати MIDI
+In 1	Вхід 1
+In {i}	Вхід {i}
+Input	Вхід
+Input Monitoring	Прослуховування входу
+Input Quantize...	Квантування на вході…
+Input Trim	Коригування входу
+Input device	Пристрій вводу
+Input monitoring	Прослуховування входу
+Insert Plugin	Додати модуль
+Insert Silence	Вставити тишу
+Insert Time...	Вставити час…
+Insert {slot}: {param}	Ефект {slot}: {param}
+Insertion Follows Playback	Позиція вставлення слідує за відтворенням
+Inserts A-E	Ефекти A–E
+Inserts F-J	Ефекти F–J
+Inspect Clip	Переглянути кліп
+Inspect Session	Переглянути сеанс
+Inspect Track	Переглянути доріжку
+Instrument	Інструмент
+Instrument Track	Інструментальна доріжка
+Instruments	Інструменти
+Interface scale	Масштаб інтерфейсу
+Invert	Інвертувати
+Join us on Discord	Приєднуйтеся до нас у Discord
+Jumbo	Дуже велика
+Key	Тональність
+Key Signature	Ключові знаки
+Key Signature Staff	Нотний стан із ключовими знаками
+Keyboard Focus	Фокус клавіатури
+Keyboard Shortcuts	Клавіатурні скорочення
+Keyboard Shortcuts...	Клавіатурні скорочення…
+Kick Decay	Спад великого барабана
+Kick Tune	Стрій великого барабана
+Knee	Плавність переходу
+L	L
+LCR	LCR
+LCRS	LCRS
+LF Freq	Частота НЧ
+LF Gain	Підсилення НЧ
+LF Q	Добротність НЧ
+LFE	LFE
+LMF Freq	Частота НСЧ
+LMF Gain	Підсилення НСЧ
+LMF Q	Добротність НСЧ
+LPF	Фільтр НЧ
+LPF Freq	Частота фільтра НЧ
+LPF Slope	Крутість фільтра НЧ
+Language	Мова
+Large	Велика
+Last	Останній
+Last commit	Останній коміт
+Latch	Фіксація
+Layered Editing	Пошарове редагування
+Lc	Lc
+Learn	Навчання
+Legato	Легато
+Length	Тривалість
+Length ratio	Коефіцієнт тривалості
+Level	Рівень
+Limit	Обмеження
+Line delta	Зміна кількості рядків
+Linear	Лінійний
+Linear...	Лінійний…
+Lines +/−	Рядки +/−
+Lines added	Додані рядки
+Lines deleted	Видалені рядки
+Link Timeline and Edit Selection	Пов’язати виділення часу й редагування
+Link Track and Edit Selection	Пов’язати виділення доріжок і редагування
+List CLAP Plugins	Список модулів CLAP
+List Commands	Список команд
+List MIDI Notes	Список нот MIDI
+List Plugins	Список модулів
+List VST3 Plugins	Список модулів VST3
+Listen	Прослухати
+Lo-Fi	Lo-Fi
+LoFi	LoFi
+Load Track Preset	Завантажити налаштування доріжки
+Locate	Перейти до позиції
+Location	Позиція
+Logarithmic	Логарифмічний
+Lookahead	Випередження
+Loop Playback	Циклічне відтворення
+Loop Playback (Cmd+Shift+L)	Циклічне відтворення (Cmd+Shift+L)
+Loop Rec	Циклічний запис
+Loop Record	Циклічний запис
+Loop-recorded {made} take(s)	Записано в циклі, дублів: {made}
+Loop...	Зациклити…
+Low Cut	Зріз НЧ
+Low Freq	Частота НЧ
+Low Gain	Підсилення НЧ
+Low Latency Monitoring	Прослуховування з малою затримкою
+Low Pass	Низькочастотний
+Low Shelf	Поличний НЧ
+Lower Dock	Нижня панель
+Lrs	Lrs
+Ls	Ls
+Lss	Lss
+Ltf	Ltf
+Ltm	Ltm
+Ltr	Ltr
+Lw	Lw
+MASTER	ОСНОВНА
+MEMORY LOCATIONS	ЗБЕРЕЖЕНІ ПОЗИЦІЇ
+MF Freq	Частота СЧ
+MF Gain	Підсилення СЧ
+MF Q	Добротність СЧ
+MIDI	MIDI
+MIDI Beat Clock...	Тактова синхронізація MIDI…
+MIDI Controls	Керування MIDI
+MIDI EDITOR	РЕДАКТОР MIDI
+MIDI Editor	Редактор MIDI
+MIDI Editors	Редактори MIDI
+MIDI Editors to Back	Редактори MIDI на задній план
+MIDI Editors to Front	Редактори MIDI на передній план
+MIDI Event List	Список подій MIDI
+MIDI Input Devices...	Пристрої входу MIDI…
+MIDI Input Display	Індикатор входу MIDI
+MIDI Input Filter...	Фільтр входу MIDI…
+MIDI Keyboard	Клавіатура MIDI
+MIDI Live Mode	Режим живого MIDI
+MIDI Merge	Об’єднання MIDI
+MIDI Operations	Операції MIDI
+MIDI Operations Window	Вікно операцій MIDI
+MIDI Real-Time Properties	Властивості MIDI в реальному часі
+MIDI Studio...	Студія MIDI…
+MIDI Thru	Наскрізний MIDI
+MIDI Track	Доріжка MIDI
+MIDI Track Offsets	Зсуви доріжок MIDI
+MIDI in: all	Вхід MIDI: усі
+MIDI...	MIDI…
+Machine Track Arming	Підготовка доріжок апаратури до запису
+Machine Track Arming Profiles...	Профілі підготовки доріжок апаратури до запису…
+Main Counter	Основний лічильник
+Main Output Format	Формат основного виходу
+Main output	Основний вихід
+Main output: {0}	Основний вихід: {0}
+Make Inactive	Зробити неактивною
+Makeup	Компенсація підсилення
+Marker Controls	Керування маркерами
+Marker Displays	Відображення маркерів
+Marker Target Follows First Selected Track	Цільова смуга маркерів слідує за першою вибраною доріжкою
+Markers	Маркери
+Markers 2	Маркери 2
+Markers 3	Маркери 3
+Markers 4	Маркери 4
+Markers 5	Маркери 5
+Markers Follow Edit	Маркери слідують за редагуванням
+Master Fader	Основний регулятор гучності
+Max	Макс.
+Maxim	Maxim
+Maximizer	Максимізація рівня
+Medium	Середня
+Melodyne	Melodyne
+Memory Locations	Збережені позиції
+Merge MIDI	Об’єднати MIDI
+Merge Markers	Об’єднати маркери
+Merged PRs	Об’єднані PR
+Messages	Повідомлення
+Metadata Inspector	Перегляд метаданих
+Meter	Розмір
+Meters and Faders	Індикатори та регулятори
+Mic Preamps	Мікрофонні підсилювачі
+Micro	Мікро
+Mid Freq	Частота СЧ
+Mid Gain	Підсилення СЧ
+Mid Q	Добротність СЧ
+Min strip duration ms	Мін. тривалість тиші, мс
+Min:Secs	Хв:Сек
+Mini	Міні
+Minimal	Мінімальний
+Mirrored MIDI Editing	Дзеркальне редагування MIDI
+Mix	Мікшер
+Mix Window View	Вигляд мікшера
+Mix Window Views	Вигляд мікшера
+Mix block size	Розмір блоку мікшування
+Mix group	Група мікшування
+Mod Delay	Модульована затримка
+Mod Delay III	Mod Delay III
+Mod Depth	Глибина модуляції
+Mod Rate	Частота модуляції
+ModDly	Мод. зат.
+Mode	Режим
+Model	Модель
+Models	Моделі
+Modulation	Модуляція
+Momentary	Поки натиснуто
+Mono	Моно
+Move Clips	Перемістити кліпи
+Move Edit Left	Перемістити виділення ліворуч
+Move Edit Right	Перемістити виділення праворуч
+Move Edit Selection To Marker Lane Above	Перемістити виділення до смуги маркерів вище
+Move Edit Selection To Marker Lane Below	Перемістити виділення до смуги маркерів нижче
+Move Insert	Перемістити ефект
+Move Notes	Перемістити ноти
+Move Selection to...	Перемістити виділення до…
+Move Song Start...	Перемістити початок композиції…
+Move Track	Перемістити доріжку
+Move to New Folder...	Перемістити до нової теки…
+Movies	Відеофайли
+Mute	Вимкнути звук
+Mute Sends	Вимкнути звук надсилань
+Mute/Unmute	Вимкнути/увімкнути звук
+Name	Назва
+Name (A–Z)	Ім’я (А–Я)
+Name:	Назва:
+Narrow Mix	Вузький мікшер
+New Bus	Нова шина
+New Configuration	Нова конфігурація
+New Configuration...	Нова конфігурація…
+New Configuration…	Нова конфігурація…
+New Group…	Нова група…
+New MIDI Clip	Новий кліп MIDI
+New Memory Location	Нова збережена позиція
+New Playlist	Новий список відтворення
+New Session	Новий сеанс
+New Tracks	Нові доріжки
+New Tracks…	Нові доріжки…
+New Workspace	Нова робоча область
+New...	Створити…
+Next	Наступний
+Next Marker	Наступний маркер
+No Audio Units found	Модулів Audio Units не знайдено
+No CLAP plugins found	Модулів CLAP не знайдено
+No Scrolling	Без прокручування
+No Time	Без часу
+No VST3 plugins found	Модулів VST3 не знайдено
+No Video track — File › Import › Video…	Немає відеодоріжки — Файл › Імпорт › Відео…
+No audio input: {e}	Немає аудіовходу: {e}
+No background tasks are running.	Немає активних фонових завдань.
+No contributor data was built into this copy.	У цій збірці немає даних про учасників.
+No model credits were built into this copy.	У цій збірці немає даних про моделі.
+No object tracks. Use the Object view in the Mix window to route tracks as objects.	Немає об’єктних доріжок. Скористайтеся виглядом «Об’єкт» у мікшері, щоб спрямувати доріжки як об’єкти.
+No parameters.	Немає параметрів.
+Noise	Шум
+Noise Shaping	Формування шуму
+Non-destructive, applied at playback to the selected MIDI tracks.	Застосовується до вибраних доріжок MIDI під час відтворення, не змінюючи ноти.
+None	Немає
+Normalize	Нормалізувати
+Normalize to -0.1 dBFS	Нормалізувати до −0,1 dBFS
+Notation view of the MIDI clip; edit notes in the MIDI Editor or Event List.	Нотний запис кліпу MIDI; редагуйте ноти в редакторі MIDI або списку подій.
+Notch	Режекторний
+Note	Нота
+Nudge	Зсув
+Nudge Value	Крок зсуву
+OBJECT	ОБ’ЄКТ
+OK	Гаразд
+Object	Об’єкт
+Object / Bed	Об’єкт / Основа
+Off	Вимкнено
+On	Увімкнено
+On Grid	За сіткою
+Open	Відкрити
+Open Hat Decay	Спад відкритої тарілки
+Open Plugin Editor	Відкрити редактор модуля
+Open Session	Відкрити сеанс
+Open Session...	Відкрити сеанс…
+Open/Close Folder	Відкрити/закрити теку
+Operation	Операція
+Options	Параметри
+Original Time Stamp	Початкова часова позначка
+Osc 1	Генератор 1
+Osc 2	Генератор 2
+Osc 2 Detune	Розстроювання генератора 2
+Osc 2 Pitch	Висота тону генератора 2
+Osc Mix	Баланс генераторів
+Other	Інше
+Other Displays	Інші відображення
+Out 1-2	Вихід 1–2
+Outlines	Контури
+Output	Вихід
+Output Meters	Індикатори виходу
+Output device	Пристрій виводу
+Outputs	Виходи
+Overlap Shadows	Тіні перекриття
+Overlapped Crossfades	Перехресні переходи з перекриттям
+Overwrite Indicator	Індикатор перезапису
+PFL (Pre Fader Listen)	PFL (прослуховування до регулятора)
+PREAMP	ПІДСИЛЮВАЧ
+PRs	PR
+Page	Сторінками
+Pan	Панорама
+Pan (drag; double-click centres)	Панорама: перетягніть; подвійне клацання — по центру
+Pan Automation	Автоматизація панорами
+Pan {index}	Панорама {index}
+Parabolic...	Параболічний…
+Parent folder	Батьківська тека
+Parity Report	Звіт відповідності
+Paste	Вставити
+Paste Clip Effects	Вставити ефекти кліпу
+Paste Clip Gain	Вставити підсилення кліпу
+Paste Special	Спеціальне вставлення
+Pause	Пауза
+Peak	Пік
+Peak dB	Пік, дБ
+Pencil	Олівець
+Peripherals...	Периферійні пристрої…
+Phase Invert	Інверсія фази
+Phaser	Фазовий ефект
+Pin Track	Закріпити доріжку
+Pink Noise	Рожевий шум
+Pinned Tracks	Закріплені доріжки
+Pitch	Висота тону
+Pitch II	Pitch II
+Pitch Shift	Зміна висоти тону
+Pitch Shift Legacy	Зміна висоти тону (попередня версія)
+Pitch Shifter	Зміна висоти тону
+PitchShift	Зміна висоти тону
+Place Audio File	Розмістити аудіофайл
+Place on New Track	Розмістити на новій доріжці
+Place on Selected Track	Розмістити на вибраній доріжці
+Plate	Пластина
+Plate Reverb	Пластинна реверберація
+Play	Відтворити
+Play (Space)	Відтворити (Space)
+Play Edit	Відтворити виділення редагування
+Play Timeline	Відтворити виділення часу
+Play/Stop	Відтворити/зупинити
+Playback Engine	Рушій відтворення
+Playback Engine...	Рушій відтворення…
+Plugin Automation	Автоматизація модулів
+Position	Позиція
+Post-Roll Amount	Тривалість подальшого відтворення
+Post-roll	Подальше відтворення
+Power	Потужність
+Pre-Delay	Попередня затримка
+Pre-Fader Metering	Вимірювання до регулятора гучності
+Pre-Roll Amount	Тривалість попереднього відтворення
+Pre-roll	Попереднє відтворення
+Pre/Post	До/Після
+Pre/Post-Roll	Попереднє відтворення/Подальше відтворення
+Preferences...	Налаштування…
+Prepare DPE Tracks	Підготувати доріжки DPE
+Presets ▾	Налаштування ▾
+Previous	Попередній
+Print Score...	Друкувати партитуру…
+Pro Tools Projects	Проєкти Pro Tools
+Pro Tools Search	Пошук Pro Tools
+Processes selected clips offline	Обробляє вибрані кліпи без відтворення
+Processes the selected clips and replaces them with rendered audio.	Обробляє вибрані кліпи та замінює їх обробленим аудіо.
+Processing State	Стан обробки
+Project...	Проєкт…
+Promote to Main Playlist	Перенести до основного списку відтворення
+Q	Добротність
+Quad	Чотири канали
+Quantize	Квантувати
+Quantize strength	Сила квантування
+Quantize to Grid	Квантувати за сіткою
+Quantize to the grid	Квантувати за сіткою
+Quantize...	Квантувати…
+QuickPunch	QuickPunch
+Quit	Вийти
+R	R
+REL GRID	ВІДН. СІТКА
+Range	Діапазон
+Rate	Частота
+Rating	Оцінка
+Ratio	Коефіцієнт
+Rc	Rc
+Read	Читання
+Real name	Справжнє ім’я
+Real-Time Properties	Властивості в реальному часі
+Recall	Відновити
+Recall Memory Location	Відновити збережену позицію
+Reconnect audio device	Перепід’єднати аудіопристрій
+Record	Запис
+Record (Cmd+Space)	Запис (Cmd+Space)
+Record Enable	Увімкнути запис
+Record enable	Увімкнути запис
+Record-enable a track first (the red button in its header).	Спочатку увімкніть запис доріжки червоною кнопкою в її заголовку.
+Recorded {0} clip(s)	Записано кліпів: {0}
+Recording at 24-bit uses {per_min:.1} MB per mono track-minute	Запис із розрядністю 24 біти потребує {per_min:.1} МіБ на хвилину однієї доріжки моно
+Recti-Fi	Recti-Fi
+Rectified	Випрямлені
+Rectifier	Випрямляч
+Rectify	Випрямл.
+Redo	Повторити
+Reduce motion	Зменшити рух
+Regroup	Згрупувати знову
+Release	Відновлення
+Remove Duplicate Notes	Видалити повторні ноти
+Remove Edit from Bottom	Зменшити виділення знизу
+Remove Edit from Top	Зменшити виділення згори
+Remove Insert	Видалити ефект
+Remove Pitch Shift	Прибрати зміну висоти тону
+Remove Send	Видалити надсилання
+Remove Tempo Change	Видалити зміну темпу
+Remove Warp	Прибрати розтягування
+Rename Clip	Перейменувати кліп
+Rename Track	Перейменувати доріжку
+Rename...	Перейменувати…
+Render	Обробити
+Render Clip Gain	Застосувати підсилення кліпу
+Renderer	Рендерер
+Renders, bounces and AudioSuite processes run to completion before returning.	Обробка, експорт міксу й операції AudioSuite завершуються до повернення керування.
+Renumber Bars...	Змінити нумерацію тактів…
+Repeat	Повторити
+Repeat to Fill Selection	Повторити до заповнення виділення
+Repeat...	Повторити…
+Reset	Скинути
+Reset Edit Settings	Скинути налаштування редагування
+Resonance	Резонанс
+Restore Last Selection	Відновити попереднє виділення
+Restore Performance...	Відновити виконання…
+Retrospective Record	Ретроспективний запис
+Return to Zero	На початок
+Return to Zero (Home)	На початок (Home)
+Reverb	Реверберація
+Reverse	Зворотне відтворення
+Reverse the order	Зворотний порядок
+Revert Session to Saved...	Відновити збережений сеанс…
+Rewind	Перемотати назад
+Room	Кімната
+Room Reverb	Кімнатна реверберація
+Route as an immersive object or to the bed	Спрямувати як об’єкт просторового звуку або до основного міксу
+Routing Folder Track	Доріжка теки маршрутизації
+Rrs	Rrs
+Rs	Rs
+Rss	Rss
+Rtf	Rtf
+Rtm	Rtm
+Rtr	Rtr
+Ruler Lane Color	Колір смуги лінійки
+Ruler Lines	Лінії лінійки
+Rulers	Лінійки
+Rw	Rw
+S-Curve	S-подібна крива
+S-Curve...	S-подібна крива…
+SC HPF	Фільтр ВЧ керувального сигналу
+SC HPF Freq	Частота фільтра ВЧ керувального сигналу
+SENDS A-E	НАДСИЛАННЯ A–E
+SENDS F-J	НАДСИЛАННЯ F–J
+SHUFFLE	ЗСУВ
+SIP (Solo In Place)	SIP (соло на місці)
+SLIP	ВІЛЬНО
+SPOT	ТОЧНО
+Sample Rate	Частота дискретизації
+Sample rate	Частота дискретизації
+Samples	Відліки
+Samples: {samples}	Відліків: {samples}
+SansAmp PSA-1	SansAmp PSA-1
+Satur	Насич.
+Saturator	Насичення
+Save	Зберегти
+Save As Template...	Зберегти як шаблон…
+Save Session	Зберегти сеанс
+Save Session As	Зберегти сеанс як
+Save Session As...	Зберегти сеанс як…
+Save Session Copy In...	Зберегти копію сеансу в…
+Save Track Preset...	Зберегти налаштування доріжки…
+Saved preset {clean}	Збережено налаштування: {clean}
+Saw	Пилкоподібна
+Scale...	Масштабувати…
+Scene And Take	Сцена й дубль
+Sci-Fi	Sci-Fi
+Score Editor	Редактор партитури
+Score Setup	Налаштування партитури
+Score Setup...	Налаштування партитури…
+Scroll Timeline	Прокрутити шкалу часу
+Scroll to Track...	Прокрутити до доріжки…
+Scrubber	Прослуховування
+Search	Пошук
+Search commands…	Пошук команд…
+Select All	Вибрати все
+Select Playlist	Вибрати список відтворення
+Select Tracks in Group	Вибрати доріжки групи
+Select a MIDI clip (or a MIDI track) to edit its notes.	Виберіть кліп MIDI або доріжку MIDI, щоб редагувати ноти.
+Select a MIDI clip or MIDI track.	Виберіть кліп MIDI або доріжку MIDI.
+Select a MIDI clip.	Виберіть кліп MIDI.
+Select an audio clip.	Виберіть аудіокліп.
+Select/Split Notes...	Вибрати/розділити ноти…
+Selected Tracks as New AAF/OMF...	Вибрані доріжки як новий AAF/OMF…
+Selected Tracks as New Media Composer Compatible Session...	Вибрані доріжки як новий сеанс для Media Composer…
+Selected Tracks as New Session...	Вибрані доріжки як новий сеанс…
+Selection	Виділення
+Selector	Виділення
+Semitones	Півтони
+Send A	Надсилання A
+Send B	Надсилання B
+Send C	Надсилання C
+Send D	Надсилання D
+Send E	Надсилання E
+Send F	Надсилання F
+Send G	Надсилання G
+Send H	Надсилання H
+Send I	Надсилання I
+Send J	Надсилання J
+Send Level	Рівень надсилання
+Send To...	Надіслати до…
+Send to Back	На задній план
+Send {0}: {1} dB (drag to change)	Надсилання {0}: {1} дБ (перетягніть, щоб змінити)
+Send {slot} level	Рівень надсилання {slot}
+Send {slot} mute	Вимкнення звуку надсилання {slot}
+Send {slot} pan	Панорама надсилання {slot}
+Sends A-E	Надсилання A–E
+Sends F-J	Надсилання F–J
+Sensitivity	Чутливість
+Separate	Розділити
+Separate clips at detected beats	Розділити кліпи за виявленими долями
+Session	Сеанс
+Session Data...	Дані сеансу…
+Session Info	Відомості про сеанс
+Session Audio Health	Стан аудіо сеансу
+Session Info as Text...	Відомості про сеанс як текст…
+Session Setup	Налаштування сеансу
+Session comments	Коментарі до сеансу
+Session file: {p}	Файл сеансу: {p}
+Session media: {0} files, {1:.1} MB in memory (32-bit float)	Медіафайли сеансу: {0} · у пам’яті: {1:.1} МіБ (32-бітний з рухомою комою)
+Session rate	Частота сеансу
+Session...	Сеанс…
+Set Clip Effects	Установити ефекти кліпу
+Set Edit Selection	Установити виділення редагування
+Set Pan	Установити панораму
+Set Plugin Parameter	Установити параметр модуля
+Set Plugin Parameters	Установити параметри модуля
+Set Record Tracks to Input Only	Прослуховувати лише вхід на доріжках запису
+Set Send Surround Pan	Установити просторову панораму надсилання
+Set Surround Pan	Установити просторову панораму
+Set Tempo	Установити темп
+Set UI State	Установити стан інтерфейсу
+Set Video Start	Установити початок відео
+Set Volume	Установити гучність
+Set Zoom	Установити масштаб
+Set the session tempo from the beats	Визначити темп сеансу за долями
+Setup	Налаштування
+Shift (seconds)	Зсув (секунди)
+Shift...	Зсунути…
+Show	Показати
+Show / Hide...	Показати / приховати…
+Show Grid Lines	Показати лінії сітки
+Show Target Playlist	Показати цільовий список відтворення
+Show grid lines	Показувати лінії сітки
+Show track names	Показувати назви доріжок
+Shuffle	Зсув
+Sibelius	Sibelius
+Sibelius...	Sibelius...
+SigGen	Ген. сиг.
+Sign In	Увійти
+Signal Generator	Генератор сигналу
+Sine	Синусоїдальна
+Size	Розмір
+Sketch to Front	Ескіз на передній план
+Sketch...	Ескіз…
+Slip	Вільне переміщення
+Small	Мала
+Smart	Комбінований
+Smart Tool	Комбінований інструмент
+Smart Tool (F6+F7 / F7+F8)	Комбінований інструмент (F6+F7 / F7+F8)
+Snap to	Прив’язати до
+Snare Decay	Спад малого барабана
+Snare Snappy	Пружини малого барабана
+Snare Tune	Стрій малого барабана
+Solo	Соло
+Solo Mode	Режим соло
+Solo Safe	Захист від соло
+Sort	Сортування
+SoundFlow	SoundFlow
+Soundbase	База звуків
+Space Clips…	Розмістити кліпи з інтервалами…
+Speed	Швидкість
+Splice	Splice
+Split into Mono	Розділити на моно
+Spot	За позицією
+Spread	Ширина стерео
+Square	Прямокутна
+Stages	Каскади
+Start	Початок
+Start (ticks)	Початок (імпульси)
+Start Collaboration...	Почати спільну роботу…
+Start from the demo session	Почати з демонстраційного сеансу
+Start to Fill Selection	Початок до межі виділення
+Start to Insertion	Початок до позиції вставлення
+Step Input...	Покроковий ввід…
+Stereo	Стерео
+Stop	Зупинити
+Stop (Space)	Зупинити (Space)
+Store Plugin State	Зберегти стан модуля
+Strength %	Сила, %
+Stretch...	Розтягнути…
+Strip	Видалити тишу
+Strip Silence	Видалити тишу
+Sub	Дод.
+Sub Counter	Додатковий лічильник
+SubSynth	Синтез.
+Subtractive Synth	Субтрактивний синтезатор
+Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence	Просторова панорама: перетягніть точку · подвійне клацання: передній центр · Alt + перетягування: розсіювання
+Swing %	Свінг, %
+Sync Point	Точка синхронізації
+Synchronization	Синхронізація
+System Usage	Навантаження системи
+System language	Мова системи
+TCE Edit to Timeline Selection	Розтягнути фрагмент до виділення часу
+TRACKS	ДОРІЖКИ
+TShift	Час
+Tab to Transient	Tab до перехідного процесу
+Table	Таблиця
+Target Playlist	Цільовий список відтворення
+Task Manager	Диспетчер завдань
+Tempo	Темп
+Tempo Change	Зміна темпу
+Tempo Change (BPM)	Зміна темпу (уд/хв)
+Tempo Editor	Редактор темпу
+Tempo Operations	Операції з темпом
+Tempo Operations Window	Вікно операцій із темпом
+Thin	Прорідити
+Thin All	Прорідити все
+This plugin has no editor of its own, or it is not loaded	Цей модуль не має власного редактора або не завантажений
+Threshold	Поріг
+Threshold dB	Поріг, дБ
+Ticks	Імпульси
+Tile	Мозаїка
+Tile Horizontal	Горизонтальна мозаїка
+Tile Vertical	Вертикальна мозаїка
+Time	Час
+Time Compression Expansion	Стиснення/розтягування часу
+Time Lock/Unlock	Заблокувати/розблокувати час
+Time Operations	Операції з часом
+Time Operations Window	Вікно операцій із часом
+Time Shift	Зміна тривалості
+Timebase	Часова основа
+Timecode	Часовий код
+Timecode 2	Часовий код 2
+Timecode Rate	Частота часового коду
+Timecode burn-in	Накладання часового коду
+Timecode rate	Частота часового коду
+Title	Назва
+To Current Automation Type	До поточного типу автоматизації
+To File Boundaries	До меж файлу
+To File End	До кінця файлу
+To File Start	До початку файлу
+To Fill Selection	До меж виділення
+To Selection	До виділення
+Toggle Group Active	Перемкнути активність групи
+Toggle Mix/Edit	Перемкнути мікшер/редагування
+Toggle Recent Playlist	Перемкнути попередній список відтворення
+Tom Decay	Спад тома
+Tom Tune	Стрій тома
+Tone	Тембр
+Touch	Дотик
+Touch/Latch	Дотик/Фіксація
+Track	Доріжка
+Track Color	Колір доріжки
+Track Comments	Коментарі доріжки
+Track Height	Висота доріжки
+Track Input	Вхід доріжки
+Track Lane	Смуга доріжки
+Track Lane Color	Колір смуги доріжки
+Track List	Список доріжок
+Track Number	Номер доріжки
+Track Output	Вихід доріжки
+Track Presets	Налаштування доріжок
+Track Timebase	Часова основа доріжки
+Track Transcription Lane	Смуга транскрипції доріжки
+Track View	Вигляд доріжки
+TrackPunch	TrackPunch
+Tracks	Доріжки
+Tracks: {0}	Доріжок: {0}
+Transcript	Транскрипція
+Transcription Settings...	Налаштування транскрипції…
+Transparency	Прозорість
+Transport	Керування відтворенням
+Transport Online	Синхронізувати відтворення
+Transport Status	Стан відтворення
+Transpose	Транспонувати
+Transpose...	Транспонувати…
+Triangle	Трикутна
+Trim	Обрізати
+Trim Playlist	Список коригування
+Trim and Downmix	Обрізати й звести канали
+Trim to All Enabled	Скоригувати всі увімкнені параметри
+Trim to Current	Скоригувати поточний параметр
+Type	Тип
+UI Customization	Налаштування інтерфейсу
+UI frame time: {0:.1} ms	Час кадру інтерфейсу: {0:.1} мс
+UNDO HISTORY	ІСТОРІЯ СКАСУВАННЯ
+Undo	Скасувати
+Undo History	Історія скасування
+Undo steps: {0}	Кроків скасування: {0}
+Undo {l}	Скасувати: {l}
+Ungroup	Розгрупувати
+Ungroup All	Розгрупувати все
+Universe	Огляд сеансу
+Unloop...	Прибрати зациклення…
+Update Active Configuration	Оновити активну конфігурацію
+User Time Stamp	Часова позначка користувача
+User presets need the desktop app.	Налаштування користувача доступні в настільній програмі.
+Username	Ім’я користувача
+Uses the edit selection.	Застосовується до виділення.
+VCA Master	Основний VCA
+VENUE Channel Names as Track Names	Назви каналів VENUE як назви доріжок
+VIDEO	ВІДЕО
+Vari-Fi	Vari-Fi
+Vel	Сила
+Vel +10	Сила +10
+Vel −10	Сила −10
+Velocity	Сила натискання
+Velocity +	Сила натискання +
+Velocity Sens	Чутливість до сили натискання
+Version	Версія
+Version {0}	Версія {0}
+Video	Відео
+Video Sync Offset...	Зсув синхронізації відео…
+Video Track	Відеодоріжка
+Video Track Offline	Відеодоріжка недоступна
+Video Track Online	Увімкнути відеодоріжку
+Video Universe	Огляд відео
+Video...	Відео…
+View	Вигляд
+View Flags	Параметри відображення
+Waveform	Форма хвилі
+Waveform Zoom	Масштаб звукової хвилі
+Waveform zoom in (Cmd+Alt+])	Збільшити масштаб хвилі (Cmd+Alt+])
+Waveforms	Звукові хвилі
+White Noise	Білий шум
+Width	Ширина
+Window	Вікно
+Window Configuration List	Список конфігурацій вікон
+Window Configurations	Конфігурації вікон
+Workspace	Робоча область
+Workspaces	Робочі області
+Workspaces to Front	Робочі області на передній план
+Write	Запис
+Write Automation	Записати автоматизацію
+Write MIDI Real-Time Properties	Застосувати властивості MIDI реального часу
+Write Trim Automation	Записати автоматизацію коригування
+Write automation for the selected tracks:	Записати автоматизацію для вибраних доріжок:
+Write to All Enabled	Записати до всіх увімкнених параметрів
+Write to Current	Записати до поточного параметра
+Write to Notes	Застосувати до нот
+X-OR (Cancels Previous Solo)	X-OR (скасовує попереднє соло)
+Zoom	Масштаб
+Zoom In	Збільшити масштаб
+Zoom Out	Зменшити масштаб
+Zoom Preset	Налаштування масштабу
+Zoom in (Cmd+])	Збільшити масштаб (Cmd+])
+Zoom out (Cmd+[)	Зменшити масштаб (Cmd+[)
+Zoom preset (click to recall, Cmd-click to store)	Налаштування масштабу (клацання: відновити; Cmd + клацання: зберегти)
+Zoom to Selection	Масштабувати до виділення
+Zoomer	Масштаб
+absolute	абсолютний
+audio	аудіо
+audio on	звук увімкнено
+auto {0}	авт. {0}
+aux	допом.
+bar(s)	тактів
+blocks	блоки
+bus	шина
+bus?	невідома шина
+change meter	змінити музичний розмір
+change velocity	змінити силу натискання
+clip_gain	підсилення кліпу
+comments	коментарі
+constant	сталий
+ct	центів
+cut	вирізати
+dB	дБ
+dotted	із крапкою
+end bpm 	кінець, уд/хв 
+equal power	рівна потужність
+extreme	найбільша
+fit to window	умістити у вікні
+flatten performance	застосувати параметри виконання
+folder	тека
+in	у
+in: {0}	вхід: {0}
+insert	вставити
+inst	інстр.
+jumbo	дуже велика
+kHz	кГц
+large	велика
+latch	фіксація
+linear	лінійний
+master	основна
+media offline	медіафайл недоступний
+media offline: {e}	медіафайл недоступний: {e}
+medium	середня
+micro	мікро
+mini	міні
+modified	змінено
+move song start	перемістити початок композиції
+movie missing from session	відеофайлу немає в сеансі
+movie offline	відеофайл недоступний
+ms	мс
+mute	вимкнення звуку
+new	нових
+new bus...	нова шина…
+no audio engine	без звукового рушія
+no engine	без рушія
+no group	без групи
+no input	без входу
+no insert	без ефекту
+no output	без виходу
+no send	без надсилання
+none	немає
+notes	ноти
+off	вимкнено
+opened on first record	відкривається під час першого запису
+out: {0}	вихід: {0}
+pan	панорама
+parabolic	параболічний
+playlists	списки відтворення
+plugin	модуль
+quantize	квантувати
+read	читання
+regions	кліпи
+relative	відносний
+restore performance	відновити виконання
+s	с
+s-curve	S-подібна крива
+saved	збережено
+scale	масштабувати
+send level	рівень надсилання
+send mute	вимкнення звуку надсилання
+send pan	панорама надсилання
+silent clock	беззвучний відлік
+small	мала
+st	півт.
+start bpm 	початок, уд/хв 
+stretch	розтягнути
+touch	дотик
+touch/latch	дотик/фіксація
+transpose	транспонувати
+trim	коригування
+triplet	тріоль
+video	відео
+vol {0}  pan {1}	гучн. {0}  пан. {1}
+volume	гучність
+waveform	звукова хвиля
+write	запис
+{0:+.1} dB	{0:+.1} дБ
+{0:.2} s	{0:.2} с
+{0} ({1} ch @ {2} Hz)	{0} (каналів: {1} @ {2} Гц)
+{0} ({1}ch)	{0} (каналів: {1})
+{0} @ {1} Hz	{0} @ {1} Гц
+{0} Hz	{0} Гц
+{0} ch	Каналів: {0}
+{0} contributors · {1} commits	Учасників: {0} · комітів: {1}
+{0} mode ({key})	Режим {0} ({key})
+{0} object track(s)	Об’єктних доріжок: {0}
+{0} preset	Налаштування: {0}
+{0} · {1} Hz · {2} · {3} tracks · {4}	{0} · {1} Гц · {2} · доріжок: {3} · {4}
+{0} · {1} notes · {2} selected · click: add · drag: move/select · arrows: move · Delete: remove	{0} · нот: {1} · вибрано: {2} · клацання: додати · перетягування: перемістити/вибрати · стрілки: перемістити · Delete: видалити
+{0} — {1} from channel {2}	{0} — {1} із каналу {2}
+{0}x{1}  {2:.3} fps  {3}	{0}×{1}  {2:.3} кадр/с  {3}
+{bars} bars	Тактів: {bars}
+{bit_depth}-bit	{bit_depth}-бітний
+{b}-bit	{b}-бітний
+{r} Hz	{r} Гц
+{sample_rate} Hz	{sample_rate} Гц
+{seconds:.3} sec	{seconds:.3} с
+{undo}   {0:.1} ms/frame	{undo}   {0:.1} мс/кадр
+🔍 Find clips	🔍 Пошук кліпів
+Appearance	Вигляд
+Theme	Тема
+System	Системна
+Light	Світла
+Dark	Темна
+Set Instrument	Вибрати інструмент
+Built-in	Вбудовані
+Unknown vendor	Невідомий виробник
+no instrument	без інструмента
+instrument	інструмент
+Instrument: {name} (click to change or open its editor)	Інструмент: {name} (натисніть, щоб змінити або відкрити його редактор)
+Click: open instrument · right-click: change	Клік: відкрити інструмент · правий клік: змінити
+Load and edit sounds in the plugin's own editor.	Завантажуйте й редагуйте звуки у власному редакторі плагіна.
+Services	Служби
+Hide SoundCraft	Сховати SoundCraft
+Hide Others	Сховати інші
+Show All	Показати все
+Quit SoundCraft	Вийти із SoundCraft

@@ -30,6 +30,7 @@ the honest status: what works today, what is missing, and how far we are.
 | Surround | Main and bus formats from stereo to 9.1.6 and Ambisonics, surround panner with divergence/centre/LFE/height, ITU fold-down, multichannel bounce, Renderer window, object/bed routing | 60 % | 12 |
 | Video | Picture track with thumbnails, Video and Video Universe windows, H.264 (Baseline/Main/High), ProRes (all flavours) and Motion JPEG decoders in pure Rust, sync offset, relinking. Missing: HEVC/AV1/DNx, timecode-track placement, video export | 55 % | 15 |
 | UI fidelity | Edit + Mix windows, toolbar, rulers, track headers, menus for the whole catalog (macOS system menu bar), floating windows, dialogs (every file command has a path prompt), command palette | 70 % | 20 |
+| UI languages | English and Ukrainian; system-language detection on desktop/web, persisted desktop language choice, translated menus, command search, dialogs and built-in parameter captions; engine/external diagnostics retain their original wording | — | — |
 | Agent control | CLI, JSON control channel, MCP server (headless + bridged), offscreen UI renders | 90 % (ahead of the incumbent) | 3 |
 | Release engineering | Signed macOS universal, Windows x64/x86, Linux AppImage/deb/rpm/tar/Flatpak, FreeBSD, Web/WASM on every push to `release` | 80 % | 3 |
 

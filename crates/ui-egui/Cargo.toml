@@ -27,6 +27,7 @@ log.workspace = true
 image.workspace = true
 
 [dev-dependencies]
+ab_glyph = "0.2"
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 
 [lints]

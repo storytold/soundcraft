@@ -29,6 +29,7 @@ and, at runtime, the operating system's own UI fonts when available (never redis
 
 | Path | Author | Source | License |
 |---|---|---|---|
+| `crates/ui-egui/src/i18n/uk.tsv` | @dmatviichuk with Codex | original Ukrainian UI translation; external dictionaries used for validation, not bundled | MIT OR Apache-2.0 |
 | `docs/brand/artcraft-logo.svg` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`) |
 | `docs/brand/artcraft-logo.png` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
 | `docs/brand/artcraft-logo-white.svg` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |

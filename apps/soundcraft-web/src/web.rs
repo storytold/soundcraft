@@ -35,7 +35,8 @@ pub fn start() {
                     }
                     let engine = if query().contains("empty") { Engine::default() } else { soundcraft_engine::demo::demo_engine() };
                     let player = soundcraft_playback::Player::new(Arc::new(engine.session().clone()));
-                    let app = SoundApp::new(engine, Some(player), Services::default());
+                    let mut app = SoundApp::new(engine, Some(player), Services::default());
+                    app.system_locale = web_sys::window().and_then(|window| window.navigator().language());
                     Ok(Box::new(WebShell(app)))
                 }),
             )

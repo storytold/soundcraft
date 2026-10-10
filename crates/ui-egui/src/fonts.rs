@@ -77,16 +77,20 @@ fn load(_: &[(&str, u32)], _: bool) -> Option<FontData> {
 }
 
 pub fn definitions() -> FontDefinitions {
+    definitions_with_system_fonts(true)
+}
+
+fn definitions_with_system_fonts(allow_system: bool) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let base: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let mut bold_family = base.clone();
-    if let Some(reg) = load(REGULAR, false) {
+    if let Some(reg) = allow_system.then(|| load(REGULAR, false)).flatten() {
         fonts.font_data.insert("system-regular".into(), Arc::new(reg));
         if let Some(f) = fonts.families.get_mut(&FontFamily::Proportional) {
             f.insert(0, "system-regular".into());
         }
     }
-    if let Some(b) = load(BOLD, true) {
+    if let Some(b) = allow_system.then(|| load(BOLD, true)).flatten() {
         fonts.font_data.insert("system-bold".into(), Arc::new(b));
         bold_family.insert(0, "system-bold".into());
     } else if fonts.font_data.contains_key("system-regular") {
@@ -98,4 +102,38 @@ pub fn definitions() -> FontDefinitions {
 
 pub fn install(ctx: &egui::Context) {
     ctx.set_fonts(definitions());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ab_glyph::{Font, FontVec};
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn bundled_regular_bold_and_monospace_cover_ukrainian_catalog() {
+        let definitions = definitions_with_system_fonts(false);
+        assert!(!definitions.font_data.contains_key("system-regular"));
+        let mut letters: BTreeSet<char> = include_str!("i18n/uk.tsv")
+            .lines()
+            .filter_map(|line| line.split_once('\t'))
+            .flat_map(|(_, value)| value.chars())
+            .filter(|ch| ('\u{0400}'..='\u{04ff}').contains(ch))
+            .collect();
+        letters.extend("ҐґЄєІіЇї".chars());
+        for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("bold".into())] {
+            let fonts: Vec<FontVec> = definitions
+                .families
+                .get(&family)
+                .into_iter()
+                .flatten()
+                .filter_map(|name| definitions.font_data.get(name))
+                .filter_map(|data| FontVec::try_from_vec_and_index(data.font.to_vec(), data.index).ok())
+                .collect();
+            assert!(!fonts.is_empty(), "no bundled fonts for {family:?}");
+            for letter in &letters {
+                assert!(fonts.iter().any(|font| font.glyph_id(*letter).0 != 0), "missing {letter} in {family:?}");
+            }
+        }
+    }
 }

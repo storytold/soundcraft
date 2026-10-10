@@ -1,5 +1,6 @@
 //! The Edit window toolbar.
 
+use crate::i18n::tr;
 use crate::theme::{Tokens, bold, mono, regular};
 use crate::widgets::icon_button;
 use crate::{SoundApp, icons};
@@ -56,7 +57,7 @@ fn edit_modes(app: &mut SoundApp, ui: &mut Ui) {
             let on = cur == m || (m == EditMode::Grid && cur == EditMode::GridRelative);
             ui.painter().rect_filled(cell, 1.0, if on { t.mode_on } else { t.mode_off });
             let txt = if m == EditMode::Grid && cur == EditMode::GridRelative { "REL GRID" } else { label };
-            ui.painter().text(cell.center(), Align2::CENTER_CENTER, txt, bold(10.5), if on { t.mode_on_text } else { t.mode_off_text });
+            ui.painter().text(cell.center(), Align2::CENTER_CENTER, tr(txt), bold(10.5), if on { t.mode_on_text } else { t.mode_off_text });
             if resp.clicked() {
                 let id = match m {
                     EditMode::Grid if cur == EditMode::Grid => "relative_grid",
@@ -67,7 +68,7 @@ fn edit_modes(app: &mut SoundApp, ui: &mut Ui) {
                 };
                 let _ = app.run("edit.mode", json!({"mode": id}));
             }
-            resp.on_hover_text(format!("{} mode ({key})", label.to_lowercase()));
+            resp.on_hover_text(crate::i18n::render("{0} mode ({key})", &[("{0}", (tr(label)).to_string()), ("{key}", key.to_string())]));
         }
     });
 }
@@ -130,7 +131,7 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
                     (Tool::Pencil, "pencil"),
                 ] {
                     let smart_member = cur == Tool::Smart && matches!(tool, Tool::Trim | Tool::Selector | Tool::Grabber);
-                    let tip = format!("{}{}", tool.label(), tool.fkey().map(|k| format!(" ({k})")).unwrap_or_default());
+                    let tip = format!("{}{}", tr(tool.label()), tool.fkey().map(|k| format!(" ({k})")).unwrap_or_default());
                     if icon_button(ui, vec2(36.0, 26.0), icon, cur == tool || smart_member, &tip).clicked() {
                         let _ = app.run("edit.tool", json!({"tool": tool.id()}));
                     }
@@ -143,7 +144,7 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             let bracket = Rect::from_min_max(pos2(bx0 - 2.0, r.min.y + 1.0), pos2(bx1 + 2.0, r.min.y + 5.0));
             let resp = ui.interact(bracket.expand2(vec2(0.0, 2.0)), ui.id().with("smart"), Sense::click());
             ui.painter().rect_filled(bracket, 1.0, if cur == Tool::Smart { t.accent } else { t.tool_bracket_off });
-            if resp.on_hover_text("Smart Tool (F6+F7 / F7+F8)").clicked() {
+            if resp.on_hover_text(tr("Smart Tool (F6+F7 / F7+F8)")).clicked() {
                 let _ = app.run("edit.tool", json!({"tool": "smart"}));
             }
             ui.horizontal(|ui| {
@@ -192,7 +193,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     icons::draw(ui.painter(), Rect::from_center_size(pos2(main_r.max.x - 9.0, main_r.center().y), vec2(10.0, 10.0)), "triangle_down", t.text_dim);
     egui::Popup::menu(&resp).show(|ui| {
         for f in TimeFormat::ALL {
-            if ui.selectable_label(main_fmt == f, f.label()).clicked() {
+            if ui.selectable_label(main_fmt == f, tr(f.label())).clicked() {
                 let _ = app.run("view.main_counter", json!({"format": f.id()}));
             }
         }
@@ -206,17 +207,17 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     ];
     for (i, (label, val)) in rows.iter().enumerate() {
         let y = r.min.y + 10.0 + i as f32 * 13.0;
-        ui.painter().text(pos2(r.min.x + 214.0, y), Align2::RIGHT_CENTER, *label, regular(11.0), t.counter_label);
+        ui.painter().text(pos2(r.min.x + 214.0, y), Align2::RIGHT_CENTER, tr(label), regular(11.0), t.counter_label);
         ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, val, mono(11.0), t.counter_text);
     }
     // Sub counter row.
     let y = r.max.y - 11.0;
     ui.painter().line_segment([pos2(r.min.x + 6.0, r.max.y - 21.0), pos2(r.max.x - 6.0, r.max.y - 21.0)], Stroke::new(1.0, t.counter_rule));
-    ui.painter().text(pos2(r.min.x + 10.0, y), Align2::LEFT_CENTER, "Sub", regular(11.0), t.counter_label);
+    ui.painter().text(pos2(r.min.x + 10.0, y), Align2::LEFT_CENTER, tr("Sub"), regular(11.0), t.counter_label);
     ui.painter().text(pos2(r.min.x + 150.0, y), Align2::RIGHT_CENTER, fmt_pos(app, pos, sub_fmt), mono(11.0), t.counter_text);
     let st = if app.engine.is_dirty() { "modified" } else { "saved" };
     let dev = app.player.as_ref().map_or("no audio engine", |p| if p.silent { "silent clock" } else { "audio on" });
-    ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, format!("{st} · {dev}"), regular(10.0), t.text_dim);
+    ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, format!("{} · {}", tr(st), tr(dev)), regular(10.0), t.text_dim);
 }
 
 fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
@@ -229,17 +230,17 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
     let gl = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 8.0), vec2(48.0, 16.0));
     ui.painter().rect_filled(gl, 1.0, if lines { t.mode_on } else { t.counter_off });
-    ui.painter().text(gl.center(), Align2::CENTER_CENTER, "Grid", bold(11.0), if lines { t.mode_on_text } else { t.mode_off_text });
-    if ui.interact(gl, ui.id().with("grid_lines"), Sense::click()).on_hover_text("Show grid lines").clicked() {
+    ui.painter().text(gl.center(), Align2::CENTER_CENTER, tr("Grid"), bold(11.0), if lines { t.mode_on_text } else { t.mode_off_text });
+    if ui.interact(gl, ui.id().with("grid_lines"), Sense::click()).on_hover_text(tr("Show grid lines")).clicked() {
         let _ = app.run("view.grid_lines", json!({}));
     }
     let gr = Rect::from_min_max(pos2(r.min.x + 60.0, r.min.y + 6.0), pos2(r.max.x - 4.0, r.min.y + 26.0));
-    ui.painter().text(pos2(gr.max.x - 14.0, gr.center().y), Align2::RIGHT_CENTER, grid.label(), mono(11.0), t.counter_text);
+    ui.painter().text(pos2(gr.max.x - 14.0, gr.center().y), Align2::RIGHT_CENTER, crate::i18n::grid_label(&grid), mono(11.0), t.counter_text);
     let gresp = ui.interact(gr, ui.id().with("grid_value"), Sense::click());
     value_menu(app, &gresp, "view.grid");
-    ui.painter().text(pos2(r.min.x + 10.0, r.min.y + 44.0), Align2::LEFT_CENTER, "Nudge", regular(11.0), t.counter_label);
+    ui.painter().text(pos2(r.min.x + 10.0, r.min.y + 44.0), Align2::LEFT_CENTER, tr("Nudge"), regular(11.0), t.counter_label);
     let nr = Rect::from_min_max(pos2(r.min.x + 60.0, r.min.y + 34.0), pos2(r.max.x - 4.0, r.min.y + 54.0));
-    ui.painter().text(pos2(nr.max.x - 14.0, nr.center().y), Align2::RIGHT_CENTER, nudge.label(), mono(11.0), t.counter_text);
+    ui.painter().text(pos2(nr.max.x - 14.0, nr.center().y), Align2::RIGHT_CENTER, crate::i18n::grid_label(&nudge), mono(11.0), t.counter_text);
     let nresp = ui.interact(nr, ui.id().with("nudge_value"), Sense::click());
     value_menu(app, &nresp, "view.nudge");
     for rr in [gr, nr] {
@@ -250,7 +251,7 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
 fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str) {
     egui::Popup::menu(resp).show(|ui| {
         for v in ["1 bar", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64", "1/8t", "1/16t", "1/4."] {
-            if ui.button(v).clicked() {
+            if ui.button(tr(v)).clicked() {
                 let _ = app.run(cmd, json!({"value": v}));
             }
         }
@@ -263,7 +264,7 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str) {
             ("1 frame", json!({"frames": 1})),
             ("100 samples", json!({"samples": 100})),
         ] {
-            if ui.button(label).clicked() {
+            if ui.button(tr(label)).clicked() {
                 let _ = app.run(cmd, json!({"value": v}));
             }
         }
@@ -292,7 +293,7 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                     StrokeKind::Inside,
                 );
                 icons::draw(ui.painter(), r.shrink(5.0), "stop", if playing { t.text } else { t.accent });
-                if resp.on_hover_text("Stop (Space)").clicked() {
+                if resp.on_hover_text(tr("Stop (Space)")).clicked() {
                     let _ = app.run("transport.stop", json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
@@ -310,7 +311,7 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                     StrokeKind::Inside,
                 );
                 icons::draw(ui.painter(), r.shrink(5.0), "play", if playing { Color32::from_rgb(120, 255, 140) } else { t.counter_text });
-                if resp.on_hover_text("Play (Space)").clicked() {
+                if resp.on_hover_text(tr("Play (Space)")).clicked() {
                     let _ = app.run("transport.play", json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
@@ -328,7 +329,7 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                     StrokeKind::Inside,
                 );
                 icons::draw(ui.painter(), r.shrink(5.0), "record", t.rec);
-                if resp.on_hover_text("Record (Cmd+Space)").clicked() {
+                if resp.on_hover_text(tr("Record (Cmd+Space)")).clicked() {
                     let _ = app.run("transport.record", json!({}));
                 }
             });
@@ -361,19 +362,25 @@ fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
     let co = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 6.0), vec2(64.0, 15.0));
     ui.painter().rect_filled(co, 1.0, if countoff { t.mode_on } else { t.counter_off });
-    ui.painter().text(co.center(), Align2::CENTER_CENTER, "Count Off", bold(10.0), if countoff { t.mode_on_text } else { t.mode_off_text });
+    ui.painter().text(co.center(), Align2::CENTER_CENTER, tr("Count Off"), bold(10.0), if countoff { t.mode_on_text } else { t.mode_off_text });
     if ui.interact(co, ui.id().with("countoff"), Sense::click()).clicked() {
         let _ = app.run("options.countoff", json!({}));
     }
-    ui.painter().text(pos2(r.max.x - 8.0, co.center().y), Align2::RIGHT_CENTER, format!("{bars} bars"), mono(11.0), t.counter_text);
-    ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 32.0), Align2::RIGHT_CENTER, "Meter", regular(11.0), t.counter_label);
+    ui.painter().text(
+        pos2(r.max.x - 8.0, co.center().y),
+        Align2::RIGHT_CENTER,
+        crate::i18n::render("{bars} bars", &[("{bars}", bars.to_string())]),
+        mono(11.0),
+        t.counter_text,
+    );
+    ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 32.0), Align2::RIGHT_CENTER, tr("Meter"), regular(11.0), t.counter_label);
     ui.painter().text(pos2(r.max.x - 8.0, r.min.y + 32.0), Align2::RIGHT_CENTER, meter, mono(11.0), t.counter_text);
-    ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 48.0), Align2::RIGHT_CENTER, "Tempo", regular(11.0), t.counter_label);
+    ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 48.0), Align2::RIGHT_CENTER, tr("Tempo"), regular(11.0), t.counter_label);
     icons::draw(ui.painter(), Rect::from_center_size(pos2(r.min.x + 82.0, r.min.y + 48.0), vec2(13.0, 13.0)), "note", t.counter_text);
     ui.painter().text(pos2(r.max.x - 8.0, r.min.y + 48.0), Align2::RIGHT_CENTER, format!("{bpm:.4}"), mono(11.0), t.counter_text);
     let clk = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 40.0), vec2(18.0, 18.0));
     icons::draw(ui.painter(), clk, "click", if click { t.counter_text } else { t.text_dim });
-    if ui.interact(clk, ui.id().with("click"), Sense::click()).on_hover_text("Click").clicked() {
+    if ui.interact(clk, ui.id().with("click"), Sense::click()).on_hover_text(tr("Click")).clicked() {
         let _ = app.run("options.click", json!({}));
     }
 }
