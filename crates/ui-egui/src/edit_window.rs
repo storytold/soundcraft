@@ -795,9 +795,17 @@ fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, sele
         let s = app.engine.session();
         let to = rows.get(target_row).and_then(|(tid, _)| s.track_index(TrackId(*tid))).unwrap_or(s.tracks.len());
         let from = s.track_index(id).unwrap_or(0);
-        let to = if to > from { to - 1 } else { to };
-        if to != from {
-            let _ = app.run("track.move", json!({"track": id.0, "to": to}));
+        // Dropping on a folder, or between its expanded children, joins its audio bus.
+        let folder = rows.get(target_row).and_then(|(tid, _)| s.track(TrackId(*tid))).and_then(|t| {
+            if t.kind == TrackKind::Folder { Some(t.id) } else { t.folder }
+        });
+        if let Some(folder) = folder.filter(|folder| *folder != id) {
+            let _ = app.run("track.folder_assign", json!({"tracks": [id.0], "folder": folder.0}));
+        } else {
+            let to = if to > from { to - 1 } else { to };
+            if to != from {
+                let _ = app.run("track.move", json!({"track": id.0, "to": to}));
+            }
         }
     }
     // Playlist selector arrow.
