@@ -138,6 +138,7 @@ impl SoundApp {
             "dialog": self.dialogs.open_name(),
             "frame_ms": self.frame_ms,
             "audio_device": self.player.as_ref().map(|p| p.device_name.clone()),
+            "audio_host": self.player.as_ref().map(|p| p.host_name.clone()),
             "status": self.ui.status,
         })
     }

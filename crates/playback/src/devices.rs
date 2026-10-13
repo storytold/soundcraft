@@ -1,7 +1,8 @@
 //! Audio device selection: which audio system (cpal host), output and input device, sample rate
 //! and buffer size to open. The choice is per machine (the app keeps it with its preferences, not
 //! in sessions). Anything that cannot be honoured falls back to the system default: a device that
-//! is unplugged, a rate or buffer size the device does not offer.
+//! is unplugged, a rate or buffer size the device does not offer. Which audio systems there are
+//! and the order they are tried in is in [`crate::host`].
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
@@ -24,9 +25,12 @@ pub(crate) fn format_rank(f: cpal::SampleFormat) -> Option<usize> {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct AudioConfig {
-    /// Audio system (cpal host name: "WASAPI", "ASIO", "CoreAudio", "ALSA", "JACK", ...).
+    /// Audio system: a host id ([`AudioSystem::id`]: `"pipewire"`, `"jack"`, `"alsa"`, `"wasapi"`,
+    /// `"asio"`, `"coreaudio"`, …). `None`: the automatic order (see [`crate::host`]).
     pub system: Option<String>,
+    /// Output device id ([`DeviceInfo::id`]).
     pub output: Option<String>,
+    /// Input device id ([`DeviceInfo::id`]).
     pub input: Option<String>,
     /// Device sample rate; the mix resamples when it differs from the session's.
     pub sample_rate: Option<u32>,
@@ -34,10 +38,43 @@ pub struct AudioConfig {
     pub buffer_size: Option<u32>,
 }
 
+impl AudioConfig {
+    /// This choice with the system and the devices as the ids `systems` lists them under.
+    /// Preferences written before devices had ids hold names (`system: "ALSA"`,
+    /// `output: "Speakers"`): a name that matches a listed system or device becomes its id. What
+    /// matches nothing stays as it is, since the device may only be unplugged; opening falls back
+    /// to the default for it (see [`device`]).
+    #[must_use]
+    pub fn with_ids(&self, systems: &[AudioSystem]) -> AudioConfig {
+        let system =
+            self.system.as_deref().and_then(|want| systems.iter().find(|s| s.id.eq_ignore_ascii_case(want) || s.name.eq_ignore_ascii_case(want)));
+        // The devices of the chosen system, else of the one the automatic order opens.
+        let devices = system.or_else(|| systems.iter().find(|s| s.is_default));
+        let id = |want: &Option<String>, list: fn(&AudioSystem) -> &Vec<DeviceInfo>| {
+            let found = want.as_deref().zip(devices).and_then(|(want, s)| {
+                let list = list(s);
+                list.iter().find(|d| d.id == want).or_else(|| list.iter().find(|d| d.name == want))
+            });
+            found.map(|d| d.id.clone()).or_else(|| want.clone())
+        };
+        AudioConfig {
+            system: system.map(|s| s.id.clone()).or_else(|| self.system.clone()),
+            output: id(&self.output, |s| &s.outputs),
+            input: id(&self.input, |s| &s.inputs),
+            sample_rate: self.sample_rate,
+            buffer_size: self.buffer_size,
+        }
+    }
+}
+
 /// One device as the settings window lists it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct DeviceInfo {
+    /// What [`AudioConfig::output`] and [`AudioConfig::input`] hold to choose this device.
+    pub id: String,
     pub name: String,
+    /// What tells it apart from its neighbours (`"2 ch · USB"`); may be empty.
+    pub detail: String,
     pub is_default: bool,
     /// Most channels any usable configuration offers.
     pub max_channels: u16,
@@ -58,7 +95,10 @@ impl DeviceInfo {
 /// An audio system and its devices.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct AudioSystem {
+    /// What [`AudioConfig::system`] holds to choose this system.
+    pub id: String,
     pub name: String,
+    /// The first system of the automatic order.
     pub is_default: bool,
     pub outputs: Vec<DeviceInfo>,
     pub inputs: Vec<DeviceInfo>,
@@ -68,19 +108,26 @@ pub struct AudioSystem {
 /// structured `description()`; `Display` for a device also formats that name but reports a
 /// formatting error (which `to_string` would turn into a panic), so keep the fallible call here.
 pub(crate) fn device_name(d: &cpal::Device) -> Option<String> {
-    d.description().ok().map(|description| description.name().to_owned())
+    let name = d.description().ok()?.name().trim().to_owned();
+    match name.as_str() {
+        // PipeWire's names for "whatever the system default is".
+        "default_output" | "default_input" | "default_sink" => Some("System default".to_owned()),
+        // A node the host has no name for: its id says more.
+        "" | "unknown" => d.id().ok().map(|id| id.to_string()),
+        _ => Some(name),
+    }
 }
 
-/// Describe one cpal device as [`DeviceInfo`], or return `None` when its name or supported configurations cannot be
-/// read. Only formats the playback path can convert are considered.
-fn describe(d: &cpal::Device, default_name: Option<&str>, output: bool) -> Option<DeviceInfo> {
-    let name = device_name(d)?;
-    let ranges: Vec<cpal::SupportedStreamConfigRange> = if output {
-        d.supported_output_configs().ok()?.filter(|c| format_rank(c.sample_format()).is_some()).collect()
-    } else {
-        d.supported_input_configs().ok()?.filter(|c| format_rank(c.sample_format()).is_some()).collect()
-    };
-    let max_channels = ranges.iter().map(cpal::SupportedStreamConfigRange::channels).max().unwrap_or(0);
+fn device_id(d: &cpal::Device) -> Option<String> {
+    d.id().ok().map(|id| id.to_string())
+}
+
+/// What the settings window needs to know about a listed device. Only formats the streams can
+/// convert count towards its channels, rates and buffer range. A JACK port group has no
+/// configurations (its rate and buffer are the server's) and is listed all the same.
+fn describe(listed: crate::host::Listed, default_id: Option<&str>) -> DeviceInfo {
+    let ranges: Vec<&cpal::SupportedStreamConfigRange> = listed.ranges.iter().filter(|c| format_rank(c.sample_format()).is_some()).collect();
+    let max_channels = ranges.iter().map(|c| c.channels()).max().unwrap_or(0);
     let sample_rates = STANDARD_RATES.iter().copied().filter(|r| ranges.iter().any(|c| c.contains_rate(*r))).collect();
     let (mut buffer_min, mut buffer_max) = (None::<u32>, None::<u32>);
     for c in &ranges {
@@ -89,22 +136,35 @@ fn describe(d: &cpal::Device, default_name: Option<&str>, output: bool) -> Optio
             buffer_max = Some(buffer_max.map_or(*max, |m| m.max(*max)));
         }
     }
-    Some(DeviceInfo { is_default: default_name == Some(name.as_str()), name, max_channels, sample_rates, buffer_min, buffer_max })
+    DeviceInfo {
+        is_default: default_id == Some(listed.id.as_str()),
+        id: listed.id,
+        name: listed.name,
+        detail: listed.detail,
+        max_channels,
+        sample_rates,
+        buffer_min,
+        buffer_max,
+    }
 }
 
-/// Every audio system on this machine with its devices. Enumerating can take a moment (some
-/// systems probe each device): call it when the settings window opens, not every frame.
+/// Every audio system this build can open on this machine, with its devices, in the automatic
+/// order. Enumerating can take a moment (some systems probe each device): call it when the
+/// settings window opens, not every frame.
 pub fn audio_systems() -> Vec<AudioSystem> {
-    let default_id = cpal::default_host().id();
-    cpal::available_hosts()
+    use crate::host::Direction;
+    crate::host::host_ids()
         .into_iter()
-        .filter_map(|id| {
+        .enumerate()
+        .filter_map(|(n, id)| {
             let host = cpal::host_from_id(id).ok()?;
-            let def_out = host.default_output_device().as_ref().and_then(device_name);
-            let def_in = host.default_input_device().as_ref().and_then(device_name);
-            let outputs = host.output_devices().map(|ds| ds.filter_map(|d| describe(&d, def_out.as_deref(), true)).collect()).unwrap_or_default();
-            let inputs = host.input_devices().map(|ds| ds.filter_map(|d| describe(&d, def_in.as_deref(), false)).collect()).unwrap_or_default();
-            Some(AudioSystem { name: id.name().to_string(), is_default: id == default_id, outputs, inputs })
+            let def_out = host.default_output_device().as_ref().and_then(device_id);
+            let def_in = host.default_input_device().as_ref().and_then(device_id);
+            let list = |direction: Direction, default: Option<&str>| -> Vec<DeviceInfo> {
+                crate::host::listed(&host, direction).into_iter().map(|entry| describe(entry, default)).collect()
+            };
+            let (outputs, inputs) = (list(Direction::Output, def_out.as_deref()), list(Direction::Input, def_in.as_deref()));
+            Some(AudioSystem { id: id.to_string(), name: id.name().to_string(), is_default: n == 0, outputs, inputs })
         })
         .collect()
 }
@@ -148,37 +208,44 @@ pub(crate) fn supported_format_config(
     best.and_then(|(_, c)| c.try_with_sample_rate(sample_rate))
 }
 
-/// The chosen audio system, else the default one.
-pub(crate) fn host(cfg: &AudioConfig) -> cpal::Host {
-    cfg.system
-        .as_deref()
-        .and_then(|want| cpal::available_hosts().into_iter().find(|id| id.name().eq_ignore_ascii_case(want)))
-        .and_then(|id| cpal::host_from_id(id).ok())
-        .unwrap_or_else(|| {
-            if let Some(s) = &cfg.system {
-                log::warn!("audio system `{s}` is not available; using the default");
-            }
-            cpal::default_host()
-        })
+/// The audio system to open an output (or input) stream on: the one the command line forced,
+/// else the chosen one, else the first of the automatic order, in each case one that has a
+/// device for that direction (see [`crate::host`]). With no such system, the platform's own.
+pub(crate) fn host(cfg: &AudioConfig, output: bool) -> cpal::Host {
+    let direction = if output { crate::host::Direction::Output } else { crate::host::Direction::Input };
+    crate::host::pick(cfg, direction).unwrap_or_else(cpal::default_host)
 }
 
-/// The named output (or input) device of `host`, else its default device.
-pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
-    if let Some(want) = name {
-        let found = if output { host.output_devices().ok() } else { host.input_devices().ok() }
-            .and_then(|mut ds| ds.find(|d| device_name(d).as_deref() == Some(want)));
+/// The chosen output (or input) device of `host`, else its default device. `want` is a device id;
+/// a name, as preferences written before devices had ids hold, finds the device too.
+pub(crate) fn device(host: &cpal::Host, want: Option<&str>, output: bool) -> Option<cpal::Device> {
+    // A JACK port group is no device: the stream opens on the default and is wired afterwards.
+    if let Some(want) = want.filter(|w| !w.starts_with(crate::host::JACK_PORTS)) {
+        let id = want.parse::<cpal::DeviceId>().ok();
+        let by_id = id.as_ref().and_then(|id| host.device_by_id(id));
+        let found = by_id.or_else(|| {
+            if output { host.output_devices().ok() } else { host.input_devices().ok() }
+                .and_then(|mut ds| ds.find(|d| d.description().is_ok_and(|description| description.name() == want)))
+        });
         if found.is_some() {
             return found;
         }
-        log::warn!("audio device `{want}` is not available; using the default");
+        // A device remembered for another system (the command line or the automatic order chose
+        // this one) is not worth a warning.
+        if id.is_some_and(|id| id.host() != host.id()) {
+            log::debug!("audio device `{want}` belongs to another audio system than {}; using the default", host.id().name());
+        } else {
+            log::warn!("audio device `{want}` is not available; using the default");
+        }
     }
     if output { host.default_output_device() } else { host.default_input_device() }
 }
 
-/// The buffer to request: the chosen size when the device's range allows it, else the default.
+/// The buffer to request: the chosen size brought into the device's range (a size remembered
+/// from another device still gets the nearest one this device has), else the default.
 pub(crate) fn buffer_size(want: Option<u32>, supported: &cpal::SupportedBufferSize) -> cpal::BufferSize {
     match (want, supported) {
-        (Some(n), cpal::SupportedBufferSize::Range { min, max }) if (*min..=*max).contains(&n) => cpal::BufferSize::Fixed(n),
+        (Some(n), cpal::SupportedBufferSize::Range { min, max }) if min <= max => cpal::BufferSize::Fixed(n.clamp(*min, *max)),
         // The device does not say: ask anyway (cpal reports an error if it cannot, and the caller
         // falls back to the default).
         (Some(n), cpal::SupportedBufferSize::Unknown) if (16..=8192).contains(&n) => cpal::BufferSize::Fixed(n),
@@ -264,41 +331,149 @@ mod tests {
 
     #[test]
     fn buffer_sizes_follow_the_device_range() {
-        let r = cpal::SupportedBufferSize::Range { min: 64, max: 1024 };
-        assert_eq!(buffer_size(Some(256), &r), cpal::BufferSize::Fixed(256));
-        assert_eq!(buffer_size(Some(32), &r), cpal::BufferSize::Default);
-        assert_eq!(buffer_size(Some(4096), &r), cpal::BufferSize::Default);
-        assert_eq!(buffer_size(None, &r), cpal::BufferSize::Default);
-        assert_eq!(buffer_size(Some(128), &cpal::SupportedBufferSize::Unknown), cpal::BufferSize::Fixed(128));
-        assert_eq!(buffer_size(Some(1 << 20), &cpal::SupportedBufferSize::Unknown), cpal::BufferSize::Default);
-        let d = DeviceInfo {
-            name: "x".into(),
-            is_default: true,
-            max_channels: 2,
-            sample_rates: vec![48_000],
-            buffer_min: Some(64),
-            buffer_max: Some(1024),
-        };
+        let sizes = |min, max| cpal::SupportedBufferSize::Range { min, max };
+        // (chosen, what the device supports, requested)
+        let cases = [
+            (Some(256), sizes(64, 1024), cpal::BufferSize::Fixed(256)),
+            (Some(64), sizes(64, 1024), cpal::BufferSize::Fixed(64)),
+            (Some(1024), sizes(64, 1024), cpal::BufferSize::Fixed(1024)),
+            // Outside the range: the nearest size the device has.
+            (Some(32), sizes(64, 1024), cpal::BufferSize::Fixed(64)),
+            (Some(4096), sizes(64, 1024), cpal::BufferSize::Fixed(1024)),
+            // A device with one size only.
+            (Some(128), sizes(480, 480), cpal::BufferSize::Fixed(480)),
+            (Some(8192), sizes(480, 480), cpal::BufferSize::Fixed(480)),
+            // A range that makes no sense is not trusted.
+            (Some(256), sizes(1024, 64), cpal::BufferSize::Default),
+            (None, sizes(64, 1024), cpal::BufferSize::Default),
+            (None, cpal::SupportedBufferSize::Unknown, cpal::BufferSize::Default),
+            (Some(128), cpal::SupportedBufferSize::Unknown, cpal::BufferSize::Fixed(128)),
+            (Some(1 << 20), cpal::SupportedBufferSize::Unknown, cpal::BufferSize::Default),
+            (Some(8), cpal::SupportedBufferSize::Unknown, cpal::BufferSize::Default),
+        ];
+        for (want, supported, expected) in cases {
+            assert_eq!(buffer_size(want, &supported), expected, "{want:?} on {supported:?}");
+        }
+        let d = info("x", "x", &[range(2, 48_000, 48_000, cpal::SampleFormat::F32)]);
+        assert_eq!((d.buffer_min, d.buffer_max), (Some(64), Some(1024)));
         assert_eq!(d.buffer_sizes(), [64, 128, 256, 512, 1024]);
         let open = DeviceInfo { buffer_min: None, buffer_max: None, ..d };
         assert_eq!(open.buffer_sizes().len(), STANDARD_BUFFERS.len());
     }
 
+    /// A listed device with these configurations, described for the settings window.
+    fn info(id: &str, name: &str, ranges: &[cpal::SupportedStreamConfigRange]) -> DeviceInfo {
+        describe(crate::host::Listed { id: id.into(), name: name.into(), detail: String::new(), ranges: ranges.to_vec() }, Some("default-id"))
+    }
+
+    #[test]
+    fn a_device_is_described_by_the_formats_the_streams_convert() {
+        // I24 is not converted: its wider channel count, rates and buffer range do not count.
+        let wide_i24 = cpal::SupportedStreamConfigRange::new(
+            8,
+            44_100,
+            192_000,
+            cpal::SupportedBufferSize::Range { min: 16, max: 8192 },
+            cpal::SampleFormat::I24,
+        );
+        let d = info(
+            "alsa:hw:CARD=0,DEV=0",
+            "Interface",
+            &[wide_i24, range(2, 44_100, 48_000, cpal::SampleFormat::I32), range(1, 96_000, 96_000, cpal::SampleFormat::I16)],
+        );
+        assert_eq!((d.id.as_str(), d.name.as_str(), d.is_default), ("alsa:hw:CARD=0,DEV=0", "Interface", false));
+        assert_eq!((d.max_channels, d.sample_rates.as_slice()), (2, &[44_100, 48_000, 96_000][..]));
+        assert_eq!((d.buffer_min, d.buffer_max), (Some(64), Some(1024)));
+        // A device with no format the streams convert is still listed, with nothing to choose.
+        let i24_only = info("alsa:hw:CARD=1,DEV=0", "Odd", &[wide_i24]);
+        assert_eq!((i24_only.max_channels, i24_only.sample_rates.len(), i24_only.buffer_min), (0, 0, None));
+        assert!(info("default-id", "Speakers", &[]).is_default);
+    }
+
+    #[test]
+    fn a_jack_port_group_is_listed_without_configurations() {
+        // No cpal device stands behind it: the rate and the buffer are the server's.
+        let id = format!("{}Scarlett 2i2", crate::host::JACK_PORTS);
+        let d = info(&id, "Scarlett 2i2", &[]);
+        assert_eq!((d.id.as_str(), d.max_channels, d.sample_rates.len(), d.buffer_min, d.buffer_max), (id.as_str(), 0, 0, None, None));
+        // Every standard buffer size stays on offer, and the group can be chosen.
+        assert_eq!(d.buffer_sizes().len(), STANDARD_BUFFERS.len());
+        let systems = [AudioSystem { id: "jack".into(), name: "JACK".into(), is_default: true, outputs: vec![d], inputs: Vec::new() }];
+        let chosen = AudioConfig { system: Some("jack".into()), output: Some(id.clone()), ..Default::default() };
+        assert_eq!(chosen.with_ids(&systems), chosen);
+    }
+
+    /// Preferences written before devices had ids hold the system's and the devices' names.
+    #[test]
+    fn names_from_older_preferences_become_ids() {
+        let device = |id: &str, name: &str| info(id, name, &[range(2, 48_000, 48_000, cpal::SampleFormat::F32)]);
+        let systems = [
+            AudioSystem {
+                id: "pipewire".into(),
+                name: "PipeWire".into(),
+                is_default: true,
+                outputs: vec![device("pipewire:alsa_output.usb-X", "Scarlett 2i2")],
+                inputs: vec![device("pipewire:alsa_input.usb-X", "Scarlett 2i2")],
+            },
+            AudioSystem {
+                id: "alsa".into(),
+                name: "ALSA".into(),
+                is_default: false,
+                outputs: vec![device("alsa:hw:CARD=USB,DEV=0", "Scarlett 2i2 USB, USB Audio"), device("alsa:pipewire", "PipeWire Sound Server")],
+                inputs: vec![device("alsa:hw:CARD=USB,DEV=0", "Scarlett 2i2 USB, USB Audio")],
+            },
+        ];
+        let old = AudioConfig {
+            system: Some("ALSA".into()),
+            output: Some("PipeWire Sound Server".into()),
+            input: Some("Scarlett 2i2 USB, USB Audio".into()),
+            sample_rate: Some(48_000),
+            buffer_size: Some(256),
+        };
+        let new = old.with_ids(&systems);
+        assert_eq!(new.system.as_deref(), Some("alsa"));
+        assert_eq!(new.output.as_deref(), Some("alsa:pipewire"));
+        assert_eq!(new.input.as_deref(), Some("alsa:hw:CARD=USB,DEV=0"));
+        assert_eq!((new.sample_rate, new.buffer_size), (Some(48_000), Some(256)));
+        // Ids stay as they are.
+        assert_eq!(new.with_ids(&systems), new);
+        // No system chosen: the devices of the one the automatic order opens.
+        let default_system = AudioConfig { output: Some("Scarlett 2i2".into()), ..Default::default() }.with_ids(&systems);
+        assert_eq!((default_system.system, default_system.output.as_deref()), (None, Some("pipewire:alsa_output.usb-X")));
+        // A system or device that is not there now (unplugged, server not running) is kept.
+        let gone = AudioConfig { system: Some("JACK".into()), output: Some("Speakers".into()), input: Some("Mic".into()), ..Default::default() };
+        assert_eq!(gone.with_ids(&systems), gone);
+        let unplugged = AudioConfig { system: Some("alsa".into()), output: Some("Speakers".into()), ..Default::default() }.with_ids(&systems);
+        assert_eq!((unplugged.system.as_deref(), unplugged.output.as_deref()), (Some("alsa"), Some("Speakers")));
+        assert_eq!(AudioConfig::default().with_ids(&systems), AudioConfig::default());
+        assert_eq!(old.with_ids(&[]), old);
+    }
+
     #[test]
     fn unknown_systems_and_devices_fall_back_to_the_defaults() {
+        // A system that does not exist: the one the automatic order opens.
         let cfg = AudioConfig { system: Some("No Such System".into()), ..Default::default() };
-        assert_eq!(host(&cfg).id(), cpal::default_host().id());
-        // No device with this name exists: the default (or none, on a machine without audio).
-        let h = cpal::default_host();
-        let fallback = device(&h, Some("No Such Device 1234"), true).as_ref().and_then(device_name);
-        assert_eq!(fallback, h.default_output_device().as_ref().and_then(device_name));
+        assert_eq!(host(&cfg, true).id(), host(&AudioConfig::default(), true).id());
+        // No device with this id or name exists: the default (or none, on a machine without audio).
+        let h = host(&AudioConfig::default(), true);
+        let default = h.default_output_device().as_ref().and_then(device_id);
+        for missing in ["No Such Device 1234", "alsa:no-such-device-1234", "jack-ports:No Such Interface"] {
+            assert_eq!(device(&h, Some(missing), true).as_ref().and_then(device_id), default, "{missing}");
+        }
     }
 
     #[test]
     fn enumeration_does_not_fail() {
         let systems = audio_systems();
         // Every listed system has a name; on a machine without audio the lists are just empty.
-        assert!(systems.iter().all(|s| !s.name.is_empty()));
+        assert!(systems.iter().all(|s| !s.name.is_empty() && !s.id.is_empty()));
         assert!(systems.iter().filter(|s| s.is_default).count() <= 1);
+        // Device ids are what the config holds: unique within a list.
+        for list in systems.iter().flat_map(|s| [&s.outputs, &s.inputs]) {
+            let mut ids: Vec<&str> = list.iter().map(|d| d.id.as_str()).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), list.len());
+        }
     }
 }

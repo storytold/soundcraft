@@ -79,6 +79,7 @@ link stays. An existing file that is not an input is replaced without asking.
 | Variable | Flag | Notes |
 |---|---|---|
 | `SOUNDCRAFT_CONTROL_PORT` | `app --port` (CLI), `--control` (desktop app) | A port or `host:port`, an IPv6 host in brackets (`[::1]:7979`). The desktop app takes the port of a loopback `host:port` (`127.0.0.1`, `localhost`). Its control server listens on `127.0.0.1` only, so it ignores another host from the variable, with a log warning, and starts no control server; given to `--control`, another host is a usage error |
+| `SOUNDCRAFT_AUDIO_HOST` | `--audio-host` (desktop app) | An audio system id (`alsa`, `pipewire`, `jack`, `coreaudio`, `wasapi`, `asio`) or `auto`. One that this build or machine does not have logs a warning, and the automatic order applies |
 
 - A flag wins over its variable.
 - An empty variable counts as unset.
@@ -108,6 +109,7 @@ names the variable.
 | `FILES` | Sessions, audio and MIDI files to open; put `--` before a name that starts with `-` |
 | `--demo` (alias `--sample`) | Start with the demo session |
 | `--no-audio` | Don't open an audio device |
+| `--audio-host <ID>` | The audio system for this run: the built-in one (`alsa`, `coreaudio`, `wasapi`) or one the build adds (`jack`, `pipewire`, `asio`); `auto` takes the first that has a device. Wins over the one chosen in Setup › Playback Engine; falls back to `SOUNDCRAFT_AUDIO_HOST` |
 | `--control <PORT>` | Start the control server on this port (`0` picks a free port and prints it); falls back to `SOUNDCRAFT_CONTROL_PORT` |
 | `--version`, `-V` | Print the version |
 | `--help`, `-h` | Print the flags and the environment variables |

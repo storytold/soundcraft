@@ -15,11 +15,14 @@ pub(crate) const NO_PREFS: &str = "SOUNDCRAFT_NO_PREFS";
 pub(crate) const NO_SYSTEM_FONTS: &str = "SOUNDCRAFT_NO_SYSTEM_FONTS";
 pub(crate) const WAYLAND: &str = "SOUNDCRAFT_WAYLAND";
 pub(crate) const RUST_LOG: &str = "RUST_LOG";
+pub(crate) const AUDIO_HOST: &str = "SOUNDCRAFT_AUDIO_HOST";
 
 /// The variables and their `--help` lines, in the order `--help` lists them.
 pub(crate) const VARS: &[(&str, &str)] = &[
     // Read by clap (`env =` on `--control`), not by `Env`.
     ("SOUNDCRAFT_CONTROL_PORT", "The --control fallback: a port or host:port, ignored for another host"),
+    // Read by clap too (`env =` on `--audio-host`).
+    (AUDIO_HOST, "The --audio-host fallback: an audio system id (alsa, pipewire, jack, ...) or auto"),
     (CONFIG_DIR, "The settings folder (ui.json, Autosave, Presets, logs); empty: none (unlike the others, where empty counts as unset)"),
     (NO_PREFS, "1 doesn't read or write preferences and logs to stderr only; 0 or unset is off"),
     (NO_SYSTEM_FONTS, "1 uses the built-in fonts only; 0 or unset is off"),

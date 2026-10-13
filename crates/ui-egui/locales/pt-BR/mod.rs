@@ -993,6 +993,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "{}  (missing)" => "{}  (ausente)",
         "{} for {}" => "{} para {}",
         "{} @ {} Hz" => "{} a {} Hz",
+        "{name} (unavailable)" => "{name} (indisponível)",
         "{} samples" => "{} amostras",
         "{} · {} Hz · {} ch · {}" => "{} · {} Hz · {} canais · {}",
         "{} · {} Hz · {} ch" => "{} · {} Hz · {} canais",

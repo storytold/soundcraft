@@ -23,6 +23,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod devices;
+pub mod host;
 pub mod record;
 
 pub use devices::AudioConfig;
@@ -163,6 +164,8 @@ pub struct Player {
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
     pub device_name: String,
+    /// The audio system the device was opened on (`"PipeWire"`, `"ALSA"`, …; empty for the silent clock).
+    pub host_name: String,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
     pub device_channels: u16,
@@ -224,7 +227,8 @@ impl Player {
             Mutex::new(side)
         };
         match open_device(want, want_ch, cfg) {
-            Ok((device, config, format, name)) => {
+            Ok((host, device, config, format, name)) => {
+                let host_name = host.id().name().to_string();
                 // The chosen buffer size first; if the device refuses it, its default.
                 let mut attempts = vec![config];
                 if config.buffer_size != cpal::BufferSize::Default {
@@ -256,8 +260,10 @@ impl Player {
                             cpal::BufferSize::Fixed(n) => Some(n),
                             cpal::BufferSize::Default => None,
                         };
+                        // On JACK the stream opened on the system ports: wire it to the chosen interface.
+                        host::wire_stream(host::Direction::Output, &host, cfg.output.as_deref());
                         log::info!(
-                            "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {}",
+                            "audio device: {name} ({host_name}) @ {rate} Hz, {channels} ch, {format}, buffer {}",
                             buffer.map_or("default".to_string(), |n| n.to_string())
                         );
                         Player {
@@ -269,6 +275,7 @@ impl Player {
                             side: new_side(grx),
                             _stream: Some(stream),
                             device_name: name,
+                            host_name,
                             device_rate: rate,
                             device_channels: config.channels,
                             device_buffer: buffer,
@@ -346,6 +353,7 @@ impl Player {
             side,
             _stream: None,
             device_name: "No audio device (silent)".into(),
+            host_name: String::new(),
             device_rate: rate,
             device_channels: 0,
             device_buffer: None,
@@ -369,6 +377,7 @@ impl Player {
             side,
             _stream: None,
             device_name: "No audio device".into(),
+            host_name: String::new(),
             device_rate: session.sample_rate.hz(),
             device_channels: 0,
             device_buffer: None,

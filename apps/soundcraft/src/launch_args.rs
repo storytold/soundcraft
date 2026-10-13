@@ -28,6 +28,9 @@ pub(crate) struct LaunchArgs {
     /// Don't open an audio device
     #[arg(long)]
     pub(crate) no_audio: bool,
+    /// The audio system for this run: the built-in one (alsa, coreaudio, wasapi) or one this build adds (jack, pipewire, asio); auto takes the first that has a device. Wins over the one chosen in Setup > Playback Engine
+    #[arg(long, value_name = "ID", env = crate::env::AUDIO_HOST)]
+    pub(crate) audio_host: Option<String>,
     #[command(flatten)]
     control: ControlServerArgs,
     /// The port the control server starts on, from `control` ([`control_port`]).
@@ -127,6 +130,10 @@ mod tests {
         assert!(parse_args(&["--sample"]).unwrap().demo);
         let none = parse_args(&[]).unwrap();
         assert!(!none.demo && !none.no_audio && none.control_port.is_none() && none.files.is_empty());
+        assert_eq!(none.audio_host, None);
+        let host = parse_args(&["--audio-host", "jack", "a.scraft"]).unwrap();
+        assert_eq!((host.audio_host.as_deref(), host.files.as_slice()), (Some("jack"), &[PathBuf::from("a.scraft")][..]));
+        assert!(usage_error(&["--audio-host"]).contains("--audio-host <ID>"));
     }
 
     #[test]
@@ -139,11 +146,12 @@ mod tests {
         let e = parse_args(&["-h", "--bogus"]).err().unwrap();
         assert_eq!((e.kind(), e.exit_code()), (ErrorKind::DisplayHelp, 0));
         let help = e.to_string();
-        for text in ["--demo", "--sample", "--no-audio", "--control <PORT>"] {
+        for text in ["--demo", "--sample", "--no-audio", "--audio-host <ID>", "--control <PORT>"] {
             assert!(help.contains(text), "{text}: {help}");
         }
         let help = command().render_help().to_string();
         assert!(help.contains("[env: SOUNDCRAFT_CONTROL_PORT"), "{help}");
+        assert!(help.contains("[env: SOUNDCRAFT_AUDIO_HOST"), "{help}");
         for var in ["SOUNDCRAFT_CONFIG_DIR", "SOUNDCRAFT_NO_PREFS", "SOUNDCRAFT_NO_SYSTEM_FONTS", "SOUNDCRAFT_WAYLAND", "RUST_LOG"] {
             assert!(help.contains(&format!("\n  {var} ")), "{var}: {help}");
         }

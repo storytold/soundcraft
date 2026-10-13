@@ -129,6 +129,8 @@ pub struct Recorder {
     #[cfg(not(target_os = "freebsd"))]
     _stream: Option<cpal::Stream>,
     pub device_name: String,
+    /// The audio system the device was opened on (`"PipeWire"`, `"ALSA"`, …).
+    pub host_name: String,
     pub sample_rate: u32,
     pub channels: usize,
     /// The take writer, and what each track's take holds so far.
@@ -220,7 +222,8 @@ impl Recorder {
     #[cfg(not(target_os = "freebsd"))]
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
         use cpal::traits::{DeviceTrait, StreamTrait};
-        let host = crate::devices::host(audio);
+        let host = crate::devices::host(audio, false);
+        let host_name = host.id().name().to_string();
         let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
         let name = crate::devices::device_name(&device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
@@ -267,8 +270,21 @@ impl Recorder {
             Err(e) => return Err(e.to_string()),
         };
         stream.play().map_err(|e| e.to_string())?;
+        // On JACK the stream opened on the system ports: wire it to the chosen interface.
+        crate::host::wire_stream(crate::host::Direction::Input, &host, audio.input.as_deref());
+        log::info!("audio input: {name} ({host_name}) @ {} Hz, {channels} ch, {format}", config.sample_rate);
         let seen = (0, Instant::now());
-        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
+        Ok(Recorder {
+            monitor,
+            shared,
+            _stream: Some(stream),
+            device_name: name,
+            host_name,
+            sample_rate: config.sample_rate,
+            channels,
+            writer: None,
+            seen,
+        })
     }
 
     #[cfg(target_os = "freebsd")]
@@ -515,6 +531,7 @@ mod tests {
             #[cfg(not(target_os = "freebsd"))]
             _stream: None,
             device_name: "Mic In".into(),
+            host_name: String::new(),
             sample_rate: 48_000,
             channels: 1,
             writer: None,

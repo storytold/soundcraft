@@ -26,6 +26,9 @@ impl SoundApp {
         // The input reopens on the next record or monitor with the new choice.
         self.recorder = None;
         self.recorder_failed = false;
+        // The old stream goes first: two streams of one client on one device make some hosts
+        // (JACK, PipeWire) report the old one as a disconnected device.
+        self.player = None;
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
         player.locate(at);
         self.player = Some(player);
@@ -125,6 +128,8 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
+        // The old stream goes first (see `apply_audio_config`).
+        self.player = None;
         self.player = Some(Player::with_config(self.engine.session_arc(), &self.ui.audio));
     }
 }

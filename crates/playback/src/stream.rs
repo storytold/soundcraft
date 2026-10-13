@@ -86,7 +86,8 @@ where
     )
 }
 
-/// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
+/// Open the output device `cfg` chooses, on the audio system it chooses (else the defaults, see
+/// [`crate::host`]), at the chosen rate (else the session
 /// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
 /// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
 /// chosen buffer size when the device allows it.
@@ -94,9 +95,9 @@ pub(crate) fn open_device(
     want_rate: u32,
     want_ch: u16,
     cfg: &AudioConfig,
-) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+) -> Result<(cpal::Host, cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
     use cpal::traits::DeviceTrait;
-    let host = devices::host(cfg);
+    let host = devices::host(cfg, true);
     let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
@@ -129,7 +130,7 @@ pub(crate) fn open_device(
             (stream_config, c.sample_format())
         }
     };
-    Ok((device, config, format, name))
+    Ok((host, device, config, format, name))
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured

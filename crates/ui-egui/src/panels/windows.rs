@@ -470,24 +470,30 @@ fn audio_systems(ctx: &egui::Context, refresh: bool) -> Arc<Vec<AudioSystem>> {
 fn chosen_system<'a>(systems: &'a [AudioSystem], cfg: &AudioConfig) -> Option<&'a AudioSystem> {
     cfg.system
         .as_deref()
-        .and_then(|n| systems.iter().find(|s| s.name.eq_ignore_ascii_case(n)))
+        .and_then(|n| systems.iter().find(|s| s.id.eq_ignore_ascii_case(n) || s.name.eq_ignore_ascii_case(n)))
         .or_else(|| systems.iter().find(|s| s.is_default))
         .or(systems.first())
 }
 
-/// The device a config means (by name, else the system default).
-fn chosen_device<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'a DeviceInfo> {
-    name.and_then(|n| devices.iter().find(|d| d.name == n)).or_else(|| devices.iter().find(|d| d.is_default))
+/// The device a config means (by id, else the system default).
+fn chosen_device<'a>(devices: &'a [DeviceInfo], id: Option<&str>) -> Option<&'a DeviceInfo> {
+    id.and_then(|n| devices.iter().find(|d| d.id == n)).or_else(|| devices.iter().find(|d| d.is_default))
 }
 
-/// Device picker with a Default entry and channel counts, labelled for accessibility.
+/// Device picker with a Default entry and what tells the devices apart, labelled for accessibility.
 fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<String>, devices: &[DeviceInfo]) {
     let default = devices.iter().find(|d| d.is_default).map_or_else(|| crate::localization::text("none").to_string(), |d| d.name.clone());
-    let shown = value.clone().unwrap_or_else(|| crate::localized_format!("Default ({default})", default = default));
+    // A remembered device that is gone stays visible.
+    let shown = match value.as_deref() {
+        None => crate::localized_format!("Default ({default})", default = default),
+        Some(v) => devices.iter().find(|d| d.id == v).map_or_else(|| crate::localized_format!("{name} (unavailable)", name = v), |d| d.name.clone()),
+    };
     let combo = craft_ui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
         ui.selectable_value(value, None, crate::localized_format!("Default ({default})", default = default));
         for d in devices {
-            ui.selectable_value(value, Some(d.name.clone()), format!("{} ({} ch)", d.name, d.max_channels));
+            // The name, then what tells it apart from its neighbours.
+            let text = if d.detail.is_empty() { d.name.clone() } else { format!("{} ({})", d.name, d.detail) };
+            ui.selectable_value(value, Some(d.id.clone()), text).on_hover_text(&d.id);
         }
     });
     combo.response.accessible_name(crate::localization::text(name));
@@ -515,24 +521,31 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     let draft_id = egui::Id::unique("audio_draft");
-    let mut draft = ctx.data(|d| d.get_temp::<AudioConfig>(draft_id)).unwrap_or_else(|| app.ui.audio.clone());
+    let systems = audio_systems(ctx, false);
+    // Preferences from before devices had ids hold names: the draft starts from their ids.
+    let mut draft = ctx.data(|d| d.get_temp::<AudioConfig>(draft_id)).unwrap_or_else(|| app.ui.audio.with_ids(&systems));
     let mut refresh = false;
     let mut apply = false;
-    let systems = audio_systems(ctx, false);
     win(ctx, &mut open, "Playback Engine", vec2(460.0, 360.0), |ui| {
         let t = Tokens::current();
         egui::Grid::new("pe").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
             let system_label = ui.label(crate::localization::text("Audio system"));
             let def = systems.iter().find(|s| s.is_default).map_or("none".to_string(), |s| s.name.clone());
-            let shown = draft.system.clone().unwrap_or_else(|| crate::localized_format!("Default ({default})", default = def));
+            let shown = match draft.system.as_deref() {
+                None => crate::localized_format!("Default ({default})", default = def),
+                Some(id) => systems
+                    .iter()
+                    .find(|s| s.id.eq_ignore_ascii_case(id) || s.name.eq_ignore_ascii_case(id))
+                    .map_or_else(|| crate::localized_format!("{name} (unavailable)", name = id), |s| s.name.clone()),
+            };
             let system = craft_ui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
                 let before = draft.system.clone();
                 ui.selectable_value(&mut draft.system, None, crate::localized_format!("Default ({default})", default = def));
                 for s in systems.iter() {
-                    ui.selectable_value(&mut draft.system, Some(s.name.clone()), &s.name);
+                    ui.selectable_value(&mut draft.system, Some(s.id.clone()), &s.name);
                 }
                 if draft.system != before {
-                    // Device names belong to a system.
+                    // Device ids belong to a system.
                     draft.output = None;
                     draft.input = None;
                 }
@@ -584,7 +597,9 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
                     let buf = p
                         .device_buffer
                         .map_or(crate::localization::text("default buffer").to_string(), |b| crate::localized_format!("{} samples", b));
-                    crate::localized_format!("{} · {} Hz · {} ch · {}", p.device_name, p.device_rate, p.device_channels, buf)
+                    // The device, and the audio system it was opened on.
+                    let device = format!("{} ({})", p.device_name, p.host_name);
+                    crate::localized_format!("{} · {} Hz · {} ch · {}", device, p.device_rate, p.device_channels, buf)
                 }
             }));
             ui.end_row();
@@ -660,7 +675,7 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
         app.apply_audio_config(cfg)?;
     }
     let device = app.player.as_ref().map(|pl| {
-        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
+        json!({"name": pl.device_name, "host": pl.host_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
     });
     let mut out = json!({"config": app.ui.audio, "device": device});
     if p.get("list").and_then(Value::as_bool).unwrap_or(false) {
@@ -669,7 +684,7 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     Ok(out)
 }
 
-/// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output name and
+/// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output device id and
 /// `buffer_size` is any integer 16..=8192 or null (not rounded to the window's power-of-two list);
 /// both go through [`audio_device_command`]. Delay compensation still goes through the engine
 /// command, and only after the device change has been accepted. The result is the open device:
