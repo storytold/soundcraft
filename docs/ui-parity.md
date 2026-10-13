@@ -30,7 +30,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Default shortcuts | 🟡 146 bound (measured: distinct `Some("…")` shortcuts in the registry) | Pro Tools' default set is several hundred incl. numeric keypad and focus keys. Collisions: Mix/Edit toggle vs zoom (#144), Heal (#140), Export (#7) Delete and Backspace clear the edit selection in the Edit window like Edit › Clear (#404). |
+| Default shortcuts | 🟡 146 bound (measured: distinct `Some("…")` shortcuts in the registry) Delete and Backspace clear the edit selection in the Edit window like Edit › Clear (#404). | Pro Tools' default set is several hundred incl. numeric keypad and focus keys. Collisions: Mix/Edit toggle vs zoom (#144), Heal (#140), Export (#7) |
 | Ctrl as Cmd on Windows/Linux | ✅ since #15, #41 still open in some builds | #62 shows Ctrl in labels |
 | Numeric keypad transport and memory-location recall | 🟡 | Classic / Transport / Shuttle modes not all present |
 | Modifier gestures (Alt for all tracks, Shift-Alt for selected, Cmd-click fine faders, Ctrl-click defaults) | 🟡 | Main ones on faders and pan; not across every control |
