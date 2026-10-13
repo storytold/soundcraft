@@ -100,15 +100,30 @@ impl SoundApp {
             self.record_hint = Some((self.last_frame.unwrap_or_default(), why));
             return;
         }
-        self.ensure_input();
-        let takes = match self.arm_recorder() {
+        // A pass records audio, MIDI or both: it needs one of them ready. The audio input is
+        // only opened for audio tracks.
+        let audio_tracks = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm && !t.kind.is_midi());
+        let midi_tracks = soundcraft_engine::io::records_midi(&self.engine);
+        let midi_ready = midi_tracks && self.midi_connected();
+        if audio_tracks {
+            self.ensure_input();
+        }
+        let audio = if audio_tracks { self.arm_recorder() } else { Err("no audio track is record-enabled".to_string()) };
+        let takes = match audio {
             Ok(takes) => takes,
+            // MIDI alone still makes a pass.
+            Err(_) if midi_ready => Vec::new(),
             Err(err) => {
-                self.ui.status = crate::localized_format!("Cannot record: {err}", err = err);
+                self.ui.status = if midi_tracks && !audio_tracks {
+                    crate::localization::text("Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)").into()
+                } else {
+                    crate::localized_format!("Cannot record: {err}", err = err)
+                };
                 return;
             }
         };
         self.lost_shown = 0;
+        self.begin_midi_take();
         if let Some(p) = &self.player {
             p.set_recording(true);
         }
@@ -202,9 +217,11 @@ impl SoundApp {
         if let Some(p) = &self.player {
             p.set_recording(false);
         }
+        // Where the pass ended: the audio engine's own position is the freshest.
+        let stopped_at = self.player.as_ref().map_or(self.engine.transport.position, |p| p.position().max(self.engine.transport.position));
         let plan = self.take_plan.take();
-        let Some(r) = &mut self.recorder else { return };
-        let (takes, problem) = r.finish();
+        // No input device is open when the pass was MIDI only.
+        let (takes, problem) = self.recorder.as_mut().map_or_else(|| (Vec::new(), None), |r| r.finish());
         let tracks = takes.len().max(1);
         let plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
             start: self.record_start,
@@ -216,11 +233,23 @@ impl SoundApp {
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
-        self.ui.status = if plan.pass.is_some() {
-            crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
-        } else {
-            crate::localized_format!("Recorded {} clip(s)", ids.len())
+        // MIDI goes where the audio of the pass goes: the loop, the punch range, or all of it.
+        let midi_range = match plan.pass {
+            Some(len) => Range::new(plan.start, plan.start.saturating_add(len)),
+            None => plan.punch.unwrap_or(Range::new(self.record_start, stopped_at)),
         };
+        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty());
+        self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
+            crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
+        } else if ids.is_empty() && midi_clips == 0 {
+            crate::localization::text("Nothing was recorded: the record-enabled tracks received no input").to_string()
+        } else {
+            crate::localized_format!("Recorded {} clip(s)", ids.len() + midi_clips)
+        };
+        // A take that lost MIDI input is not reported as a complete one.
+        if let Some(p) = midi_problem {
+            self.ui.status = format!("{} ({p})", self.ui.status);
+        }
         if let Some(p) = problem {
             log::warn!("recording: {p}");
             self.ui.status = format!("{} ({p})", self.ui.status);

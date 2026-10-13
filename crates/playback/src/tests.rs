@@ -715,3 +715,149 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     assert!(out.iter().any(|x| x.abs() > 0.1), "the input is heard");
     assert!(shared.meters.lock().unwrap().tracks.get(&t).is_some_and(|m| m.peak[0] > 0.1), "and metered");
 }
+
+/// A stopped engine with one record-enabled instrument track and a MIDI feed with one open port.
+fn keyboard_session() -> (AudioState, std::sync::mpsc::Sender<Cmd>, Arc<midi::MidiFeed>, soundcraft_model::Session, TrackId) {
+    use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+    let mut s = soundcraft_model::Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let tr = s.track_mut(t).unwrap();
+    tr.instrument = Some(Insert::new("subtractive_synth"));
+    tr.mixer.record_arm = true;
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let st = AudioState::new(rx, shared, Arc::new(s.clone()), 48_000.0, channel().0);
+    let feed = Arc::new(midi::MidiFeed::default());
+    feed.set_connected(1);
+    tx.send(Cmd::Midi(Arc::clone(&feed))).unwrap();
+    (st, tx, feed, s, t)
+}
+
+/// Runs `callbacks` device callbacks of 1024 frames; whether the last one has sound in it.
+fn heard(st: &mut AudioState, callbacks: usize) -> bool {
+    let mut out = vec![0.0f32; 2048];
+    (0..callbacks).for_each(|_| st.fill(&mut out, 2));
+    out.iter().any(|x| x.abs() > 0.003)
+}
+
+#[test]
+fn a_midi_keyboard_plays_and_records_through_a_record_enabled_instrument() {
+    let (mut st, tx, feed, mut s, t) = keyboard_session();
+    // Not record-enabled: the engine stays idle and the key press is not kept for later.
+    s.track_mut(t).unwrap().mixer.record_arm = false;
+    tx.send(Cmd::Session(Arc::new(s.clone()), Vec::new())).unwrap();
+    feed.receive(0, &[0x90, 60, 100]);
+    assert!(!heard(&mut st, 4));
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    tx.send(Cmd::Session(Arc::new(s), Vec::new())).unwrap();
+    assert!(!heard(&mut st, 4), "the earlier key press is gone");
+    feed.receive(0, &[0x90, 60, 100]);
+    assert!(heard(&mut st, 4), "stopped, a record-enabled instrument plays the keyboard");
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert!(rec.is_empty(), "nothing is recorded while stopped");
+    // Recording: the events come back with the position they were played at.
+    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Play { from: 48_000, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    feed.receive(0, &[0x90, 64, 90]);
+    st.fill(&mut out, 2);
+    feed.receive(0, &[0x80, 64, 0]);
+    st.fill(&mut out, 2);
+    st.fill(&mut out, 2);
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(), [(0x90, 64), (0x80, 64)]);
+    // One callback is 1024 frames; each event arrived just before its callback started.
+    assert!((48_000 + 1024 - 64..=48_000 + 1024).contains(&rec[0].at), "{}", rec[0].at);
+    assert!((48_000 + 2048 - 64..=48_000 + 2048).contains(&rec[1].at), "{}", rec[1].at);
+    assert_eq!(feed.take_recorded_lost(), 0);
+}
+
+#[test]
+fn a_full_midi_queue_releases_the_held_note_and_the_pedal_of_its_port_only() {
+    // Either queue overflows: the one from the device (1024 events) and the audio thread's own
+    // (256 a callback). The releases are among what is dropped.
+    for flood in [midi::INCOMING, callback::MIDI_EVENTS] {
+        let (mut st, _tx, feed, ..) = keyboard_session();
+        // Port 0 holds one note with the pedal and one with a key; port 1 holds a key.
+        for (port, msg) in [(0, [0xB0, 64, 127]), (0, [0x90, 60, 100]), (0, [0x80, 60, 0]), (0, [0x90, 64, 100]), (1, [0x90, 72, 100])] {
+            feed.receive(port, &msg);
+        }
+        assert!(heard(&mut st, 4));
+        // Port 0 floods the queue, so its note-off and pedal-up do not get through.
+        for _ in 0..flood {
+            feed.receive(0, &[0xB0, 1, 0]);
+        }
+        feed.receive(0, &[0x80, 64, 0]);
+        feed.receive(0, &[0xB0, 64, 0]);
+        assert!(heard(&mut st, 60), "{flood}: port 1 still holds its key");
+        feed.receive(1, &[0x80, 72, 0]);
+        assert!(!heard(&mut st, 60), "{flood}: port 0 holds nothing after its events were dropped");
+        // The pedal went too: a new note ends with its key.
+        feed.receive(0, &[0x90, 60, 100]);
+        assert!(heard(&mut st, 4));
+        feed.receive(0, &[0x80, 60, 0]);
+        assert!(!heard(&mut st, 60), "{flood}");
+    }
+}
+
+#[test]
+fn a_note_on_queued_before_lost_events_is_not_played_after_the_release() {
+    let (mut st, _tx, feed, ..) = keyboard_session();
+    // One callback's worth: a key goes down, the flood drops its note-off.
+    feed.receive(0, &[0x90, 60, 100]);
+    for _ in 0..callback::MIDI_EVENTS {
+        feed.receive(0, &[0xB0, 1, 0]);
+    }
+    feed.receive(0, &[0x80, 60, 0]);
+    assert!(!heard(&mut st, 60), "the note-on went with the events that were dropped");
+}
+
+#[test]
+fn keys_held_while_nothing_listens_or_the_port_closes_do_not_stay_on() {
+    let (mut st, tx, feed, mut s, t) = keyboard_session();
+    feed.receive(0, &[0x90, 60, 100]);
+    assert!(heard(&mut st, 4));
+    // The track leaves record with the key down; its note-off comes while nothing listens.
+    s.track_mut(t).unwrap().mixer.record_arm = false;
+    tx.send(Cmd::Session(Arc::new(s.clone()), Vec::new())).unwrap();
+    heard(&mut st, 2);
+    feed.receive(0, &[0x80, 60, 0]);
+    heard(&mut st, 2);
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    tx.send(Cmd::Session(Arc::new(s), Vec::new())).unwrap();
+    assert!(!heard(&mut st, 60), "the note does not come back");
+    // The device is unplugged with a key down: no note-off will come.
+    feed.receive(0, &[0x90, 62, 100]);
+    assert!(heard(&mut st, 4));
+    feed.port_lost(0);
+    assert!(!heard(&mut st, 60));
+}
+
+#[test]
+fn lost_midi_input_is_written_into_the_take() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    feed.receive(0, &[0x90, 60, 100]);
+    heard(&mut st, 2);
+    for _ in 0..midi::INCOMING {
+        feed.receive(0, &[0xB0, 1, 0]);
+    }
+    feed.receive(0, &[0x80, 60, 0]);
+    heard(&mut st, 2);
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    let lost: Vec<&midi::RecordedMidi> = rec.iter().filter(|e| e.is_lost()).collect();
+    assert_eq!(lost.iter().map(|e| e.port).collect::<Vec<_>>(), [0], "one entry for the port that lost input");
+    assert_eq!((rec[0].status, rec[0].data1), (0x90, 60));
+    assert!(lost[0].at >= rec[0].at, "the held note ends at or after its start");
+    assert!(!rec.iter().any(|e| e.status == 0x80), "its note-off was among the dropped events");
+    assert!(feed.dropped() > 0);
+}

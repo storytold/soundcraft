@@ -1606,3 +1606,97 @@ fn consolidate_many_tiny_effect_clips_stays_fast() {
     assert!((out[0][1000] - 0.5 * db_to_gain(-6.0)).abs() < 1e-6);
     assert_eq!(out[0][1001], 0.0);
 }
+
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+}
+
+/// Renders `blocks` stopped blocks, the events in the first one, and returns the last block's peak.
+fn live_peak(eng: &mut MixEngine, s: &Session, events: &[(u8, u8, u8)], blocks: usize) -> f32 {
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    eng.monitor_only = true;
+    eng.midi.clear();
+    eng.midi.extend(events.iter().map(|&(status, data1, data2)| LiveMidi { offset: 0, port: 0, status, data1, data2 }));
+    for _ in 0..blocks {
+        eng.render(s, 0, 512, &mut out);
+        eng.midi.clear();
+        eng.midi_lost = 0;
+    }
+    peak(&out[0])
+}
+
+#[test]
+fn live_midi_plays_record_enabled_instruments_while_stopped() {
+    let mut s = synth_session(-6.0);
+    let t = s.tracks[0].id;
+    let mut eng = MixEngine::new(48_000.0, 512);
+    // Not record-enabled: the keyboard is not heard, and neither is the clip while stopped.
+    assert_eq!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8), 0.0);
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    assert!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8) > 0.01, "a held key sounds");
+    assert!(live_peak(&mut eng, &s, &[], 40) > 0.01, "and keeps sounding: a stopped transport is not a seek");
+    // The sustain pedal holds the note past its note-off (a note-on with velocity 0 here).
+    assert!(live_peak(&mut eng, &s, &[(0xB0, 64, 127), (0x90, 60, 0)], 40) > 0.01);
+    assert!(live_peak(&mut eng, &s, &[(0xB0, 64, 0)], 400) < 1e-4, "pedal up releases it");
+    // Taking the track out of record releases a held key.
+    assert!(live_peak(&mut eng, &s, &[(0x91, 64, 100)], 8) > 0.01);
+    s.track_mut(t).unwrap().mixer.record_arm = false;
+    assert!(live_peak(&mut eng, &s, &[], 400) < 1e-4);
+}
+
+#[test]
+fn live_midi_honours_the_track_input_device_and_channel() {
+    let mut s = synth_session(-6.0);
+    let t = s.tracks[0].id;
+    let ports = Arc::new(MidiPorts::default());
+    ports.assign("Keys");
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.midi_ports = Some(Arc::clone(&ports));
+    let tr = s.track_mut(t).unwrap();
+    tr.mixer.input_monitor = true;
+    tr.mixer.input = soundcraft_model::MidiInput { device: Some("Pad"), channel: None }.route();
+    assert_eq!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8), 0.0, "another device");
+    s.track_mut(t).unwrap().mixer.input = soundcraft_model::MidiInput { device: Some("Keys"), channel: Some(1) }.route();
+    assert_eq!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8), 0.0, "another channel");
+    assert!(live_peak(&mut eng, &s, &[(0x91, 60, 100)], 8) > 0.01);
+}
+
+#[test]
+fn live_midi_sounds_on_top_of_the_clips_during_playback() {
+    let mut s = synth_session(-6.0);
+    s.tracks[0].mixer.record_arm = true;
+    let render = |events: &[LiveMidi]| {
+        let mut eng = MixEngine::new(48_000.0, 512);
+        let mut out = vec![vec![0.0f32; 512]; 2];
+        let mut all = Vec::new();
+        for b in 0..80 {
+            eng.midi.clear();
+            if b == 60 {
+                eng.midi.extend_from_slice(events);
+            }
+            eng.render(&s, b * 512, 512, &mut out);
+            all.extend_from_slice(&out[0]);
+        }
+        all
+    };
+    let (dry, played) = (render(&[]), render(&[LiveMidi { offset: 100, port: 0, status: 0x90, data1: 72, data2: 110 }]));
+    // The clip's note ends at 24 000 samples; block 60 starts at 30 720.
+    assert_eq!(dry[..30_720 + 100], played[..30_720 + 100], "nothing changes before the key goes down");
+    assert!(peak(&played[31_000..]) > peak(&dry[31_000..]) + 0.01);
+}
+
+#[test]
+fn a_port_that_lost_events_lets_go_of_its_held_key_and_pedal() {
+    let mut s = synth_session(-6.0);
+    s.tracks[0].mixer.record_arm = true;
+    let mut eng = MixEngine::new(48_000.0, 512);
+    // A key and the pedal are down, then the queue drops the releases.
+    assert!(live_peak(&mut eng, &s, &[(0xB0, 64, 127), (0x90, 60, 100), (0x90, 64, 100), (0x80, 64, 0)], 8) > 0.01);
+    eng.midi_lost = midi_port_bit(7);
+    assert!(live_peak(&mut eng, &s, &[], 40) > 0.01, "another port's loss leaves them alone");
+    eng.midi_lost = midi_port_bit(0);
+    assert!(live_peak(&mut eng, &s, &[], 400) < 1e-4, "nothing is left sounding");
+    // The pedal went with them: a new note ends at its note-off.
+    assert!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8) > 0.01);
+    assert!(live_peak(&mut eng, &s, &[(0x80, 60, 0)], 400) < 1e-4);
+}

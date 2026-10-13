@@ -1,6 +1,7 @@
 use super::automation::{Level, apply_gain, transport_at, volume_level};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
+use super::live_midi::{LiveMidi, LiveNotes, MidiPorts, midi_thru};
 use super::midi::{chase_controllers, schedule_notes};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
 use super::routing::solo_muted;
@@ -41,6 +42,8 @@ pub(crate) struct Strip {
     pub(crate) sample: Option<Arc<SourceAudio>>,
     /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
     pub(crate) held: Vec<u8>,
+    /// Notes held by live MIDI input.
+    pub(crate) live: LiveNotes,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
     pub(crate) muted: bool,
@@ -140,6 +143,7 @@ impl Strip {
             instrument: None,
             sample: None,
             held: Vec::new(),
+            live: LiveNotes::default(),
             chase: true,
             muted: false,
             gr: 0.0,
@@ -205,6 +209,10 @@ impl SlotCtx<'_> {
 /// Live input routed to monitored tracks.
 pub(crate) struct LiveInput<'a> {
     pub(crate) input: &'a [Vec<f32>],
+    pub(crate) midi: &'a [LiveMidi],
+    pub(crate) ports: Option<&'a MidiPorts>,
+    /// Ports whose events were dropped before this block.
+    pub(crate) midi_lost: u64,
     pub(crate) monitor_only: bool,
     pub(crate) recording: bool,
 }
@@ -295,7 +303,7 @@ fn read_aux_bus(t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, f
 }
 
 /// Render the track's instrument into the strip.
-fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, transport: &Transport) {
+fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput<'_>, blk: Block, transport: &Transport) {
     let Block { pos, frames, .. } = blk;
     if let Some(inst) = strip.instrument.as_mut().filter(|i| !i.failed) {
         // #152: push the instrument's stored parameter values into the live plugin
@@ -310,7 +318,16 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
         if std::mem::take(&mut strip.chase) {
             chase_controllers(s, t, pos, inst);
         }
-        schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+        // Stopped: the clips are silent, only live MIDI input plays.
+        if !live.monitor_only {
+            schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+        }
+        if midi_thru(t) {
+            strip.live.release_ports(live.midi_lost, inst.plugin.as_mut());
+            strip.live.play(t, inst.plugin.as_mut(), live.midi, live.ports, frames);
+        } else if strip.live.active() {
+            strip.live.release(inst.plugin.as_mut());
+        }
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
         } else if let Some(c0) = strip.buf.first_mut() {
@@ -410,10 +427,12 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
             monitor_input(t, strip, live, frames);
         }
         TrackKind::Audio if live.monitor_only => {}
-        TrackKind::Instrument | TrackKind::Midi if live.monitor_only => {}
+        // Stopped: only a track that plays live MIDI input sounds (and one that just stopped
+        // doing so, to release its notes).
+        TrackKind::Instrument | TrackKind::Midi if live.monitor_only && !midi_thru(t) && !strip.live.active() => {}
         TrackKind::Audio => render_audio_clips(s, t, strip, blk),
         TrackKind::Aux | TrackKind::Folder => read_aux_bus(t, strip, busses, frames),
-        TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, blk, &transport),
+        TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, live, blk, &transport),
         _ => {}
     }
     let trim = db_to_gain(t.mixer.trim_db) * if t.mixer.phase_invert { -1.0 } else { 1.0 };

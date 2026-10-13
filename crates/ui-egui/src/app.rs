@@ -11,6 +11,7 @@ mod commands;
 mod control;
 mod files;
 mod input;
+mod midi;
 mod playback;
 mod plugins;
 
@@ -39,6 +40,10 @@ impl SoundApp {
             record_start: 0,
             punch: None,
             recorder_failed: false,
+            midi_inputs: None,
+            midi_scan_at: 0.0,
+            midi_take: Vec::new(),
+            midi_take_lost: 0,
             lost_shown: 0,
             take_plan: None,
             ui: UiState::default(),
@@ -207,6 +212,7 @@ impl SoundApp {
         self.autosave_changes();
         self.write_automation();
         self.autosave();
+        self.service_midi(self.uptime);
         if self.recorder.is_none()
             && !self.recorder_failed
             && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm)

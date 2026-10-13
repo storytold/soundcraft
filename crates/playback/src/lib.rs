@@ -23,6 +23,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod devices;
+pub mod midi;
 pub mod record;
 
 pub use devices::AudioConfig;
@@ -118,6 +119,7 @@ enum Cmd {
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
+    Midi(Arc<midi::MidiFeed>),
     Recording(bool),
     Play {
         from: Samples,
@@ -474,6 +476,11 @@ impl Player {
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.
     pub fn set_input(&self, ring: Arc<record::InputRing>) {
         let _ = self.tx.send(Cmd::Input(ring));
+    }
+
+    /// Play MIDI devices through record-enabled and input-monitored MIDI and instrument tracks.
+    pub fn set_midi(&self, feed: Arc<midi::MidiFeed>) {
+        let _ = self.tx.send(Cmd::Midi(feed));
     }
 
     pub fn set_recording(&self, on: bool) {

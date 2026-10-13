@@ -249,7 +249,7 @@ about egui, so the interface could be swapped for another one.
 | `soundcraft-model` | Compatibility re-export of `craft-scraft-format`'s schema, validation and JSON API |
 | `soundcraft-mix` | The mix engine (realtime and offline share it) |
 | `soundcraft-engine` | Commands, undo, editing, import/export, bounce |
-| `soundcraft-playback` | Audio devices (CoreAudio, WASAPI, ALSA, WebAudio) and recording |
+| `soundcraft-playback` | Audio devices (CoreAudio, WASAPI, ALSA, WebAudio), MIDI input devices and recording |
 | `soundcraft-automation` | MCP server and control-channel client |
 | `soundcraft-ui-egui` | The user interface |
 

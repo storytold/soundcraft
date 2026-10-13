@@ -1,8 +1,10 @@
 use super::{
     Arc, AtomicBool, BLOCK, BTreeMap, Cmd, HashMap, HashSet, MAX_CHANNELS, MeterSnapshot, MixEngine, OLD_SESSIONS, Ordering, OutputTrouble, Plugin,
     PluginEditor, PluginStateReader, PluginStates, PreparedInstance, Range, Receiver, Samples, Sender, Session, Shared, SyncSender, TrackId,
-    itu_stereo_fold, main_channels, record, sync_channel,
+    itu_stereo_fold, main_channels, midi, record, sync_channel,
 };
+use soundcraft_mix::{LiveMidi, midi_port_bit, midi_thru};
+use soundcraft_model::TrackKind;
 
 /// How the audio output is doing, for the UI.
 #[derive(Default)]
@@ -80,6 +82,14 @@ pub(crate) struct AudioState {
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
+    midi: Option<Arc<midi::MidiFeed>>,
+    /// Live MIDI events of this callback not played yet: frames (session rate) until each is due.
+    midi_pending: Vec<(i64, LiveMidi)>,
+    /// The delay every live event gets so that all keep their spacing: one callback (frames).
+    midi_delay: i64,
+    /// Ports ([`midi_port_bit`]) that lost events and still have to let go of their notes in
+    /// the engine: it is told with the next block it renders.
+    midi_lost: u64,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
@@ -90,8 +100,13 @@ pub(crate) struct AudioState {
     forget_shared: Vec<TrackId>,
 }
 
+/// Live MIDI events one device callback can take in. More than that in one callback counts as
+/// lost input for the ports concerned (see `take_midi`).
+pub(crate) const MIDI_EVENTS: usize = 256;
+
 fn new_engine(sr: f32) -> MixEngine {
     let mut m = MixEngine::new(sr, BLOCK);
+    m.midi = Vec::with_capacity(MIDI_EVENTS);
     m.set_external_instances(true);
     m.metronome = true;
     m
@@ -125,6 +140,10 @@ impl AudioState {
             device_rate,
             input: None,
             recording: false,
+            midi: None,
+            midi_pending: Vec::with_capacity(MIDI_EVENTS),
+            midi_delay: 0,
+            midi_lost: 0,
             unsent: MeterSnapshot::default(),
             forget_shared: Vec::new(),
         }
@@ -135,6 +154,13 @@ impl AudioState {
         while let Ok(c) = self.rx.try_recv() {
             match c {
                 Cmd::Input(r) => self.input = Some(r),
+                Cmd::Midi(f) => {
+                    self.mix.midi_ports = Some(Arc::clone(f.ports()));
+                    self.midi = Some(f);
+                    // Another feed: releases of what is held now would never come.
+                    self.midi_pending.clear();
+                    self.midi_lost = u64::MAX;
+                }
                 Cmd::Forget(gone) => {
                     self.unsent.forget(&gone);
                     if self.forget_shared.is_empty() {
@@ -150,6 +176,7 @@ impl AudioState {
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
                         let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
                         let _ = self.garbage.send(old.drain_plugins());
+                        self.mix.midi_ports = self.midi.as_ref().map(|f| Arc::clone(f.ports()));
                     }
                     self.mix.adopt(instances);
                     // The main format changed (a document edit, not steady state): resize.
@@ -205,6 +232,93 @@ impl AudioState {
         }
     }
 
+    /// Whether a record pass is running (live MIDI is written down with its position).
+    fn recording_midi(&self) -> bool {
+        self.playing && self.recording
+    }
+
+    /// Events of the ports in `lost` ([`midi_port_bit`]) were dropped, and any of them may have
+    /// been a note-off or a pedal release. What is still queued from those ports goes too, so
+    /// that no note-on from before the loss is played after the release; the engine lets go of
+    /// what the ports hold at its next block; and a take gets an entry that ends their notes.
+    fn midi_lost(&mut self, lost: u64) {
+        if lost == 0 {
+            return;
+        }
+        self.midi_pending.retain(|(_, e)| lost & midi_port_bit(e.port) == 0);
+        self.midi_lost |= lost;
+        if self.recording_midi()
+            && let Some(feed) = &self.midi
+        {
+            feed.record_lost(self.pos.saturating_sub(self.midi_delay), lost);
+        }
+    }
+
+    /// Take the MIDI events that arrived since the last callback. Each is due `callback` frames
+    /// (session rate: the length of this callback) after it arrived, so that events keep their
+    /// spacing instead of bunching up at the start of a block.
+    fn take_midi(&mut self, callback: i64) {
+        let Some(feed) = &self.midi else { return };
+        // The loss flags first: see `MidiFeed::take_lost`.
+        let mut lost = feed.take_lost();
+        let now = feed.clock();
+        let rate = self.session.sample_rate.as_f64();
+        self.midi_delay = callback.max(0);
+        while let Some((age_us, e)) = feed.next(now) {
+            let age = (age_us as f64 * rate / 1e6) as i64;
+            if self.midi_pending.len() < self.midi_pending.capacity() {
+                self.midi_pending.push((self.midi_delay.saturating_sub(age).max(0), e));
+            } else {
+                // More than one callback holds: this event is dropped, and its port has lost input.
+                lost |= midi_port_bit(e.port);
+            }
+        }
+        self.midi_lost(lost);
+    }
+
+    /// Nothing plays live MIDI: let the events go, so that they do not sound late. Their
+    /// releases go with them, so every port lets go of its notes when the engine runs again.
+    fn skip_midi(&mut self) {
+        let Some(feed) = &self.midi else { return };
+        feed.take_lost();
+        let now = feed.clock();
+        while feed.next(now).is_some() {}
+        self.midi_pending.clear();
+        self.midi_lost = u64::MAX;
+    }
+
+    /// Hand the engine the live MIDI events due in the next `n` frames, and note them down with
+    /// their timeline position while recording.
+    fn due_midi(&mut self, n: usize) {
+        self.mix.midi.clear();
+        // Ports that lost events let go of their notes at the start of this block.
+        self.mix.midi_lost = std::mem::take(&mut self.midi_lost);
+        let frames = i64::try_from(n).unwrap_or(i64::MAX);
+        let out = &mut self.mix.midi;
+        let record = if self.playing && self.recording { self.midi.as_deref() } else { None };
+        // The position the key went down at: where it sounds, less the delay it was given.
+        let origin = self.pos.saturating_sub(self.midi_delay);
+        let mut lost = 0u64;
+        self.midi_pending.retain_mut(|(due, e)| {
+            if *due >= frames {
+                *due -= frames;
+                return true;
+            }
+            if out.len() >= out.capacity() {
+                // The engine's list is full (it holds as much as `midi_pending`, so this does
+                // not happen): treated like any other dropped event.
+                lost |= midi_port_bit(e.port);
+                return false;
+            }
+            out.push(LiveMidi { offset: u32::try_from(*due).unwrap_or(0), ..*e });
+            if let Some(feed) = record {
+                feed.record(origin.saturating_add(*due), e);
+            }
+            false
+        });
+        self.midi_lost(lost);
+    }
+
     /// Render the next block at the session rate into `pending`.
     fn render_next(&mut self, quantum: usize) {
         let mut n = quantum.clamp(1, BLOCK);
@@ -239,6 +353,7 @@ impl AudioState {
             }
             ring.pop_into(&mut self.mix.input, n, self.session.sample_rate.hz());
         }
+        self.due_midi(n);
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
         self.mix.render(&self.session, self.pos, n, &mut self.pending);
@@ -276,8 +391,12 @@ impl AudioState {
     pub(crate) fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
         let channels = channels.max(1);
-        let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        // A keyboard plays through record-enabled and input-monitored MIDI and instrument tracks.
+        let midi_live = self.midi.as_ref().is_some_and(|f| f.connected() > 0)
+            && self.session.tracks.iter().any(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && midi_thru(t));
+        let monitoring = midi_live || (self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm));
         if !self.playing && !monitoring {
+            self.skip_midi();
             out.iter_mut().for_each(|x| *x = 0.0);
             self.unsent.silence();
             self.forget_meters();
@@ -290,6 +409,11 @@ impl AudioState {
         let step = self.session.sample_rate.as_f64() / self.device_rate.max(1.0) * speed.clamp(0.1, 4.0);
         let callback_frames = out.len() / channels;
         let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
+        if midi_live {
+            self.take_midi((callback_frames as f64 * step).ceil() as i64);
+        } else {
+            self.skip_midi();
+        }
         for frame in out.chunks_mut(channels) {
             while self.read >= self.pending_len as f64 {
                 self.read -= self.pending_len as f64;
