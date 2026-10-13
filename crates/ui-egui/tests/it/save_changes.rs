@@ -131,14 +131,17 @@ fn a_session_read_in_the_browser_asks_before_replacing_a_modified_one() {
 
     let mut h = harness();
     let tracks = h.state().engine.session().tracks.len();
-    mute_kick(&mut h);
+    let volume = |h: &Harness<'_, SoundApp>| h.state().engine.session().track_by_name("Kick").unwrap().mixer.volume_db;
+    let before = volume(&h);
+    // Mute isn't an undo step (#492), so a fader move is the edit Undo can take back.
+    h.state_mut().run("mix.volume", json!({"tracks": ["Kick"], "db": before - 6.0})).unwrap();
     open_bytes(&mut h);
     assert_eq!(h.state().dialogs.open_name(), Some("save_changes"));
     click(&mut h, "Cancel");
     assert!(h.state().dialogs.open.is_none());
     assert_eq!(h.state().engine.session().tracks.len(), tracks);
     h.state_mut().run("edit.undo", json!({})).unwrap();
-    assert!(!h.state().engine.session().track_by_name("Kick").unwrap().mixer.mute, "Cancel keeps the undo history");
+    assert_eq!(volume(&h), before, "Cancel keeps the undo history");
 
     mute_kick(&mut h);
     open_bytes(&mut h);
