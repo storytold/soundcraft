@@ -79,6 +79,8 @@ pub(crate) struct AudioState {
     read: f64,
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
+    /// Nothing read the input for a while (see `fill`).
+    input_paused: bool,
     recording: bool,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
@@ -124,6 +126,7 @@ impl AudioState {
             read: 0.0,
             device_rate,
             input: None,
+            input_paused: false,
             recording: false,
             unsent: MeterSnapshot::default(),
             forget_shared: Vec::new(),
@@ -233,6 +236,9 @@ impl AudioState {
             return;
         }
         if let Some(ring) = &self.input {
+            if std::mem::take(&mut self.input_paused) {
+                ring.resync();
+            }
             let ch = ring.channels.load(Ordering::Relaxed).max(1);
             if self.mix.input.len() != ch {
                 self.mix.input = vec![vec![0.0; BLOCK]; ch];
@@ -278,6 +284,8 @@ impl AudioState {
         let channels = channels.max(1);
         let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
         if !self.playing && !monitoring {
+            // Nothing listens. The input read stands still: start it afresh when it resumes.
+            self.input_paused = true;
             out.iter_mut().for_each(|x| *x = 0.0);
             self.unsent.silence();
             self.forget_meters();

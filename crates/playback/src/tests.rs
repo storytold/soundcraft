@@ -710,6 +710,8 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     let mut out = vec![0.0f32; 4096];
     st.fill(&mut out, 2);
     assert!(!shared.playing.load(Ordering::Relaxed));
+    // The input keeps coming: one block is not yet enough to start reading from.
+    ring.push(&[0.5; 4096]);
     ring.push(&[0.5; 4096]);
     st.fill(&mut out, 2);
     assert!(out.iter().any(|x| x.abs() > 0.1), "the input is heard");
