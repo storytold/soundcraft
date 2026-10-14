@@ -190,8 +190,9 @@ fn toggle_keys(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
     let h = head.height();
     let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
     let m = &track.mixer;
-    if h >= 37.0 {
-        let (records, mixes) = (track.kind.has_playlist(), track.kind != TrackKind::Master);
+    let is_master = track.kind == TrackKind::Master;
+    if h >= 37.0 && !is_master {
+        let (records, mixes) = (track.kind.has_playlist(), true);
         let implied = !m.solo && app.engine.session().tracks.iter().any(|t| t.mixer.solo);
         let keys = [
             (HeaderKey::Rec, m.record_arm, false, "mix.record_arm", records),
@@ -213,10 +214,13 @@ fn view_selector(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
     let id = track.id;
     let h = head.height();
     let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
-    if h >= 58.0 {
+    let is_master = track.kind == TrackKind::Master;
+    let view_y = if is_master { 20.0 } else { 39.0 };
+    let view_min_h = if is_master { 37.0 } else { 58.0 };
+    if h >= view_min_h {
         let vresp = header_selector(
             ui,
-            at(17.0, 39.0, 105.0, 17.0),
+            at(17.0, view_y, 105.0, 17.0),
             ui.scope_id().with(("view", id.0)),
             &view_label(&track.view),
             t.text,
@@ -225,10 +229,32 @@ fn view_selector(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
         );
         egui::Popup::menu(&vresp).show(|ui| view_menu(app, ui, track));
     }
+    if is_master && h >= 58.0 {
+        let mode = track.mixer.automation_mode;
+        let col = match mode {
+            soundcraft_model::AutomationMode::Read => t.auto_read,
+            soundcraft_model::AutomationMode::Write => t.auto_write,
+            soundcraft_model::AutomationMode::Touch | soundcraft_model::AutomationMode::TouchLatch => t.auto_touch,
+            soundcraft_model::AutomationMode::Latch => t.auto_latch,
+            _ => t.text_dim,
+        };
+        let mode_name = format!("Automation mode for {}", track.name);
+        let aresp = header_selector(ui, at(17.0, 39.0, 105.0, 17.0), ui.scope_id().with(("auto_mode", id.0)), mode.label(), col, true, &mode_name);
+        egui::Popup::menu(&aresp).show(|ui| {
+            for m in soundcraft_model::AutomationMode::ALL {
+                if ui.selectable_label(m == mode, m.label()).clicked() {
+                    let _ = app.run("mix.automation_mode", json!({"track": id.0, "mode": m.label()}));
+                }
+            }
+        });
+    }
 }
 
 /// Freeze, voice and automation mode.
 fn voice_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
+    if track.kind == TrackKind::Master {
+        return;
+    }
     let t = Tokens::current();
     let id = track.id;
     let h = head.height();
