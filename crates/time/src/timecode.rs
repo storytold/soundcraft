@@ -108,7 +108,13 @@ impl FrameRate {
         if n == 0 {
             return 0;
         }
-        let v = (i128::from(f) * i128::from(sr.hz()) * i128::from(d) + i128::from(n) / 2) / i128::from(n);
+        // `frames_at` floors, so the first sample belonging to a frame is the
+        // ceiling of its fractional sample boundary. Rounding to nearest can
+        // put fractional-rate timecode one frame before the requested label.
+        let numerator = i128::from(f) * i128::from(sr.hz()) * i128::from(d);
+        let denominator = i128::from(n);
+        let quotient = numerator.div_euclid(denominator);
+        let v = quotient + i128::from(numerator.rem_euclid(denominator) != 0);
         i64::try_from(v).unwrap_or(if v < 0 { i64::MIN } else { i64::MAX })
     }
 
@@ -231,6 +237,7 @@ mod tests {
         assert_eq!(Timecode::from_frames(17_982, r).format(r), "00:10:00;00");
         for f in [0, 1, 1799, 1800, 1801, 17_981, 17_982, 107_892, 500_000] {
             assert_eq!(Timecode::from_frames(f, r).to_frames(r), f, "frame {f}");
+            assert_eq!(r.frames_at(r.samples_at_frame(f, SampleRate::HZ_48000), SampleRate::HZ_48000), f, "sample boundary for frame {f}");
         }
     }
 

@@ -233,6 +233,11 @@ fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
     let tl = Rect::from_min_max(pos2(full.min.x + hw, full.min.y + rulers_h), pos2(full.max.x - 12.0, full.max.y - hscroll_h));
     let rulers_rect = Rect::from_min_max(pos2(full.min.x, full.min.y), pos2(full.max.x, full.min.y + rulers_h));
     app.edit_layout.timeline = [tl.min.x, tl.min.y, tl.max.x, tl.max.y];
+    app.cursor_readout = ui
+        .ctx()
+        .pointer_hover_pos()
+        .filter(|point| tl.contains(*point))
+        .map(|point| (sample_at(app.engine.session(), tl, point.x).max(0), "—".into()));
     follow_zoom_toggle(app);
     ui.painter().rect_filled(full, 0.0, t.window_bg);
     scroll_and_zoom(app, ui, full, tl);
@@ -505,6 +510,12 @@ fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect, rulers: &[
         let painter = ui.painter().with_clip_rect(row);
         ui.painter().text(pos2(lab.max.x - 12.0, lab.center().y), Align2::RIGHT_CENTER, ruler_label(id), bold(11.0), t.ruler_text);
         let fmt = TimeFormat::from_id(id);
+        if let Some(format) = fmt {
+            let response = ui.interact(lab, ui.id().with(("ruler_timebase", id.as_str())), Sense::click());
+            if response.on_hover_text("Use this ruler for the Main Counter").clicked() {
+                let _ = app.run("view.main_counter", json!({"format": format.id()}));
+            }
+        }
         match id.as_str() {
             "tempo" => {
                 painter.rect_filled(row.shrink2(vec2(0.0, 1.0)), 0.0, t.tempo_ruler);
@@ -837,7 +848,12 @@ fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect, tl: Rect, 
         grid_lines(&painter, &s, tl, lane);
     }
     let view = Range::new(sample_at(&s, tl, tl.min.x), sample_at(&s, tl, tl.max.x));
-    let auto_view = AutoParam::parse(&track.view);
+    let auto_view = AutoParam::parse(&track.view)
+        .or_else(|| matches!(track.kind, TrackKind::Master | TrackKind::Aux | TrackKind::Vca).then_some(AutoParam::Volume));
+    if let Some(point) = ui.ctx().pointer_hover_pos().filter(|point| lane.contains(*point)) {
+        let at = sample_at(&s, tl, point.x).max(0);
+        app.cursor_readout = Some((at, cursor_value(&s, track, auto_view.as_ref(), at, point.y, lane)));
+    }
     for clip in track.clips() {
         if !clip.range().overlaps(&view) {
             continue;
@@ -852,10 +868,6 @@ fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect, tl: Rect, 
     if let Some(p) = &auto_view {
         draw_automation(&painter, &s, track, p, tl, lane);
     }
-    if track.kind == TrackKind::Master || track.kind == TrackKind::Aux || track.kind == TrackKind::Vca {
-        let p = auto_view.clone().unwrap_or(AutoParam::Volume);
-        draw_automation(&painter, &s, track, &p, tl, lane);
-    }
     // Selection highlight on this track.
     let sel = s.edit.selection;
     if selected && !sel.is_empty() {
@@ -869,6 +881,104 @@ fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect, tl: Rect, 
     if track.view == "playlists" {
         playlist_lanes(app, ui, track, row, main_h, tl);
     }
+}
+
+fn cursor_value(s: &Session, track: &Track, automation: Option<&AutoParam>, at: Samples, pointer_y: f32, lane_rect: Rect) -> String {
+    if let Some(param) = automation {
+        let default = automation_base(track, param);
+        let value = track.lane(param).map_or(default, |lane| lane.value_at(at, default));
+        return match param {
+            AutoParam::Volume | AutoParam::SendLevel(_) => format!("{value:.1} dB"),
+            AutoParam::Mute | AutoParam::SendMute(_) => {
+                if value >= 0.5 {
+                    "muted".into()
+                } else {
+                    "open".into()
+                }
+            }
+            _ => format!("{value:.3}"),
+        };
+    }
+    if track.kind == TrackKind::Audio {
+        let body_top = lane_rect.min.y + 1.0 + clip_name_height(s, lane_rect);
+        let body_bottom = lane_rect.max.y - 1.0;
+        let amplitude = cursor_audio_amplitude(pointer_y, body_top, body_bottom, track.channels(), s.edit.zoom.waveform_zoom);
+        return match s.bit_depth {
+            soundcraft_model::BitDepthSetting::Int16 => format!("{:.0}", amplitude * f32::from(i16::MAX)),
+            soundcraft_model::BitDepthSetting::Int24 => format!("{:.0}", amplitude * 8_388_607.0),
+            soundcraft_model::BitDepthSetting::Float32 => format!("{amplitude:.6}"),
+        };
+    }
+    let Some(clip) = track.clips().iter().rev().find(|clip| clip.range().contains(at)) else { return "—".into() };
+    match &clip.content {
+        ClipContent::Audio { .. } => "—".into(),
+        ClipContent::Midi { sequence } => {
+            let base = s.tempo.samples_to_ticks(clip.start, s.sample_rate);
+            let tick = s.tempo.samples_to_ticks(at, s.sample_rate).saturating_sub(base);
+            let name_h = clip_name_height(s, lane_rect);
+            let body = Rect::from_min_max(pos2(lane_rect.min.x, lane_rect.min.y + 1.0 + name_h), pos2(lane_rect.max.x, lane_rect.max.y - 1.0));
+            let (lo, hi) = sequence.notes.iter().fold((127u8, 0u8), |(lo, hi), note| (lo.min(note.pitch), hi.max(note.pitch)));
+            let (lo, hi) = if lo > hi { (48, 72) } else { (lo.saturating_sub(2), hi.saturating_add(2)) };
+            let span = f32::from(hi.saturating_sub(lo).max(1));
+            sequence
+                .notes
+                .iter()
+                .rev()
+                .find(|note| {
+                    let y = body.max.y - 3.0 - (f32::from(note.pitch.saturating_sub(lo)) / span) * (body.height() - 6.0);
+                    let height = ((body.height() - 6.0) / span).clamp(1.5, 6.0);
+                    note.start <= tick && note.start.saturating_add(note.length) > tick && (pointer_y - y).abs() <= height * 0.5
+                })
+                .map_or_else(|| "—".into(), |note| midi_note_name(note.pitch))
+        }
+        ClipContent::Video { .. } => "picture".into(),
+    }
+}
+
+fn cursor_audio_amplitude(pointer_y: f32, body_top: f32, body_bottom: f32, channels: usize, waveform_zoom: f32) -> f32 {
+    let channels = channels.max(1);
+    let channel_height = (body_bottom - body_top).max(1.0) / channels as f32;
+    let channel = ((pointer_y - body_top) / channel_height).floor().clamp(0.0, channels.saturating_sub(1) as f32);
+    let center = body_top + (channel + 0.5) * channel_height;
+    ((center - pointer_y) / (channel_height * 0.46) / waveform_zoom.max(f32::EPSILON)).clamp(-1.0, 1.0)
+}
+
+fn automation_base(track: &Track, param: &AutoParam) -> f32 {
+    match param {
+        AutoParam::Volume => track.mixer.volume_db,
+        AutoParam::Pan(index) => track.mixer.pan.get(usize::from(*index)).copied().unwrap_or(0.0),
+        AutoParam::Mute => {
+            if track.mixer.mute {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        AutoParam::SendLevel(index) => track.mixer.sends.get(usize::from(*index)).and_then(Option::as_ref).map_or(-144.0, |send| send.level_db),
+        AutoParam::SendPan(index) => track.mixer.sends.get(usize::from(*index)).and_then(Option::as_ref).map_or(0.0, |send| send.pan),
+        AutoParam::SendMute(index) => {
+            track.mixer.sends.get(usize::from(*index)).and_then(Option::as_ref).map_or(0.0, |send| if send.mute { 1.0 } else { 0.0 })
+        }
+        AutoParam::Plugin { slot, param } => track
+            .mixer
+            .inserts
+            .get(usize::from(*slot))
+            .and_then(Option::as_ref)
+            .and_then(|insert| {
+                insert
+                    .params
+                    .get(param)
+                    .copied()
+                    .or_else(|| soundcraft_dsp::plugin_info(&insert.plugin).and_then(|info| info.param(param)).map(|info| info.default))
+            })
+            .unwrap_or(0.0),
+    }
+}
+
+fn midi_note_name(pitch: u8) -> String {
+    const NAMES: [&str; 12] = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+    let name = NAMES.get(usize::from(pitch % 12)).copied().unwrap_or("C");
+    format!("{name}{} ({pitch})", i16::from(pitch) / 12 - 1)
 }
 
 /// Alternate playlists as lanes under the main one; clicking a clip promotes it (comping).
@@ -1806,11 +1916,7 @@ fn draw_automation(painter: &egui::Painter, s: &Session, track: &Track, p: &Auto
     } else {
         (lo, hi)
     };
-    let def = match p {
-        AutoParam::Volume => track.mixer.volume_db,
-        AutoParam::Pan(i) => track.mixer.pan.get(usize::from(*i)).copied().unwrap_or(0.0),
-        _ => 0.0,
-    };
+    let def = automation_base(track, p);
     let yv = |v: f32| -> f32 {
         let k = ((v.clamp(lo, hi) - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
         lane.max.y - 4.0 - k * (lane.height() - 8.0)
@@ -2707,6 +2813,15 @@ fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
 mod tests {
     use super::*;
     use egui_kittest::Harness;
+
+    #[test]
+    fn audio_cursor_value_follows_the_vertical_position_in_each_channel() {
+        assert_eq!(cursor_audio_amplitude(35.0, 10.0, 110.0, 2, 1.0), 0.0);
+        assert_eq!(cursor_audio_amplitude(85.0, 10.0, 110.0, 2, 1.0), 0.0);
+        assert_eq!(cursor_audio_amplitude(12.0, 10.0, 110.0, 2, 1.0), 1.0);
+        assert_eq!(cursor_audio_amplitude(58.0, 10.0, 110.0, 2, 1.0), -1.0);
+        assert!((cursor_audio_amplitude(23.5, 10.0, 110.0, 2, 2.0) - 0.25).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn follow_jumps_to_offscreen_playhead_while_playing() {

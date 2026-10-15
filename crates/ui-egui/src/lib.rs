@@ -6,6 +6,7 @@
 
 pub mod bounce;
 pub mod control;
+mod counter;
 pub mod credits;
 pub mod dialogs;
 pub mod docking;
@@ -326,6 +327,14 @@ pub struct SoundApp {
     pub video: video_track::VideoPool,
     /// The Bounce Mix in progress, rendered a slice per frame.
     pub bounce: Option<soundcraft_engine::io::Bounce>,
+    /// Counter currently receiving calculator-style keyboard input.
+    counter_edit: Option<counter::CounterEdit>,
+    /// Cursor position and value under the pointer in the Edit timeline.
+    cursor_readout: Option<(Samples, String)>,
+    /// Error from the latest background task, kept until dismissed or another task starts.
+    task_error: Option<String>,
+    /// Cached online state: engine revision, check time, and (timeline, complete session).
+    media_status: Option<(u64, f64, (bool, bool))>,
     /// Test-only: owns the process-wide palette lock while this app exists, so frames painted
     /// and colour assertions in one test can never straddle another test's palette change.
     #[cfg(test)]
@@ -400,6 +409,10 @@ impl SoundApp {
             last_meter_poll: f64::NEG_INFINITY,
             video: video_track::VideoPool::default(),
             bounce: None,
+            counter_edit: None,
+            cursor_readout: None,
+            task_error: None,
+            media_status: None,
             #[cfg(test)]
             _palette_lock: theme::lock_test_palette(),
         }
@@ -1215,6 +1228,7 @@ impl SoundApp {
             self.arrange_request = false;
             ctx.memory_mut(|m| m.reset_areas());
         }
+        toolbar::handle_counter_keyboard(self, ui);
         shortcuts::handle(self, &ctx);
         self.sample_drop_targets.clear();
         if !self.native_menu_bar {

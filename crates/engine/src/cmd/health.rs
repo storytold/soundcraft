@@ -9,6 +9,10 @@ use std::collections::BTreeMap;
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "session.audio_health", "Session Audio Health", [], None, "{}; checks all audio clips, including inactive playlists; no filesystem or signal analysis", always, report),
+        cmd!(query "session.media_status", "Session Media Status", [], None, "{}; reports whether active-playlist and complete-session media are online", always, |e, _| {
+            let (timeline, session) = crate::inspect::media_online(e.session());
+            Ok(json!({"timeline_online": timeline, "session_online": session}))
+        }),
     ]
 }
 
@@ -83,7 +87,7 @@ fn report(e: &mut Engine, _: &Value) -> Result<Value> {
 mod tests {
     use super::*;
     use soundcraft_audio_io::AudioBuffer;
-    use soundcraft_model::{Clip, ClipId, SourceAudio, SourceId};
+    use soundcraft_model::{ChannelFormat, Clip, ClipId, SourceAudio, SourceId, TrackKind, VideoSource};
     use std::sync::Arc;
 
     fn check(e: &mut Engine) -> Value {
@@ -103,6 +107,48 @@ mod tests {
             assert!(e.journal.is_empty());
             assert!(!e.can_undo());
         }
+    }
+
+    #[test]
+    fn media_status_distinguishes_active_and_alternate_playlists() {
+        let mut e = crate::demo::demo_engine();
+        let id = e.session().sources[0].id;
+        assert!(e.session_mut().pool.remove(id).is_some());
+        let status = e.execute("session.media_status", &json!({})).unwrap();
+        assert_eq!(status["session_online"], false);
+        let expected_timeline = e.session().tracks.iter().flat_map(|track| track.clips()).all(|clip| clip.source() != Some(id));
+        assert_eq!(status["timeline_online"], expected_timeline);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn media_status_checks_referenced_video_files() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("soundcraft-media-status-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("picture.mov");
+        std::fs::write(&path, b"movie").unwrap();
+        let mut e = Engine::default();
+        let source = SourceId(900);
+        let track = e.session_mut().add_track(TrackKind::Video, ChannelFormat::Mono, None);
+        let clip = e.session_mut().new_clip_id();
+        e.session_mut().videos.push(VideoSource {
+            id: source,
+            name: "Picture".into(),
+            path: path.to_string_lossy().into_owned(),
+            width: 1,
+            height: 1,
+            frame_rate: 24.0,
+            duration: 1.0,
+            codec: "test".into(),
+        });
+        e.session_mut().track_mut(track).unwrap().playlist_mut().unwrap().clips.push(Clip::video(clip, "Picture", source, 0, 0, 48_000));
+        assert_eq!(e.execute("session.media_status", &json!({})).unwrap()["timeline_online"], true);
+        std::fs::remove_file(path).unwrap();
+        let status = e.execute("session.media_status", &json!({})).unwrap();
+        assert_eq!(status["timeline_online"], false);
+        assert_eq!(status["session_online"], false);
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]

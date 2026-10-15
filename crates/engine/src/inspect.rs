@@ -2,8 +2,44 @@
 
 use crate::Engine;
 use serde_json::{Value, json};
-use soundcraft_model::{Clip, ClipContent, ClipId, Track, TrackId};
+use soundcraft_model::{Clip, ClipContent, ClipId, Session, Track, TrackId};
 use soundcraft_time::TimeFormat;
+use std::collections::HashSet;
+
+/// Whether media needed by the active playlists, and by the complete session, can be played.
+pub fn media_online(s: &Session) -> (bool, bool) {
+    let audio: HashSet<_> = s
+        .sources
+        .iter()
+        .filter_map(|source| {
+            let loaded = s.pool.get(source.id)?;
+            (loaded.buffer.sample_rate == s.sample_rate.hz()
+                && !loaded.buffer.channels.is_empty()
+                && loaded.frames() > 0
+                && loaded.buffer.channels.iter().all(|channel| channel.len() == loaded.frames()))
+            .then_some(source.id)
+        })
+        .collect();
+    let video: HashSet<_> = s.videos.iter().filter(|source| video_source_online(source)).map(|source| source.id).collect();
+    let playable = |clip: &Clip| match &clip.content {
+        ClipContent::Audio { source, offset } => {
+            let Some(loaded) = s.pool.get(*source).filter(|_| audio.contains(source)) else { return false };
+            let stretch = if clip.stretch.is_finite() && clip.stretch > 0.0 { clip.stretch } else { return false };
+            let last = *offset as f64 + clip.length.saturating_sub(1).max(0) as f64 / stretch;
+            clip.length > 0 && *offset >= 0 && last < loaded.frames() as f64
+        }
+        ClipContent::Video { source, offset } => clip.length > 0 && *offset >= 0 && video.contains(source),
+        ClipContent::Midi { .. } => true,
+    };
+    let timeline = s.tracks.iter().flat_map(|track| track.clips()).all(playable);
+    let session_sources = audio.len() == s.sources.len() && video.len() == s.videos.len();
+    let session = session_sources && s.all_clips().all(playable);
+    (timeline, session)
+}
+
+fn video_source_online(source: &soundcraft_model::VideoSource) -> bool {
+    !source.path.is_empty() && crate::io::file_found(&source.path)
+}
 
 fn clip_json(e: &Engine, c: &Clip) -> Value {
     let s = e.session();

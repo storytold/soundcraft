@@ -50,6 +50,7 @@ pub use soundcraft_mix::{mark_audio_thread, on_audio_thread};
 pub struct MeterSnapshot {
     pub tracks: HashMap<TrackId, StripMeter>,
     pub main: StripMeter,
+    pub delay_compensation_overloaded: bool,
 }
 
 /// Plugin states read from the live instances: `(track, slot or INSTRUMENT_SLOT, state)`.
@@ -258,7 +259,10 @@ impl AudioState {
         if changed {
             // Place adopted instances now (not only once playback starts), so editors see them;
             // `sync` creates no third-party plugins here.
-            self.mix.ensure_synced(&self.session);
+            self.mix.refresh_latency_status(&self.session, self.pos);
+            if let Ok(mut meters) = self.shared.meters.try_lock() {
+                meters.delay_compensation_overloaded = self.mix.latency_overloaded;
+            }
         }
         self.send_garbage();
         self.shared.playing.store(self.playing, Ordering::Relaxed);
@@ -312,6 +316,7 @@ impl AudioState {
         self.pending_len = n;
         if let Ok(mut m) = self.shared.meters.try_lock() {
             m.main.copy_from(&self.mix.main_meter);
+            m.delay_compensation_overloaded = self.mix.latency_overloaded;
             for (k, v) in &self.mix.meters {
                 match m.tracks.get_mut(k) {
                     Some(d) => d.copy_from(v),
@@ -788,6 +793,7 @@ fn copy_meter_snapshot(source: &MeterSnapshot, out: &mut MeterSnapshot) {
         out.tracks.entry(*id).or_default().copy_from(meter);
     }
     out.main.copy_from(&source.main);
+    out.delay_compensation_overloaded = source.delay_compensation_overloaded;
 }
 
 impl Side {

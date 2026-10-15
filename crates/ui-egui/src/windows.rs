@@ -189,7 +189,14 @@ fn task_manager(app: &mut SoundApp, ctx: &egui::Context) {
                 ui.add(egui::ProgressBar::new(b.progress()));
             }
             None => {
-                ui.label("No background tasks are running.");
+                if let Some(error) = app.task_error.clone() {
+                    ui.colored_label(Tokens::current().rec, format!("Last task failed: {error}"));
+                    if ui.button("Dismiss").clicked() {
+                        let _ = app.run("window.task_error_clear", json!({}));
+                    }
+                } else {
+                    ui.label("No background tasks are running.");
+                }
             }
         }
         ui.label(
