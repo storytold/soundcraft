@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-13 · **Change:** minor (continuous fade curvature in SoundCraft sessions) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-16 · **Change:** minor (iXML field-recorder metadata read) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every format Pro Tools reads or writes, and ours. The Pro Tools list comes from the document types
 its bundle declares (`CFBundleDocumentTypes` in Info.plist: names only, nothing else read) and its
@@ -46,7 +46,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 | Sound Designer / SD II | import (legacy) | ❌ | — | Rare today |
 | ReCycle / REX | import | ❌ | — | Loops |
 | MXF audio (OP-Atom, OP1a) | import | ❌ | ❌ | Avid media; FilmCraft has an MXF reader to learn from |
-| iXML / polyphonic field-recorder metadata | read | ❌ | ❌ | G-17 |
+| iXML / polyphonic field-recorder metadata | read | 🟡 | ❌ | Project, scene, take, tape, note, circled and `TRACK_LIST` channel names read into `AudioInfo.ixml` and shown by `soundcraft-cli info`; an unreadable chunk is ignored. Import doesn't name tracks from it yet (G-17) |
 | Peak overviews | `.wfm` cache | ✅ (own, in memory) | — | `audio-io::peaks`; not cached on disk |
 
 ## MIDI and notation
@@ -80,5 +80,6 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | iXML read (WAV/BWF/RF64) and shown by `info`; not yet used on import. Readiness estimate unchanged |
 | 2026-10-13 | minor | Fade curvature round-trips in sessions with a zero default for older files. Format version and readiness estimate unchanged |
 | 2026-10-10 | major | Created: format inventory against Pro Tools 2026.4.1's declared document types and import/bounce options |

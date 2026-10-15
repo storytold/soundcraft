@@ -135,6 +135,7 @@ fn info_of(reader: &dyn FormatReader, detected: FileFormat) -> Result<(u32, Audi
             channels,
             frames: p.n_frames.unwrap_or(0),
             bwf: None,
+            ixml: None,
         },
     ))
 }

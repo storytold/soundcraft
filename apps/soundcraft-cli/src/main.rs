@@ -113,7 +113,7 @@ fn info(args: &[String]) -> ExitCode {
     let ext = std::path::Path::new(path).extension().and_then(|x| x.to_str());
     match soundcraft_audio_io::probe(&bytes, ext) {
         Ok(i) => {
-            outln!("{}", serde_json::to_string_pretty(&json!({"format": i.format, "sample_format": i.sample_format, "sample_rate": i.sample_rate, "channels": i.channels, "frames": i.frames, "seconds": i.duration_secs(), "bwf": i.bwf})).unwrap_or_default());
+            outln!("{}", serde_json::to_string_pretty(&json!({"format": i.format, "sample_format": i.sample_format, "sample_rate": i.sample_rate, "channels": i.channels, "frames": i.frames, "seconds": i.duration_secs(), "bwf": i.bwf, "ixml": i.ixml})).unwrap_or_default());
             ExitCode::SUCCESS
         }
         Err(e) => fail(format!("{path}: {e}")),

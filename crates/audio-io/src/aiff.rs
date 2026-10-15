@@ -137,7 +137,7 @@ pub(crate) fn parse(b: &[u8]) -> Result<AiffParse> {
     let block = kind.bytes().saturating_mul(channels as usize).max(1);
     let frames = u64::from(frames).min((data_len / block) as u64);
     Ok(AiffParse::Native(AiffLayout {
-        info: AudioInfo { format: FileFormat::Aiff, sample_format, sample_rate, channels: channels as u16, frames, bwf: None },
+        info: AudioInfo { format: FileFormat::Aiff, sample_format, sample_rate, channels: channels as u16, frames, bwf: None, ixml: None },
         kind,
         data_start,
         data_len,

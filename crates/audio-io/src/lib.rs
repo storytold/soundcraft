@@ -3,7 +3,7 @@
 //! Bytes in, bytes out (no filesystem access, so the crate also builds for `wasm32`):
 //!
 //! * [`detect_format`] / [`probe`] / [`decode`] read WAV (PCM 8/16/24/32, float 32/64,
-//!   `WAVE_FORMAT_EXTENSIBLE`, RF64/BW64, BWF `bext`) and AIFF/AIFF-C (big-endian, `sowt`,
+//!   `WAVE_FORMAT_EXTENSIBLE`, RF64/BW64, BWF `bext`, iXML) and AIFF/AIFF-C (big-endian, `sowt`,
 //!   `fl32`/`fl64`) with native readers, and everything else (FLAC, MP3, Ogg Vorbis, AAC/ALAC in
 //!   MP4, CAF, Matroska, ADPCM/A-law/µ-law WAV, ...) through `symphonia`.
 //! * [`encode`] writes WAV/BWF (RF64 above 4 GiB), AIFF / AIFF-C `fl32`, and FLAC (built-in
@@ -18,6 +18,7 @@ mod aiff;
 mod buffer;
 mod caf;
 mod flac;
+mod ixml;
 mod mp4;
 mod pcm;
 pub mod peaks;
@@ -91,6 +92,30 @@ pub struct BwfInfo {
     pub time_reference: u64,
 }
 
+/// iXML metadata of a field recording (the `iXML` chunk of a WAV / BWF / RF64 file).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct IxmlInfo {
+    pub project: String,
+    pub scene: String,
+    pub take: String,
+    pub tape: String,
+    pub note: String,
+    /// The take was marked as a keeper on the recorder.
+    pub circled: bool,
+    /// `TRACK_LIST`, in file order.
+    pub tracks: Vec<IxmlTrack>,
+}
+
+/// One `TRACK` of an iXML `TRACK_LIST`.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct IxmlTrack {
+    /// The recorder's input (1-based).
+    pub channel_index: Option<u32>,
+    /// The channel of this file (1-based).
+    pub interleave_index: Option<u32>,
+    pub name: String,
+}
+
 /// What [`probe`] learns about a file without decoding all of it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AudioInfo {
@@ -100,6 +125,10 @@ pub struct AudioInfo {
     pub channels: u16,
     pub frames: u64,
     pub bwf: Option<BwfInfo>,
+    /// Field-recorder metadata; `None` when the file has none or it could not be read.
+    /// Boxed: most files have none, and every [`AudioInfo`] would otherwise carry its size.
+    #[serde(default)]
+    pub ixml: Option<Box<IxmlInfo>>,
 }
 
 impl AudioInfo {
@@ -206,15 +235,16 @@ pub fn detect_format(bytes: &[u8], ext_hint: Option<&str>) -> FileFormat {
     detect_by_magic(bytes, 0).unwrap_or_else(|| ext_hint.map(detect_by_ext).unwrap_or(FileFormat::Other))
 }
 
-/// Read a file's format, sample rate, channel count, length and BWF metadata.
+/// Read a file's format, sample rate, channel count, length and BWF / iXML metadata.
 pub fn probe(bytes: &[u8], ext_hint: Option<&str>) -> Result<AudioInfo> {
     let format = detect_format(bytes, ext_hint);
     match format {
         FileFormat::Wav if wav::is_wav(bytes) => match wav::parse(bytes)? {
             wav::WavParse::Native(l) => Ok(l.info),
-            wav::WavParse::Foreign { bwf } => {
+            wav::WavParse::Foreign { bwf, ixml } => {
                 let mut info = symph::probe(bytes, format)?;
                 info.bwf = bwf;
+                info.ixml = ixml;
                 Ok(info)
             }
         },
@@ -237,9 +267,10 @@ pub fn decode(bytes: &[u8], ext_hint: Option<&str>) -> Result<(AudioInfo, AudioB
                 info.frames = buf.frames() as u64;
                 Ok((info, buf))
             }
-            wav::WavParse::Foreign { bwf } => {
+            wav::WavParse::Foreign { bwf, ixml } => {
                 let (mut info, buf) = symph::decode(bytes, format)?;
                 info.bwf = bwf;
+                info.ixml = ixml;
                 Ok((info, buf))
             }
         },

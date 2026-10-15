@@ -1,8 +1,9 @@
 //! Native WAV / BWF / RF64 reader and writer (RIFF chunk layout per the Microsoft multimedia
-//! specification, `bext` per EBU Tech 3285, `ds64` per EBU Tech 3306).
+//! specification, `bext` per EBU Tech 3285, `ds64` per EBU Tech 3306, `iXML` per the iXML
+//! specification v2).
 
 use crate::pcm::{PcmKind, Quantizer, deinterleave, le_u16, le_u32, le_u64, sample_format, tag, validate_buffer, validate_layout, write_interleaved};
-use crate::{AudioBuffer, AudioError, AudioInfo, BitDepth, BwfInfo, FileFormat, Result, SampleFormat};
+use crate::{AudioBuffer, AudioError, AudioInfo, BitDepth, BwfInfo, FileFormat, IxmlInfo, Result, SampleFormat};
 use std::io::{Cursor, Seek, SeekFrom, Write};
 
 const WAVE_FORMAT_PCM: u16 = 1;
@@ -25,7 +26,7 @@ pub(crate) enum WavParse {
     /// A PCM / float layout we decode natively.
     Native(WavLayout),
     /// A valid WAV whose codec we hand to symphonia (ADPCM, A-law, ...).
-    Foreign { bwf: Option<BwfInfo> },
+    Foreign { bwf: Option<BwfInfo>, ixml: Option<Box<IxmlInfo>> },
 }
 
 struct Fmt {
@@ -148,6 +149,7 @@ pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
     let mut ds64_data: Option<u64> = None;
     let mut fmt: Option<Fmt> = None;
     let mut bwf: Option<BwfInfo> = None;
+    let mut ixml: Option<Box<IxmlInfo>> = None;
     let mut data: Option<(usize, usize)> = None;
 
     let mut pos: usize = 12;
@@ -184,6 +186,7 @@ pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
             match &id {
                 b"fmt " => fmt = Some(parse_fmt(c)?),
                 b"bext" => bwf = parse_bext(c),
+                b"iXML" => ixml = crate::ixml::parse(c).map(Box::new),
                 b"ds64" => ds64_data = le_u64(c, 8),
                 _ => {}
             }
@@ -219,7 +222,7 @@ pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
         (WAVE_FORMAT_PCM | WAVE_FORMAT_IEEE_FLOAT, bits) => {
             return Err(AudioError::Unsupported(format!("WAV format {} with {bits} bits per sample", fmt.tag)));
         }
-        _ => return Ok(WavParse::Foreign { bwf }),
+        _ => return Ok(WavParse::Foreign { bwf, ixml }),
     };
     let block = kind.bytes().checked_mul(channels).ok_or_else(|| AudioError::Malformed("block size overflow".into()))?;
     if usize::from(fmt.block_align) != block {
@@ -228,7 +231,7 @@ pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
     let (data_start, data_len) = data.ok_or_else(|| AudioError::Malformed("WAV has no data chunk".into()))?;
     let frames = (data_len / block) as u64;
     Ok(WavParse::Native(WavLayout {
-        info: AudioInfo { format: FileFormat::Wav, sample_format, sample_rate: fmt.sample_rate, channels: fmt.channels, frames, bwf },
+        info: AudioInfo { format: FileFormat::Wav, sample_format, sample_rate: fmt.sample_rate, channels: fmt.channels, frames, bwf, ixml },
         kind,
         data_start,
         data_len,
