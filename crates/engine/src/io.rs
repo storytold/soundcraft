@@ -899,6 +899,7 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
     let p = session_file(path);
     // Before any audio is written: a session saved outside the write root changes nothing.
     crate::file_access::check_write(&p).map_err(EngineError::Io)?;
+    session.validate_definitions().map_err(|err| EngineError::Io(err.to_string()))?;
     let dir = p.parent().map(Path::to_path_buf).unwrap_or_default();
     let audio_dir = dir.join("Audio Files");
     let mut s = session.clone();
@@ -1186,6 +1187,7 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
 /// session with its source paths pointing into the bundle.
 pub fn session_bundle(session: &Session) -> Result<(Vec<u8>, Session)> {
     use std::io::Write as _;
+    session.validate_definitions().map_err(|err| EngineError::Io(err.to_string()))?;
     let zerr = |err: zip::result::ZipError| EngineError::Io(format!("bundle: {err}"));
     let ioerr = |err: std::io::Error| EngineError::Io(format!("bundle: {err}"));
     let mut s = session.clone();

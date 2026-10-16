@@ -39,6 +39,7 @@ pub fn specs() -> Vec<CommandSpec> {
             refuse_replacing(e, "session.save_template", &file, p)?;
             let mut s = e.session().clone();
             for t in &mut s.tracks { for pl in &mut t.playlists { pl.clips.clear() } }
+            s.clip_definitions.clear();
             s.sources.clear();
             s.videos.clear();
             let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;

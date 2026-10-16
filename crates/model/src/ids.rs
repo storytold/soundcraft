@@ -15,6 +15,7 @@ macro_rules! id_type {
 
 id_type!(TrackId);
 id_type!(ClipId);
+id_type!(ClipDefinitionId);
 id_type!(SourceId);
 id_type!(BusId);
 id_type!(GroupId);

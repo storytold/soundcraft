@@ -325,6 +325,9 @@ pub struct Session {
     /// Performance). Independent of undo so a restore survives later edits.
     #[serde(default)]
     pub midi_originals: std::collections::BTreeMap<u64, soundcraft_midi::Sequence>,
+    /// Detached whole-clip snapshots, retained even when every timeline instance is removed.
+    #[serde(default)]
+    pub clip_definitions: Vec<crate::ClipDefinition>,
     #[serde(skip)]
     pub pool: SourcePool,
     /// The folder relative source paths point into: where the session was opened or last saved.
@@ -340,6 +343,8 @@ impl Default for Session {
 
 impl Session {
     pub const FORMAT_VERSION: u32 = 1;
+    /// Version 2 introduces reusable definitions. Ordinary new sessions remain version 1.
+    pub const MAX_FORMAT_VERSION: u32 = 2;
 
     pub fn new(name: impl Into<String>, sample_rate: SampleRate) -> Self {
         let mut s = Session {
@@ -362,6 +367,7 @@ impl Session {
             next_id: 1,
             comments: String::new(),
             midi_originals: std::collections::BTreeMap::new(),
+            clip_definitions: Vec::new(),
             pool: SourcePool::default(),
             folder: None,
         };
@@ -399,6 +405,9 @@ impl Session {
     }
     pub fn video(&self, id: SourceId) -> Option<&VideoSource> {
         self.videos.iter().find(|v| v.id == id)
+    }
+    pub fn clip_definition(&self, id: crate::ClipDefinitionId) -> Option<&crate::ClipDefinition> {
+        self.clip_definitions.iter().find(|definition| definition.id == id)
     }
     pub fn bus(&self, id: BusId) -> Option<&Bus> {
         self.busses.iter().find(|b| b.id == id)
@@ -529,19 +538,87 @@ impl Session {
     // ---- persistence ---------------------------------------------------------------------
 
     pub fn to_json(&self) -> Result<String, SessionError> {
-        serde_json::to_string_pretty(self).map_err(|e| SessionError::Format(e.to_string()))
+        self.validate_definitions()?;
+        if self.clip_definitions.is_empty() {
+            return serde_json::to_string_pretty(self).map_err(|e| SessionError::Format(e.to_string()));
+        }
+        let mut value = serde_json::to_value(self).map_err(|e| SessionError::Format(e.to_string()))?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert("format_version".into(), serde_json::Value::from(Self::MAX_FORMAT_VERSION));
+        }
+        serde_json::to_string_pretty(&value).map_err(|e| SessionError::Format(e.to_string()))
     }
 
     /// Parse a session; decoded audio must be attached separately (`pool`).
     pub fn from_json(text: &str) -> Result<Session, SessionError> {
         let v: serde_json::Value = serde_json::from_str(text).map_err(|e| SessionError::Format(e.to_string()))?;
         let ver = v.get("format_version").and_then(serde_json::Value::as_u64).ok_or_else(|| SessionError::Format("missing format_version".into()))?;
-        if ver > u64::from(Self::FORMAT_VERSION) {
+        if ver > u64::from(Self::MAX_FORMAT_VERSION) {
             return Err(SessionError::Version(u32::try_from(ver).unwrap_or(u32::MAX)));
         }
         let mut s: Session = serde_json::from_value(v).map_err(|e| SessionError::Format(e.to_string()))?;
+        if ver < u64::from(Self::MAX_FORMAT_VERSION) && !s.clip_definitions.is_empty() {
+            return Err(SessionError::Format("reusable definitions require format_version 2".into()));
+        }
+        s.validate_definitions()?;
         s.sanitize();
         Ok(s)
+    }
+
+    /// Strict preflight for definitions before persistence or media writes. Missing decoded
+    /// audio is allowed, so referenced/offline sessions can still be opened and saved.
+    pub fn validate_definitions(&self) -> Result<(), SessionError> {
+        use crate::ClipDefinition;
+        if self.clip_definitions.is_empty() {
+            return Ok(());
+        }
+        let bad = |message: &str| SessionError::Format(message.into());
+        if self.format_version > Self::MAX_FORMAT_VERSION {
+            return Err(SessionError::Version(self.format_version));
+        }
+        if self.clip_definitions.len() > ClipDefinition::MAX_COUNT {
+            return Err(bad("too many reusable definitions"));
+        }
+        if self.tracks.len() > 4096
+            || self.tracks.iter().try_fold(0usize, |n, t| n.checked_add(t.playlists.len())).is_none_or(|n| n > ClipDefinition::MAX_COUNT)
+        {
+            return Err(bad("definition namespace exceeds its budget"));
+        }
+        let mut occupied = std::collections::BTreeSet::new();
+        let mut maximum = 0u64;
+        let ids = self
+            .tracks
+            .iter()
+            .map(|t| t.id.0)
+            .chain(self.all_clips().map(|c| c.id.0))
+            .chain(self.all_clips().filter_map(|c| c.group))
+            .chain(self.all_clips().filter_map(|c| c.loop_id))
+            .chain(self.sources.iter().map(|s| s.id.0))
+            .chain(self.videos.iter().map(|v| v.id.0))
+            .chain(self.busses.iter().map(|b| b.id.0))
+            .chain(self.groups.iter().map(|g| g.id.0))
+            .chain(self.markers.iter().map(|m| m.id.0))
+            .chain(self.pool.ids().map(|id| id.0));
+        for (index, id) in ids.enumerate() {
+            if index >= ClipDefinition::MAX_COUNT * 8 {
+                return Err(bad("definition namespace exceeds its budget"));
+            }
+            occupied.insert(id);
+            maximum = maximum.max(id);
+        }
+        let (mut points, mut bytes, mut metadata) = (0usize, 0usize, 0usize);
+        for definition in &self.clip_definitions {
+            if !occupied.insert(definition.id.0) {
+                return Err(bad("duplicate or colliding reusable definition id"));
+            }
+            maximum = maximum.max(definition.id.0);
+            definition.validate_media(self, false).map_err(bad)?;
+            charge_definition(&mut points, &mut bytes, &mut metadata, definition).map_err(bad)?;
+        }
+        if self.next_id == u64::MAX || maximum.checked_add(1).is_none_or(|next| next == u64::MAX) {
+            return Err(bad("reusable definition namespace exhausts the session allocator"));
+        }
+        Ok(())
     }
 
     /// Repair invariants after loading untrusted data.
@@ -556,6 +633,7 @@ impl Session {
             .chain(self.busses.iter().map(|b| b.id.0))
             .chain(self.markers.iter().map(|m| m.id.0))
             .chain(self.groups.iter().map(|g| g.id.0))
+            .chain(self.clip_definitions.iter().map(|d| d.id.0))
             .max()
             .unwrap_or(0);
         self.next_id = self.next_id.max(max_id.saturating_add(1));
@@ -633,6 +711,31 @@ impl Session {
         }
         self.tempo.sanitize();
     }
+}
+
+fn charge_definition(points: &mut usize, bytes: &mut usize, metadata: &mut usize, definition: &crate::ClipDefinition) -> Result<(), &'static str> {
+    use crate::{ClipContent, ClipDefinition};
+    fn charge(total: &mut usize, amount: usize, limit: usize) -> Result<(), &'static str> {
+        *total = total.checked_add(amount).filter(|n| *n <= limit).ok_or("reusable definition storage exceeds its budget")?;
+        Ok(())
+    }
+    charge(bytes, definition.name.len().saturating_add(512), ClipDefinition::MAX_BYTES)?;
+    charge(points, definition.template.gain_env.len(), ClipDefinition::MAX_POINTS)?;
+    charge(bytes, definition.template.gain_env.len().saturating_mul(16), ClipDefinition::MAX_BYTES)?;
+    let sequence = match &definition.template.content {
+        ClipContent::Midi { sequence } => Some(sequence),
+        _ => None,
+    };
+    for sequence in sequence.into_iter().chain(definition.midi_original.as_ref()) {
+        let count = sequence.notes.len().saturating_add(sequence.ctrls.len());
+        charge(points, count, ClipDefinition::MAX_POINTS)?;
+        charge(bytes, count.saturating_mul(64), ClipDefinition::MAX_BYTES)?;
+    }
+    charge(metadata, definition.metadata.effects.len(), ClipDefinition::MAX_METADATA)?;
+    for key in definition.metadata.effects.keys() {
+        charge(bytes, key.len().saturating_add(64), ClipDefinition::MAX_BYTES)?;
+    }
+    Ok(())
 }
 
 /// The most characters kept of a name read from a file: longer ones can't be shown, and drawing
