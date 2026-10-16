@@ -75,3 +75,59 @@ fn cmd_equals_toggles_mix_and_edit_without_zooming() {
         assert_eq!(ctx.zoom_factor(), 1.25, "{os:?}");
     }
 }
+
+#[test]
+fn optional_window_and_zoom_keys_are_disabled_until_enabled() {
+    let cmd = Modifiers { mac_cmd: true, command: true, ..Modifiers::NONE };
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let ctx = egui::Context::default();
+    ctx.set_os(OperatingSystem::Mac);
+
+    press(&ctx, &mut app, Key::Num2, cmd);
+    assert_eq!(app.ui.window, MainWindow::Edit);
+
+    let mut native = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let native_ctx = egui::Context::default();
+    native_ctx.set_os(OperatingSystem::Mac);
+    press(&native_ctx, &mut native, Key::Num1, cmd);
+    assert!(native.ui.show_transport);
+
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let ctx = egui::Context::default();
+    ctx.set_os(OperatingSystem::Mac);
+    app.ui.shortcut_options.direct_window_keys = true;
+    press(&ctx, &mut app, Key::Num2, cmd);
+    assert_eq!(app.ui.window, MainWindow::Mix);
+    press(&ctx, &mut app, Key::Num1, cmd);
+    assert_eq!(app.ui.window, MainWindow::Edit);
+    assert!(!app.ui.show_transport);
+
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let ctx = egui::Context::default();
+    ctx.set_os(OperatingSystem::Mac);
+    let before: Vec<_> = app.engine.session().tracks.iter().map(|track| track.height).collect();
+    press(&ctx, &mut app, Key::ArrowDown, cmd);
+    assert_eq!(app.engine.session().tracks.iter().map(|track| track.height).collect::<Vec<_>>(), before);
+
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let ctx = egui::Context::default();
+    ctx.set_os(OperatingSystem::Mac);
+    app.ui.shortcut_options.arrow_zoom_keys = true;
+    press(&ctx, &mut app, Key::ArrowDown, cmd);
+    let selected = app.engine.session().edit.selected_tracks.clone();
+    let after: Vec<_> = app.engine.session().tracks.iter().map(|track| track.height).collect();
+    assert!(app.engine.session().tracks.iter().zip(before.iter().zip(&after)).all(|(track, (old, new))| selected.contains(&track.id) || old == new));
+    assert!(app.engine.session().tracks.iter().zip(before.iter().zip(&after)).any(|(track, (old, new))| selected.contains(&track.id) && old != new));
+
+    // Enabling the Logic-style option must not intercept the built-in PC key map.
+    let pc_ctrl = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let ctx = egui::Context::default();
+    ctx.set_os(OperatingSystem::Windows);
+    app.ui.shortcut_options.arrow_zoom_keys = true;
+    let before: Vec<_> = app.engine.session().tracks.iter().map(|track| track.height).collect();
+    let selected = app.engine.session().edit.selected_tracks.clone();
+    press(&ctx, &mut app, Key::ArrowDown, pc_ctrl);
+    let after: Vec<_> = app.engine.session().tracks.iter().map(|track| track.height).collect();
+    assert!(app.engine.session().tracks.iter().zip(before.iter().zip(&after)).all(|(track, (old, new))| selected.contains(&track.id) || old == new));
+}

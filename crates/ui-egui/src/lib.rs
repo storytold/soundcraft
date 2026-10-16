@@ -51,6 +51,16 @@ pub enum MainWindow {
     Mix,
 }
 
+/// Optional shortcut groups. Defaults preserve the Pro Tools-style key map.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ShortcutOptions {
+    /// Cmd/Ctrl+1 selects Edit and Cmd/Ctrl+2 selects Mix.
+    pub direct_window_keys: bool,
+    /// On macOS, Cmd+arrows change timeline zoom and selected track heights.
+    pub arrow_zoom_keys: bool,
+}
+
 /// UI state (serde, so agents can read and set it).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -104,6 +114,7 @@ pub struct UiState {
     pub mix_separate: bool,
     pub show_io_setup: bool,
     pub show_shortcuts: bool,
+    pub shortcut_options: ShortcutOptions,
     pub show_clip_effects: bool,
     pub show_beat_detective: bool,
     pub show_tempo_ops: bool,
@@ -168,6 +179,7 @@ impl Default for UiState {
             mix_separate: false,
             show_io_setup: false,
             show_shortcuts: false,
+            shortcut_options: ShortcutOptions::default(),
             show_clip_effects: false,
             show_beat_detective: false,
             show_tempo_ops: false,

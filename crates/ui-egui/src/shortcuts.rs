@@ -118,6 +118,21 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             let _ = app.run("window.toggle_mix_edit", json!({}));
             true
         }
+        Key::Num1 | Key::Num2 if app.ui.shortcut_options.direct_window_keys && mods_match(Modifiers::COMMAND, m, mac) => {
+            let _ = app.run(if key == Key::Num1 { "window.edit" } else { "window.mix" }, json!({}));
+            true
+        }
+        Key::ArrowUp | Key::ArrowDown if mac && app.ui.shortcut_options.arrow_zoom_keys && mods_match(Modifiers::COMMAND, m, mac) => {
+            let s = app.engine.session();
+            let tracks = crate::edit_window::height_targets(s, m, &s.edit.selected_tracks);
+            let id = if key == Key::ArrowUp { "track.height_up" } else { "track.height_down" };
+            let _ = app.run(id, if tracks.is_empty() { json!({}) } else { json!({"tracks": tracks}) });
+            true
+        }
+        Key::ArrowLeft | Key::ArrowRight if mac && app.ui.shortcut_options.arrow_zoom_keys && mods_match(Modifiers::COMMAND, m, mac) => {
+            let _ = app.run(if key == Key::ArrowRight { "view.zoom_in" } else { "view.zoom_out" }, json!({}));
+            true
+        }
         Key::Enter if plain => {
             let _ = app.run("markers.add", json!({}));
             true

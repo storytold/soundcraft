@@ -658,6 +658,18 @@ pub fn shortcuts_window(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_shortcuts;
     let mac = ctx.os().is_mac();
     win(ctx, &mut open, "Keyboard Shortcuts", vec2(520.0, 480.0), |ui| {
+        ui.label(egui::RichText::new("Optional shortcut groups").strong());
+        ui.checkbox(&mut app.ui.shortcut_options.direct_window_keys, "Direct Edit/Mix window keys");
+        ui.label(egui::RichText::new(format!("{}1 Edit · {}2 Mix", if mac { "⌘" } else { "Ctrl+" }, if mac { "⌘" } else { "Ctrl+" })).small());
+        ui.label(egui::RichText::new("When enabled, these replace the Pro Tools-style Transport and Session shortcuts.").small());
+        if mac {
+            ui.checkbox(&mut app.ui.shortcut_options.arrow_zoom_keys, "Logic-style Command-arrow zoom");
+            ui.label(egui::RichText::new("⌘←/→ timeline · ⌘↑/↓ selected track heights").small());
+        } else {
+            ui.label(egui::RichText::new("Ctrl+↑/↓ changes selected track heights using the built-in Pro Tools key map.").small());
+        }
+        ui.label(egui::RichText::new("Off by default to preserve the Pro Tools-style key map.").small());
+        ui.separator();
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("sc").num_columns(3).striped(true).show(ui, |ui| {
                 let engine = soundcraft_engine::command_specs().iter().map(|c| (c.shortcut, c.label, c.menu.join(" › ")));
