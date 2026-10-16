@@ -211,6 +211,23 @@ pub fn fit_window_to_screen(ctx: &egui::Context) {
     }
 }
 
+/// Largest window side, in physical pixels, that every GPU backend can draw (wgpu's default
+/// `max_texture_dimension_2d`).
+pub const MAX_WINDOW_SIDE: f32 = 8192.0;
+
+/// Brings the current viewport back within [`MAX_WINDOW_SIDE`] when something (a tiling window
+/// manager, a monitor change) made it larger than the GPU can draw. Call every frame, for each
+/// native window.
+pub fn keep_window_drawable(ctx: &egui::Context) {
+    let (inner, ppp) = ctx.input(|i| (i.viewport().inner_rect, i.pixels_per_point));
+    let Some(r) = inner else { return };
+    let max = MAX_WINDOW_SIDE / ppp.max(0.1);
+    if r.width() > max || r.height() > max {
+        log::warn!("window of {:.0}x{:.0} points is larger than the GPU can draw; shrinking it", r.width(), r.height());
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(r.width().min(max), r.height().min(max))));
+    }
+}
+
 /// Drag-and-drop payload: an audio file (source id) dragged from the Clip List.
 #[derive(Debug, Clone, Copy)]
 pub struct DragSource(pub u64);
@@ -1527,6 +1544,32 @@ mod tests {
         assert!(maximizes(2400.0, 1));
         assert!(!maximizes(1600.0, 1));
         assert!(!maximizes(2400.0, 2));
+    }
+
+    #[test]
+    fn a_window_wider_than_the_gpu_can_draw_is_shrunk() {
+        // The size a tiling window manager once gave SoundCraft at launch (a fatal wgpu error).
+        let commands = |w: f32, h: f32, ppp: f32| {
+            let ctx = egui::Context::default();
+            let info = egui::ViewportInfo {
+                inner_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h))),
+                native_pixels_per_point: Some(ppp),
+                ..Default::default()
+            };
+            let raw = egui::RawInput { viewports: [(egui::ViewportId::ROOT, info)].into_iter().collect(), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| super::keep_window_drawable(ui.ctx()));
+            out.textures_delta.clear();
+            out.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .filter(|c| matches!(c, egui::ViewportCommand::InnerSize(_)))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(commands(29_423.0, 986.0, 1.0), [egui::ViewportCommand::InnerSize(egui::vec2(super::MAX_WINDOW_SIDE, 986.0))]);
+        assert!(commands(2_560.0, 1_400.0, 1.0).is_empty(), "ordinary sizes are left alone");
+        // At 200 % the limit in points is half as large.
+        assert_eq!(commands(5_000.0, 900.0, 2.0), [egui::ViewportCommand::InnerSize(egui::vec2(4_096.0, 900.0))]);
     }
 
     #[test]
