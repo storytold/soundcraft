@@ -188,3 +188,27 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// macOS: hardened-runtime library validation rejects plug-in bundles signed by another team,
+    /// so the signed app and CLI scan none of them without this entitlement (#153, #149). Both are
+    /// signed with `packaging/macos/entitlements.plist`; the count keeps a binary from being
+    /// signed without it.
+    #[test]
+    fn macos_binaries_sign_with_the_plugin_hosting_entitlements() {
+        let plist = std::fs::read_to_string(root().join("packaging/macos/entitlements.plist")).expect("packaging/macos/entitlements.plist");
+        assert!(
+            plist.contains("com.apple.security.cs.disable-library-validation"),
+            "entitlements.plist lacks disable-library-validation: hardened runtime will block third-party plug-ins"
+        );
+        let script = std::fs::read_to_string(root().join("packaging/macos/package.sh")).expect("packaging/macos/package.sh");
+        assert_eq!(
+            script.matches("--entitlements \"$HERE/entitlements.plist\"").count(),
+            3,
+            "the app executable, the app bundle and the CLI must all sign with the entitlements"
+        );
+    }
+}

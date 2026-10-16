@@ -9,5 +9,10 @@
        even after the user grants microphone access (NSMicrophoneUsageDescription). -->
   <key>com.apple.security.device.audio-input</key>
   <true/>
+  <!-- Plug-in hosting: hardened-runtime library validation rejects third-party VST3/CLAP/AU
+       binaries signed by another team (Kontakt, BBC Symphony Orchestra, FabFilter…), so without
+       this the app and CLI scan none of them (#153, #149). Only plug-ins the user scans load. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
 </dict>
 </plist>

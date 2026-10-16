@@ -196,7 +196,9 @@ CLI_DIR="$WORK/soundcraft-cli-$VERSION-macos-$ARCH"
 mkdir -p "$CLI_DIR"
 cp "$WORK/bin/soundcraft-cli" "$CLI_DIR/"
 copy_docs "$CLI_DIR"
-sign --options runtime "$CLI_DIR/soundcraft-cli"
+# The CLI hosts plug-ins in-process (it shuts the plug-in hosts down on exit): same hardened-runtime
+# microphone and third-party-plug-in exceptions as the app.
+sign --options runtime --entitlements "$HERE/entitlements.plist" "$CLI_DIR/soundcraft-cli"
 codesign --verify --strict --verbose=2 "$CLI_DIR/soundcraft-cli"
 rm -f "$CLI_ZIP"
 ditto -c -k --keepParent "$CLI_DIR" "$CLI_ZIP"
