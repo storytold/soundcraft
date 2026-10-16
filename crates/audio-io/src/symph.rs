@@ -36,9 +36,15 @@ fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| Err(AudioError::Malformed("decoder failed on malformed input".into())))
 }
 
+/// What [`open`] found: a reader, or a stream that holds no audio frames and has no reader.
+enum Opened {
+    Reader(Box<dyn FormatReader>),
+    Empty(AudioInfo),
+}
+
 /// Symphonia's probe loop (`Probe::format`, whose hint 0.5 ignores), checking the container it
 /// finds before its reader allocates whatever the file claims.
-fn open(bytes: &[u8]) -> Result<Box<dyn FormatReader>> {
+fn open(bytes: &[u8]) -> Result<Opened> {
     let mut mss = MediaSourceStream::new(Box::new(Cursor::new(bytes.to_vec())), MediaSourceStreamOptions::default());
     let fmt_opts = FormatOptions { enable_gapless: true, ..FormatOptions::default() };
     loop {
@@ -50,11 +56,16 @@ fn open(bytes: &[u8]) -> Result<Box<dyn FormatReader>> {
                 match head.get(..4) {
                     Some(b"caff") => crate::caf::check(bytes, at)?,
                     Some(b"ftyp") => crate::mp4::check(bytes, at.saturating_sub(4))?,
-                    Some(b"fLaC") => crate::flac::check_metadata(bytes, at)?,
+                    Some(b"fLaC") => {
+                        crate::flac::check_metadata(bytes, at)?;
+                        if let Some(info) = crate::flac::empty_stream_info(bytes, at) {
+                            return Ok(Opened::Empty(info));
+                        }
+                    }
                     Some(b"RIFF") => crate::wav::check_info(bytes, at)?,
                     _ => {}
                 }
-                return reader(mss, &fmt_opts).map_err(map_err);
+                return reader(mss, &fmt_opts).map(Opened::Reader).map_err(map_err);
             }
             // Tags aren't used, and symphonia allocates whatever an ID3v2 frame claims: skip it.
             (Instantiate::Metadata(_), Some([b'I', b'D', b'3', _, _, _, size @ ..])) => {
@@ -141,7 +152,13 @@ fn info_of(reader: &dyn FormatReader, detected: FileFormat) -> Result<(u32, Audi
 
 /// Decode the whole first audio track. When `count_only`, samples are counted but not stored.
 fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInfo, AudioBuffer)> {
-    let mut reader = open(bytes)?;
+    let mut reader = match open(bytes)? {
+        Opened::Reader(reader) => reader,
+        Opened::Empty(info) => {
+            let buf = AudioBuffer::new(info.sample_rate, usize::from(info.channels), 0);
+            return Ok((info, buf));
+        }
+    };
     let (track_id, mut info) = info_of(reader.as_ref(), detected)?;
     if let Some(n) = reader.tracks().iter().find(|t| t.id == track_id).and_then(|t| t.codec_params.n_frames) {
         let total = n.saturating_mul(u64::from(info.channels.max(1)));
@@ -237,7 +254,10 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
 
 pub(crate) fn probe(bytes: &[u8], detected: FileFormat) -> Result<AudioInfo> {
     guarded(|| {
-        let reader = open(bytes)?;
+        let reader = match open(bytes)? {
+            Opened::Reader(reader) => reader,
+            Opened::Empty(info) => return Ok(info),
+        };
         let (_, info) = info_of(reader.as_ref(), detected)?;
         if info.frames > 0 && info.channels > 0 {
             return Ok(info);
