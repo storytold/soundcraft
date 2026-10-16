@@ -213,6 +213,8 @@ struct PluginSlot {
     /// Last values pushed to the plugin, in the insert's parameter-map order.
     applied: Vec<f32>,
     failed: bool,
+    /// A hosted plugin that has not had its first parameter pass yet (see `apply_values`).
+    fresh: bool,
 }
 
 struct Strip {
@@ -411,7 +413,7 @@ impl SlotCtx<'_> {
             let state = if third { ins.state_bytes() } else { None };
             create_instance(&ins.plugin, state.as_deref(), self.sr, self.mb, ch).map(|n| n.plugin)
         }?;
-        Some(PluginSlot { id: ins.plugin.clone(), ch, plugin, applied: Vec::new(), failed: false })
+        Some(PluginSlot { id: ins.plugin.clone(), ch, plugin, applied: Vec::new(), failed: false, fresh: third })
     }
 }
 
@@ -1671,10 +1673,18 @@ fn apply_values(slot: &mut PluginSlot, ins: &soundcraft_model::Insert, value: im
     if slot.applied.len() != ins.params.len() {
         slot.applied = vec![f32::NAN; ins.params.len()];
     }
+    // First pass over a hosted plugin: it has just loaded its own settings, so a stored value equal to
+    // the default it reports is not a choice and is left alone. Older sessions store every parameter
+    // at that default, often 0, and pushing them over a restored plugin silenced Rhapsody (volume and
+    // pan at minimum). Values that differ from the default, and every later change, are pushed.
+    let first = std::mem::take(&mut slot.fresh);
     for ((k, v), last) in ins.params.iter().zip(slot.applied.iter_mut()) {
         let val = value(k, *v);
         if val.to_bits() != last.to_bits() {
-            slot.plugin.set_param(k, val);
+            let untouched = first && slot.plugin.info().param(k).is_some_and(|pi| pi.default.to_bits() == val.to_bits());
+            if !untouched {
+                slot.plugin.set_param(k, val);
+            }
             *last = val;
         }
     }
@@ -2835,6 +2845,34 @@ mod tests {
         // Offline (not external): unknown third-party plugins are simply absent.
         let out = render_range(&s, Range::new(0, 1024), 512);
         assert!(out[0][100] > 0.3);
+    }
+
+    #[test]
+    fn a_hosted_plugin_keeps_its_own_values_where_the_session_holds_its_defaults() {
+        let (mut s, t) = session_with_dc(0.5, 48_000);
+        let id = "vst3:00000000000000000000000000000002";
+        let mut ins = Insert::new(id);
+        // Older sessions store every parameter at the default the plugin reports (0 for gain).
+        ins.params.insert("gain".into(), 0.0);
+        ins.set_state_bytes(b"stored");
+        s.track_mut(t).unwrap().mixer.inserts[0] = Some(ins);
+        let mut eng = MixEngine::new(48_000.0, 512);
+        eng.set_external_instances(true);
+        let sets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fake = Stateful { inner: soundcraft_dsp::create("gain").unwrap(), blob: Vec::new(), sets: Arc::clone(&sets) };
+        eng.adopt(vec![PreparedInstance { track: t, slot: 0, id: id.into(), ch: 1, plugin: Box::new(fake) }]);
+        let count = || sets.load(std::sync::atomic::Ordering::Relaxed);
+        render_block(&mut eng, &s, 0);
+        assert_eq!(count(), 0, "a stored default is not pushed over the restored plugin");
+        render_block(&mut eng, &s, 512);
+        assert_eq!(count(), 0);
+        // Later edits are pushed, including a return to the default.
+        s.track_mut(t).unwrap().mixer.inserts[0].as_mut().unwrap().params.insert("gain".into(), -6.0);
+        render_block(&mut eng, &s, 1024);
+        assert_eq!(count(), 1);
+        s.track_mut(t).unwrap().mixer.inserts[0].as_mut().unwrap().params.insert("gain".into(), 0.0);
+        render_block(&mut eng, &s, 1536);
+        assert_eq!(count(), 2);
     }
 
     #[test]
