@@ -157,6 +157,13 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     let w = strip_width(narrow);
     let h = ui.available_height().max(560.0);
     let (r, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+    if app.mix_scroll_into_view == Some(id) {
+        app.mix_scroll_into_view = None;
+        // egui stops `item_spacing` short of the edge (the scroll area's, not the strips' 1 pt),
+        // which would leave a sliver of the previous strip showing.
+        let margin = ui.ctx().global_style().spacing.item_spacing.x;
+        ui.scroll_to_rect(r.translate(vec2(margin, 0.0)), Some(egui::Align::Min));
+    }
     let selected = app.engine.session().edit.selected_tracks.contains(&id);
     let bg = if selected { t.strip_selected } else { t.strip_bg };
     vgradient(ui.painter(), r, shade(bg, 0.06), bg);

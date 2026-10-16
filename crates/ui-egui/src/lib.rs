@@ -294,6 +294,10 @@ pub struct SoundApp {
     pub palette: palette::PaletteState,
     /// Bring the separate Mix window to the front on the next frame.
     pub(crate) focus_mix: bool,
+    /// Scroll Into View: the track each window brings to its top (Edit) or left (Mix) when it
+    /// next draws, so a window not on screen catches up when it is shown.
+    pub(crate) edit_scroll_into_view: Option<TrackId>,
+    pub(crate) mix_scroll_into_view: Option<TrackId>,
     pub synthetic: Vec<egui::Event>,
     /// Where a dropped audio file loads into a track's sampler (last frame's rects).
     pub sample_drop_targets: Vec<(egui::Rect, TrackId)>,
@@ -378,6 +382,8 @@ impl SoundApp {
             extra: extra_windows::ExtraState::default(),
             palette: palette::PaletteState::default(),
             focus_mix: false,
+            edit_scroll_into_view: None,
+            mix_scroll_into_view: None,
             synthetic: Vec::new(),
             sample_drop_targets: Vec::new(),
             sample_reads: Vec::new(),

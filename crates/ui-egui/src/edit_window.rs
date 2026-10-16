@@ -239,6 +239,9 @@ fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
     draw_rulers(app, ui, rulers_rect, tl, &rulers);
     views_button(app, ui, rulers_rect);
     column_titles(ui, rulers_rect, &cols);
+    if let Some(id) = app.edit_scroll_into_view.take() {
+        scroll_into_view(app, id, tl.height());
+    }
     // Tracks.
     let mut y = tl.min.y - app.edit_layout.scroll_y;
     app.edit_layout.rows.clear();
@@ -286,6 +289,25 @@ fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
         if resp.dragged() {
             app.edit_layout.scroll_by(resp.drag_delta().y / frac, tl.height());
         }
+    }
+}
+
+/// Scroll Into View: track `id` to the top, as far as the scroll bar reaches. A track the Edit
+/// window doesn't show (hidden, or in a closed folder) leaves the view where it is.
+fn scroll_into_view(app: &mut SoundApp, id: TrackId, view_h: f32) {
+    let s = app.engine.session();
+    let (mut top, mut total, mut found) = (0.0, 0.0, false);
+    for t in s.tracks.iter().filter(|t| in_edit_window(s, t)) {
+        found |= t.id == id;
+        if !found {
+            top += track_height(t) + 1.0;
+        }
+        total += track_height(t) + 1.0;
+    }
+    if found {
+        let l = &mut app.edit_layout;
+        l.content_h = total;
+        l.scroll_by(top - l.scroll_y, view_h);
     }
 }
 
@@ -1455,6 +1477,11 @@ pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     }
     if app.engine.session().track(id).is_some_and(|track| track.folder.is_some()) && ui.button("Remove from Folder").clicked() {
         let _ = app.run("track.remove_from_folder", json!({"tracks": selection}));
+    }
+    // Only the track clicked: the command has one target, and the selection stays as it is.
+    if ui.button("Scroll Into View").clicked() {
+        app.edit_scroll_into_view = Some(id);
+        app.mix_scroll_into_view = Some(id);
     }
     ui.separator();
     ui.menu_button("Track Height", |ui| {
