@@ -994,7 +994,7 @@ fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, sele
         track.name.clone()
     };
     let name_color = if selected { t.text_dark } else { t.text.lerp_to_gamma(t.text_dim, 0.4) };
-    ui.painter().with_clip_rect(name_r).text(pos2(name_r.min.x + 1.5, name_r.center().y), Align2::LEFT_CENTER, &shown_name, bold(12.5), name_color);
+    ui.painter().with_clip_rect(name_r).text(name_r.center(), Align2::CENTER_CENTER, &shown_name, bold(12.5), name_color);
     let nresp = ui.interact(name_r, ui.id().with(("name", id.0)), Sense::click_and_drag());
     if nresp.double_clicked() {
         app.dialogs.open_rename_track(id, &track.name);
@@ -1055,8 +1055,9 @@ fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, sele
         }
     });
     let m = &track.mixer;
-    if h >= 37.0 {
-        let (records, mixes) = (track.kind.has_playlist(), track.kind != TrackKind::Master);
+    let is_master = track.kind == TrackKind::Master;
+    if h >= 37.0 && !is_master {
+        let (records, mixes) = (track.kind.has_playlist(), true);
         let implied = !m.solo && app.engine.session().tracks.iter().any(|t| t.mixer.solo);
         let keys = [
             (HeaderKey::Rec, m.record_arm, false, "mix.record_arm", records),
@@ -1070,11 +1071,32 @@ fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, sele
             }
         }
     }
-    if h >= 58.0 {
-        let vresp = header_selector(ui, at(17.0, 39.0, 105.0, 17.0), ui.id().with(("view", id.0)), &view_label(&track.view), t.text, true);
+    let view_y = if is_master { 20.0 } else { 39.0 };
+    let view_min_h = if is_master { 37.0 } else { 58.0 };
+    if h >= view_min_h {
+        let vresp = header_selector(ui, at(17.0, view_y, 105.0, 17.0), ui.id().with(("view", id.0)), &view_label(&track.view), t.text, true);
         egui::Popup::menu(&vresp).show(|ui| view_menu(app, ui, track));
     }
-    if h >= 76.0 {
+    if is_master {
+        if h >= 58.0 {
+            let mode = m.automation_mode;
+            let col = match mode {
+                soundcraft_model::AutomationMode::Read => t.auto_read,
+                soundcraft_model::AutomationMode::Write => t.auto_write,
+                soundcraft_model::AutomationMode::Touch | soundcraft_model::AutomationMode::TouchLatch => t.auto_touch,
+                soundcraft_model::AutomationMode::Latch => t.auto_latch,
+                _ => t.text_dim,
+            };
+            let aresp = header_selector(ui, at(17.0, 39.0, 105.0, 17.0), ui.id().with(("auto_mode", id.0)), mode.label(), col, true);
+            egui::Popup::menu(&aresp).show(|ui| {
+                for m in soundcraft_model::AutomationMode::ALL {
+                    if ui.selectable_label(m == mode, m.label()).clicked() {
+                        let _ = app.run("mix.automation_mode", json!({"track": id.0, "mode": m.label()}));
+                    }
+                }
+            });
+        }
+    } else if h >= 76.0 {
         if matches!(track.kind, TrackKind::Audio | TrackKind::Instrument | TrackKind::Aux) {
             let r = at(17.0, 57.0, 13.0, 17.0);
             let resp = ui.interact(r, ui.id().with(("freeze", id.0)), Sense::click());
