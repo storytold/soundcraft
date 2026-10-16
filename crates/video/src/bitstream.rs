@@ -11,7 +11,7 @@ use std::fmt;
 pub enum BitError {
     /// Tried to read past the end of the buffer.
     Eof,
-    /// An Exp-Golomb code longer than 32 leading zeros.
+    /// An Exp-Golomb code longer than 32 leading zeros, or one whose value does not fit the result type.
     InvalidExpGolomb,
 }
 
@@ -135,7 +135,7 @@ impl<'a> BitReader<'a> {
     /// Signed Exp-Golomb `se(v)`.
     pub fn read_se(&mut self) -> Result<i32> {
         let k = self.read_ue()? as i64;
-        Ok(if k & 1 == 1 { ((k + 1) / 2) as i32 } else { -((k / 2) as i32) })
+        if k & 1 == 1 { i32::try_from((k + 1) / 2).map_err(|_| BitError::InvalidExpGolomb) } else { Ok(-((k / 2) as i32)) }
     }
 
     /// Truncated Exp-Golomb `te(v)` with range `max`.
@@ -373,6 +373,21 @@ mod tests {
         for v in [0, 1, -1, 2, -2, 1000, -1000] {
             assert_eq!(r.read_se().unwrap(), v);
         }
+    }
+
+    #[test]
+    fn read_se_rejects_unrepresentable_positive() {
+        // ue code 2^32 - 1 maps to +2^31, which does not fit in i32.
+        let mut w = BitWriter::new();
+        w.write_ue(u32::MAX);
+        w.write_ue(u32::MAX - 1);
+        w.write_ue(u32::MAX - 2);
+        let b = w.finish();
+        let mut r = BitReader::new(&b);
+        assert_eq!(r.read_se(), Err(BitError::InvalidExpGolomb));
+        // The neighbouring codes still decode to the representable extremes.
+        assert_eq!(r.read_se().unwrap(), -i32::MAX);
+        assert_eq!(r.read_se().unwrap(), i32::MAX);
     }
 
     #[test]
