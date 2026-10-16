@@ -331,15 +331,26 @@ impl Sampler {
 /// Moves a voice's read position one output frame on, looping or ending it.
 #[inline]
 fn advance(v: &mut Voice, len: f64, region: Option<(f64, f64)>, mode: LoopMode) {
-    v.pos = if v.forward { v.pos + v.step } else { v.pos - v.step };
+    let was_forward = v.forward;
+    v.pos = if was_forward { v.pos + v.step } else { v.pos - v.step };
     match region {
         Some((ls, le)) if mode == LoopMode::PingPong => {
-            if v.forward && v.pos >= le {
-                v.pos = (le - (v.pos - le)).max(ls);
-                v.forward = false;
-            } else if !v.forward && v.pos <= ls {
-                v.pos = (ls + (ls - v.pos)).min(le);
-                v.forward = true;
+            // How far past the edge it was heading for, measured from the edge it left. A step of
+            // more than the loop's width crosses it more than once: fold the distance into the
+            // loop (even crossings keep the direction, odd ones turn it round) instead of
+            // reflecting once and dropping the rest of the travel.
+            let width = le - ls;
+            let dist = if was_forward { v.pos - ls } else { le - v.pos };
+            if width > 0.0 && dist >= width && dist.is_finite() {
+                let crossings = (dist / width).floor();
+                let into = dist - crossings * width;
+                let odd = crossings % 2.0 == 1.0;
+                (v.pos, v.forward) = match (was_forward, odd) {
+                    (true, false) => (ls + into, true),
+                    (true, true) => (le - into, false),
+                    (false, false) => (le - into, false),
+                    (false, true) => (ls + into, true),
+                };
             }
         }
         Some((ls, le)) => {
@@ -701,6 +712,52 @@ mod tests {
         assert!(out[0][1500] < out[0][1100], "falling after the loop end");
         assert!(out[0][2500] > out[0][2100], "rising again after the loop start");
         assert!(out[0].iter().all(|x| x.is_finite() && *x <= 1.0));
+    }
+
+    /// Where a ping-pong voice is after `n` steps, by walking a triangle wave over the loop.
+    fn triangle(start: f64, forward: bool, step: f64, n: u32, ls: f64, le: f64) -> (f64, bool) {
+        let width = le - ls;
+        // Unfold the walk onto one line, then fold it back: phase 0..width rising, width..2 width falling.
+        let signed = if forward { start - ls } else { (le - start) + width };
+        let t = (signed + f64::from(n) * step).rem_euclid(2.0 * width);
+        if t < width { (ls + t, true) } else { (le - (t - width), false) }
+    }
+
+    #[test]
+    fn a_ping_pong_step_wider_than_the_loop_keeps_the_phase() {
+        let (ls, le) = (100.0, 110.0);
+        // Steps below, equal to and above the loop's width, with fractions, both ways round.
+        for step in [0.37, 3.0, 9.99, 10.0, 10.5, 23.7, 25.0, 31.3, 99.9] {
+            for forward in [true, false] {
+                let mut v = Voice::new();
+                v.pos = if forward { 102.5 } else { 107.25 };
+                v.forward = forward;
+                v.step = step;
+                let start = v.pos;
+                for n in 1..=40u32 {
+                    advance(&mut v, 1000.0, Some((ls, le)), LoopMode::PingPong);
+                    let (want, want_forward) = triangle(start, forward, step, n, ls, le);
+                    assert!(v.pos >= ls - 1e-9 && v.pos <= le + 1e-9, "step {step} n {n}: {} left the loop", v.pos);
+                    // At an exact end the direction is where the position is heading next.
+                    let at_end = (want - ls).abs() < 1e-6 || (want - le).abs() < 1e-6;
+                    assert!((v.pos - want).abs() < 1e-6, "step {step} {forward} n {n}: at {} want {want}", v.pos);
+                    assert!(at_end || v.forward == want_forward, "step {step} {forward} n {n}: direction");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_ping_pong_step_below_the_loop_width_moves_as_before() {
+        let mut v = Voice::new();
+        v.pos = 108.0;
+        v.step = 5.0;
+        advance(&mut v, 1000.0, Some((100.0, 110.0)), LoopMode::PingPong);
+        assert_eq!((v.pos, v.forward), (107.0, false), "one reflection off the end");
+        advance(&mut v, 1000.0, Some((100.0, 110.0)), LoopMode::PingPong);
+        assert_eq!((v.pos, v.forward), (102.0, false));
+        advance(&mut v, 1000.0, Some((100.0, 110.0)), LoopMode::PingPong);
+        assert_eq!((v.pos, v.forward), (103.0, true), "and one off the start");
     }
 
     #[test]

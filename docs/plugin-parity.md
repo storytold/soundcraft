@@ -1,6 +1,6 @@
 # Plugin parity: built-in processors and plugin hosting
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (Sampler ping-pong loop phase (#463); previously trivial: mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Pro Tools users live in plugins: the bundled set covers everyday mixing, and third-party plugins
 cover the rest. This doc tracks both. Our plugins have our own names and are written from
@@ -21,7 +21,7 @@ scratch (clean-room rule): Avid plugin names are not used here, only categories.
 | Harmonic | lo-fi, rectifier, amp simulation, saturation, tape | `lofi`, `rectifier`, `saturator` | Amp and cabinet models, tape |
 | Pitch and time | pitch shift, varispeed effects, time shift | `pitch_shifter`, `time_shift` | Formant control, varispeed effect, pitch correction |
 | Utility | trim, gain, invert, DC offset, signal generator, dither, time adjuster | `trim`, `gain`, `invert`, `dc_offset_removal`, `signal_generator`, `dither` | Time adjuster, meter/analyzer plugins, noise shaping options |
-| Instruments | several virtual instruments (multi-sampler, piano, drum machine, organ, synths, sample player; Massive X Player added in 2026.4) | `subtractive_synth`, `drum_synth`; `mix.instrument` takes the instrument's parameters in `params` and refuses unknown fields (#265) | Sampler (PR #108 open), piano, organ, wavetable, content library |
+| Instruments | several virtual instruments (multi-sampler, piano, drum machine, organ, synths, sample player; Massive X Player added in 2026.4) | `subtractive_synth`, `drum_synth`; `mix.instrument` takes the instrument's parameters in `params` and refuses unknown fields (#265) The sampler's ping-pong loop keeps its phase when a step is wider than the loop (#463). | Sampler (PR #108 open), piano, organ, wavetable, content library |
 | **Total** | **≈ 80 processors and instruments** (estimate from Avid's bundle documentation) | **26 processors + 2 instruments** | |
 
 AudioSuite: every catalog AudioSuite leaf maps to one of our processes (`AUDIOSUITE` in
@@ -58,6 +58,7 @@ User report #152: a saved instrument level does not reach the bounce.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | trivial | Sampler ping-pong loop phase (#463) |
 | 2026-10-13 | trivial | mix.instrument sets built-in instrument parameters in params (#265) |
 | 2026-10-12 | minor | Editors: VST3 and embedded CLAP editors on Windows |
 | 2026-10-10 | major | Created: built-in processor inventory by category and third-party hosting checklist |

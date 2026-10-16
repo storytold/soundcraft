@@ -155,6 +155,8 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | trivial | Progress log: sampler ping-pong phase for wide steps (#463) |
+| 2026-10-13 | Sampler: a ping-pong loop keeps its phase and direction when a step is wider than the loop (a narrow loop with high transposition), instead of reflecting once and dropping the rest of the travel (#463) |
 | 2026-10-13 | trivial | Progress log: mix.instrument params, unknown fields refused (#265) |
 | 2026-10-13 | trivial | Progress log: bus bounce compensates aux returns (#246) |
 | 2026-10-13 | trivial | Progress log: master insert latency compensated (#351) |
