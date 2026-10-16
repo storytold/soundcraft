@@ -106,37 +106,48 @@ impl Remote {
         Ok(())
     }
 
-    fn roundtrip(&mut self, method: &str, params: &Value) -> Result<Value, String> {
-        self.connect()?;
+    /// One request/reply exchange. On failure the flag says whether the request line was already
+    /// written to the socket (so the app may have executed it).
+    fn roundtrip(&mut self, method: &str, params: &Value) -> Result<Value, (String, bool)> {
+        self.connect().map_err(|e| (e, false))?;
         let id = self.next_id;
         self.next_id += 1;
         let line = json!({"id": id, "method": method, "params": params}).to_string();
-        let (w, r) = self.conn.as_mut().ok_or("not connected")?;
-        writeln!(w, "{line}").map_err(|e| e.to_string())?;
+        let (w, r) = self.conn.as_mut().ok_or_else(|| ("not connected".to_string(), false))?;
+        writeln!(w, "{line}").map_err(|e| (e.to_string(), false))?;
         let mut buf = String::new();
-        r.read_line(&mut buf).map_err(|e| e.to_string())?;
+        r.read_line(&mut buf).map_err(|e| (e.to_string(), true))?;
         if buf.is_empty() {
-            return Err("connection closed".into());
+            return Err(("connection closed".into(), true));
         }
-        let v: Value = serde_json::from_str(&buf).map_err(|e| e.to_string())?;
+        let v: Value = serde_json::from_str(&buf).map_err(|e| (e.to_string(), true))?;
         if v.get("ok").and_then(Value::as_bool).unwrap_or(false) {
             Ok(v.get("result").cloned().unwrap_or(Value::Null))
         } else {
-            Err(v.get("error").and_then(Value::as_str).unwrap_or("error").to_string())
+            Err((v.get("error").and_then(Value::as_str).unwrap_or("error").to_string(), true))
         }
     }
+}
+
+/// Methods that only read state, so repeating them after a lost reply is harmless.
+fn is_read_only(method: &str) -> bool {
+    matches!(method, "session.inspect" | "document.inspect" | "engine.commands" | "engine.parity" | "ui.inspect" | "ui.menu.list")
 }
 
 impl Backend for Remote {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         match self.roundtrip(method, &params) {
             Ok(v) => Ok(v),
-            Err(e) if e.contains("closed") || e.contains("Broken pipe") || e.contains("reset") => {
-                // Retry once on a fresh connection.
+            Err((e, sent)) if e.contains("closed") || e.contains("Broken pipe") || e.contains("reset") => {
                 self.conn = None;
-                self.roundtrip(method, &params)
+                if sent && !is_read_only(method) {
+                    // The app may already have executed the request; repeating it could apply it twice.
+                    return Err(format!("{e}; `{method}` may or may not have been executed, check the session before repeating it"));
+                }
+                // Retry once on a fresh connection.
+                self.roundtrip(method, &params).map_err(|(e, _)| e)
             }
-            Err(e) => Err(e),
+            Err((e, _)) => Err(e),
         }
     }
     fn has_ui(&self) -> bool {
@@ -166,5 +177,44 @@ mod tests {
     fn remote_reports_unreachable() {
         let mut r = Remote::new("127.0.0.1:1");
         assert!(r.call("session.inspect", json!({})).is_err());
+    }
+
+    /// Fake app: accepts one connection per entry in `replies`, counts the request line it reads,
+    /// then either drops the connection (`false`) or answers ok (`true`).
+    fn fake_app(replies: Vec<bool>) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = seen.clone();
+        std::thread::spawn(move || {
+            for answer in replies {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                let mut line = String::new();
+                if BufReader::new(sock.try_clone().unwrap()).read_line(&mut line).unwrap_or(0) > 0 {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if answer {
+                        let _ = writeln!(sock, "{}", json!({"id": 1, "ok": true, "result": {"done": true}}));
+                    }
+                }
+            }
+        });
+        (addr, seen)
+    }
+
+    #[test]
+    fn remote_does_not_repeat_a_mutation_after_a_lost_reply() {
+        let (addr, seen) = fake_app(vec![false, true]);
+        let mut r = Remote::new(&addr);
+        let err = r.call("engine.execute", json!({"command": "track.new"})).unwrap_err();
+        assert!(err.contains("may or may not have been executed"), "{err}");
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn remote_retries_a_read_after_a_lost_reply() {
+        let (addr, seen) = fake_app(vec![false, true]);
+        let mut r = Remote::new(&addr);
+        assert!(r.call("session.inspect", json!({})).is_ok());
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }
