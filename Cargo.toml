@@ -16,6 +16,7 @@ soundcraft-time = { path = "crates/time" }
 soundcraft-audio-io = { path = "crates/audio-io" }
 soundcraft-midi = { path = "crates/midi" }
 soundcraft-video = { path = "crates/video" }
+soundcraft-accelerate = { path = "crates/accelerate" }
 soundcraft-dsp = { path = "crates/dsp" }
 soundcraft-clap-host = { path = "crates/clap-host" }
 soundcraft-vst3-host = { path = "crates/vst3-host" }
