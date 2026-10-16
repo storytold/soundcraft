@@ -92,7 +92,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.separate", "At Selection", ["Edit", "Separate"], Some("Cmd+E"), "{tracks?, at?|start/end}", has_selection, separate),
         cmd!("edit.separate_on_grid", "On Grid", ["Edit", "Separate"], None, "{tracks?, start?, end?}", has_range, separate_on_grid),
         cmd!("edit.separate_at_transients", "At Transients", ["Edit", "Separate"], None, "{sensitivity?: 0..1}", has_range, separate_at_transients),
-        cmd!("edit.heal", "Heal Separation", ["Edit"], Some("Cmd+H"), "{tracks?, start?, end?}", has_selection, heal),
+        cmd!(
+            "edit.heal",
+            "Heal Separation",
+            ["Edit"],
+            Some("Cmd+H"),
+            "{tracks?, start?, end?} — returns healed count and skipped pair reasons",
+            has_selection,
+            heal
+        ),
         cmd!("edit.trim_to_selection", "To Selection", ["Edit", "Trim"], Some("Cmd+T"), "{tracks?, start?, end?}", has_range, trim_to_selection),
         cmd!("edit.trim_start_to_insertion", "Start to Insertion", ["Edit", "Trim"], Some("Alt+Shift+7"), "{tracks?, at?}", has_selection, |e, p| {
             trim_edge(e, p, true)
@@ -680,11 +688,14 @@ fn heal(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.heal", p)?;
     let mut r = range_param(e, "edit.heal", p)?;
     if r.is_empty() {
-        r = soundcraft_time::Range::new(r.start - 1, r.start + 1);
+        r = soundcraft_time::Range::new(r.start.saturating_sub(1), r.start.saturating_add(1));
     }
-    let s = e.session_mut();
-    let n: usize = tracks.iter().map(|t| ops::heal(s, *t, r)).sum();
-    Ok(json!({"healed": n}))
+    let plan = ops::plan_heal(e.session(), &tracks, r);
+    let result = json!(plan.report);
+    if plan.report.healed > 0 {
+        plan.apply(e.session_mut());
+    }
+    Ok(result)
 }
 
 fn trim_to_selection(e: &mut Engine, p: &Value) -> Result<Value> {
