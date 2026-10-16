@@ -541,6 +541,7 @@ impl Session {
         }
         let mut s: Session = serde_json::from_value(v).map_err(|e| SessionError::Format(e.to_string()))?;
         s.sanitize();
+        s.validate()?;
         Ok(s)
     }
 
@@ -633,6 +634,25 @@ impl Session {
         }
         self.tempo.sanitize();
     }
+
+    /// Reject a document whose ids are ambiguous or exhausted, run after [`Session::sanitize`] on
+    /// untrusted data. Duplicate ids in a namespace make commands, selections and source
+    /// associations act on an arbitrary one of the objects; a maximal `next_id` -- or a maximal
+    /// existing id, which `sanitize` folds into `next_id` -- makes every later allocation return
+    /// `u64::MAX` and repeat itself.
+    fn validate(&self) -> Result<(), SessionError> {
+        if self.next_id == u64::MAX {
+            return Err(SessionError::Invalid("the session id space is exhausted".into()));
+        }
+        distinct("track", self.tracks.iter().map(|t| t.id.0))?;
+        distinct("clip", self.tracks.iter().flat_map(|t| t.playlists.iter().flat_map(|p| p.clips.iter().map(|c| c.id.0))))?;
+        distinct("source", self.sources.iter().map(|s| s.id.0))?;
+        distinct("video", self.videos.iter().map(|v| v.id.0))?;
+        distinct("bus", self.busses.iter().map(|b| b.id.0))?;
+        distinct("marker", self.markers.iter().map(|m| m.id.0))?;
+        distinct("group", self.groups.iter().map(|g| g.id.0))?;
+        Ok(())
+    }
 }
 
 /// The most characters kept of a name read from a file: longer ones can't be shown, and drawing
@@ -646,6 +666,17 @@ pub fn truncate_chars(s: &mut String, max: usize) {
     if let Some((end, _)) = s.char_indices().nth(max) {
         s.truncate(end);
     }
+}
+
+/// Every id in `ids` distinct, or an error naming the namespace and the repeated id.
+fn distinct(kind: &str, ids: impl Iterator<Item = u64>) -> Result<(), SessionError> {
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            return Err(SessionError::Invalid(format!("duplicate {kind} id {id}")));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -756,6 +787,33 @@ mod tests {
         let mut v = serde_json::to_value(Session::default()).unwrap();
         v["format_version"] = serde_json::json!(999);
         assert!(matches!(Session::from_json(&v.to_string()), Err(SessionError::Version(999))));
+    }
+
+    #[test]
+    fn duplicate_ids_are_rejected_on_load() {
+        let mut s = Session::default();
+        s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let mut v = serde_json::to_value(&s).unwrap();
+        v["tracks"][1]["id"] = v["tracks"][0]["id"].clone();
+        let err = Session::from_json(&v.to_string()).unwrap_err();
+        assert!(matches!(&err, SessionError::Invalid(m) if m.contains("duplicate track id")), "{err}");
+    }
+
+    #[test]
+    fn an_exhausted_id_space_is_rejected_on_load() {
+        let mut s = Session::default();
+        s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let mut v = serde_json::to_value(&s).unwrap();
+        v["next_id"] = serde_json::json!(u64::MAX);
+        let err = Session::from_json(&v.to_string()).unwrap_err();
+        assert!(matches!(&err, SessionError::Invalid(m) if m.contains("exhausted")), "{err}");
+        // A maximal existing id is exhausted too, however `next_id` was written: every later
+        // allocation would return `u64::MAX` again.
+        let mut v = serde_json::to_value(&s).unwrap();
+        v["tracks"][0]["id"] = serde_json::json!(u64::MAX);
+        let err = Session::from_json(&v.to_string()).unwrap_err();
+        assert!(matches!(&err, SessionError::Invalid(m) if m.contains("exhausted")), "{err}");
     }
 
     #[test]
