@@ -242,6 +242,11 @@ impl Clip {
         g
     }
 
+    /// Gain envelope value in dB at `rel` samples from the clip start (0 without an envelope).
+    pub fn env_db_at(&self, rel: Samples) -> f32 {
+        env_value(&self.gain_env, rel)
+    }
+
     /// Move the start edge to `new_start` keeping material anchored (trim start).
     pub fn trim_start_to(&mut self, new_start: Samples) {
         let new_start = new_start.min(self.end() - 1);

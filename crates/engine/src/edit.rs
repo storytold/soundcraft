@@ -418,7 +418,11 @@ pub fn heal(s: &mut Session, track: TrackId, range: Range) -> usize {
                 (ClipContent::Audio { source: a, offset: oa }, ClipContent::Audio { source: b, offset: ob }) => a == b && oa + prev.length == *ob,
                 _ => false,
             };
-            if contiguous && same && (prev.gain_db - c.gain_db).abs() < 1e-6 {
+            let same_playback = prev.muted == c.muted && (prev.stretch - c.stretch).abs() < 1e-9 && (prev.gain_db - c.gain_db).abs() < 1e-6;
+            if contiguous && same && same_playback {
+                if !prev.gain_env.is_empty() || !c.gain_env.is_empty() {
+                    join_gain_env(prev, &c);
+                }
                 prev.length += c.length;
                 prev.fade_out = c.fade_out;
                 healed += 1;
@@ -429,6 +433,21 @@ pub fn heal(s: &mut Session, track: TrackId, range: Range) -> usize {
     }
     pl.clips = out;
     healed
+}
+
+/// Give `l` the gain envelope of `l` followed by `r`, which starts where `l` ends, so every sample keeps its gain.
+fn join_gain_env(l: &mut Clip, r: &Clip) {
+    let cut = l.length;
+    let (end_db, start_db) = (l.env_db_at(cut - 1), r.env_db_at(0));
+    l.gain_env.retain(|&(at, _)| at < cut);
+    l.gain_env.extend(r.gain_env.iter().filter(|&&(at, _)| at >= 0).map(|&(at, db)| (at.saturating_add(cut), db)));
+    // Pin both sides of the seam where the joined points would interpolate across it.
+    for (at, db) in [(cut, start_db), (cut - 1, end_db)] {
+        if (l.env_db_at(at) - db).abs() > 1e-4 {
+            let i = l.gain_env.partition_point(|&(t, _)| t < at);
+            l.gain_env.insert(i, (at, db));
+        }
+    }
 }
 
 /// Move clips by `delta`, overwriting what they land on; `dest` sends whole tracks of them
@@ -876,6 +895,43 @@ mod tests {
         assert_eq!(separate_at(&mut s, t, 1000), 0);
         assert_eq!(heal(&mut s, t, Range::new(0, 10_000)), 1);
         assert_eq!(clips(&s, t), vec![(1000, 4000, 1000)]);
+    }
+
+    #[test]
+    fn heal_skips_clips_with_different_playback() {
+        for tweak in [(|c: &mut Clip| c.muted = true) as fn(&mut Clip), |c: &mut Clip| c.stretch = 1.5] {
+            let (mut s, t) = session_with_clip();
+            separate_at(&mut s, t, 3000);
+            if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+                tweak(&mut pl.clips[1]);
+            }
+            assert_eq!(heal(&mut s, t, Range::new(0, 10_000)), 0);
+            assert_eq!(s.track(t).unwrap().clips().len(), 2);
+        }
+    }
+
+    #[test]
+    fn heal_keeps_each_side_gain_envelope() {
+        let cases: [(Vec<(Samples, f32)>, Vec<(Samples, f32)>); 4] = [
+            (vec![(500, -3.0), (2500, -12.0)], vec![]),
+            (vec![], vec![(0, -6.0), (1000, 0.0)]),
+            (vec![(0, 0.0), (1999, -20.0)], vec![(-100, 4.0), (300, -9.0)]),
+            (vec![(500, -3.0), (2500, -12.0)], vec![(0, -9.75), (500, -12.0)]),
+        ];
+        for (left_env, right_env) in cases {
+            let (mut s, t) = session_with_clip();
+            separate_at(&mut s, t, 3000);
+            let pl = s.track_mut(t).and_then(|t| t.playlist_mut()).unwrap();
+            pl.clips[0].gain_env = left_env;
+            pl.clips[1].gain_env = right_env;
+            let (l, r) = (pl.clips[0].clone(), pl.clips[1].clone());
+            assert_eq!(heal(&mut s, t, Range::new(0, 10_000)), 1);
+            let healed = &s.track(t).unwrap().clips()[0];
+            for rel in 0..4000 {
+                let want = if rel < 2000 { l.gain_at(rel) } else { r.gain_at(rel - 2000) };
+                assert!((healed.gain_at(rel) - want).abs() < 1e-4, "sample {rel}: {} != {want}", healed.gain_at(rel));
+            }
+        }
     }
 
     #[test]
