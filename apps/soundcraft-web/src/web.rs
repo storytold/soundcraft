@@ -1,6 +1,5 @@
 //! The browser shell: the eframe web runner around [`SoundApp`].
 
-use serde_json::json;
 use soundcraft_engine::{Engine, io};
 use soundcraft_ui_egui::dialogs::Dialog;
 use soundcraft_ui_egui::sampler_window::SampleRead;
@@ -166,30 +165,23 @@ impl WebShell {
         }
     }
 
-    fn handle(&mut self, purpose: Purpose, name: &str, bytes: &[u8]) {
-        if matches!(purpose, Purpose::Session) && soundcraft_ui_egui::bounce::refuses_session_switch(&mut self.app) {
-            return;
-        }
+    fn handle(&mut self, purpose: Purpose, name: String, bytes: Vec<u8>) {
         let e = &mut self.app.engine;
         let at = e.session().edit.selection.start.max(0);
         let result = match purpose {
-            Purpose::Session => {
-                let _ = self.app.run("transport.stop", json!({}));
-                io::open_session_bytes(&mut self.app.engine, name, bytes).map(|missing| {
-                    if missing.is_empty() { format!("Opened {name}") } else { format!("Opened {name} ({} missing media)", missing.len()) }
-                })
-            }
+            // Asks first when the open session has changes: the bytes wait for the answer.
+            Purpose::Session => return soundcraft_ui_egui::dialogs::open_session_bytes(&mut self.app, name, bytes),
             // Imports are edits: one undo step each, like the import commands.
             Purpose::Audio => {
                 let before = e.session_arc();
-                io::import_audio_bytes(e, name, bytes, None, None, at).map(|_| {
+                io::import_audio_bytes(e, &name, &bytes, None, None, at).map(|_| {
                     e.push_undo("Import Audio", before);
                     format!("Imported {name}")
                 })
             }
             Purpose::Midi => {
                 let before = e.session_arc();
-                io::import_midi_bytes(e, bytes, at, true).map(|_| {
+                io::import_midi_bytes(e, &bytes, at, true).map(|_| {
                     e.push_undo("Import MIDI", before);
                     format!("Imported {name}")
                 })
@@ -205,7 +197,7 @@ impl eframe::App for WebShell {
         self.take_path_prompt(ctx);
         let pending = std::mem::take(&mut *self.inbox.borrow_mut());
         for (purpose, name, bytes) in pending {
-            self.handle(purpose, &name, &bytes);
+            self.handle(purpose, name, bytes);
         }
         let samples = std::mem::take(&mut *self.samples.borrow_mut());
         for (read, bytes) in samples {
