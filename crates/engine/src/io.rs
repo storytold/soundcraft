@@ -1154,9 +1154,15 @@ pub(crate) fn decode_file(files: &mut DecodedFiles, p: &Path, rate: u32) -> std:
 /// saves and opens sessions as bundles.
 pub const BUNDLE_EXTENSION: &str = "scraftz";
 
-/// Most entries and bytes a bundle may unpack to (bundles are hostile input).
-const MAX_BUNDLE_ENTRIES: usize = 10_000;
-const MAX_BUNDLE_BYTES: u64 = 1 << 30;
+/// Most entries and bytes a bundle may unpack to (bundles are hostile input). The writer keeps to
+/// them too, so a bundle it saves always opens again (#433).
+#[derive(Clone, Copy, Debug)]
+struct BundleLimits {
+    entries: usize,
+    bytes: u64,
+}
+
+const BUNDLE_LIMITS: BundleLimits = BundleLimits { entries: 10_000, bytes: 1 << 30 };
 
 /// Hands a finished file (name, bytes) to the person on a host without a filesystem: the web app
 /// installs one that starts a download. Native builds write files and never install it.
@@ -1185,6 +1191,11 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
 /// `Audio Files/` (stored, not compressed: audio barely compresses). Returns the bytes and the
 /// session with its source paths pointing into the bundle.
 pub fn session_bundle(session: &Session) -> Result<(Vec<u8>, Session)> {
+    session_bundle_within(session, BUNDLE_LIMITS)
+}
+
+/// [`session_bundle`], refused when it would hold more than `limits` allows.
+fn session_bundle_within(session: &Session, limits: BundleLimits) -> Result<(Vec<u8>, Session)> {
     use std::io::Write as _;
     let zerr = |err: zip::result::ZipError| EngineError::Io(format!("bundle: {err}"));
     let ioerr = |err: std::io::Error| EngineError::Io(format!("bundle: {err}"));
@@ -1192,6 +1203,20 @@ pub fn session_bundle(session: &Session) -> Result<(Vec<u8>, Session)> {
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored).large_file(true);
     let mut taken = std::collections::HashSet::new();
+    let (mut entries, mut total) = (0usize, 0u64);
+    // Counted as the reader counts them: files, and the bytes they unpack to.
+    let mut fits = |len: usize| {
+        entries += 1;
+        total = total.saturating_add(len as u64);
+        if entries > limits.entries || total > limits.bytes {
+            return Err(EngineError::Io(format!(
+                "bundle: too large to save (a bundle holds at most {} files and {} MiB, or it can't be opened again)",
+                limits.entries,
+                limits.bytes >> 20
+            )));
+        }
+        Ok(())
+    };
     for src in &mut s.sources {
         let Some(audio) = s.pool.get(src.id) else { continue };
         let base = sanitize_name(&src.name);
@@ -1203,6 +1228,7 @@ pub fn session_bundle(session: &Session) -> Result<(Vec<u8>, Session)> {
         }
         let opts_wav = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
         let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts_wav).map_err(|err| EngineError::Io(err.to_string()))?;
+        fits(bytes.len())?;
         w.start_file(target.as_str(), opts).map_err(zerr)?;
         w.write_all(&bytes).map_err(ioerr)?;
         taken.insert(target.clone());
@@ -1211,6 +1237,7 @@ pub fn session_bundle(session: &Session) -> Result<(Vec<u8>, Session)> {
         src.format = FileFormat::Wav;
     }
     let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
+    fits(text.len())?;
     w.start_file(format!("{}.{}", sanitize_name(&s.name), soundcraft_model::SESSION_EXTENSION), opts).map_err(zerr)?;
     w.write_all(text.as_bytes()).map_err(ioerr)?;
     let bytes = w.finish().map_err(zerr)?.into_inner();
@@ -1239,7 +1266,7 @@ fn save_session_bundle(e: &mut Engine, path: &str) -> Result<usize> {
 /// [`open_session`].
 pub fn open_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Vec<String>> {
     let (text, mut files) = if bytes.starts_with(b"PK\x03\x04") {
-        read_bundle(bytes)?
+        read_bundle(bytes, BUNDLE_LIMITS)?
     } else {
         (
             String::from_utf8(bytes.to_vec()).map_err(|_| EngineError::Io(format!("{name}: not a SoundCraft session")))?,
@@ -1269,11 +1296,11 @@ pub fn open_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Ve
 }
 
 /// Unpack a bundle: the one `.scraft` at its top level and the files beside it, by relative path.
-fn read_bundle(bytes: &[u8]) -> Result<(String, std::collections::HashMap<String, Vec<u8>>)> {
+fn read_bundle(bytes: &[u8], limits: BundleLimits) -> Result<(String, std::collections::HashMap<String, Vec<u8>>)> {
     use std::io::Read as _;
     let zerr = |err: zip::result::ZipError| EngineError::Io(format!("bundle: {err}"));
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(zerr)?;
-    if z.len() > MAX_BUNDLE_ENTRIES {
+    if z.len() > limits.entries {
         return Err(EngineError::Io("bundle: too many files".into()));
     }
     let (mut text, mut files, mut total) = (None, std::collections::HashMap::new(), 0u64);
@@ -1285,7 +1312,7 @@ fn read_bundle(bytes: &[u8]) -> Result<(String, std::collections::HashMap<String
         let rel = f.name().map_err(zerr)?.to_string();
         let size = f.size();
         total = total.saturating_add(size);
-        if total > MAX_BUNDLE_BYTES {
+        if total > limits.bytes {
             return Err(EngineError::Io("bundle: too large".into()));
         }
         let mut data = Vec::new();
@@ -1884,6 +1911,21 @@ mod bundle_tests {
         }
         assert!(!r.is_dirty());
         assert_eq!(r.path.as_deref(), Some("Midnight Groove.scraftz"));
+    }
+
+    #[test]
+    fn a_bundle_is_saved_only_if_it_opens_again() {
+        // #433: the writer keeps to the reader's limits.
+        let e = crate::demo::demo_engine();
+        let (bytes, _) = session_bundle(e.session()).unwrap();
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+        let entries = z.len();
+        let size: u64 = (0..entries).map(|i| z.by_index(i).unwrap().size()).sum();
+        let exact = BundleLimits { entries, bytes: size };
+        let (at_limit, _) = session_bundle_within(e.session(), exact).unwrap();
+        assert!(read_bundle(&at_limit, exact).is_ok(), "what the writer takes, the reader opens");
+        assert!(session_bundle_within(e.session(), BundleLimits { entries: entries - 1, ..exact }).is_err());
+        assert!(session_bundle_within(e.session(), BundleLimits { bytes: size - 1, ..exact }).is_err());
     }
 
     #[test]
