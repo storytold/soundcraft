@@ -112,8 +112,10 @@ fn open_path(app: &mut SoundApp, p: &str) {
     } else if lower.ends_with(".mid") || lower.ends_with(".midi") || lower.ends_with(".smf") {
         app.run("file.import_midi", serde_json::json!({"path": p}))
     } else {
+        // Decoded in the background so a long file doesn't freeze the window (#597).
         let at = app.engine.session().edit.selection.start;
-        app.run("file.import_audio", serde_json::json!({"path": p, "at": at}))
+        soundcraft_ui_egui::import::start(app, serde_json::json!({"path": p, "at": at}));
+        Ok(serde_json::Value::Null)
     };
     if let Err(e) = r {
         log::warn!("{p}: {e}");

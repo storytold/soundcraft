@@ -363,7 +363,7 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
                         let _ = app.run("file.import_midi", json!({"path": path}));
                     } else {
                         let at = app.engine.session().edit.selection.start;
-                        let _ = app.run("file.import_audio", json!({"path": path, "at": at}));
+                        crate::import::start(app, json!({"path": path, "at": at}));
                     }
                 }
             }

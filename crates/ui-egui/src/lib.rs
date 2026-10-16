@@ -13,6 +13,7 @@ pub mod edit_window;
 pub mod extra_windows;
 pub mod fonts;
 pub mod icons;
+pub mod import;
 pub mod menus;
 pub mod midi_editor;
 pub mod mix_window;
@@ -326,6 +327,8 @@ pub struct SoundApp {
     pub video: video_track::VideoPool,
     /// The Bounce Mix in progress, rendered a slice per frame.
     pub bounce: Option<soundcraft_engine::io::Bounce>,
+    /// Audio files importing in the background (issue #597).
+    pub imports: import::Imports,
     /// Test-only: owns the process-wide palette lock while this app exists, so frames painted
     /// and colour assertions in one test can never straddle another test's palette change.
     #[cfg(test)]
@@ -400,6 +403,7 @@ impl SoundApp {
             last_meter_poll: f64::NEG_INFINITY,
             video: video_track::VideoPool::default(),
             bounce: None,
+            imports: import::Imports::default(),
             #[cfg(test)]
             _palette_lock: theme::lock_test_palette(),
         }
@@ -1134,6 +1138,7 @@ impl SoundApp {
         self.note_recent_session();
         self.apply_editor_edits();
         bounce::step(self, ctx);
+        import::step(self, ctx);
         if !ctx.input(|i| i.pointer.any_down()) {
             if matches!(self.gesture, Some(Gesture::Fader { .. })) {
                 self.gesture = None;

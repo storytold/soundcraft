@@ -265,6 +265,7 @@ fn default_dir() -> String {
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     audiosuite_window(app, ctx);
     crate::bounce::show(app, ctx);
+    crate::import::show(app, ctx);
     let Some(mut d) = app.dialogs.open.take() else { return };
     let mut keep = true;
     let mut action: Option<(String, Value)> = None;
@@ -613,12 +614,17 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let saving = action.as_ref().is_some_and(|(cmd, _)| cmd.starts_with("session.save"));
     if let Some((cmd, params)) = action {
         keep = false;
-        match app.run(&cmd, params) {
-            Ok(v) if cmd == "file.export_clips" => {
-                app.ui.status = format!("Exported {} clip(s) to {}", v["written"], v["dir"].as_str().unwrap_or_default());
+        if cmd == "file.import_audio" {
+            // Decoded in the background so a long file doesn't freeze the app (#597).
+            crate::import::start(app, params);
+        } else {
+            match app.run(&cmd, params) {
+                Ok(v) if cmd == "file.export_clips" => {
+                    app.ui.status = format!("Exported {} clip(s) to {}", v["written"], v["dir"].as_str().unwrap_or_default());
+                }
+                Ok(_) => {}
+                Err(e) => app.ui.status = e,
             }
-            Ok(_) => {}
-            Err(e) => app.ui.status = e,
         }
     }
     if saving

@@ -237,9 +237,17 @@ fn import_audio(e: &mut Engine, p: &Value) -> Result<Value> {
     let target = import_audio_target(e, p)?;
     let mut out = Vec::new();
     for path in &paths {
-        let bytes = crate::io::read_file(path)?;
         let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or("Audio").to_string();
-        let r = crate::io::import_audio_bytes(e, &name, &bytes, Some(path.as_str()), target, at)?;
+        // Audio the app decoded on a worker thread (`Engine::offer_import`) is only placed here;
+        // the path is checked the same way either way.
+        crate::file_access::check_read(std::path::Path::new(path)).map_err(crate::EngineError::Io)?;
+        let r = match e.take_import(std::path::Path::new(path)) {
+            Some(d) => crate::io::place_decoded(e, &name, d, Some(path.as_str()), target, at)?,
+            None => {
+                let bytes = crate::io::read_file(path)?;
+                crate::io::import_audio_bytes(e, &name, &bytes, Some(path.as_str()), target, at)?
+            }
+        };
         out.push(r);
     }
     Ok(json!({"imported": out}))
@@ -348,6 +356,46 @@ mod tests {
         let path = dir.join(name);
         std::fs::write(&path, bytes).unwrap();
         path.to_string_lossy().into_owned()
+    }
+
+    /// Issue #597: the app decodes on a worker thread and hands the audio over; the command then
+    /// only places it. Audio decoded for another rate is ignored and the file is read again.
+    #[test]
+    fn import_audio_places_audio_offered_by_a_worker() {
+        let dir = std::env::temp_dir().join(format!("sc-import-offered-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = tone_wav(&dir, "tone.wav");
+
+        let mut e = Engine::default();
+        let rate = e.session().sample_rate.hz();
+        let decoded = std::thread::spawn({
+            let wav = wav.clone();
+            move || crate::io::decode_import(&wav, rate)
+        })
+        .join()
+        .unwrap()
+        .unwrap();
+        assert_eq!(decoded.frames(), 4_800);
+        e.offer_import(decoded);
+        // The file changes after decoding: the offered audio is placed, not the new bytes.
+        std::fs::write(&wav, b"not audio").unwrap();
+        let r = e.execute("file.import_audio", &json!({"path": wav, "at": 960})).unwrap();
+        assert_eq!(r["imported"][0]["frames"], 4_800);
+        assert_eq!(e.session().tracks.len(), 1);
+        assert_eq!(e.session().tracks[0].clips()[0].start, 960);
+        assert_eq!(e.session().sources[0].path, wav);
+        // Taken once: the next import reads the (now broken) file.
+        assert!(e.execute("file.import_audio", &json!({"path": wav})).is_err());
+
+        // Decoded for another rate: ignored, so the broken file is read and refused.
+        let good = tone_wav(&dir, "good.wav");
+        let other = crate::io::decode_import(&good, rate / 2).unwrap();
+        std::fs::write(&good, b"not audio").unwrap();
+        e.offer_import(other);
+        assert!(e.execute("file.import_audio", &json!({"path": good})).is_err());
+        e.drop_offered_imports();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

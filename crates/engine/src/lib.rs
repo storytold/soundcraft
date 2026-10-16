@@ -110,6 +110,9 @@ struct HistoryEntry {
     doc: Arc<Session>,
 }
 
+/// Most decoded imports [`Engine::offer_import`] holds at once (each can be gigabytes).
+const MAX_OFFERED_IMPORTS: usize = 4;
+
 /// Engine state: the document, history, clipboard and transport plumbing.
 pub struct Engine {
     doc: Arc<Session>,
@@ -139,6 +142,8 @@ pub struct Engine {
     /// The edit selection (range, tracks) before the last change, for Restore Last Selection.
     /// Kept out of the document so selecting never marks the session modified.
     pub last_selection: Option<(soundcraft_time::Range, Vec<TrackId>)>,
+    /// Audio decoded off the UI thread, waiting for its `file.import_audio` (see `offer_import`).
+    imports: Vec<io::DecodedImport>,
 }
 
 impl Default for Engine {
@@ -169,7 +174,31 @@ impl Engine {
             merge_hold: None,
             messages: Vec::new(),
             last_selection: None,
+            imports: Vec::new(),
         }
+    }
+
+    /// Hands over audio [`io::decode_import`] made off the UI thread: the next `file.import_audio`
+    /// of the same file at the session's rate places it instead of reading the file again. The
+    /// command still checks the path may be read. Only the few newest are kept.
+    pub fn offer_import(&mut self, d: io::DecodedImport) {
+        self.imports.retain(|x| x.key != d.key);
+        self.imports.push(d);
+        let extra = self.imports.len().saturating_sub(MAX_OFFERED_IMPORTS);
+        self.imports.drain(..extra);
+    }
+
+    /// Drops audio offered for imports that never ran (the command failed or was not sent).
+    pub fn drop_offered_imports(&mut self) {
+        self.imports.clear();
+    }
+
+    /// The offered audio of the file at `path`, if it was decoded for the session's current rate.
+    pub(crate) fn take_import(&mut self, path: &std::path::Path) -> Option<io::DecodedImport> {
+        let key = io::file_key(path);
+        let rate = self.session().sample_rate.hz();
+        let i = self.imports.iter().position(|d| d.key == key && d.rate == rate)?;
+        Some(self.imports.remove(i))
     }
 
     pub fn session(&self) -> &Session {

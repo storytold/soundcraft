@@ -102,6 +102,11 @@ pub fn add_source(s: &mut Session, name: &str, mut buf: AudioBuffer, path: Optio
         buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, sr);
         buf.sample_rate = sr;
     }
+    add_source_audio(s, name, Arc::new(SourceAudio::new(buf)), path, format)
+}
+
+/// Register audio already at the session rate, with its peaks built, as a new source.
+fn add_source_audio(s: &mut Session, name: &str, audio: Arc<SourceAudio>, path: Option<&str>, format: FileFormat) -> SourceId {
     let id = SourceId(s.alloc());
     let stem = Path::new(name).file_stem().and_then(|x| x.to_str()).unwrap_or(name).to_string();
     let stored = match path {
@@ -112,14 +117,14 @@ pub fn add_source(s: &mut Session, name: &str, mut buf: AudioBuffer, path: Optio
         id,
         name: stem.clone(),
         path: stored,
-        channels: u16::try_from(buf.num_channels()).unwrap_or(u16::MAX),
-        frames: buf.frames() as u64,
-        sample_rate: sr,
+        channels: u16::try_from(audio.buffer.num_channels()).unwrap_or(u16::MAX),
+        frames: audio.frames() as u64,
+        sample_rate: s.sample_rate.hz(),
         format,
         time_reference: 0,
         unsaved: true,
     });
-    s.pool.insert(id, Arc::new(SourceAudio::new(buf)));
+    s.pool.insert(id, audio);
     id
 }
 
@@ -132,20 +137,69 @@ fn stamp_at_rate(stamp: u64, file_rate: u32, session_rate: u32) -> u64 {
     u64::try_from((u128::from(stamp) * to + from / 2) / from).unwrap_or(u64::MAX)
 }
 
-/// Decode and place an audio file. With no target track, a new track of matching width is made.
-pub fn import_audio_bytes(e: &mut Engine, name: &str, bytes: &[u8], path: Option<&str>, target: Option<TrackId>, at: Samples) -> Result<Value> {
+/// An audio file decoded, resampled to a session rate and given its waveform peaks: everything an
+/// import costs except placing the clip. Making one needs no engine, so the app makes it on a
+/// worker thread ([`decode_import`]) and hands it over with [`Engine::offer_import`] before it
+/// runs `file.import_audio`, which then only places the clip (issue #597).
+#[derive(Debug, Clone)]
+pub struct DecodedImport {
+    pub(crate) key: PathBuf,
+    pub(crate) rate: u32,
+    info: soundcraft_audio_io::AudioInfo,
+    audio: Arc<SourceAudio>,
+}
+
+impl DecodedImport {
+    /// Frames at the session rate it was decoded for.
+    pub fn frames(&self) -> usize {
+        self.audio.frames()
+    }
+}
+
+/// Reads and decodes the audio file at `path` for a session at `rate`. Thread-safe and slow (the
+/// whole file is read, decoded, resampled and given peaks): run it off the UI thread.
+pub fn decode_import(path: &str, rate: u32) -> Result<DecodedImport> {
+    let bytes = read_file(path)?;
+    let name = Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or("Audio");
+    let (info, audio) = decode_import_bytes(name, &bytes, rate)?;
+    Ok(DecodedImport { key: file_key(Path::new(path)), rate, info, audio })
+}
+
+fn decode_import_bytes(name: &str, bytes: &[u8], rate: u32) -> Result<(soundcraft_audio_io::AudioInfo, Arc<SourceAudio>)> {
     let ext = Path::new(name).extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase);
     let (info, buf) = soundcraft_audio_io::decode(bytes, ext.as_deref()).map_err(|err| EngineError::Io(format!("{name}: {err}")))?;
-    let buf = at_rate(buf, e.session().sample_rate.hz(), MAX_IMPORT_SAMPLES)
-        .ok_or_else(|| EngineError::Io(format!("{name}: file is too large to import")))?;
+    let buf = at_rate(buf, rate, MAX_IMPORT_SAMPLES).ok_or_else(|| EngineError::Io(format!("{name}: file is too large to import")))?;
     if buf.frames() == 0 {
         return Err(EngineError::Io(format!("{name}: no audio")));
     }
-    let channels = buf.num_channels();
+    Ok((info, Arc::new(SourceAudio::new(buf))))
+}
+
+/// Decode and place an audio file. With no target track, a new track of matching width is made.
+pub fn import_audio_bytes(e: &mut Engine, name: &str, bytes: &[u8], path: Option<&str>, target: Option<TrackId>, at: Samples) -> Result<Value> {
+    let (info, audio) = decode_import_bytes(name, bytes, e.session().sample_rate.hz())?;
+    place_import(e, name, &info, audio, path, target, at)
+}
+
+/// Place audio from [`decode_import`] (made for this session's rate) as `import_audio_bytes` does.
+pub(crate) fn place_decoded(e: &mut Engine, name: &str, d: DecodedImport, path: Option<&str>, target: Option<TrackId>, at: Samples) -> Result<Value> {
+    place_import(e, name, &d.info, d.audio, path, target, at)
+}
+
+fn place_import(
+    e: &mut Engine,
+    name: &str,
+    info: &soundcraft_audio_io::AudioInfo,
+    audio: Arc<SourceAudio>,
+    path: Option<&str>,
+    target: Option<TrackId>,
+    at: Samples,
+) -> Result<Value> {
+    let channels = audio.buffer.num_channels();
     let file_rate = info.sample_rate;
     let s = e.session_mut();
     let session_rate = s.sample_rate.hz();
-    let src = add_source(s, name, buf, path, info.format);
+    let src = add_source_audio(s, name, audio, path, info.format);
     if let (Some(bwf), Some(sx)) = (info.bwf.as_ref(), s.sources.last_mut()) {
         sx.time_reference = stamp_at_rate(bwf.time_reference, file_rate, session_rate);
     }
