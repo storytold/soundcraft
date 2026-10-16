@@ -201,11 +201,7 @@ fn preset_menu(
         ui.label(crate::localization::text("User presets need the desktop app."));
         return;
     };
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .map(|rd| rd.flatten().filter_map(|e| e.path().file_stem().and_then(std::ffi::OsStr::to_str).map(str::to_string)).collect())
-        .unwrap_or_default();
-    names.sort();
-    for n in &names {
+    for n in crate::listed_presets(ui, &dir).iter() {
         if ui.button(n).clicked() {
             if let Ok(text) = std::fs::read_to_string(dir.join(format!("{n}.json")))
                 && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)

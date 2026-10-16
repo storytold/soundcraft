@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-11-11 · **Change:** minor (audio formats come from craft-audio; previously trivial: bounces carry a BWF time reference, #1296) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-11-19 · **Change:** minor (track presets: a Track Presets folder and recall, #639; previously minor: audio formats come from craft-audio) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every format Pro Tools reads or writes, and ours. The Pro Tools list comes from the document types
 its bundle declares (`CFBundleDocumentTypes` in Info.plist: names only, nothing else read) and its
@@ -27,7 +27,8 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 | Import Session Data (from another session) | Pro Tools sessions | 🟡 | — | From `.scraft` only |
 | Session info as text | export | — | ✅ | `file.export_session_text` |
 | Clip groups `.rgrp` / ours `.scgrp` | read/write | 🟡 | 🟡 | Our own `.scgrp` format; Pro Tools' clip-group files not read |
-| Track presets, fade presets, I/O settings, workspace, sync settings | read/write | ❌ | ❌ | Their equivalents don't exist yet (G-16) |
+| Track presets | read/write | 🟡 | 🟡 | Our own JSON presets, saved to a Track Presets folder and recalled from Track › Recall Track Preset or a track name's menu (#639); Pro Tools' track preset files not read. Recalling only a preset's inserts or sends from a slot is missing (G-16) |
+| Fade presets, I/O settings, workspace, sync settings | read/write | ❌ | ❌ | Their equivalents don't exist yet (G-16) |
 
 ## Audio
 
@@ -81,6 +82,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-19 | minor | Track presets get their own row: saved to a Track Presets folder and recalled from the Track menu or a track name's menu (#639). Readiness estimate unchanged |
 | 2026-11-11 | minor | Audio formats come from `craft-audio` (craft-libs); `crates/audio-io` is gone. New on import: Opus, AC-3/E-AC-3, `.mov`/`.mka` audio; AAC, ALAC and MP2 no longer go through symphonia; `.aifc` is a writable name |
 | 2026-11-02 | trivial | WAV bounces (mix and stems) write a `bext` TimeReference: session timecode start plus bounce start (#1296) |
 | 2026-10-19 | trivial | WAV and AIFF-C Float32 encoders retain finite headroom (#791); whole-file, streaming and bounce regression tests |

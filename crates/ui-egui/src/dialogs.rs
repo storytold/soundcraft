@@ -35,6 +35,7 @@ pub enum Dialog {
     NewSession { name: String, sample_rate: u32, demo: bool },
     Bounce { path: String, format: EncodeFormat, bit_depth: String, normalize: bool, dither: bool },
     RenameTrack { id: TrackId, name: String },
+    SaveTrackPreset { track: TrackId, name: String, dir: std::path::PathBuf, confirm: bool, error: Option<String> }, // `confirm` once Save found a preset of that name
     RenameClip { id: ClipId, name: String },
     RenameMarker { id: soundcraft_model::MarkerId, name: String },
     ClearClips { clips: Vec<ClipId>, sources: Vec<SourceId>, message: String },
@@ -94,6 +95,7 @@ impl Dialogs {
             Dialog::NewSession { .. } => "new_session",
             Dialog::Bounce { .. } => "bounce",
             Dialog::RenameTrack { .. } => "rename_track",
+            Dialog::SaveTrackPreset { .. } => "save_track_preset",
             Dialog::RenameClip { .. } => "rename_clip",
             Dialog::RenameMarker { .. } => "rename_marker",
             Dialog::ClearClips { .. } => "clear_clips",
@@ -480,6 +482,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let mut action: Option<(String, Value)> = None;
     let mut bounce_params: Option<Value> = None;
     let mut save_first: Option<(String, Value)> = None;
+    let mut save_preset = false;
     let confirmed = matches!(d, Dialog::SaveChanges { .. });
     // Strip Silence's Rename button, and the naming scheme its dialog's OK keeps.
     let mut rename_from: Option<[f64; 4]> = None;
@@ -490,6 +493,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::NewSession { .. } => "New Session",
         Dialog::Bounce { .. } => "Bounce Mix",
         Dialog::RenameTrack { .. } => "Rename Track",
+        Dialog::SaveTrackPreset { .. } => "Save Track Preset",
         Dialog::RenameClip { .. } => "Rename Clip",
         Dialog::RenameMarker { .. } => "Rename Marker",
         Dialog::ClearClips { .. } => "Clear",
@@ -586,6 +590,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     if buttons(ui, "OK", enter) {
                         action = Some(("track.rename".into(), json!({"track": id.0, "name": name})));
                     }
+                }
+                Dialog::SaveTrackPreset { name, dir, confirm, error, .. } => {
+                    save_preset = crate::track_presets::save_form(ui, name, dir, confirm, error, enter);
                 }
                 Dialog::RenameClip { id, name } => {
                     name_field(ui, name);
@@ -798,6 +805,17 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         app.dialogs.pending_session = None;
         ctx.memory_mut(|m| m.data.remove::<bool>(egui::Id::unique("dlg_cancel")));
     }
+    // Saved, asks to replace, or stays open with the error.
+    if save_preset
+        && keep
+        && let Dialog::SaveTrackPreset { track, name, dir, confirm, error } = &mut d
+    {
+        match crate::track_presets::save(app, *track, name, dir, *confirm) {
+            Ok(true) => keep = false,
+            Ok(false) => *confirm = true,
+            Err(e) => (*confirm, *error) = (false, Some(e)),
+        }
+    }
     if let Some(strip) = rename_from
         && keep
     {
@@ -897,7 +915,7 @@ pub(crate) fn buttons_enabled(ui: &mut egui::Ui, ok: &str, enter: bool, ready: b
 }
 
 /// A name field that takes the focus with its text selected, so typing replaces the old name.
-fn name_field(ui: &mut egui::Ui, name: &mut String) {
+pub(crate) fn name_field(ui: &mut egui::Ui, name: &mut String) {
     let mut out = egui::TextEdit::singleline(name).show(ui);
     let _ = crate::widgets::named_text_field(out.response.response.clone(), crate::localization::text("Name"));
     if !out.response.has_focus() {

@@ -12,6 +12,8 @@ impl SoundApp {
         // The Output window shows a track of the old session: a track of the new one can have
         // the same id.
         self.ui.output_window = None;
+        // Likewise a pending Save Track Preset: it would save the new session's track.
+        self.dialogs.open.take_if(|d| matches!(d, crate::dialogs::Dialog::SaveTrackPreset { .. }));
     }
 
     /// The session is modified, or a plugin editor gesture still holds a state the session hasn't

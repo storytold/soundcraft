@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-18 · **Change:** minor (G-02 shrunk: MIDI input devices work; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-19 · **Change:** minor (G-16 shrunk: track presets are saved to and recalled from a Track Presets folder, #639; previously minor: G-02 shrunk: MIDI input devices work; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -30,7 +30,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | G-13 | Sidechain inputs, ARA, out-of-process plugin sandboxing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 30–50 |
 | G-14 | Windows/Linux/Web exercised only lightly at runtime; no PR CI running the tests | Platforms / Stability | this file | 20–40 |
 | G-15 | Elastic Audio depth: one algorithm, no Elastic Pitch | Features | [target-app-parity.md](target-app-parity.md) | 30–45 |
-| G-16 | Session templates, track presets, workspace browser, batch rename | Features | [target-app-parity.md](target-app-parity.md) | 25–40 |
+| G-16 | Session templates, track preset recall from a slot, workspace browser, batch rename | Features | [target-app-parity.md](target-app-parity.md) | 22–36 |
 | G-17 | Video: HEVC/DNx decode, video export, external timecode | Features / Formats | [file-format-parity.md](file-format-parity.md) | 30–50 |
 | G-18 | Speech-to-text transcription | AI | this file | 30–50 |
 | G-19 | UI feel: generic plugin windows, shortcut collisions, pro-grade meters and scaling | UI/UX | [ui-parity.md](ui-parity.md) | 60–100 |
@@ -209,10 +209,10 @@ varispeed, high-quality offline) plus Elastic Pitch and warp-marker editing dept
 
 ### G-16. Session management
 
-Session templates, track-preset recall UI and browser, workspace/sound browser with previews,
-batch rename (new in 2026.4), disk-usage and relink depth remain. Track-preset saves capture the
-current hosted-plugin state before writing (#661); recall UI, partial recall and preset browsing remain
-tracked in #639. ≈ 25–40 h.
+Session templates, workspace/sound browser with previews, batch rename (new in 2026.4), disk-usage
+and relink depth remain. Track presets are saved by name to a Track Presets folder and recalled from
+the Track menu or a track name's menu, capturing the current hosted-plugin state before writing
+(#661); recalling only a preset's inserts or sends from a slot remains (#639). ≈ 22–36 h.
 
 ### G-17. Video and post
 
@@ -247,6 +247,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-19 | minor | G-16 shrunk: track presets saved to and recalled from a Track Presets folder (#639); recall from a slot remains; estimate 25–40 → 22–36 h |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
 | 2026-11-09 | trivial | G-08: 28 processors + 3 instruments with the Frequency Shifter |
 | 2026-11-04 | trivial | G-04: track and master volume automation read at every sample, so breakpoints act on their own sample in any block size (#1354); estimates unchanged |
