@@ -65,3 +65,13 @@ fn double_click_right_of_the_last_strip_opens_new_tracks() {
     click(&mut h, at);
     assert_eq!(h.state().dialogs.open_name(), Some("new_tracks"));
 }
+
+#[test]
+fn the_new_tracks_name_field_is_wide_enough_to_read_a_name() {
+    let mut h = harness(0);
+    h.get_by_label_contains("New Tracks").click();
+    h.run_steps(4);
+    assert_eq!(h.state().dialogs.open_name(), Some("new_tracks"));
+    let width = h.get_by_value("Audio").rect().width();
+    assert!(width >= 200.0, "the Name field is only {width}px wide");
+}
