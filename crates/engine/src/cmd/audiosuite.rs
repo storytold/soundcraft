@@ -117,6 +117,8 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
         nc.name = new_name;
         nc.content = ClipContent::Audio { source: src, offset: 0 };
         nc.length = i64::try_from(frames).unwrap_or(nc.length);
+        // The render already has the clip's stretch applied; keeping it would stretch the new file again.
+        nc.stretch = 1.0;
         // Invert and Duplicate are phase/copy operations. The clip's gain stays a clip gain,
         // the same way its fades stay editable. Other processes bake a new file at unity gain.
         if !matches!(name.as_str(), "invert" | "duplicate") {
@@ -214,6 +216,21 @@ mod tests {
         assert_eq!(c.gain_env, vec![(0, 0.0), (32, -12.0)]);
         let sample = e.session().pool.get(c.source().unwrap()).unwrap().buffer.channels[0][0];
         assert!((sample - 0.5).abs() < 1e-3, "duplicate keeps the file level and the clip gain, got {sample}");
+    }
+
+    #[test]
+    fn processed_clip_does_not_keep_the_stretch_it_baked() {
+        for stretch in [0.5, 2.0] {
+            for process in ["invert", "duplicate"] {
+                let (mut e, id) = gained_clip();
+                e.session_mut().find_clip_mut(id).unwrap().stretch = stretch;
+                e.execute("audiosuite.process", &json!({"process": process, "clips": [id.0]})).unwrap();
+                let c = e.session().tracks[0].clips()[0].clone();
+                let frames = e.session().pool.get(c.source().unwrap()).unwrap().buffer.channels[0].len();
+                assert_eq!(c.stretch, 1.0, "{process} at {stretch}");
+                assert_eq!(c.length, i64::try_from(frames).unwrap(), "{process} at {stretch}");
+            }
+        }
     }
 
     #[test]
