@@ -641,7 +641,8 @@ fn buttons(ui: &mut egui::Ui, ok: &str, enter: bool) -> bool {
         if ui.button("Cancel").clicked() {
             ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::new("dlg_cancel"), true));
         }
-        if ui.add(egui::Button::new(egui::RichText::new(ok).strong()).fill(Tokens::current().accent)).clicked() {
+        let t = Tokens::current();
+        if ui.add(egui::Button::new(egui::RichText::new(ok).strong().color(t.on_accent)).fill(t.accent)).clicked() {
             pressed = true;
         }
     });

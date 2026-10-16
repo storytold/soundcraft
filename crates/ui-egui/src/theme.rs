@@ -1,10 +1,15 @@
 //! Design tokens. Colours were chosen by eye to give a dark, studio-style look; they are ours.
 
+use craft_ui::theme::SuitePalette;
 use egui::{Color32, FontFamily, FontId};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 
-/// Whether the Light palette is active. Dark is the default (the incumbent is dark-only).
-static LIGHT_THEME: AtomicBool = AtomicBool::new(false);
+const SUITE_DARK: SuitePalette = SuitePalette::ARTCRAFT_DARK;
+
+mod avid_dark;
+
+/// Active resolved palette. System follows ArtCraft Dark or Light; Dark remains the default.
+static ACTIVE_THEME: AtomicU8 = AtomicU8::new(ThemeMode::Dark as u8);
 
 /// Unit tests that change or read the process-wide palette must own it until their assertions
 /// finish. The lock is re-entrant per thread, so a test may hold it and still build apps
@@ -66,7 +71,7 @@ mod palette_lock {
     }
 }
 
-/// The Appearance setting (`ui.theme {mode}`). Dark by default; System and Light are opt-in.
+/// The Appearance setting (`ui.theme {mode}`). ArtCraft Dark by default; alternatives are opt-in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
@@ -74,16 +79,18 @@ pub enum ThemeMode {
     Light,
     #[default]
     Dark,
+    AvidDark,
 }
 
 impl ThemeMode {
-    pub const ALL: [Self; 3] = [Self::Dark, Self::Light, Self::System];
+    pub const ALL: [Self; 4] = [Self::Dark, Self::AvidDark, Self::Light, Self::System];
 
     pub const fn label(self) -> &'static str {
         match self {
             Self::System => "System",
             Self::Light => "Light",
-            Self::Dark => "Dark",
+            Self::Dark => "Dark (ArtCraft)",
+            Self::AvidDark => "Dark (Avid-like)",
         }
     }
 
@@ -93,6 +100,7 @@ impl ThemeMode {
             Self::System => "system",
             Self::Light => "light",
             Self::Dark => "dark",
+            Self::AvidDark => "aviddark",
         }
     }
 
@@ -120,6 +128,10 @@ pub struct Tokens {
     pub counter_text: Color32,
     pub counter_label: Color32,
     pub accent: Color32,
+    /// Timeline and sampler editing marks, independent of the interface accent.
+    pub editor_accent: Color32,
+    /// Foreground on blue accent-filled controls.
+    pub on_accent: Color32,
     pub accent_dark: Color32,
     pub mode_on: Color32,
     pub mode_on_text: Color32,
@@ -213,30 +225,36 @@ pub struct Tokens {
 }
 
 impl Tokens {
+    /// Focused control border for standard Dark; alternative palettes keep egui defaults.
+    pub const DARK_FOCUS: Color32 = SUITE_DARK.focus;
+
+    // ArtCraft native dark UI roles. Timeline, meters, clips and transport status remain semantic.
     pub const DARK: Tokens = Tokens {
-        window_bg: Color32::from_rgb(30, 30, 30),
-        panel_bg: Color32::from_rgb(37, 37, 38),
-        panel_bg2: Color32::from_rgb(44, 44, 45),
-        toolbar_bg: Color32::from_rgb(30, 30, 31),
-        toolbar_group: Color32::from_rgb(24, 24, 25),
-        border: Color32::from_rgb(14, 14, 14),
-        border_light: Color32::from_rgb(64, 64, 66),
+        window_bg: SUITE_DARK.window,
+        panel_bg: SUITE_DARK.panel,
+        panel_bg2: SUITE_DARK.raised,
+        toolbar_bg: SUITE_DARK.chrome,
+        toolbar_group: SUITE_DARK.panel,
+        border: SUITE_DARK.border,
+        border_light: SUITE_DARK.border_strong,
         edge_light: Color32::from_rgba_premultiplied(20, 20, 20, 20),
-        text: Color32::from_rgb(214, 214, 214),
-        text_dim: Color32::from_rgb(150, 150, 152),
+        text: SUITE_DARK.text,
+        text_dim: SUITE_DARK.text_secondary,
         text_dark: Color32::from_rgb(16, 16, 16),
-        header_text: Color32::from_rgb(196, 196, 198),
+        header_text: SUITE_DARK.text,
         counter_bg: Color32::from_rgb(4, 4, 4),
         counter_text: Color32::from_rgb(104, 220, 120),
         counter_label: Color32::from_rgb(200, 200, 200),
-        accent: Color32::from_rgb(64, 132, 196),
-        accent_dark: Color32::from_rgb(40, 92, 146),
+        accent: SUITE_DARK.accent,
+        editor_accent: Color32::from_rgb(64, 132, 196),
+        on_accent: SUITE_DARK.on_accent,
+        accent_dark: SUITE_DARK.selection,
         mode_on: Color32::from_rgb(92, 196, 108),
         mode_on_text: Color32::from_rgb(10, 30, 12),
         mode_off_text: Color32::from_rgb(98, 196, 112),
-        button: Color32::from_rgb(58, 58, 60),
-        button_hi: Color32::from_rgb(78, 78, 80),
-        button_border: Color32::from_rgb(20, 20, 20),
+        button: SUITE_DARK.raised,
+        button_hi: SUITE_DARK.hover,
+        button_border: SUITE_DARK.border,
         name_field: Color32::from_rgb(208, 208, 208),
         name_field_sel: Color32::from_rgb(232, 232, 232),
         ruler_bg: Color32::from_rgb(40, 40, 41),
@@ -269,15 +287,15 @@ impl Tokens {
         strip_section: Color32::from_rgb(36, 36, 38),
         slot_bg: Color32::from_rgb(28, 28, 29),
         automation_line: Color32::from_rgb(240, 240, 240),
-        menu_bar: Color32::from_rgb(22, 22, 23),
+        menu_bar: SUITE_DARK.chrome,
         group_border: Color32::from_rgb(8, 8, 8),
         mode_off: Color32::from_rgb(20, 36, 22),
         counter_off: Color32::from_rgb(30, 50, 32),
         counter_border: Color32::from_rgb(50, 50, 50),
         counter_rule: Color32::from_rgb(40, 40, 40),
         tool_bracket_off: Color32::from_rgb(64, 64, 66),
-        row_selected: Color32::from_rgb(52, 70, 96),
-        visible_dot: Color32::from_rgb(200, 200, 200),
+        row_selected: SUITE_DARK.selection,
+        visible_dot: SUITE_DARK.text_secondary,
         big_counter_bg: Color32::from_rgb(0, 0, 0),
         header_selected: Color32::from_rgb(52, 58, 66),
         strip_selected: Color32::from_rgb(54, 58, 64),
@@ -290,13 +308,16 @@ impl Tokens {
         knob_bg: Color32::from_rgb(26, 26, 28),
         knob_ring: Color32::from_rgb(150, 150, 154),
         knob_pointer: Color32::from_rgb(230, 230, 230),
-        section_label: Color32::from_rgb(200, 200, 200),
+        section_label: SUITE_DARK.text_secondary,
         slot_well: Color32::from_rgb(43, 43, 43),
         slot_empty: Color32::from_rgb(39, 39, 39),
         slot_face: [Color32::from_rgb(92, 92, 92), Color32::from_rgb(75, 75, 75)],
         slot_bypassed: [Color32::from_rgb(66, 96, 146), Color32::from_rgb(50, 76, 120)],
         slot_mark: Color32::from_rgb(159, 159, 159),
     };
+
+    /// The original SoundCraft dark palette, independent of the standard ArtCraft dark roles.
+    pub const AVID_DARK: Tokens = avid_dark::AVID_DARK;
 
     pub const LIGHT: Tokens = Tokens {
         window_bg: Color32::from_rgb(184, 186, 190),
@@ -315,6 +336,8 @@ impl Tokens {
         counter_text: Color32::from_rgb(18, 108, 40),
         counter_label: Color32::from_rgb(54, 57, 63),
         accent: Color32::from_rgb(62, 116, 180),
+        editor_accent: Color32::from_rgb(62, 116, 180),
+        on_accent: Color32::WHITE,
         accent_dark: Color32::from_rgb(43, 88, 145),
         mode_on: Color32::from_rgb(75, 158, 88),
         mode_on_text: Color32::from_rgb(255, 255, 255),
@@ -384,22 +407,39 @@ impl Tokens {
     };
 
     pub fn current() -> Tokens {
-        if is_light() { Self::LIGHT } else { Self::DARK }
+        match active_mode() {
+            ThemeMode::Light => Self::LIGHT,
+            ThemeMode::AvidDark => Self::AVID_DARK,
+            _ => Self::DARK,
+        }
     }
 }
 
 /// Whether the Light palette is the active one.
 pub fn is_light() -> bool {
-    LIGHT_THEME.load(Ordering::Relaxed)
+    active_mode() == ThemeMode::Light
 }
 
-/// Resolve each frame from the integration's current OS appearance. Unknown uses Dark.
-pub fn wants_light(ctx: &egui::Context, mode: ThemeMode) -> bool {
-    match mode {
-        ThemeMode::Light => true,
-        ThemeMode::Dark => false,
-        ThemeMode::System => ctx.system_theme() == Some(egui::Theme::Light),
+/// The active resolved palette (never System).
+pub fn active_mode() -> ThemeMode {
+    match ACTIVE_THEME.load(Ordering::Relaxed) {
+        value if value == ThemeMode::Light as u8 => ThemeMode::Light,
+        value if value == ThemeMode::AvidDark as u8 => ThemeMode::AvidDark,
+        _ => ThemeMode::Dark,
     }
+}
+
+/// Resolve each frame from the integration's current OS appearance. Unknown uses ArtCraft Dark.
+pub fn resolved_mode(ctx: &egui::Context, mode: ThemeMode) -> ThemeMode {
+    match mode {
+        ThemeMode::System if ctx.system_theme() == Some(egui::Theme::Light) => ThemeMode::Light,
+        ThemeMode::System => ThemeMode::Dark,
+        manual => manual,
+    }
+}
+
+pub fn wants_light(ctx: &egui::Context, mode: ThemeMode) -> bool {
+    resolved_mode(ctx, mode) == ThemeMode::Light
 }
 
 /// A track's header and lane backgrounds in the Edit window, tinted with its colour by `tint` (0..1).
@@ -451,14 +491,25 @@ pub fn mono(size: f32) -> FontId {
 
 /// Make `light` (or dark) the active palette and apply its visuals. Call only when it changes.
 pub fn apply(ctx: &egui::Context, light: bool) {
-    LIGHT_THEME.store(light, Ordering::Relaxed);
+    apply_mode(ctx, if light { ThemeMode::Light } else { ThemeMode::Dark });
+}
+
+/// Apply a selected appearance, preserving the original alternative's egui visuals.
+pub fn apply_mode(ctx: &egui::Context, mode: ThemeMode) {
+    let mode = resolved_mode(ctx, mode);
+    ACTIVE_THEME.store(mode as u8, Ordering::Relaxed);
+    let light = mode == ThemeMode::Light;
     let t = Tokens::current();
     let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
     v.panel_fill = t.panel_bg;
     v.window_fill = t.panel_bg2;
     v.extreme_bg_color = t.slot_bg;
     v.faint_bg_color = t.panel_bg2;
-    v.selection.bg_fill = t.accent;
+    v.selection.bg_fill = if mode == ThemeMode::Dark { t.row_selected } else { t.accent };
+    if mode == ThemeMode::Dark {
+        v.selection.stroke.color = t.text;
+        v.widgets.hovered.bg_stroke.color = Tokens::DARK_FOCUS;
+    }
     v.widgets.inactive.weak_bg_fill = t.button;
     v.widgets.inactive.bg_fill = t.button;
     v.widgets.hovered.weak_bg_fill = t.button_hi;
@@ -481,9 +532,147 @@ pub fn apply(ctx: &egui::Context, light: bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn standard_dark_adapts_shared_suite_roles_and_focus() {
+        let suite = super::SuitePalette::ARTCRAFT_DARK;
+        let dark = super::Tokens::DARK;
+        for (role, actual, expected) in [
+            ("window", dark.window_bg, suite.window),
+            ("panel", dark.panel_bg, suite.panel),
+            ("raised panel", dark.panel_bg2, suite.raised),
+            ("toolbar", dark.toolbar_bg, suite.chrome),
+            ("toolbar group", dark.toolbar_group, suite.panel),
+            ("border", dark.border, suite.border),
+            ("strong border", dark.border_light, suite.border_strong),
+            ("text", dark.text, suite.text),
+            ("secondary text", dark.text_dim, suite.text_secondary),
+            ("header text", dark.header_text, suite.text),
+            ("accent", dark.accent, suite.accent),
+            ("accent foreground", dark.on_accent, suite.on_accent),
+            ("subdued accent", dark.accent_dark, suite.selection),
+            ("button", dark.button, suite.raised),
+            ("button hover", dark.button_hi, suite.hover),
+            ("button border", dark.button_border, suite.border),
+            ("menu bar", dark.menu_bar, suite.chrome),
+            ("selected row", dark.row_selected, suite.selection),
+            ("visible dot", dark.visible_dot, suite.text_secondary),
+            ("section label", dark.section_label, suite.text_secondary),
+            ("focus", super::Tokens::DARK_FOCUS, suite.focus),
+        ] {
+            assert_eq!(actual, expected, "{role}");
+        }
+        let _palette = super::lock_test_palette();
+        let ctx = egui::Context::default();
+        super::apply_mode(&ctx, super::ThemeMode::Dark);
+        assert_eq!(ctx.global_style().visuals.selection.bg_fill, suite.selection);
+        assert_eq!(ctx.global_style().visuals.selection.stroke.color, suite.selection_text);
+        assert_eq!(ctx.global_style().visuals.widgets.hovered.bg_stroke.color, suite.focus);
+        assert_eq!(dark.editor_accent, egui::Color32::from_rgb(64, 132, 196));
+        for mode in [super::ThemeMode::AvidDark, super::ThemeMode::Light] {
+            super::apply_mode(&ctx, mode);
+            let original = if mode == super::ThemeMode::Light { egui::Visuals::light() } else { egui::Visuals::dark() };
+            assert_eq!(ctx.global_style().visuals.widgets.hovered.bg_stroke, original.widgets.hovered.bg_stroke);
+            assert_eq!(ctx.global_style().visuals.selection.stroke, original.selection.stroke);
+        }
+    }
+
+    #[test]
+    fn artcraft_dark_roles_preserve_audio_semantics_and_light() {
+        let dark = super::Tokens::DARK;
+        let light = super::Tokens::LIGHT;
+        assert_eq!(light.editor_accent, light.accent);
+        assert_eq!(super::Tokens::AVID_DARK.editor_accent, super::Tokens::AVID_DARK.accent);
+        assert_eq!(dark.window_bg, egui::Color32::from_rgb(0x12, 0x13, 0x16));
+        assert_eq!(dark.toolbar_bg, egui::Color32::from_rgb(0x0A, 0x0A, 0x0C));
+        assert_eq!(dark.accent, egui::Color32::from_rgb(0x2D, 0x81, 0xFF));
+        assert_eq!(dark.on_accent, egui::Color32::from_rgb(0x06, 0x06, 0x07));
+        assert_eq!(dark.row_selected, egui::Color32::from_rgb(0x20, 0x3B, 0x65));
+        assert_eq!(dark.meter_green, egui::Color32::from_rgb(60, 200, 80));
+        assert_eq!(dark.rec, egui::Color32::from_rgb(214, 52, 46));
+        assert_eq!(dark.playlist_bg, egui::Color32::from_rgb(36, 36, 37));
+        let _palette = super::lock_test_palette();
+        let ctx = egui::Context::default();
+        super::apply(&ctx, false);
+        assert_eq!(ctx.global_style().visuals.selection.bg_fill, dark.row_selected);
+        assert_eq!(light.window_bg, egui::Color32::from_rgb(184, 186, 190));
+        assert_eq!(super::ThemeMode::default(), super::ThemeMode::Dark);
+    }
+
     use super::*;
     use crate::{Services, SoundApp, UiState};
     use serde_json::json;
+
+    #[test]
+    fn original_dark_palette_is_distinct_and_preserves_audio_semantics() {
+        let _palette = lock_test_palette();
+        let original = Tokens::AVID_DARK;
+        let standard = Tokens::DARK;
+        assert_eq!(original.window_bg, Color32::from_rgb(30, 30, 30));
+        assert_eq!(original.toolbar_bg, Color32::from_rgb(30, 30, 31));
+        assert_eq!(original.text, Color32::from_rgb(214, 214, 214));
+        assert_eq!(original.accent, Color32::from_rgb(64, 132, 196));
+        assert_eq!(original.on_accent, Color32::WHITE);
+        assert_ne!(original.panel_bg, standard.panel_bg);
+        assert_eq!(
+            [
+                original.counter_bg,
+                original.counter_text,
+                original.playlist_bg,
+                original.playlist_alt,
+                original.grid_line,
+                original.bar_line,
+                original.selection,
+                original.playhead,
+                original.insertion,
+                original.solo,
+                original.mute,
+                original.rec,
+                original.input,
+                original.auto_read,
+                original.auto_write,
+                original.auto_touch,
+                original.auto_latch,
+                original.meter_green,
+                original.meter_yellow,
+                original.meter_red
+            ],
+            [
+                standard.counter_bg,
+                standard.counter_text,
+                standard.playlist_bg,
+                standard.playlist_alt,
+                standard.grid_line,
+                standard.bar_line,
+                standard.selection,
+                standard.playhead,
+                standard.insertion,
+                standard.solo,
+                standard.mute,
+                standard.rec,
+                standard.input,
+                standard.auto_read,
+                standard.auto_write,
+                standard.auto_touch,
+                standard.auto_latch,
+                standard.meter_green,
+                standard.meter_yellow,
+                standard.meter_red
+            ]
+        );
+        let ctx = egui::Context::default();
+        apply_mode(&ctx, ThemeMode::AvidDark);
+        assert_eq!(active_mode(), ThemeMode::AvidDark);
+        assert!(!is_light());
+        assert_eq!(Tokens::current().panel_bg, original.panel_bg);
+        assert_eq!(ctx.global_style().visuals.selection.bg_fill, original.accent);
+        assert_eq!(ctx.global_style().visuals.selection.stroke, egui::Visuals::dark().selection.stroke);
+        let original_clips = clip_colors([70, 110, 160], false);
+        apply_mode(&ctx, ThemeMode::Dark);
+        assert_eq!(Tokens::current().panel_bg, standard.panel_bg);
+        assert_eq!(ctx.global_style().visuals.selection.bg_fill, standard.row_selected);
+        assert_eq!(clip_colors([70, 110, 160], false), original_clips);
+        assert_eq!(ThemeMode::parse(" AvidDark "), Some(ThemeMode::AvidDark));
+    }
 
     #[test]
     fn test_palette_lock_is_reentrant_and_excludes_other_threads() {
@@ -542,6 +731,8 @@ mod tests {
         assert!(app.run("ui.theme", json!({"mode": "sepia"})).is_err());
         assert_eq!(app.ui.theme, ThemeMode::Light);
         assert_eq!(app.run("ui.theme", json!({"mode": "system"})), Ok(json!({"mode": "system"})));
+        assert_eq!(app.run("ui.theme", json!({"mode": "aviddark"})), Ok(json!({"mode": "aviddark"})));
+        assert_eq!(app.ui.theme, ThemeMode::AvidDark);
         assert!(crate::menus::UI_COMMANDS.iter().any(|c| c.0 == "ui.theme"));
     }
 
@@ -565,7 +756,13 @@ mod tests {
             let mut output = ctx.run_ui(egui::RawInput { system_theme, ..Default::default() }, |ui| {
                 let ctx = ui.ctx().clone();
                 app.logic(&ctx);
-                let tokens = if light { Tokens::LIGHT } else { Tokens::DARK };
+                let tokens = if light {
+                    Tokens::LIGHT
+                } else if mode == ThemeMode::AvidDark {
+                    Tokens::AVID_DARK
+                } else {
+                    Tokens::DARK
+                };
                 assert_eq!(is_light(), light, "custom palette for {mode:?} with {system_theme:?}");
                 assert_eq!(Tokens::current().panel_bg, tokens.panel_bg);
                 assert_eq!(ctx.options(|options| options.theme_preference), egui::ThemePreference::System);
@@ -601,7 +798,7 @@ mod tests {
         track.color = [19, 83, 147];
         track.playlists.iter_mut().flat_map(|playlist| &mut playlist.clips).next().unwrap().color = Some([211, 57, 99]);
         let mut app = SoundApp::new(engine, None, Services::default());
-        for mode in [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark] {
+        for mode in ThemeMode::ALL {
             app.run("ui.theme", json!({"mode": mode.id()})).unwrap();
             for appearance in appearances {
                 let light = mode == ThemeMode::Light || (mode == ThemeMode::System && appearance == Some(egui::Theme::Light));

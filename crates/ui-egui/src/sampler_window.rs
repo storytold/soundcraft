@@ -58,7 +58,7 @@ pub fn drop_target(app: &mut SoundApp, ctx: &egui::Context, r: Rect, t: TrackId)
         ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("sample_drop", t.0)))).rect_stroke(
             r,
             2.0,
-            Stroke::new(2.0, Tokens::current().accent),
+            Stroke::new(2.0, Tokens::current().editor_accent),
             StrokeKind::Inside,
         );
     }
@@ -205,7 +205,7 @@ pub fn sample_strip(app: &mut SoundApp, ui: &mut Ui, tid: TrackId, ins: &Insert)
         (a.min(b), a.max(b))
     };
     if looping {
-        p.rect_filled(Rect::from_x_y_ranges(x_of(ls)..=x_of(le), r.y_range()), 0.0, t.accent.gamma_multiply(0.18));
+        p.rect_filled(Rect::from_x_y_ranges(x_of(ls)..=x_of(le), r.y_range()), 0.0, t.editor_accent.gamma_multiply(0.18));
     }
     // One min/max column per point, a lane per channel (two at most).
     let lanes = audio.peaks.len().clamp(1, 2);
@@ -231,8 +231,8 @@ pub fn sample_strip(app: &mut SoundApp, ui: &mut Ui, tid: TrackId, ins: &Insert)
         .map(|(id, _)| {
             let (col, tag) = match *id {
                 "start" => (t.playhead, "S"),
-                "loop_start" => (t.accent, "L"),
-                _ => (t.accent, "E"),
+                "loop_start" => (t.editor_accent, "L"),
+                _ => (t.editor_accent, "E"),
             };
             (*id, param(ins, id), col, tag)
         })

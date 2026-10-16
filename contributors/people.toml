@@ -50,3 +50,6 @@ sync_github_name = false
 
 [people.Momentum96]
 sync_github_name = true
+
+[people.pourie-he]
+sync_github_name = true

@@ -1963,7 +1963,7 @@ fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, 
         spot_or_run(app, spot);
     }
     if resp.dnd_hover_payload::<crate::DragSource>().is_some() {
-        ui.painter().rect_stroke(lane, 0.0, Stroke::new(2.0, Tokens::current().accent), StrokeKind::Inside);
+        ui.painter().rect_stroke(lane, 0.0, Stroke::new(2.0, Tokens::current().editor_accent), StrokeKind::Inside);
     }
     // Audio files dropped from outside onto an instrument track load its sampler.
     if track.kind == soundcraft_model::TrackKind::Instrument {
@@ -2613,7 +2613,7 @@ fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
         for x in [x_of(s, tl, sel.start), x_of(s, tl, sel.end)] {
             painter.add(Shape::convex_polygon(
                 vec![pos2(x - 5.0, area.min.y + 2.0), pos2(x + 5.0, area.min.y + 2.0), pos2(x, area.min.y + 9.0)],
-                t.accent,
+                t.editor_accent,
                 Stroke::NONE,
             ));
         }

@@ -81,9 +81,10 @@ where each script line is a request (`{"method": …, "params": …}`), `{"shot"
 `{"steps": n}`. Use `--system-theme light|dark|none` to supply the initial OS appearance, and
 script events such as `{"system_theme": "dark"}` to change it on subsequent frames.
 
-Appearance defaults to Dark. `ui.theme {"mode":"system"}` follows the appearance supplied by
-the native or web integration at launch and on later frames, while the saved choice stays System.
-When the integration cannot report an appearance, System uses Dark. Manual Light and Dark stay
+Appearance defaults to Dark (ArtCraft). `ui.theme {"mode":"aviddark"}` selects the original
+SoundCraft Avid-like dark palette. The saved `dark`, `light` and `system` IDs are unchanged.
+`ui.theme {"mode":"system"}` follows the appearance supplied by the native or web integration at launch and on later frames, while the saved choice stays System.
+When the integration cannot report an appearance, System uses Dark. Manual Light and both dark palettes stay
 fixed when the OS appearance changes. An offscreen render without `--system-theme` supplies no
 OS appearance and therefore resolves System to Dark.
 

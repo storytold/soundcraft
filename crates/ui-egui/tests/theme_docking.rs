@@ -24,6 +24,7 @@ fn shared_panels_and_controls_follow_manual_and_live_system_appearance() {
         h.input_mut().max_texture_side = Some(8192);
         for (name, mode, system, light) in [
             ("dark", theme::ThemeMode::Dark, egui::Theme::Light, false),
+            ("aviddark", theme::ThemeMode::AvidDark, egui::Theme::Light, false),
             ("light", theme::ThemeMode::Light, egui::Theme::Dark, true),
             ("system-light", theme::ThemeMode::System, egui::Theme::Light, true),
             ("system-dark", theme::ThemeMode::System, egui::Theme::Dark, false),
@@ -43,7 +44,7 @@ fn shared_panels_and_controls_follow_manual_and_live_system_appearance() {
                 }
             }
             let ctx = egui::Context::default();
-            theme::apply(&ctx, light);
+            theme::apply_mode(&ctx, mode);
             let tokens = theme::Tokens::current();
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 widgets::icon_button(ui, vec2(38.0, 28.0), "loop", true, "Loop playback");
@@ -58,7 +59,7 @@ fn shared_panels_and_controls_follow_manual_and_live_system_appearance() {
             if let Some(directory) = std::env::var_os("CRAFT_UI_THEME_SHOTS").map(std::path::PathBuf::from) {
                 let mut controls = Harness::builder().with_size(vec2(340.0, 150.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
                     move |ui, _: &mut ()| {
-                        theme::apply(ui.ctx(), light);
+                        theme::apply_mode(ui.ctx(), mode);
                         for enabled in [true, false] {
                             ui.add_enabled_ui(enabled, |ui| {
                                 ui.horizontal(|ui| {

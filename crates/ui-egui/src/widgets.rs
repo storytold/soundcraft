@@ -88,14 +88,14 @@ fn key_light(p: &Painter, face: Rect) {
 }
 
 /// Local colors for shared icon-button interaction; transport-specific states stay in the toolbar.
-fn button_style(selected_fill: Color32, normal_icon: Color32, radius: u8) -> IconButtonStyle {
+fn button_style(selected_fill: Color32, normal_icon: Color32, selected_icon: Color32, radius: u8) -> IconButtonStyle {
     let t = Tokens::current();
     let visuals = |fill, icon| ButtonVisuals { fill, stroke: Stroke::new(1.0, t.button_border), icon };
     IconButtonStyle {
         normal: visuals(t.button, normal_icon),
         hovered: visuals(t.button_hi, normal_icon),
         pressed: Some(visuals(shade(t.button, -0.1), normal_icon)),
-        selected: visuals(selected_fill, Color32::WHITE),
+        selected: visuals(selected_fill, selected_icon),
         corner_radius: CornerRadius::same(radius),
         focus_stroke: Stroke::new(1.0, t.accent),
     }
@@ -104,7 +104,7 @@ fn button_style(selected_fill: Color32, normal_icon: Color32, radius: u8) -> Ico
 /// A toolbar button with an icon; `on` draws the blue selected state.
 pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &str) -> Response {
     let t = Tokens::current();
-    let style = button_style(t.accent, t.text, 3);
+    let style = button_style(t.accent, t.text, t.on_accent, 3);
     let resp = IconButton::new(tip, size, &style).selected(on).single_shape_frame().show(ui, |ui, r, tint| {
         key_light(ui.painter(), r.shrink(1.0));
         let s = r.height().min(r.width()) * 0.78;
@@ -126,7 +126,7 @@ pub fn text_toggle(ui: &mut Ui, size: egui::Vec2, text: &str, on: bool, on_color
 /// Record-enable button (red dot); the caller owns track arming and command dispatch.
 pub fn rec_toggle(ui: &mut Ui, size: egui::Vec2, on: bool, tip: &str) -> Response {
     let t = Tokens::current();
-    let style = button_style(t.rec, Color32::from_rgb(218, 112, 106), 2);
+    let style = button_style(t.rec, Color32::from_rgb(218, 112, 106), Color32::WHITE, 2);
     let resp = IconButton::new(tip, size, &style).selected(on).single_shape_frame().show(ui, |ui, r, tint| {
         key_light(ui.painter(), r.shrink(1.0));
         let rad = size.y * 0.24;
