@@ -186,6 +186,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_round_trips_timecode_negative() {
+        let (sr, map, _) = ctx();
+        let rate = FrameRate::Fps25;
+        for fmt in [TimeFormat::Timecode, TimeFormat::FeetFrames] {
+            for s in [-48_000i64, -96_000 * 3, -1_440_000] {
+                let text = format_position(s, fmt, sr, &map, rate, 0, 0);
+                let back = parse_position(&text, fmt, sr, &map, rate, 0, 0).unwrap();
+                assert_eq!(back, s, "{fmt:?} {s} → {text} → {back}");
+            }
+        }
+    }
+
+    #[test]
     fn parse_rejects_garbage() {
         let (sr, map, rate) = ctx();
         assert!(parse_position("abc", TimeFormat::Samples, sr, &map, rate, 0, 0).is_err());

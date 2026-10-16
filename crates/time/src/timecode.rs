@@ -108,7 +108,9 @@ impl FrameRate {
         if n == 0 {
             return 0;
         }
-        let v = (i128::from(f) * i128::from(sr.hz()) * i128::from(d) + i128::from(n) / 2) / i128::from(n);
+        // Round half away from zero so negative frames mirror positive ones.
+        let mag = (i128::from(f.unsigned_abs()) * i128::from(sr.hz()) * i128::from(d) + i128::from(n) / 2) / i128::from(n);
+        let v = if f < 0 { -mag } else { mag };
         i64::try_from(v).unwrap_or(if v < 0 { i64::MIN } else { i64::MAX })
     }
 
@@ -219,6 +221,18 @@ mod tests {
         let tc = Timecode::from_samples(48_000 * 3661, FrameRate::Fps25, sr);
         assert_eq!(tc.format(FrameRate::Fps25), "01:01:01:00");
         assert_eq!(tc.to_samples(FrameRate::Fps25, sr), 48_000 * 3661);
+    }
+
+    #[test]
+    fn negative_timecode_rounds_symmetrically() {
+        let sr = SampleRate::HZ_48000;
+        let tc = Timecode::parse("-00:00:01:00").unwrap();
+        assert_eq!(tc.to_samples(FrameRate::Fps25, sr), -48_000);
+        for r in [FrameRate::Fps25, FrameRate::Fps29_97, FrameRate::Fps29_97Drop, FrameRate::Fps23_976] {
+            for f in [1i64, 7, 25, 1799, 107_892] {
+                assert_eq!(r.samples_at_frame(-f, sr), -r.samples_at_frame(f, sr), "{r:?} frame {f}");
+            }
+        }
     }
 
     #[test]
