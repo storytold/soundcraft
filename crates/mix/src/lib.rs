@@ -1638,7 +1638,7 @@ fn note_insert_latency(t: &Track, strip: &mut Strip, pos: Samples) {
     let mut latency = 0usize;
     for (i, ins) in t.mixer.inserts.iter().enumerate() {
         let (Some(ins), Some(Some(slot))) = (ins, strip.plugins.get_mut(i)) else { continue };
-        if !ins.active || ins.bypass {
+        if !ins.active || ins.bypass || slot.failed {
             continue;
         }
         apply_params(slot, ins, t, i, pos);
@@ -2740,6 +2740,9 @@ mod tests {
         fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
             io.iter_mut().for_each(|c| c.iter_mut().take(frames).for_each(|x| *x = f32::NAN));
         }
+        fn latency(&self) -> usize {
+            self.0.latency()
+        }
     }
 
     fn nan(track: TrackId, slot: usize, ch: usize) -> Vec<PreparedInstance> {
@@ -2784,6 +2787,71 @@ mod tests {
         assert_eq!(render_block(&mut eng, &s, 512), 0.0);
         assert_eq!(eng.meters[&m].plugin_failures, PluginFailures { count: 1, last: 0 });
         assert_eq!(render_block(&mut eng, &s, 1024), only_b);
+    }
+
+    #[test]
+    fn failed_inserts_stop_contributing_latency_until_reset() {
+        for kind in [TrackKind::Audio, TrackKind::Aux, TrackKind::Folder, TrackKind::Master] {
+            for block in [64, 512] {
+                let mut s = Session::default();
+                s.edit.delay_compensation = true;
+                let source = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+                let mut impulse = vec![0.0; block * 6];
+                for at in [block, block * 2, block * 4] {
+                    impulse[at] = 0.25;
+                }
+                s.pool
+                    .insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![impulse.clone(), impulse] })));
+                let cid = s.new_clip_id();
+                s.track_mut(source).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(
+                    cid,
+                    "impulses",
+                    SourceId(900),
+                    0,
+                    0,
+                    (block * 6) as i64,
+                ));
+                let target = if kind == TrackKind::Audio { source } else { s.add_track(kind, ChannelFormat::Stereo, None) };
+                if matches!(kind, TrackKind::Aux | TrackKind::Folder) {
+                    let bus = s.add_bus("Return", ChannelFormat::Stereo);
+                    s.track_mut(source).unwrap().mixer.output = Route::Bus(bus);
+                    s.track_mut(target).unwrap().mixer.input = Route::Bus(bus);
+                }
+                let mut failed = Insert::new("clap:test.nan");
+                failed.params.insert("lookahead".into(), 5.0);
+                let mut healthy = Insert::new("compressor");
+                healthy.params.insert("lookahead".into(), 1.0);
+                healthy.params.insert("ratio".into(), 1.0);
+                let tr = s.track_mut(target).unwrap();
+                tr.mixer.inserts[0] = Some(failed);
+                tr.mixer.inserts[1] = Some(healthy);
+                let mut plugin = soundcraft_dsp::create("compressor").unwrap();
+                plugin.prepare(48_000.0, block, 2);
+                let mut eng = MixEngine::new(48_000.0, block);
+                eng.set_external_instances(true);
+                eng.adopt(vec![PreparedInstance { track: target, slot: 0, id: "clap:test.nan".into(), ch: 2, plugin: Box::new(Nan(plugin)) }]);
+                let mut out = vec![vec![0.0; block]; 2];
+                eng.render(&s, 0, block, &mut out);
+                assert!(out.iter().flatten().all(|x| *x == 0.0));
+                assert_eq!(eng.meters[&target].plugin_failures.count, 1);
+
+                for b in [1, 2, 4] {
+                    if b == 4 {
+                        // Reset retries the failed plugin once; the next block must drop its
+                        // latency again, while keeping the healthy insert's 48-sample delay.
+                        eng.reset();
+                        eng.render(&s, (block * 3) as i64, block, &mut out);
+                        assert_eq!(eng.meters[&target].plugin_failures.count, 2);
+                    }
+                    eng.render(&s, (block * b) as i64, block, &mut out);
+                    assert_eq!(eng.latency, 48, "{kind:?}, block {block}, pass {b}: only the healthy insert delays audio");
+                    for channel in &out {
+                        assert_eq!(impulse_at(channel), vec![48], "{kind:?}, block {block}, pass {b}: no compensation for the failed insert");
+                        assert!((channel[48] - 0.25).abs() < 1e-5);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

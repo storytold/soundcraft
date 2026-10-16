@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (G-01: audio device settings and opt-in ASIO) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-16 · **Last updated:** 2026-10-16 · **Change:** trivial (G-04: failed insert latency compensation) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -79,6 +79,11 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   black-box format study is in the clean-room rules; not included in the estimate.
 
 ### G-04. Correctness bugs in "done" features
+
+**Fixed (2026-10-16):** Aux, folder and master latency calculations now skip inserts already
+disabled for producing NaN or infinity. Subsequent blocks compensate only for healthy inserts;
+regression tests verify rendered impulse timing, retained healthy latency and reset/retry at
+64- and 512-sample blocks, with audio tracks as the control.
 
 Open on 2026-10-10 (several have PRs open):
 editing #3, #5, #140, #144; clip/session #86 (PR #123), #88 (PR #130), #91 (PR #124), #92 (PR #132);
@@ -199,6 +204,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | trivial | G-04: failed aux/folder/master inserts excluded from latency compensation after containment; estimates unchanged |
 | 2026-10-12 | minor | G-01 shrunk: audio device, rate and buffer choice; opt-in ASIO |
 | 2026-10-10 | minor | Marked the alpha blockers (G-01, G-02, G-03; parts of G-05 and G-06) from the core-workflow gate |
 | 2026-10-10 | major | Created from the full re-measure against Pro Tools Ultimate 2026.4.1: 22 ranked gaps with evidence and estimates |
