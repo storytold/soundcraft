@@ -1,9 +1,9 @@
 //! Notation: MIDI tracks laid out as measures of notes and rests, written as MusicXML
 //! (File › Export › Sibelius, File › Send To › Sibelius) or engraved to SVG (File › Print Score).
 //!
-//! Notes are quantized to sixteenths. Each part is a single voice: notes that start together form
-//! a chord, overlapping notes are cut at the next onset, and anything crossing a bar line is split
-//! and tied.
+//! Notes are quantized to sixteenths. Each part is a sequence of chords split at note onsets,
+//! note ends and bar lines.
+//! Per-pitch ties preserve the duration of each note, including overlapping notes.
 
 use soundcraft_model::{ClipContent, Session, TrackId, TrackKind};
 use soundcraft_time::TICKS_PER_QUARTER;
@@ -64,8 +64,10 @@ pub struct Item {
     pub pitches: Vec<u8>,
     /// Duration in sixteenths; always one of [`VALUES`].
     pub units: u32,
-    pub tie_start: bool,
-    pub tie_stop: bool,
+    /// Pitches continuing into the next item.
+    pub tie_start: Vec<u8>,
+    /// Pitches continuing from the previous item.
+    pub tie_stop: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -151,54 +153,83 @@ fn split_units(mut units: i64) -> Vec<u32> {
 }
 
 fn fill(bars: &[(i64, i64, u32, u32)], notes: &[(i64, i64, u8)]) -> Vec<Measure> {
-    // Onsets → chords, each held until its longest note ends or the next onset.
-    let mut onsets: std::collections::BTreeMap<i64, (i64, Vec<u8>)> = std::collections::BTreeMap::new();
-    for (a, b, p) in notes {
-        let e = onsets.entry(*a).or_insert((*b, Vec::new()));
-        e.0 = e.0.max(*b);
-        if !e.1.contains(p) {
-            e.1.push(*p);
-        }
+    #[derive(Default)]
+    struct Events {
+        starts: Vec<u8>,
+        ends: Vec<u8>,
     }
-    let starts: Vec<i64> = onsets.keys().copied().collect();
-    let mut spans: Vec<(i64, i64, Vec<u8>)> = Vec::new();
-    for (i, (a, (b, mut ps))) in onsets.into_iter().enumerate() {
-        let end = starts.get(i + 1).map_or(b, |n| b.min(*n));
-        ps.sort_unstable();
-        spans.push((a, end, ps));
+    let limit = bars.last().map_or(0, |(start, length, _, _)| start.saturating_add(*length));
+    let mut events: std::collections::BTreeMap<i64, Events> = std::collections::BTreeMap::new();
+    for &(a, b, pitch) in notes {
+        if a >= b || a >= limit || b <= 0 || pitch > 127 {
+            continue;
+        }
+        events.entry(a.max(0)).or_default().starts.push(pitch);
+        events.entry(b.min(limit)).or_default().ends.push(pitch);
+    }
+    let events: Vec<_> = events.into_iter().collect();
+    let mut active = [0usize; 128];
+    let mut spans = Vec::new();
+    for pair in events.windows(2) {
+        let [(from, ev), (to, next)] = pair else { continue };
+        for pitch in &ev.ends {
+            if let Some(count) = active.get_mut(usize::from(*pitch)) {
+                *count = count.saturating_sub(1);
+            }
+        }
+        let tied_in: Vec<u8> = active.iter().enumerate().filter(|(p, n)| **n > 0 && !ev.starts.contains(&(*p as u8))).map(|(p, _)| p as u8).collect();
+        for pitch in &ev.starts {
+            if let Some(count) = active.get_mut(usize::from(*pitch)) {
+                *count = count.saturating_add(1);
+            }
+        }
+        let pitches: Vec<u8> = active.iter().enumerate().filter(|(_, n)| **n > 0).map(|(p, _)| p as u8).collect();
+        let mut ending = [0usize; 128];
+        for pitch in &next.ends {
+            if let Some(count) = ending.get_mut(usize::from(*pitch)) {
+                *count = count.saturating_add(1);
+            }
+        }
+        let tied_out: Vec<u8> = pitches
+            .iter()
+            .copied()
+            .filter(|p| active.get(usize::from(*p)).zip(ending.get(usize::from(*p))).is_some_and(|(a, b)| a > b) && !next.starts.contains(p))
+            .collect();
+        if !pitches.is_empty() {
+            spans.push((*from, *to, pitches, tied_in, tied_out));
+        }
     }
     let mut measures = Vec::new();
     for (ms, ml, num, den) in bars {
         let me = ms + ml;
         let mut items = Vec::new();
         let mut cursor = *ms;
-        let emit = |from: i64, to: i64, pitches: &[u8], tied_in: bool, tied_out: bool, items: &mut Vec<Item>| {
+        let emit = |from: i64, to: i64, pitches: &[u8], tied_in: &[u8], tied_out: &[u8], items: &mut Vec<Item>| {
             let parts = split_units(to - from);
             let n = parts.len();
             for (k, u) in parts.into_iter().enumerate() {
-                let rest = pitches.is_empty();
                 items.push(Item {
                     pitches: pitches.to_vec(),
                     units: u,
-                    tie_stop: !rest && (tied_in || k > 0),
-                    tie_start: !rest && (tied_out || k + 1 < n),
+                    tie_stop: pitches.iter().copied().filter(|p| k > 0 || tied_in.contains(p)).collect(),
+                    tie_start: pitches.iter().copied().filter(|p| k + 1 < n || tied_out.contains(p)).collect(),
                 });
             }
         };
-        for (a, b, ps) in spans.iter().filter(|(a, b, _)| *b > *ms && *a < me) {
+        for (a, b, ps, tied_in, tied_out) in spans.iter().filter(|(a, b, ..)| *b > *ms && *a < me) {
             let from = (*a).max(*ms).max(cursor);
             let to = (*b).min(me);
             if to <= from {
                 continue;
             }
             if from > cursor {
-                emit(cursor, from, &[], false, false, &mut items);
+                emit(cursor, from, &[], &[], &[], &mut items);
             }
-            emit(from, to, ps, *a < *ms, *b > me, &mut items);
+            emit(from, to, ps, if from > *a { ps } else { tied_in }, if to < *b { ps } else { tied_out }, &mut items);
             cursor = to;
         }
         if cursor < me {
-            emit(cursor, me, &[], false, false, &mut items);
+            emit(cursor, me, &[], &[], &[], &mut items);
         }
         measures.push(Measure { numerator: *num, denominator: *den, items });
     }
@@ -285,10 +316,10 @@ pub fn musicxml(parts: &[Part], setup: &ScoreSetup) -> String {
                         let _ = write!(x, "<alter>{alter}</alter>");
                     }
                     let _ = write!(x, "<octave>{octave}</octave></pitch><duration>{}</duration>", it.units);
-                    if it.tie_stop {
+                    if it.tie_stop.contains(pitch) {
                         x.push_str("<tie type=\"stop\"/>");
                     }
-                    if it.tie_start {
+                    if it.tie_start.contains(pitch) {
                         x.push_str("<tie type=\"start\"/>");
                     }
                     let _ = write!(x, "<voice>1</voice><type>{ty}</type>");
@@ -298,12 +329,12 @@ pub fn musicxml(parts: &[Part], setup: &ScoreSetup) -> String {
                     if alter != 0 {
                         x.push_str("<accidental>sharp</accidental>");
                     }
-                    if it.tie_stop || it.tie_start {
+                    if it.tie_stop.contains(pitch) || it.tie_start.contains(pitch) {
                         x.push_str("<notations>");
-                        if it.tie_stop {
+                        if it.tie_stop.contains(pitch) {
                             x.push_str("<tied type=\"stop\"/>");
                         }
-                        if it.tie_start {
+                        if it.tie_start.contains(pitch) {
                             x.push_str("<tied type=\"start\"/>");
                         }
                         x.push_str("</notations>");
@@ -457,9 +488,16 @@ pub fn svg(parts: &[Part], setup: &ScoreSetup) -> String {
                             );
                         }
                     }
-                    if it.tie_start {
-                        let y = bottom - f64::from(steps[0]) * SP / 2.0 + 6.0;
-                        let _ = writeln!(o, "<path d=\"M{:.1} {y:.1} q 8 5 16 0\" fill=\"none\" stroke=\"black\" stroke-width=\"0.9\"/>", x + 3.0);
+                    for pitch in &it.tie_start {
+                        let above = it.pitches.first().is_some_and(|low| pitch > low);
+                        let direction = if above { -1.0 } else { 1.0 };
+                        let y = bottom - f64::from(staff_step(*pitch, p.bass)) * SP / 2.0 + direction * 6.0;
+                        let _ = writeln!(
+                            o,
+                            "<path d=\"M{:.1} {y:.1} q 8 {} 16 0\" fill=\"none\" stroke=\"black\" stroke-width=\"0.9\"/>",
+                            x + 3.0,
+                            direction * 5.0
+                        );
                     }
                 }
             }
@@ -515,6 +553,37 @@ fn rest(o: &mut String, x: f64, y0: f64, sp: f64, units: u32) {
 mod tests {
     use super::*;
 
+    proptest::proptest! {
+        #[test]
+        fn score_preserves_pitch_activity(notes in proptest::collection::vec((0i64..32, 1i64..32, 48u8..72), 0..20)) {
+            let notes: Vec<_> = notes.into_iter().map(|(a, length, pitch)| (a, a + length, pitch)).collect();
+            let measures = fill(&[(0, 16, 4, 4), (16, 16, 4, 4), (32, 16, 4, 4), (48, 16, 4, 4)], &notes);
+            let mut at = 0i64;
+            for m in measures {
+                proptest::prop_assert_eq!(m.items.iter().map(|i| i.units).sum::<u32>(), 16);
+                for item in m.items {
+                    for tick in at..at + i64::from(item.units) {
+                        let expected: Vec<u8> = (48..72).filter(|pitch| notes.iter().any(|(a, b, p)| p == pitch && *a <= tick && tick < *b)).collect();
+                        proptest::prop_assert_eq!(&item.pitches, &expected);
+                    }
+                    let end = at + i64::from(item.units);
+                    let tied_in: Vec<_> = item.pitches.iter().copied().filter(|p| {
+                        notes.iter().any(|(a, b, pitch)| pitch == p && *a < at && at < *b)
+                            && !notes.iter().any(|(a, _, pitch)| pitch == p && *a == at)
+                    }).collect();
+                    let tied_out: Vec<_> = item.pitches.iter().copied().filter(|p| {
+                        end < 64 && notes.iter().any(|(a, b, pitch)| pitch == p && *a < end && end < *b)
+                            && !notes.iter().any(|(a, _, pitch)| pitch == p && *a == end)
+                    }).collect();
+                    proptest::prop_assert_eq!(item.tie_stop, tied_in);
+                    proptest::prop_assert_eq!(item.tie_start, tied_out);
+                    at = end;
+                }
+            }
+            proptest::prop_assert_eq!(at, 64);
+        }
+    }
+
     #[test]
     fn split_units_uses_representable_values() {
         assert_eq!(split_units(16), vec![16]);
@@ -542,8 +611,39 @@ mod tests {
             assert_eq!(meas.items.iter().map(|i| i.units).sum::<u32>(), 16);
         }
         assert_eq!(m[0].items[0].pitches, vec![60, 64]);
-        assert!(m[0].items.last().is_some_and(|i| i.tie_start));
-        assert!(m[1].items[0].tie_stop);
+        assert!(m[0].items.last().is_some_and(|i| !i.tie_start.is_empty()));
+        assert_eq!(m[1].items[0].tie_stop, vec![67]);
+    }
+
+    #[test]
+    fn unequal_chord_durations_are_preserved_in_layout_and_exports() {
+        let measures = fill(&[(0, 16, 4, 4)], &[(0, 4, 60), (0, 16, 64)]);
+        let items = &measures[0].items;
+        assert_eq!(items.iter().map(|i| i.units).sum::<u32>(), 16);
+        assert_eq!(items.iter().filter(|i| i.pitches.contains(&60)).map(|i| i.units).sum::<u32>(), 4);
+        assert_eq!(items.iter().filter(|i| i.pitches.contains(&64)).map(|i| i.units).sum::<u32>(), 16);
+        assert_eq!(items[0].tie_start, vec![64]);
+        assert_eq!(items[1].tie_stop, vec![64]);
+        let parts = vec![Part { name: "Keys".into(), bass: false, measures }];
+        let setup = ScoreSetup::from_session(&Session::default());
+        let xml = musicxml(&parts, &setup);
+        let notes: Vec<_> = xml.split("<note>").skip(1).map(|n| n.split("</note>").next().unwrap()).collect();
+        assert!(notes[0].contains("<step>C</step>") && notes[0].contains("<duration>4</duration>"));
+        assert!(!notes[0].contains("<tie "));
+        assert!(notes[1].contains("<tie type=\"start\"/>") && notes[1].contains("<chord/>"));
+        assert!(notes[2].contains("<duration>12</duration>") && notes[2].contains("<tie type=\"stop\"/>"));
+        assert_eq!(svg(&parts, &setup).matches("stroke-width=\"0.9\"").count(), 1);
+    }
+
+    #[test]
+    fn overlapping_notes_continue_and_repeated_notes_are_not_tied() {
+        let m = fill(&[(0, 16, 4, 4), (16, 16, 4, 4)], &[(0, 20, 60), (4, 8, 64), (20, 24, 60)]);
+        let items: Vec<_> = m.iter().flat_map(|m| &m.items).collect();
+        assert_eq!(items.iter().filter(|i| i.pitches.contains(&60)).map(|i| i.units).sum::<u32>(), 24);
+        assert_eq!(items.iter().filter(|i| i.pitches.contains(&64)).map(|i| i.units).sum::<u32>(), 4);
+        assert_eq!(m[1].items[0].tie_stop, vec![60]);
+        assert!(m[1].items[0].tie_start.is_empty());
+        assert!(m[1].items[1].tie_stop.is_empty());
     }
 
     #[test]

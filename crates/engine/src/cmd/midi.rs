@@ -126,8 +126,8 @@ fn notes_move(e: &mut Engine, p: &Value) -> Result<Value> {
     let seq = seq_mut(e, id, "midi.notes_move")?;
     for (i, n) in seq.notes.iter_mut().enumerate() {
         if idx.contains(&i) {
-            n.start = (n.start + dt).max(0);
-            n.pitch = (i64::from(n.pitch) + ds).clamp(0, 127) as u8;
+            n.start = n.start.saturating_add(dt).max(0);
+            n.pitch = i64::from(n.pitch).saturating_add(ds).clamp(0, 127) as u8;
         }
     }
     seq.sort();
@@ -155,6 +155,22 @@ mod tests {
         e.execute("midi.note_delete", &json!({"clip": clip, "indices": [0]})).unwrap();
         assert_eq!(e.execute("midi.notes", &json!({"clip": clip})).unwrap()["notes"].as_array().map(Vec::len), Some(1));
         assert!(e.execute("midi.note_edit", &json!({"clip": clip, "index": 99})).is_err());
+    }
+
+    #[test]
+    fn extreme_note_moves_saturate_and_are_undoable() {
+        let mut e = Engine::default();
+        let t = e.session_mut().add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        let clip = e.execute("midi.new_clip", &json!({"track": t.0})).unwrap()["clip"].as_u64().unwrap();
+        e.execute("midi.note_add", &json!({"clip": clip, "start_ticks": 1})).unwrap();
+        for (delta, start, pitch) in [(i64::MAX, i64::MAX, 127), (i64::MIN, 0, 0)] {
+            e.execute("midi.notes_move", &json!({"clip": clip, "indices": [0], "ticks": delta, "semitones": delta})).unwrap();
+            let notes = e.execute("midi.notes", &json!({"clip": clip})).unwrap();
+            assert_eq!(notes["notes"][0]["start"], start);
+            assert_eq!(notes["notes"][0]["pitch"], pitch);
+            assert!(e.undo());
+            assert_eq!(e.execute("midi.notes", &json!({"clip": clip})).unwrap()["notes"][0]["start"], 1);
+        }
     }
 
     #[test]

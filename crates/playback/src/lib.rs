@@ -61,6 +61,8 @@ pub type EditorEdit = (TrackId, usize, String, f32);
 enum Cmd {
     /// A new snapshot plus the third-party instances it needs (created on the UI thread).
     Session(Arc<Session>, Vec<PreparedInstance>),
+    /// Replace a document, restoring plugin states even when slot identities match.
+    ReplaceSession(Arc<Session>, Vec<PreparedInstance>),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
@@ -208,14 +210,25 @@ impl AudioState {
     fn drain(&mut self) {
         let mut changed = false;
         while let Ok(c) = self.rx.try_recv() {
+            let replacement = matches!(&c, Cmd::ReplaceSession(..));
             match c {
                 Cmd::Input(r) => self.input = Some(r),
                 Cmd::Recording(r) => self.recording = r,
-                Cmd::Session(s, instances) => {
+                Cmd::Session(s, instances) | Cmd::ReplaceSession(s, instances) => {
                     changed = true;
-                    if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
+                    if replacement || (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
                         let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
                         let _ = self.garbage.send(old.drain_plugins());
+                    }
+                    if replacement {
+                        self.playing = false;
+                        self.pos = s.edit.playhead;
+                        self.shared.position.store(self.pos, Ordering::Relaxed);
+                        self.recording = false;
+                        self.end = None;
+                        self.looped = None;
+                        self.pending_len = 0;
+                        self.read = 0.0;
                     }
                     self.mix.adopt(instances);
                     // The main format changed (a document edit, not steady state): resize.
@@ -668,6 +681,17 @@ impl Player {
         let _ = self.tx.send(Cmd::Session(s, instances));
     }
 
+    /// Replace a document, restoring its plugin states even when slot identities match.
+    pub fn replace_session(&self, s: Arc<Session>) {
+        let mut side = self.side();
+        let keys: Vec<_> = side.shadow.keys().copied().collect();
+        for key in keys {
+            side.forget(key);
+        }
+        let instances = side.prepare(&s);
+        let _ = self.tx.send(Cmd::ReplaceSession(s, instances));
+    }
+
     /// Reads the state of every live third-party plugin, for saving the session.
     pub fn capture_states(&self) -> PluginStates {
         self.side().capture_states()
@@ -1094,6 +1118,73 @@ mod tests {
         assert_eq!(shared.meters.lock().unwrap().main.peaks.len(), 6);
     }
 
+    struct Stateful(Box<dyn Plugin>, Vec<u8>);
+
+    impl Plugin for Stateful {
+        fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+            self.0.info()
+        }
+        fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+            self.0.prepare(sr, mb, ch);
+        }
+        fn reset(&mut self) {
+            self.0.reset();
+        }
+        fn set_param(&mut self, id: &str, v: f32) -> bool {
+            self.0.set_param(id, v)
+        }
+        fn param(&self, id: &str) -> Option<f32> {
+            self.0.param(id)
+        }
+        fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+            self.0.process(io, frames);
+        }
+        fn save_state(&mut self) -> Option<Vec<u8>> {
+            Some(self.1.clone())
+        }
+    }
+
+
+    #[test]
+    fn document_replacement_restores_matching_plugin_slots_and_retires_old_instances() {
+        use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+        let mut session = Session::default();
+        let track = session.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+        session.track_mut(track).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.fake"));
+        let session = Arc::new(session);
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        });
+        let (tx, rx) = channel();
+        let (gtx, grx) = channel();
+        let mut state = AudioState::new(rx, shared, Arc::new(Session::default()), 48_000.0, gtx);
+        let instance = |blob: &[u8]| PreparedInstance {
+            track,
+            slot: 0,
+            id: "clap:test.fake".into(),
+            ch: 2,
+            plugin: Box::new(Stateful(soundcraft_dsp::create("gain").unwrap(), blob.to_vec())),
+        };
+        tx.send(Cmd::Session(Arc::clone(&session), vec![instance(b"first session")])).unwrap();
+        state.drain();
+        tx.send(Cmd::Session(Arc::clone(&session), Vec::new())).unwrap();
+        state.drain();
+        assert!(grx.try_recv().is_err(), "matching slots stay live across a same-document update");
+        tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+        state.drain();
+        let mut replacement = (*session).clone();
+        replacement.edit.playhead = 1000;
+        tx.send(Cmd::ReplaceSession(Arc::new(replacement), vec![instance(b"second session")])).unwrap();
+        state.drain();
+        assert_eq!(grx.try_recv().unwrap().len(), 1);
+        assert!(!state.playing);
+        assert_eq!(state.pos, 1000);
+        assert_eq!(state.pending_len, 0);
+    }
+
     #[test]
     fn instances_arrive_with_the_session_and_leave_through_the_return_channel() {
         use soundcraft_model::{ChannelFormat, Insert, TrackKind};
@@ -1110,7 +1201,7 @@ mod tests {
         let (tx, rx) = channel();
         let (gtx, grx) = channel();
         let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(soundcraft_model::Session::default()), 48_000.0, gtx);
-        let plugin = soundcraft_dsp::create("gain").unwrap();
+        let plugin: Box<dyn Plugin> = Box::new(Stateful(soundcraft_dsp::create("gain").unwrap(), b"blob".to_vec()));
         tx.send(Cmd::Session(Arc::clone(&s), vec![PreparedInstance { track: t, slot: 1, id: "clap:test.fake".into(), ch: 2, plugin }])).unwrap();
         let mut out = vec![0.0f32; 256];
         st.fill(&mut out, 2);
@@ -1122,7 +1213,13 @@ mod tests {
         // A sample-rate change rebuilds the engine without dropping plugins on this thread.
         tx.send(Cmd::Session(
             Arc::clone(&s),
-            vec![PreparedInstance { track: t, slot: 1, id: "clap:test.fake".into(), ch: 2, plugin: soundcraft_dsp::create("gain").unwrap() }],
+            vec![PreparedInstance {
+                track: t,
+                slot: 1,
+                id: "clap:test.fake".into(),
+                ch: 2,
+                plugin: Box::new(Stateful(soundcraft_dsp::create("gain").unwrap(), b"blob".to_vec())),
+            }],
         ))
         .unwrap();
         st.fill(&mut out, 2);

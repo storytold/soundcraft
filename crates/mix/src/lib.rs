@@ -228,6 +228,7 @@ struct Strip {
     held: Vec<u8>,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     chase: bool,
+    chase_notes: bool,
     muted: bool,
     gr: f32,
     /// Per-clip effect chains (Clip Effects) and a scratch buffer to render clips into.
@@ -311,6 +312,7 @@ impl Strip {
             sample: None,
             held: Vec::new(),
             chase: true,
+            chase_notes: true,
             muted: false,
             gr: 0.0,
             clip_fx: HashMap::new(),
@@ -512,6 +514,7 @@ impl MixEngine {
             }
             s.held.clear();
             s.chase = true;
+            s.chase_notes = true;
             s.align.clear();
             s.align_pre.clear();
             s.out_extra.clear();
@@ -573,6 +576,8 @@ impl MixEngine {
                 cx.retire(old);
                 strip.instrument = want.and_then(|i| cx.make(t.id, INSTRUMENT_SLOT, i, ich));
                 strip.sample = None;
+                strip.held.clear();
+                strip.chase_notes = true;
             }
             sync_sample(strip, want, s);
         }
@@ -620,6 +625,7 @@ impl MixEngine {
                 }
                 st.held.clear();
                 st.chase = true;
+                st.chase_notes = true;
             }
         }
         self.last_end = pos.saturating_add(frames as i64);
@@ -917,9 +923,8 @@ fn process_strip(
                 }
                 _ => 0,
             };
-            let n_in = live.input.len().max(1);
             for (k, dst) in strip.buf.iter_mut().enumerate() {
-                if let Some(src) = live.input.get((first + k) % n_in) {
+                if let Some(src) = first.checked_add(k).and_then(|i| live.input.get(i)) {
                     for (d, x) in dst.iter_mut().zip(src.iter()).take(frames) {
                         *d = *x;
                     }
@@ -992,7 +997,10 @@ fn process_strip(
                 if std::mem::take(&mut strip.chase) {
                     chase_controllers(s, t, pos, inst);
                 }
-                schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+                schedule_notes(s, t, pos, frames, inst, &mut strip.held, strip.chase_notes);
+                if frames > 0 {
+                    strip.chase_notes = false;
+                }
                 if strip.buf.len() >= 2 {
                     inst.plugin.process(&mut strip.buf, frames);
                 } else if let Some(c0) = strip.buf.first_mut() {
@@ -1470,7 +1478,7 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 }
 
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
-fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>) {
+fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>, chase: bool) {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -1482,7 +1490,7 @@ fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mu
             continue;
         }
         let ClipContent::Midi { sequence } = &clip.content else { continue };
-        if !clip.range().overlaps(&Range { start: pos, end }) {
+        if !clip.range().overlaps(&Range { start: pos, end }) && clip.end() != pos {
             continue;
         }
         let base = s.tempo.samples_to_ticks(clip.start, sr);
@@ -1509,8 +1517,8 @@ fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mu
             if on >= clip.end() {
                 continue;
             }
-            if on >= pos && on < end {
-                inst.plugin.note_on(usize::try_from(on - pos).unwrap_or(0), n.pitch, n.velocity);
+            if (on >= pos && on < end) || (chase && on < pos && off > pos && !held.contains(&n.pitch)) {
+                inst.plugin.note_on(usize::try_from(on.saturating_sub(pos).max(0)).unwrap_or(0), n.pitch, n.velocity);
                 if !held.contains(&n.pitch) && held.len() < 128 {
                     held.push(n.pitch);
                 }
@@ -2332,6 +2340,71 @@ mod tests {
             pl.clips.push(Clip::audio(id, "dc", SourceId(900), 0, 0, frames as i64));
         }
         t
+    }
+
+    #[test]
+    fn sustained_midi_notes_sound_after_start_seek_and_reset() {
+        use soundcraft_midi::{Note, Sequence};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        s.track_mut(t).unwrap().instrument = Some(Insert::new("subtractive_synth"));
+        let end = s.tempo.tick_to_samples(960, s.sample_rate);
+        let clip = Clip::midi(
+            s.new_clip_id(),
+            "Held",
+            0,
+            end,
+            Sequence {
+                notes: vec![Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 }],
+                ..Sequence::default()
+            },
+        );
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(clip);
+        let mut eng = MixEngine::new(48_000.0, 512);
+        let mut out = vec![vec![0.0; 512]; 2];
+        let mut reference = soundcraft_dsp::create("subtractive_synth").unwrap();
+        reference.prepare(48_000.0, 512, 2);
+        reference.note_on(0, 60, 100);
+        let mut expected = vec![vec![0.0; 512]; 2];
+        let start = end / 2;
+        for (block, pos) in [start, start + 512, start + 2048].into_iter().enumerate() {
+            eng.render(&s, pos, 512, &mut out);
+            if block < 2 {
+                expected.iter_mut().for_each(|c| c.fill(0.0));
+                reference.process(&mut expected, 512);
+                assert!(out.iter().flatten().zip(expected.iter().flatten()).all(|(a, b)| (a - b).abs() < 1e-5), "continuous note was retriggered");
+            }
+            assert!(out.iter().flatten().any(|v| v.abs() > 1e-4), "silent at {pos}");
+            assert_eq!(eng.strips[&t].held, vec![60]);
+            assert!(!eng.strips[&t].chase_notes);
+        }
+        eng.reset();
+        eng.render(&s, start + 2560, 512, &mut out);
+        assert!(out.iter().flatten().any(|v| v.abs() > 1e-4));
+        eng.render(&s, end - 512, 512, &mut out);
+        assert_eq!(eng.strips[&t].held, vec![60]);
+        eng.render(&s, end, 512, &mut out);
+        assert!(eng.strips[&t].held.is_empty());
+        eng.reset();
+        eng.render(&s, end, 512, &mut out);
+        assert!(out.iter().flatten().all(|v| v.abs() < 1e-6), "ended note must not be chased");
+    }
+
+    #[test]
+    fn input_monitoring_does_not_wrap_unavailable_channels() {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let track = s.track_mut(t).unwrap();
+        track.mixer.input_monitor = true;
+        track.mixer.input = Route::Hardware("In 3".into());
+        let mut eng = MixEngine::new(48_000.0, 512);
+        eng.input = vec![vec![0.25; 512], vec![0.5; 512]];
+        let mut out = vec![vec![0.0; 512]; 2];
+        eng.render(&s, 0, 512, &mut out);
+        assert!(out.iter().flatten().all(|v| *v == 0.0));
+        s.track_mut(t).unwrap().mixer.input = Route::Hardware("In 2".into());
+        eng.render(&s, 512, 512, &mut out);
+        assert!((out[0][500] - 0.5 * db_to_gain(-3.0)).abs() < 1e-5);
     }
 
     #[test]
