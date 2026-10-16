@@ -331,13 +331,14 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, if playing { Color32::from_rgb(40, 90, 50) } else { key_fill(&resp) });
-                icons::draw(ui.painter(), r.shrink(5.0), "play", if playing { Color32::from_rgb(120, 255, 140) } else { t.counter_text });
+                let (icon, tint) = if playing { ("play_on", Color32::from_rgb(120, 255, 140)) } else { ("play", t.counter_text) };
+                icons::draw(ui.painter(), r.shrink(5.0), icon, tint);
                 if resp.on_hover_text("Play (Space)").clicked() {
                     let _ = app.run("transport.play", json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, if recording { Color32::from_rgb(110, 30, 30) } else { key_fill(&resp) });
-                icons::draw(ui.painter(), r.shrink(5.0), "record", t.rec);
+                icons::draw(ui.painter(), r.shrink(5.0), if recording { "record_on" } else { "record" }, t.rec);
                 let resp = resp.on_hover_text("Record (Cmd+Space)");
                 if let Some(why) = app.record_hint() {
                     // Below the whole group, so the hint covers none of its buttons.

@@ -278,13 +278,13 @@ fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                 ("end", "transport.go_to_end"),
                 ("record", "transport.record"),
             ] {
-                let resp = crate::widgets::icon_button(
-                    ui,
-                    vec2(34.0, 26.0),
-                    icon,
-                    (cmd == "transport.play" && app.is_playing()) || (cmd == "transport.record" && app.engine.transport.recording),
-                    cmd,
-                );
+                let on = (cmd == "transport.play" && app.is_playing()) || (cmd == "transport.record" && app.engine.transport.recording);
+                let icon = match (icon, on) {
+                    ("play", true) => "play_on",
+                    ("record", true) => "record_on",
+                    _ => icon,
+                };
+                let resp = crate::widgets::icon_button(ui, vec2(34.0, 26.0), icon, on, cmd);
                 if cmd == "transport.record"
                     && let Some(why) = app.record_hint()
                 {

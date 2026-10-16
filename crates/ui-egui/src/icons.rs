@@ -1,7 +1,89 @@
-//! Icons drawn procedurally with the egui painter. Original SoundCraft artwork (MIT OR Apache-2.0);
-//! no image files and nothing derived from any other product's icons.
+//! UI icons. Most are drawn procedurally with the egui painter: original SoundCraft artwork
+//! (MIT OR Apache-2.0), nothing derived from any other product's icons. The transport, zoom,
+//! tool and edit-option icons are bundled SVGs from Tabler Icons (MIT, Paweł Kuna;
+//! `assets/icons/`, listed in ATTRIBUTION.md), drawn white and tinted at paint time; each keeps
+//! its procedural drawing below as the fallback.
 
-use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, pos2, vec2};
+use egui::{Color32, ColorImage, Context, Id, Painter, Pos2, Rect, Shape, Stroke, TextureHandle, TextureOptions, pos2, vec2};
+
+macro_rules! svg {
+    ($($name:literal),* $(,)?) => { &[$(($name, include_bytes!(concat!("../assets/icons/", $name, ".svg")))),*] };
+}
+
+/// Bundled SVG icons by name. `*_on` are the filled variants for an engaged button.
+const SVG: &[(&str, &[u8])] = svg![
+    // Transport.
+    "play",
+    "play_on",
+    "stop",
+    "record",
+    "record_on",
+    "rtz",
+    "end",
+    "rewind",
+    "ffwd",
+    "loop",
+    // Zoom, tools and edit options.
+    "minus",
+    "plus",
+    "zoom",
+    "zoom_toggle",
+    "trim",
+    "selector",
+    "grabber",
+    "scrubber",
+    "pencil",
+    "tab_transient",
+    "link",
+    "note",
+    "wave",
+];
+
+fn svg_source(name: &str) -> Option<&'static [u8]> {
+    SVG.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
+}
+
+/// Rasterise `svg` into a white-on-transparent square of `px` pixels; `None` if it doesn't parse.
+fn rasterize(svg: &[u8], px: u32) -> Option<ColorImage> {
+    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(px, px)?;
+    let size = tree.size();
+    let scale = px as f32 / size.width().max(size.height());
+    if !scale.is_finite() {
+        return None;
+    }
+    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    let side = px as usize;
+    Some(ColorImage::from_rgba_premultiplied([side, side], pixmap.data()))
+}
+
+/// The texture for SVG icon `name` at `px` pixels, rasterised once and kept in egui's memory.
+/// `None` (also cached) when the icon has no SVG or it fails to render.
+fn svg_texture(ctx: &Context, name: &str, px: u32) -> Option<TextureHandle> {
+    let svg = svg_source(name)?;
+    let id = Id::new(("svg_icon", name, px));
+    if let Some(cached) = ctx.data(|d| d.get_temp::<Option<TextureHandle>>(id)) {
+        return cached;
+    }
+    let tex = rasterize(svg, px).map(|img| ctx.load_texture(format!("icon-{name}-{px}"), img, TextureOptions::LINEAR));
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    tex
+}
+
+/// Paint SVG icon `name` centred in `r`, tinted `c`. False when there is none to paint.
+fn draw_svg(painter: &Painter, r: Rect, name: &str, c: Color32) -> bool {
+    let side = r.width().min(r.height());
+    let px = side * painter.ctx().pixels_per_point();
+    if !px.is_finite() || px < 1.0 {
+        return false;
+    }
+    let Some(tex) = svg_texture(painter.ctx(), name, px.round().clamp(4.0, 256.0) as u32) else {
+        return false;
+    };
+    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    painter.image(tex.id(), Rect::from_center_size(r.center(), vec2(side, side)), uv, c);
+    true
+}
 
 fn p(r: Rect, x: f32, y: f32) -> Pos2 {
     pos2(r.min.x + r.width() * x, r.min.y + r.height() * y)
@@ -9,6 +91,10 @@ fn p(r: Rect, x: f32, y: f32) -> Pos2 {
 
 /// Draw icon `name` inside `r` with colour `c`.
 pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
+    if draw_svg(painter, r, name, c) {
+        return;
+    }
+    let name = name.strip_suffix("_on").unwrap_or(name);
     let s = Stroke::new((r.width() / 14.0).clamp(1.2, 2.4), c);
     match name {
         "play" => {
@@ -174,5 +260,24 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
         _ => {
             painter.rect_stroke(r.shrink(r.width() * 0.25), 1.0, s, egui::StrokeKind::Middle);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_bundled_svg_renders() {
+        for (name, svg) in super::SVG {
+            let img = super::rasterize(svg, 24);
+            assert!(img.is_some(), "{name} did not parse");
+            let lit = img.map_or(0, |i| i.pixels.iter().filter(|p| p.a() > 0).count());
+            assert!(lit > 20, "{name} rendered {lit} visible pixels");
+        }
+    }
+
+    #[test]
+    fn broken_svg_is_none_not_a_panic() {
+        assert!(super::rasterize(b"<svg", 24).is_none());
+        assert!(super::rasterize(b"", 24).is_none());
     }
 }

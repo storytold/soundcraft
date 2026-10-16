@@ -366,9 +366,10 @@ Copyright (c) 2026 ArtCraft Team and the SoundCraft contributors. Required notic
 Bundled fonts, icons, images and other assets keep their own open licenses; each one is listed
 with its author, source and license in [ATTRIBUTION.md](ATTRIBUTION.md).
 
-Every icon in the interface is drawn in code, the app icon is original, and the demo song and the
-screenshots' audio are synthesised by SoundCraft itself, so there are no samples or artwork from
-anyone else in this repository.
+The transport, zoom and tool icons are from [Tabler Icons](https://github.com/tabler/tabler-icons)
+(MIT); every other icon in the interface is drawn in code, the app icon is original, and the demo song and the
+screenshots' audio are synthesised by SoundCraft itself, so there are no samples in this
+repository and no artwork from anyone else beyond those openly licensed icons.
 
 The ArtCraft name, wordmark and logos in [`docs/brand/`](docs/brand/) are trademarks of the
 ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as

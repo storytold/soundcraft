@@ -8,9 +8,11 @@ Assets must be original, public domain (CC0) or permissively licensed. See `AGEN
 
 ## Icons
 
-All UI icons (tools, transport, track buttons) are drawn procedurally in
-`crates/ui-egui/src/icons.rs` by the SoundCraft contributors (MIT OR Apache-2.0). No UI icon image
-files are used. The app icon (`assets/app-icon/`, a singing nightingale drawn as original SVG by
+The icons of the transport, zoom, edit tools and edit-option toggles are SVG files from
+[Tabler Icons](https://github.com/tabler/tabler-icons) by Paweł Kuna (MIT), in
+`crates/ui-egui/assets/icons/` with the MIT notice beside them (`LICENSE-tabler.txt`); see Files
+below. The other UI icons (track buttons, lock, click, menus and the rest) are drawn procedurally
+in `crates/ui-egui/src/icons.rs` by the SoundCraft contributors (MIT OR Apache-2.0). The app icon (`assets/app-icon/`, a singing nightingale drawn as original SVG by
 the SoundCraft contributors) is listed under Files below.
 
 ## Audio
@@ -44,4 +46,5 @@ and, at runtime, the operating system's own UI fonts when available (never redis
 | `assets/app-icon/soundcraft.icns` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
 | `assets/app-icon/soundcraft.ico` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
 | `assets/app-icon/hicolor/` | SoundCraft contributors | original, rendered from `icon.svg` (16–512 px PNGs and the scalable SVG) | MIT OR Apache-2.0 |
+| `crates/ui-egui/assets/icons/` | Paweł Kuna (Tabler Icons) | [tabler/tabler-icons](https://github.com/tabler/tabler-icons) at `a4ce140`: outline `player-play`, `player-stop`, `player-record`, `player-skip-back`, `player-skip-forward`, `player-track-prev`, `player-track-next`, `repeat`, `minus`, `plus`, `zoom`, `zoom-scan`, `arrow-autofit-width`, `cursor-text`, `hand-stop`, `volume`, `pencil`, `arrow-bar-to-right`, `link`, `music`, `wave-sine`; filled `player-play`, `player-record`. Modified: renamed to SoundCraft's icon names, metadata comments removed, `currentColor` replaced by white so the UI can tint them | MIT (`LICENSE-tabler.txt`) |
 | `docs/images/` | SoundCraft contributors | screenshots of SoundCraft rendered from the synthesised demo session | MIT OR Apache-2.0 |
