@@ -1040,9 +1040,8 @@ fn process_strip(
     }
     strip.gr = gr;
     strip.latency = latency.min(MAX_LATENCY);
-    let auto_mute = t.mixer.automation_mode.reads() && t.lane(&AutoParam::Mute).is_some_and(|l| l.value_at(pos, 0.0) >= 0.5);
     let soloed_out = any_solo && !t.mixer.solo && !t.mixer.solo_safe && !receives_solo(s, t);
-    strip.muted = t.mixer.mute || auto_mute || soloed_out;
+    strip.muted = t.mixer.mute || soloed_out;
     if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
         strip.pre.resize_with(strip.buf.len(), Vec::new);
         for (d, src) in strip.pre.iter_mut().zip(strip.buf.iter()) {
@@ -1080,6 +1079,23 @@ fn process_strip(
         for i in 0..frames {
             if let Some(x) = c.get_mut(i) {
                 *x *= lerp_gain(g0, g1, i, frames.saturating_sub(1));
+            }
+        }
+    }
+    // Track mute gates the audio and its pre-fader tap without splitting processor blocks.
+    // Keep the existing curve interpolation, first-lane and mode policy, and render-position
+    // clock. Processor/bus age and Master/VCA automation policy are separate concerns.
+    if t.mixer.automation_mode.reads()
+        && let Some(lane) = t.lane(&AutoParam::Mute).filter(|lane| !lane.points.is_empty())
+    {
+        for i in 0..frames {
+            let at = pos.saturating_add(i64::try_from(i).unwrap_or(i64::MAX));
+            if lane.value_at(at, 0.0) >= 0.5 {
+                for channel in strip.buf.iter_mut().chain(strip.pre.iter_mut()) {
+                    if let Some(sample) = channel.get_mut(i) {
+                        *sample = 0.0;
+                    }
+                }
             }
         }
     }
