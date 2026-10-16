@@ -13,6 +13,7 @@ pub mod edit_window;
 pub mod extra_windows;
 pub mod fonts;
 pub mod icons;
+pub mod jsfx_browser;
 pub mod menus;
 pub mod midi_editor;
 pub mod mix_window;
@@ -291,6 +292,7 @@ pub struct SoundApp {
     pub midi: midi_editor::MidiEditorState,
     pub ops: ops_windows::OpsState,
     pub extra: extra_windows::ExtraState,
+    pub jsfx_browser: jsfx_browser::JsfxBrowser,
     pub palette: palette::PaletteState,
     /// Bring the separate Mix window to the front on the next frame.
     pub(crate) focus_mix: bool,
@@ -376,6 +378,7 @@ impl SoundApp {
             midi: midi_editor::MidiEditorState::default(),
             ops: ops_windows::OpsState::default(),
             extra: extra_windows::ExtraState::default(),
+            jsfx_browser: jsfx_browser::JsfxBrowser::default(),
             palette: palette::PaletteState::default(),
             focus_mix: false,
             synthetic: Vec::new(),
@@ -1234,6 +1237,7 @@ impl SoundApp {
         ops_windows::show(self, &ctx);
         extra_windows::show(self, &ctx);
         recovery::show(self, &ctx);
+        jsfx_browser::show(self, &ctx);
         score_editor::show(self, &ctx);
         palette::show(self, &ctx);
         dialogs::show(self, &ctx);

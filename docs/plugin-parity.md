@@ -1,6 +1,7 @@
 # Plugin parity: built-in processors and plugin hosting
 
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (JSFX host crate added)  · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Pro Tools users live in plugins: the bundled set covers everyday mixing, and third-party plugins
 cover the rest. This doc tracks both. Our plugins have our own names and are written from
@@ -39,6 +40,7 @@ User report #152: a saved instrument level does not reach the bounce.
 |---|---|---|---|
 | Plugin format | AAX only (Native and DSP) | CLAP, VST3, Audio Units (macOS) | Users' libraries mostly ship VST3/AU too. AAX (#109) needs Avid's SDK licence and PACE signing: owner decision, likely never |
 | VST2, LV2, LADSPA | — | ❌ (#30) | Beyond Pro Tools; VST2 SDK is no longer licensable |
+| JSFX (REAPER JS effects) | — | 🟡 `soundcraft-jsfx-host` runs them as `Plugin`s; `engine.jsfx_plugins`, `mix.insert jsfx:<path>` and a JSFX submenu in the insert menu. Effects that cannot run are hidden and counted. JSFX Browser (ReaPack repositories: search, install, update, remove into SoundCraft's own Effects folder; `reapack.*` commands). No GUI editor yet beyond the generic sliders | Beyond Pro Tools. From-scratch EEL2 interpreter: header, `@init/@slider/@block/@sample`, user functions (overloads, `name*` references, namespaces), `import`, `mem`/`gmem`, strings, `sprintf` and `match`, FFT and real FFT, MIDI in. Measured against a 328-effect REAPER library: 304 (93 %) load and run. Missing: `@gfx`, `@serialize`, file I/O, `mdct`/`convolve`, MIDI out, the `<? ?>` preprocessor |
 | Scan, vendor menus, instrument picker | ✅ | ✅ | #23 |
 | Audio, parameters, automation, latency (PDC) | ✅ | ✅ | |
 | Notes / MIDI to instruments | ✅ | ✅ | But no live MIDI input (G-02) |
@@ -60,4 +62,7 @@ User report #152: a saved instrument level does not reach the bounce.
 |---|---|---|
 | 2026-10-13 | trivial | mix.instrument sets built-in instrument parameters in params (#265) |
 | 2026-10-12 | minor | Editors: VST3 and embedded CLAP editors on Windows |
+| 2026-10-12 | minor | JSFX hosting row: new `soundcraft-jsfx-host` crate (EEL2 interpreter, 81 % of a 328-effect REAPER library loads) |
+| 2026-10-12 | minor | JSFX row: strings, 90 % of the test library loads; ReaPack client and JSFX Browser |
+| 2026-10-12 | minor | JSFX hosting row: new `soundcraft-jsfx-host` crate (EEL2 interpreter, 81 % of a 328-effect REAPER library loads), listed and insertable from the app |
 | 2026-10-10 | major | Created: built-in processor inventory by category and third-party hosting checklist |

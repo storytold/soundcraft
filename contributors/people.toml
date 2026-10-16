@@ -50,3 +50,7 @@ sync_github_name = false
 
 [people.Momentum96]
 sync_github_name = true
+
+[people.Limestudio90]
+display_name = "Limestudio90"
+sync_github_name = false
