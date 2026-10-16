@@ -15,6 +15,7 @@ pub mod fonts;
 pub mod icons;
 pub mod menus;
 pub mod midi_editor;
+pub mod midi_keyboard;
 pub mod mix_window;
 pub mod ops_windows;
 pub mod palette;
@@ -94,6 +95,8 @@ pub struct UiState {
     pub show_metadata: bool,
     pub show_event_list: bool,
     pub show_midi_keyboard: bool,
+    /// Window › MIDI Keyboard's octave, velocity, transpose and mode.
+    pub midi_keyboard: midi_keyboard::KeyboardPrefs,
     pub show_workspace: bool,
     pub show_configurations: bool,
     pub show_playback_engine: bool,
@@ -161,6 +164,7 @@ impl Default for UiState {
             show_metadata: false,
             show_event_list: false,
             show_midi_keyboard: false,
+            midi_keyboard: midi_keyboard::KeyboardPrefs::default(),
             show_workspace: false,
             show_configurations: false,
             show_playback_engine: false,
@@ -289,6 +293,7 @@ pub struct SoundApp {
     pub gesture: Option<Gesture>,
     pub edit_layout: edit_window::EditLayout,
     pub midi: midi_editor::MidiEditorState,
+    pub keyboard: midi_keyboard::KeyboardState,
     pub ops: ops_windows::OpsState,
     pub extra: extra_windows::ExtraState,
     pub palette: palette::PaletteState,
@@ -374,6 +379,7 @@ impl SoundApp {
             gesture: None,
             edit_layout: edit_window::EditLayout::default(),
             midi: midi_editor::MidiEditorState::default(),
+            keyboard: midi_keyboard::KeyboardState::default(),
             ops: ops_windows::OpsState::default(),
             extra: extra_windows::ExtraState::default(),
             palette: palette::PaletteState::default(),
@@ -1215,6 +1221,8 @@ impl SoundApp {
             self.arrange_request = false;
             ctx.memory_mut(|m| m.reset_areas());
         }
+        // The MIDI Keyboard takes its keys before the shortcuts see them.
+        midi_keyboard::capture(self, &ctx);
         shortcuts::handle(self, &ctx);
         self.sample_drop_targets.clear();
         if !self.native_menu_bar {

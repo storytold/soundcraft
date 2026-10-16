@@ -498,6 +498,13 @@ impl MixEngine {
         self.main.len()
     }
 
+    /// Play (velocity > 0) or release (velocity 0) `pitch` on a track's instrument at the next
+    /// block, outside the clips: the MIDI Editor's audition. Does nothing before `sync`.
+    pub fn live_note(&mut self, track: TrackId, pitch: u8, velocity: u8) {
+        let Some(inst) = self.strips.get_mut(&track).and_then(|s| s.instrument.as_mut()) else { return };
+        if velocity > 0 { inst.plugin.note_on(0, pitch.min(127), velocity.min(127)) } else { inst.plugin.note_off(0, pitch.min(127)) }
+    }
+
     /// Reset all plugin state (on stop / seek).
     pub fn reset(&mut self) {
         for s in self.strips.values_mut() {
@@ -612,7 +619,8 @@ impl MixEngine {
     /// Render `frames` (≤ max_block) samples starting at `pos` into `out` (≥ 2 channels).
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
         let frames = frames.min(self.max_block);
-        if pos != self.last_end {
+        // Stopped, the position stands still: not a seek (it would cut auditioned notes).
+        if pos != self.last_end && !self.monitor_only {
             // Seek: silence held notes and ringing plugins.
             for st in self.strips.values_mut() {
                 if let Some(i) = &mut st.instrument {
@@ -927,7 +935,6 @@ fn process_strip(
             }
         }
         TrackKind::Audio if live.monitor_only => {}
-        TrackKind::Instrument | TrackKind::Midi if live.monitor_only => {}
         TrackKind::Audio => {
             let block = Range { start: pos, end: pos.saturating_add(frames as i64) };
             for clip in t.clips() {
@@ -989,10 +996,13 @@ fn process_strip(
                     apply_params(inst, ins, t, INSTRUMENT_SLOT, pos);
                 }
                 inst.plugin.set_transport(&transport);
-                if std::mem::take(&mut strip.chase) {
-                    chase_controllers(s, t, pos, inst);
+                // Stopped: no clips, but the instrument still plays auditioned notes.
+                if !live.monitor_only {
+                    if std::mem::take(&mut strip.chase) {
+                        chase_controllers(s, t, pos, inst);
+                    }
+                    schedule_notes(s, t, pos, frames, inst, &mut strip.held);
                 }
-                schedule_notes(s, t, pos, frames, inst, &mut strip.held);
                 if strip.buf.len() >= 2 {
                     inst.plugin.process(&mut strip.buf, frames);
                 } else if let Some(c0) = strip.buf.first_mut() {
@@ -2304,6 +2314,33 @@ mod tests {
         let (loud, quiet) = (rms(-6.0), rms(-12.0));
         assert!(loud > 0.0, "the synth should sound");
         assert!((quiet / loud - 0.5).abs() < 0.05, "-12 dB vs -6 dB should halve the level: {quiet} / {loud}");
+    }
+
+    #[test]
+    fn live_notes_sound_while_stopped_without_the_clips() {
+        let s = synth_session(-6.0);
+        let t = s.tracks[0].id;
+        let mut eng = MixEngine::new(48_000.0, 512);
+        eng.monitor_only = true;
+        let mut out = vec![vec![0.0f32; 512]; 2];
+        let peak = |out: &[Vec<f32>]| out.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
+        let mut loudest = 0.0f32;
+        for _ in 0..8 {
+            eng.render(&s, 0, 512, &mut out);
+            loudest = loudest.max(peak(&out));
+        }
+        assert_eq!(loudest, 0.0, "stopped: the clip's note must not play");
+        eng.live_note(t, 72, 100);
+        for _ in 0..8 {
+            eng.render(&s, 0, 512, &mut out);
+            loudest = loudest.max(peak(&out));
+        }
+        assert!(loudest > 0.01, "the auditioned note should sound: {loudest}");
+        eng.live_note(t, 72, 0);
+        for _ in 0..400 {
+            eng.render(&s, 0, 512, &mut out);
+        }
+        assert!(peak(&out) < 1e-4, "the released note should die away: {}", peak(&out));
     }
 
     #[test]

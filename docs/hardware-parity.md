@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (bounces of a bus fed by an aux compensate its latency (#246); previously minor: audio device, rate and buffer choice; ASIO feature) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (MIDI Keyboard plays the instrument, from the mouse or two octaves of computer keys; transpose; step input switch) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 A DAW is judged by how it drives audio interfaces, MIDI gear, control surfaces and sync. This is
 SoundCraft's weakest dimension. Ours is measured from `crates/playback` (cpal) and the absence of
@@ -36,7 +36,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | MIDI Thru, input filter | ✅ | ❌ (stored flags only) |
 | MIDI Beat Clock out, MTC generate/chase | ✅ | ❌ |
 | MIDI learn / controller mapping | ✅ (via surfaces and plug-in maps) | ❌ |
-| Virtual MIDI keyboard | ✅ (MIDI Keyboard window) | 🟡 window exists, no live audition path |
+| Virtual MIDI keyboard | ✅ (MIDI Keyboard window) | ✅ plays the record-enabled (or selected) tracks' instruments from the mouse or the computer keys (two octaves, octave/velocity keys, transpose ±24, 1–4 octaves shown); Play/Step switch; not recorded yet (no MIDI recording) |
 
 ## Control surfaces
 
@@ -72,6 +72,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | minor | MIDI Keyboard: plays instruments from the mouse and two octaves of computer keys, transpose, 1–4 octaves, Play/Step switch |
 | 2026-10-13 | trivial | bounces of a bus fed by an aux compensate its latency (#246) |
 | 2026-10-12 | minor | Audio device settings: system, output, input, sample rate and buffer size; opt-in ASIO |
 | 2026-10-10 | major | Created: audit of audio interface, MIDI, control-surface, sync and performance support against Pro Tools 2026.4.1 |

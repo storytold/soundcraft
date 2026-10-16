@@ -4,7 +4,7 @@ use crate::SoundApp;
 use crate::theme::{Tokens, bold, regular};
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
-use soundcraft_model::{ClipContent, ClipId, Tool};
+use soundcraft_model::{ClipContent, ClipId, Tool, TrackId};
 use soundcraft_time::TICKS_PER_QUARTER;
 
 const KEY_W: f32 = 48.0;
@@ -19,6 +19,8 @@ pub struct MidiEditorState {
     pub clip: Option<ClipId>,
     /// Rubber-band selection start (screen position).
     pub band: Option<egui::Pos2>,
+    /// The note sounding on the track's instrument while a key or note is held.
+    pub audition: Option<(TrackId, u8)>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,7 +57,26 @@ fn is_black(p: i32) -> bool {
     matches!(p.rem_euclid(12), 1 | 3 | 6 | 8 | 10)
 }
 
+/// Sound `want` on the instrument, releasing the note that was sounding.
+fn audition(app: &mut SoundApp, want: Option<(TrackId, u8, u8)>) {
+    if app.midi.audition == want.map(|(t, p, _)| (t, p)) {
+        return;
+    }
+    if let Some(player) = &app.player {
+        if let Some((t, p)) = app.midi.audition {
+            player.note(t, p, 0);
+        }
+        if let Some((t, p, v)) = want {
+            player.note(t, p, v);
+        }
+    }
+    app.midi.audition = want.map(|(t, p, _)| (t, p));
+}
+
 pub fn show(app: &mut SoundApp, ui: &mut Ui) {
+    if !ui.input(|i| i.pointer.primary_down()) {
+        audition(app, None);
+    }
     // Painter-only contents do not advance the layout. Claim the resized
     // space, including the empty state, so the dock keeps its chosen height.
     ui.take_available_space();
@@ -232,6 +253,21 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
         })
     };
     let snap = |tk: f32| -> i64 { ((tk / grid_ticks as f32).round() as i64) * grid_ticks };
+    // Audition: a held piano key plays its pitch (sliding across keys plays each one); a held
+    // note plays at its velocity, following the pitch it is dragged to.
+    let key_resp = ui.interact(keys, ui.id().with(("keys", cid.0)), Sense::click_and_drag());
+    let pointer = ui.ctx().pointer_latest_pos();
+    let want = if key_resp.is_pointer_button_down_on() {
+        pointer.filter(|p| keys.contains(*p)).map(|p| (pitch_at(p.y).clamp(0, 127) as u8, 100))
+    } else if resp.is_pointer_button_down_on() {
+        ui.input(|i| i.pointer.press_origin()).and_then(hit).and_then(|(i, _)| sequence.notes.get(i)).map(|n| {
+            let dy = app.midi.drag.as_ref().filter(|d| !d.resize).map_or(0, |d| d.dy_semi);
+            ((i64::from(n.pitch) + dy).clamp(0, 127) as u8, n.velocity.max(1))
+        })
+    } else {
+        None
+    };
+    audition(app, want.map(|(p, v)| (track, p, v)));
     if resp.drag_started()
         && let Some(p) = resp.interact_pointer_pos()
     {
@@ -301,7 +337,6 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
                 } else {
                     app.midi.selected = vec![i];
                 }
-                // Audition on the instrument would go here (needs a live MIDI input path).
             }
             None if s.edit.tool == Tool::Pencil => {
                 let pitch = pitch_at(p.y).clamp(0, 127);
