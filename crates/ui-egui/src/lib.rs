@@ -23,6 +23,7 @@ mod recent;
 pub mod recovery;
 pub mod sampler_window;
 pub mod score_editor;
+pub mod shortcut_editor;
 pub mod shortcuts;
 pub mod spot;
 pub mod theme;
@@ -125,6 +126,8 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// Shortcuts people chose in Setup › Keyboard Shortcuts (`ui.shortcuts`).
+    pub shortcuts: shortcuts::Custom,
 }
 
 impl Default for UiState {
@@ -185,6 +188,7 @@ impl Default for UiState {
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
+            shortcuts: shortcuts::Custom::new(),
         }
     }
 }
@@ -292,6 +296,7 @@ pub struct SoundApp {
     pub ops: ops_windows::OpsState,
     pub extra: extra_windows::ExtraState,
     pub palette: palette::PaletteState,
+    pub shortcut_editor: shortcut_editor::ShortcutEditor,
     /// Bring the separate Mix window to the front on the next frame.
     pub(crate) focus_mix: bool,
     pub synthetic: Vec<egui::Event>,
@@ -313,6 +318,8 @@ pub struct SoundApp {
     /// When Record last found nothing to record on, and why: the Record buttons show it for a moment.
     record_hint: Option<(f64, &'static str)>,
     pub quit_requested: bool,
+    /// The V key's press arrived; see `shortcuts::key_presses`.
+    v_pressed: bool,
     /// Reset floating-window positions next frame (Window › Arrange).
     pub arrange_request: bool,
     /// Tracks whose automation was touched during this pass (Touch/Latch writing).
@@ -377,6 +384,7 @@ impl SoundApp {
             ops: ops_windows::OpsState::default(),
             extra: extra_windows::ExtraState::default(),
             palette: palette::PaletteState::default(),
+            shortcut_editor: shortcut_editor::ShortcutEditor::default(),
             focus_mix: false,
             synthetic: Vec::new(),
             sample_drop_targets: Vec::new(),
@@ -392,6 +400,7 @@ impl SoundApp {
             sim: None,
             record_hint: None,
             quit_requested: false,
+            v_pressed: false,
             arrange_request: false,
             touched: std::collections::HashSet::new(),
             last_write_at: i64::MIN,

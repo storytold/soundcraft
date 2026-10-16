@@ -73,6 +73,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("ui.bounce_dialog", "Bounce Mix…", "", None),
     ("ui.set", "Set UI State", "", None),
     ("ui.theme", "Appearance", "", None),
+    ("ui.shortcuts", "Change Keyboard Shortcuts", "", None),
 ];
 
 /// Extra catalog mappings handled by the UI layer.
@@ -289,7 +290,7 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
     let (enabled, checked) = item_state(app, &n.path, id.as_deref());
     let label = live_label(app, id.as_deref()).unwrap_or_else(|| n.label.clone());
     let label = if checked { format!("✔ {label}") } else { label };
-    let shortcut = id.as_deref().and_then(shortcut_for).unwrap_or("");
+    let shortcut = id.as_deref().and_then(|id| crate::shortcuts::shortcut_for(&app.ui.shortcuts, id)).unwrap_or("");
     let btn = egui::Button::new(label).shortcut_text(crate::shortcuts::shortcut_label(shortcut, ui.ctx().os().is_mac()));
     if ui.add_enabled(enabled, btn).clicked()
         && let Some(id) = id
@@ -386,7 +387,7 @@ fn mix_section_id(label: &str) -> &'static str {
 }
 
 /// Parameters implied by the menu item a command was reached through.
-fn params_for(path: &str, id: &str) -> Value {
+pub(crate) fn params_for(path: &str, id: &str) -> Value {
     let leaf = path.rsplit(" > ").next().unwrap_or("");
     match id {
         "view.ruler" => json!({"ruler": ruler_id(leaf)}),
@@ -419,11 +420,6 @@ const MENU_WINDOWS: &[(&str, &str)] = &[
     ("Event > MIDI Operations > MIDI Operations Window", "window.midi_ops"),
     ("Event > MIDI Real-Time Properties", "window.rtp"),
 ];
-
-/// The shortcut of an engine or window command.
-pub fn shortcut_for(id: &str) -> Option<&'static str> {
-    soundcraft_engine::find_command(id).map_or_else(|| UI_COMMANDS.iter().find(|c| c.0 == id).and_then(|c| c.3), |c| c.shortcut)
-}
 
 /// Undo and Redo name the step they would undo or redo; other items keep their catalog label.
 pub fn live_label(app: &SoundApp, id: Option<&str>) -> Option<String> {
@@ -638,6 +634,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.ui.theme = mode;
             json!({"mode": mode.id()})
         }
+        "ui.shortcuts" => return Some(crate::shortcuts::configure(&mut app.ui.shortcuts, p)),
         "ui.set" => match serde_json::to_value(&app.ui) {
             Ok(mut cur) => {
                 if let (Some(obj), Some(patch)) = (cur.as_object_mut(), p.as_object()) {

@@ -1,9 +1,15 @@
-//! Keyboard shortcuts. Most come from the command registry's `shortcut` strings; a few
-//! context-sensitive keys (Space, Enter, F-keys, nudge, Tab) are handled here.
+//! Keyboard shortcuts. Most come from the command registry's `shortcut` strings, which people can
+//! change in Setup › Keyboard Shortcuts; a few context-sensitive keys (Space, Enter, F-keys, nudge,
+//! Tab) are handled here.
 
 use crate::{MainWindow, SoundApp};
 use egui::{Key, Modifiers};
-use serde_json::json;
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
+
+/// People's own shortcuts: command id → shortcut, "" for none.
+pub type Custom = BTreeMap<String, String>;
 
 /// Parse "Cmd+Shift+X" style strings. Returns None for descriptive ones ("F1-F4", "Plus/Minus").
 pub fn parse(s: &str) -> Option<(Modifiers, Key)> {
@@ -41,6 +47,183 @@ pub fn parse(s: &str) -> Option<(Modifiers, Key)> {
     key.map(|k| (m, k))
 }
 
+/// egui names the shifted symbol ("?" for Shift+/); shortcuts name the key under it.
+fn unshifted(key: Key) -> Key {
+    match key {
+        Key::Questionmark => Key::Slash,
+        Key::Colon => Key::Semicolon,
+        Key::Pipe => Key::Backslash,
+        Key::OpenCurlyBracket => Key::OpenBracket,
+        Key::CloseCurlyBracket => Key::CloseBracket,
+        Key::Exclamationmark => Key::Num1,
+        k => k,
+    }
+}
+
+/// The shortcut string of a key press ("Cmd+Shift+K"). Off macOS the Ctrl key is the shortcut's Cmd.
+pub fn chord_text(key: Key, m: Modifiers, mac: bool) -> String {
+    let name = match key {
+        Key::Minus => "-",
+        Key::Quote => "'",
+        Key::Plus | Key::ArrowUp | Key::ArrowDown | Key::ArrowLeft | Key::ArrowRight => key.name(),
+        k => k.symbol_or_name(),
+    };
+    let mods = [(m.command, "Cmd"), (mac && m.ctrl, "Ctrl"), (m.alt, "Alt"), (m.shift, "Shift")];
+    mods.iter().filter(|(held, _)| *held).map(|(_, n)| *n).chain([name]).collect::<Vec<_>>().join("+")
+}
+
+/// Whether two shortcut strings name the same keys.
+fn same(a: &str, b: &str) -> bool {
+    parse(a).is_some_and(|x| parse(b) == Some(x))
+}
+
+/// A command people can give a shortcut in Setup › Keyboard Shortcuts.
+#[derive(Debug)]
+pub struct Bindable {
+    pub id: &'static str,
+    pub label: &'static str,
+    /// The menu it is in, or Markers, Mix and Transport for commands outside the menus.
+    pub category: &'static str,
+    /// Where it is: "Edit › Cut Special", or the category outside the menus.
+    pub menu: String,
+    pub default: Option<&'static str>,
+    /// False for built-in key families ("F1-F4").
+    pub editable: bool,
+}
+
+/// The categories in list order: the menus as in the menu bar, then the commands outside them.
+pub const CATEGORIES: [&str; 12] = ["File", "Edit", "View", "Track", "Clip", "Event", "Options", "Setup", "Window", "Markers", "Mix", "Transport"];
+
+/// Commands outside the menus that deserve keys of their own.
+const KEY_ONLY: &[&str] = &[
+    "transport.pause",
+    "transport.rewind",
+    "transport.fast_forward",
+    "markers.next",
+    "markers.previous",
+    "mix.solo_safe",
+    "mix.phase_invert",
+    "mix.clear_solos",
+    "mix.clear_mutes",
+    "track.hide",
+    "track.playlist_new",
+    "track.playlist_duplicate",
+    "options.keyboard_focus",
+];
+
+/// Every command a shortcut can run, by category: the menu items in menu order, then the commands outside the menus.
+pub fn bindable() -> &'static [Bindable] {
+    static LIST: OnceLock<Vec<Bindable>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        let aliases = crate::menus::ui_aliases();
+        let in_menus =
+            soundcraft_engine::catalog::catalog().into_iter().filter_map(|path| Some((crate::menus::command_for_path(path, &aliases)?, path)));
+        let keyed =
+            soundcraft_engine::command_specs().iter().filter(|c| c.shortcut.is_some() || KEY_ONLY.contains(&c.id)).map(|c| (c.id.to_string(), ""));
+        let windows = crate::menus::UI_COMMANDS.iter().map(|c| (c.0.to_string(), c.2));
+        let mut list: Vec<Bindable> = Vec::new();
+        for (id, path) in in_menus.chain(keyed).chain(windows) {
+            if list.iter().all(|b| b.id != id)
+                && let Some(b) = bindable_entry(&id, path)
+            {
+                list.push(b);
+            }
+        }
+        list.sort_by_key(|b| CATEGORIES.iter().position(|c| *c == b.category));
+        list
+    })
+}
+
+/// `path` is the menu item that runs `id`, if one does. Queries and menu items that need their item's parameters are left out.
+fn bindable_entry(id: &str, path: &'static str) -> Option<Bindable> {
+    let (id, label, default) = match soundcraft_engine::find_command(id) {
+        Some(c) if c.journal || c.view => (c.id, c.label, c.shortcut),
+        Some(_) => return None,
+        None => crate::menus::UI_COMMANDS.iter().find(|c| c.0 == id && c.0.starts_with("window.")).map(|c| (c.0, c.1, c.3))?,
+    };
+    if default.is_none() && crate::menus::params_for("", id) != json!({}) {
+        return None;
+    }
+    let category = match path.split_once(" > ") {
+        Some((menu, _)) => menu,
+        None => CATEGORIES.into_iter().find(|c| id.split_once('.').is_some_and(|(p, _)| c.eq_ignore_ascii_case(p))).unwrap_or("File"),
+    };
+    let menu = path.rsplit_once(" > ").map_or(category.to_string(), |(parents, _)| parents.replace(" > ", " › "));
+    Some(Bindable { id, label, category, menu, default, editable: default.is_none_or(|d| parse(d).is_some()) })
+}
+
+fn default_shortcut(id: &str) -> Option<&'static str> {
+    match soundcraft_engine::find_command(id) {
+        Some(c) => c.shortcut,
+        None => crate::menus::UI_COMMANDS.iter().find(|c| c.0 == id).and_then(|c| c.3),
+    }
+}
+
+/// A command's shortcut: the one people chose, else its built-in one.
+pub fn shortcut_for<'a>(custom: &'a Custom, id: &str) -> Option<&'a str> {
+    match custom.get(id) {
+        Some(s) => Some(s.as_str()).filter(|s| !s.is_empty()),
+        None => default_shortcut(id),
+    }
+}
+
+/// The other commands whose shortcut is `chord`.
+pub fn clashes(custom: &Custom, chord: &str, id: &str) -> Vec<&'static str> {
+    bindable().iter().filter(|b| b.id != id && shortcut_for(custom, b.id).is_some_and(|s| same(s, chord))).map(|b| b.id).collect()
+}
+
+/// Gives `id` the keys `chord` ("" for none) and takes them from the commands that had them, which it returns.
+/// `custom` keeps only shortcuts that differ from the built-in ones.
+pub fn assign(custom: &mut Custom, id: &'static str, chord: &str) -> Vec<&'static str> {
+    let taken = clashes(custom, chord, id);
+    for (cmd, keys) in taken.iter().map(|t| (*t, "")).chain([(id, chord)]) {
+        if default_shortcut(cmd).map_or(keys.is_empty(), |d| same(d, keys)) {
+            custom.remove(cmd);
+        } else {
+            custom.insert(cmd.to_string(), keys.to_string());
+        }
+    }
+    taken
+}
+
+/// `ui.shortcuts`: every listed command with its shortcut, or a change. `{command, shortcut}` gives the command those keys
+/// ("" or null: none) and takes them from other commands, `{command, reset: true}` gives it back its built-in keys the same
+/// way, and `{reset: true}` restores every command's.
+pub fn configure(custom: &mut Custom, p: &Value) -> Result<Value, String> {
+    let reset = p.get("reset").and_then(Value::as_bool).unwrap_or(false);
+    let Some(id) = p.get("command").and_then(Value::as_str) else {
+        if reset {
+            custom.clear();
+        }
+        let list: Vec<Value> = bindable()
+            .iter()
+            .map(|b| {
+                json!({"id": b.id, "label": b.label, "menu": b.menu, "shortcut": shortcut_for(custom, b.id), "default": b.default,
+                    "custom": custom.contains_key(b.id), "editable": b.editable})
+            })
+            .collect();
+        return Ok(json!({"shortcuts": list}));
+    };
+    let b = bindable().iter().find(|b| b.id == id && b.editable).ok_or_else(|| format!("`{id}` can't have a shortcut of its own"))?;
+    let chord = match p.get("shortcut") {
+        _ if reset => b.default.unwrap_or("").to_string(),
+        Some(Value::String(s)) if !s.is_empty() => {
+            let (m, k) = parse(s).ok_or_else(|| format!("can't read the shortcut `{s}`"))?;
+            chord_text(k, m, true)
+        }
+        Some(Value::String(_) | Value::Null) => String::new(),
+        _ => return Err("`shortcut` (such as \"Cmd+Shift+K\", or null for none) or `reset` required".into()),
+    };
+    let taken = assign(custom, b.id, &chord);
+    Ok(json!({"command": b.id, "shortcut": shortcut_for(custom, b.id), "taken_from": taken}))
+}
+
+/// The command this key press runs: among those with keys people chose (`chosen`), or among the rest.
+fn command_for(custom: &Custom, key: Key, mods: Modifiers, mac: bool, chosen: bool) -> Option<&'static str> {
+    let hit = |id: &str| shortcut_for(custom, id).and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac));
+    bindable().iter().map(|b| b.id).find(|id| custom.contains_key(*id) == chosen && hit(id))
+}
+
 /// Whether the held modifiers `got` fire a shortcut that asks for `want`.
 fn mods_match(want: Modifiers, got: Modifiers, mac: bool) -> bool {
     // Off macOS egui reports Ctrl as both `ctrl` and `command`: Ctrl is the shortcut's Cmd, and a shortcut's
@@ -57,44 +240,71 @@ fn search_chord(m: Modifiers, mac: bool) -> bool {
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
+    let events = key_presses(ctx, &mut app.v_pressed);
     if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() {
         return;
     }
-    let events: Vec<(Key, Modifiers)> = ctx.input(|i| {
-        i.events
-            .iter()
-            .filter_map(|e| match e {
-                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => Some((*key, *modifiers)),
-                _ => None,
-            })
-            .collect()
-    });
     // Cmd and Ctrl are separate keys only on macOS (asked at runtime so the web build in a Mac browser agrees).
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
+    if app.shortcut_editor.capturing.is_some() {
+        if let Some((key, mods)) = events.into_iter().find(|(k, _)| !is_modifier(*k)) {
+            crate::shortcut_editor::captured(app, key, mods, mac);
+        }
+        ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Key { .. })));
+        ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+        return;
+    }
     for (key, mods) in events {
-        if fixed(app, key, mods, mac) {
+        let chosen = command_for(&app.ui.shortcuts, key, mods, mac, true);
+        if chosen.is_none() && fixed(app, key, mods, mac) {
             continue;
         }
-        if let Some(id) = command_for(key, mods, mac) {
-            if crate::menus::invoke_shortcut_dialog(app, id) {
-                continue;
-            }
+        let Some(id) = chosen.or_else(|| command_for(&app.ui.shortcuts, key, mods, mac, false)) else { continue };
+        if !crate::menus::invoke_shortcut_dialog(app, id) {
             let _ = app.run(id, json!({}));
-        } else if let Some(c) =
-            crate::menus::UI_COMMANDS.iter().find(|c| c.3.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
-        {
-            let _ = app.run(c.0, json!({}));
         }
     }
     // Tab moves the insertion point here, so egui must not also hand focus to the first widget: that would block every shortcut.
     ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
 }
 
-fn command_for(key: Key, mods: Modifiers, mac: bool) -> Option<&'static str> {
-    soundcraft_engine::command_specs()
-        .iter()
-        .find(|c| c.shortcut.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
-        .map(|c| c.id)
+/// The desktop sends Cmd+X/C/V (and Windows' Shift+Delete, Ctrl+Insert, Shift+Insert) only as clipboard events, and
+/// drops Cmd+V's press while the clipboard holds no text, so a V release whose press never came counts as Cmd+V.
+fn key_presses(ctx: &egui::Context, v_pressed: &mut bool) -> Vec<(Key, Modifiers)> {
+    ctx.input(|i| {
+        let clipboard = |key| (!cfg!(target_arch = "wasm32")).then_some((key, if i.modifiers.command { i.modifiers } else { Modifiers::COMMAND }));
+        i.events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => {
+                    *v_pressed |= *key == Key::V;
+                    Some((if modifiers.shift { unshifted(*key) } else { *key }, *modifiers))
+                }
+                egui::Event::Key { key: Key::V, pressed: false, .. } if !std::mem::take(v_pressed) => clipboard(Key::V),
+                egui::Event::Cut => clipboard(Key::X),
+                egui::Event::Copy => clipboard(Key::C),
+                egui::Event::Paste(_) => {
+                    *v_pressed |= i.modifiers.command;
+                    clipboard(Key::V)
+                }
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+pub fn is_modifier(key: Key) -> bool {
+    matches!(
+        key,
+        Key::ShiftLeft | Key::ShiftRight | Key::ControlLeft | Key::ControlRight | Key::AltLeft | Key::AltRight | Key::SuperLeft | Key::SuperRight
+    )
+}
+
+/// Runs a built-in key's command, unless people gave that command other keys.
+fn run_unless_moved(app: &mut SoundApp, id: &str) {
+    if !app.ui.shortcuts.contains_key(id) {
+        let _ = app.run(id, json!({}));
+    }
 }
 
 /// Keys with context-dependent meaning. Returns true when handled.
@@ -102,24 +312,23 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
     let plain = !m.command && !m.alt && !m.ctrl && !m.shift;
     match key {
         Key::Space if !m.command && !m.alt => {
-            let id = if m.shift { "transport.half_speed" } else { "transport.toggle" };
-            let _ = app.run(id, json!({}));
+            run_unless_moved(app, if m.shift { "transport.half_speed" } else { "transport.toggle" });
             true
         }
         Key::Space if m.command => {
-            let _ = app.run("transport.record", json!({}));
+            run_unless_moved(app, "transport.record");
             true
         }
         Key::S if search_chord(m, mac) => {
-            let _ = app.run("window.search", json!({}));
+            run_unless_moved(app, "window.search");
             true
         }
         Key::Equals if m.command && !(mac && m.ctrl) => {
-            let _ = app.run("window.toggle_mix_edit", json!({}));
+            run_unless_moved(app, "window.toggle_mix_edit");
             true
         }
         Key::Enter if plain => {
-            let _ = app.run("markers.add", json!({}));
+            run_unless_moved(app, "markers.add");
             true
         }
         // Shift+=/- step the Grid value and Alt+Shift+=/- the Nudge value; macOS sends Alt+Shift+= as =, not +.
@@ -162,6 +371,11 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             let _ = app.run("edit.tool", json!({"tool": tool}));
             true
         }
+        // Selected notes in an open MIDI editor take the key.
+        Key::Delete | Key::Backspace if plain && app.ui.window == MainWindow::Edit && (app.midi.selected.is_empty() || !app.ui.show_midi_editor) => {
+            let _ = app.run("edit.clear", json!({}));
+            true
+        }
         Key::Plus | Key::Minus if !m.command && app.ui.window == MainWindow::Edit => {
             let dir = if key == Key::Plus { 1 } else { -1 };
             let _ = app.run("edit.nudge", json!({"direction": dir}));
@@ -202,8 +416,7 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
         }
         // Ctrl+Shift+Up/Down nudge clip gain off macOS too (the registry's Ctrl is the Mac Control key).
         Key::ArrowUp | Key::ArrowDown if !mac && m.ctrl && m.shift && !m.alt => {
-            let id = if key == Key::ArrowUp { "clip.gain_nudge_up" } else { "clip.gain_nudge_down" };
-            let _ = app.run(id, json!({}));
+            run_unless_moved(app, if key == Key::ArrowUp { "clip.gain_nudge_up" } else { "clip.gain_nudge_down" });
             true
         }
         // Commands Keyboard Focus: single-key editing (Edit window only).
@@ -416,7 +629,7 @@ mod label_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_for, mods_match, parse, search_chord};
+    use super::{Custom, command_for, mods_match, parse, search_chord};
     use egui::{Key, Modifiers};
 
     /// Ctrl held on Windows or Linux, as egui reports it.
@@ -450,8 +663,8 @@ mod tests {
 
     #[test]
     fn shift_cmd_k_prompts_for_a_folder_to_export_clips() {
-        assert_eq!(command_for(Key::K, Modifiers { shift: true, ..MAC_CMD }, true), Some("file.export_clips"));
-        assert_eq!(command_for(Key::K, Modifiers { shift: true, ..PC_CTRL }, false), Some("file.export_clips"));
+        assert_eq!(command_for(&Custom::new(), Key::K, Modifiers { shift: true, ..MAC_CMD }, true, false), Some("file.export_clips"));
+        assert_eq!(command_for(&Custom::new(), Key::K, Modifiers { shift: true, ..PC_CTRL }, false, false), Some("file.export_clips"));
         assert!(crate::dialogs::takes_path("file.export_clips"));
     }
 }

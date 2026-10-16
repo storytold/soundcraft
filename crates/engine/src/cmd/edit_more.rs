@@ -102,7 +102,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "edit.paste_merge_midi",
             "Merge MIDI",
             ["Edit", "Paste Special"],
-            None,
+            Some("Alt+M"),
             "{tracks?, at?} — merges copied MIDI notes into existing MIDI clips instead of replacing them",
             has_clipboard,
             paste_merge_midi
@@ -111,7 +111,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "edit.paste_merge_markers",
             "Merge Markers",
             ["Edit", "Paste Special"],
-            None,
+            Some("Alt+V"),
             "{at?} — adds the copied markers at the insertion point, skipping any that already exist there",
             has_marker_clipboard,
             paste_merge_markers
@@ -125,7 +125,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_automation_clipboard,
             paste_to_current_automation
         ),
-        cmd!(noundo "edit.play_timeline", "Play Timeline", ["Edit", "Selection"], None, "{} — plays the timeline selection", always, |e, _| {
+        cmd!(noundo "edit.play_timeline", "Play Timeline", ["Edit", "Selection"], Some("Alt+]"), "{} — plays the timeline selection", always, |e, _| {
             let s = e.session();
             let r = if s.edit.timeline_selection.is_empty() { s.edit.selection } else { s.edit.timeline_selection };
             e.transport_requests.push(TransportRequest::Locate(r.start));
@@ -223,7 +223,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "edit.tce_to_timeline",
             "TCE Edit to Timeline Selection",
             ["Edit"],
-            None,
+            Some("Alt+Shift+U"),
             "{clip?, start?, end?} — time-stretches the clip to fill the timeline selection (pitch preserved)",
             has_selection,
             tce
@@ -250,7 +250,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "edit.automation_trim_to_all",
             "Trim to All Enabled",
             ["Edit", "Automation"],
-            None,
+            Some("Cmd+Alt+Shift+/"),
             "{tracks?, start?, end?} — offsets every enabled lane in the selection so it starts at the current control value",
             has_range,
             |e, p| trim_glide(e, p, false, false, "edit.automation_trim_to_all")
@@ -259,7 +259,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "edit.automation_glide_to_all",
             "Glide to All Enabled",
             ["Edit", "Automation"],
-            None,
+            Some("Alt+Shift+/"),
             "{tracks?, start?, end?} — ramps every enabled lane from its value at the start to the current value at the end",
             has_range,
             |e, p| trim_glide(e, p, true, false, "edit.automation_glide_to_all")

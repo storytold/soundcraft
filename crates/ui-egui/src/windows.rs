@@ -23,7 +23,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     configurations(app, ctx);
     playback_engine(app, ctx);
     io_setup(app, ctx);
-    shortcuts_window(app, ctx);
+    crate::shortcut_editor::show(app, ctx);
     clip_effects(app, ctx);
 }
 
@@ -396,6 +396,7 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
                     } else {
                         st.configurations = app.ui.configurations.clone();
                         st.theme = app.ui.theme;
+                        st.shortcuts = app.ui.shortcuts.clone();
                         st.show_configurations = true;
                         crate::docking::cancel_replaced_state(app, &st);
                         app.ui = st;
@@ -651,28 +652,6 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
         }
     });
     app.ui.show_io_setup = open;
-}
-
-/// Setup › Keyboard Shortcuts.
-pub fn shortcuts_window(app: &mut SoundApp, ctx: &egui::Context) {
-    let mut open = app.ui.show_shortcuts;
-    let mac = ctx.os().is_mac();
-    win(ctx, &mut open, "Keyboard Shortcuts", vec2(520.0, 480.0), |ui| {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("sc").num_columns(3).striped(true).show(ui, |ui| {
-                let engine = soundcraft_engine::command_specs().iter().map(|c| (c.shortcut, c.label, c.menu.join(" › ")));
-                let windows = crate::menus::UI_COMMANDS.iter().map(|c| (c.3, c.1, c.2.replace(" > ", " › ")));
-                for (shortcut, label, menu) in engine.chain(windows) {
-                    let Some(shortcut) = shortcut else { continue };
-                    ui.label(egui::RichText::new(crate::shortcuts::shortcut_label(shortcut, mac)).font(mono(11.0)));
-                    ui.label(label);
-                    ui.label(egui::RichText::new(menu).small());
-                    ui.end_row();
-                }
-            });
-        });
-    });
-    app.ui.show_shortcuts = open;
 }
 
 /// Clip Effects: per-clip EQ, dynamics and gain (stored as `clip_fx.<clip>.*` values).

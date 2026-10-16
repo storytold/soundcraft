@@ -13,7 +13,7 @@ pub const OFFLINE_FLAG: &str = "video.offline";
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(noundo "video.online", "Video Track Online", ["Options"], None, "{value?: bool} (toggles when omitted) — when offline the Video window and the Video track stop decoding pictures", always, |e, p| {
+        cmd!(noundo "video.online", "Video Track Online", ["Options"], Some("Cmd+Shift+J"), "{value?: bool} (toggles when omitted) — when offline the Video window and the Video track stop decoding pictures", always, |e, p| {
             let s = e.session_mut();
             let online = p.get("value").and_then(Value::as_bool).unwrap_or(s.edit.flag(OFFLINE_FLAG));
             s.edit.set_flag(OFFLINE_FLAG, !online);

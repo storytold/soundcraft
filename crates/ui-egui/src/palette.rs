@@ -1,6 +1,7 @@
 //! Search: a command palette over every engine and UI command (Window › Search, Cmd+Ctrl+S).
 
 use crate::SoundApp;
+use crate::shortcuts::{shortcut_for, shortcut_label};
 use crate::theme::{Tokens, mono};
 use egui::{Align2, Key, vec2};
 
@@ -14,18 +15,15 @@ struct Entry {
     id: String,
     label: String,
     path: String,
-    shortcut: String,
 }
 
 fn entries() -> Vec<Entry> {
     let mut v: Vec<Entry> = soundcraft_engine::command_specs()
         .iter()
-        .map(|c| Entry {
-            id: c.id.to_string(), label: c.label.to_string(), path: c.menu.join(" › "), shortcut: c.shortcut.unwrap_or("").to_string()
-        })
+        .map(|c| Entry { id: c.id.to_string(), label: c.label.to_string(), path: c.menu.join(" › ") })
         .collect();
-    for (id, label, path, sc) in crate::menus::UI_COMMANDS {
-        v.push(Entry { id: id.to_string(), label: label.to_string(), path: path.replace(" > ", " › "), shortcut: sc.unwrap_or("").to_string() });
+    for (id, label, path, _) in crate::menus::UI_COMMANDS {
+        v.push(Entry { id: id.to_string(), label: label.to_string(), path: path.replace(" > ", " › ") });
     }
     v
 }
@@ -95,7 +93,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     let l = ui.selectable_label(sel, &e.label);
                     ui.label(egui::RichText::new(&e.path).small().color(t.text_dim));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let sc = crate::shortcuts::shortcut_label(&e.shortcut, ctx.os().is_mac());
+                        let sc = shortcut_label(shortcut_for(&app.ui.shortcuts, &e.id).unwrap_or(""), ctx.os().is_mac());
                         ui.label(egui::RichText::new(sc).font(mono(10.0)).color(t.text_dim));
                     });
                     l

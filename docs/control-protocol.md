@@ -87,6 +87,13 @@ When the integration cannot report an appearance, System uses Dark. Manual Light
 fixed when the OS appearance changes. An offscreen render without `--system-theme` supplies no
 OS appearance and therefore resolves System to Dark.
 
+Keyboard shortcuts: `ui.shortcuts {}` lists every command a key can run, with its menu, shortcut
+and built-in default. `{"command":"window.transport","shortcut":"Cmd+Alt+T"}` gives a command those
+keys and takes them from any other command (`Cmd` is Ctrl on Windows and Linux); `"shortcut":null`
+removes its keys, `{"command":…,"reset":true}` gives it back its built-in ones the same way and
+`{"reset":true}` restores every command's. These choices are saved with the UI prefs and win over
+built-in keys such as F1–F10.
+
 ## Panel docking
 
 Tracks and Groups, Clips, MIDI Editor, Memory Locations, and Undo History use movable panels. Commands target the active Edit or Mix view; floating panels stay inside the current viewport. Edit and Mix retain separate arrangements; Clips and MIDI Editor belong to Edit. Transport, plug-in, and specialist utility windows retain their existing hosts. The document/session view is protected. Layouts, active tabs, panel visibility, and floating rectangles are saved with the app's existing UI preferences. These operations do not edit document contents.
