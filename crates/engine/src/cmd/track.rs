@@ -197,7 +197,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"clips": ids}))
             }
         ),
-        cmd!("track.input", "Track Input", [], None, "{tracks?, input: none|bus name|hardware name}", has_selection, |e, p| route(e, p, true)),
+        cmd!(
+            "track.input",
+            "Track Input",
+            [],
+            None,
+            "{tracks?, input: none|bus name|hardware name|MIDI:<channel 1-16 or *>:<device or *> (MIDI and instrument tracks)}",
+            has_selection,
+            |e, p| route(e, p, true)
+        ),
         cmd!("track.output", "Track Output", [], None, "{tracks?, output: main|none|bus name}", has_selection, |e, p| route(e, p, false)),
         cmd!("track.timebase", "Track Timebase", [], None, "{tracks?, ticks: bool}", has_selection, |e, p| flag(
             e,
@@ -833,6 +841,8 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     if let Route::Hardware(name) = &r
         && create_bus
         && !name.to_ascii_lowercase().starts_with("in ")
+        // A MIDI input (device and channel) of a MIDI or instrument track, see `MidiInput`.
+        && !name.starts_with("MIDI:")
     {
         let fmt = tracks
             .first()

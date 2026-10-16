@@ -125,6 +125,8 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// MIDI input ports switched off in Setup, by name (all others are used).
+    pub midi_inputs_off: Vec<String>,
 }
 
 impl Default for UiState {
@@ -185,6 +187,7 @@ impl Default for UiState {
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
+            midi_inputs_off: Vec::new(),
         }
     }
 }
@@ -259,6 +262,12 @@ pub struct SoundApp {
     /// Punch range to trim the take to (pre/post-roll recordings).
     punch: Option<Range>,
     recorder_failed: bool,
+    /// MIDI device input, opened on the first frame of an app that has an audio engine.
+    pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
+    /// When the MIDI ports were last looked for (egui time).
+    midi_scan_at: f64,
+    /// MIDI played during the current record pass.
+    midi_take: Vec<soundcraft_playback::midi::RecordedMidi>,
     /// Input this take lost to a slow disk, as last reported (ms).
     lost_shown: u64,
     /// Where the takes being recorded go, autosaved with the session so a crash can't lose them.
@@ -354,6 +363,9 @@ impl SoundApp {
             record_start: 0,
             punch: None,
             recorder_failed: false,
+            midi_inputs: None,
+            midi_scan_at: 0.0,
+            midi_take: Vec::new(),
             lost_shown: 0,
             take_plan: None,
             ui: UiState::default(),
@@ -535,15 +547,34 @@ impl SoundApp {
             self.record_hint = Some((self.last_frame.unwrap_or_default(), why));
             return;
         }
-        self.ensure_input();
-        let takes = match self.arm_recorder() {
+        // A pass records audio, MIDI or both: it needs one of them ready. The audio input is
+        // only opened for audio tracks.
+        let audio_tracks = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm && !t.kind.is_midi());
+        let midi_tracks = soundcraft_engine::io::records_midi(&self.engine);
+        let midi_ready = midi_tracks && self.midi_connected();
+        if audio_tracks {
+            self.ensure_input();
+        }
+        let audio = if audio_tracks { self.arm_recorder() } else { Err("no audio track is record-enabled".to_string()) };
+        let takes = match audio {
             Ok(takes) => takes,
+            // MIDI alone still makes a pass.
+            Err(_) if midi_ready => Vec::new(),
             Err(err) => {
-                self.ui.status = format!("Cannot record: {err}");
+                self.ui.status = if midi_tracks && !audio_tracks {
+                    "Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)".into()
+                } else {
+                    format!("Cannot record: {err}")
+                };
                 return;
             }
         };
         self.lost_shown = 0;
+        // Whatever was played before this pass is not part of it.
+        if let Some(m) = &self.midi_inputs {
+            m.feed().take_recorded(&mut self.midi_take);
+        }
+        self.midi_take.clear();
         if let Some(p) = &self.player {
             p.set_recording(true);
         }
@@ -766,6 +797,7 @@ impl SoundApp {
     fn meters_live(&self) -> bool {
         self.engine.transport.playing
             || (self.recorder.is_some() && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm))
+            || (self.midi_connected() && self.engine.session().tracks.iter().any(|t| t.kind.is_midi() && soundcraft_mix::midi_thru(t)))
     }
 
     /// Reopens the audio devices with `cfg` (Setup › Playback Engine › Apply), keeping the
@@ -788,6 +820,9 @@ impl SoundApp {
         self.recorder = None;
         self.recorder_failed = false;
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        if let Some(m) = &self.midi_inputs {
+            player.set_midi(std::sync::Arc::clone(m.feed()));
+        }
         player.locate(at);
         self.player = Some(player);
         Ok(())
@@ -882,7 +917,11 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
-        self.player = Some(Player::with_config(self.engine.session_arc(), &self.ui.audio));
+        let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        if let Some(m) = &self.midi_inputs {
+            player.set_midi(std::sync::Arc::clone(m.feed()));
+        }
+        self.player = Some(player);
     }
 
     fn finish_recording(&mut self) {
@@ -890,9 +929,11 @@ impl SoundApp {
         if let Some(p) = &self.player {
             p.set_recording(false);
         }
+        // Where the pass ended: the audio engine's own position is the freshest.
+        let stopped_at = self.player.as_ref().map_or(self.engine.transport.position, |p| p.position().max(self.engine.transport.position));
         let plan = self.take_plan.take();
-        let Some(r) = &mut self.recorder else { return };
-        let (takes, problem) = r.finish();
+        // No input device is open when the pass was MIDI only.
+        let (takes, problem) = self.recorder.as_mut().map_or_else(|| (Vec::new(), None), |r| r.finish());
         let tracks = takes.len().max(1);
         let plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
             start: self.record_start,
@@ -904,12 +945,81 @@ impl SoundApp {
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
-        self.ui.status =
-            if plan.pass.is_some() { format!("Loop-recorded {} take(s)", ids.len() / tracks) } else { format!("Recorded {} clip(s)", ids.len()) };
+        // MIDI goes where the audio of the pass goes: the loop, the punch range, or all of it.
+        let midi_range = match plan.pass {
+            Some(len) => Range::new(plan.start, plan.start.saturating_add(len)),
+            None => plan.punch.unwrap_or(Range::new(self.record_start, stopped_at)),
+        };
+        let midi_clips = self.finish_midi_take(midi_range, !ids.is_empty());
+        self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
+            format!("Loop-recorded {} take(s)", ids.len() / tracks)
+        } else if ids.is_empty() && midi_clips == 0 {
+            "Nothing was recorded: the record-enabled tracks received no input".to_string()
+        } else {
+            format!("Recorded {} clip(s)", ids.len() + midi_clips)
+        };
         if let Some(p) = problem {
             log::warn!("recording: {p}");
             self.ui.status = format!("{} ({p})", self.ui.status);
         }
+    }
+
+    /// Whether a MIDI input port is open.
+    fn midi_connected(&self) -> bool {
+        self.midi_inputs.as_ref().is_some_and(|m| m.feed().connected() > 0)
+    }
+
+    /// Turn the MIDI played during the pass into clips on the record-enabled MIDI and instrument
+    /// tracks; returns how many. `with_audio`: audio takes of this pass already made its undo step.
+    fn finish_midi_take(&mut self, range: Range, with_audio: bool) -> usize {
+        let Some(m) = &self.midi_inputs else { return 0 };
+        let feed = m.feed();
+        feed.take_recorded(&mut self.midi_take);
+        let events: Vec<soundcraft_engine::io::MidiTakeEvent> = self
+            .midi_take
+            .drain(..)
+            .map(|e| soundcraft_engine::io::MidiTakeEvent { at: e.at, device: e.port, status: e.status, data1: e.data1, data2: e.data2 })
+            .collect();
+        if events.is_empty() {
+            return 0;
+        }
+        let devices: Vec<String> = (0..soundcraft_mix::MAX_MIDI_PORTS)
+            .map(|i| u8::try_from(i).ok().and_then(|i| feed.ports().name(i)).unwrap_or_default().to_string())
+            .collect();
+        soundcraft_engine::io::add_midi_recording(&mut self.engine, range, &events, &devices, with_audio).len()
+    }
+
+    /// Open the MIDI inputs once, hand them to the audio engine, and keep following devices that
+    /// are plugged in or removed. Collects what is played while recording.
+    fn service_midi(&mut self, now: f64) {
+        let Some(p) = &self.player else { return };
+        match &mut self.midi_inputs {
+            None => {
+                let m = soundcraft_playback::midi::MidiInputs::open(self.ui.midi_inputs_off.clone());
+                p.set_midi(std::sync::Arc::clone(m.feed()));
+                self.midi_inputs = Some(m);
+                self.midi_scan_at = now;
+            }
+            Some(m) => {
+                if (now - self.midi_scan_at).abs() >= 2.0 {
+                    self.midi_scan_at = now;
+                    m.rescan();
+                }
+                if self.engine.transport.recording {
+                    m.feed().take_recorded(&mut self.midi_take);
+                }
+            }
+        }
+    }
+
+    /// Use or ignore a MIDI input port. Remembered in the UI prefs.
+    pub fn set_midi_input_enabled(&mut self, name: &str, on: bool) {
+        if let Some(m) = &mut self.midi_inputs {
+            m.set_enabled(name, on);
+            self.ui.midi_inputs_off = m.disabled().to_vec();
+        }
+        // The session's own record of the devices in use follows the switch.
+        let _ = self.run("setup.midi_input_devices", json!({ if on { "enable" } else { "disable" }: [name] }));
     }
 
     /// While playing, record volume automation from fader positions for tracks in Write mode, and
@@ -1156,6 +1266,7 @@ impl SoundApp {
         self.autosave_changes();
         self.write_automation(ctx);
         self.autosave();
+        self.service_midi(now);
         if self.recorder.is_none()
             && !self.recorder_failed
             && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm)
@@ -1259,6 +1370,8 @@ impl SoundApp {
             "dialog": self.dialogs.open_name(),
             "frame_ms": self.frame_ms,
             "audio_device": self.player.as_ref().map(|p| p.device_name.clone()),
+            "midi_inputs": self.midi_inputs.as_ref().map(|m| m.ports().iter().map(|p| json!({"name": p.name, "enabled": p.enabled, "open": p.open})).collect::<Vec<_>>()),
+            "midi_events": self.midi_inputs.as_ref().map(|m| m.feed().activity().0),
             "status": self.ui.status,
         })
     }

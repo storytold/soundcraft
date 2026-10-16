@@ -457,6 +457,83 @@ fn number_combo(ui: &mut egui::Ui, id: &str, value: &mut Option<u32>, options: &
     });
 }
 
+/// What a MIDI message is, for the "last received" readout.
+fn midi_event_text(e: &soundcraft_mix::LiveMidi) -> String {
+    let ch = e.channel() + 1;
+    match e.status & 0xF0 {
+        0x90 if e.data2 > 0 => format!("note {} on, velocity {}, channel {ch}", soundcraft_midi::note_name(e.data1), e.data2),
+        0x80 | 0x90 => format!("note {} off, channel {ch}", soundcraft_midi::note_name(e.data1)),
+        0xA0 => format!("aftertouch {} on note {}, channel {ch}", e.data2, soundcraft_midi::note_name(e.data1)),
+        0xB0 => format!("controller {} = {}, channel {ch}", e.data1, e.data2),
+        0xC0 => format!("program {}, channel {ch}", u16::from(e.data1) + 1),
+        0xD0 => format!("aftertouch {}, channel {ch}", e.data1),
+        0xE0 => format!("pitch bend {}, channel {ch}", (i32::from(e.data2) << 7 | i32::from(e.data1)) - 8192),
+        _ => format!("message {:#04x}", e.status),
+    }
+}
+
+/// The MIDI inputs of Setup › Playback Engine: every input port with a switch, and on request what
+/// arrives from it, to see that a keyboard gets through.
+fn midi_inputs(app: &mut SoundApp, ui: &mut egui::Ui) {
+    ui.strong("MIDI inputs");
+    let Some(m) = &app.midi_inputs else {
+        ui.weak("No audio engine, so MIDI devices are not opened.");
+        return;
+    };
+    if let Some(e) = m.error() {
+        ui.colored_label(ui.visuals().warn_fg_color, e);
+        return;
+    }
+    let ports = m.ports().to_vec();
+    if ports.is_empty() {
+        ui.weak("No MIDI input device found. Plug one in: it shows up here by itself.");
+    }
+    // Per port name: whether its debug readout is shown, and the last message seen from it.
+    let debug_id = egui::Id::new("playback-engine-midi-debug");
+    let mut debug: std::collections::BTreeMap<String, (bool, Option<String>)> = ui.data(|d| d.get_temp(debug_id)).unwrap_or_default();
+    let (count, last) = m.feed().activity();
+    if let Some(e) = last
+        && let Some(from) = m.feed().ports().name(e.port)
+    {
+        debug.entry(from.to_string()).or_default().1 = Some(format!("{} (message {count} of all devices)", midi_event_text(&e)));
+    }
+    let mut toggle = None;
+    egui::Grid::new("pe-midi").num_columns(3).show(ui, |ui| {
+        for p in &ports {
+            let mut on = p.enabled;
+            if crate::widgets::checkbox(ui, &mut on, &p.name).on_hover_text("Play and record from this device").changed() {
+                toggle = Some((p.name.clone(), on));
+            }
+            match (p.enabled, p.open) {
+                (false, _) => ui.weak("off"),
+                (true, true) => ui.label("connected"),
+                (true, false) => ui.colored_label(ui.visuals().warn_fg_color, "could not be opened"),
+            };
+            let shown = &mut debug.entry(p.name.clone()).or_default().0;
+            if ui.selectable_label(*shown, "Test").on_hover_text("Show what arrives from this device").clicked() {
+                *shown = !*shown;
+            }
+            ui.end_row();
+        }
+    });
+    if let Some((name, on)) = toggle {
+        app.set_midi_input_enabled(&name, on);
+    }
+    for p in &ports {
+        let Some((true, seen)) = debug.get(&p.name) else { continue };
+        ui.separator();
+        ui.label(&p.name);
+        ui.weak(format!("Enabled: {}, open: {}", if p.enabled { "yes" } else { "no" }, if p.open { "yes" } else { "no" }));
+        ui.weak(match seen {
+            Some(text) => format!("Last received: {text}"),
+            None => "Last received: nothing yet".to_string(),
+        });
+        // Keep the readout live while it is shown.
+        ui.ctx().request_repaint_after_secs(0.1);
+    }
+    ui.data_mut(|d| d.insert_temp(debug_id, debug));
+}
+
 /// Setup › Playback Engine / Hardware: choose the audio system, devices, rate and buffer size.
 pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_playback_engine;
@@ -551,6 +628,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         if ui.button("Reconnect audio device").clicked() {
             app.reconnect_audio();
         }
+        ui.separator();
+        midi_inputs(app, ui);
     });
     if refresh {
         audio_systems(ctx, true);

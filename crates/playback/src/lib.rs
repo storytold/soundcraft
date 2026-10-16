@@ -23,13 +23,14 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod devices;
+pub mod midi;
 pub mod record;
 
 pub use devices::AudioConfig;
 
 use soundcraft_dsp::{Plugin, PluginEditor, PluginStateReader};
-use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
-use soundcraft_model::{Session, TrackId};
+use soundcraft_mix::{LiveMidi, MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
+use soundcraft_model::{Session, TrackId, TrackKind};
 use soundcraft_time::{Range, Samples};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
@@ -64,6 +65,7 @@ enum Cmd {
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
+    Midi(Arc<midi::MidiFeed>),
     Recording(bool),
     Play {
         from: Samples,
@@ -168,13 +170,22 @@ struct AudioState {
     device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
+    midi: Option<Arc<midi::MidiFeed>>,
+    /// Live MIDI events of this callback not played yet: frames (session rate) until each is due.
+    midi_pending: Vec<(i64, LiveMidi)>,
+    /// The delay every live event gets so that all keep their spacing: one callback (frames).
+    midi_delay: i64,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
 }
 
+/// Live MIDI events one device callback can take in.
+const MIDI_EVENTS: usize = 256;
+
 fn new_engine(sr: f32) -> MixEngine {
     let mut m = MixEngine::new(sr, BLOCK);
+    m.midi = Vec::with_capacity(MIDI_EVENTS);
     m.set_external_instances(true);
     m.metronome = true;
     m
@@ -202,6 +213,9 @@ impl AudioState {
             device_rate,
             input: None,
             recording: false,
+            midi: None,
+            midi_pending: Vec::with_capacity(MIDI_EVENTS),
+            midi_delay: 0,
         }
     }
 
@@ -210,12 +224,17 @@ impl AudioState {
         while let Ok(c) = self.rx.try_recv() {
             match c {
                 Cmd::Input(r) => self.input = Some(r),
+                Cmd::Midi(f) => {
+                    self.mix.midi_ports = Some(Arc::clone(f.ports()));
+                    self.midi = Some(f);
+                }
                 Cmd::Recording(r) => self.recording = r,
                 Cmd::Session(s, instances) => {
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
                         let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
                         let _ = self.garbage.send(old.drain_plugins());
+                        self.mix.midi_ports = self.midi.as_ref().map(|f| Arc::clone(f.ports()));
                     }
                     self.mix.adopt(instances);
                     // The main format changed (a document edit, not steady state): resize.
@@ -271,6 +290,46 @@ impl AudioState {
         }
     }
 
+    /// Take the MIDI events that arrived since the last callback. Each is due `callback` frames
+    /// (session rate: the length of this callback) after it arrived, so that events keep their
+    /// spacing instead of bunching up at the start of a block.
+    fn take_midi(&mut self, callback: i64) {
+        let Some(feed) = &self.midi else { return };
+        let now = feed.clock();
+        let rate = self.session.sample_rate.as_f64();
+        self.midi_delay = callback.max(0);
+        while let Some((age_us, e)) = feed.next(now) {
+            let age = (age_us as f64 * rate / 1e6) as i64;
+            if self.midi_pending.len() < self.midi_pending.capacity() {
+                self.midi_pending.push((self.midi_delay.saturating_sub(age).max(0), e));
+            }
+        }
+    }
+
+    /// Hand the engine the live MIDI events due in the next `n` frames, and note them down with
+    /// their timeline position while recording.
+    fn due_midi(&mut self, n: usize) {
+        self.mix.midi.clear();
+        let frames = i64::try_from(n).unwrap_or(i64::MAX);
+        let out = &mut self.mix.midi;
+        let record = if self.playing && self.recording { self.midi.as_deref() } else { None };
+        // The position the key went down at: where it sounds, less the delay it was given.
+        let origin = self.pos.saturating_sub(self.midi_delay);
+        self.midi_pending.retain_mut(|(due, e)| {
+            if *due >= frames {
+                *due -= frames;
+                return true;
+            }
+            if out.len() < out.capacity() {
+                out.push(LiveMidi { offset: u32::try_from(*due).unwrap_or(0), ..*e });
+            }
+            if let Some(feed) = record {
+                feed.record(origin.saturating_add(*due), e);
+            }
+            false
+        });
+    }
+
     /// Render the next block at the session rate into `pending`.
     fn render_next(&mut self, quantum: usize) {
         let mut n = quantum.clamp(1, BLOCK);
@@ -305,6 +364,7 @@ impl AudioState {
             }
             ring.pop_into(&mut self.mix.input, n, self.session.sample_rate.hz());
         }
+        self.due_midi(n);
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
         self.mix.render(&self.session, self.pos, n, &mut self.pending);
@@ -331,8 +391,14 @@ impl AudioState {
     fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
         let channels = channels.max(1);
-        let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        // A keyboard plays through record-enabled and input-monitored MIDI and instrument tracks.
+        let midi_thru = self.midi.as_ref().is_some_and(|f| f.connected() > 0)
+            && self.session.tracks.iter().any(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && soundcraft_mix::midi_thru(t));
+        let monitoring = midi_thru || (self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm));
         if !self.playing && !monitoring {
+            // Nothing listens: let the MIDI events go, so that they do not sound late.
+            self.take_midi(0);
+            self.midi_pending.clear();
             out.iter_mut().for_each(|x| *x = 0.0);
             if let Ok(mut m) = self.shared.meters.try_lock() {
                 m.main = StripMeter::default();
@@ -344,6 +410,7 @@ impl AudioState {
         let step = self.session.sample_rate.as_f64() / self.device_rate.max(1.0) * speed.clamp(0.1, 4.0);
         let callback_frames = out.len() / channels;
         let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
+        self.take_midi((callback_frames as f64 * step).ceil() as i64);
         for frame in out.chunks_mut(channels) {
             while self.read >= self.pending_len as f64 {
                 self.read -= self.pending_len as f64;
@@ -736,6 +803,11 @@ impl Player {
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.
     pub fn set_input(&self, ring: Arc<record::InputRing>) {
         let _ = self.tx.send(Cmd::Input(ring));
+    }
+
+    /// Play MIDI devices through record-enabled and input-monitored MIDI and instrument tracks.
+    pub fn set_midi(&self, feed: Arc<midi::MidiFeed>) {
+        let _ = self.tx.send(Cmd::Midi(feed));
     }
 
     pub fn set_recording(&self, on: bool) {
@@ -1279,6 +1351,55 @@ mod tests {
                 assert!(out.iter().all(|x| x.abs() < 1e-6), "{plugin}: audio from before the locate");
             }
         }
+    }
+
+    #[test]
+    fn a_midi_keyboard_plays_and_records_through_a_record_enabled_instrument() {
+        use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+        let mut s = soundcraft_model::Session::default();
+        let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        s.track_mut(t).unwrap().instrument = Some(Insert::new("subtractive_synth"));
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        });
+        let (tx, rx) = channel();
+        let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s.clone()), 48_000.0, channel().0);
+        let feed = Arc::new(midi::MidiFeed::default());
+        feed.set_connected(1);
+        tx.send(Cmd::Midi(Arc::clone(&feed))).unwrap();
+        let mut out = vec![0.0f32; 2048];
+        let heard = |st: &mut AudioState, out: &mut Vec<f32>| {
+            (0..4).for_each(|_| st.fill(out, 2));
+            out.iter().any(|x| x.abs() > 0.01)
+        };
+        // Not record-enabled: the engine stays idle and the key press is not kept for later.
+        feed.receive(0, &[0x90, 60, 100]);
+        assert!(!heard(&mut st, &mut out));
+        s.track_mut(t).unwrap().mixer.record_arm = true;
+        tx.send(Cmd::Session(Arc::new(s), Vec::new())).unwrap();
+        assert!(!heard(&mut st, &mut out), "the earlier key press is gone");
+        feed.receive(0, &[0x90, 60, 100]);
+        assert!(heard(&mut st, &mut out), "stopped, a record-enabled instrument plays the keyboard");
+        let mut rec = Vec::new();
+        feed.take_recorded(&mut rec);
+        assert!(rec.is_empty(), "nothing is recorded while stopped");
+        // Recording: the events come back with the position they were played at.
+        tx.send(Cmd::Recording(true)).unwrap();
+        tx.send(Cmd::Play { from: 48_000, end: None, looped: None }).unwrap();
+        st.fill(&mut out, 2);
+        feed.receive(0, &[0x90, 64, 90]);
+        st.fill(&mut out, 2);
+        feed.receive(0, &[0x80, 64, 0]);
+        st.fill(&mut out, 2);
+        st.fill(&mut out, 2);
+        feed.take_recorded(&mut rec);
+        assert_eq!(rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(), [(0x90, 64), (0x80, 64)]);
+        // One callback is 1024 frames; each event arrived just before its callback started.
+        assert!((48_000 + 1024 - 64..=48_000 + 1024).contains(&rec[0].at), "{}", rec[0].at);
+        assert!((48_000 + 2048 - 64..=48_000 + 2048).contains(&rec[1].at), "{}", rec[1].at);
     }
 
     #[test]
