@@ -64,7 +64,7 @@ mod tests {
         e.execute("track.height", &json!({"tracks": ["Audio 2"], "height": "large"})).unwrap();
         assert_eq!(e.execute("view.zoom_toggle", &json!({})).unwrap(), json!({"on": false}));
         assert_eq!(view(&e), (500.0, 1000, vec![Medium, Large, Medium]));
-        assert_eq!(e.undo_history().len(), steps + 1);
+        assert_eq!(e.undo_history().len(), steps, "neither Zoom Toggle nor the track height is an undo step");
         e.execute("edit.select", &json!({"tracks": ["Audio 2"], "start": 5000})).unwrap();
         e.execute("view.zoom_toggle", &json!({"height_px": 300.0})).unwrap();
         assert_eq!(view(&e), (500.0, 1000, vec![Medium, Fit(299), Medium]));

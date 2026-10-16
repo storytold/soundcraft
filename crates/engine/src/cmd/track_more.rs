@@ -68,31 +68,31 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             load_preset
         ),
-        cmd!("track.bypass_inserts_ae", "Inserts A-E", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| {
+        cmd!(noundo "track.bypass_inserts_ae", "Inserts A-E", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| {
             bypass_where(e, p, |i, _| i < 5)
         }),
-        cmd!("track.bypass_inserts_fj", "Inserts F-J", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| {
+        cmd!(noundo "track.bypass_inserts_fj", "Inserts F-J", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| {
             bypass_where(e, p, |i, _| (5..10).contains(&i))
         }),
-        cmd!("track.bypass_eq", "EQ", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool} — EQ plug-ins only", has_selection, |e, p| {
+        cmd!(noundo "track.bypass_eq", "EQ", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool} — EQ plug-ins only", has_selection, |e, p| {
             bypass_where(e, p, |_, c| c == Some(Category::Eq))
         }),
-        cmd!("track.bypass_dynamics", "Dynamics", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| bypass_where(
+        cmd!(noundo "track.bypass_dynamics", "Dynamics", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| bypass_where(
             e,
             p,
             |_, c| c == Some(Category::Dynamics)
         )),
-        cmd!("track.bypass_reverb", "Reverb", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| bypass_where(
+        cmd!(noundo "track.bypass_reverb", "Reverb", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| bypass_where(
             e,
             p,
             |_, c| c == Some(Category::Reverb)
         )),
-        cmd!("track.bypass_delay", "Delay", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| bypass_where(
+        cmd!(noundo "track.bypass_delay", "Delay", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| bypass_where(
             e,
             p,
             |_, c| c == Some(Category::Delay)
         )),
-        cmd!("track.bypass_modulation", "Modulation", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| {
+        cmd!(noundo "track.bypass_modulation", "Modulation", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| {
             bypass_where(e, p, |_, c| c == Some(Category::Modulation))
         }),
         cmd!(

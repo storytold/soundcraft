@@ -1,6 +1,6 @@
 # Target-app parity: SoundCraft vs Avid Pro Tools
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (hours to ~95 % for each audience; full number confirmed as an additive weighted sum) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (undo covers edits only, #492; previously minor: hours to ~95 % for each audience; full number confirmed as an additive weighted sum) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
 
 The authoritative assessment of how close SoundCraft is to Pro Tools. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimension docs go deeper:
@@ -155,7 +155,7 @@ microphone or interface, uses default settings, and exports a file to share.
 | Record from the default device | 12 % | 65 % | Works on the default input; forced monitoring can feed back (#42) |
 | Play, stop, loop, scroll, zoom | 10 % | 75 % | Half-speed after Stop (#101) |
 | Basic editing: select, cut/copy/paste, split, trim, move, fades | 18 % | 70 % | #3, #5 |
-| Undo/redo | 5 % | 90 % | Every command undoable |
+| Undo/redo | 5 % | 90 % | Every edit undoable; solo, mute, record and view settings aren't undo steps (#492) |
 | Volume, pan, mute, solo | 10 % | 85 % | |
 | Add a stock effect (EQ, compressor, reverb) and pick a preset | 10 % | 60 % | Generic panels, few presets |
 | Draw MIDI notes for a built-in synth | 5 % | 50 % | Two built-in instruments |
@@ -245,6 +245,7 @@ serializes more, because it needs hands-on testing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | trivial | Undo/redo row: undo covers edits only (#492) |
 | 2026-10-10 | minor | Readiness-by-audience table: hours to ~95 % for full (950–1,450 h), mainstream (380–600 h) and essentials (110–200 h). The full number is already the additive weighted sum over the written dimension table (40.6 %); method unchanged |
 | 2026-10-10 | minor | Added the mainstream-practitioner (~36 %) and essentials-user (~57 %) numbers with written weights, discounts and user evidence. Checked the full ~40 %: it is the written dimension weights × values (40.6 %), so it doesn't move |
 | 2026-10-10 | minor | Stage alpha → pre-alpha under the core-workflow gate; alpha distance ~110–180 h |

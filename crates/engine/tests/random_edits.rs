@@ -149,6 +149,15 @@ proptest! {
                 o.remove("edit");
             }
         }
+        // Nor is a track's width (#492): a track left at another width keeps that width's panners.
+        if let (Some(bt), Some(ot)) = (back["tracks"].as_array_mut(), orig["tracks"].as_array_mut()) {
+            for (b, o) in bt.iter_mut().zip(ot.iter_mut()).filter(|(b, o)| b["format"] != o["format"]) {
+                for t in [b, o] {
+                    t["format"] = Value::Null;
+                    t["mixer"]["pan"] = Value::Null;
+                }
+            }
+        }
         prop_assert_eq!(back, orig);
     }
 }

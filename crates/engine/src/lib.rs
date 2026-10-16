@@ -18,7 +18,7 @@ pub mod io;
 pub mod score;
 
 use serde_json::{Value, json};
-use soundcraft_model::{Clip, Session, TrackId, ZoomState};
+use soundcraft_model::{Clip, Session, Track, TrackId, ZoomState};
 use soundcraft_time::Samples;
 use std::cell::Cell;
 use std::sync::Arc;
@@ -108,6 +108,8 @@ impl Clipboard {
 struct HistoryEntry {
     label: String,
     doc: Arc<Session>,
+    /// The document right after the step was taken or undone, to tell what changed since.
+    after: Arc<Session>,
 }
 
 /// Engine state: the document, history, clipboard and transport plumbing.
@@ -246,7 +248,8 @@ impl Engine {
         let Some(h) = self.undo.pop() else { return false };
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
-        self.redo.push(HistoryEntry { label: h.label, doc: cur });
+        self.keep_live_state(&h.after, &cur);
+        self.redo.push(HistoryEntry { label: h.label, doc: cur, after: Arc::clone(&self.doc) });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         true
@@ -256,7 +259,8 @@ impl Engine {
         let Some(h) = self.redo.pop() else { return false };
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
-        self.undo.push(HistoryEntry { label: h.label, doc: cur });
+        self.keep_live_state(&h.after, &cur);
+        self.undo.push(HistoryEntry { label: h.label, doc: cur, after: Arc::clone(&self.doc) });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         true
@@ -276,12 +280,73 @@ impl Engine {
         }
     }
 
+    /// Undo and Redo leave what isn't an edit as it is (#492): what changed in `cur` since the step
+    /// (`after`) carries over, so solo, mute, record, each track's height, view, width, automation
+    /// mode and insert bypass, and which groups are active. A `noundo` command that changes the
+    /// document needs its fields carried over here.
+    fn keep_live_state(&mut self, after: &Session, cur: &Session) {
+        fn live(t: &Track) -> impl PartialEq + '_ {
+            let m = &t.mixer;
+            let bypass: Vec<_> = m.inserts.iter().map(|i| i.as_ref().map(|i| (&i.plugin, i.bypass))).collect();
+            (m.mute, m.solo, m.solo_safe, m.record_arm, m.input_monitor, m.automation_mode, t.height, &t.view, t.hidden, t.format, bypass)
+        }
+        let group_active = |s: &Session, id| s.groups.iter().find(|g| g.id == id).map(|g| g.active);
+        let changed = cur.tracks.iter().any(|c| after.track(c.id).is_some_and(|a| live(a) != live(c)))
+            || cur.groups.iter().any(|g| group_active(after, g.id).is_some_and(|a| a != g.active));
+        if !changed {
+            return;
+        }
+        let doc = Arc::make_mut(&mut self.doc);
+        for t in &mut doc.tracks {
+            let (Some(a), Some(c)) = (after.track(t.id), cur.track(t.id)) else { continue };
+            macro_rules! carry {
+                ($($field:tt)+) => {
+                    if c.$($field)+ != a.$($field)+ {
+                        t.$($field)+ = c.$($field)+;
+                    }
+                };
+            }
+            carry!(mixer.mute);
+            carry!(mixer.solo);
+            carry!(mixer.solo_safe);
+            carry!(mixer.record_arm);
+            carry!(mixer.input_monitor);
+            carry!(mixer.automation_mode);
+            carry!(height);
+            carry!(hidden);
+            if c.view != a.view {
+                t.view.clone_from(&c.view);
+            }
+            // Changing the width resets the panners to the new format's, so they go together.
+            if c.format != a.format {
+                t.format = c.format;
+                t.mixer.pan.clone_from(&c.mixer.pan);
+            }
+            for (slot, (ai, ci)) in t.mixer.inserts.iter_mut().zip(a.mixer.inserts.iter().zip(&c.mixer.inserts)) {
+                if let (Some(i), Some(ai), Some(ci)) = (slot, ai, ci)
+                    && i.plugin == ci.plugin
+                    && ai.plugin == ci.plugin
+                    && ai.bypass != ci.bypass
+                {
+                    i.bypass = ci.bypass;
+                }
+            }
+        }
+        for g in &mut doc.groups {
+            if let (Some(a), Some(c)) = (group_active(after, g.id), group_active(cur, g.id))
+                && a != c
+            {
+                g.active = c;
+            }
+        }
+    }
+
     /// Record an undo point manually (for interactive gestures committed by the UI).
     pub fn push_undo(&mut self, label: &str, before: Arc<Session>) {
         if Arc::ptr_eq(&before, &self.doc) {
             return;
         }
-        self.undo.push(HistoryEntry { label: label.to_string(), doc: before });
+        self.undo.push(HistoryEntry { label: label.to_string(), doc: before, after: Arc::clone(&self.doc) });
         self.redo.clear();
         if self.undo.len() > self.history_limit {
             let excess = self.undo.len() - self.history_limit;
@@ -373,6 +438,9 @@ impl Engine {
         if continuing && self.undo.len() == before_len + 1 && before_len > 0 {
             // Drop the step just pushed; the earlier one still holds the pre-gesture document.
             self.undo.pop();
+            if let Some(h) = self.undo.last_mut() {
+                h.after = Arc::clone(&self.doc);
+            }
         }
         self.merge_key = Some(key);
         Ok(r)
@@ -484,7 +552,7 @@ mod merge_tests {
         e.execute("transport.stop", &json!({})).unwrap();
         e.execute_merged("mix.volume", &json!({"track": t.0, "db": -2.0}), "fader").unwrap();
         assert_eq!(e.undo_history().len(), 1);
-        e.execute("mix.mute", &json!({"track": t.0})).unwrap();
+        e.execute("track.color", &json!({"tracks": [t.0], "color": 3})).unwrap();
         e.execute_merged("mix.volume", &json!({"track": t.0, "db": -3.0}), "fader").unwrap();
         assert_eq!(e.undo_history().len(), 3);
     }
@@ -507,7 +575,7 @@ mod dirty_tests {
             e.execute(id, &p).unwrap();
             assert!(!e.is_dirty(), "{id}");
         }
-        e.execute("mix.mute", &json!({"track": "Kick"})).unwrap();
+        e.execute("track.color", &json!({"tracks": ["Kick"], "color": 3})).unwrap();
         assert!(e.is_dirty());
         e.undo();
         assert!(!e.is_dirty());

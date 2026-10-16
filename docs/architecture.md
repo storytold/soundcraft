@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (delay compensation includes the master faders' inserts (#351); previously minor: bounces stream to disk) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (delay compensation includes the master faders' inserts (#351); undo leaves listening and view settings alone (#492); previously minor: bounces stream to disk) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a Cargo workspace of small crates with enforced layering (`cargo xtask layers`).
 Nothing below the UI knows about egui, so the interface can be replaced.
@@ -37,6 +37,10 @@ busses, and `EditState` (selection, tools, modes, view flags). Decoded audio liv
 Every user action is a `CommandSpec` (id, label, menu path, shortcut, params doc, enabled, run)
 registered in `crates/engine/src/cmd/`. `Engine::execute(id, params)` runs it, catches any escaped
 panic, and pushes an undo snapshot (the previous `Arc<Session>`) when the document changed.
+`noundo` commands (solo, mute, record, track height and view, insert bypass, …) push none, and
+undo and redo carry what changed since the step over to the restored snapshot
+(`Engine::keep_live_state`), so a `noundo` command that changes the document needs its fields
+added there.
 Continuous gestures use `execute_merged` so a fader drag is one undo step. Menus are built from
 the incumbent's menu catalog (`crates/engine/catalog/menus.txt`); a menu item lights up when a
 command has the same menu path and label (or an alias maps it), which also drives the parity
@@ -78,6 +82,7 @@ app as an MCP server. See `control-protocol.md` and `mcp.md`.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | trivial | Undo is for edits: `noundo` commands keep their values through undo and redo (#492) |
 | 2026-10-13 | trivial | delay compensation includes the master faders' inserts (#351) |
 | 2026-10-10 | minor | Added video, vst3-host and au-host to the layer diagram; documented device I/O limits and in-memory media |
 | 2026-10-05 | major | First architecture overview |
