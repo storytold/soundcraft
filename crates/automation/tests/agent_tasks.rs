@@ -31,6 +31,8 @@ fn handshake_and_tool_list() {
     assert_eq!(r["result"]["serverInfo"]["name"], "soundcraft");
     let r = rpc(&mut s, 2, "tools/list", json!({}));
     assert!(r["result"]["tools"].as_array().unwrap().len() >= 10);
+    let batch = r["result"]["tools"].as_array().unwrap().iter().find(|tool| tool["name"] == "batch").unwrap();
+    assert_eq!(batch["inputSchema"]["properties"]["calls"]["maxItems"], 1000);
     assert!(s.handle(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).is_none());
     let r = rpc(&mut s, 3, "nope", json!({}));
     assert_eq!(r["error"]["code"], -32601);
@@ -170,4 +172,36 @@ fn batch_rejects_non_array_calls() {
     let text = r["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("`calls` must be an array"), "{text}");
     assert_eq!(session(&mut s)["tracks"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn batch_rejects_oversize_calls_before_any_mutation() {
+    for keep_going in [false, true] {
+        let mut s = Server::new(Headless::new(Engine::default()));
+        let before = session(&mut s);
+        let mut calls = vec![json!({"command": "engine.history"}); 1001];
+        calls[0] = json!({"command": "track.new", "params": {"name": "Must not be created"}});
+        let r = rpc(&mut s, 1, "tools/call", json!({"name": "batch", "arguments": {"calls": calls, "keep_going": keep_going}}));
+        assert_eq!(session(&mut s), before, "oversize batch mutated the session (keep_going={keep_going})");
+        assert!(s.backend.engine.journal.is_empty());
+        assert!(!s.backend.engine.can_undo());
+        assert_eq!(r["result"]["isError"], true);
+        let text = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("1000"), "{text}");
+    }
+}
+
+#[test]
+fn batch_accepts_empty_and_limit_sized_calls_in_order() {
+    for count in [0, 1000] {
+        let mut s = Server::new(Headless::new(Engine::default()));
+        let calls: Vec<_> = (0..count).map(|at| json!({"command": "session.format_time", "params": {"at": at, "format": "samples"}})).collect();
+        let results = tool(&mut s, "batch", json!({"calls": calls}));
+        let results = results.as_array().unwrap();
+        assert_eq!(results.len(), count);
+        for (at, result) in results.iter().enumerate() {
+            assert_eq!(result["ok"], true);
+            assert_eq!(result["result"]["text"], at.to_string());
+        }
+    }
 }
