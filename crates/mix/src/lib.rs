@@ -61,6 +61,22 @@ use std::collections::HashMap;
 use std::ops::Bound;
 use std::sync::Arc;
 
+mod prepared_automation;
+pub use prepared_automation::{MAX_AUTOMATION_INDEX_BYTES, PreparedSession};
+use prepared_automation::{Read as AutomationRead, value_at as automation_value_at};
+
+#[derive(Clone, Copy)]
+struct RenderSource<'a, 'document> {
+    session: &'a Session,
+    prepared: Option<&'a PreparedSession<'document>>,
+}
+
+impl RenderSource<'_, '_> {
+    fn read<'a>(&'a self, track: &'a Track) -> AutomationRead<'a> {
+        self.prepared.map_or_else(|| AutomationRead::ordinary(track), |prepared| prepared.read(track))
+    }
+}
+
 /// Default (stereo) main mix width. The actual width is [`main_channels`].
 pub const MAIN_CHANNELS: usize = 2;
 
@@ -611,6 +627,17 @@ impl MixEngine {
 
     /// Render `frames` (≤ max_block) samples starting at `pos` into `out` (≥ 2 channels).
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
+        self.render_source(RenderSource { session: s, prepared: None }, pos, frames, out);
+    }
+
+    /// Render the document paired with its prepared lookup table. Sampling and processing
+    /// follow the ordinary mixer; an unindexed pair uses the same document and ordinary reads.
+    pub fn render_prepared(&mut self, prepared: &PreparedSession<'_>, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
+        self.render_source(RenderSource { session: prepared.source(), prepared: Some(prepared) }, pos, frames, out);
+    }
+
+    fn render_source(&mut self, source: RenderSource<'_, '_>, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
+        let s = source.session;
         let frames = frames.min(self.max_block);
         if pos != self.last_end {
             // Seek: silence held notes and ringing plugins.
@@ -654,7 +681,7 @@ impl MixEngine {
         let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
-                process_strip(s, t, st, &busses, &live_in, pos, frames, any_solo);
+                process_strip(source, t, st, &busses, &live_in, pos, frames, any_solo);
             }
         });
         self.busses = busses;
@@ -665,7 +692,7 @@ impl MixEngine {
         if pdc {
             for t in s.tracks.iter().filter(|t| is_aux(t) && !t.inactive) {
                 if let Some(st) = self.strips.get_mut(&t.id) {
-                    note_insert_latency(t, st, pos);
+                    note_insert_latency(source.read(t), st, pos);
                 }
             }
         }
@@ -675,7 +702,7 @@ impl MixEngine {
         if pdc {
             for t in s.tracks.iter().filter(|t| t.kind == TrackKind::Master && !t.inactive) {
                 if let Some(st) = self.strips.get_mut(&t.id) {
-                    note_insert_latency(t, st, pos);
+                    note_insert_latency(source.read(t), st, pos);
                     lmax_m = lmax_m.saturating_add(st.latency);
                 }
             }
@@ -716,7 +743,7 @@ impl MixEngine {
         }
         for (i, st) in work.iter_mut() {
             if let Some(t) = s.tracks.get(*i) {
-                self.route_strip(t, st, pos, frames);
+                self.route_strip(source.read(t), st, pos, frames);
             }
         }
         for (i, st) in work.drain(..) {
@@ -733,12 +760,12 @@ impl MixEngine {
                 st.scratch.resize(self.max_block, 0.0);
             }
             let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
-            process_strip(s, t, &mut st, &self.busses, &live_in, pos, frames, any_solo);
+            process_strip(source, t, &mut st, &self.busses, &live_in, pos, frames, any_solo);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
             st.align.process(&mut st.buf, frames);
             st.out_extra.set(0, ch);
-            self.route_strip(t, &mut st, pos, frames);
+            self.route_strip(source.read(t), &mut st, pos, frames);
             self.strips.insert(t.id, st);
         }
         self.order = order;
@@ -757,7 +784,7 @@ impl MixEngine {
                         && !ins.bypass
                         && !slot.failed
                     {
-                        apply_params(slot, ins, t, i, pos);
+                        apply_params(slot, ins, source.read(t), i, pos);
                         slot.plugin.set_transport(&transport);
                         slot.plugin.process(&mut strip.buf, frames);
                         if contain_failure(slot, &mut strip.buf, frames) {
@@ -765,8 +792,8 @@ impl MixEngine {
                         }
                     }
                 }
-                let v0 = volume_db_at(t, pos);
-                let v1 = volume_db_at(t, pos + frames as i64);
+                let v0 = volume_db_at(source.read(t), pos);
+                let v1 = volume_db_at(source.read(t), pos.saturating_add(frames as i64));
                 for (ch, src) in strip.buf.iter().enumerate().take(self.main.len()) {
                     if let Some(m) = self.main.get_mut(ch) {
                         for i in 0..frames {
@@ -827,7 +854,8 @@ impl MixEngine {
     }
 
     /// Send, meter and pan a processed strip into the busses / main mix.
-    fn route_strip(&mut self, t: &Track, strip: &mut Strip, pos: Samples, frames: usize) {
+    fn route_strip(&mut self, read: AutomationRead<'_>, strip: &mut Strip, pos: Samples, frames: usize) {
+        let t = read.track;
         let m = self.meters.entry(t.id).or_default();
         m.measure(&strip.buf, frames, strip.gr);
         m.plugin_failures = strip.failures;
@@ -838,7 +866,7 @@ impl MixEngine {
             if snd.mute || strip.muted {
                 continue;
             }
-            let lvl = send_level(t, i, snd.level_db, pos);
+            let lvl = send_level(read, i, snd.level_db, pos);
             let gain = db_to_gain(lvl);
             let src = if snd.pre_fader { &strip.pre } else { &strip.buf };
             let Route::Bus(b) = &snd.target else { continue };
@@ -876,8 +904,8 @@ impl MixEngine {
         };
         let mut start = 0;
         while start < frames {
-            let (at, end) = pan_segment(t, pos, start, frames);
-            let spec = PanSpec { stereo: [pan_at(t, 0, at), pan_at(t, 1, at)], surround: t.mixer.surround.as_ref() };
+            let (at, end) = pan_segment(read, pos, start, frames);
+            let spec = PanSpec { stereo: [pan_at(read, 0, at), pan_at(read, 1, at)], surround: t.mixer.surround.as_ref() };
             let m = build_matrix(src_fmt, src.len(), dst_fmt, dst.len(), &spec, law);
             apply_matrix_span(src, start..end, dst, &m, 1.0);
             start = end;
@@ -895,7 +923,7 @@ struct LiveInput<'a> {
 }
 
 fn process_strip(
-    s: &Session,
+    source: RenderSource<'_, '_>,
     t: &Track,
     strip: &mut Strip,
     busses: &HashMap<BusId, BusBuf>,
@@ -904,6 +932,8 @@ fn process_strip(
     frames: usize,
     any_solo: bool,
 ) {
+    let s = source.session;
+    let read = source.read(t);
     for c in strip.buf.iter_mut() {
         c.iter_mut().take(frames).for_each(|x| *x = 0.0);
     }
@@ -986,7 +1016,7 @@ fn process_strip(
                 // instance and the rendered audio matches the plugin's defaults — e.g. a saved
                 // `level = -12 dB` sounds the same as `level = -6 dB`.
                 if let Some(ins) = &t.instrument {
-                    apply_params(inst, ins, t, INSTRUMENT_SLOT, pos);
+                    apply_params(inst, ins, read, INSTRUMENT_SLOT, pos);
                 }
                 inst.plugin.set_transport(&transport);
                 if std::mem::take(&mut strip.chase) {
@@ -1026,7 +1056,7 @@ fn process_strip(
         if !ins.active || ins.bypass || slot.failed {
             continue;
         }
-        apply_params(slot, ins, t, i, pos);
+        apply_params(slot, ins, read, i, pos);
         slot.plugin.set_transport(&transport);
         slot.plugin.process(&mut strip.buf, frames);
         if contain_failure(slot, &mut strip.buf, frames) {
@@ -1040,7 +1070,7 @@ fn process_strip(
     }
     strip.gr = gr;
     strip.latency = latency.min(MAX_LATENCY);
-    let auto_mute = t.mixer.automation_mode.reads() && t.lane(&AutoParam::Mute).is_some_and(|l| l.value_at(pos, 0.0) >= 0.5);
+    let auto_mute = t.mixer.automation_mode.reads() && read.lane(&AutoParam::Mute).is_some_and(|l| automation_value_at(l, pos, 0.0) >= 0.5);
     let soloed_out = any_solo && !t.mixer.solo && !t.mixer.solo_safe && !receives_solo(s, t);
     strip.muted = t.mixer.mute || auto_mute || soloed_out;
     if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
@@ -1053,24 +1083,19 @@ fn process_strip(
     // Endpoints are the first and last sample of this block. The next block starts on its own
     // first sample, so a breakpoint there does not ramp the block before it.
     let last = pos.saturating_add(frames.saturating_sub(1) as i64);
-    let mut v0 = volume_db_at(t, pos);
-    let mut v1 = volume_db_at(t, last);
+    let mut v0 = volume_db_at(read, pos);
+    let mut v1 = volume_db_at(read, last);
     // Trim automation (an offset on top of the volume curve).
-    if let Some(l) = t
-        .automation
-        .iter()
-        .find(|l| matches!(&l.param, AutoParam::Plugin { slot: u8::MAX, param } if param == "trim"))
-        .filter(|l| !l.points.is_empty())
-    {
-        v0 += l.value_at(pos, 0.0);
-        v1 += l.value_at(last, 0.0);
+    if let Some(l) = read.plugin_lane(u8::MAX, "trim").filter(|l| !l.points.is_empty()) {
+        v0 += automation_value_at(l, pos, 0.0);
+        v1 += automation_value_at(l, last, 0.0);
     }
     // VCA master: its fader offsets the member's, and its mute mutes the member.
     if let Some(vid) = t.mixer.vca
         && let Some(vca) = s.tracks.iter().find(|x| x.id.0 == vid && x.kind == TrackKind::Vca)
     {
-        v0 += volume_db_at(vca, pos);
-        v1 += volume_db_at(vca, last);
+        v0 += volume_db_at(source.read(vca), pos);
+        v1 += volume_db_at(source.read(vca), last);
         if vca.mixer.mute {
             strip.muted = true;
         }
@@ -1634,33 +1659,34 @@ fn sync_sample(strip: &mut Strip, want: Option<&soundcraft_model::Insert>, s: &S
 }
 
 /// Record insert latency without processing audio, so this block can compensate for it.
-fn note_insert_latency(t: &Track, strip: &mut Strip, pos: Samples) {
+fn note_insert_latency(read: AutomationRead<'_>, strip: &mut Strip, pos: Samples) {
+    let t = read.track;
     let mut latency = 0usize;
     for (i, ins) in t.mixer.inserts.iter().enumerate() {
         let (Some(ins), Some(Some(slot))) = (ins, strip.plugins.get_mut(i)) else { continue };
         if !ins.active || ins.bypass {
             continue;
         }
-        apply_params(slot, ins, t, i, pos);
+        apply_params(slot, ins, read, i, pos);
         latency = latency.saturating_add(slot.plugin.latency());
     }
     strip.latency = latency.min(MAX_LATENCY);
 }
 
-fn apply_params(slot: &mut PluginSlot, ins: &soundcraft_model::Insert, t: &Track, i: usize, pos: Samples) {
+fn apply_params(slot: &mut PluginSlot, ins: &soundcraft_model::Insert, read: AutomationRead<'_>, i: usize, pos: Samples) {
+    let t = read.track;
     // Automation lanes address insert slots; the instrument (`INSTRUMENT_SLOT`) has none, so it
     // must not pick up slot A's lanes.
     let Ok(slot_u8) = u8::try_from(i) else {
         return apply_values(slot, ins, |_, v| v);
     };
-    let automated = t.mixer.automation_mode.reads()
-        && t.automation.iter().any(|l| matches!(&l.param, AutoParam::Plugin { slot, .. } if *slot == slot_u8) && !l.points.is_empty());
+    let automated = t.mixer.automation_mode.reads() && read.plugin_automated(slot_u8);
     apply_values(slot, ins, |k, val| {
         if automated
-            && let Some(l) = t.automation.iter().find(|l| matches!(&l.param, AutoParam::Plugin { slot, param } if *slot == slot_u8 && param == k))
+            && let Some(l) = read.plugin_lane(slot_u8, k)
             && !l.points.is_empty()
         {
-            return l.value_at(pos, val);
+            return automation_value_at(l, pos, val);
         }
         val
     });
@@ -1701,24 +1727,26 @@ fn transport_at(s: &Session, pos: Samples, playing: bool, recording: bool) -> Tr
     }
 }
 
-fn volume_db_at(t: &Track, pos: Samples) -> f32 {
+fn volume_db_at(read: AutomationRead<'_>, pos: Samples) -> f32 {
+    let t = read.track;
     if t.mixer.automation_mode.reads()
         && t.mixer.automation_mode != soundcraft_model::AutomationMode::Write
-        && let Some(l) = t.lane(&AutoParam::Volume)
+        && let Some(l) = read.lane(&AutoParam::Volume)
         && !l.points.is_empty()
     {
-        return l.value_at(pos, t.mixer.volume_db);
+        return automation_value_at(l, pos, t.mixer.volume_db);
     }
     t.mixer.volume_db
 }
 
-fn pan_at(t: &Track, idx: usize, pos: Samples) -> f32 {
+fn pan_at(read: AutomationRead<'_>, idx: usize, pos: Samples) -> f32 {
+    let t = read.track;
     let base = t.mixer.pan.get(idx).copied().unwrap_or(if idx == 0 { 0.0 } else { 1.0 });
     if t.mixer.automation_mode.reads()
-        && let Some(l) = t.lane(&AutoParam::Pan(u8::try_from(idx).unwrap_or(0)))
+        && let Some(l) = read.lane(&AutoParam::Pan(u8::try_from(idx).unwrap_or(0)))
         && !l.points.is_empty()
     {
-        return l.value_at(pos, base);
+        return automation_value_at(l, pos, base);
     }
     base
 }
@@ -1729,8 +1757,8 @@ const PAN_STEP: Samples = 64;
 
 /// The position to read the pan at for the frames from `start` of the block at `pos`, and the end
 /// of the frames that share it. Without pan automation the whole block shares one pan.
-fn pan_segment(t: &Track, pos: Samples, start: usize, frames: usize) -> (Samples, usize) {
-    let automated = t.mixer.automation_mode.reads() && t.automation.iter().any(|l| matches!(l.param, AutoParam::Pan(_)) && !l.points.is_empty());
+fn pan_segment(read: AutomationRead<'_>, pos: Samples, start: usize, frames: usize) -> (Samples, usize) {
+    let automated = read.track.mixer.automation_mode.reads() && read.pan_automated();
     if !automated {
         return (pos, frames);
     }
@@ -1740,12 +1768,12 @@ fn pan_segment(t: &Track, pos: Samples, start: usize, frames: usize) -> (Samples
     (at, start.saturating_add(left).min(frames))
 }
 
-fn send_level(t: &Track, i: usize, base: f32, pos: Samples) -> f32 {
-    if t.mixer.automation_mode.reads()
-        && let Some(l) = t.lane(&AutoParam::SendLevel(u8::try_from(i).unwrap_or(0)))
+fn send_level(read: AutomationRead<'_>, i: usize, base: f32, pos: Samples) -> f32 {
+    if read.track.mixer.automation_mode.reads()
+        && let Some(l) = read.lane(&AutoParam::SendLevel(u8::try_from(i).unwrap_or(0)))
         && !l.points.is_empty()
     {
-        return l.value_at(pos, base);
+        return automation_value_at(l, pos, base);
     }
     base
 }
@@ -2044,8 +2072,9 @@ fn render_in_memory(s: &Session, bus: Option<BusId>, range: Range, block: usize)
     let nch = source_channels(s, bus);
     let len = usize::try_from(range.len().max(0)).unwrap_or(0).min(MAX_RENDER_SAMPLES / nch.max(1));
     let mut out: Vec<Vec<f32>> = (0..nch).map(|_| Vec::with_capacity(len)).collect();
+    let prepared = PreparedSession::borrowed(s);
     let mut render = RangeRender::new(s, bus, Range::new(range.start, range.start + len as i64), block);
-    while let Some((chunk, n)) = render.next_block(s) {
+    while let Some((chunk, n)) = render.next_block_prepared(&prepared) {
         for (o, c) in out.iter_mut().zip(chunk) {
             o.extend_from_slice(c.get(..n).unwrap_or_default());
         }
@@ -2082,13 +2111,13 @@ impl RangeRender {
         RangeRender { eng, bus, tmp, start: range.start, done: 0, total: len, latency: 0 }
     }
 
-    fn render(&mut self, s: &Session, pos: Samples, n: usize) {
+    fn render(&mut self, source: RenderSource<'_, '_>, pos: Samples, n: usize) {
         match self.bus {
             Some(id) => {
-                self.eng.render(s, pos, n, &mut []);
+                self.eng.render_source(source, pos, n, &mut []);
                 self.eng.copy_bus(id, n, &mut self.tmp);
             }
-            None => self.eng.render(s, pos, n, &mut self.tmp),
+            None => self.eng.render_source(source, pos, n, &mut self.tmp),
         }
     }
 
@@ -2096,11 +2125,21 @@ impl RangeRender {
     /// returns it as `(channels, n)`: the next `n` samples of the range lead each channel (none
     /// while the mix's latency is still being skipped). `None` once the range is done.
     pub fn next_block(&mut self, s: &Session) -> Option<(&[Vec<f32>], usize)> {
+        self.next_source(RenderSource { session: s, prepared: None })
+    }
+
+    /// Render the next block from a document-bound prepared pair, with the same streaming and
+    /// delay-compensation policy as next_block. Only the lookup path differs.
+    pub fn next_block_prepared(&mut self, prepared: &PreparedSession<'_>) -> Option<(&[Vec<f32>], usize)> {
+        self.next_source(RenderSource { session: prepared.source(), prepared: Some(prepared) })
+    }
+
+    fn next_source(&mut self, source: RenderSource<'_, '_>) -> Option<(&[Vec<f32>], usize)> {
         if self.done >= self.total {
             return None;
         }
         let n = (self.total - self.done).min(self.eng.max_block());
-        self.render(s, self.start + self.done as i64, n);
+        self.render(source, self.start + self.done as i64, n);
         if self.done == 0 {
             // The first block tells the mix's latency: render that much more and drop the head.
             self.latency = match self.bus {

@@ -343,7 +343,7 @@ pub fn export_midi(e: &Engine, only: Option<&[TrackId]>) -> Result<Vec<u8>> {
 /// progress. The file appears at its path only once complete; a bounce that fails, or is dropped
 /// unfinished, leaves any older file there alone.
 pub struct Bounce {
-    session: Arc<Session>,
+    session: soundcraft_mix::PreparedSession<'static>,
     path: PathBuf,
     part: PathBuf,
     range: Range,
@@ -403,7 +403,7 @@ impl Bounce {
         let render = soundcraft_mix::RangeRender::new(&s, bus, r, 1024);
         let meter = soundcraft_dsp::meter::LoudnessMeter::new(s.sample_rate.as_f64() as f32, channels);
         Ok(Bounce {
-            session: s,
+            session: soundcraft_mix::PreparedSession::owned(s),
             path: path.to_path_buf(),
             part,
             range: r,
@@ -443,7 +443,7 @@ impl Bounce {
     /// bounce once its file is complete.
     pub fn step(&mut self, mut more: impl FnMut() -> bool) -> Result<Option<Bounced>> {
         loop {
-            match self.render.next_block(&self.session) {
+            match self.render.next_block_prepared(&self.session) {
                 Some((chunk, n)) => {
                     fill(&mut self.block, chunk, n, self.fold, self.gain);
                     self.done += n;
@@ -460,7 +460,7 @@ impl Bounce {
                     self.peak = 0.0;
                     self.done = 0;
                     self.measuring = false;
-                    self.render = soundcraft_mix::RangeRender::new(&self.session, self.bus, self.range, 1024);
+                    self.render = soundcraft_mix::RangeRender::new(self.session.source(), self.bus, self.range, 1024);
                 }
                 None => return self.finish().map(Some),
             }
