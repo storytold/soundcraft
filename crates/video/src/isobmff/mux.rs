@@ -498,7 +498,8 @@ fn validate_track(cfg: &TrackConfig) -> Result<Option<u32>> {
         if (p.sample_rate - cfg.timescale as f64).abs() > 0.5 {
             return Err(Error::Mux("PCM track timescale must equal the sample rate".into()));
         }
-        return Ok(Some(p.bytes_per_frame()));
+        let frame_bytes = p.checked_bytes_per_frame().ok_or_else(|| Error::Mux("PCM frame width does not fit in 32 bits".into()))?;
+        return Ok(Some(frame_bytes));
     }
     Ok(None)
 }
@@ -891,6 +892,13 @@ mod tests {
 
     fn avc_entry() -> SampleEntry {
         SampleEntry::avc(AvcConfig::new(vec![vec![0x67, 0x42, 0, 0x1E]], vec![vec![0x68, 0xCE]], 4), 64, 48)
+    }
+
+    #[test]
+    fn pcm_frame_width_overflow_is_rejected() {
+        let mut w = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
+        let pcm = PcmConfig { bits: 16, float: false, big_endian: false, signed: true, channels: u32::MAX, sample_rate: 48000.0 };
+        assert!(w.add_track(TrackConfig::new(SampleEntry::pcm(pcm), 48000)).is_err());
     }
 
     #[test]

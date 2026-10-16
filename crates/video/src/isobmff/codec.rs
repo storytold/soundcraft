@@ -605,9 +605,14 @@ pub struct PcmConfig {
 }
 
 impl PcmConfig {
-    /// Bytes per interleaved audio frame (all channels).
+    /// Bytes per interleaved audio frame (all channels), saturating at `u32::MAX` for absurd channel counts.
     pub fn bytes_per_frame(&self) -> u32 {
-        (self.bits as u32).div_ceil(8) * self.channels.max(1)
+        self.checked_bytes_per_frame().unwrap_or(u32::MAX)
+    }
+
+    /// Like [`Self::bytes_per_frame`], but `None` when the frame width does not fit in `u32`.
+    pub fn checked_bytes_per_frame(&self) -> Option<u32> {
+        (self.bits as u32).div_ceil(8).checked_mul(self.channels.max(1))
     }
 }
 
@@ -1549,6 +1554,15 @@ mod tests {
             let back = roundtrip(&e, qt, b"soun");
             assert_eq!(back.codec, CodecConfig::Pcm(p), "{bits} {float} {be} {qt}");
         }
+    }
+
+    #[test]
+    fn pcm_frame_width_overflow() {
+        let p = PcmConfig { bits: 16, channels: u32::MAX, ..Default::default() };
+        assert_eq!(p.checked_bytes_per_frame(), None);
+        assert_eq!(p.bytes_per_frame(), u32::MAX);
+        let p = PcmConfig { bits: 24, channels: 2, ..Default::default() };
+        assert_eq!(p.checked_bytes_per_frame(), Some(6));
     }
 
     #[test]
