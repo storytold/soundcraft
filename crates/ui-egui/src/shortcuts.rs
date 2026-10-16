@@ -454,4 +454,11 @@ mod tests {
         assert_eq!(command_for(Key::K, Modifiers { shift: true, ..PC_CTRL }, false), Some("file.export_clips"));
         assert!(crate::dialogs::takes_path("file.export_clips"));
     }
+
+    #[test]
+    fn batch_rename_manual_shortcut_maps_on_mac_and_pc() {
+        let mods = Modifiers { alt: true, shift: true, ..Modifiers::NONE };
+        assert_eq!(command_for(Key::R, mods, true), Some("track.batch_rename"));
+        assert_eq!(command_for(Key::R, mods, false), Some("track.batch_rename"));
+    }
 }
