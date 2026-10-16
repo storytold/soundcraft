@@ -10,10 +10,27 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn cargo(args: &[&str]) -> Result<(), String> {
-    let st =
-        Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into())).args(args).current_dir(root()).status().map_err(|e| e.to_string())?;
+fn cargo_command(args: &[&str], isolate_plugins: bool) -> Command {
+    let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    command.args(args).current_dir(root());
+    if isolate_plugins {
+        command.env("SOUNDCRAFT_CLAP_SEARCH_PATHS", "");
+        command.env("SOUNDCRAFT_VST3_SEARCH_PATHS", "");
+        command.env("SOUNDCRAFT_AU_MANUFACTURERS", "appl");
+        for name in ["SOUNDCRAFT_CLAP_SMOKE", "SOUNDCRAFT_VST3_SMOKE", "SOUNDCRAFT_AU_SMOKE"] {
+            command.env_remove(name);
+        }
+    }
+    command
+}
+
+fn run_cargo(args: &[&str], isolate_plugins: bool) -> Result<(), String> {
+    let st = cargo_command(args, isolate_plugins).status().map_err(|e| e.to_string())?;
     if st.success() { Ok(()) } else { Err(format!("cargo {} failed", args.join(" "))) }
+}
+
+fn cargo(args: &[&str]) -> Result<(), String> {
+    run_cargo(args, false)
 }
 
 /// Layer table: crate name (minus `soundcraft-`) → layer. Apps and xtask are exempt.
@@ -38,9 +55,8 @@ const STANDALONE: &[&str] = &["time", "audio-io", "midi", "video", "dsp"];
 const UI_CRATES: &[&str] = &["craft-ui", "egui", "eframe", "winit", "egui_kittest", "rfd", "egui-wgpu", "egui_glow"];
 const EXEMPT: &[&str] = &["soundcraft", "soundcraft-cli", "soundcraft-web", "xtask"];
 
-fn layers() -> Result<(), String> {
-    let out =
-        Command::new("cargo").args(["metadata", "--format-version", "1", "--no-deps"]).current_dir(root()).output().map_err(|e| e.to_string())?;
+fn layers(isolate_plugins: bool) -> Result<(), String> {
+    let out = cargo_command(&["metadata", "--format-version", "1", "--no-deps"], isolate_plugins).output().map_err(|e| e.to_string())?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
     let mut problems = Vec::new();
     for p in v["packages"].as_array().cloned().unwrap_or_default() {
@@ -131,7 +147,7 @@ const WASM: &[&str] = &[
     "soundcraft-ui-egui",
 ];
 
-fn wasm() -> Result<(), String> {
+fn wasm(isolate_plugins: bool) -> Result<(), String> {
     let mut args = vec!["check", "--target", "wasm32-unknown-unknown"];
     for c in WASM {
         args.push("-p");
@@ -141,17 +157,17 @@ fn wasm() -> Result<(), String> {
         args.push("-p");
         args.push("soundcraft-web");
     }
-    cargo(&args)
+    run_cargo(&args, isolate_plugins)
 }
 
 fn ci() -> Result<(), String> {
     let steps: Vec<(&str, Box<dyn Fn() -> Result<(), String>>)> = vec![
-        ("fmt", Box::new(|| cargo(&["fmt", "--all", "--", "--check"]))),
-        ("clippy", Box::new(|| cargo(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))),
-        ("test", Box::new(|| cargo(&["test", "--workspace"]))),
+        ("fmt", Box::new(|| run_cargo(&["fmt", "--all", "--", "--check"], true))),
+        ("clippy", Box::new(|| run_cargo(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], true))),
+        ("test", Box::new(|| run_cargo(&["test", "--workspace"], true))),
         ("assets", Box::new(assets)),
-        ("layers", Box::new(layers)),
-        ("wasm", Box::new(wasm)),
+        ("layers", Box::new(|| layers(true))),
+        ("wasm", Box::new(|| wasm(true))),
     ];
     let mut summary = Vec::new();
     for (name, f) in &steps {
@@ -172,10 +188,10 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
         Some("ci") => ci(),
-        Some("layers") => layers(),
+        Some("layers") => layers(false),
         Some("assets") => assets(),
         Some("parity") => parity(),
-        Some("wasm") => wasm(),
+        Some("wasm") => wasm(false),
         Some("version") => version::run(args.get(1..).unwrap_or(&[])),
         Some("ico") => ico::run(args.get(1..).unwrap_or(&[])),
         _ => Err("usage: cargo xtask <ci|layers|assets|parity|wasm|version>".into()),
