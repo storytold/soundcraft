@@ -61,6 +61,8 @@ use std::collections::HashMap;
 use std::ops::Bound;
 use std::sync::Arc;
 
+mod send_automation;
+
 /// Default (stereo) main mix width. The actual width is [`main_channels`].
 pub const MAIN_CHANNELS: usize = 2;
 
@@ -203,6 +205,50 @@ impl StripMeter {
 struct BusBuf {
     fmt: ChannelFormat,
     buf: Vec<Vec<f32>>,
+    /// Age shared by the routed contributions in this block, or Mixed when they differ.
+    age: SignalAge,
+}
+
+/// Source-sample age metadata only; it never changes routing or audio delay compensation.
+/// A mixed-age sum has no single source clock, so new send readers retain their legacy clock.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+enum SignalAge {
+    #[default]
+    Empty,
+    Known(u64),
+    Mixed,
+}
+
+impl SignalAge {
+    fn input(self) -> Self {
+        match self {
+            Self::Empty => Self::Known(0),
+            other => other,
+        }
+    }
+
+    fn delayed(self, frames: usize) -> Self {
+        match self {
+            Self::Known(age) => u64::try_from(frames).ok().and_then(|frames| age.checked_add(frames)).map_or(Self::Mixed, Self::Known),
+            other => other,
+        }
+    }
+
+    fn include(&mut self, contribution: Self) {
+        *self = match (*self, contribution) {
+            (Self::Empty, age) | (age, Self::Empty) => age,
+            (Self::Known(a), Self::Known(b)) if a == b => Self::Known(a),
+            _ => Self::Mixed,
+        };
+    }
+
+    fn clock(self, position: Samples) -> send_automation::Clock {
+        let age = match self {
+            Self::Known(age) => age,
+            Self::Empty | Self::Mixed => 0,
+        };
+        send_automation::Clock::new(position, age)
+    }
 }
 
 struct PluginSlot {
@@ -235,6 +281,9 @@ struct Strip {
     clipbuf: Vec<Vec<f32>>,
     /// Total latency of the active inserts (samples).
     latency: usize,
+    /// Sample ages of the selected send taps after their actual applied alignment.
+    send_pre_age: SignalAge,
+    send_post_age: SignalAge,
     /// Delay compensation: align this strip with the slowest one (post- and pre-fader paths),
     /// plus extra delay for direct-to-main outputs so they line up with aux returns.
     align: DelayLine,
@@ -316,6 +365,8 @@ impl Strip {
             clip_fx: HashMap::new(),
             clipbuf: Vec::new(),
             latency: 0,
+            send_pre_age: SignalAge::Known(0),
+            send_post_age: SignalAge::Known(0),
             align: DelayLine::default(),
             align_pre: DelayLine::default(),
             out_extra: DelayLine::default(),
@@ -588,7 +639,7 @@ impl MixEngine {
         }
         for b in &s.busses {
             let n = b.format.channels().clamp(1, MAX_CHANNELS);
-            let bus = self.busses.entry(b.id).or_insert_with(|| BusBuf { fmt: b.format, buf: Vec::new() });
+            let bus = self.busses.entry(b.id).or_insert_with(|| BusBuf { fmt: b.format, buf: Vec::new(), age: SignalAge::Empty });
             bus.fmt = b.format;
             if bus.buf.len() != n {
                 bus.buf = vec![vec![0.0; mb]; n];
@@ -625,6 +676,7 @@ impl MixEngine {
         self.last_end = pos.saturating_add(frames as i64);
         self.ensure_synced(s);
         for b in self.busses.values_mut() {
+            b.age = SignalAge::Empty;
             for c in b.buf.iter_mut() {
                 c.iter_mut().take(frames).for_each(|x| *x = 0.0);
             }
@@ -703,9 +755,11 @@ impl MixEngine {
             let ch = st.buf.len();
             st.align.set(lmax_t.saturating_sub(st.latency), ch);
             st.align.process(&mut st.buf, frames);
+            st.send_post_age = st.send_post_age.delayed(st.align.len);
             if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
                 st.align_pre.set(lmax_t.saturating_sub(st.latency), ch);
                 st.align_pre.process(&mut st.pre, frames);
+                st.send_pre_age = st.send_pre_age.delayed(st.align_pre.len);
             }
             let waits = match &t.mixer.output {
                 Route::Main => true,
@@ -737,6 +791,7 @@ impl MixEngine {
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
             st.align.process(&mut st.buf, frames);
+            st.send_post_age = st.send_post_age.delayed(st.align.len);
             st.out_extra.set(0, ch);
             self.route_strip(t, &mut st, pos, frames);
             self.strips.insert(t.id, st);
@@ -835,22 +890,41 @@ impl MixEngine {
         let law = self.pan_law;
         for (i, snd) in t.mixer.sends.iter().enumerate() {
             let Some(snd) = snd else { continue };
-            if snd.mute || strip.muted {
+            if strip.muted {
+                continue;
+            }
+            let src = if snd.pre_fader { &strip.pre } else { &strip.buf };
+            let age = if snd.pre_fader { strip.send_pre_age } else { strip.send_post_age };
+            let clock = age.clock(pos);
+            let Route::Bus(b) = &snd.target else { continue };
+            let Some(dst) = self.busses.get_mut(b) else { continue };
+            let ordinary = !src_fmt.is_ambisonic() && !dst.fmt.is_ambisonic();
+            let mute = ordinary.then(|| send_automation::Reader::for_send(t, AutoParam::SendMute, i, clock.at(0))).flatten();
+            if mute.is_none() && snd.mute {
                 continue;
             }
             let lvl = send_level(t, i, snd.level_db, pos);
             let gain = db_to_gain(lvl);
-            let src = if snd.pre_fader { &strip.pre } else { &strip.buf };
-            let Route::Bus(b) = &snd.target else { continue };
-            let Some(dst) = self.busses.get_mut(b) else { continue };
             if gain <= 0.0 {
+                continue;
+            }
+            dst.age.include(age);
+            let pan = (ordinary && src.len() == 1 && dst.fmt == ChannelFormat::Stereo)
+                .then(|| send_automation::Reader::for_send(t, AutoParam::SendPan, i, clock.at(0)))
+                .flatten();
+            if let Some(pan) = pan {
+                send_automation::apply_mono_stereo(src, frames, &mut dst.buf, gain, law, clock, pan, mute);
                 continue;
             }
             // Mono sends use the send's own pan; stereo sends go straight to L/R.
             let stereo = if src.len() == 1 { [snd.pan, 0.0] } else { [-1.0, 1.0] };
             let surround = snd.surround.as_ref().or(if snd.follow_main_pan { t.mixer.surround.as_ref() } else { None });
             let m = build_matrix(src_fmt, src.len(), dst.fmt, dst.buf.len(), &PanSpec { stereo, surround }, law);
-            apply_matrix(src, frames, &mut dst.buf, &m, gain);
+            if let Some(mute) = mute {
+                send_automation::apply_gated(src, frames, &mut dst.buf, &m, gain, clock, mute);
+            } else {
+                apply_matrix(src, frames, &mut dst.buf, &m, gain);
+            }
         }
         let src: &[Vec<f32>] = match &t.mixer.output {
             Route::Main | Route::Bus(_) if strip.out_extra.len > 0 => {
@@ -869,7 +943,10 @@ impl MixEngine {
         let (dst, dst_fmt) = match &t.mixer.output {
             Route::Main => (&mut self.main, self.main_fmt),
             Route::Bus(b) => match self.busses.get_mut(b) {
-                Some(d) => (&mut d.buf, d.fmt),
+                Some(d) => {
+                    d.age.include(strip.send_post_age.delayed(strip.out_extra.len));
+                    (&mut d.buf, d.fmt)
+                }
                 None => return,
             },
             _ => return,
@@ -907,6 +984,7 @@ fn process_strip(
     for c in strip.buf.iter_mut() {
         c.iter_mut().take(frames).for_each(|x| *x = 0.0);
     }
+    let mut input_age = SignalAge::Known(0);
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
     match t.kind {
         TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording))) => {
@@ -961,6 +1039,7 @@ fn process_strip(
             if let Route::Bus(b) = &t.mixer.input
                 && let Some(src) = busses.get(b)
             {
+                input_age = src.age.input();
                 let (ns, nd) = (src.buf.len(), strip.buf.len());
                 let dst_fmt = strip_format(t, nd);
                 let m = if src.fmt == dst_fmt && ns == nd {
@@ -1021,6 +1100,7 @@ fn process_strip(
     }
     let mut gr = 0.0f32;
     let mut latency = 0usize;
+    let mut send_age = input_age;
     for (i, ins) in t.mixer.inserts.iter().enumerate() {
         let (Some(ins), Some(Some(slot))) = (ins, strip.plugins.get_mut(i)) else { continue };
         if !ins.active || ins.bypass || slot.failed {
@@ -1033,13 +1113,17 @@ fn process_strip(
             strip.failures.record(i);
             continue;
         }
-        latency = latency.saturating_add(slot.plugin.latency());
+        let declared_latency = slot.plugin.latency();
+        latency = latency.saturating_add(declared_latency);
+        send_age = send_age.delayed(declared_latency);
         if gr == 0.0 {
             gr = slot.plugin.gain_reduction_db();
         }
     }
     strip.gr = gr;
     strip.latency = latency.min(MAX_LATENCY);
+    strip.send_pre_age = send_age;
+    strip.send_post_age = send_age;
     let auto_mute = t.mixer.automation_mode.reads() && t.lane(&AutoParam::Mute).is_some_and(|l| l.value_at(pos, 0.0) >= 0.5);
     let soloed_out = any_solo && !t.mixer.solo && !t.mixer.solo_safe && !receives_solo(s, t);
     strip.muted = t.mixer.mute || auto_mute || soloed_out;
@@ -3241,5 +3325,122 @@ mod tests {
         }
         let e_ls = out[4][100].powi(2) + out[6][100].powi(2);
         assert!((e_ls - x(4).powi(2)).abs() < 1e-5, "Ls energy is preserved");
+    }
+}
+
+#[cfg(test)]
+mod send_age_tests {
+    use super::*;
+
+    #[test]
+    fn known_bus_ages_accumulate_and_mixed_ages_keep_the_legacy_clock() {
+        let mut bus = SignalAge::Empty;
+        assert_eq!(bus.input(), SignalAge::Known(0));
+        bus.include(SignalAge::Known(71));
+        bus.include(SignalAge::Known(71));
+        assert_eq!(bus, SignalAge::Known(71));
+        let aux_pre = bus.delayed(23);
+        let aux_post = aux_pre.delayed(48);
+        assert_eq!(aux_pre, SignalAge::Known(94));
+        assert_eq!(aux_post, SignalAge::Known(142));
+        assert_eq!(aux_pre.clock(300).at(0), 206);
+        assert_eq!(aux_post.clock(300).at(0), 158);
+        let nested = aux_post.delayed(71);
+        assert_eq!(nested, SignalAge::Known(213));
+        bus.include(SignalAge::Known(142));
+        assert_eq!(bus, SignalAge::Mixed);
+        assert_eq!(bus.delayed(71).clock(300).at(0), 300);
+    }
+
+    #[test]
+    fn age_overflow_preserves_audio_with_the_legacy_clock_fallback() {
+        let age = SignalAge::Known(u64::MAX).delayed(1);
+        assert_eq!(age, SignalAge::Mixed);
+        assert_eq!(age.clock(-7).at(3), -4);
+        let mut bus = SignalAge::Known(71);
+        bus.include(SignalAge::Empty);
+        assert_eq!(bus, SignalAge::Known(71));
+    }
+
+    #[test]
+    fn processed_insert_age_is_uncapped_while_pdc_stays_capped_and_overflow_falls_back() {
+        struct DeclaredDelay {
+            inner: Box<dyn Plugin>,
+            latency: usize,
+        }
+        impl Plugin for DeclaredDelay {
+            fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+                self.inner.info()
+            }
+            fn prepare(&mut self, rate: f32, block: usize, channels: usize) {
+                self.inner.prepare(rate, block, channels);
+            }
+            fn reset(&mut self) {
+                self.inner.reset();
+            }
+            fn set_param(&mut self, id: &str, value: f32) -> bool {
+                self.inner.set_param(id, value)
+            }
+            fn param(&self, id: &str) -> Option<f32> {
+                self.inner.param(id)
+            }
+            fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+                self.inner.process(io, frames);
+            }
+            fn latency(&self) -> usize {
+                self.latency
+            }
+        }
+        fn slot(latency: usize) -> PluginSlot {
+            let mut inner = soundcraft_dsp::create("gain").unwrap();
+            inner.prepare(48_000.0, 16, 1);
+            PluginSlot { id: "gain".into(), ch: 1, plugin: Box::new(DeclaredDelay { inner, latency }), applied: Vec::new(), failed: false }
+        }
+        let mut source = Session::default();
+        source.edit.delay_compensation = false;
+        let audio = source.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let source_id = soundcraft_model::SourceId(900);
+        source
+            .pool
+            .insert(source_id, Arc::new(SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 16]] })));
+        let clip = source.new_clip_id();
+        let track = source.track_mut(audio).unwrap();
+        track.playlist_mut().unwrap().clips.push(Clip::audio(clip, "Declared-age reference", source_id, 0, 0, 16));
+        track.mixer.inserts[0] = Some(soundcraft_model::Insert::new("gain"));
+        track.mixer.inserts[1] = Some(soundcraft_model::Insert::new("gain"));
+        let mut pre = soundcraft_model::SendSlot::new(Route::None);
+        pre.pre_fader = true;
+        track.mixer.sends[0] = Some(pre);
+        let mut strip = Strip::new();
+        strip.buf = vec![vec![0.0; 16]];
+        strip.scratch = vec![0.0; 16];
+        strip.plugins = vec![Some(slot(MAX_LATENCY + 5)), Some(slot(MAX_LATENCY + 9))];
+        let busses = HashMap::new();
+        let live = LiveInput { input: &[], monitor_only: false, recording: false };
+        process_strip(&source, source.track(audio).unwrap(), &mut strip, &busses, &live, 0, 16, false);
+        let declared_sum = 2 * MAX_LATENCY as u64 + 14;
+        assert_eq!(strip.latency, MAX_LATENCY, "the existing PDC cap remains unchanged");
+        assert_eq!(strip.send_pre_age, SignalAge::Known(declared_sum));
+        assert_eq!(strip.send_post_age, SignalAge::Known(declared_sum));
+        assert_eq!(strip.align.len, 0);
+        assert_eq!(strip.align_pre.len, 0);
+        assert_eq!(strip.pre, vec![vec![0.25; 16]]);
+        assert_eq!(strip.buf, strip.pre, "declared age metadata never changes the processed PCM");
+
+        let bus = source.add_bus("Overflowing known input", ChannelFormat::Mono);
+        let aux = source.add_track(TrackKind::Aux, ChannelFormat::Mono, None);
+        let track = source.track_mut(aux).unwrap();
+        track.mixer.input = Route::Bus(bus);
+        track.mixer.inserts[0] = Some(soundcraft_model::Insert::new("gain"));
+        let busses = HashMap::from([(bus, BusBuf { fmt: ChannelFormat::Mono, buf: vec![vec![0.25; 16]], age: SignalAge::Known(u64::MAX) })]);
+        let mut aux_strip = Strip::new();
+        aux_strip.buf = vec![vec![0.0; 16]];
+        aux_strip.plugins = vec![Some(slot(1))];
+        process_strip(&source, source.track(aux).unwrap(), &mut aux_strip, &busses, &live, 0, 16, false);
+        assert_eq!(aux_strip.latency, 1);
+        assert_eq!(aux_strip.send_pre_age, SignalAge::Mixed);
+        assert_eq!(aux_strip.send_post_age, SignalAge::Mixed);
+        assert_eq!(aux_strip.send_post_age.clock(300).at(0), 300);
+        assert_eq!(aux_strip.buf, vec![vec![0.25; 16]], "overflow preserves the output instead of silencing it");
     }
 }
