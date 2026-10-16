@@ -30,6 +30,8 @@ pub struct Autosaver {
 
 enum Job {
     Write(Arc<Session>, Option<String>, Option<Recording>),
+    /// Switch to an already reserved directory without joining the writer on the caller's thread.
+    Rebind(PathBuf),
     /// Done with the session's folder: keep it for the next launch, or delete it.
     Close(bool),
     Flush(Sender<std::result::Result<(), String>>),
@@ -38,9 +40,20 @@ enum Job {
 impl Autosaver {
     /// A writer for autosave folders under `root`.
     pub fn new(root: PathBuf) -> Autosaver {
+        Self::start(Destination::Root(root))
+    }
+
+    /// A writer for an already reserved document directory. It uses `dir` itself, rather than
+    /// creating a child folder, and reports opening or locking failures through `flush`/`failure`.
+    /// Closing without keeping recovery data deletes this directory.
+    pub fn new_in_directory(dir: PathBuf) -> Autosaver {
+        Self::start(Destination::Reserved(dir))
+    }
+
+    fn start(destination: Destination) -> Autosaver {
         let (tx, rx) = channel();
         let failure = Arc::new(Mutex::new(None));
-        let writer = Writer { root, failure: Arc::clone(&failure), folder: None, pending: None, last: None, written: Ok(()) };
+        let writer = Writer { destination, failure: Arc::clone(&failure), folder: None, pending: None, last: None, written: Ok(()) };
         let thread = std::thread::Builder::new().name("soundcraft-autosave".into()).spawn(move || writer.run(&rx));
         if let Err(e) = &thread {
             report(&failure, format!("{STOPPED}: {e}"));
@@ -52,6 +65,13 @@ impl Autosaver {
     /// recording running in it.
     pub fn write(&self, session: Arc<Session>, origin: Option<String>, recording: Option<Recording>) {
         self.send(Job::Write(session, origin, recording));
+    }
+
+    /// Use another already reserved document directory for subsequent writes. Earlier work and
+    /// close requests are processed first, on the same background thread. An unclosed old folder
+    /// is kept for recovery, as when a writer is dropped.
+    pub fn rebind_directory(&self, dir: PathBuf) {
+        self.send(Job::Rebind(dir));
     }
 
     /// Done with the open session's folder: keep it for the next launch, or delete it.
@@ -95,7 +115,7 @@ impl Drop for Autosaver {
 
 /// The writer thread.
 struct Writer {
-    root: PathBuf,
+    destination: Destination,
     failure: Arc<Mutex<Option<String>>>,
     /// The open session's folder.
     folder: Option<Autosave>,
@@ -104,6 +124,11 @@ struct Writer {
     last: Option<Instant>,
     /// How the newest write into the open folder went, for `Flush`.
     written: std::result::Result<(), String>,
+}
+
+enum Destination {
+    Root(PathBuf),
+    Reserved(PathBuf),
 }
 
 impl Writer {
@@ -115,6 +140,13 @@ impl Writer {
             };
             match jobs.recv_timeout(wait) {
                 Ok(Job::Write(session, origin, recording)) => self.pending = Some((session, origin, recording)),
+                Ok(Job::Rebind(dir)) => {
+                    self.write_pending();
+                    self.folder = None;
+                    self.destination = Destination::Reserved(dir);
+                    self.last = None;
+                    self.written = Ok(());
+                }
                 Ok(Job::Flush(reply)) => {
                     self.write_pending();
                     let _ = reply.send(self.written.clone());
@@ -145,7 +177,10 @@ impl Writer {
         self.last = Some(Instant::now());
         let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             if self.folder.is_none() {
-                self.folder = Some(Autosave::create(&self.root, &session.name)?);
+                self.folder = Some(match &self.destination {
+                    Destination::Root(root) => Autosave::create(root, &session.name)?,
+                    Destination::Reserved(dir) => Autosave::in_directory(dir.clone())?,
+                });
             }
             self.folder.as_mut().map_or(Ok(()), |a| a.write(&session, origin.as_deref(), recording.as_ref()))
         }));
@@ -180,14 +215,20 @@ impl Autosave {
     fn create(root: &Path, name: &str) -> Result<Autosave> {
         let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_millis();
         let dir = root.join(format!("{} {stamp}-{}", sanitize_name(name), std::process::id()));
-        let lock = std::fs::create_dir_all(&dir).and_then(|()| std::fs::File::create(dir.join(LOCK))).map_err(|err| io_error(&dir, err))?;
+        std::fs::create_dir_all(&dir).map_err(|err| io_error(&dir, err))?;
+        Self::in_directory(dir)
+    }
+
+    /// Use an existing document directory without recreating a deleted reservation.
+    fn in_directory(dir: PathBuf) -> Result<Autosave> {
+        let lock = std::fs::File::create(dir.join(LOCK)).map_err(|err| io_error(&dir, err))?;
         lock.try_lock().map_err(|err| EngineError::Io(format!("{}: {err}", dir.display())))?;
         Ok(Autosave { dir, lock: Some(lock), copies: BTreeMap::new(), next: 1, recording: false })
     }
 
     /// Write `session`, opened from the session file `origin`, and the plan of the `recording`
     /// running in it. Audio saved with it is referenced where it is; audio that exists only in
-    /// memory is copied, once per recording or render.
+    /// memory is copied. Available pooled audio is reused only after checking the stored bytes.
     fn write(&mut self, session: &Session, origin: Option<&str>, recording: Option<&Recording>) -> Result<()> {
         let base = origin.and_then(|p| Path::new(p).parent()).and_then(|p| std::path::absolute(p).ok());
         let audio_dir = self.dir.join("Audio Files");
@@ -196,23 +237,31 @@ impl Autosave {
         for src in &mut s.sources {
             let file = if Path::new(&src.path).is_absolute() { Some(PathBuf::from(&src.path)) } else { base.as_ref().map(|b| b.join(&src.path)) };
             let audio = s.pool.get(src.id);
+            let Some(audio) = audio else {
+                if let Some(f) = &file {
+                    src.path = f.to_string_lossy().into_owned();
+                }
+                continue;
+            };
+            let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+            let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
+            let own_copy = self.copies.get(&src.id).is_some_and(|(_, name)| file.as_ref() == Some(&audio_dir.join(name)));
             if let Some(f) = &file
-                && (!src.unsaved && f.is_file() || audio.is_none())
+                && !src.unsaved
+                && !own_copy
+                && crate::file_access::check_read(f).is_ok()
+                && wav_matches(f, &bytes)
             {
                 src.path = f.to_string_lossy().into_owned();
                 continue;
             }
-            let Some(audio) = audio else { continue };
             let name = match self.copies.remove(&src.id) {
-                Some((copy, name)) if copy.upgrade().is_some_and(|a| Arc::ptr_eq(&a, audio)) => name,
+                Some((copy, name)) if copy.upgrade().is_some_and(|a| Arc::ptr_eq(&a, audio)) && wav_matches(&audio_dir.join(&name), &bytes) => name,
                 _ => {
-                    let name = format!("{} {}.wav", sanitize_name(&src.name), self.next);
-                    self.next += 1;
-                    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
-                    let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
-                    std::fs::create_dir_all(&audio_dir)
-                        .and_then(|()| write_synced(&audio_dir.join(&name), &bytes))
-                        .map_err(|err| io_error(&audio_dir, err))?;
+                    let stem = format!("{} {}", sanitize_name(&src.name), self.next);
+                    self.next = self.next.checked_add(1).ok_or_else(|| EngineError::Io("no free autosave audio counter".into()))?;
+                    std::fs::create_dir_all(&audio_dir).map_err(|err| io_error(&audio_dir, err))?;
+                    let (name, _) = crate::io::store_wav(&audio_dir, &stem, &bytes)?;
                     name
                 }
             };
@@ -339,7 +388,24 @@ fn unfinished_takes(left: &Leftover, s: &Session, skipped: &mut Vec<String>) -> 
 fn take_folders(left: &Leftover) -> Vec<PathBuf> {
     let saved = left.origin.as_deref().and_then(|o| Path::new(o).parent()).map(|d| d.join("Audio Files"));
     let unsaved = left.dir.parent().map(|root| root.join(sanitize_name(&left.name)).join("Audio Files"));
-    saved.into_iter().chain(unsaved).filter_map(|d| std::fs::canonicalize(d).ok()).collect()
+    saved.into_iter().chain(Some(left.dir.join("Audio Files"))).chain(unsaved).filter_map(|d| std::fs::canonicalize(d).ok()).collect()
+}
+
+/// Compare a candidate with the available encoded audio without allocating from its file size.
+fn wav_matches(path: &Path, bytes: &[u8]) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else { return false };
+    if !file.metadata().is_ok_and(|m| m.is_file() && m.len() == bytes.len() as u64) {
+        return false;
+    }
+    let mut block = [0u8; 8192];
+    for chunk in bytes.chunks(block.len()) {
+        let target = &mut block[..chunk.len()];
+        if file.read_exact(target).is_err() || target != chunk {
+            return false;
+        }
+    }
+    file.read(&mut block[..1]).is_ok_and(|n| n == 0)
 }
 
 /// Make a take file's header cover all the audio in it; returns its frames. The recorder
@@ -613,5 +679,301 @@ mod tests {
         Autosave::create(&root, "Song").unwrap().discard();
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reserved_directory_writers_isolate_equal_source_ids_and_keep_main_cleanup() {
+        let root = folder("autosave-reserved-writers");
+        std::fs::create_dir_all(&root).unwrap();
+        let first = root.join("first-document");
+        let second = root.join("second-document");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let mut a = Engine::default();
+        let mut b = Engine::default();
+        record(&mut a, 0.5);
+        record(&mut b, -0.25);
+        assert_eq!(a.session().sources[0].id, b.session().sources[0].id);
+        assert_eq!(a.session().name, b.session().name);
+        let wa = Autosaver::new_in_directory(first.clone());
+        let wb = Autosaver::new_in_directory(second.clone());
+        wa.write(a.session_arc(), None, None);
+        wb.write(b.session_arc(), None, None);
+        wa.flush().unwrap();
+        wb.flush().unwrap();
+        assert!(first.join(SESSION).is_file() && second.join(SESSION).is_file());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2, "no nested writer directory");
+        assert!(leftovers(&root).is_empty(), "both exact document folders are locked");
+        let mut reopened = Engine::default();
+        assert!(open_session(&mut reopened, &first.join(SESSION).to_string_lossy()).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [0.5]);
+        assert!(Path::new(&reopened.session().sources[0].path).starts_with(first.join("Audio Files")));
+        assert!(open_session(&mut reopened, &second.join(SESSION).to_string_lossy()).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [-0.25]);
+        wa.close(false);
+        wa.flush().unwrap();
+        assert!(!first.exists(), "successful-save cleanup keeps its main contract");
+        assert!(second.join(SESSION).is_file(), "the other document is untouched");
+        drop(wb);
+        let left = leftovers(&root);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].dir, second);
+        assert!(recover(&mut reopened, &left[0]).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [-0.25]);
+        drop(wa);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reserved_directory_constructor_refuses_missing_or_locked_reservations() {
+        let root = folder("autosave-reserved-admission");
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = root.join("document");
+        let mut e = Engine::default();
+        record(&mut e, 0.5);
+        let missing = Autosaver::new_in_directory(dir.clone());
+        missing.write(e.session_arc(), None, None);
+        assert!(missing.flush().is_err());
+        assert!(!dir.exists(), "a worker cannot manufacture a missing reservation");
+        drop(missing);
+        std::fs::create_dir(&dir).unwrap();
+        let owner = Autosaver::new_in_directory(dir.clone());
+        owner.write(e.session_arc(), None, None);
+        owner.flush().unwrap();
+        let before = std::fs::read(dir.join(SESSION)).unwrap();
+        let contender = Autosaver::new_in_directory(dir.clone());
+        contender.write(Arc::new(Session::default()), None, None);
+        assert!(contender.flush().is_err());
+        assert_eq!(std::fs::read(dir.join(SESSION)).unwrap(), before);
+        assert!(leftovers(&root).is_empty());
+        drop(contender);
+        owner.close(false);
+        owner.flush().unwrap();
+        drop(owner);
+        assert!(!dir.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cached_wavs_are_verified_and_collisions_corruption_and_deletion_get_fresh_names() {
+        let root = folder("autosave-cache-bytes");
+        let dir = root.join("document");
+        let audio_dir = dir.join("Audio Files");
+        std::fs::create_dir_all(&audio_dir).unwrap();
+        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+        let wrong = soundcraft_audio_io::encode(&AudioBuffer { sample_rate: 48_000, channels: vec![vec![-0.25; 4_800]] }, &opts).unwrap();
+        let collision = audio_dir.join("Audio 1_01 1.wav");
+        std::fs::write(&collision, &wrong).unwrap();
+        let mut e = Engine::default();
+        record(&mut e, 0.5);
+        let snapshot = e.session_arc();
+        let w = Autosaver::new_in_directory(dir.clone());
+        w.write(Arc::clone(&snapshot), None, None);
+        w.flush().unwrap();
+        let mut reopened = Engine::default();
+        assert!(open_session(&mut reopened, &dir.join(SESSION).to_string_lossy()).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [0.5]);
+        let first = PathBuf::from(&reopened.session().sources[0].path);
+        assert_ne!(first, collision);
+        assert_eq!(std::fs::read(&collision).unwrap(), wrong, "an existing recording is never overwritten");
+        let correct = std::fs::read(&first).unwrap();
+        w.write(Arc::clone(&snapshot), None, None);
+        w.flush().unwrap();
+        open_session(&mut reopened, &dir.join(SESSION).to_string_lossy()).unwrap();
+        assert_eq!(Path::new(&reopened.session().sources[0].path), first);
+        assert_eq!(std::fs::read_dir(&audio_dir).unwrap().count(), 2, "unchanged verified bytes are reused");
+        let mut referenced = (*snapshot).clone();
+        referenced.sources[0].path = first.to_string_lossy().into_owned();
+        referenced.sources[0].unsaved = false;
+        w.write(Arc::new(referenced), None, None);
+        w.flush().unwrap();
+        assert!(open_session(&mut reopened, &dir.join(SESSION).to_string_lossy()).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [0.5]);
+        assert_eq!(Path::new(&reopened.session().sources[0].path), first, "reused private audio remains in the owned cache");
+        assert_eq!(std::fs::read(&first).unwrap(), correct, "reference metadata cannot trigger cleanup of live cached audio");
+        assert_eq!(wrong.len(), correct.len(), "the hostile replacement has a valid equal-size WAV header");
+        std::fs::write(&first, &wrong).unwrap();
+        w.write(Arc::clone(&snapshot), None, None);
+        w.flush().unwrap();
+        assert!(open_session(&mut reopened, &dir.join(SESSION).to_string_lossy()).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [0.5], "the same pooled Arc cannot admit changed disk bytes");
+        let second = PathBuf::from(&reopened.session().sources[0].path);
+        assert_ne!(second, first);
+        assert_eq!(std::fs::read(&first).unwrap(), wrong, "changed prior bytes remain untouched");
+        assert_eq!(std::fs::read(&second).unwrap(), correct);
+        std::fs::remove_file(&second).unwrap();
+        w.write(snapshot, None, None);
+        w.flush().unwrap();
+        assert!(open_session(&mut reopened, &dir.join(SESSION).to_string_lossy()).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [0.5]);
+        let third = PathBuf::from(&reopened.session().sources[0].path);
+        assert_ne!(third, second);
+        assert_eq!(std::fs::read(third).unwrap(), correct);
+        drop(w);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovered_pooled_audio_is_verified_before_referencing_an_existing_saved_file() {
+        let root = folder("autosave-recovered-bytes");
+        let saved = root.join("Song/Song.scraft");
+        let mut e = Engine::default();
+        record(&mut e, 0.5);
+        crate::io::save_session(&mut e, &saved.to_string_lossy()).unwrap();
+        let original = saved.parent().unwrap().join(&e.session().sources[0].path);
+        let original_bytes = std::fs::read(&original).unwrap();
+        let id = e.session().sources[0].id;
+        assert!(!e.session().sources[0].unsaved);
+        e.session_mut().pool.insert(id, Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.75; 4_800]] })));
+        let dir = root.join("Autosave/document");
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        let w = Autosaver::new_in_directory(dir.clone());
+        w.write(e.session_arc(), e.path.clone(), None);
+        w.flush().unwrap();
+        let mut reopened = Engine::default();
+        assert!(open_session(&mut reopened, &dir.join(SESSION).to_string_lossy()).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [0.75]);
+        assert!(Path::new(&reopened.session().sources[0].path).starts_with(dir.join("Audio Files")));
+        assert!(reopened.session().sources[0].unsaved);
+        assert_eq!(std::fs::read(original).unwrap(), original_bytes);
+        drop(w);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_partial_take_in_the_reserved_document_directory_recovers_all_literal_samples() {
+        use crate::io::Take;
+        let root = folder("autosave-reserved-take");
+        let dir = root.join("document");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::create_dir(dir.join("Audio Files")).unwrap();
+        let mut e = Engine::default();
+        let track = soundcraft_model::TrackId(e.execute("track.new", &json!({"name":"Vox","format":"mono"})).unwrap()["tracks"][0].as_u64().unwrap());
+        let take = dir.join("Audio Files/Vox_01.wav");
+        let literal: Vec<f32> = (0..480).map(|i| i as f32 / 1000.0).collect();
+        let bytes: Vec<u8> = literal.iter().flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(&take, [soundcraft_audio_io::wav_float_header(1, 48_000, 100).unwrap(), bytes].concat()).unwrap();
+        let plan = Recording { start: 48_000, pass: None, punch: None, rate: 48_000, takes: vec![Take { track, path: take, channels: 1 }] };
+        let w = Autosaver::new_in_directory(dir.clone());
+        w.write(e.session_arc(), None, Some(plan));
+        w.flush().unwrap();
+        assert!(leftovers(&root).is_empty());
+        drop(w);
+        let left = leftovers(&root);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].dir, dir);
+        assert!(left[0].recording);
+        let mut reopened = Engine::default();
+        assert!(recover(&mut reopened, &left[0]).unwrap().is_empty());
+        let clips: Vec<_> = reopened.session().track(track).unwrap().clips().iter().map(|c| (c.start, c.length)).collect();
+        assert_eq!(clips, [(48_000, 480)]);
+        assert_eq!(reopened.session().sources.len(), 1);
+        let audio = reopened.session().pool.get(reopened.session().sources[0].id).unwrap();
+        assert_eq!(audio.buffer.channels, [literal]);
+        discard(&left[0]);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn queued_directory_switches_keep_one_worker_and_order_old_audio_cleanup_and_new_audio() {
+        let root = folder("autosave-queued-switch");
+        std::fs::create_dir_all(&root).unwrap();
+        let first = root.join("first-document");
+        let second = root.join("second-document");
+        let third = root.join("third-document");
+        for dir in [&first, &second, &third] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let mut a = Engine::default();
+        let mut b = Engine::default();
+        let mut c = Engine::default();
+        record(&mut a, 0.5);
+        record(&mut b, -0.25);
+        record(&mut c, 0.75);
+        assert_eq!(a.session().sources[0].id, b.session().sources[0].id);
+        assert_eq!(b.session().sources[0].id, c.session().sources[0].id);
+        let w = Autosaver::new_in_directory(first.clone());
+        let worker = w.thread.as_ref().unwrap().thread().id();
+        w.write(a.session_arc(), None, None);
+        w.rebind_directory(second.clone());
+        w.write(b.session_arc(), None, None);
+        w.flush().unwrap();
+        assert_eq!(w.thread.as_ref().unwrap().thread().id(), worker);
+        let mut reopened = Engine::default();
+        assert!(open_session(&mut reopened, &first.join(SESSION).to_string_lossy()).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [0.5], "pending work from the old document was completed before rebind");
+        assert!(open_session(&mut reopened, &second.join(SESSION).to_string_lossy()).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [-0.25]);
+        let left = leftovers(&root);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].dir, first, "the old lock is released and the current document remains locked");
+        w.close(false);
+        w.rebind_directory(third.clone());
+        w.write(c.session_arc(), None, None);
+        w.flush().unwrap();
+        assert_eq!(w.thread.as_ref().unwrap().thread().id(), worker);
+        assert!(!second.exists(), "queued cleanup applies to the previous document only");
+        assert!(first.join(SESSION).is_file() && third.join(SESSION).is_file());
+        assert!(open_session(&mut reopened, &third.join(SESSION).to_string_lossy()).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [0.75]);
+        w.close(false);
+        w.flush().unwrap();
+        assert!(!third.exists());
+        assert!(open_session(&mut reopened, &first.join(SESSION).to_string_lossy()).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [0.5]);
+        drop(w);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn external_saved_candidates_respect_read_roots_and_owned_cached_audio_stays_reusable() {
+        let root = folder("autosave-external-read-root");
+        let read_root = root.join("Allowed");
+        let saved = read_root.join("Song.scraft");
+        let mut e = Engine::default();
+        record(&mut e, 0.5);
+        record(&mut e, -0.25);
+        crate::io::save_session(&mut e, &saved.to_string_lossy()).unwrap();
+        let allowed = read_root.join(&e.session().sources[0].path);
+        let denied = root.join("Outside/Source.wav");
+        std::fs::create_dir_all(denied.parent().unwrap()).unwrap();
+        std::fs::copy(read_root.join(&e.session().sources[1].path), &denied).unwrap();
+        let outside_bytes = std::fs::read(&denied).unwrap();
+        e.session_mut().sources[1].path = denied.to_string_lossy().into_owned();
+        assert!(!e.session().sources[0].unsaved && !e.session().sources[1].unsaved);
+        let roots = crate::file_access::AutomationRoots::new(Some(&read_root), None).unwrap().unwrap();
+        let dir = root.join("Private-document");
+        std::fs::create_dir(&dir).unwrap();
+        let mut a = Autosave::in_directory(dir.clone()).unwrap();
+        let previous_policy = crate::file_access::check_read(&denied);
+        let (first, second) = crate::file_access::confine(Some(&roots), || {
+            assert!(crate::file_access::check_read(&allowed).is_ok());
+            assert!(crate::file_access::check_read(&denied).is_err());
+            assert!(crate::file_access::check_read(&dir).is_err(), "private cache access is distinct from external-source admission");
+            a.write(e.session(), e.path.as_deref(), None).unwrap();
+            let first = Session::from_json(&std::fs::read_to_string(dir.join(SESSION)).unwrap()).unwrap();
+            assert_eq!(Path::new(&first.sources[0].path), allowed, "the admitted external source stays referenced");
+            assert!(!first.sources[0].unsaved);
+            assert_ne!(Path::new(&first.sources[1].path), denied, "available pooled audio is copied without admitting a denied candidate");
+            assert!(Path::new(&first.sources[1].path).starts_with(dir.join("Audio Files")));
+            assert!(first.sources[1].unsaved);
+            a.write(e.session(), e.path.as_deref(), None).unwrap();
+            let second = Session::from_json(&std::fs::read_to_string(dir.join(SESSION)).unwrap()).unwrap();
+            (first, second)
+        });
+        assert_eq!(crate::file_access::check_read(&denied), previous_policy, "thread-local policy is restored without changing the process policy");
+        assert_eq!(second.sources[1].path, first.sources[1].path, "the app-owned verified cache still reuses its file");
+        assert_eq!(std::fs::read_dir(dir.join("Audio Files")).unwrap().count(), 1);
+        assert_eq!(std::fs::read(&denied).unwrap(), outside_bytes);
+        let mut reopened = Engine::default();
+        assert!(open_session(&mut reopened, &dir.join(SESSION).to_string_lossy()).unwrap().is_empty());
+        assert_eq!(levels(&reopened), [0.5, -0.25]);
+        assert_eq!(reopened.session().pool.get(reopened.session().sources[0].id).unwrap().buffer.channels, [vec![0.5; 4_800]]);
+        assert_eq!(reopened.session().pool.get(reopened.session().sources[1].id).unwrap().buffer.channels, [vec![-0.25; 4_800]]);
+        drop(a);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

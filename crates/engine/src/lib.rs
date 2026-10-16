@@ -125,6 +125,8 @@ pub struct Engine {
     pub path: Option<String>,
     /// Revision counter; bumps on every document change but zoom/scroll (UI caches key on it).
     pub revision: u64,
+    /// Changes only when a document is opened, created or reverted, not on edit/undo/save.
+    session_generation: u64,
     dirty: bool,
     /// The document as last opened or saved, for `is_dirty`.
     saved: Arc<Session>,
@@ -163,6 +165,7 @@ impl Engine {
             journal: Vec::new(),
             path: None,
             revision: 1,
+            session_generation: 1,
             dirty: false,
             dirty_at: Cell::new((0, false)),
             merge_key: None,
@@ -178,6 +181,12 @@ impl Engine {
 
     pub fn session_arc(&self) -> Arc<Session> {
         Arc::clone(&self.doc)
+    }
+
+    /// Identifies the current open-document lifetime within this engine. Hosts can use it to
+    /// isolate recovery resources without adding transient identity to the session format.
+    pub fn session_generation(&self) -> u64 {
+        self.session_generation
     }
 
     /// Mutable access (copy-on-write). Callers outside commands should prefer `execute`.
@@ -204,6 +213,7 @@ impl Engine {
         self.redo.clear();
         self.last_selection = None;
         self.revision = self.revision.wrapping_add(1);
+        self.session_generation = self.session_generation.wrapping_add(1);
         self.dirty = false;
     }
 
@@ -316,6 +326,7 @@ impl Engine {
         let before = Arc::clone(&self.doc);
         let rev = self.revision;
         let dirty = self.dirty;
+        let generation = self.session_generation;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, params)));
         let result = match result {
             Ok(r) => r,
@@ -323,6 +334,7 @@ impl Engine {
                 self.doc = before;
                 self.revision = rev.wrapping_add(1);
                 self.dirty = dirty;
+                self.session_generation = generation;
                 return Err(EngineError::Internal(id.to_string(), panic_message(&*p)));
             }
         };
@@ -343,6 +355,7 @@ impl Engine {
             }
             Err(e) => {
                 // Commands must not leave half-applied edits behind.
+                self.session_generation = generation;
                 if !Arc::ptr_eq(&before, &self.doc) {
                     self.doc = before;
                     self.revision = self.revision.wrapping_add(1);

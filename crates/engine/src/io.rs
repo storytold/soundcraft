@@ -881,7 +881,7 @@ pub fn save_session(e: &mut Engine, path: &str) -> Result<usize> {
 }
 
 /// Write a copy of the session (and any audio it needs) without touching the open document —
-/// used for autosave / crash recovery. Audio already written for a source is reused.
+/// used for autosave / crash recovery. Audio is reused only when its encoded bytes match.
 pub fn save_copy(e: &Engine, path: &str) -> Result<usize> {
     write_session(e.session(), path, true).map(|(_, n, _)| n)
 }
@@ -925,11 +925,11 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
         }
         let exists_rel = same_dir && !Path::new(&src.path).is_absolute() && dir.join(&src.path).exists();
         let shared = shared_paths.get(i).copied().unwrap_or(false);
-        if exists_rel && !src.unsaved && !shared {
+        if !overwrite && exists_rel && !src.unsaved && !shared {
             continue;
         }
         let in_folder = Path::new(&src.path).strip_prefix(&audio_dir).ok().and_then(Path::to_str).map(str::to_string);
-        if let Some(f) = in_folder.filter(|_| !src.unsaved && Path::new(&src.path).is_file()) {
+        if let Some(f) = in_folder.filter(|_| !overwrite && !src.unsaved && Path::new(&src.path).is_file()) {
             src.path = format!("Audio Files/{f}");
             continue;
         }
@@ -943,14 +943,9 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
         make_dir(&audio_dir)?;
         let mut stem = sanitize_name(&src.name);
         if overwrite {
-            // One file per source id so autosaves never collide or pile up.
+            // Keep stable candidate names, but let store_wav validate the bytes. Different
+            // documents and undo states can reuse a source id/name for different audio.
             stem = format!("{stem}_{}", src.id.0);
-            if audio_dir.join(format!("{stem}.wav")).exists() {
-                src.path = format!("Audio Files/{stem}.wav");
-                src.unsaved = false;
-                files.insert(Arc::as_ptr(audio), src.path.clone());
-                continue;
-            }
         }
         let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
         let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
@@ -1070,7 +1065,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
 /// Store `bytes` as the first of `<stem>.wav`, `<stem>_01.wav`, … in `dir` that is free or already
 /// holds exactly these bytes, so saving never replaces audio; returns the name and whether it was
 /// written.
-fn store_wav(dir: &Path, stem: &str, bytes: &[u8]) -> Result<(String, bool)> {
+pub(crate) fn store_wav(dir: &Path, stem: &str, bytes: &[u8]) -> Result<(String, bool)> {
     use std::io::Write;
     for k in 0..10_000u32 {
         let name = if k == 0 { format!("{stem}.wav") } else { format!("{stem}_{k:02}.wav") };
@@ -1463,6 +1458,7 @@ mod record_tests {
         let mut e = Engine::default();
         let vox = armed(&mut e, "Vox", "mono", "In 1");
         assert_eq!(add_recording(&mut e, 1_000, vec![(vox, path.clone())], Some(400)).len(), 3);
+        assert_eq!(save_copy(&e, &dir.join("Untitled.scraft").to_string_lossy()).unwrap(), 1);
         assert_eq!(save_copy(&e, &dir.join("Untitled.scraft").to_string_lossy()).unwrap(), 0);
         let t = e.session().track(vox).unwrap();
         let passes: Vec<_> = t.playlists.iter().flat_map(|p| p.clips.iter().map(|c| (c.source_offset(), c.start, c.length))).collect();
@@ -1521,6 +1517,65 @@ mod save_tests {
         let mut r = Engine::default();
         assert_eq!(open_session(&mut r, path).unwrap(), Vec::<String>::new());
         r
+    }
+
+    fn first_sample(e: &Engine) -> f32 {
+        e.session().pool.get(e.session().sources[0].id).unwrap().buffer.channels[0][0]
+    }
+
+    #[test]
+    fn autosaves_validate_reused_source_ids_and_preserve_prior_audio() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-autosave-identity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (first, second) = (with_take(0.5), with_take(-0.25));
+        assert_eq!(first.session().sources[0].id, second.session().sources[0].id);
+        assert_eq!(first.session().sources[0].name, second.session().sources[0].name);
+        let a = dir.join("A.scraft").to_string_lossy().into_owned();
+        let b = dir.join("B.scraft").to_string_lossy().into_owned();
+        assert_eq!(save_copy(&first, &a).unwrap(), 1);
+        assert_eq!(save_copy(&second, &b).unwrap(), 1);
+        assert_eq!(save_copy(&second, &b).unwrap(), 0);
+        assert_eq!(first_sample(&reopen(&a)), 0.5);
+        assert_eq!(first_sample(&reopen(&b)), -0.25);
+        assert!(first.path.is_none() && second.path.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autosave_rejects_changed_bytes_at_an_existing_audio_name() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-autosave-corrupt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let e = with_take(0.5);
+        let path = dir.join("Recovery.scraft").to_string_lossy().into_owned();
+        save_copy(&e, &path).unwrap();
+        let saved = reopen(&path);
+        let media = dir.join(&saved.session().sources[0].path);
+        let wrong = AudioBuffer { sample_rate: 48_000, channels: vec![vec![-0.25; 4_800]] };
+        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
+        let bytes = soundcraft_audio_io::encode(&wrong, &opts).unwrap();
+        assert_eq!(std::fs::metadata(&media).unwrap().len(), bytes.len() as u64);
+        std::fs::write(&media, bytes).unwrap();
+        assert_eq!(save_copy(&e, &path).unwrap(), 1);
+        let recovered = reopen(&path);
+        assert_eq!(first_sample(&recovered), 0.5);
+        assert_ne!(recovered.session().sources[0].path, saved.session().sources[0].path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recovered_media_is_validated_even_when_its_path_already_exists() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-autosave-reopened-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("Recovery.scraft").to_string_lossy().into_owned();
+        save_copy(&with_take(0.5), &path).unwrap();
+        let mut e = reopen(&path);
+        let source = e.session().sources[0].id;
+        assert!(!e.session().sources[0].unsaved);
+        e.session_mut().pool.insert(source, Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.75; 4_800]] })));
+        assert_eq!(save_copy(&e, &path).unwrap(), 1);
+        assert_eq!(first_sample(&reopen(&path)), 0.75);
+        assert_eq!(save_copy(&e, &path).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
