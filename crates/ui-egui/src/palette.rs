@@ -80,7 +80,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 entries().into_iter().filter_map(|e| score(&format!("{} {} {}", e.label, e.path, e.id), &q).map(|s| (s, e))).collect();
             hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.label.cmp(&b.1.label)));
             hits.truncate(14);
-            let (down, up, enter) = ctx.input(|i| (i.key_pressed(Key::ArrowDown), i.key_pressed(Key::ArrowUp), i.key_pressed(Key::Enter)));
+            let (down, up) = ctx.input(|i| (i.key_pressed(Key::ArrowDown), i.key_pressed(Key::ArrowUp)));
+            // Consumed, so a dialog the chosen command opens this frame doesn't take it as OK.
+            let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
             if down {
                 app.palette.selected = (app.palette.selected + 1).min(hits.len().saturating_sub(1));
             }

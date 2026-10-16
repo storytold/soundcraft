@@ -14,6 +14,7 @@ pub enum Dialog {
     NewSession { name: String, sample_rate: u32, demo: bool },
     Bounce { path: String, format: String, bit_depth: String, normalize: bool },
     RenameTrack { id: TrackId, name: String },
+    SaveTrackPreset { track: TrackId, name: String, dir: std::path::PathBuf },
     RenameClip { id: ClipId, name: String },
     RenameMarker { id: soundcraft_model::MarkerId, name: String },
     ClearClips { clips: Vec<ClipId>, sources: Vec<SourceId>, message: String },
@@ -43,6 +44,7 @@ impl Dialogs {
             Dialog::NewSession { .. } => "new_session",
             Dialog::Bounce { .. } => "bounce",
             Dialog::RenameTrack { .. } => "rename_track",
+            Dialog::SaveTrackPreset { .. } => "save_track_preset",
             Dialog::RenameClip { .. } => "rename_clip",
             Dialog::RenameMarker { .. } => "rename_marker",
             Dialog::ClearClips { .. } => "clear_clips",
@@ -275,6 +277,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::NewSession { .. } => "New Session",
         Dialog::Bounce { .. } => "Bounce Mix",
         Dialog::RenameTrack { .. } => "Rename Track",
+        Dialog::SaveTrackPreset { .. } => "Save Track Preset",
         Dialog::RenameClip { .. } => "Rename Clip",
         Dialog::RenameMarker { .. } => "Rename Marker",
         Dialog::ClearClips { .. } => "Clear",
@@ -401,6 +404,19 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     name_field(ui, name);
                     if buttons(ui, "OK", enter) {
                         action = Some(("track.rename".into(), json!({"track": id.0, "name": name})));
+                    }
+                }
+                Dialog::SaveTrackPreset { track, name, dir } => {
+                    name_field(ui, name);
+                    let file = dir.join(format!("{}.json", soundcraft_engine::io::sanitize_name(name)));
+                    let replaces = file.exists();
+                    if replaces {
+                        ui.label(format!("“{}” already exists. Do you want to replace it?", file.file_stem().unwrap_or_default().to_string_lossy()));
+                    }
+                    if buttons(ui, if replaces { "Replace" } else { "OK" }, enter && !replaces) {
+                        // `track.save_preset` writes the file but doesn't create its folder.
+                        let _ = std::fs::create_dir_all(&*dir);
+                        action = Some(("track.save_preset".into(), json!({"path": file.to_string_lossy(), "track": track.0})));
                     }
                 }
                 Dialog::RenameClip { id, name } => {
