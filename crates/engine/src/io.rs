@@ -1350,18 +1350,25 @@ pub struct Take {
 
 /// Place recorded take files as `plan` says, as one undo step ("Record").
 pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, PathBuf)>) -> Vec<soundcraft_model::ClipId> {
-    let ids = add_recording(e, plan.start, takes, plan.pass);
-    if let Some(p) = plan.punch {
-        let clips: Vec<u64> = ids.iter().map(|c| c.0).collect();
-        let _ = e.execute_merged("edit.trim_to_fill_selection", &json!({"clips": clips, "start": p.start, "end": p.end}), "record");
-    }
-    ids
+    add_recording_in(e, plan.start, takes, plan.pass, plan.punch)
 }
 
 /// Turn recorded take files into clips at `start`, as one undo step ("Record"); each file is the
 /// source of its clips. With `pass` (loop recording), a take becomes one clip per pass (at most
 /// 1000), each pass after the first on a new playlist.
 pub fn add_recording(e: &mut Engine, start: Samples, takes: Vec<(TrackId, PathBuf)>, pass: Option<Samples>) -> Vec<soundcraft_model::ClipId> {
+    add_recording_in(e, start, takes, pass, None)
+}
+
+/// [`add_recording`] limited to the `punch` range: each clip is cut to it before it's placed, so
+/// the material around the punch isn't overwritten.
+fn add_recording_in(
+    e: &mut Engine,
+    start: Samples,
+    takes: Vec<(TrackId, PathBuf)>,
+    pass: Option<Samples>,
+    punch: Option<Range>,
+) -> Vec<soundcraft_model::ClipId> {
     let before = e.session_arc();
     let mut out = Vec::new();
     for (tid, path) in takes {
@@ -1384,6 +1391,13 @@ pub fn add_recording(e: &mut Engine, start: Samples, takes: Vec<(TrackId, PathBu
             if offset > 0 && n < pass / 8 {
                 break;
             }
+            let (clip_start, cut, clip_len) = match punch {
+                Some(p) => {
+                    let Some(kept) = Range::new(start, start.saturating_add(n)).intersect(&p) else { continue };
+                    (kept.start, kept.start.saturating_sub(start), kept.len())
+                }
+                None => (start, 0, n),
+            };
             if offset > 0
                 && let Some(t) = s.track_mut(tid)
             {
@@ -1391,7 +1405,7 @@ pub fn add_recording(e: &mut Engine, start: Samples, takes: Vec<(TrackId, PathBu
                 t.active_playlist = t.playlists.len() - 1;
             }
             let cid = s.new_clip_id();
-            crate::edit::place_clip(s, tid, Clip::audio(cid, name, src, offset, start, n));
+            crate::edit::place_clip(s, tid, Clip::audio(cid, name, src, offset.saturating_add(cut), clip_start, clip_len));
             out.push(cid);
         }
     }
@@ -1470,6 +1484,30 @@ mod record_tests {
         assert_eq!((t.active_playlist, t.playlists[2].name.as_str()), (2, "Vox.03"));
         e.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(e.session().track(vox).unwrap().playlists.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn punching_in_keeps_the_material_around_the_punch_range() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-punch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut e = Engine::default();
+        let vox = armed(&mut e, "Vox", "mono", "In 1");
+        let base = dir.join("Audio Files/Base.wav");
+        let take = dir.join("Audio Files/Take.wav");
+        write_take(&base, 3_000);
+        write_take(&take, 1_000);
+        add_recording(&mut e, 0, vec![(vox, base)], None);
+        let plan = Recording {
+            start: 1_000,
+            pass: None,
+            punch: Some(Range::new(1_400, 1_600)),
+            rate: 48_000,
+            takes: vec![Take { track: vox, path: take.clone(), channels: 1 }],
+        };
+        place_recording(&mut e, &plan, vec![(vox, take)]);
+        let clips: Vec<_> = e.session().track(vox).unwrap().clips().iter().map(|c| (c.start, c.length, c.source_offset())).collect();
+        assert_eq!(clips, vec![(0, 1_400, 0), (1_400, 200, 400), (1_600, 1_400, 1_600)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
