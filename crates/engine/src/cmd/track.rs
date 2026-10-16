@@ -3,7 +3,7 @@
 use super::*;
 use crate::cmd;
 use serde_json::json;
-use soundcraft_model::{ChannelFormat, Group, GroupId, Playlist, Route, Session, Track, TrackHeight, TrackKind};
+use soundcraft_model::{ChannelFormat, ClipContent, Group, GroupId, Playlist, Route, Session, Track, TrackHeight, TrackKind};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -362,6 +362,8 @@ fn split_mono(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.split_into_mono", p)?;
     let s = e.session_mut();
     let mut out = Vec::new();
+    let mut mono_sources = std::collections::BTreeMap::new();
+    let mut copied_samples = 0usize;
     for t in tracks {
         let Some(src) = s.track(t).cloned() else { continue };
         if src.channels() < 2 || src.kind != TrackKind::Audio {
@@ -377,12 +379,46 @@ fn split_mono(e: &mut Engine, p: &Value) -> Result<Value> {
             let mut clips = src.clips().to_vec();
             for c in &mut clips {
                 c.id = s.new_clip_id();
-                // Mono tracks read channel 0 of the source; record the channel in the name for now.
+                if let ClipContent::Audio { source, .. } = &mut c.content {
+                    let audio =
+                        s.pool.get(*source).ok_or_else(|| bad("track.split_into_mono", format!("audio unavailable for clip `{}`", c.name)))?;
+                    let channels = audio.buffer.channels.len();
+                    if channels == 0 {
+                        return Err(bad("track.split_into_mono", format!("audio has no channels for clip `{}`", c.name)));
+                    }
+                    // Match the renderer's channel wrapping when a track is wider than its source.
+                    // An already-mono source can be shared without copying it.
+                    if channels > 1 {
+                        let key = (*source, ch % channels);
+                        let mono = if let Some(&id) = mono_sources.get(&key) {
+                            id
+                        } else {
+                            let samples =
+                                audio.buffer.channels.get(key.1).ok_or_else(|| bad("track.split_into_mono", "source channel unavailable"))?;
+                            copied_samples = copied_samples
+                                .checked_add(samples.len())
+                                .filter(|&n| n <= crate::io::MAX_IMPORT_SAMPLES)
+                                .ok_or_else(|| bad("track.split_into_mono", "split would copy too much audio"))?;
+                            // Keep the full channel: the cloned clips retain their offsets, stretch,
+                            // gain and fades, and every reader sees genuine mono media (including saves).
+                            let buf = soundcraft_audio_io::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![samples.clone()] };
+                            let original = s.source(*source);
+                            let name = format!("{}.{suffix}.wav", original.map_or(c.name.as_str(), |source| source.name.as_str()));
+                            let time_reference = original.map_or(0, |source| source.time_reference);
+                            let id = crate::io::add_source(s, &name, buf, None, soundcraft_audio_io::FileFormat::Wav);
+                            if let Some(source) = s.sources.iter_mut().find(|source| source.id == id) {
+                                source.time_reference = time_reference;
+                            }
+                            mono_sources.insert(key, id);
+                            id
+                        };
+                        *source = mono;
+                    }
+                }
                 c.name = format!("{}.{suffix}", c.name);
             }
             if let Some(tr) = s.track_mut(id) {
                 tr.mixer.pan = vec![if ch == 0 { -1.0 } else { 1.0 }];
-                tr.comments = format!("source_channel={ch}");
                 if let Some(pl) = tr.playlist_mut() {
                     pl.clips = clips;
                 }
