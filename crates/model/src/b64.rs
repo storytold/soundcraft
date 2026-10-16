@@ -37,15 +37,19 @@ fn value(c: u8) -> Option<u32> {
 /// Decodes padded (or unpadded) standard base64. `None` for malformed input or a result larger
 /// than [`MAX_DECODED_BYTES`].
 pub fn decode(text: &str) -> Option<Vec<u8>> {
+    if text.bytes().filter(|c| !c.is_ascii_whitespace()).count() > MAX_DECODED_BYTES.div_ceil(3).saturating_mul(4) {
+        return None;
+    }
     let syms: Vec<u8> = text.bytes().filter(|c| !c.is_ascii_whitespace()).collect();
     let body = syms.strip_suffix(b"==").or_else(|| syms.strip_suffix(b"=")).unwrap_or(&syms);
     if body.contains(&b'=') || (syms.len() != body.len() && !syms.len().is_multiple_of(4)) || body.len() % 4 == 1 {
         return None;
     }
-    if body.len() / 4 * 3 > MAX_DECODED_BYTES {
+    let decoded_len = body.len() / 4 * 3 + body.len() % 4 * 3 / 4;
+    if decoded_len > MAX_DECODED_BYTES {
         return None;
     }
-    let mut out = Vec::with_capacity(body.len() / 4 * 3 + 2);
+    let mut out = Vec::with_capacity(decoded_len);
     for chunk in body.chunks(4) {
         let mut n = 0u32;
         for (i, &c) in chunk.iter().enumerate() {
@@ -79,6 +83,19 @@ mod tests {
     fn hostile_input_is_rejected() {
         for bad in ["Z", "Zm9=v", "Zm9v!", "====", "Zg=", "é", "Zg===", "Z==="] {
             assert!(decode(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn size_cap_counts_the_partial_quartet() {
+        for (extra, ok) in [(-1, true), (0, true), (1, false), (2, false)] {
+            let data = vec![7u8; MAX_DECODED_BYTES.saturating_add_signed(extra)];
+            let padded = encode(&data);
+            let unpadded = padded.trim_end_matches('=');
+            assert_eq!(decode(&padded).is_some(), ok, "padded, {extra}");
+            assert_eq!(decode(unpadded).is_some(), ok, "unpadded, {extra}");
+            let spaced = format!("{}\n {}", &padded[..8], &padded[8..]);
+            assert_eq!(decode(&spaced).is_some(), ok, "whitespace, {extra}");
         }
     }
 }
