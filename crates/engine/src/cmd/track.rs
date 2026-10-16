@@ -493,6 +493,15 @@ fn folder_bus(s: &Session, folder: TrackId) -> Option<Route> {
     s.track(folder).map(|folder| folder.mixer.input.clone()).filter(|route| matches!(route, Route::Bus(_)))
 }
 
+/// The summing bus owned by a routing folder.
+fn owned_folder_bus(s: &Session, folder: TrackId) -> Option<soundcraft_model::BusId> {
+    let folder = s.track(folder).filter(|track| track.kind == TrackKind::Folder)?;
+    match folder.mixer.input {
+        Route::Bus(id) => Some(id),
+        _ => None,
+    }
+}
+
 /// Keep only the selected roots so selecting a folder and one of its children preserves the subtree.
 fn root_tracks(s: &Session, tracks: Vec<TrackId>) -> Vec<TrackId> {
     tracks.iter().copied().filter(|track| !tracks.iter().any(|root| root != track && in_folder(s, *track, *root))).collect()
@@ -577,6 +586,20 @@ fn change_width(e: &mut Engine, p: &Value) -> Result<Value> {
 fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.delete", p)?;
     let s = e.session_mut();
+    let removed_busses: Vec<_> = tracks
+        .iter()
+        .filter_map(|folder| {
+            let bus = owned_folder_bus(s, *folder)?;
+            let mut parent = s.track(*folder).and_then(|folder| folder.folder);
+            for _ in 0..64 {
+                match parent {
+                    Some(candidate) if tracks.contains(&candidate) => parent = s.track(candidate).and_then(|folder| folder.folder),
+                    _ => break,
+                }
+            }
+            Some((bus, parent.and_then(|parent| folder_bus(s, parent)).unwrap_or(Route::Main)))
+        })
+        .collect();
     // Promote children of deleted folders and repair only routes that used the deleted
     // folder's own bus. Custom outputs remain untouched.
     let mut promoted = Vec::new();
@@ -606,6 +629,22 @@ fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
     s.edit.selected_tracks.retain(|t| !tracks.contains(t));
     for g in &mut s.groups {
         g.members.retain(|t| !tracks.contains(t));
+    }
+    for (bus, replacement) in removed_busses {
+        s.busses.retain(|candidate| candidate.id != bus);
+        for track in &mut s.tracks {
+            if track.mixer.input == Route::Bus(bus) {
+                track.mixer.input = Route::None;
+            }
+            if track.mixer.output == Route::Bus(bus) {
+                track.mixer.output = replacement.clone();
+            }
+            for send in &mut track.mixer.sends {
+                if send.as_ref().is_some_and(|send| send.target == Route::Bus(bus)) {
+                    *send = None;
+                }
+            }
+        }
     }
     Ok(json!({"deleted": tracks.len()}))
 }
@@ -920,6 +959,14 @@ mod tests {
 
         e.execute("track.move_to_folder", &json!({"tracks": ["Kick"], "folder": inner.0})).unwrap();
         e.execute("track.move_to_folder", &json!({"tracks": [inner.0], "folder": outer.0})).unwrap();
+        let inner_bus = match e.session().track(inner).unwrap().mixer.input {
+            Route::Bus(bus) => bus,
+            _ => panic!("folder did not receive a bus"),
+        };
+        let outer_bus = match e.session().track(outer).unwrap().mixer.input {
+            Route::Bus(bus) => bus,
+            _ => panic!("folder did not receive a bus"),
+        };
         assert!(e.execute("track.move_to_folder", &json!({"tracks": [outer.0], "folder": inner.0})).is_err());
 
         let kick = e.session().track_by_name("Kick").unwrap();
@@ -946,6 +993,8 @@ mod tests {
         let kick = e.session().track_by_name("Kick").unwrap();
         assert_eq!(kick.folder, None);
         assert_eq!(kick.mixer.output, Route::Main);
+        assert!(e.session().bus(inner_bus).is_none(), "the deleted folder's owned bus must be removed");
+        assert!(e.session().bus(outer_bus).is_some(), "the surviving parent folder's bus must remain");
     }
 
     #[test]
