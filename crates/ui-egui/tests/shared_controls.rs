@@ -116,6 +116,23 @@ fn toolbar_keyboard_activation_changes_tools_without_transport_or_marker_actions
     h.get_by_label("Trim (F6)").click();
     h.run_steps(3);
     assert_eq!(h.state().engine.session().edit.tool, soundcraft_model::Tool::Trim);
+    let smart = h.get_by_label("Smart Tool").rect();
+    assert!(smart.width() >= 110.0 && smart.height() >= 14.0, "Smart Tool hit target is {smart:?}");
+    h.get_by_label("Smart Tool").click();
+    h.run_steps(3);
+    assert_eq!(h.state().engine.session().edit.tool, soundcraft_model::Tool::Smart);
+    for (button, x) in [("Trim (F6)", -1.0), ("Grabber (F8)", 1.0)] {
+        h.get_by_label("Selector (F7)").click();
+        h.run_steps(2);
+        let rect = h.get_by_label(button).rect();
+        let side = pos2(if x < 0.0 { rect.left() + x } else { rect.right() + x }, rect.center().y);
+        h.event(Event::PointerMoved(side));
+        h.event(pointer(side, true));
+        h.run_steps(1);
+        h.event(pointer(side, false));
+        h.run_steps(2);
+        assert_eq!(h.state().engine.session().edit.tool, soundcraft_model::Tool::Smart, "Smart Tool side at {side:?}");
+    }
     let markers = h.state().engine.session().markers.len();
     for (label, tool, key) in
         [("Pencil (F10)", soundcraft_model::Tool::Pencil, Key::Enter), ("Grabber (F8)", soundcraft_model::Tool::Grabber, Key::Space)]

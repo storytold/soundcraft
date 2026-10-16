@@ -16,6 +16,19 @@ fn press(ctx: &egui::Context, app: &mut SoundApp, key: Key, modifiers: Modifiers
     ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| shortcuts::handle(app, ui.ctx())).textures_delta.clear();
 }
 
+fn tool_chord(ctx: &egui::Context, app: &mut SoundApp, keys: &[Key]) {
+    for &key in keys {
+        let event = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        ctx.run_ui(egui::RawInput { events: vec![event], ..Default::default() }, |ui| shortcuts::handle(app, ui.ctx())).textures_delta.clear();
+    }
+    let events = keys
+        .iter()
+        .rev()
+        .map(|&key| egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE })
+        .collect();
+    ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| shortcuts::handle(app, ui.ctx())).textures_delta.clear();
+}
+
 fn rig(os: OperatingSystem) -> (egui::Context, SoundApp) {
     let ctx = egui::Context::default();
     ctx.set_os(os);
@@ -59,5 +72,32 @@ fn commands_focus_digits_recall_zoom_presets_and_n_toggles_insertion_follows_pla
         press(&ctx, &mut app, Key::N, Modifiers::NONE);
         let edit = &app.engine.session().edit;
         assert_eq!((edit.zoom.samples_per_px, edit.insertion_follows_playback), (16384.0, !follows), "{os:?}");
+    }
+}
+
+#[test]
+fn f6_f7_f8_choose_individual_tools_and_any_held_pair_selects_smart() {
+    use soundcraft_model::Tool;
+
+    for (os, _) in OSES {
+        for (key, expected) in [(Key::F6, Tool::Trim), (Key::F7, Tool::Selector), (Key::F8, Tool::Grabber)] {
+            let (ctx, mut app) = rig(os);
+            press(&ctx, &mut app, key, Modifiers::NONE);
+            assert_eq!(app.engine.session().edit.tool, expected, "{os:?}");
+        }
+
+        for keys in [
+            vec![Key::F6, Key::F7],
+            vec![Key::F7, Key::F6],
+            vec![Key::F6, Key::F8],
+            vec![Key::F8, Key::F6],
+            vec![Key::F7, Key::F8],
+            vec![Key::F8, Key::F7],
+            vec![Key::F6, Key::F7, Key::F8],
+        ] {
+            let (ctx, mut app) = rig(os);
+            tool_chord(&ctx, &mut app, &keys);
+            assert_eq!(app.engine.session().edit.tool, Tool::Smart, "{os:?}: {keys:?}");
+        }
     }
 }

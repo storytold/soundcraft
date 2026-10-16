@@ -72,7 +72,7 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd and Ctrl are separate keys only on macOS (asked at runtime so the web build in a Mac browser agrees).
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     for (key, mods) in events {
-        if fixed(app, key, mods, mac) {
+        if fixed(app, ctx, key, mods, mac) {
             continue;
         }
         if let Some(id) = command_for(key, mods, mac) {
@@ -98,7 +98,7 @@ fn command_for(key: Key, mods: Modifiers, mac: bool) -> Option<&'static str> {
 }
 
 /// Keys with context-dependent meaning. Returns true when handled.
-fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
+fn fixed(app: &mut SoundApp, ctx: &egui::Context, key: Key, m: Modifiers, mac: bool) -> bool {
     let plain = !m.command && !m.alt && !m.ctrl && !m.shift;
     match key {
         Key::Space if !m.command && !m.alt => {
@@ -150,15 +150,16 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             cycle_edit_mode(app);
             true
         }
-        Key::F5 | Key::F6 | Key::F7 | Key::F8 | Key::F9 | Key::F10 if plain => {
-            let tool = match key {
-                Key::F5 => "zoom",
-                Key::F6 => "trim",
-                Key::F7 => "selector",
-                Key::F8 => "grabber",
-                Key::F9 => "scrubber",
-                _ => "pencil",
-            };
+        Key::F5 if plain => {
+            let _ = app.run("edit.tool", json!({"tool": "zoom"}));
+            true
+        }
+        Key::F6 | Key::F7 | Key::F8 if plain => {
+            smart_tool_key(app, ctx, key);
+            true
+        }
+        Key::F9 | Key::F10 if plain => {
+            let tool = if key == Key::F9 { "scrubber" } else { "pencil" };
             let _ = app.run("edit.tool", json!({"tool": tool}));
             true
         }
@@ -224,6 +225,22 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
         }
         _ => false,
     }
+}
+
+/// F6, F7 and F8 choose their individual tools. Holding any two of them selects the Smart Tool;
+/// releases do not change the resulting selection, so pressing a third key keeps Smart selected.
+fn smart_tool_key(app: &mut SoundApp, ctx: &egui::Context, pressed: Key) {
+    let smart = [Key::F6, Key::F7, Key::F8].into_iter().any(|key| key != pressed && ctx.input(|i| i.key_down(key)));
+    let tool = if smart {
+        "smart"
+    } else {
+        match pressed {
+            Key::F6 => "trim",
+            Key::F7 => "selector",
+            _ => "grabber",
+        }
+    };
+    let _ = app.run("edit.tool", json!({"tool": tool}));
 }
 
 /// F1–F4 (and Alt+1–4) choose Shuffle, Slip, Spot and Grid; F4 in Grid switches between Absolute and

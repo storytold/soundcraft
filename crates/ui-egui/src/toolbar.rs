@@ -175,14 +175,29 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
                     }
                 }
             });
-            // Smart tool bracket above Trim/Selector/Grabber.
+            // The Smart Tool target is the heavy top-and-side bracket shared by
+            // Trim/Selector/Grabber. Each visible edge is clickable without taking the centers
+            // away from the individual tool buttons.
             let rr = row.response.rect;
             let bx0 = rr.min.x + 76.0;
             let bx1 = bx0 + 38.0 * 3.0 - 2.0;
-            let bracket = Rect::from_min_max(pos2(bx0 - 2.0, r.min.y + 1.0), pos2(bx1 + 2.0, r.min.y + 5.0));
-            let resp = ui.interact(bracket.expand2(vec2(0.0, 2.0)), ui.id().with("smart"), Sense::click());
-            ui.painter().rect_filled(bracket, 1.0, if cur == Tool::Smart { t.accent } else { t.tool_bracket_off });
-            if resp.on_hover_text("Smart Tool (F6+F7 / F7+F8)").clicked() {
+            let outline = Rect::from_min_max(pos2(bx0 - 3.0, r.min.y + 1.0), pos2(bx1 + 3.0, rr.max.y + 2.0));
+            let top_hit = Rect::from_min_max(outline.min, pos2(outline.max.x, rr.min.y + 10.0));
+            let left_hit = Rect::from_min_max(outline.min, pos2(outline.min.x + 9.0, outline.max.y));
+            let right_hit = Rect::from_min_max(pos2(outline.max.x - 9.0, outline.min.y), outline.max);
+            let tip = "Smart Tool (hold any two of F6, F7 and F8)";
+            let top = ui.interact(top_hit, ui.id().with("smart"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
+            let left =
+                ui.interact(left_hit, ui.id().with("smart_left"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
+            let right = ui
+                .interact(right_hit, ui.id().with("smart_right"), Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(tip);
+            let color = if cur == Tool::Smart { t.accent } else { t.tool_bracket_off };
+            let stroke = Stroke::new(4.0, color);
+            ui.painter().add(egui::Shape::line(vec![outline.left_bottom(), outline.left_top(), outline.right_top(), outline.right_bottom()], stroke));
+            top.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, cur == Tool::Smart, "Smart Tool"));
+            if top.clicked() || left.clicked() || right.clicked() {
                 let _ = app.run("edit.tool", json!({"tool": "smart"}));
             }
             ui.horizontal(|ui| {
