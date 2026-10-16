@@ -11,6 +11,8 @@
 //! - The result must lie inside the root, compared by whole components (`/work2` isn't inside
 //!   `/work`), without regard to case on Windows.
 //! - Read and write access are separate: a root given alone grants only its own kind of access.
+//!   Bounce may compare known media locator names through metadata-only ancestor resolution,
+//!   including outside these roots; this never reads media contents or grants read authority.
 //!
 //! Roots are in force on a thread inside [`confine`], and in the whole process after
 //! [`confine_process`] (`soundcraft-cli mcp`), except inside [`unconfined`]. Without roots
@@ -192,6 +194,111 @@ pub fn check_write(path: impl AsRef<Path>) -> Result<(), String> {
     current().map_or(Ok(()), |r| r.check(path.as_ref(), Access::Write))
 }
 
+/// Compare known session locator names with a writable destination. This metadata-only gateway
+/// may resolve ancestors outside the roots, just as root validation does; it never opens media
+/// contents or grants read authority. Unresolvable locators produce no metadata diagnostics.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn check_media_locator_destination(destination: &Path, locators: impl IntoIterator<Item = PathBuf>) -> Result<(), String> {
+    check_write(destination)?;
+    validate_locator_disk_path(destination).map_err(|()| "bounce destination uses an ambiguous disk path".to_string())?;
+    let destination = resolve(destination)?;
+    for locator in locators {
+        validate_locator_disk_path(&locator).map_err(|()| "bounce media locator name cannot be validated".to_string())?;
+        let locator = resolve(&locator).map_err(|_| "bounce media locator name cannot be validated".to_string())?;
+        // Conservative ASCII folding also reserves missing case aliases on common macOS file
+        // systems. It can refuse distinct names on case-sensitive disks; Unicode equivalence
+        // and concurrent directory replacement are outside this name-comparison guarantee.
+        if locator.components().eq(destination.components())
+            || locator.components().count() == destination.components().count()
+                && locator
+                    .components()
+                    .zip(destination.components())
+                    .all(|(a, b)| a == b || a.as_os_str().as_encoded_bytes().eq_ignore_ascii_case(b.as_os_str().as_encoded_bytes()))
+        {
+            return Err("bounce destination is a current media locator".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn validate_locator_disk_path(path: &Path) -> Result<(), ()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        if !windows_locator_disk_path(&path.as_os_str().encode_wide().take(MAX_WINDOWS_LOCATOR_UNITS + 1).collect::<Vec<_>>()) {
+            return Err(());
+        }
+    }
+    let _ = path;
+    Ok(())
+}
+
+// UTF-16 units preserve Windows names containing unpaired surrogates. Only ambiguous disk
+// syntax is refused; this parser does not convert native names through lossy Unicode text.
+#[cfg(any(windows, test))]
+const MAX_WINDOWS_LOCATOR_UNITS: usize = 32_767;
+
+#[cfg(any(windows, test))]
+fn windows_locator_disk_path(path: &[u16]) -> bool {
+    let separator = |c: &u16| matches!(*c, 47 | 92);
+    if path.is_empty() || path.len() > MAX_WINDOWS_LOCATOR_UNITS || path.last().is_some_and(separator) {
+        return false;
+    }
+    // std::fs::canonicalize produces these regular disk/UNC verbatim prefixes on Windows.
+    // Validate their normal spelling losslessly, but resolve the caller's original Path below.
+    if path.starts_with(&[92, 92, 63, 92]) {
+        let rest = path.get(4..).unwrap_or_default();
+        if rest.get(..4).is_some_and(|prefix| prefix.iter().zip([85, 78, 67, 92]).all(|(a, b)| *a == b || *a == b + 32 && b != 92)) {
+            let mut normal = vec![92, 92];
+            normal.extend_from_slice(rest.get(4..).unwrap_or_default());
+            return windows_regular_locator_disk_path(&normal);
+        }
+        if rest.get(1) == Some(&58) && rest.get(2) == Some(&92) {
+            return windows_regular_locator_disk_path(rest);
+        }
+        return false;
+    }
+    windows_regular_locator_disk_path(path)
+}
+
+#[cfg(any(windows, test))]
+fn windows_regular_locator_disk_path(path: &[u16]) -> bool {
+    let separator = |c: &u16| matches!(*c, 47 | 92);
+    let parts: Vec<&[u16]> = path.split(separator).filter(|part| !part.is_empty()).collect();
+    let network = path.first().is_some_and(separator) && path.get(1).is_some_and(separator);
+    if network && (parts.len() < 3 || parts.first().is_some_and(|part| *part == [46] || *part == [63])) {
+        return false;
+    }
+    if path.first().is_some_and(separator) && !network {
+        return false;
+    }
+    parts.iter().enumerate().all(|(index, part)| {
+        if index == 0 && part.len() == 2 && part.get(1) == Some(&58) && part.first().is_some_and(|c| (65..=90).contains(c) || (97..=122).contains(c))
+        {
+            return path.get(2).is_some_and(separator);
+        }
+        if *part == [46] || *part == [46, 46] {
+            return true;
+        }
+        if part.last().is_some_and(|c| matches!(*c, 32 | 46)) || part.iter().any(|c| *c < 32 || matches!(*c, 34 | 60 | 62 | 58 | 124 | 63 | 42)) {
+            return false;
+        }
+        let mut stem: Vec<u16> = part.iter().take_while(|c| **c != 46).map(|c| if (97..=122).contains(c) { c - 32 } else { *c }).collect();
+        while stem.last() == Some(&32) {
+            stem.pop();
+        }
+        let ascii = |text: &str| stem.iter().copied().eq(text.encode_utf16());
+        if ["CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$"].iter().any(|name| ascii(name)) {
+            return false;
+        }
+        let numbered = stem.len() == 4
+            && (stem.starts_with(&[67, 79, 77]) || stem.starts_with(&[76, 80, 84]))
+            && stem.last().is_some_and(|c| (49..=57).contains(c) || matches!(*c, 185 | 178 | 179));
+        !numbered
+    })
+}
+
 /// `path` made absolute with its links followed; for a path that doesn't exist (yet), its nearest
 /// existing folder's links followed and the rest appended.
 fn resolve(path: &Path) -> Result<PathBuf, String> {
@@ -270,6 +377,46 @@ fn is_device_name(component: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_locator_names_refuse_ambiguous_disk_syntax() {
+        for name in [
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\mix.wav",
+            r"\\?\C:\NUL.wav",
+            r"\\?\UNC\server\share\mix.wav:stream",
+            r"\\.\NUL",
+            r"C:mix.wav",
+            r"\mix.wav",
+            "mix.wav:audio",
+            "NUL.wav",
+            "CON .wav",
+            "COM¹.wav",
+            "mix. ",
+            "mix.",
+            r"\\server\share",
+        ] {
+            assert!(!windows_locator_disk_path(&name.encode_utf16().collect::<Vec<_>>()), "{name}");
+        }
+        for name in [
+            r"\\?\C:\mix.wav",
+            r"\\?\UNC\server\share\mix.wav",
+            "mix.wav",
+            r"Audio Files\mix.wav",
+            r"C:\audio\mix.wav",
+            r"\\server\share\mix.wav",
+            r"..\audio\mix.wav",
+        ] {
+            assert!(windows_locator_disk_path(&name.encode_utf16().collect::<Vec<_>>()), "{name}");
+        }
+        assert!(windows_locator_disk_path(&[120, 0xd800, 46, 119, 97, 118]));
+        assert!(windows_locator_disk_path(&vec![120; MAX_WINDOWS_LOCATOR_UNITS]));
+        assert!(!windows_locator_disk_path(&vec![120; MAX_WINDOWS_LOCATOR_UNITS + 1]));
+        let mut canonical: Vec<_> = r"\\?\C:\".encode_utf16().collect();
+        canonical.resize(MAX_WINDOWS_LOCATOR_UNITS, 120);
+        assert!(windows_locator_disk_path(&canonical));
+        canonical.push(120);
+        assert!(!windows_locator_disk_path(&canonical));
+    }
 
     /// A fresh folder holding `in` (read root), `out` (write root) and `outside`.
     fn folders(name: &str) -> (PathBuf, Arc<AutomationRoots>) {
@@ -442,8 +589,9 @@ mod tests {
     /// and the other checked helpers there), which check the roots. Engine code that reaches for
     /// the file system itself would bypass them, so none may: every file under `src/` except
     /// `io.rs`, this module and the test files. Audio is decoded into the session when it enters
-    /// it (import, open, sampler load), so playback and bounce read nothing from disk and need no
-    /// check of their own. Plug-in scans live in the host crates. The one engine module that reads
+    /// it (import, open, sampler load), so playback and bounce need no media-content read authority;
+    /// bounce reserves media names through metadata-only resolution in this module. Plug-in scans
+    /// live in the host crates. The one engine module that reads
     /// and writes a fixed folder is `autosave.rs`: crash-recovery copies in the app's own data
     /// folder, which no command names, so it is skipped too.
     #[test]

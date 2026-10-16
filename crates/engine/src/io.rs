@@ -32,7 +32,8 @@ pub(crate) fn at_rate(mut buf: AudioBuffer, rate: u32, limit: usize) -> Option<A
 // `--automation-write-root`) are checked in one place. A test in `file_access` keeps the rest of
 // the engine from calling `std::fs` itself. Audio is decoded into the session's pool the moment it
 // enters it (import, open, sampler load), so playback and bounce read nothing from disk and
-// need no check of their own.
+// need no content-read authority. Bounce compares current media names through the metadata-only
+// file_access gateway before writing output.
 
 /// The bytes of the file at `path`, which must be inside the automation read root when there is
 /// one. Only a regular file qualifies: a device or a pipe named by a session or a command would
@@ -338,6 +339,24 @@ pub fn export_midi(e: &Engine, only: Option<&[TrackId]>) -> Result<Vec<u8>> {
     soundcraft_midi::write_smf(&smf).map_err(|err| EngineError::Io(err.to_string()))
 }
 
+/// Reserve all current media names, including imported and generated unsaved source paths.
+/// The model's `unsaved` flag describes save state, not whether a locator names an original.
+#[cfg(not(target_arch = "wasm32"))]
+fn check_bounce_media_locators(session: &Session, destination: &Path) -> Result<()> {
+    crate::file_access::check_write(destination).map_err(EngineError::Io)?;
+    let cwd = std::env::current_dir().map_err(|err| EngineError::Io(err.to_string()))?;
+    let folder = session.folder.as_deref().unwrap_or(&cwd);
+    let folder = if folder.is_absolute() { folder.to_path_buf() } else { cwd.join(folder) };
+    let locators = session
+        .sources
+        .iter()
+        .map(|source| source.path.as_str())
+        .chain(session.videos.iter().map(|video| video.path.as_str()))
+        .filter(|path| !path.is_empty())
+        .map(|path| if Path::new(path).is_absolute() { PathBuf::from(path) } else { folder.join(path) });
+    crate::file_access::check_media_locator_destination(destination, locators).map_err(EngineError::Io)
+}
+
 /// A bounce of the main mix, or of one bus, over a range, written to its file block by block so no
 /// bounce has to fit in memory, and rendered a slice at a time ([`Bounce::step`]) so a UI can show
 /// progress. The file appears at its path only once complete; a bounce that fails, or is dropped
@@ -386,6 +405,8 @@ impl Bounce {
         if r.len() > s.sample_rate.samples(MAX_BOUNCE_SECS) {
             return Err(EngineError::BadParams("file.bounce_mix".into(), "bounces are limited to 4 hours".into()));
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        check_bounce_media_locators(&s, path)?;
         let (fmt, channels, fold) = bounce_layout(&s, bus, fold_stereo);
         let name = path.file_name().map_or_else(|| "bounce".into(), |n| n.to_string_lossy().into_owned());
         let part = path.with_file_name(format!("{name}.part"));
