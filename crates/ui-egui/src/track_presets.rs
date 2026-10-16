@@ -9,7 +9,7 @@ use soundcraft_model::TrackId;
 use std::path::{Path, PathBuf};
 
 /// The Track Presets folder, beside the plugin presets' folders (desktop only).
-fn dir(app: &SoundApp) -> Option<PathBuf> {
+pub(crate) fn dir(app: &SoundApp) -> Option<PathBuf> {
     app.preset_dir.as_ref().map(|d| d.join("Track Presets"))
 }
 
@@ -101,28 +101,77 @@ pub(crate) fn name_menu(app: &mut SoundApp, ui: &mut egui::Ui, id: TrackId, trac
 /// can't be read says why in the menu, a preset that can't be recalled in the status line
 /// (`SoundApp::run`).
 fn recall_menu(app: &mut SoundApp, ui: &mut egui::Ui, tracks: &[u64]) {
-    ui.menu_button(crate::localization::text("Recall Track Preset"), |ui| {
-        let Some(dir) = dir(app) else {
+    if let Some(path) = presets_menu(ui, "Recall Track Preset", dir(app).as_deref()) {
+        let _ = app.run("track.load_preset", json!({"path": path, "tracks": tracks}));
+    }
+}
+
+/// What was picked in an insert or send slot's track preset items.
+pub(crate) enum SlotPick {
+    Save,
+    /// The preset file to recall.
+    Recall(String),
+}
+
+/// An insert or send slot's menu items, as in Pro Tools: Save Track Preset... for the clicked track
+/// (desktop only), and Recall Inserts (or Recall Sends). For menus that can't lend `SoundApp` while
+/// they draw; `slot_pick` acts on the pick.
+pub(crate) fn slot_items(ui: &mut egui::Ui, dir: Option<&Path>, sends: bool) -> Option<SlotPick> {
+    if dir.is_some() && ui.button(crate::localization::text("Save Track Preset...")).clicked() {
+        ui.close();
+        return Some(SlotPick::Save);
+    }
+    presets_menu(ui, if sends { "Recall Sends" } else { "Recall Inserts" }, dir).map(SlotPick::Recall)
+}
+
+/// Acts on `slot_items`' pick: Save Track Preset for `track`, or a recall whose inserts or sends land
+/// on `track` starting at `slot`.
+pub(crate) fn slot_pick(app: &mut SoundApp, track: TrackId, slot: usize, sends: bool, pick: SlotPick) {
+    match pick {
+        SlotPick::Save => {
+            open_save(app, track);
+        }
+        SlotPick::Recall(path) => {
+            let only = if sends { "sends" } else { "inserts" };
+            let _ = app.run("track.load_preset", json!({"path": path, "tracks": [track.0], "only": only, "from": slot}));
+        }
+    }
+}
+
+/// `slot_items` and `slot_pick` together, for a menu that has `SoundApp` at hand.
+pub(crate) fn slot_menu(app: &mut SoundApp, ui: &mut egui::Ui, track: TrackId, slot: usize, sends: bool) {
+    if let Some(pick) = slot_items(ui, dir(app).as_deref(), sends) {
+        slot_pick(app, track, slot, sends, pick);
+    }
+}
+
+/// The presets in `dir` as a submenu; the path of the one picked.
+fn presets_menu(ui: &mut egui::Ui, label: &str, dir: Option<&Path>) -> Option<String> {
+    ui.menu_button(crate::localization::text(label), |ui| {
+        let Some(dir) = dir else {
             ui.add_enabled(false, egui::Button::new(crate::localization::text("Track presets need the desktop app")));
-            return;
+            return None;
         };
-        let names = match crate::listed_presets(ui, &dir) {
+        let names = match crate::listed_presets(ui, dir) {
             Ok(names) => names,
             Err(e) => {
                 ui.add_enabled(false, egui::Button::new(&*e));
-                return;
+                return None;
             }
         };
         if names.is_empty() {
             ui.add_enabled(false, egui::Button::new(crate::localization::text("No Track Presets")));
-            return;
+            return None;
         }
+        let mut picked = None;
         for n in names.iter() {
             if ui.button(n).clicked() {
-                let path = dir.join(format!("{n}.json"));
-                let _ = app.run("track.load_preset", json!({"path": path.to_string_lossy(), "tracks": tracks}));
                 ui.close();
+                picked = Some(dir.join(format!("{n}.json")).to_string_lossy().into_owned());
             }
         }
-    });
+        picked
+    })
+    .inner
+    .flatten()
 }

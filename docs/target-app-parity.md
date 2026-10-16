@@ -1,6 +1,6 @@
 # Target-app parity: SoundCraft vs Avid Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-20 · **Change:** minor (track presets saved to and recalled from the Track Presets folder (#639); previously minor: Performance row: recording is to disk (#84, #888); scores unchanged; strict external-WAV AAF import; previously trivial: Frequency Shifter: 28 built-in processors; G-09/localization: pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-20 · **Change:** minor (track presets: Recall Inserts / Recall Sends from a slot (#639); previously minor: track presets saved to and recalled from the Track Presets folder (#639); Performance row: recording is to disk (#84, #888); scores unchanged; strict external-WAV AAF import; previously trivial: Frequency Shifter: 28 built-in processors; G-09/localization: pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
 
 The authoritative assessment of how close SoundCraft is to Pro Tools. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimension docs go deeper:
@@ -245,6 +245,7 @@ serializes more, because it needs hands-on testing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-20 | minor | Recall Inserts / Recall Sends from an insert or send slot (#639); the Session row's "track presets" covers it. Percentages unchanged |
 | 2026-11-19 | minor | Session row: track presets saved to a Track Presets folder and recalled from the Track menu or a track name's menu (#639). Percentages unchanged |
 | 2026-11-14 | minor | Strict external-WAV AAF import added to format, interchange and alpha-gate evidence; readiness estimates unchanged |
 | 2026-11-09 | trivial | Built-in plugin counts: 28 processors + 3 instruments with the Frequency Shifter. Percentages unchanged |

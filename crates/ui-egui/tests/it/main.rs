@@ -54,6 +54,7 @@ mod shared_controls;
 mod shortcuts;
 mod side_lists_access;
 mod side_lists_text;
+mod slot_recall;
 mod strip_silence_dialog;
 mod strip_silence_rectangles;
 mod strip_silence_rename;

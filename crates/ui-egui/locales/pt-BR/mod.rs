@@ -709,6 +709,8 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Save Session Copy In..." => "Salvar cópia da sessão em...",
         "Save Track Preset..." => "Salvar predefinição de faixa...",
         "Save Track Preset" => "Salvar predefinição de faixa",
+        "Recall Inserts" => "Recuperar inserts",
+        "Recall Sends" => "Recuperar envios",
         "Recall Track Preset" => "Recuperar predefinição de faixa",
         "Recall Track Preset from File..." => "Recuperar predefinição de faixa de um arquivo...",
         "Track — Recall Track Preset from File" => "Faixa — Recuperar predefinição de faixa de um arquivo",
