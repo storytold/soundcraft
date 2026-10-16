@@ -234,6 +234,44 @@ fn the_piano_roll_leaves_modified_arrows_to_the_shortcuts() {
 }
 
 #[test]
+fn the_piano_roll_selection_follows_notes_the_arrows_move_past_others() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.ui.show_midi_editor = true;
+    app.run("edit.select", json!({"tracks": ["Keys"]})).unwrap();
+    let ctx = egui::Context::default();
+    let frame = |app: &mut SoundApp, events: Vec<Event>| {
+        let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), events, ..Default::default() };
+        ctx.run_ui(raw, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        })
+        .textures_delta
+        .clear();
+    };
+    for _ in 0..6 {
+        frame(&mut app, vec![]);
+    }
+    let body = ctx.data(|d| d.get_temp::<Rect>(egui::Id::new("soundcraft-midi-body"))).unwrap();
+    frame(&mut app, vec![Event::PointerMoved(body.center())]);
+    let notes = |app: &SoundApp| {
+        let clip = soundcraft_ui_egui::midi_editor::target_clip(app).unwrap();
+        match &app.engine.session().find_clip(clip).unwrap().1.content {
+            ClipContent::Midi { sequence } => sequence.notes.clone(),
+            _ => panic!("not a MIDI clip"),
+        }
+    };
+    // The first chord's lowest note, an octave up, sorts after the other chord notes.
+    let first = notes(&app)[0];
+    app.midi.selected = vec![0];
+    for octaves in 1..=2u8 {
+        frame(&mut app, keys(Key::ArrowUp, Modifiers::SHIFT));
+        let &[i] = app.midi.selected.as_slice() else { panic!("selection {:?}", app.midi.selected) };
+        assert_ne!(i, 0);
+        assert_eq!((notes(&app)[i].start, notes(&app)[i].pitch), (first.start, first.pitch + 12 * octaves));
+    }
+}
+
+#[test]
 fn shift_tab_extends_the_selection_and_tab_to_transient_stops_on_hits() {
     for (os, cmd) in OSES {
         let (ctx, mut app) = rig(os);

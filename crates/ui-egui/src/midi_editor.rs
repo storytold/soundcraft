@@ -21,6 +21,19 @@ pub struct MidiEditorState {
     pub band: Option<egui::Pos2>,
 }
 
+impl MidiEditorState {
+    /// Start editing `id`. Note indices only mean something inside one clip, so the selection and
+    /// any gesture in progress are dropped when the clip changes.
+    fn switch_clip(&mut self, id: ClipId) {
+        if self.clip != Some(id) {
+            self.selected.clear();
+            self.drag = None;
+            self.band = None;
+        }
+        self.clip = Some(id);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NoteDrag {
     pub index: usize,
@@ -148,7 +161,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
         let hi = sequence.notes.iter().map(|n| i32::from(n.pitch)).max().unwrap_or(72);
         let lo = sequence.notes.iter().map(|n| i32::from(n.pitch)).min().unwrap_or(48);
         app.midi.scroll = (127 - (hi + lo) / 2 - rows / 2) as f32 * ROW_H;
-        app.midi.clip = Some(cid);
+        app.midi.switch_clip(cid);
     }
     if ui.rect_contains_pointer(roll) {
         app.midi.scroll -= ui.input(|i| i.smooth_scroll_delta.y);
@@ -346,7 +359,10 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
             0
         };
         if (semi != 0 || ticks != 0) && !app.midi.selected.is_empty() {
-            let _ = app.run("midi.notes_move", json!({"clip": cid.0, "indices": app.midi.selected, "ticks": ticks, "semitones": semi}));
+            let moved = app.run("midi.notes_move", json!({"clip": cid.0, "indices": app.midi.selected, "ticks": ticks, "semitones": semi}));
+            // The engine re-sorts the notes: follow the moved ones to their new indices, so the
+            // selection never points at other notes and the arrows can keep nudging it.
+            app.midi.selected = moved.ok().and_then(|v| serde_json::from_value(v["indices"].clone()).ok()).unwrap_or_default();
         }
     }
     if !app.midi.selected.is_empty()
@@ -374,5 +390,21 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     {
         let v = (((vel.max.y - 2.0 - p.y) / (vel.height() - 4.0)) * 127.0).round().clamp(1.0, 127.0) as i64;
         let _ = app.engine.execute_merged("midi.note_edit", &json!({"clip": cid.0, "index": i, "velocity": v}), &format!("vel:{}", cid.0));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switching_clip_drops_selection_and_gestures() {
+        let mut st = MidiEditorState { selected: vec![0, 2], clip: Some(ClipId(1)), band: Some(pos2(1.0, 2.0)), ..Default::default() };
+        st.switch_clip(ClipId(1));
+        assert_eq!(st.selected, vec![0, 2]);
+        st.switch_clip(ClipId(2));
+        assert!(st.selected.is_empty());
+        assert!(st.drag.is_none() && st.band.is_none());
+        assert_eq!(st.clip, Some(ClipId(2)));
     }
 }
