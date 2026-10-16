@@ -362,7 +362,9 @@ impl AudioState {
             let sample = |c: usize| {
                 let ch = self.pending.get(c);
                 let a = ch.and_then(|v| v.get(i0)).copied().unwrap_or(0.0);
-                let b = ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a);
+                // Holds the last sample at the block edge (`pending` is BLOCK long,
+                // only `pending_len` is valid); carry the next block's first sample if audible.
+                let b = if i0 + 1 < self.pending_len { ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a) } else { a };
                 a + (b - a) * fr
             };
             if nch > 2 && channels < nch {
