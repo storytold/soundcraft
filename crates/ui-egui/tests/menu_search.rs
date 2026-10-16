@@ -107,6 +107,9 @@ fn picks_without_the_search_still_close_the_menu() {
         assert_eq!(h.state().engine.session().tracks[0].mixer.inserts[2].as_ref().unwrap().plugin, plugin.id);
         assert!(h.query_by_label(&category).is_none(), "a plugin from a category closes the menu");
     }
+    // The picks opened the plugin's window (#486), whose Bypass button would match the menu's.
+    h.state_mut().ui.plugin_windows.clear();
+    h.run_steps(2);
 
     for (item, bypassed) in [("Bypass", Some(true)), ("no insert", None)] {
         h.get_by_label("Insert C").click_secondary();

@@ -301,6 +301,8 @@ pub struct SoundApp {
     synthetic_grace: u32,
     control_rx: Option<Receiver<ControlRequest>>,
     pending_shots: Vec<control::PendingShot>,
+    /// An insert just picked from its menu, opened once the audio engine has its instance.
+    pub(crate) pending_open: Option<(TrackId, usize)>,
     last_rev: u64,
     fonts_ready: bool,
     fonts_installed: bool,
@@ -384,6 +386,7 @@ impl SoundApp {
             synthetic_grace: 0,
             control_rx: None,
             pending_shots: Vec::new(),
+            pending_open: None,
             last_rev: 0,
             fonts_ready: false,
             fonts_installed: false,
@@ -614,6 +617,27 @@ impl SoundApp {
             if let Err(e) = self.engine.execute("mix.insert_state", &json!({"track": t.0, "slot": slot, "state": state})) {
                 log::warn!("storing plugin state: {e}");
             }
+        }
+    }
+
+    /// Opens the insert just picked from its menu: a hosted plugin's own editor, else (a built-in
+    /// plugin, no audio engine, or an editor that can't open here) its plugin window.
+    fn open_inserted(&mut self) {
+        let Some((track, slot)) = self.pending_open.take() else { return };
+        let Some(plugin) = self.engine.session().track(track).and_then(|t| t.mixer.inserts.get(slot).cloned().flatten()).map(|i| i.plugin) else {
+            return;
+        };
+        if soundcraft_mix::is_third_party(&plugin)
+            && let Some(p) = &self.player
+            && p.has_editor(track, slot)
+        {
+            match p.open_editor(track, slot) {
+                Ok(()) => return,
+                Err(e) => self.ui.status = format!("{}: {e}", mix_window::plugin_info(&plugin).map_or(plugin.as_str(), |i| i.name)),
+            }
+        }
+        if !self.ui.plugin_windows.contains(&(track, slot)) {
+            self.ui.plugin_windows.push((track, slot));
         }
     }
 
@@ -1153,6 +1177,7 @@ impl SoundApp {
                 p.update_session(self.engine.session_arc());
             }
         }
+        self.open_inserted();
         self.autosave_changes();
         self.write_automation(ctx);
         self.autosave();
