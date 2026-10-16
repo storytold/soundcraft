@@ -41,6 +41,12 @@
     <keyword>recording</keyword>
     <keyword>midi</keyword>
   </keywords>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Mixer with channel strips, sends, faders and an equalizer</caption>
+      <image type="source" width="2400" height="1500">https://raw.githubusercontent.com/storytold/soundcraft/main/docs/images/mix.png</image>
+    </screenshot>
+  </screenshots>
   <branding>
     <color type="primary" scheme_preference="light">#8fd9e6</color>
     <color type="primary" scheme_preference="dark">#0b7385</color>
