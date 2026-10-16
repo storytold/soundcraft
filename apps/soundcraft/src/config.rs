@@ -1,7 +1,12 @@
 //! Per-user settings and automation profile directories.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Portable mode (#268): this file beside the executable keeps settings, autosaves, presets and
+/// logs in [`PORTABLE_DATA_DIR`] next to it instead of the user profile.
+const PORTABLE_MARKER: &str = "portable.txt";
+const PORTABLE_DATA_DIR: &str = "SoundCraftData";
 
 #[derive(Clone, Copy)]
 enum Platform {
@@ -13,7 +18,18 @@ enum Platform {
 /// SoundCraft's settings folder. A nonempty `$SOUNDCRAFT_CONFIG_DIR` overrides the platform default.
 /// The override is the complete directory; no application-name suffix is appended. An explicitly
 /// empty value disables the settings directory instead of falling back to a personal profile.
+/// Otherwise `portable.txt` beside the executable selects `<exe dir>/SoundCraftData`, when that
+/// folder can be written (a read-only medium falls back to the platform default).
 pub fn config_dir() -> Option<PathBuf> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let exe = std::env::current_exe().ok();
+        resolve(exe.as_deref().and_then(Path::parent))
+    })
+    .clone()
+}
+
+fn resolve(exe_dir: Option<&Path>) -> Option<PathBuf> {
     let platform = if cfg!(target_os = "macos") {
         Platform::Mac
     } else if cfg!(windows) {
@@ -21,12 +37,19 @@ pub fn config_dir() -> Option<PathBuf> {
     } else {
         Platform::Other
     };
-    config_dir_with(platform, |name| std::env::var_os(name))
+    config_dir_with(platform, |name| std::env::var_os(name), exe_dir)
 }
 
-fn config_dir_with(platform: Platform, env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+fn config_dir_with(platform: Platform, env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>) -> Option<PathBuf> {
     if let Some(dir) = env("SOUNDCRAFT_CONFIG_DIR") {
         return (!dir.is_empty()).then(|| PathBuf::from(dir));
+    }
+    if let Some(exe_dir) = exe_dir.filter(|d| d.join(PORTABLE_MARKER).is_file()) {
+        let data = exe_dir.join(PORTABLE_DATA_DIR);
+        match writable(&data) {
+            Ok(()) => return Some(data),
+            Err(e) => log::warn!("portable mode: {} can't be written ({e}); using the user profile instead", data.display()),
+        }
     }
     match platform {
         Platform::Mac => env("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/SoundCraft")),
@@ -35,6 +58,14 @@ fn config_dir_with(platform: Platform, env: impl Fn(&str) -> Option<OsString>) -
             env("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| env("HOME").map(|h| PathBuf::from(h).join(".config"))).map(|c| c.join("soundcraft"))
         }
     }
+}
+
+/// Create `dir` if needed and prove a file can be written in it.
+fn writable(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let probe = dir.join(format!(".write-test-{}", std::process::id()));
+    std::fs::write(&probe, b"")?;
+    std::fs::remove_file(probe)
 }
 
 /// Read bounded settings, recovering unreadable docking metadata independently of other settings.
@@ -195,16 +226,20 @@ mod config_tests {
     }
 
     fn resolve(platform: Platform, vars: &[(&str, &str)]) -> Option<PathBuf> {
-        config_dir_with(platform, |name| vars.iter().find_map(|(key, value)| (*key == name).then(|| OsString::from(value))))
+        config_dir_with(platform, |name| vars.iter().find_map(|(key, value)| (*key == name).then(|| OsString::from(value))), None)
     }
 
     #[test]
     fn config_override_wins_without_reading_user_profile() {
         for platform in [Platform::Mac, Platform::Windows, Platform::Other] {
-            let actual = config_dir_with(platform, |name| {
-                assert_eq!(name, "SOUNDCRAFT_CONFIG_DIR");
-                Some(OsString::from("isolated/settings"))
-            });
+            let actual = config_dir_with(
+                platform,
+                |name| {
+                    assert_eq!(name, "SOUNDCRAFT_CONFIG_DIR");
+                    Some(OsString::from("isolated/settings"))
+                },
+                None,
+            );
             assert_eq!(actual, Some(PathBuf::from("isolated/settings")));
         }
     }
@@ -213,10 +248,14 @@ mod config_tests {
     fn config_empty_override_disables_profile_without_reading_defaults() {
         for platform in [Platform::Mac, Platform::Windows, Platform::Other] {
             assert_eq!(
-                config_dir_with(platform, |name| {
-                    assert_eq!(name, "SOUNDCRAFT_CONFIG_DIR");
-                    Some(OsString::new())
-                }),
+                config_dir_with(
+                    platform,
+                    |name| {
+                        assert_eq!(name, "SOUNDCRAFT_CONFIG_DIR");
+                        Some(OsString::new())
+                    },
+                    None
+                ),
                 None
             );
         }
@@ -234,11 +273,34 @@ mod config_tests {
         }
     }
 
+    #[test]
+    fn portable_txt_beside_the_exe_keeps_settings_next_to_it() {
+        let exe = std::env::temp_dir().join(format!("soundcraft-portable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&exe);
+        std::fs::create_dir_all(&exe).unwrap();
+        let vars = [("APPDATA", "/roaming")];
+        assert_eq!(resolve_with_exe(&vars, &exe), Some(PathBuf::from("/roaming/SoundCraft")), "no marker: the profile");
+        std::fs::write(exe.join("portable.txt"), b"").unwrap();
+        assert_eq!(resolve_with_exe(&vars, &exe), Some(exe.join("SoundCraftData")));
+        assert!(exe.join("SoundCraftData").is_dir());
+        // The explicit override still wins.
+        assert_eq!(resolve_with_exe(&[("SOUNDCRAFT_CONFIG_DIR", "/custom")], &exe), Some(PathBuf::from("/custom")));
+        // A data folder that can't be made (a file is in the way) falls back to the profile.
+        std::fs::remove_dir_all(exe.join("SoundCraftData")).unwrap();
+        std::fs::write(exe.join("SoundCraftData"), b"").unwrap();
+        assert_eq!(resolve_with_exe(&vars, &exe), Some(PathBuf::from("/roaming/SoundCraft")));
+        std::fs::remove_dir_all(exe).unwrap();
+    }
+
+    fn resolve_with_exe(vars: &[(&str, &str)], exe: &Path) -> Option<PathBuf> {
+        config_dir_with(Platform::Windows, |name| vars.iter().find_map(|(key, value)| (*key == name).then(|| OsString::from(value))), Some(exe))
+    }
+
     #[cfg(unix)]
     #[test]
     fn config_override_preserves_non_unicode_paths() {
         use std::os::unix::ffi::OsStringExt as _;
         let value = OsString::from_vec(b"isolated/\xff".to_vec());
-        assert_eq!(config_dir_with(Platform::Mac, |_| Some(value.clone())), Some(PathBuf::from(value)));
+        assert_eq!(config_dir_with(Platform::Mac, |_| Some(value.clone()), None), Some(PathBuf::from(value)));
     }
 }
