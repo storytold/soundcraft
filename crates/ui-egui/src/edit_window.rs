@@ -2030,7 +2030,13 @@ fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, 
             Tool::Trim => egui::CursorIcon::ResizeHorizontal,
             Tool::Grabber => egui::CursorIcon::Grab,
             Tool::Selector => egui::CursorIcon::Text,
-            Tool::Zoom => egui::CursorIcon::ZoomIn,
+            Tool::Zoom => {
+                if mods.alt {
+                    egui::CursorIcon::ZoomOut
+                } else {
+                    egui::CursorIcon::ZoomIn
+                }
+            }
             Tool::Pencil => egui::CursorIcon::Crosshair,
             _ => egui::CursorIcon::Default,
         };
@@ -2120,7 +2126,8 @@ fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, 
                 hit.is_none().then_some(Gesture::MidiClip { track: track.id, from: at_origin, to: at_origin })
             }
             Tool::Pencil => Some(Gesture::Pencil { track: track.id, points: Vec::new() }),
-            Tool::Zoom => Some(Gesture::ZoomBox { start: origin.x }),
+            Tool::Zoom if mods.alt => Some(Gesture::ZoomOut),
+            Tool::Zoom => Some(Gesture::ZoomBox { start: origin.x, current: origin.x, lane_y: [lane.min.y, lane.max.y] }),
         };
     }
     if let Some(Gesture::ClipGain { clip, track: t, pos, anchor, fine, fader_bottom }) = &mut app.gesture
@@ -2161,6 +2168,7 @@ fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, 
             }
             Tool::Zoom => {
                 let _ = app.run(if mods.alt { "view.zoom_out" } else { "view.zoom_in" }, json!({}));
+                let _ = app.run("edit.zoom_complete", json!({}));
             }
             Tool::Pencil => {
                 if let Some(param) = &auto_view {
@@ -2248,6 +2256,12 @@ fn drive_drag(app: &mut SoundApp, ctx: &egui::Context) {
     if app.gesture.is_none() || matches!(app.gesture, Some(Gesture::Fader { .. })) {
         return;
     }
+    if matches!(app.gesture, Some(Gesture::ZoomBox { .. } | Gesture::ZoomOut))
+        && (ctx.input(|i| i.key_pressed(egui::Key::Escape)) || app.engine.session().edit.tool != Tool::Zoom)
+    {
+        app.gesture = None;
+        return;
+    }
     let (s, tl) = (app.engine.session_arc(), rect(app.edit_layout.timeline));
     let p = ctx.pointer_latest_pos();
     if !ctx.input(|i| i.pointer.any_down()) {
@@ -2320,6 +2334,10 @@ fn drive_drag(app: &mut SoundApp, ctx: &egui::Context) {
                 }
             }
         }
+        Some(Gesture::ZoomBox { current, .. }) => {
+            *current = inside.x;
+            ctx.request_repaint();
+        }
         _ => {}
     }
     if invalid_fade {
@@ -2378,7 +2396,7 @@ fn finish_drag(app: &mut SoundApp, s: &Session, tl: Rect, p: Option<Pos2>) {
                 }
             }
         }
-        Some(Gesture::ZoomBox { start }) => {
+        Some(Gesture::ZoomBox { start, .. }) => {
             let Some(p) = p else { return };
             let a = sample_at(s, tl, start.min(p.x));
             let b = sample_at(s, tl, start.max(p.x));
@@ -2386,7 +2404,12 @@ fn finish_drag(app: &mut SoundApp, s: &Session, tl: Rect, p: Option<Pos2>) {
                 let spp = ((b - a) as f64 / f64::from(tl.width())).max(0.25);
                 let _ = app.run("view.zoom_set", json!({"samples_per_px": spp}));
                 let _ = app.run("view.scroll", json!({"to": a}));
+                let _ = app.run("edit.zoom_complete", json!({}));
             }
+        }
+        Some(Gesture::ZoomOut) => {
+            let _ = app.run("view.zoom_out", json!({}));
+            let _ = app.run("edit.zoom_complete", json!({}));
         }
         _ => {}
     }
@@ -2693,6 +2716,13 @@ fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
         let x = x_of(s, tl, *to);
         painter.line_segment([pos2(x, r[1]), pos2(x, r[3])], Stroke::new(2.0, Color32::WHITE));
     }
+    if let Some(Gesture::ZoomBox { start, current, lane_y }) = &app.gesture {
+        let (x0, x1) = (start.min(*current).clamp(tl.min.x, tl.max.x), start.max(*current).clamp(tl.min.x, tl.max.x));
+        let box_rect = Rect::from_min_max(pos2(x0, lane_y[0].max(tl.min.y)), pos2(x1, lane_y[1].min(tl.max.y)));
+        let zoom_painter = painter.with_clip_rect(tl);
+        zoom_painter.rect_filled(box_rect, 0.0, Color32::from_white_alpha(16));
+        zoom_painter.rect_stroke(box_rect, 0.0, Stroke::new(1.0, Color32::WHITE), StrokeKind::Inside);
+    }
     if let Some(at) = scroll_to {
         let _ = app.engine.execute("view.scroll", &json!({"to": at}));
     }
@@ -2786,6 +2816,14 @@ mod tests {
         harness_with(engine)
     }
 
+    fn zoom_demo(mode: &str) -> Harness<'static, SoundApp> {
+        let mut engine = soundcraft_engine::demo::demo_engine();
+        engine.execute("edit.tool", &json!({"tool": "smart"})).unwrap();
+        engine.execute("edit.zoom_mode", &json!({"mode": mode})).unwrap();
+        engine.execute("edit.tool", &json!({"tool": "zoom"})).unwrap();
+        harness_with(engine)
+    }
+
     fn row(h: &Harness<SoundApp>, i: usize) -> Rect {
         rect(h.state().edit_layout.rows[i].1)
     }
@@ -2853,6 +2891,112 @@ mod tests {
         h.event(egui::Event::ModifiersChanged(mods));
         click(h, at);
         h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    }
+
+    #[test]
+    fn zoom_cursor_follows_alt_and_shift_alt_without_pointer_movement() {
+        let mut h = zoom_demo("normal");
+        let at = lane_point(&h, 0);
+        h.hover_at(at);
+        h.step();
+        assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::ZoomIn);
+
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::ALT));
+        h.step();
+        assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::ZoomOut);
+
+        let shift_alt = egui::Modifiers { alt: true, shift: true, ..egui::Modifiers::NONE };
+        h.event(egui::Event::ModifiersChanged(shift_alt));
+        h.step();
+        assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::ZoomOut);
+
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        h.step();
+        assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::ZoomIn);
+    }
+
+    #[test]
+    fn alt_click_and_alt_drag_zoom_out_without_drawing_a_box() {
+        let alt = egui::Modifiers::ALT;
+        let shift_alt = egui::Modifiers { alt: true, shift: true, ..egui::Modifiers::NONE };
+
+        let mut clicked = zoom_demo("normal");
+        let at = lane_point(&clicked, 0);
+        let before = clicked.state().engine.session().edit.zoom.samples_per_px;
+        click_with(&mut clicked, at, alt);
+        assert!(clicked.state().engine.session().edit.zoom.samples_per_px > before);
+
+        for mods in [alt, shift_alt] {
+            let mut dragged = zoom_demo("normal");
+            let from = lane_point(&dragged, 0);
+            let to = from + vec2(180.0, 30.0);
+            let before = dragged.state().engine.session().edit.zoom;
+            dragged.event(egui::Event::ModifiersChanged(mods));
+            dragged.hover_at(from);
+            dragged.drag_at(from);
+            dragged.hover_at(to);
+            dragged.step();
+            assert!(matches!(dragged.state().gesture, Some(Gesture::ZoomOut)));
+            dragged.drop_at(to);
+            dragged.step();
+            dragged.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+            assert!(dragged.state().gesture.is_none());
+            assert!(dragged.state().engine.session().edit.zoom.samples_per_px > before.samples_per_px);
+        }
+    }
+
+    #[test]
+    fn zoom_drag_draws_its_box_and_single_zoom_returns_to_the_previous_tool() {
+        let mut h = zoom_demo("single");
+        let from = lane_point(&h, 0);
+        let to = from + vec2(180.0, 45.0);
+        let before = h.state().engine.session().edit.zoom.samples_per_px;
+
+        h.hover_at(from);
+        h.drag_at(from);
+        h.hover_at(to);
+        h.step();
+        h.step();
+        assert!(matches!(h.state().gesture, Some(Gesture::ZoomBox { .. })));
+        let zoom_rects: Vec<Rect> = h
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                Shape::Rect(rect) if rect.stroke.color == Color32::WHITE && rect.stroke.width == 1.0 => Some(rect.rect),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            zoom_rects.iter().any(|rect| {
+                (rect.min.x - from.x).abs() < 0.1
+                    && (rect.max.x - to.x).abs() < 0.1
+                    && (rect.min.y - row(&h, 0).min.y).abs() < 0.1
+                    && (rect.max.y - row(&h, 0).max.y).abs() < 0.1
+            }),
+            "zoom rectangles: {zoom_rects:?}, expected {from:?} to {to:?}"
+        );
+
+        h.drop_at(to);
+        h.step();
+        assert!(h.state().gesture.is_none());
+        assert!(h.state().engine.session().edit.zoom.samples_per_px < before);
+        assert_eq!(h.state().engine.session().edit.tool, Tool::Smart);
+    }
+
+    #[test]
+    fn escape_cancels_a_zoom_drag_without_consuming_single_zoom() {
+        let mut h = zoom_demo("single");
+        let from = lane_point(&h, 0);
+        let before = h.state().engine.session().edit.zoom;
+        start_drag(&mut h, from);
+        assert!(matches!(h.state().gesture, Some(Gesture::ZoomBox { .. })));
+
+        h.event(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        h.step();
+        assert!(h.state().gesture.is_none());
+        assert_eq!(h.state().engine.session().edit.zoom, before);
+        assert_eq!(h.state().engine.session().edit.tool, Tool::Zoom);
     }
 
     fn painted_rows(h: &Harness<SoundApp>, y_of: impl Fn(&Shape) -> Option<f32>) -> Vec<usize> {

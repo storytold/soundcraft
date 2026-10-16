@@ -82,6 +82,38 @@ pub enum Tool {
     Smart,
 }
 
+/// Whether the Zoom tool stays active or returns to the previous edit tool after one use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ZoomMode {
+    #[default]
+    Normal,
+    Single,
+}
+
+impl ZoomMode {
+    pub fn id(self) -> &'static str {
+        match self {
+            ZoomMode::Normal => "normal",
+            ZoomMode::Single => "single",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ZoomMode::Normal => "Normal Zoom",
+            ZoomMode::Single => "Single Zoom",
+        }
+    }
+
+    pub fn from_id(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Some(ZoomMode::Normal),
+            "single" => Some(ZoomMode::Single),
+            _ => None,
+        }
+    }
+}
+
 impl Tool {
     pub const ALL: [Tool; 7] = [Tool::Zoom, Tool::Trim, Tool::Selector, Tool::Grabber, Tool::Scrubber, Tool::Pencil, Tool::Smart];
     pub fn id(self) -> &'static str {
@@ -164,6 +196,12 @@ pub struct ZoomToggle {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EditState {
     pub tool: Tool,
+    /// Persistent or one-shot behaviour for the Zoom tool.
+    #[serde(default)]
+    pub zoom_mode: ZoomMode,
+    /// Tool restored after a one-shot zoom. This belongs to the live gesture, not the session file.
+    #[serde(skip)]
+    pub zoom_return_tool: Option<Tool>,
     pub edit_mode: EditMode,
     /// The edit selection (a point = insertion position).
     pub selection: Range,
@@ -247,6 +285,8 @@ impl Default for EditState {
     fn default() -> Self {
         EditState {
             tool: Tool::Smart,
+            zoom_mode: ZoomMode::Normal,
+            zoom_return_tool: None,
             edit_mode: EditMode::Slip,
             selection: Range::default(),
             selected_tracks: Vec::new(),

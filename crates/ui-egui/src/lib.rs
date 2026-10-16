@@ -241,7 +241,8 @@ pub enum Gesture {
     ClipGain { clip: soundcraft_model::ClipId, track: TrackId, pos: f32, anchor: (f32, f32), fine: bool, fader_bottom: egui::Pos2 },
     Pencil { track: TrackId, points: Vec<(Samples, f32)> },
     MidiClip { track: TrackId, from: Samples, to: Samples },
-    ZoomBox { start: f32 },
+    ZoomBox { start: f32, current: f32, lane_y: [f32; 2] },
+    ZoomOut,
 }
 
 pub struct SoundApp {

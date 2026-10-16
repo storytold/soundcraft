@@ -61,3 +61,39 @@ fn commands_focus_digits_recall_zoom_presets_and_n_toggles_insertion_follows_pla
         assert_eq!((edit.zoom.samples_per_px, edit.insertion_follows_playback), (16384.0, !follows), "{os:?}");
     }
 }
+
+#[test]
+fn repeated_zoom_shortcuts_cycle_the_zoom_mode_on_every_platform() {
+    for (os, command) in OSES {
+        let (ctx, mut app) = rig(os);
+        app.engine.execute("edit.tool", &json!({"tool": "smart"})).unwrap();
+        app.engine.execute("edit.zoom_mode", &json!({"mode": "normal"})).unwrap();
+
+        press(&ctx, &mut app, Key::Num1, command);
+        assert_eq!(app.engine.session().edit.tool, soundcraft_model::Tool::Zoom, "{os:?}");
+        assert_eq!(app.engine.session().edit.zoom_mode, soundcraft_model::ZoomMode::Normal, "{os:?}");
+        press(&ctx, &mut app, Key::Num1, command);
+        assert_eq!(app.engine.session().edit.zoom_mode, soundcraft_model::ZoomMode::Single, "{os:?}");
+        press(&ctx, &mut app, Key::Num1, command);
+        assert_eq!(app.engine.session().edit.zoom_mode, soundcraft_model::ZoomMode::Normal, "{os:?}");
+
+        press(&ctx, &mut app, Key::F5, Modifiers::NONE);
+        assert_eq!(app.engine.session().edit.zoom_mode, soundcraft_model::ZoomMode::Single, "{os:?}");
+    }
+}
+
+#[test]
+fn tool_mode_keyboard_lock_stops_the_zoom_shortcut_cycle() {
+    let (ctx, mut app) = rig(OperatingSystem::Mac);
+    app.engine.execute("edit.tool", &json!({"tool": "zoom"})).unwrap();
+    app.engine.execute("edit.zoom_mode", &json!({"mode": "normal"})).unwrap();
+    app.engine.execute("options.keyboard_lock", &json!({"value": true})).unwrap();
+
+    press(&ctx, &mut app, Key::F5, Modifiers::NONE);
+    press(&ctx, &mut app, Key::Num1, MAC_CMD);
+    assert_eq!(app.engine.session().edit.zoom_mode, soundcraft_model::ZoomMode::Normal);
+
+    app.engine.execute("edit.tool", &json!({"tool": "smart"})).unwrap();
+    press(&ctx, &mut app, Key::F5, Modifiers::NONE);
+    assert_eq!(app.engine.session().edit.tool, soundcraft_model::Tool::Zoom);
+}
