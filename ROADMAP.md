@@ -2,7 +2,7 @@
 
 **Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (readiness by audience with hours to ~95 %) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (G-02 closed: MIDI device input layer, live audition, and recording) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -17,28 +17,27 @@ menu checklist).
 |---|---|---|
 | Menu breadth | **482 / 512 Pro Tools menu leaves (94.1 %)**; engine alone 397 / 512 | measured (`cargo xtask parity` + UI-layer aliases) |
 | Feature breadth | **~70 %** | estimated (menus plus plugins, hardware, formats, immersive, cloud) |
-| **Ready for real work** | **~40 %** | estimated, weighted by dimension |
-| Mainstream practitioner (tracking/mixing engineer) | **~36 %** | estimated: 50.6 % weekly-area depth × 0.90 interaction × 0.92 stability × 0.85 file exchange ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
-| Essentials user (song or podcast, defaults) | **~57 %** | estimated: 72.4 % core-feature depth × 0.90 launch/stability × 0.90 discoverability × 0.97 files ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
-| Remaining to alpha | **~110–180 Opus 5.5 agent-hours** (the failing gate rows) | estimated, calibrated on PR history |
-| Remaining to beta | **~350–570 Opus 5.5 agent-hours** (includes the alpha work; ~60–70 % parallelizable) | estimated |
-| Remaining to full parity | **~950–1,450 Opus 5.5 agent-hours** | estimated |
+| **Ready for real work** | **~42 %** | estimated, weighted by dimension |
+| Mainstream practitioner (tracking/mixing engineer) | **~38 %** | estimated: 52.0 % weekly-area depth × 0.90 interaction × 0.92 stability × 0.85 file exchange ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
+| Essentials user (song or podcast, defaults) | **~59 %** | estimated: 74.0 % core-feature depth × 0.90 launch/stability × 0.90 discoverability × 0.97 files ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
+| Remaining to alpha | **~90–150 Opus 5.5 agent-hours** (the remaining gate rows) | estimated, calibrated on PR history |
+| Remaining to beta | **~330–540 Opus 5.5 agent-hours** (includes the alpha work; ~60–70 % parallelizable) | estimated |
+| Remaining to full parity | **~920–1,410 Opus 5.5 agent-hours** | estimated |
 
 | Audience | Ready % | Agent-hours to ~95 % | Work that dominates |
 |---|---:|---:|---|
-| Full target (ready for real work) | ~40 % | ~950–1,450 h | Hardware, the stock plugin catalogue, AAF/OMF and immersive, localization, fidelity |
-| Mainstream practitioner | ~36 % | ~380–600 h | Interface and MIDI recording, AAF/OMF, stock-plugin depth, core-path bugs |
-| Essentials user | ~57 % | ~110–200 h | Launch and platform fixes, onboarding, effect panels and presets, MP3/AAC export |
+| Full target (ready for real work) | ~42 % | ~920–1,410 h | Hardware, the stock plugin catalogue, AAF/OMF and immersive, localization, fidelity |
+| Mainstream practitioner | ~38 % | ~360–570 h | Interface recording, AAF/OMF, stock-plugin depth, core-path bugs |
+| Essentials user | ~59 % | ~90–170 h | Launch and platform fixes, onboarding, effect panels and presets, MP3/AAC export |
 
 Hours are Opus 5.5 agent wall-clock hours, calibrated on this repo's PRs; 60–70 % parallelizes.
 Detail: [target-app-parity.md](docs/target-app-parity.md#readiness-by-audience).
 
 **Why pre-alpha:** the core-workflow gate in [docs/roadmap.md](docs/roadmap.md#alpha-gate) fails.
-Editing, mixing, bouncing, and saving and reopening work end to end. But a Pro Tools user can't
-record from a chosen audio interface at a chosen buffer size (only the default devices, a fixed
-512-sample block, and takes held in RAM). They can't record MIDI from a keyboard (there is no
-MIDI device layer). And they can't bring a session in or hand one back (no AAF/OMF/`.ptx`).
-Readiness (~40 %) sits right at the alpha bar, but a gate failure keeps the app pre-alpha. The
+Editing, mixing, bouncing, and saving and reopening work end to end; MIDI keyboard input, live audition,
+and MIDI recording are now complete (#G-02). But a Pro Tools user can't record from a chosen audio interface
+at a chosen buffer size (takes held in RAM), and they can't bring a session in or hand one back (no AAF/OMF/`.ptx`).
+Readiness (~42 %) sits right at the alpha bar, but the remaining gate failures keep the app pre-alpha. The
 2026-10-07 estimate ("~65 % overall, 110–150 h to 100 %") counted feature presence. This one
 measures readiness and adds hardware, localization and field bug reports.
 

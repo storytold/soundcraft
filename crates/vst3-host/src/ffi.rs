@@ -963,9 +963,9 @@ impl IBStreamTrait for MemoryStream {
 /// A host → plugin note event, safe to build anywhere; converted inside `process`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum NoteEvent {
-    On { time: u32, key: u8, velocity: f32 },
-    Off { time: u32, key: u8 },
-    Pressure { time: u32, key: u8, pressure: f32 },
+    On { time: u32, channel: u8, key: u8, velocity: f32 },
+    Off { time: u32, channel: u8, key: u8 },
+    Pressure { time: u32, channel: u8, key: u8, pressure: f32 },
 }
 
 impl NoteEvent {
@@ -987,17 +987,19 @@ impl NoteEvent {
         e.sampleOffset = i32::try_from(self.time().saturating_sub(offset)).unwrap_or(0);
         e.flags = sv::Event_::EventFlags_::kIsLive as u16;
         match self {
-            NoteEvent::On { key, velocity, .. } => {
+            NoteEvent::On { channel, key, velocity, .. } => {
                 e.r#type = sv::Event_::EventTypes_::kNoteOnEvent as u16;
-                e.__field0.noteOn = sv::NoteOnEvent { channel: 0, pitch: i16::from(key), tuning: 0.0, velocity, length: 0, noteId: -1 };
+                e.__field0.noteOn =
+                    sv::NoteOnEvent { channel: i16::from(channel & 0x0F), pitch: i16::from(key), tuning: 0.0, velocity, length: 0, noteId: -1 };
             }
-            NoteEvent::Off { key, .. } => {
+            NoteEvent::Off { channel, key, .. } => {
                 e.r#type = sv::Event_::EventTypes_::kNoteOffEvent as u16;
-                e.__field0.noteOff = sv::NoteOffEvent { channel: 0, pitch: i16::from(key), velocity: 0.0, noteId: -1, tuning: 0.0 };
+                e.__field0.noteOff =
+                    sv::NoteOffEvent { channel: i16::from(channel & 0x0F), pitch: i16::from(key), velocity: 0.0, noteId: -1, tuning: 0.0 };
             }
-            NoteEvent::Pressure { key, pressure, .. } => {
+            NoteEvent::Pressure { channel, key, pressure, .. } => {
                 e.r#type = sv::Event_::EventTypes_::kPolyPressureEvent as u16;
-                e.__field0.polyPressure = sv::PolyPressureEvent { channel: 0, pitch: i16::from(key), pressure, noteId: -1 };
+                e.__field0.polyPressure = sv::PolyPressureEvent { channel: i16::from(channel & 0x0F), pitch: i16::from(key), pressure, noteId: -1 };
             }
         }
         e
@@ -2215,7 +2217,7 @@ mod tests {
             assert_ne!(q.getPoint(0, std::ptr::null_mut(), &mut v), sb::kResultOk);
         }
         let el = EventList::new(1);
-        let mut e = NoteEvent::On { time: 5, key: 60, velocity: 1.0 }.to_raw(2);
+        let mut e = NoteEvent::On { time: 5, channel: 0, key: 60, velocity: 1.0 }.to_raw(2);
         // SAFETY: as above.
         unsafe {
             assert_eq!(el.addEvent(&mut e), sb::kResultOk);

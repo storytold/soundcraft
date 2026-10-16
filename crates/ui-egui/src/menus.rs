@@ -166,6 +166,7 @@ const DIALOG_COMMANDS: &[&str] = &[
     "event.transpose",
     "edit.strip_silence",
     "clip.rename",
+    "setup.midi_input_devices",
 ];
 
 /// Shared menu hierarchy for egui and native desktop hosts.

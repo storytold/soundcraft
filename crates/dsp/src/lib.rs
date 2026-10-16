@@ -217,7 +217,15 @@ pub trait Plugin: Send {
     fn set_transport(&mut self, _transport: &Transport) {}
     /// Instruments: note events at sample offsets within the next block.
     fn note_on(&mut self, _offset: usize, _note: u8, _velocity: u8) {}
+    /// Instruments: note events with MIDI channel (0..15) at sample offsets within the next block.
+    fn note_on_chan(&mut self, offset: usize, _channel: u8, note: u8, velocity: u8) {
+        self.note_on(offset, note, velocity);
+    }
     fn note_off(&mut self, _offset: usize, _note: u8) {}
+    /// Instruments: note-off events with MIDI channel (0..15) at sample offsets within the next block.
+    fn note_off_chan(&mut self, offset: usize, _channel: u8, note: u8) {
+        self.note_off(offset, note);
+    }
     /// Instruments: any other MIDI 1.0 channel message (control change, pitch bend, pressure,
     /// program change) at a sample offset within the next block.
     fn midi(&mut self, _offset: usize, _msg: [u8; 3]) {}

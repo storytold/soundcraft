@@ -269,20 +269,77 @@ fn event_list(app: &mut SoundApp, ctx: &egui::Context) {
 fn midi_keyboard(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_midi_keyboard;
     win(ctx, &mut open, "MIDI Keyboard", vec2(640.0, 110.0), |ui| {
-        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(400.0), 80.0), Sense::click());
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(400.0), 80.0), Sense::click_and_drag());
         let whites = 28;
         let w = r.width() / whites as f32;
-        let mut wi = 0;
         let base = 48u8;
-        let mut clicked: Option<u8> = None;
         let pos = resp.interact_pointer_pos();
+
+        let mut hovered_key: Option<u8> = None;
+        let mut bi = 0;
+        for p in base..base + 48 {
+            if matches!(p % 12, 1 | 3 | 6 | 8 | 10) {
+                let kr = egui::Rect::from_min_size(egui::pos2(r.min.x + bi as f32 * w - w * 0.3, r.min.y), vec2(w * 0.6, r.height() * 0.6));
+                if pos.is_some_and(|q| kr.contains(q)) {
+                    hovered_key = Some(p);
+                    break;
+                }
+            } else {
+                bi += 1;
+            }
+        }
+        if hovered_key.is_none() {
+            let mut wi2 = 0;
+            for p in base..base + 48 {
+                if !matches!(p % 12, 1 | 3 | 6 | 8 | 10) {
+                    let kr = egui::Rect::from_min_size(egui::pos2(r.min.x + wi2 as f32 * w, r.min.y), vec2(w - 1.0, r.height()));
+                    if pos.is_some_and(|q| kr.contains(q)) {
+                        hovered_key = Some(p);
+                        break;
+                    }
+                    wi2 += 1;
+                }
+            }
+        }
+
+        let is_down = (resp.clicked() || resp.dragged()) && ui.input(|i| i.pointer.primary_down());
+        let active_key = if is_down { hovered_key } else { None };
+
+        let kbd_id = ui.id().with("midi_kbd_held");
+        let prev_key: Option<u8> = ui.data(|d| d.get_temp(kbd_id));
+        if prev_key != active_key {
+            if let Some(old) = prev_key
+                && let Some(pl) = &app.player
+            {
+                pl.midi_input.push(soundcraft_midi::LiveMidiEvent::note_off(0, old, 0));
+            }
+            if let Some(new_p) = active_key {
+                if let Some(pl) = &app.player {
+                    pl.midi_input.push(soundcraft_midi::LiveMidiEvent::note_on(0, new_p, 100));
+                }
+                if resp.clicked()
+                    && let Some(cid) = crate::midi_editor::target_clip(app)
+                {
+                    // Step input: add the note at the insertion point (relative to the clip) and advance.
+                    let s = app.engine.session();
+                    let (clip_start, at) = (s.find_clip(cid).map_or(0, |(_, c)| c.start), s.edit.selection.start);
+                    let rel = s.tempo.samples_to_ticks(at, s.sample_rate) - s.tempo.samples_to_ticks(clip_start, s.sample_rate);
+                    let len = soundcraft_time::TICKS_PER_QUARTER / 2;
+                    let _ = app.run("midi.note_add", json!({"clip": cid.0, "pitch": new_p, "start_ticks": rel.max(0), "length_ticks": len}));
+                    let s = app.engine.session();
+                    let next = s.tempo.tick_to_samples(s.tempo.samples_to_ticks(at, s.sample_rate) + len, s.sample_rate);
+                    let _ = app.run("transport.locate", json!({"at": next}));
+                }
+            }
+            ui.data_mut(|d| d.insert_temp(kbd_id, active_key));
+        }
+
+        let mut wi = 0;
         for p in base..base + 48 {
             if !matches!(p % 12, 1 | 3 | 6 | 8 | 10) {
                 let kr = egui::Rect::from_min_size(egui::pos2(r.min.x + wi as f32 * w, r.min.y), vec2(w - 1.0, r.height()));
-                ui.painter().rect_filled(kr, 2.0, Color32::from_rgb(235, 235, 235));
-                if resp.clicked() && pos.is_some_and(|q| kr.contains(q)) {
-                    clicked = Some(p);
-                }
+                let color = if active_key == Some(p) { Color32::from_rgb(180, 210, 255) } else { Color32::from_rgb(235, 235, 235) };
+                ui.painter().rect_filled(kr, 2.0, color);
                 wi += 1;
             }
         }
@@ -290,26 +347,11 @@ fn midi_keyboard(app: &mut SoundApp, ctx: &egui::Context) {
         for p in base..base + 48 {
             if matches!(p % 12, 1 | 3 | 6 | 8 | 10) {
                 let kr = egui::Rect::from_min_size(egui::pos2(r.min.x + wi as f32 * w - w * 0.3, r.min.y), vec2(w * 0.6, r.height() * 0.6));
-                ui.painter().rect_filled(kr, 2.0, Color32::from_rgb(20, 20, 20));
-                if resp.clicked() && pos.is_some_and(|q| kr.contains(q)) {
-                    clicked = Some(p);
-                }
+                let color = if active_key == Some(p) { Color32::from_rgb(60, 100, 180) } else { Color32::from_rgb(20, 20, 20) };
+                ui.painter().rect_filled(kr, 2.0, color);
             } else {
                 wi += 1;
             }
-        }
-        if let Some(p) = clicked
-            && let Some(cid) = crate::midi_editor::target_clip(app)
-        {
-            // Step input: add the note at the insertion point (relative to the clip) and advance.
-            let s = app.engine.session();
-            let (clip_start, at) = (s.find_clip(cid).map_or(0, |(_, c)| c.start), s.edit.selection.start);
-            let rel = s.tempo.samples_to_ticks(at, s.sample_rate) - s.tempo.samples_to_ticks(clip_start, s.sample_rate);
-            let len = soundcraft_time::TICKS_PER_QUARTER / 2;
-            let _ = app.run("midi.note_add", json!({"clip": cid.0, "pitch": p, "start_ticks": rel.max(0), "length_ticks": len}));
-            let s = app.engine.session();
-            let next = s.tempo.tick_to_samples(s.tempo.samples_to_ticks(at, s.sample_rate) + len, s.sample_rate);
-            let _ = app.run("transport.locate", json!({"at": next}));
         }
         ui.label(egui::RichText::new("Click keys to step-enter notes into the selected MIDI clip at the insertion point.").small());
     });

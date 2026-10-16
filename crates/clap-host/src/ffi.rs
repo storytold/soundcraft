@@ -507,11 +507,13 @@ pub(crate) enum Event {
     },
     NoteOn {
         time: u32,
+        channel: u8,
         key: u8,
         velocity: f64,
     },
     NoteOff {
         time: u32,
+        channel: u8,
         key: u8,
     },
     /// A raw MIDI 1.0 message (for plugins whose note port speaks only MIDI).
@@ -571,19 +573,19 @@ impl RawEvent {
                 key: -1,
                 value,
             }),
-            Event::NoteOn { time, key, velocity } => RawEvent::Note(clap_event_note {
+            Event::NoteOn { time, channel, key, velocity } => RawEvent::Note(clap_event_note {
                 header: header(size_of::<clap_event_note>(), CLAP_EVENT_NOTE_ON, time),
                 note_id: -1,
                 port_index: 0,
-                channel: 0,
+                channel: i16::from(channel & 0x0F),
                 key: i16::from(key),
                 velocity,
             }),
-            Event::NoteOff { time, key } => RawEvent::Note(clap_event_note {
+            Event::NoteOff { time, channel, key } => RawEvent::Note(clap_event_note {
                 header: header(size_of::<clap_event_note>(), CLAP_EVENT_NOTE_OFF, time),
                 note_id: -1,
                 port_index: 0,
-                channel: 0,
+                channel: i16::from(channel & 0x0F),
                 key: i16::from(key),
                 velocity: 0.0,
             }),

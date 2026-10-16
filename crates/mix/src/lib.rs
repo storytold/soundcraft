@@ -52,7 +52,7 @@
 
 use soundcraft_dsp::pan::{PanLaw, SpeakerPos, SurroundParams, gains};
 use soundcraft_dsp::{Plugin, SampleSource, Transport, db_to_gain};
-use soundcraft_midi::CtrlKind;
+use soundcraft_midi::{CtrlKind, LiveMidiEvent};
 use soundcraft_model::{
     AutoParam, BusId, ChannelFormat, Clip, ClipContent, Route, Session, SourceAudio, Speaker, SurroundPan, Track, TrackId, TrackKind,
 };
@@ -215,6 +215,72 @@ struct PluginSlot {
     failed: bool,
 }
 
+/// Sounding MIDI note pitches (0..127) on channels (0..15) on an instrument.
+/// Fixed 2048-bit bitset (32 x 64-bit words, 256 bytes on stack, zero heap allocation).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeldNotes {
+    mask: [u64; 32],
+}
+
+impl HeldNotes {
+    pub const fn new() -> Self {
+        Self { mask: [0u64; 32] }
+    }
+
+    #[inline]
+    fn bit_pos(channel: u8, pitch: u8) -> (usize, u64) {
+        let ch = (channel & 0x0F) as usize;
+        let p = (pitch & 0x7F) as usize;
+        let idx = ch * 128 + p;
+        (idx / 64, 1u64 << (idx % 64))
+    }
+
+    #[inline]
+    pub fn contains(&self, channel: u8, pitch: u8) -> bool {
+        if channel >= 16 || pitch >= 128 {
+            return false;
+        }
+        let (word, bit) = Self::bit_pos(channel, pitch);
+        (self.mask[word] & bit) != 0
+    }
+
+    #[inline]
+    pub fn insert(&mut self, channel: u8, pitch: u8) {
+        if channel < 16 && pitch < 128 {
+            let (word, bit) = Self::bit_pos(channel, pitch);
+            self.mask[word] |= bit;
+        }
+    }
+
+    #[inline]
+    pub fn remove(&mut self, channel: u8, pitch: u8) {
+        if channel < 16 && pitch < 128 {
+            let (word, bit) = Self::bit_pos(channel, pitch);
+            self.mask[word] &= !bit;
+        }
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.mask = [0u64; 32];
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.mask.iter().all(|&w| w == 0)
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.mask.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = (u8, u8)> + '_ {
+        (0..16u8).flat_map(move |ch| (0..128u8).filter_map(move |p| if self.contains(ch, p) { Some((ch, p)) } else { None }))
+    }
+}
+
 struct Strip {
     buf: Vec<Vec<f32>>,
     /// Pre-fader copy for pre-fader sends.
@@ -225,7 +291,7 @@ struct Strip {
     /// The pool audio handed to the instrument with `set_sample` (sample-playing instruments).
     sample: Option<Arc<SourceAudio>>,
     /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
-    held: Vec<u8>,
+    held: HeldNotes,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     chase: bool,
     muted: bool,
@@ -264,6 +330,11 @@ impl DelayLine {
             self.idx = 0;
             self.bufs = vec![vec![0.0; len]; ch];
         }
+    }
+    #[cfg(test)]
+    #[inline]
+    fn len(&self) -> usize {
+        self.len
     }
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
         if self.len == 0 {
@@ -309,7 +380,7 @@ impl Strip {
             plugins: Vec::new(),
             instrument: None,
             sample: None,
-            held: Vec::new(),
+            held: HeldNotes::new(),
             chase: true,
             muted: false,
             gr: 0.0,
@@ -355,6 +426,8 @@ pub struct MixEngine {
     aux_latency: usize,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
     pub input: Vec<Vec<f32>>,
+    /// Live MIDI events for the next block: `(offset_in_block, LiveMidiEvent)`.
+    pub midi_input: Vec<(usize, LiveMidiEvent)>,
     /// Transport stopped: only monitored inputs sound (no clips).
     pub monitor_only: bool,
     /// Recording: record-armed tracks hear their input (auto input).
@@ -436,6 +509,7 @@ impl MixEngine {
             aux_fed: Vec::new(),
             aux_latency: 0,
             input: Vec::new(),
+            midi_input: Vec::with_capacity(256),
             monitor_only: false,
             recording: false,
             metronome: false,
@@ -518,6 +592,7 @@ impl MixEngine {
         }
         self.meters.clear();
         self.main_meter = StripMeter::default();
+        self.midi_input.clear();
     }
 
     /// Bring plugin instances in line with the session (creates/destroys as needed). Allocates;
@@ -651,7 +726,7 @@ impl MixEngine {
             }
         }
         let busses = std::mem::take(&mut self.busses);
-        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+        let live_in = LiveInput { input: &self.input, midi_input: &self.midi_input, monitor_only: self.monitor_only, recording: self.recording };
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
                 process_strip(s, t, st, &busses, &live_in, pos, frames, any_solo);
@@ -701,15 +776,17 @@ impl MixEngine {
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
             let ch = st.buf.len();
-            st.align.set(lmax_t.saturating_sub(st.latency), ch);
+            let is_monitored = t.mixer.record_arm || t.mixer.input_monitor;
+            let align_delay = if pdc && !is_monitored { lmax_t.saturating_sub(st.latency) } else { 0 };
+            st.align.set(align_delay, ch);
             st.align.process(&mut st.buf, frames);
             if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
-                st.align_pre.set(lmax_t.saturating_sub(st.latency), ch);
+                st.align_pre.set(align_delay, ch);
                 st.align_pre.process(&mut st.pre, frames);
             }
             let waits = match &t.mixer.output {
-                Route::Main => true,
-                Route::Bus(b) => self.aux_fed.contains(b),
+                Route::Main => !is_monitored,
+                Route::Bus(b) => !is_monitored && self.aux_fed.contains(b),
                 _ => false,
             };
             st.out_extra.set(if waits { lmax_a } else { 0 }, ch);
@@ -732,7 +809,7 @@ impl MixEngine {
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
-            let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+            let live_in = LiveInput { input: &self.input, midi_input: &self.midi_input, monitor_only: self.monitor_only, recording: self.recording };
             process_strip(s, t, &mut st, &self.busses, &live_in, pos, frames, any_solo);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
@@ -890,6 +967,7 @@ impl MixEngine {
 /// Live input routed to monitored tracks.
 struct LiveInput<'a> {
     input: &'a [Vec<f32>],
+    midi_input: &'a [(usize, LiveMidiEvent)],
     monitor_only: bool,
     recording: bool,
 }
@@ -927,7 +1005,6 @@ fn process_strip(
             }
         }
         TrackKind::Audio if live.monitor_only => {}
-        TrackKind::Instrument | TrackKind::Midi if live.monitor_only => {}
         TrackKind::Audio => {
             let block = Range { start: pos, end: pos.saturating_add(frames as i64) };
             for clip in t.clips() {
@@ -979,7 +1056,24 @@ fn process_strip(
             }
         }
         TrackKind::Instrument | TrackKind::Midi => {
-            if let Some(inst) = strip.instrument.as_mut().filter(|i| !i.failed) {
+            let is_selected = s.edit.selected_tracks.contains(&t.id);
+            let midi_target = t.mixer.record_arm || t.mixer.input_monitor || (s.edit.flag("options.midi_thru") && is_selected);
+
+            if live.monitor_only && !midi_target {
+                // Stopped and not targeted for live MIDI: silence hanging notes if a panic event arrived.
+                if let Some(inst) = strip.instrument.as_mut().filter(|i| !i.failed)
+                    && live.midi_input.iter().any(|(_, ev)| ev.is_control_change() && (ev.cc_controller() == 120 || ev.cc_controller() == 123))
+                {
+                    inst.plugin.all_notes_off();
+                    for (ch, p) in strip.held.iter() {
+                        inst.plugin.note_off_chan(0, ch, p);
+                    }
+                    strip.held.clear();
+                    if strip.buf.len() >= 2 {
+                        inst.plugin.process(&mut strip.buf, frames);
+                    }
+                }
+            } else if let Some(inst) = strip.instrument.as_mut().filter(|i| !i.failed) {
                 // #152: push the instrument's stored parameter values into the live plugin
                 // before processing, the same way inserts do below. Without this, the values
                 // loaded from a session (or set via `mix.insert_state`) never reach the plugin
@@ -992,7 +1086,35 @@ fn process_strip(
                 if std::mem::take(&mut strip.chase) {
                     chase_controllers(s, t, pos, inst);
                 }
-                schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+                if !live.monitor_only {
+                    schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+                }
+                if midi_target {
+                    for &(offset, ev) in live.midi_input {
+                        if !t.matches_midi_channel(ev.channel()) {
+                            continue;
+                        }
+                        let off = offset.min(frames.saturating_sub(1));
+                        if ev.is_note_on() {
+                            let pitch = ev.note_pitch();
+                            inst.plugin.note_on_chan(off, ev.channel(), pitch, ev.note_velocity());
+                            strip.held.insert(ev.channel(), pitch);
+                        } else if ev.is_note_off() {
+                            let pitch = ev.note_pitch();
+                            inst.plugin.note_off_chan(off, ev.channel(), pitch);
+                            strip.held.remove(ev.channel(), pitch);
+                        } else {
+                            if ev.is_control_change() && (ev.cc_controller() == 120 || ev.cc_controller() == 123) {
+                                inst.plugin.all_notes_off();
+                                for (ch, p) in strip.held.iter() {
+                                    inst.plugin.note_off_chan(off, ch, p);
+                                }
+                                strip.held.clear();
+                            }
+                            inst.plugin.midi(off, ev.data);
+                        }
+                    }
+                }
                 if strip.buf.len() >= 2 {
                     inst.plugin.process(&mut strip.buf, frames);
                 } else if let Some(c0) = strip.buf.first_mut() {
@@ -1470,7 +1592,7 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 }
 
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
-fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>) {
+fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut HeldNotes) {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -1510,14 +1632,12 @@ fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mu
                 continue;
             }
             if on >= pos && on < end {
-                inst.plugin.note_on(usize::try_from(on - pos).unwrap_or(0), n.pitch, n.velocity);
-                if !held.contains(&n.pitch) && held.len() < 128 {
-                    held.push(n.pitch);
-                }
+                inst.plugin.note_on_chan(usize::try_from(on - pos).unwrap_or(0), n.channel, n.pitch, n.velocity);
+                held.insert(n.channel, n.pitch);
             }
             if off >= pos && off < end {
-                inst.plugin.note_off(usize::try_from(off - pos).unwrap_or(0), n.pitch);
-                held.retain(|p| *p != n.pitch);
+                inst.plugin.note_off_chan(usize::try_from(off - pos).unwrap_or(0), n.channel, n.pitch);
+                held.remove(n.channel, n.pitch);
             }
         }
         let near = s.tempo.samples_to_ticks(pos, sr).saturating_sub(base).saturating_sub(1)
@@ -3241,5 +3361,127 @@ mod tests {
         }
         let e_ls = out[4][100].powi(2) + out[6][100].powi(2);
         assert!((e_ls - x(4).powi(2)).abs() < 1e-5, "Ls energy is preserved");
+    }
+
+    #[test]
+    fn live_midi_events_trigger_instrument_when_monitored_or_armed() {
+        use soundcraft_model::Insert;
+        let mut s = Session::new("LiveMidiTest", soundcraft_time::SampleRate::new(48_000).unwrap());
+        let trk = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("SynthTrack"));
+        let mut ins = Insert::new("subtractive_synth");
+        ins.params.insert("level".into(), -6.0);
+        s.track_mut(trk).unwrap().instrument = Some(ins);
+
+        let mut eng = MixEngine::new(48_000.0, 512);
+
+        // Case 1: Monitor-only (stopped transport), track is NOT armed and NOT monitored -> silent
+        eng.monitor_only = true;
+        eng.midi_input = vec![(0, LiveMidiEvent { port_id: 0, timestamp_us: 10, len: 3, data: [0x90, 60, 100] })];
+        let mut out = vec![vec![0.0; 512]; 2];
+        eng.render(&s, 0, 512, &mut out);
+        assert!(out[0].iter().all(|x| x.abs() < 1e-6), "unarmed track should not produce sound when stopped");
+
+        // Case 2: Monitor-only (stopped transport), track IS record-armed -> synthesizes Note On!
+        s.track_mut(trk).unwrap().mixer.record_arm = true;
+        eng.midi_input = vec![(0, LiveMidiEvent { port_id: 0, timestamp_us: 20, len: 3, data: [0x90, 60, 100] })];
+        let mut out = vec![vec![0.0; 512]; 2];
+        eng.render(&s, 0, 512, &mut out);
+        assert!(out[0].iter().any(|x| x.abs() > 1e-4), "armed track must synthesize live note on");
+
+        // Case 3: Send Note Off -> sound decays
+        eng.midi_input = vec![(0, LiveMidiEvent { port_id: 0, timestamp_us: 30, len: 3, data: [0x80, 60, 0] })];
+        let mut out_off = vec![vec![0.0; 512]; 2];
+        eng.render(&s, 512, 512, &mut out_off);
+        assert!(eng.strips.get(&trk).unwrap().held.is_empty(), "held notes must be cleared after note off");
+
+        // Case 4: Not armed, but MIDI Thru enabled and track is selected -> synthesizes Note On!
+        s.track_mut(trk).unwrap().mixer.record_arm = false;
+        s.edit.set_flag("options.midi_thru", true);
+        s.edit.selected_tracks = vec![trk];
+        eng.midi_input = vec![(0, LiveMidiEvent { port_id: 0, timestamp_us: 40, len: 3, data: [0x90, 64, 110] })];
+        let mut out_thru = vec![vec![0.0; 512]; 2];
+        eng.render(&s, 1024, 512, &mut out_thru);
+        assert!(out_thru[0].iter().any(|x| x.abs() > 1e-4), "MIDI Thru on selected track must synthesize note");
+    }
+
+    #[test]
+    fn held_notes_tracks_multi_channel_voices_independently() {
+        let mut held = HeldNotes::new();
+        assert!(held.is_empty());
+        assert_eq!(held.len(), 0);
+
+        // Hold pitch 60 on Channel 0 and Channel 1
+        held.insert(0, 60);
+        held.insert(1, 60);
+        assert_eq!(held.len(), 2);
+        assert!(held.contains(0, 60));
+        assert!(held.contains(1, 60));
+        assert!(!held.contains(2, 60));
+
+        // Release on Channel 0: Channel 1 MUST remain held!
+        held.remove(0, 60);
+        assert_eq!(held.len(), 1);
+        assert!(!held.contains(0, 60));
+        assert!(held.contains(1, 60));
+
+        let items: Vec<(u8, u8)> = held.iter().collect();
+        assert_eq!(items, vec![(1, 60)]);
+
+        held.clear();
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn monitored_tracks_bypass_pdc_alignment() {
+        use soundcraft_model::Insert;
+        let mut s = Session::new("PdcBypassTest", soundcraft_time::SampleRate::new(48_000).unwrap());
+        let t_mix = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, Some("MixTrack"));
+        let t_mon = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("MonTrack"));
+
+        // t_mix has latency (e.g. 512 samples)
+        let mut ins = Insert::new("eq_7band");
+        ins.params.insert("frequency".into(), 1000.0);
+        s.track_mut(t_mix).unwrap().mixer.inserts.push(Some(ins));
+
+        // t_mon is record-armed
+        s.track_mut(t_mon).unwrap().mixer.record_arm = true;
+
+        let mut eng = MixEngine::new(48_000.0, 512);
+        let mut out = vec![vec![0.0; 512]; 2];
+        eng.render(&s, 0, 512, &mut out);
+
+        // Check strips: t_mon must have align delay of 0
+        if let Some(strip_mon) = eng.strips.get(&t_mon) {
+            assert_eq!(strip_mon.align.len(), 0, "Monitored track must sever from PDC alignment delay");
+        }
+    }
+
+    #[test]
+    fn per_track_midi_channel_filtering() {
+        use soundcraft_model::Insert;
+        let mut s = Session::new("MidiFilterTest", soundcraft_time::SampleRate::new(48_000).unwrap());
+        let t_ch0 = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("SynthCh0"));
+        let t_ch1 = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("SynthCh1"));
+
+        s.track_mut(t_ch0).unwrap().instrument = Some(Insert::new("subtractive_synth"));
+        s.track_mut(t_ch0).unwrap().mixer.record_arm = true;
+        s.track_mut(t_ch0).unwrap().midi_channel = Some(0); // Channel 1 (0-indexed 0)
+
+        s.track_mut(t_ch1).unwrap().instrument = Some(Insert::new("subtractive_synth"));
+        s.track_mut(t_ch1).unwrap().mixer.record_arm = true;
+        s.track_mut(t_ch1).unwrap().midi_channel = Some(1); // Channel 2 (0-indexed 1)
+
+        let mut eng = MixEngine::new(48_000.0, 512);
+        eng.monitor_only = true;
+
+        // Send Note On on Channel 1 (0-indexed 1)
+        eng.midi_input = vec![(0, LiveMidiEvent { port_id: 0, timestamp_us: 10, len: 3, data: [0x91, 60, 100] })];
+        let mut out = vec![vec![0.0; 512]; 2];
+        eng.render(&s, 0, 512, &mut out);
+
+        // t_ch0 should have ignored the event (no held notes)
+        assert!(eng.strips.get(&t_ch0).unwrap().held.is_empty(), "Track filtered to Ch 0 must ignore Ch 1 event");
+        // t_ch1 should have accepted the event (held note on (1, 60))
+        assert!(eng.strips.get(&t_ch1).unwrap().held.contains(1, 60), "Track filtered to Ch 1 must receive Ch 1 event");
     }
 }

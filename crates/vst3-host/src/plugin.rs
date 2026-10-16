@@ -330,22 +330,30 @@ impl Plugin for Vst3Plugin {
     }
 
     fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
+        self.note_on_chan(offset, 0, note, velocity);
+    }
+
+    fn note_on_chan(&mut self, offset: usize, channel: u8, note: u8, velocity: u8) {
         if note > 127 || !self.event_input {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        self.push_note(NoteEvent::On { time, key: note, velocity: f32::from(velocity.min(127)) / 127.0 });
+        self.push_note(NoteEvent::On { time, channel, key: note, velocity: f32::from(velocity.min(127)) / 127.0 });
         if let Some(h) = self.held.get_mut(note as usize) {
             *h = true;
         }
     }
 
     fn note_off(&mut self, offset: usize, note: u8) {
+        self.note_off_chan(offset, 0, note);
+    }
+
+    fn note_off_chan(&mut self, offset: usize, channel: u8, note: u8) {
         if note > 127 || !self.event_input {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        self.push_note(NoteEvent::Off { time, key: note });
+        self.push_note(NoteEvent::Off { time, channel, key: note });
         if let Some(h) = self.held.get_mut(note as usize) {
             *h = false;
         }
@@ -359,7 +367,8 @@ impl Plugin for Vst3Plugin {
             0xD0 => (AFTERTOUCH, f64::from(d1) / 127.0),
             0xE0 => (PITCH_BEND, f64::from(u16::from(d2) << 7 | u16::from(d1)) / 16383.0),
             0xA0 if self.event_input => {
-                self.push_note(NoteEvent::Pressure { time, key: d1, pressure: f32::from(d2) / 127.0 });
+                let chan = msg[0] & 0x0F;
+                self.push_note(NoteEvent::Pressure { time, channel: chan, key: d1, pressure: f32::from(d2) / 127.0 });
                 return;
             }
             _ => return,

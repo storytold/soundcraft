@@ -255,6 +255,8 @@ pub struct SoundApp {
     pub player: Option<Player>,
     /// Input capture, opened on first record.
     pub recorder: Option<soundcraft_playback::record::Recorder>,
+    pub midi_recorder: Option<soundcraft_playback::midi::MidiRecorder>,
+    pub midi_manager: Option<soundcraft_playback::midi::MidiManager>,
     record_start: Samples,
     /// Punch range to trim the take to (pre/post-roll recordings).
     punch: Option<Range>,
@@ -348,9 +350,17 @@ impl SoundApp {
             recent_seen: engine.path.clone(),
             recent_changed: false,
             recent_checked: None,
+            midi_manager: player.as_ref().map(|p| {
+                let mut mm = soundcraft_playback::midi::MidiManager::new(p.midi_input_ring());
+                let flags = &engine.session().edit.flags;
+                let enabled: Vec<String> = flags.iter().filter_map(|f| f.strip_prefix("midi.input.").map(str::to_string)).collect();
+                mm.sync_enabled(&enabled);
+                mm
+            }),
             engine,
             player,
             recorder: None,
+            midi_recorder: None,
             record_start: 0,
             punch: None,
             recorder_failed: false,
@@ -591,16 +601,30 @@ impl SoundApp {
     fn arm_recorder(&mut self) -> Result<Vec<soundcraft_engine::io::Take>, String> {
         let name = soundcraft_engine::io::sanitize_name(&self.engine.session().name);
         let unsaved_dir = self.autosave_dir.as_ref().map_or_else(std::env::temp_dir, |d| d.join(name));
-        let Some(r) = &mut self.recorder else { return Err("no audio input device".into()) };
-        let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels);
-        if plan.is_empty() {
-            return Err("no audio track is record-enabled".into());
+        let midi_tracks = soundcraft_engine::io::plan_midi_takes(&self.engine);
+        let plan =
+            if let Some(r) = &mut self.recorder { soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels) } else { Vec::new() };
+        if plan.is_empty() && midi_tracks.is_empty() {
+            let has_armed_audio = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm && t.kind == soundcraft_model::TrackKind::Audio);
+            if has_armed_audio && self.recorder.is_none() {
+                return Err("no audio input device".into());
+            }
+            return Err("no track is record-enabled".into());
         }
-        let takes = plan
+        let takes: Vec<soundcraft_engine::io::Take> = plan
             .iter()
             .map(|(track, inputs, path)| soundcraft_engine::io::Take { track: *track, path: path.clone(), channels: inputs.len() })
             .collect();
-        r.arm(plan)?;
+        if !plan.is_empty()
+            && let Some(r) = &mut self.recorder
+        {
+            r.arm(plan)?;
+        }
+        if !midi_tracks.is_empty()
+            && let Some(player) = &self.player
+        {
+            self.midi_recorder = Some(soundcraft_playback::midi::MidiRecorder::new(player.midi_record_ring(), midi_tracks, self.record_start));
+        }
         Ok(takes)
     }
 
@@ -790,7 +814,23 @@ impl SoundApp {
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
         player.locate(at);
         self.player = Some(player);
+        self.sync_midi_devices();
         Ok(())
+    }
+
+    /// Sync connected MIDI input devices with the session's enabled flags.
+    pub fn sync_midi_devices(&mut self) {
+        if let Some(player) = &self.player {
+            let flags = &self.engine.session().edit.flags;
+            let enabled: Vec<String> = flags.iter().filter_map(|f| f.strip_prefix("midi.input.").map(str::to_string)).collect();
+            if let Some(mm) = &mut self.midi_manager {
+                mm.sync_enabled(&enabled);
+            } else {
+                let mut mm = soundcraft_playback::midi::MidiManager::new(player.midi_input_ring());
+                mm.sync_enabled(&enabled);
+                self.midi_manager = Some(mm);
+            }
+        }
     }
 
     /// Open the input device once (for recording and input monitoring) and feed the player.
@@ -843,6 +883,9 @@ impl SoundApp {
     /// Stop recording, keeping the take, when the input device or the disk fails, and say as soon
     /// as a slow disk loses input.
     fn watch_input(&mut self) {
+        if let Some(mr) = &mut self.midi_recorder {
+            mr.poll(self.engine.session());
+        }
         let recording = self.engine.transport.recording;
         let Some(r) = &mut self.recorder else { return };
         let Some(trouble) = r.trouble() else {
@@ -883,6 +926,7 @@ impl SoundApp {
         self.recorder = None;
         self.recorder_failed = false;
         self.player = Some(Player::with_config(self.engine.session_arc(), &self.ui.audio));
+        self.sync_midi_devices();
     }
 
     fn finish_recording(&mut self) {
@@ -890,10 +934,11 @@ impl SoundApp {
         if let Some(p) = &self.player {
             p.set_recording(false);
         }
+        let pos = self.position();
         let plan = self.take_plan.take();
-        let Some(r) = &mut self.recorder else { return };
-        let (takes, problem) = r.finish();
-        let tracks = takes.len().max(1);
+        let (audio_takes, problem) = self.recorder.as_mut().map(|r| r.finish()).unwrap_or_default();
+        let midi_takes = self.midi_recorder.take().map(|mut r| r.finish(self.engine.session(), pos)).unwrap_or_default();
+        let tracks = audio_takes.len().max(1);
         let plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
             start: self.record_start,
             pass: None,
@@ -901,11 +946,24 @@ impl SoundApp {
             rate: 0,
             takes: Vec::new(),
         });
+        let punch = self.punch;
         self.punch = None;
         self.autosaved_rev = 0;
-        let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
-        self.ui.status =
-            if plan.pass.is_some() { format!("Loop-recorded {} take(s)", ids.len() / tracks) } else { format!("Recorded {} clip(s)", ids.len()) };
+        let mut audio_ids = Vec::new();
+        if !audio_takes.is_empty() {
+            audio_ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, audio_takes);
+        }
+        let mut midi_ids = Vec::new();
+        if !midi_takes.is_empty() {
+            let merge = self.engine.session().edit.flag("options.midi_merge");
+            midi_ids = soundcraft_engine::io::place_midi_takes(&mut self.engine, midi_takes, punch, merge, plan.pass);
+        }
+        let total_clips = audio_ids.len() + midi_ids.len();
+        self.ui.status = if plan.pass.is_some() {
+            format!("Loop-recorded {} take(s)", audio_ids.len() / tracks)
+        } else {
+            format!("Recorded {} clip(s)", total_clips)
+        };
         if let Some(p) = problem {
             log::warn!("recording: {p}");
             self.ui.status = format!("{} ({p})", self.ui.status);
@@ -1050,7 +1108,11 @@ impl SoundApp {
                     self.play_from_selection();
                 }
                 TransportRequest::Scrub(at) => self.engine.transport.position = at,
-                TransportRequest::AllNotesOff => {}
+                TransportRequest::AllNotesOff => {
+                    if let Some(p) = &self.player {
+                        p.panic_all_notes_off();
+                    }
+                }
             }
         }
         // Read back the position.

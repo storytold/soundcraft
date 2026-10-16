@@ -835,6 +835,7 @@ pub fn delete_fades(s: &mut Session, track: TrackId, range: Range) -> usize {
             }
         }
     }
+    pl.sort();
     n
 }
 

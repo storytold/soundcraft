@@ -229,14 +229,18 @@ impl Plugin for ClapPlugin {
     }
 
     fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
+        self.note_on_chan(offset, 0, note, velocity);
+    }
+
+    fn note_on_chan(&mut self, offset: usize, channel: u8, note: u8, velocity: u8) {
         if note > 127 {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
         let vel = velocity.min(127);
         match self.notes {
-            NoteMode::Clap => self.push(Event::NoteOn { time, key: note, velocity: f64::from(vel) / 127.0 }),
-            NoteMode::Midi => self.push(Event::Midi { time, data: [0x90, note, vel] }),
+            NoteMode::Clap => self.push(Event::NoteOn { time, channel, key: note, velocity: f64::from(vel) / 127.0 }),
+            NoteMode::Midi => self.push(Event::Midi { time, data: [0x90 | (channel & 0x0F), note, vel] }),
             NoteMode::None => return,
         }
         if let Some(h) = self.held.get_mut(note as usize) {
@@ -245,13 +249,17 @@ impl Plugin for ClapPlugin {
     }
 
     fn note_off(&mut self, offset: usize, note: u8) {
+        self.note_off_chan(offset, 0, note);
+    }
+
+    fn note_off_chan(&mut self, offset: usize, channel: u8, note: u8) {
         if note > 127 {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
         match self.notes {
-            NoteMode::Clap => self.push(Event::NoteOff { time, key: note }),
-            NoteMode::Midi => self.push(Event::Midi { time, data: [0x80, note, 0] }),
+            NoteMode::Clap => self.push(Event::NoteOff { time, channel, key: note }),
+            NoteMode::Midi => self.push(Event::Midi { time, data: [0x80 | (channel & 0x0F), note, 0] }),
             NoteMode::None => return,
         }
         if let Some(h) = self.held.get_mut(note as usize) {

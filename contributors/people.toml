@@ -50,3 +50,7 @@ sync_github_name = false
 
 [people.Momentum96]
 sync_github_name = true
+
+[people.goldwaterfung]
+real_name = "Kam Kiu Fung"
+sync_github_name = true

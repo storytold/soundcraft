@@ -3,6 +3,7 @@
 use crate::{Engine, EngineError, Result};
 use serde_json::{Value, json};
 use soundcraft_audio_io::{AudioBuffer, EncodeOptions, FileFormat};
+use soundcraft_midi::MidiTake;
 use soundcraft_model::{BusId, ChannelFormat, Clip, ClipContent, Session, Source, SourceAudio, SourceId, TrackId, TrackKind};
 use soundcraft_time::{Range, Samples};
 use std::path::{Path, PathBuf};
@@ -1327,6 +1328,11 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
         .collect()
 }
 
+/// The record-enabled MIDI and Instrument tracks.
+pub fn plan_midi_takes(e: &Engine) -> Vec<TrackId> {
+    e.session().tracks.iter().filter(|t| t.mixer.record_arm && t.kind.is_midi() && !t.inactive).map(|t| t.id).collect()
+}
+
 /// A recording's plan, made when it starts: each record-enabled track's take file, where the
 /// takes start on the timeline, the loop length they split into when loop recording, and the
 /// punch range they're trimmed to.
@@ -1356,6 +1362,142 @@ pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, Pa
         let _ = e.execute_merged("edit.trim_to_fill_selection", &json!({"clips": clips, "start": p.start, "end": p.end}), "record");
     }
     ids
+}
+
+/// Place recorded MIDI takes into the session as one undo step ("Record").
+pub fn place_midi_takes(
+    e: &mut Engine,
+    takes: Vec<MidiTake>,
+    punch: Option<Range>,
+    merge: bool,
+    pass: Option<Samples>,
+) -> Vec<soundcraft_model::ClipId> {
+    let before = e.session_arc();
+    let mut out = Vec::new();
+    let s = e.session_mut();
+    let sr = s.sample_rate;
+    let tempo = s.tempo.clone();
+
+    for take in takes {
+        let tid = TrackId(take.track_id);
+        let Some(track) = s.track(tid) else {
+            continue;
+        };
+        let track_name = track.name.clone();
+
+        // If merge is enabled, attempt to merge into an existing MIDI clip overlapping this range
+        let mut merged = false;
+        if merge
+            && let Some(t) = s.track_mut(tid)
+            && let Some(pl) = t.playlist_mut()
+        {
+            for clip in &mut pl.clips {
+                let c_end = clip.start.saturating_add(clip.length);
+                let overlaps = clip.start < take.start.saturating_add(take.length) && c_end > take.start;
+                if overlaps && let ClipContent::Midi { sequence } = &mut clip.content {
+                    let new_start = clip.start.min(take.start);
+                    let new_end = (take.start.saturating_add(take.length)).max(c_end);
+                    let new_base_ticks = tempo.samples_to_ticks(new_start, sr);
+
+                    let clip_base_ticks = tempo.samples_to_ticks(clip.start, sr);
+                    let clip_shift_ticks = clip_base_ticks.saturating_sub(new_base_ticks);
+
+                    let take_base_ticks = tempo.samples_to_ticks(take.start, sr);
+                    let take_shift_ticks = take_base_ticks.saturating_sub(new_base_ticks);
+
+                    if clip_shift_ticks > 0 {
+                        for note in &mut sequence.notes {
+                            note.start = note.start.saturating_add(clip_shift_ticks);
+                        }
+                        for ctrl in &mut sequence.ctrls {
+                            ctrl.tick = ctrl.tick.saturating_add(clip_shift_ticks);
+                        }
+                    }
+
+                    for note in &take.sequence.notes {
+                        let mut n = *note;
+                        n.start = n.start.saturating_add(take_shift_ticks);
+                        sequence.notes.push(n);
+                    }
+                    for ctrl in &take.sequence.ctrls {
+                        let mut c = *ctrl;
+                        c.tick = c.tick.saturating_add(take_shift_ticks);
+                        sequence.ctrls.push(c);
+                    }
+                    sequence.sort();
+                    clip.start = new_start;
+                    clip.length = new_end.saturating_sub(new_start).max(1);
+                    out.push(clip.id);
+                    merged = true;
+                    break;
+                }
+            }
+        }
+
+        if !merged {
+            let pass_len = pass.unwrap_or(take.length).max(1);
+            let take_len = take.length;
+            let take_base_ticks = tempo.samples_to_ticks(take.start, sr);
+            for offset in (0..take_len).step_by(usize::try_from(pass_len).unwrap_or(usize::MAX)).take(1_000) {
+                let n = pass_len.min(take_len - offset);
+                if offset > 0 && n < pass_len / 8 {
+                    break;
+                }
+                if offset > 0
+                    && let Some(t) = s.track_mut(tid)
+                {
+                    t.playlists.push(soundcraft_model::Playlist::new(format!("{}.{:02}", t.name, t.playlists.len() + 1)));
+                    t.active_playlist = t.playlists.len().saturating_sub(1);
+                }
+                let pass_start = take.start + offset;
+                let pass_end = pass_start + n;
+                let target_base_ticks = tempo.samples_to_ticks(take.start, sr);
+
+                let mut pass_notes = Vec::new();
+                for note in &take.sequence.notes {
+                    let note_sample = tempo.tick_to_samples(take_base_ticks.saturating_add(note.start), sr);
+                    if note_sample >= pass_start && note_sample < pass_end {
+                        let mut n = *note;
+                        let sample_in_pass = note_sample - offset;
+                        let tick_in_pass = tempo.samples_to_ticks(sample_in_pass, sr).saturating_sub(target_base_ticks);
+                        n.start = tick_in_pass;
+                        pass_notes.push(n);
+                    }
+                }
+
+                let mut pass_ctrls = Vec::new();
+                for ctrl in &take.sequence.ctrls {
+                    let ctrl_sample = tempo.tick_to_samples(take_base_ticks.saturating_add(ctrl.tick), sr);
+                    if ctrl_sample >= pass_start && ctrl_sample < pass_end {
+                        let mut c = *ctrl;
+                        let sample_in_pass = ctrl_sample - offset;
+                        let tick_in_pass = tempo.samples_to_ticks(sample_in_pass, sr).saturating_sub(target_base_ticks);
+                        c.tick = tick_in_pass;
+                        pass_ctrls.push(c);
+                    }
+                }
+
+                let mut pass_seq = soundcraft_midi::Sequence { notes: pass_notes, ctrls: pass_ctrls };
+                pass_seq.sort();
+
+                let cid = s.new_clip_id();
+                let name = format!("{}_Take", track_name);
+                let clip = Clip::midi(cid, name, take.start, n, pass_seq);
+                crate::edit::place_clip(s, tid, clip);
+                out.push(cid);
+            }
+        }
+    }
+
+    if let Some(p) = punch {
+        let clips: Vec<u64> = out.iter().map(|c| c.0).collect();
+        let _ = e.execute_merged("edit.trim_to_fill_selection", &json!({"clips": clips, "start": p.start, "end": p.end}), "record");
+    }
+
+    if !out.is_empty() {
+        e.push_undo("Record", before);
+    }
+    out
 }
 
 /// Turn recorded take files into clips at `start`, as one undo step ("Record"); each file is the
@@ -1482,6 +1624,116 @@ mod record_tests {
         let punch = Some(Range::new(1_200, 1_400));
         assert_eq!(live_span(1_000, None, punch, 150), None);
         assert_eq!(live_span(1_000, None, punch, 500), Some((1_000, Range::new(1_200, 1_400))));
+    }
+
+    #[test]
+    fn plan_and_place_midi_takes() {
+        let mut e = Engine::default();
+        let s = e.session_mut();
+        let inst = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Synth"));
+        let audio = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("AudioTrack"));
+        s.track_mut(inst).unwrap().mixer.record_arm = true;
+        s.track_mut(audio).unwrap().mixer.record_arm = true;
+
+        let midi_plan = plan_midi_takes(&e);
+        assert_eq!(midi_plan, vec![inst]);
+
+        let mut seq = soundcraft_midi::Sequence::default();
+        seq.notes.push(soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 });
+
+        let take = soundcraft_midi::MidiTake { track_id: inst.0, start: 48_000, length: 48_000, sequence: seq };
+
+        let clips = place_midi_takes(&mut e, vec![take], None, false, None);
+        assert_eq!(clips.len(), 1);
+        let clip = e.session().find_clip(clips[0]).unwrap().1;
+        assert_eq!(clip.start, 48_000);
+        assert_eq!(clip.length, 48_000);
+        assert_eq!(clip.name, "Synth_Take");
+
+        // Verify undo removes the clip
+        e.execute("edit.undo", &json!({})).unwrap();
+        assert!(e.session().find_clip(clips[0]).is_none());
+    }
+
+    #[test]
+    fn place_midi_takes_merge_mode() {
+        let mut e = Engine::default();
+        let s = e.session_mut();
+        let inst = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Synth"));
+        let mut seq1 = soundcraft_midi::Sequence::default();
+        seq1.notes.push(soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 });
+        let cid = s.new_clip_id();
+        crate::edit::place_clip(s, inst, Clip::midi(cid, "Existing", 0, 48_000, seq1));
+
+        // Now place a take in merge mode
+        let mut seq2 = soundcraft_midi::Sequence::default();
+        seq2.notes.push(soundcraft_midi::Note { pitch: 64, velocity: 90, release_velocity: 64, channel: 0, start: 0, length: 960 });
+        let take = soundcraft_midi::MidiTake { track_id: inst.0, start: 0, length: 48_000, sequence: seq2 };
+
+        let clips = place_midi_takes(&mut e, vec![take], None, true, None);
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0], cid);
+        let clip = e.session().find_clip(cid).unwrap().1;
+        if let ClipContent::Midi { sequence } = &clip.content {
+            assert_eq!(sequence.notes.len(), 2);
+            assert_eq!(sequence.notes[0].pitch, 60);
+            assert_eq!(sequence.notes[1].pitch, 64);
+        } else {
+            panic!("Expected MIDI clip content");
+        }
+    }
+
+    #[test]
+    fn place_midi_takes_merge_with_take_starting_earlier() {
+        let mut e = Engine::default();
+        let s = e.session_mut();
+        let inst = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Synth"));
+        let mut seq1 = soundcraft_midi::Sequence::default();
+        // Note 1 starts at clip tick 0 (sample 48_000)
+        seq1.notes.push(soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 });
+        let cid = s.new_clip_id();
+        crate::edit::place_clip(s, inst, Clip::midi(cid, "Existing", 48_000, 48_000, seq1));
+
+        // Take starts earlier (at sample 24_000) with Note 2 at take tick 0
+        let mut seq2 = soundcraft_midi::Sequence::default();
+        seq2.notes.push(soundcraft_midi::Note { pitch: 55, velocity: 80, release_velocity: 64, channel: 0, start: 0, length: 480 });
+        let take = soundcraft_midi::MidiTake { track_id: inst.0, start: 24_000, length: 48_000, sequence: seq2 };
+
+        let clips = place_midi_takes(&mut e, vec![take], None, true, None);
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0], cid);
+        let clip = e.session().find_clip(cid).unwrap().1;
+        assert_eq!(clip.start, 24_000, "clip start must expand backwards to take start");
+        if let ClipContent::Midi { sequence } = &clip.content {
+            assert_eq!(sequence.notes.len(), 2);
+            // Note 2 (pitch 55) started at sample 24_000 -> tick 0 relative to new clip start
+            assert_eq!(sequence.notes[0].pitch, 55);
+            assert_eq!(sequence.notes[0].start, 0);
+            // Note 1 (pitch 60) started at sample 48_000 -> shifted forward relative to new clip start
+            assert_eq!(sequence.notes[1].pitch, 60);
+            assert!(sequence.notes[1].start > 0);
+        } else {
+            panic!("Expected MIDI clip content");
+        }
+    }
+
+    #[test]
+    fn place_midi_takes_loop_record_passes() {
+        let mut e = Engine::default();
+        let s = e.session_mut();
+        let inst = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Synth"));
+        let mut seq = soundcraft_midi::Sequence::default();
+        seq.notes.push(soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 480 });
+        let pass2_tick = s.tempo.samples_to_ticks(48_000, s.sample_rate);
+        seq.notes.push(soundcraft_midi::Note { pitch: 64, velocity: 90, release_velocity: 64, channel: 0, start: pass2_tick, length: 480 });
+
+        let take = soundcraft_midi::MidiTake { track_id: inst.0, start: 0, length: 96_000, sequence: seq };
+        let clips = place_midi_takes(&mut e, vec![take], None, false, Some(48_000));
+        assert_eq!(clips.len(), 2);
+        let t = e.session().track(inst).unwrap();
+        assert_eq!(t.playlists.len(), 2);
+        assert_eq!(t.playlists[1].name, "Synth.02");
+        assert_eq!(t.active_playlist, 1);
     }
 }
 

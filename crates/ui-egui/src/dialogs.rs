@@ -26,6 +26,7 @@ pub enum Dialog {
     Group { name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
     Session { frame_rate: String, bit_depth: String },
     ScoreSetup { title: String, composer: String, bars_per_system: u32, show_track_names: bool },
+    MidiInputDevices { devices: Vec<(String, bool)> },
     SaveChanges { then: (String, Value) },
 }
 
@@ -55,6 +56,7 @@ impl Dialogs {
             Dialog::Group { .. } => "group",
             Dialog::Session { .. } => "session",
             Dialog::ScoreSetup { .. } => "score_setup",
+            Dialog::MidiInputDevices { .. } => "midi_input_devices",
             Dialog::SaveChanges { .. } => "save_changes",
         })
     }
@@ -142,6 +144,19 @@ impl Dialogs {
                 let target = soundcraft_engine::cmd::clip_ids_param(e, &json!({})).first().and_then(|id| e.session().find_clip(*id));
                 let Some((_, clip)) = target else { return false };
                 Dialog::RenameClip { id: clip.id, name: clip.name.clone() }
+            }
+            "setup.midi_input_devices" => {
+                let devices = soundcraft_playback::midi::list_input_devices();
+                let flags = &e.session().edit.flags;
+                let any_flag = flags.iter().any(|f| f.starts_with("midi.input."));
+                let items = devices
+                    .into_iter()
+                    .map(|d| {
+                        let enabled = if any_flag { flags.contains(&format!("midi.input.{}", d.name.trim())) } else { true };
+                        (d.name, enabled)
+                    })
+                    .collect();
+                Dialog::MidiInputDevices { devices: items }
             }
             _ => match path_dialog(id, &home, &name) {
                 Some(d) => d,
@@ -286,6 +301,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::Group { .. } => "Create Group",
         Dialog::Session { .. } => "Session Setup",
         Dialog::ScoreSetup { .. } => "Score Setup",
+        Dialog::MidiInputDevices { .. } => "MIDI Input Devices",
         Dialog::SaveChanges { then } if then.0 == "session.revert" => "Revert to Saved",
         Dialog::SaveChanges { .. } => "Unsaved Changes",
     }
@@ -563,6 +579,21 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         ));
                     }
                 }
+                Dialog::MidiInputDevices { devices } => {
+                    ui.label("MIDI input devices:");
+                    if devices.is_empty() {
+                        ui.label(egui::RichText::new("No MIDI input devices detected.").color(Tokens::current().text_dim));
+                    } else {
+                        for (name, enabled) in devices.iter_mut() {
+                            crate::widgets::checkbox(ui, enabled, name.as_str());
+                        }
+                    }
+                    if buttons(ui, "OK", enter) {
+                        let enable: Vec<String> = devices.iter().filter(|(_, en)| *en).map(|(n, _)| n.clone()).collect();
+                        let disable: Vec<String> = devices.iter().filter(|(_, en)| !*en).map(|(n, _)| n.clone()).collect();
+                        action = Some(("setup.midi_input_devices".into(), json!({"enable": enable, "disable": disable})));
+                    }
+                }
                 Dialog::SaveChanges { then } => {
                     let name = &app.engine.session().name;
                     let revert = then.0 == "session.revert";
@@ -619,6 +650,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             }
             Ok(_) => {}
             Err(e) => app.ui.status = e,
+        }
+        if cmd == "setup.midi_input_devices" {
+            app.sync_midi_devices();
         }
     }
     if saving
@@ -793,5 +827,14 @@ mod tests {
             message(&d),
             "Remove 2 files from the session? They are used by 4 clips on the timeline, which are removed too. The files stay on disk."
         );
+    }
+
+    #[test]
+    fn midi_input_devices_dialog_opens_and_reports_name() {
+        let e = soundcraft_engine::demo::demo_engine();
+        let mut d = Dialogs::default();
+        assert!(d.open_for_command(&e, "setup.midi_input_devices"));
+        assert_eq!(d.open_name(), Some("midi_input_devices"));
+        assert!(matches!(d.open, Some(Dialog::MidiInputDevices { .. })));
     }
 }

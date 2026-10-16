@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (G-01: audio device settings and opt-in ASIO) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (G-02: MIDI hardware devices, live audition, and recording closed) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -16,7 +16,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
-| G-02 | **Alpha blocker.** No MIDI device input or output | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 20–35 |
+| G-02 | Closed. MIDI device input, live audition, take recording, all notes off panic | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 0 |
 | G-03 | **Alpha blocker.** Cannot exchange sessions with Pro Tools (no AAF/OMF, no `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 15–25 |
@@ -58,15 +58,19 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   clock, ASIO feature build, per-channel I/O mapping into I/O Setup, latency reporting and
   record-offset compensation). Needs hands-on hardware testing.
 
-### G-02. MIDI devices
+### G-02. MIDI devices (closed)
 
-- **Missing:** all MIDI hardware I/O. No `midir`/CoreMIDI/WinMM/ALSA sequencer code exists;
-  `setup.midi_input_devices` and `setup.midi_studio` only store names. You cannot record from a
-  keyboard, play a hosted instrument live, drive external synths, or send MIDI clock/MTC.
-  `midi_editor.rs:288` notes audition "needs a live MIDI input path".
-- **Impact:** MIDI production is limited to drawing notes and importing SMF.
-- **Estimate:** ≈ 20–35 h (device layer, realtime input to armed tracks and instruments with
-  timestamps, MIDI record/merge/loop, thru, output tracks, clock out).
+- **Closed:** cross-platform hardware MIDI input via `midir` (CoreMIDI / WinMM / ALSA); lock-free
+  SPSC ring buffers (`MidiInputRing` and `MidiRecordRing`) with 64-byte cache line padding (`CachePadded`);
+  zero-allocation RT audio path using fixed `HeldNotes` bitmasks and pre-allocated bounded event queues;
+  sample-accurate sub-sample intra-block offsets derived from high-resolution microsecond timestamps;
+  multi-channel note dispatch (0..15) across DSP plugin hosts (VST3, CLAP, AU);
+  drain and execution of CC 120/123 panic silencing with stopped transport;
+  live take capture into timeline clips with `options.midi_merge` overdub support and retroactive start expansion;
+  sustained note auditioning on mouse down/drag in Virtual Keyboard and Piano Roll;
+  and `Setup > MIDI > MIDI Input Devices...` dialog.
+- **Remaining for future:** MIDI Beat Clock / MTC output, driving external hardware synths.
+- **Estimate:** 0 h (closed).
 
 ### G-03. Session interchange with Pro Tools
 

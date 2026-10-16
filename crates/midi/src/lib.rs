@@ -9,12 +9,14 @@
 //! - [`note_name`], [`gm_drum_name`], [`gm_program_name`]: display names.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod live;
 mod names;
 pub mod ops;
 mod rng;
 mod sequence;
 mod smf;
 
+pub use live::{LiveMidiEvent, MidiTake, RecordedMidiEvent, parse_midi_message};
 pub use names::{gm_drum_name, gm_program_name, note_name};
 pub use rng::XorShift;
 pub use sequence::{CtrlEvent, CtrlKind, Note, Sequence};

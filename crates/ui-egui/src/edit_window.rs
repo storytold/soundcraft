@@ -1436,6 +1436,25 @@ pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
             }
         }
     }
+    if let Some(t) = app.engine.session().track(id)
+        && t.kind.is_midi()
+    {
+        let current_ch = t.midi_channel;
+        ui.menu_button("MIDI Channel", |ui| {
+            if ui.selectable_label(current_ch.is_none(), "Omni (All)").clicked() {
+                let _ = app.run("track.midi_channel", json!({"tracks": selection, "channel": "omni"}));
+                ui.close();
+            }
+            ui.separator();
+            for ch in 1..=16 {
+                let is_current = current_ch == Some(ch - 1);
+                if ui.selectable_label(is_current, format!("Channel {ch}")).clicked() {
+                    let _ = app.run("track.midi_channel", json!({"tracks": selection, "channel": ch}));
+                    ui.close();
+                }
+            }
+        });
+    }
     let folders: Vec<(u64, String)> = app
         .engine
         .session()
@@ -1555,6 +1574,27 @@ fn clip_preview_fades(clip: &Clip, gesture: Option<&Gesture>) -> (soundcraft_mod
 
 /// The take `track` is recording, drawn in red as it grows, as in Pro Tools.
 fn draw_live_take(app: &SoundApp, painter: &egui::Painter, s: &Session, track: &Track, tl: Rect, lane: Rect) {
+    if track.kind.is_midi() {
+        let Some(rec) = &app.midi_recorder else { return };
+        let pos = app.position();
+        let len = pos.saturating_sub(app.record_start).max(0);
+        let sel = s.edit.selection;
+        let (start, pass) = if s.edit.loop_record && !sel.is_empty() { (sel.start, Some(sel.len())) } else { (app.record_start, None) };
+        let Some((_origin, span)) = soundcraft_engine::io::live_span(start, pass, app.punch, len) else { return };
+        let r = Rect::from_min_max(pos2(x_of(s, tl, span.start), lane.min.y + 1.0), pos2(x_of(s, tl, span.end), lane.max.y - 1.0));
+        let t = Tokens::current();
+        let (body, _, _) = clip_colors([t.rec.r(), t.rec.g(), t.rec.b()], false);
+        painter.rect(r, CornerRadius::same(2), body, Stroke::new(1.0, Color32::from_rgb(10, 10, 10)), StrokeKind::Inside);
+        let notes = rec.live_notes(track.id, pos);
+        for (n_start, n_len, pitch) in notes {
+            let nx0 = x_of(s, tl, n_start).max(r.min.x);
+            let nx1 = x_of(s, tl, n_start.saturating_add(n_len)).min(r.max.x).max(nx0 + 2.0);
+            let ny = lane.max.y - (pitch as f32 / 127.0) * (lane.height() - 4.0) - 2.0;
+            let note_rect = Rect::from_min_max(pos2(nx0, ny - 1.5), pos2(nx1, ny + 1.5));
+            painter.rect_filled(note_rect, CornerRadius::same(1), Color32::WHITE);
+        }
+        return;
+    }
     let Some(rec) = &app.recorder else { return };
     let Some(take) = rec.live_take(track.id) else { return };
     let block_len = soundcraft_playback::record::LIVE_BLOCK as f64 * s.sample_rate.as_f64() / f64::from(rec.sample_rate.max(1));

@@ -244,6 +244,9 @@ pub struct Track {
     /// Pinned to top in the Edit window.
     #[serde(default)]
     pub pinned: bool,
+    /// MIDI input channel filter: `None` = Omni/All channels, `Some(0..15)` = specific channel.
+    #[serde(default)]
+    pub midi_channel: Option<u8>,
 }
 
 fn yes() -> bool {
@@ -283,7 +286,13 @@ impl Track {
             ticks_timebase: kind.is_midi(),
             elastic: None,
             pinned: false,
+            midi_channel: None,
         }
+    }
+
+    #[inline]
+    pub fn matches_midi_channel(&self, channel: u8) -> bool {
+        self.midi_channel.is_none() || self.midi_channel == Some(channel)
     }
 
     pub fn channels(&self) -> usize {

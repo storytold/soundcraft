@@ -208,23 +208,31 @@ impl Plugin for AuPlugin {
     }
 
     fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
+        self.note_on_chan(offset, 0, note, velocity);
+    }
+
+    fn note_on_chan(&mut self, offset: usize, channel: u8, note: u8, velocity: u8) {
         if note > 127 {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
         // Velocity 0 would be a note-off.
-        self.push_event(MidiEvent { time, status: 0x90, data1: note, data2: velocity.clamp(1, 127) });
+        self.push_event(MidiEvent { time, status: 0x90 | (channel & 0x0F), data1: note, data2: velocity.clamp(1, 127) });
         if let Some(h) = self.held.get_mut(note as usize) {
             *h = true;
         }
     }
 
     fn note_off(&mut self, offset: usize, note: u8) {
+        self.note_off_chan(offset, 0, note);
+    }
+
+    fn note_off_chan(&mut self, offset: usize, channel: u8, note: u8) {
         if note > 127 {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        self.push_event(MidiEvent { time, status: 0x80, data1: note, data2: 0 });
+        self.push_event(MidiEvent { time, status: 0x80 | (channel & 0x0F), data1: note, data2: 0 });
         if let Some(h) = self.held.get_mut(note as usize) {
             *h = false;
         }

@@ -225,7 +225,41 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"algorithm": alg}))
             }
         ),
+        cmd!("track.midi_channel", "MIDI Channel", [], None, "{tracks?, channel: 1..16 | 'omni' | null}", has_selection, midi_channel),
     ]
+}
+
+fn midi_channel(e: &mut Engine, p: &Value) -> Result<Value> {
+    let tracks = tracks_required(e, "track.midi_channel", p)?;
+    let channel: Option<u8> = match p.get("channel") {
+        Some(v) if v.is_null() => None,
+        Some(Value::String(s)) if s.eq_ignore_ascii_case("omni") || s.eq_ignore_ascii_case("all") => None,
+        Some(Value::String(s)) => {
+            let n: u8 = s.parse().map_err(|_| bad("track.midi_channel", format!("invalid channel `{s}`")))?;
+            if !(1..=16).contains(&n) {
+                return Err(bad("track.midi_channel", "channel must be 1..16 or omni"));
+            }
+            Some(n - 1)
+        }
+        Some(Value::Number(n)) => {
+            let num = n.as_i64().ok_or_else(|| bad("track.midi_channel", "invalid channel number"))?;
+            if num == 0 {
+                None
+            } else if (1..=16).contains(&num) {
+                Some((num - 1) as u8)
+            } else {
+                return Err(bad("track.midi_channel", "channel must be 1..16 or 0/omni"));
+            }
+        }
+        _ => None,
+    };
+    let s = e.session_mut();
+    for t in &tracks {
+        if let Some(tr) = s.track_mut(*t) {
+            tr.midi_channel = channel;
+        }
+    }
+    Ok(json!({"channel": channel.map(|c| c + 1)}))
 }
 
 fn new_track(e: &mut Engine, p: &Value) -> Result<Value> {

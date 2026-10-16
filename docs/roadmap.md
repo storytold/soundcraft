@@ -86,5 +86,6 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | G-02 closed: MIDI device input layer, live audition, take recording, and panic (#G-02) |
 | 2026-10-10 | minor | Added the alpha gate (3 of 6 core workflows fail → pre-alpha) |
 | 2026-10-10 | major | Created from ROADMAP.md's milestones and alpha list; added M12–M17 and the beta plan with estimates |

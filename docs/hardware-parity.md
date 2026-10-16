@@ -1,13 +1,12 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (bounces of a bus fed by an aux compensate its latency (#246); previously minor: audio device, rate and buffer choice; ASIO feature) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (MIDI hardware devices layer, live audition, recording takes, all notes off panic; #G-02) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 A DAW is judged by how it drives audio interfaces, MIDI gear, control surfaces and sync. This is
-SoundCraft's weakest dimension. Ours is measured from `crates/playback` (cpal) and the absence of
-any MIDI-device or control-surface code; Pro Tools' from its documentation and Setup menus.
+SoundCraft's weakest dimension. Ours is measured from `crates/playback` (cpal and midir); Pro Tools' from its documentation and Setup menus.
 
-**Hardware: ~12 % ready** (estimated). **Performance: ~35 %** (estimated; nothing benchmarked
-against Pro Tools). Remaining ≈ 110–180 h for hardware, 40–70 h for performance.
+**Hardware: ~18 % ready** (estimated). **Performance: ~35 %** (estimated; nothing benchmarked
+against Pro Tools). Remaining ≈ 85–145 h for hardware, 40–70 h for performance.
 
 Legend: ✅ works · 🟡 partial · ❌ missing.
 
@@ -31,12 +30,12 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Feature | Pro Tools | SoundCraft (all platforms) |
 |---|---|---|
-| MIDI input devices (keyboards, pads) | ✅ | ❌ no MIDI device layer at all (`setup.midi_input_devices` stores names) |
+| MIDI input devices (keyboards, pads) | ✅ | ✅ midir device layer; dynamic enumeration & connection; lock-free SPSC ring buffer; live audition and recording into takes |
 | MIDI output to external gear | ✅ | ❌ |
-| MIDI Thru, input filter | ✅ | ❌ (stored flags only) |
+| MIDI Thru, input filter | ✅ | ✅ live audition dispatch obeys track monitoring and MIDI Thru; input filter actively filters notes, CC, pitch bend, aftertouch, program change |
 | MIDI Beat Clock out, MTC generate/chase | ✅ | ❌ |
 | MIDI learn / controller mapping | ✅ (via surfaces and plug-in maps) | ❌ |
-| Virtual MIDI keyboard | ✅ (MIDI Keyboard window) | 🟡 window exists, no live audition path |
+| Virtual MIDI keyboard | ✅ (MIDI Keyboard window) | ✅ step-input and live instrument auditioning |
 
 ## Control surfaces
 

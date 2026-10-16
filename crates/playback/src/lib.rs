@@ -23,9 +23,11 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod devices;
+pub mod midi;
 pub mod record;
 
 pub use devices::AudioConfig;
+pub use midi::{LiveMidiEvent, MidiDeviceInfo, MidiInputRing, MidiManager};
 
 use soundcraft_dsp::{Plugin, PluginEditor, PluginStateReader};
 use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
@@ -64,6 +66,8 @@ enum Cmd {
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
+    MidiInput(Arc<midi::MidiInputRing>),
+    MidiRecord(Arc<midi::MidiRecordRing>),
     Recording(bool),
     Play {
         from: Samples,
@@ -167,7 +171,11 @@ struct AudioState {
     read: f64,
     device_rate: f64,
     input: Option<Arc<record::InputRing>>,
+    midi_input: Option<Arc<midi::MidiInputRing>>,
+    midi_record: Option<Arc<midi::MidiRecordRing>>,
     recording: bool,
+    stream_start_us: u64,
+    rendered_samples: u64,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
@@ -201,7 +209,11 @@ impl AudioState {
             read: 0.0,
             device_rate,
             input: None,
+            midi_input: None,
+            midi_record: None,
             recording: false,
+            stream_start_us: 0,
+            rendered_samples: 0,
         }
     }
 
@@ -210,6 +222,8 @@ impl AudioState {
         while let Ok(c) = self.rx.try_recv() {
             match c {
                 Cmd::Input(r) => self.input = Some(r),
+                Cmd::MidiInput(r) => self.midi_input = Some(r),
+                Cmd::MidiRecord(r) => self.midi_record = Some(r),
                 Cmd::Recording(r) => self.recording = r,
                 Cmd::Session(s, instances) => {
                     changed = true;
@@ -239,18 +253,24 @@ impl AudioState {
                     self.playing = true;
                     self.pending_len = 0;
                     self.read = 0.0;
+                    self.stream_start_us = 0;
+                    self.rendered_samples = 0;
                     self.mix.reset();
                 }
                 Cmd::Stop => {
                     self.playing = false;
                     self.end = None;
                     self.looped = None;
+                    self.stream_start_us = 0;
+                    self.rendered_samples = 0;
                     self.mix.reset();
                 }
                 Cmd::Locate(at) => {
                     self.pos = at;
                     self.pending_len = 0;
                     self.read = 0.0;
+                    self.stream_start_us = 0;
+                    self.rendered_samples = 0;
                     self.mix.reset();
                 }
             }
@@ -305,6 +325,41 @@ impl AudioState {
             }
             ring.pop_into(&mut self.mix.input, n, self.session.sample_rate.hz());
         }
+        self.mix.midi_input.clear();
+        if let Some(ring) = &self.midi_input {
+            let sr = self.session.sample_rate.as_f64().max(1.0);
+            if self.stream_start_us == 0 {
+                self.stream_start_us = midi::monotonic_now_us();
+                self.rendered_samples = 0;
+            }
+            let block_start_us = self.stream_start_us.saturating_add((self.rendered_samples as f64 * 1_000_000.0 / sr) as u64);
+            self.rendered_samples = self.rendered_samples.saturating_add(n as u64);
+
+            while let Some(ev) = ring.pop() {
+                let sample_offset = if ev.timestamp_us > 0 && ev.timestamp_us >= block_start_us {
+                    let elapsed_us = ev.timestamp_us.saturating_sub(block_start_us);
+                    ((elapsed_us as f64 * sr / 1_000_000.0) as usize).min(n.saturating_sub(1))
+                } else {
+                    0
+                };
+                if self.mix.midi_input.len() < self.mix.midi_input.capacity() {
+                    self.mix.midi_input.push((sample_offset, ev));
+                }
+                let is_panic_cc = ev.is_control_change() && (ev.cc_controller() == 120 || ev.cc_controller() == 123);
+                if !is_panic_cc
+                    && self.recording
+                    && self.playing
+                    && let Some(rec_ring) = &self.midi_record
+                {
+                    let at_sample = self.pos.saturating_add(sample_offset as i64);
+                    for t in &self.session.tracks {
+                        if t.kind.is_midi() && t.mixer.record_arm && !t.inactive && t.matches_midi_channel(ev.channel()) {
+                            rec_ring.push(midi::RecordedMidiEvent { track_id: t.id.0, at_sample, event: ev });
+                        }
+                    }
+                }
+            }
+        }
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
         self.mix.render(&self.session, self.pos, n, &mut self.pending);
@@ -331,7 +386,16 @@ impl AudioState {
     fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
         let channels = channels.max(1);
-        let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        let audio_monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        let midi_monitoring = self.midi_input.is_some()
+            && self.session.tracks.iter().any(|t| {
+                t.kind.is_midi()
+                    && (t.mixer.input_monitor
+                        || t.mixer.record_arm
+                        || (self.session.edit.flag("options.midi_thru") && self.session.edit.selected_tracks.contains(&t.id)))
+            });
+        let midi_has_events = self.midi_input.as_ref().is_some_and(|r| !r.is_empty());
+        let monitoring = audio_monitoring || midi_monitoring || midi_has_events;
         if !self.playing && !monitoring {
             out.iter_mut().for_each(|x| *x = 0.0);
             if let Ok(mut m) = self.shared.meters.try_lock() {
@@ -466,6 +530,8 @@ pub struct Player {
     pub device_buffer: Option<u32>,
     /// True when no audio device could be opened (silent clock).
     pub silent: bool,
+    pub midi_input: Arc<midi::MidiInputRing>,
+    pub midi_record: Arc<midi::MidiRecordRing>,
 }
 
 impl Player {
@@ -512,6 +578,8 @@ impl Player {
         let want_ch = u16::try_from(main_channels(&session)).unwrap_or(2);
         let side_rate = session.sample_rate.as_f64() as f32;
         let new_side = |garbage: Receiver<Vec<Box<dyn Plugin>>>| Mutex::new(Side::new(side_rate, garbage));
+        let midi_input = midi::MidiInputRing::new(midi::DEFAULT_RING_CAPACITY);
+        let midi_record = midi::MidiRecordRing::new(midi::DEFAULT_RING_CAPACITY);
         match open_device(want, want_ch, cfg) {
             Ok((device, config, format, name)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
@@ -525,6 +593,8 @@ impl Player {
                     let (tx, rx) = channel();
                     let (gtx, grx) = channel();
                     let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
+                    let _ = tx.send(Cmd::MidiInput(Arc::clone(&midi_input)));
+                    let _ = tx.send(Cmd::MidiRecord(Arc::clone(&midi_record)));
                     let fault = Arc::new(Fault::default());
                     use cpal::traits::StreamTrait;
                     let built = match format {
@@ -558,6 +628,8 @@ impl Player {
                                 device_channels: config.channels,
                                 device_buffer: buffer,
                                 silent: false,
+                                midi_input,
+                                midi_record,
                             };
                         }
                         Err(e) => log::warn!("cannot open audio stream ({:?}): {e}", config.buffer_size),
@@ -566,13 +638,13 @@ impl Player {
                 log::warn!("no usable audio stream; using a silent clock");
                 let (tx, rx) = channel();
                 let (gtx, grx) = channel();
-                Player::silent_clock(shared, tx, rx, want, new_side(grx), gtx)
+                Player::silent_clock(shared, tx, rx, want, new_side(grx), gtx, midi_input, midi_record)
             }
             Err(e) => {
                 log::warn!("no audio output: {e}; using a silent clock");
                 let (tx, rx) = channel();
                 let (gtx, grx) = channel();
-                Player::silent_clock_with(shared, tx, rx, Arc::clone(&session), new_side(grx), gtx)
+                Player::silent_clock_with(shared, tx, rx, Arc::clone(&session), new_side(grx), gtx, midi_input, midi_record)
             }
         }
     }
@@ -584,9 +656,11 @@ impl Player {
         rate: u32,
         side: Mutex<Side>,
         gtx: Sender<Vec<Box<dyn Plugin>>>,
+        midi_input: Arc<midi::MidiInputRing>,
+        midi_record: Arc<midi::MidiRecordRing>,
     ) -> Player {
         let s = Arc::new(Session::new("Untitled", soundcraft_time::SampleRate::new(rate).unwrap_or_default()));
-        Player::silent_clock_with(shared, tx, rx, s, side, gtx)
+        Player::silent_clock_with(shared, tx, rx, s, side, gtx, midi_input, midi_record)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -597,8 +671,12 @@ impl Player {
         session: Arc<Session>,
         side: Mutex<Side>,
         gtx: Sender<Vec<Box<dyn Plugin>>>,
+        midi_input: Arc<midi::MidiInputRing>,
+        midi_record: Arc<midi::MidiRecordRing>,
     ) -> Player {
         let rate = session.sample_rate.hz();
+        let _ = tx.send(Cmd::MidiInput(Arc::clone(&midi_input)));
+        let _ = tx.send(Cmd::MidiRecord(Arc::clone(&midi_record)));
         let mut state = AudioState::new(rx, Arc::clone(&shared), session, f64::from(rate), gtx);
         let fault = Arc::new(Fault::default());
         let failed = Arc::clone(&fault);
@@ -635,6 +713,8 @@ impl Player {
             device_channels: 0,
             device_buffer: None,
             silent: true,
+            midi_input,
+            midi_record,
         }
     }
 
@@ -646,7 +726,11 @@ impl Player {
         session: Arc<Session>,
         side: Mutex<Side>,
         _gtx: Sender<Vec<Box<dyn Plugin>>>,
+        midi_input: Arc<midi::MidiInputRing>,
+        midi_record: Arc<midi::MidiRecordRing>,
     ) -> Player {
+        let _ = tx.send(Cmd::MidiInput(Arc::clone(&midi_input)));
+        let _ = tx.send(Cmd::MidiRecord(Arc::clone(&midi_record)));
         Player {
             shared,
             fault: Arc::default(),
@@ -658,6 +742,8 @@ impl Player {
             device_channels: 0,
             device_buffer: None,
             silent: true,
+            midi_input,
+            midi_record,
         }
     }
 
@@ -736,6 +822,34 @@ impl Player {
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.
     pub fn set_input(&self, ring: Arc<record::InputRing>) {
         let _ = self.tx.send(Cmd::Input(ring));
+    }
+
+    /// Feed live MIDI events (from a `midi::MidiManager` or virtual keyboard) into the audio callback.
+    pub fn set_midi_input(&self, ring: Arc<midi::MidiInputRing>) {
+        let _ = self.tx.send(Cmd::MidiInput(ring));
+    }
+
+    /// Access the lock-free live MIDI input ring buffer.
+    pub fn midi_input_ring(&self) -> Arc<midi::MidiInputRing> {
+        Arc::clone(&self.midi_input)
+    }
+
+    /// Emergency silence: send All Sound Off (CC 120) and All Notes Off (CC 123) across all channels.
+    pub fn panic_all_notes_off(&self) {
+        for ch in 0..16u8 {
+            self.midi_input.push(soundcraft_midi::LiveMidiEvent::all_sound_off(ch));
+            self.midi_input.push(soundcraft_midi::LiveMidiEvent::all_notes_off(ch));
+        }
+    }
+
+    /// Access the lock-free MIDI recording ring where captured MIDI events are delivered.
+    pub fn midi_record_ring(&self) -> Arc<midi::MidiRecordRing> {
+        Arc::clone(&self.midi_record)
+    }
+
+    /// Swap the lock-free MIDI recording ring.
+    pub fn set_midi_record(&self, ring: Arc<midi::MidiRecordRing>) {
+        let _ = self.tx.send(Cmd::MidiRecord(ring));
     }
 
     pub fn set_recording(&self, on: bool) {
@@ -1305,5 +1419,81 @@ mod tests {
         st.fill(&mut out, 2);
         assert!(out.iter().any(|x| x.abs() > 0.1), "the input is heard");
         assert!(shared.meters.lock().unwrap().tracks.get(&t).is_some_and(|m| m.peak[0] > 0.1), "and metered");
+    }
+
+    #[test]
+    fn armed_instrument_tracks_audition_live_midi_when_stopped() {
+        use crate::midi::MidiInputRing;
+        use soundcraft_midi::LiveMidiEvent;
+        use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+
+        let mut s = soundcraft_model::Session::default();
+        let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        let mut ins = Insert::new("subtractive_synth");
+        ins.params.insert("level".into(), -6.0);
+        s.track_mut(t).unwrap().instrument = Some(ins);
+        s.track_mut(t).unwrap().mixer.record_arm = true;
+
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        });
+        let (tx, rx) = channel();
+        let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
+
+        let midi_ring = Arc::new(MidiInputRing::new(1024));
+        tx.send(Cmd::MidiInput(Arc::clone(&midi_ring))).unwrap();
+
+        let mut out = vec![0.0f32; 2 * 512];
+        st.fill(&mut out, 2);
+        assert!(out.iter().all(|x| x.abs() < 1e-6), "silent before note on");
+
+        // Push Note On (channel 0, pitch 60, vel 100)
+        assert!(midi_ring.push(LiveMidiEvent { port_id: 0, timestamp_us: 100, len: 3, data: [0x90, 60, 100] }));
+
+        st.fill(&mut out, 2);
+        assert!(out.iter().any(|x| x.abs() > 1e-4), "armed instrument must produce audio on live note on");
+    }
+
+    #[test]
+    fn recording_captures_live_midi_events_into_record_ring() {
+        use crate::midi::{MidiInputRing, MidiRecordRing};
+        use soundcraft_midi::LiveMidiEvent;
+        use soundcraft_model::{ChannelFormat, TrackKind};
+
+        let mut s = soundcraft_model::Session::default();
+        let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        s.track_mut(t).unwrap().mixer.record_arm = true;
+
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(true),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        });
+        let (tx, rx) = channel();
+        let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
+
+        let midi_in = Arc::new(MidiInputRing::new(64));
+        let midi_rec = Arc::new(MidiRecordRing::new(64));
+        tx.send(Cmd::MidiInput(Arc::clone(&midi_in))).unwrap();
+        tx.send(Cmd::MidiRecord(Arc::clone(&midi_rec))).unwrap();
+        tx.send(Cmd::Recording(true)).unwrap();
+        tx.send(Cmd::Play { from: 1000, end: None, looped: None }).unwrap();
+
+        let mut out = vec![0.0f32; 2 * 512];
+        st.fill(&mut out, 2);
+
+        // Push Note On
+        assert!(midi_in.push(LiveMidiEvent { port_id: 0, timestamp_us: 100, len: 3, data: [0x90, 60, 100] }));
+        st.fill(&mut out, 2);
+
+        assert_eq!(midi_rec.len(), 1);
+        let rec = midi_rec.pop().unwrap();
+        assert_eq!(rec.track_id, t.0);
+        assert_eq!(rec.event.note_pitch(), 60);
+        assert_eq!(rec.event.note_velocity(), 100);
     }
 }
