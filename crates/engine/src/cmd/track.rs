@@ -12,7 +12,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New...",
             ["Track"],
             Some("Cmd+Shift+N"),
-            "{count?: 1, format?: mono|stereo|5.1…, kind?: audio|aux|master|midi|instrument|vca|folder, name?, timebase?: samples|ticks, instrument?: plugin id}",
+            "{count?: 1, format?: mono|stereo|5.1…, kind?: audio|aux|master|midi|instrument|vca|folder, name?, timebase?: samples|ticks, instrument?: plugin id, rows?: [objects with the same fields] (1–128 tracks total)}",
             always,
             new_track
         ),
@@ -229,6 +229,35 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 fn new_track(e: &mut Engine, p: &Value) -> Result<Value> {
+    let ids = if let Some(rows) = p.get("rows") {
+        let rows = rows.as_array().ok_or_else(|| bad("track.new", "`rows` must be an array"))?;
+        if rows.is_empty() || rows.len() > 128 {
+            return Err(bad("track.new", "`rows` must contain 1–128 rows"));
+        }
+        let mut total = 0_i64;
+        for row in rows {
+            if !row.is_object() || row.get("rows").is_some() {
+                return Err(bad("track.new", "each row must be an object without nested rows"));
+            }
+            total = total.saturating_add(i64_or(row, "count", 1).clamp(1, 128));
+        }
+        if total > 128 {
+            return Err(bad("track.new", "a single creation is limited to 128 tracks"));
+        }
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.extend(new_track_row(e, row)?);
+        }
+        ids
+    } else {
+        new_track_row(e, p)?
+    };
+    e.session_mut().edit.selected_tracks = ids.clone();
+    Ok(json!({"tracks": ids}))
+}
+
+/// All rows run inside one command, so failures roll back and Undo covers the whole creation.
+fn new_track_row(e: &mut Engine, p: &Value) -> Result<Vec<TrackId>> {
     let count = i64_or(p, "count", 1).clamp(1, 128);
     let kind = match str_param(p, "kind") {
         Some(k) => TrackKind::from_id(k).ok_or_else(|| bad("track.new", format!("unknown kind `{k}`")))?,
@@ -268,8 +297,7 @@ fn new_track(e: &mut Engine, p: &Value) -> Result<Value> {
         }
         ids.push(id);
     }
-    s.edit.selected_tracks = ids.clone();
-    Ok(json!({"tracks": ids}))
+    Ok(ids)
 }
 
 fn group(e: &mut Engine, p: &Value) -> Result<Value> {

@@ -10,7 +10,7 @@ use soundcraft_time::Samples;
 
 #[derive(Debug, Clone)]
 pub enum Dialog {
-    NewTracks { count: u32, format: String, kind: String, timebase: String, name: String },
+    NewTracks(crate::new_tracks::NewTracks),
     NewSession { name: String, sample_rate: u32, demo: bool },
     Bounce { path: String, format: String, bit_depth: String, normalize: bool },
     RenameTrack { id: TrackId, name: String },
@@ -39,7 +39,7 @@ pub struct Dialogs {
 impl Dialogs {
     pub fn open_name(&self) -> Option<&'static str> {
         self.open.as_ref().map(|d| match d {
-            Dialog::NewTracks { .. } => "new_tracks",
+            Dialog::NewTracks(_) => "new_tracks",
             Dialog::NewSession { .. } => "new_session",
             Dialog::Bounce { .. } => "bounce",
             Dialog::RenameTrack { .. } => "rename_track",
@@ -88,9 +88,7 @@ impl Dialogs {
                 let ed = &e.session().edit;
                 return self.open_clear(e, ed.selected_clips.clone(), ed.selected_sources.clone());
             }
-            "track.new" => {
-                Dialog::NewTracks { count: 1, format: "Mono".into(), kind: "audio".into(), timebase: "samples".into(), name: "Audio".into() }
-            }
+            "track.new" => Dialog::NewTracks(crate::new_tracks::NewTracks::default()),
             "session.new" => Dialog::NewSession { name: "Untitled".into(), sample_rate: 48_000, demo: false },
             "file.bounce_mix" => {
                 let dir = e
@@ -271,7 +269,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let mut save_first: Option<(String, Value)> = None;
     let confirmed = matches!(d, Dialog::SaveChanges { .. });
     let title = match &d {
-        Dialog::NewTracks { .. } => "New Tracks",
+        Dialog::NewTracks(_) => "New Tracks",
         Dialog::NewSession { .. } => "New Session",
         Dialog::Bounce { .. } => "Bounce Mix",
         Dialog::RenameTrack { .. } => "Rename Track",
@@ -299,40 +297,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             match &mut d {
-                Dialog::NewTracks { count, format, kind, timebase, name } => {
-                    ui.horizontal(|ui| {
-                        ui.label("Create");
-                        ui.add(egui::DragValue::new(count).range(1..=128));
-                        ui.label("new");
-                        egui::ComboBox::from_id_salt("nt_fmt").selected_text(format.as_str()).show_ui(ui, |ui| {
-                            for f in soundcraft_model::ChannelFormat::ALL {
-                                ui.selectable_value(format, f.label().to_string(), f.label());
-                            }
-                        });
-                        egui::ComboBox::from_id_salt("nt_kind")
-                            .selected_text(soundcraft_model::TrackKind::from_id(kind).map_or("Audio Track", |k| k.label()))
-                            .show_ui(ui, |ui| {
-                                for k in soundcraft_model::TrackKind::ALL {
-                                    if ui.selectable_label(kind == k.id(), k.label()).clicked() {
-                                        *kind = k.id().to_string();
-                                        *name = k.default_name().to_string();
-                                    }
-                                }
-                            });
-                        ui.label("in");
-                        egui::ComboBox::from_id_salt("nt_tb").selected_text(if timebase == "ticks" { "Ticks" } else { "Samples" }).show_ui(
-                            ui,
-                            |ui| {
-                                ui.selectable_value(timebase, "samples".to_string(), "Samples");
-                                ui.selectable_value(timebase, "ticks".to_string(), "Ticks");
-                            },
-                        );
-                        ui.label("Name:");
-                        ui.add(egui::TextEdit::singleline(name).desired_width(140.0));
-                    });
-                    if buttons(ui, "Create", enter) {
-                        action =
-                            Some(("track.new".into(), json!({"count": count, "format": format, "kind": kind, "timebase": timebase, "name": name})));
+                Dialog::NewTracks(tracks) => {
+                    if let Some(params) = tracks.show(ui, enter) {
+                        action = Some(("track.new".into(), params));
                     }
                 }
                 Dialog::NewSession { name, sample_rate, demo } => {
@@ -635,13 +602,17 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
 
 /// Cancel/OK row; returns true when OK was pressed (or Enter).
 fn buttons(ui: &mut egui::Ui, ok: &str, enter: bool) -> bool {
-    let mut pressed = enter;
+    buttons_enabled(ui, ok, enter, true)
+}
+
+pub(crate) fn buttons_enabled(ui: &mut egui::Ui, ok: &str, enter: bool, enabled: bool) -> bool {
+    let mut pressed = enter && enabled;
     ui.separator();
     ui.horizontal(|ui| {
         if ui.button("Cancel").clicked() {
             ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::new("dlg_cancel"), true));
         }
-        if ui.add(egui::Button::new(egui::RichText::new(ok).strong()).fill(Tokens::current().accent)).clicked() {
+        if ui.add_enabled(enabled, egui::Button::new(egui::RichText::new(ok).strong()).fill(Tokens::current().accent)).clicked() {
             pressed = true;
         }
     });
@@ -719,6 +690,171 @@ fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::new_tracks::set_new_track_kind;
+
+    fn tracks_dialog(os: egui::os::OperatingSystem) -> (egui::Context, SoundApp) {
+        let ctx = egui::Context::default();
+        ctx.set_os(os);
+        crate::fonts::install(&ctx);
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        assert!(app.dialogs.open_for_command(&app.engine, "track.new"));
+        for _ in 0..3 {
+            dialog_frame(&ctx, &mut app, vec![]);
+        }
+        (ctx, app)
+    }
+
+    fn dialog_frame(ctx: &egui::Context, app: &mut SoundApp, events: Vec<egui::Event>) {
+        let raw =
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1600.0, 1000.0))), events, ..Default::default() };
+        let mut output = ctx.run_ui(raw, |ui| {
+            crate::shortcuts::handle(app, ui.ctx());
+            show(app, ui.ctx());
+        });
+        output.textures_delta.clear();
+    }
+
+    fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    fn track_fields(app: &SoundApp) -> (u32, &str, &str, &str, &str) {
+        match app.dialogs.open.as_ref().unwrap() {
+            Dialog::NewTracks(tracks) => {
+                let row = tracks.active_row().unwrap();
+                (row.count, &row.format, &row.kind, &row.timebase, &row.name)
+            }
+            other => panic!("unexpected dialog: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn new_tracks_focus_selects_count_and_arrows_clamp_it() {
+        let (ctx, mut app) = tracks_dialog(egui::os::OperatingSystem::Mac);
+        dialog_frame(&ctx, &mut app, vec![egui::Event::Text("7".into())]);
+        assert_eq!(track_fields(&app).0, 7, "typing must replace the selected initial value");
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowUp, egui::Modifiers::NONE)]);
+        assert_eq!(track_fields(&app).0, 8);
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowDown, egui::Modifiers::NONE)]);
+        assert_eq!(track_fields(&app).0, 7);
+        if let Some(Dialog::NewTracks(tracks)) = &mut app.dialogs.open {
+            tracks.rows[0].count = 128;
+        }
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowUp, egui::Modifiers::NONE)]);
+        assert_eq!(track_fields(&app).0, 128);
+        if let Some(Dialog::NewTracks(tracks)) = &mut app.dialogs.open {
+            tracks.rows[0].count = 1;
+        }
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowDown, egui::Modifiers::NONE)]);
+        assert_eq!(track_fields(&app).0, 1);
+    }
+
+    #[test]
+    fn new_tracks_mac_chords_change_settings_without_changing_count() {
+        for ctrl in [false, true] {
+            let (ctx, mut app) = tracks_dialog(egui::os::OperatingSystem::Mac);
+            let cmd = egui::Modifiers { command: true, mac_cmd: true, ctrl, ..Default::default() };
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowRight, cmd)]);
+            assert_eq!(track_fields(&app), (1, "Stereo", "audio", "samples", "Audio"));
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowLeft, cmd)]);
+            assert_eq!(track_fields(&app).1, "Mono");
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowLeft, cmd)]);
+            assert_eq!(track_fields(&app).1, soundcraft_model::ChannelFormat::ALL.last().unwrap().label());
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowRight, cmd)]);
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowDown, cmd)]);
+            assert_eq!(track_fields(&app), (1, "Mono", "aux", "samples", "Aux"));
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowUp, cmd)]);
+            assert_eq!(track_fields(&app).2, "audio");
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowUp, cmd)]);
+            assert_eq!(track_fields(&app).2, "video");
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowDown, cmd)]);
+            assert_eq!(track_fields(&app).4, "Audio");
+            assert!(app.engine.session().tracks.is_empty());
+        }
+        let (ctx, mut app) = tracks_dialog(egui::os::OperatingSystem::Mac);
+        let cmd_alt = egui::Modifiers { command: true, mac_cmd: true, alt: true, ..Default::default() };
+        for (arrow, expected) in [(egui::Key::ArrowDown, "ticks"), (egui::Key::ArrowUp, "samples")] {
+            dialog_frame(&ctx, &mut app, vec![key(arrow, cmd_alt)]);
+            assert_eq!(track_fields(&app).3, expected);
+            assert_eq!(track_fields(&app).0, 1);
+            assert_eq!(track_fields(&app).2, "audio");
+        }
+    }
+
+    #[test]
+    fn new_tracks_type_changes_preserve_custom_names() {
+        let (ctx, mut app) = tracks_dialog(egui::os::OperatingSystem::Mac);
+        if let Some(Dialog::NewTracks(tracks)) = &mut app.dialogs.open {
+            tracks.rows[0].name = "Dialogue cinema".into();
+        }
+        let cmd = egui::Modifiers { command: true, mac_cmd: true, ..Default::default() };
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowDown, cmd)]);
+        assert_eq!(track_fields(&app).4, "Dialogue cinema");
+        let mut kind = "audio".to_string();
+        let mut name = "Audio".to_string();
+        set_new_track_kind(&mut kind, &mut name, soundcraft_model::TrackKind::Instrument);
+        assert_eq!(name, "Inst");
+        name = "Foley".to_string();
+        set_new_track_kind(&mut kind, &mut name, soundcraft_model::TrackKind::Aux);
+        assert_eq!(name, "Foley");
+    }
+
+    #[test]
+    fn new_tracks_enter_creates_and_escape_cancels_on_each_platform() {
+        for os in [egui::os::OperatingSystem::Mac, egui::os::OperatingSystem::Windows, egui::os::OperatingSystem::Nix] {
+            let (ctx, mut app) = tracks_dialog(os);
+            dialog_frame(&ctx, &mut app, vec![egui::Event::Text("3".into())]);
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+            assert!(app.dialogs.open.is_none());
+            assert_eq!(app.engine.session().tracks.len(), 3);
+            assert!(app.engine.session().markers.is_empty(), "Enter must not add a background marker");
+            assert!(app.dialogs.open_for_command(&app.engine, "track.new"));
+            dialog_frame(&ctx, &mut app, vec![]);
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
+            assert!(app.dialogs.open.is_none());
+            assert_eq!(app.engine.session().tracks.len(), 3);
+        }
+    }
+
+    #[test]
+    fn new_tracks_windows_and_linux_chords_cover_every_field_and_row_action() {
+        for os in [egui::os::OperatingSystem::Windows, egui::os::OperatingSystem::Nix] {
+            let (ctx, mut app) = tracks_dialog(os);
+            let ctrl = egui::Modifiers { command: true, ctrl: true, ..Default::default() };
+
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowRight, ctrl)]);
+            assert_eq!(track_fields(&app).1, "Stereo");
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowLeft, ctrl)]);
+            assert_eq!(track_fields(&app).1, "Mono");
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowDown, ctrl)]);
+            assert_eq!(track_fields(&app).2, "aux");
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowUp, ctrl)]);
+            assert_eq!(track_fields(&app).2, "audio");
+
+            let ctrl_alt = egui::Modifiers { alt: true, ..ctrl };
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowDown, ctrl_alt)]);
+            assert_eq!(track_fields(&app).3, "ticks");
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowUp, ctrl_alt)]);
+            assert_eq!(track_fields(&app).3, "samples");
+
+            for alt in [false, true] {
+                let rows = egui::Modifiers { shift: true, alt, ..ctrl };
+                dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowDown, rows)]);
+                let Some(Dialog::NewTracks(tracks)) = &app.dialogs.open else { panic!("missing dialog") };
+                assert_eq!(tracks.rows.len(), 2);
+                dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowUp, rows)]);
+                let Some(Dialog::NewTracks(tracks)) = &app.dialogs.open else { panic!("missing dialog") };
+                assert_eq!(tracks.rows.len(), 1);
+            }
+
+            let Some(Dialog::NewTracks(tracks)) = &mut app.dialogs.open else { panic!("missing dialog") };
+            tracks.rows[0].kind = "video".into();
+            tracks.rows[0].timebase = "ticks".into();
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowRight, ctrl), key(egui::Key::ArrowUp, ctrl_alt)]);
+            assert_eq!(track_fields(&app).1, "Mono", "Video has no format control");
+            assert_eq!(track_fields(&app).3, "ticks", "Video has no timebase control");
+        }
+    }
 
     #[test]
     fn file_commands_get_path_prompts_with_sensible_names() {

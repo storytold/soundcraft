@@ -161,6 +161,16 @@ Useful shortcuts: <kbd>Space</kbd> play/stop, <kbd>⌘</kbd><kbd>=</kbd> Mix/Edi
 separate, <kbd>⌘</kbd><kbd>D</kbd> duplicate, <kbd>Enter</kbd> new marker, <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd>
 new tracks. **Setup › Keyboard Shortcuts** lists them all.
 
+In **New Tracks**, each row has its own count, format, type, Samples/Ticks timebase and name.
+Use **+** to add a row below or **−** to remove it; **Create** makes all rows in order, with one
+Undo step (up to 128 tracks per creation). The last row stays available. The dropdown widths
+fit their longest option and remain fixed when the selection changes.
+
+On macOS, **⌘←/→** changes the active row's format, **⌘↑/↓** its type (also with **⌃**),
+and **⌥⌘↑/↓** its timebase. **⇧⌃⌘↓/↑** adds/removes the active row, also with **⌥**;
+**⇧⌘↓/↑** works too. Windows/Linux use **Ctrl** for **⌘**. The active row follows the
+field you click. A new row starts with its count focused and selected; Enter creates and Escape cancels.
+
 ### Logs
 
 The desktop app writes its `log` records to standard error and to `logs/soundcraft.log` in the

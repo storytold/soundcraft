@@ -16,6 +16,7 @@ pub mod icons;
 pub mod menus;
 pub mod midi_editor;
 pub mod mix_window;
+pub mod new_tracks;
 pub mod ops_windows;
 pub mod palette;
 pub mod panels;
