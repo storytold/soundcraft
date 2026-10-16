@@ -103,3 +103,21 @@ fn new_midi_clip_is_in_the_clip_menu() {
     let clip = tree.iter().find(|n| n.label == "Clip").unwrap();
     assert_eq!(clip.children[0].label, "New MIDI Clip", "creates rather than edits, so it comes first");
 }
+
+#[test]
+fn remove_sync_point_follows_identify_and_is_greyed_out_without_a_point() {
+    let tree = menus::tree();
+    let clip = tree.iter().find(|n| n.label == "Clip").unwrap();
+    let labels: Vec<&str> = clip.children.iter().map(|n| n.label.as_str()).collect();
+    let at = labels.iter().position(|l| *l == "Identify Sync Point").unwrap();
+    assert_eq!(labels.get(at + 1), Some(&"Remove Sync Point"));
+    let path = &clip.children[at + 1].path;
+    let id = menus::command_for_path(path, &menus::ui_aliases());
+    assert_eq!(id.as_deref(), Some("clip.remove_sync_point"));
+
+    let mut app = soundcraft_ui_egui::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, soundcraft_ui_egui::Services::default());
+    app.engine.execute("edit.select", &serde_json::json!({"tracks": ["Kick"], "start": {"seconds": 12.0}})).unwrap();
+    assert!(!menus::item_state(&app, path, id.as_deref()).0, "the selected Kick clip has no sync point yet");
+    app.engine.execute("clip.identify_sync_point", &serde_json::json!({})).unwrap();
+    assert!(menus::item_state(&app, path, id.as_deref()).0);
+}
