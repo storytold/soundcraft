@@ -13,6 +13,8 @@ pub enum BitError {
     Eof,
     /// An Exp-Golomb code longer than 32 leading zeros.
     InvalidExpGolomb,
+    /// A NAL length-field width outside 1..=4 bytes.
+    InvalidLengthSize,
 }
 
 impl fmt::Display for BitError {
@@ -20,6 +22,7 @@ impl fmt::Display for BitError {
         match self {
             BitError::Eof => f.write_str("unexpected end of bitstream"),
             BitError::InvalidExpGolomb => f.write_str("invalid Exp-Golomb code"),
+            BitError::InvalidLengthSize => f.write_str("invalid NAL length-field size"),
         }
     }
 }
@@ -302,8 +305,11 @@ pub fn annexb_nals(data: &[u8]) -> Vec<&[u8]> {
     out
 }
 
-/// Split a length-prefixed sample (AVCC/HVCC, `length_size` 1/2/4 bytes) into NAL units.
+/// Split a length-prefixed sample (AVCC/HVCC, `length_size` 1 to 4 bytes) into NAL units.
 pub fn length_prefixed_nals(data: &[u8], length_size: usize) -> Result<Vec<&[u8]>> {
+    if !(1..=4).contains(&length_size) {
+        return Err(BitError::InvalidLengthSize);
+    }
     let mut out = Vec::new();
     let mut i = 0;
     while i < data.len() {
@@ -315,7 +321,7 @@ pub fn length_prefixed_nals(data: &[u8], length_size: usize) -> Result<Vec<&[u8]
             len = (len << 8) | data[i + k] as usize;
         }
         i += length_size;
-        if i + len > data.len() {
+        if len > data.len() - i {
             return Err(BitError::Eof);
         }
         out.push(&data[i..i + len]);
@@ -390,6 +396,14 @@ mod tests {
         assert_eq!(n, vec![&[0x67, 1, 2][..], &[0x68, 3][..], &[0x65, 9, 9][..]]);
         let l = [0, 0, 0, 2, 0x67, 1, 0, 0, 0, 1, 0x68];
         assert_eq!(length_prefixed_nals(&l, 4).unwrap(), vec![&[0x67, 1][..], &[0x68][..]]);
+    }
+
+    #[test]
+    fn length_prefixed_rejects_bad_width() {
+        let l = [0, 0, 0, 2, 0x67, 1];
+        assert_eq!(length_prefixed_nals(&l, 0), Err(BitError::InvalidLengthSize));
+        assert_eq!(length_prefixed_nals(&l, 5), Err(BitError::InvalidLengthSize));
+        assert_eq!(length_prefixed_nals(&[1, 0x67], 1).unwrap(), vec![&[0x67][..]]);
     }
 
     #[test]
