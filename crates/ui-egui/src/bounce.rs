@@ -11,9 +11,7 @@ pub fn start(app: &mut SoundApp, params: &Value) {
         app.ui.status = "A bounce is already running".into();
         return;
     }
-    // Third-party plugins keep state the session can't see: store it first.
-    app.capture_plugin_states();
-    match soundcraft_engine::cmd::bounce_job(&app.engine, params) {
+    match app.export_engine().and_then(|copy| soundcraft_engine::cmd::bounce_job(&copy, params).map_err(|error| error.to_string())) {
         Ok(job) => app.bounce = Some(job),
         Err(e) => app.ui.status = e.to_string(),
     }
