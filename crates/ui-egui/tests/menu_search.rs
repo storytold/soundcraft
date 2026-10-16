@@ -83,7 +83,7 @@ fn a_menu_opens_with_an_empty_search() {
     assert!(h.query_by_label(built_in(false, "reverb")[0].name).is_none(), "Escape closes the menu");
 
     open(&mut h, "Insert B");
-    let category = format!("{:?}", soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap().category);
+    let category = category_label(soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap().category);
     assert!(h.query_by_label_contains(&category).is_some(), "the old search is gone, so the categories show");
     type_text(&mut h, "zzzz");
     assert!(h.query_by_label("No matches").is_some());
@@ -95,7 +95,7 @@ fn a_menu_opens_with_an_empty_search() {
 fn picks_without_the_search_still_close_the_menu() {
     let first = soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap();
     let other = soundcraft_dsp::plugins().iter().find(|p| p.category == first.category && p.id != first.id).unwrap();
-    let category = format!("{:?} ⏵", first.category);
+    let category = format!("{} ⏵", category_label(first.category));
     let mut h = harness(vox());
     for (plugin, click) in [(first, egui::PointerButton::Primary), (other, egui::PointerButton::Secondary)] {
         h.get_by_label("Insert C").click_button(click);
@@ -168,4 +168,13 @@ fn scripted_keys_reach_the_search_with_the_window_in_the_background() {
     press(&mut h, Key::Enter);
     let insert = h.state().engine.session().tracks[0].mixer.inserts[0].clone().expect("Enter works without window focus, as typing does");
     assert_eq!(insert.plugin, plates[0].id);
+}
+
+/// The English caption of a plugin category's submenu.
+fn category_label(c: soundcraft_dsp::Category) -> String {
+    match c {
+        soundcraft_dsp::Category::Eq => "EQ".into(),
+        soundcraft_dsp::Category::PitchShift => "Pitch Shift".into(),
+        other => format!("{other:?}"),
+    }
 }

@@ -12,6 +12,7 @@
 //! seconds while the menu is open, because a session on a network share costs a round trip.
 
 use crate::SoundApp;
+use crate::i18n::{tr, trf};
 use serde_json::json;
 use std::path::Path;
 
@@ -84,9 +85,9 @@ impl SoundApp {
 
 /// The File › Open Recent submenu.
 pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
-    ui.menu_button("Open Recent", |ui| {
+    ui.menu_button(tr("Open Recent"), |ui| {
         if app.ui.recent_sessions.is_empty() {
-            ui.add_enabled(false, egui::Button::new("No Recent Sessions"));
+            ui.add_enabled(false, egui::Button::new(tr("No Recent Sessions")));
             return;
         }
         let now = ui.ctx().input(|i| i.time);
@@ -101,7 +102,7 @@ pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
             }
         }
         ui.separator();
-        if ui.button("Clear Recent").clicked() {
+        if ui.button(tr("Clear Recent")).clicked() {
             app.ui.recent_sessions.clear();
             app.recent_changed = true;
             ui.close();
@@ -111,7 +112,7 @@ pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
             // Through the dialog layer, so unsaved changes are asked about first.
             if let Err(e) = crate::dialogs::run_or_ask(app, "session.open", json!({"path": path})) {
                 log::warn!("{path}: {e}");
-                app.ui.status = format!("Could not open {path}: {e}");
+                app.ui.status = trf("Could not open {}: {}", &[&path, &e]);
             }
         }
     });

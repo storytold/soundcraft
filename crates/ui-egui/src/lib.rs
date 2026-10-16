@@ -12,6 +12,7 @@ pub mod docking;
 pub mod edit_window;
 pub mod extra_windows;
 pub mod fonts;
+pub mod i18n;
 pub mod icons;
 pub mod menus;
 pub mod midi_editor;
@@ -125,6 +126,8 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// Interface language (`ui.language`): English by default.
+    pub language: i18n::Language,
 }
 
 impl Default for UiState {
@@ -185,6 +188,7 @@ impl Default for UiState {
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
+            language: i18n::Language::En,
         }
     }
 }
@@ -452,11 +456,11 @@ impl SoundApp {
         self.engine.transport.playing
     }
 
-    /// Why the last Record press did nothing, for a few seconds and while it still holds.
+    /// Why the last Record press did nothing (in the interface language), for a few seconds and while it still holds.
     pub(crate) fn record_hint(&self) -> Option<&'static str> {
         let (at, why) = self.record_hint?;
         let fresh = self.last_frame.unwrap_or_default() - at < 4.0;
-        (fresh && !self.engine.session().tracks.iter().any(|t| t.mixer.record_arm)).then_some(why)
+        (fresh && !self.engine.session().tracks.iter().any(|t| t.mixer.record_arm)).then(|| i18n::tr(why))
     }
 
     /// Current transport position (playhead while playing, else the edit insertion).
@@ -531,7 +535,7 @@ impl SoundApp {
             } else {
                 "No track is record-enabled: click the R button on the track to record."
             };
-            self.ui.status = why.into();
+            self.ui.status = i18n::tr(why).into();
             self.record_hint = Some((self.last_frame.unwrap_or_default(), why));
             return;
         }
@@ -539,7 +543,7 @@ impl SoundApp {
         let takes = match self.arm_recorder() {
             Ok(takes) => takes,
             Err(err) => {
-                self.ui.status = format!("Cannot record: {err}");
+                self.ui.status = i18n::trf("Cannot record: {}", &[&i18n::tr(&err)]);
                 return;
             }
         };
@@ -646,7 +650,7 @@ impl SoundApp {
     /// plugins' own state reaches the session every two minutes (`autosave`).
     fn autosave_changes(&mut self) {
         if let Some(e) = self.autosaver.as_ref().and_then(soundcraft_engine::autosave::Autosaver::failure) {
-            self.ui.status = format!("Autosave failed: {e}");
+            self.ui.status = i18n::trf("Autosave failed: {}", &[&e]);
         }
         if self.autosave_dir.is_none() || self.engine.revision == self.autosaved_rev {
             return;
@@ -672,7 +676,7 @@ impl SoundApp {
         let Some(w) = &self.autosaver else { return false };
         let written = w.flush();
         if let Err(e) = &written {
-            self.ui.status = format!("Autosave failed: {e}");
+            self.ui.status = i18n::trf("Autosave failed: {}", &[&e]);
         }
         written.is_ok()
     }
@@ -717,16 +721,16 @@ impl SoundApp {
         self.panic_rev = self.engine.revision;
         let saved = self.engine.is_dirty() && self.write_autosave();
         self.ui.status = if saved {
-            "SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft.".into()
+            i18n::tr("SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft.").into()
         } else {
-            "SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe.".into()
+            i18n::tr("SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe.").into()
         };
     }
 
     /// Replace the open session with unsaved work an earlier run left behind.
     pub fn recover(&mut self, left: &soundcraft_engine::autosave::Leftover) {
         if self.engine.transport.recording {
-            self.ui.status = "Stop recording before recovering other work.".into();
+            self.ui.status = i18n::tr("Stop recording before recovering other work.").into();
             return;
         }
         self.close_autosave();
@@ -736,11 +740,11 @@ impl SoundApp {
                     soundcraft_engine::autosave::discard(left);
                 }
                 self.ui.status = match missing.len() {
-                    0 => format!("Recovered “{}”. Save it to keep the changes.", left.name),
-                    n => format!("Recovered “{}”, but {n} audio file(s) are missing. Save it to keep the changes.", left.name),
+                    0 => i18n::trf("Recovered “{}”. Save it to keep the changes.", &[&left.name]),
+                    n => i18n::trf("Recovered “{}”, but {} audio file(s) are missing. Save it to keep the changes.", &[&left.name, &n]),
                 };
             }
-            Err(e) => self.ui.status = format!("Couldn't recover “{}”: {e}", left.name),
+            Err(e) => self.ui.status = i18n::trf("Couldn't recover “{}”: {}", &[&left.name, &e]),
         }
     }
 
@@ -807,7 +811,7 @@ impl SoundApp {
             }
             Err(e) => {
                 self.recorder_failed = true;
-                self.ui.status = format!("No audio input: {e}");
+                self.ui.status = i18n::trf("No audio input: {}", &[&e]);
             }
         }
     }
@@ -819,24 +823,27 @@ impl SoundApp {
         let name = p.device_name.clone();
         let (cause, then) = match trouble {
             OutputTrouble::Bug => (
-                "the audio engine hit an internal error (see the log)".to_string(),
+                i18n::tr("the audio engine hit an internal error (see the log)").to_string(),
                 "Use Reconnect audio device in Setup ▸ Playback Engine, or restart SoundCraft.",
             ),
             OutputTrouble::Gone => {
-                (format!("“{name}” was disconnected"), "Plug it back in, then use Reconnect audio device in Setup ▸ Playback Engine.")
+                (i18n::trf("“{}” was disconnected", &[&name]), "Plug it back in, then use Reconnect audio device in Setup ▸ Playback Engine.")
             }
-            OutputTrouble::Stalled => (format!("“{name}” stopped asking for audio"), "Use Reconnect audio device in Setup ▸ Playback Engine."),
+            OutputTrouble::Stalled => {
+                (i18n::trf("“{}” stopped asking for audio", &[&name]), "Use Reconnect audio device in Setup ▸ Playback Engine.")
+            }
         };
+        let then = i18n::tr(then);
         let (recording, playing) = (self.engine.transport.recording, self.engine.transport.playing);
         if recording || playing {
             self.stop_play();
         }
         self.ui.status = if recording {
-            format!("Recording stopped: {cause}. The take is kept up to there. {then}")
+            i18n::trf("Recording stopped: {}. The take is kept up to there. {}", &[&cause, &then])
         } else if playing {
-            format!("Playback stopped: {cause}. {then}")
+            i18n::trf("Playback stopped: {}. {}", &[&cause, &then])
         } else {
-            format!("Audio output: {cause}. {then}")
+            i18n::trf("Audio output: {}. {}", &[&cause, &then])
         };
     }
 
@@ -849,7 +856,7 @@ impl SoundApp {
             let lost = r.lost_ms();
             if recording && lost > self.lost_shown {
                 self.lost_shown = lost;
-                self.ui.status = format!("The disk is too slow: this take has lost {lost} ms of input so far.");
+                self.ui.status = i18n::trf("The disk is too slow: this take has lost {} ms of input so far.", &[&lost]);
             }
             return;
         };
@@ -864,10 +871,11 @@ impl SoundApp {
             }
             Trouble::Disk(what) => (what, "Check the disk, then record again."),
         };
+        let (what, then) = (i18n::tr(&what), i18n::tr(then));
         self.ui.status = if recording {
-            format!("Recording stopped: {what}. The take is kept up to there. {then}")
+            i18n::trf("Recording stopped: {}. The take is kept up to there. {}", &[&what, &then])
         } else {
-            format!("Audio input: {what}. {then}")
+            i18n::trf("Audio input: {}. {}", &[&what, &then])
         };
     }
 
@@ -904,8 +912,11 @@ impl SoundApp {
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
-        self.ui.status =
-            if plan.pass.is_some() { format!("Loop-recorded {} take(s)", ids.len() / tracks) } else { format!("Recorded {} clip(s)", ids.len()) };
+        self.ui.status = if plan.pass.is_some() {
+            i18n::trf("Loop-recorded {} take(s)", &[&(ids.len() / tracks)])
+        } else {
+            i18n::trf("Recorded {} clip(s)", &[&ids.len()])
+        };
         if let Some(p) = problem {
             log::warn!("recording: {p}");
             self.ui.status = format!("{} ({p})", self.ui.status);
@@ -1122,6 +1133,7 @@ impl SoundApp {
                 ctx.request_repaint();
             }
         }
+        i18n::set(self.ui.language);
         let light = theme::wants_light(ctx, self.ui.theme);
         if self.theme_applied != Some(light) || theme::is_light() != light {
             theme::apply(ctx, light);
