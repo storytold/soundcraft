@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (alpha gate added; stage re-normalized to pre-alpha) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (shared Windows installer UI; existing folder/shortcut/launch options retained; install and uninstall completion) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -88,3 +88,19 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 |---|---|---|
 | 2026-10-10 | minor | Added the alpha gate (3 of 6 core workflows fail → pre-alpha) |
 | 2026-10-10 | major | Created from ROADMAP.md's milestones and alpha list; added M12–M17 and the beta plan with estimates |
+
+## Packaging update — 2026-10-10
+
+Windows setup now uses the shared `craft-installer` native UI source, with install/repair/remove
+completion, cancellation and failure screens. Existing MSI ownership and upgrade identities are
+preserved; unattended modes remain unattended. Source/generator checks pass; native Windows
+installer acceptance is still pending. See [setup validation](../packaging/windows/README.md).
+
+## Packaging update (2026-10-11)
+
+Windows setup now uses the suite's shared `craft-installer` UI, preserving existing folder,
+shortcut and launch options and app-owned installation policy. Install, uninstall and repair
+have explicit completion screens; cancellation and failure have separate endings. Source/profile
+checks, WiX UI library compilation for x64/x86/ARM64, PowerShell parsing and package identity
+comparisons pass. Full MSI linking and interactive Windows acceptance remain pending; see
+[Windows packaging](../packaging/windows/README.md).

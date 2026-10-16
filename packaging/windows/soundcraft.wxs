@@ -2,7 +2,7 @@
 <!--
   SoundCraft MSI (WiX Toolset v5: `dotnet tool install -g wix`). Built by package.ps1:
 
-    wix build soundcraft.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
+    wix build soundcraft.wxs installer-ui.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
 
   Per-machine install into Program Files, a Start Menu shortcut, `.scraft` sessions owned by
   SoundCraft, and SoundCraft offered under "Open with" for WAV/AIFF/FLAC/MP3 and MIDI files
@@ -30,6 +30,8 @@
     <Property Id="ARPURLUPDATEINFO" Value="https://getartcraft.com/apps/soundcraft" />
     <Property Id="ARPHELPLINK" Value="https://discord.gg/artcraft" />
 
+    <!-- Shared native setup UI, including install/uninstall completion. -->
+
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="SoundCraft" />
     </StandardDirectory>
@@ -37,7 +39,10 @@
 
     <Feature Id="Main" Title="SoundCraft" Level="1">
       <ComponentGroupRef Id="SoundcraftFiles" />
+      <ComponentGroupRef Id="CraftInstallerSettings" />
     </Feature>
+    <!-- Shared full UI; app installation policy remains below. -->
+    <UIRef Id="CraftInstallerUI" />
   </Package>
 
   <Fragment>

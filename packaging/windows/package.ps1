@@ -93,7 +93,7 @@ Copy-Item (Join-Path $Bin 'soundcraft.exe'), (Join-Path $Bin 'soundcraft-cli.exe
 # ---- MSI ---------------------------------------------------------------------------------------
 $Msi = Join-Path $Dist "soundcraft-$Version-windows-$Arch.msi"
 Invoke-Native 'wix build' {
-  wix build (Join-Path $PSScriptRoot 'soundcraft.wxs') -arch $Arch `
+  wix build (Join-Path $PSScriptRoot 'soundcraft.wxs') (Join-Path $PSScriptRoot 'installer-ui.wxs') -arch $Arch `
     -d "Version=$MsiVersion" -d "BinDir=$Stage" -d "IconPath=$(Join-Path $Root 'assets\app-icon\soundcraft.ico')" `
     -o $Msi
 }

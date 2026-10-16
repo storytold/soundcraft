@@ -2,7 +2,7 @@
 
 **Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (readiness by audience with hours to ~95 %) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (shared Windows installer UI; existing folder/shortcut/launch options retained; install and uninstall completion) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -167,3 +167,29 @@ mutated and truncated movies. Field reports from the first public week are track
 | 2026-10-10 | major | Rewritten to the progress-docs standard: stage alpha (re-normalized the same day), two numbers (breadth ~70 %, ready ~40 %), dimension/feature/language tables, hours re-calibrated; area table moved to docs/target-app-parity.md, milestones to docs/roadmap.md |
 | 2026-10-07 | major | Menu parity 94 %, ~65 % estimated feature parity, alpha list |
 | 2026-10-06 | minor | Alpha and parity estimates |
+
+## Packaging update — 2026-10-10
+
+Windows setup now uses the shared `craft-installer` native UI source, with install/repair/remove
+completion, cancellation and failure screens. Existing MSI ownership and upgrade identities are
+preserved; unattended modes remain unattended. Source/generator checks pass; native Windows
+installer acceptance with real release payloads is still pending. See [setup validation](packaging/windows/README.md).
+
+## Packaging update (2026-10-11)
+
+Windows setup now uses the suite's shared `craft-installer` UI, preserving existing folder,
+shortcut and launch options and app-owned installation policy. Install, uninstall and repair
+have explicit completion screens; cancellation and failure have separate endings. Source/profile
+checks, WiX UI library compilation for x64/x86/ARM64, PowerShell parsing and package identity
+comparisons pass. Native fixture MSI linking/UI tables pass on all three architectures, and
+Windows full UI install/repair/uninstall, x86 install/remove, folder upgrades, desktop choices
+and launch checks pass with fixtures. Native evidence and real-release acceptance limits
+are linked from
+[Windows packaging](packaging/windows/README.md).
+
+Windows Settings removal now opens the shared completion screen. Quiet install/removal
+remains unattended; Settings labels preserve compatibility with existing Launchers, and
+previous Modify policy is retained. Windows 11 fixture verification covers both installation
+scopes and x64/x86 removal, with full MSI validation on x64/x86/ARM64.
+
+- **2026-10-15** · Recovery retains autosaves whose timestamps equal the saved project. New autosave folders are created atomically and retry occupied names, preserving existing recovery data when runs collide. Regression tests cover timestamp ties and occupied folders. No readiness percentage change.
