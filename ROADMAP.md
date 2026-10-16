@@ -122,6 +122,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
+- **2026-10-13 (importing audio):** File › Import › Audio takes any number of files and asks where they go (new tracks, the selected track one after another, or the Clip List only) and from where (session start or the insertion point). Audio files dropped on the window land where they are dropped, like Pro Tools: on an audio track from the time under the pointer (on the grid when it is on), below the tracks as new tracks, on the Clip List only there; a hint says what a drop will do, and a drop is one undo step. No readiness percentage change.
 - **2026-10-13:** `mix.instrument` takes the built-in instrument's parameters in `params` (validated, clamped) and refuses any other field, so a synth setting written beside `plugin` is an error instead of being accepted and ignored (#265)
 - **2026-10-13:** A bounce of a bus that an aux returns onto lines up with the timeline: the aux insert's lookahead is compensated like the main mix's (it left the bus late and cut the end off), and tracks routed to that bus wait for it too (#246)
 - **2026-10-13:** Delay compensation covers the inserts of the master faders: a bounce of the main mix with a Maximizer on the master lines up with the same mix without it (it came out 71 samples late) (#351)

@@ -178,6 +178,7 @@ fn gutter_scroll<R>(ui: &Ui, gutter: Rect, out: &egui::scroll_area::ScrollAreaOu
 }
 
 pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
+    app.clip_list_rect = Some(ui.max_rect());
     let t = Tokens::current();
     panel_header(ui, "CLIPS");
     let items: Vec<(u64, String, bool, [u8; 3], bool)> = {

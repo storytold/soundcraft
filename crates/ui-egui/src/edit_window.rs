@@ -1862,6 +1862,11 @@ fn snap(s: &Session, at: Samples) -> Samples {
     if on { s.edit.grid.snap(at, s.sample_rate, &s.tempo, s.frame_rate) } else { at }
 }
 
+/// Where files dropped at `at` start: on the grid when the grid is on, like a clip move.
+pub(crate) fn snap_drop(s: &Session, at: Samples) -> Samples {
+    snap(s, at)
+}
+
 fn clip_at(track: &Track, at: Samples) -> Option<&Clip> {
     track.clips().iter().rev().find(|c| c.range().contains(at))
 }

@@ -13,6 +13,7 @@ pub mod edit_window;
 pub mod extra_windows;
 pub mod fonts;
 pub mod icons;
+pub mod import_audio;
 pub mod menus;
 pub mod midi_editor;
 pub mod mix_window;
@@ -193,6 +194,8 @@ impl Default for UiState {
 #[derive(Default)]
 pub struct Services {
     pub pick_open: Option<Box<dyn Fn(&str, &[&str]) -> Option<String>>>,
+    /// Like `pick_open`, choosing several files at once (empty when cancelled).
+    pub pick_open_many: Option<Box<dyn Fn(&str, &[&str]) -> Vec<String>>>,
     pub pick_save: Option<Box<dyn Fn(&str, &str) -> Option<String>>>,
     pub pick_folder: Option<Box<dyn Fn(&str) -> Option<String>>>,
 }
@@ -297,6 +300,8 @@ pub struct SoundApp {
     pub synthetic: Vec<egui::Event>,
     /// Where a dropped audio file loads into a track's sampler (last frame's rects).
     pub sample_drop_targets: Vec<(egui::Rect, TrackId)>,
+    /// The Clip List panel this frame (audio dropped there goes to the Clip List only).
+    pub clip_list_rect: Option<egui::Rect>,
     sample_reads: Vec<sampler_window::SampleRead>,
     synthetic_grace: u32,
     control_rx: Option<Receiver<ControlRequest>>,
@@ -380,6 +385,7 @@ impl SoundApp {
             focus_mix: false,
             synthetic: Vec::new(),
             sample_drop_targets: Vec::new(),
+            clip_list_rect: None,
             sample_reads: Vec::new(),
             synthetic_grace: 0,
             control_rx: None,
@@ -1217,6 +1223,7 @@ impl SoundApp {
         }
         shortcuts::handle(self, &ctx);
         self.sample_drop_targets.clear();
+        self.clip_list_rect = None;
         if !self.native_menu_bar {
             menus::menu_bar(self, ui);
         }
@@ -1237,6 +1244,7 @@ impl SoundApp {
         score_editor::show(self, &ctx);
         palette::show(self, &ctx);
         dialogs::show(self, &ctx);
+        import_audio::paint_drop_hint(self, &ctx);
         // Here, not in logic(): a covered or minimized window runs only logic(), with no vsync to pace it.
         if self.meters_live() {
             let hz = if self.ui.window == MainWindow::Mix { 60 } else { 30 };

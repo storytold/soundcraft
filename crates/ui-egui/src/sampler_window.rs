@@ -84,12 +84,20 @@ impl SoundApp {
     /// Takes this frame's dropped files: audio dropped on an instrument track or a Sampler window
     /// loads into that track's sampler (the sampler becomes its instrument). A file with a full
     /// path loads straight away; one without (the browser) waits in [`SoundApp::take_sample_reads`]
-    /// for the shell to read. Everything else is returned for the shell to open or import.
+    /// for the shell to read. Other audio files with a full path import where they were dropped
+    /// (see [`crate::import_audio::drop_target`]). Everything else is returned for the shell to
+    /// open or import.
     pub fn take_dropped_files(&mut self, ctx: &egui::Context) -> Vec<egui::DroppedFileHandle> {
         let (files, pos) = ctx.input(|i| (i.raw.dropped_files.clone(), i.pointer.latest_pos()));
         if files.is_empty() {
             return files;
         }
+        let rest = self.take_sampler_drops(files, pos);
+        self.import_dropped_audio(rest, pos)
+    }
+
+    /// The sampler's share of dropped `files`; returns the rest.
+    fn take_sampler_drops(&mut self, files: Vec<egui::DroppedFileHandle>, pos: Option<egui::Pos2>) -> Vec<egui::DroppedFileHandle> {
         let Some(track) = self.drop_track(pos) else { return files };
         let mut rest = Vec::new();
         let mut claimed = false;

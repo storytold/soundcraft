@@ -134,6 +134,31 @@ fn stamp_at_rate(stamp: u64, file_rate: u32, session_rate: u32) -> u64 {
 
 /// Decode and place an audio file. With no target track, a new track of matching width is made.
 pub fn import_audio_bytes(e: &mut Engine, name: &str, bytes: &[u8], path: Option<&str>, target: Option<TrackId>, at: Samples) -> Result<Value> {
+    let (src, frames, channels) = import_audio_source(e, name, bytes, path)?;
+    let s = e.session_mut();
+    let track = match target {
+        Some(t) => t,
+        None => {
+            let stem = Path::new(name).file_stem().and_then(|x| x.to_str()).unwrap_or("Audio").to_string();
+            s.add_track(TrackKind::Audio, ChannelFormat::for_channels(channels), Some(&stem))
+        }
+    };
+    let cid = s.new_clip_id();
+    let stem = s.source(src).map(|x| x.name.clone()).unwrap_or_default();
+    crate::edit::place_clip(s, track, Clip::audio(cid, stem, src, 0, at, frames));
+    Ok(json!({"track": track, "clip": cid, "source": src, "frames": frames, "channels": channels}))
+}
+
+/// Decodes an audio file into the session's Clip List only (a source at the session rate, no
+/// track and no clip): Pro Tools' "Clip List" import destination.
+pub fn import_audio_to_clip_list(e: &mut Engine, name: &str, bytes: &[u8], path: Option<&str>) -> Result<Value> {
+    let (src, frames, channels) = import_audio_source(e, name, bytes, path)?;
+    Ok(json!({"source": src, "frames": frames, "channels": channels}))
+}
+
+/// Decodes `bytes`, converts them to the session rate and adds them as a source. Returns the
+/// source, its length in session samples and its channel count.
+fn import_audio_source(e: &mut Engine, name: &str, bytes: &[u8], path: Option<&str>) -> Result<(SourceId, Samples, usize)> {
     let ext = Path::new(name).extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase);
     let (info, buf) = soundcraft_audio_io::decode(bytes, ext.as_deref()).map_err(|err| EngineError::Io(format!("{name}: {err}")))?;
     let buf = at_rate(buf, e.session().sample_rate.hz(), MAX_IMPORT_SAMPLES)
@@ -150,17 +175,7 @@ pub fn import_audio_bytes(e: &mut Engine, name: &str, bytes: &[u8], path: Option
         sx.time_reference = stamp_at_rate(bwf.time_reference, file_rate, session_rate);
     }
     let frames = s.source(src).map_or(0, |x| i64::try_from(x.frames).unwrap_or(0));
-    let track = match target {
-        Some(t) => t,
-        None => {
-            let stem = Path::new(name).file_stem().and_then(|x| x.to_str()).unwrap_or("Audio").to_string();
-            s.add_track(TrackKind::Audio, ChannelFormat::for_channels(channels), Some(&stem))
-        }
-    };
-    let cid = s.new_clip_id();
-    let stem = s.source(src).map(|x| x.name.clone()).unwrap_or_default();
-    crate::edit::place_clip(s, track, Clip::audio(cid, stem, src, 0, at, frames));
-    Ok(json!({"track": track, "clip": cid, "source": src, "frames": frames, "channels": channels}))
+    Ok((src, frames, channels))
 }
 
 /// Loads an audio file's bytes into an instrument track's Sampler as one undo step ("Load

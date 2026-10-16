@@ -59,7 +59,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Audio...",
             ["File", "Import"],
             Some("Cmd+Shift+I"),
-            "{path | paths: [..], track?: target track, at?: position, new_tracks?: true (default; false uses `track` or the selected audio track)}",
+            "{path | paths: [..], track?: target track, at?: position, new_tracks?: true (default; false uses `track` or the selected audio track), sequential?: true (files on one track go one after another), clip_list?: false (true: only into the Clip List, no tracks)}",
             always,
             import_audio
         ),
@@ -233,13 +233,23 @@ fn import_audio(e: &mut Engine, p: &Value) -> Result<Value> {
     if paths.is_empty() {
         return Err(bad("file.import_audio", "`path` or `paths` required"));
     }
-    let at = position_param(e, "file.import_audio", p, "at")?.unwrap_or(0).max(0);
-    let target = import_audio_target(e, p)?;
+    let mut at = position_param(e, "file.import_audio", p, "at")?.unwrap_or(0).max(0);
+    let clip_list = bool_or(p, "clip_list", false);
+    let target = if clip_list { None } else { import_audio_target(e, p)? };
+    // Several files on one track would stack at the same spot: they go one after another.
+    let sequential = target.is_some() && bool_or(p, "sequential", true);
     let mut out = Vec::new();
     for path in &paths {
         let bytes = crate::io::read_file(path)?;
         let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or("Audio").to_string();
-        let r = crate::io::import_audio_bytes(e, &name, &bytes, Some(path.as_str()), target, at)?;
+        let r = if clip_list {
+            crate::io::import_audio_to_clip_list(e, &name, &bytes, Some(path.as_str()))?
+        } else {
+            crate::io::import_audio_bytes(e, &name, &bytes, Some(path.as_str()), target, at)?
+        };
+        if sequential {
+            at = at.saturating_add(r.get("frames").and_then(Value::as_i64).unwrap_or(0)).min(MAX_POSITION);
+        }
         out.push(r);
     }
     Ok(json!({"imported": out}))
@@ -394,6 +404,41 @@ mod tests {
         assert_eq!(e.session().tracks.len(), 1);
         assert_eq!(e.session().tracks[0].kind, TrackKind::Audio);
         assert_eq!(e.session().tracks[0].format, ChannelFormat::Mono);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_audio_places_several_files_and_can_fill_the_clip_list_only() {
+        let dir = std::env::temp_dir().join(format!("sc-import-many-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (tone_wav(&dir, "a.wav"), tone_wav(&dir, "b.wav"));
+        let starts = |e: &Engine, i: usize| e.session().tracks[i].clips().iter().map(|c| c.start).collect::<Vec<_>>();
+
+        // Several files, new tracks: one track each, all at `at`, and one undo step.
+        let mut e = Engine::default();
+        e.execute("file.import_audio", &json!({"paths": [a, b], "at": 1000})).unwrap();
+        assert_eq!(e.session().tracks.len(), 2);
+        assert_eq!((starts(&e, 0), starts(&e, 1)), (vec![1000], vec![1000]));
+        assert!(e.undo());
+        assert!(e.session().tracks.is_empty() && e.session().sources.is_empty(), "one undo step takes the whole import back");
+
+        // Several files on one track: one after another, unless told otherwise.
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"count": 1, "name": "Target", "format": "mono"})).unwrap();
+        e.execute("file.import_audio", &json!({"paths": [a, b], "track": "Target", "at": 1000})).unwrap();
+        assert_eq!(starts(&e, 0), vec![1000, 1000 + 4_800]);
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"count": 1, "name": "Target", "format": "mono"})).unwrap();
+        e.execute("file.import_audio", &json!({"paths": [a], "track": "Target", "at": 0, "sequential": false})).unwrap();
+        assert_eq!(starts(&e, 0), vec![0]);
+
+        // Clip List only: sources, no tracks and no clips, whatever else is asked.
+        let mut e = Engine::default();
+        e.execute("file.import_audio", &json!({"paths": [a, b], "clip_list": true, "new_tracks": true})).unwrap();
+        assert!(e.session().tracks.is_empty());
+        assert_eq!(e.session().sources.len(), 2);
 
         let _ = std::fs::remove_dir_all(dir);
     }
