@@ -75,3 +75,37 @@ fn cmd_equals_toggles_mix_and_edit_without_zooming() {
         assert_eq!(ctx.zoom_factor(), 1.25, "{os:?}");
     }
 }
+
+#[test]
+fn pro_tools_shift_keys_bypass_inserts_and_mute_sends() {
+    for os in [OperatingSystem::Mac, OperatingSystem::Windows, OperatingSystem::Nix] {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        app.engine.execute("edit.select", &json!({"tracks": ["Snare"]})).unwrap();
+        let ctx = egui::Context::default();
+        ctx.set_os(os);
+        for (key, id) in [
+            (Key::A, "track.bypass_inserts"),
+            (Key::Num2, "track.bypass_inserts_ae"),
+            (Key::Num3, "track.bypass_inserts_fj"),
+            (Key::E, "track.bypass_eq"),
+            (Key::C, "track.bypass_dynamics"),
+            (Key::V, "track.bypass_reverb"),
+            (Key::D, "track.bypass_delay"),
+            (Key::W, "track.bypass_modulation"),
+            (Key::Q, "track.mute_sends"),
+            (Key::Num4, "track.mute_sends_ae"),
+            (Key::Num5, "track.mute_sends_fj"),
+        ] {
+            let before = app.engine.journal.len();
+            press(&ctx, &mut app, key, Modifiers::SHIFT);
+            assert_eq!(app.engine.journal.len(), before + 1, "{os:?} Shift+{key:?}: {}", app.ui.status);
+            assert_eq!(app.engine.journal.last().unwrap().0, id, "{os:?} Shift+{key:?}");
+        }
+        let muted = |app: &SoundApp| app.engine.session().track_by_name("Snare").unwrap().mixer.sends[0].as_ref().is_some_and(|s| s.mute);
+        let was = muted(&app);
+        press(&ctx, &mut app, Key::Q, Modifiers::SHIFT);
+        assert_ne!(muted(&app), was, "{os:?}");
+        press(&ctx, &mut app, Key::Q, Modifiers::SHIFT);
+        assert_eq!(muted(&app), was, "{os:?}: a second Shift+Q unmutes");
+    }
+}

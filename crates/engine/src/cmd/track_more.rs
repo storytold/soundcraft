@@ -68,38 +68,56 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             load_preset
         ),
-        cmd!("track.bypass_inserts_ae", "Inserts A-E", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| {
-            bypass_where(e, p, |i, _| i < 5)
+        cmd!(
+            "track.bypass_inserts_ae",
+            "Inserts A-E",
+            ["Track", "Bypass Inserts"],
+            Some("Shift+2"),
+            "{tracks?, bypass?: bool}",
+            has_selection,
+            |e, p| bypass_where(e, p, |i, _| i < 5)
+        ),
+        cmd!(
+            "track.bypass_inserts_fj",
+            "Inserts F-J",
+            ["Track", "Bypass Inserts"],
+            Some("Shift+3"),
+            "{tracks?, bypass?: bool}",
+            has_selection,
+            |e, p| bypass_where(e, p, |i, _| (5..10).contains(&i))
+        ),
+        cmd!(
+            "track.bypass_eq",
+            "EQ",
+            ["Track", "Bypass Inserts"],
+            Some("Shift+E"),
+            "{tracks?, bypass?: bool} — EQ plug-ins only",
+            has_selection,
+            |e, p| bypass_where(e, p, |_, c| c == Some(Category::Eq))
+        ),
+        cmd!("track.bypass_dynamics", "Dynamics", ["Track", "Bypass Inserts"], Some("Shift+C"), "{tracks?, bypass?: bool}", has_selection, |e, p| {
+            bypass_where(e, p, |_, c| c == Some(Category::Dynamics))
         }),
-        cmd!("track.bypass_inserts_fj", "Inserts F-J", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| {
-            bypass_where(e, p, |i, _| (5..10).contains(&i))
+        cmd!("track.bypass_reverb", "Reverb", ["Track", "Bypass Inserts"], Some("Shift+V"), "{tracks?, bypass?: bool}", has_selection, |e, p| {
+            bypass_where(e, p, |_, c| c == Some(Category::Reverb))
         }),
-        cmd!("track.bypass_eq", "EQ", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool} — EQ plug-ins only", has_selection, |e, p| {
-            bypass_where(e, p, |_, c| c == Some(Category::Eq))
+        cmd!("track.bypass_delay", "Delay", ["Track", "Bypass Inserts"], Some("Shift+D"), "{tracks?, bypass?: bool}", has_selection, |e, p| {
+            bypass_where(e, p, |_, c| c == Some(Category::Delay))
         }),
-        cmd!("track.bypass_dynamics", "Dynamics", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| bypass_where(
-            e,
-            p,
-            |_, c| c == Some(Category::Dynamics)
-        )),
-        cmd!("track.bypass_reverb", "Reverb", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| bypass_where(
-            e,
-            p,
-            |_, c| c == Some(Category::Reverb)
-        )),
-        cmd!("track.bypass_delay", "Delay", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| bypass_where(
-            e,
-            p,
-            |_, c| c == Some(Category::Delay)
-        )),
-        cmd!("track.bypass_modulation", "Modulation", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| {
-            bypass_where(e, p, |_, c| c == Some(Category::Modulation))
-        }),
+        cmd!(
+            "track.bypass_modulation",
+            "Modulation",
+            ["Track", "Bypass Inserts"],
+            Some("Shift+W"),
+            "{tracks?, bypass?: bool}",
+            has_selection,
+            |e, p| bypass_where(e, p, |_, c| c == Some(Category::Modulation))
+        ),
         cmd!(
             "track.mute_sends_ae",
             "Sends A-E",
             ["Track", "Mute Sends"],
-            None,
+            Some("Shift+4"),
             "{tracks?, mute?: bool} (toggles when omitted)",
             has_selection,
             |e, p| mute_sends_where(e, p, 0, 5)
@@ -108,7 +126,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "track.mute_sends_fj",
             "Sends F-J",
             ["Track", "Mute Sends"],
-            None,
+            Some("Shift+5"),
             "{tracks?, mute?: bool} (toggles when omitted)",
             has_selection,
             |e, p| mute_sends_where(e, p, 5, 10)
@@ -332,7 +350,7 @@ fn bypass_where(e: &mut Engine, p: &Value, pick: fn(usize, Option<Category>) -> 
     Ok(json!({"bypass": target, "inserts": n}))
 }
 
-fn mute_sends_where(e: &mut Engine, p: &Value, from: usize, to: usize) -> Result<Value> {
+pub(super) fn mute_sends_where(e: &mut Engine, p: &Value, from: usize, to: usize) -> Result<Value> {
     let tracks = tracks_required(e, "track.mute_sends", p)?;
     let s = e.session_mut();
     let all_muted = tracks.iter().filter_map(|t| s.track(*t)).all(|tr| tr.mixer.sends.iter().skip(from).take(to - from).flatten().all(|x| x.mute));
@@ -568,6 +586,8 @@ mod tests {
         assert!(!e.session().track_by_name("Snare").unwrap().mixer.sends[0].as_ref().unwrap().mute);
         e.execute("track.mute_sends_ae", &json!({})).unwrap();
         assert!(e.session().track_by_name("Snare").unwrap().mixer.sends[0].as_ref().unwrap().mute);
+        e.execute("track.mute_sends", &json!({})).unwrap();
+        assert!(!e.session().track_by_name("Snare").unwrap().mixer.sends[0].as_ref().unwrap().mute);
     }
 
     #[test]
