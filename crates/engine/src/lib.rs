@@ -15,6 +15,7 @@ pub mod edit;
 pub mod file_access;
 pub mod inspect;
 pub mod io;
+pub(crate) mod original_audio;
 pub mod score;
 
 use serde_json::{Value, json};
@@ -139,6 +140,28 @@ pub struct Engine {
     /// The edit selection (range, tracks) before the last change, for Restore Last Selection.
     /// Kept out of the document so selecting never marks the session modified.
     pub last_selection: Option<(soundcraft_time::Range, Vec<TrackId>)>,
+    original_store: Option<original_audio::OriginalStore>,
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        if self.original_store.is_some() {
+            let empty = Arc::new(Session::default());
+            self.doc = Arc::clone(&empty);
+            self.saved = empty;
+            self.undo.clear();
+            self.redo.clear();
+            self.release_original_store();
+        }
+        original_audio::collect_closed_scopes();
+    }
+}
+
+struct OriginalControlCleanup;
+impl Drop for OriginalControlCleanup {
+    fn drop(&mut self) {
+        original_audio::collect_closed_scopes();
+    }
 }
 
 impl Default for Engine {
@@ -169,6 +192,7 @@ impl Engine {
             merge_hold: None,
             messages: Vec::new(),
             last_selection: None,
+            original_store: None,
         }
     }
 
@@ -205,6 +229,24 @@ impl Engine {
         self.last_selection = None;
         self.revision = self.revision.wrapping_add(1);
         self.dirty = false;
+        self.release_original_store();
+    }
+
+    /// The engine runs on the control side; snapshots only send nonblocking cleanup signals.
+    fn release_original_store(&mut self) {
+        if let Some(store) = self.original_store.take() {
+            store.close();
+        }
+    }
+
+    fn prune_originals(&mut self) {
+        if !self.doc.originals.keys().any(|id| self.doc.source(*id).is_none()) {
+            return;
+        }
+        let s = Arc::make_mut(&mut self.doc);
+        let ids: std::collections::BTreeSet<_> = s.sources.iter().map(|source| source.id).collect();
+        s.originals.retain(|id, _| ids.contains(id));
+        s.pool.retain_originals(&ids);
     }
 
     /// Whether the document changed since it was opened or saved. Selecting, locating and zooming
@@ -313,6 +355,7 @@ impl Engine {
         if spec.view {
             return self.execute_view(spec, params);
         }
+        let _original_cleanup = OriginalControlCleanup;
         let before = Arc::clone(&self.doc);
         let rev = self.revision;
         let dirty = self.dirty;
@@ -326,6 +369,9 @@ impl Engine {
                 return Err(EngineError::Internal(id.to_string(), panic_message(&*p)));
             }
         };
+        if result.is_ok() {
+            self.prune_originals();
+        }
         if !Arc::ptr_eq(&before, &self.doc) {
             // Only a change to the document ends a gesture, so Stop doesn't split the pass it ends.
             self.merge_key = None;

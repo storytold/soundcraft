@@ -4,7 +4,56 @@
 use crate::SourceId;
 use soundcraft_audio_io::{AudioBuffer, FileFormat, peaks::Peaks};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc::SyncSender;
+use std::time::SystemTime;
+
+/// Versioned receipt for the exact encoded bytes supplied to a native audio import.
+/// The decoded [`Source`] remains the working audio used by edits and playback.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OriginalProvenance {
+    pub version: u32,
+    /// Generated relative name under `Original Files/`, never a referenced import path.
+    pub path: String,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+/// A control-side verification receipt. Metadata is a cache check, not proof against a
+/// concurrently modified file: open and copy boundaries verify the complete checksum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginalAssetStamp {
+    pub receipt_id: u64,
+    pub len: u64,
+    pub modified: Option<SystemTime>,
+    pub created: Option<SystemTime>,
+}
+
+/// Shared lifetime of retained encoded audio. It contains no file handles or encoded bytes.
+/// Releasing a snapshot only wakes the collector; it never touches disk on that thread.
+#[derive(Debug)]
+pub struct OriginalAssetLease {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub bytes: u64,
+    pub stamp: OriginalAssetStamp,
+    cleanup: Option<SyncSender<()>>,
+}
+
+impl OriginalAssetLease {
+    pub fn new(path: PathBuf, sha256: String, bytes: u64, stamp: OriginalAssetStamp, cleanup: Option<SyncSender<()>>) -> Self {
+        Self { path, sha256, bytes, stamp, cleanup }
+    }
+}
+
+impl Drop for OriginalAssetLease {
+    fn drop(&mut self) {
+        if let Some(cleanup) = &self.cleanup {
+            let _ = cleanup.try_send(());
+        }
+    }
+}
 
 /// Metadata for an audio file used by the session (serialised).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -79,6 +128,7 @@ impl SourceAudio {
 #[derive(Debug, Clone, Default)]
 pub struct SourcePool {
     map: BTreeMap<SourceId, Arc<SourceAudio>>,
+    originals: BTreeMap<SourceId, Arc<OriginalAssetLease>>,
 }
 
 impl SourcePool {
@@ -90,6 +140,18 @@ impl SourcePool {
     }
     pub fn remove(&mut self, id: SourceId) -> Option<Arc<SourceAudio>> {
         self.map.remove(&id)
+    }
+    pub fn insert_original(&mut self, id: SourceId, original: Arc<OriginalAssetLease>) {
+        self.originals.insert(id, original);
+    }
+    pub fn original_asset(&self, id: SourceId) -> Option<&Arc<OriginalAssetLease>> {
+        self.originals.get(&id)
+    }
+    pub fn remove_original(&mut self, id: SourceId) -> Option<Arc<OriginalAssetLease>> {
+        self.originals.remove(&id)
+    }
+    pub fn retain_originals(&mut self, ids: &std::collections::BTreeSet<SourceId>) {
+        self.originals.retain(|id, _| ids.contains(id));
     }
     pub fn contains(&self, id: SourceId) -> bool {
         self.map.contains_key(&id)
@@ -107,6 +169,9 @@ impl SourcePool {
 
 impl PartialEq for SourcePool {
     fn eq(&self, other: &Self) -> bool {
-        self.map.len() == other.map.len() && self.map.iter().zip(other.map.iter()).all(|((a, x), (b, y))| a == b && Arc::ptr_eq(x, y))
+        self.map.len() == other.map.len()
+            && self.map.iter().zip(other.map.iter()).all(|((a, x), (b, y))| a == b && Arc::ptr_eq(x, y))
+            && self.originals.len() == other.originals.len()
+            && self.originals.iter().zip(other.originals.iter()).all(|((a, x), (b, y))| a == b && Arc::ptr_eq(x, y))
     }
 }

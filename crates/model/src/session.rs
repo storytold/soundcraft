@@ -2,8 +2,8 @@
 
 use crate::clip::{bound, bound_sequence};
 use crate::{
-    Bus, BusId, ChannelFormat, Clip, ClipId, Group, GroupId, MarkerId, MarkerKind, MemoryLocation, OutputPath, Source, SourceId, SourcePool,
-    TRACK_COLORS, Track, TrackId, TrackKind, VideoSource,
+    Bus, BusId, ChannelFormat, Clip, ClipId, Group, GroupId, MarkerId, MarkerKind, MemoryLocation, OriginalProvenance, OutputPath, Source, SourceId,
+    SourcePool, TRACK_COLORS, Track, TrackId, TrackKind, VideoSource,
 };
 use soundcraft_time::{FrameRate, GridValue, Range, SampleRate, Samples, TempoMap, TimeFormat};
 
@@ -310,6 +310,9 @@ pub struct Session {
     pub key_signatures: Vec<(Samples, String)>,
     pub tracks: Vec<Track>,
     pub sources: Vec<Source>,
+    /// Optional native import receipts; old sessions and generated audio have no entries.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub originals: std::collections::BTreeMap<SourceId, OriginalProvenance>,
     /// Movies referenced by Video track clips.
     #[serde(default)]
     pub videos: Vec<VideoSource>,
@@ -353,6 +356,7 @@ impl Session {
             key_signatures: Vec::new(),
             tracks: Vec::new(),
             sources: Vec::new(),
+            originals: std::collections::BTreeMap::new(),
             videos: Vec::new(),
             busses: Vec::new(),
             outputs: vec![OutputPath { name: "Out 1-2".into(), first_channel: 0, format: ChannelFormat::Stereo }],
