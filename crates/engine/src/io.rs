@@ -4,7 +4,7 @@ use crate::{Engine, EngineError, Result};
 use serde_json::{Value, json};
 use soundcraft_audio_io::{AudioBuffer, EncodeOptions, FileFormat};
 use soundcraft_model::{BusId, ChannelFormat, Clip, ClipContent, Session, Source, SourceAudio, SourceId, TrackId, TrackKind};
-use soundcraft_time::{Range, Samples};
+use soundcraft_time::{Range, SampleRate, Samples};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -338,8 +338,64 @@ pub fn export_midi(e: &Engine, only: Option<&[TrackId]>) -> Result<Vec<u8>> {
     soundcraft_midi::write_smf(&smf).map_err(|err| EngineError::Io(err.to_string()))
 }
 
+/// Render the main mix at its session rate into an encoded memory buffer.
+pub fn bounce_bytes(e: &Engine, r: Range, opts: &EncodeOptions, normalize: bool) -> Result<(Vec<u8>, (f32, f32, f32))> {
+    bounce_bytes_with(e, r, opts, normalize, false)
+}
+
+/// The session-rate main mix, optionally folded to stereo.
+pub fn bounce_bytes_with(e: &Engine, r: Range, opts: &EncodeOptions, normalize: bool, fold_stereo: bool) -> Result<(Vec<u8>, (f32, f32, f32))> {
+    bounce_source(e, r, opts, normalize, fold_stereo, None)
+}
+
+/// The session-rate main mix or a named bus, encoded in memory.
+pub fn bounce_source(
+    e: &Engine,
+    r: Range,
+    opts: &EncodeOptions,
+    normalize: bool,
+    fold_stereo: bool,
+    bus: Option<BusId>,
+) -> Result<(Vec<u8>, (f32, f32, f32))> {
+    let output = bounce_source_at_rate(e, r, opts, normalize, fold_stereo, bus, e.session().sample_rate)?;
+    Ok((output.bytes, output.stats))
+}
+
+/// Encoded delivery and measurements of its final output-rate signal before quantization.
+#[derive(Debug)]
+pub struct BounceOutput {
+    pub bytes: Vec<u8>,
+    pub stats: (f32, f32, f32),
+    pub sample_rate: SampleRate,
+    pub frames: usize,
+}
+
+/// Use the same guarded render/delivery pipeline as a file bounce, with an in-memory sink.
+pub fn bounce_source_at_rate(
+    e: &Engine,
+    r: Range,
+    opts: &EncodeOptions,
+    normalize: bool,
+    fold_stereo: bool,
+    bus: Option<BusId>,
+    sample_rate: SampleRate,
+) -> Result<BounceOutput> {
+    let mut job = Bounce::start(e.session_arc(), None, r, opts, bus, normalize, fold_stereo, sample_rate, true)?;
+    let done = loop {
+        if let Some(done) = job.step(|| true)? {
+            break done;
+        }
+    };
+    let bytes = job.memory_output.take().ok_or_else(|| EngineError::Io("memory bounce returned no encoded audio".into()))?;
+    Ok(BounceOutput { bytes, stats: (done.peak_db, done.lufs, done.true_peak_db), sample_rate, frames: job.frames })
+}
+
+fn bounce_error(message: &str) -> EngineError {
+    EngineError::BadParams("file.bounce_mix".into(), message.into())
+}
+
 /// A bounce of the main mix, or of one bus, over a range, written to its file block by block so no
-/// bounce has to fit in memory, and rendered a slice at a time ([`Bounce::step`]) so a UI can show
+/// session-rate bounce has to fit in memory, and rendered a slice at a time ([`Bounce::step`]) so a UI can show
 /// progress. The file appears at its path only once complete; a bounce that fails, or is dropped
 /// unfinished, leaves any older file there alone.
 pub struct Bounce {
@@ -347,6 +403,16 @@ pub struct Bounce {
     path: PathBuf,
     part: PathBuf,
     range: Range,
+    sample_rate: SampleRate,
+    frames: usize,
+    source_frames: usize,
+    /// Converted deliveries retain one bounded folded render, then convert exactly once.
+    delivery: Option<Vec<Vec<f32>>>,
+    conversion: Option<soundcraft_dsp::offline::DeliveryResampler>,
+    delivered: Option<Vec<Vec<f32>>>,
+    delivered_at: usize,
+    in_memory: bool,
+    memory_output: Option<Vec<u8>>,
     bus: Option<BusId>,
     fold: Option<ChannelFormat>,
     normalize: bool,
@@ -383,34 +449,96 @@ impl Bounce {
         normalize: bool,
         fold_stereo: bool,
     ) -> Result<Bounce> {
-        if r.len() > s.sample_rate.samples(MAX_BOUNCE_SECS) {
-            return Err(EngineError::BadParams("file.bounce_mix".into(), "bounces are limited to 4 hours".into()));
+        let rate = s.sample_rate;
+        Self::start(s, Some(path), r, opts, bus, normalize, fold_stereo, rate, false)
+    }
+
+    /// An independently selected delivery rate, retaining the session-rate mixer and plugins.
+    /// Equal rates keep the existing incremental path; differing rates use bounded planar SRC.
+    pub fn new_at_rate(
+        s: Arc<Session>,
+        path: &Path,
+        r: Range,
+        opts: &EncodeOptions,
+        bus: Option<BusId>,
+        normalize: bool,
+        fold_stereo: bool,
+        sample_rate: SampleRate,
+    ) -> Result<Bounce> {
+        Self::start(s, Some(path), r, opts, bus, normalize, fold_stereo, sample_rate, true)
+    }
+
+    fn start(
+        s: Arc<Session>,
+        path: Option<&Path>,
+        r: Range,
+        opts: &EncodeOptions,
+        bus: Option<BusId>,
+        normalize: bool,
+        fold_stereo: bool,
+        sample_rate: SampleRate,
+        bounded_buffers: bool,
+    ) -> Result<Bounce> {
+        let (source_frames, frames, channels) = bounce_plan(&s, r, fold_stereo, bus, sample_rate, bounded_buffers)?;
+        let (fmt, layout_channels, fold) = bounce_layout(&s, bus, fold_stereo);
+        if layout_channels != channels {
+            return Err(bounce_error("bounce layout differs from its planned channel count"));
         }
-        let (fmt, channels, fold) = bounce_layout(&s, bus, fold_stereo);
+        let converting = sample_rate != s.sample_rate;
+        let in_memory = path.is_none();
+        let path = path.unwrap_or(Path::new("memory bounce"));
         let name = path.file_name().map_or_else(|| "bounce".into(), |n| n.to_string_lossy().into_owned());
         let part = path.with_file_name(format!("{name}.part"));
-        crate::file_access::check_write(path).map_err(EngineError::Io)?;
-        crate::file_access::check_write(&part).map_err(EngineError::Io)?;
+        if !in_memory {
+            crate::file_access::check_write(path).map_err(EngineError::Io)?;
+            crate::file_access::check_write(&part).map_err(EngineError::Io)?;
+        }
+        let delivery = if converting {
+            let mut channels_buffer = Vec::with_capacity(channels);
+            for _ in 0..channels {
+                let mut channel = Vec::new();
+                channel.try_reserve_exact(source_frames).map_err(|_| bounce_error("cannot allocate the planned conversion source buffer"))?;
+                channels_buffer.push(channel);
+            }
+            Some(channels_buffer)
+        } else {
+            None
+        };
+        let mut owns_part = false;
         let enc = (|| -> std::result::Result<_, soundcraft_audio_io::AudioError> {
-            let enc = soundcraft_audio_io::FileEncoder::new(Out::create(&part)?, opts, channels, s.sample_rate.hz(), Some(fmt.channel_mask()))?;
-            enc.check_room(u64::try_from(r.len()).unwrap_or(0))?;
+            let out = if in_memory { Out::Memory(std::io::Cursor::new(Vec::new())) } else { Out::create(&part)? };
+            owns_part = matches!(&out, Out::File(_));
+            let enc = soundcraft_audio_io::FileEncoder::new(out, opts, channels, sample_rate.hz(), Some(fmt.channel_mask()))?;
+            let encoded_frames = if bounded_buffers { frames as u64 } else { u64::try_from(r.len()).unwrap_or(0) };
+            enc.check_room(encoded_frames)?;
             Ok(enc)
         })()
         .map_err(|err| {
-            let _ = std::fs::remove_file(&part);
+            if owns_part {
+                let _ = std::fs::remove_file(&part);
+            }
             EngineError::Io(format!("{}: {err}", path.display()))
         })?;
         let render = soundcraft_mix::RangeRender::new(&s, bus, r, 1024);
-        let meter = soundcraft_dsp::meter::LoudnessMeter::new(s.sample_rate.as_f64() as f32, channels);
+        let meter = soundcraft_dsp::meter::LoudnessMeter::new(sample_rate.as_f64() as f32, channels);
         Ok(Bounce {
             session: s,
             path: path.to_path_buf(),
             part,
             range: r,
+            sample_rate,
+            frames,
+            source_frames,
+            delivery,
+            conversion: None,
+            delivered: None,
+            delivered_at: 0,
+            in_memory,
+            memory_output: None,
             bus,
             fold,
             normalize,
-            measuring: normalize,
+            measuring: normalize && !converting,
             render,
             block: Vec::new(),
             done: 0,
@@ -419,6 +547,14 @@ impl Bounce {
             meter,
             enc: Some(enc),
         })
+    }
+
+    pub fn sample_rate(&self) -> SampleRate {
+        self.sample_rate
+    }
+
+    pub fn frames(&self) -> usize {
+        self.frames
     }
 
     pub fn path(&self) -> &Path {
@@ -432,6 +568,15 @@ impl Bounce {
     /// How far along the bounce is, from 0 to 1.
     pub fn progress(&self) -> f32 {
         let pass = (self.done as f64 / self.range.len().max(1) as f64).min(1.0) as f32;
+        if self.delivery.is_some() {
+            return pass * 0.35;
+        }
+        if let Some(conversion) = &self.conversion {
+            return 0.35 + conversion.progress() * 0.5;
+        }
+        if self.delivered.is_some() {
+            return 0.85 + (self.delivered_at as f64 / self.frames as f64) as f32 * 0.15;
+        }
         match (self.normalize, self.measuring) {
             (false, _) => pass,
             (true, true) => pass / 2.0,
@@ -443,26 +588,84 @@ impl Bounce {
     /// bounce once its file is complete.
     pub fn step(&mut self, mut more: impl FnMut() -> bool) -> Result<Option<Bounced>> {
         loop {
-            match self.render.next_block(&self.session) {
-                Some((chunk, n)) => {
-                    fill(&mut self.block, chunk, n, self.fold, self.gain);
-                    self.done += n;
-                    self.peak = self.peak.max(soundcraft_dsp::offline::peak(&self.block));
-                    if !self.measuring {
-                        self.meter.process(&self.block, n);
-                        if let Some(enc) = &mut self.enc {
-                            enc.write(&self.block, n).map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?;
+            if let Some(conversion) = &mut self.conversion {
+                if conversion.step().map_err(bounce_error)? {
+                    let conversion = self.conversion.take().ok_or_else(|| bounce_error("missing conversion state"))?;
+                    let peak = conversion.peak();
+                    self.gain = if self.normalize && peak > 0.0 { soundcraft_dsp::db_to_gain(-0.1) / peak } else { 1.0 };
+                    self.delivered = Some(conversion.finish().map_err(bounce_error)?);
+                }
+            } else if let Some(delivered) = &self.delivered {
+                let end = self.delivered_at.saturating_add(1024).min(self.frames);
+                let n = end - self.delivered_at;
+                self.block.resize_with(delivered.len(), Vec::new);
+                for (block, channel) in self.block.iter_mut().zip(delivered) {
+                    block.clear();
+                    block.extend(channel.iter().skip(self.delivered_at).take(n).map(|sample| sample * self.gain));
+                }
+                self.delivered_at = end;
+                self.peak = self.peak.max(soundcraft_dsp::offline::peak(&self.block));
+                self.meter.process(&self.block, n);
+                if let Some(enc) = &mut self.enc {
+                    enc.write(&self.block, n).map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?;
+                }
+                if self.delivered_at == self.frames {
+                    return self.finish().map(Some);
+                }
+            } else {
+                match self.render.next_block(&self.session) {
+                    Some((chunk, n)) => {
+                        fill(&mut self.block, chunk, n, self.fold, self.gain);
+                        if let Some(delivery) = &mut self.delivery {
+                            if self.block.len() != delivery.len()
+                                || self.block.iter().any(|channel| channel.len() != n)
+                                || self.done.checked_add(n).is_none_or(|done| done > self.source_frames)
+                            {
+                                return Err(bounce_error("renderer did not deliver the planned channel/frame shape"));
+                            }
+                            for (target, channel) in delivery.iter_mut().zip(&self.block) {
+                                target.try_reserve(n).map_err(|_| bounce_error("cannot allocate the planned conversion source buffer"))?;
+                                target.extend_from_slice(channel);
+                            }
+                            self.done += n;
+                            if !more() {
+                                return Ok(None);
+                            }
+                            continue;
+                        }
+                        self.done += n;
+                        self.peak = self.peak.max(soundcraft_dsp::offline::peak(&self.block));
+                        if !self.measuring {
+                            self.meter.process(&self.block, n);
+                            if let Some(enc) = &mut self.enc {
+                                enc.write(&self.block, n).map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?;
+                            }
                         }
                     }
+                    None if self.delivery.is_some() => {
+                        let source = self.delivery.take().ok_or_else(|| bounce_error("missing conversion source buffer"))?;
+                        if source.iter().any(|channel| channel.len() != self.source_frames) {
+                            return Err(bounce_error("renderer did not deliver the complete requested frame shape"));
+                        }
+                        self.conversion = Some(
+                            soundcraft_dsp::offline::DeliveryResampler::new(
+                                source,
+                                self.session.sample_rate.hz(),
+                                self.sample_rate.hz(),
+                                self.frames,
+                            )
+                            .map_err(bounce_error)?,
+                        );
+                    }
+                    None if self.measuring => {
+                        self.gain = if self.peak > 0.0 { soundcraft_dsp::db_to_gain(-0.1) / self.peak } else { 1.0 };
+                        self.peak = 0.0;
+                        self.done = 0;
+                        self.measuring = false;
+                        self.render = soundcraft_mix::RangeRender::new(&self.session, self.bus, self.range, 1024);
+                    }
+                    None => return self.finish().map(Some),
                 }
-                None if self.measuring => {
-                    self.gain = if self.peak > 0.0 { soundcraft_dsp::db_to_gain(-0.1) / self.peak } else { 1.0 };
-                    self.peak = 0.0;
-                    self.done = 0;
-                    self.measuring = false;
-                    self.render = soundcraft_mix::RangeRender::new(&self.session, self.bus, self.range, 1024);
-                }
-                None => return self.finish().map(Some),
             }
             if !more() {
                 return Ok(None);
@@ -481,7 +684,22 @@ impl Bounce {
 
     fn finish(&mut self) -> Result<Bounced> {
         let bytes = match self.enc.take() {
-            Some(enc) => enc.finish().map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?.complete(&self.part, &self.path)?,
+            Some(enc) => {
+                let out = enc.finish().map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?;
+                if self.in_memory {
+                    match out {
+                        Out::Memory(memory) => {
+                            let bytes = memory.into_inner();
+                            let len = bytes.len() as u64;
+                            self.memory_output = Some(bytes);
+                            len
+                        }
+                        Out::File(_) => return Err(EngineError::Io("memory bounce returned a file sink".into())),
+                    }
+                } else {
+                    out.complete(&self.part, &self.path)?
+                }
+            }
             None => 0,
         };
         Ok(Bounced {
@@ -497,7 +715,9 @@ impl Drop for Bounce {
     /// Removes the part file unless the bounce completed (which renamed it).
     fn drop(&mut self) {
         drop(self.enc.take());
-        let _ = std::fs::remove_file(&self.part);
+        if !self.in_memory {
+            let _ = std::fs::remove_file(&self.part);
+        }
     }
 }
 
@@ -569,6 +789,70 @@ impl std::io::Seek for Out {
 }
 
 const MAX_BOUNCE_SECS: f64 = 4.0 * 3600.0;
+
+fn bounce_plan(s: &Session, r: Range, fold: bool, bus: Option<BusId>, rate: SampleRate, bounded_buffers: bool) -> Result<(usize, usize, usize)> {
+    if !bounded_buffers {
+        // The original streaming constructor also permits an empty render. Keep its behavior
+        // independent of the stricter, explicitly selected delivery-buffer plan below.
+        if r.len() > s.sample_rate.samples(MAX_BOUNCE_SECS) {
+            return Err(bounce_error("bounces are limited to 4 hours"));
+        }
+        let (_, channels, _) = bounce_layout(s, bus, fold);
+        let frames = usize::try_from(r.len()).unwrap_or(0);
+        return Ok((frames, frames, channels));
+    }
+    // Session deserialization can supply the private rate wrapper without calling its constructor.
+    if SampleRate::new(s.sample_rate.hz()).is_err() || SampleRate::new(rate.hz()).is_err() {
+        return Err(bounce_error("session and delivery sample rates must be within 8000..768000 Hz"));
+    }
+    let length =
+        r.end.checked_sub(r.start).filter(|len| *len > 0).ok_or_else(|| bounce_error("bounce range must have a positive, non-overflowing length"))?;
+    if length > s.sample_rate.samples(4.0 * 3600.0) {
+        return Err(bounce_error("bounces are limited to 4 hours"));
+    }
+    let render_channels = match bus {
+        Some(id) => s.bus(id).ok_or_else(|| bounce_error("unknown bounce bus"))?.format.channels(),
+        None => {
+            if s.outputs.first().is_some_and(|output| output.format.channels() > soundcraft_mix::MAX_CHANNELS) {
+                return Err(bounce_error("bounce rendering supports at most 16 channels"));
+            }
+            soundcraft_mix::main_channels(s)
+        }
+    };
+    if !(1..=soundcraft_mix::MAX_CHANNELS).contains(&render_channels) {
+        return Err(bounce_error("bounce rendering supports at most 16 channels"));
+    }
+    let source_frames = usize::try_from(length).map_err(|_| bounce_error("bounce source length exceeds platform limits"))?;
+    let channels = if fold && render_channels > 2 { 2 } else { render_channels };
+    // Integer round-to-nearest (half upward), not a saturated float cast. u128 keeps every
+    // input-rate/output-rate product exact on native and WASM platforms.
+    let numerator = (source_frames as u128)
+        .checked_mul(u128::from(rate.hz()))
+        .and_then(|n| n.checked_add(u128::from(s.sample_rate.hz() / 2)))
+        .ok_or_else(|| bounce_error("bounce conversion length overflow"))?;
+    let frames =
+        usize::try_from(numerator / u128::from(s.sample_rate.hz())).map_err(|_| bounce_error("bounce output length exceeds platform limits"))?;
+    if frames == 0 {
+        return Err(bounce_error("bounce converts to zero output frames; select a longer range"));
+    }
+    if rate != s.sample_rate && frames.checked_mul(channels).is_none_or(|n| n > soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES) {
+        return Err(bounce_error("bounce exceeds the sample-rate conversion allocation limit"));
+    }
+    let cap = soundcraft_mix::MAX_RENDER_SAMPLES;
+    let samples = |frames: usize, channels: usize| {
+        frames.checked_mul(channels).filter(|n| *n <= cap).ok_or_else(|| bounce_error("bounce exceeds the offline buffer allocation limit"))
+    };
+    // The renderer uses at least a stereo working path, including mono bus delivery.
+    let rendered = samples(source_frames, render_channels.max(2))?;
+    let delivered = samples(frames, channels)?;
+    let folded = if channels != render_channels { samples(source_frames, channels)? } else { 0 };
+    let render_live = rendered.checked_add(folded);
+    let conversion_live = if rate != s.sample_rate { samples(source_frames, channels)?.checked_add(delivered) } else { Some(delivered) };
+    if render_live.is_none_or(|n| n > cap) || conversion_live.is_none_or(|n| n > cap) {
+        return Err(bounce_error("bounce exceeds the offline buffer allocation limit"));
+    }
+    Ok((source_frames, frames, channels))
+}
 
 /// The format, channel count and fold-down source of a bounce of the main mix or `bus`: every
 /// channel (a mono or stereo main mix as stereo), or an ITU stereo fold-down of a surround source

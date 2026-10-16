@@ -84,7 +84,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 crate::io::import_video_bytes(e, &path, bytes, at)
             }
         ),
-        cmd!(noundo "file.bounce_mix", "Bounce Mix...", ["File"], Some("Cmd+Alt+B"), "{path, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, source?: main|bus name, normalize?: false, dither?: true, fold_down?: stereo}", always, bounce),
+        cmd!(noundo "file.bounce_mix", "Bounce Mix...", ["File"], Some("Cmd+Alt+B"), "{path, format?: wav|aiff|flac, bit_depth?: 16|24|32f, sample_rate?: integer Hz (8000..768000; default session rate), start?, end?, source?: main|bus name, normalize?: false, dither?: true, fold_down?: stereo}", always, bounce),
         cmd!(noundo "file.bounce_stems", "Bounce Stems...", [], None, "{dir, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, fold_down?: stereo}", has_tracks, |e, p| {
             let dir = str_param(p, "dir").ok_or_else(|| bad("file.bounce_stems", "`dir` required"))?.to_string();
             let r = range_param(e, "file.bounce_stems", p)?;
@@ -282,12 +282,16 @@ fn fold_down_param(p: &Value, id: &str) -> Result<bool> {
 
 fn bounce(e: &mut Engine, p: &Value) -> Result<Value> {
     let job = bounce_job(e, p)?;
-    let (path, seconds) = (job.path().to_string_lossy().into_owned(), e.session().sample_rate.seconds(job.range().len()));
+    let path = job.path().to_string_lossy().into_owned();
+    let (sample_rate, frames) = (job.sample_rate(), job.frames());
+    let seconds = frames as f64 / sample_rate.as_f64();
     let done = job.run()?;
     Ok(json!({
         "path": path,
         "bytes": done.bytes,
         "seconds": seconds,
+        "sample_rate": sample_rate.hz(),
+        "frames": frames,
         "peak_db": done.peak_db,
         "lufs": done.lufs,
         "true_peak_db": done.true_peak_db,
@@ -313,7 +317,13 @@ pub fn bounce_job(e: &Engine, p: &Value) -> Result<crate::io::Bounce> {
     let normalize = bool_or(p, "normalize", false);
     let fold = fold_down_param(p, "file.bounce_mix")?;
     let bus = bounce_bus(e, p)?;
-    crate::io::Bounce::new(e.session_arc(), std::path::Path::new(&path), r, &opts, bus, normalize, fold)
+    let Some(value) = p.get("sample_rate") else {
+        return crate::io::Bounce::new(e.session_arc(), std::path::Path::new(&path), r, &opts, bus, normalize, fold);
+    };
+    let hz =
+        value.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| bad("file.bounce_mix", "`sample_rate` must be an integer number of Hz"))?;
+    let sample_rate = SampleRate::new(hz).map_err(|err| bad("file.bounce_mix", err.to_string()))?;
+    crate::io::Bounce::new_at_rate(e.session_arc(), std::path::Path::new(&path), r, &opts, bus, normalize, fold, sample_rate)
 }
 
 /// Write the score of the chosen MIDI tracks as MusicXML (or SVG when `svg`).

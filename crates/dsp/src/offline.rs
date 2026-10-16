@@ -186,24 +186,23 @@ impl SincTable {
 /// Resamples one channel to exactly `out_len` samples, where output sample `n` is read at input
 /// time `n / ratio`.
 fn resample_channel(x: &[f32], ratio: f64, out_len: usize, table: &SincTable) -> Vec<f32> {
+    (0..out_len).map(|n| resample_sample(x, ratio, n, table)).collect()
+}
+
+fn resample_sample(x: &[f32], ratio: f64, n: usize, table: &SincTable) -> f32 {
     let len = x.len() as i64;
-    let hw = table.half_width;
-    (0..out_len)
-        .map(|n| {
-            let t = n as f64 / ratio;
-            let lo = (t - hw).ceil().max(0.0) as i64;
-            let hi = ((t + hw).floor() as i64).min(len - 1);
-            let mut acc = 0.0f32;
-            let mut j = lo;
-            while j <= hi {
-                if let Some(&v) = x.get(j as usize) {
-                    acc += v * table.at(t - j as f64);
-                }
-                j += 1;
-            }
-            acc
-        })
-        .collect()
+    let t = n as f64 / ratio;
+    let lo = (t - table.half_width).ceil().max(0.0) as i64;
+    let hi = ((t + table.half_width).floor() as i64).min(len - 1);
+    let mut acc = 0.0f32;
+    let mut j = lo;
+    while j <= hi {
+        if let Some(&v) = x.get(j as usize) {
+            acc += v * table.at(t - j as f64);
+        }
+        j += 1;
+    }
+    acc
 }
 
 fn resample_ratio(ch: &[Vec<f32>], ratio: f64, out_len: usize) -> Vec<Vec<f32>> {
@@ -228,6 +227,147 @@ pub fn resample(ch: &[Vec<f32>], from: u32, to: u32) -> Vec<Vec<f32>> {
             resample_ratio(std::slice::from_ref(c), ratio, out_len).into_iter().next().unwrap_or_default()
         })
         .collect()
+}
+
+/// Windowed-sinc conversion to a caller-planned, nearest-frame delivery length. Rejects invalid
+/// rates/shapes and output allocations over [`MAX_OFFLINE_SAMPLES`] summed over channels;
+/// unlike [`resample`], it never silently caps the caller's requested delivery.
+pub fn resample_to_frames(ch: &[Vec<f32>], from: u32, to: u32, frames: usize) -> Result<Vec<Vec<f32>>, &'static str> {
+    if !(8_000..=768_000).contains(&from) || !(8_000..=768_000).contains(&to) {
+        return Err("sample rates must be within 8000..768000 Hz");
+    }
+    let length = ch.first().map_or(0, Vec::len);
+    if ch.is_empty() || ch.len() > crate::util::MAX_CHANNELS || length == 0 || ch.iter().any(|c| c.len() != length) {
+        return Err("conversion requires nonempty, equal-length channels within the channel limit");
+    }
+    if frames == 0 || frames.checked_mul(ch.len()).is_none_or(|n| n > MAX_OFFLINE_SAMPLES) {
+        return Err("conversion output exceeds the offline sample allocation limit or is empty");
+    }
+    if from == to {
+        return if frames == length { Ok(ch.to_vec()) } else { Err("equal-rate conversion must retain its frame count") };
+    }
+    Ok(resample_ratio(ch, f64::from(to) / f64::from(from), frames))
+}
+
+/// A delivery conversion advanced in bounded work quanta, using the same sinc coefficients and
+/// global sample positions as `resample_to_frames`. Owns its already-bounded input and output.
+pub struct DeliveryResampler {
+    source: Vec<Vec<f32>>,
+    output: Vec<Vec<f32>>,
+    ratio: f64,
+    equal_rate: bool,
+    frames: usize,
+    channel: usize,
+    at: usize,
+    table: SincTable,
+    table_len: usize,
+    cutoff: f64,
+    i0b: f64,
+    peak: f32,
+}
+
+impl DeliveryResampler {
+    pub fn new(source: Vec<Vec<f32>>, from: u32, to: u32, frames: usize) -> Result<Self, &'static str> {
+        if !(8_000..=768_000).contains(&from) || !(8_000..=768_000).contains(&to) {
+            return Err("sample rates must be within 8000..768000 Hz");
+        }
+        let length = source.first().map_or(0, Vec::len);
+        if source.is_empty() || source.len() > crate::util::MAX_CHANNELS || length == 0 || source.iter().any(|c| c.len() != length) {
+            return Err("conversion requires nonempty, equal-length channels within the channel limit");
+        }
+        if frames == 0 || frames.checked_mul(source.len()).is_none_or(|n| n > MAX_OFFLINE_SAMPLES) {
+            return Err("conversion output exceeds the offline sample allocation limit or is empty");
+        }
+        if from == to && frames != length {
+            return Err("equal-rate conversion must retain its frame count");
+        }
+        let ratio = f64::from(to) / f64::from(from);
+        let cutoff = if ratio < 1.0 { ratio * 0.94 } else { 0.97 };
+        let cutoff = cutoff.clamp(0.01, 1.0);
+        let half_width = SINC_ZC / cutoff;
+        let table_len = if from == to { 0 } else { (half_width * SINC_RES as f64).ceil() as usize + 2 };
+        let mut output = Vec::with_capacity(source.len());
+        for _ in &source {
+            let mut channel = Vec::new();
+            channel.try_reserve_exact(frames).map_err(|_| "cannot allocate the planned delivery buffer")?;
+            output.push(channel);
+        }
+        let mut table = Vec::new();
+        table.try_reserve_exact(table_len).map_err(|_| "cannot allocate the sinc kernel")?;
+        Ok(Self {
+            source,
+            output,
+            ratio,
+            equal_rate: from == to,
+            frames,
+            channel: 0,
+            at: 0,
+            table: SincTable { table, half_width },
+            table_len,
+            cutoff,
+            i0b: bessel_i0(9.0),
+            peak: 0.0,
+        })
+    }
+
+    /// Generate at most 1024 kernel coefficients or approximately 8192 sinc taps in one channel.
+    /// Returns true once every output sample is ready.
+    pub fn step(&mut self) -> Result<bool, &'static str> {
+        if self.table.table.len() < self.table_len {
+            let end = self.table.table.len().saturating_add(1024).min(self.table_len);
+            self.table.table.try_reserve(end - self.table.table.len()).map_err(|_| "cannot allocate the sinc kernel")?;
+            for i in self.table.table.len()..end {
+                let t = i as f64 / SINC_RES as f64;
+                let x = t / self.table.half_width;
+                let coefficient = if x >= 1.0 {
+                    0.0
+                } else {
+                    let arg = PI * self.cutoff * t;
+                    let sinc = if arg.abs() < 1e-12 { 1.0 } else { arg.sin() / arg };
+                    let w = bessel_i0(9.0 * (1.0 - x * x).max(0.0).sqrt()) / self.i0b;
+                    (self.cutoff * sinc * w) as f32
+                };
+                self.table.table.push(coefficient);
+            }
+            return Ok(false);
+        }
+        let Some(source) = self.source.get(self.channel) else { return Ok(true) };
+        let taps = (self.table.half_width.ceil() as usize).saturating_mul(2).saturating_add(1);
+        let quantum = if self.equal_rate { 1024 } else { (8192 / taps.max(1)).max(1) };
+        let end = self.at.saturating_add(quantum).min(self.frames);
+        let output = self.output.get_mut(self.channel).ok_or("conversion channel disappeared")?;
+        output.try_reserve(end - self.at).map_err(|_| "cannot allocate the planned delivery buffer")?;
+        for n in self.at..end {
+            let sample = if self.equal_rate { source.get(n).copied().unwrap_or(0.0) } else { resample_sample(source, self.ratio, n, &self.table) };
+            if sample.is_finite() {
+                self.peak = self.peak.max(sample.abs());
+            }
+            output.push(sample);
+        }
+        self.at = end;
+        if self.at == self.frames {
+            self.channel += 1;
+            self.at = 0;
+        }
+        Ok(self.channel == self.source.len())
+    }
+
+    pub fn progress(&self) -> f32 {
+        let kernel = if self.table_len == 0 { 1.0 } else { self.table.table.len() as f64 / self.table_len as f64 };
+        let samples = (self.channel as f64 * self.frames as f64 + self.at as f64) / (self.source.len() as f64 * self.frames as f64);
+        (kernel * 0.25 + samples * 0.75) as f32
+    }
+
+    pub fn peak(&self) -> f32 {
+        self.peak
+    }
+
+    pub fn finish(self) -> Result<Vec<Vec<f32>>, &'static str> {
+        if self.channel != self.source.len() {
+            return Err("conversion is not complete");
+        }
+        Ok(self.output)
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
