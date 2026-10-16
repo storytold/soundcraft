@@ -1788,6 +1788,20 @@ impl EditorLink {
         v.is_finite().then(|| v.clamp(0.0, 1.0))
     }
 
+    /// The plugin's own text for a normalized value (`getParamStringByValue`). Main thread only
+    /// (`None` elsewhere, and once the instance is gone).
+    pub fn value_text(&self, id: u32, n: f64) -> Option<String> {
+        if !window::on_main_thread() || !n.is_finite() {
+            return None;
+        }
+        let g = self.lock();
+        let c = g.controller.as_ref()?;
+        let mut s: sv::String128 = [0; 128];
+        // SAFETY: valid controller (the instance clears it under this lock before it terminates),
+        // main thread; `s` is a writable String128.
+        ok(unsafe { c.getParamStringByValue(id, n.clamp(0.0, 1.0), &mut s) }).then(|| read_c16(&s)).filter(|t| !t.is_empty())
+    }
+
     /// Shows a value change in the editor (`setParamNormalized`, main thread).
     pub fn set_normalized(&self, id: u32, n: f64) {
         if !window::on_main_thread() || !n.is_finite() {

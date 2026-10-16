@@ -42,7 +42,7 @@ fn info_exposes_visible_params_with_plain_ranges() {
     assert_eq!(info.id, gain);
     assert_eq!(info.short_name, "Fixture ");
     let ids: Vec<&str> = info.params.iter().map(|p| p.id).collect();
-    assert_eq!(ids, vec!["7", "3", "12"], "hidden 9 and bypass 11 are skipped");
+    assert_eq!(ids, vec!["7", "3", "12", "13", "14"], "hidden 9 and bypass 11 are skipped");
     let g = info.param("7").unwrap();
     assert_eq!((g.name, g.min, g.max, g.default, g.unit, g.taper), ("Gain", 0.0, 2.0, 1.0, Unit::Db, Taper::Linear));
     let mode = info.param("3").unwrap();
@@ -53,6 +53,23 @@ fn info_exposes_visible_params_with_plain_ranges() {
     assert!((f.min - 20.0).abs() < 1e-3 && (f.max - 20_000.0).abs() < 1e-1, "{f:?}");
     // Cached: the same leaked info every time.
     assert!(std::ptr::eq(info, soundcraft_vst3_host::plugin_info(&gain).unwrap()));
+}
+
+/// #599: a plugin whose `normalizedParamToPlain` is the identity (JUCE, the SDK's default
+/// `Parameter`) gives SoundCraft a 0..1 range; its real values are only in its own text, which the
+/// editor handle reads from the controller on the main thread only (see `editor_main_thread`).
+#[test]
+fn identity_mapped_param_text_is_read_on_the_main_thread_only() {
+    let id = id_of("Fixture Gain");
+    let level = soundcraft_vst3_host::plugin_info(&id).unwrap().param("13").unwrap();
+    assert_eq!((level.min, level.max, level.unit), (0.0, 1.0, Unit::Db));
+    let mut p = soundcraft_vst3_host::instantiate_plugin(&id).unwrap();
+    let mut ed = soundcraft_dsp::Plugin::editor(&mut p).expect("editor handle");
+    if cfg!(any(target_os = "macos", windows)) {
+        assert_eq!(ed.value_text("13", 0.375), None, "test threads are not the main thread");
+    } else {
+        assert_eq!(ed.value_text("13", 0.375).as_deref(), Some("\u{2212}6.0 dB"));
+    }
 }
 
 #[test]

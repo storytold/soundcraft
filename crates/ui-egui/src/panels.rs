@@ -544,7 +544,11 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                                 }
                             }
                             let _ = resp;
-                            let shown = if instrument { crate::sampler_window::format_param(&ins.plugin, p, x) } else { p.format(x) };
+                            let shown = if instrument {
+                                crate::sampler_window::format_param(&ins.plugin, p, x)
+                            } else {
+                                app.player.as_ref().and_then(|pl| pl.editor_value_text(tid, slot, p.id, x)).unwrap_or_else(|| p.format(x))
+                            };
                             ui.label(egui::RichText::new(shown).font(mono(11.0)));
                             ui.end_row();
                         }

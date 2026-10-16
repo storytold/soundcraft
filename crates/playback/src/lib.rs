@@ -726,6 +726,12 @@ impl Player {
         }
     }
 
+    /// The plugin's own text for a parameter value when SoundCraft's format would be wrong for it
+    /// (see `PluginEditor::value_text`). Main thread only.
+    pub fn editor_value_text(&self, track: TrackId, slot: usize, id: &str, value: f32) -> Option<String> {
+        self.side().editors.get_mut(&(track, slot))?.value_text(id, value)
+    }
+
     /// Start playback at `from`, stopping at `end`, or looping `looped`.
     pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
         self.shared.position.store(from, Ordering::Relaxed);

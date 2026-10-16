@@ -2,6 +2,7 @@
 
 use crate::ffi::{AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND};
 use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport, Unit};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use vst3::ComWrapper;
@@ -399,7 +400,16 @@ impl Plugin for Vst3Plugin {
 
     fn editor(&mut self) -> Option<Box<dyn PluginEditor>> {
         let link = self.inst.editor()?;
-        Some(Box::new(Vst3Editor { link, host: self.inst.host_ref(), info: self.info, ids: self.ids.clone(), maps: self.maps.clone() }))
+        let mut units: HashMap<u32, String> = self.inst.params().into_iter().map(|p| (p.id, p.units)).collect();
+        Some(Box::new(Vst3Editor {
+            link,
+            host: self.inst.host_ref(),
+            info: self.info,
+            index: self.info.params.iter().enumerate().map(|(i, p)| (p.id, i)).collect(),
+            units: self.ids.iter().map(|id| units.remove(id).unwrap_or_default()).collect(),
+            ids: self.ids.clone(),
+            maps: self.maps.clone(),
+        }))
     }
 
     fn state_reader(&mut self) -> Option<Box<dyn soundcraft_dsp::PluginStateReader>> {
@@ -423,6 +433,10 @@ struct Vst3Editor {
     link: Arc<EditorLink>,
     host: ComWrapper<HostContext>,
     info: &'static PluginInfo,
+    /// Position of each SoundCraft param id in `info.params` (looked up once per row and frame).
+    index: HashMap<&'static str, usize>,
+    /// The plugin's own unit label of each param (same order as `ids`).
+    units: Vec<String>,
     ids: Vec<u32>,
     maps: Vec<Mapping>,
 }
@@ -486,5 +500,20 @@ impl PluginEditor for Vst3Editor {
         if let (Some(&vid), Some(n)) = (self.ids.get(i), self.normalized(i, value)) {
             self.link.set_normalized(vid, n);
         }
+    }
+
+    fn value_text(&mut self, id: &str, value: f32) -> Option<String> {
+        let &i = self.index.get(id)?;
+        let pi = self.info.params.get(i)?;
+        // A plugin whose plain mapping is the identity (JUCE, the SDK's default `Parameter`) leaves
+        // a 0..1 range with the units of its real one: only its own text says what the value is.
+        if !matches!(self.maps.get(i)?, Mapping::Plain) || pi.min != 0.0 || pi.max != 1.0 {
+            return None;
+        }
+        let text = self.link.value_text(*self.ids.get(i)?, self.normalized(i, value)?)?;
+        // VST3 keeps the units apart from the text (JUCE's label, the SDK's `RangeParameter`),
+        // but some plugins put them in both.
+        let units = self.units.get(i).map_or("", |u| u.trim());
+        if units.is_empty() || text.trim_end().to_lowercase().ends_with(&units.to_lowercase()) { Some(text) } else { Some(format!("{text} {units}")) }
     }
 }

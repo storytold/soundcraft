@@ -275,6 +275,12 @@ pub trait PluginEditor: Send {
     /// Tells the editor that a parameter changed elsewhere (generic editor, automation), so the
     /// GUI shows it. Values are in SoundCraft units.
     fn set_param(&mut self, _id: &str, _value: f32) {}
+    /// The plugin's own text for a parameter value (SoundCraft units) when SoundCraft's
+    /// [`ParamInfo::format`] would be wrong for it. Main thread only; `None` means "format it
+    /// yourself".
+    fn value_text(&mut self, _id: &str, _value: f32) -> Option<String> {
+        None
+    }
 }
 
 /// Reads a plugin's state on the main (UI) thread while the instance processes on the audio

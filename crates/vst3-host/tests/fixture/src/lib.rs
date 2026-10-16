@@ -298,12 +298,17 @@ impl IConnectionPointTrait for GainController {
     }
 }
 
-const GAIN_PARAMS: [(u32, &str, &str, i32, f64, i32); 5] = [
+const GAIN_PARAMS: [(u32, &str, &str, i32, f64, i32); 7] = [
     (7, "Gain", "dB", 0, 0.5, ParameterInfo_::ParameterFlags_::kCanAutomate),
     (9, "Secret", "", 0, 0.0, ParameterInfo_::ParameterFlags_::kIsHidden),
     (3, "Mode", "", 2, 0.0, ParameterInfo_::ParameterFlags_::kIsList),
     (11, "Bypass", "", 1, 0.0, ParameterInfo_::ParameterFlags_::kIsBypass),
     (12, "Freq", "Hz", 0, 0.5, 0),
+    // Like JUCE and the SDK's default `Parameter`: no plain mapping (identity), so the real range
+    // is only in the plugin's own text (-24..+24, the default 0.375 is -6), without the units.
+    (13, "Level", "dB", 0, 0.375, ParameterInfo_::ParameterFlags_::kCanAutomate),
+    // Identity too, but its text already carries the units (0..12 dB).
+    (14, "Drive", "dB", 0, 0.0, ParameterInfo_::ParameterFlags_::kCanAutomate),
 ];
 
 impl IEditControllerTrait for GainController {
@@ -351,6 +356,8 @@ impl IEditControllerTrait for GainController {
         let s = unsafe { &mut *string };
         let text = match id {
             3 => ["A", "B", "C"][((n * 2.0).round() as usize).min(2)].to_string(),
+            13 => format!("{:.1}", 48.0 * n - 24.0).replace('-', "\u{2212}"),
+            14 => format!("{:.1} dB", 12.0 * n),
             _ => format!("{:.2}", unsafe { self.normalizedParamToPlain(id, n) }),
         };
         copy_c16(&text, s);

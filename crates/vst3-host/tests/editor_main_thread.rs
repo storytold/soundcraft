@@ -23,7 +23,16 @@ fn main() {
     ed.set_param("7", 1.5);
     ed.set_param("nope", 1.0);
     assert!(ed.idle().is_empty(), "set_param is not reported back as an edit");
+    // #599: an identity-mapped (JUCE-style) parameter shows the plugin's own text, verbatim, with
+    // its units appended once; correctly mapped parameters and choices keep SoundCraft's format.
+    assert_eq!(ed.value_text("13", 0.375).as_deref(), Some("\u{2212}6.0 dB"));
+    assert_eq!(ed.value_text("13", 1.0).as_deref(), Some("24.0 dB"));
+    assert_eq!(ed.value_text("14", 0.25).as_deref(), Some("3.0 dB"), "units already in the text");
+    assert_eq!(ed.value_text("7", 1.5), None);
+    assert_eq!(ed.value_text("3", 1.0), None);
+    assert_eq!(ed.value_text("nope", 0.5), None);
     drop(p);
+    assert_eq!(ed.value_text("13", 0.375), None, "the plugin is gone");
     assert!(!ed.is_open());
     assert!(ed.open().is_err(), "the plugin is gone");
     println!("editor_main_thread: ok");
