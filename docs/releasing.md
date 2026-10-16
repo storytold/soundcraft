@@ -64,11 +64,42 @@ kept ready for a Flathub submission; the release's `.flatpak` bundles come from
 
 SoundCraft plays and records through [cpal](https://github.com/RustAudio/cpal): CoreAudio on
 macOS, WASAPI on Windows, ALSA on Linux and FreeBSD (PulseAudio and PipeWire through their ALSA
-plugins), and WebAudio in the browser.
+plugins), and WebAudio in the browser. The desktop app also builds in two more hosts by default
+(`soundcraft_playback::host`, cargo features `jack` and `pipewire` of `apps/soundcraft`): native
+PipeWire, which is the automatic choice on Linux when it is running, and JACK. A Linux build
+therefore needs their headers (below); `cargo build -p soundcraft --no-default-features` builds
+without them (ALSA only), which is what the FreeBSD package and the Flatpak manifest do.
+
+MIDI devices go through [midir](https://github.com/Boddlnagg/midir) (`soundcraft_playback::midi`):
+the ALSA sequencer on Linux (the same `libasound` the audio side links, no further package),
+CoreMIDI on macOS and WinMM on Windows. FreeBSD and the web build have no MIDI input yet. A
+keyboard without the hardware, for trying it:
+`cargo run -p soundcraft-playback --example midi_keys` (Linux and macOS).
 
 - **Linux** builds need the ALSA headers (`libasound2-dev` and `pkg-config` on Ubuntu). The binary
   links `libasound.so.2`, so the `.deb` depends on `libasound2 | libasound2t64` and the `.rpm` on
   `alsa-lib`; the AppImage and tarball expect it on the host (every desktop distro has it).
+- **Linux, `jack` feature** (default): needs the JACK headers at build time (`libjack-jackd2-dev` on Ubuntu,
+  `pipewire-jack-audio-connection-kit-devel` or `jack-audio-connection-kit-devel` on Fedora).
+  `libjack.so.0` is loaded at runtime, not linked: without it the JACK host is simply not offered.
+  With PipeWire's JACK library installed, JACK clients land in the PipeWire graph.
+- **Linux, `pipewire` feature** (default): needs the PipeWire headers and libclang at build time
+  (`libpipewire-0.3-dev libclang-dev` on Ubuntu, `pipewire-devel clang-devel` on Fedora), and the
+  binary then links `libpipewire-0.3.so.0`, so a package built this way must depend on it.
+- **Windows, `asio` feature** (`--features asio`): cpal's ASIO host. The build needs LLVM/Clang
+  (`LIBCLANG_PATH`) and the Steinberg ASIO SDK, which the build downloads unless `CPAL_ASIO_DIR`
+  points at a copy. The SDK is Steinberg's, under its own licence: read it before distributing a
+  build with this feature. The release builds do not include it.
+- **Windows and macOS, `jack` feature** (default): no build dependency; `libjack64.dll`
+  / `libjack.0.dylib` is loaded at runtime and the host is offered only when it is found.
+- **Sample formats**: streams open in the device's own format (f32 preferred, then i32, i24, f64,
+  i16, …) and are converted, so ASIO drivers and raw ALSA devices that offer no f32 still open.
+- **Choosing the host and devices** (all platforms): Setup › Playback Engine lists the hosts the build has (remembered
+  in the UI prefs); `--audio-host <id>` and `SOUNDCRAFT_AUDIO_HOST` (`pipewire`, `jack`, `alsa`,
+  `auto`) override it. Default takes the first host with a default device, in the order
+  PipeWire, JACK, ALSA on Linux; on macOS and Windows the system host (CoreAudio, WASAPI) first,
+  so ASIO and JACK are used only when chosen. A host that cannot be opened falls back to the
+  automatic order. The same dialog picks the output and input device of that host.
 - **FreeBSD** builds need `alsa-lib` (`pkg install alsa-lib`); at runtime `alsa-plugins-oss`
   routes ALSA to the OSS `sound(4)` devices. Without a device the player falls back to its
   silent clock, so the transport still runs.

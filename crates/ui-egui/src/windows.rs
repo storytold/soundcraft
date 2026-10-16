@@ -5,9 +5,6 @@ use crate::theme::{Tokens, mono, rgb};
 use egui::{Color32, Sense, vec2};
 use serde_json::json;
 use soundcraft_model::{AutomationMode, ClipContent};
-use soundcraft_playback::AudioConfig;
-use soundcraft_playback::devices::{AudioSystem, DeviceInfo};
-use std::sync::Arc;
 
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     audio_health(app, ctx);
@@ -410,162 +407,355 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_configurations = open;
 }
 
-/// The audio systems as last enumerated (enumerating probes devices: done when the window opens
-/// and on Refresh, not every frame).
-fn audio_systems(ctx: &egui::Context, refresh: bool) -> Arc<Vec<AudioSystem>> {
-    let id = egui::Id::new("audio_systems");
-    if !refresh && let Some(s) = ctx.data(|d| d.get_temp::<Arc<Vec<AudioSystem>>>(id)) {
-        return s;
+/// What a MIDI message is, for the "last received" readout.
+fn midi_event_text(e: &soundcraft_mix::LiveMidi) -> String {
+    let ch = e.channel() + 1;
+    match e.status & 0xF0 {
+        0x90 if e.data2 > 0 => format!("note {} on, velocity {}, channel {ch}", soundcraft_midi::note_name(e.data1), e.data2),
+        0x80 | 0x90 => format!("note {} off, channel {ch}", soundcraft_midi::note_name(e.data1)),
+        0xA0 => format!("aftertouch {} on note {}, channel {ch}", e.data2, soundcraft_midi::note_name(e.data1)),
+        0xB0 => format!("controller {} = {}, channel {ch}", e.data1, e.data2),
+        0xC0 => format!("program {}, channel {ch}", u16::from(e.data1) + 1),
+        0xD0 => format!("aftertouch {}, channel {ch}", e.data1),
+        0xE0 => format!("pitch bend {}, channel {ch}", (i32::from(e.data2) << 7 | i32::from(e.data1)) - 8192),
+        _ => format!("message {:#04x}", e.status),
     }
-    let s = Arc::new(soundcraft_playback::devices::audio_systems());
-    ctx.data_mut(|d| d.insert_temp(id, Arc::clone(&s)));
-    s
 }
 
-/// The system a config means (its own, else the default one) in an enumeration.
-fn chosen_system<'a>(systems: &'a [AudioSystem], cfg: &AudioConfig) -> Option<&'a AudioSystem> {
-    cfg.system
-        .as_deref()
-        .and_then(|n| systems.iter().find(|s| s.name.eq_ignore_ascii_case(n)))
-        .or_else(|| systems.iter().find(|s| s.is_default))
-        .or(systems.first())
-}
-
-/// The device a config means (by name, else the system default).
-fn chosen_device<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'a DeviceInfo> {
-    name.and_then(|n| devices.iter().find(|d| d.name == n)).or_else(|| devices.iter().find(|d| d.is_default))
-}
-
-fn device_combo(ui: &mut egui::Ui, id: &str, value: &mut Option<String>, devices: &[DeviceInfo]) {
-    let default = devices.iter().find(|d| d.is_default).map_or("none".to_string(), |d| d.name.clone());
-    let shown = value.clone().unwrap_or_else(|| format!("Default ({default})"));
-    egui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
-        ui.selectable_value(value, None, format!("Default ({default})"));
-        for d in devices {
-            ui.selectable_value(value, Some(d.name.clone()), format!("{} ({} ch)", d.name, d.max_channels));
-        }
-    });
-}
-
-fn number_combo(ui: &mut egui::Ui, id: &str, value: &mut Option<u32>, options: &[u32], unit: &str) {
-    let shown = value.map_or("Device default".to_string(), |v| format!("{v} {unit}"));
-    egui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
-        ui.selectable_value(value, None, "Device default");
-        for v in options {
-            ui.selectable_value(value, Some(*v), format!("{v} {unit}"));
-        }
-    });
-}
-
-/// Setup › Playback Engine / Hardware: choose the audio system, devices, rate and buffer size.
-pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
-    let mut open = app.ui.show_playback_engine;
-    if !open {
+/// The MIDI tab of Setup › Playback Engine: every input port with a switch, and on request what
+/// arrives from it, to see that a keyboard gets through.
+fn midi_inputs(app: &mut SoundApp, ui: &mut egui::Ui) {
+    ui.strong("MIDI inputs");
+    let Some(m) = &app.midi_inputs else {
+        ui.weak("No audio engine, so MIDI devices are not opened.");
+        return;
+    };
+    if let Some(e) = m.error() {
+        ui.colored_label(ui.visuals().warn_fg_color, e);
         return;
     }
-    let draft_id = egui::Id::new("audio_draft");
-    let mut draft = ctx.data(|d| d.get_temp::<AudioConfig>(draft_id)).unwrap_or_else(|| app.ui.audio.clone());
-    let mut refresh = false;
-    let mut apply = false;
-    let systems = audio_systems(ctx, false);
-    win(ctx, &mut open, "Playback Engine", vec2(460.0, 360.0), |ui| {
-        let t = Tokens::current();
-        egui::Grid::new("pe").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
-            ui.label("Audio system");
-            let def = systems.iter().find(|s| s.is_default).map_or("none".to_string(), |s| s.name.clone());
-            let shown = draft.system.clone().unwrap_or_else(|| format!("Default ({def})"));
-            egui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
-                let before = draft.system.clone();
-                ui.selectable_value(&mut draft.system, None, format!("Default ({def})"));
-                for s in systems.iter() {
-                    ui.selectable_value(&mut draft.system, Some(s.name.clone()), &s.name);
-                }
-                if draft.system != before {
-                    // Device names belong to a system.
-                    draft.output = None;
-                    draft.input = None;
-                }
-            });
-            ui.end_row();
-            let sys = chosen_system(&systems, &draft);
-            ui.label("Output device");
-            device_combo(ui, "pe-out", &mut draft.output, sys.map_or(&[][..], |s| &s.outputs));
-            ui.end_row();
-            ui.label("Input device");
-            device_combo(ui, "pe-in", &mut draft.input, sys.map_or(&[][..], |s| &s.inputs));
-            ui.end_row();
-            let out = sys.and_then(|s| chosen_device(&s.outputs, draft.output.as_deref()));
-            ui.label("Sample rate");
-            number_combo(ui, "pe-rate", &mut draft.sample_rate, out.map_or(&[][..], |d| &d.sample_rates), "Hz");
-            ui.end_row();
-            ui.label("Buffer size");
-            let buffers = out.map(DeviceInfo::buffer_sizes).unwrap_or_else(|| soundcraft_playback::devices::STANDARD_BUFFERS.to_vec());
-            number_combo(ui, "pe-buffer", &mut draft.buffer_size, &buffers, "samples");
-            ui.end_row();
-        });
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            if ui.button("Refresh devices").clicked() {
-                refresh = true;
+    let ports = m.ports().to_vec();
+    if ports.is_empty() {
+        ui.weak("No MIDI input device found. Plug one in: it shows up here by itself.");
+    }
+    // Per port name: whether its debug readout is shown, and the last message seen from it.
+    let debug_id = egui::Id::new("playback-engine-midi-debug");
+    let mut debug: std::collections::BTreeMap<String, (bool, Option<String>)> = ui.data(|d| d.get_temp(debug_id)).unwrap_or_default();
+    let (count, last) = m.feed().activity();
+    if let Some(e) = last
+        && let Some(from) = m.feed().ports().name(e.port)
+    {
+        debug.entry(from.to_string()).or_default().1 = Some(format!("{} (message {count} of all devices)", midi_event_text(&e)));
+    }
+    let mut toggle = None;
+    egui::Grid::new("pe-midi").num_columns(3).show(ui, |ui| {
+        for p in &ports {
+            let mut on = p.enabled;
+            if crate::widgets::checkbox(ui, &mut on, &p.name).on_hover_text("Play and record from this device").changed() {
+                toggle = Some((p.name.clone(), on));
             }
-            let changed = draft != app.ui.audio;
-            if ui.add_enabled(changed, egui::Button::new("Apply")).on_hover_text("Reopen the audio devices with these settings").clicked() {
-                apply = true;
+            match (p.enabled, p.open) {
+                (false, _) => ui.weak("off"),
+                (true, true) => ui.label("connected"),
+                (true, false) => ui.colored_label(ui.visuals().warn_fg_color, "could not be opened"),
+            };
+            let shown = &mut debug.entry(p.name.clone()).or_default().0;
+            if ui.selectable_label(*shown, "Test").on_hover_text("Show what arrives from this device").clicked() {
+                *shown = !*shown;
             }
-            if changed && ui.button("Revert").clicked() {
-                draft = app.ui.audio.clone();
-            }
-        });
-        ui.separator();
-        egui::Grid::new("pe-state").num_columns(2).show(ui, |ui| {
-            ui.label("Output");
-            ui.label(app.player.as_ref().map_or("none".to_string(), |p| {
-                if p.silent {
-                    "no device (silent clock)".to_string()
-                } else {
-                    let buf = p.device_buffer.map_or("default buffer".to_string(), |b| format!("{b} samples"));
-                    format!("{} · {} Hz · {} ch · {buf}", p.device_name, p.device_rate, p.device_channels)
-                }
-            }));
             ui.end_row();
-            ui.label("Input");
-            ui.label(app.recorder.as_ref().map_or("opened on first record or monitor".to_string(), |r| {
-                format!("{} · {} Hz · {} ch", r.device_name, r.sample_rate, r.channels)
-            }));
-            ui.end_row();
-            ui.label("Session rate");
-            let sr = app.engine.session().sample_rate.hz();
-            let note = app
-                .player
-                .as_ref()
-                .filter(|p| !p.silent && p.device_rate != sr)
-                .map_or(String::new(), |_| " (resampled to the device rate)".to_string());
-            ui.label(format!("{sr} Hz{note}"));
-            ui.end_row();
-        });
-        ui.label(egui::RichText::new("The mix runs in 512-sample blocks; the buffer size sets the device's own latency.").small().color(t.text_dim));
-        let mut dc = app.engine.session().edit.delay_compensation;
-        if crate::widgets::checkbox(ui, &mut dc, "Delay compensation").changed() {
-            let _ = app.run("options.delay_compensation", json!({"value": dc}));
-        }
-        if ui.button("Reconnect audio device").clicked() {
-            app.reconnect_audio();
         }
     });
-    if refresh {
-        audio_systems(ctx, true);
+    if let Some((name, on)) = toggle {
+        app.set_midi_input_enabled(&name, on);
     }
-    if apply && let Err(e) = app.apply_audio_config(draft.clone()) {
-        app.ui.status = e;
-    }
-    if open {
-        ctx.data_mut(|d| d.insert_temp(draft_id, draft));
-    } else {
-        // Closing discards unapplied edits and the device list (re-read on the next open).
-        ctx.data_mut(|d| {
-            d.remove_temp::<AudioConfig>(draft_id);
-            d.remove_temp::<Arc<Vec<AudioSystem>>>(egui::Id::new("audio_systems"));
+    for p in &ports {
+        let Some((true, seen)) = debug.get(&p.name) else { continue };
+        ui.separator();
+        ui.label(&p.name);
+        ui.weak(format!("Enabled: {}, open: {}", if p.enabled { "yes" } else { "no" }, if p.open { "yes" } else { "no" }));
+        ui.weak(match seen {
+            Some(text) => format!("Last received: {text}"),
+            None => "Last received: nothing yet".to_string(),
         });
+        // Keep the readout live while it is shown.
+        ui.ctx().request_repaint_after_secs(0.1);
+    }
+    ui.data_mut(|d| d.insert_temp(debug_id, debug));
+}
+
+/// Setup › Playback Engine / Hardware.
+pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
+    use soundcraft_playback::host::{self, DeviceInfo};
+    let mut open = app.ui.show_playback_engine;
+    // Input channels (one bit each) listened to while the Audio tab shows them.
+    let listen_id = egui::Id::new("playback-engine-listen");
+    let mut listen = 0u64;
+    win(ctx, &mut open, "Playback Engine", vec2(460.0, 420.0), |ui| {
+        // Audio devices on one tab, MIDI devices on the other; the buttons below serve both.
+        let mut tab = app.ui.playback_engine_tab.min(1);
+        ui.horizontal(|ui| {
+            for (i, l) in (0u8..).zip(["Audio", "MIDI"]) {
+                if ui.selectable_label(tab == i, l).clicked() {
+                    tab = i;
+                }
+            }
+        });
+        app.ui.playback_engine_tab = tab;
+        ui.separator();
+        // Probing every device takes a moment (ALSA opens each one): listed once, then on request.
+        let cache = egui::Id::new("playback-engine-devices");
+        let devices: std::sync::Arc<(Vec<DeviceInfo>, Vec<DeviceInfo>, Vec<u32>)> = match ui.data(|d| d.get_temp(cache)) {
+            Some(d) => d,
+            None => {
+                let rates = soundcraft_playback::devices::describe_chosen(true).map(|d| d.sample_rates).unwrap_or_default();
+                let d = std::sync::Arc::new((host::output_devices(), host::input_devices(), rates));
+                ui.data_mut(|x| x.insert_temp(cache, std::sync::Arc::clone(&d)));
+                d
+            }
+        };
+        let mut rescan = false;
+        let top = ui.cursor().top();
+        if tab == 0 {
+            // "Default" (naming the device it is now, when one is open) plus the host's devices; a
+            // remembered device that is gone stays visible. `open` is the device in use and what it
+            // runs at, for the tooltip.
+            let device_combo = |ui: &mut egui::Ui,
+                                salt: &str,
+                                list: &[DeviceInfo],
+                                current: &Option<String>,
+                                open: Option<(&str, String)>|
+             -> Option<Option<String>> {
+                let mut choice = current.clone();
+                let default = match (current, &open) {
+                    (None, Some((name, _))) => format!("Default ({name})"),
+                    _ => "Default".to_string(),
+                };
+                let label = match current {
+                    None => default.clone(),
+                    Some(id) => list.iter().find(|d| &d.id == id).map_or_else(|| format!("{id} (unavailable)"), |d| d.name.clone()),
+                };
+                let combo = egui::ComboBox::from_id_salt(salt).selected_text(label).width(260.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut choice, None, default).on_hover_text("Whatever the system uses, following it when it changes");
+                    for d in list {
+                        // The name, then what tells it apart from its neighbours, dimmer.
+                        let mut row = egui::text::LayoutJob::default();
+                        let font = egui::TextStyle::Button.resolve(ui.style());
+                        row.append(&d.name, 0.0, egui::TextFormat { font_id: font.clone(), color: ui.visuals().text_color(), ..Default::default() });
+                        if !d.detail.is_empty() {
+                            let small = egui::FontId::new(font.size * 0.85, font.family.clone());
+                            row.append(
+                                &d.detail,
+                                10.0,
+                                egui::TextFormat { font_id: small, color: ui.visuals().weak_text_color(), ..Default::default() },
+                            );
+                        }
+                        ui.selectable_value(&mut choice, Some(d.id.clone()), row).on_hover_text(&d.id);
+                    }
+                });
+                if let Some((_, runs)) = open {
+                    combo.response.on_hover_text(runs);
+                }
+                (&choice != current).then_some(choice)
+            };
+            egui::Grid::new("pe").num_columns(2).show(ui, |ui| {
+                let hosts = host::available_hosts();
+                let missing = host::unavailable_hosts();
+                ui.label("Audio host");
+                let mut choice = app.ui.audio.system.clone();
+                // Which host "Default" turned out to be, once the output is open on it.
+                let default = match app.player.as_ref().filter(|p| choice.is_none() && !p.host_name.is_empty()) {
+                    Some(p) => format!("Default ({})", p.host_name),
+                    None => "Default".to_string(),
+                };
+                let label = match &choice {
+                    None => default.clone(),
+                    Some(id) => hosts.iter().find(|h| &h.id == id).map_or_else(|| format!("{id} (unavailable)"), |h| h.name.clone()),
+                };
+                egui::ComboBox::from_id_salt("audio_host").selected_text(label).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut choice, None, default).on_hover_text("The first host that has a device");
+                    for h in &hosts {
+                        ui.selectable_value(&mut choice, Some(h.id.clone()), &h.name);
+                    }
+                    // Hosts that exist but cannot be chosen: shown with the reason, not left out.
+                    for (name, why) in &missing {
+                        ui.add_enabled(false, egui::Button::selectable(false, format!("{name}  ({why})")));
+                    }
+                });
+                if choice != app.ui.audio.system {
+                    app.set_audio_host(choice);
+                    rescan = true;
+                }
+                ui.end_row();
+                // The chosen host did not open (JACK without a running server, …): say what is used.
+                let chosen = app.ui.audio.system.as_ref().and_then(|id| hosts.iter().find(|h| &h.id == id)).map(|h| h.name.clone());
+                if let (Some(chosen), Some(p)) = (chosen, app.player.as_ref())
+                    && p.host_name != chosen
+                {
+                    ui.label("");
+                    let used = if p.host_name.is_empty() { "no device".to_string() } else { format!("using {}", p.host_name) };
+                    ui.colored_label(ui.visuals().warn_fg_color, format!("{chosen} could not be opened (is its server running?); {used}"));
+                    ui.end_row();
+                }
+                ui.label("Output device");
+                let out_open = app
+                    .player
+                    .as_ref()
+                    .filter(|p| !p.silent)
+                    .map(|p| (p.device_name.clone(), format!("{} ch @ {} Hz", p.device_channels, p.device_rate)));
+                if let Some(choice) =
+                    device_combo(ui, "audio_output_device", &devices.0, &app.ui.audio.output, out_open.as_ref().map(|(n, r)| (n.as_str(), r.clone())))
+                {
+                    app.set_output_device(choice);
+                    // Its rates are another device's now.
+                    rescan = true;
+                }
+                ui.end_row();
+                ui.label("Input device");
+                let in_open = app.recorder.as_ref().map(|r| (r.device_name.clone(), format!("{} ch @ {} Hz", r.channels, r.sample_rate)));
+                if let Some(choice) =
+                    device_combo(ui, "audio_input_device", &devices.1, &app.ui.audio.input, in_open.as_ref().map(|(n, r)| (n.as_str(), r.clone())))
+                {
+                    app.set_input_device(choice);
+                }
+                ui.end_row();
+                if app.recorder.is_none() && app.recorder_failed {
+                    ui.label("");
+                    ui.colored_label(ui.visuals().warn_fg_color, "The input device could not be opened");
+                    ui.end_row();
+                }
+                // A level per input channel: which socket of the interface is which input, at a glance.
+                // "Test" plays them, to try them out without a track.
+                if let Some(r) = &app.recorder {
+                    listen = ui.data(|d| d.get_temp(listen_id)).unwrap_or(0);
+                    ui.label("Inputs");
+                    let peaks = r.monitor.take_peaks();
+                    let held = egui::Id::new("playback-engine-input-levels");
+                    let mut levels: Vec<f32> = ui.data(|d| d.get_temp(held)).unwrap_or_default();
+                    levels.resize(peaks.len(), 0.0);
+                    ui.horizontal_wrapped(|ui| {
+                        for (i, (level, peak)) in levels.iter_mut().zip(peaks.iter()).enumerate() {
+                            // Fall back slowly, jump up at once.
+                            *level = (*level * 0.8).max(*peak);
+                            let db = 20.0 * level.max(1e-6).log10();
+                            ui.label(format!("Input {}", i + 1));
+                            ui.add(egui::ProgressBar::new(((db + 60.0) / 60.0).clamp(0.0, 1.0)).desired_width(70.0).desired_height(8.0))
+                                .on_hover_text(format!("{db:.0} dB"));
+                        }
+                        // All of them at once: the levels tell which is which.
+                        if ui.selectable_label(listen != 0, "Test").on_hover_text("Hear the inputs through the output").clicked() {
+                            listen = if listen == 0 { u64::MAX } else { 0 };
+                        }
+                    });
+                    ui.data_mut(|d| d.insert_temp(held, levels));
+                    ui.data_mut(|d| d.insert_temp(listen_id, listen));
+                    ui.ctx().request_repaint_after_secs(0.05);
+                    ui.end_row();
+                }
+                ui.label("Sample rate");
+                let mut choice = app.ui.audio.sample_rate;
+                let session = app.engine.session().sample_rate.hz();
+                // What the output runs at: a device may not offer the rate asked for.
+                let running = app.player.as_ref().filter(|p| !p.silent && p.device_rate > 0).map(|p| p.device_rate);
+                let default = match running.filter(|_| choice.is_none()) {
+                    Some(r) => format!("Default ({r} Hz)"),
+                    None => "Default".to_string(),
+                };
+                let label = choice.map_or_else(|| default.clone(), |r| format!("{r} Hz"));
+                let combo = egui::ComboBox::from_id_salt("audio_sample_rate").selected_text(label).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut choice, None, default).on_hover_text("The session's rate when the device offers it");
+                    for r in &devices.2 {
+                        ui.selectable_value(&mut choice, Some(*r), format!("{r} Hz"));
+                    }
+                });
+                if let Some(r) = running.filter(|r| *r != session) {
+                    combo.response.on_hover_text(format!("The session is {session} Hz: the mix is resampled to the device's {r} Hz"));
+                }
+                if choice != app.ui.audio.sample_rate {
+                    app.set_sample_rate(choice);
+                }
+                ui.end_row();
+                ui.label("Session rate");
+                ui.label(format!("{} Hz", app.engine.session().sample_rate.hz()));
+                ui.end_row();
+                ui.label("Buffer size");
+                let mut choice = app.ui.audio.buffer_size;
+                // The delay of a buffer, at the rate the output runs at (the session's until it is open).
+                let rate =
+                    app.player.as_ref().filter(|p| !p.silent && p.device_rate > 0).map_or(app.engine.session().sample_rate.hz(), |p| p.device_rate);
+                let ms = |frames: u32| f64::from(frames) * 1000.0 / f64::from(rate.max(1));
+                // What the output really runs at: a host may give another size than asked for.
+                let running = app.player.as_ref().filter(|p| !p.silent && p.buffer_frames() > 0).map(|p| p.buffer_frames());
+                let default = match running.filter(|_| choice.is_none()) {
+                    Some(f) => format!("Default ({f} frames, {:.1} ms)", ms(f)),
+                    None => "Default".to_string(),
+                };
+                let label = choice.map_or_else(|| default.clone(), |n| format!("{n} frames ({:.1} ms)", ms(n)));
+                let combo = egui::ComboBox::from_id_salt("audio_buffer_size").selected_text(label).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut choice, None, default).on_hover_text("Whatever the audio host runs at");
+                    for n in host::BUFFER_SIZES {
+                        ui.selectable_value(&mut choice, Some(n), format!("{n} frames ({:.1} ms)", ms(n)));
+                    }
+                });
+                if let Some(f) = running {
+                    combo.response.on_hover_text(format!("The output runs at {f} frames ({:.1} ms)", ms(f)));
+                    ui.ctx().request_repaint_after_secs(0.5);
+                }
+                if choice != app.ui.audio.buffer_size {
+                    app.set_buffer_size(choice);
+                }
+                ui.end_row();
+                if let Some(gaps) = app.recorder.as_ref().map(|r| r.monitor.underruns()).filter(|g| *g > 0) {
+                    ui.label("");
+                    ui.colored_label(ui.visuals().warn_fg_color, format!("{gaps} gap(s) in the monitored input so far: try a larger buffer"));
+                    ui.end_row();
+                }
+            });
+            let mut dc = app.engine.session().edit.delay_compensation;
+            if crate::widgets::checkbox(ui, &mut dc, "Delay compensation").changed() {
+                let _ = app.run("options.delay_compensation", json!({"value": dc}));
+            }
+        } else {
+            midi_inputs(app, ui);
+        }
+        // Both tabs take the height of the taller one, so the window keeps its size when switching.
+        let heights_id = egui::Id::new("playback-engine-tab-heights");
+        let mut heights: [f32; 2] = ui.data(|d| d.get_temp(heights_id)).unwrap_or_default();
+        let height = ui.cursor().top() - top;
+        if let Some(h) = heights.get_mut(usize::from(tab)) {
+            *h = height;
+        }
+        ui.data_mut(|d| d.insert_temp(heights_id, heights));
+        ui.add_space((heights[0].max(heights[1]) - height).max(0.0));
+        ui.separator();
+        let mut io = app.engine.session().edit.flag("edit_view.io");
+        if crate::widgets::checkbox(ui, &mut io, "Show input selectors on tracks in the Edit window")
+            .on_hover_text("The same as View > Edit Window Views > I/O")
+            .changed()
+        {
+            let _ = app.run("view.edit_io", json!({"value": io}));
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Reconnect audio device").clicked() {
+                app.reconnect_audio();
+            }
+            if ui.button("Rescan devices").clicked() {
+                rescan = true;
+                if let Some(m) = &mut app.midi_inputs {
+                    m.reconnect();
+                }
+            }
+        });
+        if rescan {
+            ui.data_mut(|d| d.remove::<std::sync::Arc<(Vec<DeviceInfo>, Vec<DeviceInfo>, Vec<u32>)>>(cache));
+        }
+    });
+    // Only while the dialog shows the inputs: closing it, or leaving the tab, ends the listening.
+    if !open {
+        ctx.data_mut(|d| d.remove::<u64>(listen_id));
+    }
+    if let Some(p) = &app.player {
+        p.set_input_test(listen);
     }
     app.ui.show_playback_engine = open;
 }

@@ -148,7 +148,11 @@ cd soundcraft
 cargo run --release -p soundcraft -- --demo     # opens the demo song
 ```
 
-Linux needs the ALSA headers (`libasound2-dev` on Debian/Ubuntu, `alsa-lib-devel` on Fedora).
+Linux needs the ALSA, JACK and PipeWire headers and libclang (`libasound2-dev libjack-jackd2-dev
+libpipewire-0.3-dev libclang-dev` on Debian/Ubuntu, `alsa-lib-devel
+pipewire-jack-audio-connection-kit-devel pipewire-devel clang-devel` on Fedora); on NixOS,
+`nix-shell` provides all of it. With only the ALSA headers, add `--no-default-features` (see
+[Audio libraries](docs/releasing.md#audio-libraries)).
 
 The web build:
 
@@ -232,7 +236,7 @@ about egui, so the interface could be swapped for another one.
 | `soundcraft-model` | The session document |
 | `soundcraft-mix` | The mix engine (realtime and offline share it) |
 | `soundcraft-engine` | Commands, undo, editing, import/export, bounce |
-| `soundcraft-playback` | Audio devices (CoreAudio, WASAPI, ALSA, WebAudio) and recording |
+| `soundcraft-playback` | Audio devices (CoreAudio, WASAPI, ALSA, WebAudio), MIDI input devices and recording |
 | `soundcraft-automation` | MCP server and control-channel client |
 | `soundcraft-ui-egui` | The user interface |
 

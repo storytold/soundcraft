@@ -22,8 +22,9 @@ description: |-
   reverb, delay and instruments; imports WAV, AIFF, FLAC, MP3 and MIDI.
   Includes soundcraft-cli, a headless editor, bounce tool and MCP server.
 
-# The app links glibc, libgcc_s and ALSA (libasound, for audio I/O through cpal; PulseAudio and
-# PipeWire are reached through their ALSA plugins). Windowing (X11/Wayland, xkbcommon) and the GPU
+# The app links glibc, libgcc_s, ALSA (libasound) and PipeWire (libpipewire-0.3) for audio I/O
+# through cpal; libjack is loaded at runtime when installed (JACK host), and PulseAudio is reached
+# through its ALSA plugin. A build made with --no-default-features links ALSA only. Windowing (X11/Wayland, xkbcommon) and the GPU
 # (Vulkan, EGL/GL) are loaded at runtime, so they are dependencies/recommendations here rather
 # than ELF NEEDED entries.
 overrides:
@@ -32,6 +33,7 @@ overrides:
       - libc6 (>= 2.35)
       - libgcc-s1
       - libasound2 | libasound2t64
+      - libpipewire-0.3-0 | libpipewire-0.3-0t64
       - libxkbcommon0
       - libvulkan1 | libegl1
     recommends:
@@ -47,6 +49,7 @@ overrides:
   rpm:
     depends:
       - alsa-lib
+      - pipewire-libs
       - libxkbcommon
       - (vulkan-loader or libglvnd-egl)
     recommends:

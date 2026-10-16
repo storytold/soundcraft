@@ -50,6 +50,10 @@
 //! [`Insert::sample`]: soundcraft_model::Insert::sample
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod live_midi;
+
+pub use live_midi::{LiveMidi, MAX_MIDI_PORTS, MidiPorts, midi_thru};
+
 use soundcraft_dsp::pan::{PanLaw, SpeakerPos, SurroundParams, gains};
 use soundcraft_dsp::{Plugin, SampleSource, Transport, db_to_gain};
 use soundcraft_midi::CtrlKind;
@@ -226,6 +230,8 @@ struct Strip {
     sample: Option<Arc<SourceAudio>>,
     /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
     held: Vec<u8>,
+    /// Notes held by live MIDI input.
+    live: live_midi::LiveNotes,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     chase: bool,
     muted: bool,
@@ -311,6 +317,7 @@ impl Strip {
             sample: None,
             held: Vec::new(),
             chase: true,
+            live: live_midi::LiveNotes::default(),
             muted: false,
             gr: 0.0,
             clip_fx: HashMap::new(),
@@ -355,6 +362,11 @@ pub struct MixEngine {
     aux_latency: usize,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
     pub input: Vec<Vec<f32>>,
+    /// Live MIDI input for the next block, set by the audio host: record-enabled and
+    /// input-monitored MIDI and instrument tracks play it. Keep its capacity; `render` only reads.
+    pub midi: Vec<LiveMidi>,
+    /// Names of the ports the events in `midi` come from (for tracks that listen to one device).
+    pub midi_ports: Option<Arc<MidiPorts>>,
     /// Transport stopped: only monitored inputs sound (no clips).
     pub monitor_only: bool,
     /// Recording: record-armed tracks hear their input (auto input).
@@ -436,6 +448,8 @@ impl MixEngine {
             aux_fed: Vec::new(),
             aux_latency: 0,
             input: Vec::new(),
+            midi: Vec::new(),
+            midi_ports: None,
             monitor_only: false,
             recording: false,
             metronome: false,
@@ -515,6 +529,7 @@ impl MixEngine {
             s.align.clear();
             s.align_pre.clear();
             s.out_extra.clear();
+            s.live.clear();
         }
         self.meters.clear();
         self.main_meter = StripMeter::default();
@@ -612,17 +627,22 @@ impl MixEngine {
     /// Render `frames` (≤ max_block) samples starting at `pos` into `out` (≥ 2 channels).
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
         let frames = frames.min(self.max_block);
-        if pos != self.last_end {
-            // Seek: silence held notes and ringing plugins.
-            for st in self.strips.values_mut() {
-                if let Some(i) = &mut st.instrument {
-                    i.plugin.all_notes_off();
+        // While stopped (monitoring only) the position stands still: that is not a seek, and
+        // notes played live keep sounding.
+        if !self.monitor_only {
+            if pos != self.last_end {
+                // Seek: silence held notes and ringing plugins.
+                for st in self.strips.values_mut() {
+                    if let Some(i) = &mut st.instrument {
+                        i.plugin.all_notes_off();
+                    }
+                    st.held.clear();
+                    st.chase = true;
+                    st.live.clear();
                 }
-                st.held.clear();
-                st.chase = true;
             }
+            self.last_end = pos.saturating_add(frames as i64);
         }
-        self.last_end = pos.saturating_add(frames as i64);
         self.ensure_synced(s);
         for b in self.busses.values_mut() {
             for c in b.buf.iter_mut() {
@@ -651,7 +671,13 @@ impl MixEngine {
             }
         }
         let busses = std::mem::take(&mut self.busses);
-        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+        let live_in = LiveInput {
+            input: &self.input,
+            midi: &self.midi,
+            ports: self.midi_ports.as_deref(),
+            monitor_only: self.monitor_only,
+            recording: self.recording,
+        };
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
                 process_strip(s, t, st, &busses, &live_in, pos, frames, any_solo);
@@ -732,7 +758,13 @@ impl MixEngine {
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
-            let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+            let live_in = LiveInput {
+                input: &self.input,
+                midi: &self.midi,
+                ports: self.midi_ports.as_deref(),
+                monitor_only: self.monitor_only,
+                recording: self.recording,
+            };
             process_strip(s, t, &mut st, &self.busses, &live_in, pos, frames, any_solo);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
@@ -890,6 +922,8 @@ impl MixEngine {
 /// Live input routed to monitored tracks.
 struct LiveInput<'a> {
     input: &'a [Vec<f32>],
+    midi: &'a [LiveMidi],
+    ports: Option<&'a MidiPorts>,
     monitor_only: bool,
     recording: bool,
 }
@@ -927,7 +961,10 @@ fn process_strip(
             }
         }
         TrackKind::Audio if live.monitor_only => {}
-        TrackKind::Instrument | TrackKind::Midi if live.monitor_only => {}
+        // Stopped: only a track that plays live MIDI input sounds (and one that just stopped
+        // doing so, to release its notes).
+        TrackKind::Instrument | TrackKind::Midi if live.monitor_only && !midi_thru(t) && !strip.live.active() => {}
+        TrackKind::Midi if live.monitor_only => {}
         TrackKind::Audio => {
             let block = Range { start: pos, end: pos.saturating_add(frames as i64) };
             for clip in t.clips() {
@@ -992,7 +1029,14 @@ fn process_strip(
                 if std::mem::take(&mut strip.chase) {
                     chase_controllers(s, t, pos, inst);
                 }
-                schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+                if !live.monitor_only {
+                    schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+                }
+                if midi_thru(t) {
+                    strip.live.play(t, inst.plugin.as_mut(), live.midi, live.ports, frames);
+                } else if strip.live.active() {
+                    strip.live.release(inst.plugin.as_mut());
+                }
                 if strip.buf.len() >= 2 {
                     inst.plugin.process(&mut strip.buf, frames);
                 } else if let Some(c0) = strip.buf.first_mut() {
@@ -2306,6 +2350,78 @@ mod tests {
         assert!((quiet / loud - 0.5).abs() < 0.05, "-12 dB vs -6 dB should halve the level: {quiet} / {loud}");
     }
 
+    /// Renders `blocks` stopped blocks, the events in the first one, and returns the last block's peak.
+    fn live_peak(eng: &mut MixEngine, s: &Session, events: &[(u8, u8, u8)], blocks: usize) -> f32 {
+        let mut out = vec![vec![0.0f32; 512]; 2];
+        eng.monitor_only = true;
+        eng.midi.clear();
+        eng.midi.extend(events.iter().map(|&(status, data1, data2)| LiveMidi { offset: 0, port: 0, status, data1, data2 }));
+        for _ in 0..blocks {
+            eng.render(s, 0, 512, &mut out);
+            eng.midi.clear();
+        }
+        peak(&out[0])
+    }
+
+    #[test]
+    fn live_midi_plays_record_enabled_instruments_while_stopped() {
+        let mut s = synth_session(-6.0);
+        let t = s.tracks[0].id;
+        let mut eng = MixEngine::new(48_000.0, 512);
+        // Not record-enabled: the keyboard is not heard, and neither is the clip while stopped.
+        assert_eq!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8), 0.0);
+        s.track_mut(t).unwrap().mixer.record_arm = true;
+        assert!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8) > 0.01, "a held key sounds");
+        assert!(live_peak(&mut eng, &s, &[], 40) > 0.01, "and keeps sounding: a stopped transport is not a seek");
+        // The sustain pedal holds the note past its note-off (a note-on with velocity 0 here).
+        assert!(live_peak(&mut eng, &s, &[(0xB0, 64, 127), (0x90, 60, 0)], 40) > 0.01);
+        assert!(live_peak(&mut eng, &s, &[(0xB0, 64, 0)], 400) < 1e-4, "pedal up releases it");
+        // Taking the track out of record releases a held key.
+        assert!(live_peak(&mut eng, &s, &[(0x91, 64, 100)], 8) > 0.01);
+        s.track_mut(t).unwrap().mixer.record_arm = false;
+        assert!(live_peak(&mut eng, &s, &[], 400) < 1e-4);
+    }
+
+    #[test]
+    fn live_midi_honours_the_track_input_device_and_channel() {
+        let mut s = synth_session(-6.0);
+        let t = s.tracks[0].id;
+        let ports = Arc::new(MidiPorts::default());
+        ports.assign("Keys");
+        let mut eng = MixEngine::new(48_000.0, 512);
+        eng.midi_ports = Some(Arc::clone(&ports));
+        let tr = s.track_mut(t).unwrap();
+        tr.mixer.input_monitor = true;
+        tr.mixer.input = soundcraft_model::MidiInput { device: Some("Pad"), channel: None }.route();
+        assert_eq!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8), 0.0, "another device");
+        s.track_mut(t).unwrap().mixer.input = soundcraft_model::MidiInput { device: Some("Keys"), channel: Some(1) }.route();
+        assert_eq!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8), 0.0, "another channel");
+        assert!(live_peak(&mut eng, &s, &[(0x91, 60, 100)], 8) > 0.01);
+    }
+
+    #[test]
+    fn live_midi_sounds_on_top_of_the_clips_during_playback() {
+        let mut s = synth_session(-6.0);
+        s.tracks[0].mixer.record_arm = true;
+        let render = |events: &[LiveMidi]| {
+            let mut eng = MixEngine::new(48_000.0, 512);
+            let mut out = vec![vec![0.0f32; 512]; 2];
+            let mut all = Vec::new();
+            for b in 0..80 {
+                eng.midi.clear();
+                if b == 60 {
+                    eng.midi.extend_from_slice(events);
+                }
+                eng.render(&s, b * 512, 512, &mut out);
+                all.extend_from_slice(&out[0]);
+            }
+            all
+        };
+        let (dry, played) = (render(&[]), render(&[LiveMidi { offset: 100, port: 0, status: 0x90, data1: 72, data2: 110 }]));
+        // The clip's note ends at 24 000 samples; block 60 starts at 30 720.
+        assert_eq!(dry[..30_720 + 100], played[..30_720 + 100], "nothing changes before the key goes down");
+        assert!(peak(&played[31_000..]) > peak(&dry[31_000..]) + 0.01);
+    }
     #[test]
     fn insert_slot_a_automation_does_not_drive_the_instrument() {
         let mut s = synth_session(-6.0);

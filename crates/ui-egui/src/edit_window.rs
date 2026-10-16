@@ -1066,7 +1066,14 @@ fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, sele
         ];
         for (i, (key, lit, implied, cmd, shown)) in keys.into_iter().enumerate() {
             if shown && header_toggle(ui, at(23.0 + i as f32 * 26.0, 20.0, 16.0, 16.0), id, key, lit, implied).clicked() {
-                let _ = app.run(cmd, json!({"track": id.0}));
+                // Record enable and input monitoring say what they do in the status line.
+                match key {
+                    HeaderKey::Rec => crate::mix_window::toggle_record_arm(app, id),
+                    HeaderKey::Input => crate::mix_window::toggle_input_monitor(app, id),
+                    _ => {
+                        let _ = app.run(cmd, json!({"track": id.0}));
+                    }
+                }
             }
         }
     }

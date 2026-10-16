@@ -10,10 +10,6 @@ default-run = "soundcraft"
 [lints]
 workspace = true
 
-[features]
-# ASIO audio devices on Windows (see soundcraft-playback's `asio` feature).
-asio = ["soundcraft-playback/asio"]
-
 [dependencies]
 soundcraft-engine.workspace = true
 soundcraft-ui-egui.workspace = true
@@ -22,6 +18,16 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "
 egui.workspace = true
 serde_json.workspace = true
 log.workspace = true
+
+[features]
+# JACK and PipeWire are built in by default, so Linux builds need their headers and libclang
+# (docs/releasing.md, "Audio libraries"); `--no-default-features` gives the system host only
+# (ALSA on Linux). Off Linux `pipewire` does nothing and `jack` has no build dependency.
+default = ["jack", "pipewire"]
+# Extra audio hosts (see crates/playback/Cargo.toml).
+jack = ["soundcraft-playback/jack"]
+pipewire = ["soundcraft-playback/pipewire"]
+asio = ["soundcraft-playback/asio"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd.workspace = true

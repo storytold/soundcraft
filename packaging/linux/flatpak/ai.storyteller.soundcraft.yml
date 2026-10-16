@@ -69,7 +69,9 @@ modules:
         CARGO_HOME: /run/build/soundcraft/cargo
         CARGO_NET_OFFLINE: 'true'
     build-commands:
-      - cargo --offline build --release --locked -p soundcraft -p soundcraft-cli
+      # --no-default-features: the sandbox reaches the sound server through ALSA and the PulseAudio
+      # socket (see finish-args), not the JACK or PipeWire hosts, and the Sdk has no JACK headers.
+      - cargo --offline build --release --locked --no-default-features -p soundcraft -p soundcraft-cli
       - install -Dm755 target/release/soundcraft /app/bin/soundcraft
       - install -Dm755 target/release/soundcraft-cli /app/bin/soundcraft-cli
       - install -Dm644 packaging/linux/ai.storyteller.soundcraft.desktop /app/share/applications/ai.storyteller.soundcraft.desktop

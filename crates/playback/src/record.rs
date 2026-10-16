@@ -129,6 +129,8 @@ pub struct Recorder {
     #[cfg(not(target_os = "freebsd"))]
     _stream: Option<cpal::Stream>,
     pub device_name: String,
+    /// Display name of the audio host the device belongs to (see [`crate::host`]).
+    pub host_name: String,
     pub sample_rate: u32,
     pub channels: usize,
     /// The take writer, and what each track's take holds so far.
@@ -137,55 +139,82 @@ pub struct Recorder {
     seen: (u64, Instant),
 }
 
-/// The input stream: device samples are converted to f32 in a scratch buffer allocated here (so
-/// the callback never allocates), then feed the monitor ring and, while armed, the capture.
+/// The input stream in the device's sample format: device samples are converted to f32 in a
+/// scratch buffer allocated here (so the callback never allocates), then feed the monitor ring
+/// and, while armed, the capture. A callback that panics breaks the input instead of the app, and
+/// a device that goes away is noted in `shared`.
 #[cfg(not(target_os = "freebsd"))]
-fn build_input<T>(
+fn build_input(
     device: &cpal::Device,
-    config: &cpal::StreamConfig,
+    config: cpal::StreamConfig,
+    format: cpal::SampleFormat,
     shared: &Arc<Shared>,
     monitor: &Arc<InputRing>,
-) -> Result<cpal::Stream, cpal::BuildStreamError>
-where
-    T: cpal::SizedSample,
-    f32: cpal::FromSample<T>,
-{
-    use cpal::Sample;
-    use cpal::traits::DeviceTrait;
-    let (sh, errors) = (Arc::clone(shared), Arc::clone(shared));
-    let mon = Arc::clone(monitor);
-    let mut scratch = vec![0.0f32; 8192 * usize::from(config.channels).max(1)];
-    let chunk = scratch.len();
-    let mut owed = 0;
-    device.build_input_stream(
-        config,
-        move |data: &[T], _: &cpal::InputCallbackInfo| {
-            crate::mark_audio_thread();
-            sh.guarded(|| {
-                for part in data.chunks(chunk) {
-                    let Some(s) = scratch.get_mut(..part.len()) else { return };
-                    for (o, x) in s.iter_mut().zip(part) {
-                        *o = f32::from_sample(*x);
+) -> Result<cpal::Stream, String> {
+    use cpal::SampleFormat as F;
+    fn converted<T>(
+        device: &cpal::Device,
+        config: cpal::StreamConfig,
+        shared: &Arc<Shared>,
+        monitor: &Arc<InputRing>,
+    ) -> Result<cpal::Stream, cpal::Error>
+    where
+        T: cpal::SizedSample,
+        f32: cpal::FromSample<T>,
+    {
+        use cpal::Sample;
+        use cpal::traits::DeviceTrait;
+        let (sh, errors) = (Arc::clone(shared), Arc::clone(shared));
+        let mon = Arc::clone(monitor);
+        let mut scratch = vec![0.0f32; 8192 * usize::from(config.channels).max(1)];
+        let chunk = scratch.len();
+        let mut owed = 0;
+        device.build_input_stream(
+            config,
+            move |data: &[T], _: &cpal::InputCallbackInfo| {
+                crate::mark_audio_thread();
+                sh.guarded(|| {
+                    for part in data.chunks(chunk) {
+                        let Some(s) = scratch.get_mut(..part.len()) else { return };
+                        for (o, x) in s.iter_mut().zip(part) {
+                            *o = f32::from_sample(*x);
+                        }
+                        mon.push(s);
+                        if sh.armed.load(Ordering::Acquire) {
+                            sh.capture(s, &mut owed);
+                        } else {
+                            owed = 0;
+                        }
                     }
-                    mon.push(s);
-                    if sh.armed.load(Ordering::Acquire) {
-                        sh.capture(s, &mut owed);
-                    } else {
-                        owed = 0;
-                    }
+                });
+            },
+            move |e: cpal::Error| {
+                // Possibly the audio thread (see `crate::mark_audio_thread`).
+                crate::mark_audio_thread();
+                if e.kind() == cpal::ErrorKind::DeviceNotAvailable {
+                    let _ = errors.fault.compare_exchange(0, GONE, Ordering::Relaxed, Ordering::Relaxed);
                 }
-            });
-        },
-        move |e| {
-            // Possibly the audio thread (see `crate::mark_audio_thread`).
-            crate::mark_audio_thread();
-            if matches!(e, cpal::StreamError::DeviceNotAvailable) {
-                let _ = errors.fault.compare_exchange(0, GONE, Ordering::Relaxed, Ordering::Relaxed);
-            }
-            log::warn!("input stream error: {e}");
-        },
-        None,
-    )
+                log::warn!("input stream error: {e}");
+            },
+            None,
+        )
+    }
+    let stream = match format {
+        F::F32 => converted::<f32>(device, config, shared, monitor),
+        F::I8 => converted::<i8>(device, config, shared, monitor),
+        F::I16 => converted::<i16>(device, config, shared, monitor),
+        F::I24 => converted::<cpal::I24>(device, config, shared, monitor),
+        F::I32 => converted::<i32>(device, config, shared, monitor),
+        F::I64 => converted::<i64>(device, config, shared, monitor),
+        F::U8 => converted::<u8>(device, config, shared, monitor),
+        F::U16 => converted::<u16>(device, config, shared, monitor),
+        F::U24 => converted::<cpal::U24>(device, config, shared, monitor),
+        F::U32 => converted::<u32>(device, config, shared, monitor),
+        F::U64 => converted::<u64>(device, config, shared, monitor),
+        F::F64 => converted::<f64>(device, config, shared, monitor),
+        f => return Err(format!("unsupported input sample format {f:?}")),
+    };
+    stream.map_err(|e| e.to_string())
 }
 
 impl Recorder {
@@ -194,58 +223,65 @@ impl Recorder {
         Recorder::open_with(&crate::AudioConfig::default())
     }
 
-    /// Open the input device `audio` chooses (else the default) at its chosen rate and buffer
-    /// size when the device offers them, else at the device's defaults. Integer devices (ASIO
-    /// drivers usually are) are converted to f32.
+    /// Open the input device `audio` chooses (its audio host and device, see [`crate::host`]; else
+    /// the defaults) at its chosen rate and buffer size when the device offers them, else at the
+    /// device's defaults. Devices in another sample format than f32 (ASIO drivers and raw ALSA
+    /// devices usually are) are converted.
     #[cfg(not(target_os = "freebsd"))]
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
         use cpal::traits::{DeviceTrait, StreamTrait};
-        let host = crate::devices::host(audio);
-        let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
-        #[allow(deprecated)]
-        let name = device.name().unwrap_or_else(|_| "Input".into());
+        crate::host::configure(audio);
+        let (device, host_name) = crate::host::default_device(crate::host::Direction::Input).map_err(|_| "no audio input device")?;
+        let name = crate::host::device_label(&device, "Input");
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
         let at_rate = audio.sample_rate.and_then(|r| {
             device
                 .supported_input_configs()
                 .ok()?
-                .filter(|c| crate::devices::format_rank(c.sample_format()).is_some() && c.min_sample_rate().0 <= r && c.max_sample_rate().0 >= r)
-                .min_by_key(|c| (crate::devices::format_rank(c.sample_format()), std::cmp::Reverse(c.channels())))
-                .map(|c| c.with_sample_rate(cpal::SampleRate(r)))
+                .filter(|c| crate::format_rank(c.sample_format()) != u8::MAX && c.min_sample_rate() <= r && c.max_sample_rate() >= r)
+                .min_by_key(|c| (crate::format_rank(c.sample_format()), std::cmp::Reverse(c.channels())))
+                .map(|c| c.with_sample_rate(r))
         });
         let cfg = match at_rate {
             Some(c) => c,
             None => device.default_input_config().map_err(|e| e.to_string())?,
         };
         let format = cfg.sample_format();
-        if crate::devices::format_rank(format).is_none() {
+        if crate::format_rank(format) == u8::MAX {
             return Err(format!("unsupported input sample format {format:?}"));
         }
         let mut config = cfg.config();
-        config.buffer_size = crate::devices::buffer_size(audio.buffer_size, cfg.buffer_size());
+        config.buffer_size = crate::host::buffer_size(audio.buffer_size, cfg.buffer_size());
         let channels = usize::from(config.channels).max(1);
-        let ring = CaptureRing::new((config.sample_rate.0 as usize).saturating_mul(channels * RING_SECONDS).min(1 << 25));
+        let ring = CaptureRing::new((config.sample_rate as usize).saturating_mul(channels * RING_SECONDS).min(1 << 25));
         let shared = Arc::new(Shared::new(ring));
-        let monitor = InputRing::new(usize::from(config.channels), config.sample_rate.0);
-        let build = |config: &cpal::StreamConfig| match format {
-            cpal::SampleFormat::I32 => build_input::<i32>(&device, config, &shared, &monitor),
-            cpal::SampleFormat::I16 => build_input::<i16>(&device, config, &shared, &monitor),
-            _ => build_input::<f32>(&device, config, &shared, &monitor),
-        };
+        let monitor = InputRing::new(usize::from(config.channels), config.sample_rate);
         // The chosen buffer size first; if the device refuses it, its default.
-        let stream = match build(&config) {
+        let stream = match build_input(&device, config, format, &shared, &monitor) {
             Ok(s) => s,
             Err(e) if config.buffer_size != cpal::BufferSize::Default => {
                 log::warn!("cannot open the input with buffer {:?}: {e}; using the device default", config.buffer_size);
                 config.buffer_size = cpal::BufferSize::Default;
-                build(&config).map_err(|e| e.to_string())?
+                build_input(&device, config, format, &shared, &monitor)?
             }
-            Err(e) => return Err(e.to_string()),
+            Err(e) => return Err(e),
         };
         stream.play().map_err(|e| e.to_string())?;
+        crate::host::wire_stream(crate::host::Direction::Input, &host_name);
+        log::info!("audio input: {name} ({host_name}) @ {} Hz, {channels} ch, {format}", config.sample_rate);
         let seen = (0, Instant::now());
-        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate.0, channels, writer: None, seen })
+        Ok(Recorder {
+            monitor,
+            shared,
+            _stream: Some(stream),
+            device_name: name,
+            host_name,
+            sample_rate: config.sample_rate,
+            channels,
+            writer: None,
+            seen,
+        })
     }
 
     #[cfg(target_os = "freebsd")]
@@ -469,6 +505,7 @@ mod tests {
             monitor: InputRing::new(1, 48_000),
             #[cfg(not(target_os = "freebsd"))]
             _stream: None,
+            host_name: String::new(),
             device_name: "Mic In".into(),
             sample_rate: 48_000,
             channels: 1,
@@ -565,76 +602,208 @@ mod tests {
     }
 }
 
-/// Ring state behind the lock: interleaved input frames at the input device's rate, plus the
-/// fractional read position (in input frames) of the next output sample.
-struct RingState {
-    data: std::collections::VecDeque<f32>,
+/// The reading side of an [`InputRing`]: where the next output sample is, and how well the two
+/// streams keep step.
+struct Reader {
+    /// Fractional position (input frames) of the next output sample past the ring's tail.
     phase: f64,
+    /// Reading has started: enough input is buffered. Cleared when the input runs dry.
+    primed: bool,
+    /// Extra frames kept in hand, grown each time the input ran dry.
+    extra: usize,
+    /// Fewest frames left after a read in the current half-second window, and its length so far.
+    low: usize,
+    window: usize,
+    /// Correction of the read speed (±0.5 %) that holds the buffered amount steady when the input
+    /// and output devices run on different clocks.
+    trim: f64,
+    /// The steady part of `trim`: the clock difference learned so far.
+    drift: f64,
 }
 
-/// A small interleaved FIFO from the input callback to the output callback, for input
-/// monitoring. Both sides only `try_lock`; it holds at most ~0.5 s and drops the oldest frames.
-/// The input device may run at a different rate than the session, so the reader converts
-/// rates with linear interpolation (cheap, allocation-free, fine for monitoring).
+/// The live input on its way from the input callback to the output callback, for input
+/// monitoring. Lock-free: the input side never waits and never loses a block to the reader.
+///
+/// The two callbacks are separate streams, often on separate clocks, so the reader keeps a small
+/// reserve (about one callback of each side) and steers its read speed by up to ±0.5 % to hold
+/// it. That reserve is the monitoring delay this ring adds; it follows the device buffer size.
+/// The input device may also run at another rate than the session: the reader converts with
+/// linear interpolation (cheap, allocation-free, fine for monitoring).
 pub struct InputRing {
-    state: Mutex<RingState>,
-    pub channels: std::sync::atomic::AtomicUsize,
+    slots: Box<[AtomicU32]>,
+    mask: usize,
+    /// Samples written and samples read so far (wrapping).
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    pub channels: AtomicUsize,
     /// Input device sample rate in Hz (0 when unknown, which reads as "same as the session").
     rate: u32,
-    /// Most samples kept: half a second of input, or 24 000 frames when the rate is unknown.
-    cap: usize,
+    /// Largest block the input callback delivered (frames).
+    push_block: AtomicUsize,
+    /// Times the input ran dry while being read (each is a gap in what is heard).
+    underruns: AtomicUsize,
+    /// Peak of each input channel since [`InputRing::take_peaks`] (bits of a non-negative f32).
+    peaks: Box<[AtomicU32]>,
+    /// Only the reader locks this (`try_lock`, never contended in normal running).
+    reader: Mutex<Reader>,
 }
 
 impl InputRing {
     pub fn new(channels: usize, rate: u32) -> Arc<InputRing> {
         let ch = channels.max(1);
-        let frames = if rate == 0 { 24_000 } else { rate as usize / 2 };
+        // Half a second of input: far more than the reader keeps, room for a stalled reader.
+        let frames = if rate == 0 { 24_000 } else { (rate as usize / 2).clamp(4_096, 1 << 20) };
+        let n = (frames * ch).next_power_of_two();
         Arc::new(InputRing {
-            state: Mutex::new(RingState { data: std::collections::VecDeque::with_capacity(rate.max(48_000) as usize * ch), phase: 0.0 }),
-            channels: std::sync::atomic::AtomicUsize::new(ch),
+            slots: (0..n).map(|_| AtomicU32::new(0)).collect(),
+            mask: n - 1,
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            channels: AtomicUsize::new(ch),
             rate,
-            cap: frames * ch,
+            push_block: AtomicUsize::new(0),
+            underruns: AtomicUsize::new(0),
+            peaks: (0..ch.min(64)).map(|_| AtomicU32::new(0)).collect(),
+            reader: Mutex::new(Reader { phase: 0.0, primed: false, extra: 0, low: usize::MAX, window: 0, trim: 0.0, drift: 0.0 }),
         })
     }
 
+    /// Frames per callback the input device delivers (0 before the first).
+    pub fn input_block(&self) -> usize {
+        self.push_block.load(Ordering::Relaxed)
+    }
+
+    /// The peak level of each input channel since the last call (linear, 1.0 is full scale).
+    pub fn take_peaks(&self) -> Vec<f32> {
+        self.peaks.iter().map(|p| f32::from_bits(p.swap(0, Ordering::Relaxed))).collect()
+    }
+
+    /// How often the input ran dry while it was being listened to.
+    pub fn underruns(&self) -> usize {
+        self.underruns.load(Ordering::Relaxed)
+    }
+
+    /// Input callback: queue interleaved samples. When nobody has read for so long that the ring
+    /// is full, the block is dropped (the reader starts afresh when it comes back).
     pub fn push(&self, samples: &[f32]) {
-        if let Ok(mut s) = self.state.try_lock() {
-            s.data.extend(samples.iter().copied().map(finite));
-            while s.data.len() > self.cap {
-                s.data.pop_front();
+        let ch = self.channels.load(Ordering::Relaxed).max(1);
+        let head = self.head.load(Ordering::Relaxed);
+        let free = self.slots.len().saturating_sub(head.wrapping_sub(self.tail.load(Ordering::Acquire)));
+        if samples.len() > free {
+            return;
+        }
+        for (i, s) in samples.iter().enumerate() {
+            if let Some(slot) = self.slots.get(head.wrapping_add(i) & self.mask) {
+                slot.store(finite(*s).to_bits(), Ordering::Relaxed);
             }
+        }
+        self.head.store(head.wrapping_add(samples.len()), Ordering::Release);
+        self.push_block.fetch_max(samples.len() / ch, Ordering::Relaxed);
+        // Levels for the input meters. Non-negative floats order like their bits.
+        for (c, peak) in self.peaks.iter().enumerate() {
+            let top = samples.iter().skip(c).step_by(ch).fold(0.0f32, |m, s| m.max(finite(*s).abs()));
+            peak.fetch_max(top.to_bits(), Ordering::Relaxed);
         }
     }
 
-    /// Fill `out` (planar, at `session_rate`) with up to `frames` frames, converting from the
-    /// input rate. Missing frames are silence.
+    fn sample(&self, at: usize) -> f32 {
+        self.slots.get(at & self.mask).map_or(0.0, |s| f32::from_bits(s.load(Ordering::Relaxed)))
+    }
+
+    /// Start afresh at the newest input the next time it is read (after a pause in reading).
+    pub fn resync(&self) {
+        if let Ok(mut r) = self.reader.try_lock() {
+            r.primed = false;
+        }
+    }
+
+    /// Output callback: fill `out` (planar, at `session_rate`) with `frames` frames, converting
+    /// from the input rate. Silence until enough input is buffered, and where it runs dry.
     pub fn pop_into(&self, out: &mut [Vec<f32>], frames: usize, session_rate: u32) {
         let ch = self.channels.load(Ordering::Relaxed).max(1);
         for c in out.iter_mut() {
             c.iter_mut().take(frames).for_each(|x| *x = 0.0);
         }
-        let Ok(mut s) = self.state.try_lock() else { return };
+        let Ok(mut r) = self.reader.try_lock() else { return };
         // Input frames consumed per output frame.
-        let step = if self.rate == 0 || session_rate == 0 { 1.0 } else { f64::from(self.rate) / f64::from(session_rate) };
-        for f in 0..frames {
-            // Drop input frames we have moved past; keep the one at `phase` and the next one.
-            while s.phase >= 1.0 && s.data.len() >= 2 * ch {
-                s.data.drain(..ch);
-                s.phase -= 1.0;
+        let ratio = if self.rate == 0 || session_rate == 0 { 1.0 } else { f64::from(self.rate) / f64::from(session_rate) };
+        let head = self.head.load(Ordering::Acquire);
+        let mut tail = self.tail.load(Ordering::Relaxed);
+        let mut avail = head.wrapping_sub(tail) / ch;
+        // What this read takes (the interpolation looks one frame ahead), the input's own block,
+        // and the reserve kept beyond the read: a callback of the longer side and a little more,
+        // so that an input block that comes a whole callback late (or the two callbacks swapping
+        // order, which separate clocks do now and then) is not a gap.
+        let need = (frames as f64 * ratio).ceil() as usize + 2;
+        let push = self.push_block.load(Ordering::Relaxed).max(1);
+        let reserve = need.max(push + 2).saturating_add(16).saturating_add(r.extra);
+        // Full: reading stood still and the input side has been dropping blocks. All of it is old.
+        if avail.saturating_add(push) >= self.slots.len() / ch {
+            tail = head;
+            avail = 0;
+            r.primed = false;
+        }
+        if !r.primed {
+            // Wait until the input covers this read and the reserve. Then start from the newest
+            // input, with one more input block when there is one: how far away the next block
+            // is, is not known here.
+            let start = need.saturating_add(reserve);
+            if avail < start {
+                self.tail.store(tail, Ordering::Release);
+                return;
             }
-            if s.phase >= 1.0 || s.data.len() < 2 * ch {
+            let keep = start.saturating_add(push).min(avail);
+            tail = head.wrapping_sub(keep * ch);
+            avail = keep;
+            *r = Reader { primed: true, extra: r.extra, phase: 0.0, low: usize::MAX, window: 0, trim: r.drift, drift: r.drift };
+        }
+        let step = ratio * (1.0 + r.trim);
+        for f in 0..frames {
+            // Move past the input frames already read; keep the one at `phase` and the next.
+            while r.phase >= 1.0 && avail >= 2 {
+                tail = tail.wrapping_add(ch);
+                avail -= 1;
+                r.phase -= 1.0;
+            }
+            if r.phase >= 1.0 || avail < 2 {
+                // Ran dry: a gap. Keep more in hand from now on (up to four input blocks more).
+                r.primed = false;
+                r.extra = r.extra.saturating_add(reserve / 2 + 1).min(push.saturating_mul(4).max(256));
+                self.underruns.fetch_add(1, Ordering::Relaxed);
                 break;
             }
-            let fr = s.phase as f32;
+            let fr = r.phase as f32;
             for c in 0..ch {
-                let a = s.data.get(c).copied().unwrap_or(0.0);
-                let b = s.data.get(ch + c).copied().unwrap_or(a);
+                let (a, b) = (self.sample(tail.wrapping_add(c)), self.sample(tail.wrapping_add(ch + c)));
                 if let Some(x) = out.get_mut(c).and_then(|o| o.get_mut(f)) {
                     *x = a + (b - a) * fr;
                 }
             }
-            s.phase += step;
+            r.phase += step;
         }
+        if r.primed {
+            // Every half second, compare the least that was left after a read with the reserve.
+            r.low = r.low.min(avail);
+            r.window = r.window.saturating_add(frames);
+            let window = (session_rate as usize / 2).max(1);
+            if r.window >= window {
+                let over = r.low as f64 - reserve as f64;
+                if over > (push.max(need) + self.rate.max(1) as usize / 100) as f64 {
+                    // Far behind (more than 10 ms late): drop the excess at once.
+                    let skip = over as usize;
+                    tail = tail.wrapping_add(skip.min(avail.saturating_sub(2)) * ch);
+                    r.trim = r.drift;
+                } else {
+                    // The two clocks differ: learn by how much, and work the rest off quickly.
+                    let rate = over / (window as f64 * ratio);
+                    r.drift = (r.drift + 0.1 * rate).clamp(-0.005, 0.005);
+                    r.trim = (r.drift + 0.5 * rate).clamp(-0.005, 0.005);
+                }
+                r.low = usize::MAX;
+                r.window = 0;
+            }
+        }
+        self.tail.store(tail, Ordering::Release);
     }
 }
 
@@ -642,66 +811,109 @@ impl InputRing {
 mod ring_tests {
     use super::InputRing;
 
-    /// A 1 kHz sine recorded at 16 kHz must come out as a 1 kHz sine at 48 kHz, across calls.
-    #[test]
-    fn monitor_converts_input_rate_to_session_rate() {
-        let ring = InputRing::new(1, 16_000);
-        let input: Vec<f32> = (0..4_000).map(|i| (2.0 * std::f64::consts::PI * 1_000.0 * f64::from(i) / 16_000.0).sin() as f32).collect();
-        ring.push(&input);
-        let mut out = vec![vec![0.0f32; 48]];
-        let mut k = 0usize;
-        for _ in 0..10 {
-            ring.pop_into(&mut out, 48, 48_000);
-            for v in &out[0] {
-                let want = (2.0 * std::f64::consts::PI * 1_000.0 * k as f64 / 48_000.0).sin() as f32;
-                assert!((v - want).abs() < 0.05, "sample {k}: got {v}, want {want}");
-                k += 1;
+    fn sine(k: usize, rate: f64) -> f32 {
+        (2.0 * std::f64::consts::PI * 1_000.0 * k as f64 / rate).sin() as f32
+    }
+
+    /// Runs an input callback of `push` frames at `in_rate` against an output callback of `pop`
+    /// frames at 48 kHz for `seconds`, the input clock off by `drift`. Returns the output and
+    /// the number of times the input ran dry.
+    fn run(in_rate: u32, push: usize, pop: usize, seconds: f64, drift: f64) -> (Vec<f32>, usize) {
+        let ring = InputRing::new(1, in_rate);
+        let (mut out, mut block) = (Vec::new(), vec![vec![0.0f32; pop]]);
+        let (mut pushed, mut k) = (0.0f64, 0usize);
+        let total = (48_000.0 * seconds) as usize;
+        while out.len() < total {
+            // Input frames due by the end of this output block.
+            let due = (out.len() + pop) as f64 * f64::from(in_rate) / 48_000.0 * (1.0 + drift);
+            while pushed + push as f64 <= due {
+                let data: Vec<f32> = (0..push).map(|i| sine(k + i, f64::from(in_rate))).collect();
+                ring.push(&data);
+                k += push;
+                pushed += push as f64;
             }
+            ring.pop_into(&mut block, pop, 48_000);
+            out.extend_from_slice(&block[0]);
+        }
+        (out, ring.underruns())
+    }
+
+    /// The largest jump between neighbouring samples once the sound has started: a 1 kHz sine at
+    /// 48 kHz moves at most 0.131 per sample, a gap or a repeated block far more.
+    fn roughness(out: &[f32]) -> f32 {
+        let start = out.iter().position(|v| v.abs() > 0.5).unwrap_or(out.len());
+        out.get(start..).unwrap_or_default().windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn monitoring_is_continuous_for_small_and_large_buffers_on_one_clock() {
+        for (rate, push, pop) in [(48_000, 64, 64), (48_000, 1024, 1024), (48_000, 256, 64), (48_000, 64, 512), (44_100, 441, 480), (96_000, 128, 64)]
+        {
+            let (out, dry) = run(rate, push, pop, 3.0, 0.0);
+            assert_eq!(dry, 0, "{rate} Hz, {push} in, {pop} out");
+            assert!(roughness(&out) < 0.14, "{rate} Hz, {push} in, {pop} out: {}", roughness(&out));
+            assert!(out.iter().skip(48_000).any(|v| v.abs() > 0.9), "the input is heard");
         }
     }
 
-    /// Input faster than the session (96 kHz into 48 kHz): every other frame is read, in order.
     #[test]
-    fn monitor_decimates_when_input_is_faster() {
-        let ring = InputRing::new(1, 96_000);
-        let input: Vec<f32> = (0..1_000).map(|i| i as f32).collect();
-        ring.push(&input);
-        let mut out = vec![vec![0.0f32; 100]];
-        ring.pop_into(&mut out, 100, 48_000);
-        for (k, v) in out[0].iter().enumerate() {
-            assert_eq!(*v, (2 * k) as f32, "output {k}");
+    fn monitoring_follows_an_input_clock_that_runs_fast_or_slow() {
+        for drift in [0.0002, -0.0002, 0.001, -0.001] {
+            let (out, dry) = run(48_000, 64, 64, 20.0, drift);
+            assert_eq!(dry, 0, "drift {drift}");
+            assert!(roughness(&out) < 0.14, "drift {drift}: {}", roughness(&out));
         }
     }
 
-    /// Same rate: samples pass through unchanged.
     #[test]
-    fn monitor_passes_through_at_equal_rates() {
+    fn the_reserve_is_about_one_block_of_each_side_not_the_whole_ring() {
+        // A reader that comes late finds half a second waiting: it must start at the newest input.
+        let ring = InputRing::new(1, 48_000);
+        let ramp: Vec<f32> = (0..20_000).map(|i| i as f32).collect();
+        for block in ramp.chunks(64) {
+            ring.push(block);
+        }
+        let mut out = vec![vec![0.0f32; 64]];
+        ring.pop_into(&mut out, 64, 48_000);
+        // 64 + 2 to read, that and 16 more in reserve, 64 for the next input block.
+        assert_eq!(out[0][0], (20_000 - 212) as f32);
+        assert_eq!(out[0][63], (20_000 - 212 + 63) as f32);
+    }
+
+    #[test]
+    fn a_ring_left_full_starts_afresh_and_an_empty_one_is_silent() {
         let ring = InputRing::new(2, 48_000);
-        let input: Vec<f32> = (0..200).map(|i| i as f32).collect();
-        ring.push(&input);
-        let mut out = vec![vec![0.0f32; 50], vec![0.0f32; 50]];
-        ring.pop_into(&mut out, 50, 48_000);
-        assert_eq!(out[0][0], 0.0);
-        assert_eq!(out[1][0], 1.0);
-        assert_eq!(out[0][49], 98.0);
-    }
-
-    /// Nothing buffered: silence, not stale data.
-    #[test]
-    fn monitor_underrun_is_silence() {
-        let ring = InputRing::new(1, 16_000);
-        let mut out = vec![vec![1.0f32; 16]];
-        ring.pop_into(&mut out, 16, 48_000);
-        assert!(out[0].iter().all(|v| *v == 0.0));
+        let mut out = vec![vec![1.0f32; 64], vec![1.0f32; 64]];
+        ring.pop_into(&mut out, 64, 48_000);
+        assert!(out.iter().flatten().all(|v| *v == 0.0));
+        assert_eq!(ring.underruns(), 0, "waiting for input is not a gap");
+        ring.push(&[0.1, -0.7, -0.3, 0.2]);
+        assert_eq!((ring.take_peaks(), ring.take_peaks()), (vec![0.3, 0.7], vec![0.0, 0.0]), "a level per input channel");
+        // Nobody reads for two seconds: old input must not be played back afterwards.
+        for _ in 0..1500 {
+            ring.push(&[0.25; 128]);
+        }
+        ring.pop_into(&mut out, 64, 48_000);
+        assert!(out.iter().flatten().all(|v| *v == 0.0), "the stale input is dropped");
+        for _ in 0..4 {
+            ring.push(&[0.5, -0.5].repeat(64));
+        }
+        ring.pop_into(&mut out, 64, 48_000);
+        assert!(out[0].iter().all(|v| *v == 0.5) && out[1].iter().all(|v| *v == -0.5));
     }
 
     /// NaN and infinities from the device monitor as silence.
     #[test]
     fn monitor_silences_nan_and_infinite_input() {
         let ring = InputRing::new(1, 48_000);
-        ring.push(&[0.5, f32::NAN, f32::INFINITY, -0.5, 0.0, 0.0, 0.0, 0.0]);
-        let mut out = vec![vec![1.0f32; 4]];
-        ring.pop_into(&mut out, 4, 48_000);
-        assert_eq!(out[0], [0.5, 0.0, 0.0, -0.5]);
+        // Enough for the reader's reserve, so that it reads.
+        for _ in 0..4 {
+            ring.push(&[0.5, f32::NAN, f32::INFINITY, -0.5].repeat(16));
+        }
+        let mut out = vec![vec![1.0f32; 64]];
+        ring.pop_into(&mut out, 64, 48_000);
+        assert!(out[0].iter().all(|v| v.is_finite() && v.abs() <= 0.5), "{:?}", out[0]);
+        assert!(out[0].iter().any(|v| *v > 0.25) && out[0].iter().any(|v| *v < -0.25), "{:?}", out[0]);
+        assert!(ring.take_peaks().iter().all(|p| *p == 0.5));
     }
 }

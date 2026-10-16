@@ -130,23 +130,134 @@ fn section_label(ui: &Ui, r: Rect, text: &str, narrow: bool) {
     p.galley(Align2::CENTER_CENTER.anchor_size(pos2(r.center().x, r.min.y + 7.0), galley.size()).min, galley, color);
 }
 
+/// The input an audio track records and monitors, for messages: `In 2 of Scarlett 2i2`.
+fn input_of(app: &SoundApp, t: &Track) -> String {
+    let input = match &t.mixer.input {
+        Route::None => input_label(default_input_name(t)),
+        r => route_name(app, r),
+    };
+    match &app.recorder {
+        Some(r) => format!("{input} of {}", r.device_name),
+        None => input,
+    }
+}
+
+/// Toggle a track's record enable, and say which input an audio track will record.
+pub(crate) fn toggle_record_arm(app: &mut SoundApp, id: TrackId) {
+    let _ = app.run("mix.record_arm", json!({"track": id.0}));
+    if let Some(t) = app.engine.session().track(id).filter(|t| t.mixer.record_arm && t.kind == TrackKind::Audio) {
+        app.ui.status = format!("{} records {}. Choose another input at the track's input selector (I/O)", t.name, input_of(app, t));
+    }
+}
+
+/// Toggle a track's input-only monitoring and say what it means when it goes on.
+pub(crate) fn toggle_input_monitor(app: &mut SoundApp, id: TrackId) {
+    let _ = app.run("mix.input_monitor", json!({"track": id.0}));
+    if let Some(t) = app.engine.session().track(id).filter(|t| t.mixer.input_monitor) {
+        app.ui.status = if t.kind.is_midi() {
+            format!("{}: plays the MIDI keyboard", t.name)
+        } else {
+            format!("{}: input only ({}), so its clips are not played until I is switched off", t.name, input_of(app, t))
+        };
+    }
+}
+
+/// How a hardware input ("In 2", "In 1-2") reads in the selectors: "Input 2", "Input 1-2".
+pub(crate) fn input_label(name: &str) -> String {
+    name.strip_prefix("In ").map_or_else(|| name.to_string(), |rest| format!("Input {rest}"))
+}
+
+/// The hardware input an audio track records when none is chosen: the first channel, or the
+/// first pair on wider tracks.
+pub(crate) fn default_input_name(track: &Track) -> &'static str {
+    if track.channels() >= 2 { "In 1-2" } else { "In 1" }
+}
+
+/// The input selector's text on a MIDI or instrument track.
+pub(crate) fn midi_input_name(track: &Track) -> String {
+    let input = soundcraft_model::MidiInput::of(&track.mixer.input);
+    if input.device.is_none() && input.channel.is_none() { "All MIDI".into() } else { input.label() }
+}
+
+/// The MIDI input menu of a MIDI or instrument track: a device (or all) and a channel (or all).
+pub(crate) fn midi_input_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
+    let Some(route) = app.engine.session().track(id).map(|t| t.mixer.input.clone()) else { return };
+    let now = soundcraft_model::MidiInput::of(&route);
+    let (device, channel) = (now.device.map(str::to_string), now.channel);
+    let mut pick: Option<(Option<String>, Option<u8>)> = None;
+    let mut devices: Vec<(String, bool)> =
+        app.midi_inputs.as_ref().map(|m| m.ports().iter().filter(|p| p.enabled).map(|p| (p.name.clone(), p.open)).collect()).unwrap_or_default();
+    // A device the track listens to stays in the list while it is unplugged.
+    if let Some(d) = &device
+        && !devices.iter().any(|(n, _)| n == d)
+    {
+        devices.push((d.clone(), false));
+    }
+    ui.strong("MIDI input");
+    if ui.selectable_label(device.is_none(), "All devices").clicked() {
+        pick = Some((None, channel));
+    }
+    for (name, open) in &devices {
+        let text = if *open { name.clone() } else { format!("{name} (not connected)") };
+        if ui.selectable_label(device.as_deref() == Some(name.as_str()), text).clicked() {
+            pick = Some((Some(name.clone()), channel));
+        }
+    }
+    if devices.is_empty() {
+        ui.weak("No MIDI input device found");
+    }
+    ui.separator();
+    ui.strong("Channel");
+    egui::Grid::new(("midi-channel", id.0)).spacing(vec2(2.0, 2.0)).show(ui, |ui| {
+        if ui.selectable_label(channel.is_none(), "All").clicked() {
+            pick = Some((device.clone(), None));
+        }
+        ui.end_row();
+        for ch in 0..16u8 {
+            if ui.selectable_label(channel == Some(ch), format!("{:>2}", ch + 1)).clicked() {
+                pick = Some((device.clone(), Some(ch)));
+            }
+            if ch % 8 == 7 {
+                ui.end_row();
+            }
+        }
+    });
+    if let Some((device, channel)) = pick {
+        let input = match (soundcraft_model::MidiInput { device: device.as_deref(), channel }).route() {
+            Route::Hardware(h) => h,
+            _ => "none".to_string(),
+        };
+        let _ = app.run("track.input", json!({"track": id.0, "input": input}));
+    }
+}
+
 pub(crate) fn route_name(app: &SoundApp, r: &Route) -> String {
     match r {
-        Route::None => "no output".into(),
+        Route::None => "None".into(),
         Route::Main => app.engine.session().outputs.first().map_or_else(|| "Out 1-2".into(), |o| o.name.clone()),
         Route::Bus(b) => app.engine.session().bus(*b).map_or_else(|| "bus?".into(), |b| b.name.clone()),
-        Route::Hardware(h) => h.clone(),
+        Route::Hardware(h) => input_label(h),
     }
 }
 
 pub(crate) fn input_name(app: &SoundApp, track: &Track) -> String {
-    if track.kind.has_playlist() && track.mixer.input == Route::None { "In 1".to_string() } else { route_name(app, &track.mixer.input) }
+    if track.kind.is_midi() {
+        midi_input_name(track)
+    } else if track.kind.has_playlist() && track.mixer.input == Route::None {
+        input_label(default_input_name(track))
+    } else {
+        route_name(app, &track.mixer.input)
+    }
 }
 
 /// The input or output menu under `resp`. It closes only on a click outside, so its bus search
 /// field can be typed in.
 pub(crate) fn route_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId, input: bool) {
-    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| route_menu(app, ui, id, input));
+    // The input of a MIDI or instrument track is a MIDI device and channel.
+    let midi = input && app.engine.session().track(id).is_some_and(|t| t.kind.is_midi());
+    egui::Popup::menu(resp)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| if midi { midi_input_menu(app, ui, id) } else { route_menu(app, ui, id, input) });
 }
 
 fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapshot>) {
@@ -385,10 +496,10 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     row.spacing_mut().item_spacing.x = 6.0;
     if track.kind.has_playlist() {
         if text_toggle(&mut row, vec2(bw, 18.0), "I", track.mixer.input_monitor, t.input, "Input monitoring").clicked() {
-            let _ = app.run("mix.input_monitor", json!({"track": id.0}));
+            toggle_input_monitor(app, id);
         }
         if rec_toggle(&mut row, vec2(bw, 18.0), track.mixer.record_arm, "Record enable").clicked() {
-            let _ = app.run("mix.record_arm", json!({"track": id.0}));
+            toggle_record_arm(app, id);
         }
     }
     y += 22.0;
@@ -1245,25 +1356,50 @@ fn send_route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, cu
     }
 }
 
-fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
+pub(crate) fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
     let key = if input { "input" } else { "output" };
     let cmd = if input { "track.input" } else { "track.output" };
-    if ui.button(if input { "no input" } else { "no output" }).clicked() {
+    // What the track has now: highlighted below.
+    let current = app.engine.session().track(id).map(|t| if input { t.mixer.input.clone() } else { t.mixer.output.clone() });
+    // The device the choices below belong to (Setup > Playback Engine chooses it).
+    let device = if input {
+        app.recorder.as_ref().map(|r| r.device_name.clone())
+    } else {
+        app.player.as_ref().filter(|p| !p.silent).map(|p| p.device_name.clone())
+    };
+    match device {
+        Some(name) => ui.strong(name),
+        None => ui.weak(if input { "Input device not open yet" } else { "No output device" }),
+    };
+    if ui.selectable_label(current == Some(Route::None), "None").clicked() {
         let _ = app.run(cmd, json!({"track": id.0, key: "none"}));
         ui.close();
     }
     let main_name = app.engine.session().outputs.first().map_or_else(|| "Out 1-2".to_string(), |o| o.name.clone());
-    if !input && ui.button(main_name).clicked() {
+    if !input && ui.selectable_label(current == Some(Route::Main), main_name).clicked() {
         let _ = app.run(cmd, json!({"track": id.0, key: "main"}));
         ui.close();
     }
     if input {
-        for i in 1..=8 {
-            if ui.button(format!("In {i}")).clicked() {
-                let _ = app.run(cmd, json!({"track": id.0, key: format!("In {i}")}));
+        // The channels of the input device: pairs first on tracks wider than mono. Two until the
+        // device is open.
+        let n = app.recorder.as_ref().map_or(2, |r| r.channels).clamp(1, 64);
+        let wide = app.engine.session().track(id).is_some_and(|t| t.channels() >= 2);
+        let mut names: Vec<String> = Vec::new();
+        if wide {
+            names.extend((1..n).step_by(2).map(|i| format!("In {i}-{}", i + 1)));
+        }
+        names.extend((1..=n).map(|i| format!("In {i}")));
+        for name in names {
+            if ui.selectable_label(matches!(&current, Some(Route::Hardware(h)) if *h == name), input_label(&name)).clicked() {
+                let _ = app.run(cmd, json!({"track": id.0, key: name}));
                 ui.close();
             }
         }
+    }
+    // Outputs go to buses (submixes), and an aux track's input is one; other inputs are hardware.
+    if input && !app.engine.session().track(id).is_some_and(|t| t.kind == TrackKind::Aux) {
+        return;
     }
     ui.separator();
     let busses: Vec<String> = app.engine.session().busses.iter().map(|b| b.name.clone()).collect();

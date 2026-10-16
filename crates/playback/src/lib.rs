@@ -1,5 +1,5 @@
-//! Realtime playback through the system audio device (cpal: CoreAudio, WASAPI, ALSA/Pulse/
-//! PipeWire via ALSA, JACK, WebAudio).
+//! Realtime playback through the system audio device (cpal: CoreAudio, WASAPI, WebAudio;
+//! on Linux ALSA, plus JACK and PipeWire with their cargo features, see [`host`]).
 //!
 //! The UI thread owns a [`Player`]; the audio callback owns the [`MixEngine`] and a snapshot of
 //! the session (`Arc<Session>`) that the UI swaps whenever the document changes. Commands go to
@@ -23,16 +23,18 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod devices;
+pub mod host;
+pub mod midi;
 pub mod record;
 
 pub use devices::AudioConfig;
 
 use soundcraft_dsp::{Plugin, PluginEditor, PluginStateReader};
-use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
-use soundcraft_model::{Session, TrackId};
+use soundcraft_mix::{LiveMidi, MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
+use soundcraft_model::{Session, TrackId, TrackKind};
 use soundcraft_time::{Range, Samples};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -64,6 +66,7 @@ enum Cmd {
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
+    Midi(Arc<midi::MidiFeed>),
     Recording(bool),
     Play {
         from: Samples,
@@ -80,6 +83,11 @@ struct Shared {
     /// Speed × 1000.
     speed: AtomicU32,
     meters: Mutex<MeterSnapshot>,
+    /// Frames of the last device callback: the buffer size the device really runs at.
+    callback_frames: AtomicU32,
+    /// Input channels (one bit each) played straight to the output, to try the inputs out in the
+    /// Playback Engine dialog; 0 outside it.
+    input_test: AtomicU64,
 }
 
 /// What stopped the audio output.
@@ -167,14 +175,25 @@ struct AudioState {
     read: f64,
     device_rate: f64,
     input: Option<Arc<record::InputRing>>,
+    /// Nothing read the input for a while (see `fill`).
+    input_paused: bool,
     recording: bool,
+    midi: Option<Arc<midi::MidiFeed>>,
+    /// Live MIDI events of this callback not played yet: frames (session rate) until each is due.
+    midi_pending: Vec<(i64, LiveMidi)>,
+    /// The delay every live event gets so that all keep their spacing: one callback (frames).
+    midi_delay: i64,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
 }
 
+/// Live MIDI events one device callback can take in.
+const MIDI_EVENTS: usize = 256;
+
 fn new_engine(sr: f32) -> MixEngine {
     let mut m = MixEngine::new(sr, BLOCK);
+    m.midi = Vec::with_capacity(MIDI_EVENTS);
     m.set_external_instances(true);
     m.metronome = true;
     m
@@ -201,7 +220,11 @@ impl AudioState {
             read: 0.0,
             device_rate,
             input: None,
+            input_paused: false,
             recording: false,
+            midi: None,
+            midi_pending: Vec::with_capacity(MIDI_EVENTS),
+            midi_delay: 0,
         }
     }
 
@@ -210,12 +233,17 @@ impl AudioState {
         while let Ok(c) = self.rx.try_recv() {
             match c {
                 Cmd::Input(r) => self.input = Some(r),
+                Cmd::Midi(f) => {
+                    self.mix.midi_ports = Some(Arc::clone(f.ports()));
+                    self.midi = Some(f);
+                }
                 Cmd::Recording(r) => self.recording = r,
                 Cmd::Session(s, instances) => {
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
                         let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
                         let _ = self.garbage.send(old.drain_plugins());
+                        self.mix.midi_ports = self.midi.as_ref().map(|f| Arc::clone(f.ports()));
                     }
                     self.mix.adopt(instances);
                     // The main format changed (a document edit, not steady state): resize.
@@ -271,6 +299,46 @@ impl AudioState {
         }
     }
 
+    /// Take the MIDI events that arrived since the last callback. Each is due `callback` frames
+    /// (session rate: the length of this callback) after it arrived, so that events keep their
+    /// spacing instead of bunching up at the start of a block.
+    fn take_midi(&mut self, callback: i64) {
+        let Some(feed) = &self.midi else { return };
+        let now = feed.clock();
+        let rate = self.session.sample_rate.as_f64();
+        self.midi_delay = callback.max(0);
+        while let Some((age_us, e)) = feed.next(now) {
+            let age = (age_us as f64 * rate / 1e6) as i64;
+            if self.midi_pending.len() < self.midi_pending.capacity() {
+                self.midi_pending.push((self.midi_delay.saturating_sub(age).max(0), e));
+            }
+        }
+    }
+
+    /// Hand the engine the live MIDI events due in the next `n` frames, and note them down with
+    /// their timeline position while recording.
+    fn due_midi(&mut self, n: usize) {
+        self.mix.midi.clear();
+        let frames = i64::try_from(n).unwrap_or(i64::MAX);
+        let out = &mut self.mix.midi;
+        let record = if self.playing && self.recording { self.midi.as_deref() } else { None };
+        // The position the key went down at: where it sounds, less the delay it was given.
+        let origin = self.pos.saturating_sub(self.midi_delay);
+        self.midi_pending.retain_mut(|(due, e)| {
+            if *due >= frames {
+                *due -= frames;
+                return true;
+            }
+            if out.len() < out.capacity() {
+                out.push(LiveMidi { offset: u32::try_from(*due).unwrap_or(0), ..*e });
+            }
+            if let Some(feed) = record {
+                feed.record(origin.saturating_add(*due), e);
+            }
+            false
+        });
+    }
+
     /// Render the next block at the session rate into `pending`.
     fn render_next(&mut self, quantum: usize) {
         let mut n = quantum.clamp(1, BLOCK);
@@ -299,15 +367,33 @@ impl AudioState {
             return;
         }
         if let Some(ring) = &self.input {
+            if std::mem::take(&mut self.input_paused) {
+                ring.resync();
+            }
             let ch = ring.channels.load(Ordering::Relaxed).max(1);
             if self.mix.input.len() != ch {
                 self.mix.input = vec![vec![0.0; BLOCK]; ch];
             }
             ring.pop_into(&mut self.mix.input, n, self.session.sample_rate.hz());
         }
+        self.due_midi(n);
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
         self.mix.render(&self.session, self.pos, n, &mut self.pending);
+        // Inputs tried out in the Playback Engine dialog: straight to the first two outputs.
+        let test = self.shared.input_test.load(Ordering::Relaxed);
+        if test != 0 && self.input.is_some() {
+            for (c, input) in self.mix.input.iter().enumerate().take(64) {
+                if test & (1u64 << c) == 0 {
+                    continue;
+                }
+                for out in self.pending.iter_mut().take(2) {
+                    for (o, i) in out.iter_mut().zip(input.iter()).take(n) {
+                        *o += *i;
+                    }
+                }
+            }
+        }
         self.send_garbage();
         self.pending_len = n;
         if let Ok(mut m) = self.shared.meters.try_lock() {
@@ -331,8 +417,18 @@ impl AudioState {
     fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
         let channels = channels.max(1);
-        let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        let midi_thru = self.midi.as_ref().is_some_and(|f| f.connected() > 0)
+            && self.session.tracks.iter().any(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && soundcraft_mix::midi_thru(t));
+        let monitoring = midi_thru
+            || (self.input.is_some()
+                && (self.shared.input_test.load(Ordering::Relaxed) != 0
+                    || self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm)));
         if !self.playing && !monitoring {
+            // Nothing listens. The input read stands still: start it afresh when it resumes.
+            self.input_paused = true;
+            // And let the MIDI events go, so that they do not sound late.
+            self.take_midi(0);
+            self.midi_pending.clear();
             out.iter_mut().for_each(|x| *x = 0.0);
             if let Ok(mut m) = self.shared.meters.try_lock() {
                 m.main = StripMeter::default();
@@ -343,7 +439,9 @@ impl AudioState {
         let speed = f64::from(self.shared.speed.load(Ordering::Relaxed)) / 1000.0;
         let step = self.session.sample_rate.as_f64() / self.device_rate.max(1.0) * speed.clamp(0.1, 4.0);
         let callback_frames = out.len() / channels;
+        self.shared.callback_frames.store(u32::try_from(callback_frames).unwrap_or(u32::MAX), Ordering::Relaxed);
         let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
+        self.take_midi((callback_frames as f64 * step).ceil() as i64);
         for frame in out.chunks_mut(channels) {
             while self.read >= self.pending_len as f64 {
                 self.read -= self.pending_len as f64;
@@ -459,6 +557,9 @@ pub struct Player {
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
     pub device_name: String,
+    /// Display name of the audio host the device belongs to (`"ALSA"`, `"JACK"`, `"PipeWire"`, …);
+    /// empty for the silent clock.
+    pub host_name: String,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
     pub device_channels: u16,
@@ -477,6 +578,7 @@ impl Player {
     /// Open the output device `cfg` chooses (system, device, rate, buffer size), falling back to the
     /// defaults for whatever is unavailable. Never fails: without a device it runs a silent clock.
     pub fn with_config(session: Arc<Session>, cfg: &AudioConfig) -> Player {
+        host::configure(cfg);
         let p = Player::open(Arc::clone(&session), cfg);
         p.side().return_old_sessions(&p.tx);
         // Hand the initial session's third-party plugins over.
@@ -501,48 +603,51 @@ impl Player {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Frames per callback the output device runs at (0 before the first callback).
+    pub fn buffer_frames(&self) -> u32 {
+        self.shared.callback_frames.load(Ordering::Relaxed)
+    }
+
     fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            callback_frames: AtomicU32::new(0),
+            input_test: AtomicU64::new(0),
         });
         let want = session.sample_rate.hz();
         let want_ch = u16::try_from(main_channels(&session)).unwrap_or(2);
         let side_rate = session.sample_rate.as_f64() as f32;
         let new_side = |garbage: Receiver<Vec<Box<dyn Plugin>>>| Mutex::new(Side::new(side_rate, garbage));
         match open_device(want, want_ch, cfg) {
-            Ok((device, config, format, name)) => {
+            Ok((device, config, format, name, host_name)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
-                let mut attempts = vec![config.clone()];
+                let mut attempts = vec![config];
                 if config.buffer_size != cpal::BufferSize::Default {
                     attempts.push(cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config });
                 }
                 for config in attempts {
-                    let rate = config.sample_rate.0;
+                    let rate = config.sample_rate;
                     let channels = usize::from(config.channels);
                     let (tx, rx) = channel();
                     let (gtx, grx) = channel();
                     let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
                     let fault = Arc::new(Fault::default());
                     use cpal::traits::StreamTrait;
-                    let built = match format {
-                        cpal::SampleFormat::I32 => build_output::<i32>(&device, &config, state, channels, &fault, &shared),
-                        cpal::SampleFormat::I16 => build_output::<i16>(&device, &config, state, channels, &fault, &shared),
-                        _ => build_output::<f32>(&device, &config, state, channels, &fault, &shared),
-                    };
-                    match built {
+                    match build_output(&device, config, format, state, channels, &fault, &shared) {
                         Ok(stream) => {
                             if let Err(e) = stream.play() {
                                 log::warn!("audio stream failed to start: {e}");
                             }
+                            host::wire_stream(host::Direction::Output, &host_name);
                             let buffer = match config.buffer_size {
                                 cpal::BufferSize::Fixed(n) => Some(n),
                                 cpal::BufferSize::Default => None,
                             };
                             log::info!(
-                                "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {}",
+                                "audio device: {name} ({host_name}) @ {rate} Hz, {channels} ch, {format}, buffer {}",
                                 buffer.map_or("default".to_string(), |n| n.to_string())
                             );
                             return Player {
@@ -554,6 +659,7 @@ impl Player {
                                 side: new_side(grx),
                                 _stream: Some(stream),
                                 device_name: name,
+                                host_name,
                                 device_rate: rate,
                                 device_channels: config.channels,
                                 device_buffer: buffer,
@@ -631,6 +737,7 @@ impl Player {
             side,
             _stream: None,
             device_name: "No audio device (silent)".into(),
+            host_name: String::new(),
             device_rate: rate,
             device_channels: 0,
             device_buffer: None,
@@ -654,6 +761,7 @@ impl Player {
             side,
             _stream: None,
             device_name: "No audio device".into(),
+            host_name: String::new(),
             device_rate: session.sample_rate.hz(),
             device_channels: 0,
             device_buffer: None,
@@ -736,6 +844,17 @@ impl Player {
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.
     pub fn set_input(&self, ring: Arc<record::InputRing>) {
         let _ = self.tx.send(Cmd::Input(ring));
+    }
+
+    /// Play these input channels (one bit each) straight to the output, whatever the tracks do;
+    /// 0 stops it. For trying the inputs out.
+    pub fn set_input_test(&self, channels: u64) {
+        self.shared.input_test.store(channels, Ordering::Relaxed);
+    }
+
+    /// Play MIDI devices through record-enabled and input-monitored MIDI and instrument tracks.
+    pub fn set_midi(&self, feed: Arc<midi::MidiFeed>) {
+        let _ = self.tx.send(Cmd::Midi(feed));
     }
 
     pub fn set_recording(&self, on: bool) {
@@ -862,80 +981,54 @@ fn fold_gains(s: &Session) -> [(f32, f32); MAX_CHANNELS] {
     g
 }
 
-/// The output stream: the mix renders f32 into a scratch buffer allocated here (so the callback
-/// never allocates), converted to the device's sample type.
-fn build_output<T>(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    mut state: AudioState,
-    channels: usize,
-    fault: &Arc<Fault>,
-    shared: &Arc<Shared>,
-) -> Result<cpal::Stream, cpal::BuildStreamError>
-where
-    T: cpal::SizedSample + cpal::FromSample<f32>,
-{
-    use cpal::traits::DeviceTrait;
-    let frame = channels.max(1);
-    let mut scratch = vec![0.0f32; 8192 * frame];
-    let chunk = scratch.len();
-    let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
-    device.build_output_stream(
-        config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-            mark_audio_thread();
-            for out in data.chunks_mut(chunk) {
-                let Some(s) = scratch.get_mut(..out.len()) else { return };
-                guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
-                for (o, x) in out.iter_mut().zip(s.iter()) {
-                    *o = T::from_sample(*x);
-                }
-            }
-        },
-        // cpal may call this on the audio thread (on ALSA in a loop while the device stays
-        // broken): marked, so the logger hands the record off instead of writing it.
-        move |e: cpal::StreamError| {
-            mark_audio_thread();
-            if matches!(e, cpal::StreamError::DeviceNotAvailable) {
-                gone.gone.store(true, Ordering::Relaxed);
-            }
-            log::warn!("audio stream error: {e}");
-        },
-        None,
-    )
+/// Device sample formats in the order we like them: f32 needs no conversion, then by precision.
+pub(crate) fn format_rank(f: cpal::SampleFormat) -> u8 {
+    use cpal::SampleFormat as F;
+    match f {
+        F::F32 => 0,
+        F::I32 => 1,
+        F::I24 => 2,
+        F::F64 => 3,
+        F::I16 => 4,
+        F::U32 | F::U24 | F::I64 | F::U64 => 5,
+        F::U16 => 6,
+        F::I8 | F::U8 => 7,
+        // DSD and whatever cpal adds: not PCM we can write.
+        _ => u8::MAX,
+    }
 }
 
-/// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
-/// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
-/// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
-/// chosen buffer size when the device allows it.
-fn open_device(want_rate: u32, want_ch: u16, cfg: &AudioConfig) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+/// Open the output device `cfg` chooses (its audio host and device, see [`host`]; else the
+/// defaults) at the chosen rate (else the session rate) if possible, with as many channels as it
+/// offers up to `want_ch` (at least stereo when available), the best sample format it has (ASIO
+/// drivers and raw ALSA devices rarely offer f32), and the chosen buffer size when the device
+/// allows it.
+fn open_device(
+    want_rate: u32,
+    want_ch: u16,
+    cfg: &AudioConfig,
+) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, String), String> {
     use cpal::traits::DeviceTrait;
-    let host = devices::host(cfg);
-    let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
-    #[allow(deprecated)]
-    let name = device.name().unwrap_or_else(|_| "Audio device".into());
-    // Prefer a config at the chosen (else session) rate; else the device default (we resample).
+    let (device, host_name) = host::default_device(host::Direction::Output)?;
+    let name = host::device_label(&device, "Audio device");
     let want_ch = want_ch.max(2);
+    // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
-    let mut chosen: Option<(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)> = None;
-    // Better: a preferred format first, then more channels.
-    let better = |c: &cpal::SupportedStreamConfigRange, x: &(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)| {
-        let (rc, rx) = (devices::format_rank(c.sample_format()).unwrap_or(usize::MAX), devices::format_rank(x.2).unwrap_or(usize::MAX));
-        rc < rx || (rc == rx && c.channels() > x.0.channels)
-    };
+    // The best config so far: more channels first, then the format.
+    let mut chosen: Option<(cpal::StreamConfig, cpal::SampleFormat, cpal::SupportedBufferSize)> = None;
     if let Ok(configs) = device.supported_output_configs() {
         let configs: Vec<cpal::SupportedStreamConfigRange> = configs.collect();
         for rate in rates {
             for c in &configs {
-                if devices::format_rank(c.sample_format()).is_some()
-                    && c.min_sample_rate().0 <= rate
-                    && c.max_sample_rate().0 >= rate
+                let rank = format_rank(c.sample_format());
+                if rank != u8::MAX
+                    && c.min_sample_rate() <= rate
+                    && c.max_sample_rate() >= rate
                     && c.channels() >= 2
                     && c.channels() <= want_ch
-                    && chosen.as_ref().is_none_or(|x| better(c, x))
+                    && chosen.as_ref().is_none_or(|(x, f, _)| c.channels() > x.channels || (c.channels() == x.channels && rank < format_rank(*f)))
                 {
-                    chosen = Some((c.with_sample_rate(cpal::SampleRate(rate)).config(), *c.buffer_size(), c.sample_format()));
+                    chosen = Some((c.with_sample_rate(rate).config(), c.sample_format(), *c.buffer_size()));
                 }
             }
             if chosen.is_some() {
@@ -943,24 +1036,94 @@ fn open_device(want_rate: u32, want_ch: u16, cfg: &AudioConfig) -> Result<(cpal:
             }
         }
     }
-    let (config, format) = match chosen {
-        Some((mut c, buffers, format)) => {
-            c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
-            (c, format)
-        }
+    let (mut config, format, sizes) = match chosen {
+        Some(c) => c,
         None => {
             let d = device.default_output_config().map_err(|e| e.to_string())?;
-            if devices::format_rank(d.sample_format()).is_none() {
+            if format_rank(d.sample_format()) == u8::MAX {
                 return Err(format!("unsupported device sample format {:?}", d.sample_format()));
             }
-            let buffers = *d.buffer_size();
-            let format = d.sample_format();
-            let mut c = d.config();
-            c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
-            (c, format)
+            (d.config(), d.sample_format(), *d.buffer_size())
         }
     };
-    Ok((device, config, format, name))
+    config.buffer_size = host::buffer_size(cfg.buffer_size, &sizes);
+    Ok((device, config, format, name, host_name))
+}
+
+/// Samples of f32 mix rendered per conversion step: larger device buffers are rendered in steps
+/// of whole frames.
+const CONVERT_SAMPLES: usize = 16_384;
+
+/// The output stream in the device's sample format: the mix renders f32 into a scratch buffer
+/// allocated here (so the callback never allocates), converted to the device's sample type. A
+/// block that panics goes silent instead of taking the app down, and a device that goes away is
+/// noted in `fault`.
+fn build_output(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    format: cpal::SampleFormat,
+    state: AudioState,
+    channels: usize,
+    fault: &Arc<Fault>,
+    shared: &Arc<Shared>,
+) -> Result<cpal::Stream, String> {
+    use cpal::SampleFormat as F;
+    fn converted<T>(
+        device: &cpal::Device,
+        config: cpal::StreamConfig,
+        mut state: AudioState,
+        channels: usize,
+        fault: &Arc<Fault>,
+        shared: &Arc<Shared>,
+    ) -> Result<cpal::Stream, cpal::Error>
+    where
+        T: cpal::SizedSample + cpal::FromSample<f32>,
+    {
+        use cpal::traits::DeviceTrait;
+        let frame = channels.max(1);
+        let mut scratch = vec![0.0f32; (CONVERT_SAMPLES / frame).max(1) * frame];
+        let chunk = scratch.len();
+        let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
+        device.build_output_stream(
+            config,
+            move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+                mark_audio_thread();
+                for out in data.chunks_mut(chunk) {
+                    let Some(s) = scratch.get_mut(..out.len()) else { return };
+                    guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
+                    for (o, x) in out.iter_mut().zip(s.iter()) {
+                        *o = T::from_sample(*x);
+                    }
+                }
+            },
+            // cpal may call this on the audio thread (on ALSA in a loop while the device stays
+            // broken): marked, so the logger hands the record off instead of writing it.
+            move |e: cpal::Error| {
+                mark_audio_thread();
+                if e.kind() == cpal::ErrorKind::DeviceNotAvailable {
+                    gone.gone.store(true, Ordering::Relaxed);
+                }
+                log::warn!("audio stream error: {e}");
+            },
+            None,
+        )
+    }
+    let stream = match format {
+        F::F32 => converted::<f32>(device, config, state, channels, fault, shared),
+        F::I8 => converted::<i8>(device, config, state, channels, fault, shared),
+        F::I16 => converted::<i16>(device, config, state, channels, fault, shared),
+        F::I24 => converted::<cpal::I24>(device, config, state, channels, fault, shared),
+        F::I32 => converted::<i32>(device, config, state, channels, fault, shared),
+        F::I64 => converted::<i64>(device, config, state, channels, fault, shared),
+        F::U8 => converted::<u8>(device, config, state, channels, fault, shared),
+        F::U16 => converted::<u16>(device, config, state, channels, fault, shared),
+        F::U24 => converted::<cpal::U24>(device, config, state, channels, fault, shared),
+        F::U32 => converted::<u32>(device, config, state, channels, fault, shared),
+        F::U64 => converted::<u64>(device, config, state, channels, fault, shared),
+        F::F64 => converted::<f64>(device, config, state, channels, fault, shared),
+        f => return Err(format!("unsupported device sample format {f:?}")),
+    };
+    stream.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -989,6 +1152,8 @@ mod tests {
             playing: AtomicBool::new(true),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            callback_frames: AtomicU32::new(0),
+            input_test: AtomicU64::new(0),
         };
         let fault = Fault::default();
         let mut out = [0.5f32; 8];
@@ -1030,6 +1195,8 @@ mod tests {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            callback_frames: AtomicU32::new(0),
+            input_test: AtomicU64::new(0),
         });
         let (tx, rx) = channel();
         let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
@@ -1048,6 +1215,8 @@ mod tests {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            callback_frames: AtomicU32::new(0),
+            input_test: AtomicU64::new(0),
         });
         let (tx, rx) = channel();
         let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
@@ -1073,6 +1242,8 @@ mod tests {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            callback_frames: AtomicU32::new(0),
+            input_test: AtomicU64::new(0),
         });
         let (tx, rx) = channel();
         let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&s), 48_000.0, channel().0);
@@ -1095,6 +1266,41 @@ mod tests {
     }
 
     #[test]
+    fn a_tried_out_input_is_heard_without_any_track() {
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+            callback_frames: AtomicU32::new(0),
+            input_test: AtomicU64::new(0),
+        });
+        let (tx, rx) = channel();
+        let (gtx, _grx) = channel();
+        let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(soundcraft_model::Session::default()), 48_000.0, gtx);
+        let ring = record::InputRing::new(2, 48_000);
+        tx.send(Cmd::Input(Arc::clone(&ring))).unwrap();
+        let heard = |st: &mut AudioState| {
+            let mut peak = 0.0f32;
+            for _ in 0..20 {
+                // Only the second input channel carries a signal.
+                ring.push(&[0.0, 0.5].repeat(256));
+                let mut out = vec![0.0f32; 512];
+                st.fill(&mut out, 2);
+                peak = out.iter().fold(peak, |p, x| p.max(x.abs()));
+            }
+            peak
+        };
+        assert_eq!(heard(&mut st), 0.0, "no track listens, nothing is tried out");
+        shared.input_test.store(0b01, Ordering::Relaxed);
+        assert_eq!(heard(&mut st), 0.0, "the silent channel");
+        shared.input_test.store(0b10, Ordering::Relaxed);
+        assert!(heard(&mut st) > 0.4, "the channel with the signal");
+        shared.input_test.store(0, Ordering::Relaxed);
+        heard(&mut st);
+        assert_eq!(heard(&mut st), 0.0, "and silence again once it is switched off");
+    }
+    #[test]
     fn instances_arrive_with_the_session_and_leave_through_the_return_channel() {
         use soundcraft_model::{ChannelFormat, Insert, TrackKind};
         let mut s = soundcraft_model::Session::default();
@@ -1106,6 +1312,8 @@ mod tests {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            callback_frames: AtomicU32::new(0),
+            input_test: AtomicU64::new(0),
         });
         let (tx, rx) = channel();
         let (gtx, grx) = channel();
@@ -1198,6 +1406,8 @@ mod tests {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            callback_frames: AtomicU32::new(0),
+            input_test: AtomicU64::new(0),
         });
         let (tx, rx) = channel();
         let (gtx, grx) = channel();
@@ -1227,6 +1437,8 @@ mod tests {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            callback_frames: AtomicU32::new(0),
+            input_test: AtomicU64::new(0),
         });
         let (tx, rx) = channel();
         let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
@@ -1262,6 +1474,8 @@ mod tests {
                 playing: AtomicBool::new(false),
                 speed: AtomicU32::new(1000),
                 meters: Mutex::new(MeterSnapshot::default()),
+                callback_frames: AtomicU32::new(0),
+                input_test: AtomicU64::new(0),
             });
             let (tx, rx) = channel();
             let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
@@ -1280,7 +1494,58 @@ mod tests {
             }
         }
     }
-
+    #[test]
+    fn a_midi_keyboard_plays_and_records_through_a_record_enabled_instrument() {
+        use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+        let mut s = soundcraft_model::Session::default();
+        let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        s.track_mut(t).unwrap().instrument = Some(Insert::new("subtractive_synth"));
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+            callback_frames: AtomicU32::new(0),
+            input_test: AtomicU64::new(0),
+        });
+        let (tx, rx) = channel();
+        let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s.clone()), 48_000.0, channel().0);
+        let feed = Arc::new(midi::MidiFeed::default());
+        feed.set_connected(1);
+        tx.send(Cmd::Midi(Arc::clone(&feed))).unwrap();
+        // The input device is open from the start: that must not get in the way.
+        tx.send(Cmd::Input(record::InputRing::new(2, 48_000))).unwrap();
+        let mut out = vec![0.0f32; 2048];
+        let heard = |st: &mut AudioState, out: &mut Vec<f32>| {
+            (0..4).for_each(|_| st.fill(out, 2));
+            out.iter().any(|x| x.abs() > 0.01)
+        };
+        // Not record-enabled: the engine stays idle and the key press is not kept for later.
+        feed.receive(0, &[0x90, 60, 100]);
+        assert!(!heard(&mut st, &mut out));
+        s.track_mut(t).unwrap().mixer.record_arm = true;
+        tx.send(Cmd::Session(Arc::new(s), Vec::new())).unwrap();
+        assert!(!heard(&mut st, &mut out), "the earlier key press is gone");
+        feed.receive(0, &[0x90, 60, 100]);
+        assert!(heard(&mut st, &mut out), "stopped, a record-enabled instrument plays the keyboard");
+        let mut rec = Vec::new();
+        feed.take_recorded(&mut rec);
+        assert!(rec.is_empty(), "nothing is recorded while stopped");
+        // Recording: the events come back with the position they were played at.
+        tx.send(Cmd::Recording(true)).unwrap();
+        tx.send(Cmd::Play { from: 48_000, end: None, looped: None }).unwrap();
+        st.fill(&mut out, 2);
+        feed.receive(0, &[0x90, 64, 90]);
+        st.fill(&mut out, 2);
+        feed.receive(0, &[0x80, 64, 0]);
+        st.fill(&mut out, 2);
+        st.fill(&mut out, 2);
+        feed.take_recorded(&mut rec);
+        assert_eq!(rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(), [(0x90, 64), (0x80, 64)]);
+        // One callback is 1024 frames; each event arrived just before its callback started.
+        assert!((48_000 + 1024 - 64..=48_000 + 1024).contains(&rec[0].at), "{}", rec[0].at);
+        assert!((48_000 + 2048 - 64..=48_000 + 2048).contains(&rec[1].at), "{}", rec[1].at);
+    }
     #[test]
     fn armed_tracks_are_heard_and_metered_after_playback_stops() {
         use soundcraft_model::{ChannelFormat, TrackKind};
@@ -1292,6 +1557,8 @@ mod tests {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            callback_frames: AtomicU32::new(0),
+            input_test: AtomicU64::new(0),
         });
         let (tx, rx) = channel();
         let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
@@ -1301,6 +1568,8 @@ mod tests {
         let mut out = vec![0.0f32; 4096];
         st.fill(&mut out, 2);
         assert!(!shared.playing.load(Ordering::Relaxed));
+        // The input keeps coming: one block is not yet enough to start reading from.
+        ring.push(&[0.5; 4096]);
         ring.push(&[0.5; 4096]);
         st.fill(&mut out, 2);
         assert!(out.iter().any(|x| x.abs() > 0.1), "the input is heard");

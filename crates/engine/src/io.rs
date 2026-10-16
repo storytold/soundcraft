@@ -3,8 +3,10 @@
 use crate::{Engine, EngineError, Result};
 use serde_json::{Value, json};
 use soundcraft_audio_io::{AudioBuffer, EncodeOptions, FileFormat};
+use soundcraft_midi::{CtrlEvent, CtrlKind, Note, Sequence};
 use soundcraft_model::{BusId, ChannelFormat, Clip, ClipContent, Session, Source, SourceAudio, SourceId, TrackId, TrackKind};
 use soundcraft_time::{Range, Samples};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1410,6 +1412,128 @@ pub fn live_span(start: Samples, pass: Option<Samples>, punch: Option<Range>, le
     Some((origin, span.intersect(&punch.unwrap_or(span))?))
 }
 
+/// A MIDI message played during a record pass, at its timeline position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MidiTakeEvent {
+    pub at: Samples,
+    /// Index into the take's device names.
+    pub device: u8,
+    pub status: u8,
+    pub data1: u8,
+    pub data2: u8,
+}
+
+/// Whether a record pass would record MIDI: a record-enabled MIDI or instrument track exists.
+pub fn records_midi(e: &Engine) -> bool {
+    e.session().tracks.iter().any(|t| t.mixer.record_arm && !t.inactive && matches!(t.kind, TrackKind::Instrument | TrackKind::Midi))
+}
+
+/// The MIDI kinds Setup › MIDI › Input Filter keeps out of recordings.
+fn midi_filtered(s: &Session, status: u8) -> bool {
+    let kind = match status & 0xF0 {
+        0x80 | 0x90 => "notes",
+        0xA0 => "poly_aftertouch",
+        0xB0 => "cc",
+        0xC0 => "program",
+        0xD0 => "mono_aftertouch",
+        0xE0 => "pitch_bend",
+        _ => return true,
+    };
+    !s.edit.flags.is_empty() && s.edit.flag(&format!("midi.filter.{kind}"))
+}
+
+/// What `track` recorded of `events` over `range`, in ticks from the start of the range. A key
+/// already down when the range starts is left out; one still down at its end ends there.
+fn midi_take_sequence(s: &Session, input: &soundcraft_model::MidiInput<'_>, range: Range, events: &[MidiTakeEvent], devices: &[String]) -> Sequence {
+    let sr = s.sample_rate;
+    let base = s.tempo.samples_to_ticks(range.start, sr);
+    let tick = |at: Samples| s.tempo.samples_to_ticks(at, sr).saturating_sub(base).max(0);
+    let end_tick = tick(range.end).max(1);
+    let mut seq = Sequence::default();
+    // Keys down: (channel, pitch) -> (start tick, velocity).
+    let mut down: HashMap<(u8, u8), (i64, u8)> = HashMap::new();
+    let close = |seq: &mut Sequence, (channel, pitch): (u8, u8), (start, velocity): (i64, u8), end: i64, release: u8| {
+        seq.notes.push(Note { pitch, velocity, release_velocity: release, channel, start, length: end.saturating_sub(start).max(1) });
+    };
+    for e in events.iter().take(MAX_MIDI_TAKE_EVENTS) {
+        let (channel, d1, d2) = (e.status & 0x0F, e.data1 & 0x7F, e.data2 & 0x7F);
+        if e.at < range.start
+            || e.at >= range.end
+            || midi_filtered(s, e.status)
+            || !input.accepts(devices.get(usize::from(e.device)).map(String::as_str), channel)
+        {
+            continue;
+        }
+        let at = tick(e.at);
+        let ctrl = |kind, value| CtrlEvent { tick: at, channel, kind, value };
+        match e.status & 0xF0 {
+            0x90 if d2 > 0 => {
+                // The same key again without a release: the first note ends here.
+                if let Some(open) = down.insert((channel, d1), (at, d2)) {
+                    close(&mut seq, (channel, d1), open, at, 64);
+                }
+            }
+            0x80 | 0x90 => {
+                if let Some(open) = down.remove(&(channel, d1)) {
+                    close(&mut seq, (channel, d1), open, at, if e.status & 0xF0 == 0x80 { d2 } else { 64 });
+                }
+            }
+            0xA0 => seq.ctrls.push(ctrl(CtrlKind::PolyPressure(d1), i32::from(d2))),
+            0xB0 => seq.ctrls.push(ctrl(CtrlKind::Cc(d1), i32::from(d2))),
+            0xC0 => seq.ctrls.push(ctrl(CtrlKind::Program, i32::from(d1))),
+            0xD0 => seq.ctrls.push(ctrl(CtrlKind::ChannelPressure, i32::from(d1))),
+            0xE0 => seq.ctrls.push(ctrl(CtrlKind::PitchBend, (i32::from(d2) << 7 | i32::from(d1)) - 8192)),
+            _ => {}
+        }
+    }
+    for (key, open) in down {
+        close(&mut seq, key, open, end_tick, 64);
+    }
+    seq.sort();
+    seq
+}
+
+/// Most events of one MIDI record pass that are kept.
+pub const MAX_MIDI_TAKE_EVENTS: usize = 1 << 20;
+
+/// Turn the MIDI played during a record pass into a clip over `range` on every record-enabled
+/// MIDI and instrument track, each taking the events of its MIDI input (device and channel).
+/// `devices` names the devices by [`MidiTakeEvent::device`]. A track that received nothing gets
+/// no clip. One undo step ("Record"); with `same_pass` the clips join the step the audio takes
+/// of this pass already made.
+pub fn add_midi_recording(
+    e: &mut Engine,
+    range: Range,
+    events: &[MidiTakeEvent],
+    devices: &[String],
+    same_pass: bool,
+) -> Vec<soundcraft_model::ClipId> {
+    let before = e.session_arc();
+    let mut out = Vec::new();
+    if range.len() <= 0 {
+        return out;
+    }
+    let takes: Vec<(TrackId, String, Sequence)> = {
+        let s = e.session();
+        s.tracks
+            .iter()
+            .filter(|t| t.mixer.record_arm && !t.inactive && matches!(t.kind, TrackKind::Instrument | TrackKind::Midi))
+            .map(|t| (t.id, t.name.clone(), midi_take_sequence(s, &soundcraft_model::MidiInput::of(&t.mixer.input), range, events, devices)))
+            .filter(|(_, _, seq)| !seq.notes.is_empty() || !seq.ctrls.is_empty())
+            .collect()
+    };
+    for (tid, name, seq) in takes {
+        let s = e.session_mut();
+        let cid = s.new_clip_id();
+        crate::edit::place_clip(s, tid, Clip::midi(cid, name, range.start, range.len(), seq));
+        out.push(cid);
+    }
+    if !out.is_empty() && !same_pass {
+        e.push_undo("Record", before);
+    }
+    out
+}
+
 #[cfg(test)]
 mod record_tests {
     use super::*;
@@ -1429,6 +1553,62 @@ mod record_tests {
         std::fs::write(path, bytes).unwrap();
     }
 
+    #[test]
+    fn midi_played_during_a_pass_becomes_a_clip_on_each_record_enabled_midi_track() {
+        let mut e = Engine::default();
+        let new = |e: &mut Engine, name: &str, input: &str| {
+            let id = e.execute("track.new", &json!({"name": name, "kind": "instrument"})).unwrap()["tracks"][0].as_u64().unwrap();
+            e.execute("track.input", &json!({"tracks": [id], "input": input})).unwrap();
+            e.execute("mix.record_arm", &json!({"tracks": [id], "value": true})).unwrap();
+            TrackId(id)
+        };
+        let all = new(&mut e, "Keys", "none");
+        let pad = new(&mut e, "Pad", "MIDI:10:Pad");
+        let idle = new(&mut e, "Idle", "MIDI:*:Nothing");
+        assert_eq!(e.session().busses.len(), 0, "a MIDI input is not a bus name");
+        assert!(records_midi(&e));
+        let ev = |at, device, status, data1, data2| MidiTakeEvent { at, device, status, data1, data2 };
+        let events = [
+            ev(40_000, 0, 0x90, 59, 80),  // before the pass: left out, and so is its release
+            ev(48_000, 0, 0x90, 60, 100), // one beat at 120 bpm, 48 kHz: 24 000 samples = 960 ticks
+            ev(50_000, 0, 0x80, 59, 0),
+            ev(60_000, 1, 0x99, 36, 127),
+            ev(72_000, 0, 0x80, 60, 30),
+            ev(72_000, 0, 0xE0, 0, 96),
+            ev(84_000, 1, 0x99, 36, 0),
+            ev(90_000, 0, 0xB0, 64, 127),
+            ev(95_000, 0, 0x90, 67, 90), // still down at the end
+            ev(96_000, 0, 0x90, 72, 90), // after the pass
+        ];
+        let devices = ["Keys".to_string(), "Pad".to_string()];
+        let range = Range::new(48_000, 96_000);
+        let before = e.session().tracks.iter().map(|t| t.clips().len()).sum::<usize>();
+        let clips = add_midi_recording(&mut e, range, &events, &devices, false);
+        assert_eq!((before, clips.len()), (0, 2), "the track whose device was silent gets no clip");
+        let seq = |e: &Engine, t: TrackId| {
+            let clip = e.session().track(t).unwrap().clips().first().unwrap().clone();
+            assert_eq!(clip.range(), range);
+            let ClipContent::Midi { sequence } = clip.content else { panic!("not a MIDI clip") };
+            sequence
+        };
+        let keys = seq(&e, all);
+        let notes: Vec<(u8, u8, i64, i64, u8)> = keys.notes.iter().map(|n| (n.channel, n.pitch, n.start, n.length, n.release_velocity)).collect();
+        assert_eq!(notes, [(0, 60, 0, 960, 30), (9, 36, 480, 960, 64), (0, 67, 1880, 40, 64)]);
+        assert_eq!(
+            keys.ctrls.iter().map(|c| (c.tick, c.kind, c.value)).collect::<Vec<_>>(),
+            [(960, CtrlKind::PitchBend, 4096), (1680, CtrlKind::Cc(64), 127)]
+        );
+        let pads = seq(&e, pad);
+        assert_eq!((pads.notes.len(), pads.notes[0].pitch, pads.ctrls.len()), (1, 36, 0), "only its device and channel");
+        assert!(e.session().track(idle).unwrap().clips().is_empty());
+        // One undo step for the pass; the input filter keeps kinds out.
+        e.run("edit.undo").unwrap();
+        assert_eq!(e.session().tracks.iter().map(|t| t.clips().len()).sum::<usize>(), 0);
+        e.execute("setup.midi_input_filter", &json!({"filter": ["pitch_bend", "cc"]})).unwrap();
+        add_midi_recording(&mut e, range, &events, &devices, false);
+        assert!(seq(&e, all).ctrls.is_empty());
+        assert!(add_midi_recording(&mut e, Range::new(5, 5), &events, &devices, false).is_empty());
+    }
     #[test]
     fn armed_tracks_get_new_take_files_used_in_place() {
         let dir = std::env::temp_dir().join(format!("soundcraft-takes-{}", std::process::id()));

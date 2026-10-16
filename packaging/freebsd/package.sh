@@ -39,7 +39,8 @@ BASENAME="soundcraft-$VERSION-freebsd-$ARCH"
 echo "==> SoundCraft $VERSION for FreeBSD $ARCH"
 
 if [ "$SKIP_BUILD" = 0 ]; then
-  (cd "$ROOT" && cargo build --release --locked -p soundcraft -p soundcraft-cli)
+  # --no-default-features: no JACK or PipeWire host here (ALSA through alsa-plugins-oss).
+  (cd "$ROOT" && cargo build --release --locked --no-default-features -p soundcraft -p soundcraft-cli)
 fi
 BIN="$CARGO_TARGET_DIR/release"
 WORK="$CARGO_TARGET_DIR/freebsd-package"
