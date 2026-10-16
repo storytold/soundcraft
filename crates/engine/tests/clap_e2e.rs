@@ -40,7 +40,7 @@ fn install_fixture_now() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::copy(target.join("debug").join(lib), dir.join("Fixture.clap")).unwrap();
-    assert_eq!(soundcraft_clap_host::add_search_dir(&dir), 2);
+    assert_eq!(soundcraft_clap_host::add_search_dir(&dir), 5);
 }
 
 #[test]

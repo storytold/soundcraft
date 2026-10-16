@@ -1241,25 +1241,38 @@ impl Instance {
         ok.then(|| read_name(&buf)).filter(|s| !s.is_empty())
     }
 
-    pub fn audio_ports(&self, is_input: bool) -> Vec<PortInfo> {
+    /// The plugin's audio ports in one direction. A layout beyond `MAX_PORTS` ports or
+    /// `MAX_PORT_CHANNELS` channels per port is an error: we never hand a plugin fewer ports or
+    /// channels than it advertised.
+    pub fn audio_ports(&self, is_input: bool) -> Result<Vec<PortInfo>, ClapError> {
         // SAFETY: see `params`.
-        let Some(p) = (unsafe { self.ports.as_ref() }) else { return Vec::new() };
-        let (Some(count), Some(get)) = (p.count, p.get) else { return Vec::new() };
+        let Some(p) = (unsafe { self.ports.as_ref() }) else { return Ok(Vec::new()) };
+        let (Some(count), Some(get)) = (p.count, p.get) else { return Ok(Vec::new()) };
+        let dir = if is_input { "input" } else { "output" };
         // SAFETY: vtable call with its instance.
-        let n = unsafe { count(self.plugin, is_input) }.min(MAX_PORTS);
+        let n = unsafe { count(self.plugin, is_input) };
+        if n > MAX_PORTS {
+            return Err(ClapError::Process(format!("{n} audio {dir} ports (at most {MAX_PORTS} supported)")));
+        }
         let mut out = Vec::new();
         for i in 0..n {
             // SAFETY: plain data; all-zero (null port_type pointer) is valid.
             let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
             // SAFETY: index below the count; `info` is writable.
             if unsafe { get(self.plugin, i, is_input, &mut info) } {
-                out.push(PortInfo { channels: info.channel_count.min(MAX_PORT_CHANNELS), main: info.flags & CLAP_AUDIO_PORT_IS_MAIN != 0 });
+                if info.channel_count > MAX_PORT_CHANNELS {
+                    return Err(ClapError::Process(format!(
+                        "audio {dir} port {i} has {} channels (at most {MAX_PORT_CHANNELS} supported)",
+                        info.channel_count
+                    )));
+                }
+                out.push(PortInfo { channels: info.channel_count, main: info.flags & CLAP_AUDIO_PORT_IS_MAIN != 0 });
             } else {
                 // Keep port indices aligned: an unreadable port still needs a (silent) buffer slot.
                 out.push(PortInfo { channels: 0, main: false });
             }
         }
-        out
+        Ok(out)
     }
 
     pub fn note_port(&self) -> Option<NotePort> {

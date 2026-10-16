@@ -113,8 +113,21 @@ impl Plugin for ClapPlugin {
         self.channels = channels.clamp(1, MAX_CHANNELS);
         self.inst.deactivate();
         self.inst.service_callback();
-        let ins = self.inst.audio_ports(true);
-        let outs = self.inst.audio_ports(false);
+        let ports = self.inst.audio_ports(true).and_then(|ins| Ok((ins, self.inst.audio_ports(false)?)));
+        let (ins, outs) = match ports {
+            Ok(p) => p,
+            Err(e) => {
+                // Unsupported layout: stay inactive (`process` passes audio through untouched).
+                log::warn!("{}: {e}", self.info.id);
+                self.inputs = PortBuffers::new(&[], 0);
+                self.outputs = PortBuffers::new(&[], 0);
+                self.in_main = None;
+                self.out_main = None;
+                self.max_block = 0;
+                self.latency = 0;
+                return;
+            }
+        };
         self.in_main = pick_main(&ins);
         self.out_main = pick_main(&outs);
         self.inputs = PortBuffers::new(&ins.iter().map(|p| p.channels).collect::<Vec<_>>(), mb);

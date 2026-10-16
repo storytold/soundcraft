@@ -6,6 +6,11 @@
 //!   to the velocity of the held note (0 when none), switching at the event's sample offset. A
 //!   MIDI CC 7 (volume) sets the constant to its value / 127.
 //!
+//! - `org.soundcraft.test.wide16`, `.wide17ports`, `.wide65ch`: effects advertising wide layouts
+//!   (16 ports of 64 channels, 17 ports of 2 channels, one port of 65 channels per direction).
+//!   `process` writes 1.0 into every output channel it was given when the host's buffers match the
+//!   advertised layout, -1.0 when they do not.
+//!
 //! The gain plugin also implements `clap.state` (gain and mode as two little-endian f64s) and a
 //! floating-only `clap.gui` without a real window: showing it "edits" the gain to 0.25 in the GUI,
 //! reported as an output parameter event by the next `process`.
@@ -35,6 +40,27 @@ unsafe impl<const N: usize> Sync for Features<N> {}
 
 static GAIN_FEATURES: Features<3> = Features([c"audio-effect".as_ptr(), c"stereo".as_ptr(), std::ptr::null()]);
 static SYNTH_FEATURES: Features<3> = Features([c"instrument".as_ptr(), c"synthesizer".as_ptr(), std::ptr::null()]);
+
+static WIDE_FEATURES: Features<2> = Features([c"audio-effect".as_ptr(), std::ptr::null()]);
+
+const fn wide_desc(id: &'static CStr, name: &'static CStr) -> clap_plugin_descriptor {
+    clap_plugin_descriptor {
+        clap_version: CLAP_VERSION,
+        id: id.as_ptr(),
+        name: name.as_ptr(),
+        vendor: c"SoundCraft tests".as_ptr(),
+        url: std::ptr::null(),
+        manual_url: std::ptr::null(),
+        support_url: std::ptr::null(),
+        version: c"1.0.0".as_ptr(),
+        description: std::ptr::null(),
+        features: WIDE_FEATURES.0.as_ptr(),
+    }
+}
+
+static WIDE16_DESC: clap_plugin_descriptor = wide_desc(c"org.soundcraft.test.wide16", c"Fixture Wide 16x64");
+static WIDE17_DESC: clap_plugin_descriptor = wide_desc(c"org.soundcraft.test.wide17ports", c"Fixture Wide 17 ports");
+static WIDE65_DESC: clap_plugin_descriptor = wide_desc(c"org.soundcraft.test.wide65ch", c"Fixture Wide 65 channels");
 
 static GAIN_DESC: clap_plugin_descriptor = clap_plugin_descriptor {
     clap_version: CLAP_VERSION,
@@ -66,6 +92,8 @@ struct Fx {
     plugin: clap_plugin,
     host: *const clap_host,
     synth: bool,
+    /// `(ports per direction, channels per port)` for the wide fixtures.
+    wide: Option<(u32, u32)>,
     gain: f64,
     mode: f64,
     level: f64,
@@ -168,6 +196,22 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
     let n = pr.frames_count as usize;
     let ev = unsafe { &*pr.in_events };
     let count = unsafe { (ev.size.unwrap())(pr.in_events) };
+    if let Some((ports, channels)) = f.wide {
+        let fits = |bufs: *const clap_audio_buffer, n: u32| {
+            n == ports && (0..n as usize).all(|i| unsafe { &*bufs.add(i) }.channel_count == channels)
+        };
+        let ok = fits(pr.audio_inputs, pr.audio_inputs_count) && fits(pr.audio_outputs, pr.audio_outputs_count);
+        if pr.audio_outputs_count > 0 {
+            let out = unsafe { &*pr.audio_outputs };
+            for c in 0..out.channel_count as usize {
+                let o = unsafe { *out.data32.add(c) };
+                for i in 0..n {
+                    unsafe { *o.add(i) = if ok { 1.0 } else { -1.0 } };
+                }
+            }
+        }
+        return CLAP_PROCESS_CONTINUE;
+    }
     if pr.audio_outputs_count != 1 {
         return CLAP_PROCESS_ERROR;
     }
@@ -324,10 +368,26 @@ static PARAMS: clap_plugin_params = clap_plugin_params {
 };
 
 unsafe extern "C" fn ports_count(p: *const clap_plugin, is_input: bool) -> u32 {
+    if let Some((ports, _)) = unsafe { fx(p) }.wide {
+        return ports;
+    }
     if is_input && unsafe { fx(p) }.synth { 0 } else { 1 }
 }
 
 unsafe extern "C" fn ports_get(p: *const clap_plugin, index: u32, is_input: bool, info: *mut clap_audio_port_info) -> bool {
+    if let Some((ports, channels)) = unsafe { fx(p) }.wide {
+        if index >= ports {
+            return false;
+        }
+        let info = unsafe { &mut *info };
+        info.id = index * 2 + u32::from(is_input);
+        write_name(&mut info.name, c"wide");
+        info.flags = if index == 0 { CLAP_AUDIO_PORT_IS_MAIN } else { 0 };
+        info.channel_count = channels;
+        info.port_type = std::ptr::null();
+        info.in_place_pair = clap_sys::id::CLAP_INVALID_ID;
+        return true;
+    }
     if index != 0 || (is_input && unsafe { fx(p) }.synth) {
         return false;
     }
@@ -498,23 +558,32 @@ unsafe extern "C" fn on_main_thread(_p: *const clap_plugin) {}
 // ---- factory + entry ----
 
 unsafe extern "C" fn factory_count(_f: *const clap_plugin_factory) -> u32 {
-    2
+    5
 }
 
 unsafe extern "C" fn factory_desc(_f: *const clap_plugin_factory, i: u32) -> *const clap_plugin_descriptor {
     match i {
         0 => &GAIN_DESC,
         1 => &SYNTH_DESC,
+        2 => &WIDE16_DESC,
+        3 => &WIDE17_DESC,
+        4 => &WIDE65_DESC,
         _ => std::ptr::null(),
     }
 }
 
 unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const clap_host, id: *const c_char) -> *const clap_plugin {
     let id = unsafe { CStr::from_ptr(id) };
-    let (desc, synth) = if id == c"org.soundcraft.test.gain" {
-        (&GAIN_DESC as *const _, false)
+    let (desc, synth, wide) = if id == c"org.soundcraft.test.gain" {
+        (&GAIN_DESC as *const _, false, None)
     } else if id == c"org.soundcraft.test.synth" {
-        (&SYNTH_DESC as *const _, true)
+        (&SYNTH_DESC as *const _, true, None)
+    } else if id == c"org.soundcraft.test.wide16" {
+        (&WIDE16_DESC as *const _, false, Some((16, 64)))
+    } else if id == c"org.soundcraft.test.wide17ports" {
+        (&WIDE17_DESC as *const _, false, Some((17, 2)))
+    } else if id == c"org.soundcraft.test.wide65ch" {
+        (&WIDE65_DESC as *const _, false, Some((1, 65)))
     } else {
         return std::ptr::null();
     };
@@ -535,6 +604,7 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         },
         host,
         synth,
+        wide,
         gain: 1.0,
         mode: 0.0,
         level: 0.0,
