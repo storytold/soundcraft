@@ -694,7 +694,9 @@ fn clip_gain_to_vol(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn copy_to_send(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "automation.copy_to_send", p)?;
-    let slot = slot_of(p, "send", SEND_SLOTS).unwrap_or(0) as u8;
+    let slot = slot_of(p, "send", SEND_SLOTS).ok_or_else(|| {
+        bad("automation.copy_to_send", format!("`send` must be 0..{} or a..{}", SEND_SLOTS - 1, (b'a' + SEND_SLOTS as u8 - 1) as char))
+    })? as u8;
     let s = e.session_mut();
     for t in &tracks {
         if let Some(tr) = s.track_mut(*t) {
@@ -872,6 +874,23 @@ mod tests {
         // Empty params with a preset name still recall (the rename path).
         e.execute("mix.insert_params", &json!({"track": t, "slot": 0, "params": {}, "preset": "Saved"})).unwrap();
         assert_eq!(e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().preset, "Saved");
+    }
+
+    #[test]
+    fn copy_to_send_rejects_an_invalid_send_slot() {
+        let mut e = crate::demo::demo_engine();
+        let history = e.undo_history().len();
+        let lanes = |e: &Engine| e.session().tracks.iter().filter(|t| t.lane(&AutoParam::SendLevel(0)).is_some_and(|l| !l.points.is_empty())).count();
+        let before = lanes(&e);
+        for bad_params in [json!({"track": "Kick", "send": 99}), json!({"track": "Kick", "send": "zz"}), json!({"track": "Kick"})] {
+            let r = e.execute("automation.copy_to_send", &bad_params);
+            assert!(r.is_err(), "{bad_params} accepted: {r:?}");
+            assert_eq!(e.undo_history().len(), history, "{bad_params} pushed an undo step");
+            assert_eq!(lanes(&e), before, "{bad_params} edited Send A");
+        }
+        // A valid slot still copies.
+        e.execute("automation.copy_to_send", &json!({"track": "Kick", "send": "a"})).unwrap();
+        assert_eq!(lanes(&e), before + 1);
     }
 
     #[test]
