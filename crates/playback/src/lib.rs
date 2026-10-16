@@ -72,6 +72,12 @@ enum Cmd {
     },
     Stop,
     Locate(Samples),
+    /// Audition a note on a track's instrument (velocity 0 releases it).
+    Note {
+        track: TrackId,
+        pitch: u8,
+        velocity: u8,
+    },
 }
 
 struct Shared {
@@ -168,6 +174,9 @@ struct AudioState {
     device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
+    /// Auditioned notes held, and the frames left to render the last one's release.
+    live_notes: usize,
+    live_tail: usize,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
@@ -202,6 +211,8 @@ impl AudioState {
             device_rate,
             input: None,
             recording: false,
+            live_notes: 0,
+            live_tail: 0,
         }
     }
 
@@ -246,6 +257,16 @@ impl AudioState {
                     self.end = None;
                     self.looped = None;
                     self.mix.reset();
+                }
+                Cmd::Note { track, pitch, velocity } => {
+                    self.mix.live_note(track, pitch, velocity);
+                    if velocity > 0 {
+                        self.live_notes = self.live_notes.saturating_add(1);
+                    } else {
+                        self.live_notes = self.live_notes.saturating_sub(1);
+                        // Long enough for a synth's release to ring out.
+                        self.live_tail = (self.device_rate * 2.0) as usize;
+                    }
                 }
                 Cmd::Locate(at) => {
                     self.pos = at;
@@ -331,7 +352,9 @@ impl AudioState {
     fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
         let channels = channels.max(1);
-        let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        let monitoring = self.live_notes > 0
+            || self.live_tail > 0
+            || self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
         if !self.playing && !monitoring {
             out.iter_mut().for_each(|x| *x = 0.0);
             if let Ok(mut m) = self.shared.meters.try_lock() {
@@ -343,6 +366,9 @@ impl AudioState {
         let speed = f64::from(self.shared.speed.load(Ordering::Relaxed)) / 1000.0;
         let step = self.session.sample_rate.as_f64() / self.device_rate.max(1.0) * speed.clamp(0.1, 4.0);
         let callback_frames = out.len() / channels;
+        if self.live_notes == 0 {
+            self.live_tail = self.live_tail.saturating_sub(callback_frames);
+        }
         let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
         for frame in out.chunks_mut(channels) {
             while self.read >= self.pending_len as f64 {
@@ -740,6 +766,12 @@ impl Player {
 
     pub fn set_recording(&self, on: bool) {
         let _ = self.tx.send(Cmd::Recording(on));
+    }
+
+    /// Play `pitch` on `track`'s instrument while the transport is stopped or playing, until a
+    /// call with velocity 0 releases it (the MIDI Editor's audition).
+    pub fn note(&self, track: TrackId, pitch: u8, velocity: u8) {
+        let _ = self.tx.send(Cmd::Note { track, pitch, velocity });
     }
 
     pub fn stop(&self) {
