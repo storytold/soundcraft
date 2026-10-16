@@ -13,6 +13,8 @@ pub enum BitError {
     Eof,
     /// An Exp-Golomb code longer than 32 leading zeros.
     InvalidExpGolomb,
+    /// A NAL length-prefix width outside the AVCC/HVCC range of 1..=4 bytes.
+    InvalidLengthSize,
 }
 
 impl fmt::Display for BitError {
@@ -20,6 +22,7 @@ impl fmt::Display for BitError {
         match self {
             BitError::Eof => f.write_str("unexpected end of bitstream"),
             BitError::InvalidExpGolomb => f.write_str("invalid Exp-Golomb code"),
+            BitError::InvalidLengthSize => f.write_str("invalid NAL length size"),
         }
     }
 }
@@ -302,24 +305,37 @@ pub fn annexb_nals(data: &[u8]) -> Vec<&[u8]> {
     out
 }
 
-/// Split a length-prefixed sample (AVCC/HVCC, `length_size` 1/2/4 bytes) into NAL units.
+/// Split a length-prefixed sample (AVCC/HVCC, `length_size` 1..=4 bytes) into NAL units.
+///
+/// The width comes from the stream's configuration record (`(byte & 3) + 1`), so anything
+/// outside 1..=4 is a programming or parsing error and is rejected up front: a width of 0
+/// would never advance the cursor, looping forever and appending empty NALs until the
+/// process runs out of memory, and a wider prefix cannot occur in a real sample.
 pub fn length_prefixed_nals(data: &[u8], length_size: usize) -> Result<Vec<&[u8]>> {
+    if !(1..=4).contains(&length_size) {
+        return Err(BitError::InvalidLengthSize);
+    }
     let mut out = Vec::new();
     let mut i = 0;
     while i < data.len() {
-        if i + length_size > data.len() {
+        let Some(start) = i.checked_add(length_size) else {
+            return Err(BitError::Eof);
+        };
+        if start > data.len() {
             return Err(BitError::Eof);
         }
         let mut len = 0usize;
-        for k in 0..length_size {
-            len = (len << 8) | data[i + k] as usize;
+        for &b in &data[i..start] {
+            len = (len << 8) | b as usize;
         }
-        i += length_size;
-        if i + len > data.len() {
+        let Some(end) = start.checked_add(len) else {
+            return Err(BitError::Eof);
+        };
+        if end > data.len() {
             return Err(BitError::Eof);
         }
-        out.push(&data[i..i + len]);
-        i += len;
+        out.push(&data[start..end]);
+        i = end;
     }
     Ok(out)
 }
@@ -390,6 +406,34 @@ mod tests {
         assert_eq!(n, vec![&[0x67, 1, 2][..], &[0x68, 3][..], &[0x65, 9, 9][..]]);
         let l = [0, 0, 0, 2, 0x67, 1, 0, 0, 0, 1, 0x68];
         assert_eq!(length_prefixed_nals(&l, 4).unwrap(), vec![&[0x67, 1][..], &[0x68][..]]);
+    }
+
+    #[test]
+    fn length_prefixed_rejects_bad_length_size() {
+        // Regression test for #469: with a width of 0 neither the prefix nor a
+        // zero-length payload advanced the cursor, so any non-empty sample
+        // looped forever appending empty NALs. Widths above 4 cannot come
+        // from an AVCC/HVCC record either.
+        let d = [0, 0, 0, 2, 0x67, 1];
+        assert_eq!(length_prefixed_nals(&d, 0), Err(BitError::InvalidLengthSize));
+        assert_eq!(length_prefixed_nals(&d, 5), Err(BitError::InvalidLengthSize));
+        assert_eq!(length_prefixed_nals(&d, usize::MAX), Err(BitError::InvalidLengthSize));
+        assert_eq!(length_prefixed_nals(&[], 0), Err(BitError::InvalidLengthSize));
+    }
+
+    #[test]
+    fn length_prefixed_widths() {
+        // 1-byte prefixes.
+        assert_eq!(length_prefixed_nals(&[2, 0x67, 1, 1, 0x68], 1).unwrap(), vec![&[0x67, 1][..], &[0x68][..]]);
+        // 2-byte prefixes.
+        assert_eq!(length_prefixed_nals(&[0, 2, 0x67, 1, 0, 1, 0x68], 2).unwrap(), vec![&[0x67, 1][..], &[0x68][..]]);
+        // 3-byte prefixes (lengthSizeMinusOne == 2 in the configuration record).
+        assert_eq!(length_prefixed_nals(&[0, 0, 2, 0x67, 1], 3).unwrap(), vec![&[0x67, 1][..]]);
+        // A truncated prefix or payload is Eof, not a panic or a short read.
+        assert_eq!(length_prefixed_nals(&[0, 0], 4), Err(BitError::Eof));
+        assert_eq!(length_prefixed_nals(&[0, 0, 0, 9, 0x67], 4), Err(BitError::Eof));
+        // Empty input splits to no NALs.
+        assert!(length_prefixed_nals(&[], 4).unwrap().is_empty());
     }
 
     #[test]
