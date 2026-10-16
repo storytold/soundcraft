@@ -18,6 +18,7 @@ mod processing_keeps_crossfades;
 mod random_edits;
 mod recording;
 mod session_transport;
+mod slot_recall;
 mod split_into_mono;
 mod time_key_signatures;
 mod track_name_collisions;
