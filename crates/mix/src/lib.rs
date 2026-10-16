@@ -1442,7 +1442,7 @@ fn render_clip(s: &Session, clip: &Clip, pos: Samples, frames: usize, buf: &mut 
                     let x0 = f.floor();
                     let fr = (f - x0) as f32;
                     let a = if x0 >= 0.0 { src.get(x0 as usize).copied().unwrap_or(0.0) } else { 0.0 };
-                    let b = if x0 + 1.0 >= 0.0 { src.get((x0 as usize).saturating_add(1)).copied().unwrap_or(0.0) } else { 0.0 };
+                    let b = if x0 + 1.0 >= 0.0 { src.get((x0 + 1.0) as usize).copied().unwrap_or(0.0) } else { 0.0 };
                     a + (b - a) * fr
                 };
                 let t = (k - i) as f32 / n;
@@ -2367,6 +2367,30 @@ mod tests {
         s.track_mut(t).unwrap().mixer.pan = vec![-1.0];
         let out = render_range(&s, Range::new(0, 4800), 256);
         assert!(out[0][100] > 0.49 && out[1][100].abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_stretched_clip_before_its_source_start_reads_from_the_first_sample() {
+        // A clip that extends before its source (a negative offset) plays silence there. When it
+        // is stretched, the read position passes through [-1, 0), which must interpolate from
+        // that silence towards sample 0 of the file -- not towards sample 1.
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let buf = AudioBuffer { sample_rate: 48_000, channels: vec![vec![1.0, 0.5, 0.25, 0.125]] };
+        s.pool.insert(SourceId(901), Arc::new(SourceAudio::new(buf)));
+        let id = s.new_clip_id();
+        let mut c = Clip::audio(id, "late", SourceId(901), -1, 0, 4);
+        c.stretch = 2.0;
+        if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+            pl.clips.push(c);
+        }
+        let out = render_clips(&s, t, Range::new(0, 4));
+        // rel 0 -> source -1.0: silence; rel 1 -> source -0.5: halfway from silence to sample 0;
+        // rel 2 -> source 0.0: sample 0; rel 3 -> source 0.5: halfway to sample 1.
+        let want = [0.0, 0.5, 1.0, 0.75];
+        for (i, w) in want.iter().enumerate() {
+            assert!((out[0][i] - w).abs() < 1e-6, "frame {i}: {} vs {w}", out[0][i]);
+        }
     }
 
     #[test]
