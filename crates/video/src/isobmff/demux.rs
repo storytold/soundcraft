@@ -555,6 +555,9 @@ impl SttsCursor<'_> {
 fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64) -> Result<()> {
     let mut stts: Vec<(u32, u32)> = Vec::new();
     let mut ctts: Vec<(u32, u32)> = Vec::new();
+    // ISO BMFF version 0 composition offsets are unsigned and version 1 offsets are signed;
+    // QuickTime defines them as signed in every version.
+    let mut ctts_signed = false;
     let mut stss: Option<Vec<u32>> = None;
     let mut stsc: Vec<(u32, u32, u32)> = Vec::new();
     let mut const_size = 0u32;
@@ -581,7 +584,7 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64) -> Result<
                 stts = (0..n).map(|_| Ok((c.u32()?, c.u32()?))).collect::<Result<_>>()?;
             }
             b"ctts" => {
-                c.full_header()?;
+                ctts_signed = c.full_header()?.0 != 0 || is_qt;
                 let n = c.count(8)?;
                 ctts = (0..n).map(|_| Ok((c.u32()?, c.u32()?))).collect::<Result<_>>()?;
             }
@@ -755,7 +758,8 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64) -> Result<
                 }
                 let size = if const_size != 0 { const_size } else { sizes[sidx] };
                 let duration = stts_c.next_value();
-                let cts = ctts_c.next_value() as i32 as i64;
+                let raw_cts = ctts_c.next_value();
+                let cts = if ctts_signed { raw_cts as i32 as i64 } else { raw_cts as i64 };
                 let is_sync = match &stss {
                     None => true,
                     Some(v) => {
@@ -1120,6 +1124,22 @@ mod tests {
         b.bytes(b"free");
         b.bytes(&[9; 5]);
         b.buf
+    }
+
+    #[test]
+    fn ctts_version0_offsets_are_unsigned() {
+        let mut d = handmade(None);
+        let p = d.windows(4).position(|w| w == b"ctts").unwrap();
+        // Version byte follows the box type; the -5 offsets now read as 0xFFFFFFFB.
+        d[p + 4] = 0;
+        let f = open(d.as_slice()).unwrap();
+        let pts: Vec<i64> = f.tracks[0].samples.iter().map(|s| s.pts).collect();
+        assert_eq!(pts, [4_294_967_291, 4_294_967_301, 25, 35]);
+        // QuickTime composition offsets stay signed in version 0.
+        d[8..12].copy_from_slice(b"qt  ");
+        let f = open(d.as_slice()).unwrap();
+        let pts: Vec<i64> = f.tracks[0].samples.iter().map(|s| s.pts).collect();
+        assert_eq!(pts, [-5, 5, 25, 35]);
     }
 
     #[test]
