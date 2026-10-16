@@ -1304,8 +1304,10 @@ fn read_bundle(bytes: &[u8]) -> Result<(String, std::collections::HashMap<String
 
 /// The record-enabled audio tracks, each with the input channels it records (those its input
 /// route names, "In 3" → 2, wrapped to the device's `input_channels`) and a new take file
-/// `<track>_<NN>.wav` in the `Audio Files` of the session's folder (`unsaved_dir` until it is saved).
-pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<(TrackId, Vec<usize>, PathBuf)> {
+/// `<track>_<NN>.wav`. Disk allocation chooses the destination: a track override, then the
+/// session override, then `Audio Files`. Relative folders resolve against the session folder
+/// (`unsaved_dir` until it is saved); absolute allocated folders must already be available.
+pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Result<Vec<(TrackId, Vec<usize>, PathBuf)>> {
     let dir = e.path.as_deref().and_then(|p| Path::new(p).parent()).unwrap_or(unsaved_dir);
     let s = e.session();
     let take_no = s.sources.len() + 1;
@@ -1320,9 +1322,23 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
                 _ => 0,
             };
             let inputs = (0..t.channels()).map(|k| first.saturating_add(k) % input_channels.max(1)).collect();
-            let file = |n: usize| dir.join("Audio Files").join(format!("{}_{n:02}.wav", sanitize_name(&t.name)));
+            let setting = |key: &str| {
+                let prefix = format!("{key}=");
+                s.edit.flags.iter().find_map(|f| f.strip_prefix(&prefix))
+            };
+            let allocation = setting(&format!("disk.track.{}", t.id.0)).or_else(|| setting("disk.root")).unwrap_or("Audio Files");
+            let folder = Path::new(allocation);
+            let folder = if folder.is_absolute() {
+                if !folder.is_dir() {
+                    return Err(EngineError::Io(format!("{}: recording folder is unavailable: {}", t.name, folder.display())));
+                }
+                folder.to_path_buf()
+            } else {
+                dir.join(folder)
+            };
+            let file = |n: usize| folder.join(format!("{}_{n:02}.wav", sanitize_name(&t.name)));
             let path = (take_no..take_no + 1_000).map(file).find(|p| !p.exists()).unwrap_or_else(|| file(take_no));
-            (t.id, inputs, path)
+            Ok((t.id, inputs, path))
         })
         .collect()
 }
@@ -1437,9 +1453,9 @@ mod record_tests {
         let vox = armed(&mut e, "Vox", "mono", "In 2");
         let gtr = armed(&mut e, "Gtr", "stereo", "In 3-4");
         write_take(&dir.join("Audio Files/Vox_01.wav"), 10);
-        let plan = plan_takes(&e, &dir, 4);
+        let plan = plan_takes(&e, &dir, 4).unwrap();
         assert_eq!(plan, vec![(vox, vec![1], dir.join("Audio Files/Vox_02.wav")), (gtr, vec![2, 3], dir.join("Audio Files/Gtr_01.wav"))]);
-        assert_eq!(plan_takes(&e, &dir, 2)[1].1, vec![0, 1]);
+        assert_eq!(plan_takes(&e, &dir, 2).unwrap()[1].1, vec![0, 1]);
 
         let session = dir.join("Song.scraft").to_string_lossy().into_owned();
         e.execute("session.save_as", &json!({"path": session})).unwrap();
@@ -1482,6 +1498,73 @@ mod record_tests {
         let punch = Some(Range::new(1_200, 1_400));
         assert_eq!(live_span(1_000, None, punch, 150), None);
         assert_eq!(live_span(1_000, None, punch, 500), Some((1_000, Range::new(1_200, 1_400))));
+    }
+
+    #[test]
+    fn disk_allocation_routes_distinct_takes_and_survives_session_save() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-allocation-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let drive_a = dir.join("drive-a");
+        let drive_b = dir.join("drive-b");
+        std::fs::create_dir_all(&drive_a).unwrap();
+        std::fs::create_dir_all(&drive_b).unwrap();
+        let mut e = Engine::default();
+        let a = armed(&mut e, "A", "mono", "In 1");
+        let b = armed(&mut e, "B", "mono", "In 2");
+        e.execute("setup.disk_allocation", &json!({"path": drive_a})).unwrap();
+        e.execute("setup.disk_allocation", &json!({"track": b.0, "path": drive_b})).unwrap();
+        let session = dir.join("session/Song.scraft");
+        save_session(&mut e, &session.to_string_lossy()).unwrap();
+        let mut reopened = Engine::default();
+        open_session(&mut reopened, &session.to_string_lossy()).unwrap();
+        let takes = plan_takes(&reopened, &dir.join("unsaved"), 2).unwrap();
+        assert_eq!(takes, vec![(a, vec![0], drive_a.join("A_01.wav")), (b, vec![1], drive_b.join("B_01.wav"))]);
+        for (index, (_, _, path)) in takes.iter().enumerate() {
+            write_take(path, 48 * (index + 1));
+        }
+        let clips = add_recording(&mut reopened, 96, takes.iter().map(|(id, _, path)| (*id, path.clone())).collect(), None);
+        assert_eq!(clips.len(), 2);
+        assert_eq!(reopened.session().sources.iter().map(|s| s.frames).collect::<Vec<_>>(), vec![48, 96]);
+        assert!(drive_a.join("A_01.wav").is_file());
+        assert!(drive_b.join("B_01.wav").is_file());
+        assert!(!dir.join("session/Audio Files").exists());
+        assert_eq!(plan_takes(&reopened, &dir, 2).unwrap()[0].2, drive_a.join("A_03.wav"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_allocation_inherits_resolves_and_resets_without_shortening_paths() {
+        let mut e = Engine::default();
+        let id = armed(&mut e, "A", "mono", "In 1");
+        let base = std::env::temp_dir().join("soundcraft-relative-allocation");
+        assert_eq!(plan_takes(&e, &base, 1).unwrap()[0].2, base.join("Audio Files/A_01.wav"));
+        let long_path = ["a".repeat(80), "b".repeat(80), "c".repeat(80)].join("/");
+        e.execute("setup.disk_allocation", &json!({"path": long_path})).unwrap();
+        assert_eq!(plan_takes(&e, &base, 1).unwrap()[0].2, base.join(&long_path).join("A_01.wav"));
+        e.execute("setup.disk_allocation", &json!({"track": id.0, "path": "Custom Takes"})).unwrap();
+        assert_eq!(plan_takes(&e, &base, 1).unwrap()[0].2, base.join("Custom Takes/A_01.wav"));
+        e.execute("setup.disk_allocation", &json!({"track": id.0, "path": null})).unwrap();
+        assert_eq!(plan_takes(&e, &base, 1).unwrap()[0].2, base.join(&long_path).join("A_01.wav"));
+        e.execute("setup.disk_allocation", &json!({"path": null})).unwrap();
+        assert_eq!(plan_takes(&e, &base, 1).unwrap()[0].2, base.join("Audio Files/A_01.wav"));
+        let before = e.session().clone();
+        for path in [json!(true), json!(""), json!("bad\u{0}path"), json!("x".repeat(32_769))] {
+            assert!(e.execute("setup.disk_allocation", &json!({"path": path})).is_err());
+            assert_eq!(e.session(), &before);
+        }
+    }
+
+    #[test]
+    fn unavailable_allocated_folder_refuses_the_whole_recording_plan() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-offline-allocation-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut e = Engine::default();
+        armed(&mut e, "Available", "mono", "In 1");
+        let offline = armed(&mut e, "Offline", "mono", "In 2");
+        e.execute("setup.disk_allocation", &json!({"track": offline.0, "path": dir})).unwrap();
+        let error = plan_takes(&e, &dir.join("session"), 2).unwrap_err().to_string();
+        assert!(error.contains("Offline") && error.contains("recording folder is unavailable"), "{error}");
+        assert!(!dir.exists(), "planning must not recreate an unavailable allocated folder");
     }
 }
 

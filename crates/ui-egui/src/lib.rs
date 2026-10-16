@@ -592,7 +592,7 @@ impl SoundApp {
         let name = soundcraft_engine::io::sanitize_name(&self.engine.session().name);
         let unsaved_dir = self.autosave_dir.as_ref().map_or_else(std::env::temp_dir, |d| d.join(name));
         let Some(r) = &mut self.recorder else { return Err("no audio input device".into()) };
-        let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels);
+        let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels).map_err(|e| e.to_string())?;
         if plan.is_empty() {
             return Err("no audio track is record-enabled".into());
         }
