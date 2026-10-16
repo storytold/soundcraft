@@ -278,17 +278,19 @@ pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: b
     let base_tick = s.tempo.samples_to_ticks(at, s.sample_rate);
     let mut out = Vec::new();
     for (i, tr) in smf.tracks.iter().enumerate() {
-        if tr.sequence.notes.is_empty() {
+        if tr.sequence.notes.is_empty() && tr.sequence.ctrls.is_empty() {
             continue;
         }
         let mut name = if tr.name.trim().is_empty() { format!("MIDI {}", i + 1) } else { tr.name.clone() };
         soundcraft_model::truncate_chars(&mut name, soundcraft_model::MAX_NAME_CHARS);
         let id = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some(&name));
-        let drums = tr.sequence.notes.iter().all(|n| n.channel == 9);
+        let drums = !tr.sequence.notes.is_empty() && tr.sequence.notes.iter().all(|n| n.channel == 9);
         if let Some(t) = s.track_mut(id) {
             t.instrument = Some(soundcraft_model::Insert::new(if drums { "drum_synth" } else { "subtractive_synth" }));
         }
-        let end_tick = base_tick.saturating_add(tr.sequence.end_tick().max(1));
+        // A controller on the clip's last tick would not play, so the clip runs one tick past the last one.
+        let past_ctrls = tr.sequence.ctrls.iter().map(|c| c.tick.saturating_add(1)).max().unwrap_or(0);
+        let end_tick = base_tick.saturating_add(tr.sequence.end_tick().max(past_ctrls).max(1));
         let len = s.tempo.tick_to_samples(end_tick, s.sample_rate).saturating_sub(at);
         if len > s.sample_rate.samples(86_400.0) {
             return Err(EngineError::Io(format!("MIDI track {}: longer than 24 hours", i + 1)));
@@ -1746,6 +1748,28 @@ mod name_tests {
         let ids = import_midi_bytes(&mut e, &soundcraft_midi::write_smf(&smf).unwrap(), 0, false).unwrap();
         let track = e.session().track(ids[0]).unwrap();
         assert_eq!((track.name.len(), track.clips()[0].name.len()), (soundcraft_model::MAX_NAME_CHARS, soundcraft_model::MAX_NAME_CHARS));
+    }
+
+    #[test]
+    fn a_controller_only_midi_track_is_imported_with_its_events() {
+        let ctrls = vec![
+            soundcraft_midi::CtrlEvent { tick: 0, channel: 0, kind: soundcraft_midi::CtrlKind::Cc(7), value: 100 },
+            soundcraft_midi::CtrlEvent { tick: 480, channel: 0, kind: soundcraft_midi::CtrlKind::Cc(7), value: 64 },
+            soundcraft_midi::CtrlEvent { tick: 960, channel: 0, kind: soundcraft_midi::CtrlKind::Cc(7), value: 20 },
+        ];
+        let sequence = soundcraft_midi::Sequence { ctrls: ctrls.clone(), ..Default::default() };
+        let smf = soundcraft_midi::Smf { tracks: vec![soundcraft_midi::SmfTrack { name: "Vol".into(), sequence }], ..Default::default() };
+        let mut e = Engine::default();
+        let ids = import_midi_bytes(&mut e, &soundcraft_midi::write_smf(&smf).unwrap(), 0, false).unwrap();
+        assert_eq!(ids.len(), 1);
+        let track = e.session().track(ids[0]).unwrap();
+        assert_eq!(track.instrument.as_ref().map(|i| i.plugin.as_str()), Some("subtractive_synth"));
+        // The clip must reach past the last event, or playback skips it.
+        assert!(track.clips()[0].end() > e.session().tempo.tick_to_samples(960, e.session().sample_rate));
+        match &track.clips()[0].content {
+            ClipContent::Midi { sequence } => assert_eq!(sequence.ctrls, ctrls),
+            _ => panic!("expected a MIDI clip"),
+        }
     }
 
     #[test]
