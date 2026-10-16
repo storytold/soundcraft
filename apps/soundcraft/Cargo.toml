@@ -16,6 +16,8 @@ asio = ["soundcraft-playback/asio"]
 
 [dependencies]
 soundcraft-engine.workspace = true
+soundcraft-au-host.workspace = true
+soundcraft-vst3-host.workspace = true
 soundcraft-ui-egui.workspace = true
 soundcraft-playback.workspace = true
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links"] }

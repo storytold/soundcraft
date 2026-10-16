@@ -36,6 +36,7 @@
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod ffi;
+pub mod isolated;
 #[cfg(target_os = "macos")]
 mod plugin;
 #[cfg(target_os = "macos")]
@@ -241,6 +242,18 @@ pub fn rescan() -> Vec<AuDescriptor> {
 /// 1024-frame blocks (like `soundcraft_dsp::create`), with the reason when it fails.
 pub fn instantiate(id: &str) -> Result<Box<dyn Plugin>, AuError> {
     api::instantiate(id)
+}
+
+/// Creates and immediately destroys one Audio Unit without consulting the child-process guard.
+/// Desktop validator children call this before any application UI is initialized.
+#[cfg(target_os = "macos")]
+pub fn validate_instance_direct(id: &str) -> Result<(), AuError> {
+    registry::validate_instance_direct(id)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn validate_instance_direct(_id: &str) -> Result<(), AuError> {
+    Err(AuError::Unsupported)
 }
 
 /// Like [`instantiate`], but returns the concrete [`AuPlugin`].

@@ -31,6 +31,20 @@ use vst3::Steinberg::{self as sb};
 use vst3::Steinberg::{FUnknown, IBStreamTrait, IPlugFrameTrait, IPlugViewTrait, IPluginBaseTrait, IPluginFactory2Trait, IPluginFactoryTrait};
 use vst3::{Class, ComPtr, ComWrapper, Interface};
 
+/// Keep scanner/validator subprocesses out of the Dock even when a plugin initializes AppKit.
+#[cfg(target_os = "macos")]
+pub(crate) fn prepare_isolated_helper() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+    if let Some(mtm) = MainThreadMarker::new() {
+        let app = NSApplication::sharedApplication(mtm);
+        let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Prohibited);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn prepare_isolated_helper() {}
+
 /// Most classes one factory may report (hostile-input cap).
 const MAX_CLASSES: i32 = 1024;
 /// Most parameters read from one controller.

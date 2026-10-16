@@ -175,6 +175,7 @@ fn instantiate_raw(id: &str) -> Result<(Instance, &'static PluginInfo, u32), AuE
         ensure_scanned(&mut r).iter().find(|d| d.id == id).cloned().ok_or_else(|| AuError::NotFound(id.to_string()))?
     };
     let has_input = ty == TYPE_EFFECT || ty == TYPE_MUSIC_EFFECT;
+    crate::isolated::validate_instance(id, &desc.version)?;
     let made = Instance::new(ty, sub, manu, has_input);
     let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
     match made {
@@ -194,6 +195,13 @@ fn instantiate_raw(id: &str) -> Result<(Instance, &'static PluginInfo, u32), AuE
             Err(AuError::Instantiate(id.to_string(), e))
         }
     }
+}
+
+/// Direct preflight used only by the disposable desktop helper process.
+pub fn validate_instance_direct(id: &str) -> Result<(), AuError> {
+    let (ty, sub, manu) = parse_id(id).ok_or_else(|| AuError::NotFound(id.to_string()))?;
+    let has_input = ty == TYPE_EFFECT || ty == TYPE_MUSIC_EFFECT;
+    Instance::new(ty, sub, manu, has_input).map(|_| ()).map_err(|e| AuError::Instantiate(id.to_string(), e))
 }
 
 pub fn instantiate(id: &str) -> Result<Box<dyn Plugin>, AuError> {

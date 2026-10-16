@@ -159,6 +159,31 @@ fn save_prefs(ui: &UiState) {
     }
 }
 
+/// Remove scanner scratch directories left behind by a helper that crashed or was force-quit.
+/// Fresh entries are retained in case another SoundCraft process is actively using them.
+fn cleanup_stale_plugin_scratch() {
+    const MAX_ENTRIES: usize = 256;
+    const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+    let root = std::env::temp_dir();
+    let Ok(entries) = std::fs::read_dir(&root) else { return };
+    for entry in entries.flatten().take(MAX_ENTRIES) {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !["soundcraft-vst3-probe-", "soundcraft-vst3-garbage-", "soundcraft-vst3-scan-"].iter().any(|prefix| name.starts_with(prefix)) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        if meta.file_type().is_symlink() || meta.modified().ok().and_then(|t| t.elapsed().ok()).is_none_or(|age| age < MAX_AGE) {
+            continue;
+        }
+        let result = if meta.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+        if let Err(e) = result {
+            log::warn!("could not remove stale plugin scratch {}: {e}", path.display());
+        }
+    }
+}
+
 fn services() -> Services {
     Services {
         pick_open: Some(Box::new(|purpose: &str, _exts: &[&str]| {
@@ -204,6 +229,49 @@ fn app_icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result {
+    // Scanner/validator children touch only one untrusted bundle and never open a window or user
+    // settings. A crash remains in the disposable process instead of taking down the session.
+    let scan_args: Vec<_> = std::env::args_os().collect();
+    let isolated_helper = scan_args.get(1).is_some_and(|a| a == "--validate-au" || a == "--validate-vst3" || a == "--scan-vst3");
+    if isolated_helper {
+        soundcraft_vst3_host::prepare_isolated_helper();
+    }
+    if scan_args.get(1).is_some_and(|a| a == "--validate-au") {
+        let result = match scan_args.get(2).and_then(|v| v.to_str()) {
+            Some(id) => soundcraft_au_host::validate_instance_direct(id).map_err(|e| e.to_string()),
+            None => Err("validator requires an Audio Unit id".into()),
+        };
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
+    if scan_args.get(1).is_some_and(|a| a == "--validate-vst3") {
+        let result = match (scan_args.get(2), scan_args.get(3).and_then(|v| v.to_str())) {
+            (Some(bundle), Some(id)) => soundcraft_vst3_host::validate_bundle_instance(std::path::Path::new(bundle), id).map_err(|e| e.to_string()),
+            _ => Err("validator requires bundle and plugin id".into()),
+        };
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
+    if scan_args.get(1).is_some_and(|a| a == "--scan-vst3") {
+        let result = match (scan_args.get(2), scan_args.get(3)) {
+            (Some(bundle), Some(output)) => soundcraft_vst3_host::load_bundle(std::path::Path::new(bundle))
+                .map_err(|e| e.to_string())
+                .and_then(|ds| serde_json::to_vec(&ds).map_err(|e| e.to_string()))
+                .and_then(|bytes| std::fs::write(output, bytes).map_err(|e| e.to_string())),
+            _ => Err("scanner requires bundle and output paths".into()),
+        };
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
+    cleanup_stale_plugin_scratch();
+    if let Ok(exe) = std::env::current_exe() {
+        soundcraft_vst3_host::isolated_scan::configure(exe.clone());
+        soundcraft_au_host::isolated::configure(exe);
+    }
+    if prefs_enabled()
+        && let Some(dir) = config_dir()
+    {
+        soundcraft_vst3_host::isolated_scan::configure_cache(dir.join("vst3-scan-cache.json"));
+        soundcraft_vst3_host::isolated_scan::configure_validation_cache(dir.join("vst3-validation-cache.json"));
+        soundcraft_au_host::isolated::configure_cache(dir.join("au-validation-cache.json"));
+    }
     // First, so every start-up record (and the engine's panic hook, installed with the first
     // Engine) is captured; see `logging`.
     let logger = logging::install();
