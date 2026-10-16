@@ -120,21 +120,62 @@ fn info(args: &[String]) -> ExitCode {
     }
 }
 
+fn option_value(args: &[String], index: &mut usize, flag: &str, inline: Option<&str>) -> Result<String, String> {
+    let value = match inline {
+        Some(value) => value,
+        None => {
+            let value = args.get(*index + 1).ok_or_else(|| format!("{flag} needs a value"))?;
+            if value.starts_with("--") {
+                return Err(format!("{flag} needs a value"));
+            }
+            *index += 1;
+            value
+        }
+    };
+    if value.is_empty() {
+        return Err(format!("{flag} needs a value"));
+    }
+    Ok(value.to_owned())
+}
+
+struct ConvertArgs {
+    input: String,
+    output: String,
+    rate: Option<u32>,
+    bit_depth: soundcraft_audio_io::BitDepth,
+    normalize: bool,
+}
+
+fn parse_convert_args(args: &[String]) -> Result<ConvertArgs, String> {
+    let (Some(input), Some(output)) = (args.first(), args.get(1)) else { return Err("convert IN OUT".into()) };
+    let mut rate = None;
+    let mut bit_depth = soundcraft_audio_io::BitDepth::Int24;
+    let mut normalize = false;
+    let mut i = 2;
+    while let Some(arg) = args.get(i) {
+        let (flag, inline) = arg.split_once('=').map_or((arg.as_str(), None), |(flag, value)| (flag, Some(value)));
+        match flag {
+            "--rate" => rate = parse_rate(Some(&option_value(args, &mut i, flag, inline)?))?,
+            "--bit-depth" => bit_depth = parse_bit_depth(Some(&option_value(args, &mut i, flag, inline)?))?,
+            "--normalize" if inline.is_none() => normalize = true,
+            other if other.starts_with("--") => return Err(format!("unknown convert option `{arg}`")),
+            _ => return Err(format!("unexpected convert argument `{arg}`")),
+        }
+        i += 1;
+    }
+    Ok(ConvertArgs { input: input.clone(), output: output.clone(), rate, bit_depth, normalize })
+}
+
 fn convert(args: &[String]) -> ExitCode {
-    let (Some(input), Some(output)) = (args.first(), args.get(1)) else { return fail("convert IN OUT") };
-    let rate = match parse_rate(arg_value(args, "--rate").as_deref()) {
-        Ok(r) => r,
-        Err(e) => return fail(e),
+    let ConvertArgs { input, output, rate, bit_depth, normalize } = match parse_convert_args(args) {
+        Ok(args) => args,
+        Err(err) => return fail(err),
     };
-    let bit_depth = match parse_bit_depth(arg_value(args, "--bit-depth").as_deref()) {
-        Ok(b) => b,
-        Err(e) => return fail(e),
-    };
-    let bytes = match std::fs::read(input) {
+    let bytes = match std::fs::read(&input) {
         Ok(b) => b,
         Err(e) => return fail(format!("{input}: {e}")),
     };
-    let ext = std::path::Path::new(input).extension().and_then(|x| x.to_str());
+    let ext = std::path::Path::new(&input).extension().and_then(|x| x.to_str());
     let (_, mut buf) = match soundcraft_audio_io::decode(&bytes, ext) {
         Ok(x) => x,
         Err(e) => return fail(format!("{input}: {e}")),
@@ -143,15 +184,15 @@ fn convert(args: &[String]) -> ExitCode {
         buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, rate);
         buf.sample_rate = rate;
     }
-    if args.iter().any(|a| a == "--normalize") {
+    if normalize {
         soundcraft_dsp::offline::normalize(&mut buf.channels, -0.1, false);
     }
-    let out_ext = std::path::Path::new(output).extension().and_then(|x| x.to_str()).unwrap_or("wav").to_ascii_lowercase();
+    let out_ext = std::path::Path::new(&output).extension().and_then(|x| x.to_str()).unwrap_or("wav").to_ascii_lowercase();
     let Some(format) = soundcraft_audio_io::encode_format_for(&out_ext) else {
         return fail(format!("{output}: cannot write `.{out_ext}` files (supported: {})", soundcraft_audio_io::ENCODE_EXTENSIONS));
     };
     let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: true, bwf: None };
-    match soundcraft_audio_io::encode(&buf, &opts).map_err(|e| e.to_string()).and_then(|b| std::fs::write(output, b).map_err(|e| e.to_string())) {
+    match soundcraft_audio_io::encode(&buf, &opts).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&output, b).map_err(|e| e.to_string())) {
         Ok(()) => {
             outln!("wrote {output} ({} ch, {} Hz, {:.2} s)", buf.num_channels(), buf.sample_rate, buf.duration_secs());
             ExitCode::SUCCESS
@@ -242,29 +283,52 @@ fn parse_cmd_spec(spec: &str) -> Result<(String, Value), String> {
     }
 }
 
-fn run(args: &[String]) -> ExitCode {
-    let mut e = match load_engine(args) {
-        Ok(e) => e,
-        Err(err) => return fail(err),
-    };
+struct RunArgs {
+    shared: Vec<String>,
+    commands: Vec<String>,
+}
+
+fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
+    let mut shared = Vec::new();
+    let mut commands = Vec::new();
     let mut i = 0;
-    while i < args.len() {
-        if args.get(i).is_some_and(|a| a == "--cmd")
-            && let Some(spec) = args.get(i + 1)
-        {
-            let (id, params) = match parse_cmd_spec(spec) {
-                Ok(v) => v,
-                Err(err) => return fail(err),
-            };
-            match e.execute(&id, &params) {
-                Ok(v) => outln!("{id}: {v}"),
-                Err(err) => return fail(format!("{id}: {err}")),
+    while let Some(arg) = args.get(i) {
+        let (flag, inline) = arg.split_once('=').map_or((arg.as_str(), None), |(flag, value)| (flag, Some(value)));
+        match flag {
+            "--in" | "--bounce" | "--start" | "--end" | "--save" => {
+                let value = option_value(args, &mut i, flag, inline)?;
+                shared.extend([flag.to_owned(), value]);
             }
-            i += 1;
+            "--cmd" => commands.push(option_value(args, &mut i, flag, inline)?),
+            "--demo" | "--sample" | "--inspect" if inline.is_none() => shared.push(flag.to_owned()),
+            other if other.starts_with("--") => return Err(format!("unknown run option `{arg}`")),
+            _ => return Err(format!("unexpected run argument `{arg}`")),
         }
         i += 1;
     }
-    finish(&mut e, args)
+    Ok(RunArgs { shared, commands })
+}
+
+fn run(args: &[String]) -> ExitCode {
+    let RunArgs { shared, commands } = match parse_run_args(args) {
+        Ok(args) => args,
+        Err(err) => return fail(err),
+    };
+    let mut e = match load_engine(&shared) {
+        Ok(e) => e,
+        Err(err) => return fail(err),
+    };
+    for spec in commands {
+        let (id, params) = match parse_cmd_spec(&spec) {
+            Ok(v) => v,
+            Err(err) => return fail(err),
+        };
+        match e.execute(&id, &params) {
+            Ok(v) => outln!("{id}: {v}"),
+            Err(err) => return fail(format!("{id}: {err}")),
+        }
+    }
+    finish(&mut e, &shared)
 }
 
 fn script(args: &[String]) -> ExitCode {
@@ -482,6 +546,24 @@ fn parity(args: &[String]) -> ExitCode {
 mod tests {
     use super::*;
 
+    fn convert_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!("soundcraft-cli-{tag}-{}", std::process::id()));
+        let input = base.with_extension("input.wav");
+        let output = base.with_extension("output.wav");
+        let audio = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 16]] };
+        let bytes = soundcraft_audio_io::encode(&audio, &soundcraft_audio_io::EncodeOptions::default()).unwrap();
+        std::fs::write(&input, bytes).unwrap();
+        let _ = std::fs::remove_file(&output);
+        (input, output)
+    }
+
+    fn convert_args(input: &std::path::Path, output: &std::path::Path, options: &[&str]) -> Vec<String> {
+        [input.to_string_lossy().into_owned(), output.to_string_lossy().into_owned()]
+            .into_iter()
+            .chain(options.iter().map(|s| (*s).to_owned()))
+            .collect()
+    }
+
     #[test]
     fn command_ids_are_execute_shorthand_and_control_methods_stay_methods() {
         let (m, p) = app_request("engine.history", json!({}));
@@ -509,6 +591,55 @@ mod tests {
         assert!(matches!(parse_bit_depth(Some("16")), Ok(soundcraft_audio_io::BitDepth::Int16)));
         assert!(matches!(parse_bit_depth(Some("32f")), Ok(soundcraft_audio_io::BitDepth::Float32)));
         assert!(parse_bit_depth(Some("8")).is_err());
+    }
+
+    #[test]
+    fn convert_rejects_unknown_and_misspelled_options() {
+        let (input, output) = convert_fixture("unknown-options");
+        let bogus = convert_args(&input, &output, &["--bogus"]);
+        assert_eq!(parse_convert_args(&bogus).err().as_deref(), Some("unknown convert option `--bogus`"));
+        assert_eq!(convert(&bogus), ExitCode::FAILURE);
+        let normalise = convert_args(&input, &output, &["--normalise"]);
+        assert_eq!(parse_convert_args(&normalise).err().as_deref(), Some("unknown convert option `--normalise`"));
+        assert_eq!(convert(&normalise), ExitCode::FAILURE);
+        let _ = std::fs::remove_file(input);
+        let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
+    fn convert_rejects_option_without_value() {
+        let (input, output) = convert_fixture("missing-value");
+        let args = convert_args(&input, &output, &["--rate"]);
+        assert_eq!(parse_convert_args(&args).err().as_deref(), Some("--rate needs a value"));
+        assert_eq!(convert(&args), ExitCode::FAILURE);
+        let _ = std::fs::remove_file(input);
+        let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
+    fn convert_accepts_equals_options() {
+        let (input, output) = convert_fixture("equals-options");
+        assert_eq!(convert(&convert_args(&input, &output, &["--rate=24000", "--bit-depth=16"])), ExitCode::SUCCESS);
+        let bytes = std::fs::read(&output).unwrap();
+        let info = soundcraft_audio_io::probe(&bytes, Some("wav")).unwrap();
+        assert_eq!(info.sample_rate, 24_000);
+        let _ = std::fs::remove_file(input);
+        let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
+    fn run_rejects_bad_options_and_accepts_equals_values() {
+        let bogus = ["--bogus".into()];
+        assert_eq!(parse_run_args(&bogus).err().as_deref(), Some("unknown run option `--bogus`"));
+        assert_eq!(run(&bogus), ExitCode::FAILURE);
+        let missing = ["--bounce".into()];
+        assert_eq!(parse_run_args(&missing).err().as_deref(), Some("--bounce needs a value"));
+        assert_eq!(run(&missing), ExitCode::FAILURE);
+        let path = std::env::temp_dir().join(format!("soundcraft-cli-run-equals-{}.scraft", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(run(&[format!("--save={}", path.display())]), ExitCode::SUCCESS);
+        assert!(path.exists());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
