@@ -1823,6 +1823,49 @@ mod stem_tests {
         assert_eq!(n, 7, "{r}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The largest gap between the 16-bit stem in `dir16` and the 32-bit float one in `dir32`, in LSBs.
+    fn max_error_lsb(dir16: &std::path::Path, dir32: &std::path::Path) -> f64 {
+        let mut worst = 0.0f64;
+        let mut names: Vec<_> = std::fs::read_dir(dir32).unwrap().map(|f| f.unwrap().file_name()).collect();
+        names.sort();
+        assert!(!names.is_empty());
+        for name in names {
+            let (_, float) = soundcraft_audio_io::decode(&std::fs::read(dir32.join(&name)).unwrap(), None).unwrap();
+            let (_, int) = soundcraft_audio_io::decode(&std::fs::read(dir16.join(&name)).unwrap(), None).unwrap();
+            for (f, i) in float.channels.iter().zip(&int.channels) {
+                for (a, b) in f.iter().zip(i) {
+                    worst = worst.max((f64::from(a.clamp(-1.0, 1.0)) - f64::from(*b)).abs() * 32768.0);
+                }
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn stems_dither_only_when_asked() {
+        let mut e = crate::demo::demo_engine();
+        let root = std::env::temp_dir().join(format!("soundcraft-stems-dither-{}", std::process::id()));
+        let mut bounce = |name: &str, extra: serde_json::Value| {
+            let dir = root.join(name);
+            let mut p = serde_json::json!({"dir": dir.to_string_lossy(), "start": {"seconds": 10.0}, "end": {"seconds": 10.5}});
+            for (k, v) in extra.as_object().unwrap() {
+                p[k] = v.clone();
+            }
+            e.execute("file.bounce_stems", &p).unwrap();
+            dir
+        };
+        let float = bounce("float", serde_json::json!({"bit_depth": "32f"}));
+        let plain = bounce("plain", serde_json::json!({"bit_depth": "16", "dither": false}));
+        let dithered = bounce("dithered", serde_json::json!({"bit_depth": "16"}));
+        // Without dither every sample is the float one rounded to the nearest step; TPDF dither of
+        // ±1 LSB moves some of them further than half a step.
+        let plain_error = max_error_lsb(&plain, &float);
+        let dithered_error = max_error_lsb(&dithered, &float);
+        assert!(plain_error <= 0.5 + 1e-3, "{plain_error}");
+        assert!(dithered_error > 0.6, "{dithered_error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]

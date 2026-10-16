@@ -12,7 +12,7 @@ use soundcraft_time::Samples;
 pub enum Dialog {
     NewTracks { count: u32, format: String, kind: String, timebase: String, name: String },
     NewSession { name: String, sample_rate: u32, demo: bool },
-    Bounce { path: String, format: String, bit_depth: String, normalize: bool },
+    Bounce { path: String, format: String, bit_depth: String, normalize: bool, dither: bool },
     RenameTrack { id: TrackId, name: String },
     RenameClip { id: ClipId, name: String },
     RenameMarker { id: soundcraft_model::MarkerId, name: String },
@@ -99,7 +99,13 @@ impl Dialogs {
                     .and_then(|p| std::path::Path::new(p).parent())
                     .filter(|d| !d.as_os_str().is_empty())
                     .map_or(home.clone(), |d| d.display().to_string());
-                Dialog::Bounce { path: format!("{dir}/{name} Bounce.wav"), format: "wav".into(), bit_depth: "24".into(), normalize: false }
+                Dialog::Bounce {
+                    path: format!("{dir}/{name} Bounce.wav"),
+                    format: "wav".into(),
+                    bit_depth: "24".into(),
+                    normalize: false,
+                    dither: false,
+                }
             }
             "file.import_audio" => Dialog::PathPrompt { cmd: id.into(), title: "Import Audio".into(), path: home, key: "path".into() },
             "file.import_midi" => Dialog::PathPrompt { cmd: id.into(), title: "Import MIDI".into(), path: home, key: "path".into() },
@@ -353,7 +359,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         ));
                     }
                 }
-                Dialog::Bounce { path, format, bit_depth, normalize } => {
+                Dialog::Bounce { path, format, bit_depth, normalize, dither } => {
                     ui.horizontal(|ui| {
                         ui.label("File");
                         ui.add(egui::TextEdit::singleline(path).desired_width(420.0));
@@ -383,6 +389,11 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         });
                     });
                     crate::widgets::checkbox(ui, normalize, "Normalize to -0.1 dBFS");
+                    // 32-bit float keeps every sample as it is: there is nothing to dither.
+                    ui.add_enabled_ui(bit_depth.as_str() != "32f", |ui| {
+                        crate::widgets::checkbox(ui, dither, "Dither (TPDF)")
+                            .on_hover_text("Adds ±1 LSB triangular dither when writing 16- or 24-bit files. Leave it off when the master chain already dithers.");
+                    });
                     ui.label(
                         egui::RichText::new("Bounces the edit selection, or the whole session when nothing is selected.")
                             .small()
@@ -392,7 +403,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         let p = std::path::Path::new(path.as_str()).with_extension(if format == "aiff" { "aif" } else { format.as_str() });
                         crate::bounce::start(
                             app,
-                            &json!({"path": p.to_string_lossy(), "format": format, "bit_depth": bit_depth, "normalize": normalize}),
+                            &json!({"path": p.to_string_lossy(), "format": format, "bit_depth": bit_depth, "normalize": normalize, "dither": *dither && bit_depth.as_str() != "32f"}),
                         );
                         keep = false;
                     }

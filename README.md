@@ -131,7 +131,7 @@ where things are.
   pitch-preserving Elastic warping.
 - **Audio files:** WAV/BWF/RF64, AIFF/AIFC and FLAC in and out; MP3, Ogg Vorbis, AAC, ALAC, CAF
   and the audio of MP4/MOV movies in. Any sample rate and bit depth.
-- **Bounce:** mix or stems to WAV, AIFF or FLAC at 16/24/32-bit float with dither and
+- **Bounce:** mix or stems to WAV, AIFF or FLAC at 16/24/32-bit float with optional dither and
   normalisation, reporting peak, true peak and integrated loudness (LUFS).
 - **Fast:** a parallel mix engine, copy-on-write undo, and a UI that holds 120 frames per second
   with seventy-odd tracks playing.

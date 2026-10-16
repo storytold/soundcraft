@@ -114,3 +114,57 @@ fn cancel_or_escape_stops_a_bounce_and_leaves_no_file() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The largest gap between `int` and `float` in 16-bit LSBs.
+fn max_error_lsb(int: &Path, float: &Path) -> f64 {
+    let (_, a) = soundcraft_audio_io::decode(&std::fs::read(int).unwrap(), None).unwrap();
+    let (_, b) = soundcraft_audio_io::decode(&std::fs::read(float).unwrap(), None).unwrap();
+    let mut worst = 0.0f64;
+    for (i, f) in a.channels.iter().zip(&b.channels) {
+        for (x, y) in i.iter().zip(f) {
+            worst = worst.max((f64::from(*x) - f64::from(y.clamp(-1.0, 1.0))).abs() * 32768.0);
+        }
+    }
+    worst
+}
+
+/// Bounces from the dialog at `bit_depth`, ticking Dither when `dither`, and waits for the file.
+fn bounce_with(h: &mut Harness<'_, SoundApp>, file: &Path, bit_depth: &str, dither: bool) {
+    let app = h.state_mut();
+    assert!(app.dialogs.open_for_command(&app.engine, "file.bounce_mix"));
+    if let Some(Dialog::Bounce { path, bit_depth: depth, .. }) = &mut app.dialogs.open {
+        *path = file.to_string_lossy().into_owned();
+        *depth = bit_depth.into();
+    }
+    h.run_steps(2);
+    if dither {
+        h.get_by_label("Dither (TPDF)").click();
+        h.run_steps(2);
+    }
+    h.get_by_label("Bounce").click();
+    h.run_steps(3);
+    h.run();
+    assert!(h.state().bounce.is_none());
+    assert!(file.exists(), "{}", h.state().ui.status);
+}
+
+#[test]
+fn the_bounce_dialog_dithers_only_when_dither_is_ticked() {
+    let dir = scratch("bounce-dither");
+    let mut h = harness();
+    let app = h.state_mut();
+    assert!(app.dialogs.open_for_command(&app.engine, "file.bounce_mix"));
+    match &app.dialogs.open {
+        Some(Dialog::Bounce { dither, .. }) => assert!(!dither, "Dither starts off"),
+        other => panic!("{other:?}"),
+    }
+    app.dialogs.open = None;
+    bounce_with(&mut h, &dir.join("Float.wav"), "32f", false);
+    bounce_with(&mut h, &dir.join("Plain.wav"), "16", false);
+    bounce_with(&mut h, &dir.join("Dithered.wav"), "16", true);
+    let plain = max_error_lsb(&dir.join("Plain.wav"), &dir.join("Float.wav"));
+    let dithered = max_error_lsb(&dir.join("Dithered.wav"), &dir.join("Float.wav"));
+    assert!(plain <= 0.5 + 1e-3, "{plain}");
+    assert!(dithered > 0.6, "{dithered}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
