@@ -19,6 +19,7 @@ pub mod mix_window;
 pub mod ops_windows;
 pub mod palette;
 pub mod panels;
+pub mod preferences;
 mod recent;
 pub mod recovery;
 pub mod sampler_window;
@@ -125,11 +126,14 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// Extra CLAP/VST3 search directories, applied by the desktop host at startup.
+    pub plugin_folders: Vec<String>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
         UiState {
+            plugin_folders: Vec::new(),
             recent_sessions: Vec::new(),
             docking: docking::Workspace::default(),
             mix_docking: docking::mix_default(),
@@ -291,6 +295,7 @@ pub struct SoundApp {
     pub midi: midi_editor::MidiEditorState,
     pub ops: ops_windows::OpsState,
     pub extra: extra_windows::ExtraState,
+    pub preferences: preferences::Preferences,
     pub palette: palette::PaletteState,
     /// Bring the separate Mix window to the front on the next frame.
     pub(crate) focus_mix: bool,
@@ -376,6 +381,7 @@ impl SoundApp {
             midi: midi_editor::MidiEditorState::default(),
             ops: ops_windows::OpsState::default(),
             extra: extra_windows::ExtraState::default(),
+            preferences: preferences::Preferences::default(),
             palette: palette::PaletteState::default(),
             focus_mix: false,
             synthetic: Vec::new(),

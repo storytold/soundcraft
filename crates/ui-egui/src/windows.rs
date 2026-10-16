@@ -10,6 +10,7 @@ use soundcraft_playback::devices::{AudioSystem, DeviceInfo};
 use std::sync::Arc;
 
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
+    crate::preferences::show(app, ctx);
     audio_health(app, ctx);
     automation(app, ctx);
     color_palette(app, ctx);

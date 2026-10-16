@@ -247,6 +247,7 @@ fn main() -> eframe::Result {
 
     let engine = if demo { soundcraft_engine::demo::demo_engine() } else { Engine::default() };
     let prefs = load_prefs().unwrap_or_default();
+    soundcraft_ui_egui::preferences::load_plugin_folders(&prefs.plugin_folders);
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("SoundCraft")

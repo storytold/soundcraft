@@ -94,6 +94,22 @@ pub fn rescan() -> Vec<ClapDescriptor> {
     ensure_scanned(&mut r).clone()
 }
 
+/// Register a folder without reading it or loading any plugin binaries.
+pub fn register_search_dir(dir: &Path) {
+    let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
+    r.register_search_dir(dir);
+}
+
+impl Registry {
+    fn register_search_dir(&mut self, dir: &Path) {
+        if !self.extra_dirs.iter().any(|d| d == dir) {
+            self.extra_dirs.push(dir.to_path_buf());
+            // The next scan includes both the standard paths and all extra folders.
+            self.scanned = None;
+        }
+    }
+}
+
 pub fn add_search_dir(dir: &Path) -> usize {
     let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
     if !r.extra_dirs.iter().any(|d| d == dir) {
@@ -210,4 +226,26 @@ pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
     }
     // Instantiate once to learn the parameters (CLAP exposes them only on an instance).
     instantiate_raw(id).ok().map(|(_, info)| info)
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+
+    #[test]
+    fn registering_folders_defers_scanning_and_invalidates_only_new_paths() {
+        let mut r = Registry::default();
+        let first = Path::new("first-plugin-folder");
+        let second = Path::new("second-plugin-folder");
+        r.register_search_dir(first);
+        assert!(r.scanned.is_none(), "a cold registry must remain unscanned");
+        assert_eq!(r.extra_dirs, [first]);
+        r.scanned = Some(Vec::new());
+        r.register_search_dir(first);
+        assert!(r.scanned.is_some(), "duplicate registration preserves the cache");
+        assert_eq!(r.extra_dirs, [first]);
+        r.register_search_dir(second);
+        assert!(r.scanned.is_none(), "a new folder must be discovered on the next scan");
+        assert_eq!(r.extra_dirs, [first, second]);
+    }
 }

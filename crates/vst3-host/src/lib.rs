@@ -125,6 +125,9 @@ mod api {
     pub fn rescan() -> Vec<Vst3Descriptor> {
         registry::rescan()
     }
+    pub fn register_search_dir(dir: &Path) {
+        registry::register_search_dir(dir);
+    }
     pub fn add_search_dir(dir: &Path) -> usize {
         registry::add_search_dir(dir)
     }
@@ -158,6 +161,7 @@ mod api {
     pub fn rescan() -> Vec<Vst3Descriptor> {
         Vec::new()
     }
+    pub fn register_search_dir(_dir: &Path) {}
     pub fn add_search_dir(_dir: &Path) -> usize {
         0
     }
@@ -186,6 +190,14 @@ pub fn scan() -> Vec<Vst3Descriptor> {
 /// Forgets the cached scan (and remembered failures) and scans again.
 pub fn rescan() -> Vec<Vst3Descriptor> {
     api::rescan()
+}
+
+/// Registers a folder for the next scan without reading it or loading plugin binaries.
+/// Duplicate registrations preserve the cache; a new folder invalidates it. Use this when
+/// loading preferences at startup. Standard and environment-variable paths remain included.
+/// A no-op on WebAssembly.
+pub fn register_search_dir(dir: &Path) {
+    api::register_search_dir(dir);
 }
 
 /// Adds a folder to the search path and merges its plugins into the cache. Returns how many

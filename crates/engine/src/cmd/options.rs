@@ -78,7 +78,7 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             session_setup
         ),
-        cmd!(noundo "setup.preferences", "Preferences...", ["Setup"], None, "{}", always, |e, _| Ok(json!({"edit": e.session().edit.clone()}))),
+        cmd!(query "setup.preferences", "Preferences...", ["Setup"], None, "{}", always, |e, _| Ok(json!({"edit": e.session().edit.clone()}))),
         cmd!(noundo "setup.reset_edit_state", "Reset Edit Settings", [], None, "{}", always, |e, _| {
             let s = e.session_mut();
             let keep = (s.edit.selection, s.edit.selected_tracks.clone());

@@ -112,6 +112,17 @@ mod config_tests {
     use super::*;
 
     #[test]
+    fn plugin_folders_survive_saving_and_loading_preferences() {
+        let directory = std::env::temp_dir().join(format!("soundcraft-plugin-prefs-{}", std::process::id()));
+        let path = directory.join("ui.json");
+        let ui = soundcraft_ui_egui::UiState { plugin_folders: vec![directory.join("plugins").to_string_lossy().into_owned()], ..Default::default() };
+        save_ui(&path, &ui).unwrap();
+        assert_eq!(load_ui(&path).unwrap().unwrap().plugin_folders, ui.plugin_folders);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
     fn native_file_reload_preserves_edit_mix_and_hidden_floating_panels() {
         use soundcraft_ui_egui::{MainWindow, Services, SoundApp, docking::Panel};
         let directory = std::env::temp_dir().join(format!("soundcraft-dock-prefs-{}", std::process::id()));
