@@ -140,6 +140,30 @@ pub(crate) fn is_wav(b: &[u8]) -> bool {
     matches!(tag(b, 0), Some(t) if &t == b"RIFF" || &t == b"RF64" || &t == b"BW64") && tag(b, 8).is_some_and(|t| &t == b"WAVE")
 }
 
+/// True when everything from `from` to the end of the file is whole RIFF chunks (four printable
+/// ASCII id bytes, a size that fits, the pad byte after an odd size; the last chunk's pad may be
+/// missing): the metadata of a finished file, not samples.
+fn only_chunks_follow(b: &[u8], from: usize) -> bool {
+    let mut pos = from;
+    while pos < b.len() {
+        let (Some(id), Some(size)) = (tag(b, pos), le_u32(b, pos + 4)) else { return false };
+        if !id.iter().all(|c| (0x20..0x7f).contains(c)) {
+            return false;
+        }
+        let size = size as usize;
+        let Some(end) = pos.checked_add(8).and_then(|body| body.checked_add(size)) else { return false };
+        if end > b.len() {
+            return false;
+        }
+        let next = end + (size & 1);
+        if end == b.len() || next == b.len() {
+            return true;
+        }
+        pos = next;
+    }
+    false
+}
+
 pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
     if !is_wav(b) {
         return Err(AudioError::Malformed("not a RIFF/RF64 WAVE file".into()));
@@ -168,7 +192,12 @@ pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
         if &id == b"data" {
             // Lenient: a truncated recording (or a streaming writer's 0 / 0xFFFFFFFF size) still
             // yields whatever audio is actually present.
-            let len = if size32 == 0 && !is_rf64 { remaining } else { declared.min(remaining) };
+            // A size of 0 in a file whose RIFF size is right and that has only chunks after it is an
+            // empty data chunk followed by metadata (LIST, bext, …); otherwise it is a recording
+            // that was never finalised, and what follows is audio.
+            let finished = u64::from(le_u32(b, 4).unwrap_or(0)) + 8 == b.len() as u64;
+            let empty = size32 == 0 && !is_rf64 && finished && only_chunks_follow(b, body);
+            let len = if size32 == 0 && !is_rf64 && !empty { remaining } else { declared.min(remaining) };
             if data.is_none() {
                 data = Some((body, len));
             }
