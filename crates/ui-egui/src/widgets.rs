@@ -169,7 +169,63 @@ pub(crate) fn selector_box_with_tooltip(ui: &mut Ui, width: f32, height: f32, te
     resp.on_hover_text(tooltip)
 }
 
-/// Rotary knob for pan / send pan (-1..1). Drag vertically; double-click resets.
+/// Mouse-wheel notches turned over `resp` this frame (positive = wheel up, away from you) and
+/// whether the fine modifier (Ctrl, or Cmd on a Mac) was held. A notch is one line; a trackpad's
+/// smooth scrolling arrives in points and counts as `line_scroll_speed` points to the notch.
+///
+/// While the pointer is over the control it takes the wheel, as in Pro Tools, Cubase and Logic:
+/// the smoothed scroll is consumed so the area around it (the Mix strips scroll with the wheel)
+/// does not move as well. Away from the control, nothing changes.
+pub fn wheel_notches(ui: &Ui, resp: &Response) -> Option<(f32, bool)> {
+    if !resp.hovered() {
+        return None;
+    }
+    let per_line = ui.ctx().options(|o| o.input_options.line_scroll_speed).max(1.0);
+    let (notches, fine) = ui.input(|i| {
+        let mut n = 0.0;
+        let mut fine = false;
+        for e in &i.events {
+            if let egui::Event::MouseWheel { unit, delta, modifiers, .. } = e {
+                n += match unit {
+                    egui::MouseWheelUnit::Point => delta.y / per_line,
+                    egui::MouseWheelUnit::Line => delta.y,
+                    egui::MouseWheelUnit::Page => delta.y * 3.0,
+                };
+                fine |= modifiers.command || modifiers.ctrl;
+            }
+        }
+        (n, fine)
+    });
+    ui.ctx().input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+    (notches.is_finite() && notches != 0.0).then_some((notches, fine))
+}
+
+/// A fader's level after `notches` of wheel: 1 dB a notch, 0.1 dB fine, on a 0.1 dB grid. From
+/// -inf the first notch up lands on -60 dB; below -80 dB it drops to -inf, as dragging does near
+/// the bottom of the travel.
+pub fn wheel_db(db: f32, notches: f32, fine: bool) -> f32 {
+    if !notches.is_finite() || notches == 0.0 {
+        return db;
+    }
+    if db <= -143.9 {
+        return if notches > 0.0 { -60.0 } else { -144.0 };
+    }
+    let step = if fine { 0.1 } else { 1.0 };
+    let v = ((db + notches * step) * 10.0).round() / 10.0;
+    if v < -80.0 { -144.0 } else { v.clamp(-144.0, 12.0) }
+}
+
+/// A pan knob's position after `notches` of wheel: 2 a notch on the -100..100 scale, 1 fine.
+pub fn wheel_pan(v: f32, notches: f32, fine: bool) -> f32 {
+    if !notches.is_finite() || notches == 0.0 {
+        return v;
+    }
+    let step = if fine { 0.01 } else { 0.02 };
+    (((v + notches * step) * 100.0).round() / 100.0).clamp(-1.0, 1.0)
+}
+
+/// Rotary knob for pan / send pan (-1..1). Drag vertically or turn the mouse wheel over it;
+/// double-click resets.
 pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response {
     let t = Tokens::current();
     let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
@@ -179,6 +235,9 @@ pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response 
     }
     if resp.double_clicked() {
         *value = 0.0;
+    }
+    if let Some((n, fine)) = wheel_notches(ui, &resp) {
+        *value = wheel_pan(*value, n, fine);
     }
     let p = ui.painter();
     let c = r.center();
@@ -318,7 +377,7 @@ pub fn fader_slot(r: Rect) -> Rect {
     Rect::from_center_size(r.center(), vec2(4.0, r.height() - FADER_CAP_H))
 }
 
-/// A fader: returns the new dB value when dragged. `db` in -144..12.
+/// A fader: returns the new dB value when dragged or wheeled. `db` in -144..12.
 pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id) -> Option<f32> {
     let t = Tokens::current();
     let resp = ui.interact(r, id, Sense::click_and_drag());
@@ -354,6 +413,12 @@ pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id) -> Option<f32> {
     }
     if resp.double_clicked() || (resp.clicked() && ui.input(|i| i.modifiers.alt)) {
         return Some(0.0);
+    }
+    if let Some((n, fine)) = wheel_notches(ui, &resp) {
+        let to = wheel_db(db, n, fine);
+        if to != db {
+            return Some(to);
+        }
     }
     if resp.dragged() {
         let fine = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
@@ -562,6 +627,63 @@ mod tests {
         h.run();
         let at = h.get_all_by_label("Box").map(|n| n.rect().center()).collect();
         (h, at)
+    }
+
+    /// A fader and a pan knob side by side, as a test state (dB, pan).
+    fn wheel_harness() -> Harness<'static, (f32, f32)> {
+        let mut h = Harness::builder().with_size(egui::vec2(200.0, 260.0)).build_ui_state(
+            |ui, s: &mut (f32, f32)| {
+                let fr = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(40.0, 200.0));
+                if let Some(db) = super::fader(ui, fr, s.0, egui::Id::new("f")) {
+                    s.0 = db;
+                }
+                let kr = egui::Rect::from_min_size(egui::pos2(100.0, 10.0), egui::vec2(34.0, 34.0));
+                let mut c = ui.new_child(egui::UiBuilder::new().max_rect(kr));
+                super::pan_knob(&mut c, 34.0, &mut s.1, "Pan");
+            },
+            (0.0, 0.0),
+        );
+        h.run();
+        h
+    }
+
+    fn wheel(h: &mut Harness<'_, (f32, f32)>, at: Pos2, lines: f32, modifiers: Modifiers) {
+        h.event(Event::PointerMoved(at));
+        h.event(Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, lines), phase: egui::TouchPhase::Move, modifiers });
+        h.run_steps(1);
+    }
+
+    /// The wheel over a fader moves it 1 dB a notch (0.1 dB with Ctrl/Cmd), and over a pan knob 2
+    /// a notch; away from both it changes nothing.
+    #[test]
+    fn the_wheel_turns_faders_and_knobs_under_the_pointer() {
+        let mut h = wheel_harness();
+        let fader = egui::pos2(30.0, 110.0);
+        let knob = egui::pos2(117.0, 27.0);
+        wheel(&mut h, fader, 3.0, Modifiers::NONE);
+        assert!((h.state().0 - 3.0).abs() < 1e-4, "{}", h.state().0);
+        wheel(&mut h, fader, -1.0, Modifiers::CTRL);
+        assert!((h.state().0 - 2.9).abs() < 1e-4, "{}", h.state().0);
+        wheel(&mut h, knob, -5.0, Modifiers::NONE);
+        assert!((h.state().1 + 0.1).abs() < 1e-4, "{}", h.state().1);
+        let before = *h.state();
+        wheel(&mut h, egui::pos2(180.0, 240.0), 4.0, Modifiers::NONE);
+        assert_eq!(*h.state(), before, "the wheel away from a control leaves it alone");
+    }
+
+    #[test]
+    fn wheel_steps_on_the_fader_and_knob_scales() {
+        use super::{wheel_db, wheel_pan};
+        assert_eq!(wheel_db(0.0, 1.0, false), 1.0);
+        assert_eq!(wheel_db(11.5, 2.0, false), 12.0, "stops at the top");
+        assert_eq!(wheel_db(-144.0, 1.0, false), -60.0, "up from -inf lands on -60 dB");
+        assert_eq!(wheel_db(-144.0, -1.0, false), -144.0);
+        assert_eq!(wheel_db(-80.0, -1.0, false), -144.0, "below -80 dB is -inf");
+        assert_eq!(wheel_db(-6.0, 1.0, true), -5.9, "fine: 0.1 dB a notch");
+        assert_eq!(wheel_db(-3.0, f32::NAN, false), -3.0);
+        assert_eq!(wheel_pan(0.0, 1.0, false), 0.02);
+        assert_eq!(wheel_pan(0.99, 3.0, false), 1.0, "stops at hard right");
+        assert_eq!(wheel_pan(0.0, -1.0, true), -0.01);
     }
 
     /// #399: pressing a box and dragging over its neighbours sets them all to the state the first

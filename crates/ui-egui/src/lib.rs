@@ -244,8 +244,13 @@ pub enum Gesture {
     ZoomBox { start: f32 },
 }
 
+/// Seconds without a wheel notch that end a wheel gesture (one undo step per turn of the wheel).
+pub const WHEEL_GESTURE_GAP: f64 = 0.5;
+
 pub struct SoundApp {
     pub engine: Engine,
+    /// When a mouse wheel last turned (input time), for [`WHEEL_GESTURE_GAP`].
+    last_wheel: f64,
     /// The session path as of the last frame, and whether the recent list changed since the host
     /// last saved it (see `recent`).
     recent_seen: Option<String>,
@@ -345,6 +350,7 @@ fn automation_step_due(pos: Samples, last: Samples, step: Samples) -> bool {
 impl SoundApp {
     pub fn new(engine: Engine, player: Option<Player>, services: Services) -> Self {
         SoundApp {
+            last_wheel: f64::NEG_INFINITY,
             recent_seen: engine.path.clone(),
             recent_changed: false,
             recent_checked: None,
@@ -1134,12 +1140,18 @@ impl SoundApp {
         self.note_recent_session();
         self.apply_editor_edits();
         bounce::step(self, ctx);
+        // A wheel turn on a fader or knob is one gesture: its notches arrive over many frames
+        // with no button down, so it stays one undo step until the wheel rests.
+        if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. }))) {
+            self.last_wheel = now;
+        }
+        let wheeling = now - self.last_wheel < WHEEL_GESTURE_GAP;
         if !ctx.input(|i| i.pointer.any_down()) {
             if matches!(self.gesture, Some(Gesture::Fader { .. })) {
                 self.gesture = None;
             }
             // Keep a running automation pass merged until playback stops.
-            if !ctx.egui_wants_keyboard_input() && self.touched.is_empty() {
+            if !ctx.egui_wants_keyboard_input() && self.touched.is_empty() && !wheeling {
                 self.engine.end_merge();
             }
         }

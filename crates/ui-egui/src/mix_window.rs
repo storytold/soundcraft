@@ -362,7 +362,7 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
             let mut c = ui.new_child(egui::UiBuilder::new().max_rect(kr));
             let mut v = track.mixer.pan.get(i).copied().unwrap_or(0.0);
             let before = v;
-            let resp = pan_knob(&mut c, ks, &mut v, "Pan (drag; double-click centres)");
+            let resp = pan_knob(&mut c, ks, &mut v, "Pan (drag or wheel; double-click centres)");
             if (v - before).abs() > f32::EPSILON {
                 let _ = app.engine.execute_merged("mix.pan", &json!({"track": id.0, "pan": v, "index": i}), &format!("pan:{}:{i}", id.0));
             }
@@ -1024,7 +1024,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 });
                 let mut pan = send.pan;
-                pan_knob(ui, 32.0, &mut pan, "Send pan (drag; double-click centres)");
+                pan_knob(ui, 32.0, &mut pan, "Send pan (drag or wheel; double-click centres)");
                 if (pan - send.pan).abs() > f32::EPSILON {
                     let _ = app.engine.execute_merged(
                         "mix.send_level",
