@@ -13,6 +13,7 @@ soundcraft-audio-io.workspace = true
 soundcraft-model.workspace = true
 soundcraft-mix.workspace = true
 soundcraft-dsp.workspace = true
+soundcraft-asio-panel.workspace = true
 log.workspace = true
 serde.workspace = true
 
@@ -25,7 +26,7 @@ cpal = { workspace = true, features = ["wasm-bindgen"] }
 [features]
 # ASIO on Windows (cpal's ASIO host). Off by default: building it downloads Steinberg's ASIO SDK
 # (its own licence) and needs LLVM (libclang) for the bindings. `cargo build -p soundcraft --features asio`.
-asio = ["cpal/asio"]
+asio = ["cpal/asio", "soundcraft-asio-panel/asio"]
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -911,8 +911,8 @@ where
 /// chosen buffer size when the device allows it.
 fn open_device(want_rate: u32, want_ch: u16, cfg: &AudioConfig) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
     use cpal::traits::DeviceTrait;
-    let host = devices::host(cfg);
-    let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
+    let host = devices::host(cfg).ok_or_else(|| "no audio system".to_string())?;
+    let device = devices::device(host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
     #[allow(deprecated)]
     let name = device.name().unwrap_or_else(|_| "Audio device".into());
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
