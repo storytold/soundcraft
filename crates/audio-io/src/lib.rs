@@ -100,6 +100,11 @@ pub struct AudioInfo {
     pub channels: u16,
     pub frames: u64,
     pub bwf: Option<BwfInfo>,
+    /// Set by [`decode`] when a lossless stream was damaged (corrupt frames, replaced with silence
+    /// of the same length so later audio keeps its timing, or a file that ends before its declared
+    /// length). `None` for an intact file and for [`probe`], which does not decode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage: Option<String>,
 }
 
 impl AudioInfo {

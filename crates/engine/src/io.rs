@@ -160,7 +160,13 @@ pub fn import_audio_bytes(e: &mut Engine, name: &str, bytes: &[u8], path: Option
     let cid = s.new_clip_id();
     let stem = s.source(src).map(|x| x.name.clone()).unwrap_or_default();
     crate::edit::place_clip(s, track, Clip::audio(cid, stem, src, 0, at, frames));
-    Ok(json!({"track": track, "clip": cid, "source": src, "frames": frames, "channels": channels}))
+    let mut r = json!({"track": track, "clip": cid, "source": src, "frames": frames, "channels": channels});
+    // Damaged lossless audio still imports (lost frames are silence, so timing holds), but says so.
+    if let Some(damage) = info.damage {
+        log::warn!("{name}: {damage}");
+        r["warning"] = json!(format!("{name}: damaged audio: {damage}"));
+    }
+    Ok(r)
 }
 
 /// Loads an audio file's bytes into an instrument track's Sampler as one undo step ("Load

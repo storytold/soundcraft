@@ -135,10 +135,15 @@ fn convert(args: &[String]) -> ExitCode {
         Err(e) => return fail(format!("{input}: {e}")),
     };
     let ext = std::path::Path::new(input).extension().and_then(|x| x.to_str());
-    let (_, mut buf) = match soundcraft_audio_io::decode(&bytes, ext) {
+    let (info, mut buf) = match soundcraft_audio_io::decode(&bytes, ext) {
         Ok(x) => x,
         Err(e) => return fail(format!("{input}: {e}")),
     };
+    // A damaged lossless file would convert to audio that differs from the original without a
+    // trace: refuse, and write nothing.
+    if let Some(damage) = &info.damage {
+        return fail(format!("{input}: damaged audio, nothing written: {damage}"));
+    }
     if let Some(rate) = rate {
         buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, rate);
         buf.sample_rate = rate;

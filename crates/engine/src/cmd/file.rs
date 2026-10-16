@@ -632,6 +632,30 @@ mod tests {
     }
 
     #[test]
+    fn import_of_damaged_flac_keeps_timing_and_warns() {
+        let mut buf = AudioBuffer::new(48_000, 1, 48_000);
+        for (i, s) in buf.channels[0].iter_mut().enumerate() {
+            *s = (i as f32 * 0.05).sin() * 0.25;
+        }
+        let opts = EncodeOptions {
+            format: soundcraft_audio_io::FileFormat::Flac,
+            bit_depth: soundcraft_audio_io::BitDepth::Int16,
+            dither: false,
+            bwf: None,
+        };
+        let mut bytes = soundcraft_audio_io::encode(&buf, &opts).unwrap();
+        let mut e = Engine::default();
+        let v = crate::io::import_audio_bytes(&mut e, "take.flac", &bytes, None, None, 0).unwrap();
+        assert!(v.get("warning").is_none(), "{v}");
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0xFF;
+        let v = crate::io::import_audio_bytes(&mut e, "take.flac", &bytes, None, None, 0).unwrap();
+        assert_eq!(v["frames"], 48_000, "{v}");
+        let warning = v["warning"].as_str().unwrap();
+        assert!(warning.starts_with("take.flac: damaged audio:") && warning.contains("silence"), "{warning}");
+    }
+
+    #[test]
     fn repeated_consolidate_keeps_distinct_audio_files() {
         let (mut e, track) = tone_engine();
         e.execute("edit.consolidate", &json!({"track": track, "start": 0, "end": 4800})).unwrap();

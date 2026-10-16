@@ -135,6 +135,7 @@ fn info_of(reader: &dyn FormatReader, detected: FileFormat) -> Result<(u32, Audi
             channels,
             frames: p.n_frames.unwrap_or(0),
             bwf: None,
+            damage: None,
         },
     ))
 }
@@ -160,11 +161,21 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
         return Err(AudioError::Malformed("the file declares packets far longer than any codec uses".into()));
     }
     let mut decoder = symphonia::default::get_codecs().make(&params, &DecoderOptions::default()).map_err(map_err)?;
+    // Skipping a bad packet is fine for a lossy stream, but in a lossless one (FLAC, ALAC, PCM) a
+    // dropped frame shifts all later audio earlier: there the lost frames become silence of the
+    // same length, and the damage is reported in `info.damage`.
+    let lossless = info.sample_format != SampleFormat::Compressed;
+    let packet_cap = params.max_frames_per_packet.unwrap_or(MAX_PACKET_FRAMES).min(MAX_PACKET_FRAMES);
+    let declared = params.n_frames;
+    let flac = params.codec == CODEC_TYPE_FLAC;
 
     let mut planar: Vec<Vec<f32>> = Vec::new();
     let mut frames: u64 = 0;
     let mut sbuf: Option<SampleBuffer<f32>> = None;
     let mut errors = 0usize;
+    let (mut corrupt, mut silenced) = (0usize, 0u64);
+    let mut stopped: Option<String> = None;
+    let mut next_ts = 0u64;
     loop {
         let packet = match reader.next_packet() {
             Ok(p) => p,
@@ -175,11 +186,25 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
                     return Err(map_err(e));
                 }
                 log::warn!("stopping decode after demux error: {e}");
+                stopped = Some(e.to_string());
                 break;
             }
         };
         if packet.track_id() != track_id {
             continue;
+        }
+        if flac {
+            // The FLAC demuxer drops a frame whose checksum fails and resyncs on the next one: the
+            // gap in the timestamps (which start at 0) is the audio that was lost. Never pad past
+            // the declared length.
+            let gap = packet.ts().saturating_sub(next_ts);
+            let room = declared.map_or(0, |n| n.saturating_sub(frames));
+            if gap > 0 && gap <= room {
+                pad_silence(&mut planar, info.channels, gap, &mut frames, count_only)?;
+                corrupt += 1;
+                silenced = silenced.saturating_add(gap);
+            }
+            next_ts = packet.ts().saturating_add(packet.dur);
         }
         let decoded = match decoder.decode(&packet) {
             Ok(d) => d,
@@ -188,6 +213,14 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
                 log::debug!("skipping corrupt packet: {m}");
                 if errors > 1000 && frames == 0 {
                     return Err(AudioError::Malformed(format!("no decodable packets: {m}")));
+                }
+                if lossless {
+                    // Keep the timing: the packet's frames as silence.
+                    let n = packet.dur.min(packet_cap);
+                    pad_silence(&mut planar, info.channels, n, &mut frames, count_only)?;
+                    next_ts = packet.ts().saturating_add(packet.dur);
+                    corrupt += 1;
+                    silenced = silenced.saturating_add(n);
                 }
                 continue;
             }
@@ -231,8 +264,44 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
         planar = (0..usize::from(info.channels)).map(|_| Vec::new()).collect();
     }
     info.frames = if count_only { frames } else { planar.iter().map(Vec::len).min().unwrap_or(0) as u64 };
+    if lossless {
+        let mut damage = Vec::new();
+        if corrupt > 0 {
+            let s = if corrupt == 1 { "" } else { "s" };
+            damage.push(format!("{corrupt} corrupt frame{s} ({silenced} samples per channel) replaced with silence"));
+        }
+        if let Some(e) = stopped {
+            damage.push(format!("stopped reading at a damaged frame: {e}"));
+        }
+        if let Some(n) = declared.filter(|&n| frames < n) {
+            damage.push(format!("audio ends early: {frames} of the {n} frames the file declares"));
+        }
+        info.damage = (!damage.is_empty()).then(|| damage.join("; "));
+    }
     let sample_rate = info.sample_rate;
     Ok((info, AudioBuffer { sample_rate, channels: planar }))
+}
+
+/// Append `n` frames of silence (lost audio in a lossless stream) to `planar`, counting them in `frames`.
+fn pad_silence(planar: &mut Vec<Vec<f32>>, channels: u16, n: u64, frames: &mut u64, count_only: bool) -> Result<()> {
+    let ch = if planar.is_empty() { usize::from(channels) } else { planar.len() };
+    if n == 0 || ch == 0 {
+        return Ok(());
+    }
+    if planar.is_empty() {
+        *planar = (0..ch).map(|_| Vec::new()).collect();
+    }
+    *frames = frames.saturating_add(n);
+    if frames.saturating_mul(ch as u64) > MAX_DECODE_SAMPLES {
+        return Err(AudioError::TooLarge("decoded audio exceeds the 4 GiB limit".into()));
+    }
+    if !count_only {
+        let len = usize::try_from(n).map_err(|_| AudioError::TooLarge("gap too long".into()))?;
+        for dst in planar.iter_mut() {
+            dst.resize(dst.len().saturating_add(len), 0.0);
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn probe(bytes: &[u8], detected: FileFormat) -> Result<AudioInfo> {

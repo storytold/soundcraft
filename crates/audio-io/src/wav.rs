@@ -228,7 +228,7 @@ pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
     let (data_start, data_len) = data.ok_or_else(|| AudioError::Malformed("WAV has no data chunk".into()))?;
     let frames = (data_len / block) as u64;
     Ok(WavParse::Native(WavLayout {
-        info: AudioInfo { format: FileFormat::Wav, sample_format, sample_rate: fmt.sample_rate, channels: fmt.channels, frames, bwf },
+        info: AudioInfo { format: FileFormat::Wav, sample_format, sample_rate: fmt.sample_rate, channels: fmt.channels, frames, bwf, damage: None },
         kind,
         data_start,
         data_len,
