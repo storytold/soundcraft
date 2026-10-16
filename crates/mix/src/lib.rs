@@ -515,6 +515,9 @@ impl MixEngine {
             s.align.clear();
             s.align_pre.clear();
             s.out_extra.clear();
+            for fx in s.clip_fx.values_mut() {
+                fx.reset();
+            }
         }
         self.meters.clear();
         self.main_meter = StripMeter::default();
@@ -1148,6 +1151,12 @@ impl std::fmt::Write for Key {
 impl ClipFx {
     fn new(sr: f32, ch: usize) -> ClipFx {
         ClipFx { eq: None, comp: None, gain_db: 0.0, sr, ch }
+    }
+    /// Clear filter, detector and lookahead history (transport stop / locate).
+    fn reset(&mut self) {
+        for p in self.eq.iter_mut().chain(self.comp.iter_mut()) {
+            p.reset();
+        }
     }
     fn make(&self, id: &str) -> Option<Box<dyn Plugin>> {
         soundcraft_dsp::create(id).map(|mut p| {
@@ -2900,6 +2909,29 @@ mod tests {
         eng.reset();
         eng.render(&s, 1_000_000, 512, &mut out);
         assert!(out.iter().flatten().all(|x| *x == 0.0), "old aligned audio after a reset");
+    }
+
+    /// A reset (stop, locate) must clear the cached clip EQ/compressor history too.
+    #[test]
+    fn reset_clears_clip_effect_history() {
+        // Compressor lookahead delay, then EQ high-pass filter state, each primed with DC.
+        for (param, value) in [("comp.lookahead", 5.0), ("eq.hpf_on", 1.0)] {
+            let (mut s, t) = session_with_dc(0.5, 9600);
+            s.edit.click = false;
+            let cid = s.track(t).unwrap().clips()[0].id.0;
+            s.edit.values.insert(format!("clip_fx.{cid}.{param}"), value);
+            let mut out = vec![vec![0.0f32; 512]; 2];
+            let mut eng = MixEngine::new(48_000.0, 512);
+            for b in 0..4 {
+                eng.render(&s, b * 512, 512, &mut out);
+            }
+            eng.reset();
+            eng.render(&s, 4096, 512, &mut out);
+            let mut fresh = MixEngine::new(48_000.0, 512);
+            let mut expect = vec![vec![0.0f32; 512]; 2];
+            fresh.render(&s, 4096, 512, &mut expect);
+            assert_eq!(out, expect, "{param}: clip effect state survived the reset");
+        }
     }
 
     fn impulse_at(ch: &[f32]) -> Vec<usize> {
