@@ -613,15 +613,26 @@ fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
 fn rename(e: &mut Engine, p: &Value) -> Result<Value> {
     let t = track_param(e, "track.rename", p, "track")?.ok_or_else(|| bad("track.rename", "`track` required"))?;
     let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad("track.rename", "`name` required"))?;
-    let s = e.session_mut();
+    // Validate the stored name, including its existing 64-character limit.
+    let name: String = name.chars().take(64).collect();
+    let s = e.session();
     if s.tracks.iter().any(|x| x.name == name && x.id != t) {
         return Err(bad("track.rename", format!("a track named `{name}` already exists")));
     }
-    let name: String = name.chars().take(64).collect();
     let bus = s.track(t).and_then(|track| match (track.kind, &track.mixer.input) {
         (TrackKind::Folder, Route::Bus(bus)) => Some(*bus),
         _ => None,
     });
+    let track = s.track(t).ok_or_else(|| bad("track.rename", "unknown track"))?;
+    if track.name == name
+        && bus.is_none_or(|id| {
+            let expected = unique_folder_bus_name(s, &format!("{name} Bus"), Some(id));
+            s.bus(id).is_none_or(|bus| bus.name == expected)
+        })
+    {
+        return Ok(json!({"name": name}));
+    }
+    let s = e.session_mut();
     if let Some(track) = s.track_mut(t) {
         track.name.clone_from(&name);
     }
