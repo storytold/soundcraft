@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (bounces of a bus fed by an aux compensate its latency (#246); previously minor: audio device, rate and buffer choice; ASIO feature) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (opt-in JACK and PipeWire hosts; cpal 0.18; every device sample format) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 A DAW is judged by how it drives audio interfaces, MIDI gear, control surfaces and sync. This is
 SoundCraft's weakest dimension. Ours is measured from `crates/playback` (cpal) and the absence of
@@ -15,10 +15,10 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Feature | Pro Tools (macOS / Windows) | SoundCraft macOS | Windows | Linux | FreeBSD | Web |
 |---|---|---|---|---|---|---|
-| Driver API | Core Audio / ASIO | 🟡 Core Audio via cpal | 🟡 WASAPI shared via cpal; ASIO with the opt-in `asio` build feature (verified with an SSL 2+) | 🟡 ALSA/Pulse via cpal; no JACK | 🟡 cpal (ALSA layer) | 🟡 Web Audio |
-| Choose playback device | ✅ Playback Engine | 🟡 Setup › Playback Engine (not yet verified on macOS) | ✅ Setup › Playback Engine (WASAPI, ASIO) | 🟡 (not yet verified) | 🟡 (not yet verified) | ❌ |
-| Choose input device | ✅ | 🟡 Setup › Playback Engine (not yet verified on macOS) | ✅ (WASAPI, ASIO) | 🟡 (not yet verified) | ❌ no recording | ❌ |
-| Buffer size (32–2048) | ✅ | 🟡 device buffer when the driver allows it (not yet verified); mix in 512-sample blocks | 🟡 device buffer 16–8192 (verified 128 on ASIO, 256 on WASAPI); mix in 512-sample blocks | 🟡 (not yet verified) | 🟡 | ❌ |
+| Driver API | Core Audio / ASIO | 🟡 Core Audio via cpal; JACK with the opt-in `jack` build feature (untested) | 🟡 WASAPI shared via cpal; ASIO with the opt-in `asio` build feature (verified with an SSL 2+ before the move to cpal 0.18, not since); JACK with the opt-in `jack` feature (untested) | 🟡 ALSA via cpal (Pulse/PipeWire through their ALSA plugins); native PipeWire and JACK with the opt-in `pipewire` and `jack` build features, chosen in Playback Engine (checked with a Scarlett 2i2 on PipeWire) | 🟡 cpal (ALSA layer) | 🟡 Web Audio |
+| Choose playback device | ✅ Playback Engine | 🟡 Setup › Playback Engine (not yet verified on macOS) | 🟡 Setup › Playback Engine (WASAPI, ASIO; verified before the move to cpal 0.18, not since) | 🟡 checked on PipeWire; on JACK the interfaces behind the physical ports are listed and the stream is wired to the chosen one | 🟡 (not yet verified) | ❌ |
+| Choose input device | ✅ | 🟡 Setup › Playback Engine (not yet verified on macOS) | 🟡 (WASAPI, ASIO; verified before the move to cpal 0.18, not since) | 🟡 checked on PipeWire | ❌ no recording | ❌ |
+| Buffer size (32–2048) | ✅ | 🟡 device buffer when the driver allows it (not yet verified); mix in 512-sample blocks | 🟡 device buffer 16–8192 (128 on ASIO and 256 on WASAPI verified before the move to cpal 0.18); mix in 512-sample blocks | 🟡 checked on PipeWire (which keeps to its own quantum limits) | 🟡 | ❌ |
 | Duplex stream on one clock | ✅ | ❌ separate input/output streams | ❌ | ❌ | ❌ | ❌ |
 | Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 multichannel output in order; no per-channel map | 🟡 | 🟡 | 🟡 | ❌ |
 | Low-latency monitoring | ✅ | ❌ (`options.low_latency_monitoring` is a stored flag) | ❌ | ❌ | ❌ | ❌ |
@@ -72,6 +72,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | Opt-in native JACK and PipeWire hosts (cargo features `jack`, `pipewire`; cpal 0.18), chosen in Playback Engine, with `--audio-host` or `SOUNDCRAFT_AUDIO_HOST`. On JACK, Playback Engine lists the interfaces behind the physical ports and wires the streams to the chosen one (cpal alone connects to `system:*`). Streams open in the device's own sample format (i16/i24/i32/f64…), not f32, i32 and i16 only |
 | 2026-10-13 | trivial | bounces of a bus fed by an aux compensate its latency (#246) |
 | 2026-10-12 | minor | Audio device settings: system, output, input, sample rate and buffer size; opt-in ASIO |
 | 2026-10-10 | major | Created: audit of audio interface, MIDI, control-surface, sync and performance support against Pro Tools 2026.4.1 |

@@ -149,6 +149,17 @@ cargo run --release -p soundcraft -- --demo     # opens the demo song
 ```
 
 Linux needs the ALSA headers (`libasound2-dev` on Debian/Ubuntu, `alsa-lib-devel` on Fedora).
+The native JACK and PipeWire audio hosts are opt-in build features, not in the default build or
+the release packages. With their headers and libclang installed (`libjack-jackd2-dev
+libpipewire-0.3-dev libclang-dev` on Debian/Ubuntu, `pipewire-jack-audio-connection-kit-devel
+pipewire-devel clang-devel` on Fedora):
+
+```sh
+cargo run --release -p soundcraft --features jack,pipewire -- --demo
+```
+
+Setup › Playback Engine then lists them under Audio system. See
+[Audio libraries](docs/releasing.md#audio-libraries).
 
 The web build:
 

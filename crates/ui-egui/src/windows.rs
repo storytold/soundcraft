@@ -426,23 +426,29 @@ fn audio_systems(ctx: &egui::Context, refresh: bool) -> Arc<Vec<AudioSystem>> {
 fn chosen_system<'a>(systems: &'a [AudioSystem], cfg: &AudioConfig) -> Option<&'a AudioSystem> {
     cfg.system
         .as_deref()
-        .and_then(|n| systems.iter().find(|s| s.name.eq_ignore_ascii_case(n)))
+        .and_then(|n| systems.iter().find(|s| s.id.eq_ignore_ascii_case(n) || s.name.eq_ignore_ascii_case(n)))
         .or_else(|| systems.iter().find(|s| s.is_default))
         .or(systems.first())
 }
 
-/// The device a config means (by name, else the system default).
-fn chosen_device<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'a DeviceInfo> {
-    name.and_then(|n| devices.iter().find(|d| d.name == n)).or_else(|| devices.iter().find(|d| d.is_default))
+/// The device a config means (by id, else the system default).
+fn chosen_device<'a>(devices: &'a [DeviceInfo], id: Option<&str>) -> Option<&'a DeviceInfo> {
+    id.and_then(|n| devices.iter().find(|d| d.id == n)).or_else(|| devices.iter().find(|d| d.is_default))
 }
 
 fn device_combo(ui: &mut egui::Ui, id: &str, value: &mut Option<String>, devices: &[DeviceInfo]) {
-    let default = devices.iter().find(|d| d.is_default).map_or("none".to_string(), |d| d.name.clone());
-    let shown = value.clone().unwrap_or_else(|| format!("Default ({default})"));
+    let default = devices.iter().find(|d| d.is_default).map_or("Default".to_string(), |d| format!("Default ({})", d.name));
+    // A remembered device that is gone stays visible.
+    let shown = match value.as_deref() {
+        None => default.clone(),
+        Some(v) => devices.iter().find(|d| d.id == v).map_or_else(|| format!("{v} (unavailable)"), |d| d.name.clone()),
+    };
     egui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
-        ui.selectable_value(value, None, format!("Default ({default})"));
+        ui.selectable_value(value, None, default);
         for d in devices {
-            ui.selectable_value(value, Some(d.name.clone()), format!("{} ({} ch)", d.name, d.max_channels));
+            // The name, then what tells it apart from its neighbours.
+            let text = if d.detail.is_empty() { d.name.clone() } else { format!("{} ({})", d.name, d.detail) };
+            ui.selectable_value(value, Some(d.id.clone()), text).on_hover_text(&d.id);
         }
     });
 }
@@ -473,15 +479,21 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         egui::Grid::new("pe").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
             ui.label("Audio system");
             let def = systems.iter().find(|s| s.is_default).map_or("none".to_string(), |s| s.name.clone());
-            let shown = draft.system.clone().unwrap_or_else(|| format!("Default ({def})"));
+            let shown = match draft.system.as_deref() {
+                None => format!("Default ({def})"),
+                Some(id) => systems
+                    .iter()
+                    .find(|s| s.id.eq_ignore_ascii_case(id) || s.name.eq_ignore_ascii_case(id))
+                    .map_or_else(|| format!("{id} (unavailable)"), |s| s.name.clone()),
+            };
             egui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
                 let before = draft.system.clone();
                 ui.selectable_value(&mut draft.system, None, format!("Default ({def})"));
                 for s in systems.iter() {
-                    ui.selectable_value(&mut draft.system, Some(s.name.clone()), &s.name);
+                    ui.selectable_value(&mut draft.system, Some(s.id.clone()), &s.name);
                 }
                 if draft.system != before {
-                    // Device names belong to a system.
+                    // Device ids belong to a system.
                     draft.output = None;
                     draft.input = None;
                 }
@@ -524,7 +536,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
                     "no device (silent clock)".to_string()
                 } else {
                     let buf = p.device_buffer.map_or("default buffer".to_string(), |b| format!("{b} samples"));
-                    format!("{} · {} Hz · {} ch · {buf}", p.device_name, p.device_rate, p.device_channels)
+                    format!("{} ({}) · {} Hz · {} ch · {buf}", p.device_name, p.host_name, p.device_rate, p.device_channels)
                 }
             }));
             ui.end_row();
@@ -596,7 +608,7 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
         app.apply_audio_config(cfg)?;
     }
     let device = app.player.as_ref().map(|pl| {
-        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
+        json!({"name": pl.device_name, "host": pl.host_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
     });
     let mut out = json!({"config": app.ui.audio, "device": device});
     if p.get("list").and_then(Value::as_bool).unwrap_or(false) {

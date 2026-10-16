@@ -18,13 +18,24 @@ serde.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal.workspace = true
+# Only to ask whether libjack can be loaded before cpal's JACK host is touched (see host.rs).
+jack-sys = { version = "0.5", optional = true }
+# To wire the JACK host's streams to a chosen interface (see jack_ports.rs); cpal's own version.
+jack = { version = "0.13", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 cpal = { workspace = true, features = ["wasm-bindgen"] }
 
 [features]
-# ASIO on Windows (cpal's ASIO host). Off by default: building it downloads Steinberg's ASIO SDK
-# (its own licence) and needs LLVM (libclang) for the bindings. `cargo build -p soundcraft --features asio`.
+# Extra audio hosts next to the system one (see docs/releasing.md, "Audio libraries"). All are
+# opt-in: cargo run -p soundcraft --features jack,pipewire
+# JACK: on Linux the build needs the JACK headers (jack.pc); everywhere libjack is loaded at
+# runtime when present.
+jack = ["cpal/jack", "dep:jack-sys", "dep:jack"]
+# PipeWire (Linux): needs the PipeWire headers and libclang, and links libpipewire-0.3.
+pipewire = ["cpal/pipewire"]
+# ASIO (Windows): needs LLVM/Clang and the Steinberg ASIO SDK (downloaded by the build, or
+# CPAL_ASIO_DIR). The SDK has its own licence: read it before distributing such a build.
 asio = ["cpal/asio"]
 
 [dev-dependencies]

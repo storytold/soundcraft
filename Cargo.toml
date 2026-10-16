@@ -40,7 +40,7 @@ symphonia = { version = "0.5", default-features = false, features = ["mp3", "fla
 rustfft = "6"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
-cpal = "0.16"
+cpal = "0.18"
 
 # ui
 craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "5c874d51eeb3de70e735c8ce87a59a7dedd47675", features = ["serde"] }

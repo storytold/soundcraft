@@ -1,10 +1,14 @@
 //! SoundCraft desktop app.
 //!
-//! Usage: `soundcraft [--demo] [--control <port>] [--no-audio] [session.scraft | audio files…]`
+//! Usage: `soundcraft [--demo] [--control <port>] [--no-audio] [--audio-host <id>] [session.scraft | audio files…]`
 //!
 //! `--control <port>` (or `SOUNDCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server
 //! (`0` picks a free port and prints it): `{"id":1,"method":"ui.inspect","params":{}}` →
 //! `{"id":1,"ok":true,"result":…}`. See `soundcraft_ui_egui::control` for the methods.
+//!
+//! `--audio-host <id>` (or `SOUNDCRAFT_AUDIO_HOST`) picks the audio host: the built-in one (`alsa`, `coreaudio`,
+//! `wasapi`) or one added by a cargo feature (`jack`, `pipewire`, `asio`); `auto` (the default) takes the first one that
+//! has a device. It overrides the host remembered from the Playback Engine dialog.
 //!
 //! `log` records go to standard error and `<settings dir>/logs/soundcraft.log` (`RUST_LOG` sets the
 //! levels); see [`logging`].
@@ -214,6 +218,7 @@ fn main() -> eframe::Result {
     }
     let demo = args.iter().any(|a| a == "--demo" || a == "--sample");
     let no_audio = args.iter().any(|a| a == "--no-audio");
+    let audio_host: Option<String> = args.iter().position(|a| a == "--audio-host").and_then(|i| args.get(i + 1)).cloned();
     let control_port: Option<u16> = args
         .iter()
         .position(|a| a == "--control")
@@ -223,7 +228,7 @@ fn main() -> eframe::Result {
     let files: Vec<String> = args
         .iter()
         .enumerate()
-        .filter(|(i, a)| !(a.starts_with("--") || (i > &0 && args.get(i - 1).is_some_and(|p| p == "--control"))))
+        .filter(|(i, a)| !(a.starts_with("--") || (i > &0 && args.get(i - 1).is_some_and(|p| p == "--control" || p == "--audio-host"))))
         .map(|(_, a)| a.clone())
         .collect();
     log::info!("SoundCraft {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
@@ -247,6 +252,9 @@ fn main() -> eframe::Result {
 
     let engine = if demo { soundcraft_engine::demo::demo_engine() } else { Engine::default() };
     let prefs = load_prefs().unwrap_or_default();
+    // The command line wins over the host chosen in the Playback Engine dialog for this run; then
+    // comes `SOUNDCRAFT_AUDIO_HOST` (read by the playback crate), then the automatic order.
+    soundcraft_playback::host::force_host(audio_host.as_deref());
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("SoundCraft")

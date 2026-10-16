@@ -64,11 +64,48 @@ kept ready for a Flathub submission; the release's `.flatpak` bundles come from
 
 SoundCraft plays and records through [cpal](https://github.com/RustAudio/cpal): CoreAudio on
 macOS, WASAPI on Windows, ALSA on Linux and FreeBSD (PulseAudio and PipeWire through their ALSA
-plugins), and WebAudio in the browser.
+plugins), and WebAudio in the browser. Two more hosts are opt-in
+cargo features of `apps/soundcraft` (`soundcraft_playback::host`): native PipeWire (`pipewire`),
+which is then the automatic choice on Linux when it is running, and JACK (`jack`):
+`cargo run --release -p soundcraft --features jack,pipewire`. A build without them still reaches
+PipeWire, through its ALSA plugin: Setup › Playback Engine then offers ALSA as the only audio
+system, with "PipeWire Sound Server" among its devices.
+
+**Release builds do not include the JACK and PipeWire hosts.** They need extra headers and
+libclang at build time (below), and the release jobs install their build packages in the shared
+`storytold/craft-common-actions` workflow (`install-linux-deps`, `install-riscv64-cross`), which
+has none of them. Shipping the hosts takes, in order: those packages in the shared actions (also
+for the aarch64 runner and the riscv64 cross build); the two features made default in
+`apps/soundcraft/Cargo.toml`; `--no-default-features` in the FreeBSD package and the Flatpak
+manifest; and `libpipewire-0.3` among the dependencies in `packaging/linux/nfpm.yaml`. Note that a
+binary with the `pipewire` feature links `libpipewire-0.3.so.0`, so the AppImage and the tarball
+would no longer start on a machine without PipeWire; `jack` has no such cost (libjack is loaded
+at runtime when present).
 
 - **Linux** builds need the ALSA headers (`libasound2-dev` and `pkg-config` on Ubuntu). The binary
   links `libasound.so.2`, so the `.deb` depends on `libasound2 | libasound2t64` and the `.rpm` on
   `alsa-lib`; the AppImage and tarball expect it on the host (every desktop distro has it).
+- **Linux, `jack` feature** (`--features jack`): needs the JACK headers at build time (`libjack-jackd2-dev` on Ubuntu,
+  `pipewire-jack-audio-connection-kit-devel` or `jack-audio-connection-kit-devel` on Fedora).
+  `libjack.so.0` is loaded at runtime, not linked: without it the JACK host is simply not offered.
+  With PipeWire's JACK library installed, JACK clients land in the PipeWire graph.
+- **Linux, `pipewire` feature** (`--features pipewire`): needs the PipeWire headers and libclang at build time
+  (`libpipewire-0.3-dev libclang-dev` on Ubuntu, `pipewire-devel clang-devel` on Fedora), and the
+  binary then links `libpipewire-0.3.so.0`, so a package built this way must depend on it.
+- **Windows, `asio` feature** (`--features asio`): cpal's ASIO host. The build needs LLVM/Clang
+  (`LIBCLANG_PATH`) and the Steinberg ASIO SDK, which the build downloads unless `CPAL_ASIO_DIR`
+  points at a copy. The SDK is Steinberg's, under its own licence: read it before distributing a
+  build with this feature. The release builds do not include it.
+- **Windows and macOS, `jack` feature** (`--features jack`): no build dependency; `libjack64.dll`
+  / `libjack.0.dylib` is loaded at runtime and the host is offered only when it is found.
+- **Sample formats**: streams open in the device's own format (f32 preferred, then i32, i24, f64,
+  i16, …) and are converted, so ASIO drivers and raw ALSA devices that offer no f32 still open.
+- **Choosing the host and devices** (all platforms): Setup › Playback Engine lists the hosts the build has (remembered
+  in the UI prefs); `--audio-host <id>` and `SOUNDCRAFT_AUDIO_HOST` (`pipewire`, `jack`, `alsa`,
+  `auto`) override it. Default takes the first host with a default device, in the order
+  PipeWire, JACK, ALSA on Linux; on macOS and Windows the system host (CoreAudio, WASAPI) first,
+  so ASIO and JACK are used only when chosen. A host that cannot be opened falls back to the
+  automatic order. The same dialog picks the output and input device of that host.
 - **FreeBSD** builds need `alsa-lib` (`pkg install alsa-lib`); at runtime `alsa-plugins-oss`
   routes ALSA to the OSS `sound(4)` devices. Without a device the player falls back to its
   silent clock, so the transport still runs.

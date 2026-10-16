@@ -1,5 +1,5 @@
-//! Realtime playback through the system audio device (cpal: CoreAudio, WASAPI, ALSA/Pulse/
-//! PipeWire via ALSA, JACK, WebAudio).
+//! Realtime playback through the system audio device (cpal: CoreAudio, WASAPI, WebAudio;
+//! on Linux ALSA, plus JACK and PipeWire with their cargo features, see [`host`]).
 //!
 //! The UI thread owns a [`Player`]; the audio callback owns the [`MixEngine`] and a snapshot of
 //! the session (`Arc<Session>`) that the UI swaps whenever the document changes. Commands go to
@@ -23,6 +23,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod devices;
+pub mod host;
 pub mod record;
 
 pub use devices::AudioConfig;
@@ -459,6 +460,9 @@ pub struct Player {
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
     pub device_name: String,
+    /// Display name of the audio host the device belongs to (`"ALSA"`, `"JACK"`, `"PipeWire"`, …);
+    /// empty for the silent clock.
+    pub host_name: String,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
     pub device_channels: u16,
@@ -477,6 +481,7 @@ impl Player {
     /// Open the output device `cfg` chooses (system, device, rate, buffer size), falling back to the
     /// defaults for whatever is unavailable. Never fails: without a device it runs a silent clock.
     pub fn with_config(session: Arc<Session>, cfg: &AudioConfig) -> Player {
+        host::configure(cfg);
         let p = Player::open(Arc::clone(&session), cfg);
         p.side().return_old_sessions(&p.tx);
         // Hand the initial session's third-party plugins over.
@@ -513,36 +518,32 @@ impl Player {
         let side_rate = session.sample_rate.as_f64() as f32;
         let new_side = |garbage: Receiver<Vec<Box<dyn Plugin>>>| Mutex::new(Side::new(side_rate, garbage));
         match open_device(want, want_ch, cfg) {
-            Ok((device, config, format, name)) => {
+            Ok((device, config, format, name, host_name)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
-                let mut attempts = vec![config.clone()];
+                let mut attempts = vec![config];
                 if config.buffer_size != cpal::BufferSize::Default {
                     attempts.push(cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config });
                 }
                 for config in attempts {
-                    let rate = config.sample_rate.0;
+                    let rate = config.sample_rate;
                     let channels = usize::from(config.channels);
                     let (tx, rx) = channel();
                     let (gtx, grx) = channel();
                     let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
                     let fault = Arc::new(Fault::default());
                     use cpal::traits::StreamTrait;
-                    let built = match format {
-                        cpal::SampleFormat::I32 => build_output::<i32>(&device, &config, state, channels, &fault, &shared),
-                        cpal::SampleFormat::I16 => build_output::<i16>(&device, &config, state, channels, &fault, &shared),
-                        _ => build_output::<f32>(&device, &config, state, channels, &fault, &shared),
-                    };
-                    match built {
+                    match build_output(&device, config, format, state, channels, &fault, &shared) {
                         Ok(stream) => {
                             if let Err(e) = stream.play() {
                                 log::warn!("audio stream failed to start: {e}");
                             }
+                            host::wire_stream(host::Direction::Output, &host_name);
                             let buffer = match config.buffer_size {
                                 cpal::BufferSize::Fixed(n) => Some(n),
                                 cpal::BufferSize::Default => None,
                             };
                             log::info!(
-                                "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {}",
+                                "audio device: {name} ({host_name}) @ {rate} Hz, {channels} ch, {format}, buffer {}",
                                 buffer.map_or("default".to_string(), |n| n.to_string())
                             );
                             return Player {
@@ -554,6 +555,7 @@ impl Player {
                                 side: new_side(grx),
                                 _stream: Some(stream),
                                 device_name: name,
+                                host_name,
                                 device_rate: rate,
                                 device_channels: config.channels,
                                 device_buffer: buffer,
@@ -631,6 +633,7 @@ impl Player {
             side,
             _stream: None,
             device_name: "No audio device (silent)".into(),
+            host_name: String::new(),
             device_rate: rate,
             device_channels: 0,
             device_buffer: None,
@@ -654,6 +657,7 @@ impl Player {
             side,
             _stream: None,
             device_name: "No audio device".into(),
+            host_name: String::new(),
             device_rate: session.sample_rate.hz(),
             device_channels: 0,
             device_buffer: None,
@@ -862,80 +866,54 @@ fn fold_gains(s: &Session) -> [(f32, f32); MAX_CHANNELS] {
     g
 }
 
-/// The output stream: the mix renders f32 into a scratch buffer allocated here (so the callback
-/// never allocates), converted to the device's sample type.
-fn build_output<T>(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    mut state: AudioState,
-    channels: usize,
-    fault: &Arc<Fault>,
-    shared: &Arc<Shared>,
-) -> Result<cpal::Stream, cpal::BuildStreamError>
-where
-    T: cpal::SizedSample + cpal::FromSample<f32>,
-{
-    use cpal::traits::DeviceTrait;
-    let frame = channels.max(1);
-    let mut scratch = vec![0.0f32; 8192 * frame];
-    let chunk = scratch.len();
-    let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
-    device.build_output_stream(
-        config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-            mark_audio_thread();
-            for out in data.chunks_mut(chunk) {
-                let Some(s) = scratch.get_mut(..out.len()) else { return };
-                guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
-                for (o, x) in out.iter_mut().zip(s.iter()) {
-                    *o = T::from_sample(*x);
-                }
-            }
-        },
-        // cpal may call this on the audio thread (on ALSA in a loop while the device stays
-        // broken): marked, so the logger hands the record off instead of writing it.
-        move |e: cpal::StreamError| {
-            mark_audio_thread();
-            if matches!(e, cpal::StreamError::DeviceNotAvailable) {
-                gone.gone.store(true, Ordering::Relaxed);
-            }
-            log::warn!("audio stream error: {e}");
-        },
-        None,
-    )
+/// Device sample formats in the order we like them: f32 needs no conversion, then by precision.
+pub(crate) fn format_rank(f: cpal::SampleFormat) -> u8 {
+    use cpal::SampleFormat as F;
+    match f {
+        F::F32 => 0,
+        F::I32 => 1,
+        F::I24 => 2,
+        F::F64 => 3,
+        F::I16 => 4,
+        F::U32 | F::U24 | F::I64 | F::U64 => 5,
+        F::U16 => 6,
+        F::I8 | F::U8 => 7,
+        // DSD and whatever cpal adds: not PCM we can write.
+        _ => u8::MAX,
+    }
 }
 
-/// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
-/// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
-/// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
-/// chosen buffer size when the device allows it.
-fn open_device(want_rate: u32, want_ch: u16, cfg: &AudioConfig) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+/// Open the output device `cfg` chooses (its audio host and device, see [`host`]; else the
+/// defaults) at the chosen rate (else the session rate) if possible, with as many channels as it
+/// offers up to `want_ch` (at least stereo when available), the best sample format it has (ASIO
+/// drivers and raw ALSA devices rarely offer f32), and the chosen buffer size when the device
+/// allows it.
+fn open_device(
+    want_rate: u32,
+    want_ch: u16,
+    cfg: &AudioConfig,
+) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, String), String> {
     use cpal::traits::DeviceTrait;
-    let host = devices::host(cfg);
-    let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
-    #[allow(deprecated)]
-    let name = device.name().unwrap_or_else(|_| "Audio device".into());
-    // Prefer a config at the chosen (else session) rate; else the device default (we resample).
+    let (device, host_name) = host::default_device(host::Direction::Output)?;
+    let name = host::device_label(&device, "Audio device");
     let want_ch = want_ch.max(2);
+    // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
-    let mut chosen: Option<(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)> = None;
-    // Better: a preferred format first, then more channels.
-    let better = |c: &cpal::SupportedStreamConfigRange, x: &(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)| {
-        let (rc, rx) = (devices::format_rank(c.sample_format()).unwrap_or(usize::MAX), devices::format_rank(x.2).unwrap_or(usize::MAX));
-        rc < rx || (rc == rx && c.channels() > x.0.channels)
-    };
+    // The best config so far: more channels first, then the format.
+    let mut chosen: Option<(cpal::StreamConfig, cpal::SampleFormat, cpal::SupportedBufferSize)> = None;
     if let Ok(configs) = device.supported_output_configs() {
         let configs: Vec<cpal::SupportedStreamConfigRange> = configs.collect();
         for rate in rates {
             for c in &configs {
-                if devices::format_rank(c.sample_format()).is_some()
-                    && c.min_sample_rate().0 <= rate
-                    && c.max_sample_rate().0 >= rate
+                let rank = format_rank(c.sample_format());
+                if rank != u8::MAX
+                    && c.min_sample_rate() <= rate
+                    && c.max_sample_rate() >= rate
                     && c.channels() >= 2
                     && c.channels() <= want_ch
-                    && chosen.as_ref().is_none_or(|x| better(c, x))
+                    && chosen.as_ref().is_none_or(|(x, f, _)| c.channels() > x.channels || (c.channels() == x.channels && rank < format_rank(*f)))
                 {
-                    chosen = Some((c.with_sample_rate(cpal::SampleRate(rate)).config(), *c.buffer_size(), c.sample_format()));
+                    chosen = Some((c.with_sample_rate(rate).config(), c.sample_format(), *c.buffer_size()));
                 }
             }
             if chosen.is_some() {
@@ -943,24 +921,94 @@ fn open_device(want_rate: u32, want_ch: u16, cfg: &AudioConfig) -> Result<(cpal:
             }
         }
     }
-    let (config, format) = match chosen {
-        Some((mut c, buffers, format)) => {
-            c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
-            (c, format)
-        }
+    let (mut config, format, sizes) = match chosen {
+        Some(c) => c,
         None => {
             let d = device.default_output_config().map_err(|e| e.to_string())?;
-            if devices::format_rank(d.sample_format()).is_none() {
+            if format_rank(d.sample_format()) == u8::MAX {
                 return Err(format!("unsupported device sample format {:?}", d.sample_format()));
             }
-            let buffers = *d.buffer_size();
-            let format = d.sample_format();
-            let mut c = d.config();
-            c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
-            (c, format)
+            (d.config(), d.sample_format(), *d.buffer_size())
         }
     };
-    Ok((device, config, format, name))
+    config.buffer_size = host::buffer_size(cfg.buffer_size, &sizes);
+    Ok((device, config, format, name, host_name))
+}
+
+/// Samples of f32 mix rendered per conversion step: larger device buffers are rendered in steps
+/// of whole frames.
+const CONVERT_SAMPLES: usize = 16_384;
+
+/// The output stream in the device's sample format: the mix renders f32 into a scratch buffer
+/// allocated here (so the callback never allocates), converted to the device's sample type. A
+/// block that panics goes silent instead of taking the app down, and a device that goes away is
+/// noted in `fault`.
+fn build_output(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    format: cpal::SampleFormat,
+    state: AudioState,
+    channels: usize,
+    fault: &Arc<Fault>,
+    shared: &Arc<Shared>,
+) -> Result<cpal::Stream, String> {
+    use cpal::SampleFormat as F;
+    fn converted<T>(
+        device: &cpal::Device,
+        config: cpal::StreamConfig,
+        mut state: AudioState,
+        channels: usize,
+        fault: &Arc<Fault>,
+        shared: &Arc<Shared>,
+    ) -> Result<cpal::Stream, cpal::Error>
+    where
+        T: cpal::SizedSample + cpal::FromSample<f32>,
+    {
+        use cpal::traits::DeviceTrait;
+        let frame = channels.max(1);
+        let mut scratch = vec![0.0f32; (CONVERT_SAMPLES / frame).max(1) * frame];
+        let chunk = scratch.len();
+        let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
+        device.build_output_stream(
+            config,
+            move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+                mark_audio_thread();
+                for out in data.chunks_mut(chunk) {
+                    let Some(s) = scratch.get_mut(..out.len()) else { return };
+                    guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
+                    for (o, x) in out.iter_mut().zip(s.iter()) {
+                        *o = T::from_sample(*x);
+                    }
+                }
+            },
+            // cpal may call this on the audio thread (on ALSA in a loop while the device stays
+            // broken): marked, so the logger hands the record off instead of writing it.
+            move |e: cpal::Error| {
+                mark_audio_thread();
+                if e.kind() == cpal::ErrorKind::DeviceNotAvailable {
+                    gone.gone.store(true, Ordering::Relaxed);
+                }
+                log::warn!("audio stream error: {e}");
+            },
+            None,
+        )
+    }
+    let stream = match format {
+        F::F32 => converted::<f32>(device, config, state, channels, fault, shared),
+        F::I8 => converted::<i8>(device, config, state, channels, fault, shared),
+        F::I16 => converted::<i16>(device, config, state, channels, fault, shared),
+        F::I24 => converted::<cpal::I24>(device, config, state, channels, fault, shared),
+        F::I32 => converted::<i32>(device, config, state, channels, fault, shared),
+        F::I64 => converted::<i64>(device, config, state, channels, fault, shared),
+        F::U8 => converted::<u8>(device, config, state, channels, fault, shared),
+        F::U16 => converted::<u16>(device, config, state, channels, fault, shared),
+        F::U24 => converted::<cpal::U24>(device, config, state, channels, fault, shared),
+        F::U32 => converted::<u32>(device, config, state, channels, fault, shared),
+        F::U64 => converted::<u64>(device, config, state, channels, fault, shared),
+        F::F64 => converted::<f64>(device, config, state, channels, fault, shared),
+        f => return Err(format!("unsupported device sample format {f:?}")),
+    };
+    stream.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

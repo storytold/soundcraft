@@ -787,6 +787,9 @@ impl SoundApp {
         // The input reopens on the next record or monitor with the new choice.
         self.recorder = None;
         self.recorder_failed = false;
+        // The old stream goes first: two streams of one client on one device make some hosts
+        // (JACK, PipeWire) report the old one as a disconnected device.
+        self.player = None;
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
         player.locate(at);
         self.player = Some(player);
@@ -882,6 +885,7 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
+        self.player = None;
         self.player = Some(Player::with_config(self.engine.session_arc(), &self.ui.audio));
     }
 
@@ -1259,6 +1263,7 @@ impl SoundApp {
             "dialog": self.dialogs.open_name(),
             "frame_ms": self.frame_ms,
             "audio_device": self.player.as_ref().map(|p| p.device_name.clone()),
+            "audio_host": self.player.as_ref().map(|p| p.host_name.clone()),
             "status": self.ui.status,
         })
     }
