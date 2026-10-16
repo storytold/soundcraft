@@ -385,3 +385,12 @@ Forks and modified versions must remove them.
 </p>
 
 Tracks and Groups, Clips, MIDI Editor, Memory Locations, and Undo History use movable panels. Edit and Mix retain separate arrangements; Clips and MIDI Editor belong to Edit. Transport, plug-in, and specialist utility windows retain their existing hosts. Drag a panel header to a target edge or another header. Its context menu offers Float panel, Move to group, and Close panel. Existing panel toggles reopen panels at their saved location; Reset Panel Layout restores the app layout. Floating panels remain inside the current app window.
+
+## Linux window controls
+
+Linux desktop builds enable winit's Adwaita client-side frame on GNOME/Wayland,
+where the compositor does not provide server-side decorations. Its minimize,
+maximize/restore and close icons are drawn as vectors, so the close button does
+not depend on a font containing a particular character. The frame follows the
+desktop's button layout; X11 and compositors offering server-side decorations
+keep their window manager's frame.

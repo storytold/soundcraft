@@ -34,3 +34,8 @@ winresource = "0.1"
 muda = { version = "0.19.2", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSResponder"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# GNOME/Wayland has no server-side frame. Enable winit's Adwaita title bar and
+# vector-drawn window buttons; eframe/wayland alone does not enable decorations.
+winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita"] }
