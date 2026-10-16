@@ -25,6 +25,7 @@ mod symph;
 mod wav;
 
 pub use buffer::AudioBuffer;
+pub use wav::DiskWavReader;
 use std::io::{Seek, Write};
 
 /// Errors from probing, decoding and encoding.
