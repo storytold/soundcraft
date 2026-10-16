@@ -246,8 +246,16 @@ impl Clip {
     pub fn trim_start_to(&mut self, new_start: Samples) {
         let new_start = new_start.min(self.end() - 1);
         let delta = new_start - self.start;
-        if let ClipContent::Audio { offset, .. } | ClipContent::Video { offset, .. } = &mut self.content {
-            *offset = offset.saturating_add(delta);
+        // The mixer plays a stretched audio clip from `offset + rel / stretch`.
+        let stretch = if self.stretch.is_finite() && self.stretch > 0.0 { self.stretch } else { 1.0 };
+        match &mut self.content {
+            ClipContent::Audio { offset, .. } if (stretch - 1.0).abs() >= 1e-9 => {
+                *offset = offset.saturating_add((delta as f64 / stretch).round() as Samples);
+            }
+            ClipContent::Audio { offset, .. } | ClipContent::Video { offset, .. } => {
+                *offset = offset.saturating_add(delta);
+            }
+            ClipContent::Midi { .. } => {}
         }
         // MIDI note ticks are re-anchored by the engine, which knows the tempo map.
         self.length -= delta;
@@ -478,5 +486,22 @@ mod tests {
         c.fade_out = Fade { len: 800, shape: FadeShape::Linear, curvature: 0.0 };
         c.trim_start_to(900);
         assert!(c.fade_out.len <= c.length);
+    }
+
+    #[test]
+    fn trim_start_of_stretched_audio_advances_offset_by_source_time() {
+        // The mixer plays source `offset + rel / stretch`, so a split at timeline 1000 of a 2x clip
+        // must start the right half at source sample 500.
+        let mut c = Clip::audio(ClipId(1), "a", SourceId(1), 0, 0, 2000);
+        c.stretch = 2.0;
+        c.trim_start_to(1000);
+        assert_eq!(c.source_offset(), 500);
+        let mut c = Clip::audio(ClipId(2), "b", SourceId(1), 0, 0, 2000);
+        c.stretch = 0.5;
+        c.trim_start_to(1000);
+        assert_eq!(c.source_offset(), 2000);
+        let mut c = Clip::audio(ClipId(3), "c", SourceId(1), 0, 0, 2000);
+        c.trim_start_to(1000);
+        assert_eq!(c.source_offset(), 1000);
     }
 }
