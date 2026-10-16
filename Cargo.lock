@@ -3580,6 +3580,7 @@ dependencies = [
  "soundcraft-engine",
  "soundcraft-playback",
  "soundcraft-ui-egui",
+ "winit",
  "winresource",
 ]
 

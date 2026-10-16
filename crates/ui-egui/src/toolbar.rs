@@ -351,7 +351,7 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
                 for (icon, cmd, tip) in [
-                    ("rtz", "transport.rtz", "Return to Zero (Home)"),
+                    ("rtz", "transport.rtz", "Return to Zero (Return or Home)"),
                     ("rewind", "transport.rewind", "Rewind"),
                     ("ffwd", "transport.fast_forward", "Fast Forward"),
                     ("end", "transport.go_to_end", "Go to End (End)"),

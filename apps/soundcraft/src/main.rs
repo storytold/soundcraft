@@ -15,6 +15,7 @@ mod config;
 mod control_server;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
+mod keypad;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
@@ -98,7 +99,7 @@ impl eframe::App for App {
         if let Some(logger) = self.1 {
             logger.report_audio_thread();
         }
-        // The system Quit (⌘Q) ends the process from inside the event loop, so `run_native` never
+        // The system Quit (⌘Q) ends the process from inside the event loop, so `run_app` never
         // returns: release the player's plugin instances and shut plugin hosting down here.
         self.0.player = None;
         soundcraft_engine::shutdown_plugin_hosts();
@@ -263,13 +264,18 @@ fn main() -> eframe::Result {
     // Before eframe creates the wgpu instance: default Windows to DirectX 12 with FXC (see graphics.rs).
     #[cfg(target_os = "windows")]
     graphics::configure(&mut options, eframe::wgpu::Backends::from_env(), eframe::wgpu::Dx12Compiler::from_env());
-    eframe::run_native(
+    // eframe's own loop, run here so `keypad` can see which Enter key was pressed.
+    let event_loop = winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event().build()?;
+    let keypad = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let app_keypad = keypad.clone();
+    let app = eframe::create_native(
         "SoundCraft",
         options,
         Box::new(move |cc| {
             let player =
                 if no_audio { None } else { Some(soundcraft_playback::Player::with_config(Arc::new(engine.session().clone()), &prefs.audio)) };
             let mut app = SoundApp::new(engine, player, services());
+            app.keypad_enter = app_keypad;
             app.autosave_dir = prefs_path().and_then(|p| p.parent().map(|d| d.join("Autosave")));
             app.leftovers = app.autosave_dir.as_deref().map(soundcraft_engine::autosave::leftovers).unwrap_or_default();
             app.preset_dir = prefs_path().and_then(|p| p.parent().map(|d| d.join("Presets")));
@@ -301,7 +307,10 @@ fn main() -> eframe::Result {
                 menu,
             )))
         }),
-    )
+        &event_loop,
+    );
+    event_loop.run_app(&mut keypad::KeypadEnter::new(app, keypad))?;
+    Ok(())
 }
 
 /// A saved window size, or the default when the prefs file holds nonsense (NaN, negative, tiny).

@@ -209,6 +209,9 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
             let name = p.get("key").and_then(Value::as_str).unwrap_or("");
             let Some(key) = key_from(name) else { return Some(err(format!("unknown key `{name}`"))) };
             let m = mods(p);
+            if key == egui::Key::Enter {
+                app.keypad_enter.store(name.eq_ignore_ascii_case("NumpadEnter"), std::sync::atomic::Ordering::Relaxed);
+            }
             app.synthetic.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: m });
             app.synthetic.push(egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: m });
             ok(json!({}))

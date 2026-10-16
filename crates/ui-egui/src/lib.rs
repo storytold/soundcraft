@@ -299,6 +299,9 @@ pub struct SoundApp {
     pub sample_drop_targets: Vec<(egui::Rect, TrackId)>,
     sample_reads: Vec<sampler_window::SampleRead>,
     synthetic_grace: u32,
+    /// Set by the desktop app when the last Enter came from the numeric keypad: egui reports
+    /// Return and the keypad's Enter as the same key.
+    pub keypad_enter: std::sync::Arc<std::sync::atomic::AtomicBool>,
     control_rx: Option<Receiver<ControlRequest>>,
     pending_shots: Vec<control::PendingShot>,
     last_rev: u64,
@@ -382,6 +385,7 @@ impl SoundApp {
             sample_drop_targets: Vec::new(),
             sample_reads: Vec::new(),
             synthetic_grace: 0,
+            keypad_enter: Default::default(),
             control_rx: None,
             pending_shots: Vec::new(),
             last_rev: 0,

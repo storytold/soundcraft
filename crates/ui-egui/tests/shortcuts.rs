@@ -75,3 +75,19 @@ fn cmd_equals_toggles_mix_and_edit_without_zooming() {
         assert_eq!(ctx.zoom_factor(), 1.25, "{os:?}");
     }
 }
+
+#[test]
+fn return_goes_to_the_session_start_and_the_keypad_enter_adds_a_marker() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let ctx = egui::Context::default();
+    let markers = app.engine.session().markers.len();
+    app.run("transport.locate", json!({"at": 96_000})).unwrap();
+    press(&ctx, &mut app, Key::Enter, Modifiers::NONE);
+    assert_eq!(app.engine.session().edit.playhead, 0);
+    assert_eq!(app.engine.session().markers.len(), markers);
+    app.run("transport.locate", json!({"at": 96_000})).unwrap();
+    app.keypad_enter.store(true, std::sync::atomic::Ordering::Relaxed);
+    press(&ctx, &mut app, Key::Enter, Modifiers::NONE);
+    assert_eq!(app.engine.session().edit.playhead, 96_000);
+    assert_eq!(app.engine.session().markers.len(), markers + 1);
+}

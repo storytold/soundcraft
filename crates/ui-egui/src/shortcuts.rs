@@ -118,8 +118,10 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             let _ = app.run("window.toggle_mix_edit", json!({}));
             true
         }
+        // As in Pro Tools, Return goes to the session start and the keypad's Enter adds a marker.
         Key::Enter if plain => {
-            let _ = app.run("markers.add", json!({}));
+            let keypad = app.keypad_enter.load(std::sync::atomic::Ordering::Relaxed);
+            let _ = app.run(if keypad { "markers.add" } else { "transport.rtz" }, json!({}));
             true
         }
         // Shift+=/- step the Grid value and Alt+Shift+=/- the Nudge value; macOS sends Alt+Shift+= as =, not +.
