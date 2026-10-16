@@ -1248,14 +1248,32 @@ pub fn open_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Ve
     };
     let mut s = Session::from_json(&text).map_err(|err| EngineError::Io(format!("{name}: {err}")))?;
     let mut missing = Vec::new();
+    // Several sources may share one file (native sessions do): decode each path once and share the result.
+    let mut decoded: std::collections::HashMap<String, Option<Arc<SourceAudio>>> = std::collections::HashMap::new();
     for src in &s.sources {
-        match files.remove(&src.path) {
-            Some(audio) => match decode_source(&audio, Path::new(&src.path).extension().and_then(|x| x.to_str()), s.sample_rate.hz()) {
-                Ok(audio) => s.pool.insert(src.id, audio),
-                Err(err) => missing.push(format!("{}: {err}", src.path)),
-            },
-            None => missing.push(src.path.clone()),
+        if let Some(audio) = decoded.get(&src.path) {
+            if let Some(audio) = audio {
+                s.pool.insert(src.id, Arc::clone(audio));
+            }
+            continue;
         }
+        let audio = match files.remove(&src.path) {
+            Some(bytes) => match decode_source(&bytes, Path::new(&src.path).extension().and_then(|x| x.to_str()), s.sample_rate.hz()) {
+                Ok(audio) => Some(audio),
+                Err(err) => {
+                    missing.push(format!("{}: {err}", src.path));
+                    None
+                }
+            },
+            None => {
+                missing.push(src.path.clone());
+                None
+            }
+        };
+        if let Some(audio) = &audio {
+            s.pool.insert(src.id, Arc::clone(audio));
+        }
+        decoded.insert(src.path.clone(), audio);
     }
     // Movies are referenced by path, never copied into a session: none can be found here.
     missing.extend(s.videos.iter().map(|v| v.path.clone()));
@@ -1884,6 +1902,31 @@ mod bundle_tests {
         }
         assert!(!r.is_dirty());
         assert_eq!(r.path.as_deref(), Some("Midnight Groove.scraftz"));
+    }
+
+    #[test]
+    fn sources_sharing_one_file_all_load_from_a_bundle() {
+        use std::io::Write as _;
+        let e = crate::demo::demo_engine();
+        let (bytes, _) = session_bundle(e.session()).unwrap();
+        let (text, files) = read_bundle(&bytes).unwrap();
+        let mut s = Session::from_json(&text).unwrap();
+        s.sources[1].path = s.sources[0].path.clone();
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for path in s.sources.iter().map(|x| &x.path).collect::<std::collections::BTreeSet<_>>() {
+            w.start_file(path.as_str(), opts).unwrap();
+            w.write_all(&files[path]).unwrap();
+        }
+        w.start_file("Song.scraft", opts).unwrap();
+        w.write_all(s.to_json().unwrap().as_bytes()).unwrap();
+        let bundle = w.finish().unwrap().into_inner();
+        let mut r = Engine::default();
+        let missing = open_session_bytes(&mut r, "Song.scraftz", &bundle).unwrap();
+        assert!(missing.is_empty(), "{missing:?}");
+        for src in &r.session().sources {
+            assert!(r.session().pool.get(src.id).is_some(), "{} has no audio", src.name);
+        }
     }
 
     #[test]
