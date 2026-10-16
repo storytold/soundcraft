@@ -1,6 +1,6 @@
 //! Tempo and meter maps: the conversion between musical time (ticks) and samples.
 
-use crate::{SampleRate, Samples, TimeError, to_samples};
+use crate::{MAX_POSITION, SampleRate, Samples, TimeError, to_samples};
 
 /// Ticks per quarter note (Pro Tools' resolution).
 pub const TICKS_PER_QUARTER: i64 = 960;
@@ -74,17 +74,17 @@ impl TempoMap {
         &self.meters
     }
 
-    /// Repair a map read from a file: only valid tempos and meters, in tick order, with one of each
-    /// at tick 0.
+    /// Repair a map read from a file: only valid tempos and meters within `0..=MAX_POSITION` ticks, in
+    /// tick order, with one of each at tick 0.
     pub fn sanitize(&mut self) {
-        self.tempos.retain(|e| e.tick >= 0 && valid_bpm(e.bpm).is_ok());
+        self.tempos.retain(|e| (0..=MAX_POSITION).contains(&e.tick) && valid_bpm(e.bpm).is_ok());
         self.tempos.sort_by_key(|e| e.tick);
         self.tempos.dedup_by_key(|e| e.tick);
         if self.tempos.first().is_none_or(|e| e.tick > 0) {
             let bpm = self.tempos.first().map_or(120.0, |e| e.bpm);
             self.tempos.insert(0, TempoEvent { tick: 0, bpm });
         }
-        self.meters.retain(|m| m.tick >= 0 && valid_meter(m.numerator, m.denominator));
+        self.meters.retain(|m| (0..=MAX_POSITION).contains(&m.tick) && valid_meter(m.numerator, m.denominator));
         self.meters.sort_by_key(|m| m.tick);
         self.meters.dedup_by_key(|m| m.tick);
         if self.meters.first().is_none_or(|m| m.tick > 0) {
@@ -384,6 +384,17 @@ mod tests {
         let mut empty = TempoMap { tempos: Vec::new(), meters: Vec::new() };
         empty.sanitize();
         assert_eq!(empty, TempoMap::default());
+    }
+
+    #[test]
+    fn sanitize_drops_events_beyond_the_position_range() {
+        let mut m = TempoMap {
+            tempos: vec![TempoEvent { tick: 0, bpm: 120.0 }, TempoEvent { tick: i64::MAX, bpm: 90.0 }],
+            meters: vec![MeterEvent { tick: 0, numerator: 4, denominator: 4 }, MeterEvent { tick: i64::MAX, numerator: 3, denominator: 4 }],
+        };
+        m.sanitize();
+        assert_eq!(m, TempoMap::default());
+        assert_eq!(m.bar_start_tick(2), TICKS_PER_QUARTER * 4);
     }
 
     #[test]

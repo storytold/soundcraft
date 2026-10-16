@@ -750,6 +750,17 @@ mod tests {
     }
 
     #[test]
+    fn a_meter_change_far_beyond_the_position_range_is_dropped_on_load() {
+        let mut v = serde_json::to_value(Session::default()).unwrap();
+        v["tempo"]["meters"] = serde_json::json!([
+            {"tick": 0, "numerator": 4, "denominator": 4},
+            {"tick": i64::MAX, "numerator": 3, "denominator": 4}
+        ]);
+        let s = Session::from_json(&v.to_string()).unwrap();
+        assert_eq!(s.parse_position("2|1|000", TimeFormat::BarsBeats), Ok(96_000));
+    }
+
+    #[test]
     fn rejects_garbage_and_future_versions() {
         assert!(Session::from_json("not json").is_err());
         assert!(Session::from_json("{}").is_err());
