@@ -468,6 +468,9 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                             let _ = app.run("mix.insert_bypass", json!({"track": tid.0, "slot": slot}));
                         }
                         ui.menu_button("Presets ▾", |ui| preset_menu(app, ui, tid, slot, info, &ins));
+                        if soundcraft_dsp::takes_key(&ins.plugin) {
+                            key_input_menu(app, ui, tid, slot, &ins);
+                        }
                     }
                     if soundcraft_mix::is_third_party(&ins.plugin) {
                         let open = app.player.as_ref().is_some_and(|p| p.editor_open(tid, slot));
@@ -562,6 +565,31 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
         }
     }
     app.ui.plugin_windows = keep;
+}
+
+/// The key input (sidechain) menu of a dynamics insert: no key, or one of the session's busses.
+/// A bus that already carries this track's signal is greyed out: keying from it would feed back.
+fn key_input_menu(app: &mut SoundApp, ui: &mut Ui, tid: soundcraft_model::TrackId, slot: usize, ins: &soundcraft_model::Insert) {
+    const NONE: &str = "No Key Input";
+    let s = app.engine.session();
+    let current = ins.key.and_then(|b| s.bus(b)).map_or_else(|| NONE.to_string(), |b| b.name.clone());
+    let busses: Vec<(String, bool)> = s.busses.iter().map(|b| (b.name.clone(), !soundcraft_mix::key_feeds_back(s, tid, b.id))).collect();
+    let mut pick = None;
+    let menu = egui::ComboBox::from_id_salt(("key", tid.0, slot)).selected_text(format!("Key: {current}")).show_ui(ui, |ui| {
+        if ui.add(egui::Button::selectable(ins.key.is_none(), NONE)).clicked() {
+            pick = Some(json!(null));
+        }
+        for (name, ok) in &busses {
+            let r = ui.add_enabled(*ok, egui::Button::selectable(*name == current, name.as_str()));
+            if r.on_disabled_hover_text("This bus carries this track's own signal").clicked() {
+                pick = Some(json!(name));
+            }
+        }
+    });
+    menu.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "Key Input"));
+    if let Some(bus) = pick {
+        let _ = app.run("mix.insert_key", json!({"track": tid.0, "slot": slot, "bus": bus}));
+    }
 }
 
 fn eq_curve(ui: &mut Ui, id: &str, ins: &soundcraft_model::Insert) {

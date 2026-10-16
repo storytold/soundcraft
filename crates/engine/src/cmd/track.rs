@@ -849,6 +849,7 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
             }
         }
     }
+    super::mix::refuse_key_loop(e, "track.route")?;
     Ok(json!({key: r}))
 }
 

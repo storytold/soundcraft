@@ -31,7 +31,7 @@ fn ballistic(state: f32, target: f32, att: f32, rel: f32) -> f32 {
 
 // ---------------------------------------------------------------------------------------------
 
-static COMP_PARAMS: [ParamInfo; 11] = [
+static COMP_PARAMS: [ParamInfo; 12] = [
     lin("threshold", "Threshold", -60.0, 0.0, -20.0, Unit::Db),
     log("ratio", "Ratio", 1.0, 100.0, 4.0, Unit::Ratio),
     log("attack", "Attack", 0.01, 300.0, 10.0, Unit::Ms),
@@ -43,6 +43,7 @@ static COMP_PARAMS: [ParamInfo; 11] = [
     toggle("limiter", "Limit", false),
     lin("lookahead", "Lookahead", 0.0, 10.0, 0.0, Unit::Ms),
     lin("mix", "Mix", 0.0, 100.0, 100.0, Unit::Percent),
+    toggle("ext_key", "External Key", false),
 ];
 
 pub static COMP_INFO: PluginInfo = PluginInfo {
@@ -55,11 +56,42 @@ pub static COMP_INFO: PluginInfo = PluginInfo {
     audiosuite: true,
 };
 
-/// Feed-forward compressor / limiter with optional lookahead and sidechain high-pass.
+/// Most key-input channels the detectors read (a 9.1.6 bus).
+const KEY_CHANNELS: usize = 16;
+
+/// The linked peak of a key signal at frame `n`, through `hpf` when given (one filter per channel).
+#[inline]
+fn key_level(key: &[Vec<f32>], n: usize, hpf: Option<&mut [Biquad]>) -> f32 {
+    let mut level = 0.0f32;
+    match hpf {
+        Some(f) => {
+            for (b, f) in key.iter().zip(f.iter_mut()) {
+                let s = f.process_sample(b.get(n).copied().unwrap_or(0.0));
+                if s.is_finite() {
+                    level = level.max(s.abs());
+                }
+            }
+        }
+        None => {
+            for b in key.iter().take(KEY_CHANNELS) {
+                let s = b.get(n).copied().unwrap_or(0.0);
+                if s.is_finite() {
+                    level = level.max(s.abs());
+                }
+            }
+        }
+    }
+    level
+}
+
+/// Feed-forward compressor / limiter with optional lookahead and sidechain high-pass. With
+/// External Key on, a key input (see [`Plugin::process_keyed`]) drives the detector.
 pub struct Compressor {
     p: Params,
     sr: f32,
     sc: Vec<Biquad>,
+    /// The sidechain high-pass for the key input's channels.
+    key_sc: Vec<Biquad>,
     delay: Vec<DelayLine>,
     gr: f32,
     att: f32,
@@ -82,6 +114,7 @@ impl Compressor {
             p: Params::new(&COMP_PARAMS),
             sr: 48_000.0,
             sc: Vec::new(),
+            key_sc: Vec::new(),
             delay: Vec::new(),
             gr: 0.0,
             att: 0.0,
@@ -106,7 +139,7 @@ impl Compressor {
         self.makeup.set(db_to_gain(self.p.v(5)));
         self.mix.set(self.p.v(10) / 100.0);
         let f = self.p.v(7);
-        for b in &mut self.sc {
+        for b in self.sc.iter_mut().chain(self.key_sc.iter_mut()) {
             b.set(FilterType::HighPass, f, std::f32::consts::FRAC_1_SQRT_2, 0.0, sr);
         }
         let max = self.delay.first().map(|d| d.max_delay() as usize).unwrap_or(0);
@@ -133,6 +166,7 @@ impl Plugin for Compressor {
         self.sr = sane_sr(sample_rate);
         let ch = sane_channels(channels);
         self.sc = vec![Biquad::default(); ch];
+        self.key_sc = vec![Biquad::default(); KEY_CHANNELS];
         let max = ms_to_samples(10.0, self.sr).ceil() as usize + 2;
         self.delay = (0..ch)
             .map(|_| {
@@ -148,7 +182,7 @@ impl Plugin for Compressor {
     }
 
     fn reset(&mut self) {
-        self.sc.iter_mut().for_each(Biquad::reset);
+        self.sc.iter_mut().chain(self.key_sc.iter_mut()).for_each(Biquad::reset);
         self.delay.iter_mut().for_each(DelayLine::clear);
         self.gr = 0.0;
         self.gr_meter = 0.0;
@@ -157,6 +191,26 @@ impl Plugin for Compressor {
     }
 
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.run(io, None, frames);
+    }
+
+    fn process_keyed(&mut self, io: &mut [Vec<f32>], key: &[Vec<f32>], frames: usize) {
+        let key = self.p.on(11).then_some(key);
+        self.run(io, key, frames);
+    }
+
+    fn latency(&self) -> usize {
+        self.lookahead
+    }
+
+    fn gain_reduction_db(&self) -> f32 {
+        self.gr_meter
+    }
+}
+
+impl Compressor {
+    /// Compresses `io`, detecting on `key` when given and on `io` otherwise.
+    fn run(&mut self, io: &mut [Vec<f32>], key: Option<&[Vec<f32>]>, frames: usize) {
         let ch = self.sc.len().min(io.len());
         let frames = frames_in(io, frames, ch);
         let hpf = self.p.on(6);
@@ -164,14 +218,19 @@ impl Plugin for Compressor {
         let mut max_gr = 0.0f32;
         for n in 0..frames {
             let mut level = 0.0f32;
-            for c in 0..ch {
-                let x = io.get(c).and_then(|b| b.get(n)).copied().unwrap_or(0.0);
-                let s = match self.sc.get_mut(c) {
-                    Some(f) if hpf => f.process_sample(x),
-                    _ => x,
-                };
-                if s.is_finite() {
-                    level = level.max(s.abs());
+            match key {
+                Some(key) => level = key_level(key, n, if hpf { Some(&mut self.key_sc) } else { None }),
+                None => {
+                    for c in 0..ch {
+                        let x = io.get(c).and_then(|b| b.get(n)).copied().unwrap_or(0.0);
+                        let s = match self.sc.get_mut(c) {
+                            Some(f) if hpf => f.process_sample(x),
+                            _ => x,
+                        };
+                        if s.is_finite() {
+                            level = level.max(s.abs());
+                        }
+                    }
                 }
             }
             let gr = self.gain_for(level);
@@ -188,25 +247,18 @@ impl Plugin for Compressor {
         }
         self.gr_meter = max_gr;
     }
-
-    fn latency(&self) -> usize {
-        self.lookahead
-    }
-
-    fn gain_reduction_db(&self) -> f32 {
-        self.gr_meter
-    }
 }
 
 // ---------------------------------------------------------------------------------------------
 
-static GATE_PARAMS: [ParamInfo; 6] = [
+static GATE_PARAMS: [ParamInfo; 7] = [
     lin("threshold", "Threshold", -80.0, 0.0, -40.0, Unit::Db),
     log("ratio", "Ratio", 1.0, 100.0, 100.0, Unit::Ratio),
     lin("range", "Range", 0.0, 80.0, 80.0, Unit::Db),
     log("attack", "Attack", 0.01, 100.0, 0.5, Unit::Ms),
     lin("hold", "Hold", 0.0, 2000.0, 50.0, Unit::Ms),
     log("release", "Release", 1.0, 4000.0, 100.0, Unit::Ms),
+    toggle("ext_key", "External Key", false),
 ];
 
 pub static GATE_INFO: PluginInfo = PluginInfo {
@@ -308,11 +360,30 @@ impl Plugin for ExpanderGate {
     }
 
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.run(io, None, frames);
+    }
+
+    fn process_keyed(&mut self, io: &mut [Vec<f32>], key: &[Vec<f32>], frames: usize) {
+        let key = self.p.on(6).then_some(key);
+        self.run(io, key, frames);
+    }
+
+    fn gain_reduction_db(&self) -> f32 {
+        self.gr_meter
+    }
+}
+
+impl ExpanderGate {
+    /// Gates `io`, detecting on `key` when given and on `io` otherwise.
+    fn run(&mut self, io: &mut [Vec<f32>], key: Option<&[Vec<f32>]>, frames: usize) {
         let ch = self.ch.min(io.len());
         let frames = frames_in(io, frames, ch);
         let mut max_gr = 0.0f32;
         for n in 0..frames {
-            let level = io.iter().take(ch).filter_map(|b| b.get(n)).fold(0.0f32, |m, v| m.max(v.abs()));
+            let level = match key {
+                Some(key) => key_level(key, n, None),
+                None => io.iter().take(ch).filter_map(|b| b.get(n)).fold(0.0f32, |m, v| m.max(v.abs())),
+            };
             let gr = self.tick(level);
             max_gr = max_gr.max(gr);
             let g = db_to_gain(-gr);
@@ -323,10 +394,6 @@ impl Plugin for ExpanderGate {
             }
         }
         self.gr_meter = max_gr;
-    }
-
-    fn gain_reduction_db(&self) -> f32 {
-        self.gr_meter
     }
 }
 

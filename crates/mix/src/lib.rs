@@ -640,7 +640,7 @@ impl MixEngine {
         let mut work = std::mem::take(&mut self.work);
         work.clear();
         for &i in &order {
-            let Some(t) = s.tracks.get(i).filter(|t| live(t) && !is_aux(t)) else { continue };
+            let Some(t) = s.tracks.get(i).filter(|t| live(t) && !reads_busses(t)) else { continue };
             if let Some(st) = self.strips.remove(&t.id) {
                 work.push((i, st));
             }
@@ -663,7 +663,7 @@ impl MixEngine {
         // or the first block (and a one-block bounce probe) still sees zero.
         let pdc = s.edit.delay_compensation;
         if pdc {
-            for t in s.tracks.iter().filter(|t| is_aux(t) && !t.inactive) {
+            for t in s.tracks.iter().filter(|t| reads_busses(t) && !t.inactive) {
                 if let Some(st) = self.strips.get_mut(&t.id) {
                     note_insert_latency(t, st, pos);
                 }
@@ -680,7 +680,10 @@ impl MixEngine {
                 }
             }
         }
-        let lmax_t = if pdc { work.iter().map(|(_, st)| st.latency).max().unwrap_or(0) } else { 0 };
+        // Tracks keyed from a bus run in phase 2, but they are tracks: they align with phase 1.
+        let keyed_latency =
+            || self.strips.iter().filter(|(id, _)| s.track(**id).is_some_and(|t| live(t) && !is_aux(t) && keyed(t))).map(|(_, st)| st.latency);
+        let lmax_t = if pdc { work.iter().map(|(_, st)| st.latency).chain(keyed_latency()).max().unwrap_or(0) } else { 0 };
         let lmax_a =
             if pdc { self.strips.iter().filter(|(id, _)| s.track(**id).is_some_and(is_aux)).map(|(_, st)| st.latency).max().unwrap_or(0) } else { 0 };
         self.track_latency = lmax_t;
@@ -700,19 +703,7 @@ impl MixEngine {
         }
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
-            let ch = st.buf.len();
-            st.align.set(lmax_t.saturating_sub(st.latency), ch);
-            st.align.process(&mut st.buf, frames);
-            if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
-                st.align_pre.set(lmax_t.saturating_sub(st.latency), ch);
-                st.align_pre.process(&mut st.pre, frames);
-            }
-            let waits = match &t.mixer.output {
-                Route::Main => true,
-                Route::Bus(b) => self.aux_fed.contains(b),
-                _ => false,
-            };
-            st.out_extra.set(if waits { lmax_a } else { 0 }, ch);
+            align_track(t, st, lmax_t, lmax_a, &self.aux_fed, frames);
         }
         for (i, st) in work.iter_mut() {
             if let Some(t) = s.tracks.get(*i) {
@@ -726,18 +717,22 @@ impl MixEngine {
         }
         self.work = work;
         let is_aux = |t: &Track| matches!(t.kind, TrackKind::Aux | TrackKind::Folder);
-        // Phase 2: auxes in dependency order (they read busses).
-        for t in order.iter().filter_map(|&i| s.tracks.get(i)).filter(|t| live(t)).filter(|t| is_aux(t)) {
+        // Phase 2: strips that read busses (auxes, keyed tracks) in dependency order.
+        for t in order.iter().filter_map(|&i| s.tracks.get(i)).filter(|t| live(t)).filter(|t| reads_busses(t)) {
             let Some(mut st) = self.strips.remove(&t.id) else { continue };
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
             let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
             process_strip(s, t, &mut st, &self.busses, &live_in, pos, frames, any_solo);
-            let ch = st.buf.len();
-            st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
-            st.align.process(&mut st.buf, frames);
-            st.out_extra.set(0, ch);
+            if is_aux(t) {
+                let ch = st.buf.len();
+                st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
+                st.align.process(&mut st.buf, frames);
+                st.out_extra.set(0, ch);
+            } else {
+                align_track(t, &mut st, lmax_t, lmax_a, &self.aux_fed, frames);
+            }
             self.route_strip(t, &mut st, pos, frames);
             self.strips.insert(t.id, st);
         }
@@ -1028,7 +1023,10 @@ fn process_strip(
         }
         apply_params(slot, ins, t, i, pos);
         slot.plugin.set_transport(&transport);
-        slot.plugin.process(&mut strip.buf, frames);
+        match ins.key.and_then(|b| busses.get(&b)) {
+            Some(key) => slot.plugin.process_keyed(&mut strip.buf, &key.buf, frames),
+            None => slot.plugin.process(&mut strip.buf, frames),
+        }
         if contain_failure(slot, &mut strip.buf, frames) {
             strip.failures.record(i);
             continue;
@@ -1083,6 +1081,24 @@ fn process_strip(
             }
         }
     }
+}
+
+/// Delay compensation for a track strip (not an aux): align it with the slowest track, and make
+/// its direct output wait for the slowest aux return when that return lands where it goes.
+fn align_track(t: &Track, st: &mut Strip, lmax_t: usize, lmax_a: usize, aux_fed: &[BusId], frames: usize) {
+    let ch = st.buf.len();
+    st.align.set(lmax_t.saturating_sub(st.latency), ch);
+    st.align.process(&mut st.buf, frames);
+    if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
+        st.align_pre.set(lmax_t.saturating_sub(st.latency), ch);
+        st.align_pre.process(&mut st.pre, frames);
+    }
+    let waits = match &t.mixer.output {
+        Route::Main => true,
+        Route::Bus(b) => aux_fed.contains(b),
+        _ => false,
+    };
+    st.out_extra.set(if waits { lmax_a } else { 0 }, ch);
 }
 
 /// Silences a block the plugin filled with NaN or infinity and takes the plugin out until the
@@ -1217,7 +1233,7 @@ fn structure_fingerprint(s: &Session) -> usize {
         t.mixer.input.hash(&mut h);
         t.mixer.output.hash(&mut h);
         for i in &t.mixer.inserts {
-            i.as_ref().map(|x| x.plugin.as_str()).hash(&mut h);
+            i.as_ref().map(|x| (x.plugin.as_str(), x.key)).hash(&mut h);
         }
         for snd in t.mixer.sends.iter().flatten() {
             snd.target.hash(&mut h);
@@ -1300,19 +1316,85 @@ fn strip_format(t: &Track, n: usize) -> ChannelFormat {
     if t.format.channels().min(MAX_CHANNELS) == n { t.format } else { ChannelFormat::for_channels(n) }
 }
 
-/// Audio/instrument tracks first, then auxes ordered so bus producers come before consumers.
+/// A track with an insert keyed from a bus (a plugin with a key input, not on a master fader).
+fn keyed(t: &Track) -> bool {
+    !matches!(t.kind, TrackKind::Master | TrackKind::Vca)
+        && t.mixer.inserts.iter().flatten().any(|i| i.key.is_some() && soundcraft_dsp::takes_key(&i.plugin))
+}
+
+/// Strips that read busses while they process: auxes and folders (their input) and keyed tracks.
+/// They run after the other strips have filled the busses.
+fn reads_busses(t: &Track) -> bool {
+    matches!(t.kind, TrackKind::Aux | TrackKind::Folder) || keyed(t)
+}
+
+/// The busses a strip reads: an aux's input and its inserts' key inputs.
+fn bus_reads(t: &Track) -> impl Iterator<Item = BusId> + '_ {
+    let input = match &t.mixer.input {
+        Route::Bus(b) if matches!(t.kind, TrackKind::Aux | TrackKind::Folder) => Some(*b),
+        _ => None,
+    };
+    input.into_iter().chain(key_reads(t))
+}
+
+/// The busses a strip's inserts read as key inputs.
+fn key_reads(t: &Track) -> impl Iterator<Item = BusId> + '_ {
+    t.mixer.inserts.iter().flatten().filter(|_| keyed(t)).filter(|i| soundcraft_dsp::takes_key(&i.plugin)).filter_map(|i| i.key)
+}
+
+/// The busses a strip writes: its output and its sends.
+fn bus_writes(t: &Track) -> impl Iterator<Item = BusId> + '_ {
+    let out = match &t.mixer.output {
+        Route::Bus(b) => Some(*b),
+        _ => None,
+    };
+    let sends = t.mixer.sends.iter().flatten().filter_map(|sn| match &sn.target {
+        Route::Bus(b) => Some(*b),
+        _ => None,
+    });
+    out.into_iter().chain(sends)
+}
+
+/// True when keying an insert on `track` from `bus` would make a feedback loop: `bus` already
+/// carries the track's own signal, directly or through auxes and other keyed tracks.
+pub fn key_feeds_back(s: &Session, track: TrackId, bus: BusId) -> bool {
+    let Some(t) = s.track(track) else { return false };
+    let mut reached: Vec<BusId> = bus_writes(t).collect();
+    let mut next = 0;
+    while let Some(&b) = reached.get(next) {
+        if b == bus {
+            return true;
+        }
+        for r in s.tracks.iter().filter(|r| bus_reads(r).any(|x| x == b)) {
+            for w in bus_writes(r) {
+                if !reached.contains(&w) {
+                    reached.push(w);
+                }
+            }
+        }
+        next += 1;
+    }
+    false
+}
+
+/// The first key input that feeds back, as (keyed track, key bus): a routing change that makes
+/// a key bus carry the keyed track's own signal shows up here.
+pub fn key_loop(s: &Session) -> Option<(TrackId, BusId)> {
+    s.tracks.iter().find_map(|t| key_reads(t).find(|b| key_feeds_back(s, t.id, *b)).map(|b| (t.id, b)))
+}
+
+/// Strips that read no busses first, then the ones that do, ordered so bus producers come
+/// before consumers.
 fn processing_order(s: &Session) -> Vec<usize> {
-    let mut order: Vec<usize> =
-        (0..s.tracks.len()).filter(|&i| s.tracks.get(i).is_some_and(|t| !matches!(t.kind, TrackKind::Aux | TrackKind::Folder))).collect();
-    let mut auxes: Vec<usize> =
-        (0..s.tracks.len()).filter(|&i| s.tracks.get(i).is_some_and(|t| matches!(t.kind, TrackKind::Aux | TrackKind::Folder))).collect();
-    // Depth = how many aux hops feed this aux's input bus (bounded; cycles cap out).
+    let mut order: Vec<usize> = (0..s.tracks.len()).filter(|&i| s.tracks.get(i).is_some_and(|t| !reads_busses(t))).collect();
+    let mut readers: Vec<usize> = (0..s.tracks.len()).filter(|&i| s.tracks.get(i).is_some_and(reads_busses)).collect();
+    // Depth = how many reader hops feed the busses this strip reads (bounded; cycles cap out).
     let depth = |i: usize| -> usize {
         let mut d = 0;
         let mut cur = vec![i];
         for _ in 0..8 {
-            let inputs: Vec<&Route> = cur.iter().filter_map(|&k| s.tracks.get(k)).map(|t| &t.mixer.input).collect();
-            let feeders: Vec<usize> = auxes_feeding(s, &inputs);
+            let reads: Vec<BusId> = cur.iter().filter_map(|&k| s.tracks.get(k)).flat_map(bus_reads).collect();
+            let feeders: Vec<usize> = readers_feeding(s, &reads);
             if feeders.is_empty() {
                 break;
             }
@@ -1321,21 +1403,13 @@ fn processing_order(s: &Session) -> Vec<usize> {
         }
         d
     };
-    auxes.sort_by_key(|&i| depth(i));
-    order.extend(auxes);
+    readers.sort_by_key(|&i| depth(i));
+    order.extend(readers);
     order
 }
 
-fn auxes_feeding(s: &Session, inputs: &[&Route]) -> Vec<usize> {
-    s.tracks
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| matches!(t.kind, TrackKind::Aux | TrackKind::Folder))
-        .filter(|(_, t)| {
-            inputs.iter().any(|r| matches!(r, Route::Bus(_)) && (&&t.mixer.output == r || t.mixer.sends.iter().flatten().any(|sn| &&sn.target == r)))
-        })
-        .map(|(i, _)| i)
-        .collect()
+fn readers_feeding(s: &Session, reads: &[BusId]) -> Vec<usize> {
+    s.tracks.iter().enumerate().filter(|(_, t)| reads_busses(t) && bus_writes(t).any(|b| reads.contains(&b))).map(|(i, _)| i).collect()
 }
 
 /// Implicit solo: an aux is not muted when a soloed track feeds its input bus.
@@ -2186,6 +2260,25 @@ pub fn render_clips(s: &Session, track: TrackId, range: Range) -> Vec<Vec<f32>> 
 
 /// Render one track through its inserts (pre-fader) — Commit / Freeze.
 pub fn render_track_pre_fader(s: &Session, track: TrackId, range: Range) -> Vec<Vec<f32>> {
+    // The tracks that feed the track's key inputs keep playing, heard only through the busses
+    // that lead there, or a keyed gate would commit silence.
+    let mut need: Vec<BusId> = s.track(track).map(|t| key_reads(t).collect()).unwrap_or_default();
+    let mut keep: Vec<TrackId> = Vec::new();
+    let mut next = 0;
+    while let Some(&b) = need.get(next) {
+        for o in s.tracks.iter().filter(|o| o.id != track && bus_writes(o).any(|w| w == b)) {
+            if keep.contains(&o.id) {
+                continue;
+            }
+            keep.push(o.id);
+            for r in bus_reads(o) {
+                if !need.contains(&r) {
+                    need.push(r);
+                }
+            }
+        }
+        next += 1;
+    }
     let mut solo = s.clone();
     // Multichannel tracks render into a main mix of their own format (straight through).
     let fmt = s.track(track).map_or(ChannelFormat::Stereo, |t| if t.channels() > 2 { t.format } else { ChannelFormat::Stereo });
@@ -2203,6 +2296,17 @@ pub fn render_track_pre_fader(s: &Session, track: TrackId, range: Range) -> Vec<
             t.automation.retain(|l| matches!(l.param, AutoParam::Plugin { .. }));
             t.mixer.sends.iter_mut().for_each(|x| *x = None);
             t.mixer.surround = None;
+        } else if keep.contains(&t.id) {
+            t.mixer.solo = false;
+            let feeds = |r: &Route| matches!(r, Route::Bus(b) if need.contains(b));
+            if !feeds(&t.mixer.output) {
+                t.mixer.output = Route::None;
+            }
+            for snd in &mut t.mixer.sends {
+                if snd.as_ref().is_some_and(|x| !feeds(&x.target)) {
+                    *snd = None;
+                }
+            }
         } else {
             t.inactive = true;
         }

@@ -290,6 +290,11 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
             tr.mixer.output = keep.1;
             tr.mixer.vca = keep.2;
             tr.mixer.record_arm = keep.3;
+            // Key inputs name this session's busses too.
+            for ins in tr.mixer.inserts.iter_mut().flatten().filter(|i| i.key.is_some()) {
+                ins.key = None;
+                ins.params.insert("ext_key".to_string(), 0.0);
+            }
             if tr.mixer.pan.len() != keep.4.len() {
                 tr.mixer.pan = keep.4;
             }
@@ -613,6 +618,24 @@ mod tests {
         assert_eq!(hats.mixer.inserts[0].as_ref().map(|i| i.plugin.as_str()), Some("compressor"));
         assert_eq!(hats.mixer.volume_db, -5.0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_preset_leaves_key_inputs_behind() {
+        let dir = std::env::temp_dir().join(format!("sc-preset-key-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bass.json").to_string_lossy().into_owned();
+        let mut e = crate::demo::demo_engine();
+        e.execute("mix.send", &json!({"track": "Kick", "slot": 1, "bus": "Kick Key"})).unwrap();
+        e.execute("mix.insert_key", &json!({"track": "Bass", "slot": 0, "bus": "Kick Key"})).unwrap();
+        e.execute("edit.select", &json!({"tracks": ["Bass"]})).unwrap();
+        e.execute("track.save_preset", &json!({"path": path})).unwrap();
+        e.execute("edit.select", &json!({"tracks": ["Hats"]})).unwrap();
+        e.execute("track.load_preset", &json!({"path": path})).unwrap();
+        let ins = e.session().track_by_name("Hats").unwrap().mixer.inserts[0].clone().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(ins.plugin, "compressor");
+        assert_eq!((ins.key, ins.params["ext_key"]), (None, 0.0));
     }
 
     #[test]

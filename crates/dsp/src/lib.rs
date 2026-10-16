@@ -201,6 +201,12 @@ pub trait Plugin: Send {
     fn param(&self, id: &str) -> Option<f32>;
     /// In-place processing of `channels` planar buffers each `frames` long.
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize);
+    /// Like `process`, with a key (sidechain) signal: planar, any channel count, at least
+    /// `frames` long where it matters. Plugins with a key input ([`takes_key`]) detect on it
+    /// while their External Key is on; every other plugin ignores it.
+    fn process_keyed(&mut self, io: &mut [Vec<f32>], _key: &[Vec<f32>], frames: usize) {
+        self.process(io, frames);
+    }
     /// Processing latency in samples (for delay compensation).
     fn latency(&self) -> usize {
         0
@@ -340,6 +346,11 @@ pub fn create(id: &str) -> Option<Box<dyn Plugin>> {
 /// Looks up a plugin description by id.
 pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
     plugins::REGISTRY.iter().copied().find(|i| i.id == id)
+}
+
+/// Whether a built-in plugin has a key (sidechain) input, see [`Plugin::process_keyed`].
+pub fn takes_key(id: &str) -> bool {
+    matches!(id, "compressor" | "expander_gate")
 }
 
 /// Whether a plugin makes sound instead of processing its input (it ignores the input).

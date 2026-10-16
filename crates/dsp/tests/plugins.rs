@@ -282,6 +282,60 @@ fn gate_closes_below_threshold() {
     assert!(g.abs() < 0.5, "open gate changed level {g}");
 }
 
+fn run_keyed(p: &mut dyn Plugin, input: &[Vec<f32>], key: &[Vec<f32>]) -> Vec<Vec<f32>> {
+    let len = input[0].len();
+    let mut out = vec![Vec::with_capacity(len); input.len()];
+    let mut pos = 0;
+    while pos < len {
+        let n = BLOCK.min(len - pos);
+        let mut buf: Vec<Vec<f32>> = input.iter().map(|c| c[pos..pos + n].to_vec()).collect();
+        let k: Vec<Vec<f32>> = key.iter().map(|c| c[pos..pos + n].to_vec()).collect();
+        p.process_keyed(&mut buf, &k, n);
+        for (o, b) in out.iter_mut().zip(&buf) {
+            o.extend_from_slice(b);
+        }
+        pos += n;
+    }
+    out
+}
+
+#[test]
+fn compressor_external_key_detects_on_the_key() {
+    let mut p = prepared("compressor");
+    p.set_param("threshold", -20.0);
+    p.set_param("attack", 1.0);
+    let quiet = vec![vec![db_to_gain(-40.0); 48_000]; 2];
+    let loud = vec![vec![db_to_gain(-6.0); 48_000]];
+    let silent = vec![vec![0.0; 48_000]];
+    let change = |out: &[Vec<f32>], x: &[Vec<f32>]| gain_to_db(out[0][47_999] / x[0][47_999]);
+    // The key is ignored until External Key is on.
+    let out = run_keyed(p.as_mut(), &quiet, &loud);
+    assert!(change(&out, &quiet).abs() < 0.1, "keyed without External Key: {}", change(&out, &quiet));
+    p.set_param("ext_key", 1.0);
+    p.reset();
+    let out = run_keyed(p.as_mut(), &quiet, &loud);
+    assert!(change(&out, &quiet) < -5.0, "a loud key should duck a quiet signal: {}", change(&out, &quiet));
+    p.reset();
+    let loud_own = vec![vec![db_to_gain(-6.0); 48_000]; 2];
+    let out = run_keyed(p.as_mut(), &loud_own, &silent);
+    assert!(change(&out, &loud_own).abs() < 0.1, "a silent key leaves a loud signal alone: {}", change(&out, &loud_own));
+}
+
+#[test]
+fn gate_external_key_opens_on_the_key() {
+    let mut p = prepared("expander_gate");
+    p.set_param("threshold", -20.0);
+    p.set_param("ext_key", 1.0);
+    let own = vec![sine(300.0, db_to_gain(-30.0), 48_000)];
+    let open = run_keyed(p.as_mut(), &own, &[vec![db_to_gain(-6.0); 48_000]]);
+    let g = gain_to_db(peak(&open[0][24_000..]) / peak(&own[0][24_000..]));
+    assert!(g.abs() < 0.5, "a loud key should hold the gate open: {g}");
+    p.reset();
+    let closed = run_keyed(p.as_mut(), &own, &[vec![0.0; 48_000]]);
+    let g = gain_to_db(peak(&closed[0][24_000..]) / peak(&own[0][24_000..]));
+    assert!(g < -40.0, "a silent key should close the gate: {g}");
+}
+
 #[test]
 fn maximizer_respects_ceiling_and_reports_latency() {
     let mut p = prepared("maximizer");

@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (G-01: audio device settings and opt-in ASIO) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (G-13: key input for the built-in dynamics) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -27,7 +27,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | G-10 | No control surfaces (HUI/MCU, EUCON) | Hardware | [hardware-parity.md](hardware-parity.md) | 40–70 |
 | G-11 | No external sync (MTC, LTC, MIDI clock, video reference) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
 | G-12 | Immersive delivery: no Dolby Atmos/ADM BWF, MPEG-H, binaural | Features | [file-format-parity.md](file-format-parity.md) | 50–80 |
-| G-13 | Sidechain inputs, ARA, out-of-process plugin sandboxing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 30–50 |
+| G-13 | Sidechain inputs for third-party plugins, ARA, out-of-process plugin sandboxing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 30–50 |
 | G-14 | Windows/Linux/Web exercised only lightly at runtime; no PR CI running the tests | Platforms / Stability | this file | 20–40 |
 | G-15 | Elastic Audio depth: one algorithm, no Elastic Pitch | Features | [target-app-parity.md](target-app-parity.md) | 30–45 |
 | G-16 | Session templates, track presets, workspace browser, batch rename | Features | [target-app-parity.md](target-app-parity.md) | 25–40 |
@@ -146,8 +146,10 @@ SDKs are licensed, so we'd write our own ADM and object renderer.
 
 ### G-13. Plugin ecosystem depth
 
-No sidechain (key input) buses for any host; no ARA (Melodyne-style editing is a menu in Pro
-Tools); plugins run in-process, so a crashing plugin can take the session down. ≈ 30–50 h. AAX
+The built-in Compressor/Limiter and Expander/Gate take a key input from a bus (`mix.insert_key`,
+the Key menu in the plug-in window, an External Key parameter), but no host gives third-party
+plugins their sidechain buses (#502); the De-Esser has no key input, there is no Key Listen, and
+the key path is not delay-compensated. No ARA (Melodyne-style editing is a menu in Pro Tools); plugins run in-process, so a crashing plugin can take the session down. ≈ 30–50 h. AAX
 cannot be hosted (#109): Avid's AAX SDK licence and PACE signing; owner decision, likely never.
 
 ### G-14. Platforms and CI
@@ -199,6 +201,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | minor | G-13 shrunk: key input from a bus for the built-in Compressor/Limiter and Expander/Gate |
 | 2026-10-12 | minor | G-01 shrunk: audio device, rate and buffer choice; opt-in ASIO |
 | 2026-10-10 | minor | Marked the alpha blockers (G-01, G-02, G-03; parts of G-05 and G-06) from the core-workflow gate |
 | 2026-10-10 | major | Created from the full re-measure against Pro Tools Ultimate 2026.4.1: 22 ranked gaps with evidence and estimates |

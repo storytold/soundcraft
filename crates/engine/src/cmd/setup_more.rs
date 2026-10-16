@@ -264,6 +264,10 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
                         *slot = None;
                     }
                 }
+                for ins in t.mixer.inserts.iter_mut().flatten().filter(|i| i.key == Some(bid)) {
+                    ins.key = None;
+                    ins.params.insert("ext_key".to_string(), 0.0);
+                }
             }
         }
         "create_output" => {
@@ -505,6 +509,20 @@ mod tests {
         assert!(e.session().edit.flag("options.midi_thru"));
         e.execute("options.midi_thru", &json!({"value": false})).unwrap();
         assert!(!e.session().edit.flag("options.midi_thru"));
+    }
+
+    #[test]
+    fn deleting_a_key_bus_clears_the_key() {
+        let mut e = crate::demo::demo_engine();
+        e.execute("mix.send", &json!({"track": "Kick", "slot": 1, "bus": "Kick Key"})).unwrap();
+        e.execute("mix.insert_key", &json!({"track": "Bass", "slot": 0, "bus": "Kick Key"})).unwrap();
+        e.execute("mix.insert_key", &json!({"track": "Kick", "slot": 1, "bus": "Verb"})).unwrap();
+        e.execute("setup.io", &json!({"action": "delete_bus", "name": "Kick Key"})).unwrap();
+        let ins = |track: &str, slot: usize| e.session().track_by_name(track).unwrap().mixer.inserts[slot].clone().unwrap();
+        assert_eq!((ins("Bass", 0).key, ins("Bass", 0).params["ext_key"]), (None, 0.0));
+        // Another bus's key stays.
+        let verb = e.session().bus_by_name("Verb").unwrap().id;
+        assert_eq!((ins("Kick", 1).key, ins("Kick", 1).params["ext_key"]), (Some(verb), 1.0));
     }
 
     #[test]

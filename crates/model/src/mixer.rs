@@ -441,6 +441,10 @@ pub struct Insert {
     /// The session audio source a sample-playing instrument (the built-in Sampler) plays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample: Option<SourceId>,
+    /// Key input (sidechain): the bus whose signal drives the plugin's detector when its
+    /// External Key is on. Only plugins with a key input use it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<BusId>,
 }
 
 fn yes() -> bool {
@@ -457,6 +461,7 @@ impl Insert {
             preset: String::from("<factory default>"),
             state: None,
             sample: None,
+            key: None,
         }
     }
 
