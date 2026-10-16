@@ -765,12 +765,14 @@ impl MixEngine {
                         }
                     }
                 }
+                // Match track faders: the next block's first sample must not ramp this one.
+                let last = pos.saturating_add(frames.saturating_sub(1) as i64);
                 let v0 = volume_db_at(t, pos);
-                let v1 = volume_db_at(t, pos + frames as i64);
+                let v1 = volume_db_at(t, last);
                 for (ch, src) in strip.buf.iter().enumerate().take(self.main.len()) {
                     if let Some(m) = self.main.get_mut(ch) {
                         for i in 0..frames {
-                            let g = lerp_gain(v0, v1, i, frames);
+                            let g = lerp_gain(v0, v1, i, frames.saturating_sub(1));
                             if let (Some(d), Some(x)) = (m.get_mut(i), src.get(i)) {
                                 *d = x * g;
                             }
@@ -2471,6 +2473,52 @@ mod tests {
         let out = render_range(&s, Range::new(0, 48_000), 512);
         assert!(out[0][100] > 0.3);
         assert!(out[0][30_000].abs() < 1e-4);
+    }
+
+    #[test]
+    fn master_volume_breakpoint_does_not_ramp_the_previous_block() {
+        for block in [1, 2, 37, 512, 1024] {
+            let start = 37;
+            let boundary = start + block as i64;
+            let end = boundary + block as i64;
+            let (mut s, t) = session_with_dc(0.5, end as usize);
+            s.track_mut(t).unwrap().mixer.pan = vec![-1.0];
+            let master = s.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+            let lane = s.track_mut(master).unwrap().lane_mut(&AutoParam::Volume);
+            lane.set_point(start, 0.0);
+            lane.set_point(boundary - 1, 0.0);
+            lane.set_point(boundary, -60.0);
+            lane.set_point(end - 1, -60.0);
+
+            let mut mixer = MixEngine::new(48_000.0, block);
+            let mut out = vec![vec![0.0; block]; 2];
+            for (pos, expected) in [(start, 0.5), (boundary, 0.0005)] {
+                mixer.render(&s, pos, block, &mut out);
+                for (i, &sample) in out[0].iter().enumerate() {
+                    assert!((sample - expected).abs() < 1e-6, "block {block}, position {pos}, sample {i}: {sample} vs {expected}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn master_volume_ramp_reaches_the_last_sample_of_the_block() {
+        for block in [2, 37, 512, 1024] {
+            let start = 37;
+            let end = start + block as i64;
+            let (mut s, t) = session_with_dc(0.5, end as usize);
+            s.track_mut(t).unwrap().mixer.pan = vec![-1.0];
+            let master = s.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+            let lane = s.track_mut(master).unwrap().lane_mut(&AutoParam::Volume);
+            lane.set_point(start, 0.0);
+            lane.set_point(end - 1, -12.0);
+
+            let out = render_range(&s, Range::new(start, end), block);
+            assert_eq!(out[0].len(), block);
+            assert!((out[0][0] - 0.5).abs() < 1e-6);
+            let expected = 0.5 * db_to_gain(-12.0);
+            assert!((out[0][block - 1] - expected).abs() < 1e-6, "block {block}: {} vs {expected}", out[0][block - 1]);
+        }
     }
 
     #[test]
