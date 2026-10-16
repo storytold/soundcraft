@@ -129,6 +129,15 @@ pub fn instance_specs(s: &Session) -> Vec<InstanceSpec> {
     out
 }
 
+/// Borrow the identity/width of one hosted slot without decoding stored plugin state.
+/// Inactive and master tracks follow the same strip policy as [`instance_specs`].
+pub fn instance_identity(s: &Session, track: TrackId, slot: usize) -> Option<(&str, usize)> {
+    let track = s.track(track)?;
+    let channels = strip_channels(track, main_channels(s));
+    let insert = if slot == INSTRUMENT_SLOT { track.instrument.as_ref()? } else { track.mixer.inserts.get(slot)?.as_ref()? };
+    is_third_party(&insert.plugin).then_some((insert.plugin.as_str(), if slot == INSTRUMENT_SLOT { channels.max(2) } else { channels }))
+}
+
 /// A plugin made by [`create_instance`].
 pub struct NewInstance {
     pub plugin: Box<dyn Plugin>,
@@ -454,8 +463,13 @@ impl MixEngine {
 
     /// Takes instances created off the audio thread; the next render's `sync` places them.
     /// An earlier instance waiting for the same slot is retired.
-    pub fn adopt(&mut self, instances: Vec<PreparedInstance>) {
-        for p in instances {
+    pub fn adopt(&mut self, mut instances: Vec<PreparedInstance>) {
+        self.adopt_from(&mut instances);
+    }
+
+    /// Adopt prepared processors while leaving their emptied publication storage with its owner.
+    pub fn adopt_from(&mut self, instances: &mut Vec<PreparedInstance>) {
+        for p in instances.drain(..) {
             if let Some(old) = self.adopt.insert((p.track, p.slot), p) {
                 self.retired.push(old.plugin);
             }
