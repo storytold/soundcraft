@@ -27,6 +27,7 @@ pub mod shortcuts;
 pub mod spot;
 pub mod theme;
 pub mod toolbar;
+mod track_bounce_dialog;
 pub mod video_track;
 pub mod video_window;
 pub mod waveform;
@@ -989,6 +990,9 @@ impl SoundApp {
         for r in reqs {
             match r {
                 TransportRequest::ResetSession => {
+                    if matches!(self.dialogs.open, Some(dialogs::Dialog::TrackBounce(_))) {
+                        self.dialogs.open = None;
+                    }
                     if let Some(p) = &self.player {
                         p.stop();
                         p.set_recording(false);

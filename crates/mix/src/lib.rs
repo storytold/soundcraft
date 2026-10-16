@@ -61,6 +61,8 @@ use std::collections::HashMap;
 use std::ops::Bound;
 use std::sync::Arc;
 
+pub mod track_bounce;
+
 /// Default (stereo) main mix width. The actual width is [`main_channels`].
 pub const MAIN_CHANNELS: usize = 2;
 
@@ -229,6 +231,10 @@ struct Strip {
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     chase: bool,
     muted: bool,
+    /// Export-only volume bypass. Ordinary/realtime strips always leave this false.
+    skip_volume: bool,
+    /// Export tail: stop clip input/new note scheduling while processors keep ringing.
+    skip_source: bool,
     gr: f32,
     /// Per-clip effect chains (Clip Effects) and a scratch buffer to render clips into.
     clip_fx: HashMap<u64, ClipFx>,
@@ -312,6 +318,8 @@ impl Strip {
             held: Vec::new(),
             chase: true,
             muted: false,
+            skip_volume: false,
+            skip_source: false,
             gr: 0.0,
             clip_fx: HashMap::new(),
             clipbuf: Vec::new(),
@@ -928,7 +936,7 @@ fn process_strip(
         }
         TrackKind::Audio if live.monitor_only => {}
         TrackKind::Instrument | TrackKind::Midi if live.monitor_only => {}
-        TrackKind::Audio => {
+        TrackKind::Audio if !strip.skip_source => {
             let block = Range { start: pos, end: pos.saturating_add(frames as i64) };
             for clip in t.clips() {
                 if clip.muted || !clip.is_audio() || !clip.range().overlaps(&block) {
@@ -989,10 +997,12 @@ fn process_strip(
                     apply_params(inst, ins, t, INSTRUMENT_SLOT, pos);
                 }
                 inst.plugin.set_transport(&transport);
-                if std::mem::take(&mut strip.chase) {
-                    chase_controllers(s, t, pos, inst);
+                if !strip.skip_source {
+                    if std::mem::take(&mut strip.chase) {
+                        chase_controllers(s, t, pos, inst);
+                    }
+                    schedule_notes(s, t, pos, frames, inst, &mut strip.held);
                 }
-                schedule_notes(s, t, pos, frames, inst, &mut strip.held);
                 if strip.buf.len() >= 2 {
                     inst.plugin.process(&mut strip.buf, frames);
                 } else if let Some(c0) = strip.buf.first_mut() {
@@ -1053,14 +1063,15 @@ fn process_strip(
     // Endpoints are the first and last sample of this block. The next block starts on its own
     // first sample, so a breakpoint there does not ramp the block before it.
     let last = pos.saturating_add(frames.saturating_sub(1) as i64);
-    let mut v0 = volume_db_at(t, pos);
-    let mut v1 = volume_db_at(t, last);
+    let mut v0 = if strip.skip_volume { 0.0 } else { volume_db_at(t, pos) };
+    let mut v1 = if strip.skip_volume { 0.0 } else { volume_db_at(t, last) };
     // Trim automation (an offset on top of the volume curve).
-    if let Some(l) = t
-        .automation
-        .iter()
-        .find(|l| matches!(&l.param, AutoParam::Plugin { slot: u8::MAX, param } if param == "trim"))
-        .filter(|l| !l.points.is_empty())
+    if !strip.skip_volume
+        && let Some(l) = t
+            .automation
+            .iter()
+            .find(|l| matches!(&l.param, AutoParam::Plugin { slot: u8::MAX, param } if param == "trim"))
+            .filter(|l| !l.points.is_empty())
     {
         v0 += l.value_at(pos, 0.0);
         v1 += l.value_at(last, 0.0);
@@ -1069,8 +1080,10 @@ fn process_strip(
     if let Some(vid) = t.mixer.vca
         && let Some(vca) = s.tracks.iter().find(|x| x.id.0 == vid && x.kind == TrackKind::Vca)
     {
-        v0 += volume_db_at(vca, pos);
-        v1 += volume_db_at(vca, last);
+        if !strip.skip_volume {
+            v0 += volume_db_at(vca, pos);
+            v1 += volume_db_at(vca, last);
+        }
         if vca.mixer.mute {
             strip.muted = true;
         }

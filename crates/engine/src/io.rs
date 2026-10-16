@@ -1410,6 +1410,220 @@ pub fn live_span(start: Samples, pass: Option<Samples>, punch: Option<Range>, le
     Some((origin, span.intersect(&punch.unwrap_or(span))?))
 }
 
+/// Check a new Track Bounce destination inside the active automation write root.
+pub(crate) fn check_new_track_bounce_destination(path: &Path) -> Result<()> {
+    crate::file_access::check_write(path).map_err(EngineError::Io)?;
+    if path.file_name().and_then(|n| n.to_str()).is_none_or(|n| n.is_empty() || n == "." || n == "..") {
+        return Err(EngineError::BadParams("track.bounce".into(), "destination needs a file name".into()));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => return Err(EngineError::BadParams("track.bounce".into(), format!("destination already exists: {}", path.display()))),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(EngineError::Io(err.to_string())),
+        }
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        if !std::fs::metadata(parent).is_ok_and(|m| m.is_dir() && !m.permissions().readonly()) {
+            return Err(EngineError::BadParams("track.bounce".into(), "destination directory must exist and be writable".into()));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+pub(crate) mod track_bounce_files {
+    use super::*;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    struct Owned {
+        path: PathBuf,
+        metadata: std::fs::Metadata,
+    }
+
+    impl Owned {
+        fn verify(&self) -> std::io::Result<()> {
+            crate::file_access::check_write(&self.path).map_err(std::io::Error::other)?;
+            use std::os::unix::fs::MetadataExt;
+            let current = std::fs::symlink_metadata(&self.path)?;
+            if current.dev() == self.metadata.dev() && current.ino() == self.metadata.ino() {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("file identity changed; preserved"))
+            }
+        }
+        fn remove(&self) -> std::io::Result<()> {
+            crate::file_access::check_write(&self.path).map_err(std::io::Error::other)?;
+            let current = match std::fs::symlink_metadata(&self.path) {
+                Ok(m) => m,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(err) => return Err(err),
+            };
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if current.dev() == self.metadata.dev() && current.ino() == self.metadata.ino() {
+                    return std::fs::remove_file(&self.path);
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = (&current, &self.metadata);
+            // No portable identity proof: preserve replaced/unverifiable paths, report them.
+            Err(std::io::Error::other("output identity changed or cannot be verified; preserved"))
+        }
+    }
+
+    fn stage(path: &Path, bytes: &[u8]) -> Result<Owned> {
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        for _ in 0..64 {
+            let tmp = parent.join(format!(".soundcraft-bounce-{}-{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            crate::file_access::check_write(&tmp).map_err(EngineError::Io)?;
+            let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+                Ok(f) => f,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(EngineError::Io(format!("{}: {err}", tmp.display()))),
+            };
+            let metadata = file
+                .metadata()
+                .map_err(|err| EngineError::Io(format!("cannot establish staging identity; retained path {}: {err}", tmp.display())))?;
+            let owned = Owned { path: tmp, metadata };
+            if let Err(err) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+                let cleanup = owned.remove().err().map_or(String::new(), |err| format!("; staging preserved at {}: {err}", owned.path.display()));
+                return Err(EngineError::Io(format!("write failed: {err}{cleanup}")));
+            }
+            return Ok(owned);
+        }
+        Err(EngineError::Io("cannot reserve a unique staging file".into()))
+    }
+
+    /// Stage each encoded delivery, then publish without replacing existing destination names.
+    pub(crate) fn deliver(paths: &[PathBuf], mut encode: impl FnMut(usize) -> Result<Vec<u8>>) -> Result<Vec<usize>> {
+        let mut staging = Vec::new();
+        let mut published = Vec::new();
+        let mut sizes = Vec::new();
+        let result: Result<()> = (|| {
+            for (index, path) in paths.iter().enumerate() {
+                crate::file_access::check_write(path).map_err(EngineError::Io)?;
+                let bytes = encode(index)?;
+                sizes.push(bytes.len());
+                staging.push(stage(path, &bytes)?);
+            }
+            publish(&staging, paths, &mut published)?;
+            Ok(())
+        })();
+        finish(&staging, &published, result)?;
+        Ok(sizes)
+    }
+
+    fn publish(staging: &[Owned], paths: &[PathBuf], published: &mut Vec<Owned>) -> Result<()> {
+        for (path, tmp) in paths.iter().zip(staging) {
+            crate::file_access::check_write(path).map_err(EngineError::Io)?;
+            tmp.verify().map_err(|err| EngineError::Io(format!("staging identity unavailable; preserved {}: {err}", tmp.path.display())))?;
+            // Same directory/filesystem; exclusive hard links never replace a destination.
+            std::fs::hard_link(&tmp.path, path)
+                .map_err(|err| EngineError::Io(format!("cannot publish {} without overwrite: {err}", path.display())))?;
+            published.push(Owned { path: path.clone(), metadata: tmp.metadata.clone() });
+            // The source path can change between verification and link. Verify the final too;
+            // an unverified final remains tracked for retained-path reporting, never blind unlink.
+            published
+                .last()
+                .ok_or_else(|| EngineError::Io("missing publication ownership".into()))?
+                .verify()
+                .map_err(|err| EngineError::Io(format!("published identity unavailable; preserved {}: {err}", path.display())))?;
+        }
+        Ok(())
+    }
+
+    fn finish(staging: &[Owned], published: &[Owned], result: Result<()>) -> Result<()> {
+        let mut residual = Vec::new();
+        if result.is_err() {
+            for f in published {
+                if f.remove().is_err() {
+                    residual.push(f.path.display().to_string());
+                }
+            }
+        }
+        for f in staging {
+            if f.remove().is_err() {
+                residual.push(f.path.display().to_string());
+            }
+        }
+        if let Err(err) = result {
+            return Err(EngineError::Io(format!("{err}; retained paths requiring cleanup: {}", residual.join(", "))));
+        }
+        if !residual.is_empty() {
+            return Err(EngineError::Io(format!(
+                "files delivered: {}; staging requiring cleanup: {}",
+                published.iter().map(|f| f.path.display().to_string()).collect::<Vec<_>>().join(", "),
+                residual.join(", ")
+            )));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        fn dir() -> PathBuf {
+            let p = std::env::temp_dir().join(format!("sc-bounce-publish-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            std::fs::create_dir(&p).unwrap();
+            p
+        }
+        #[test]
+        fn late_collision_rolls_back_only_created_paths() {
+            let dir = dir();
+            let a = dir.join("a.wav");
+            let b = dir.join("b.wav");
+            let staged = vec![stage(&a, b"first").unwrap(), stage(&b, b"second").unwrap()];
+            std::fs::write(&b, b"external").unwrap();
+            let mut published = Vec::new();
+            let result = publish(&staged, &[a.clone(), b.clone()], &mut published);
+            assert!(finish(&staged, &published, result).is_err());
+            assert!(!a.exists());
+            assert_eq!(std::fs::read(&b).unwrap(), b"external");
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+        #[test]
+        fn replaced_staging_and_final_are_preserved_and_reported() {
+            let dir = dir();
+            let path = dir.join("output.wav");
+            let staged = vec![stage(&path, b"ours").unwrap()];
+            let mut published = Vec::new();
+            publish(&staged, std::slice::from_ref(&path), &mut published).unwrap();
+            // Rename replacements over live owned inodes, so inode reuse cannot hide the change.
+            let replacement = dir.join("replacement");
+            std::fs::write(&replacement, b"external-final").unwrap();
+            std::fs::rename(&replacement, &path).unwrap();
+            std::fs::write(&replacement, b"external-stage").unwrap();
+            std::fs::rename(&replacement, &staged[0].path).unwrap();
+            assert!(published[0].verify().is_err(), "a replacement must fail post-link identity verification");
+            let err = finish(&staged, &published, Err(EngineError::Io("synthetic late failure".into()))).unwrap_err().to_string();
+            assert!(err.contains(&path.display().to_string()));
+            assert!(err.contains(&staged[0].path.display().to_string()));
+            assert_eq!(std::fs::read(&path).unwrap(), b"external-final");
+            assert_eq!(std::fs::read(&staged[0].path).unwrap(), b"external-stage");
+            let mut outputs = Vec::new();
+            assert!(publish(&staged, &[dir.join("other.wav")], &mut outputs).is_err());
+            assert!(!dir.join("other.wav").exists());
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+        #[test]
+        fn publication_link_failure_cleans_owned_staging() {
+            let dir = dir();
+            let path = dir.join("output.wav");
+            let staged = vec![stage(&path, b"ours").unwrap()];
+            let mut published = Vec::new();
+            let result = publish(&staged, &[dir.join("missing/output.wav")], &mut published);
+            assert!(finish(&staged, &published, result).is_err());
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+            std::fs::remove_dir(dir).unwrap();
+        }
+    }
+}
+
 #[cfg(test)]
 mod record_tests {
     use super::*;
