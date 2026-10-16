@@ -4,6 +4,19 @@
 use crate::pcm::{be_u16, be_u32, be_u64};
 use crate::{AudioError, Result};
 
+/// Compressed packets are allocated whole by the demuxer, before any short-read check.
+const MAX_PACKET_BYTES: u64 = 16 * 1024 * 1024;
+
+fn check_packet_size(size: u64, file_bytes: usize) -> Result<()> {
+    if size > file_bytes as u64 {
+        return Err(malformed("packet"));
+    }
+    if size > MAX_PACKET_BYTES {
+        return Err(AudioError::TooLarge("CAF packet exceeds the 16 MiB packet limit".into()));
+    }
+    Ok(())
+}
+
 /// Refuse the CAF stream at `at` if its magic cookie, packet table or packets claim more bytes
 /// than the file holds.
 pub(crate) fn check(b: &[u8], at: usize) -> Result<()> {
@@ -18,19 +31,19 @@ fn malformed(what: &str) -> AudioError {
 /// the declared size, and after a `data` chunk of unknown size it reads on into the audio.
 fn chunks(b: &[u8], mut pos: usize) -> Result<()> {
     // Whether the packet table lists each packet's size and frame count (variable per packet).
-    let (mut lists_sizes, mut lists_frames, mut described) = (false, false, false);
+    let (mut bytes_per_packet, mut lists_frames, mut described) = (0, false, false);
     while let (Some(kind), Some(size)) = (b.get(pos..pos + 4), be_u64(b, pos + 4)) {
         let (body, size) = (pos + 12, size as i64);
         let used = match kind {
             b"desc" if size == 32 => {
-                lists_sizes = be_u32(b, body + 16) == Some(0);
+                bytes_per_packet = be_u32(b, body + 16).unwrap_or(0);
                 lists_frames = be_u32(b, body + 20) == Some(0);
                 described = true;
                 Some(32)
             }
             b"data" if size == -1 => Some(4),
             b"chan" if size >= 12 => be_u32(b, body + 8).map(|n| 12 + u64::from(n) * 20),
-            b"pakt" if size >= 24 && described => packet_table(b, body, lists_sizes, lists_frames)?,
+            b"pakt" if size >= 24 && described => packet_table(b, body, bytes_per_packet, lists_frames)?,
             b"kuki" if size >= 0 && size as u64 > b.len().saturating_sub(body) as u64 => return Err(malformed("magic cookie")),
             b"desc" | b"pakt" | b"chan" => None,
             _ => u64::try_from(size).ok(),
@@ -46,22 +59,23 @@ fn chunks(b: &[u8], mut pos: usize) -> Result<()> {
 /// Check a packet table's count and packet sizes; returns the bytes symphonia reads for it, or
 /// None where symphonia stops. It reserves room for every packet before reading any, so a table
 /// it would refuse after that, or that runs past the file, is refused first.
-fn packet_table(b: &[u8], body: usize, lists_sizes: bool, lists_frames: bool) -> Result<Option<u64>> {
+fn packet_table(b: &[u8], body: usize, bytes_per_packet: u32, lists_frames: bool) -> Result<Option<u64>> {
     let valid = |at: usize| be_u64(b, at).filter(|&n| n as i64 >= 0);
     let (Some(packets), Some(_)) = (valid(body), valid(body + 8)) else { return Ok(None) };
     let mut at = body + 24;
     if packets > b.len().saturating_sub(at) as u64 {
         return Err(malformed("packet table"));
     }
-    if !lists_sizes && !lists_frames {
+    if bytes_per_packet != 0 && !lists_frames {
         return if packets == 0 { Ok(Some(24)) } else { Err(AudioError::Malformed("a constant bit rate CAF lists packets".into())) };
     }
+    if packets != 0 {
+        check_packet_size(u64::from(bytes_per_packet), b.len())?;
+    }
     for _ in 0..packets {
-        if lists_sizes {
+        if bytes_per_packet == 0 {
             let Some((size, len)) = varint(b, at) else { return Err(malformed("packet table")) };
-            if size > b.len() as u64 {
-                return Err(malformed("packet"));
-            }
+            check_packet_size(size, b.len())?;
             at += len;
         }
         if lists_frames {

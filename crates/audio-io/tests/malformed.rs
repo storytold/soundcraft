@@ -210,6 +210,42 @@ fn well_formed_caf_still_reads() {
     assert_eq!(probe(&aac, None).unwrap().frames, 3072);
 }
 
+#[test]
+fn caf_fixed_packet_size_is_checked_before_demux_allocation() {
+    // A tiny fixture: the old decoder accepts the description, allocates a 512-byte
+    // compressed packet, then treats the short read as a successful empty decode.
+    let table = packet_table(1, 1024, &[0x88, 0]);
+    let file = caf(&[caf_desc(b"aac ", 512, 0, 2, 0), (b"pakt", table.len() as i64, table), (b"data", 8, vec![0; 8])]);
+    for result in [probe(&file, None).map(|_| ()), decode(&file, None).map(|_| ())] {
+        assert!(matches!(result, Err(AudioError::Malformed(ref m)) if m.contains("packet")), "{result:?}");
+    }
+}
+
+#[test]
+fn caf_packet_budget_covers_fixed_and_variable_sizes() {
+    const LIMIT: usize = 16 * 1024 * 1024;
+    // Padding makes the file large enough that only the packet budget can reject it.
+    for (bytes_per_packet, frames_per_packet, entries) in [(LIMIT as u32 + 1, 0, vec![1]), (0, 1, vec![0x88, 0x80, 0x80, 1])] {
+        let table = packet_table(1, 1, &entries);
+        let file = caf(&[
+            caf_desc(b"aac ", bytes_per_packet, frames_per_packet, 2, 0),
+            (b"pakt", table.len() as i64, table),
+            (b"data", (LIMIT + 5) as i64, vec![0; LIMIT + 5]),
+        ]);
+        assert!(matches!(probe(&file, None), Err(AudioError::TooLarge(_))));
+        assert!(matches!(decode(&file, None), Err(AudioError::TooLarge(_))));
+    }
+}
+
+#[test]
+fn caf_fixed_size_variable_frames_and_empty_tables_still_probe() {
+    for (packets, bytes, entries) in [(1, 4, vec![1]), (0, 512, vec![])] {
+        let table = packet_table(packets, packets, &entries);
+        let file = caf(&[caf_desc(b"aac ", bytes, 0, 2, 0), (b"pakt", table.len() as i64, table), (b"data", 8, vec![0; 8])]);
+        assert_eq!(probe(&file, None).unwrap().frames, packets as u64);
+    }
+}
+
 fn atom(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
     [&(8 + body.len() as u32).to_be_bytes()[..], kind, body].concat()
 }

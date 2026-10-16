@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-13 · **Change:** minor (continuous fade curvature in SoundCraft sessions) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-13 · **Change:** minor (CAF packet allocation limits) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every format Pro Tools reads or writes, and ours. The Pro Tools list comes from the document types
 its bundle declares (`CFBundleDocumentTypes` in Info.plist: names only, nothing else read) and its
@@ -42,7 +42,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 | AAC / M4A / MP4 audio | import, bounce | ✅ (symphonia) | ❌ | G-21 |
 | ALAC | import | ✅ | ❌ | |
 | Ogg Vorbis | — | ✅ | ❌ | Beyond Pro Tools |
-| CAF | — | ✅ | ❌ | |
+| CAF | — | ✅ | ❌ | Fixed and variable compressed packet sizes are checked before demuxing: at most 16 MiB per packet and never larger than the input file. This is a per-packet bound, not an aggregate decoded-audio limit. |
 | Sound Designer / SD II | import (legacy) | ❌ | — | Rare today |
 | ReCycle / REX | import | ❌ | — | Loops |
 | MXF audio (OP-Atom, OP1a) | import | ❌ | ❌ | Avid media; FilmCraft has an MXF reader to learn from |
@@ -80,5 +80,6 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | Bound fixed and variable CAF packet allocations before demuxing; retain empty packet tables and normal PCM decoding. Readiness estimate unchanged |
 | 2026-10-13 | minor | Fade curvature round-trips in sessions with a zero default for older files. Format version and readiness estimate unchanged |
 | 2026-10-10 | major | Created: format inventory against Pro Tools 2026.4.1's declared document types and import/bounce options |
