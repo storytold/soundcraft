@@ -412,7 +412,7 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
 
 /// The audio systems as last enumerated (enumerating probes devices: done when the window opens
 /// and on Refresh, not every frame).
-fn audio_systems(ctx: &egui::Context, refresh: bool) -> Arc<Vec<AudioSystem>> {
+pub(crate) fn audio_systems(ctx: &egui::Context, refresh: bool) -> Arc<Vec<AudioSystem>> {
     let id = egui::Id::new("audio_systems");
     if !refresh && let Some(s) = ctx.data(|d| d.get_temp::<Arc<Vec<AudioSystem>>>(id)) {
         return s;
@@ -423,7 +423,7 @@ fn audio_systems(ctx: &egui::Context, refresh: bool) -> Arc<Vec<AudioSystem>> {
 }
 
 /// The system a config means (its own, else the default one) in an enumeration.
-fn chosen_system<'a>(systems: &'a [AudioSystem], cfg: &AudioConfig) -> Option<&'a AudioSystem> {
+pub(crate) fn chosen_system<'a>(systems: &'a [AudioSystem], cfg: &AudioConfig) -> Option<&'a AudioSystem> {
     cfg.system
         .as_deref()
         .and_then(|n| systems.iter().find(|s| s.name.eq_ignore_ascii_case(n)))
@@ -432,7 +432,7 @@ fn chosen_system<'a>(systems: &'a [AudioSystem], cfg: &AudioConfig) -> Option<&'
 }
 
 /// The device a config means (by name, else the system default).
-fn chosen_device<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'a DeviceInfo> {
+pub(crate) fn chosen_device<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'a DeviceInfo> {
     name.and_then(|n| devices.iter().find(|d| d.name == n)).or_else(|| devices.iter().find(|d| d.is_default))
 }
 
@@ -605,52 +605,9 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     Ok(out)
 }
 
-/// Setup › I/O: busses and output paths.
+/// Setup › I/O: see [`crate::io_setup`].
 pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
-    let mut open = app.ui.show_io_setup;
-    win(ctx, &mut open, "I/O Setup", vec2(420.0, 300.0), |ui| {
-        ui.label(egui::RichText::new("Busses").strong());
-        let busses: Vec<(String, String)> = app.engine.session().busses.iter().map(|b| (b.name.clone(), b.format.label().to_string())).collect();
-        egui::Grid::new("busses").num_columns(3).striped(true).show(ui, |ui| {
-            for (name, fmt) in busses {
-                let key = egui::Id::new(("bus_name", name.clone()));
-                let mut edit: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| name.clone());
-                let r = ui.text_edit_singleline(&mut edit);
-                ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
-                if r.lost_focus() && edit != name {
-                    let _ = app.run("setup.io", json!({"action": "rename_bus", "name": name, "new_name": edit}));
-                }
-                ui.label(fmt);
-                if ui.small_button("Delete").clicked() {
-                    let _ = app.run("setup.io", json!({"action": "delete_bus", "name": name}));
-                }
-                ui.end_row();
-            }
-        });
-        if ui.button("New Bus").clicked() {
-            let n = app.engine.session().busses.len() + 1;
-            let _ = app.run("mix.new_bus", json!({"name": format!("Bus {n}")}));
-        }
-        ui.separator();
-        ui.label(egui::RichText::new("Outputs").strong());
-        // Main output format: stereo, or a surround format (the mix and master faders follow).
-        let main = app.engine.session().main_format();
-        ui.horizontal(|ui| {
-            ui.label("Main output");
-            egui::ComboBox::from_id_salt("main_output_format").selected_text(main.label()).show_ui(ui, |ui| {
-                for f in soundcraft_model::ChannelFormat::ALL.into_iter().filter(|f| (2..=16).contains(&f.channels())) {
-                    if ui.selectable_label(f == main, f.label()).clicked() && f != main {
-                        let _ = app.run("setup.main_format", json!({"format": f.label()}));
-                    }
-                }
-            });
-            ui.label(egui::RichText::new(format!("{} ch", main.channels())).small());
-        });
-        for o in app.engine.session().outputs.clone() {
-            ui.label(format!("{} — {} from channel {}", o.name, o.format.label(), o.first_channel + 1));
-        }
-    });
-    app.ui.show_io_setup = open;
+    crate::io_setup::io_setup(app, ctx);
 }
 
 /// Setup › Keyboard Shortcuts.

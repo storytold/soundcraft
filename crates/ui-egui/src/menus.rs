@@ -546,7 +546,15 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         "window.midi_ops" => toggle(&mut app.ui.show_midi_ops),
         "window.rtp" => toggle(&mut app.ui.show_rtp),
         "window.playback_engine" => toggle(&mut app.ui.show_playback_engine),
-        "window.io_setup" => toggle(&mut app.ui.show_io_setup),
+        "window.io_setup" => {
+            // `{tab?: input|output|bus}` opens the window on that tab.
+            if let Some(tab) = p.get("tab").and_then(Value::as_str) {
+                app.ui.io_setup_tab = Some(tab.to_ascii_lowercase());
+                app.ui.show_io_setup = true;
+                return Some(Ok(json!({"value": true, "tab": tab})));
+            }
+            toggle(&mut app.ui.show_io_setup)
+        }
         "window.shortcuts" => toggle(&mut app.ui.show_shortcuts),
         "window.color_palette" => toggle(&mut app.ui.show_color_palette),
         "window.disk_usage" => toggle(&mut app.ui.show_disk_usage),

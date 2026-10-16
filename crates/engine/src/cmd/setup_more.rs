@@ -5,7 +5,7 @@ use super::more_util::{set_text, store_value, text, toggle_flag, values_with_pre
 use super::*;
 use crate::cmd;
 use serde_json::json;
-use soundcraft_model::{BusId, ChannelFormat, ClipContent, OutputPath, Route, Session, SourceId, TrackId, TrackKind};
+use soundcraft_model::{ClipContent, Route, Session, SourceId, TrackId, TrackKind};
 use soundcraft_time::Timecode;
 use std::path::{Path, PathBuf};
 
@@ -56,7 +56,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "I/O...",
             ["Setup"],
             None,
-            "{action?: list|create_bus|rename_bus|delete_bus|create_output|rename_output|delete_output, name?, new_name?, format?: stereo, first_channel?: 0}",
+            "{action?: list | inputs: create_input|create_input_subpath|rename_input|delete_input|set_input_format|map_input|set_input_channel|set_input_active|default_inputs | outputs: create_output|rename_output|delete_output|set_output_format|map_output|set_output_channel|set_output_active|default_outputs|set_monitor_output|set_meter_output | busses: create_bus|rename_bus|delete_bus|set_bus_format|set_bus_active|map_bus_output|create_bus_subpath|map_bus_subpath|set_bus_subpath_channel|default_busses|sort_busses; name?, new_name?, format?, count?, path?, bus?, channel?, bus_channel?, hardware?: n|null, output?: path|null, all?, cascade?, active?, channels?, device_channels?, assign?, sub_paths?, which?: all|internal|output, by?: name|format|output, descending?} — Setup › I/O: input and output paths mapped per channel to the hardware, busses with sub-paths and a mapping to an output path",
             always,
             io_setup
         ),
@@ -218,7 +218,7 @@ fn peripherals(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn io_state(s: &Session) -> Value {
-    json!({"busses": s.busses, "outputs": s.outputs})
+    json!({"busses": s.busses, "inputs": s.inputs, "outputs": s.outputs})
 }
 
 fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -227,72 +227,16 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
     if action == "list" {
         return Ok(io_state(e.session()));
     }
-    let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(id, "`name` required"))?.to_string();
-    let new_name = str_param(p, "new_name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
-    let format = match str_param(p, "format") {
-        Some(f) => ChannelFormat::from_id(f).ok_or_else(|| bad(id, format!("unknown format `{f}`")))?,
-        None => ChannelFormat::Stereo,
-    };
-    let s = e.session_mut();
-    match action {
-        "create_bus" => {
-            if s.bus_by_name(&name).is_some() {
-                return Err(bad(id, format!("a bus named `{name}` exists")));
-            }
-            s.add_bus(&name, format);
-        }
-        "rename_bus" => {
-            let to = new_name.ok_or_else(|| bad(id, "`new_name` required"))?;
-            if s.bus_by_name(&to).is_some() {
-                return Err(bad(id, format!("a bus named `{to}` exists")));
-            }
-            let b = s.busses.iter_mut().find(|b| b.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no bus `{name}`")))?;
-            b.name = to;
-        }
-        "delete_bus" => {
-            let bid: BusId = s.bus_by_name(&name).map(|b| b.id).ok_or_else(|| bad(id, format!("no bus `{name}`")))?;
-            s.busses.retain(|b| b.id != bid);
-            for t in &mut s.tracks {
-                if t.mixer.input == Route::Bus(bid) {
-                    t.mixer.input = Route::None;
-                }
-                if t.mixer.output == Route::Bus(bid) {
-                    t.mixer.output = Route::None;
-                }
-                for slot in &mut t.mixer.sends {
-                    if slot.as_ref().is_some_and(|x| x.target == Route::Bus(bid)) {
-                        *slot = None;
-                    }
-                }
-            }
-        }
-        "create_output" => {
-            if s.outputs.iter().any(|o| o.name.eq_ignore_ascii_case(&name)) {
-                return Err(bad(id, format!("an output named `{name}` exists")));
-            }
-            let first = i64_or(p, "first_channel", 0).clamp(0, 1023) as u16;
-            s.outputs.push(OutputPath { name, first_channel: first, format });
-        }
-        "rename_output" => {
-            let to = new_name.ok_or_else(|| bad(id, "`new_name` required"))?;
-            let o = s.outputs.iter_mut().find(|o| o.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no output `{name}`")))?;
-            let old = std::mem::replace(&mut o.name, to.clone());
-            for t in &mut s.tracks {
-                if t.mixer.output == Route::Hardware(old.clone()) {
-                    t.mixer.output = Route::Hardware(to.clone());
-                }
-            }
-        }
-        "delete_output" => {
-            let before = s.outputs.len();
-            s.outputs.retain(|o| !o.name.eq_ignore_ascii_case(&name));
-            if s.outputs.len() == before {
-                return Err(bad(id, format!("no output `{name}`")));
-            }
-        }
-        other => return Err(bad(id, format!("unknown action `{other}`"))),
+    if let Some(r) = super::io_inputs::input_action(e, action, p) {
+        return r;
     }
-    Ok(io_state(s))
+    if let Some(r) = super::io_outputs::output_action(e, action, p) {
+        return r;
+    }
+    if let Some(r) = super::io_busses::bus_action(e, action, p) {
+        return r;
+    }
+    Err(bad(id, format!("unknown action `{action}`")))
 }
 
 fn current_timecode(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -497,6 +441,7 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soundcraft_model::BusId;
 
     #[test]
     fn option_flags_toggle() {

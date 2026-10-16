@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (G-01: audio device settings and opt-in ASIO) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (G-01: I/O Setup paths, grids and bus mapping; previously: audio device settings and opt-in ASIO) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -15,7 +15,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
-| G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
+| G-01 | **Alpha blocker.** No duplex low-latency path on one clock (device, rate and buffer choice, input and output paths done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 12–20 |
 | G-02 | **Alpha blocker.** No MIDI device input or output | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 20–35 |
 | G-03 | **Alpha blocker.** Cannot exchange sessions with Pro Tools (no AAF/OMF, no `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
@@ -46,7 +46,14 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   device, sample rate and device buffer size (kept with the preferences, per machine; `ui.audio_device`
   for agents); f32 and 16/32-bit integer devices; ASIO behind the opt-in `asio` build feature
   (verified on Windows with an SSL 2+ at 128 samples).
-- **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
+- **Done (2026-10-14):** Setup › I/O with Pro Tools' Input, Output and Bus tabs: named input
+  and output paths (sub-paths for inputs), each channel mapped in the grid (`setup.io` actions
+  for agents); monitoring and takes read the input map; tracks, sends and busses mapped to an
+  output path drive its device channels (the device is opened with every channel it offers);
+  Monitor and Output Meter Path; busses with sub-paths as routing targets, Mapping to Output,
+  sorting and Pro Tools' defaults; the track I/O and send menus list it all; Alt/Alt+Shift/
+  Cmd-click set inputs on all or the selected tracks and cascade over the paths (#570).
+- **Missing:** one duplex stream on one clock (input and
   output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
   verification on macOS and Linux. The mix still runs in fixed 512-sample blocks.
@@ -54,9 +61,8 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 - **Evidence:** code above; Playback Engine window says "Mix block size: 512 samples"; issue #42
   (no input device selection, forced monitoring feedback with virtual routing).
 - **Impact:** blocks tracking with any multichannel interface; latency makes overdubs hard.
-- **Estimate:** ≈ 25–40 h (device enumeration and selection, buffer size, duplex stream with one
-  clock, ASIO feature build, per-channel I/O mapping into I/O Setup, latency reporting and
-  record-offset compensation). Needs hands-on hardware testing.
+- **Estimate:** ≈ 12–20 h (duplex stream with one clock, latency reporting and record-offset
+  compensation). Needs hands-on hardware testing.
 
 ### G-02. MIDI devices
 
@@ -199,6 +205,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | G-01 shrunk: I/O Setup input and output paths with grids, bus sub-paths and mapping to outputs (#570) |
 | 2026-10-12 | minor | G-01 shrunk: audio device, rate and buffer choice; opt-in ASIO |
 | 2026-10-10 | minor | Marked the alpha blockers (G-01, G-02, G-03; parts of G-05 and G-06) from the core-workflow gate |
 | 2026-10-10 | major | Created from the full re-measure against Pro Tools Ultimate 2026.4.1: 22 ranked gaps with evidence and estimates |

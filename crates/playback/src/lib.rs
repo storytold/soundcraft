@@ -160,7 +160,11 @@ struct AudioState {
     end: Option<Samples>,
     looped: Option<Range>,
     /// Rendered frames waiting to be consumed (planar, main channels) and the fractional read index.
+    /// The main mix's last block (one Vec per mix channel).
     pending: Vec<Vec<f32>>,
+    /// That block, and the other output paths', laid out on the device's channels (one Vec per
+    /// device channel) as the I/O Setup maps them: what the callback reads.
+    device: Vec<Vec<f32>>,
     /// Stereo fold-down gains per main channel (used when the device has fewer channels).
     fold: [(f32, f32); MAX_CHANNELS],
     pending_len: usize,
@@ -197,6 +201,7 @@ impl AudioState {
             end: None,
             looped: None,
             pending: vec![vec![0.0; BLOCK]; nch],
+            device: Vec::new(),
             pending_len: 0,
             read: 0.0,
             device_rate,
@@ -271,8 +276,64 @@ impl AudioState {
         }
     }
 
-    /// Render the next block at the session rate into `pending`.
-    fn render_next(&mut self, quantum: usize) {
+    /// Lays the rendered block out on the device's `channels`: the main mix on the monitor
+    /// path's channels (folded down to stereo when the device has no room for a wider mix), the
+    /// other output paths on theirs; a device channel two paths drive sums them.
+    fn lay_out_on_device(&mut self, n: usize, channels: usize) {
+        if self.device.len() != channels || self.device.first().map_or(0, Vec::len) != BLOCK {
+            // Once per stream (the callback's channel count is fixed), so not in steady state.
+            self.device = vec![vec![0.0; BLOCK]; channels];
+        }
+        for d in &mut self.device {
+            d.iter_mut().take(n).for_each(|x| *x = 0.0);
+        }
+        let nch = self.pending.len();
+        let map = self.mix.monitor_channels();
+        let fits = nch <= 2 || (0..nch).all(|c| map.get(c).copied().flatten().is_some_and(|d| usize::from(d) < channels));
+        if nch > 2 && !fits {
+            // No room for the wide mix: ITU fold-down to stereo, on the path's first two channels.
+            let target = |k: usize| map.get(k).copied().flatten().map_or(k, usize::from).min(channels.saturating_sub(1));
+            let (l, r) = (target(0), target(1));
+            for (c, (gl, gr)) in self.fold.iter().enumerate().take(nch) {
+                let Some(src) = self.pending.get(c) else { continue };
+                for i in 0..n {
+                    let v = src.get(i).copied().unwrap_or(0.0);
+                    if let Some(d) = self.device.get_mut(l).and_then(|d| d.get_mut(i)) {
+                        *d += v * gl;
+                    }
+                    if let Some(d) = self.device.get_mut(r).and_then(|d| d.get_mut(i)) {
+                        *d += v * gr;
+                    }
+                }
+            }
+        } else {
+            for (c, src) in self.pending.iter().enumerate() {
+                // A stereo mix on a mono device plays its left channel, as before.
+                let dst = match map.get(c).copied().flatten() {
+                    Some(d) => usize::from(d),
+                    None if nch <= 2 => c,
+                    None => continue,
+                };
+                let Some(d) = self.device.get_mut(dst) else { continue };
+                for (x, y) in d.iter_mut().zip(src.iter()).take(n) {
+                    *x += *y;
+                }
+            }
+        }
+        for (map, buf) in self.mix.hardware_outputs() {
+            for (k, src) in buf.iter().enumerate() {
+                let Some(dst) = map.get(k).copied().flatten() else { continue };
+                let Some(d) = self.device.get_mut(usize::from(dst)) else { continue };
+                for (x, y) in d.iter_mut().zip(src.iter()).take(n) {
+                    *x += *y;
+                }
+            }
+        }
+    }
+
+    /// Render the next block at the session rate into `pending`, laid out on `channels` device
+    /// channels in `device`.
+    fn render_next(&mut self, quantum: usize, channels: usize) {
         let mut n = quantum.clamp(1, BLOCK);
         if let Some(l) = self.looped
             && self.pos >= l.end
@@ -296,6 +357,7 @@ impl AudioState {
                 c.iter_mut().for_each(|x| *x = 0.0);
             }
             self.pending_len = BLOCK;
+            self.lay_out_on_device(BLOCK, channels);
             return;
         }
         if let Some(ring) = &self.input {
@@ -310,6 +372,7 @@ impl AudioState {
         self.mix.render(&self.session, self.pos, n, &mut self.pending);
         self.send_garbage();
         self.pending_len = n;
+        self.lay_out_on_device(n, channels);
         if let Ok(mut m) = self.shared.meters.try_lock() {
             m.main.copy_from(&self.mix.main_meter);
             for (k, v) in &self.mix.meters {
@@ -350,7 +413,7 @@ impl AudioState {
                 if !self.playing && !monitoring {
                     break;
                 }
-                self.render_next(quantum);
+                self.render_next(quantum, channels);
                 if self.pending_len == 0 {
                     break;
                 }
@@ -358,35 +421,14 @@ impl AudioState {
             let i0 = self.read.floor() as usize;
             let fr = (self.read - i0 as f64) as f32;
             let sounding = self.playing || monitoring;
-            let nch = self.pending.len();
             let sample = |c: usize| {
-                let ch = self.pending.get(c);
+                let ch = self.device.get(c);
                 let a = ch.and_then(|v| v.get(i0)).copied().unwrap_or(0.0);
                 let b = ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a);
                 a + (b - a) * fr
             };
-            if nch > 2 && channels < nch {
-                // Fewer device channels than the main mix: ITU fold-down to stereo.
-                let (mut l, mut r) = (0.0f32, 0.0f32);
-                if sounding {
-                    for (c, (gl, gr)) in self.fold.iter().enumerate().take(nch) {
-                        let v = sample(c);
-                        l += v * gl;
-                        r += v * gr;
-                    }
-                }
-                for (c, o) in frame.iter_mut().enumerate() {
-                    *o = match c {
-                        0 => l.clamp(-1.0, 1.0),
-                        1 => r.clamp(-1.0, 1.0),
-                        _ => 0.0,
-                    };
-                }
-            } else {
-                for (c, o) in frame.iter_mut().enumerate() {
-                    // Stereo mixes on a mono device play the left channel (as before).
-                    *o = if c < nch.max(1) && sounding { sample(c).clamp(-1.0, 1.0) } else { 0.0 };
-                }
+            for (c, o) in frame.iter_mut().enumerate() {
+                *o = if sounding { sample(c).clamp(-1.0, 1.0) } else { 0.0 };
             }
             self.read += step;
         }
@@ -509,10 +551,9 @@ impl Player {
             meters: Mutex::new(MeterSnapshot::default()),
         });
         let want = session.sample_rate.hz();
-        let want_ch = u16::try_from(main_channels(&session)).unwrap_or(2);
         let side_rate = session.sample_rate.as_f64() as f32;
         let new_side = |garbage: Receiver<Vec<Box<dyn Plugin>>>| Mutex::new(Side::new(side_rate, garbage));
-        match open_device(want, want_ch, cfg) {
+        match open_device(want, cfg) {
             Ok((device, config, format, name)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
                 let mut attempts = vec![config.clone()];
@@ -909,14 +950,14 @@ where
 /// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
 /// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
 /// chosen buffer size when the device allows it.
-fn open_device(want_rate: u32, want_ch: u16, cfg: &AudioConfig) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+fn open_device(want_rate: u32, cfg: &AudioConfig) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
     use cpal::traits::DeviceTrait;
     let host = devices::host(cfg);
     let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
     #[allow(deprecated)]
     let name = device.name().unwrap_or_else(|_| "Audio device".into());
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
-    let want_ch = want_ch.max(2);
+    // Every output channel the device offers: the I/O Setup's output paths drive any of them.
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
     let mut chosen: Option<(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)> = None;
     // Better: a preferred format first, then more channels.
@@ -932,7 +973,6 @@ fn open_device(want_rate: u32, want_ch: u16, cfg: &AudioConfig) -> Result<(cpal:
                     && c.min_sample_rate().0 <= rate
                     && c.max_sample_rate().0 >= rate
                     && c.channels() >= 2
-                    && c.channels() <= want_ch
                     && chosen.as_ref().is_none_or(|x| better(c, x))
                 {
                     chosen = Some((c.with_sample_rate(cpal::SampleRate(rate)).config(), *c.buffer_size(), c.sample_format()));
@@ -1061,7 +1101,7 @@ mod tests {
     fn surround_main_maps_to_device_channels_or_folds_down() {
         use soundcraft_model::{ChannelFormat, Clip, SourceAudio, SourceId, TrackKind};
         let mut s = soundcraft_model::Session::default();
-        s.outputs[0].format = ChannelFormat::Surround51;
+        s.outputs[0] = soundcraft_model::OutputPath::assigned("Out 1-6", ChannelFormat::Surround51, 0);
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Surround51, None);
         let chans: Vec<Vec<f32>> = (0..6).map(|c| vec![0.1 * (c + 1) as f32; 48_000]).collect();
         s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: chans })));
@@ -1092,6 +1132,47 @@ mod tests {
         let l = (0.1 + h * 0.3 + h * 0.5f32).min(1.0);
         assert!((out[200] - l).abs() < 1e-4, "{} vs {l}", out[200]);
         assert_eq!(shared.meters.lock().unwrap().main.peaks.len(), 6);
+    }
+
+    #[test]
+    fn output_paths_drive_their_device_channels() {
+        use soundcraft_model::{ChannelFormat, Clip, Route, SourceAudio, SourceId, TrackKind};
+        let mut s = soundcraft_model::Session::new("x", Default::default());
+        s.outputs = soundcraft_model::Session::default_output_paths(4);
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+        let chans: Vec<Vec<f32>> = vec![vec![0.25; 48_000], vec![0.5; 48_000]];
+        s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: chans })));
+        let id = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "x", SourceId(5), 0, 0, 48_000));
+        s.track_mut(t).unwrap().mixer.output = Route::Hardware("Out 3-4".into());
+        let s = Arc::new(s);
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        });
+        let (tx, rx) = channel();
+        let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&s), 48_000.0, channel().0);
+        tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+        let mut out = vec![0.0f32; 4 * 256];
+        st.fill(&mut out, 4);
+        let f = &out[4 * 100..4 * 101];
+        assert!(f[0] == 0.0 && f[1] == 0.0, "nothing on the monitor path: {f:?}");
+        assert!((f[2] - 0.25).abs() < 1e-5 && (f[3] - 0.5).abs() < 1e-5, "the track on Out 3-4: {f:?}");
+        // A two-channel device has no channels 3 and 4: the path drives nothing there.
+        let mut out = vec![0.0f32; 2 * 256];
+        st.fill(&mut out, 2);
+        assert!(out.iter().all(|x| *x == 0.0));
+        // The monitor path moved to channels 3-4 takes the main mix with it.
+        let mut s2 = (*s).clone();
+        s2.track_mut(t).unwrap().mixer.output = Route::Main;
+        s2.monitor_output = Some("Out 3-4".into());
+        tx.send(Cmd::Session(Arc::new(s2), Vec::new())).unwrap();
+        let mut out = vec![0.0f32; 4 * 256];
+        st.fill(&mut out, 4);
+        let f = &out[4 * 100..4 * 101];
+        assert!(f[0] == 0.0 && f[1] == 0.0 && (f[2] - 0.25).abs() < 1e-5 && (f[3] - 0.5).abs() < 1e-5, "{f:?}");
     }
 
     #[test]

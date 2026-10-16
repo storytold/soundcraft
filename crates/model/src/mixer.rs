@@ -391,21 +391,48 @@ impl SurroundPan {
     }
 }
 
-/// An internal mix bus (Pro Tools "bus" paths).
+/// An internal mix bus (Pro Tools "bus" paths). Tracks and sends write onto it; aux inputs read
+/// it. Mapped to an output path (Setup › I/O › Bus, "Mapping to Output"), its mix also goes to
+/// that output's hardware channels, as Pro Tools' output busses do. Its sub-paths are routing
+/// targets within it (the mono `.L` of a stereo bus).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bus {
     pub id: BusId,
     pub name: String,
     pub format: ChannelFormat,
+    #[serde(default = "yes")]
+    pub active: bool,
+    /// The output path (by name) this bus also feeds.
+    #[serde(default)]
+    pub output: Option<String>,
+    #[serde(default)]
+    pub sub_paths: Vec<BusSubPath>,
 }
 
-/// Physical output paths (from the I/O setup).
+/// A path within a bus: a name, a format and, per channel, which bus channel it reads or writes
+/// (`None` while unassigned). Routed to by [`Route::BusSub`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BusSubPath {
+    pub id: crate::BusSubId,
+    pub name: String,
+    pub format: ChannelFormat,
+    pub channels: Vec<Option<u8>>,
+}
+
+/// A physical output path (Setup › I/O › Output): a name, a format and the hardware output
+/// channel (0-based) each of its channels drives (`None` while unassigned). The first active
+/// one, or the session's monitor path, carries the main mix. An inactive path drives nothing.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OutputPath {
     pub name: String,
-    /// First hardware channel (0-based).
+    /// The first assigned hardware channel (0-based); what older readers know. `channels` is
+    /// the mapping; this follows it.
     pub first_channel: u16,
     pub format: ChannelFormat,
+    #[serde(default)]
+    pub channels: Vec<Option<u16>>,
+    #[serde(default = "yes")]
+    pub active: bool,
 }
 
 /// Where a signal goes or comes from.
@@ -418,6 +445,8 @@ pub enum Route {
     Bus(BusId),
     /// Hardware input/output by path name.
     Hardware(String),
+    /// A sub-path of a bus: some of its channels (`Bus::sub_paths`).
+    BusSub(crate::BusSubId),
 }
 
 /// A plugin instance on an insert slot.
@@ -574,10 +603,11 @@ impl Mixer {
 }
 
 impl crate::Session {
-    /// The main mix format: the format of the first (main) output path, at least stereo and at
-    /// most 16 channels (wider formats fall back to stereo).
+    /// The main mix format: the format of the monitor output path (the first active one unless
+    /// the I/O Setup names another), at least stereo and at most 16 channels (wider formats
+    /// fall back to stereo).
     pub fn main_format(&self) -> ChannelFormat {
-        match self.outputs.first().map(|o| o.format) {
+        match self.monitor_output_path().map(|o| o.format) {
             Some(f) if (2..=16).contains(&f.channels()) => f,
             _ => ChannelFormat::Stereo,
         }

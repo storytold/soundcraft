@@ -110,7 +110,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Assign Send",
             [],
             None,
-            "{track?, slot?: 0..9|a..j, bus: name, level_db?: 0 (kept when re-targeting), pre_fader?: false}",
+            "{track?, slot?: 0..9|a..j, bus: name (a bus, a bus sub-path or an output path; a new name makes a bus), level_db?: 0 (kept when re-targeting), pre_fader?: false}",
             has_selection,
             send
         ),
@@ -418,13 +418,22 @@ fn send(e: &mut Engine, p: &Value) -> Result<Value> {
     let t = tracks_required(e, "mix.send", p)?.first().copied().ok_or_else(|| bad("mix.send", "no track"))?;
     let explicit = slot_of(p, "slot", SEND_SLOTS);
     let s = e.session_mut();
-    let bid = s.add_bus(&bus, soundcraft_model::ChannelFormat::Stereo);
+    // A bus, a bus sub-path or an output path by name; any other name makes a new bus.
+    let target = match super::track::parse_route(s, &bus) {
+        r @ (soundcraft_model::Route::Bus(_) | soundcraft_model::Route::BusSub(_)) => r,
+        soundcraft_model::Route::Hardware(name) if s.output_path(&name).is_some() => soundcraft_model::Route::Hardware(name),
+        _ => soundcraft_model::Route::Bus(s.add_bus(&bus, soundcraft_model::ChannelFormat::Stereo)),
+    };
+    let bid = match &target {
+        soundcraft_model::Route::Bus(b) => json!(b),
+        other => json!(other),
+    };
     let tr = s.track_mut(t).ok_or_else(|| bad("mix.send", "no track"))?;
     let slot = explicit.or_else(|| tr.mixer.sends.iter().position(Option::is_none)).ok_or_else(|| bad("mix.send", "all send slots are in use"))?;
     // Re-targeting an existing send keeps its level, pan, mute and pre/post setting.
     let mut sl = match tr.mixer.sends.get(slot).cloned().flatten() {
-        Some(old) => SendSlot { target: soundcraft_model::Route::Bus(bid), ..old },
-        None => SendSlot::new(soundcraft_model::Route::Bus(bid)),
+        Some(old) => SendSlot { target: target.clone(), ..old },
+        None => SendSlot::new(target.clone()),
     };
     sl.level_db = f32_or(p, "level_db", sl.level_db).clamp(-144.0, 12.0);
     sl.pre_fader = bool_or(p, "pre_fader", sl.pre_fader);

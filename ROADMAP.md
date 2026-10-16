@@ -122,6 +122,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
+- **2026-10-14 (I/O Setup):** Setup › I/O gets Pro Tools' Input, Output and Bus tabs: paths with sub-paths, each channel mapped to the device's channels in the grid, New Path / New Sub-Path / Delete Path / Default and a Default Format; Monitor Path and Output Meter Path; busses with sub-paths as routing targets and Mapping to Output; Export and Import Settings carry it all between sessions. Tracks, sends and mapped busses on an output path drive its device channels (the device opens with every channel it offers), monitoring and takes read the input map, the I/O and send menus list it all, and Alt-click in a track's I/O menu sets the input on all or the selected tracks, with Cmd cascading over the paths (#570). No readiness percentage change.
 - **2026-10-13:** `mix.instrument` takes the built-in instrument's parameters in `params` (validated, clamped) and refuses any other field, so a synth setting written beside `plugin` is an error instead of being accepted and ignored (#265)
 - **2026-10-13:** A bounce of a bus that an aux returns onto lines up with the timeline: the aux insert's lookahead is compensated like the main mix's (it left the bus late and cut the end off), and tracks routed to that bus wait for it too (#246)
 - **2026-10-13:** Delay compensation covers the inserts of the master faders: a bounce of the main mix with a Maximizer on the master lines up with the same mix without it (it came out 71 samples late) (#351)

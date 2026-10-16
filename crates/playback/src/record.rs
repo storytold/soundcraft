@@ -204,20 +204,21 @@ impl Recorder {
         let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
         #[allow(deprecated)]
         let name = device.name().unwrap_or_else(|_| "Input".into());
-        // At the chosen rate when the device offers it, so input and output run together: the
-        // best format first, then the most channels.
-        let at_rate = audio.sample_rate.and_then(|r| {
-            device
-                .supported_input_configs()
-                .ok()?
-                .filter(|c| crate::devices::format_rank(c.sample_format()).is_some() && c.min_sample_rate().0 <= r && c.max_sample_rate().0 >= r)
+        // At the chosen rate when the device offers it (else the device's default rate), so input
+        // and output run together, with every input channel the device offers at that rate (the
+        // default configuration of a four-input interface often opens two): the best format
+        // first, then the most channels.
+        let default = device.default_input_config().map_err(|e| e.to_string())?;
+        let rate = audio.sample_rate.unwrap_or(default.sample_rate().0);
+        let most = device.supported_input_configs().ok().and_then(|configs| {
+            configs
+                .filter(|c| {
+                    crate::devices::format_rank(c.sample_format()).is_some() && c.min_sample_rate().0 <= rate && c.max_sample_rate().0 >= rate
+                })
                 .min_by_key(|c| (crate::devices::format_rank(c.sample_format()), std::cmp::Reverse(c.channels())))
-                .map(|c| c.with_sample_rate(cpal::SampleRate(r)))
+                .map(|c| c.with_sample_rate(cpal::SampleRate(rate)))
         });
-        let cfg = match at_rate {
-            Some(c) => c,
-            None => device.default_input_config().map_err(|e| e.to_string())?,
-        };
+        let cfg = most.unwrap_or(default);
         let format = cfg.sample_format();
         if crate::devices::format_rank(format).is_none() {
             return Err(format!("unsupported input sample format {format:?}"));

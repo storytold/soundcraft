@@ -19,6 +19,10 @@ mod event_more;
 mod file;
 mod health;
 mod instrument;
+mod io_busses;
+mod io_inputs;
+mod io_outputs;
+mod io_settings;
 mod midi;
 mod mix;
 mod more_util;
@@ -128,6 +132,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(clip_list::specs());
         v.extend(event_more::specs());
         v.extend(setup_more::specs());
+        v.extend(io_settings::specs());
         v.extend(clap::specs());
         v.extend(vst3::specs());
         v.extend(surround::specs());

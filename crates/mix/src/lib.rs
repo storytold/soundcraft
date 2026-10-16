@@ -54,7 +54,7 @@ use soundcraft_dsp::pan::{PanLaw, SpeakerPos, SurroundParams, gains};
 use soundcraft_dsp::{Plugin, SampleSource, Transport, db_to_gain};
 use soundcraft_midi::CtrlKind;
 use soundcraft_model::{
-    AutoParam, BusId, ChannelFormat, Clip, ClipContent, Route, Session, SourceAudio, Speaker, SurroundPan, Track, TrackId, TrackKind,
+    AutoParam, BusId, BusSubId, ChannelFormat, Clip, ClipContent, Route, Session, SourceAudio, Speaker, SurroundPan, Track, TrackId, TrackKind,
 };
 use soundcraft_time::{Range, Samples, TICKS_PER_QUARTER};
 use std::collections::HashMap;
@@ -203,6 +203,104 @@ impl StripMeter {
 struct BusBuf {
     fmt: ChannelFormat,
     buf: Vec<Vec<f32>>,
+    /// Routing on; off, nothing writes onto it or reads it (Setup › I/O › Bus, Active).
+    active: bool,
+    /// Where the bus's mix also goes when it is mapped to an output path: the main mix (`None`)
+    /// or an entry of `MixEngine::hw`.
+    to_out: Option<Option<usize>>,
+    /// The copy that goes there, delayed like direct outputs so it lines up with aux returns.
+    outbuf: Vec<Vec<f32>>,
+    out_delay: DelayLine,
+}
+
+/// An output path other than the monitor one (Setup › I/O › Output): its own mix, and the device
+/// channels (0-based) it drives. Tracks, sends and mapped busses routed to it write here.
+struct HwOut {
+    name: String,
+    fmt: ChannelFormat,
+    buf: Vec<Vec<f32>>,
+    channels: Vec<Option<u16>>,
+}
+
+/// A bus sub-path as the engine routes it: its bus and format, and the bus channel each of its
+/// channels is (`None` where unassigned).
+struct SubInfo {
+    bus: BusId,
+    fmt: ChannelFormat,
+    channels: Vec<Option<u8>>,
+}
+
+/// Where a route writes: a buffer with its format, and for a bus sub-path which bus channel each
+/// sub-path channel is.
+struct Dst<'a> {
+    buf: &'a mut [Vec<f32>],
+    fmt: ChannelFormat,
+    sub: Option<(ChannelFormat, [Option<u8>; MAX_CHANNELS], usize)>,
+}
+
+/// The buffer a route writes onto: the main mix for `Main` and for the monitor output path's
+/// name, another output path's buffer, a bus or, through its bus, a bus sub-path. `None` for no
+/// route, an unknown or inactive path or bus.
+fn resolve_dst<'a>(
+    r: &Route,
+    main: &'a mut Vec<Vec<f32>>,
+    main_fmt: ChannelFormat,
+    monitor: Option<&str>,
+    busses: &'a mut HashMap<BusId, BusBuf>,
+    hw: &'a mut [HwOut],
+    subs: &HashMap<BusSubId, SubInfo>,
+) -> Option<Dst<'a>> {
+    match r {
+        Route::None => None,
+        Route::Main => Some(Dst { buf: main, fmt: main_fmt, sub: None }),
+        Route::Hardware(name) => {
+            if monitor.is_some_and(|m| m.eq_ignore_ascii_case(name)) {
+                return Some(Dst { buf: main, fmt: main_fmt, sub: None });
+            }
+            hw.iter_mut().find(|h| h.name.eq_ignore_ascii_case(name)).map(|h| Dst { buf: &mut h.buf, fmt: h.fmt, sub: None })
+        }
+        Route::Bus(b) => busses.get_mut(b).filter(|d| d.active).map(|d| Dst { buf: &mut d.buf, fmt: d.fmt, sub: None }),
+        Route::BusSub(id) => {
+            let info = subs.get(id)?;
+            let d = busses.get_mut(&info.bus).filter(|d| d.active)?;
+            let mut map = [None; MAX_CHANNELS];
+            for (m, c) in map.iter_mut().zip(info.channels.iter()) {
+                *m = *c;
+            }
+            Some(Dst { buf: &mut d.buf, fmt: d.fmt, sub: Some((info.fmt, map, info.channels.len().min(MAX_CHANNELS))) })
+        }
+    }
+}
+
+/// The routing matrix from a source into `dst`: for a bus sub-path, the matrix into the sub-path's
+/// format with its columns moved to the bus channels the sub-path is on.
+fn dst_matrix(src_fmt: ChannelFormat, ns: usize, dst: &Dst<'_>, spec: &PanSpec<'_>, law: PanLaw) -> Matrix {
+    match &dst.sub {
+        None => build_matrix(src_fmt, ns, dst.fmt, dst.buf.len(), spec, law),
+        Some((fmt, map, width)) => {
+            let m_sub = build_matrix(src_fmt, ns, *fmt, *width, spec, law);
+            let mut m = [[0.0f32; MAX_CHANNELS]; MAX_CHANNELS];
+            for (row, srow) in m.iter_mut().zip(m_sub.iter()).take(ns.min(MAX_CHANNELS)) {
+                for (k, bus_ch) in map.iter().enumerate().take(*width) {
+                    if let (Some(bc), Some(g)) = (bus_ch, srow.get(k))
+                        && let Some(x) = row.get_mut(usize::from(*bc))
+                    {
+                        *x += g;
+                    }
+                }
+            }
+            m
+        }
+    }
+}
+
+/// The bus a route reaches: a bus, or the bus of a bus sub-path.
+fn route_bus(s: &Session, r: &Route) -> Option<BusId> {
+    match r {
+        Route::Bus(b) => Some(*b),
+        Route::BusSub(id) => s.bus_sub(*id).map(|(b, _)| b.id),
+        _ => None,
+    }
 }
 
 struct PluginSlot {
@@ -333,6 +431,18 @@ pub struct MixEngine {
     busses: HashMap<BusId, BusBuf>,
     main: Vec<Vec<f32>>,
     main_fmt: ChannelFormat,
+    /// The output paths other than the monitor one, in I/O Setup order.
+    hw: Vec<HwOut>,
+    /// The monitor output path's name (`Route::Hardware` to it is the main mix).
+    monitor_name: Option<String>,
+    /// The device channels the main mix drives (the monitor path's map).
+    monitor_map: Vec<Option<u16>>,
+    /// The entry of `hw` the main meter shows instead of the main mix (Output Meter Path).
+    meter_hw: Option<usize>,
+    /// Bus sub-paths by id.
+    subs: HashMap<BusSubId, SubInfo>,
+    /// Busses mapped to an output path, in session order.
+    bus_out_order: Vec<BusId>,
     pub meters: HashMap<TrackId, StripMeter>,
     pub main_meter: StripMeter,
     pub pan_law: PanLaw,
@@ -425,6 +535,12 @@ impl MixEngine {
             busses: HashMap::new(),
             main: vec![vec![0.0; max_block]; MAIN_CHANNELS],
             main_fmt: ChannelFormat::Stereo,
+            hw: Vec::new(),
+            monitor_name: None,
+            monitor_map: vec![Some(0), Some(1)],
+            meter_hw: None,
+            subs: HashMap::new(),
+            bus_out_order: Vec::new(),
             meters: HashMap::new(),
             main_meter: StripMeter::default(),
             pan_law: PanLaw::Minus3,
@@ -498,6 +614,18 @@ impl MixEngine {
         self.main.len()
     }
 
+    /// The device channels (0-based) the main mix drives: the monitor output path's map, as of
+    /// the last sync. `None` where a channel of the mix drives nothing.
+    pub fn monitor_channels(&self) -> &[Option<u16>] {
+        &self.monitor_map
+    }
+
+    /// The other output paths' mixes as of the last render, each with the device channels it
+    /// drives.
+    pub fn hardware_outputs(&self) -> impl Iterator<Item = (&[Option<u16>], &[Vec<f32>])> {
+        self.hw.iter().map(|h| (h.channels.as_slice(), h.buf.as_slice()))
+    }
+
     /// Reset all plugin state (on stop / seek).
     pub fn reset(&mut self) {
         for s in self.strips.values_mut() {
@@ -515,6 +643,9 @@ impl MixEngine {
             s.align.clear();
             s.align_pre.clear();
             s.out_extra.clear();
+        }
+        for b in self.busses.values_mut() {
+            b.out_delay.clear();
         }
         self.meters.clear();
         self.main_meter = StripMeter::default();
@@ -588,13 +719,65 @@ impl MixEngine {
         }
         for b in &s.busses {
             let n = b.format.channels().clamp(1, MAX_CHANNELS);
-            let bus = self.busses.entry(b.id).or_insert_with(|| BusBuf { fmt: b.format, buf: Vec::new() });
+            let bus = self.busses.entry(b.id).or_insert_with(|| BusBuf {
+                fmt: b.format,
+                buf: Vec::new(),
+                active: true,
+                to_out: None,
+                outbuf: Vec::new(),
+                out_delay: DelayLine::default(),
+            });
             bus.fmt = b.format;
             if bus.buf.len() != n {
                 bus.buf = vec![vec![0.0; mb]; n];
             }
         }
         self.busses.retain(|id, _| s.bus(*id).is_some());
+        // The output paths (Setup › I/O › Output): the monitor one is the main mix; the others get
+        // their own buffers, kept across syncs when their width holds.
+        let monitor = s.monitor_output_path().map(|o| o.name.clone());
+        self.monitor_map =
+            s.monitor_output_path().map(|o| o.channels.clone()).unwrap_or_else(|| (0..main_ch).map(|c| u16::try_from(c).ok()).collect());
+        let mut hw: Vec<HwOut> = Vec::new();
+        for o in s.outputs.iter().filter(|o| o.active && monitor.as_deref().is_none_or(|m| !m.eq_ignore_ascii_case(&o.name))) {
+            let n = o.format.channels().clamp(1, MAX_CHANNELS);
+            let buf = match self.hw.iter_mut().find(|h| h.name.eq_ignore_ascii_case(&o.name)) {
+                Some(h) if h.buf.len() == n && h.buf.first().map_or(0, Vec::len) == mb => std::mem::take(&mut h.buf),
+                _ => vec![vec![0.0; mb]; n],
+            };
+            hw.push(HwOut { name: o.name.clone(), fmt: o.format, buf, channels: o.channels.clone() });
+        }
+        self.hw = hw;
+        self.meter_hw = s.meter_output_path().and_then(|m| self.hw.iter().position(|h| h.name.eq_ignore_ascii_case(&m.name)));
+        self.monitor_name = monitor;
+        // Bus sub-paths, and which busses feed an output path.
+        self.subs.clear();
+        for b in &s.busses {
+            for sp in &b.sub_paths {
+                self.subs.insert(sp.id, SubInfo { bus: b.id, fmt: sp.format, channels: sp.channels.clone() });
+            }
+        }
+        self.bus_out_order.clear();
+        for b in &s.busses {
+            let to_out = b.output.as_deref().filter(|_| b.active).and_then(|name| {
+                if self.monitor_name.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(name)) {
+                    Some(None)
+                } else {
+                    self.hw.iter().position(|h| h.name.eq_ignore_ascii_case(name)).map(Some)
+                }
+            });
+            if let Some(bus) = self.busses.get_mut(&b.id) {
+                bus.active = b.active;
+                bus.to_out = to_out;
+                let n = bus.buf.len();
+                if to_out.is_some() && (bus.outbuf.len() != n || bus.outbuf.first().map_or(0, Vec::len) != mb) {
+                    bus.outbuf = vec![vec![0.0; mb]; n];
+                }
+            }
+            if to_out.is_some() {
+                self.bus_out_order.push(b.id);
+            }
+        }
     }
 
     /// Re-syncs plugin instances and the routing order when the session's structure changed
@@ -632,6 +815,11 @@ impl MixEngine {
         for c in &mut self.main {
             c.iter_mut().take(frames).for_each(|x| *x = 0.0);
         }
+        for h in &mut self.hw {
+            for c in &mut h.buf {
+                c.iter_mut().take(frames).for_each(|x| *x = 0.0);
+            }
+        }
         let any_solo = s.tracks.iter().any(|t| t.mixer.solo && !t.inactive);
         let order = std::mem::take(&mut self.order);
         let live = |t: &Track| !(t.kind == TrackKind::Master || t.inactive || t.kind == TrackKind::Vca);
@@ -652,9 +840,10 @@ impl MixEngine {
         }
         let busses = std::mem::take(&mut self.busses);
         let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+        let subs = &self.subs;
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
-                process_strip(s, t, st, &busses, &live_in, pos, frames, any_solo);
+                process_strip(s, t, st, &busses, subs, &live_in, pos, frames, any_solo);
             }
         });
         self.busses = busses;
@@ -708,9 +897,10 @@ impl MixEngine {
                 st.align_pre.process(&mut st.pre, frames);
             }
             let waits = match &t.mixer.output {
-                Route::Main => true,
+                Route::Main | Route::Hardware(_) => true,
                 Route::Bus(b) => self.aux_fed.contains(b),
-                _ => false,
+                Route::BusSub(id) => self.subs.get(id).is_some_and(|x| self.aux_fed.contains(&x.bus)),
+                Route::None => false,
             };
             st.out_extra.set(if waits { lmax_a } else { 0 }, ch);
         }
@@ -733,7 +923,7 @@ impl MixEngine {
                 st.scratch.resize(self.max_block, 0.0);
             }
             let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
-            process_strip(s, t, &mut st, &self.busses, &live_in, pos, frames, any_solo);
+            process_strip(s, t, &mut st, &self.busses, &self.subs, &live_in, pos, frames, any_solo);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
             st.align.process(&mut st.buf, frames);
@@ -742,6 +932,33 @@ impl MixEngine {
             self.strips.insert(t.id, st);
         }
         self.order = order;
+        // Busses mapped to an output path (Setup › I/O › Bus) also feed it, delayed like direct
+        // outputs so they line up with the aux returns.
+        for k in 0..self.bus_out_order.len() {
+            let Some(id) = self.bus_out_order.get(k).copied() else { break };
+            let Some(bus) = self.busses.get_mut(&id) else { continue };
+            let Some(to) = bus.to_out else { continue };
+            for (d, src) in bus.outbuf.iter_mut().zip(bus.buf.iter()) {
+                if let (Some(d), Some(sr)) = (d.get_mut(..frames), src.get(..frames)) {
+                    d.copy_from_slice(sr);
+                }
+            }
+            let n = bus.outbuf.len();
+            bus.out_delay.set(lmax_a, n);
+            bus.out_delay.process(&mut bus.outbuf, frames);
+            let dst: &mut Vec<Vec<f32>> = match to {
+                None => &mut self.main,
+                Some(i) => match self.hw.get_mut(i) {
+                    Some(h) => &mut h.buf,
+                    None => continue,
+                },
+            };
+            for (d, src) in dst.iter_mut().zip(bus.outbuf.iter()) {
+                for (x, y) in d.iter_mut().zip(src.iter()).take(frames) {
+                    *x += *y;
+                }
+            }
+        }
         // Master faders process the main mix.
         let transport = transport_at(s, pos, !self.monitor_only, self.recording);
         for t in s.tracks.iter().filter(|t| t.kind == TrackKind::Master && !t.inactive) {
@@ -799,7 +1016,10 @@ impl MixEngine {
                 }
             }
         }
-        self.main_meter.measure(&self.main, frames, 0.0);
+        match self.meter_hw.and_then(|i| self.hw.get(i)) {
+            Some(h) => self.main_meter.measure(&h.buf, frames, 0.0),
+            None => self.main_meter.measure(&self.main, frames, 0.0),
+        }
     }
 
     /// The delay-compensation latency written onto `bus`: the slowest track insert, plus the
@@ -841,19 +1061,23 @@ impl MixEngine {
             let lvl = send_level(t, i, snd.level_db, pos);
             let gain = db_to_gain(lvl);
             let src = if snd.pre_fader { &strip.pre } else { &strip.buf };
-            let Route::Bus(b) = &snd.target else { continue };
-            let Some(dst) = self.busses.get_mut(b) else { continue };
             if gain <= 0.0 {
                 continue;
             }
+            let Some(dst) =
+                resolve_dst(&snd.target, &mut self.main, self.main_fmt, self.monitor_name.as_deref(), &mut self.busses, &mut self.hw, &self.subs)
+            else {
+                continue;
+            };
             // Mono sends use the send's own pan; stereo sends go straight to L/R.
             let stereo = if src.len() == 1 { [snd.pan, 0.0] } else { [-1.0, 1.0] };
             let surround = snd.surround.as_ref().or(if snd.follow_main_pan { t.mixer.surround.as_ref() } else { None });
-            let m = build_matrix(src_fmt, src.len(), dst.fmt, dst.buf.len(), &PanSpec { stereo, surround }, law);
-            apply_matrix(src, frames, &mut dst.buf, &m, gain);
+            let m = dst_matrix(src_fmt, src.len(), &dst, &PanSpec { stereo, surround }, law);
+            apply_matrix(src, frames, dst.buf, &m, gain);
         }
         let src: &[Vec<f32>] = match &t.mixer.output {
-            Route::Main | Route::Bus(_) if strip.out_extra.len > 0 => {
+            Route::None => return,
+            _ if strip.out_extra.len > 0 => {
                 if strip.outbuf.len() != strip.buf.len() {
                     strip.outbuf = vec![Vec::new(); strip.buf.len()];
                 }
@@ -866,20 +1090,17 @@ impl MixEngine {
             }
             _ => &strip.buf,
         };
-        let (dst, dst_fmt) = match &t.mixer.output {
-            Route::Main => (&mut self.main, self.main_fmt),
-            Route::Bus(b) => match self.busses.get_mut(b) {
-                Some(d) => (&mut d.buf, d.fmt),
-                None => return,
-            },
-            _ => return,
+        let Some(dst) =
+            resolve_dst(&t.mixer.output, &mut self.main, self.main_fmt, self.monitor_name.as_deref(), &mut self.busses, &mut self.hw, &self.subs)
+        else {
+            return;
         };
         let mut start = 0;
         while start < frames {
             let (at, end) = pan_segment(t, pos, start, frames);
             let spec = PanSpec { stereo: [pan_at(t, 0, at), pan_at(t, 1, at)], surround: t.mixer.surround.as_ref() };
-            let m = build_matrix(src_fmt, src.len(), dst_fmt, dst.len(), &spec, law);
-            apply_matrix_span(src, start..end, dst, &m, 1.0);
+            let m = dst_matrix(src_fmt, src.len(), &dst, &spec, law);
+            apply_matrix_span(src, start..end, dst.buf, &m, 1.0);
             start = end;
         }
     }
@@ -899,6 +1120,7 @@ fn process_strip(
     t: &Track,
     strip: &mut Strip,
     busses: &HashMap<BusId, BusBuf>,
+    subs: &HashMap<BusSubId, SubInfo>,
     live: &LiveInput<'_>,
     pos: Samples,
     frames: usize,
@@ -910,16 +1132,13 @@ fn process_strip(
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
     match t.kind {
         TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording))) => {
-            // Input monitoring: the track hears its hardware input instead of its clips.
-            let first = match &t.mixer.input {
-                Route::Hardware(h) => {
-                    h.trim_start_matches("In ").split(['-', ' ']).next().and_then(|n| n.parse::<usize>().ok()).map_or(0, |n| n.saturating_sub(1))
-                }
-                _ => 0,
-            };
+            // Input monitoring: the track hears the hardware channels its input path feeds it
+            // instead of its clips (a channel nothing feeds stays silent).
+            let chans = s.input_route_channels(&t.mixer.input, strip.buf.len());
             let n_in = live.input.len().max(1);
             for (k, dst) in strip.buf.iter_mut().enumerate() {
-                if let Some(src) = live.input.get((first + k) % n_in) {
+                let Some(ch) = chans.get(k).copied().flatten() else { continue };
+                if let Some(src) = live.input.get(usize::from(ch) % n_in) {
                     for (d, x) in dst.iter_mut().zip(src.iter()).take(frames) {
                         *d = *x;
                     }
@@ -958,12 +1177,20 @@ fn process_strip(
             }
         }
         TrackKind::Aux | TrackKind::Folder => {
-            if let Route::Bus(b) = &t.mixer.input
-                && let Some(src) = busses.get(b)
-            {
-                let (ns, nd) = (src.buf.len(), strip.buf.len());
+            // The bus, or the bus sub-path (some of a bus's channels), the aux reads.
+            let src = match &t.mixer.input {
+                Route::Bus(b) => busses.get(b).filter(|x| x.active).map(|x| (x, None)),
+                Route::BusSub(id) => subs.get(id).and_then(|info| busses.get(&info.bus).filter(|x| x.active).map(|x| (x, Some(info)))),
+                _ => None,
+            };
+            if let Some((src, sub)) = src {
+                let nd = strip.buf.len();
+                let (src_fmt, ns) = match sub {
+                    Some(i) => (i.fmt, i.channels.len().min(MAX_CHANNELS)),
+                    None => (src.fmt, src.buf.len()),
+                };
                 let dst_fmt = strip_format(t, nd);
-                let m = if src.fmt == dst_fmt && ns == nd {
+                let m_src = if src_fmt == dst_fmt && ns == nd {
                     identity_matrix(ns)
                 } else if ns == 1 && nd == 2 {
                     // A mono bus feeds both sides of a stereo aux.
@@ -973,7 +1200,22 @@ fn process_strip(
                     m
                 } else {
                     let stereo = if ns == 1 { [0.0, 0.0] } else { [-1.0, 1.0] };
-                    build_matrix(src.fmt, ns, dst_fmt, nd, &PanSpec { stereo, surround: None }, PanLaw::Minus3)
+                    build_matrix(src_fmt, ns, dst_fmt, nd, &PanSpec { stereo, surround: None }, PanLaw::Minus3)
+                };
+                // A sub-path's rows move to the bus channels it is on.
+                let m = match sub {
+                    None => m_src,
+                    Some(info) => {
+                        let mut m = [[0.0f32; MAX_CHANNELS]; MAX_CHANNELS];
+                        for (k, bus_ch) in info.channels.iter().enumerate().take(ns) {
+                            if let (Some(bc), Some(srow)) = (bus_ch, m_src.get(k))
+                                && let Some(row) = m.get_mut(usize::from(*bc))
+                            {
+                                *row = *srow;
+                            }
+                        }
+                        m
+                    }
                 };
                 apply_matrix(&src.buf, frames, &mut strip.buf, &m, 1.0);
             }
@@ -1228,6 +1470,23 @@ fn structure_fingerprint(s: &Session) -> usize {
         // Which decoded audio it is, so new audio under the same id (another session) re-syncs.
         sample.and_then(|id| s.pool.get(id)).map(|a| Arc::as_ptr(a) as usize).hash(&mut h);
     }
+    for o in &s.outputs {
+        o.name.hash(&mut h);
+        o.format.hash(&mut h);
+        o.channels.hash(&mut h);
+        o.active.hash(&mut h);
+    }
+    s.monitor_output.hash(&mut h);
+    s.meter_output.hash(&mut h);
+    for b in &s.busses {
+        b.active.hash(&mut h);
+        b.output.hash(&mut h);
+        for sp in &b.sub_paths {
+            sp.id.hash(&mut h);
+            sp.format.hash(&mut h);
+            sp.channels.hash(&mut h);
+        }
+    }
     for b in &s.busses {
         b.id.hash(&mut h);
         b.format.hash(&mut h);
@@ -1332,7 +1591,10 @@ fn auxes_feeding(s: &Session, inputs: &[&Route]) -> Vec<usize> {
         .enumerate()
         .filter(|(_, t)| matches!(t.kind, TrackKind::Aux | TrackKind::Folder))
         .filter(|(_, t)| {
-            inputs.iter().any(|r| matches!(r, Route::Bus(_)) && (&&t.mixer.output == r || t.mixer.sends.iter().flatten().any(|sn| &&sn.target == r)))
+            inputs
+                .iter()
+                .filter_map(|r| route_bus(s, r))
+                .any(|b| route_bus(s, &t.mixer.output) == Some(b) || t.mixer.sends.iter().flatten().any(|sn| route_bus(s, &sn.target) == Some(b)))
         })
         .map(|(i, _)| i)
         .collect()
@@ -1340,10 +1602,10 @@ fn auxes_feeding(s: &Session, inputs: &[&Route]) -> Vec<usize> {
 
 /// Implicit solo: an aux is not muted when a soloed track feeds its input bus.
 fn receives_solo(s: &Session, t: &Track) -> bool {
-    let Route::Bus(b) = &t.mixer.input else { return false };
-    s.tracks
-        .iter()
-        .any(|o| o.mixer.solo && (o.mixer.output == Route::Bus(*b) || o.mixer.sends.iter().flatten().any(|sn| sn.target == Route::Bus(*b))))
+    let Some(b) = route_bus(s, &t.mixer.input) else { return false };
+    s.tracks.iter().any(|o| {
+        o.mixer.solo && (route_bus(s, &o.mixer.output) == Some(b) || o.mixer.sends.iter().flatten().any(|sn| route_bus(s, &sn.target) == Some(b)))
+    })
 }
 
 /// Metronome: a short synthesized blip on every beat of the tempo map, accented on beat 1 of
@@ -2189,7 +2451,7 @@ pub fn render_track_pre_fader(s: &Session, track: TrackId, range: Range) -> Vec<
     let mut solo = s.clone();
     // Multichannel tracks render into a main mix of their own format (straight through).
     let fmt = s.track(track).map_or(ChannelFormat::Stereo, |t| if t.channels() > 2 { t.format } else { ChannelFormat::Stereo });
-    solo.outputs = vec![soundcraft_model::OutputPath { name: "Out".into(), first_channel: 0, format: fmt }];
+    solo.outputs = vec![soundcraft_model::OutputPath::assigned("Out", fmt, 0)];
     for t in &mut solo.tracks {
         if t.id == track {
             t.mixer.volume_db = 0.0;
@@ -2443,6 +2705,101 @@ mod tests {
         }
         let out = render_range(&s, Range::new(0, 4800), 512);
         assert!(out[0][1000] > 0.1, "aux should carry the send: {}", out[0][1000]);
+    }
+
+    #[test]
+    fn a_track_on_another_output_path_leaves_the_main_mix_and_drives_that_path() {
+        let (mut s, t) = session_with_dc(0.5, 4800);
+        s.outputs = Session::default_output_paths(4);
+        s.track_mut(t).unwrap().mixer.output = Route::Hardware("Out 3-4".into());
+        let main = render_range(&s, Range::new(0, 4800), 512);
+        assert!(main[0][1000].abs() < 1e-4, "main carries nothing: {}", main[0][1000]);
+        let mut eng = MixEngine::new(48_000.0, 512);
+        let mut out = vec![vec![0.0; 512]; 2];
+        eng.render(&s, 0, 512, &mut out);
+        eng.render(&s, 512, 512, &mut out);
+        let hw: Vec<(&[Option<u16>], &[Vec<f32>])> = eng.hardware_outputs().collect();
+        assert_eq!(hw.len(), 1);
+        assert_eq!(hw[0].0, &[Some(2), Some(3)]);
+        let expect = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+        assert!((hw[0].1[0][100] - expect).abs() < 1e-3 && (hw[0].1[1][100] - expect).abs() < 1e-3, "{:?}", hw[0].1[0][100]);
+        assert_eq!(eng.monitor_channels(), &[Some(0), Some(1)]);
+        // Routed to the monitor path by name, the track is in the main mix again.
+        s.track_mut(t).unwrap().mixer.output = Route::Hardware("Out 1-2".into());
+        let main = render_range(&s, Range::new(0, 4800), 512);
+        assert!((main[0][1000] - expect).abs() < 1e-3);
+        // An inactive path drives nothing.
+        s.track_mut(t).unwrap().mixer.output = Route::Hardware("Out 3-4".into());
+        s.outputs[1].active = false;
+        let mut eng = MixEngine::new(48_000.0, 512);
+        eng.render(&s, 0, 512, &mut out);
+        assert_eq!(eng.hardware_outputs().count(), 0);
+    }
+
+    #[test]
+    fn a_bus_mapped_to_an_output_path_feeds_it() {
+        let (mut s, t) = session_with_dc(0.5, 4800);
+        s.outputs = Session::default_output_paths(4);
+        let stem = s.add_bus("Stem", ChannelFormat::Stereo);
+        s.track_mut(t).unwrap().mixer.output = Route::Bus(stem);
+        s.busses[0].output = Some("Out 3-4".into());
+        let mut eng = MixEngine::new(48_000.0, 512);
+        let mut out = vec![vec![0.0; 512]; 2];
+        eng.render(&s, 0, 512, &mut out);
+        let expect = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+        let hw: Vec<_> = eng.hardware_outputs().collect();
+        assert!((hw[0].1[0][100] - expect).abs() < 1e-3, "the bus reaches Out 3-4: {}", hw[0].1[0][100]);
+        assert!(out[0][100].abs() < 1e-4, "not the main mix");
+        // Mapped to the monitor path, it is in the main mix; an inactive bus carries nothing.
+        s.busses[0].output = Some("Out 1-2".into());
+        let main = render_range(&s, Range::new(0, 4800), 512);
+        assert!((main[0][1000] - expect).abs() < 1e-3, "{}", main[0][1000]);
+        s.busses[0].active = false;
+        let main = render_range(&s, Range::new(0, 4800), 512);
+        assert!(main[0][1000].abs() < 1e-4);
+        let bus = render_bus(&s, stem, Range::new(0, 4800), 512);
+        assert!(bus[0][1000].abs() < 1e-4, "an inactive bus takes no signal");
+    }
+
+    #[test]
+    fn a_bus_sub_path_is_one_channel_of_the_bus_in_and_out() {
+        use soundcraft_model::{BusSubId, BusSubPath};
+        let (mut s, t) = session_with_dc(0.5, 4800);
+        let verb = s.add_bus("Verb", ChannelFormat::Stereo);
+        let mut l = BusSubPath::new(BusSubId(501), "Verb.L", ChannelFormat::Mono);
+        l.channels = vec![Some(0)];
+        let mut r = BusSubPath::new(BusSubId(502), "Verb.R", ChannelFormat::Mono);
+        r.channels = vec![Some(1)];
+        s.busses[0].sub_paths = vec![l, r];
+        // A mono track routed to Verb.R lands on the bus's right channel only.
+        s.track_mut(t).unwrap().mixer.output = Route::BusSub(BusSubId(502));
+        let bus = render_bus(&s, verb, Range::new(0, 4800), 512);
+        // Mono into a mono destination sits at centre pan: -3 dB, as into a mono bus.
+        let expect = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+        assert!(bus[0][1000].abs() < 1e-4 && (bus[1][1000] - expect).abs() < 1e-3, "{} {}", bus[0][1000], bus[1][1000]);
+        // A mono aux reading Verb.R hears it; one reading Verb.L hears nothing.
+        let hear_r = s.add_track(TrackKind::Aux, ChannelFormat::Mono, Some("R"));
+        s.track_mut(hear_r).unwrap().mixer.input = Route::BusSub(BusSubId(502));
+        let hear_l = s.add_track(TrackKind::Aux, ChannelFormat::Mono, Some("L"));
+        s.track_mut(hear_l).unwrap().mixer.input = Route::BusSub(BusSubId(501));
+        s.track_mut(hear_l).unwrap().mixer.output = Route::None;
+        let main = render_range(&s, Range::new(0, 4800), 512);
+        let heard = expect * std::f32::consts::FRAC_1_SQRT_2;
+        assert!((main[0][1000] - heard).abs() < 1e-3, "the R aux carries the signal: {}", main[0][1000]);
+        s.track_mut(hear_r).unwrap().mixer.output = Route::None;
+        s.track_mut(hear_l).unwrap().mixer.output = Route::Main;
+        let main = render_range(&s, Range::new(0, 4800), 512);
+        assert!(main[0][1000].abs() < 1e-4, "the L aux hears nothing: {}", main[0][1000]);
+        // A send to a sub-path, and an unknown sub-path goes nowhere.
+        s.track_mut(t).unwrap().mixer.output = Route::None;
+        let mut snd = soundcraft_model::SendSlot::new(Route::BusSub(BusSubId(501)));
+        snd.level_db = 0.0;
+        s.track_mut(t).unwrap().mixer.sends[0] = Some(snd);
+        let bus = render_bus(&s, verb, Range::new(0, 4800), 512);
+        assert!((bus[0][1000] - expect).abs() < 1e-3 && bus[1][1000].abs() < 1e-4, "{} {}", bus[0][1000], bus[1][1000]);
+        s.track_mut(t).unwrap().mixer.sends[0] = Some(soundcraft_model::SendSlot::new(Route::BusSub(BusSubId(999))));
+        let bus = render_bus(&s, verb, Range::new(0, 4800), 512);
+        assert!(bus[0][1000].abs() < 1e-4);
     }
 
     #[test]

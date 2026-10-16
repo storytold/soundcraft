@@ -17,5 +17,6 @@ id_type!(TrackId);
 id_type!(ClipId);
 id_type!(SourceId);
 id_type!(BusId);
+id_type!(BusSubId);
 id_type!(GroupId);
 id_type!(MarkerId);

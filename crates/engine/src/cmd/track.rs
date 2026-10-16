@@ -197,7 +197,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"clips": ids}))
             }
         ),
-        cmd!("track.input", "Track Input", [], None, "{tracks?, input: none|bus name|hardware name}", has_selection, |e, p| route(e, p, true)),
+        cmd!(
+            "track.input",
+            "Track Input",
+            [],
+            None,
+            "{tracks?, input: none|bus name|hardware name, cascade?: bool (`In N` on the first track, the channels after it on the next)}",
+            has_selection,
+            |e, p| route(e, p, true)
+        ),
         cmd!("track.output", "Track Output", [], None, "{tracks?, output: main|none|bus name}", has_selection, |e, p| route(e, p, false)),
         cmd!("track.timebase", "Track Timebase", [], None, "{tracks?, ticks: bool}", has_selection, |e, p| flag(
             e,
@@ -815,11 +823,18 @@ fn select_playlist(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({}))
 }
 
+/// A route from its name: none, the main mix (also the monitor output path's name), a bus, a
+/// bus sub-path, else a hardware path by name.
 pub(crate) fn parse_route(s: &soundcraft_model::Session, v: &str) -> Route {
     match v.to_ascii_lowercase().as_str() {
         "" | "none" | "no input" | "no output" => Route::None,
-        "main" | "out 1-2" | "master" => Route::Main,
-        _ => s.bus_by_name(v).map_or_else(|| Route::Hardware(v.to_string()), |b| Route::Bus(b.id)),
+        "main" | "master" => Route::Main,
+        _ if s.is_monitor_output(v) => Route::Main,
+        _ => match s.bus_path_by_name(v) {
+            Some((_, Some(sp))) => Route::BusSub(sp.id),
+            Some((b, None)) => Route::Bus(b.id),
+            None => Route::Hardware(v.to_string()),
+        },
     }
 }
 
@@ -828,10 +843,45 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     let tracks = tracks_required(e, "track.route", p)?;
     let v = str_param(p, key).ok_or_else(|| bad("track.route", format!("`{key}` required")))?.to_string();
     let create_bus = bool_or(p, "create_bus", true);
+    let cascade = bool_or(p, "cascade", false);
     let s = e.session_mut();
     let mut r = parse_route(s, &v);
+    if cascade {
+        if input
+            && let Route::Hardware(name) = &r
+            && s.find_input_path(name).is_some()
+        {
+            return cascade_paths(s, &tracks, name);
+        }
+        // Checked before anything changes: a bus or "none" has no next channel.
+        let first = match &r {
+            Route::Hardware(name) if input => hardware_input_channel(name),
+            _ => None,
+        };
+        let mut next = first.ok_or_else(|| {
+            bad("track.input", "`cascade` needs a hardware input such as `In 3`: the first track gets it, each next track the channels after it")
+        })?;
+        let mut assigned = Vec::new();
+        for t in &tracks {
+            if let Some(tr) = s.track_mut(*t) {
+                let channels = tr.channels().max(1);
+                tr.mixer.input = Route::Hardware(hardware_input_name(next, channels));
+                assigned.push(json!({"track": t.0, "input": tr.mixer.input}));
+                next = next.saturating_add(channels);
+            }
+        }
+        return Ok(json!({"input": "cascade", "tracks": assigned}));
+    }
+    // A name that is no path and no bus makes a bus (an aux's return), unless it is a hardware
+    // path of the kind being routed.
+    let is_path = match &r {
+        Route::Hardware(name) if input => s.input_path(name).is_some(),
+        Route::Hardware(name) => s.output_path(name).is_some(),
+        _ => false,
+    };
     if let Route::Hardware(name) = &r
         && create_bus
+        && !is_path
         && !name.to_ascii_lowercase().starts_with("in ")
     {
         let fmt = tracks
@@ -850,6 +900,58 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
         }
     }
     Ok(json!({key: r}))
+}
+
+/// The cascade over the session's input paths: the first track gets the clicked path (or the next
+/// one of its width), each next track the next path of its width that starts after the channels
+/// the previous one took, so a mono track after a stereo one skips both of its channels. Only
+/// active, fully assigned paths count; a track with no path left keeps its input.
+fn cascade_paths(s: &mut Session, tracks: &[TrackId], first: &str) -> Result<Value> {
+    let paths: Vec<(String, usize, u16, u16)> = s
+        .input_paths_flat()
+        .iter()
+        .filter(|(p, active)| *active && p.complete() && p.width() > 0)
+        .map(|(p, _)| {
+            let hw: Vec<u16> = p.channels.iter().flatten().copied().collect();
+            (p.name.clone(), p.width(), hw.iter().copied().min().unwrap_or(0), hw.iter().copied().max().unwrap_or(0))
+        })
+        .collect();
+    let mut from = paths.iter().find(|(n, ..)| n.eq_ignore_ascii_case(first)).map_or(0, |(_, _, lo, _)| *lo);
+    let mut assigned = Vec::new();
+    for t in tracks {
+        let Some(tr) = s.track_mut(*t) else { continue };
+        let width = tr.channels().max(1);
+        let Some((name, _, _, hi)) = paths.iter().filter(|(_, w, lo, _)| *w == width && *lo >= from).min_by_key(|(_, _, lo, _)| *lo) else {
+            break;
+        };
+        tr.mixer.input = Route::Hardware(name.clone());
+        assigned.push(json!({"track": t.0, "input": tr.mixer.input}));
+        from = hi.saturating_add(1);
+    }
+    Ok(json!({"input": "cascade", "tracks": assigned}))
+}
+
+/// Hardware input names without a path behind them are read by channel, `In 3` for one channel
+/// and `In 3-4` for two (what the default paths are called). Channel numbers are capped here.
+const MAX_HARDWARE_INPUT: usize = 1024;
+
+/// The first channel (from 1) a hardware input path names: `In 3` and `In 3-4` → 3; `None` for
+/// anything that isn't `In <number>`. Hostile numbers are clamped to 1..=[`MAX_HARDWARE_INPUT`].
+fn hardware_input_channel(name: &str) -> Option<usize> {
+    let name = name.trim();
+    if !name.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("in ")) {
+        return None;
+    }
+    let digits: String = name.get(3..)?.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    Some(digits.parse::<usize>().unwrap_or(MAX_HARDWARE_INPUT).clamp(1, MAX_HARDWARE_INPUT))
+}
+
+/// The path name for `channels` hardware inputs starting at `first`: `In 3`, or `In 3-4`.
+fn hardware_input_name(first: usize, channels: usize) -> String {
+    if channels <= 1 { format!("In {first}") } else { format!("In {first}-{}", first.saturating_add(channels).saturating_sub(1)) }
 }
 
 #[cfg(test)]
@@ -982,5 +1084,69 @@ mod tests {
         assert_eq!(vca(&e), None);
         assert!(e.undo());
         assert_eq!(vca(&e), Some(master.0));
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    fn new(e: &mut Engine, name: &str, format: &str) -> u64 {
+        e.execute("track.new", &json!({"name": name, "format": format})).unwrap()["tracks"][0].as_u64().unwrap()
+    }
+
+    fn input(e: &Engine, id: u64) -> Route {
+        e.session().track(soundcraft_model::TrackId(id)).unwrap().mixer.input.clone()
+    }
+
+    #[test]
+    fn cascading_inputs_follow_each_tracks_channel_count_in_one_undo_step() {
+        let mut e = Engine::default();
+        let (vox, gtr, bass) = (new(&mut e, "Vox", "mono"), new(&mut e, "Gtr", "stereo"), new(&mut e, "Bass", "mono"));
+        let before = input(&e, bass);
+        let out = e.execute("track.input", &json!({"tracks": [vox, gtr, bass], "input": "In 3", "cascade": true})).unwrap();
+        assert_eq!(out["tracks"].as_array().map(Vec::len), Some(3));
+        assert_eq!(input(&e, vox), Route::Hardware("In 3".into()));
+        assert_eq!(input(&e, gtr), Route::Hardware("In 5-6".into()), "the next stereo path after channel 3");
+        assert_eq!(input(&e, bass), Route::Hardware("In 7".into()), "the next mono path after the pair");
+        assert!(e.undo());
+        assert_eq!((input(&e, vox), input(&e, bass)), (before.clone(), before), "one step undoes all three");
+    }
+
+    #[test]
+    fn cascade_runs_over_the_paths_in_channel_order_and_stops_when_they_run_out() {
+        let mut e = Engine::default();
+        let (a, b, c) = (new(&mut e, "A", "stereo"), new(&mut e, "B", "stereo"), new(&mut e, "C", "mono"));
+        e.execute("track.input", &json!({"tracks": [a, b, c], "input": "In 5-6", "cascade": true})).unwrap();
+        assert_eq!((input(&e, a), input(&e, b)), (Route::Hardware("In 5-6".into()), Route::Hardware("In 7-8".into())));
+        assert_eq!(input(&e, c), Route::None, "no mono path after channel 8: unchanged");
+        // Inactive and unassigned paths are skipped.
+        e.execute("setup.io", &json!({"action": "set_input_active", "name": "In 3-4", "active": false})).unwrap();
+        e.execute("setup.io", &json!({"action": "map_input", "name": "In 5-6", "hardware": null})).unwrap();
+        e.execute("track.input", &json!({"tracks": [a, b], "input": "In 1-2", "cascade": true})).unwrap();
+        assert_eq!((input(&e, a), input(&e, b)), (Route::Hardware("In 1-2".into()), Route::Hardware("In 7-8".into())));
+        // Clicking a path of another width starts at its channels.
+        e.execute("track.input", &json!({"tracks": [c], "input": "In 7-8", "cascade": true})).unwrap();
+        assert_eq!(input(&e, c), Route::Hardware("In 7".into()));
+    }
+
+    #[test]
+    fn cascade_needs_a_hardware_input_and_survives_hostile_numbers() {
+        let mut e = Engine::default();
+        let (a, b) = (new(&mut e, "A", "mono"), new(&mut e, "B", "stereo"));
+        let busses = e.session().busses.len();
+        assert!(e.execute("track.input", &json!({"tracks": [a, b], "input": "Verb", "cascade": true})).is_err(), "a bus has no next channel");
+        assert_eq!(e.session().busses.len(), busses, "and the refused cascade made no bus");
+        assert!(e.execute("track.input", &json!({"tracks": [a, b], "input": "none", "cascade": true})).is_err());
+        assert!(e.execute("track.output", &json!({"tracks": [a, b], "output": "main", "cascade": true})).is_err(), "outputs don't cascade");
+        e.execute("track.input", &json!({"tracks": [a, b], "input": "In 99999999999999999999999", "cascade": true})).unwrap();
+        assert_eq!(input(&e, a), Route::Hardware("In 1024".into()));
+        assert_eq!(input(&e, b), Route::Hardware("In 1025-1026".into()));
+        e.execute("track.input", &json!({"tracks": [a, b], "input": " in 0 ", "cascade": true})).unwrap();
+        assert_eq!(input(&e, a), Route::Hardware("In 1".into()));
+        assert_eq!(input(&e, b), Route::Hardware("In 2-3".into()));
+        assert_eq!(hardware_input_channel("In 7-8"), Some(7));
+        assert_eq!(hardware_input_channel("Input"), None);
+        assert_eq!(hardware_input_channel("In "), None);
     }
 }

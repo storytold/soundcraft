@@ -9,6 +9,7 @@ mod automation;
 pub mod b64;
 mod clip;
 mod ids;
+mod io_paths;
 mod markers;
 mod mixer;
 mod session;
@@ -17,10 +18,12 @@ mod track;
 
 pub use automation::{AutoParam, AutomationLane, AutomationMode, AutomationPoint};
 pub use clip::{Clip, ClipContent, Fade, FadeShape};
-pub use ids::{BusId, ClipId, GroupId, MarkerId, SourceId, TrackId};
+pub use ids::{BusId, BusSubId, ClipId, GroupId, MarkerId, SourceId, TrackId};
+pub use io_paths::{InputPath, MAX_INPUT_CHANNEL, MAX_INPUT_PATHS, MAX_SUB_PATHS, default_bus_sub_paths, default_sub_paths};
 pub use markers::{Group, MarkerKind, MemoryLocation};
 pub use mixer::{
-    Bus, ChannelFormat, INSERT_SLOTS, Insert, Mixer, OutputPath, Route, SEND_SLOTS, SendSlot, Speaker, SurroundPan, fader_db_to_pos, fader_pos_to_db,
+    Bus, BusSubPath, ChannelFormat, INSERT_SLOTS, Insert, Mixer, OutputPath, Route, SEND_SLOTS, SendSlot, Speaker, SurroundPan, fader_db_to_pos,
+    fader_pos_to_db,
 };
 pub use session::{
     BitDepthSetting, EditMode, EditState, FEET_FRAMES_START, MAX_COMMENT_CHARS, MAX_NAME_CHARS, SESSION_EXTENSION, Session, SessionError, Tool,

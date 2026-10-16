@@ -102,13 +102,19 @@ fn send_slot(p: &Value) -> Option<usize> {
     (i < SEND_SLOTS).then_some(i)
 }
 
-/// Set the main output path's format (creating it if missing) and resize master faders to match.
+/// Set the monitor (main) output path's format (creating it if missing), its channels following
+/// in order, and resize master faders to match.
 pub fn set_main_format(s: &mut Session, fmt: ChannelFormat) {
     let n = fmt.channels();
     let new_name = format!("Out 1-{n}");
-    match s.outputs.first_mut() {
+    let idx = s.monitor_output_path().and_then(|m| s.find_output_path(&m.name)).unwrap_or(0);
+    match s.outputs.get_mut(idx) {
         Some(o) => {
-            o.format = fmt;
+            o.set_format(fmt);
+            if !o.complete() {
+                let first = o.first_channel;
+                o.assign_from(first);
+            }
             // Rename the default-style "Out 1-N" path to the new width; custom names stay.
             let default_style = o.name.strip_prefix("Out 1-").is_some_and(|x| x.parse::<usize>().is_ok());
             if default_style && o.name != new_name {
@@ -120,7 +126,7 @@ pub fn set_main_format(s: &mut Session, fmt: ChannelFormat) {
                 }
             }
         }
-        None => s.outputs.push(OutputPath { name: new_name, first_channel: 0, format: fmt }),
+        None => s.outputs.push(OutputPath::assigned(new_name, fmt, 0)),
     }
     for t in s.tracks.iter_mut().filter(|t| t.kind == TrackKind::Master) {
         if t.format != fmt {
