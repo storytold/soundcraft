@@ -111,10 +111,12 @@ impl Plugin for AuPlugin {
         let Some(i) = self.info.params.iter().position(|p| p.id == id) else { return false };
         let (Some(pi), Some(&aid)) = (self.info.params.get(i), self.ids.get(i)) else { return false };
         let v = pi.clamp(value);
+        if !self.inst.set_param(aid, v) {
+            return false;
+        }
         if let Some(slot) = self.values.get_mut(i) {
             *slot = v;
         }
-        self.inst.set_param(aid, v);
         true
     }
 

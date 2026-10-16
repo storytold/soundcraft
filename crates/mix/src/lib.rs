@@ -1673,8 +1673,7 @@ fn apply_values(slot: &mut PluginSlot, ins: &soundcraft_model::Insert, value: im
     }
     for ((k, v), last) in ins.params.iter().zip(slot.applied.iter_mut()) {
         let val = value(k, *v);
-        if val.to_bits() != last.to_bits() {
-            slot.plugin.set_param(k, val);
+        if val.to_bits() != last.to_bits() && slot.plugin.set_param(k, val) {
             *last = val;
         }
     }
