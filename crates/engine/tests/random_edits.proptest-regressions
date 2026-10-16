@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 1dc212f0026723d05bfcfbb29fcff476eda7f491e9bea9cd5d26dccf006a81f6 # shrinks to ops = [(9, 0, 2420494, 1), (3, 0, 2396495, 1)]
+cc 999e3118bcb90cf7c61fe9c49122ef9f99cb985800872e9c4220234f9d17a398 # shrinks to ops = [(13, 0, 1939984, 0), (36, 2215386, 0, 0), (10, 0, 2215386, 0), (1, 8, 2368718, 0), (11, 1238645, 369271, 0)]

@@ -835,6 +835,9 @@ pub fn delete_fades(s: &mut Session, track: TrackId, range: Range) -> usize {
             }
         }
     }
+    // Trimming a long crossfade can move a clip's start past another short clip.
+    // Restore playlist order after all edge changes, not just before them.
+    pl.sort();
     n
 }
 
