@@ -167,6 +167,8 @@ struct AudioState {
     read: f64,
     device_rate: f64,
     input: Option<Arc<record::InputRing>>,
+    /// Nothing read the input for a while (see `fill`).
+    input_paused: bool,
     recording: bool,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
@@ -201,6 +203,7 @@ impl AudioState {
             read: 0.0,
             device_rate,
             input: None,
+            input_paused: false,
             recording: false,
         }
     }
@@ -299,6 +302,9 @@ impl AudioState {
             return;
         }
         if let Some(ring) = &self.input {
+            if std::mem::take(&mut self.input_paused) {
+                ring.resync();
+            }
             let ch = ring.channels.load(Ordering::Relaxed).max(1);
             if self.mix.input.len() != ch {
                 self.mix.input = vec![vec![0.0; BLOCK]; ch];
@@ -333,6 +339,8 @@ impl AudioState {
         let channels = channels.max(1);
         let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
         if !self.playing && !monitoring {
+            // Nothing listens. The input read stands still: start it afresh when it resumes.
+            self.input_paused = true;
             out.iter_mut().for_each(|x| *x = 0.0);
             if let Ok(mut m) = self.shared.meters.try_lock() {
                 m.main = StripMeter::default();
@@ -1301,6 +1309,8 @@ mod tests {
         let mut out = vec![0.0f32; 4096];
         st.fill(&mut out, 2);
         assert!(!shared.playing.load(Ordering::Relaxed));
+        // The input keeps coming: one block is not yet enough to start reading from.
+        ring.push(&[0.5; 4096]);
         ring.push(&[0.5; 4096]);
         st.fill(&mut out, 2);
         assert!(out.iter().any(|x| x.abs() > 0.1), "the input is heard");
