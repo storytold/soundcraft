@@ -300,6 +300,7 @@ fn add_marker(e: &mut Engine, p: &Value) -> Result<Value> {
     let (a, b) = match (at, st, en) {
         (Some(a), _, _) => (a, a),
         (None, Some(a), Some(b)) => (a, b),
+        (None, Some(p), None) | (None, None, Some(p)) => (p, p),
         _ if kind == MarkerKind::Selection => (sel.start, sel.end),
         _ => (if e.transport.playing { e.transport.position } else { sel.start }, sel.start),
     };
@@ -441,6 +442,20 @@ mod tests {
         let s = e.session();
         let bridge = s.markers.iter().find(|m| m.id.0 == outro_id).unwrap();
         assert_eq!((bridge.name.as_str(), bridge.comments.as_str()), ("Bridge", "last"));
+    }
+
+    /// `markers.add` with only `start` or only `end` places the marker there, not at the edit selection.
+    #[test]
+    fn markers_add_start_or_end_alone_is_used() {
+        let mut e = demo_engine();
+        assert_ne!(e.session().edit.selection.start, 96_000);
+        let a = e.execute("markers.add", &json!({"name": "A", "start": 96_000})).unwrap();
+        let b = e.execute("markers.add", &json!({"name": "B", "end": 96_000})).unwrap();
+        let c = e.execute("markers.add", &json!({"name": "C", "start": 1000, "end": 2000})).unwrap();
+        let find = |r: &serde_json::Value| e.session().markers.iter().find(|m| Some(m.id.0) == r["id"].as_u64()).map(|m| (m.start, m.end));
+        assert_eq!(find(&a), Some((96_000, 96_000)));
+        assert_eq!(find(&b), Some((96_000, 96_000)));
+        assert_eq!(find(&c), Some((1000, 2000)));
     }
 
     /// Constant replaces the tempo over [start, end) only; the tempo at the old end tick carries on after it.
