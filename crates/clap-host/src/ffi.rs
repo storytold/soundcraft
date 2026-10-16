@@ -1120,6 +1120,27 @@ pub(crate) struct NotePort {
     pub preferred: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum InstanceProcessError {
+    Inactive,
+    InvalidBlock,
+    StartFailed,
+    MissingProcess,
+    ProcessorFailed,
+}
+
+impl InstanceProcessError {
+    fn message(self) -> &'static str {
+        match self {
+            Self::Inactive => "not active",
+            Self::InvalidBlock => "block larger than the activated size",
+            Self::StartFailed => "start_processing failed",
+            Self::MissingProcess => "plugin has no process",
+            Self::ProcessorFailed => "plugin reported a processing error",
+        }
+    }
+}
+
 /// A live plugin instance plus the host struct it was created with.
 pub(crate) struct Instance {
     plugin: *const clap_plugin,
@@ -1331,6 +1352,40 @@ impl Instance {
         }
     }
 
+    /// Control-side capacity for the checked opt-in path; legacy event policy is unchanged.
+    pub fn reserve_block_events(&mut self, capacity: usize) -> Result<(), soundcraft_dsp::BlockDeliveryError> {
+        if capacity > 4096 + 1024 {
+            return Err(soundcraft_dsp::BlockDeliveryError::InvalidCapacity);
+        }
+        if self.raw.capacity() < capacity {
+            self.raw.try_reserve_exact(capacity.saturating_sub(self.raw.len())).map_err(|_| soundcraft_dsp::BlockDeliveryError::Allocation)?;
+        }
+        Ok(())
+    }
+
+    /// Unlike legacy processing, this entry never silently truncates inbound events.
+    pub fn process_block_checked(
+        &mut self,
+        frames: usize,
+        steady: i64,
+        inputs: &mut PortBuffers,
+        outputs: &mut PortBuffers,
+        events: &[Event],
+        transport: Option<&Transport>,
+    ) -> Result<soundcraft_dsp::BlockProcessStatus, soundcraft_dsp::BlockDeliveryError> {
+        use soundcraft_dsp::{BlockDeliveryError, BlockProcessStatus};
+        if events.len() > self.raw.capacity() {
+            return Err(BlockDeliveryError::InvalidCapacity);
+        }
+        match self.process_inner(frames, steady, inputs, outputs, events, 0, transport) {
+            Ok(1) => Ok(BlockProcessStatus::Continue),
+            Ok(2) => Ok(BlockProcessStatus::ContinueIfNotQuiet),
+            Ok(3) => Ok(BlockProcessStatus::Tail),
+            Ok(4) => Ok(BlockProcessStatus::Sleep),
+            _ => Err(BlockDeliveryError::ProcessFailed),
+        }
+    }
+
     /// Runs one `clap_process` call over `frames` frames. Events must be sorted by time; their
     /// times are made relative to `offset`. Returns the CLAP process status.
     pub fn process(
@@ -1343,11 +1398,25 @@ impl Instance {
         offset: u32,
         transport: Option<&Transport>,
     ) -> Result<i32, ClapError> {
+        self.process_inner(frames, steady_time, inputs, outputs, events, offset, transport)
+            .map_err(|error| ClapError::Process(error.message().into()))
+    }
+
+    fn process_inner(
+        &mut self,
+        frames: usize,
+        steady_time: i64,
+        inputs: &mut PortBuffers,
+        outputs: &mut PortBuffers,
+        events: &[Event],
+        offset: u32,
+        transport: Option<&Transport>,
+    ) -> Result<i32, InstanceProcessError> {
         if !self.active {
-            return Err(ClapError::Process("not active".into()));
+            return Err(InstanceProcessError::Inactive);
         }
         if frames == 0 || frames > self.max_frames || frames > inputs.frames || frames > outputs.frames {
-            return Err(ClapError::Process("block larger than the activated size".into()));
+            return Err(InstanceProcessError::InvalidBlock);
         }
         if !self.processing {
             let ok = match self.vt().start_processing {
@@ -1356,11 +1425,11 @@ impl Instance {
                 None => true,
             };
             if !ok {
-                return Err(ClapError::Process("start_processing failed".into()));
+                return Err(InstanceProcessError::StartFailed);
             }
             self.processing = true;
         }
-        let process = self.vt().process.ok_or_else(|| ClapError::Process("plugin has no process".into()))?;
+        let process = self.vt().process.ok_or(InstanceProcessError::MissingProcess)?;
         self.raw.clear();
         for e in events.iter().take(self.raw.capacity()) {
             self.raw.push(RawEvent::from_event(e, offset));
@@ -1403,7 +1472,7 @@ impl Instance {
             }
         }
         self.out_params.clear();
-        if status == CLAP_PROCESS_ERROR { Err(ClapError::Process("plugin reported a processing error".into())) } else { Ok(status) }
+        if status == CLAP_PROCESS_ERROR { Err(InstanceProcessError::ProcessorFailed) } else { Ok(status) }
     }
 }
 
