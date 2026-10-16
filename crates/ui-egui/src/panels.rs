@@ -66,6 +66,7 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
     let out = lists.show(ui, |ui| {
         for (id, name, shown, color, sel) in tracks {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::click_and_drag());
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, sel, &name));
             if sel {
                 ui.painter().rect_filled(r, 0.0, t.row_selected);
             }
@@ -94,6 +95,7 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::hover());
         ui.painter().text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, "<ALL>", regular(11.5).clone(), t.text);
         let all = ui.interact(r, ui.id().with("group_all"), Sense::click());
+        all.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "<ALL>"));
         if all.double_clicked() {
             let _ = app.run("edit.select_all", json!({}));
         }
@@ -105,6 +107,7 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
         });
         for (id, letter, name, active, color) in groups {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, active, &name));
             if active {
                 ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x + 4.0, r.min.y + 2.0), vec2(14.0, 13.0)), 1.0, rgb(color));
             }
