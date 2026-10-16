@@ -1,6 +1,6 @@
 //! Tracks and playlists.
 
-use crate::{AutoParam, AutomationLane, ChannelFormat, Clip, ClipId, Mixer, TrackId};
+use crate::{AutoParam, AutomationLane, ChannelFormat, Clip, ClipId, Mixer, SourceId, TrackId};
 use soundcraft_time::{Range, Samples};
 
 /// Track types (Track › New).
@@ -225,6 +225,14 @@ pub struct Track {
     pub inactive: bool,
     #[serde(default)]
     pub frozen: bool,
+    /// Offline pre-fader render used while frozen. The original playlist, routing and inserts stay
+    /// intact, so unfreeze is instant and lossless.
+    #[serde(default)]
+    pub frozen_source: Option<SourceId>,
+    #[serde(default)]
+    pub frozen_start: Samples,
+    #[serde(default)]
+    pub frozen_len: Samples,
     #[serde(default)]
     pub comments: String,
     /// Folder that contains this track.
@@ -276,6 +284,9 @@ impl Track {
             hidden: false,
             inactive: false,
             frozen: false,
+            frozen_source: None,
+            frozen_start: 0,
+            frozen_len: 0,
             comments: String::new(),
             folder: None,
             folder_open: true,

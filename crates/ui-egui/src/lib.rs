@@ -1132,6 +1132,7 @@ impl SoundApp {
         self.frame_ms = self.frame_ms * 0.9 + dt * 1000.0 * 0.1;
         control::drain(self, ctx);
         self.note_recent_session();
+        self.engine.poll_background();
         self.apply_editor_edits();
         bounce::step(self, ctx);
         if !ctx.input(|i| i.pointer.any_down()) {
@@ -1165,7 +1166,14 @@ impl SoundApp {
         // Autosave and the macOS menu bar only run on frames, and plugin editors are native windows egui never hears from.
         // egui takes its predicted frame time off every delay, so add it back.
         let editors = self.player.as_ref().is_some_and(Player::any_editor_open);
-        ctx.request_repaint_after_secs(if editors { 0.03 } else { 1.0 } + ctx.input(|i| i.predicted_dt));
+        let interval = if self.engine.has_background_work() {
+            0.016
+        } else if editors {
+            0.03
+        } else {
+            1.0
+        };
+        ctx.request_repaint_after_secs(interval + ctx.input(|i| i.predicted_dt));
         control::collect_screenshots(self, ctx);
     }
 

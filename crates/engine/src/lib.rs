@@ -19,7 +19,7 @@ pub mod score;
 
 use serde_json::{Value, json};
 use soundcraft_model::{Clip, Session, TrackId, ZoomState};
-use soundcraft_time::Samples;
+use soundcraft_time::{Range, Samples};
 use std::cell::Cell;
 use std::sync::Arc;
 
@@ -110,6 +110,19 @@ struct HistoryEntry {
     doc: Arc<Session>,
 }
 
+pub(crate) struct FreezeRender {
+    pub track: TrackId,
+    pub name: String,
+    pub range: Range,
+    pub sample_rate: u32,
+    pub audio: Vec<Vec<f32>>,
+}
+
+pub(crate) struct FreezeJob {
+    pub base_revision: u64,
+    pub handle: std::thread::JoinHandle<Vec<FreezeRender>>,
+}
+
 /// Engine state: the document, history, clipboard and transport plumbing.
 pub struct Engine {
     doc: Arc<Session>,
@@ -139,6 +152,7 @@ pub struct Engine {
     /// The edit selection (range, tracks) before the last change, for Restore Last Selection.
     /// Kept out of the document so selecting never marks the session modified.
     pub last_selection: Option<(soundcraft_time::Range, Vec<TrackId>)>,
+    pub(crate) pending_freeze: Option<FreezeJob>,
 }
 
 impl Default for Engine {
@@ -169,6 +183,7 @@ impl Engine {
             merge_hold: None,
             messages: Vec::new(),
             last_selection: None,
+            pending_freeze: None,
         }
     }
 
@@ -403,6 +418,54 @@ impl Engine {
         if self.messages.len() > 100 {
             self.messages.remove(0);
         }
+    }
+
+    /// Apply a completed offline freeze render on the owner thread. The render is discarded if
+    /// the document changed while it was running, rather than committing stale audio.
+    pub fn poll_background(&mut self) -> bool {
+        let finished = self.pending_freeze.as_ref().is_some_and(|job| job.handle.is_finished());
+        if !finished {
+            return false;
+        }
+        let Some(job) = self.pending_freeze.take() else { return false };
+        let Ok(renders) = job.handle.join() else {
+            self.message("Freeze render failed");
+            return true;
+        };
+        if self.revision != job.base_revision {
+            self.message("Freeze cancelled because the session changed during rendering");
+            return true;
+        }
+        let before = Arc::clone(&self.doc);
+        let mut changed = 0;
+        for render in renders {
+            if render.audio.is_empty() || self.session().track(render.track).is_none_or(|track| track.frozen) {
+                continue;
+            }
+            let source = crate::io::add_source(
+                self.session_mut(),
+                &render.name,
+                soundcraft_audio_io::AudioBuffer { sample_rate: render.sample_rate, channels: render.audio },
+                None,
+                soundcraft_audio_io::FileFormat::Wav,
+            );
+            if let Some(track) = self.session_mut().track_mut(render.track) {
+                track.frozen = true;
+                track.frozen_source = Some(source);
+                track.frozen_start = render.range.start;
+                track.frozen_len = render.range.len();
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.push_undo("Freeze", before);
+        }
+        self.message(format!("Freeze finished for {changed} track(s)"));
+        true
+    }
+
+    pub fn has_background_work(&self) -> bool {
+        self.pending_freeze.is_some()
     }
 
     /// Tracks targeted by an edit: the selected tracks, or all tracks with playlists if none.
