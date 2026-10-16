@@ -204,7 +204,8 @@ impl AutomationLane {
 
     /// Thin: remove points whose removal changes the curve by less than `tolerance`.
     pub fn thin(&mut self, tolerance: f32) -> usize {
-        if self.points.len() < 3 || tolerance.is_nan() {
+        // Linear thinning would move the transitions of step lanes.
+        if matches!(self.param, AutoParam::Mute | AutoParam::SendMute(_)) || self.points.len() < 3 || tolerance.is_nan() {
             return 0;
         }
         let tolerance = f64::from(tolerance);
@@ -300,6 +301,19 @@ mod tests {
                 let error = (lane.value_at(point.at, 0.0) - point.value).abs();
                 assert!(error <= tolerance, "at {}: error {error} exceeds {tolerance}", point.at);
             }
+        }
+    }
+
+    #[test]
+    fn thin_keeps_mute_changes_in_place() {
+        for param in [AutoParam::Mute, AutoParam::SendMute(0)] {
+            let mut lane = AutomationLane::new(param);
+            for (at, value) in [(0, 0.0), (9000, 1.0), (10000, 1.0)] {
+                lane.set_point(at, value);
+            }
+            lane.thin(0.1);
+            assert_eq!(lane.value_at(8999, 0.0), 0.0);
+            assert_eq!(lane.value_at(9000, 0.0), 1.0);
         }
     }
 
