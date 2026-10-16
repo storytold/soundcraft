@@ -145,6 +145,29 @@ fn synth_plays_notes_at_their_offsets() {
 }
 
 #[test]
+fn reset_after_all_notes_off_still_releases_held_voices() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    p.note_on(0, 60, 127);
+    let mut io = vec![vec![0.0f32; 64], vec![0.0f32; 64]];
+    p.process(&mut io, 64);
+    assert!((io[0][63] - 1.0).abs() < 1e-6, "the note sounds");
+    // Mixer::reset calls these two in a row on an instrument (stop / seek).
+    p.all_notes_off();
+    p.reset();
+    let mut io = vec![vec![9.0f32; 64], vec![9.0f32; 64]];
+    p.process(&mut io, 64);
+    assert!(io[0].iter().all(|x| x.abs() < 1e-6), "voice still sounding after reset: {}", io[0][63]);
+    // A reset alone also releases what the host still holds.
+    p.note_on(0, 61, 127);
+    p.process(&mut io, 64);
+    assert!((io[0][63] - 1.0).abs() < 1e-6);
+    p.reset();
+    p.process(&mut io, 64);
+    assert!(io[0].iter().all(|x| x.abs() < 1e-6), "voice still sounding after reset: {}", io[0][63]);
+}
+
+#[test]
 fn many_instances_create_and_drop_cleanly() {
     let (g, s) = (id_of("Fixture Gain"), id_of("Fixture Synth"));
     for _ in 0..50 {

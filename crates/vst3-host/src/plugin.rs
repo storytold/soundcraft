@@ -213,8 +213,14 @@ impl Plugin for Vst3Plugin {
     }
 
     fn reset(&mut self) {
-        self.notes.clear();
+        // Keep pending releases and release whatever is still held, so the processor's voices stop
+        // on the next block instead of sounding on while the host forgets them.
+        self.notes.retain(|e| matches!(e, NoteEvent::Off { .. }));
+        for e in &mut self.notes {
+            e.set_time(0);
+        }
         self.controls.clear();
+        self.all_notes_off();
         self.held = [false; 128];
     }
 
