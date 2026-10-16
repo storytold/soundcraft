@@ -414,7 +414,9 @@ fn step_input(e: &mut Engine, p: &Value) -> Result<Value> {
     let end = s.tempo.tick_to_samples(end_tick, sr);
     // Continue the clip under (or ending at) the insertion point, else start a new one.
     let host = s.track(t).and_then(|tr| {
-        tr.clips().iter().filter(|c| matches!(c.content, ClipContent::Midi { .. })).find(|c| c.range().contains(at) || c.end() == at).map(|c| c.id)
+        let mut midi = tr.clips().iter().filter(|c| matches!(c.content, ClipContent::Midi { .. }));
+        // A clip starting at `at` wins over one that merely ends there.
+        midi.clone().find(|c| c.range().contains(at)).or_else(|| midi.find(|c| c.end() == at)).map(|c| c.id)
     });
     let host = match host {
         Some(h) => h,
@@ -860,6 +862,25 @@ mod tests {
             _ => panic!(),
         }
         assert_eq!(e.session().edit.selection.start, 3 * 24_000);
+    }
+
+    #[test]
+    fn step_input_at_clip_boundary_uses_next_clip() {
+        let (mut e, t) = midi_engine();
+        let sr = 48_000;
+        e.execute("midi.new_clip", &json!({"track": t.0, "start": 0, "end": sr})).unwrap();
+        let second = e.execute("midi.new_clip", &json!({"track": t.0, "start": sr, "end": 2 * sr})).unwrap()["clip"].as_u64().unwrap();
+        e.execute("edit.select", &json!({"tracks": [t.0], "start": sr})).unwrap();
+        let r = e.execute("event.step_input", &json!({"track": t.0, "pitch": 60, "duration": "1/4"})).unwrap();
+        assert_eq!(r["clip"].as_u64(), Some(second));
+        let mut ranges: Vec<(i64, i64)> = e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.end())).collect();
+        ranges.sort();
+        assert_eq!(ranges, vec![(0, sr), (sr, 2 * sr)]);
+        let c = e.session().find_clip(soundcraft_model::ClipId(second)).map(|(_, c)| c.clone()).unwrap();
+        match &c.content {
+            ClipContent::Midi { sequence } => assert_eq!(sequence.notes.iter().map(|n| n.start).collect::<Vec<_>>(), vec![0]),
+            _ => panic!(),
+        }
     }
 
     #[test]
