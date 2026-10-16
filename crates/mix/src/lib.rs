@@ -1,10 +1,10 @@
 //! The SoundCraft mix engine.
 //!
 //! [`MixEngine::render`] produces one block of the main output for a session at a timeline
-//! position: clips (with clip gain and fades) → trim/phase → inserts → pre-fader sends → fader and
-//! mute (with automation) → pan → post-fader sends → busses → aux inputs → main → master faders.
-//! The same code drives realtime playback and offline bounces, so what you hear is what you get.
-//! Steady-state rendering does not allocate.
+//! position: clips (with clip gain and fades; MIDI/instrument clips too) → trim/phase → inserts →
+//! pre-fader sends → fader and mute (with automation) → pan → post-fader sends → busses → aux
+//! inputs → main → master faders. The same code drives realtime playback and offline bounces, so
+//! what you hear is what you get. Steady-state rendering does not allocate.
 //!
 //! ## Surround
 //! The main mix has the format of the session's main output path ([`Session::main_format`]:
@@ -1006,6 +1006,9 @@ fn process_strip(
                         *x = 0.5 * (*x + *y);
                     }
                 }
+                // #274: MIDI clips store fade_in/fade_out/gain like audio clips, but notes are
+                // scheduled into one instrument — apply clip.gain_at to the rendered buffer.
+                apply_midi_clip_gains(t, pos, frames, &mut strip.buf);
                 if contain_failure(inst, &mut strip.buf, frames) {
                     strip.failures.record(INSTRUMENT_SLOT);
                 }
@@ -1533,6 +1536,94 @@ fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mu
                 inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(c.kind, c.value, dp));
             }
         }
+    }
+}
+
+/// Apply MIDI clip gain, envelopes and fades to the instrument's rendered buffer (#274).
+///
+/// Audio clips bake `Clip::gain_at` into [`render_clip`]; MIDI notes go through one shared
+/// instrument, so the same envelope is applied to the output for each sample that falls inside
+/// an unmuted MIDI clip. Past the clip end, the final in-clip gain is held so a fade-out stays
+/// quiet through the instrument's release tail (otherwise gain jumps back to 1.0 and clicks).
+fn apply_midi_clip_gains(t: &Track, pos: Samples, frames: usize, buf: &mut [Vec<f32>]) {
+    let block = Range { start: pos, end: pos.saturating_add(frames as i64) };
+    let mut needs = false;
+    for clip in t.clips() {
+        if clip.muted || !matches!(clip.content, ClipContent::Midi { .. }) {
+            continue;
+        }
+        let shaped = clip.fade_in.len > 0 || clip.fade_out.len > 0 || clip.gain_db != 0.0 || !clip.gain_env.is_empty();
+        if !shaped {
+            continue;
+        }
+        // Overlap, or the block sits after a shaped clip whose ending gain we must hold.
+        if clip.range().overlaps(&block) || clip.end() <= block.end {
+            needs = true;
+            break;
+        }
+    }
+    if !needs {
+        return;
+    }
+    // Same step as audio fades: evaluate gain every 32 samples and interpolate.
+    const STEP: usize = 32;
+    let mut i = 0;
+    while i < frames {
+        let seg_end = (i + STEP).min(frames);
+        let at0 = pos.saturating_add(i as i64);
+        let at1 = pos.saturating_add(seg_end.saturating_sub(1) as i64);
+        let g0 = midi_clip_gain_at(t, at0);
+        let g1 = midi_clip_gain_at(t, at1);
+        if (g0 - 1.0).abs() <= f32::EPSILON && (g1 - 1.0).abs() <= f32::EPSILON {
+            i = seg_end;
+            continue;
+        }
+        let n = (seg_end - i).saturating_sub(1).max(1) as f32;
+        for k in i..seg_end {
+            let t_lerp = (k - i) as f32 / n;
+            let g = g0 + (g1 - g0) * t_lerp;
+            if (g - 1.0).abs() <= f32::EPSILON {
+                continue;
+            }
+            for ch in buf.iter_mut() {
+                if let Some(s) = ch.get_mut(k) {
+                    *s *= g;
+                }
+            }
+        }
+        i = seg_end;
+    }
+}
+
+/// MIDI-clip gain at an absolute timeline sample.
+///
+/// Inside a clip: [`Clip::gain_at`]. Past every clip: hold the most recently ended clip's final
+/// in-clip gain (release tails). Before any clip, or with no MIDI clips: 1.0.
+fn midi_clip_gain_at(t: &Track, at: Samples) -> f32 {
+    let mut inside = 1.0f32;
+    let mut any_inside = false;
+    let mut hold = 1.0f32;
+    let mut hold_end = i64::MIN;
+    let mut any_hold = false;
+    for clip in t.clips() {
+        if clip.muted || !matches!(clip.content, ClipContent::Midi { .. }) {
+            continue;
+        }
+        if at >= clip.start && at < clip.end() {
+            inside *= clip.gain_at(at.saturating_sub(clip.start));
+            any_inside = true;
+        } else if at >= clip.end() && clip.end() >= hold_end {
+            hold_end = clip.end();
+            hold = clip.gain_at(clip.length.saturating_sub(1));
+            any_hold = true;
+        }
+    }
+    if any_inside {
+        inside
+    } else if any_hold {
+        hold
+    } else {
+        1.0
     }
 }
 
@@ -2426,6 +2517,79 @@ mod tests {
         assert!(out[0][0].abs() < 1e-3);
         assert!((out[0][500] - 0.5 * g).abs() < 0.02, "{}", out[0][500]);
         assert!((out[0][1500] - g).abs() < 1e-3);
+    }
+
+    #[test]
+    fn midi_clip_fade_out_reaches_the_bounce() {
+        // #274: edit.fades_create stores fade_out on instrument clips, but the bounce ignored it.
+        use soundcraft_midi::{Note, Sequence};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        let mut seq = Sequence::default();
+        // Hold a note across the whole clip so the fade region has sustained audio.
+        seq.notes.push(Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 * 4 });
+        let cid = s.new_clip_id();
+        let len = 24_000i64;
+        let fade = 3_000i64;
+        {
+            let tr = s.track_mut(t).unwrap();
+            let mut clip = Clip::midi(cid, "n", 0, len, seq);
+            clip.fade_out = soundcraft_model::Fade { len: fade, shape: soundcraft_model::FadeShape::Linear, curvature: 0.0 };
+            tr.playlist_mut().unwrap().clips.push(clip);
+            let mut ins = Insert::new("subtractive_synth");
+            // Hold the note at a known level; percussion instruments die before the fade.
+            ins.params.insert("level".into(), -6.0);
+            tr.instrument = Some(ins);
+        }
+        let with_fade = render_range(&s, Range::new(0, len), 512);
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips[0].fade_out.len = 0;
+        let without = render_range(&s, Range::new(0, len), 512);
+        let rms = |buf: &[f32]| (buf.iter().map(|x| x * x).sum::<f32>() / buf.len().max(1) as f32).sqrt();
+        // Mid-clip (before the fade) must match bit-for-bit so the fade is the only change.
+        assert_eq!(&with_fade[0][..18_000], &without[0][..18_000]);
+        let fade_start = (len - fade) as usize;
+        let faded = rms(&with_fade[0][fade_start..]);
+        let full = rms(&without[0][fade_start..]);
+        assert!(full > 1e-4, "the synth should sound in the fade region");
+        // Linear 1→0 over a constant tone has RMS ≈ 1/√3 ≈ 0.577 of the unfaded region.
+        assert!(faded < full * 0.65, "linear fade-out must quiet the end: faded={faded} full={full}");
+        let last = with_fade[0][(len as usize).saturating_sub(1)].abs();
+        let last_full = without[0][(len as usize).saturating_sub(1)].abs();
+        assert!(last_full > 1e-4, "unfaded last sample should sound");
+        assert!(last < last_full * 0.01, "last sample of the fade must be near silence: {last} vs {last_full}");
+    }
+
+    #[test]
+    fn midi_clip_fade_out_holds_through_the_release_tail() {
+        // After a fade-out to 0, note-off at the clip end still leaves a synth release. Holding
+        // the final fade gain past the clip keeps that tail silent (no click back to gain 1.0).
+        use soundcraft_midi::{Note, Sequence};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        let mut seq = Sequence::default();
+        seq.notes.push(Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 * 4 });
+        let cid = s.new_clip_id();
+        let len = 12_000i64;
+        let fade = 2_000i64;
+        let tail = 4_000i64;
+        {
+            let tr = s.track_mut(t).unwrap();
+            let mut clip = Clip::midi(cid, "n", 0, len, seq);
+            clip.fade_out = soundcraft_model::Fade { len: fade, shape: soundcraft_model::FadeShape::Linear, curvature: 0.0 };
+            tr.playlist_mut().unwrap().clips.push(clip);
+            let mut ins = Insert::new("subtractive_synth");
+            ins.params.insert("level".into(), -6.0);
+            tr.instrument = Some(ins);
+        }
+        let faded = render_range(&s, Range::new(0, len + tail), 512);
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips[0].fade_out.len = 0;
+        let open = render_range(&s, Range::new(0, len + tail), 512);
+        let rms = |buf: &[f32]| (buf.iter().map(|x| x * x).sum::<f32>() / buf.len().max(1) as f32).sqrt();
+        let after = (len as usize)..((len + tail) as usize);
+        let open_tail = rms(&open[0][after.clone()]);
+        let faded_tail = rms(&faded[0][after]);
+        assert!(open_tail > 1e-4, "the synth release should still ring without a fade: {open_tail}");
+        assert!(faded_tail < open_tail * 0.05, "held fade-out must keep the release quiet: faded={faded_tail} open={open_tail}");
     }
 
     #[test]
