@@ -159,15 +159,20 @@ fn prepare_dpe(e: &mut Engine, p: &Value) -> Result<Value> {
 fn engine_settings(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     if let Some(b) = p.get("buffer_size").and_then(Value::as_u64) {
-        let b = b.clamp(16, 8192).next_power_of_two().min(8192);
+        let b = if b == 0 { 0 } else { b.clamp(16, 8192).next_power_of_two().min(8192) };
         s.edit.values.insert("engine.buffer_size".into(), b as f64);
+    }
+    if let Some(b) = p.get("record_buffer_size").and_then(Value::as_u64) {
+        let b = b.clamp(32, 512).next_power_of_two().min(512);
+        s.edit.values.insert("engine.record_buffer_size".into(), b as f64);
     }
     if let Some(d) = str_param(p, "device") {
         set_text(&mut s.edit, "engine.device", Some(d));
     }
     Ok(json!({
         "device": text(&s.edit, "engine.device"),
-        "buffer_size": s.edit.value("engine.buffer_size", 1024.0),
+        "buffer_size": s.edit.value("engine.buffer_size", 0.0),
+        "record_buffer_size": s.edit.value("engine.record_buffer_size", 128.0),
         "sample_rate": s.sample_rate.hz(),
         "bit_depth": s.bit_depth,
         "delay_compensation": s.edit.delay_compensation,
@@ -569,6 +574,9 @@ mod tests {
         let r = e.execute("setup.playback_engine", &json!({"buffer_size": 300, "device": "Interface"})).unwrap();
         assert_eq!(r["buffer_size"], 512.0);
         assert_eq!(r["device"], "Interface");
+        let r = e.execute("setup.playback_engine", &json!({"buffer_size": 0, "record_buffer_size": 100})).unwrap();
+        assert_eq!(r["buffer_size"], 0.0);
+        assert_eq!(r["record_buffer_size"], 128.0);
         let r = e.execute("setup.midi_input_filter", &json!({"filter": ["sysex", "bogus"]})).unwrap();
         assert_eq!(r["filtered"], json!(["sysex"]));
         let r = e.execute("setup.midi_input_devices", &json!({"enable": ["Keys"]})).unwrap();

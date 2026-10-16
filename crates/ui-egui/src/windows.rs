@@ -548,6 +548,23 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         if crate::widgets::checkbox(ui, &mut dc, "Delay compensation").changed() {
             let _ = app.run("options.delay_compensation", json!({"value": dc}));
         }
+        let mut low = app.engine.session().edit.flag("options.low_latency_monitoring");
+        if ui.checkbox(&mut low, "Low latency while recording").changed() {
+            let _ = app.run("options.low_latency_monitoring", json!({"value": low}));
+        }
+        ui.horizontal(|ui| {
+            ui.label("Recording buffer");
+            let current = app.engine.session().edit.value("engine.record_buffer_size", 128.0) as u32;
+            let mut selected = current;
+            egui::ComboBox::from_id_salt("record_buffer_size").selected_text(format!("{current} samples")).show_ui(ui, |ui| {
+                for n in [32, 64, 128, 256, 512] {
+                    ui.selectable_value(&mut selected, n, format!("{n} samples"));
+                }
+            });
+            if selected != current {
+                let _ = app.run("setup.playback_engine", json!({"record_buffer_size": selected}));
+            }
+        });
         if ui.button("Reconnect audio device").clicked() {
             app.reconnect_audio();
         }

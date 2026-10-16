@@ -661,6 +661,7 @@ impl MixEngine {
         // Delay compensation: align every strip to the slowest. Direct-to-main outputs also wait
         // for the slowest aux return. Aux latency has to be read before those outputs are routed,
         // or the first block (and a one-block bounce probe) still sees zero.
+        let low_latency = self.recording && s.edit.flag("options.low_latency_monitoring");
         let pdc = s.edit.delay_compensation;
         if pdc {
             for t in s.tracks.iter().filter(|t| is_aux(t) && !t.inactive) {
@@ -701,17 +702,19 @@ impl MixEngine {
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
             let ch = st.buf.len();
-            st.align.set(lmax_t.saturating_sub(st.latency), ch);
+            let live_path = low_latency && (t.mixer.record_arm || t.mixer.input_monitor);
+            st.align.set(if live_path { 0 } else { lmax_t.saturating_sub(st.latency) }, ch);
             st.align.process(&mut st.buf, frames);
             if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
-                st.align_pre.set(lmax_t.saturating_sub(st.latency), ch);
+                st.align_pre.set(if live_path { 0 } else { lmax_t.saturating_sub(st.latency) }, ch);
                 st.align_pre.process(&mut st.pre, frames);
             }
-            let waits = match &t.mixer.output {
-                Route::Main => true,
-                Route::Bus(b) => self.aux_fed.contains(b),
-                _ => false,
-            };
+            let waits = !live_path
+                && match &t.mixer.output {
+                    Route::Main => true,
+                    Route::Bus(b) => self.aux_fed.contains(b),
+                    _ => false,
+                };
             st.out_extra.set(if waits { lmax_a } else { 0 }, ch);
         }
         for (i, st) in work.iter_mut() {
@@ -1021,7 +1024,11 @@ fn process_strip(
     }
     let mut gr = 0.0f32;
     let mut latency = 0usize;
+    let skip_plugins = live.recording && s.edit.flag("options.low_latency_monitoring") && (t.mixer.record_arm || t.mixer.input_monitor);
     for (i, ins) in t.mixer.inserts.iter().enumerate() {
+        if skip_plugins {
+            break;
+        }
         let (Some(ins), Some(Some(slot))) = (ins, strip.plugins.get_mut(i)) else { continue };
         if !ins.active || ins.bypass || slot.failed {
             continue;
@@ -3022,6 +3029,29 @@ mod tests {
         }
         render_block(&mut eng, &s, 0);
         assert_eq!((eng.track_latency, eng.latency), (MAX_LATENCY, 2 * MAX_LATENCY));
+    }
+
+    #[test]
+    fn low_latency_recording_bypasses_plugins_on_armed_tracks() {
+        let (mut s, t) = session_with_dc(0.5, 4800);
+        let mut gain = Insert::new("gain");
+        gain.params.insert("gain".into(), -12.0);
+        let track = s.track_mut(t).unwrap();
+        track.mixer.inserts[0] = Some(gain);
+        track.mixer.record_arm = true;
+
+        let normal = render_playback(&s, 4800, 512, true);
+        s.edit.set_flag("options.low_latency_monitoring", true);
+        let low = render_playback(&s, 4800, 512, true);
+        assert!(low[0][4000].abs() > normal[0][4000].abs() * 2.0, "{} vs {}", low[0][4000], normal[0][4000]);
+
+        let playback = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Compensated playback"));
+        s.track_mut(playback).unwrap().mixer.inserts[0] = Some(Insert::new("maximizer"));
+        let mut eng = MixEngine::new(48_000.0, 512);
+        eng.recording = true;
+        let mut out = vec![vec![0.0; 512]; 2];
+        eng.render(&s, 0, 512, &mut out);
+        assert!(eng.latency > 0, "low-latency monitoring must not disable PDC for playback tracks");
     }
 
     #[test]
