@@ -181,19 +181,24 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-/// Apply a change to `t` and its active mix-group siblings.
-fn set_grouped(s: &mut Session, t: TrackId, attr: &str, f: impl Fn(&mut soundcraft_model::Track)) {
-    let mut targets = vec![t];
+/// `t` plus the members of its active mix groups that share `attr`.
+fn grouped_ids(s: &Session, t: TrackId, attr: &str) -> Vec<TrackId> {
+    let mut ids = vec![t];
     for g in &s.groups {
         if g.active && g.mix && g.members.contains(&t) && g.attributes.iter().any(|a| a == attr) {
             for m in &g.members {
-                if !targets.contains(m) {
-                    targets.push(*m);
+                if !ids.contains(m) {
+                    ids.push(*m);
                 }
             }
         }
     }
-    for id in targets {
+    ids
+}
+
+/// Apply a change to `t` and its active mix-group siblings.
+fn set_grouped(s: &mut Session, t: TrackId, attr: &str, f: impl Fn(&mut soundcraft_model::Track)) {
+    for id in grouped_ids(s, t, attr) {
         if let Some(tr) = s.track_mut(id) {
             f(tr);
         }
@@ -218,7 +223,13 @@ fn volume(e: &mut Engine, p: &Value) -> Result<Value> {
         return Err(bad("mix.volume", "`db` or `delta_db` required"));
     }
     let s = e.session_mut();
+    // Tracks already moved as a group sibling of an earlier target must not move again.
+    let mut done: Vec<TrackId> = Vec::new();
     for t in &tracks {
+        if done.contains(t) {
+            continue;
+        }
+        done.extend(grouped_ids(s, *t, "volume"));
         let cur = s.track(*t).map_or(0.0, |tr| tr.mixer.volume_db);
         let new = match (abs, delta) {
             (Some(a), _) => a as f32,
@@ -885,5 +896,36 @@ mod tests {
         let delay = e.session().busses.iter().find(|b| b.name == "Delay").unwrap().id;
         assert_eq!(sl.target, soundcraft_model::Route::Bus(delay));
         assert_eq!((sl.level_db, sl.pan, sl.mute, sl.pre_fader), (-9.0, 0.5, true, true));
+    }
+
+    fn grouped_demo() -> Engine {
+        let mut e = crate::demo::demo_engine();
+        e.execute("mix.volume", &json!({"tracks": [3], "db": 0.0})).unwrap();
+        e.execute("mix.volume", &json!({"tracks": [6], "db": 0.0})).unwrap();
+        e.execute("track.group", &json!({"tracks": [3, 6]})).unwrap();
+        e
+    }
+
+    fn volumes(e: &Engine) -> Vec<f32> {
+        [3, 6].iter().map(|id| e.session().track(TrackId(*id)).unwrap().mixer.volume_db).collect()
+    }
+
+    #[test]
+    fn volume_delta_on_a_whole_group_applies_once() {
+        let mut e = grouped_demo();
+        e.execute("mix.volume", &json!({"tracks": [3, 6], "delta_db": -3.0})).unwrap();
+        assert_eq!(volumes(&e), [-3.0, -3.0]);
+
+        let mut e = grouped_demo();
+        e.execute("mix.volume", &json!({"tracks": [3], "delta_db": -3.0})).unwrap();
+        assert_eq!(volumes(&e), [-3.0, -3.0]);
+    }
+
+    #[test]
+    fn volume_absolute_on_a_whole_group_keeps_offsets() {
+        let mut e = grouped_demo();
+        e.session_mut().track_mut(TrackId(6)).unwrap().mixer.volume_db = -2.0;
+        e.execute("mix.volume", &json!({"tracks": [3, 6], "db": -10.0})).unwrap();
+        assert_eq!(volumes(&e), [-10.0, -12.0]);
     }
 }
