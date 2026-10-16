@@ -43,7 +43,8 @@ impl TimeFormat {
 
 fn min_secs(s: Samples, sr: SampleRate) -> String {
     let neg = s < 0;
-    let ms_total = (sr.seconds(s.saturating_abs()) * 1000.0).floor() as i64;
+    // Integer maths: a float `seconds * 1000` lands just below exact millisecond positions.
+    let ms_total = i64::try_from(i128::from(s).abs() * 1000 / i128::from(sr.hz().max(1))).unwrap_or(i64::MAX);
     let mins = ms_total / 60_000;
     let secs = (ms_total / 1000) % 60;
     let ms = ms_total % 1000;
