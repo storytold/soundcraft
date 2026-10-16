@@ -682,6 +682,19 @@ mod tests {
     }
 
     #[test]
+    fn session_with_legacy_fit_height_loads() {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+        if let Some(track) = s.track_mut(t) {
+            track.height = crate::TrackHeight::Large;
+        }
+        let text = s.to_json().unwrap().replace("\"height\": \"Large\"", "\"height\": \"Fit\"");
+        assert!(text.contains("\"height\": \"Fit\""));
+        let back = Session::from_json(&text).unwrap();
+        assert_eq!(back.track(t).map(|tr| tr.height), Some(crate::TrackHeight::Medium));
+    }
+
+    #[test]
     fn video_clip_round_trips_and_old_sessions_load() {
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Video, ChannelFormat::Mono, None);
