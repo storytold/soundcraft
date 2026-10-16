@@ -519,54 +519,58 @@ impl Player {
                 if config.buffer_size != cpal::BufferSize::Default {
                     attempts.push(cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config });
                 }
-                for config in attempts {
-                    let rate = config.sample_rate.0;
-                    let channels = usize::from(config.channels);
-                    let (tx, rx) = channel();
-                    let (gtx, grx) = channel();
-                    let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
-                    let fault = Arc::new(Fault::default());
-                    use cpal::traits::StreamTrait;
-                    let built = match format {
-                        cpal::SampleFormat::I32 => build_output::<i32>(&device, &config, state, channels, &fault, &shared),
-                        cpal::SampleFormat::I16 => build_output::<i16>(&device, &config, state, channels, &fault, &shared),
-                        _ => build_output::<f32>(&device, &config, state, channels, &fault, &shared),
-                    };
-                    match built {
-                        Ok(stream) => {
-                            if let Err(e) = stream.play() {
-                                log::warn!("audio stream failed to start: {e}");
-                            }
-                            let buffer = match config.buffer_size {
-                                cpal::BufferSize::Fixed(n) => Some(n),
-                                cpal::BufferSize::Default => None,
-                            };
-                            log::info!(
-                                "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {}",
-                                buffer.map_or("default".to_string(), |n| n.to_string())
-                            );
-                            return Player {
-                                shared,
-                                fault,
-                                #[cfg(not(target_arch = "wasm32"))]
-                                watch: Mutex::new(None),
-                                tx,
-                                side: new_side(grx),
-                                _stream: Some(stream),
-                                device_name: name,
-                                device_rate: rate,
-                                device_channels: config.channels,
-                                device_buffer: buffer,
-                                silent: false,
-                            };
+                let opened = first_started(
+                    attempts,
+                    |config: &cpal::StreamConfig| -> Result<Opened, cpal::BuildStreamError> {
+                        let rate = config.sample_rate.0;
+                        let channels = usize::from(config.channels);
+                        let (tx, rx) = channel();
+                        let (gtx, grx) = channel();
+                        let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
+                        let fault = Arc::new(Fault::default());
+                        let stream = match format {
+                            cpal::SampleFormat::I32 => build_output::<i32>(&device, config, state, channels, &fault, &shared),
+                            cpal::SampleFormat::I16 => build_output::<i16>(&device, config, state, channels, &fault, &shared),
+                            _ => build_output::<f32>(&device, config, state, channels, &fault, &shared),
+                        }?;
+                        Ok(Opened { stream, tx, grx, fault })
+                    },
+                    |opened| start_stream(&opened.stream),
+                );
+                match opened {
+                    Some((config, Opened { stream, tx, grx, fault })) => {
+                        let rate = config.sample_rate.0;
+                        let channels = usize::from(config.channels);
+                        let buffer = match config.buffer_size {
+                            cpal::BufferSize::Fixed(n) => Some(n),
+                            cpal::BufferSize::Default => None,
+                        };
+                        log::info!(
+                            "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {}",
+                            buffer.map_or("default".to_string(), |n| n.to_string())
+                        );
+                        Player {
+                            shared,
+                            fault,
+                            #[cfg(not(target_arch = "wasm32"))]
+                            watch: Mutex::new(None),
+                            tx,
+                            side: new_side(grx),
+                            _stream: Some(stream),
+                            device_name: name,
+                            device_rate: rate,
+                            device_channels: config.channels,
+                            device_buffer: buffer,
+                            silent: false,
                         }
-                        Err(e) => log::warn!("cannot open audio stream ({:?}): {e}", config.buffer_size),
+                    }
+                    None => {
+                        log::warn!("no usable audio stream; using a silent clock");
+                        let (tx, rx) = channel();
+                        let (gtx, grx) = channel();
+                        Player::silent_clock(shared, tx, rx, want, new_side(grx), gtx)
                     }
                 }
-                log::warn!("no usable audio stream; using a silent clock");
-                let (tx, rx) = channel();
-                let (gtx, grx) = channel();
-                Player::silent_clock(shared, tx, rx, want, new_side(grx), gtx)
             }
             Err(e) => {
                 log::warn!("no audio output: {e}; using a silent clock");
@@ -862,6 +866,44 @@ fn fold_gains(s: &Session) -> [(f32, f32); MAX_CHANNELS] {
     g
 }
 
+/// Start a freshly built output stream. `false` when the device refuses to start it, so the caller
+/// treats it like a stream that failed to build and tries the next configuration.
+fn start_stream(stream: &impl cpal::traits::StreamTrait) -> bool {
+    match stream.play() {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("audio stream failed to start: {e}");
+            false
+        }
+    }
+}
+
+/// A built output stream and the channels and fault flag its callback shares with the player.
+struct Opened {
+    stream: cpal::Stream,
+    tx: Sender<Cmd>,
+    grx: Receiver<Vec<Box<dyn Plugin>>>,
+    fault: Arc<Fault>,
+}
+
+/// Build and start the attempts in order; the first that builds and starts wins. A build error or
+/// a stream that will not start is logged, and the next attempt is tried. `None` when none works.
+fn first_started<A: std::fmt::Debug, S, E: std::fmt::Display>(
+    attempts: impl IntoIterator<Item = A>,
+    mut build: impl FnMut(&A) -> Result<S, E>,
+    start: impl Fn(&S) -> bool,
+) -> Option<(A, S)> {
+    for attempt in attempts {
+        match build(&attempt) {
+            Ok(built) if start(&built) => return Some((attempt, built)),
+            // `start` has already logged why the stream would not start.
+            Ok(_) => {}
+            Err(e) => log::warn!("cannot open audio stream ({attempt:?}): {e}"),
+        }
+    }
+    None
+}
+
 /// The output stream: the mix renders f32 into a scratch buffer allocated here (so the callback
 /// never allocates), converted to the device's sample type.
 fn build_output<T>(
@@ -966,6 +1008,64 @@ fn open_device(want_rate: u32, want_ch: u16, cfg: &AudioConfig) -> Result<(cpal:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stream that builds; `starts` says whether the device lets it play (it can refuse after a
+    /// reconnect).
+    struct Fake {
+        starts: bool,
+    }
+
+    impl cpal::traits::StreamTrait for Fake {
+        fn play(&self) -> Result<(), cpal::PlayStreamError> {
+            if self.starts { Ok(()) } else { Err(cpal::PlayStreamError::DeviceNotAvailable) }
+        }
+        fn pause(&self) -> Result<(), cpal::PauseStreamError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_stream_that_will_not_start_is_reported_as_failed() {
+        assert!(!start_stream(&Fake { starts: false }));
+        assert!(start_stream(&Fake { starts: true }));
+    }
+
+    #[test]
+    fn the_first_config_that_starts_wins_and_later_ones_are_not_tried() {
+        let mut tried = Vec::new();
+        let won = first_started(
+            [1u32, 2, 3],
+            |&n| {
+                tried.push(n);
+                Ok::<_, String>(Fake { starts: n != 1 })
+            },
+            start_stream,
+        );
+        assert_eq!(won.map(|(n, _)| n), Some(2));
+        assert_eq!(tried, vec![1, 2]);
+    }
+
+    #[test]
+    fn a_config_that_fails_to_build_falls_through_to_the_next() {
+        let won =
+            first_started([1u32, 2], |&n| if n == 1 { Err("no such buffer size".to_string()) } else { Ok(Fake { starts: true }) }, start_stream);
+        assert_eq!(won.map(|(n, _)| n), Some(2));
+    }
+
+    #[test]
+    fn no_config_that_starts_yields_none_so_the_caller_falls_back_to_a_silent_clock() {
+        let mut tried = 0;
+        let won = first_started(
+            [1u32, 2],
+            |_| {
+                tried += 1;
+                Ok::<_, String>(Fake { starts: false })
+            },
+            start_stream,
+        );
+        assert!(won.is_none());
+        assert_eq!(tried, 2);
+    }
 
     #[test]
     fn reusable_meter_snapshot_updates_and_drops_stale_tracks() {
