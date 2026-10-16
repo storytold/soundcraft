@@ -485,3 +485,37 @@ proptest! {
         prop_assert_eq!(flac, wav);
     }
 }
+
+/// An extensible `fmt ` chunk: cbSize, valid bits, mask, then the 16-byte subtype GUID.
+fn extensible_fmt(cb_size: u16, valid_bits: u16, guid: &[u8]) -> Vec<u8> {
+    let mut f = fmt(0xFFFE, 1, 44_100, 16);
+    f.extend_from_slice(&cb_size.to_le_bytes());
+    f.extend_from_slice(&valid_bits.to_le_bytes());
+    f.extend_from_slice(&4u32.to_le_bytes());
+    f.extend_from_slice(guid);
+    f
+}
+
+const PCM_GUID: [u8; 16] = [1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71];
+
+#[test]
+fn extensible_fmt_is_checked_in_full() {
+    let data = vec![0u8; 8];
+    let good = riff(&[(b"fmt ", extensible_fmt(22, 16, &PCM_GUID)), (b"data", data.clone())]);
+    assert_eq!(probe(&good, None).unwrap().sample_format, SampleFormat::Int16);
+    // Subtype GUID cut short after the format code.
+    let cut = riff(&[(b"fmt ", extensible_fmt(22, 16, &PCM_GUID[..4])), (b"data", data.clone())]);
+    assert!(matches!(probe(&cut, None), Err(AudioError::Malformed(_))));
+    assert!(matches!(decode(&cut, None), Err(AudioError::Malformed(_))));
+    // cbSize too small for the extension.
+    let small_cb = riff(&[(b"fmt ", extensible_fmt(0, 16, &PCM_GUID)), (b"data", data.clone())]);
+    assert!(matches!(probe(&small_cb, None), Err(AudioError::Malformed(_))));
+    // More valid bits than the 16-bit container holds.
+    let wide = riff(&[(b"fmt ", extensible_fmt(22, 24, &PCM_GUID)), (b"data", data.clone())]);
+    assert!(matches!(probe(&wide, None), Err(AudioError::Malformed(_))));
+    // PCM-like prefix but a foreign GUID tail is not read as native PCM.
+    let mut foreign = PCM_GUID;
+    foreign[15] ^= 0xFF;
+    let foreign = riff(&[(b"fmt ", extensible_fmt(22, 16, &foreign)), (b"data", data)]);
+    assert!(!matches!(probe(&foreign, None), Ok(i) if i.sample_format == SampleFormat::Int16));
+}

@@ -50,13 +50,25 @@ fn parse_fmt(c: &[u8]) -> Result<Fmt> {
     fmt.valid_bits = fmt.bits;
     if fmt.tag == WAVE_FORMAT_EXTENSIBLE {
         // cbSize(2) validBits(2) channelMask(4) subFormat GUID(16)
-        if let (Some(valid), Some(sub)) = (le_u16(c, 18), le_u16(c, 24)) {
-            if valid != 0 {
-                fmt.valid_bits = valid;
-            }
-            fmt.tag = sub;
-        } else {
+        let (Some(cb_size), Some(valid), Some(sub)) = (le_u16(c, 16), le_u16(c, 18), le_u16(c, 24)) else {
             return Err(AudioError::Malformed("WAVE_FORMAT_EXTENSIBLE fmt chunk too short".into()));
+        };
+        let Some(tail) = c.get(26..40) else {
+            return Err(AudioError::Malformed("WAVE_FORMAT_EXTENSIBLE fmt chunk too short".into()));
+        };
+        if cb_size < 22 {
+            return Err(AudioError::Malformed("WAVE_FORMAT_EXTENSIBLE cbSize is below 22".into()));
+        }
+        if valid > fmt.bits {
+            return Err(AudioError::Malformed("WAVE_FORMAT_EXTENSIBLE valid bits exceed the container size".into()));
+        }
+        if valid != 0 {
+            fmt.valid_bits = valid;
+        }
+        // A subtype outside the KSDATAFORMAT_SUBTYPE_* family is not PCM/float, whatever its first two bytes say:
+        // keep the extensible tag so the file goes to the foreign decoder.
+        if tail == GUID_TAIL {
+            fmt.tag = sub;
         }
     }
     Ok(fmt)
