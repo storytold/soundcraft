@@ -1456,6 +1456,7 @@ pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     if app.engine.session().track(id).is_some_and(|track| track.folder.is_some()) && ui.button("Remove from Folder").clicked() {
         let _ = app.run("track.remove_from_folder", json!({"tracks": selection}));
     }
+    crate::track_presets::name_menu(app, ui, id, &selection);
     ui.separator();
     ui.menu_button("Track Height", |ui| {
         for h in TrackHeight::ALL {

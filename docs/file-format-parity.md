@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-13 · **Change:** minor (continuous fade curvature in SoundCraft sessions) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-16 · **Change:** minor (track presets: a Track Presets folder, recall, and Recall Inserts / Recall Sends from a slot, #639) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every format Pro Tools reads or writes, and ours. The Pro Tools list comes from the document types
 its bundle declares (`CFBundleDocumentTypes` in Info.plist: names only, nothing else read) and its
@@ -27,7 +27,8 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 | Import Session Data (from another session) | Pro Tools sessions | 🟡 | — | From `.scraft` only |
 | Session info as text | export | — | ✅ | `file.export_session_text` |
 | Clip groups `.rgrp` / ours `.scgrp` | read/write | 🟡 | 🟡 | Our own `.scgrp` format; Pro Tools' clip-group files not read |
-| Track presets, fade presets, I/O settings, workspace, sync settings | read/write | ❌ | ❌ | Their equivalents don't exist yet (G-16) |
+| Track presets | read/write | 🟡 | 🟡 | Our own JSON presets, saved to a Track Presets folder and recalled from Track › Recall Track Preset or a track name's menu (#639); an insert or send slot's menu has Save Track Preset... and Recall Inserts / Recall Sends, which recall only the preset's inserts or sends, starting at that slot. Pro Tools' track preset files not read |
+| Fade presets, I/O settings, workspace, sync settings | read/write | ❌ | ❌ | Their equivalents don't exist yet (G-16) |
 
 ## Audio
 
@@ -80,5 +81,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | Track presets: Recall Inserts / Recall Sends from an insert or send slot (#639). Readiness estimate unchanged |
+| 2026-10-16 | minor | Track presets get their own row: saved to a Track Presets folder and recalled from the Track menu or a track name's menu (#639). Readiness estimate unchanged |
 | 2026-10-13 | minor | Fade curvature round-trips in sessions with a zero default for older files. Format version and readiness estimate unchanged |
 | 2026-10-10 | major | Created: format inventory against Pro Tools 2026.4.1's declared document types and import/bounce options |

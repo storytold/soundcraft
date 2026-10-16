@@ -631,8 +631,9 @@ pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, oc
         if ui.button("no insert").clicked() {
             run_pick(app, ui, "mix.insert_remove", json!({"track": id.0, "slot": slot}));
         }
-        ui.separator();
     }
+    crate::track_presets::slot_menu(app, ui, id, slot, false);
+    ui.separator();
     let mut cats: Vec<soundcraft_dsp::Category> = Vec::new();
     for p in soundcraft_dsp::plugins() {
         if !p.is_instrument && !cats.contains(&p.category) {
@@ -970,12 +971,16 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
                 let _ = app.run("mix.send_remove", json!({"track": id.0, "slot": slot}));
                 ui.close();
             }
+            ui.separator();
+            crate::track_presets::slot_menu(app, ui, id, slot, true);
         });
     } else {
         egui::Popup::menu(&route_resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             ui.set_min_width(250.0);
             ui.strong(format!("Send {} · Choose destination", (b'A' + slot as u8) as char));
             send_route_menu(app, ui, id, slot, None);
+            ui.separator();
+            crate::track_presets::slot_menu(app, ui, id, slot, true);
         });
     }
 }

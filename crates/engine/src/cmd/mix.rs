@@ -275,7 +275,7 @@ fn automation_mode(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"mode": m}))
 }
 
-fn slot_of(p: &Value, key: &str, max: usize) -> Option<usize> {
+pub(super) fn slot_of(p: &Value, key: &str, max: usize) -> Option<usize> {
     let v = p.get(key)?;
     let i = if let Some(n) = v.as_u64() {
         n as usize

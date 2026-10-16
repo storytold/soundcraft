@@ -6,7 +6,9 @@ use super::*;
 use crate::cmd;
 use serde_json::json;
 use soundcraft_dsp::Category;
-use soundcraft_model::{AutoParam, AutomationLane, ChannelFormat, Clip, ClipContent, Insert, Route, Session, Track, TrackId, TrackKind};
+use soundcraft_model::{
+    AutoParam, AutomationLane, ChannelFormat, Clip, ClipContent, INSERT_SLOTS, Insert, Route, SEND_SLOTS, Session, Track, TrackId, TrackKind,
+};
 use soundcraft_time::Samples;
 
 /// Trim automation lives in a lane addressed past the last insert slot, so the mixer ignores it
@@ -61,10 +63,10 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "track.save_preset", "Save Track Preset...", ["Track"], None, "{path, track?} — writes the track's type, width, mixer, inserts, sends and instrument as JSON", has_selection, save_preset),
         cmd!(
             "track.load_preset",
-            "Load Track Preset",
+            "Recall Track Preset",
             [],
             None,
-            "{path, tracks?} — applies a saved track preset's mixer, inserts, sends and instrument",
+            "{path, tracks?, only?: inserts|sends, from?: 0..9|a..j} — applies a saved track preset's mixer, inserts, sends and instrument; with `only`, just its inserts or sends, shifted to start at slot `from` (Recall Inserts / Recall Sends)",
             has_selection,
             load_preset
         ),
@@ -271,6 +273,17 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "track.load_preset";
     let path = str_param(p, "path").ok_or_else(|| bad(id, "`path` required"))?.to_string();
     let tracks = tracks_required(e, id, p)?;
+    let only = match str_param(p, "only") {
+        None => None,
+        Some(o @ ("inserts" | "sends")) => Some(o),
+        Some(_) => return Err(bad(id, "`only` must be inserts or sends")),
+    };
+    let from = match (p.get("from"), only) {
+        (None, _) => 0,
+        (Some(_), None) => return Err(bad(id, "`from` needs `only`")),
+        (Some(_), Some(o)) => super::mix::slot_of(p, "from", if o == "sends" { SEND_SLOTS } else { INSERT_SLOTS })
+            .ok_or_else(|| bad(id, "`from` must be 0..9 or a..j"))?,
+    };
     let text = crate::io::read_text(&path)?;
     let v: Value = serde_json::from_str(&text).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
     if v.get("format").and_then(Value::as_str) != Some(PRESET_FORMAT) {
@@ -283,6 +296,17 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     for t in &tracks {
         if let Some(tr) = s.track_mut(*t) {
+            // Recall Inserts / Recall Sends, as in Pro Tools: the preset's slot A lands on `from`, B
+            // on the next, and so on. An empty preset slot leaves the track's slot alone; whatever
+            // would land past slot J is dropped.
+            if let Some(only) = only {
+                if only == "inserts" {
+                    shift_slots(&mixer.inserts, &mut tr.mixer.inserts, from);
+                } else {
+                    shift_slots(&mixer.sends, &mut tr.mixer.sends, from);
+                }
+                continue;
+            }
             // Routing is session-specific: keep the track's own input/output, VCA and arm state.
             let keep = (tr.mixer.input.clone(), tr.mixer.output.clone(), tr.mixer.vca, tr.mixer.record_arm, tr.mixer.pan.clone());
             tr.mixer = mixer.clone();
@@ -299,6 +323,14 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     Ok(json!({"tracks": tracks}))
+}
+
+fn shift_slots<T: Clone>(preset: &[Option<T>], track: &mut [Option<T>], from: usize) {
+    for (slot, x) in track.iter_mut().skip(from).zip(preset) {
+        if x.is_some() {
+            slot.clone_from(x);
+        }
+    }
 }
 
 fn bypass_where(e: &mut Engine, p: &Value, pick: fn(usize, Option<Category>) -> bool) -> Result<Value> {

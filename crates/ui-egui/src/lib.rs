@@ -27,6 +27,7 @@ pub mod shortcuts;
 pub mod spot;
 pub mod theme;
 pub mod toolbar;
+mod track_presets;
 pub mod video_track;
 pub mod video_window;
 pub mod waveform;
@@ -197,6 +198,21 @@ pub struct Services {
     pub pick_folder: Option<Box<dyn Fn(&str) -> Option<String>>>,
 }
 
+/// The presets (`*.json`) in a preset folder, by name, sorted.
+pub(crate) fn preset_names(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "json"))
+                .filter_map(|p| p.file_stem()?.to_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
 /// File-system-safe folder name for a plugin id (`clap:com.x.y` → `clap_com.x.y`).
 pub fn preset_folder_name(plugin: &str) -> String {
     plugin.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' }).collect()
@@ -278,7 +294,7 @@ pub struct SoundApp {
     pub leftovers: Vec<soundcraft_engine::autosave::Leftover>,
     /// The document revision last autosaved after a caught panic.
     panic_rev: u64,
-    /// Folder for user plugin presets (native apps set it).
+    /// Folder for user plugin presets and the Track Presets folder (native apps set it).
     pub preset_dir: Option<std::path::PathBuf>,
     last_autosave: Option<std::time::Instant>,
     pub dialogs: dialogs::Dialogs,
