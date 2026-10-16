@@ -240,6 +240,7 @@ pub enum Gesture {
     Fader { track: TrackId, start_db: f32 },
     ClipGain { clip: soundcraft_model::ClipId, track: TrackId, pos: f32, anchor: (f32, f32), fine: bool, fader_bottom: egui::Pos2 },
     Pencil { track: TrackId, points: Vec<(Samples, f32)> },
+    Breakpoint { track: TrackId, param: soundcraft_model::AutoParam, at: Samples },
     MidiClip { track: TrackId, from: Samples, to: Samples },
     ZoomBox { start: f32 },
 }
