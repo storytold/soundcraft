@@ -208,6 +208,8 @@ pub fn tree() -> Vec<MenuNode> {
     if let Some(clip) = roots.iter_mut().find(|n| n.label == "Clip") {
         clip.children.rotate_right(1);
     }
+    // SoundCraft-only: Whisper → LLM cut plan → apply (shells out to scripts/soundcraft/).
+    insert_path(&mut roots, "Edit > VO Cut Pipeline...");
     for (path, _) in MENU_WINDOWS {
         insert_path(&mut roots, path);
     }
@@ -401,6 +403,12 @@ fn params_for(path: &str, id: &str) -> Value {
         "track.change_width" => json!({"format": leaf}),
         "view.mix_section" => json!({"section": mix_section_id(leaf)}),
         "audiosuite.process" => json!({"process": AUDIOSUITE.iter().find(|(p, _)| *p == path).map_or("", |(_, x)| *x)}),
+        // Fresh Whisper on session audio + apply cuts (not the stale work/asr_segments cache).
+        "edit.vo_cut" => json!({
+            "dry_run": false,
+            "prefer_cached_asr": false,
+            "llm": "ollama",
+        }),
         _ => json!({}),
     }
 }

@@ -103,3 +103,19 @@ fn new_midi_clip_is_in_the_clip_menu() {
     let clip = tree.iter().find(|n| n.label == "Clip").unwrap();
     assert_eq!(clip.children[0].label, "New MIDI Clip", "creates rather than edits, so it comes first");
 }
+
+#[test]
+fn vo_cut_pipeline_is_in_the_edit_menu() {
+    let extra = menus::ui_aliases();
+    assert_eq!(
+        catalog::implemented_by("Edit > VO Cut Pipeline...", &extra).as_deref(),
+        Some("edit.vo_cut")
+    );
+    assert!(menu_commands().contains("edit.vo_cut"));
+    let tree = menus::tree();
+    let edit = tree.iter().find(|n| n.label == "Edit").expect("Edit menu");
+    assert!(
+        edit.children.iter().any(|c| c.label == "VO Cut Pipeline..."),
+        "Edit menu should list VO Cut Pipeline..."
+    );
+}

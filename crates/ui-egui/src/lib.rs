@@ -438,6 +438,13 @@ impl SoundApp {
                 if id == "track.clear_clip_indicators" {
                     self.meters.values_mut().chain([&mut self.main_meter]).for_each(|m| m.clip = false);
                 }
+                if id == "edit.vo_cut" {
+                    self.ui.status = v
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("VO cut finished")
+                        .to_string();
+                }
                 Ok(v)
             }
             Err(e) => {
