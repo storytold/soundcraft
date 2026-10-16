@@ -19,6 +19,7 @@ pub mod mix_window;
 pub mod ops_windows;
 pub mod palette;
 pub mod panels;
+pub mod plugin_folders;
 mod recent;
 pub mod recovery;
 pub mod sampler_window;
@@ -97,6 +98,9 @@ pub struct UiState {
     pub show_workspace: bool,
     pub show_configurations: bool,
     pub show_playback_engine: bool,
+    pub show_plugin_folders: bool,
+    /// The user's own VST3 and CLAP folders (Setup › Plug-in Folders), kept with the preferences.
+    pub plugin_dirs: plugin_folders::PluginDirs,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
@@ -164,6 +168,8 @@ impl Default for UiState {
             show_workspace: false,
             show_configurations: false,
             show_playback_engine: false,
+            show_plugin_folders: false,
+            plugin_dirs: plugin_folders::PluginDirs::default(),
             audio: soundcraft_playback::AudioConfig::default(),
             mix_separate: false,
             show_io_setup: false,
@@ -1230,6 +1236,7 @@ impl SoundApp {
         }
         panels::floating(self, &ctx);
         windows::show(self, &ctx);
+        plugin_folders::scan_notice(&ctx);
         video_window::show(self, &ctx);
         ops_windows::show(self, &ctx);
         extra_windows::show(self, &ctx);

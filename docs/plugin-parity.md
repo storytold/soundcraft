@@ -1,6 +1,6 @@
 # Plugin parity: built-in processors and plugin hosting
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (VST3/CLAP scans in the background, cached between launches; Setup ▸ Plug-in Folders; previously trivial: mix.instrument sets built-in instrument parameters in params (#265)) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Pro Tools users live in plugins: the bundled set covers everyday mixing, and third-party plugins
 cover the rest. This doc tracks both. Our plugins have our own names and are written from
@@ -39,7 +39,8 @@ User report #152: a saved instrument level does not reach the bounce.
 |---|---|---|---|
 | Plugin format | AAX only (Native and DSP) | CLAP, VST3, Audio Units (macOS) | Users' libraries mostly ship VST3/AU too. AAX (#109) needs Avid's SDK licence and PACE signing: owner decision, likely never |
 | VST2, LV2, LADSPA | — | ❌ (#30) | Beyond Pro Tools; VST2 SDK is no longer licensable |
-| Scan, vendor menus, instrument picker | ✅ | ✅ | #23 |
+| Scan, vendor menus, instrument picker | ✅ | ✅ | #23. VST3/CLAP scan from launch in the background, each new plugin file loaded in a child process (a plugin's start-up never stalls or crashes the app); a cache file keeps what each file held, so later launches load only new or changed files (like REAPER). A notice shows the file being loaded, with Skip |
+| Plugin folders, rescan, failed files | — (one fixed folder) | ✅ | Setup ▸ Plug-in Folders: the user's own VST3/CLAP folders, Rescan, Clear Cache & Rescan, files that would not load |
 | Audio, parameters, automation, latency (PDC) | ✅ | ✅ | |
 | Notes / MIDI to instruments | ✅ | ✅ | But no live MIDI input (G-02) |
 | State saved in sessions, presets | ✅ | ✅ | |
@@ -58,6 +59,7 @@ User report #152: a saved instrument level does not reach the bounce.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | Background, cached VST3/CLAP scans; Setup ▸ Plug-in Folders |
 | 2026-10-13 | trivial | mix.instrument sets built-in instrument parameters in params (#265) |
 | 2026-10-12 | minor | Editors: VST3 and embedded CLAP editors on Windows |
 | 2026-10-10 | major | Created: built-in processor inventory by category and third-party hosting checklist |
