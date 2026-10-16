@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (alpha gate added; stage re-normalized to pre-alpha) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-14 · **Change:** minor (M7: Velocity note-length tails) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -42,7 +42,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 | M0–M4 | Workspace, gates, model, I/O, DSP, mix engine, command engine, Edit/Mix UI, playback, metering, plugins, bounce | ✅ | — |
 | M5 | Editing depth (tools, modes, playlists, fades, comping, clip groups) | ✅ (bugs open, G-04) | in G-04 |
 | M6 | Recording, punch, loop record, monitoring | 🟡 first cut; device choice and record-to-disk missing | 40–60 |
-| M7 | MIDI and notation editing | 🟡 | 50–80 |
+| M7 | MIDI and notation editing | 🟡 playback cursor, six independent scrolling modes, centered play cue and resizable Velocity lane with note-length drag/reset tails done; MIDI hardware and notation depth remain | 50–80 |
 | M8 | CLI, control channel, MCP, agent acceptance test | ✅ | 3 |
 | M9 | AudioSuite breadth ✅, Elastic Audio 🟡, Beat Detective 🟡 | 🟡 | 40–60 |
 | M10 | Public releases on all platforms | ✅ v0.3.0 (2026-10-08) and v0.4.0 (2026-10-10) released for every platform | — |
@@ -86,5 +86,8 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | M7: Velocity note-length tails with direct drag/reset input and selected-note visibility; stage and readiness estimates unchanged |
+| 2026-10-14 | minor | M7: resizable Velocity with saved UI height, keyboard adjustment and reset; stage and readiness estimates unchanged |
+| 2026-10-14 | minor | M7: MIDI Editor playback cursor, six scrolling modes and independent stopped cue; stage and readiness estimates unchanged |
 | 2026-10-10 | minor | Added the alpha gate (3 of 6 core workflows fail → pre-alpha) |
 | 2026-10-10 | major | Created from ROADMAP.md's milestones and alpha list; added M12–M17 and the beta plan with estimates |

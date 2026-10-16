@@ -115,7 +115,16 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
             };
             if let Some(arr) = list.as_array_mut() {
                 for (id, label, path, sc) in crate::menus::UI_COMMANDS.iter().filter(|c| matches(c.0, c.1)) {
-                    arr.push(json!({"id": id, "label": label, "menu": path, "shortcut": sc, "enabled": true, "params": "{}"}));
+                    let params = match *id {
+                        "ui.midi_scroll" => "{by_px?: 0, by_y_px?: 0} — pan time/pitch in window points",
+                        "ui.midi_zoom_at" => "{factor?: 1, anchor_px?: centre} — zoom around the anchor measured from the piano roll's left edge",
+                        "ui.midi_velocity_height" => "{height?: number} — preferred Velocity lane height in window points (24–4096); omit to inspect",
+                        "ui.midi_scrolling" => {
+                            "{mode?: none|after_playback|page|continuous|center|follow_edit} — independent MIDI scrolling; omit mode to inspect"
+                        }
+                        _ => "{}",
+                    };
+                    arr.push(json!({"id": id, "label": label, "menu": path, "shortcut": sc, "enabled": true, "params": params}));
                 }
             }
             ok(list)
@@ -127,6 +136,14 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
         "ui.inspect" => {
             let mut v = app.inspect(ctx);
             v["edit_layout"] = json!(app.edit_layout);
+            v["midi_layout"] = json!({
+                "clip": app.midi.clip, "roll": app.midi.roll, "velocity": app.midi.velocity,
+                "velocity_divider": app.midi.velocity_divider, "velocity_height": app.ui.midi_velocity_height,
+                "zoom": app.midi.zoom, "scroll_ticks": app.midi.scroll_ticks, "top_pitch": app.midi.top_pitch,
+                "scrolling": app.ui.midi_scrolling.id(), "effective_scrolling": crate::midi_playback::effective(app).id(),
+                "follow_hold": app.midi.follow.hold, "owns_transport": app.midi.follow.owns_transport,
+                "play_start": crate::midi_playback::play_start(app), "playhead_sample": crate::midi_playback::display_position(app),
+            });
             ok(v)
         }
         "ui.menu.list" => ok(json!(

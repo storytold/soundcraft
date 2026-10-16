@@ -203,6 +203,19 @@ impl TempoMap {
         to_samples(self.tick_to_samples_f(tick, sr))
     }
 
+    /// Fractional ticks → sample position, without rounding to a whole MIDI tick first.
+    /// Tempo events fall on integer ticks, so each interval is linear even at an event boundary.
+    pub fn fractional_tick_to_samples(&self, tick: f64, sr: SampleRate) -> Samples {
+        if !tick.is_finite() {
+            return 0;
+        }
+        let left_tick = to_samples(tick.floor());
+        let left = self.tick_to_samples_f(left_tick, sr);
+        let right = self.tick_to_samples_f(left_tick.saturating_add(1), sr);
+        let fraction = (tick - left_tick as f64).clamp(0.0, 1.0);
+        to_samples(left + (right - left) * fraction)
+    }
+
     fn tick_to_samples_f(&self, tick: i64, sr: SampleRate) -> f64 {
         let mut acc = 0.0;
         let mut seg_tick = 0i64;
@@ -349,6 +362,22 @@ mod tests {
         // Bar 1 at 120 = 96000 samples; bar 2 at 60 = 192000 samples.
         assert_eq!(m.tick_to_samples(TICKS_PER_QUARTER * 8, sr), 96_000 + 192_000);
         assert_eq!(m.samples_to_ticks(96_000 + 192_000, sr), TICKS_PER_QUARTER * 8);
+    }
+
+    #[test]
+    fn fractional_ticks_preserve_sample_positions_across_tempo_changes() {
+        let mut m = TempoMap::default();
+        m.set_tempo(1920, 90.0).unwrap();
+        for sr in [SampleRate::HZ_48000, SampleRate::new(44_100).unwrap(), SampleRate::new(96_000).unwrap()] {
+            for sample in [-10, 0, 1, 500, 47_999, 48_000, 48_001, 96_007, 400_123] {
+                let ticks = m.samples_to_ticks_f(sample, sr);
+                assert!((m.fractional_tick_to_samples(ticks, sr) - sample).abs() <= 1, "{sample} at {sr:?}");
+            }
+        }
+        assert_eq!(m.fractional_tick_to_samples(0.5, SampleRate::HZ_48000), 13);
+        for ticks in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(m.fractional_tick_to_samples(ticks, SampleRate::HZ_48000), 0);
+        }
     }
 
     #[test]

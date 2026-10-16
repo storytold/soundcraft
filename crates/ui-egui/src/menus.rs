@@ -27,6 +27,11 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.close", "Close Window", "Window > Close Window", Some("Cmd+W")),
     ("window.hide_floating", "Hide All Floating Windows", "Window > Hide All Floating Windows", Some("Cmd+Ctrl+W")),
     ("window.midi_editor", "MIDI Editor", "Window > MIDI Editor", None),
+    ("ui.midi_scroll", "Scroll MIDI Editor", "", None),
+    ("ui.midi_zoom_at", "Zoom MIDI Editor at Cursor", "", None),
+    ("ui.midi_fit", "Fit MIDI Clip", "", None),
+    ("ui.midi_scrolling", "MIDI Editor Scrolling", "", None),
+    ("ui.midi_velocity_height", "MIDI Velocity Lane Height", "", None),
     ("window.universe", "Universe", "View > Other Displays > Universe", Some("Alt+7")),
     ("window.video", "Video", "Window > Video", Some("Cmd+9")),
     ("window.video_universe", "Video Universe", "Window > Video Universe", None),
@@ -477,6 +482,15 @@ fn wants_dialog(id: &str) -> bool {
 
 /// Handle UI-layer commands. Returns None when `id` is not a UI command.
 pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    if id == "ui.midi_velocity_height" {
+        return Some(crate::midi_editor::velocity_height_command(app, p));
+    }
+    if id == "ui.midi_scrolling" {
+        return Some(crate::midi_playback::scrolling_command(app, p));
+    }
+    if matches!(id, "ui.midi_scroll" | "ui.midi_zoom_at" | "ui.midi_fit") {
+        return Some(crate::midi_editor::view_command(app, id, p));
+    }
     if matches!(id, "ui.dock" | "ui.dock.reset") {
         return Some(crate::docking::command(app, id == "ui.dock.reset", p));
     }
@@ -527,13 +541,20 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             toggle(&mut app.ui.show_audio_health)
         }
         "window.about" => toggle(&mut app.ui.show_about),
-        "window.midi_editor" => toggle(&mut app.ui.show_midi_editor),
+        "window.midi_editor" => {
+            let v = toggle(&mut app.ui.show_midi_editor);
+            if !app.ui.show_midi_editor {
+                crate::midi_playback::release_transport(app);
+            }
+            v
+        }
         "window.midi_front" => {
             app.ui.show_midi_editor = true;
             json!({"value": true})
         }
         "window.midi_back" => {
             app.ui.show_midi_editor = false;
+            crate::midi_playback::release_transport(app);
             json!({})
         }
         "window.automation" => toggle(&mut app.ui.show_automation),

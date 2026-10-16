@@ -233,6 +233,9 @@ fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
     let tl = Rect::from_min_max(pos2(full.min.x + hw, full.min.y + rulers_h), pos2(full.max.x - 12.0, full.max.y - hscroll_h));
     let rulers_rect = Rect::from_min_max(pos2(full.min.x, full.min.y), pos2(full.max.x, full.min.y + rulers_h));
     app.edit_layout.timeline = [tl.min.x, tl.min.y, tl.max.x, tl.max.y];
+    if ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(tl) {
+        crate::midi_playback::release_transport(app);
+    }
     follow_zoom_toggle(app);
     ui.painter().rect_filled(full, 0.0, t.window_bg);
     scroll_and_zoom(app, ui, full, tl);

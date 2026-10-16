@@ -59,6 +59,8 @@ pub enum TransportRequest {
     /// Stop the old session's transport without applying stop-time edits to the new document.
     ResetSession,
     Play,
+    /// Explicit start, independent of the host's selection or centered editor cue.
+    PlayFrom(Samples),
     Stop,
     TogglePlay,
     Record,

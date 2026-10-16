@@ -32,6 +32,7 @@ mod tab;
 mod track;
 mod track_more;
 mod transport;
+mod transport_cue;
 mod video;
 mod view;
 mod view_more;
@@ -116,6 +117,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(mix::specs());
         v.extend(options::specs());
         v.extend(transport::specs());
+        v.extend(transport_cue::specs());
         v.extend(tab::specs());
         v.extend(query::specs());
         v.extend(health::specs());
