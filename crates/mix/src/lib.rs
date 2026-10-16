@@ -2021,37 +2021,147 @@ fn apply_matrix_span(src: &[Vec<f32>], span: std::ops::Range<usize>, dst: &mut [
     }
 }
 
-/// Ceiling on one in-memory offline render (samples summed over channels): 2^29 f32 = 2 GiB, about
-/// 93 minutes of stereo at 48 kHz. Longer requests are truncated rather than exhausting memory;
-/// [`RangeRender`] streams any length.
+/// Ceiling on one in-memory offline render (samples summed over channels): 2 GiB of f32.
+/// Mixed range, bus and pre-fader helpers reject requests above this limit. The clip-only
+/// [`render_clips`] helper retains its separate truncation contract; [`RangeRender`] streams
+/// without this whole-output-buffer limit.
 pub const MAX_RENDER_SAMPLES: usize = 1 << 29;
 
-/// Offline render of the main mix over `range` (planar, [`main_channels`] channels in SMPTE/WAV
-/// order). The mix's delay-compensation latency is removed, so the result lines up with the
-/// timeline.
-pub fn render_range(s: &Session, range: Range, block: usize) -> Vec<Vec<f32>> {
+/// A refused offline request or an output allocation failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderError {
+    InvertedRange,
+    RangeOverflow,
+    UnknownBus,
+    UnknownTrack,
+    UnsupportedChannels,
+    OutputTooLarge,
+    AllocationFailed,
+    TimelineOverflow,
+    RenderShape,
+}
+
+impl std::fmt::Display for RenderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::InvertedRange => "offline render range is inverted",
+            Self::RangeOverflow => "offline render range length overflows",
+            Self::UnknownBus => "offline render bus does not exist",
+            Self::UnknownTrack => "offline render track does not exist",
+            Self::UnsupportedChannels => "offline render output geometry is unsupported",
+            Self::OutputTooLarge => "offline render output exceeds the sample budget",
+            Self::AllocationFailed => "offline render output allocation failed",
+            Self::TimelineOverflow => "offline render latency extension exceeds the timeline",
+            Self::RenderShape => "offline render block shape differs from the requested output",
+        })
+    }
+}
+
+impl std::error::Error for RenderError {}
+
+fn window_frames(range: Range) -> Result<usize, RenderError> {
+    if range.end < range.start {
+        return Err(RenderError::InvertedRange);
+    }
+    let frames = range.end.checked_sub(range.start).ok_or(RenderError::RangeOverflow)?;
+    usize::try_from(frames).map_err(|_| RenderError::RangeOverflow)
+}
+
+fn checked_channels(channels: usize) -> Result<usize, RenderError> {
+    if channels == 0 || channels > MAX_CHANNELS {
+        return Err(RenderError::UnsupportedChannels);
+    }
+    Ok(channels)
+}
+
+fn selected_channels(s: &Session, bus: Option<BusId>) -> Result<usize, RenderError> {
+    match bus {
+        Some(id) => checked_channels(s.bus(id).ok_or(RenderError::UnknownBus)?.format.channels()),
+        None => {
+            checked_channels(s.outputs.first().map_or(MAIN_CHANNELS, |output| output.format.channels())).map(|channels| channels.max(MAIN_CHANNELS))
+        }
+    }
+}
+
+fn output_budget(frames: usize, channels: usize) -> Result<(), RenderError> {
+    if frames.checked_mul(channels).is_none_or(|samples| samples > MAX_RENDER_SAMPLES) {
+        return Err(RenderError::OutputTooLarge);
+    }
+    Ok(())
+}
+
+/// Pure static preflight for streamed main/bus output, before plugin preparation or rendering.
+/// Literal endpoints are checked without sorting, saturating or shortening the request.
+pub fn validate_render_window(s: &Session, bus: Option<BusId>, range: Range) -> Result<(), RenderError> {
+    window_frames(range)?;
+    selected_channels(s, bus)?;
+    Ok(())
+}
+
+/// Pure static preflight including the in-memory output sample budget.
+pub fn validate_in_memory_render_window(s: &Session, bus: Option<BusId>, range: Range) -> Result<(), RenderError> {
+    output_budget(window_frames(range)?, selected_channels(s, bus)?)
+}
+
+/// Pure pre-fader track preflight. Mono tracks use a stereo intermediate before folding back.
+pub fn validate_track_render_window(s: &Session, track: TrackId, range: Range) -> Result<(), RenderError> {
+    let frames = window_frames(range)?;
+    let channels = checked_channels(s.track(track).ok_or(RenderError::UnknownTrack)?.channels())?;
+    output_budget(frames, channels.max(MAIN_CHANNELS))
+}
+
+fn planar_output(channels: usize, frames: usize, initialized: bool) -> Result<Vec<Vec<f32>>, RenderError> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(channels).map_err(|_| RenderError::AllocationFailed)?;
+    for _ in 0..channels {
+        let mut channel = Vec::new();
+        channel.try_reserve_exact(frames).map_err(|_| RenderError::AllocationFailed)?;
+        if initialized {
+            channel.resize(frames, 0.0);
+        }
+        out.push(channel);
+    }
+    Ok(out)
+}
+
+/// Offline main mix with compensation delay removed and exact requested output length.
+pub fn render_range(s: &Session, range: Range, block: usize) -> Result<Vec<Vec<f32>>, RenderError> {
     render_in_memory(s, None, range, block)
 }
 
-/// Offline render of one bus over `range` (planar, the bus format's channel count).
-/// The compensation delay written onto the bus is removed (track inserts, and the aux returns
-/// when an aux returns onto it), so the bus lines up with the timeline. An unknown bus is silent.
-pub fn render_bus(s: &Session, bus: BusId, range: Range, block: usize) -> Vec<Vec<f32>> {
+/// Offline selected bus with compensation delay removed. Unknown buses are errors.
+pub fn render_bus(s: &Session, bus: BusId, range: Range, block: usize) -> Result<Vec<Vec<f32>>, RenderError> {
     render_in_memory(s, Some(bus), range, block)
 }
 
-fn render_in_memory(s: &Session, bus: Option<BusId>, range: Range, block: usize) -> Vec<Vec<f32>> {
-    let nch = source_channels(s, bus);
-    let len = usize::try_from(range.len().max(0)).unwrap_or(0).min(MAX_RENDER_SAMPLES / nch.max(1));
-    let mut out: Vec<Vec<f32>> = (0..nch).map(|_| Vec::with_capacity(len)).collect();
-    let mut render = RangeRender::new(s, bus, Range::new(range.start, range.start + len as i64), block);
-    while let Some((chunk, n)) = render.next_block(s) {
-        for (o, c) in out.iter_mut().zip(chunk) {
-            o.extend_from_slice(c.get(..n).unwrap_or_default());
-        }
+fn render_in_memory(s: &Session, bus: Option<BusId>, range: Range, block: usize) -> Result<Vec<Vec<f32>>, RenderError> {
+    validate_in_memory_render_window(s, bus, range)?;
+    let mut out = planar_output(selected_channels(s, bus)?, window_frames(range)?, false)?;
+    let mut render = RangeRender::new(s, bus, range, block)?;
+    let frames = window_frames(range)?;
+    while let Some((chunk, n)) = render.next_block(s)? {
+        append_render_block(&mut out, chunk, n, frames)?;
     }
-    out
+    if out.iter().any(|channel| channel.len() != frames) {
+        return Err(RenderError::RenderShape);
+    }
+    Ok(out)
 }
+
+fn append_render_block(out: &mut [Vec<f32>], chunk: &[Vec<f32>], frames: usize, total: usize) -> Result<(), RenderError> {
+    if out.len() != chunk.len()
+        || out.iter().zip(chunk).any(|(output, input)| input.len() < frames || output.len().checked_add(frames).is_none_or(|end| end > total))
+    {
+        return Err(RenderError::RenderShape);
+    }
+    for (output, input) in out.iter_mut().zip(chunk) {
+        output.extend_from_slice(input.get(..frames).ok_or(RenderError::RenderShape)?);
+    }
+    Ok(())
+}
+
+/// One streamed block: channel buffers with `frames` valid samples at their head.
+pub type RenderBlock<'a> = (&'a [Vec<f32>], usize);
 
 /// Channels of the main mix, or of `bus` (none for an unknown bus).
 pub fn source_channels(s: &Session, bus: Option<BusId>) -> usize {
@@ -2070,16 +2180,18 @@ pub struct RangeRender {
     done: usize,
     total: usize,
     latency: usize,
+    error: Option<RenderError>,
 }
 
 impl RangeRender {
     /// Renders the main mix over `range`, or `bus` when one is named.
-    pub fn new(s: &Session, bus: Option<BusId>, range: Range, block: usize) -> Self {
-        let nch = source_channels(s, bus);
+    pub fn new(s: &Session, bus: Option<BusId>, range: Range, block: usize) -> Result<Self, RenderError> {
+        validate_render_window(s, bus, range)?;
+        let nch = selected_channels(s, bus)?;
         let eng = MixEngine::new(s.sample_rate.as_f64() as f32, block);
-        let tmp = vec![vec![0.0f32; eng.max_block()]; nch];
-        let len = if nch == 0 { 0 } else { usize::try_from(range.len().max(0)).unwrap_or(0) };
-        RangeRender { eng, bus, tmp, start: range.start, done: 0, total: len, latency: 0 }
+        let tmp = planar_output(nch, eng.max_block(), true)?;
+        let len = window_frames(range)?;
+        Ok(RangeRender { eng, bus, tmp, start: range.start, done: 0, total: len, latency: 0, error: None })
     }
 
     fn render(&mut self, s: &Session, pos: Samples, n: usize) {
@@ -2095,19 +2207,41 @@ impl RangeRender {
     /// Renders one more block of the mix of `s` (the session given to [`RangeRender::new`]) and
     /// returns it as `(channels, n)`: the next `n` samples of the range lead each channel (none
     /// while the mix's latency is still being skipped). `None` once the range is done.
-    pub fn next_block(&mut self, s: &Session) -> Option<(&[Vec<f32>], usize)> {
+    pub fn next_block(&mut self, s: &Session) -> Result<Option<RenderBlock<'_>>, RenderError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        match self.advance(s) {
+            Ok(Some(frames)) => Ok(Some((&self.tmp, frames))),
+            Ok(None) => Ok(None),
+            Err(error) => {
+                self.error = Some(error);
+                Err(error)
+            }
+        }
+    }
+
+    fn advance(&mut self, s: &Session) -> Result<Option<usize>, RenderError> {
+        if selected_channels(s, self.bus)? != self.tmp.len() {
+            return Err(RenderError::UnsupportedChannels);
+        }
         if self.done >= self.total {
-            return None;
+            return Ok(None);
         }
         let n = (self.total - self.done).min(self.eng.max_block());
-        self.render(s, self.start + self.done as i64, n);
+        let offset = i64::try_from(self.done).map_err(|_| RenderError::TimelineOverflow)?;
+        let pos = self.start.checked_add(offset).ok_or(RenderError::TimelineOverflow)?;
+        self.render(s, pos, n);
         if self.done == 0 {
             // The first block tells the mix's latency: render that much more and drop the head.
             self.latency = match self.bus {
                 Some(b) => self.eng.bus_latency(b),
                 None => self.eng.latency,
             };
-            self.total = self.total.saturating_add(self.latency);
+            let total = self.total.checked_add(self.latency).ok_or(RenderError::TimelineOverflow)?;
+            let duration = i64::try_from(total).map_err(|_| RenderError::TimelineOverflow)?;
+            self.start.checked_add(duration).ok_or(RenderError::TimelineOverflow)?;
+            self.total = total;
         }
         let skip = self.latency.saturating_sub(self.done).min(n);
         self.done += n;
@@ -2116,7 +2250,7 @@ impl RangeRender {
                 c.copy_within(skip..n, 0);
             }
         }
-        Some((&self.tmp, n - skip))
+        Ok(Some(n - skip))
     }
 }
 
@@ -2185,7 +2319,8 @@ pub fn render_clips(s: &Session, track: TrackId, range: Range) -> Vec<Vec<f32>> 
 }
 
 /// Render one track through its inserts (pre-fader) — Commit / Freeze.
-pub fn render_track_pre_fader(s: &Session, track: TrackId, range: Range) -> Vec<Vec<f32>> {
+pub fn render_track_pre_fader(s: &Session, track: TrackId, range: Range) -> Result<Vec<Vec<f32>>, RenderError> {
+    validate_track_render_window(s, track, range)?;
     let mut solo = s.clone();
     // Multichannel tracks render into a main mix of their own format (straight through).
     let fmt = s.track(track).map_or(ChannelFormat::Stereo, |t| if t.channels() > 2 { t.format } else { ChannelFormat::Stereo });
@@ -2207,15 +2342,17 @@ pub fn render_track_pre_fader(s: &Session, track: TrackId, range: Range) -> Vec<
             t.inactive = true;
         }
     }
-    let mut out = render_range(&solo, range, 1024);
-    // Mono tracks: fold back to one channel (undo the centre pan law).
-    if s.track(track).is_some_and(|t| t.channels() == 1)
-        && let Some(l) = out.first().cloned()
-    {
-        let g = std::f32::consts::SQRT_2;
-        out = vec![l.iter().map(|x| x * g).collect()];
+    let mut out = render_range(&solo, range, 1024)?;
+    // Fold the existing left channel in place, avoiding another whole-output allocation.
+    if s.track(track).is_some_and(|t| t.channels() == 1) {
+        out.truncate(1);
+        if let Some(left) = out.first_mut() {
+            for sample in left {
+                *sample *= std::f32::consts::SQRT_2;
+            }
+        }
     }
-    out
+    Ok(out)
 }
 
 /// A built-in plugin, else a hosted CLAP plugin (`clap:<id>`).
@@ -2297,7 +2434,7 @@ mod tests {
         // #152: a saved instrument level of -12 dB must render quieter than -6 dB.
         // RMS over the held part of the note, past any parameter smoothing.
         let rms = |db: f32| {
-            let out = render_range(&synth_session(db), Range::new(0, 12_000), 512);
+            let out = render_range(&synth_session(db), Range::new(0, 12_000), 512).unwrap();
             let tail = out[0].get(6_000..).unwrap_or_default();
             (tail.iter().map(|x| x * x).sum::<f32>() / tail.len().max(1) as f32).sqrt()
         };
@@ -2309,12 +2446,12 @@ mod tests {
     #[test]
     fn insert_slot_a_automation_does_not_drive_the_instrument() {
         let mut s = synth_session(-6.0);
-        let reference = render_range(&s, Range::new(0, 12_000), 512);
+        let reference = render_range(&s, Range::new(0, 12_000), 512).unwrap();
         let tr = &mut s.tracks[0];
         let mut lane = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: 0, param: "level".into() });
         lane.set_point(0, -48.0);
         tr.automation.push(lane);
-        assert_eq!(render_range(&s, Range::new(0, 12_000), 512), reference);
+        assert_eq!(render_range(&s, Range::new(0, 12_000), 512).unwrap(), reference);
     }
 
     fn session_with_dc(level: f32, frames: usize) -> (Session, TrackId) {
@@ -2337,7 +2474,7 @@ mod tests {
     #[test]
     fn mono_center_pan_is_minus_3db() {
         let (s, _) = session_with_dc(0.5, 4800);
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         let expect = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
         assert!((out[0][1000] - expect).abs() < 1e-3, "{}", out[0][1000]);
         assert!((out[1][1000] - expect).abs() < 1e-3);
@@ -2347,17 +2484,17 @@ mod tests {
     fn fader_mute_and_solo() {
         let (mut s, t) = session_with_dc(0.5, 4800);
         s.track_mut(t).unwrap().mixer.volume_db = -6.0;
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         let expect = 0.5 * std::f32::consts::FRAC_1_SQRT_2 * db_to_gain(-6.0);
         assert!((out[0][2000] - expect).abs() < 1e-3);
         s.track_mut(t).unwrap().mixer.mute = true;
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         assert!(out[0][2000].abs() < 1e-6);
         // Soloing another track mutes this one.
         s.track_mut(t).unwrap().mixer.mute = false;
         let other = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
         s.track_mut(other).unwrap().mixer.solo = true;
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         assert!(out[0][2000].abs() < 1e-6);
     }
 
@@ -2365,7 +2502,7 @@ mod tests {
     fn hard_pans() {
         let (mut s, t) = session_with_dc(0.5, 4800);
         s.track_mut(t).unwrap().mixer.pan = vec![-1.0];
-        let out = render_range(&s, Range::new(0, 4800), 256);
+        let out = render_range(&s, Range::new(0, 4800), 256).unwrap();
         assert!(out[0][100] > 0.49 && out[1][100].abs() < 1e-4);
     }
 
@@ -2382,7 +2519,7 @@ mod tests {
                 } else {
                     c.fade_out = fade;
                 }
-                let out = render_range(&s, Range::new(0, 8192), 512);
+                let out = render_range(&s, Range::new(0, 8192), 512).unwrap();
                 let expected = if curvature < 0.0 {
                     0.2
                 } else if curvature > 0.0 {
@@ -2406,10 +2543,10 @@ mod tests {
             l.set_point(0, -1.0);
             l.set_point(480, 1.0);
         }
-        let bounce = render_range(&s, Range::new(0, 4800), 1024);
+        let bounce = render_range(&s, Range::new(0, 4800), 1024).unwrap();
         assert!(bounce[0][600].abs() < 1e-4 && bounce[1][600] > 0.49, "{} {}", bounce[0][600], bounce[1][600]);
         for block in [512, 100, 37] {
-            assert_eq!(render_range(&s, Range::new(0, 4800), block), bounce, "block {block}");
+            assert_eq!(render_range(&s, Range::new(0, 4800), block).unwrap(), bounce, "block {block}");
         }
     }
 
@@ -2421,7 +2558,7 @@ mod tests {
             c.fade_in = soundcraft_model::Fade { len: 1000, shape: soundcraft_model::FadeShape::Linear, curvature: 0.0 };
             c.gain_db = -6.0;
         }
-        let out = render_range(&s, Range::new(0, 2000), 512);
+        let out = render_range(&s, Range::new(0, 2000), 512).unwrap();
         let g = std::f32::consts::FRAC_1_SQRT_2 * db_to_gain(-6.0);
         assert!(out[0][0].abs() < 1e-3);
         assert!((out[0][500] - 0.5 * g).abs() < 0.02, "{}", out[0][500]);
@@ -2441,7 +2578,7 @@ mod tests {
             snd.level_db = 0.0;
             tr.mixer.sends[0] = Some(snd);
         }
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         assert!(out[0][1000] > 0.1, "aux should carry the send: {}", out[0][1000]);
     }
 
@@ -2451,9 +2588,9 @@ mod tests {
         let stem = s.add_bus("Stem", ChannelFormat::Stereo);
         let empty = s.add_bus("Empty", ChannelFormat::Stereo);
         s.track_mut(t).unwrap().mixer.output = Route::Bus(stem);
-        let main = render_range(&s, Range::new(0, 4800), 512);
-        let bus = render_bus(&s, stem, Range::new(0, 4800), 512);
-        let silent = render_bus(&s, empty, Range::new(0, 4800), 512);
+        let main = render_range(&s, Range::new(0, 4800), 512).unwrap();
+        let bus = render_bus(&s, stem, Range::new(0, 4800), 512).unwrap();
+        let silent = render_bus(&s, empty, Range::new(0, 4800), 512).unwrap();
         assert!(main[0][1000].abs() < 1e-4, "main should not carry a track routed to the bus: {}", main[0][1000]);
         assert!(bus[0][1000].abs() > 0.1, "bus should carry the track: {}", bus[0][1000]);
         assert!(silent.iter().all(|c| c.iter().all(|x| x.abs() < 1e-6)));
@@ -2468,7 +2605,7 @@ mod tests {
             l.set_point(0, 0.0);
             l.set_point(24_000, -144.0);
         }
-        let out = render_range(&s, Range::new(0, 48_000), 512);
+        let out = render_range(&s, Range::new(0, 48_000), 512).unwrap();
         assert!(out[0][100] > 0.3);
         assert!(out[0][30_000].abs() < 1e-4);
     }
@@ -2477,13 +2614,13 @@ mod tests {
     fn inserts_process_and_survive_unknown_plugins() {
         let (mut s, t) = session_with_dc(0.5, 4800);
         s.track_mut(t).unwrap().mixer.inserts[0] = Some(Insert::new("does-not-exist"));
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         assert!(out[0][100] > 0.3);
         let id = soundcraft_dsp::plugins().iter().find(|p| p.id.contains("gain")).map(|p| p.id).unwrap_or("gain");
         let mut ins = Insert::new(id);
         ins.params.insert("gain".into(), -6.0);
         s.track_mut(t).unwrap().mixer.inserts[0] = Some(ins);
-        let _ = render_range(&s, Range::new(0, 4800), 512);
+        let _ = render_range(&s, Range::new(0, 4800), 512).unwrap();
     }
 
     /// A built-in gain behind a third-party id, with a log of parameter sets.
@@ -2833,7 +2970,7 @@ mod tests {
         render_block(&mut eng, &s, 1024);
         assert_eq!(sets.load(std::sync::atomic::Ordering::Relaxed), 2, "later session edits apply");
         // Offline (not external): unknown third-party plugins are simply absent.
-        let out = render_range(&s, Range::new(0, 1024), 512);
+        let out = render_range(&s, Range::new(0, 1024), 512).unwrap();
         assert!(out[0][100] > 0.3);
     }
 
@@ -2842,14 +2979,14 @@ mod tests {
         let (mut s, t) = session_with_dc(0.5, 4800);
         let cid = s.track(t).unwrap().clips()[0].id.0;
         s.edit.values.insert(format!("clip_fx.{cid}.gain"), -6.0);
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         let expect = 0.5 * std::f32::consts::FRAC_1_SQRT_2 * db_to_gain(-6.0);
         assert!((out[0][2000] - expect).abs() < 0.01, "{}", out[0][2000]);
         s.edit.set_flag(&format!("clip_fx.bypass.{cid}"), true);
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         assert!((out[0][2000] - 0.5 * std::f32::consts::FRAC_1_SQRT_2).abs() < 0.01);
         s.track_mut(t).unwrap().lane_mut(&AutoParam::Plugin { slot: u8::MAX, param: "trim".into() }).set_point(0, -12.0);
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         assert!(out[0][2000] < 0.2, "{}", out[0][2000]);
     }
 
@@ -2874,10 +3011,10 @@ mod tests {
         let argmax = |c: &[f32]| c.iter().enumerate().max_by(|a, b| a.1.abs().total_cmp(&b.1.abs())).map(|(i, _)| i).unwrap();
         let lat = soundcraft_dsp::create("maximizer").unwrap().latency();
         assert!(lat > 0, "test needs a latent plugin");
-        let out = render_range(&s, Range::new(0, 8000), 512);
+        let out = render_range(&s, Range::new(0, 8000), 512).unwrap();
         assert_eq!(argmax(&out[0]), argmax(&out[1]), "PDC should align L and R");
         s.edit.delay_compensation = false;
-        let out = render_range(&s, Range::new(0, 8000), 512);
+        let out = render_range(&s, Range::new(0, 8000), 512).unwrap();
         assert_ne!(argmax(&out[0]), argmax(&out[1]));
     }
 
@@ -2923,7 +3060,7 @@ mod tests {
         s.track_mut(source).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "impulses", SourceId(901), 0, 0, n as i64));
         s.track_mut(source).unwrap().mixer.output = Route::Bus(bus);
         s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
-        let render = |s: &Session, start: i64, end: i64| render_range(s, Range::new(start, end), 1024);
+        let render = |s: &Session, start: i64, end: i64| render_range(s, Range::new(start, end), 1024).unwrap();
         let control = render(&s, 0, n as i64);
         assert_eq!(impulse_at(&control[0]), vec![0, 2048, 8000]);
         assert_eq!(impulse_at(&control[1]), impulse_at(&control[0]));
@@ -2970,8 +3107,8 @@ mod tests {
             for block in [16, 100, 512] {
                 let mut got = Vec::new();
                 let mut skipped = 0;
-                let mut render = RangeRender::new(&s, source, Range::new(900, 2900), block);
-                while let Some((chunk, n)) = render.next_block(&s) {
+                let mut render = RangeRender::new(&s, source, Range::new(900, 2900), block).unwrap();
+                while let Some((chunk, n)) = render.next_block(&s).unwrap() {
                     assert!(n <= block);
                     skipped += usize::from(n == 0);
                     got.extend_from_slice(&chunk[0][..n]);
@@ -3048,7 +3185,7 @@ mod tests {
     #[test]
     fn empty_session_is_silent() {
         let s = Session::default();
-        let out = render_range(&s, Range::new(0, 1000), 128);
+        let out = render_range(&s, Range::new(0, 1000), 128).unwrap();
         assert!(out.iter().all(|c| c.iter().all(|x| *x == 0.0)));
     }
 
@@ -3109,7 +3246,7 @@ mod tests {
         let len = beat * 8;
         s.edit.click = true;
         // Offline renders (bounces, stems) never print the metronome.
-        let offline = render_range(&s, Range::new(0, len as i64), 512);
+        let offline = render_range(&s, Range::new(0, len as i64), 512).unwrap();
         assert!(offline.iter().all(|c| c.iter().all(|x| *x == 0.0)));
 
         let out = render_playback(&s, len, 512, false);
@@ -3153,7 +3290,7 @@ mod tests {
     fn surround_track_passes_through_bit_exact() {
         let (s, _) = multichannel_session(ChannelFormat::Surround51, ChannelFormat::Surround51, 4800);
         let src = s.pool.get(SourceId(901)).unwrap().buffer.channels.clone();
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         assert_eq!(out.len(), 6);
         for (o, x) in out.iter().zip(src.iter()) {
             assert_eq!(o, x, "5.1 → 5.1 must be bit-exact");
@@ -3163,7 +3300,7 @@ mod tests {
     #[test]
     fn surround_to_stereo_folds_down_itu() {
         let (s, _) = multichannel_session(ChannelFormat::Surround51, ChannelFormat::Stereo, 4800);
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         assert_eq!(out.len(), 2);
         let h = std::f32::consts::FRAC_1_SQRT_2;
         let x = |c: usize| 0.1 * (c + 1) as f32 + (1000 % 7) as f32 * 1e-3;
@@ -3179,14 +3316,14 @@ mod tests {
         let (mut s, t) = session_with_dc(0.5, 4800);
         s.outputs[0].format = ChannelFormat::Surround51;
         // No surround pan: stereo behaviour on L/R.
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         assert_eq!(out.len(), 6);
         let h = 0.5 * gains(0.0, PanLaw::Minus3).0;
         assert!((out[0][100] - h).abs() < 1e-6 && (out[1][100] - h).abs() < 1e-6);
         assert!(out[2..].iter().all(|c| c[100].abs() < 1e-7));
         // Front centre: the centre speaker only.
         s.track_mut(t).unwrap().mixer.surround = Some(SurroundPan::default());
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         assert!((out[2][100] - 0.5).abs() < 1e-4, "{}", out[2][100]);
         assert!(out.iter().enumerate().all(|(c, x)| c == 2 || x[100].abs() < 1e-4));
         // Rear right with LFE: Rs plus the LFE send.
@@ -3212,7 +3349,7 @@ mod tests {
         s.track_mut(t).unwrap().mixer.output = Route::Bus(bus);
         let m = s.add_track(TrackKind::Master, ChannelFormat::Surround51, None);
         s.track_mut(m).unwrap().mixer.volume_db = -6.0;
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         let g = db_to_gain(-6.0);
         for (c, ch) in out.iter().enumerate() {
             let x = 0.1 * (c + 1) as f32 + (1000 % 7) as f32 * 1e-3;
@@ -3225,7 +3362,7 @@ mod tests {
         s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
         s.track_mut(aux).unwrap().mixer.pan = vec![-1.0];
         s.track_mut(t).unwrap().mixer.output = Route::Bus(bus);
-        let out = render_range(&s, Range::new(0, 4800), 512);
+        let out = render_range(&s, Range::new(0, 4800), 512).unwrap();
         assert!((out[0][1000] - 0.5 * gains(0.0, PanLaw::Minus3).0).abs() < 1e-6, "{}", out[0][1000]);
     }
 
@@ -3233,7 +3370,7 @@ mod tests {
     fn surround_upmix_and_downmix_between_layouts() {
         // 5.1 → 7.1: shared speakers map 1:1; 5.x surrounds pan between the 7.1 sides and rears.
         let (s, _) = multichannel_session(ChannelFormat::Surround51, ChannelFormat::Surround71, 2000);
-        let out = render_range(&s, Range::new(0, 2000), 512);
+        let out = render_range(&s, Range::new(0, 2000), 512).unwrap();
         assert_eq!(out.len(), 8);
         let x = |c: usize| 0.1 * (c + 1) as f32 + (100 % 7) as f32 * 1e-3;
         for (c, ch) in out.iter().enumerate().take(4) {
@@ -3241,5 +3378,95 @@ mod tests {
         }
         let e_ls = out[4][100].powi(2) + out[6][100].powi(2);
         assert!((e_ls - x(4).powi(2)).abs() < 1e-5, "Ls energy is preserved");
+    }
+}
+
+#[cfg(test)]
+mod offline_window_tests {
+    use super::*;
+
+    #[test]
+    fn literal_windows_reject_inversion_and_signed_length_overflow() {
+        let s = Session::default();
+        assert_eq!(validate_render_window(&s, None, Range { start: 1, end: 0 }), Err(RenderError::InvertedRange));
+        assert_eq!(validate_render_window(&s, None, Range { start: i64::MIN, end: i64::MAX }), Err(RenderError::RangeOverflow));
+        assert!(validate_render_window(&s, None, Range { start: -20, end: 20 }).is_ok());
+        assert!(validate_render_window(&s, None, Range { start: i64::MAX, end: i64::MAX }).is_ok());
+    }
+
+    #[test]
+    fn exact_sample_budget_is_checked_without_allocating_output() {
+        for channels in [1, 2, 16] {
+            assert_eq!(output_budget(MAX_RENDER_SAMPLES / channels, channels), Ok(()));
+            assert_eq!(output_budget(MAX_RENDER_SAMPLES / channels + 1, channels), Err(RenderError::OutputTooLarge));
+        }
+        assert_eq!(output_budget(usize::MAX, 2), Err(RenderError::OutputTooLarge));
+        let s = Session::default();
+        let too_long = Range { start: 0, end: (MAX_RENDER_SAMPLES / 2 + 1) as i64 };
+        assert_eq!(render_range(&s, too_long, 1024), Err(RenderError::OutputTooLarge));
+        assert!(validate_render_window(&s, None, too_long).is_ok(), "streaming has no whole-output allocation cap");
+        let mut s = s;
+        let bus = s.add_bus("Budget", ChannelFormat::Stereo);
+        let track = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Budget"));
+        assert_eq!(render_bus(&s, bus, too_long, 1024), Err(RenderError::OutputTooLarge));
+        assert_eq!(render_track_pre_fader(&s, track, too_long), Err(RenderError::OutputTooLarge));
+    }
+
+    #[test]
+    fn selected_ids_and_raw_geometry_are_checked() {
+        let mut s = Session::default();
+        let r = Range::point(0);
+        assert_eq!(validate_render_window(&s, Some(BusId(u64::MAX)), r), Err(RenderError::UnknownBus));
+        assert_eq!(validate_track_render_window(&s, TrackId(u64::MAX), r), Err(RenderError::UnknownTrack));
+        assert_eq!(render_bus(&s, BusId(u64::MAX), r, 1024), Err(RenderError::UnknownBus));
+        assert_eq!(render_track_pre_fader(&s, TrackId(u64::MAX), r), Err(RenderError::UnknownTrack));
+        let bus = s.add_bus("wide", ChannelFormat::Ambisonics(7));
+        assert_eq!(validate_render_window(&s, Some(bus), r), Err(RenderError::UnsupportedChannels));
+        s.outputs = vec![soundcraft_model::OutputPath { name: "main".into(), first_channel: 0, format: ChannelFormat::Mono }];
+        assert_eq!(selected_channels(&s, None), Ok(2), "mono main output retains its stereo minimum");
+        s.outputs[0].format = ChannelFormat::Stereo;
+        assert_eq!(selected_channels(&s, None), Ok(2));
+        s.outputs[0].format = ChannelFormat::Ambisonics(7);
+        assert_eq!(validate_render_window(&s, None, r), Err(RenderError::UnsupportedChannels));
+    }
+
+    #[test]
+    fn zero_length_and_negative_start_keep_exact_geometry_and_cadence() {
+        let s = Session::default();
+        assert_eq!(render_range(&s, Range::point(0), 32).unwrap(), vec![Vec::<f32>::new(); 2]);
+        let mut render = RangeRender::new(&s, None, Range { start: -5, end: 30 }, 16).unwrap();
+        let mut blocks = Vec::new();
+        while let Some((channels, n)) = render.next_block(&s).unwrap() {
+            assert_eq!(channels.len(), 2);
+            assert!(channels.iter().all(|channel| channel.iter().take(n).all(|sample| *sample == 0.0)));
+            blocks.push(n);
+        }
+        assert_eq!(blocks, vec![16, 16, 3]);
+    }
+
+    #[test]
+    fn malformed_block_shapes_fail_before_appending_any_channel() {
+        let mut out = vec![vec![1.0], vec![2.0]];
+        let before = out.clone();
+        assert_eq!(append_render_block(&mut out, &[vec![3.0]], 1, 2), Err(RenderError::RenderShape));
+        assert_eq!(append_render_block(&mut out, &[vec![3.0], vec![]], 1, 2), Err(RenderError::RenderShape));
+        assert_eq!(append_render_block(&mut out, &[vec![3.0], vec![4.0]], 2, 2), Err(RenderError::RenderShape));
+        assert_eq!(out, before);
+        append_render_block(&mut out, &[vec![3.0], vec![4.0]], 1, 2).unwrap();
+        assert_eq!(out, vec![vec![1.0, 3.0], vec![2.0, 4.0]]);
+    }
+
+    #[test]
+    fn latency_extension_error_is_sticky_even_if_the_session_changes() {
+        let mut s = Session::default();
+        let track = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Latency"));
+        s.track_mut(track).unwrap().mixer.inserts[0] = Some(soundcraft_model::Insert::new("maximizer"));
+        let mut render = RangeRender::new(&s, None, Range { start: i64::MAX - 2, end: i64::MAX }, 16).unwrap();
+        assert_eq!(render.next_block(&s).err(), Some(RenderError::TimelineOverflow));
+        // Repairing the inputs cannot resume a partially advanced DSP stream after failure.
+        render.start = 0;
+        s.track_mut(track).unwrap().mixer.inserts[0] = None;
+        assert_eq!(render.next_block(&s).err(), Some(RenderError::TimelineOverflow));
+        assert_eq!(render.done, 0);
     }
 }

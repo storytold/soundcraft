@@ -23,8 +23,8 @@ fn bounces_write_exactly_the_mix_and_report_its_levels() {
     let verb = s.bus_by_name("Verb").unwrap().id;
     for bus in [None, Some(verb)] {
         let mut mix = match bus {
-            Some(b) => soundcraft_mix::render_bus(s, b, r, 1024),
-            None => soundcraft_mix::render_range(s, r, 1024),
+            Some(b) => soundcraft_mix::render_bus(s, b, r, 1024).unwrap(),
+            None => soundcraft_mix::render_range(s, r, 1024).unwrap(),
         };
         assert!(mix.iter().flatten().any(|v| v.abs() > 1e-3), "{bus:?}");
         for normalize in [false, true] {

@@ -727,6 +727,9 @@ fn move_track(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn commit(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.commit", p)?;
+    for &t in &tracks {
+        crate::io::commit_range(e.session(), t)?;
+    }
     let mut out = Vec::new();
     for t in tracks {
         if let Some(id) = crate::io::commit_track(e, t)? {

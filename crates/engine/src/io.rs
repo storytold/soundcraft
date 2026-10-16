@@ -383,9 +383,12 @@ impl Bounce {
         normalize: bool,
         fold_stereo: bool,
     ) -> Result<Bounce> {
+        crate::file_access::check_write(path).map_err(EngineError::Io)?;
+        soundcraft_mix::validate_render_window(&s, bus, r).map_err(|err| crate::cmd::bad("file.bounce_mix", err.to_string()))?;
         if r.len() > s.sample_rate.samples(MAX_BOUNCE_SECS) {
             return Err(EngineError::BadParams("file.bounce_mix".into(), "bounces are limited to 4 hours".into()));
         }
+        let render = soundcraft_mix::RangeRender::new(&s, bus, r, 1024).map_err(|err| crate::cmd::bad("file.bounce_mix", err.to_string()))?;
         let (fmt, channels, fold) = bounce_layout(&s, bus, fold_stereo);
         let name = path.file_name().map_or_else(|| "bounce".into(), |n| n.to_string_lossy().into_owned());
         let part = path.with_file_name(format!("{name}.part"));
@@ -400,7 +403,6 @@ impl Bounce {
             let _ = std::fs::remove_file(&part);
             EngineError::Io(format!("{}: {err}", path.display()))
         })?;
-        let render = soundcraft_mix::RangeRender::new(&s, bus, r, 1024);
         let meter = soundcraft_dsp::meter::LoudnessMeter::new(s.sample_rate.as_f64() as f32, channels);
         Ok(Bounce {
             session: s,
@@ -443,7 +445,7 @@ impl Bounce {
     /// bounce once its file is complete.
     pub fn step(&mut self, mut more: impl FnMut() -> bool) -> Result<Option<Bounced>> {
         loop {
-            match self.render.next_block(&self.session) {
+            match self.render.next_block(&self.session).map_err(|err| crate::cmd::bad("file.bounce_mix", err.to_string()))? {
                 Some((chunk, n)) => {
                     fill(&mut self.block, chunk, n, self.fold, self.gain);
                     self.done += n;
@@ -460,7 +462,8 @@ impl Bounce {
                     self.peak = 0.0;
                     self.done = 0;
                     self.measuring = false;
-                    self.render = soundcraft_mix::RangeRender::new(&self.session, self.bus, self.range, 1024);
+                    self.render = soundcraft_mix::RangeRender::new(&self.session, self.bus, self.range, 1024)
+                        .map_err(|err| crate::cmd::bad("file.bounce_mix", err.to_string()))?;
                 }
                 None => return self.finish().map(Some),
             }
@@ -790,9 +793,9 @@ pub fn render_clip_gain(e: &mut Engine, cmd: &str, id: soundcraft_model::ClipId)
     Ok(true)
 }
 
-/// Commit a track's inserts into a new audio track (Track › Commit).
-pub fn commit_track(e: &mut Engine, t: TrackId) -> Result<Option<TrackId>> {
-    let s = e.session();
+/// Validate a Commit target without rendering or changing the document.
+/// Unsupported targets and tracks without material retain their ordinary no-op behavior.
+pub(crate) fn commit_range(s: &Session, t: TrackId) -> Result<Option<Range>> {
     let Some(tr) = s.track(t) else { return Ok(None) };
     if !tr.kind.is_audio_path() || tr.kind == TrackKind::Master {
         return Ok(None);
@@ -801,10 +804,20 @@ pub fn commit_track(e: &mut Engine, t: TrackId) -> Result<Option<TrackId>> {
     if end <= 0 {
         return Ok(None);
     }
-    let range = Range::new(0, end + s.sample_rate.samples(2.0));
-    // The track renders through a main mix of at least two channels.
+    let end = end.checked_add(s.sample_rate.samples(2.0)).ok_or_else(|| crate::cmd::bad("track.commit", "commit tail exceeds the timeline range"))?;
+    let range = Range::new(0, end);
+    // Retain the command-specific duration diagnostic before the shared checked plan.
     refuse_longer(s, "track.commit", &tr.name, "commit", range.len(), render_limit(tr.channels().max(2)))?;
-    let audio = soundcraft_mix::render_track_pre_fader(s, t, range);
+    soundcraft_mix::validate_track_render_window(s, t, range).map_err(|err| crate::cmd::bad("track.commit", err.to_string()))?;
+    Ok(Some(range))
+}
+
+/// Commit a track's inserts into a new audio track (Track › Commit).
+pub fn commit_track(e: &mut Engine, t: TrackId) -> Result<Option<TrackId>> {
+    let s = e.session();
+    let Some(range) = commit_range(s, t)? else { return Ok(None) };
+    let Some(tr) = s.track(t) else { return Ok(None) };
+    let audio = soundcraft_mix::render_track_pre_fader(s, t, range).map_err(|err| crate::cmd::bad("track.commit", err.to_string()))?;
     let name = format!("{}.cm", tr.name);
     let fmt = ChannelFormat::for_channels(audio.len().clamp(1, 2));
     let mixer = tr.mixer.clone();

@@ -7,7 +7,7 @@ use soundcraft_time::Range;
 use std::sync::Arc;
 use std::time::Instant;
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<usize> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
     let tracks = args.first().copied().unwrap_or(64);
     let secs = args.get(1).copied().unwrap_or(30);
@@ -34,8 +34,9 @@ fn main() {
         }
     }
     let t0 = Instant::now();
-    let out = soundcraft_mix::render_range(&s, Range::new(0, frames as i64), 512);
+    let out = soundcraft_mix::render_range(&s, Range::new(0, frames as i64), 512)?;
     let el = t0.elapsed().as_secs_f64();
     let peak = out.iter().flat_map(|c| c.iter()).fold(0.0f32, |m, v| m.max(v.abs()));
     println!("{tracks} tracks × {secs} s with EQ+comp (+reverb on 1/4): rendered in {el:.2} s → {:.1}× realtime (peak {peak:.2})", secs as f64 / el);
+    Ok(())
 }

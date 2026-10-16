@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(e.session().main_format(), ChannelFormat::Surround51);
         assert_eq!(e.session().outputs[0].name, "Out 1-6");
         assert!(e.session().tracks.iter().filter(|t| t.kind == TrackKind::Master).all(|t| t.format == ChannelFormat::Surround51));
-        let out = soundcraft_mix::render_range(e.session(), soundcraft_time::Range::new(0, 4800), 512);
+        let out = soundcraft_mix::render_range(e.session(), soundcraft_time::Range::new(0, 4800), 512).unwrap();
         assert_eq!(out.len(), 6);
         assert!(e.execute("setup.main_format", &json!({"format": "mono"})).is_err());
         assert!(e.execute("setup.main_format", &json!({"format": "nope"})).is_err());

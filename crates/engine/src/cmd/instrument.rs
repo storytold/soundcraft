@@ -144,7 +144,7 @@ mod tests {
         let s = e.session_mut();
         let cid = s.new_clip_id();
         crate::edit::place_clip(s, t, Clip::midi(cid, "note", 0, 48_000 * 4, seq));
-        let out = soundcraft_mix::render_range(e.session(), Range::new(0, 48_000 * secs), 512);
+        let out = soundcraft_mix::render_range(e.session(), Range::new(0, 48_000 * secs), 512).unwrap();
         let n = out[0].len().max(1) as f32;
         (out[0].iter().map(|x| x * x).sum::<f32>() / n).sqrt()
     }

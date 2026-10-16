@@ -47,12 +47,12 @@ fn positions(ch: &[f32]) -> Vec<usize> {
 #[test]
 fn named_bus_after_aux_preserves_requested_timeline() {
     let (s, a, b) = fixture(true, false);
-    let bus = render_bus(&s, b, Range::new(0, 8192), 1024);
-    let upstream = render_bus(&s, a, Range::new(0, 8192), 1024);
+    let bus = render_bus(&s, b, Range::new(0, 8192), 1024).unwrap();
+    let upstream = render_bus(&s, a, Range::new(0, 8192), 1024).unwrap();
     let (plain, _, plain_b) = fixture(false, false);
-    let control = render_bus(&plain, plain_b, Range::new(0, 8192), 1024);
+    let control = render_bus(&plain, plain_b, Range::new(0, 8192), 1024).unwrap();
     let (main, _, _) = fixture(true, true);
-    let main = render_range(&main, Range::new(0, 8192), 1024);
+    let main = render_range(&main, Range::new(0, 8192), 1024).unwrap();
     for c in 0..2 {
         // Controls: the bus before the aux, the same route without the insert, and the main mix.
         assert_eq!(positions(&control[c]), AT);
@@ -64,7 +64,7 @@ fn named_bus_after_aux_preserves_requested_timeline() {
         assert!(bus[c] == control[c], "the aligned samples must match the control");
     }
     // A partial range lines up too.
-    let part = render_bus(&s, b, Range::new(2048, 4096), 1024);
+    let part = render_bus(&s, b, Range::new(2048, 4096), 1024).unwrap();
     assert_eq!(positions(&part[0]), vec![0]);
 }
 
@@ -77,7 +77,7 @@ fn a_track_routed_to_the_same_bus_stays_aligned_with_the_aux_return() {
     s.track_mut(direct).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(clip, "impulses", SourceId(901), 0, 0, 8192));
     s.track_mut(direct).unwrap().mixer.pan = vec![-1.0, 1.0];
     s.track_mut(direct).unwrap().mixer.output = Route::Bus(b);
-    let bus = render_bus(&s, b, Range::new(0, 8192), 1024);
+    let bus = render_bus(&s, b, Range::new(0, 8192), 1024).unwrap();
     for (c, ch) in bus.iter().enumerate() {
         assert_eq!(positions(ch), AT, "direct and aux signals arrive together");
         for at in AT {

@@ -55,16 +55,16 @@ fn clap_insert_renders_through_the_mix() {
     s.pool.insert(SourceId(77), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 4800]] })));
     let id = s.new_clip_id();
     s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "dc", SourceId(77), 0, 0, 4800));
-    let dry = soundcraft_mix::render_range(e.session(), Range::new(0, 4800), 512)[0][2000];
+    let dry = soundcraft_mix::render_range(e.session(), Range::new(0, 4800), 512).unwrap()[0][2000];
     assert!(dry.abs() > 0.01);
 
     let r = e.execute("mix.insert", &json!({"track": t.0, "plugin": "clap:org.soundcraft.test.gain", "params": {"7": 2.0}})).unwrap();
     assert_eq!(r["plugin"], "clap:org.soundcraft.test.gain");
-    let wet = soundcraft_mix::render_range(e.session(), Range::new(0, 4800), 512)[0][2000];
+    let wet = soundcraft_mix::render_range(e.session(), Range::new(0, 4800), 512).unwrap()[0][2000];
     assert!((wet - 2.0 * dry).abs() < 1e-4, "dry {dry} wet {wet}");
 
     e.execute("mix.insert_param", &json!({"track": t.0, "slot": 0, "param": "7", "value": 0.5})).unwrap();
-    let half = soundcraft_mix::render_range(e.session(), Range::new(0, 4800), 512)[0][2000];
+    let half = soundcraft_mix::render_range(e.session(), Range::new(0, 4800), 512).unwrap()[0][2000];
     assert!((half - 0.5 * dry).abs() < 1e-4, "dry {dry} half {half}");
     assert!(e.execute("mix.insert_param", &json!({"track": t.0, "slot": 0, "param": "Gain", "value": 1.0})).is_err());
 }
@@ -112,7 +112,7 @@ fn clap_state_is_captured_stored_and_restored_before_the_first_block() {
 
     // Offline render (synchronous creation): the state is restored before the first block.
     // With the gain absent from the session's params, the state's 1.5 is what plays.
-    let gain_of = |s: &soundcraft_model::Session| soundcraft_mix::render_range(s, Range::new(0, 4800), 512)[0][2000];
+    let gain_of = |s: &soundcraft_model::Session| soundcraft_mix::render_range(s, Range::new(0, 4800), 512).unwrap()[0][2000];
     let mut s2 = e.session().clone();
     s2.track_mut(t).unwrap().mixer.inserts[0].as_mut().unwrap().params.remove("7");
     let restored = gain_of(&s2);
