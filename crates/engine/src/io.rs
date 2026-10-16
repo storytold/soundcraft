@@ -1154,9 +1154,21 @@ pub(crate) fn decode_file(files: &mut DecodedFiles, p: &Path, rate: u32) -> std:
 /// saves and opens sessions as bundles.
 pub const BUNDLE_EXTENSION: &str = "scraftz";
 
-/// Most entries and bytes a bundle may unpack to (bundles are hostile input).
+/// Most entries and bytes a bundle may unpack to (bundles are hostile input). The writer refuses
+/// bundles over the same caps, so a save never delivers a file its own reader rejects (#433).
 const MAX_BUNDLE_ENTRIES: usize = 10_000;
 const MAX_BUNDLE_BYTES: u64 = 1 << 30;
+
+/// Running totals for the bundle being written: reject before the reader's caps are exceeded.
+fn bundle_within_reader_caps(entries: usize, bytes: u64) -> Result<()> {
+    if entries > MAX_BUNDLE_ENTRIES {
+        return Err(EngineError::Io("bundle: too many files to save".into()));
+    }
+    if bytes > MAX_BUNDLE_BYTES {
+        return Err(EngineError::Io("bundle: too large to save".into()));
+    }
+    Ok(())
+}
 
 /// Hands a finished file (name, bytes) to the person on a host without a filesystem: the web app
 /// installs one that starts a download. Native builds write files and never install it.
@@ -1192,6 +1204,7 @@ pub fn session_bundle(session: &Session) -> Result<(Vec<u8>, Session)> {
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored).large_file(true);
     let mut taken = std::collections::HashSet::new();
+    let (mut entries, mut total) = (0usize, 0u64);
     for src in &mut s.sources {
         let Some(audio) = s.pool.get(src.id) else { continue };
         let base = sanitize_name(&src.name);
@@ -1203,6 +1216,9 @@ pub fn session_bundle(session: &Session) -> Result<(Vec<u8>, Session)> {
         }
         let opts_wav = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
         let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts_wav).map_err(|err| EngineError::Io(err.to_string()))?;
+        entries += 1;
+        total = total.saturating_add(bytes.len() as u64);
+        bundle_within_reader_caps(entries, total)?;
         w.start_file(target.as_str(), opts).map_err(zerr)?;
         w.write_all(&bytes).map_err(ioerr)?;
         taken.insert(target.clone());
@@ -1211,6 +1227,9 @@ pub fn session_bundle(session: &Session) -> Result<(Vec<u8>, Session)> {
         src.format = FileFormat::Wav;
     }
     let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
+    entries += 1;
+    total = total.saturating_add(text.len() as u64);
+    bundle_within_reader_caps(entries, total)?;
     w.start_file(format!("{}.{}", sanitize_name(&s.name), soundcraft_model::SESSION_EXTENSION), opts).map_err(zerr)?;
     w.write_all(text.as_bytes()).map_err(ioerr)?;
     let bytes = w.finish().map_err(zerr)?.into_inner();
@@ -1884,6 +1903,47 @@ mod bundle_tests {
         }
         assert!(!r.is_dirty());
         assert_eq!(r.path.as_deref(), Some("Midnight Groove.scraftz"));
+    }
+
+    /// A session with `n` one-frame sources, each in the pool.
+    fn session_with_sources(n: usize) -> Session {
+        let mut s = Session::default();
+        for i in 0..n {
+            let id = SourceId(i as u64 + 1);
+            s.sources.push(Source {
+                id,
+                name: format!("take{i}"),
+                path: format!("Audio Files/take{i}.wav"),
+                channels: 1,
+                frames: 1,
+                sample_rate: 48_000,
+                format: FileFormat::Wav,
+                time_reference: 0,
+                unsaved: false,
+            });
+            s.pool.insert(id, Arc::new(SourceAudio::new(AudioBuffer::new(48_000, 1, 1))));
+        }
+        s
+    }
+
+    /// The reader caps entries and bytes because bundles are hostile input; the writer must not
+    /// deliver a bundle over those caps, or a save produces a file SoundCraft cannot reopen (#433).
+    #[test]
+    fn a_bundle_over_the_readers_entry_limit_is_not_written() {
+        let s = session_with_sources(MAX_BUNDLE_ENTRIES);
+        let err = match session_bundle(&s) {
+            Ok((bytes, _)) => panic!("the writer delivered a {} byte bundle over the reader's entry cap", bytes.len()),
+            Err(err) => err,
+        };
+        assert!(err.to_string().starts_with("bundle:"), "{err}");
+    }
+
+    /// The caps themselves: exactly at the reader's limit is fine, one over is refused.
+    #[test]
+    fn the_writers_caps_match_the_readers() {
+        assert!(bundle_within_reader_caps(MAX_BUNDLE_ENTRIES, MAX_BUNDLE_BYTES).is_ok());
+        assert!(bundle_within_reader_caps(MAX_BUNDLE_ENTRIES + 1, 0).is_err());
+        assert!(bundle_within_reader_caps(0, MAX_BUNDLE_BYTES + 1).is_err());
     }
 
     #[test]
