@@ -321,6 +321,9 @@ pub(crate) struct Writer<W> {
     quantizers: Vec<Quantizer>,
     frames: u64,
     bytes: Vec<u8>,
+    /// Set when a block write has failed: the sink may hold a prefix of that block while
+    /// `frames` does not count it, so the writer refuses every later call.
+    failed: bool,
 }
 
 impl<W: Write + Seek> Writer<W> {
@@ -339,7 +342,20 @@ impl<W: Write + Seek> Writer<W> {
         let start = out.stream_position()?;
         out.write_all(&header(channels, sample_rate, format, bwf, mask, 0, force_rf64)?)?;
         let quantizers = Quantizer::per_channel(u32::from(format.0), dither, channels);
-        Ok(Writer { out, start, channels, sample_rate, format, bwf: bwf.cloned(), mask, force_rf64, quantizers, frames: 0, bytes: Vec::new() })
+        Ok(Writer {
+            out,
+            start,
+            channels,
+            sample_rate,
+            format,
+            bwf: bwf.cloned(),
+            mask,
+            force_rf64,
+            quantizers,
+            frames: 0,
+            bytes: Vec::new(),
+            failed: false,
+        })
     }
 
     fn header(&self, frames: u64) -> Result<Vec<u8>> {
@@ -355,13 +371,22 @@ impl<W: Write + Seek> Writer<W> {
 
     /// Appends `frames` frames of planar audio (missing samples are silence).
     pub(crate) fn write(&mut self, block: &[Vec<f32>], frames: usize) -> Result<()> {
+        if self.failed {
+            return Err(crate::failed_write_error());
+        }
         let total = self.check_room(frames as u64)?;
-        write_interleaved(&mut self.out, &mut self.bytes, block, frames, &mut self.quantizers, self.format, false)?;
+        if let Err(e) = write_interleaved(&mut self.out, &mut self.bytes, block, frames, &mut self.quantizers, self.format, false) {
+            self.failed = true;
+            return Err(AudioError::from(e));
+        }
         self.frames = total;
         Ok(())
     }
 
     pub(crate) fn finish(mut self) -> Result<W> {
+        if self.failed {
+            return Err(crate::failed_write_error());
+        }
         let data_len = u64::from(self.format.0 / 8).saturating_mul(self.channels as u64).saturating_mul(self.frames);
         if data_len % 2 == 1 {
             self.out.write_all(&[0])?;

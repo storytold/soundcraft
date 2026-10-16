@@ -318,6 +318,10 @@ pub(crate) struct Writer<W> {
     pending: Vec<Vec<i64>>,
     frames: u64,
     frame_no: u64,
+    /// Set when a frame write has failed: `write_frame` clears the pending samples before
+    /// writing, so a failed frame is lost while `frames` still counts it; the writer refuses
+    /// every later call.
+    failed: bool,
 }
 
 impl<W: Write + Seek> Writer<W> {
@@ -336,6 +340,7 @@ impl<W: Write + Seek> Writer<W> {
             pending: (0..channels).map(|_| Vec::with_capacity(BLOCK_SIZE)).collect(),
             frames: 0,
             frame_no: 0,
+            failed: false,
         })
     }
 
@@ -351,6 +356,9 @@ impl<W: Write + Seek> Writer<W> {
     /// Appends `frames` frames of planar audio (missing samples are silence), unless they don't
     /// fit (see [`Writer::check_room`]).
     pub(crate) fn write(&mut self, block: &[Vec<f32>], frames: usize) -> Result<()> {
+        if self.failed {
+            return Err(crate::failed_write_error());
+        }
         let total = self.check_room(frames as u64)?;
         let mut done = 0;
         while done < frames {
@@ -361,8 +369,11 @@ impl<W: Write + Seek> Writer<W> {
                 p.extend((0..n).map(|i| i64::from(q.quantize(src.get(i).copied().unwrap_or(0.0)))));
             }
             done += n;
-            if held + n == BLOCK_SIZE {
-                self.write_frame()?;
+            if held + n == BLOCK_SIZE
+                && let Err(e) = self.write_frame()
+            {
+                self.failed = true;
+                return Err(e);
             }
         }
         self.frames = total;
@@ -408,6 +419,9 @@ impl<W: Write + Seek> Writer<W> {
     }
 
     pub(crate) fn finish(mut self) -> Result<W> {
+        if self.failed {
+            return Err(crate::failed_write_error());
+        }
         self.write_frame()?;
         let info = stream_info(self.channels, self.sample_rate, self.bps, self.frames);
         self.out.seek(SeekFrom::Start(self.start.saturating_add(4)))?;

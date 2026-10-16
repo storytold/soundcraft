@@ -294,6 +294,13 @@ pub fn encode_with_channel_mask(buf: &AudioBuffer, opts: &EncodeOptions, mask: u
     }
 }
 
+/// The error a stream encoder returns for every call after one of its writes has failed: the
+/// sink may already hold a prefix of the failed block, so the encoder's counters can no longer
+/// describe the bytes on the sink, and later writes or `finish` must not claim success.
+pub(crate) fn failed_write_error() -> AudioError {
+    AudioError::Encode("the stream encoder already failed on an earlier write; its output is incomplete".into())
+}
+
 /// Writes WAV/BWF (RF64 above 4 GiB), AIFF / AIFF-C `fl32` or FLAC block by block, producing
 /// the same bytes [`encode_with_channel_mask`] would for the whole buffer.
 pub struct FileEncoder<W: Write + Seek>(Writer<W>);
@@ -329,7 +336,9 @@ impl<W: Write + Seek> FileEncoder<W> {
     }
 
     /// Appends the first `frames` frames of `block`, one `Vec` per channel (missing samples are
-    /// silence), unless they don't fit (see [`FileEncoder::check_room`]).
+    /// silence), unless they don't fit (see [`FileEncoder::check_room`]). Once a write has
+    /// failed, the encoder is unusable: the sink may hold a prefix of the failed block, so
+    /// every later `write` and `finish` fails instead of completing an inconsistent file.
     pub fn write(&mut self, block: &[Vec<f32>], frames: usize) -> Result<()> {
         match &mut self.0 {
             Writer::Wav(w) => w.write(block, frames),

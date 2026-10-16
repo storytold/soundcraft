@@ -1,5 +1,5 @@
 use soundcraft_audio_io::{AudioBuffer, AudioError, BitDepth, BwfInfo, EncodeOptions, FileEncoder, FileFormat, encode, encode_with_channel_mask};
-use std::io::Cursor;
+use std::io::{Cursor, Seek, SeekFrom, Write};
 
 fn tone(channels: usize, frames: usize) -> AudioBuffer {
     let channels = (0..channels).map(|c| (0..frames).map(|i| ((i * (c + 3)) as f32 * 0.013).sin() * 1.2).collect()).collect();
@@ -46,6 +46,50 @@ fn streamed_files_match_whole_buffer_encodes() {
             .unwrap();
             assert_eq!(streamed(&buf, &opts, mask), [b"pre".as_slice(), &whole].concat(), "{opts:?}, {channels} channels");
         }
+    }
+}
+
+/// A `Write + Seek` sink that accepts `budget` bytes in total and then fails every write, so
+/// a `write_all` on it appends a prefix of the block and only then reports the error.
+struct FailAfter {
+    inner: Cursor<Vec<u8>>,
+    budget: usize,
+}
+
+impl Write for FailAfter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.budget == 0 {
+            return Err(std::io::Error::other("sink is full"));
+        }
+        let n = buf.len().min(self.budget);
+        self.budget -= n;
+        self.inner.write(&buf[..n])
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl Seek for FailAfter {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+#[test]
+fn a_failed_write_poisons_the_encoder() {
+    let buf = tone(2, 20_001);
+    for format in [FileFormat::Wav, FileFormat::Aiff, FileFormat::Flac] {
+        let opts = EncodeOptions { format, bit_depth: BitDepth::Int16, dither: false, bwf: None };
+        let sink = FailAfter { inner: Cursor::new(Vec::new()), budget: 256 };
+        let mut enc = FileEncoder::new(sink, &opts, 2, buf.sample_rate, None).unwrap();
+        // The sink accepts a prefix of the first block, then fails.
+        assert!(enc.write(&buf.channels, buf.frames()).is_err(), "{format:?}");
+        // Later calls must not claim success: the bytes on the sink no longer match the
+        // encoder's counters (and for FLAC the failed frame's samples are already gone).
+        assert!(matches!(enc.write(&buf.channels, 16), Err(AudioError::Encode(_))), "{format:?}");
+        assert!(matches!(enc.finish(), Err(AudioError::Encode(_))), "{format:?}");
     }
 }
 
