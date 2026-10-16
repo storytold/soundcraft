@@ -1209,4 +1209,27 @@ mod tests {
         assert_eq!(e.session().edit.selection, soundcraft_time::Range::new(7_000, 9_000));
         assert_eq!(json!(tracks(&e)), json!([ids[1]]));
     }
+
+    #[test]
+    fn clear_counts_end_and_length_from_the_insertion_point() {
+        // The selection runs on to 50,000, so falling back to it would clear far more than asked.
+        for (p, kept) in [(json!({"length": 5_000}), (15_000, 60_000, 15_000)), (json!({"end": 20_000}), (20_000, 60_000, 20_000))] {
+            let (mut e, t, _) = trim_session(&[(0, 60_000, 0)]);
+            e.execute("edit.select", &json!({"tracks": [t], "start": 10_000, "end": 50_000})).unwrap();
+            let mut p = p;
+            p["tracks"] = json!([t]);
+            e.execute("edit.clear", &p).unwrap();
+            assert_eq!(bounds(&e, t), vec![(0, 10_000, 0), kept], "{p}");
+        }
+    }
+
+    #[test]
+    fn clear_refuses_end_and_length_that_disagree() {
+        let (mut e, t, _) = trim_session(&[(0, 60_000, 0)]);
+        e.execute("edit.select", &json!({"tracks": [t], "start": 10_000, "end": 50_000})).unwrap();
+        for p in [json!({"tracks": [t], "start": 10_000, "end": 20_000, "length": 5_000}), json!({"tracks": [t], "end": 20_000, "length": 5_000})] {
+            assert!(e.execute("edit.clear", &p).is_err(), "{p} must be refused");
+        }
+        assert_eq!(bounds(&e, t), vec![(0, 60_000, 0)], "a refused clear removes nothing");
+    }
 }

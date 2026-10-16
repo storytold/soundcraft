@@ -15,7 +15,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New MIDI Clip",
             ["Clip"],
             None,
-            "{track, start?, end?|length?} (default: the edit selection, or 1 bar)",
+            "{track, start?, end?|length?} (default: the edit selection, or 1 bar; without start, end/length count from the insertion point)",
             has_tracks,
             new_clip
         ),
@@ -155,6 +155,36 @@ mod tests {
         e.execute("midi.note_delete", &json!({"clip": clip, "indices": [0]})).unwrap();
         assert_eq!(e.execute("midi.notes", &json!({"clip": clip})).unwrap()["notes"].as_array().map(Vec::len), Some(1));
         assert!(e.execute("midi.note_edit", &json!({"clip": clip, "index": 99})).is_err());
+    }
+
+    #[test]
+    fn new_clip_keeps_length_and_end_without_start() {
+        let mut e = Engine::default();
+        let t = e.session_mut().add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Keys"));
+        e.execute("edit.select", &json!({"start": 12_000, "end": 12_000})).unwrap();
+        // Without `start` the clip starts at the insertion point and keeps the asked length or end (#411).
+        let r = e.execute("midi.new_clip", &json!({"track": t.0, "length": 30_000})).unwrap();
+        assert_eq!((r["start"].as_i64(), r["end"].as_i64()), (Some(12_000), Some(42_000)));
+        let r = e.execute("midi.new_clip", &json!({"track": t.0, "end": 200_000})).unwrap();
+        assert_eq!((r["start"].as_i64(), r["end"].as_i64()), (Some(12_000), Some(200_000)));
+        let r = e.execute("midi.new_clip", &json!({"track": t.0, "length": 30_000, "end": 42_000})).unwrap();
+        assert_eq!((r["start"].as_i64(), r["end"].as_i64()), (Some(12_000), Some(42_000)));
+    }
+
+    #[test]
+    fn new_clip_rejects_inconsistent_ranges() {
+        let mut e = Engine::default();
+        let t = e.session_mut().add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Keys"));
+        e.execute("edit.select", &json!({"start": 12_000, "end": 12_000})).unwrap();
+        for p in [
+            json!({"track": t.0, "end": 6_000}),
+            json!({"track": t.0, "length": -6_000}),
+            json!({"track": t.0, "length": 30_000, "end": 96_000}),
+            json!({"track": t.0, "start": 0, "length": 30_000, "end": 96_000}),
+        ] {
+            assert!(e.execute("midi.new_clip", &p).is_err(), "{p} must be refused");
+        }
+        assert!(e.session().tracks.iter().all(|x| x.clips().is_empty()), "a refused call adds no clip");
     }
 
     #[test]

@@ -886,4 +886,30 @@ mod tests {
         assert_eq!(sl.target, soundcraft_model::Route::Bus(delay));
         assert_eq!((sl.level_db, sl.pan, sl.mute, sl.pre_fader), (-9.0, 0.5, true, true));
     }
+
+    #[test]
+    fn write_range_counts_end_and_length_from_the_insertion_point() {
+        // tone_session selects 2048..6144, so falling back to the selection would write up to 6144.
+        for p in [json!({"length": 1_024}), json!({"end": 3_072})] {
+            let (mut e, t) = tone_session(&[]);
+            let mut p = p;
+            p["track"] = json!(t.0);
+            p["value"] = json!(-12.0);
+            e.execute("automation.write_range", &p).unwrap();
+            let lane = e.session().track(t).unwrap().lane(&AutoParam::Volume).unwrap();
+            assert_eq!(lane.points.iter().map(|x| x.at).collect::<Vec<_>>(), vec![2047, 2048, 3072, 3073], "{p}");
+        }
+    }
+
+    #[test]
+    fn write_range_refuses_end_and_length_that_disagree() {
+        let (mut e, t) = tone_session(&[]);
+        for p in [
+            json!({"track": t.0, "value": -12.0, "start": 2_048, "end": 3_072, "length": 2_048}),
+            json!({"track": t.0, "value": -12.0, "end": 3_072, "length": 2_048}),
+        ] {
+            assert!(e.execute("automation.write_range", &p).is_err(), "{p} must be refused");
+        }
+        assert!(e.session().track(t).unwrap().lane(&AutoParam::Volume).is_none_or(|l| l.points.is_empty()), "a refused write adds no point");
+    }
 }

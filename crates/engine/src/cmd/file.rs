@@ -685,4 +685,37 @@ mod tests {
         assert!(from_copy.session().track_by_name("Extra").is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn bounce_counts_end_and_length_from_the_insertion_point() {
+        let dir = std::env::temp_dir().join(format!("sc-bounce-range-{}", std::process::id()));
+        assert!(std::fs::create_dir_all(&dir).is_ok());
+        let path = dir.join("mix.wav").to_string_lossy().into_owned();
+        let mut e = Engine::default();
+        // The selection lasts 96,000 samples, so falling back to it would bounce four times what was asked.
+        e.session_mut().edit.selection = soundcraft_time::Range::new(48_000, 144_000);
+        let want = e.session().sample_rate.seconds(24_000);
+        for p in [json!({"path": path, "length": 24_000}), json!({"path": path, "end": 72_000})] {
+            let r = e.execute("file.bounce_mix", &p).unwrap();
+            assert_eq!(r["seconds"].as_f64(), Some(want), "{p}");
+        }
+        assert!(std::fs::remove_dir_all(&dir).is_ok());
+    }
+
+    #[test]
+    fn bounce_refuses_end_and_length_that_disagree() {
+        let dir = std::env::temp_dir().join(format!("sc-bounce-disagree-{}", std::process::id()));
+        assert!(std::fs::create_dir_all(&dir).is_ok());
+        let path = dir.join("mix.wav");
+        let mut e = Engine::default();
+        e.session_mut().edit.selection = soundcraft_time::Range::new(48_000, 144_000);
+        for p in [
+            json!({"path": path.to_string_lossy(), "start": 0, "end": 4_800, "length": 9_600}),
+            json!({"path": path.to_string_lossy(), "end": 72_000, "length": 9_600}),
+        ] {
+            assert!(e.execute("file.bounce_mix", &p).is_err(), "{p} must be refused");
+        }
+        assert!(!path.exists(), "a refused bounce writes nothing");
+        assert!(std::fs::remove_dir_all(&dir).is_ok());
+    }
 }

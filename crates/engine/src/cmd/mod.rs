@@ -290,17 +290,23 @@ fn position_param_raw(e: &Engine, cmd: &str, p: &Value, key: &str) -> Result<Opt
     Err(bad(cmd, format!("`{key}` must be samples, {{seconds}}, or a time string")))
 }
 
-/// Range from `start`/`end` params, else the edit selection.
+/// Range from `start` + `end`/`length` params, else the edit selection. An `end` or `length` without
+/// `start` counts from the selection start (the insertion point) instead of being dropped (#411).
 pub fn range_param(e: &Engine, cmd: &str, p: &Value) -> Result<Range> {
     let st = position_param(e, cmd, p, "start")?;
     let en = position_param(e, cmd, p, "end")?;
     let len = position_param(e, cmd, p, "length")?;
-    match (st, en, len) {
-        (Some(a), Some(b), _) => Ok(Range::new(a, b)),
-        (Some(a), None, Some(l)) => Ok(Range::new(a, a.saturating_add(l))),
-        (Some(a), None, None) => Ok(Range::point(a)),
-        _ => Ok(e.session().edit.selection),
+    let a = st.unwrap_or(e.session().edit.selection.start);
+    let Some(b) = en.or_else(|| len.map(|l| a.saturating_add(l))) else {
+        return Ok(st.map_or(e.session().edit.selection, Range::point));
+    };
+    if en.zip(len).is_some_and(|(b, l)| a.saturating_add(l) != b) {
+        return Err(bad(cmd, "`end` and `length` disagree; give one of them"));
     }
+    if st.is_none() && b < a {
+        return Err(bad(cmd, "the range ends before the insertion point; give `start` too"));
+    }
+    Ok(Range::new(a, b))
 }
 
 pub fn clip_id(p: &Value, cmd: &str) -> Result<ClipId> {
