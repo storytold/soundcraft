@@ -730,13 +730,16 @@ fn retro_record(e: &mut Engine, p: &Value) -> Result<Value> {
     let t = midi_target(e, p, id)?;
     let s = e.session();
     let sr = s.sample_rate;
+    // Latest start tick whose longest note still ends within MAX_POSITION.
+    let max_tick = s.tempo.samples_to_ticks(MAX_POSITION, sr).saturating_sub(TICKS_PER_QUARTER * 1024).max(0);
     let mut raw: Vec<(i64, Note)> = Vec::new();
     for v in list.iter().take(100_000) {
         let tick = match (v.get("start_ticks").and_then(Value::as_i64), v.get("start")) {
             (Some(tk), _) => tk.max(0),
             (None, Some(_)) => s.tempo.samples_to_ticks(position_param(e, id, v, "start")?.unwrap_or(0).max(0), sr),
             _ => return Err(bad(id, "each note needs `start` or `start_ticks`")),
-        };
+        }
+        .min(max_tick);
         let note = Note {
             pitch: i64_or(v, "pitch", 60).clamp(0, 127) as u8,
             velocity: i64_or(v, "velocity", 100).clamp(1, 127) as u8,
@@ -750,7 +753,7 @@ fn retro_record(e: &mut Engine, p: &Value) -> Result<Value> {
     let first = raw.iter().map(|x| x.0).min().unwrap_or(0);
     // Start the clip on the bar line so the quantize grid lines up with the music.
     let clip_tick = s.tempo.bar_start_tick(s.tempo.bar_beat_at_tick(first).bar).min(first).max(0);
-    let end_tick = raw.iter().map(|(tk, n)| tk.saturating_add(n.length)).max().unwrap_or(first + 1);
+    let end_tick = raw.iter().map(|(tk, n)| tk.saturating_add(n.length)).max().unwrap_or_else(|| first.saturating_add(1));
     let mut seq = soundcraft_midi::Sequence::default();
     for (tk, mut n) in raw {
         n.start = tk - clip_tick;
@@ -764,7 +767,7 @@ fn retro_record(e: &mut Engine, p: &Value) -> Result<Value> {
         seq.sort();
     }
     let start = s.tempo.tick_to_samples(clip_tick, sr);
-    let end = s.tempo.tick_to_samples(end_tick, sr);
+    let end = s.tempo.tick_to_samples(end_tick, sr).min(MAX_POSITION);
     let n = seq.notes.len();
     let s = e.session_mut();
     let cid = s.new_clip_id();
@@ -941,6 +944,18 @@ mod tests {
         let r = e.execute("event.beat_detective", &json!({"tracks": [kick.id.0], "start": c.start, "end": c.start + 48_000 * 8})).unwrap();
         assert!(r["count"].as_u64().unwrap() > 4, "{r}");
         assert!(r["bpm"].as_f64().is_some());
+    }
+
+    #[test]
+    fn retro_record_huge_start_ticks_stay_in_range() {
+        for tk in [i64::MAX, 1_000_000_000_000_000] {
+            let (mut e, t) = midi_engine();
+            let notes = json!([{"pitch": 60, "start_ticks": tk, "length_ticks": TICKS_PER_QUARTER * 1024}]);
+            e.execute("event.retrospective_record", &json!({"track": t.0, "notes": notes})).unwrap();
+            let c = e.session().track(t).unwrap().clips()[0].clone();
+            assert!(c.start >= 0 && c.length >= 1, "{tk}: {} {}", c.start, c.length);
+            assert!(c.start.saturating_add(c.length) <= MAX_POSITION, "{tk}: start {} len {}", c.start, c.length);
+        }
     }
 
     #[test]
