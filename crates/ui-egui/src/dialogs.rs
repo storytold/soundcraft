@@ -12,7 +12,7 @@ use soundcraft_time::Samples;
 pub enum Dialog {
     NewTracks { count: u32, format: String, kind: String, timebase: String, name: String },
     NewSession { name: String, sample_rate: u32, demo: bool },
-    Bounce { path: String, format: String, bit_depth: String, normalize: bool },
+    Bounce { path: String, format: String, bit_depth: String, bitrate: u32, normalize: bool }, // bitrate (kbps) is MP3's
     RenameTrack { id: TrackId, name: String },
     RenameClip { id: ClipId, name: String },
     RenameMarker { id: soundcraft_model::MarkerId, name: String },
@@ -99,7 +99,13 @@ impl Dialogs {
                     .and_then(|p| std::path::Path::new(p).parent())
                     .filter(|d| !d.as_os_str().is_empty())
                     .map_or(home.clone(), |d| d.display().to_string());
-                Dialog::Bounce { path: format!("{dir}/{name} Bounce.wav"), format: "wav".into(), bit_depth: "24".into(), normalize: false }
+                Dialog::Bounce {
+                    path: format!("{dir}/{name} Bounce.wav"),
+                    format: "wav".into(),
+                    bit_depth: "24".into(),
+                    bitrate: soundcraft_audio_io::MP3_DEFAULT_KBPS,
+                    normalize: false,
+                }
             }
             "file.import_audio" => Dialog::PathPrompt { cmd: id.into(), title: "Import Audio".into(), path: home, key: "path".into() },
             "file.import_midi" => Dialog::PathPrompt { cmd: id.into(), title: "Import MIDI".into(), path: home, key: "path".into() },
@@ -353,7 +359,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         ));
                     }
                 }
-                Dialog::Bounce { path, format, bit_depth, normalize } => {
+                Dialog::Bounce { path, format, bit_depth, bitrate, normalize } => {
                     ui.horizontal(|ui| {
                         ui.label("File");
                         ui.add(egui::TextEdit::singleline(path).desired_width(420.0));
@@ -366,21 +372,30 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                                 Some("wav") => *format = "wav".into(),
                                 Some("aif" | "aiff") => *format = "aiff".into(),
                                 Some("flac") => *format = "flac".into(),
+                                Some("mp3") => *format = "mp3".into(),
                                 _ => {}
                             }
                         }
                     });
                     ui.horizontal(|ui| {
                         egui::ComboBox::from_label("Format").selected_text(format.to_uppercase()).show_ui(ui, |ui| {
-                            for f in ["wav", "aiff", "flac"] {
+                            for f in ["wav", "aiff", "flac", "mp3"] {
                                 ui.selectable_value(format, f.to_string(), f.to_uppercase());
                             }
                         });
-                        egui::ComboBox::from_label("Bit Depth").selected_text(format!("{bit_depth}-bit")).show_ui(ui, |ui| {
-                            for b in ["16", "24", "32f"] {
-                                ui.selectable_value(bit_depth, b.to_string(), format!("{b}-bit"));
-                            }
-                        });
+                        if format == "mp3" {
+                            egui::ComboBox::from_label("Bitrate").selected_text(format!("{bitrate} kbps")).show_ui(ui, |ui| {
+                                for b in soundcraft_audio_io::MP3_BITRATES.into_iter().rev() {
+                                    ui.selectable_value(bitrate, b, format!("{b} kbps"));
+                                }
+                            });
+                        } else {
+                            egui::ComboBox::from_label("Bit Depth").selected_text(format!("{bit_depth}-bit")).show_ui(ui, |ui| {
+                                for b in ["16", "24", "32f"] {
+                                    ui.selectable_value(bit_depth, b.to_string(), format!("{b}-bit"));
+                                }
+                            });
+                        }
                     });
                     crate::widgets::checkbox(ui, normalize, "Normalize to -0.1 dBFS");
                     ui.label(
@@ -392,7 +407,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         let p = std::path::Path::new(path.as_str()).with_extension(if format == "aiff" { "aif" } else { format.as_str() });
                         crate::bounce::start(
                             app,
-                            &json!({"path": p.to_string_lossy(), "format": format, "bit_depth": bit_depth, "normalize": normalize}),
+                            &json!({"path": p.to_string_lossy(), "format": format, "bit_depth": bit_depth, "bitrate": bitrate, "normalize": normalize}),
                         );
                         keep = false;
                     }

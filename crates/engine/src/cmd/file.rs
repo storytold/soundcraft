@@ -84,14 +84,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 crate::io::import_video_bytes(e, &path, bytes, at)
             }
         ),
-        cmd!(noundo "file.bounce_mix", "Bounce Mix...", ["File"], Some("Cmd+Alt+B"), "{path, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, source?: main|bus name, normalize?: false, dither?: true, fold_down?: stereo}", always, bounce),
-        cmd!(noundo "file.bounce_stems", "Bounce Stems...", [], None, "{dir, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, fold_down?: stereo}", has_tracks, |e, p| {
+        cmd!(noundo "file.bounce_mix", "Bounce Mix...", ["File"], Some("Cmd+Alt+B"), "{path, format?: wav|aiff|flac|mp3, bit_depth?: 16|24|32f, bitrate?: 320 (mp3 kbps), start?, end?, source?: main|bus name, normalize?: false, dither?: true, fold_down?: stereo (always for mp3)}", always, bounce),
+        cmd!(noundo "file.bounce_stems", "Bounce Stems...", [], None, "{dir, format?: wav|aiff|flac|mp3, bit_depth?: 16|24|32f, bitrate?: 320 (mp3 kbps), start?, end?, fold_down?: stereo (always for mp3)}", has_tracks, |e, p| {
             let dir = str_param(p, "dir").ok_or_else(|| bad("file.bounce_stems", "`dir` required"))?.to_string();
             let r = range_param(e, "file.bounce_stems", p)?;
             let r = if r.is_empty() { soundcraft_time::Range::new(0, e.session().content_end().max(1)) } else { r };
             let format = match str_param(p, "format") {
                 Some("aiff") | Some("aif") => soundcraft_audio_io::FileFormat::Aiff,
                 Some("flac") => soundcraft_audio_io::FileFormat::Flac,
+                Some("mp3") => soundcraft_audio_io::FileFormat::Mp3,
                 _ => soundcraft_audio_io::FileFormat::Wav,
             };
             let bit_depth = match p.get("bit_depth").map(|b| b.to_string().trim_matches('"').to_string()).as_deref() {
@@ -99,8 +100,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 Some("32") | Some("32f") => soundcraft_audio_io::BitDepth::Float32,
                 _ => soundcraft_audio_io::BitDepth::Int24,
             };
-            let fold = fold_down_param(p, "file.bounce_stems")?;
-            let files = crate::io::bounce_stems_with(e, &dir, r, &soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: true, bwf: None }, fold)?;
+            let bitrate_kbps = bitrate_param(p, "file.bounce_stems")?;
+            let fold = fold_down_param(p, "file.bounce_stems")? || format == soundcraft_audio_io::FileFormat::Mp3;
+            let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: true, bwf: None, bitrate_kbps };
+            let files = crate::io::bounce_stems_with(e, &dir, r, &opts, fold)?;
             Ok(json!({"files": files}))
         }),
         cmd!(noundo "file.export_midi", "MIDI...", ["File", "Export"], None, "{path, tracks?}", always, |e, p| {
@@ -271,6 +274,19 @@ fn bounce_bus(e: &Engine, p: &Value) -> Result<Option<soundcraft_model::BusId>> 
     e.session().bus_by_name(name).map(|b| Some(b.id)).ok_or_else(|| bad("file.bounce_mix", format!("unknown bus `{name}`")))
 }
 
+/// `bitrate` (kbps) of an MP3 bounce, as a number or a string; omitted is the encoder's default.
+fn bitrate_param(p: &Value, id: &str) -> Result<Option<u32>> {
+    let Some(v) = p.get("bitrate").filter(|v| !v.is_null()) else { return Ok(None) };
+    let kbps = v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().trim_end_matches(['k', 'K']).parse().ok()));
+    match kbps.and_then(|k| u32::try_from(k).ok()).filter(|k| soundcraft_audio_io::MP3_BITRATES.contains(k)) {
+        Some(k) => Ok(Some(k)),
+        None => {
+            let list: Vec<String> = soundcraft_audio_io::MP3_BITRATES.iter().map(u32::to_string).collect();
+            Err(bad(id, format!("`bitrate` must be one of {} kbps", list.join(", "))))
+        }
+    }
+}
+
 /// `fold_down: "stereo"` bounces an ITU stereo fold-down of a surround mix.
 fn fold_down_param(p: &Value, id: &str) -> Result<bool> {
     match str_param(p, "fold_down").map(str::trim) {
@@ -309,9 +325,11 @@ pub fn bounce_job(e: &Engine, p: &Value) -> Result<crate::io::Bounce> {
         Some("32") | Some("32f") => soundcraft_audio_io::BitDepth::Float32,
         _ => soundcraft_audio_io::BitDepth::Int24,
     };
-    let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: bool_or(p, "dither", true), bwf: None };
+    let bitrate_kbps = bitrate_param(p, "file.bounce_mix")?;
+    let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: bool_or(p, "dither", true), bwf: None, bitrate_kbps };
     let normalize = bool_or(p, "normalize", false);
-    let fold = fold_down_param(p, "file.bounce_mix")?;
+    // MP3 holds mono or stereo: a surround mix bounces as its stereo fold-down.
+    let fold = fold_down_param(p, "file.bounce_mix")? || format == soundcraft_audio_io::FileFormat::Mp3;
     let bus = bounce_bus(e, p)?;
     crate::io::Bounce::new(e.session_arc(), std::path::Path::new(&path), r, &opts, bus, normalize, fold)
 }
@@ -403,7 +421,7 @@ mod tests {
         let mut e = Engine::default();
         let dir = std::env::temp_dir().join(format!("sc-bounce-ext-{}", std::process::id()));
         assert!(std::fs::create_dir_all(&dir).is_ok());
-        for name in ["mix.mp3", "mix.ogg", "mix.xyz"] {
+        for name in ["mix.ogg", "mix.m4a", "mix.xyz"] {
             let path = dir.join(name);
             let err = e.execute("file.bounce_mix", &json!({"path": path.to_string_lossy(), "start": 0, "end": 480})).map(|_| ()).unwrap_err();
             assert!(err.to_string().contains("supported: wav"), "{name}: {err}");
@@ -411,6 +429,41 @@ mod tests {
         }
         let ok = dir.join("mix.flac");
         assert!(e.execute("file.bounce_mix", &json!({"path": ok.to_string_lossy(), "start": 0, "end": 480})).is_ok());
+        assert!(std::fs::remove_dir_all(&dir).is_ok());
+    }
+
+    #[test]
+    fn bounce_writes_mp3_at_the_chosen_bitrate() {
+        let mut e = crate::demo::demo_engine();
+        let dir = std::env::temp_dir().join(format!("sc-bounce-mp3-{}", std::process::id()));
+        assert!(std::fs::create_dir_all(&dir).is_ok());
+        let path = dir.join("mix.mp3");
+        let ps = path.to_string_lossy().into_owned();
+        let rate = e.session().sample_rate.hz();
+        let end = i64::from(rate) * 4;
+        for (bitrate, kbps) in [(json!(128), 128.0), (json!("192"), 192.0), (Value::Null, 320.0)] {
+            let done = e.execute("file.bounce_mix", &json!({"path": ps, "start": 0, "end": end, "bitrate": bitrate})).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(done["bytes"].as_u64(), Some(bytes.len() as u64));
+            let (info, audio) = soundcraft_audio_io::decode(&bytes, None).unwrap();
+            assert_eq!((info.format, info.sample_rate, info.channels), (soundcraft_audio_io::FileFormat::Mp3, rate, 2));
+            assert!(audio.channels[0].iter().any(|v| v.abs() > 1e-3), "the mix is audible");
+            let seen = bytes.len() as f64 * 8.0 / 4.0 / 1000.0;
+            assert!((seen / kbps - 1.0).abs() < 0.1, "{kbps} kbps came out at {seen:.1}");
+        }
+        assert!(std::fs::remove_file(&path).is_ok());
+        for bitrate in [json!(100), json!("fast"), json!(-1)] {
+            let err = e.execute("file.bounce_mix", &json!({"path": ps, "start": 0, "end": end, "bitrate": bitrate})).map(|_| ()).unwrap_err();
+            assert!(err.to_string().contains("bitrate"), "{err}");
+            assert!(!path.exists());
+        }
+        // Stems too.
+        let stems = dir.join("stems");
+        let r =
+            e.execute("file.bounce_stems", &json!({"dir": stems.to_string_lossy(), "start": 0, "end": end, "format": "mp3", "bitrate": 96})).unwrap();
+        let first = r["files"][0].as_str().unwrap_or_default().to_string();
+        assert!(first.ends_with(".mp3"), "{first}");
+        assert_eq!(soundcraft_audio_io::probe(&std::fs::read(&first).unwrap(), None).unwrap().format, soundcraft_audio_io::FileFormat::Mp3);
         assert!(std::fs::remove_dir_all(&dir).is_ok());
     }
 

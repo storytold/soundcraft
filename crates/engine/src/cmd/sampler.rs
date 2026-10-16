@@ -130,7 +130,7 @@ mod tests {
         let n = (rate as f32 * secs) as usize;
         let one: Vec<f32> = (0..n).map(|i| 0.5 * (std::f32::consts::TAU * freq * i as f32 / rate as f32).sin()).collect();
         let buf = AudioBuffer { sample_rate: rate, channels: vec![one; channels] };
-        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None };
+        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None, bitrate_kbps: None };
         std::fs::write(path, soundcraft_audio_io::encode(&buf, &opts).unwrap()).unwrap();
     }
 
@@ -234,7 +234,7 @@ mod tests {
         let t = instrument_track(&mut e);
         for (ext, format) in [("flac", FileFormat::Flac), ("aif", FileFormat::Aiff)] {
             let path = d.join(format!("tone.{ext}"));
-            let opts = EncodeOptions { format, bit_depth: BitDepth::Int24, dither: false, bwf: None };
+            let opts = EncodeOptions { format, bit_depth: BitDepth::Int24, dither: false, bwf: None, bitrate_kbps: None };
             std::fs::write(&path, soundcraft_audio_io::encode(&buf, &opts).unwrap()).unwrap();
             let r = e.execute("mix.sampler_load", &json!({"track": t.0, "path": path.to_string_lossy()})).unwrap();
             assert_eq!(r["channels"], 2, "{ext}");
@@ -319,7 +319,7 @@ mod tests {
         let junk = d.join("junk.wav");
         std::fs::write(&junk, b"definitely not audio").unwrap();
         let empty = d.join("empty.wav");
-        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None };
+        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None, bitrate_kbps: None };
         std::fs::write(&empty, soundcraft_audio_io::encode(&AudioBuffer { sample_rate: 48_000, channels: vec![vec![]] }, &opts).unwrap()).unwrap();
         let wav = d.join("ok.wav");
         tone_wav(&wav, 440.0, 48_000, 0.1, 1);

@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-13 · **Change:** minor (continuous fade curvature in SoundCraft sessions) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-14 · **Change:** minor (MP3 bounce) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every format Pro Tools reads or writes, and ours. The Pro Tools list comes from the document types
 its bundle declares (`CFBundleDocumentTypes` in Info.plist: names only, nothing else read) and its
@@ -38,7 +38,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 | WAV `WAVE_FORMAT_EXTENSIBLE` multichannel with channel mask | read/write | ✅ | ✅ | `encode_with_channel_mask`; default 5.1 import creates a stereo track (#89, PR #128) |
 | AIFF / AIFF-C | native | ✅ | ✅ (`fl32`) | Native |
 | FLAC | import | ✅ | ✅ | Own encoder |
-| MP3 | import, bounce | ✅ (symphonia) | ❌ | G-21 |
+| MP3 | import, bounce | ✅ (symphonia) | ✅ | Own encoder: MPEG-1 Layer III CBR 32–320 kbps, joint stereo, bit reservoir; other session rates resampled to 44.1/48 kHz; surround folds to stereo. No gapless (LAME) tag yet |
 | AAC / M4A / MP4 audio | import, bounce | ✅ (symphonia) | ❌ | G-21 |
 | ALAC | import | ✅ | ❌ | |
 | Ogg Vorbis | — | ✅ | ❌ | Beyond Pro Tools |
@@ -80,5 +80,6 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | MP3 written by Bounce Mix and Bounce Stems (own encoder). Readiness estimate unchanged |
 | 2026-10-13 | minor | Fade curvature round-trips in sessions with a zero default for older files. Format version and readiness estimate unchanged |
 | 2026-10-10 | major | Created: format inventory against Pro Tools 2026.4.1's declared document types and import/bounce options |

@@ -19,7 +19,7 @@ fn bounces_write_exactly_the_mix_and_report_its_levels() {
     let dir = scratch("bounce-exact");
     let path = dir.join("Mix.wav");
     let r = Range::new(s.sample_rate.samples(10.0) + 7, s.sample_rate.samples(13.0));
-    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None, bitrate_kbps: None };
     let verb = s.bus_by_name("Verb").unwrap().id;
     for bus in [None, Some(verb)] {
         let mut mix = match bus {
@@ -61,7 +61,7 @@ fn a_bounce_too_big_for_its_format_fails_and_keeps_the_old_file() {
     let dir = scratch("bounce-too-big");
     let path = dir.join("Mix.aif");
     std::fs::write(&path, b"old").unwrap();
-    let opts = EncodeOptions { format: FileFormat::Aiff, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+    let opts = EncodeOptions { format: FileFormat::Aiff, bit_depth: BitDepth::Float32, dither: false, bwf: None, bitrate_kbps: None };
     let err = Bounce::new(e.session_arc(), &path, Range::new(0, s.sample_rate.samples(3.9 * 3600.0)), &opts, None, false, false).err().unwrap();
     assert!(err.to_string().contains("4 GiB"), "{err}");
     assert_eq!(std::fs::read(&path).unwrap(), b"old");

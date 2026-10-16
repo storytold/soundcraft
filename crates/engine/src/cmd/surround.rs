@@ -220,6 +220,11 @@ mod tests {
         assert_eq!(buf.channels.len(), 2);
         assert!((buf.channels[0][1000] - 0.25 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-4);
         assert!(e.execute("file.bounce_mix", &json!({"path": ps, "fold_down": "quad"})).is_err());
+        // MP3 holds stereo at most: a surround bounce folds down without being asked.
+        let mp3 = dir.join("mix.mp3");
+        e.execute("file.bounce_mix", &json!({"path": mp3.to_string_lossy(), "start": 0, "end": 4800})).unwrap();
+        let (info, _) = soundcraft_audio_io::decode(&std::fs::read(&mp3).unwrap(), None).unwrap();
+        assert_eq!((info.format, info.channels), (soundcraft_audio_io::FileFormat::Mp3, 2));
         // Stems follow the main format too.
         let sdir = dir.join("stems");
         let r = e.execute("file.bounce_stems", &json!({"dir": sdir.to_string_lossy(), "start": 0, "end": 4800})).unwrap();

@@ -1,6 +1,6 @@
 # Target-app parity: SoundCraft vs Avid Pro Tools
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (hours to ~95 % for each audience; full number confirmed as an additive weighted sum) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (MP3 bounce) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
 
 The authoritative assessment of how close SoundCraft is to Pro Tools. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimension docs go deeper:
@@ -29,7 +29,7 @@ summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimens
 |---|---:|---:|---|
 | Full target (ready for real work) | ~40 % | ~950–1,450 h (~60–70 % parallelizable) | Hardware (interfaces, MIDI, surfaces, sync), the built-in plugin catalogue, AAF/OMF and immersive delivery, localization, fidelity against Pro Tools |
 | Mainstream practitioner | ~36 % | ~380–600 h (~60 % parallelizable) | Interface recording and MIDI devices, AAF/OMF exchange, stock-plugin depth, the core-path bug backlog, interaction feel |
-| Essentials user | ~57 % | ~110–200 h (~70 % parallelizable) | Launch and platform fixes, an onboarding and user guide, stock-effect panels and presets, MP3/AAC export, editing and transport bugs |
+| Essentials user | ~57 % | ~110–200 h (~70 % parallelizable) | Launch and platform fixes, an onboarding and user guide, stock-effect panels and presets, AAC export, editing and transport bugs |
 
 Each audience's hours are for its own areas only, so essentials ⊂ mainstream ⊂ full. Calibration
 is the same as for the full estimate ([Effort and calibration](#effort-and-calibration)): bug fixes
@@ -81,7 +81,7 @@ post-production, tracking) can switch. "Ready" is depth, correctness and fidelit
 |---|---:|---:|---|---:|---|---|
 | Features | 45 % | **~45 %** | estimated | 520–810 | [area table](#feature-areas) | Menu breadth 94 % measured, but depth is thin: see the area table |
 | UI/UX fidelity | 10 % | **~55 %** | estimated | 60–100 | [ui-parity.md](ui-parity.md) | Edit/Mix windows, every menu, floating windows; open UX bugs #3 #5 #6 #7 #140 #144; shortcuts only recently right on Windows/Linux (#15, #41); generic plugin UIs |
-| File formats | 10 % | **~40 %** | estimated | 70–120 | [file-format-parity.md](file-format-parity.md) | WAV/BWF/RF64/AIFF/FLAC read+write, compressed formats read; no `.ptx`, AAF, OMF, ADM BWF, MP3/AAC export, video export |
+| File formats | 10 % | **~40 %** | estimated | 70–120 | [file-format-parity.md](file-format-parity.md) | WAV/BWF/RF64/AIFF/FLAC/MP3 read+write, compressed formats read; no `.ptx`, AAF, OMF, ADM BWF, AAC export, video export |
 | Hardware | 10 % | **~12 %** | estimated | 110–180 | [hardware-parity.md](hardware-parity.md) | Default output and default input device only, fixed 512-sample block, no ASIO, no MIDI devices, no control surfaces, no sync |
 | Stability | 10 % | **~45 %** | estimated | 50–80 | [gaps.md](gaps.md) | Never-crash rules and proptests (random edits, mutated sessions, hostile params); but ~25 open correctness bugs, a launch failure (#142), an X11 llvmpipe failure (#107) |
 | Performance | 5 % | **~35 %** | estimated (unmeasured) | 40–70 | [hardware-parity.md](hardware-parity.md) | Parallel strip rendering and PDC exist; whole files decoded into RAM, recording into RAM (#84 open), no track-count or latency benchmarks |
@@ -160,7 +160,7 @@ microphone or interface, uses default settings, and exports a file to share.
 | Add a stock effect (EQ, compressor, reverb) and pick a preset | 10 % | 60 % | Generic panels, few presets |
 | Draw MIDI notes for a built-in synth | 5 % | 50 % | Two built-in instruments |
 | Save and reopen | 5 % | 80 % | Web build can drop unsaved edits (#136) |
-| Export / bounce a file to share | 5 % | 60 % | WAV/AIFF/FLAC only, no MP3/AAC |
+| Export / bounce a file to share | 5 % | 60 % | WAV/AIFF/FLAC/MP3, no AAC |
 | **Weighted depth** | 100 % | **72.4 %** | |
 
 | Discount | Factor | Evidence |
@@ -245,6 +245,7 @@ serializes more, because it needs hands-on testing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | MP3 bounce noted in the file-format and share-a-file rows; percentages not re-measured |
 | 2026-10-10 | minor | Readiness-by-audience table: hours to ~95 % for full (950–1,450 h), mainstream (380–600 h) and essentials (110–200 h). The full number is already the additive weighted sum over the written dimension table (40.6 %); method unchanged |
 | 2026-10-10 | minor | Added the mainstream-practitioner (~36 %) and essentials-user (~57 %) numbers with written weights, discounts and user evidence. Checked the full ~40 %: it is the written dimension weights × values (40.6 %), so it doesn't move |
 | 2026-10-10 | minor | Stage alpha → pre-alpha under the core-workflow gate; alpha distance ~110–180 h |

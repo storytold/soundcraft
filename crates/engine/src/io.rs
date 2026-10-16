@@ -610,6 +610,7 @@ pub fn bounce_stems_with(e: &Engine, dir: &str, r: Range, opts: &EncodeOptions, 
     let ext = match opts.format {
         FileFormat::Aiff => "aif",
         FileFormat::Flac => "flac",
+        FileFormat::Mp3 => "mp3",
         _ => "wav",
     };
     let mut out = Vec::new();
@@ -952,7 +953,13 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
                 continue;
             }
         }
-        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
+        let opts = EncodeOptions {
+            format: FileFormat::Wav,
+            bit_depth: soundcraft_audio_io::BitDepth::Float32,
+            dither: false,
+            bwf: None,
+            bitrate_kbps: None,
+        };
         let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
         let (name, new) = store_wav(&audio_dir, &stem, &bytes)?;
         src.path = format!("Audio Files/{name}");
@@ -1201,7 +1208,13 @@ pub fn session_bundle(session: &Session) -> Result<(Vec<u8>, Session)> {
             target = format!("Audio Files/{base}_{k:02}.wav");
             k += 1;
         }
-        let opts_wav = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
+        let opts_wav = EncodeOptions {
+            format: FileFormat::Wav,
+            bit_depth: soundcraft_audio_io::BitDepth::Float32,
+            dither: false,
+            bwf: None,
+            bitrate_kbps: None,
+        };
         let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts_wav).map_err(|err| EngineError::Io(err.to_string()))?;
         w.start_file(target.as_str(), opts).map_err(zerr)?;
         w.write_all(&bytes).map_err(ioerr)?;

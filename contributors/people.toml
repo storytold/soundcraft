@@ -50,3 +50,8 @@ sync_github_name = false
 
 [people.Momentum96]
 sync_github_name = true
+
+[people.Milkshak3s]
+real_name = "Chris Vantine"
+display_name = "Chris Vantine"
+sync_github_name = false

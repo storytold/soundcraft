@@ -10,7 +10,7 @@ fn small(format: FileFormat, depth: BitDepth, channels: usize) -> Vec<u8> {
             *s = ((i as f32) * 0.1).sin() * 0.5;
         }
     }
-    encode(&b, &EncodeOptions { format, bit_depth: depth, dither: false, bwf: None }).unwrap()
+    encode(&b, &EncodeOptions { format, bit_depth: depth, dither: false, bwf: None, bitrate_kbps: None }).unwrap()
 }
 
 /// Little helper for building RIFF files by hand.
@@ -479,7 +479,7 @@ proptest! {
     fn random_audio_roundtrips_through_flac(samples in proptest::collection::vec(-1.2f32..1.2, 1..3000), channels in 1usize..4) {
         let buf = AudioBuffer::from_interleaved(48_000, channels, &samples);
         prop_assume!(buf.frames() > 0);
-        let opts = EncodeOptions { format: FileFormat::Flac, bit_depth: BitDepth::Int24, dither: false, bwf: None };
+        let opts = EncodeOptions { format: FileFormat::Flac, bit_depth: BitDepth::Int24, dither: false, bwf: None, bitrate_kbps: None };
         let (_, flac) = decode(&encode(&buf, &opts).unwrap(), None).unwrap();
         let (_, wav) = decode(&encode(&buf, &EncodeOptions { format: FileFormat::Wav, ..opts }).unwrap(), None).unwrap();
         prop_assert_eq!(flac, wav);

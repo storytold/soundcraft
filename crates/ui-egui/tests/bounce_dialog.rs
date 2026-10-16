@@ -52,3 +52,35 @@ fn bounce_of_a_session_with_a_relative_path_starts_in_the_default_folder() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn an_mp3_bounce_offers_bitrates_instead_of_bit_depths() {
+    let pick_save: Box<dyn Fn(&str, &str) -> Option<String>> = Box::new(|_, _| Some("/Mixes/Final Mix.mp3".into()));
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services { pick_save: Some(pick_save), ..Default::default() });
+    assert!(app.dialogs.open_for_command(&app.engine, "file.bounce_mix"));
+    let mut builder = Harness::builder().with_size(vec2(1600.0, 1000.0));
+    let shots = std::env::var("CRAFT_UI_BOUNCE_DIR").ok();
+    if shots.is_some() {
+        builder = builder.wgpu();
+    }
+    let mut h = builder.build_ui_state(
+        |ui, app: &mut SoundApp| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    assert!(h.query_by_label("Bit Depth").is_some() && h.query_by_label("Bitrate").is_none());
+    h.get_by_label("Browse…").click();
+    h.run_steps(3);
+    match &h.state().dialogs.open {
+        Some(Dialog::Bounce { format, bitrate, .. }) => assert_eq!((format.as_str(), *bitrate), ("mp3", 320)),
+        other => panic!("{other:?}"),
+    }
+    assert!(h.query_by_label("Bitrate").is_some() && h.query_by_label("Bit Depth").is_none());
+    if let Some(dir) = shots {
+        std::fs::create_dir_all(&dir).unwrap();
+        h.render().unwrap().save(format!("{dir}/bounce-mp3.png")).unwrap();
+    }
+}

@@ -29,7 +29,7 @@ fn wav(secs: f32) -> Vec<u8> {
     let n = (48_000.0 * secs) as usize;
     let one: Vec<f32> = (0..n).map(|i| 0.4 * (std::f32::consts::TAU * 220.0 * i as f32 / 48_000.0).sin()).collect();
     let buf = AudioBuffer { sample_rate: 48_000, channels: vec![one; 2] };
-    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None };
+    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None, bitrate_kbps: None };
     soundcraft_audio_io::encode(&buf, &opts).unwrap()
 }
 

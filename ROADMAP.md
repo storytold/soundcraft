@@ -28,7 +28,7 @@ menu checklist).
 |---|---:|---:|---|
 | Full target (ready for real work) | ~40 % | ~950–1,450 h | Hardware, the stock plugin catalogue, AAF/OMF and immersive, localization, fidelity |
 | Mainstream practitioner | ~36 % | ~380–600 h | Interface and MIDI recording, AAF/OMF, stock-plugin depth, core-path bugs |
-| Essentials user | ~57 % | ~110–200 h | Launch and platform fixes, onboarding, effect panels and presets, MP3/AAC export |
+| Essentials user | ~57 % | ~110–200 h | Launch and platform fixes, onboarding, effect panels and presets, AAC export |
 
 Hours are Opus 5.5 agent wall-clock hours, calibrated on this repo's PRs; 60–70 % parallelizes.
 Detail: [target-app-parity.md](docs/target-app-parity.md#readiness-by-audience).
@@ -122,6 +122,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
+- **2026-10-14 (MP3 bounce):** Bounce Mix and Bounce Stems write MP3 (`format: mp3`, `bitrate` 32–320 kbps, default 320) with SoundCraft's own pure-Rust MPEG-1 Layer III encoder: joint stereo, bit reservoir, scalefactor noise shaping; other session rates are resampled to 44.1/48 kHz and surround mixes fold to stereo. Also `soundcraft-cli convert … out.mp3 --bitrate`. AAC remains (G-21). No readiness percentage change.
 - **2026-10-13:** `mix.instrument` takes the built-in instrument's parameters in `params` (validated, clamped) and refuses any other field, so a synth setting written beside `plugin` is an error instead of being accepted and ignored (#265)
 - **2026-10-13:** A bounce of a bus that an aux returns onto lines up with the timeline: the aux insert's lookahead is compensated like the main mix's (it left the bus late and cut the end off), and tracks routed to that bus wait for it too (#246)
 - **2026-10-13:** Delay compensation covers the inserts of the master faders: a bounce of the main mix with a Maximizer on the master lines up with the same mix without it (it came out 71 samples late) (#351)
@@ -155,6 +156,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | trivial | Progress log: MP3 bounce |
 | 2026-10-13 | trivial | Progress log: mix.instrument params, unknown fields refused (#265) |
 | 2026-10-13 | trivial | Progress log: bus bounce compensates aux returns (#246) |
 | 2026-10-13 | trivial | Progress log: master insert latency compensated (#351) |

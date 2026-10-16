@@ -36,7 +36,7 @@ fn streamed_files_match_whole_buffer_encodes() {
         (FileFormat::Flac, BitDepth::Int24, false, None, None),
     ];
     for (format, bit_depth, dither, bwf, mask) in cases {
-        let opts = EncodeOptions { format, bit_depth, dither, bwf };
+        let opts = EncodeOptions { format, bit_depth, dither, bwf, bitrate_kbps: None };
         for channels in [1, 6] {
             let buf = tone(channels, 20_001);
             let whole = match mask {
@@ -53,7 +53,7 @@ fn streamed_files_match_whole_buffer_encodes() {
 fn blocks_past_a_format_limit_are_refused_before_anything_is_written() {
     let buf = tone(2, 100);
     for (format, limit) in [(FileFormat::Aiff, 1usize << 30), (FileFormat::Flac, 1 << 36)] {
-        let opts = EncodeOptions { format, bit_depth: BitDepth::Int16, dither: false, bwf: None };
+        let opts = EncodeOptions { format, bit_depth: BitDepth::Int16, dither: false, bwf: None, bitrate_kbps: None };
         let mut enc = FileEncoder::new(Cursor::new(Vec::new()), &opts, 2, buf.sample_rate, None).unwrap();
         enc.write(&buf.channels, 100).unwrap();
         assert!(enc.check_room(limit as u64 / 2).is_ok(), "{format:?}");

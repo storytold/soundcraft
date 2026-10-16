@@ -2,8 +2,8 @@
 //!
 //! ```text
 //! soundcraft-cli info FILE                       audio file or .scraft summary
-//! soundcraft-cli convert IN OUT [--bit-depth 16|24|32f] [--rate HZ] [--normalize]
-//! soundcraft-cli run [--in S.scraft | --demo] [--cmd ID[=JSON]]… [--bounce OUT] [--start T --end T] [--save S.scraft] [--inspect]
+//! soundcraft-cli convert IN OUT [--bit-depth 16|24|32f] [--bitrate KBPS] [--rate HZ] [--normalize]
+//! soundcraft-cli run [--in S.scraft | --demo] [--cmd ID[=JSON]]… [--bounce OUT [--bitrate KBPS]] [--start T --end T] [--save S.scraft] [--inspect]
 //! soundcraft-cli script FILE [--in S | --demo] [--save S] [--bounce OUT]   (one `ID JSON` per line)
 //! soundcraft-cli commands [FILTER]               list commands
 //! soundcraft-cli describe ID                     one command's details
@@ -126,6 +126,10 @@ fn convert(args: &[String]) -> ExitCode {
         Ok(r) => r,
         Err(e) => return fail(e),
     };
+    let bitrate_kbps = match parse_bitrate(arg_value(args, "--bitrate").as_deref()) {
+        Ok(b) => b,
+        Err(e) => return fail(e),
+    };
     let bit_depth = match parse_bit_depth(arg_value(args, "--bit-depth").as_deref()) {
         Ok(b) => b,
         Err(e) => return fail(e),
@@ -150,7 +154,7 @@ fn convert(args: &[String]) -> ExitCode {
     let Some(format) = soundcraft_audio_io::encode_format_for(&out_ext) else {
         return fail(format!("{output}: cannot write `.{out_ext}` files (supported: {})", soundcraft_audio_io::ENCODE_EXTENSIONS));
     };
-    let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: true, bwf: None };
+    let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: true, bwf: None, bitrate_kbps };
     match soundcraft_audio_io::encode(&buf, &opts).map_err(|e| e.to_string()).and_then(|b| std::fs::write(output, b).map_err(|e| e.to_string())) {
         Ok(()) => {
             outln!("wrote {output} ({} ch, {} Hz, {:.2} s)", buf.num_channels(), buf.sample_rate, buf.duration_secs());
@@ -166,6 +170,20 @@ fn parse_rate(v: Option<&str>) -> Result<Option<u32>, String> {
         Some(r) => match r.parse::<u32>() {
             Ok(hz) if hz > 0 => Ok(Some(hz)),
             _ => Err(format!("--rate: expected a sample rate in Hz, got `{r}`")),
+        },
+    }
+}
+
+/// `--bitrate`: an MP3 bitrate in kbps.
+fn parse_bitrate(v: Option<&str>) -> Result<Option<u32>, String> {
+    match v {
+        None => Ok(None),
+        Some(b) => match b.parse::<u32>() {
+            Ok(k) if soundcraft_audio_io::MP3_BITRATES.contains(&k) => Ok(Some(k)),
+            _ => {
+                let list: Vec<String> = soundcraft_audio_io::MP3_BITRATES.iter().map(u32::to_string).collect();
+                Err(format!("--bitrate: expected one of {} kbps, got `{b}`", list.join(", ")))
+            }
         },
     }
 }
@@ -211,6 +229,9 @@ fn finish(e: &mut Engine, args: &[String]) -> ExitCode {
         }
         if let Some(s) = arg_value(args, "--end") {
             p["end"] = time_arg(&s);
+        }
+        if let Some(b) = arg_value(args, "--bitrate") {
+            p["bitrate"] = json!(b);
         }
         match e.execute("file.bounce_mix", &p) {
             Ok(v) => outln!("{v}"),
@@ -509,6 +530,10 @@ mod tests {
         assert!(matches!(parse_bit_depth(Some("16")), Ok(soundcraft_audio_io::BitDepth::Int16)));
         assert!(matches!(parse_bit_depth(Some("32f")), Ok(soundcraft_audio_io::BitDepth::Float32)));
         assert!(parse_bit_depth(Some("8")).is_err());
+        assert!(matches!(parse_bitrate(None), Ok(None)));
+        assert!(matches!(parse_bitrate(Some("192")), Ok(Some(192))));
+        assert!(parse_bitrate(Some("100")).is_err());
+        assert!(parse_bitrate(Some("fast")).is_err());
     }
 
     #[test]
