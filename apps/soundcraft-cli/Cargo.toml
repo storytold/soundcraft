@@ -14,6 +14,8 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+soundcraft-vst3-host.workspace = true
+soundcraft-clap-host.workspace = true
 soundcraft-engine.workspace = true
 soundcraft-automation.workspace = true
 soundcraft-audio-io.workspace = true

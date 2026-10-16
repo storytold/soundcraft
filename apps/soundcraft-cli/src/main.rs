@@ -59,6 +59,16 @@ fn help_text() -> String {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // A plugin-scan helper started by this program (`soundcraft_vst3_host::isolated`).
+    if let Some(code) = soundcraft_vst3_host::isolated::worker_main(&args).or_else(|| soundcraft_clap_host::isolated::worker_main(&args)) {
+        std::process::exit(code);
+    }
+    // Scan VST3 and CLAP plugins in helper copies of this program, so a plugin that crashes while it
+    // loads is skipped instead of aborting the command (no cache: the CLI has no settings folder).
+    if let Ok(exe) = std::env::current_exe() {
+        soundcraft_vst3_host::isolated::enable(exe.clone(), None);
+        soundcraft_clap_host::isolated::enable(exe, None);
+    }
     let Some(cmd) = args.first().cloned() else {
         eprintln!("usage: soundcraft-cli <info|convert|run|script|commands|describe|app|mcp|parity|plugins> …  (see --help)");
         return ExitCode::FAILURE;

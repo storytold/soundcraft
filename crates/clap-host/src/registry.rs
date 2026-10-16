@@ -8,10 +8,15 @@ use clap_sys::ext::params::{CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_HIDDEN, CLAP_PARAM
 use soundcraft_dsp::{ParamInfo, Plugin, PluginInfo, Taper, Unit};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 /// Most labels read for an enum parameter.
 const MAX_CHOICES: f64 = 128.0;
+
+/// A file that takes longer than this to load is named in the log (some plugins wait on a licence
+/// check or a network drive at load, and a scan of hundreds of files is slow without saying why).
+pub(crate) const SLOW_LOAD: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 struct Registry {
@@ -22,6 +27,12 @@ struct Registry {
     infos: HashMap<String, &'static PluginInfo>,
     /// Ids that failed to instantiate (not retried every UI frame).
     failed: HashSet<String>,
+    /// A scan is running (with the lock released); see [`ensure_scanned`].
+    scanning: bool,
+    /// A background scan was started and has not stored its result yet.
+    background: bool,
+    /// The next scan ignores the helper processes' cache (a rescan).
+    force_next: bool,
 }
 
 fn registry() -> &'static Mutex<Registry> {
@@ -52,35 +63,90 @@ pub fn load_bundle(path: &Path) -> Result<Vec<ClapDescriptor>, ClapError> {
 /// Scans `dirs` (uncached). Unloadable files are logged and skipped; the first plugin with a
 /// given id wins.
 pub fn scan_paths(dirs: &[PathBuf]) -> Vec<ClapDescriptor> {
+    scan_dirs(dirs, false)
+}
+
+/// [`scan_paths`], in helper processes when the app enabled them ([`crate::isolated`]); `force`
+/// ignores their cache.
+fn scan_dirs(dirs: &[PathBuf], force: bool) -> Vec<ClapDescriptor> {
+    let bundles = paths::find_bundles(dirs);
+    let found = if crate::isolated::enabled() { crate::isolated::scan(&bundles, force) } else { scan_in_process(&bundles) };
     let mut out: Vec<ClapDescriptor> = Vec::new();
-    for path in paths::find_bundles(dirs) {
-        match load_bundle(&path) {
-            Ok(ds) => {
-                for d in ds {
-                    if !out.iter().any(|o| o.id == d.id) {
-                        out.push(d);
-                    }
-                }
-            }
-            Err(e) => log::warn!("{e}"),
+    for d in found {
+        if !out.iter().any(|o| o.id == d.id) {
+            out.push(d);
         }
     }
     out.sort_by_key(|d| d.name.to_lowercase());
     out
 }
 
-fn ensure_scanned(r: &mut Registry) -> &Vec<ClapDescriptor> {
-    if r.scanned.is_none() {
-        let mut dirs = paths::default_search_paths();
-        dirs.extend(r.extra_dirs.iter().cloned());
-        r.scanned = Some(scan_paths(&dirs));
+/// Loads every file into this process.
+///
+/// Each file is logged *before* it is loaded. Loading runs the plugin's own code in this process,
+/// and a plugin that crashes there (an access violation, or a C++ exception unwinding into Rust,
+/// which aborts) takes the app down before any error can be logged. The log file is written
+/// unbuffered, so the last `scanning` line then names the plugin that did it.
+fn scan_in_process(bundles: &[PathBuf]) -> Vec<ClapDescriptor> {
+    let started = Instant::now();
+    crate::isolated::start_progress(bundles.len());
+    let mut out = Vec::new();
+    let mut failed = 0usize;
+    for path in bundles {
+        log::info!("scanning CLAP plugin {}", path.display());
+        let one = Instant::now();
+        match load_bundle(path) {
+            Ok(ds) => out.extend(ds),
+            Err(e) => {
+                failed = failed.saturating_add(1);
+                log::warn!("{e}");
+            }
+        }
+        let took = one.elapsed();
+        if took >= SLOW_LOAD {
+            log::warn!("CLAP plugin {} took {:.1} s to scan", path.display(), took.as_secs_f64());
+        }
+        crate::isolated::step_progress();
     }
-    r.scanned.get_or_insert_with(Vec::new)
+    log::info!("CLAP scan: {} plugins from {} files ({failed} failed) in {:.1} s", out.len(), bundles.len(), started.elapsed().as_secs_f64());
+    out
+}
+
+/// Signalled when a scan stores its result, for callers waiting on one that is running.
+fn scan_finished() -> &'static Condvar {
+    static C: Condvar = Condvar::new();
+    &C
+}
+
+fn lock() -> MutexGuard<'static, Registry> {
+    registry().lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The scanned list, scanning first if needed. The lock is released while the scan runs (the UI
+/// can keep asking how far it got); a caller that finds a scan already running waits for it
+/// rather than starting a second one.
+fn ensure_scanned(mut r: MutexGuard<'static, Registry>) -> MutexGuard<'static, Registry> {
+    while r.scanned.is_none() && r.scanning {
+        r = scan_finished().wait(r).unwrap_or_else(PoisonError::into_inner);
+    }
+    if r.scanned.is_some() {
+        return r;
+    }
+    r.scanning = true;
+    let force = std::mem::take(&mut r.force_next);
+    let mut dirs = paths::default_search_paths();
+    dirs.extend(r.extra_dirs.iter().cloned());
+    drop(r);
+    let list = scan_dirs(&dirs, force);
+    let mut r = lock();
+    r.scanned = Some(list);
+    r.scanning = false;
+    scan_finished().notify_all();
+    r
 }
 
 pub fn scan() -> Vec<ClapDescriptor> {
-    let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
-    ensure_scanned(&mut r).clone()
+    ensure_scanned(lock()).scanned.clone().unwrap_or_default()
 }
 
 pub fn cached() -> Option<Vec<ClapDescriptor>> {
@@ -88,14 +154,45 @@ pub fn cached() -> Option<Vec<ClapDescriptor>> {
 }
 
 pub fn rescan() -> Vec<ClapDescriptor> {
-    let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut r = lock();
+    while r.scanning {
+        r = scan_finished().wait(r).unwrap_or_else(PoisonError::into_inner);
+    }
     r.scanned = None;
     r.failed.clear();
-    ensure_scanned(&mut r).clone()
+    r.force_next = true;
+    ensure_scanned(r).scanned.clone().unwrap_or_default()
+}
+
+/// The list if the scan is done; otherwise starts it on a background thread (once) and says how
+/// far it got. Only with helper processes: an in-process scan stays where it was asked from,
+/// because a module must be entered on the thread that will run its exit.
+pub fn scan_in_background() -> crate::ScanState {
+    let mut r = lock();
+    if let Some(list) = &r.scanned {
+        return crate::ScanState::Ready(list.clone());
+    }
+    if !crate::isolated::enabled() {
+        return crate::ScanState::Ready(ensure_scanned(r).scanned.clone().unwrap_or_default());
+    }
+    if !r.scanning && !r.background {
+        r.background = true;
+        crate::isolated::start_progress(0);
+        let spawned = std::thread::Builder::new().name("clap-scan".into()).spawn(|| {
+            let mut r = ensure_scanned(lock());
+            r.background = false;
+        });
+        if spawned.is_err() {
+            r.background = false;
+            return crate::ScanState::Ready(ensure_scanned(r).scanned.clone().unwrap_or_default());
+        }
+    }
+    let (done, total) = crate::isolated::progress();
+    crate::ScanState::Scanning { done, total }
 }
 
 pub fn add_search_dir(dir: &Path) -> usize {
-    let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut r = lock();
     if !r.extra_dirs.iter().any(|d| d == dir) {
         r.extra_dirs.push(dir.to_path_buf());
     }
@@ -163,11 +260,12 @@ fn build_info(d: &ClapDescriptor, inst: &Instance) -> &'static PluginInfo {
 fn instantiate_raw(id: &str) -> Result<(Instance, &'static PluginInfo), ClapError> {
     let plugin_id = parse_id(id).ok_or_else(|| ClapError::NotFound(id.to_string()))?;
     let desc = {
-        let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
+        let r = lock();
         if r.failed.contains(id) {
             return Err(ClapError::Instantiate(plugin_id.to_string(), "failed before".into()));
         }
-        ensure_scanned(&mut r).iter().find(|d| d.id == id).cloned().ok_or_else(|| ClapError::NotFound(id.to_string()))?
+        let r = ensure_scanned(r);
+        r.scanned.iter().flatten().find(|d| d.id == id).cloned().ok_or_else(|| ClapError::NotFound(id.to_string()))?
     };
     let made = Bundle::load(&desc.path).and_then(|b| b.instantiate(plugin_id));
     let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);

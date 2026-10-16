@@ -18,6 +18,8 @@ asio = ["soundcraft-playback/asio"]
 soundcraft-engine.workspace = true
 soundcraft-ui-egui.workspace = true
 soundcraft-playback.workspace = true
+soundcraft-vst3-host.workspace = true
+soundcraft-clap-host.workspace = true
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links"] }
 egui.workspace = true
 serde_json.workspace = true

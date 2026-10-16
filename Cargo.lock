@@ -3577,9 +3577,11 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "rfd",
  "serde_json",
+ "soundcraft-clap-host",
  "soundcraft-engine",
  "soundcraft-playback",
  "soundcraft-ui-egui",
+ "soundcraft-vst3-host",
  "winresource",
 ]
 
@@ -3623,6 +3625,7 @@ dependencies = [
  "libloading",
  "log",
  "serde",
+ "serde_json",
  "soundcraft-dsp",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
@@ -3635,8 +3638,10 @@ dependencies = [
  "serde_json",
  "soundcraft-audio-io",
  "soundcraft-automation",
+ "soundcraft-clap-host",
  "soundcraft-dsp",
  "soundcraft-engine",
+ "soundcraft-vst3-host",
 ]
 
 [[package]]
@@ -3783,6 +3788,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "serde",
+ "serde_json",
  "soundcraft-dsp",
  "thiserror 2.0.21",
  "vst3",

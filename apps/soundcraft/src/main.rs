@@ -204,10 +204,16 @@ fn app_icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // A plugin-scan helper, started by the app itself to load one plugin file out of process
+    // (`soundcraft_vst3_host::isolated`): answer and exit before anything else, so it never opens
+    // a window or the user's log file.
+    if let Some(code) = soundcraft_vst3_host::isolated::worker_main(&args).or_else(|| soundcraft_clap_host::isolated::worker_main(&args)) {
+        std::process::exit(code);
+    }
     // First, so every start-up record (and the engine's panic hook, installed with the first
     // Engine) is captured; see `logging`.
     let logger = logging::install();
-    let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("SoundCraft {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -243,6 +249,17 @@ fn main() -> eframe::Result {
                 log::warn!("no log file: no settings directory (profile override is empty or platform configuration is unavailable)");
             }
         }
+    }
+
+    // Scan VST3 and CLAP plugins in helper copies of this program, so one that crashes while it loads
+    // costs that plugin, not the session, and keep the results beside the log for next time.
+    match std::env::current_exe() {
+        Ok(exe) => {
+            let dir = config_dir().filter(|_| prefs_enabled()).map(|d| d.join("plugin-scan"));
+            soundcraft_vst3_host::isolated::enable(exe.clone(), dir.as_ref().map(|d| d.join("vst3.json")));
+            soundcraft_clap_host::isolated::enable(exe, dir.map(|d| d.join("clap.json")));
+        }
+        Err(e) => log::warn!("plugins are scanned in-process: cannot find this program's path: {e}"),
     }
 
     let engine = if demo { soundcraft_engine::demo::demo_engine() } else { Engine::default() };

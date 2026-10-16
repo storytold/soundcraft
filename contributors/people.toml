@@ -50,3 +50,7 @@ sync_github_name = false
 
 [people.Momentum96]
 sync_github_name = true
+
+[people.woodgrain816]
+display_name = "WGProductions"
+sync_github_name = false

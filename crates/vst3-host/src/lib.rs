@@ -47,6 +47,8 @@ pub mod scan;
 #[allow(unsafe_code)]
 mod ffi;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod isolated;
+#[cfg(not(target_arch = "wasm32"))]
 mod plugin;
 #[cfg(not(target_arch = "wasm32"))]
 mod registry;
@@ -78,7 +80,7 @@ pub fn parse_id(id: &str) -> Option<[u8; 16]> {
 }
 
 /// One plugin found by a scan.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Vst3Descriptor {
     /// SoundCraft id: `vst3:<class_id>`.
     pub id: String,
@@ -125,6 +127,9 @@ mod api {
     pub fn rescan() -> Vec<Vst3Descriptor> {
         registry::rescan()
     }
+    pub fn scan_in_background() -> ScanState {
+        registry::scan_in_background()
+    }
     pub fn add_search_dir(dir: &Path) -> usize {
         registry::add_search_dir(dir)
     }
@@ -158,6 +163,9 @@ mod api {
     pub fn rescan() -> Vec<Vst3Descriptor> {
         Vec::new()
     }
+    pub fn scan_in_background() -> ScanState {
+        ScanState::Ready(Vec::new())
+    }
     pub fn add_search_dir(_dir: &Path) -> usize {
         0
     }
@@ -186,6 +194,22 @@ pub fn scan() -> Vec<Vst3Descriptor> {
 /// Forgets the cached scan (and remembered failures) and scans again.
 pub fn rescan() -> Vec<Vst3Descriptor> {
     api::rescan()
+}
+
+/// Where [`scan_in_background`] got to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScanState {
+    /// The scan is done: every plugin found.
+    Ready(Vec<Vst3Descriptor>),
+    /// Still scanning: `done` of `total` files so far (`total` is 0 until the files are listed).
+    Scanning { done: usize, total: usize },
+}
+
+/// For the UI thread: the plugins if the scan is done, otherwise how far it got, never waiting
+/// on a plugin. With helper processes ([`isolated::enable`]) the first call starts the scan on a
+/// background thread; without them it scans here, like [`scan`].
+pub fn scan_in_background() -> ScanState {
+    api::scan_in_background()
 }
 
 /// Adds a folder to the search path and merges its plugins into the cache. Returns how many
