@@ -22,7 +22,16 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("midi.note_add", "Add Note", [], None, "{clip, pitch, start_ticks, length_ticks?: 480, velocity?: 100, channel?: 0}", always, note_add),
         cmd!("midi.note_edit", "Edit Note", [], None, "{clip, index, pitch?, start_ticks?, length_ticks?, velocity?}", always, note_edit),
         cmd!("midi.note_delete", "Delete Notes", [], None, "{clip, indices: [n]}", always, note_delete),
-        cmd!("midi.notes_move", "Move Notes", [], None, "{clip, indices: [n], ticks?: 0, semitones?: 0}", always, notes_move),
+        cmd!("midi.notes_move", "Move Notes", [], None, "{clip, indices: [n], ticks?: 0, semitones?: 0, copy?: false}", always, notes_move),
+        cmd!(
+            "midi.notes_trim",
+            "Trim Notes",
+            [],
+            None,
+            "{clip, indices: [n], start?: 0, end?: 0} (tick offsets for the note edges)",
+            always,
+            notes_trim
+        ),
     ]
 }
 
@@ -123,15 +132,63 @@ fn notes_move(e: &mut Engine, p: &Value) -> Result<Value> {
     let idx = indices(p);
     let dt = i64_or(p, "ticks", 0);
     let ds = i64_or(p, "semitones", 0);
+    let copy = p.get("copy").and_then(Value::as_bool).unwrap_or(false);
     let seq = seq_mut(e, id, "midi.notes_move")?;
+    let mut moved = Vec::with_capacity(idx.len());
     for (i, n) in seq.notes.iter_mut().enumerate() {
         if idx.contains(&i) {
-            n.start = (n.start + dt).max(0);
-            n.pitch = (i64::from(n.pitch) + ds).clamp(0, 127) as u8;
+            let mut m = *n;
+            m.start = (m.start + dt).max(0);
+            m.pitch = (i64::from(m.pitch) + ds).clamp(0, 127) as u8;
+            if !copy {
+                *n = m;
+            }
+            moved.push(m);
+        }
+    }
+    if copy {
+        seq.notes.extend_from_slice(&moved);
+    }
+    seq.sort();
+    // Where the moved notes (or the copies) ended up after sorting, so the editor can keep them selected.
+    Ok(json!({"moved": moved.len(), "indices": relocate(seq, &moved)}))
+}
+
+/// Trim the start and/or end of several notes at once: `start` and `end` are tick offsets for the
+/// note edges (a start trim keeps the note's end in place). Notes never shrink below one tick.
+fn notes_trim(e: &mut Engine, p: &Value) -> Result<Value> {
+    let id = clip_id(p, "midi.notes_trim")?;
+    let idx = indices(p);
+    let ds = i64_or(p, "start", 0);
+    let de = i64_or(p, "end", 0);
+    let seq = seq_mut(e, id, "midi.notes_trim")?;
+    let mut trimmed = Vec::with_capacity(idx.len());
+    for (i, n) in seq.notes.iter_mut().enumerate() {
+        if idx.contains(&i) {
+            let end = n.end().saturating_add(de).max(1);
+            n.start = n.start.saturating_add(ds).clamp(0, end - 1);
+            n.length = (end - n.start).max(1);
+            trimmed.push(*n);
         }
     }
     seq.sort();
-    Ok(json!({"moved": idx.len()}))
+    Ok(json!({"trimmed": trimmed.len(), "indices": relocate(seq, &trimmed)}))
+}
+
+/// The sorted indices `notes` now sit at in `seq` (each matched once, so duplicates stay distinct).
+fn relocate(seq: &Sequence, notes: &[Note]) -> Vec<usize> {
+    let mut taken = vec![false; seq.notes.len()];
+    let mut out = Vec::with_capacity(notes.len());
+    for m in notes {
+        if let Some(j) = seq.notes.iter().enumerate().position(|(j, n)| !taken.get(j).copied().unwrap_or(true) && n == m) {
+            if let Some(t) = taken.get_mut(j) {
+                *t = true;
+            }
+            out.push(j);
+        }
+    }
+    out.sort_unstable();
+    out
 }
 
 #[cfg(test)]
@@ -155,6 +212,64 @@ mod tests {
         e.execute("midi.note_delete", &json!({"clip": clip, "indices": [0]})).unwrap();
         assert_eq!(e.execute("midi.notes", &json!({"clip": clip})).unwrap()["notes"].as_array().map(Vec::len), Some(1));
         assert!(e.execute("midi.note_edit", &json!({"clip": clip, "index": 99})).is_err());
+    }
+
+    #[test]
+    fn notes_move_reports_where_the_moved_notes_went() {
+        let mut e = Engine::default();
+        let t = e.session_mut().add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Keys"));
+        let clip = e.execute("midi.new_clip", &json!({"track": t.0})).unwrap()["clip"].as_u64().unwrap();
+        for start in [0, 480, 960] {
+            e.execute("midi.note_add", &json!({"clip": clip, "pitch": 60, "start_ticks": start})).unwrap();
+        }
+        let r = e.execute("midi.notes_move", &json!({"clip": clip, "indices": [0], "ticks": 720})).unwrap();
+        assert_eq!(r["indices"], json!([1]));
+        let notes = e.execute("midi.notes", &json!({"clip": clip})).unwrap();
+        assert_eq!(notes["notes"][1]["start"], 720);
+    }
+
+    fn keys_clip(e: &mut Engine, notes: &[(u8, i64, i64)]) -> u64 {
+        let t = e.session_mut().add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Keys"));
+        let clip = e.execute("midi.new_clip", &json!({"track": t.0})).unwrap()["clip"].as_u64().unwrap();
+        for &(pitch, start, length) in notes {
+            e.execute("midi.note_add", &json!({"clip": clip, "pitch": pitch, "start_ticks": start, "length_ticks": length})).unwrap();
+        }
+        clip
+    }
+
+    fn starts_pitches_lengths(e: &mut Engine, clip: u64) -> Vec<(i64, i64, i64)> {
+        let n = e.execute("midi.notes", &json!({"clip": clip})).unwrap();
+        n["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| (n["start"].as_i64().unwrap(), n["pitch"].as_i64().unwrap(), n["length"].as_i64().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn notes_move_with_copy_leaves_the_originals_and_reports_the_copies() {
+        let mut e = Engine::default();
+        let clip = keys_clip(&mut e, &[(60, 0, 240), (64, 480, 240)]);
+        let r = e.execute("midi.notes_move", &json!({"clip": clip, "indices": [0, 1], "ticks": 960, "semitones": 2, "copy": true})).unwrap();
+        assert_eq!(r["indices"], json!([2, 3]));
+        assert_eq!(starts_pitches_lengths(&mut e, clip), vec![(0, 60, 240), (480, 64, 240), (960, 62, 240), (1440, 66, 240)]);
+        e.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(starts_pitches_lengths(&mut e, clip).len(), 2, "one undo step removes the copies");
+    }
+
+    #[test]
+    fn notes_trim_moves_both_edges_of_every_note_in_one_step() {
+        let mut e = Engine::default();
+        let clip = keys_clip(&mut e, &[(60, 480, 480), (64, 960, 240)]);
+        let r = e.execute("midi.notes_trim", &json!({"clip": clip, "indices": [0, 1], "end": 120})).unwrap();
+        assert_eq!(r["indices"], json!([0, 1]));
+        assert_eq!(starts_pitches_lengths(&mut e, clip), vec![(480, 60, 600), (960, 64, 360)]);
+        // A start trim keeps the end; it stops one tick short of it and never goes below zero.
+        e.execute("midi.notes_trim", &json!({"clip": clip, "indices": [0, 1], "start": -600})).unwrap();
+        assert_eq!(starts_pitches_lengths(&mut e, clip), vec![(0, 60, 1080), (360, 64, 960)]);
+        e.execute("midi.notes_trim", &json!({"clip": clip, "indices": [1], "start": 5000, "end": -5000})).unwrap();
+        assert_eq!(starts_pitches_lengths(&mut e, clip)[1].2, 1);
     }
 
     #[test]

@@ -425,6 +425,10 @@ impl SoundApp {
         let replacing = matches!(id, "session.new" | "session.open" | "session.close" | "session.revert");
         match self.engine.execute(id, &params) {
             Ok(v) => {
+                if replacing {
+                    // Note indices and gestures belong to the old session's clips.
+                    self.midi = midi_editor::MidiEditorState::default();
+                }
                 if replacing || (id.starts_with("session.save") && !self.engine.is_dirty()) {
                     self.release_autosave(false);
                 }
@@ -1342,6 +1346,17 @@ mod tests {
         assert!(msg.starts_with("Gain on Vox put out invalid audio"), "{msg}");
         assert_eq!(super::failed_plugin_status(&s, t, 0), None);
         assert_eq!(super::failed_plugin_status(&s, t, soundcraft_mix::INSTRUMENT_SLOT), None);
+    }
+
+    #[test]
+    fn replacing_the_session_drops_the_midi_note_selection() {
+        for command in ["session.new", "session.close"] {
+            let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+            app.midi.selected = vec![0, 1];
+            app.midi.clip = Some(soundcraft_model::ClipId(1));
+            app.run(command, json!({})).unwrap();
+            assert!(app.midi.selected.is_empty() && app.midi.clip.is_none(), "{command}");
+        }
     }
 
     #[test]
