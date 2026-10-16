@@ -26,6 +26,9 @@ fn clip_json(e: &Engine, c: &Clip) -> Value {
             v["offset"] = json!(offset);
         }
     }
+    if let Some(recipe) = &c.groove {
+        v["groove"] = json!(recipe);
+    }
     if !c.gain_env.is_empty() {
         v["gain_envelope"] = json!(c.gain_env);
     }

@@ -11,6 +11,20 @@ fn p(r: Rect, x: f32, y: f32) -> Pos2 {
 pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
     let s = Stroke::new((r.width() / 14.0).clamp(1.2, 2.4), c);
     match name {
+        "groove" => {
+            for row in 0..3 {
+                for column in 0..4 {
+                    let x = 0.12 + column as f32 * 0.2;
+                    let y = 0.2 + row as f32 * 0.23;
+                    let cell = Rect::from_min_max(p(r, x, y), p(r, x + 0.13, y + 0.13));
+                    if (row + column) % 3 == 0 {
+                        painter.rect_filled(cell, 1.0, c);
+                    } else {
+                        painter.rect_stroke(cell, 1.0, Stroke::new(s.width * 0.6, c), egui::StrokeKind::Inside);
+                    }
+                }
+            }
+        }
         "play" => {
             painter.add(Shape::convex_polygon(vec![p(r, 0.28, 0.18), p(r, 0.82, 0.5), p(r, 0.28, 0.82)], c, Stroke::NONE));
         }

@@ -92,6 +92,13 @@ pub enum ClipContent {
     Video { source: SourceId, offset: Samples },
 }
 
+/// Versioned, editable recipe for an arithmetic step pattern.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GrooveRecipe {
+    pub version: u32,
+    pub config: soundcraft_midi::groove::Config,
+}
+
 /// A clip on a playlist.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Clip {
@@ -102,6 +109,8 @@ pub struct Clip {
     /// Length (samples, > 0).
     pub length: Samples,
     pub content: ClipContent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groove: Option<GrooveRecipe>,
     /// Static clip gain in dB.
     #[serde(default)]
     pub gain_db: f32,
@@ -150,6 +159,7 @@ impl Clip {
             start,
             length: length.max(1),
             content: ClipContent::Audio { source, offset },
+            groove: None,
             gain_db: 0.0,
             gain_env: Vec::new(),
             fade_in: Fade::default(),

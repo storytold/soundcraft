@@ -1409,6 +1409,14 @@ fn view_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
 }
 
 pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
+    let groove_clip = app.engine.session().track(id).and_then(|t| t.clips().iter().find(|c| c.groove.is_some())).map(|c| c.id);
+    if let Some(cid) = groove_clip {
+        if ui.button("Edit Groove...").clicked() {
+            let _ = app.run("groove.open", json!({"clip":cid}));
+            ui.close();
+        }
+        ui.separator();
+    }
     let tid = id.0;
     let items: [(&str, &str); 10] = [
         ("Rename...", "ui.rename_track"),
@@ -2192,7 +2200,11 @@ fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, 
     {
         let _ = app.run("edit.select", json!({"clips": [c.id.0]}));
         if eff == Tool::Grabber && matches!(c.content, ClipContent::Midi { .. }) {
-            app.ui.show_midi_editor = true;
+            if c.groove.is_some() {
+                let _ = app.run("groove.open", json!({"clip":c.id}));
+            } else {
+                app.ui.show_midi_editor = true;
+            }
         }
     }
 }
@@ -2528,6 +2540,13 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
         }
         return;
     };
+    if app.engine.session().find_clip(c).is_some_and(|(_, clip)| clip.groove.is_some()) {
+        if ui.button("Edit Groove...").clicked() {
+            let _ = app.run("groove.open", json!({"clip":c}));
+            ui.close();
+        }
+        ui.separator();
+    }
     let ids = json!([c.0]);
     for (label, cmd) in [
         ("Mute/Unmute", "edit.mute_clips"),

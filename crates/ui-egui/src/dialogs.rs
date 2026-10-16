@@ -300,6 +300,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             match &mut d {
                 Dialog::NewTracks { count, format, kind, timebase, name } => {
+                    if ui.button("Build a groove pattern...").clicked() {
+                        action = Some(("groove.new".into(), json!({})));
+                    }
                     ui.horizontal(|ui| {
                         ui.label("Create");
                         ui.add(egui::DragValue::new(count).range(1..=128));

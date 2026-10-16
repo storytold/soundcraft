@@ -9,8 +9,8 @@ Assets must be original, public domain (CC0) or permissively licensed. See `AGEN
 ## Icons
 
 All UI icons (tools, transport, track buttons) are drawn procedurally in
-`crates/ui-egui/src/icons.rs` by the SoundCraft contributors (MIT OR Apache-2.0). No UI icon image
-files are used. The app icon (`assets/app-icon/`, a singing nightingale drawn as original SVG by
+`crates/ui-egui/src/icons.rs` by the SoundCraft contributors (MIT OR Apache-2.0). The Groove
+Builder step icon is drawn in the same module. No UI icon image files are used. The app icon (`assets/app-icon/`, a singing nightingale drawn as original SVG by
 the SoundCraft contributors) is listed under Files below.
 
 ## Audio

@@ -17,6 +17,7 @@ mod edit_more;
 mod event;
 mod event_more;
 mod file;
+mod groove;
 mod health;
 mod instrument;
 mod midi;
@@ -122,6 +123,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(audiosuite::specs());
         v.extend(audio_midi::specs());
         v.extend(midi::specs());
+        v.extend(groove::specs());
         v.extend(view_more::specs());
         v.extend(track_more::specs());
         v.extend(clip_more::specs());
