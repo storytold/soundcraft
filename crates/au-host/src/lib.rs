@@ -25,8 +25,17 @@
 //!
 //! Host callbacks report the session's tempo, meter, position and play state.
 //!
-//! Not hosted yet: Audio Unit editor views (Cocoa `AUCocoaUIBase`), sidechain/extra buses, and
-//! parameters outside the global scope.
+//! Editors: a unit that names a Cocoa view (`kAudioUnitProperty_CocoaUI`) has one. The view
+//! comes from its `AUCocoaUIBase` factory and only ever lives inside a host `NSWindow` (titled and
+//! closable, floating above the app); the window follows the view's size. [`Plugin::editor`]
+//! returns a handle used on the main thread while the instance renders on the audio thread.
+//! Edits made in the view (`AUParameterSet`) reach the handle's `idle` through a parameter
+//! listener; the handle's `set_param` tells the view without being reported back. A unit
+//! without a view has no editor (the host shows its generic controls). An Objective-C exception
+//! thrown by a view aborts the process, like a crash inside any hosted plugin.
+//!
+//! Not hosted yet: AUv3 view controllers (AUv3 extensions are not loaded), sidechain/extra
+//! buses, and parameters outside the global scope.
 //!
 //! Off macOS (and on `wasm32`) the crate compiles to stubs: scans are empty and nothing can be
 //! created.

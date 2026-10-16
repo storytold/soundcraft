@@ -1,5 +1,5 @@
-//! The only module with `unsafe`: hand-written AudioToolbox / CoreFoundation declarations and a
-//! thin safe wrapper over one Audio Unit instance.
+//! The only module with `unsafe`: hand-written AudioToolbox / CoreFoundation declarations, a
+//! thin safe wrapper over one Audio Unit instance, and the host window of its Cocoa view (objc2).
 //!
 //! Every pointer handed to the Audio Unit points into memory this module owns for at least as
 //! long as the unit can use it: the input state the render callback reads and the host time the
@@ -31,6 +31,10 @@ const MAX_VALUE_STRINGS: CFIndex = 256;
 const MAX_STATE: usize = 64 << 20;
 /// Longest CFString converted (bytes).
 const MAX_STRING: CFIndex = 4096;
+/// Most parameter edits queued between two editor idles (extra edits are dropped).
+const EDIT_CAP: usize = 1024;
+/// Most view classes read from `kAudioUnitProperty_CocoaUI`.
+const MAX_VIEW_CLASSES: usize = 16;
 
 const K_AUDIO_COMPONENT_FLAG_REQUIRES_ASYNC: u32 = 8;
 
@@ -44,6 +48,7 @@ const PROP_PARAMETER_VALUE_STRINGS: u32 = 16;
 const PROP_TAIL_TIME: u32 = 20;
 const PROP_SET_RENDER_CALLBACK: u32 = 23;
 const PROP_HOST_CALLBACKS: u32 = 27;
+const PROP_COCOA_UI: u32 = 31;
 
 const SCOPE_GLOBAL: u32 = 0;
 const SCOPE_INPUT: u32 = 1;
@@ -319,6 +324,17 @@ struct AudioUnitParameterInfo {
     flags: u32,
 }
 
+/// `AudioUnitParameter`: one parameter of one unit, as parameter listeners name it.
+#[repr(C)]
+struct AudioUnitParameter {
+    unit: AudioUnit,
+    id: u32,
+    scope: u32,
+    element: u32,
+}
+
+type ParamListenerProc = unsafe extern "C" fn(user: *mut c_void, object: *mut c_void, param: *const AudioUnitParameter, value: f32);
+
 #[link(name = "AudioToolbox", kind = "framework")]
 unsafe extern "C" {
     fn AudioComponentFindNext(component: AudioComponent, desc: *const AudioComponentDescription) -> AudioComponent;
@@ -344,6 +360,17 @@ unsafe extern "C" {
     ) -> OSStatus;
     fn AudioUnitReset(unit: AudioUnit, scope: u32, element: u32) -> OSStatus;
     fn MusicDeviceMIDIEvent(unit: AudioUnit, status: u32, data1: u32, data2: u32, offset: u32) -> OSStatus;
+    fn AUListenerCreate(
+        proc_: ParamListenerProc,
+        user: *mut c_void,
+        run_loop: CFTypeRef,
+        mode: CFTypeRef,
+        interval: f32,
+        listener: *mut *mut c_void,
+    ) -> OSStatus;
+    fn AUListenerDispose(listener: *mut c_void) -> OSStatus;
+    fn AUListenerAddParameter(listener: *mut c_void, object: *mut c_void, param: *const AudioUnitParameter) -> OSStatus;
+    fn AUParameterSet(sender: *mut c_void, object: *mut c_void, param: *const AudioUnitParameter, value: f32, offset: u32) -> OSStatus;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -562,7 +589,7 @@ impl Instance {
             outputs: Vec::new(),
             abl: AudioBufferList { number_buffers: 0, buffers: [empty; MAX_AU_CHANNELS] },
             has_input,
-            link: std::sync::Arc::new(StateLink(std::sync::Mutex::new(LinkedUnit(Some(unit))))),
+            link: std::sync::Arc::new(StateLink::new(unit)),
             initialized: false,
             channels: 0,
             max_frames: 0,
@@ -889,18 +916,106 @@ impl Instance {
     }
 }
 
-struct LinkedUnit(Option<AudioUnit>);
+/// The parameter edits a listener heard, until the editor's next `idle`. Bounded: once full,
+/// further edits are dropped.
+#[derive(Default)]
+struct Edits(std::sync::Mutex<Vec<(u32, f32)>>);
 
-// SAFETY: the pointer is only used under the link's mutex, while the instance keeps the unit alive.
+impl Edits {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<(u32, f32)>> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn push(&self, id: u32, value: f32) {
+        let mut q = self.lock();
+        if q.len() < EDIT_CAP && value.is_finite() {
+            q.push((id, value));
+        }
+    }
+
+    fn take(&self) -> Vec<(u32, f32)> {
+        self.lock().drain(..).collect()
+    }
+}
+
+/// Called by the listener, on the thread that changed the parameter (the view's: the main thread).
+unsafe extern "C" fn param_changed(user: *mut c_void, _object: *mut c_void, param: *const AudioUnitParameter, value: f32) {
+    // SAFETY: `user` is the `Edits` the listener was created with, freed only after the listener
+    // is disposed; `param` is null or valid for this call.
+    let (edits, param) = unsafe { (user.cast::<Edits>().cast_const().as_ref(), param.as_ref()) };
+    if let (Some(edits), Some(p)) = (edits, param) {
+        edits.push(p.id, value);
+    }
+}
+
+/// A parameter listener on every parameter of one unit, hearing the edits made through
+/// `AUParameterSet` (what Cocoa views use) by anyone but itself.
+struct Listener {
+    raw: *mut c_void,
+    /// Leaked `Box<Edits>` the callback writes; freed in `dispose`.
+    edits: *mut Edits,
+}
+
+impl Listener {
+    fn new(unit: AudioUnit, ids: &[u32]) -> Option<Listener> {
+        let edits = Box::into_raw(Box::new(Edits(std::sync::Mutex::new(Vec::new()))));
+        let mut raw: *mut c_void = ptr::null_mut();
+        // SAFETY: `edits` lives until `dispose` (after `AUListenerDispose`) or is leaked with the
+        // listener. An interval of 0 calls back on the changing thread, without a run loop.
+        let st = unsafe { AUListenerCreate(param_changed, edits.cast(), ptr::null(), ptr::null(), 0.0, &mut raw) };
+        if st != 0 || raw.is_null() {
+            // SAFETY: no listener holds `edits`.
+            drop(unsafe { Box::from_raw(edits) });
+            return None;
+        }
+        for &id in ids {
+            let p = AudioUnitParameter { unit, id, scope: SCOPE_GLOBAL, element: 0 };
+            // SAFETY: live listener and unit; `p` is a local.
+            unsafe { AUListenerAddParameter(raw, ptr::null_mut(), &p) };
+        }
+        Some(Listener { raw, edits })
+    }
+
+    fn edits(&self) -> &Edits {
+        // SAFETY: `edits` is the box leaked in `new`, freed only in `dispose`.
+        unsafe { &*self.edits }
+    }
+
+    /// Without this call the listener and its queue are leaked (`Listener` has no destructor).
+    fn dispose(self) {
+        // SAFETY: a live listener; once disposed it no longer calls back, so `edits` can go.
+        unsafe {
+            AUListenerDispose(self.raw);
+            drop(Box::from_raw(self.edits));
+        }
+    }
+}
+
+struct LinkedUnit {
+    /// `None` once the instance is gone.
+    unit: Option<AudioUnit>,
+    /// Created by the first editor handle, disposed with the instance.
+    listener: Option<Listener>,
+    /// The open (or user-closed) view and its window.
+    editor: Option<window::Editor>,
+}
+
+// SAFETY: the unit and listener pointers are only used under the link's mutex, while the instance
+// keeps the unit alive; the editor is `Send` on its own terms (main-thread use only).
 unsafe impl Send for LinkedUnit {}
 
-/// The link between an instance and its state handles: the unit's state is read on the main
-/// thread while the instance renders on the audio thread (hosts make property calls from other
-/// threads during rendering). The instance clears the link under its lock before it disposes of
-/// the unit, so a handle never reads a dead unit.
+/// The link between an instance and its state and editor handles: the unit's state is read and
+/// its Cocoa view driven on the main thread while the instance renders on the audio thread (hosts
+/// make property and parameter calls from other threads during rendering). The audio thread never
+/// takes this lock. The instance closes the view and clears the link under its lock before it
+/// disposes of the unit, so a handle never reaches a dead unit.
 pub(crate) struct StateLink(std::sync::Mutex<LinkedUnit>);
 
 impl StateLink {
+    fn new(unit: AudioUnit) -> StateLink {
+        StateLink(std::sync::Mutex::new(LinkedUnit { unit: Some(unit), listener: None, editor: None }))
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, LinkedUnit> {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -908,7 +1023,7 @@ impl StateLink {
     /// The unit's `ClassInfo` as a binary property list (`None` once the instance is gone).
     pub fn save_state(&self) -> Option<Vec<u8>> {
         let g = self.lock();
-        let unit = g.0?;
+        let unit = g.unit?;
         let mut plist: CFTypeRef = ptr::null();
         let mut size = std::mem::size_of::<CFTypeRef>() as u32;
         // SAFETY: the unit is live while the link holds it (see the type); the property is a
@@ -936,17 +1051,199 @@ impl StateLink {
         out
     }
 
-    fn kill(&self) {
-        self.lock().0 = None;
+    /// True when the unit names a Cocoa view (`kAudioUnitProperty_CocoaUI`). Loads nothing.
+    pub fn has_view(&self) -> bool {
+        let g = self.lock();
+        let Some(unit) = g.unit else { return false };
+        let (mut size, mut writable) = (0u32, 0u8);
+        // SAFETY: the unit is live while the link holds it; out pointers are locals.
+        let st = unsafe { AudioUnitGetPropertyInfo(unit, PROP_COCOA_UI, SCOPE_GLOBAL, 0, &mut size, &mut writable) };
+        st == 0 && size as usize >= 2 * std::mem::size_of::<CFTypeRef>()
     }
+
+    /// Starts hearing edits of the parameters `ids` (once; later calls do nothing).
+    pub fn listen(&self, ids: &[u32]) {
+        let mut g = self.lock();
+        if let (Some(unit), None) = (g.unit, &g.listener) {
+            g.listener = Listener::new(unit, ids);
+        }
+    }
+
+    /// The parameter edits made by others (the view) since the last call, as `(id, value)`.
+    pub fn take_edits(&self) -> Vec<(u32, f32)> {
+        self.lock().listener.as_ref().map_or_else(Vec::new, |l| l.edits().take())
+    }
+
+    /// Sets a parameter and tells the unit's other listeners (the view), but not ours, so the
+    /// change is not reported back as an edit.
+    pub fn set_param(&self, id: u32, value: f32) {
+        if !value.is_finite() {
+            return;
+        }
+        let g = self.lock();
+        let Some(unit) = g.unit else { return };
+        let sender = g.listener.as_ref().map_or(ptr::null_mut(), |l| l.raw);
+        let p = AudioUnitParameter { unit, id, scope: SCOPE_GLOBAL, element: 0 };
+        // SAFETY: the unit is live while the link holds it; `sender` is null or our live
+        // listener; `p` is a local.
+        unsafe { AUParameterSet(sender, ptr::null_mut(), &p, value, 0) };
+    }
+
+    /// Creates the unit's view inside a host window that is not shown yet.
+    fn make_editor(unit: AudioUnit, title: &str) -> Result<window::Editor, String> {
+        let (url, class) = cocoa_view(unit)?;
+        let made = window::Editor::new(title, unit, url, &class);
+        release(url);
+        made
+    }
+
+    /// Opens (or raises) the view in a host window. Main thread only.
+    pub fn open(&self, title: &str) -> Result<(), String> {
+        if !window::on_main_thread() {
+            return Err("plug-in editors must be opened on the main thread".into());
+        }
+        let mut g = self.lock();
+        if let Some(e) = &g.editor {
+            if e.is_visible() {
+                e.raise();
+                return Ok(());
+            }
+            // The user closed the window: start over.
+            if let Some(e) = g.editor.take() {
+                objc2::rc::autoreleasepool(|_| e.close());
+            }
+        }
+        let unit = g.unit.ok_or_else(|| "the plug-in is gone".to_string())?;
+        let editor = objc2::rc::autoreleasepool(|_| StateLink::make_editor(unit, title))?;
+        editor.raise();
+        g.editor = Some(editor);
+        // What the view reported while it was being made is not an edit.
+        if let Some(l) = &g.listener {
+            let _ = l.edits().take();
+        }
+        Ok(())
+    }
+
+    /// The view's size in points without showing it: the open view's, or a view made inside a
+    /// hidden window and torn down again. Main thread only.
+    pub fn probe(&self) -> Result<(u32, u32), String> {
+        if !window::on_main_thread() {
+            return Err("plug-in editors must be opened on the main thread".into());
+        }
+        let g = self.lock();
+        if let Some(e) = &g.editor {
+            return Ok(e.size());
+        }
+        let unit = g.unit.ok_or_else(|| "the plug-in is gone".to_string())?;
+        objc2::rc::autoreleasepool(|_| {
+            let e = StateLink::make_editor(unit, "")?;
+            let size = e.size();
+            e.close();
+            Ok(size)
+        })
+    }
+
+    /// Closes the view. Main thread only (no-op elsewhere).
+    pub fn close(&self) {
+        if window::on_main_thread()
+            && let Some(e) = self.lock().editor.take()
+        {
+            objc2::rc::autoreleasepool(|_| e.close());
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        let g = self.lock();
+        match &g.editor {
+            Some(e) if window::on_main_thread() => e.is_visible(),
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    /// Main-thread housekeeping: tears the view down when the user closed its window, otherwise
+    /// makes the window follow the view's size.
+    pub fn idle(&self) {
+        if !window::on_main_thread() {
+            return;
+        }
+        let mut g = self.lock();
+        objc2::rc::autoreleasepool(|_| {
+            if g.editor.as_ref().is_some_and(|e| !e.is_visible()) {
+                if let Some(e) = g.editor.take() {
+                    e.close();
+                }
+            } else if let Some(e) = &g.editor {
+                e.fit();
+            }
+        });
+    }
+
+    /// Called by the instance before it disposes of the unit: closes the view and cuts the
+    /// handles off. Returns true when the view was open off the main thread and had to be leaked:
+    /// it may still call into the unit, which must then stay alive too.
+    fn kill(&self) -> bool {
+        let mut g = self.lock();
+        let mut leaked = false;
+        if let Some(e) = g.editor.take() {
+            if window::on_main_thread() {
+                // The pool drains here, before the unit is disposed.
+                objc2::rc::autoreleasepool(|_| e.close());
+            } else {
+                log::warn!("au: editor still open while its plug-in is destroyed off the main thread");
+                e.leak();
+                leaked = true;
+            }
+        }
+        // A leaked view keeps listening through its own listener; ours (and its queue) is left
+        // alive with it.
+        if let Some(l) = g.listener.take()
+            && !leaked
+        {
+            l.dispose();
+        }
+        g.unit = None;
+        leaked
+    }
+}
+
+/// The bundle URL (owned: the caller releases it) and the first class name of the unit's Cocoa
+/// view, from `kAudioUnitProperty_CocoaUI`.
+fn cocoa_view(unit: AudioUnit) -> Result<(CFTypeRef, String), String> {
+    let ptr_size = std::mem::size_of::<CFTypeRef>();
+    let (mut size, mut writable) = (0u32, 0u8);
+    // SAFETY: the unit is live (callers hold the link); out pointers are locals.
+    let st = unsafe { AudioUnitGetPropertyInfo(unit, PROP_COCOA_UI, SCOPE_GLOBAL, 0, &mut size, &mut writable) };
+    if st != 0 || (size as usize) < 2 * ptr_size {
+        return Err("this plug-in has no editor".into());
+    }
+    let n = (size as usize / ptr_size).min(1 + MAX_VIEW_CLASSES);
+    let mut refs: Vec<CFTypeRef> = vec![ptr::null(); n];
+    let mut size = (n * ptr_size) as u32;
+    // SAFETY: `refs` has room for `size` bytes: a `CFURLRef` then `CFStringRef`s, each returned +1.
+    let st = unsafe { AudioUnitGetProperty(unit, PROP_COCOA_UI, SCOPE_GLOBAL, 0, refs.as_mut_ptr().cast(), &mut size) };
+    let class = if st == 0 { refs.get(1).map_or_else(String::new, |&c| cf_string(c)) } else { String::new() };
+    for &r in refs.iter().skip(1) {
+        release(r);
+    }
+    let url = refs.first().copied().unwrap_or(ptr::null());
+    if st != 0 || url.is_null() || class.is_empty() {
+        release(url);
+        return Err("the plug-in's editor could not be loaded".into());
+    }
+    Ok((url, class))
 }
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        self.link.kill();
-        // SAFETY: the unit is live (disposed only here); after disposal nothing can call the
-        // input callback or the host callbacks, so the leaked input state and host time can be
-        // freed.
+        if self.link.kill() {
+            // A leaked view may still call into the unit: leave it, and what its callbacks read,
+            // alive.
+            return;
+        }
+        // SAFETY: the unit is live (disposed only here) and no view of it is left; after disposal
+        // nothing can call the input callback or the host callbacks, so the leaked input state and
+        // host time can be freed.
         unsafe {
             if self.initialized {
                 AudioUnitUninitialize(self.unit);
@@ -955,6 +1252,164 @@ impl Drop for Instance {
             drop(Box::from_raw(self.input));
             drop(Box::from_raw(self.time));
         }
+    }
+}
+
+/// The host window of a unit's Cocoa view.
+mod window {
+    use super::AudioUnit;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject, Sel};
+    use objc2::{MainThreadMarker, MainThreadOnly, msg_send, sel};
+    use objc2_app_kit::{NSApplication, NSBackingStoreType, NSFloatingWindowLevel, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask};
+    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+    use std::ffi::c_void;
+
+    /// Largest window side, in points.
+    const MAX_SIDE: f64 = 16_384.0;
+
+    /// `uiViewForAudioUnit:withSize:` of `AUCocoaUIBase`.
+    type UiViewFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, AudioUnit, NSSize) -> *mut AnyObject;
+
+    pub fn on_main_thread() -> bool {
+        MainThreadMarker::new().is_some()
+    }
+
+    fn clamp(s: NSSize) -> NSSize {
+        let side = |v: f64| if v.is_finite() { v.clamp(1.0, MAX_SIDE) } else { 1.0 };
+        NSSize::new(side(s.width), side(s.height))
+    }
+
+    /// A unit's Cocoa view inside its host `NSWindow` (titled and closable, floating above the
+    /// app, not minimizable: as the VST3 host's). A view only ever lives inside this window: a
+    /// view left outside one can call into its unit after the unit is gone. Holds one retain of
+    /// the window, the view and the factory that made it; main thread only.
+    pub struct Editor {
+        window: *mut NSWindow,
+        view: *mut NSView,
+        factory: *mut AnyObject,
+    }
+
+    // SAFETY: the pointers are only dereferenced on the main thread (every method checks
+    // `MainThreadMarker`); the struct merely carries the retains between threads' locks.
+    unsafe impl Send for Editor {}
+
+    impl Editor {
+        /// Makes the view of `unit` (class `class` of the bundle at `url`) inside a new host
+        /// window sized to it and not shown yet.
+        pub fn new(title: &str, unit: AudioUnit, url: *const c_void, class: &str) -> Result<Editor, String> {
+            let mtm = MainThreadMarker::new().ok_or_else(|| "not on the main thread".to_string())?;
+            let failed = || "the plug-in's editor could not be loaded".to_string();
+            let bundle_class = AnyClass::get(c"NSBundle").ok_or_else(failed)?;
+            // SAFETY: `url` is a live CFURL, toll-free bridged to NSURL; the result is retained.
+            let bundle: Option<Retained<AnyObject>> = unsafe { msg_send![bundle_class, bundleWithURL: url.cast::<AnyObject>()] };
+            let bundle = bundle.ok_or_else(failed)?;
+            let name = NSString::from_str(class);
+            // SAFETY: `classNamed:` takes an NSString and returns a class or nil (loading the bundle).
+            let factory_class: *const AnyClass = unsafe { msg_send![&*bundle, classNamed: &*name] };
+            // SAFETY: a class pointer from the runtime, or null.
+            let factory_class = unsafe { factory_class.as_ref() }.ok_or_else(failed)?;
+            // SAFETY: `new` on a class returns a +1 instance or nil.
+            let factory: Option<Retained<AnyObject>> = unsafe { msg_send![factory_class, new] };
+            let factory = factory.ok_or_else(failed)?;
+            let make = sel!(uiViewForAudioUnit:withSize:);
+            // SAFETY: `respondsToSelector:` is NSObject's.
+            let responds: bool = unsafe { msg_send![&*factory, respondsToSelector: make] };
+            if !responds {
+                return Err(failed());
+            }
+
+            let _app = NSApplication::sharedApplication(mtm);
+            let rect = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(400.0, 300.0));
+            let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
+            // SAFETY: a freshly allocated window on the main thread; valid rect and style.
+            let window = unsafe {
+                NSWindow::initWithContentRect_styleMask_backing_defer(NSWindow::alloc(mtm), rect, style, NSBackingStoreType::Buffered, false)
+            };
+            // SAFETY: we keep our own retain and release it in `close`, so AppKit must not
+            // release the window when the user closes it.
+            unsafe { window.setReleasedWhenClosed(false) };
+            window.setTitle(&NSString::from_str(title));
+            window.setLevel(NSFloatingWindowLevel);
+            window.setHidesOnDeactivate(true);
+            window.setExcludedFromWindowsMenu(true);
+            window.setCollectionBehavior(NSWindowCollectionBehavior::Transient | NSWindowCollectionBehavior::IgnoresCycle);
+            let Some(content) = window.contentView() else {
+                window.close();
+                return Err(failed());
+            };
+
+            // The unit argument's declared type differs between plug-ins (and so its encoding),
+            // which `msg_send!` would check: call `objc_msgSend` with the protocol's signature.
+            // SAFETY: `objc_msgSend` takes the receiver, selector and arguments of the method.
+            let send = unsafe { std::mem::transmute::<unsafe extern "C-unwind" fn(), UiViewFn>(objc2::ffi::objc_msgSend) };
+            // SAFETY: the factory responds to `uiViewForAudioUnit:withSize:` (checked above); the
+            // unit is live; the view comes back autoreleased (+0) and is retained right away.
+            let view = unsafe { Retained::retain(send(Retained::as_ptr(&factory).cast_mut(), make, unit, NSSize::new(0.0, 0.0))) };
+            let Some(view) = view.and_then(|v| v.downcast::<NSView>().ok()) else {
+                window.close();
+                return Err(failed());
+            };
+            // The window follows the view, never the other way round: many views have a sizable
+            // autoresizing mask, and resizing them with the window would feed back into `fit`.
+            content.setAutoresizesSubviews(false);
+            view.setFrameOrigin(NSPoint::new(0.0, 0.0));
+            content.addSubview(&view);
+            window.setContentSize(clamp(view.frame().size));
+            window.center();
+            Ok(Editor { window: Retained::into_raw(window), view: Retained::into_raw(view), factory: Retained::into_raw(factory) })
+        }
+
+        fn get(&self) -> Option<(&NSWindow, &NSView)> {
+            MainThreadMarker::new()?;
+            // SAFETY: we hold a retain of both until `close`.
+            unsafe { Some((self.window.as_ref()?, self.view.as_ref()?)) }
+        }
+
+        /// The view's size in points.
+        pub fn size(&self) -> (u32, u32) {
+            let s = self.get().map_or(NSSize::new(1.0, 1.0), |(_, v)| clamp(v.frame().size));
+            (s.width.round() as u32, s.height.round() as u32)
+        }
+
+        /// Makes the window's content follow the view when the view changed its own size.
+        pub fn fit(&self) {
+            let Some((w, v)) = self.get() else { return };
+            let want = clamp(v.frame().size);
+            let have = w.contentView().map(|c| c.frame().size);
+            if have.is_some_and(|h| (h.width - want.width).abs() >= 0.5 || (h.height - want.height).abs() >= 0.5) {
+                w.setContentSize(want);
+            }
+        }
+
+        pub fn raise(&self) {
+            if let Some((w, _)) = self.get() {
+                w.makeKeyAndOrderFront(None);
+            }
+        }
+
+        pub fn is_visible(&self) -> bool {
+            self.get().is_some_and(|(w, _)| w.isVisible())
+        }
+
+        /// Takes the view out of the window and releases view, factory and window. Callers drain
+        /// an autorelease pool around it, before the unit is disposed.
+        pub fn close(self) {
+            let Some((w, v)) = self.get() else { return self.leak() };
+            v.removeFromSuperview();
+            w.orderOut(None);
+            w.close();
+            // SAFETY: balances the retains taken in `new`; nothing uses the pointers after this.
+            unsafe {
+                drop(Retained::from_raw(self.view));
+                drop(Retained::from_raw(self.factory));
+                drop(Retained::from_raw(self.window));
+            }
+        }
+
+        /// Leaves window, view and factory alive (off the main thread, where they can't be
+        /// closed). `Editor` has no destructor: this only documents the intent.
+        pub fn leak(self) {}
     }
 }
 
@@ -1002,5 +1457,47 @@ mod tests {
         assert_eq!(std::mem::offset_of!(AudioUnitParameterInfo, cf_name_string), 72);
         assert_eq!(std::mem::offset_of!(AudioUnitParameterInfo, flags), 96);
         assert_eq!(std::mem::size_of::<AudioUnitParameterInfo>(), 104);
+        assert_eq!(std::mem::size_of::<AudioUnitParameter>(), 24);
+    }
+
+    #[test]
+    fn the_listener_hears_the_view_but_not_the_host() {
+        let code = |c: &[u8; 4]| u32::from_be_bytes(*c);
+        let Ok(inst) = Instance::new(code(b"aufx"), code(b"dely"), code(b"appl"), true) else {
+            eprintln!("AUDelay not installed; skipping");
+            return;
+        };
+        let link = inst.state_link();
+        assert!(link.has_view());
+        link.listen(&[0, 1, 2, 3]);
+        link.listen(&[0, 1, 2, 3]);
+        assert!(link.take_edits().is_empty());
+        // What a Cocoa view does: `AUParameterSet` from a sender that is not ours.
+        let wet = AudioUnitParameter { unit: inst.unit, id: 0, scope: SCOPE_GLOBAL, element: 0 };
+        // SAFETY: the unit is live; a null sender stands for the view's own listener.
+        assert_eq!(unsafe { AUParameterSet(ptr::null_mut(), ptr::null_mut(), &wet, 25.0, 0) }, 0);
+        assert_eq!(link.take_edits(), vec![(0, 25.0)]);
+        assert!(link.take_edits().is_empty(), "taken once");
+        // The host's own changes reach the unit (and the view) but are not edits.
+        link.set_param(1, 0.4);
+        assert_eq!(inst.get_param(1), Some(0.4));
+        assert!(link.take_edits().is_empty());
+        drop(inst);
+        assert!(!link.has_view());
+        assert!(link.take_edits().is_empty());
+        link.set_param(1, 0.5);
+    }
+
+    #[test]
+    fn edits_are_bounded() {
+        let e = Edits::default();
+        for i in 0..EDIT_CAP + 10 {
+            e.push(i as u32, 1.0);
+        }
+        e.push(0, f32::NAN);
+        let got = e.take();
+        assert_eq!(got.len(), EDIT_CAP);
+        assert_eq!(got.last(), Some(&((EDIT_CAP - 1) as u32, 1.0)));
+        assert!(e.take().is_empty());
     }
 }

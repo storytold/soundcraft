@@ -13,6 +13,16 @@ serde.workspace = true
 thiserror.workspace = true
 log.workspace = true
 
+# The editor host window (an NSWindow holding the unit's Cocoa view), as in soundcraft-vst3-host.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSWindow", "NSGraphics"] }
+
+[[test]]
+name = "editor_main_thread"
+harness = false
+
 # An isolated unsafe helper crate (craftrules never-crash), like soundcraft-vst3-host: this crate
 # opts out of the workspace `unsafe_code = "forbid"` for itself only. It denies unsafe everywhere
 # and allows it solely on the FFI module (`src/ffi.rs`). The rest mirrors `[workspace.lints]`.

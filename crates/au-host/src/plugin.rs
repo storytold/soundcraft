@@ -1,7 +1,8 @@
 //! `AuPlugin`: a loaded Audio Unit behind the safe `soundcraft_dsp::Plugin` trait.
 
-use crate::ffi::Instance;
-use soundcraft_dsp::{Plugin, PluginInfo, Transport};
+use crate::ffi::{Instance, StateLink};
+use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport};
+use std::sync::Arc;
 
 /// Most MIDI events queued between two blocks (extra events are dropped).
 const EVENT_CAP: usize = 1024;
@@ -54,6 +55,16 @@ impl AuPlugin {
             latency: 0,
             tail: 0,
         }
+    }
+
+    /// The editor's size in points without showing it (makes the view in a hidden window and
+    /// tears it down, or reads the open one). Main thread only.
+    pub fn editor_size(&self) -> Result<(u32, u32), String> {
+        let link = self.inst.state_link();
+        if !link.has_view() {
+            return Err("this plug-in has no editor".into());
+        }
+        link.probe()
     }
 
     /// Re-reads every parameter value from the unit (after a state load).
@@ -255,8 +266,70 @@ impl Plugin for AuPlugin {
         ok
     }
 
+    fn open_editor(&mut self) -> Result<(), String> {
+        let link = self.inst.state_link();
+        if !link.has_view() {
+            return Err("this plug-in has no editor".into());
+        }
+        link.open(self.info.name)
+    }
+
+    fn close_editor(&mut self) {
+        self.inst.state_link().close();
+    }
+
+    fn editor(&mut self) -> Option<Box<dyn PluginEditor>> {
+        let link = self.inst.state_link();
+        if !link.has_view() {
+            return None;
+        }
+        link.listen(&self.ids);
+        Some(Box::new(AuEditor { link, info: self.info, ids: self.ids.clone() }))
+    }
+
     fn state_reader(&mut self) -> Option<Box<dyn soundcraft_dsp::PluginStateReader>> {
         let link = self.inst.state_link();
         Some(Box::new(move || link.save_state()))
+    }
+}
+
+/// An Audio Unit's editor (its Cocoa view in a host window), driven from the main thread.
+struct AuEditor {
+    link: Arc<StateLink>,
+    info: &'static PluginInfo,
+    /// Audio Unit id of each `info.params` entry (same order).
+    ids: Vec<u32>,
+}
+
+impl PluginEditor for AuEditor {
+    fn open(&mut self) -> Result<(), String> {
+        self.link.open(self.info.name)
+    }
+
+    fn close(&mut self) {
+        self.link.close();
+    }
+
+    fn is_open(&self) -> bool {
+        self.link.is_open()
+    }
+
+    fn idle(&mut self) -> Vec<(String, f32)> {
+        self.link.idle();
+        let mut out = Vec::new();
+        for (aid, v) in self.link.take_edits() {
+            let Some(i) = self.ids.iter().position(|&x| x == aid) else { continue };
+            if let Some(p) = self.info.params.get(i) {
+                out.push((p.id.to_string(), p.clamp(v)));
+            }
+        }
+        out
+    }
+
+    fn set_param(&mut self, id: &str, value: f32) {
+        let Some(i) = self.info.params.iter().position(|p| p.id == id) else { return };
+        if let (Some(p), Some(&aid)) = (self.info.params.get(i), self.ids.get(i)) {
+            self.link.set_param(aid, p.clamp(value));
+        }
     }
 }
