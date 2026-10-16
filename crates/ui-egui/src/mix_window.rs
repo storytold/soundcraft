@@ -587,7 +587,8 @@ pub(crate) fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: 
     let t = Tokens::current();
     let id = track.id;
     let ins = track.mixer.inserts.get(slot).cloned().flatten();
-    let resp = ui.interact(r, ui.id().with(("ins", id.0, slot)), Sense::click());
+    let sense = if ins.is_some() { Sense::click_and_drag() } else { Sense::click() };
+    let resp = ui.interact(r, ui.id().with(("ins", id.0, slot)), sense);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Insert {}", (b'A' + slot as u8) as char)));
     let info = ins.as_ref().and_then(|i| plugin_info(&i.plugin));
     let name = ins.as_ref().map(|i| info.map_or(i.plugin.as_str(), |p| p.short_name)).unwrap_or_default();
@@ -606,12 +607,53 @@ pub(crate) fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: 
             app.ui.plugin_windows.push((id, slot));
         }
     }
+    let here = crate::InsertDrag { track: id, slot };
+    if ins.is_some() {
+        resp.dnd_set_drag_payload(here);
+        if resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        }
+    }
+    if resp.dnd_hover_payload::<crate::InsertDrag>().is_some_and(|from| *from != here) {
+        ui.painter().rect_stroke(r, 1.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+    }
+    if let Some(from) = resp.dnd_release_payload::<crate::InsertDrag>()
+        && *from != here
+    {
+        // Option (Alt) at the drop copies, as in Pro Tools.
+        drop_insert(app, *from, here, ui.input(|i| i.modifiers.alt));
+        ui.ctx().request_repaint();
+    }
     let cmd = if ui.ctx().os().is_mac() { "⌘" } else { "Ctrl+" };
-    let tip = format!("{name}: click to open · {cmd}click to bypass · right-click to change");
+    let alt = if ui.ctx().os().is_mac() { "⌥" } else { "Alt+" };
+    let tip = format!("{name}: click to open · {cmd}click to bypass · drag to move · {alt}drag to copy · right-click to change");
     let menu_resp = if ins.is_none() { resp.clone() } else { resp.clone().on_hover_text(tip) };
     let popup = if ins.is_none() { egui::Popup::menu(&menu_resp) } else { egui::Popup::context_menu(&menu_resp) };
     let popup = popup.close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
     popup.show(|ui| plugin_menu(app, ui, id, slot, ins.is_some()));
+}
+
+/// Moves (or copies) the insert `from` onto `to`, replacing what `to` holds, as one undo step.
+fn drop_insert(app: &mut SoundApp, from: crate::InsertDrag, to: crate::InsertDrag, copy: bool) {
+    // A hosted plugin's settings live in its instance: store them on the insert so they travel.
+    app.capture_plugin_states();
+    let editor = !copy && app.player.as_ref().is_some_and(|p| p.editor_open(from.track, from.slot));
+    let params = json!({"track": from.track.0, "slot": from.slot, "to_track": to.track.0, "to_slot": to.slot, "copy": copy});
+    if let Err(e) = app.run("mix.insert_transfer", params) {
+        app.ui.status = e;
+        return;
+    }
+    if copy {
+        return;
+    }
+    let (src, dst) = ((from.track, from.slot), (to.track, to.slot));
+    if app.ui.plugin_windows.contains(&src) {
+        app.ui.plugin_windows.retain(|w| *w != src && *w != dst);
+        app.ui.plugin_windows.push(dst);
+    }
+    if editor {
+        app.reopen_editor = Some(dst);
+    }
 }
 
 /// An insert's menu: a search field that takes typing at once, then (until something is typed)

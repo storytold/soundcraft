@@ -3,7 +3,7 @@
 use super::*;
 use crate::cmd;
 use serde_json::json;
-use soundcraft_model::{AutoParam, AutomationMode, INSERT_SLOTS, Insert, SEND_SLOTS, SendSlot, Session, TrackId};
+use soundcraft_model::{AutoParam, AutomationLane, AutomationMode, INSERT_SLOTS, Insert, SEND_SLOTS, SendSlot, Session, TrackId, TrackKind};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -105,6 +105,15 @@ pub fn specs() -> Vec<CommandSpec> {
             insert_params
         ),
         cmd!("mix.insert_move", "Move Insert", [], None, "{track?, from, to}", has_selection, insert_move),
+        cmd!(
+            "mix.insert_transfer",
+            "Move or Copy Insert",
+            [],
+            None,
+            "{track?, slot, to_track?, to_slot, copy?: false}: moves (or copies) an insert with its settings, plugin state and automation, replacing whatever `to_slot` holds",
+            has_selection,
+            insert_transfer
+        ),
         cmd!(
             "mix.send",
             "Assign Send",
@@ -411,6 +420,60 @@ fn insert_move(e: &mut Engine, p: &Value) -> Result<Value> {
         tr.mixer.inserts.swap(from, to);
     }
     Ok(json!({}))
+}
+
+/// Drag (or Option-drag) of an insert onto another slot. Plugin automation lanes are keyed by
+/// slot, so they go with the insert, and the replaced plugin's lanes go with it.
+fn insert_transfer(e: &mut Engine, p: &Value) -> Result<Value> {
+    const CMD: &str = "mix.insert_transfer";
+    let (t, from) = track_slot(e, p, CMD, INSERT_SLOTS)?;
+    let to_t = track_param(e, CMD, p, "to_track")?.unwrap_or(t);
+    let to = slot_of(p, "to_slot", INSERT_SLOTS).ok_or_else(|| bad(CMD, "`to_slot` must be 0..9 or a..j"))?;
+    let copy = p.get("copy").and_then(Value::as_bool).unwrap_or(false);
+    if (t, from) == (to_t, to) {
+        return Err(bad(CMD, "the insert is already in that slot"));
+    }
+    let (from8, to8) = (u8::try_from(from).map_err(|_| bad(CMD, "slot"))?, u8::try_from(to).map_err(|_| bad(CMD, "slot"))?);
+    let is_slot = |l: &AutomationLane, k: u8| matches!(&l.param, AutoParam::Plugin { slot, .. } if *slot == k);
+    let s = e.session();
+    let src = s.track(t).ok_or_else(|| bad(CMD, "no track"))?;
+    let ins = src.mixer.inserts.get(from).cloned().flatten().ok_or_else(|| bad(CMD, "empty slot"))?;
+    let lanes: Vec<AutomationLane> = src.automation.iter().filter(|l| is_slot(l, from8)).cloned().collect();
+    // A lane left on show for the emptied slot would take Pencil points for whatever goes there next.
+    let shown = match AutoParam::parse(&src.view) {
+        Some(AutoParam::Plugin { slot, param }) if slot == from8 && !copy => Some(param),
+        _ => None,
+    };
+    let to_kind = s.track(to_t).map(|tr| tr.kind);
+    // An instrument insert plays the MIDI of a MIDI track; anywhere else it would get none.
+    if super::clap::plugin_info(&ins.plugin).is_some_and(|i| i.is_instrument) && to_kind != Some(TrackKind::Midi) {
+        return Err(bad(CMD, "an instrument plugin can only go on a MIDI track"));
+    }
+    let s = e.session_mut();
+    if !copy && let Some(tr) = s.track_mut(t) {
+        if let Some(sl) = tr.mixer.inserts.get_mut(from) {
+            *sl = None;
+        }
+        tr.automation.retain(|l| !is_slot(l, from8));
+        if shown.is_some() {
+            tr.view = "volume".into();
+        }
+    }
+    let tr = s.track_mut(to_t).ok_or_else(|| bad(CMD, "no track"))?;
+    if let Some(sl) = tr.mixer.inserts.get_mut(to) {
+        *sl = Some(ins);
+    }
+    tr.automation.retain(|l| !is_slot(l, to8));
+    for mut l in lanes {
+        if let AutoParam::Plugin { slot, .. } = &mut l.param {
+            *slot = to8;
+        }
+        tr.automation.push(l);
+    }
+    if let Some(param) = shown {
+        tr.view = format!("plugin:{}:{param}", char::from(b'a' + to8));
+    }
+    Ok(json!({"track": to_t, "slot": to}))
 }
 
 fn send(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -885,5 +948,136 @@ mod tests {
         let delay = e.session().busses.iter().find(|b| b.name == "Delay").unwrap().id;
         assert_eq!(sl.target, soundcraft_model::Route::Bus(delay));
         assert_eq!((sl.level_db, sl.pan, sl.mute, sl.pre_fader), (-9.0, 0.5, true, true));
+    }
+
+    /// Vox has a compressor on A (state "SA", threshold automated); Gtr has another compressor
+    /// on B with its own settings, state "SB" and automation on two parameters.
+    fn two_compressors() -> (Engine, Insert, Insert) {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"count": 1, "name": "Vox", "format": "mono"})).unwrap();
+        e.execute("track.new", &json!({"count": 1, "name": "Gtr", "format": "mono"})).unwrap();
+        e.execute("mix.insert", &json!({"track": "Vox", "slot": "a", "plugin": "compressor", "params": {"threshold": -30.0, "ratio": 8.0}})).unwrap();
+        e.execute("mix.insert", &json!({"track": "Gtr", "slot": "b", "plugin": "compressor", "params": {"threshold": -10.0, "ratio": 2.0}})).unwrap();
+        e.execute("mix.insert_bypass", &json!({"track": "Gtr", "slot": "b", "value": true})).unwrap();
+        e.execute("mix.insert_state", &json!({"track": "Vox", "slot": "a", "state": soundcraft_model::b64::encode(b"SA")})).unwrap();
+        e.execute("mix.insert_state", &json!({"track": "Gtr", "slot": "b", "state": soundcraft_model::b64::encode(b"SB")})).unwrap();
+        let s = e.session_mut();
+        let vox = s.track_by_name("Vox").unwrap().id;
+        let gtr = s.track_by_name("Gtr").unwrap().id;
+        s.track_mut(vox).unwrap().lane_mut(&AutoParam::Plugin { slot: 0, param: "threshold".into() }).set_point(100, -40.0);
+        let g = s.track_mut(gtr).unwrap();
+        g.lane_mut(&AutoParam::Plugin { slot: 1, param: "threshold".into() }).set_point(200, -5.0);
+        g.lane_mut(&AutoParam::Plugin { slot: 1, param: "ratio".into() }).set_point(300, 3.0);
+        let a = insert_at(&e, "Vox", 0).unwrap();
+        let b = insert_at(&e, "Gtr", 1).unwrap();
+        assert_ne!(a, b);
+        (e, a, b)
+    }
+
+    fn insert_at(e: &Engine, track: &str, slot: usize) -> Option<Insert> {
+        e.session().track_by_name(track).and_then(|t| t.mixer.inserts[slot].clone())
+    }
+
+    /// The plugin lanes of `slot` on `track`, as (param, points).
+    fn lanes(e: &Engine, track: &str, slot: u8) -> Vec<(String, Vec<(i64, f32)>)> {
+        let t = e.session().track_by_name(track).unwrap();
+        t.automation
+            .iter()
+            .filter_map(|l| match &l.param {
+                AutoParam::Plugin { slot: s, param } if *s == slot => Some((param.clone(), l.points.iter().map(|p| (p.at, p.value)).collect())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn moving_an_insert_to_another_track_takes_its_settings_and_automation() {
+        let (mut e, a, _) = two_compressors();
+        e.execute("mix.insert_transfer", &json!({"track": "Vox", "slot": "a", "to_track": "Gtr", "to_slot": "b"})).unwrap();
+        assert_eq!(insert_at(&e, "Vox", 0), None);
+        assert!(lanes(&e, "Vox", 0).is_empty());
+        assert_eq!(insert_at(&e, "Gtr", 1), Some(a), "params, state and the rest replace what B held");
+        assert_eq!(lanes(&e, "Gtr", 1), vec![("threshold".to_string(), vec![(100, -40.0)])], "the replaced plugin's lanes go with it");
+    }
+
+    #[test]
+    fn the_shown_lane_follows_a_moved_insert() {
+        let (mut e, _, _) = two_compressors();
+        e.execute("track.view", &json!({"tracks": ["Vox", "Gtr"], "view": "plugin:a:threshold"})).unwrap();
+        e.execute("mix.insert_transfer", &json!({"track": "Vox", "slot": "a", "to_track": "Gtr", "to_slot": "b", "copy": true})).unwrap();
+        let view = |e: &Engine, t: &str| e.session().track_by_name(t).unwrap().view.clone();
+        assert_eq!(view(&e, "Vox"), "plugin:a:threshold", "a copy leaves the original's lane shown");
+        e.execute("mix.insert_transfer", &json!({"track": "Vox", "slot": "a", "to_track": "Gtr", "to_slot": "c"})).unwrap();
+        assert_eq!(view(&e, "Vox"), "volume", "the emptied slot's lane is no longer shown");
+        assert_eq!(view(&e, "Gtr"), "plugin:c:threshold");
+    }
+
+    #[test]
+    fn copying_an_insert_leaves_the_original_in_place() {
+        let (mut e, a, _) = two_compressors();
+        let vox_lanes = lanes(&e, "Vox", 0);
+        e.execute("mix.insert_transfer", &json!({"track": "Vox", "slot": "a", "to_track": "Gtr", "to_slot": "b", "copy": true})).unwrap();
+        assert_eq!(insert_at(&e, "Vox", 0), Some(a.clone()));
+        assert_eq!(lanes(&e, "Vox", 0), vox_lanes);
+        assert_eq!(insert_at(&e, "Gtr", 1), Some(a));
+        assert_eq!(lanes(&e, "Gtr", 1), vox_lanes);
+    }
+
+    #[test]
+    fn moving_within_a_track_renames_the_lanes() {
+        let (mut e, _, b) = two_compressors();
+        e.execute("mix.insert", &json!({"track": "Gtr", "slot": "e", "plugin": "gain", "params": {"gain": -6.0}})).unwrap();
+        e.execute("mix.insert_transfer", &json!({"track": "Gtr", "slot": "b", "to_slot": "e"})).unwrap();
+        assert_eq!(insert_at(&e, "Gtr", 1), None);
+        assert_eq!(insert_at(&e, "Gtr", 4), Some(b));
+        assert!(lanes(&e, "Gtr", 1).is_empty());
+        assert_eq!(lanes(&e, "Gtr", 4).len(), 2);
+    }
+
+    #[test]
+    fn a_move_is_one_undo_step_for_both_tracks() {
+        let (mut e, a, b) = two_compressors();
+        let (vox, gtr) = (lanes(&e, "Vox", 0), lanes(&e, "Gtr", 1));
+        let steps = e.undo_history().len();
+        e.execute("mix.insert_transfer", &json!({"track": "Vox", "slot": "a", "to_track": "Gtr", "to_slot": "b"})).unwrap();
+        assert_eq!(e.undo_history().len(), steps + 1);
+        assert!(e.undo());
+        assert_eq!((insert_at(&e, "Vox", 0), insert_at(&e, "Gtr", 1)), (Some(a.clone()), Some(b)));
+        assert_eq!((lanes(&e, "Vox", 0), lanes(&e, "Gtr", 1)), (vox.clone(), gtr));
+        assert!(e.redo());
+        assert_eq!((insert_at(&e, "Vox", 0), insert_at(&e, "Gtr", 1)), (None, Some(a)));
+        assert_eq!(lanes(&e, "Gtr", 1), vox);
+    }
+
+    #[test]
+    fn an_instrument_insert_only_goes_to_a_midi_track() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"count": 1, "name": "Keys", "kind": "midi"})).unwrap();
+        e.execute("track.new", &json!({"count": 1, "name": "Pad", "kind": "midi"})).unwrap();
+        e.execute("track.new", &json!({"count": 1, "name": "Gtr"})).unwrap();
+        e.execute("mix.insert", &json!({"track": "Keys", "slot": "a", "plugin": "subtractive_synth"})).unwrap();
+        let synth = insert_at(&e, "Keys", 0);
+        let err =
+            e.execute("mix.insert_transfer", &json!({"track": "Keys", "slot": "a", "to_track": "Gtr", "to_slot": "a", "copy": true})).unwrap_err();
+        assert!(err.to_string().contains("MIDI"), "{err}");
+        assert_eq!(insert_at(&e, "Gtr", 0), None);
+        e.execute("mix.insert_transfer", &json!({"track": "Keys", "slot": "a", "to_track": "Pad", "to_slot": "a", "copy": true})).unwrap();
+        assert_eq!(insert_at(&e, "Pad", 0), synth);
+    }
+
+    #[test]
+    fn a_transfer_needs_a_plugin_and_another_slot() {
+        let (mut e, _, _) = two_compressors();
+        let steps = e.undo_history().len();
+        for p in [
+            json!({"track": "Vox", "slot": "a", "to_slot": "a"}),
+            json!({"track": "Vox", "slot": "a", "to_track": "Vox", "to_slot": "a", "copy": true}),
+            json!({"track": "Vox", "slot": "c", "to_track": "Gtr", "to_slot": "a"}),
+            json!({"track": "Vox", "slot": "a", "to_track": "Gtr", "to_slot": "k"}),
+            json!({"track": "Vox", "slot": "a", "to_track": "Nobody", "to_slot": "a"}),
+        ] {
+            assert!(e.execute("mix.insert_transfer", &p).is_err(), "{p}");
+        }
+        assert_eq!(e.undo_history().len(), steps);
     }
 }

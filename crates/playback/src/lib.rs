@@ -397,6 +397,9 @@ impl AudioState {
 struct Side {
     /// What was last created for each slot: (plugin id, channels, created ok).
     shadow: HashMap<(TrackId, usize), (String, usize, bool)>,
+    /// Fingerprints of every state each instance was created with or captured in. A stored state
+    /// outside this set came from another plugin (a copied insert, or Undo of one).
+    known: HashMap<(TrackId, usize), HashSet<u64>>,
     /// Session sample rate the instances were prepared for.
     rate: f32,
     /// Editor handles of the live instances.
@@ -412,7 +415,16 @@ struct Side {
 
 impl Side {
     fn new(rate: f32, garbage: Receiver<Vec<Box<dyn Plugin>>>) -> Side {
-        Side { shadow: HashMap::new(), rate, editors: HashMap::new(), states: BTreeMap::new(), refused: HashSet::new(), garbage, old_sessions: None }
+        Side {
+            shadow: HashMap::new(),
+            known: HashMap::new(),
+            rate,
+            editors: HashMap::new(),
+            states: BTreeMap::new(),
+            refused: HashSet::new(),
+            garbage,
+            old_sessions: None,
+        }
     }
 
     /// Drops retired instances (closing their editors first, inside the plugin's drop) and
@@ -437,6 +449,7 @@ impl Side {
 
     fn forget(&mut self, key: (TrackId, usize)) {
         self.shadow.remove(&key);
+        self.known.remove(&key);
         self.states.remove(&key);
         self.refused.remove(&key);
         if let Some(mut e) = self.editors.remove(&key) {
@@ -792,7 +805,16 @@ fn copy_meter_snapshot(source: &MeterSnapshot, out: &mut MeterSnapshot) {
 
 impl Side {
     fn capture_states(&mut self) -> PluginStates {
-        self.states.iter_mut().filter(|(k, _)| !self.refused.contains(*k)).filter_map(|(&(t, slot), r)| Some((t, slot, r.save_state()?))).collect()
+        let out: PluginStates = self
+            .states
+            .iter_mut()
+            .filter(|(k, _)| !self.refused.contains(*k))
+            .filter_map(|(&(t, slot), r)| Some((t, slot, r.save_state()?)))
+            .collect();
+        for (t, slot, data) in &out {
+            self.known.entry((*t, *slot)).or_default().insert(state_fingerprint(Some(data)));
+        }
+        out
     }
 
     fn open_editor(&mut self, key: (TrackId, usize)) -> Result<(), String> {
@@ -822,10 +844,16 @@ impl Side {
         let mut out = Vec::new();
         for spec in specs {
             let key = (spec.track, spec.slot);
-            if self.shadow.get(&key).is_some_and(|(id, ch, _)| *id == spec.id && *ch == spec.ch) {
+            let fingerprint = state_fingerprint(spec.state.as_deref());
+            // A state this instance once had (a capture stored back, Undo past one) keeps it, with
+            // the settings it has now.
+            if self.shadow.get(&key).is_some_and(|(id, ch, _)| *id == spec.id && *ch == spec.ch)
+                && self.known.get(&key).is_none_or(|k| k.contains(&fingerprint))
+            {
                 continue;
             }
             self.forget(key);
+            self.known.insert(key, HashSet::from([fingerprint]));
             let made = soundcraft_mix::create_instance(&spec.id, spec.state.as_deref(), sr, BLOCK, spec.ch);
             log::debug!("plugin instance for {:?} slot {}: {} ({} ch, created: {})", spec.track, spec.slot, spec.id, spec.ch, made.is_some());
             self.shadow.insert(key, (spec.id.clone(), spec.ch, made.is_some()));
@@ -844,6 +872,14 @@ impl Side {
         }
         out
     }
+}
+
+/// No stored state and an empty one restore the same way.
+fn state_fingerprint(state: Option<&[u8]>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    state.unwrap_or_default().hash(&mut h);
+    h.finish()
 }
 
 /// ITU stereo fold-down gains for each main channel of a session.
@@ -1189,6 +1225,39 @@ mod tests {
         s.track_mut(t).unwrap().mixer.inserts[0] = None;
         side.prepare(&s);
         assert!(side.shadow.is_empty());
+    }
+
+    #[test]
+    fn a_slot_given_another_plugins_state_gets_a_new_instance() {
+        use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+        let mut side = Side::new(48_000.0, channel().1);
+        let mut s = soundcraft_model::Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let k = (t, 0);
+        let set = |s: &mut soundcraft_model::Session, state: &[u8]| {
+            let mut ins = Insert::new("clap:does.not.exist");
+            ins.set_state_bytes(state);
+            s.track_mut(t).unwrap().mixer.inserts[0] = Some(ins);
+        };
+        set(&mut s, b"SB");
+        side.prepare(&s);
+        // Stands in for the live instance: its current state differs from the stored one.
+        side.states.insert(k, Box::new(|| Some(b"SB tweaked".to_vec())));
+        assert_eq!(side.capture_states(), vec![(t, 0, b"SB tweaked".to_vec())]);
+
+        // Storing what was just captured, or going back (Undo) to a state this instance had,
+        // keeps it: recreating it would throw away its live settings.
+        set(&mut s, b"SB tweaked");
+        side.prepare(&s);
+        set(&mut s, b"SB");
+        side.prepare(&s);
+        assert!(side.states.contains_key(&k));
+
+        // Another plugin's state (a copy dropped on the slot, or Undo of one) needs a new
+        // instance, or the next capture would write the old one's state over it.
+        set(&mut s, b"SA");
+        side.prepare(&s);
+        assert!(side.capture_states().is_empty());
     }
 
     #[test]

@@ -215,6 +215,13 @@ pub fn fit_window_to_screen(ctx: &egui::Context) {
 #[derive(Debug, Clone, Copy)]
 pub struct DragSource(pub u64);
 
+/// Drag-and-drop payload: an insert dragged from its slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InsertDrag {
+    pub track: TrackId,
+    pub slot: usize,
+}
+
 /// Ballistic meter display state per strip.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MeterDisplay {
@@ -302,6 +309,8 @@ pub struct SoundApp {
     control_rx: Option<Receiver<ControlRequest>>,
     pending_shots: Vec<control::PendingShot>,
     last_rev: u64,
+    /// A moved insert's own editor, reopened on its new slot once the player has the new instance.
+    pub(crate) reopen_editor: Option<(TrackId, usize)>,
     fonts_ready: bool,
     fonts_installed: bool,
     /// The palette last applied to the context (light?), so visuals are set only on a change.
@@ -385,6 +394,7 @@ impl SoundApp {
             control_rx: None,
             pending_shots: Vec::new(),
             last_rev: 0,
+            reopen_editor: None,
             fonts_ready: false,
             fonts_installed: false,
             theme_applied: None,
@@ -1152,6 +1162,12 @@ impl SoundApp {
             if let Some(p) = &self.player {
                 p.update_session(self.engine.session_arc());
             }
+        }
+        if let Some((t, slot)) = self.reopen_editor.take()
+            && let Some(p) = &self.player
+            && let Err(e) = p.open_editor(t, slot)
+        {
+            log::warn!("reopening a moved plugin's editor: {e}");
         }
         self.autosave_changes();
         self.write_automation(ctx);
