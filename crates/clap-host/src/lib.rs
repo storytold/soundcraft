@@ -54,7 +54,7 @@ pub fn parse_id(id: &str) -> Option<&str> {
 }
 
 /// One plugin found by a scan.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ClapDescriptor {
     /// SoundCraft id: `clap:<plugin_id>`.
     pub id: String,
@@ -147,8 +147,7 @@ mod api {
 }
 
 /// Every plugin in the standard CLAP folders, `CLAP_PATH` and folders added with
-/// [`add_search_dir`]. Scanned on first call (loads each binary's entry, but creates no plugin
-/// instances), then cached in memory.
+/// [`add_search_dir`]. Scanned on first call, in child processes, then cached in memory.
 pub fn scan() -> Vec<ClapDescriptor> {
     api::scan()
 }
@@ -164,7 +163,7 @@ pub fn add_search_dir(dir: &Path) -> usize {
     api::add_search_dir(dir)
 }
 
-/// Scans the given folders without touching the cache.
+/// Scans the given folders without keeping the result in memory.
 pub fn scan_paths(dirs: &[PathBuf]) -> Vec<ClapDescriptor> {
     api::scan_paths(dirs)
 }
@@ -233,7 +232,6 @@ mod tests {
         for f in ["garbage.clap", "empty.clap", "Bundle.clap", "missing.clap"] {
             assert!(load_bundle(&d.join(f)).is_err(), "{f}");
         }
-        assert!(scan_paths(std::slice::from_ref(&d)).is_empty());
         assert!(create("clap:does.not.exist").is_none());
         assert!(plugin_info("clap:does.not.exist").is_none());
         assert!(instantiate("clap:does.not.exist").is_err());

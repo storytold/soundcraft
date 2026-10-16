@@ -40,6 +40,7 @@ pub fn fixture_dir() -> &'static Path {
             std::fs::create_dir_all(dir.join("vendor")).unwrap();
             std::fs::copy(&built, dir.join("vendor/Fixture.clap")).unwrap();
         }
+        soundcraft_plugin_scan::in_process();
         assert_eq!(soundcraft_clap_host::add_search_dir(&dir), 2);
         dir
     })

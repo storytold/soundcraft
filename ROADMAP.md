@@ -115,10 +115,10 @@ Ranked; the alpha gate, the alpha checklist and the beta plan are in [docs/roadm
 Property tests drive random edit sequences (with full undo), mutated session files and hostile
 command parameters through the engine and mixer; they have caught fade, overflow and
 unbounded-allocation bugs. Every command also runs with empty parameters on empty and demo
-sessions. Hosted plugins live in isolated unsafe crates (`clap-host`, `vst3-host`, `au-host`) and
-are created, loaded and destroyed off the audio thread. The video decoders survive hundreds of
-mutated and truncated movies. Field reports from the first public week are tracked in
-[gaps.md](docs/gaps.md) (G-04).
+sessions. Hosted plugins live in isolated unsafe crates (`clap-host`, `vst3-host`, `au-host`),
+are scanned in child processes (`plugin-scan`), and are created, loaded and destroyed off the
+audio thread. The video decoders survive hundreds of mutated and truncated movies. Field reports
+from the first public week are tracked in [gaps.md](docs/gaps.md) (G-04).
 
 ## Progress log
 

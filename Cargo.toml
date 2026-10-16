@@ -17,6 +17,7 @@ soundcraft-audio-io = { path = "crates/audio-io" }
 soundcraft-midi = { path = "crates/midi" }
 soundcraft-video = { path = "crates/video" }
 soundcraft-dsp = { path = "crates/dsp" }
+soundcraft-plugin-scan = { path = "crates/plugin-scan" }
 soundcraft-clap-host = { path = "crates/clap-host" }
 soundcraft-vst3-host = { path = "crates/vst3-host" }
 soundcraft-au-host = { path = "crates/au-host" }

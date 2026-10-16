@@ -3624,6 +3624,7 @@ dependencies = [
  "log",
  "serde",
  "soundcraft-dsp",
+ "soundcraft-plugin-scan",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
 ]
@@ -3635,8 +3636,10 @@ dependencies = [
  "serde_json",
  "soundcraft-audio-io",
  "soundcraft-automation",
+ "soundcraft-clap-host",
  "soundcraft-dsp",
  "soundcraft-engine",
+ "soundcraft-plugin-scan",
 ]
 
 [[package]]
@@ -3665,6 +3668,7 @@ dependencies = [
  "soundcraft-midi",
  "soundcraft-mix",
  "soundcraft-model",
+ "soundcraft-plugin-scan",
  "soundcraft-time",
  "soundcraft-video",
  "soundcraft-vst3-host",
@@ -3727,6 +3731,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-plugin-scan"
+version = "0.6.1"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "soundcraft-time"
 version = "0.7.0"
 dependencies = [
@@ -3756,6 +3769,7 @@ dependencies = [
  "soundcraft-mix",
  "soundcraft-model",
  "soundcraft-playback",
+ "soundcraft-plugin-scan",
  "soundcraft-time",
  "soundcraft-video",
  "soundcraft-vst3-host",
@@ -3784,6 +3798,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "serde",
  "soundcraft-dsp",
+ "soundcraft-plugin-scan",
  "thiserror 2.0.21",
  "vst3",
  "windows-sys 0.61.2",

@@ -19,3 +19,7 @@ soundcraft-automation.workspace = true
 soundcraft-audio-io.workspace = true
 soundcraft-dsp.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+soundcraft-clap-host.workspace = true
+soundcraft-plugin-scan.workspace = true
