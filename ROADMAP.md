@@ -155,6 +155,8 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | trivial | Progress log: Delete key clears the selection (#404) |
+| 2026-10-13 | The Delete and Backspace keys clear the edit selection in the Edit window, as Pro Tools' Delete does (Edit › Clear is Cmd+B); the MIDI editor keeps them for its selected notes (#404) |
 | 2026-10-13 | trivial | Progress log: mix.instrument params, unknown fields refused (#265) |
 | 2026-10-13 | trivial | Progress log: bus bounce compensates aux returns (#246) |
 | 2026-10-13 | trivial | Progress log: master insert latency compensated (#351) |
