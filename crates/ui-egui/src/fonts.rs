@@ -12,8 +12,10 @@ const REGULAR: &[(&str, u32)] = &[
     ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
     ("/usr/share/fonts/TTF/DejaVuSans.ttf", 0),
     ("/usr/share/fonts/dejavu/DejaVuSans.ttf", 0),
+    ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", 0),
     ("/usr/local/share/fonts/dejavu/DejaVuSans.ttf", 0),
     ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 0),
+    ("/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf", 0),
 ];
 const BOLD: &[(&str, u32)] = &[
     ("/System/Library/Fonts/HelveticaNeue.ttc", 1),
@@ -22,8 +24,10 @@ const BOLD: &[(&str, u32)] = &[
     ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),
     ("/usr/share/fonts/TTF/DejaVuSans-Bold.ttf", 0),
     ("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf", 0),
+    ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf", 0),
     ("/usr/local/share/fonts/dejavu/DejaVuSans-Bold.ttf", 0),
     ("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 0),
+    ("/usr/share/fonts/liberation-sans-fonts/LiberationSans-Bold.ttf", 0),
 ];
 /// Hangul fallback, appended after every family so Korean session, track and clip names draw
 /// whatever the interface language. The Noto Sans CJK collection's face 1 is its Korean face.
