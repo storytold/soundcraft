@@ -38,8 +38,56 @@ macro_rules! outln {
 }
 
 fn arg_value(args: &[String], flag: &str) -> Option<String> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
+    args.iter().enumerate().find_map(|(i, a)| {
+        if a == flag { args.get(i + 1).cloned() } else { a.strip_prefix(flag).and_then(|rest| rest.strip_prefix('=')).map(str::to_owned) }
+    })
 }
+
+/// Every option a subcommand accepts, with whether it carries a value.
+type Options = [(&'static str, bool)];
+
+/// A misspelled option, or one whose value is missing, reads as absent through `arg_value`, so the
+/// subcommand would run without what was asked for and still report success. Reject both instead.
+fn check_options(args: &[String], allowed: &Options) -> Result<(), String> {
+    let mut i = 0;
+    while i < args.len() {
+        let Some(name) = args[i].strip_prefix("--") else {
+            i += 1;
+            continue;
+        };
+        let (name, inline) = name.split_once('=').map_or((name, None), |(n, v)| (n, Some(v)));
+        let flag = format!("--{name}");
+        let Some(&(_, takes_value)) = allowed.iter().find(|(f, _)| f == &flag) else {
+            return Err(format!("unknown option {flag}"));
+        };
+        match (takes_value, inline) {
+            (false, Some(_)) => return Err(format!("{flag} takes no value")),
+            (true, None) => {
+                // A following option is the next flag, not this one's value.
+                if args.get(i + 1).is_none_or(|v| v.starts_with("--")) {
+                    return Err(format!("{flag} needs a value"));
+                }
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
+/// `--in`, `--demo`/`--sample`, `--bounce`, `--start`, `--end`, `--save` and `--inspect`, read by
+/// `load_engine` and `finish` and so shared by `run` and `script`.
+const ENGINE_OPTIONS: &Options = &[
+    ("--in", true),
+    ("--demo", false),
+    ("--sample", false),
+    ("--bounce", true),
+    ("--start", true),
+    ("--end", true),
+    ("--save", true),
+    ("--inspect", false),
+];
 
 fn fail(msg: impl std::fmt::Display) -> ExitCode {
     eprintln!("soundcraft-cli: {msg}");
@@ -122,6 +170,10 @@ fn info(args: &[String]) -> ExitCode {
 
 fn convert(args: &[String]) -> ExitCode {
     let (Some(input), Some(output)) = (args.first(), args.get(1)) else { return fail("convert IN OUT") };
+    const OPTIONS: &Options = &[("--rate", true), ("--bit-depth", true), ("--normalize", false)];
+    if let Err(e) = check_options(&args[2..], OPTIONS) {
+        return fail(e);
+    }
     let rate = match parse_rate(arg_value(args, "--rate").as_deref()) {
         Ok(r) => r,
         Err(e) => return fail(e),
@@ -243,6 +295,10 @@ fn parse_cmd_spec(spec: &str) -> Result<(String, Value), String> {
 }
 
 fn run(args: &[String]) -> ExitCode {
+    let options: Vec<(&str, bool)> = ENGINE_OPTIONS.iter().copied().chain([("--cmd", true)]).collect();
+    if let Err(e) = check_options(args, &options) {
+        return fail(e);
+    }
     let mut e = match load_engine(args) {
         Ok(e) => e,
         Err(err) => return fail(err),
@@ -269,6 +325,10 @@ fn run(args: &[String]) -> ExitCode {
 
 fn script(args: &[String]) -> ExitCode {
     let Some(path) = args.first() else { return fail("script FILE") };
+    let options: Vec<(&str, bool)> = ENGINE_OPTIONS.iter().copied().chain([("--keep-going", false)]).collect();
+    if let Err(e) = check_options(&args[1..], &options) {
+        return fail(e);
+    }
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => return fail(format!("{path}: {e}")),
