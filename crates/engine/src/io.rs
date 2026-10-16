@@ -1010,6 +1010,18 @@ fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     f.sync_all()
 }
 
+/// Copies `from` to `to`, which must not exist yet; an existing entry, even a link, is never followed.
+fn copy_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut src = std::fs::File::open(from)?;
+    let mut dst = std::fs::OpenOptions::new().write(true).create_new(true).open(to)?;
+    if let Err(err) = std::io::copy(&mut src, &mut dst) {
+        drop(dst);
+        let _ = std::fs::remove_file(to);
+        return Err(err);
+    }
+    Ok(())
+}
+
 /// Copy the session file about to be replaced to `Backups/<name> backup <n>.<ext>`, keeping the
 /// newest ten.
 fn back_up(file: &Path) {
@@ -1030,9 +1042,16 @@ fn back_up(file: &Path) {
         .flatten()
         .filter_map(|f| f.file_name().to_str()?.strip_prefix(&prefix)?.strip_suffix(&suffix)?.parse().ok())
         .collect();
-    let next = numbers.iter().max().map_or(1, |n| n.saturating_add(1));
-    let copied = std::fs::create_dir_all(&backups).and_then(|()| std::fs::copy(file, backups.join(format!("{prefix}{next}{suffix}"))));
-    if let Err(err) = copied {
+    let Some(next) = numbers.iter().max().map_or(Some(1), |n| n.checked_add(1)) else {
+        log::warn!("no backup of {}: backup numbers are exhausted", file.display());
+        return;
+    };
+    let dest = backups.join(format!("{prefix}{next}{suffix}"));
+    if let Err(err) = crate::file_access::check_write(&dest) {
+        log::warn!("no backup of {}: {err}", file.display());
+        return;
+    }
+    if let Err(err) = std::fs::create_dir_all(&backups).and_then(|()| copy_new(file, &dest)) {
         log::warn!("no backup of {}: {err}", file.display());
         return;
     }
@@ -1645,6 +1664,43 @@ mod save_tests {
         let backup = |n: usize| std::fs::read(dir.join(format!("Backups/Song backup {n}.scraft"))).ok();
         assert_eq!(std::fs::read_dir(dir.join("Backups")).unwrap().count(), 10);
         assert_eq!((backup(1), backup(2), backup(11)), (None, Some(versions[1].clone()), Some(versions[10].clone())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backup_never_overwrites_an_existing_entry_when_numbers_run_out() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-backups-full-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Backups")).unwrap();
+        let path = dir.join("Song.scraft");
+        std::fs::write(&path, b"session").unwrap();
+        let last = dir.join(format!("Backups/Song backup {}.scraft", u32::MAX));
+        std::fs::write(&last, b"sentinel").unwrap();
+        back_up(&path);
+        assert_eq!(std::fs::read(&last).unwrap(), b"sentinel");
+        let dest = dir.join("Backups/Song backup 1.scraft");
+        std::fs::write(&dest, b"taken").unwrap();
+        assert!(copy_new(&path, &dest).is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"taken");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_never_writes_through_a_link_to_an_outside_file() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-backups-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Project/Backups")).unwrap();
+        let outside = dir.join("outside.txt");
+        std::fs::write(&outside, b"sentinel").unwrap();
+        let path = dir.join("Project/Song.scraft");
+        std::fs::write(&path, b"session").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(format!("Project/Backups/Song backup {}.scraft", u32::MAX))).unwrap();
+        back_up(&path);
+        let link = dir.join("Project/Backups/Song backup 1.scraft");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert!(copy_new(&path, &link).is_err());
+        assert_eq!(std::fs::read(&outside).unwrap(), b"sentinel");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
