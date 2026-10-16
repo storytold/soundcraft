@@ -47,6 +47,15 @@ fn insert_state(e: &mut Engine, p: &Value) -> Result<Value> {
         Some(Value::String(s)) => Some(b64::decode(s).ok_or_else(|| bad(CMD, "`state` is not valid base64 (or is too large)"))?),
         Some(_) => return Err(bad(CMD, "`state` must be a base64 string or null")),
     };
+    let n = state.as_ref().map_or(0, Vec::len);
+    // Plugins report changes that leave their state as it was: don't modify the session for those.
+    let stored = e.session().track(t).and_then(|tr| match slot {
+        Some(i) => tr.mixer.inserts.get(i).and_then(Option::as_ref),
+        None => tr.instrument.as_ref(),
+    });
+    if stored.is_some_and(|ins| ins.state_bytes().as_deref() == state.as_deref().filter(|b| !b.is_empty())) {
+        return Ok(json!({"bytes": n}));
+    }
     let s = e.session_mut();
     let tr = s.track_mut(t).ok_or_else(|| bad(CMD, "no track"))?;
     let ins = match slot {
@@ -54,7 +63,6 @@ fn insert_state(e: &mut Engine, p: &Value) -> Result<Value> {
         None => tr.instrument.as_mut(),
     }
     .ok_or_else(|| bad(CMD, "empty slot"))?;
-    let n = state.as_ref().map_or(0, Vec::len);
     match state {
         Some(bytes) => ins.set_state_bytes(&bytes),
         None => ins.state = None,
@@ -94,6 +102,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         e.execute("mix.insert_state", &json!({"track": t, "slot": 2, "state": null})).unwrap();
         assert_eq!(e.session().tracks[0].mixer.inserts[2].as_ref().unwrap().state, None);
+    }
+
+    #[test]
+    fn storing_the_same_state_again_changes_nothing() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({})).unwrap();
+        let t = e.session().tracks[0].id.0;
+        e.execute("mix.insert", &json!({"track": t, "plugin": "gain", "slot": 0})).unwrap();
+        let blob = b64::encode(b"same");
+        e.execute("mix.insert_state", &json!({"track": t, "slot": 0, "state": blob})).unwrap();
+        let rev = e.revision;
+        e.execute("mix.insert_state", &json!({"track": t, "slot": 0, "state": blob})).unwrap();
+        assert_eq!(e.revision, rev);
     }
 
     #[test]

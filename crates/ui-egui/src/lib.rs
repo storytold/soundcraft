@@ -608,25 +608,45 @@ impl SoundApp {
     /// (`mix.insert_state`), so saves and bounces include it.
     pub fn capture_plugin_states(&mut self) {
         let Some(p) = &self.player else { return };
-        for (t, slot, data) in p.capture_states() {
+        let states = p.capture_states();
+        self.store_plugin_states(states);
+    }
+
+    fn store_plugin_states(&mut self, states: soundcraft_playback::PluginStates) {
+        for (t, slot, data) in states {
             let slot = if slot == soundcraft_mix::INSTRUMENT_SLOT { json!("instrument") } else { json!(slot) };
-            let state = soundcraft_model::b64::encode(&data);
-            if let Err(e) = self.engine.execute("mix.insert_state", &json!({"track": t.0, "slot": slot, "state": state})) {
+            let params = json!({"track": t.0, "slot": slot, "state": soundcraft_model::b64::encode(&data)});
+            // A state read while a knob is dragged (or a pass recorded) joins that gesture, so it
+            // stays one undo step.
+            let stored = match self.engine.merge_key().map(str::to_string) {
+                Some(key) => self.engine.execute_merged("mix.insert_state", &params, &key),
+                None => self.engine.execute("mix.insert_state", &params),
+            };
+            if let Err(e) = stored {
                 log::warn!("storing plugin state: {e}");
             }
         }
     }
 
     /// Parameter edits made in plugin editors go into the session (one undo step per gesture).
+    /// Hosted instruments keep their parameters in their own state, which the session takes
+    /// instead, as it does for plugins that said their state changed: either way the session is
+    /// modified, so it is autosaved and asks to be saved.
     fn apply_editor_edits(&mut self) {
         let Some(p) = &self.player else { return };
+        let mut instruments = Vec::new();
         for (t, slot, param, value) in p.idle() {
             if slot == soundcraft_mix::INSTRUMENT_SLOT {
+                if !instruments.contains(&(t, slot)) {
+                    instruments.push((t, slot));
+                }
                 continue;
             }
             let key = format!("param:{}:{slot}:{param}", t.0);
             let _ = self.engine.execute_merged("mix.insert_param", &json!({"track": t.0, "slot": slot, "param": param, "value": value}), &key);
         }
+        let states = p.capture_changed_states(&instruments);
+        self.store_plugin_states(states);
     }
 
     /// Every two minutes, copy a modified session to the autosave folder (not while recording).
@@ -1498,6 +1518,24 @@ mod tests {
         app.handle_transport(0.0);
         app.write_automation(&ctx);
         assert_eq!(app.engine.undo_history().len(), steps + 1);
+    }
+
+    #[test]
+    fn plugin_states_read_during_a_drag_keep_it_one_undo_step() {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+        app.run("mix.insert", json!({"track": kick.0, "plugin": "gain", "slot": 0})).unwrap();
+        let steps = app.engine.undo_history().len();
+        for frame in 0..60u8 {
+            // What a plugin editor reports each frame of a drag, and the state the plugin marked dirty.
+            let gain = -10.0 + f32::from(frame) / 10.0;
+            app.engine
+                .execute_merged("mix.insert_param", &json!({"track": kick.0, "slot": 0, "param": "gain", "value": gain}), "param:drag")
+                .unwrap();
+            app.store_plugin_states(vec![(kick, 0, vec![frame, 1])]);
+        }
+        assert_eq!(app.engine.undo_history().len(), steps + 1);
+        assert_eq!(app.engine.session().track(kick).unwrap().mixer.inserts[0].as_ref().unwrap().state_bytes(), Some(vec![59, 1]));
     }
 
     #[test]

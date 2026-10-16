@@ -673,6 +673,12 @@ impl Player {
         self.side().capture_states()
     }
 
+    /// Reads the state of the plugins in `slots` and of those that said their state changed since
+    /// the last call, so the session keeps changes made only in plugin editors.
+    pub fn capture_changed_states(&self, slots: &[(TrackId, usize)]) -> PluginStates {
+        self.side().capture_changed_states(slots)
+    }
+
     /// Per-UI-frame housekeeping: drops retired instances and services plugin editors. Returns
     /// the parameter edits made in open editors since the last call.
     pub fn idle(&self) -> Vec<EditorEdit> {
@@ -795,6 +801,21 @@ impl Side {
         self.states.iter_mut().filter(|(k, _)| !self.refused.contains(*k)).filter_map(|(&(t, slot), r)| Some((t, slot, r.save_state()?))).collect()
     }
 
+    fn capture_changed_states(&mut self, slots: &[(TrackId, usize)]) -> PluginStates {
+        let changed: Vec<(TrackId, usize)> = self.editors.iter_mut().filter_map(|(k, e)| e.state_changed().then_some(*k)).collect();
+        self.states
+            .iter_mut()
+            .filter(|(k, _)| !self.refused.contains(*k) && (slots.contains(k) || changed.contains(k)))
+            .filter_map(|(&(t, slot), r)| Some((t, slot, r.save_state()?)))
+            .collect()
+    }
+
+    /// A plugin that marks its state changed while it loads or restores it hasn't changed.
+    fn add_editor(&mut self, key: (TrackId, usize), mut e: Box<dyn PluginEditor>) {
+        let _ = e.state_changed();
+        self.editors.insert(key, e);
+    }
+
     fn open_editor(&mut self, key: (TrackId, usize)) -> Result<(), String> {
         let e = self.editors.get_mut(&key).ok_or_else(|| "this plugin has no editor (or it is not loaded)".to_string())?;
         e.open()?;
@@ -831,7 +852,7 @@ impl Side {
             self.shadow.insert(key, (spec.id.clone(), spec.ch, made.is_some()));
             if let Some(soundcraft_mix::NewInstance { mut plugin, refused_state }) = made {
                 if let Some(e) = plugin.editor() {
-                    self.editors.insert(key, e);
+                    self.add_editor(key, e);
                 }
                 if let Some(r) = plugin.state_reader() {
                     self.states.insert(key, r);
@@ -1172,6 +1193,52 @@ mod tests {
         assert!(side.capture_states().is_empty());
         side.open_editor(k).unwrap();
         assert_eq!(side.capture_states(), vec![(TrackId(1), 0, b"defaults".to_vec())]);
+    }
+
+    /// An editor whose plugin said its state changed (CLAP `state.mark_dirty`).
+    struct Dirty(bool);
+
+    impl PluginEditor for Dirty {
+        fn open(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn close(&mut self) {}
+        fn is_open(&self) -> bool {
+            true
+        }
+        fn idle(&mut self) -> Vec<(String, f32)> {
+            Vec::new()
+        }
+        fn state_changed(&mut self) -> bool {
+            std::mem::take(&mut self.0)
+        }
+    }
+
+    #[test]
+    fn changed_states_are_read_once_for_the_session() {
+        let mut side = Side::new(48_000.0, channel().1);
+        let (a, b) = (TrackId(1), TrackId(2));
+        let synth = (a, soundcraft_mix::INSTRUMENT_SLOT);
+        side.states.insert((a, 0), Box::new(|| Some(b"a0".to_vec())));
+        side.states.insert((a, 1), Box::new(|| Some(b"a1".to_vec())));
+        side.states.insert(synth, Box::new(|| Some(b"synth".to_vec())));
+        side.states.insert((b, 0), Box::new(|| Some(b"b0".to_vec())));
+        side.editors.insert((a, 0), Box::new(Dirty(true)));
+        side.editors.insert((a, 1), Box::new(Dirty(false)));
+        side.editors.insert((b, 0), Box::new(Dirty(true)));
+        side.refused.insert((b, 0));
+        let want = vec![(a, 0, b"a0".to_vec()), (a, soundcraft_mix::INSTRUMENT_SLOT, b"synth".to_vec())];
+        assert_eq!(side.capture_changed_states(&[synth]), want);
+        assert!(side.capture_changed_states(&[]).is_empty(), "each change is read once");
+    }
+
+    #[test]
+    fn a_state_marked_changed_while_loading_is_not_a_change() {
+        let mut side = Side::new(48_000.0, channel().1);
+        let k = (TrackId(1), 0);
+        side.states.insert(k, Box::new(|| Some(b"loaded".to_vec())));
+        side.add_editor(k, Box::new(Dirty(true)));
+        assert!(side.capture_changed_states(&[]).is_empty());
     }
 
     #[test]
