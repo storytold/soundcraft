@@ -485,20 +485,20 @@ pub fn write_smf(smf: &Smf) -> Result<Vec<u8>, MidiError> {
         }
         for n in &track.sequence.notes {
             let ch = n.channel & 0x0F;
-            let pitch = n.pitch & 0x7F;
+            let pitch = n.pitch.min(127);
             let start = clamp_tick(n.start);
             let end = clamp_tick(n.end()).max(start.saturating_add(1));
             ev.push(WEvent { tick: start, order: 3, bytes: vec![0x90 | ch, pitch, n.velocity.clamp(1, 127)] });
-            ev.push(WEvent { tick: end, order: 1, bytes: vec![0x80 | ch, pitch, n.release_velocity & 0x7F] });
+            ev.push(WEvent { tick: end, order: 1, bytes: vec![0x80 | ch, pitch, n.release_velocity.min(127)] });
         }
         for c in &track.sequence.ctrls {
             let ch = c.channel & 0x0F;
             let v7 = c.value.clamp(0, 127) as u8;
             let bytes = match c.kind {
-                CtrlKind::Cc(num) => vec![0xB0 | ch, num & 0x7F, v7],
+                CtrlKind::Cc(num) => vec![0xB0 | ch, num.min(127), v7],
                 CtrlKind::Program => vec![0xC0 | ch, v7],
                 CtrlKind::ChannelPressure => vec![0xD0 | ch, v7],
-                CtrlKind::PolyPressure(p) => vec![0xA0 | ch, p & 0x7F, v7],
+                CtrlKind::PolyPressure(p) => vec![0xA0 | ch, p.min(127), v7],
                 CtrlKind::PitchBend => {
                     let v = (c.value.saturating_add(8192)).clamp(0, 16383);
                     vec![0xE0 | ch, (v & 0x7F) as u8, ((v >> 7) & 0x7F) as u8]

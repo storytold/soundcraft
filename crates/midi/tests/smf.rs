@@ -332,3 +332,21 @@ proptest! {
         prop_assert_eq!(a, b);
     }
 }
+
+/// #472: out-of-range pitches, release velocities and controller numbers clamp to 127 instead of
+/// wrapping into other notes and controllers (128 & 0x7F would be 0).
+#[test]
+fn writer_clamps_out_of_range_data_bytes() {
+    for raw in [127u8, 128, 255] {
+        let mut seq = Sequence::default();
+        seq.notes.push(Note { pitch: raw, velocity: 100, release_velocity: raw, channel: 0, start: 0, length: 960 });
+        seq.ctrls.push(CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Cc(raw), value: 64 });
+        seq.ctrls.push(CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::PolyPressure(raw), value: 64 });
+        let smf = Smf { tracks: vec![SmfTrack { name: String::new(), sequence: seq }], ..Smf::default() };
+        let back = read_smf(&write_smf(&smf).unwrap()).unwrap();
+        let s = &back.tracks.last().unwrap().sequence;
+        assert_eq!((s.notes[0].pitch, s.notes[0].release_velocity), (127, 127), "input {raw}");
+        let kinds: Vec<CtrlKind> = s.ctrls.iter().map(|c| c.kind).collect();
+        assert!(kinds.contains(&CtrlKind::Cc(127)) && kinds.contains(&CtrlKind::PolyPressure(127)), "input {raw}: {kinds:?}");
+    }
+}
