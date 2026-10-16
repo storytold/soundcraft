@@ -179,6 +179,15 @@ pub struct EditState {
     pub playhead: Samples,
     pub grid: GridValue,
     pub nudge: GridValue,
+    /// Grid/Nudge time scales follow the main counter when enabled.
+    #[serde(default)]
+    pub grid_follow_main: bool,
+    #[serde(default)]
+    pub nudge_follow_main: bool,
+    /// Grid lines and snapping use visible clip boundaries and memory locations while the numeric
+    /// Grid value is retained for when this mode is left.
+    #[serde(default)]
+    pub grid_clips_markers: bool,
     #[serde(default = "yes")]
     pub grid_lines: bool,
     pub main_counter: TimeFormat,
@@ -255,6 +264,9 @@ impl Default for EditState {
             playhead: 0,
             grid: GridValue::default(),
             nudge: GridValue::Seconds(1.0),
+            grid_follow_main: false,
+            nudge_follow_main: false,
+            grid_clips_markers: false,
             grid_lines: true,
             main_counter: TimeFormat::MinSecs,
             sub_counter: Some(TimeFormat::Samples),
@@ -449,6 +461,49 @@ impl Session {
     /// Parse a position typed in `fmt` against this session's references.
     pub fn parse_position(&self, text: &str, fmt: TimeFormat) -> Result<Samples, soundcraft_time::TimeError> {
         soundcraft_time::parse_position(text, fmt, self.sample_rate, &self.tempo, self.frame_rate, self.timecode_start, self.feet_frames_start())
+    }
+
+    fn clip_marker_grid_points(&self) -> Vec<Samples> {
+        let mut points = vec![0];
+        for clip in self.tracks.iter().flat_map(|track| track.clips()) {
+            points.extend([clip.start, clip.end()]);
+        }
+        for marker in &self.markers {
+            points.push(marker.start);
+            if marker.end != marker.start {
+                points.push(marker.end);
+            }
+        }
+        points.sort_unstable();
+        points.dedup();
+        points
+    }
+
+    /// Grid lines for the current Grid value, including clip and marker boundaries.
+    pub fn grid_lines(&self, start: Samples, end: Samples, max: usize) -> Vec<Samples> {
+        if !self.edit.grid_clips_markers {
+            return self.edit.grid.lines(start, end, self.sample_rate, &self.tempo, self.frame_rate, max);
+        }
+        self.clip_marker_grid_points().into_iter().filter(|point| *point >= start && *point < end).take(max).collect()
+    }
+
+    /// The current Grid line at or before `position`.
+    pub fn grid_line_at_or_before(&self, position: Samples) -> Samples {
+        if !self.edit.grid_clips_markers {
+            return self.edit.grid.line_at_or_before(position, self.sample_rate, &self.tempo, self.frame_rate);
+        }
+        self.clip_marker_grid_points().into_iter().take_while(|point| *point <= position).last().unwrap_or(position)
+    }
+
+    /// Snap to the nearest line in the current Grid.
+    pub fn snap_to_grid(&self, position: Samples) -> Samples {
+        if !self.edit.grid_clips_markers {
+            return self.edit.grid.snap(position, self.sample_rate, &self.tempo, self.frame_rate);
+        }
+        self.clip_marker_grid_points()
+            .into_iter()
+            .min_by_key(|point| i128::from(*point).saturating_sub(i128::from(position)).abs())
+            .unwrap_or(position)
     }
 
     pub fn next_track_color(&self) -> [u8; 3] {
@@ -679,6 +734,22 @@ mod tests {
         let text = s.to_json().unwrap();
         let back = Session::from_json(&text).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn clips_markers_grid_uses_visible_clip_edges_and_memory_locations() {
+        let mut s = Session::default();
+        let track = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+        let clip = Clip::midi(s.new_clip_id(), "Notes", 1_000, 2_000, soundcraft_midi::Sequence::default());
+        s.track_mut(track).and_then(Track::playlist_mut).unwrap().clips.push(clip);
+        s.add_marker("Cue", MarkerKind::Marker, 2_500, 2_500);
+        s.add_marker("Selection", MarkerKind::Selection, 4_000, 4_500);
+        s.edit.grid_clips_markers = true;
+
+        assert_eq!(s.grid_lines(0, 5_000, 20), [0, 1_000, 2_500, 3_000, 4_000, 4_500]);
+        assert_eq!(s.grid_line_at_or_before(2_800), 2_500);
+        assert_eq!(s.snap_to_grid(2_800), 3_000);
+        assert_eq!(s.snap_to_grid(3_700), 4_000);
     }
 
     #[test]

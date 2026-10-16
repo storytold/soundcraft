@@ -1493,9 +1493,9 @@ fn grid_lines(painter: &egui::Painter, s: &Session, tl: Rect, lane: Rect) {
     }
     if s.edit.grid_lines {
         let step_px = s.edit.grid.step_samples(view.start, sr, &s.tempo, s.frame_rate) as f64 / s.edit.zoom.samples_per_px;
-        if step_px > 7.0 {
+        if s.edit.grid_clips_markers || step_px > 7.0 {
             let col = grid_veil(t.grid_line, t.playlist_bg);
-            for at in s.edit.grid.lines(view.start, view.end, sr, &s.tempo, s.frame_rate, 2000) {
+            for at in s.grid_lines(view.start, view.end, 2000) {
                 let x = x_of(s, tl, at);
                 painter.line_segment([pos2(x, lane.min.y), pos2(x, lane.max.y)], Stroke::new(1.0, col));
             }
@@ -1859,7 +1859,7 @@ fn plugin_range(track: &Track, p: &AutoParam) -> (f32, f32) {
 
 fn snap(s: &Session, at: Samples) -> Samples {
     let on = s.edit.edit_mode.is_grid() || s.edit.flag(ops::SNAP_TO_GRID);
-    if on { s.edit.grid.snap(at, s.sample_rate, &s.tempo, s.frame_rate) } else { at }
+    if on { s.snap_to_grid(at) } else { at }
 }
 
 fn clip_at(track: &Track, at: Samples) -> Option<&Clip> {
@@ -2407,7 +2407,7 @@ fn automation_id(p: &AutoParam) -> String {
 
 /// Grid snapping while dragging; holding Cmd/Ctrl swaps Grid and Slip.
 fn drag_snap(s: &Session, at: Samples, flip: bool) -> Samples {
-    if s.edit.edit_mode.is_grid() != flip { s.edit.grid.snap(at, s.sample_rate, &s.tempo, s.frame_rate) } else { at }
+    if s.edit.edit_mode.is_grid() != flip { s.snap_to_grid(at) } else { at }
 }
 
 /// What a clip drag works out once per target track rather than every frame: where the tracks go

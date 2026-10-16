@@ -99,7 +99,7 @@ pub struct Clipboard {
 impl Clipboard {
     /// An empty clipboard for material copied from `range`.
     pub fn of_range(s: &Session, range: soundcraft_time::Range) -> Clipboard {
-        let line = s.edit.grid.line_at_or_before(range.start, s.sample_rate, &s.tempo, s.frame_rate);
+        let line = s.grid_line_at_or_before(range.start);
         Clipboard { length: range.len(), grid_offset: range.start.saturating_sub(line), ..Clipboard::default() }
     }
 }

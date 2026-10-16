@@ -6,6 +6,7 @@ use crate::{FrameRate, SampleRate, Samples, TICKS_PER_QUARTER, TempoMap, to_samp
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum NoteValue {
     Bar,
+    Whole,
     Half,
     Quarter,
     Eighth,
@@ -15,8 +16,9 @@ pub enum NoteValue {
 }
 
 impl NoteValue {
-    pub const ALL: [NoteValue; 7] = [
+    pub const ALL: [NoteValue; 8] = [
         NoteValue::Bar,
+        NoteValue::Whole,
         NoteValue::Half,
         NoteValue::Quarter,
         NoteValue::Eighth,
@@ -27,6 +29,7 @@ impl NoteValue {
     pub fn ticks(self) -> i64 {
         match self {
             NoteValue::Bar => TICKS_PER_QUARTER * 4,
+            NoteValue::Whole => TICKS_PER_QUARTER * 4,
             NoteValue::Half => TICKS_PER_QUARTER * 2,
             NoteValue::Quarter => TICKS_PER_QUARTER,
             NoteValue::Eighth => TICKS_PER_QUARTER / 2,
@@ -38,6 +41,7 @@ impl NoteValue {
     pub fn label(self) -> &'static str {
         match self {
             NoteValue::Bar => "1 bar",
+            NoteValue::Whole => "Whole note",
             NoteValue::Half => "1/2 note",
             NoteValue::Quarter => "1/4 note",
             NoteValue::Eighth => "1/8 note",
@@ -48,15 +52,164 @@ impl NoteValue {
     }
 }
 
+/// The time scale used by a Grid or Nudge value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum GridScale {
+    BarsBeats,
+    MinSecs,
+    Timecode,
+    FeetFrames,
+    Samples,
+    ClipsMarkers,
+}
+
+impl GridScale {
+    pub const TIME: [GridScale; 5] = [GridScale::BarsBeats, GridScale::MinSecs, GridScale::Timecode, GridScale::FeetFrames, GridScale::Samples];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GridScale::BarsBeats => "Bars|Beats",
+            GridScale::MinSecs => "Min:Secs",
+            GridScale::Timecode => "Timecode",
+            GridScale::FeetFrames => "Feet+Frames",
+            GridScale::Samples => "Samples",
+            GridScale::ClipsMarkers => "Clips/Markers",
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            GridScale::BarsBeats => "bars_beats",
+            GridScale::MinSecs => "min_secs",
+            GridScale::Timecode => "timecode",
+            GridScale::FeetFrames => "feet_frames",
+            GridScale::Samples => "samples",
+            GridScale::ClipsMarkers => "clips_markers",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<GridScale> {
+        Self::TIME.into_iter().chain([GridScale::ClipsMarkers]).find(|scale| scale.id() == id || scale.label().eq_ignore_ascii_case(id))
+    }
+}
+
+/// Timecode Grid/Nudge increments, ordered independently of the session frame rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum TimecodeValue {
+    Second,
+    FiveFrames,
+    Frame,
+    HalfFrame,
+    QuarterFrame,
+    SubFrame,
+}
+
+impl TimecodeValue {
+    pub const ALL: [TimecodeValue; 6] = [
+        TimecodeValue::Second,
+        TimecodeValue::FiveFrames,
+        TimecodeValue::Frame,
+        TimecodeValue::HalfFrame,
+        TimecodeValue::QuarterFrame,
+        TimecodeValue::SubFrame,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TimecodeValue::Second => "1 second",
+            TimecodeValue::FiveFrames => "5 frames",
+            TimecodeValue::Frame => "1 frame",
+            TimecodeValue::HalfFrame => "1/2 frame",
+            TimecodeValue::QuarterFrame => "1/4 frame",
+            TimecodeValue::SubFrame => "1 subframe",
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            TimecodeValue::Second => "second",
+            TimecodeValue::FiveFrames => "5_frames",
+            TimecodeValue::Frame => "frame",
+            TimecodeValue::HalfFrame => "half_frame",
+            TimecodeValue::QuarterFrame => "quarter_frame",
+            TimecodeValue::SubFrame => "subframe",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<TimecodeValue> {
+        Self::ALL.into_iter().find(|value| value.id() == id || value.label().eq_ignore_ascii_case(id))
+    }
+
+    fn frames(self, rate: FrameRate) -> f64 {
+        match self {
+            TimecodeValue::Second => rate.nominal() as f64,
+            TimecodeValue::FiveFrames => 5.0,
+            TimecodeValue::Frame => 1.0,
+            TimecodeValue::HalfFrame => 0.5,
+            TimecodeValue::QuarterFrame => 0.25,
+            TimecodeValue::SubFrame => 0.01,
+        }
+    }
+}
+
+/// Feet+Frames Grid/Nudge increments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum FeetFramesValue {
+    Foot,
+    Frame,
+    QuarterFrame,
+    SubFrame,
+}
+
+impl FeetFramesValue {
+    pub const ALL: [FeetFramesValue; 4] = [FeetFramesValue::Foot, FeetFramesValue::Frame, FeetFramesValue::QuarterFrame, FeetFramesValue::SubFrame];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FeetFramesValue::Foot => "1 foot",
+            FeetFramesValue::Frame => "1 frame",
+            FeetFramesValue::QuarterFrame => "1/4 frame",
+            FeetFramesValue::SubFrame => "1 subframe",
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            FeetFramesValue::Foot => "foot",
+            FeetFramesValue::Frame => "frame",
+            FeetFramesValue::QuarterFrame => "quarter_frame",
+            FeetFramesValue::SubFrame => "subframe",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<FeetFramesValue> {
+        Self::ALL.into_iter().find(|value| value.id() == id || value.label().eq_ignore_ascii_case(id))
+    }
+
+    fn frames(self) -> f64 {
+        match self {
+            FeetFramesValue::Foot => 16.0,
+            FeetFramesValue::Frame => 1.0,
+            FeetFramesValue::QuarterFrame => 0.25,
+            FeetFramesValue::SubFrame => 0.01,
+        }
+    }
+}
+
 /// A grid or nudge step.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum GridValue {
     /// Musical: note value, optionally dotted or triplet.
     Note { value: NoteValue, dotted: bool, triplet: bool },
-    /// Absolute seconds (Min:Secs grids: 0.001 … 10 s).
+    /// Absolute seconds (Min:Secs grids: 0.001 … 1 s).
     Seconds(f64),
     /// Frames at the session timecode rate.
+    /// Kept for sessions and commands written before named timecode increments were added.
     Frames(i64),
+    /// A named Timecode increment, including fractional frames and one second.
+    Timecode(TimecodeValue),
+    /// A Feet+Frames increment (one foot is 16 frames).
+    FeetFrames(FeetFramesValue),
     /// Raw samples.
     Samples(i64),
 }
@@ -80,14 +233,43 @@ impl GridValue {
                 }
                 s
             }
-            GridValue::Seconds(s) => format!("{s:.3} sec"),
+            GridValue::Seconds(s) => {
+                if *s >= 1.0 {
+                    format!("{s} second{}", if *s == 1.0 { "" } else { "s" })
+                } else {
+                    format!("{} ms", (s * 1000.0).round() as i64)
+                }
+            }
             GridValue::Frames(f) => format!("{f} frame{}", if *f == 1 { "" } else { "s" }),
-            GridValue::Samples(n) => format!("{n} samples"),
+            GridValue::Timecode(value) => value.label().to_string(),
+            GridValue::FeetFrames(value) => value.label().to_string(),
+            GridValue::Samples(n) => format!("{n} sample{}", if *n == 1 { "" } else { "s" }),
         }
     }
 
-    /// The next larger or smaller value of the same kind, or `self` at either end. Note values keep their
-    /// dot or triplet; seconds, frames and samples step by tens.
+    pub fn scale(self) -> GridScale {
+        match self {
+            GridValue::Note { .. } => GridScale::BarsBeats,
+            GridValue::Seconds(_) => GridScale::MinSecs,
+            GridValue::Frames(_) | GridValue::Timecode(_) => GridScale::Timecode,
+            GridValue::FeetFrames(_) => GridScale::FeetFrames,
+            GridValue::Samples(_) => GridScale::Samples,
+        }
+    }
+
+    pub fn for_scale(scale: GridScale) -> GridValue {
+        match scale {
+            GridScale::BarsBeats => GridValue::default(),
+            GridScale::MinSecs => GridValue::Seconds(1.0),
+            GridScale::Timecode => GridValue::Timecode(TimecodeValue::Frame),
+            GridScale::FeetFrames => GridValue::FeetFrames(FeetFramesValue::Frame),
+            GridScale::Samples => GridValue::Samples(100),
+            GridScale::ClipsMarkers => GridValue::default(),
+        }
+    }
+
+    /// The next larger or smaller menu value of the same kind, or `self` at either end. Note values keep
+    /// their dot or triplet modifier.
     pub fn stepped(self, larger: bool) -> GridValue {
         fn next<T: PartialOrd + Copy>(ladder: &[T], v: T, larger: bool) -> Option<T> {
             if larger { ladder.iter().copied().find(|x| *x > v) } else { ladder.iter().rev().copied().find(|x| *x < v) }
@@ -98,9 +280,11 @@ impl GridValue {
                 let j = if larger { i.checked_sub(1) } else { i.checked_add(1) };
                 j.and_then(|j| NoteValue::ALL.get(j)).map_or(self, |&value| GridValue::Note { value, dotted, triplet })
             }
-            GridValue::Seconds(s) => next(&[0.001, 0.01, 0.1, 1.0, 10.0], s, larger).map_or(self, GridValue::Seconds),
+            GridValue::Seconds(s) => next(&[0.001, 0.01, 0.1, 0.5, 1.0], s, larger).map_or(self, GridValue::Seconds),
             GridValue::Frames(f) => next(&[1, 10, 100], f, larger).map_or(self, GridValue::Frames),
-            GridValue::Samples(n) => next(&[1, 10, 100, 1_000, 10_000, 100_000], n, larger).map_or(self, GridValue::Samples),
+            GridValue::Timecode(value) => step_enum(&TimecodeValue::ALL, value, larger).map_or(self, GridValue::Timecode),
+            GridValue::FeetFrames(value) => step_enum(&FeetFramesValue::ALL, value, larger).map_or(self, GridValue::FeetFrames),
+            GridValue::Samples(n) => next(&[1, 2, 10, 100, 1_000, 10_000], n, larger).map_or(self, GridValue::Samples),
         }
     }
 
@@ -126,6 +310,8 @@ impl GridValue {
             }
             GridValue::Seconds(s) => sr.samples(s.clamp(0.000_01, 3600.0)).max(1),
             GridValue::Frames(f) => to_samples(rate.samples_per_frame(sr) * f.clamp(1, 1_000_000) as f64).max(1),
+            GridValue::Timecode(value) => to_samples(rate.samples_per_frame(sr) * value.frames(rate)).max(1),
+            GridValue::FeetFrames(value) => to_samples(rate.samples_per_frame(sr) * value.frames()).max(1),
             GridValue::Samples(n) => n.max(1),
         }
     }
@@ -187,6 +373,12 @@ impl GridValue {
     }
 }
 
+fn step_enum<T: Copy + PartialEq>(values: &[T], value: T, larger: bool) -> Option<T> {
+    let index = values.iter().position(|candidate| *candidate == value)?;
+    let next = if larger { index.checked_sub(1) } else { index.checked_add(1) }?;
+    values.get(next).copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,7 +411,21 @@ mod tests {
         let (sr, map, rate) = (SampleRate::HZ_48000, TempoMap::default(), FrameRate::Fps25);
         assert_eq!(GridValue::Seconds(1.0).snap(70_000, sr, &map, rate), 48_000);
         assert_eq!(GridValue::Frames(1).step_samples(0, sr, &map, rate), 1920);
+        assert_eq!(GridValue::Timecode(TimecodeValue::Second).step_samples(0, sr, &map, rate), 48_000);
+        assert_eq!(GridValue::Timecode(TimecodeValue::FiveFrames).step_samples(0, sr, &map, rate), 9_600);
+        assert_eq!(GridValue::Timecode(TimecodeValue::HalfFrame).step_samples(0, sr, &map, rate), 960);
+        assert_eq!(GridValue::Timecode(TimecodeValue::QuarterFrame).step_samples(0, sr, &map, rate), 480);
+        assert_eq!(GridValue::Timecode(TimecodeValue::SubFrame).step_samples(0, sr, &map, rate), 19);
+        assert_eq!(GridValue::FeetFrames(FeetFramesValue::Foot).step_samples(0, sr, &map, rate), 30_720);
         assert_eq!(GridValue::Samples(0).step_samples(0, sr, &map, rate), 1);
+    }
+
+    #[test]
+    fn a_bar_and_a_whole_note_differ_in_three_four() {
+        let (sr, map, rate) = (SampleRate::HZ_48000, TempoMap::new(120.0, 3, 4).unwrap(), FrameRate::Fps25);
+        let note = |value| GridValue::Note { value, dotted: false, triplet: false };
+        assert_eq!(note(NoteValue::Bar).step_samples(0, sr, &map, rate), 72_000);
+        assert_eq!(note(NoteValue::Whole).step_samples(0, sr, &map, rate), 96_000);
     }
 
     #[test]
@@ -246,9 +452,12 @@ mod tests {
         assert_eq!(note(NoteValue::SixtyFourth, false).stepped(false), note(NoteValue::SixtyFourth, false));
         assert_eq!(GridValue::Seconds(0.01).stepped(true), GridValue::Seconds(0.1));
         assert_eq!(GridValue::Seconds(0.5).stepped(false), GridValue::Seconds(0.1));
-        assert_eq!(GridValue::Seconds(10.0).stepped(true), GridValue::Seconds(10.0));
+        assert_eq!(GridValue::Seconds(1.0).stepped(true), GridValue::Seconds(1.0));
         assert_eq!(GridValue::Frames(1).stepped(true), GridValue::Frames(10));
+        assert_eq!(GridValue::Timecode(TimecodeValue::Frame).stepped(false), GridValue::Timecode(TimecodeValue::HalfFrame));
+        assert_eq!(GridValue::FeetFrames(FeetFramesValue::Frame).stepped(true), GridValue::FeetFrames(FeetFramesValue::Foot));
         assert_eq!(GridValue::Samples(100).stepped(false), GridValue::Samples(10));
+        assert_eq!(GridValue::Samples(1).stepped(true), GridValue::Samples(2));
         assert_eq!(GridValue::Samples(1).stepped(false), GridValue::Samples(1));
     }
 }
