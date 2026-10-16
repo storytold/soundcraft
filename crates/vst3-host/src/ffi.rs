@@ -1555,14 +1555,67 @@ fn split_state(data: &[u8]) -> Option<(&[u8], &[u8])> {
 
 // ---- editor (IPlugView) --------------------------------------------------------------------
 
-/// The `IPlugFrame` handed to a plugin view: `resizeView` resizes our host window.
+/// The `IPlugFrame` handed to a plugin view: `resizeView` resizes our host window. On X11 it is
+/// also the view's `Linux::IRunLoop` (plugins query the frame for it).
 pub(crate) struct PlugFrame {
-    /// The host window (an `NSWindow*` on macOS), not owned; null when there is none.
+    /// The host window (an `NSWindow*` on macOS, the X11 window id on Linux), not owned; null
+    /// when there is none.
     window: std::sync::atomic::AtomicPtr<c_void>,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    run_loop: run_loop::RunLoop,
 }
 
+impl PlugFrame {
+    fn new(window: *mut c_void) -> PlugFrame {
+        PlugFrame {
+            window: std::sync::atomic::AtomicPtr::new(window),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            run_loop: run_loop::RunLoop::default(),
+        }
+    }
+
+    /// Services the view's run loop (X11 only): ready file descriptors and due timers.
+    fn dispatch(&self) {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        self.run_loop.dispatch(std::time::Instant::now());
+    }
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
 impl Class for PlugFrame {
     type Interfaces = (sb::IPlugFrame,);
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+impl Class for PlugFrame {
+    type Interfaces = (sb::IPlugFrame, sb::Linux::IRunLoop);
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+impl sb::Linux::IRunLoopTrait for PlugFrame {
+    unsafe fn registerEventHandler(&self, handler: *mut sb::Linux::IEventHandler, fd: sb::Linux::FileDescriptor) -> sb::tresult {
+        // SAFETY: in-pointer from the plugin (or null, handled); we take our own reference.
+        match unsafe { vst3::ComRef::from_raw(handler) } {
+            Some(h) if self.run_loop.add_fd(h.to_com_ptr(), fd) => sb::kResultOk,
+            _ => sb::kInvalidArgument,
+        }
+    }
+
+    unsafe fn unregisterEventHandler(&self, handler: *mut sb::Linux::IEventHandler) -> sb::tresult {
+        if self.run_loop.remove_fd(handler) { sb::kResultOk } else { sb::kInvalidArgument }
+    }
+
+    unsafe fn registerTimer(&self, handler: *mut sb::Linux::ITimerHandler, milliseconds: sb::Linux::TimerInterval) -> sb::tresult {
+        // SAFETY: as in `registerEventHandler`.
+        match unsafe { vst3::ComRef::from_raw(handler) } {
+            Some(h) if self.run_loop.add_timer(h.to_com_ptr(), milliseconds) => sb::kResultOk,
+            _ => sb::kInvalidArgument,
+        }
+    }
+
+    unsafe fn unregisterTimer(&self, handler: *mut sb::Linux::ITimerHandler) -> sb::tresult {
+        if self.run_loop.remove_timer(handler) { sb::kResultOk } else { sb::kInvalidArgument }
+    }
 }
 
 impl IPlugFrameTrait for PlugFrame {
@@ -1670,7 +1723,7 @@ impl EditorLink {
         unsafe { view.getSize(&mut r) };
         let (w, h) = rect_size(&r);
         let win = window::HostWindow::new(title, w, h)?;
-        let frame = ComWrapper::new(PlugFrame { window: std::sync::atomic::AtomicPtr::new(win.raw()) });
+        let frame = ComWrapper::new(PlugFrame::new(win.raw()));
         if let Some(f) = frame.as_com_ref::<sb::IPlugFrame>() {
             // SAFETY: valid view; the frame outlives the view's attachment (kept in `g.frame`
             // and detached in `teardown`).
@@ -1698,6 +1751,11 @@ impl EditorLink {
                 view.removed();
                 view.setFrame(std::ptr::null_mut());
             }
+        }
+        // Release the view's run-loop handlers even if the plugin still holds the frame.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if let Some(f) = &g.frame {
+            f.run_loop.clear();
         }
         g.frame = None;
         if let Some(w) = g.window.take() {
@@ -1764,6 +1822,8 @@ impl EditorLink {
         let mut g = self.lock();
         if g.window.as_ref().is_some_and(|w| !w.is_visible()) {
             EditorLink::teardown(&mut g);
+        } else if let Some(f) = &g.frame {
+            f.dispatch();
         }
     }
 
@@ -2101,8 +2161,323 @@ mod window {
     }
 }
 
+/// The `Linux::IRunLoop` a view gets through its frame. X11 plugin editors have no event loop of
+/// their own: they register their display connection's file descriptor and their repaint timers
+/// here, and the host calls them back on the main thread. SoundCraft drives this from the editor
+/// link's `idle`, once per UI frame (the UI repaints at least every 30 ms while an editor is open).
+#[cfg(all(unix, not(target_os = "macos")))]
+mod run_loop {
+    use std::sync::{Mutex, PoisonError};
+    use std::time::{Duration, Instant};
+    use vst3::ComPtr;
+    use vst3::Steinberg::Linux::{FileDescriptor, IEventHandler, IEventHandlerTrait, ITimerHandler, ITimerHandlerTrait, TimerInterval};
+
+    /// Registrations kept per view; a plugin needs a handful.
+    const MAX_ENTRIES: usize = 256;
+    /// Longest timer period accepted (one hour).
+    const MAX_INTERVAL_MS: TimerInterval = 3_600_000;
+
+    struct Timer {
+        handler: ComPtr<ITimerHandler>,
+        every: Duration,
+        next: Instant,
+    }
+
+    #[derive(Default)]
+    struct Entries {
+        fds: Vec<(ComPtr<IEventHandler>, FileDescriptor)>,
+        timers: Vec<Timer>,
+    }
+
+    #[derive(Default)]
+    pub struct RunLoop {
+        entries: Mutex<Entries>,
+    }
+
+    impl RunLoop {
+        fn lock(&self) -> std::sync::MutexGuard<'_, Entries> {
+            self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        pub fn add_fd(&self, handler: ComPtr<IEventHandler>, fd: FileDescriptor) -> bool {
+            let mut e = self.lock();
+            if fd < 0 || e.fds.len() >= MAX_ENTRIES {
+                return false;
+            }
+            e.fds.push((handler, fd));
+            log::debug!("vst3: run loop: watching fd {fd}");
+            true
+        }
+
+        /// Removes every descriptor registered with this handler.
+        pub fn remove_fd(&self, handler: *mut IEventHandler) -> bool {
+            let mut e = self.lock();
+            let before = e.fds.len();
+            e.fds.retain(|(h, _)| h.as_ptr() != handler);
+            e.fds.len() != before
+        }
+
+        pub fn add_timer(&self, handler: ComPtr<ITimerHandler>, milliseconds: TimerInterval) -> bool {
+            let mut e = self.lock();
+            if e.timers.len() >= MAX_ENTRIES {
+                return false;
+            }
+            let every = Duration::from_millis(milliseconds.clamp(1, MAX_INTERVAL_MS));
+            e.timers.push(Timer { handler, every, next: Instant::now() + every });
+            log::debug!("vst3: run loop: timer every {} ms", every.as_millis());
+            true
+        }
+
+        pub fn remove_timer(&self, handler: *mut ITimerHandler) -> bool {
+            let mut e = self.lock();
+            let before = e.timers.len();
+            e.timers.retain(|t| t.handler.as_ptr() != handler);
+            e.timers.len() != before
+        }
+
+        pub fn clear(&self) {
+            *self.lock() = Entries::default();
+        }
+
+        fn has_fd(&self, handler: *mut IEventHandler, fd: FileDescriptor) -> bool {
+            self.lock().fds.iter().any(|(h, f)| h.as_ptr() == handler && *f == fd)
+        }
+
+        fn has_timer(&self, handler: *mut ITimerHandler) -> bool {
+            self.lock().timers.iter().any(|t| t.handler.as_ptr() == handler)
+        }
+
+        /// Calls the handlers whose descriptor is readable and the timers that are due (at most
+        /// once each per call: a late UI frame does not replay missed ticks). Handlers may
+        /// (un)register from inside their callback, so none is called with the lock held, and
+        /// one removed earlier in the same pass is skipped.
+        pub fn dispatch(&self, now: Instant) {
+            let (fds, due) = {
+                let mut e = self.lock();
+                let fds = e.fds.clone();
+                let mut due = Vec::new();
+                for t in e.timers.iter_mut().filter(|t| t.next <= now) {
+                    t.next = now + t.every;
+                    due.push(t.handler.clone());
+                }
+                (fds, due)
+            };
+            for (h, fd) in ready(&fds) {
+                if self.has_fd(h.as_ptr(), fd) {
+                    // SAFETY: a live handler we hold a reference to; main thread (the caller's).
+                    unsafe { h.onFDIsSet(fd) };
+                }
+            }
+            for h in due {
+                if self.has_timer(h.as_ptr()) {
+                    // SAFETY: as above.
+                    unsafe { h.onTimer() };
+                }
+            }
+        }
+    }
+
+    /// The registrations whose descriptor has something to read (or hung up), without waiting.
+    fn ready(fds: &[(ComPtr<IEventHandler>, FileDescriptor)]) -> Vec<(ComPtr<IEventHandler>, FileDescriptor)> {
+        if fds.is_empty() {
+            return Vec::new();
+        }
+        let mut polled: Vec<libc::pollfd> = fds.iter().map(|&(_, fd)| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
+        // SAFETY: `polled` is a valid, writable array of `polled.len()` entries; a zero timeout
+        // never blocks.
+        let n = unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, 0) };
+        if n <= 0 {
+            return Vec::new();
+        }
+        fds.iter()
+            .zip(&polled)
+            .filter(|(_, p)| p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0)
+            .map(|((h, fd), _)| (h.clone(), *fd))
+            .collect()
+    }
+}
+
+/// The X11 host window (Linux and the BSDs): a top-level window on our own connection to the X
+/// server (XWayland on Wayland desktops) whose id the plugin view embeds its window into. The
+/// close button only hides it (`WM_DELETE_WINDOW`); the editor link notices in `idle`, detaches
+/// the view, then destroys the window. Our connection's events are read whenever a window's
+/// visibility is asked, which the UI does every frame while an editor is open.
+#[cfg(all(unix, not(target_os = "macos")))]
+mod window {
+    use std::collections::HashSet;
+    use std::ffi::{c_char, c_void};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, OnceLock, PoisonError};
+    use x11rb::connection::Connection;
+    use x11rb::properties::WmSizeHints;
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xproto::{
+        AtomEnum, ConfigureWindowAux, ConnectionExt as _, CreateWindowAux, EventMask, PropMode, StackMode, Window, WindowClass,
+    };
+    use x11rb::rust_connection::RustConnection;
+    use x11rb::wrapper::ConnectionExt as _;
+
+    pub const PLATFORM_TYPE: Option<*const c_char> = Some(vst3::Steinberg::kPlatformTypeX11EmbedWindowID);
+
+    /// Rust names the process's first thread "main"; the app runs its UI (and event loop) there.
+    pub fn on_main_thread() -> bool {
+        std::thread::current().name() == Some("main")
+    }
+
+    struct X {
+        conn: RustConnection,
+        root: Window,
+        visual: u32,
+        background: u32,
+        wm_protocols: u32,
+        wm_delete: u32,
+        net_wm_name: u32,
+        utf8: u32,
+        /// Windows whose close button was pressed (hidden, not yet destroyed).
+        closed: Mutex<HashSet<Window>>,
+    }
+
+    /// The process-wide connection, opened on first use (`None` without an X server).
+    fn x() -> Option<&'static X> {
+        static X: OnceLock<Option<X>> = OnceLock::new();
+        X.get_or_init(|| match connect() {
+            Ok(x) => Some(x),
+            Err(e) => {
+                log::warn!("vst3: no X11 display for plugin editors: {e}");
+                None
+            }
+        })
+        .as_ref()
+    }
+
+    fn connect() -> Result<X, Box<dyn std::error::Error>> {
+        let (conn, screen) = x11rb::connect(None)?;
+        let s = conn.setup().roots.get(screen).ok_or("no X11 screen")?;
+        let (root, visual, background) = (s.root, s.root_visual, s.black_pixel);
+        let atom = |name: &[u8]| -> Result<u32, Box<dyn std::error::Error>> { Ok(conn.intern_atom(false, name)?.reply()?.atom) };
+        Ok(X {
+            wm_protocols: atom(b"WM_PROTOCOLS")?,
+            wm_delete: atom(b"WM_DELETE_WINDOW")?,
+            net_wm_name: atom(b"_NET_WM_NAME")?,
+            utf8: atom(b"UTF8_STRING")?,
+            root,
+            visual,
+            background,
+            closed: Mutex::new(HashSet::new()),
+            conn,
+        })
+    }
+
+    impl X {
+        fn closed(&self) -> std::sync::MutexGuard<'_, HashSet<Window>> {
+            self.closed.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        /// Reads pending events: a close request hides its window and marks it closed.
+        fn pump(&self) {
+            while let Ok(Some(ev)) = self.conn.poll_for_event() {
+                if let Event::ClientMessage(m) = ev
+                    && m.type_ == self.wm_protocols
+                    && m.format == 32
+                    && m.data.as_data32().first() == Some(&self.wm_delete)
+                {
+                    let _ = self.conn.unmap_window(m.window);
+                    self.closed().insert(m.window);
+                }
+            }
+            let _ = self.conn.flush();
+        }
+
+        /// Fixes the window's size for the window manager (plugins resize through the frame).
+        fn size_hints(&self, w: Window, width: u32, height: u32) {
+            let (width, height) = (width as i32, height as i32);
+            let hints = WmSizeHints { min_size: Some((width, height)), max_size: Some((width, height)), ..WmSizeHints::new() };
+            let _ = hints.set_normal_hints(&self.conn, w);
+        }
+    }
+
+    fn dims(w: f64, h: f64) -> (u16, u16) {
+        (w.clamp(1.0, 16_384.0) as u16, h.clamp(1.0, 16_384.0) as u16)
+    }
+
+    pub struct HostWindow {
+        id: Window,
+        shown: AtomicBool,
+    }
+
+    impl HostWindow {
+        pub fn new(title: &str, w: f64, h: f64) -> Result<HostWindow, String> {
+            if !on_main_thread() {
+                return Err("not on the main thread".into());
+            }
+            let x = x().ok_or_else(|| "plugin editors need an X11 display (XWayland on Wayland desktops)".to_string())?;
+            let err = |e: &dyn std::fmt::Display| format!("cannot create the editor window: {e}");
+            let id = x.conn.generate_id().map_err(|e| err(&e))?;
+            let (width, height) = dims(w, h);
+            let aux = CreateWindowAux::new().background_pixel(x.background).event_mask(EventMask::STRUCTURE_NOTIFY);
+            x.conn
+                .create_window(x11rb::COPY_DEPTH_FROM_PARENT, id, x.root, 0, 0, width, height, 0, WindowClass::INPUT_OUTPUT, x.visual, &aux)
+                .map_err(|e| err(&e))?;
+            let _ = x.conn.change_property8(PropMode::REPLACE, id, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes());
+            let _ = x.conn.change_property8(PropMode::REPLACE, id, x.net_wm_name, x.utf8, title.as_bytes());
+            let _ = x.conn.change_property8(PropMode::REPLACE, id, AtomEnum::WM_CLASS, AtomEnum::STRING, b"soundcraft\0SoundCraft\0");
+            let _ = x.conn.change_property32(PropMode::REPLACE, id, x.wm_protocols, AtomEnum::ATOM, &[x.wm_delete]);
+            x.size_hints(id, width.into(), height.into());
+            // A round trip, so the window exists before the plugin (on its own connection)
+            // embeds into it.
+            x.conn.get_input_focus().map_err(|e| err(&e))?.reply().map_err(|e| err(&e))?;
+            Ok(HostWindow { id, shown: AtomicBool::new(false) })
+        }
+
+        /// The window id (for the plug frame's resizes).
+        pub fn raw(&self) -> *mut c_void {
+            self.id as usize as *mut c_void
+        }
+
+        /// The X11 window id the plugin view embeds into (`kPlatformTypeX11EmbedWindowID`).
+        pub fn parent(&self) -> *mut c_void {
+            self.raw()
+        }
+
+        pub fn raise(&self) {
+            let Some(x) = x().filter(|_| on_main_thread()) else { return };
+            x.closed().remove(&self.id);
+            let _ = x.conn.map_window(self.id);
+            let _ = x.conn.configure_window(self.id, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE));
+            let _ = x.conn.flush();
+            self.shown.store(true, Ordering::Relaxed);
+        }
+
+        pub fn is_visible(&self) -> bool {
+            let Some(x) = x().filter(|_| on_main_thread()) else { return false };
+            x.pump();
+            self.shown.load(Ordering::Relaxed) && !x.closed().contains(&self.id)
+        }
+
+        pub fn close(self) {
+            let Some(x) = x().filter(|_| on_main_thread()) else { return };
+            x.closed().remove(&self.id);
+            let _ = x.conn.destroy_window(self.id);
+            let _ = x.conn.flush();
+        }
+    }
+
+    /// Resizes a host window (`window` from [`HostWindow::raw`]); main thread only.
+    pub fn resize(window: *mut c_void, w: f64, h: f64) {
+        let Some(x) = x().filter(|_| on_main_thread()) else { return };
+        let Ok(id) = Window::try_from(window as usize) else { return };
+        if id == 0 {
+            return;
+        }
+        let (width, height) = dims(w, h);
+        x.size_hints(id, width.into(), height.into());
+        let _ = x.conn.configure_window(id, &ConfigureWindowAux::new().width(u32::from(width)).height(u32::from(height)));
+        let _ = x.conn.flush();
+    }
+}
+
 /// Other platforms: no editor windows yet (opening reports "unsupported").
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", windows, unix)))]
 mod window {
     use std::ffi::{c_char, c_void};
 
@@ -2253,5 +2628,81 @@ mod tests {
         assert_eq!(read_c16(&name), "SoundCraft");
         assert!(h.latency_changed.load(Ordering::Relaxed));
         assert_eq!(hex(&[0xAB; 16]), "AB".repeat(16));
+    }
+
+    /// A plugin-side handler for the run-loop test: counts its callbacks.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[derive(Default)]
+    struct Ticks {
+        timer: std::sync::atomic::AtomicU32,
+        fd: std::sync::atomic::AtomicU32,
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    impl Class for Ticks {
+        type Interfaces = (sb::Linux::ITimerHandler, sb::Linux::IEventHandler);
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    impl sb::Linux::ITimerHandlerTrait for Ticks {
+        unsafe fn onTimer(&self) {
+            self.timer.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    impl sb::Linux::IEventHandlerTrait for Ticks {
+        unsafe fn onFDIsSet(&self, _fd: sb::Linux::FileDescriptor) {
+            self.fd.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn the_run_loop_fires_due_timers_and_ready_descriptors() {
+        use sb::Linux::IRunLoopTrait;
+        use std::time::{Duration, Instant};
+        let frame = ComWrapper::new(PlugFrame::new(std::ptr::null_mut()));
+        let rl = frame.as_com_ref::<sb::Linux::IRunLoop>().expect("the frame is the view's run loop");
+        let ticks = ComWrapper::new(Ticks::default());
+        let timer = ticks.as_com_ref::<sb::Linux::ITimerHandler>().unwrap().as_ptr();
+        let handler = ticks.as_com_ref::<sb::Linux::IEventHandler>().unwrap().as_ptr();
+        let mut fds = [0; 2];
+        // SAFETY: `fds` holds the two descriptors `pipe` writes.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // SAFETY: test calls through our own implementation with live handler objects.
+        unsafe {
+            assert_eq!(rl.registerTimer(timer, 10), sb::kResultOk);
+            assert_eq!(rl.registerEventHandler(handler, fds[0]), sb::kResultOk);
+            assert_ne!(rl.registerEventHandler(handler, -1), sb::kResultOk);
+            assert_ne!(rl.registerTimer(std::ptr::null_mut(), 10), sb::kResultOk);
+        }
+        let t0 = Instant::now();
+        frame.run_loop.dispatch(t0);
+        assert_eq!(ticks.timer.load(Ordering::Relaxed), 0, "not due yet");
+        assert_eq!(ticks.fd.load(Ordering::Relaxed), 0, "nothing to read");
+        // SAFETY: a valid one-byte buffer written to our own pipe.
+        assert_eq!(unsafe { libc::write(fds[1], b"x".as_ptr().cast(), 1) }, 1);
+        frame.run_loop.dispatch(t0 + Duration::from_secs(1));
+        assert_eq!(ticks.timer.load(Ordering::Relaxed), 1, "a late frame fires once, not once per missed period");
+        assert_eq!(ticks.fd.load(Ordering::Relaxed), 1);
+        // SAFETY: as above.
+        unsafe {
+            assert_eq!(rl.unregisterTimer(timer), sb::kResultOk);
+            assert_ne!(rl.unregisterTimer(timer), sb::kResultOk, "already gone");
+            assert_eq!(rl.unregisterEventHandler(handler), sb::kResultOk);
+        }
+        frame.run_loop.dispatch(t0 + Duration::from_secs(2));
+        assert_eq!((ticks.timer.load(Ordering::Relaxed), ticks.fd.load(Ordering::Relaxed)), (1, 1), "unregistered handlers stay quiet");
+        // SAFETY: as above.
+        unsafe { assert_eq!(rl.registerTimer(timer, 10), sb::kResultOk) };
+        frame.run_loop.clear();
+        frame.run_loop.dispatch(t0 + Duration::from_secs(3));
+        assert_eq!(ticks.timer.load(Ordering::Relaxed), 1, "cleared on teardown");
+        // SAFETY: closing the pipe we opened.
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
     }
 }

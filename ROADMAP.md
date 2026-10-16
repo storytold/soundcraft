@@ -122,6 +122,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
+- **2026-10-13 (plugin editors on Linux):** VST3 editors and embedded CLAP editors open in a SoundCraft X11 host window on Linux and the BSDs (XWayland on Wayland desktops), resized on request and closed from its title bar; the host run loop (VST3 `Linux::IRunLoop`, CLAP `timer-support` and `posix-fd-support`) lets X11 editors read their display connection and repaint. Verified with Graillon 3 and Surge XT Effects (JUCE) in both formats (#527). No readiness percentage change.
 - **2026-10-13:** `mix.instrument` takes the built-in instrument's parameters in `params` (validated, clamped) and refuses any other field, so a synth setting written beside `plugin` is an error instead of being accepted and ignored (#265)
 - **2026-10-13:** A bounce of a bus that an aux returns onto lines up with the timeline: the aux insert's lookahead is compensated like the main mix's (it left the bus late and cut the end off), and tracks routed to that bus wait for it too (#246)
 - **2026-10-13:** Delay compensation covers the inserts of the master faders: a bounce of the main mix with a Maximizer on the master lines up with the same mix without it (it came out 71 samples late) (#351)

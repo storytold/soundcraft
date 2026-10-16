@@ -20,7 +20,7 @@ use clap_sys::events::{
     clap_event_transport, clap_input_events, clap_output_events,
 };
 use clap_sys::ext::audio_ports::{CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, clap_audio_port_info, clap_plugin_audio_ports};
-use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui, clap_plugin_gui, clap_window, clap_window_handle};
+use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui, clap_plugin_gui, clap_window};
 use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_host_latency, clap_plugin_latency};
 use clap_sys::ext::log::{CLAP_EXT_LOG, CLAP_LOG_ERROR, CLAP_LOG_FATAL, CLAP_LOG_WARNING, clap_host_log, clap_log_severity};
 use clap_sys::ext::note_ports::{CLAP_EXT_NOTE_PORTS, clap_note_port_info, clap_plugin_note_ports};
@@ -28,6 +28,11 @@ use clap_sys::ext::params::{
     CLAP_EXT_PARAMS, clap_host_params, clap_param_clear_flags, clap_param_info, clap_param_rescan_flags, clap_plugin_params,
 };
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_host_state, clap_plugin_state};
+#[cfg(all(unix, not(target_os = "macos")))]
+use clap_sys::ext::{
+    posix_fd_support::{CLAP_EXT_POSIX_FD_SUPPORT, clap_host_posix_fd_support, clap_plugin_posix_fd_support},
+    timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support, clap_plugin_timer_support},
+};
 use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::host::clap_host;
@@ -279,7 +284,19 @@ impl Bundle {
         inst.state_ext = inst.extension::<clap_plugin_state>(CLAP_EXT_STATE);
         let gui = inst.extension::<clap_plugin_gui>(CLAP_EXT_GUI);
         inst.gui = Arc::new(GuiLink {
-            inner: Mutex::new(GuiInner { plugin, gui, state: inst.state_ext, alive: true, created: false, visible: false, window: None }),
+            inner: Mutex::new(GuiInner {
+                plugin,
+                gui,
+                state: inst.state_ext,
+                alive: true,
+                created: false,
+                visible: false,
+                window: None,
+                #[cfg(all(unix, not(target_os = "macos")))]
+                timer: inst.extension::<clap_plugin_timer_support>(CLAP_EXT_TIMER_SUPPORT),
+                #[cfg(all(unix, not(target_os = "macos")))]
+                fd: inst.extension::<clap_plugin_posix_fd_support>(CLAP_EXT_POSIX_FD_SUPPORT),
+            }),
             host: Arc::clone(&inst.state),
         });
         Ok(inst)
@@ -319,6 +336,10 @@ pub(crate) struct HostState {
     /// Parameter changes the plugin reported (output events: typically edits in its GUI),
     /// waiting for the UI. Bounded by `EDIT_CAP`; the audio thread only `try_lock`s it.
     pub edits: Mutex<Vec<(u32, f64)>>,
+    /// The timers and descriptors the plugin registered (`clap.timer-support`,
+    /// `clap.posix-fd-support`), serviced by the editor's `idle` on the main thread.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub run_loop: run_loop::RunLoop,
 }
 
 impl Default for HostState {
@@ -336,6 +357,8 @@ impl Default for HostState {
             gui_hide: AtomicBool::new(false),
             gui_resize: AtomicU64::new(0),
             edits: Mutex::new(Vec::with_capacity(EDIT_CAP)),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            run_loop: run_loop::RunLoop::default(),
         }
     }
 }
@@ -489,10 +512,76 @@ unsafe extern "C" fn host_get_extension(_host: *const clap_host, id: *const c_ch
         (&HOST_STATE as *const clap_host_state).cast()
     } else if id == CLAP_EXT_GUI {
         (&HOST_GUI as *const clap_host_gui).cast()
+    } else if let Some(ext) = run_loop_extension(id) {
+        ext
     } else {
-        // Everything else (thread-check, timers, fd support, …) is unsupported: CLAP allows null.
+        // Everything else (thread-check, …) is unsupported: CLAP allows null.
         std::ptr::null()
     }
+}
+
+/// `clap.timer-support` and `clap.posix-fd-support`: X11 editors have no event loop of their own
+/// and rely on the host's to read their display connection and to repaint.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn run_loop_extension(id: &CStr) -> Option<*const c_void> {
+    if id == CLAP_EXT_TIMER_SUPPORT {
+        Some((&HOST_TIMER as *const clap_host_timer_support).cast())
+    } else if id == CLAP_EXT_POSIX_FD_SUPPORT {
+        Some((&HOST_FD as *const clap_host_posix_fd_support).cast())
+    } else {
+        None
+    }
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn run_loop_extension(_id: &CStr) -> Option<*const c_void> {
+    None
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+static HOST_TIMER: clap_host_timer_support =
+    clap_host_timer_support { register_timer: Some(host_register_timer), unregister_timer: Some(host_unregister_timer) };
+#[cfg(all(unix, not(target_os = "macos")))]
+static HOST_FD: clap_host_posix_fd_support =
+    clap_host_posix_fd_support { register_fd: Some(host_register_fd), modify_fd: Some(host_modify_fd), unregister_fd: Some(host_unregister_fd) };
+
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe extern "C" fn host_register_timer(host: *const clap_host, period_ms: u32, timer_id: *mut clap_id) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    let Some(s) = (unsafe { state(host) }) else { return false };
+    // SAFETY: an out-pointer from the plugin (or null, handled).
+    let Some(out) = (unsafe { timer_id.as_mut() }) else { return false };
+    match s.run_loop.add_timer(period_ms) {
+        Some(id) => {
+            *out = id;
+            true
+        }
+        None => false,
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe extern "C" fn host_unregister_timer(host: *const clap_host, timer_id: clap_id) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    unsafe { state(host) }.is_some_and(|s| s.run_loop.remove_timer(timer_id))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe extern "C" fn host_register_fd(host: *const clap_host, fd: i32, flags: u32) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    unsafe { state(host) }.is_some_and(|s| s.run_loop.add_fd(fd, flags))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe extern "C" fn host_modify_fd(host: *const clap_host, fd: i32, flags: u32) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    unsafe { state(host) }.is_some_and(|s| s.run_loop.modify_fd(fd, flags))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe extern "C" fn host_unregister_fd(host: *const clap_host, fd: i32) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    unsafe { state(host) }.is_some_and(|s| s.run_loop.remove_fd(fd))
 }
 
 // ---- events --------------------------------------------------------------------------------
@@ -752,6 +841,11 @@ struct GuiInner {
     visible: bool,
     /// The host window of an embedded editor (`None` for floating editors).
     window: Option<hostwin::HostWindow>,
+    /// The plugin's `clap.timer-support` and `clap.posix-fd-support` (null without them).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    timer: *const clap_plugin_timer_support,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fd: *const clap_plugin_posix_fd_support,
 }
 
 /// The link between an instance and its editor and state handles. The instance may process on
@@ -776,6 +870,10 @@ impl Default for GuiLink {
                 created: false,
                 visible: false,
                 window: None,
+                #[cfg(all(unix, not(target_os = "macos")))]
+                timer: std::ptr::null(),
+                #[cfg(all(unix, not(target_os = "macos")))]
+                fd: std::ptr::null(),
             }),
             host: Arc::new(HostState::default()),
         }
@@ -831,7 +929,7 @@ impl GuiLink {
             if hostwin::SUPPORTED && unsafe { supported(g.plugin, api.as_ptr(), false) } {
                 return self.open_embedded(&mut g, vt, api, title);
             }
-            return Err("this plugin offers only an embedded editor, which SoundCraft hosts on Windows only".into());
+            return Err("this plugin offers only an embedded editor, which SoundCraft hosts on Windows and X11 (Linux, BSDs) only".into());
         }
         self.host.gui_closed.store(false, Ordering::Relaxed);
         self.host.gui_destroyed.store(false, Ordering::Relaxed);
@@ -893,7 +991,7 @@ impl GuiLink {
                 return Err(e);
             }
         };
-        let parent = clap_window { api: api.as_ptr(), specific: clap_window_handle { win32: win.parent() } };
+        let parent = clap_window { api: api.as_ptr(), specific: win.handle() };
         // SAFETY: live plugin with a created embedded GUI; `parent` names our live window and
         // outlives the call.
         if !unsafe { set_parent(g.plugin, &parent) } {
@@ -979,6 +1077,8 @@ impl GuiLink {
                 unsafe { f(g.plugin) };
             }
         }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        self.dispatch(&g);
         if g.created {
             let resize = self.host.gui_resize.swap(0, Ordering::Relaxed);
             if resize != 0
@@ -1035,6 +1135,36 @@ impl GuiLink {
             }
         }
         g.alive = false;
+        #[cfg(all(unix, not(target_os = "macos")))]
+        self.host.run_loop.clear();
+    }
+
+    /// Calls the plugin back for its ready descriptors and due timers (main thread, under the
+    /// lock, plugin alive). One unregistered earlier in the same pass is skipped.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn dispatch(&self, g: &GuiInner) {
+        if !g.alive {
+            return;
+        }
+        let rl = &self.host.run_loop;
+        // SAFETY: null or the plugin's static extension vtables, valid while `alive`.
+        let (timer, fd) = unsafe { (g.timer.as_ref().and_then(|t| t.on_timer), g.fd.as_ref().and_then(|f| f.on_fd)) };
+        if let Some(on_fd) = fd {
+            for (d, flags) in rl.ready() {
+                if rl.has_fd(d) {
+                    // SAFETY: live plugin, main thread, a descriptor it registered.
+                    unsafe { on_fd(g.plugin, d, flags) };
+                }
+            }
+        }
+        if let Some(on_timer) = timer {
+            for id in rl.due(std::time::Instant::now()) {
+                if rl.has_timer(id) {
+                    // SAFETY: live plugin, main thread, a timer it registered.
+                    unsafe { on_timer(g.plugin, id) };
+                }
+            }
+        }
     }
 }
 
@@ -1430,6 +1560,7 @@ impl Drop for Instance {
 /// Messages are dispatched by the app's own event loop on the main thread.
 #[cfg(windows)]
 mod hostwin {
+    use clap_sys::ext::gui::clap_window_handle;
     use std::ffi::c_void;
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -1560,6 +1691,10 @@ mod hostwin {
             self.live().unwrap_or(std::ptr::null_mut())
         }
 
+        pub fn handle(&self) -> clap_window_handle {
+            clap_window_handle { win32: self.parent() }
+        }
+
         pub fn raise(&self) {
             if let Some(h) = self.live() {
                 // SAFETY: a live window of this thread.
@@ -1597,9 +1732,389 @@ mod hostwin {
     }
 }
 
-/// Other platforms: embedded editors are not hosted (floating ones still are).
-#[cfg(not(windows))]
+/// The timers and descriptors a plugin registered through `clap.timer-support` and
+/// `clap.posix-fd-support`. X11 editors have no event loop of their own: they register their
+/// display connection's descriptor and their repaint timers, and the host calls them back on the
+/// main thread. SoundCraft does that from the editor's `idle`, once per UI frame (the UI repaints
+/// at least every 30 ms while an editor is open).
+#[cfg(all(unix, not(target_os = "macos")))]
+mod run_loop {
+    use clap_sys::ext::posix_fd_support::{CLAP_POSIX_FD_ERROR, CLAP_POSIX_FD_READ, CLAP_POSIX_FD_WRITE, clap_posix_fd_flags};
+    use clap_sys::id::clap_id;
+    use std::sync::{Mutex, PoisonError};
+    use std::time::{Duration, Instant};
+
+    /// Registrations kept per instance; a plugin needs a handful.
+    const MAX_ENTRIES: usize = 256;
+    /// Longest timer period accepted (one hour).
+    const MAX_PERIOD_MS: u32 = 3_600_000;
+
+    struct Timer {
+        id: clap_id,
+        every: Duration,
+        next: Instant,
+    }
+
+    #[derive(Default)]
+    struct Entries {
+        timers: Vec<Timer>,
+        fds: Vec<(i32, clap_posix_fd_flags)>,
+        next_id: clap_id,
+    }
+
+    #[derive(Default)]
+    pub struct RunLoop {
+        entries: Mutex<Entries>,
+    }
+
+    impl RunLoop {
+        fn lock(&self) -> std::sync::MutexGuard<'_, Entries> {
+            self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        pub fn add_timer(&self, period_ms: u32) -> Option<clap_id> {
+            let mut e = self.lock();
+            if e.timers.len() >= MAX_ENTRIES {
+                return None;
+            }
+            // Ids are never reused within an instance (`CLAP_INVALID_ID` is u32::MAX).
+            let id = e.next_id;
+            e.next_id = e.next_id.checked_add(1).filter(|&n| n != clap_id::MAX)?;
+            let every = Duration::from_millis(u64::from(period_ms.clamp(1, MAX_PERIOD_MS)));
+            e.timers.push(Timer { id, every, next: Instant::now() + every });
+            log::debug!("clap: run loop: timer {id} every {} ms", every.as_millis());
+            Some(id)
+        }
+
+        pub fn remove_timer(&self, id: clap_id) -> bool {
+            let mut e = self.lock();
+            let before = e.timers.len();
+            e.timers.retain(|t| t.id != id);
+            e.timers.len() != before
+        }
+
+        pub fn add_fd(&self, fd: i32, flags: clap_posix_fd_flags) -> bool {
+            let mut e = self.lock();
+            if fd < 0 || e.fds.len() >= MAX_ENTRIES || e.fds.iter().any(|&(f, _)| f == fd) {
+                return false;
+            }
+            e.fds.push((fd, flags));
+            log::debug!("clap: run loop: watching fd {fd}");
+            true
+        }
+
+        pub fn modify_fd(&self, fd: i32, flags: clap_posix_fd_flags) -> bool {
+            let mut e = self.lock();
+            match e.fds.iter_mut().find(|(f, _)| *f == fd) {
+                Some(entry) => {
+                    entry.1 = flags;
+                    true
+                }
+                None => false,
+            }
+        }
+
+        pub fn remove_fd(&self, fd: i32) -> bool {
+            let mut e = self.lock();
+            let before = e.fds.len();
+            e.fds.retain(|&(f, _)| f != fd);
+            e.fds.len() != before
+        }
+
+        pub fn clear(&self) {
+            let mut e = self.lock();
+            e.timers.clear();
+            e.fds.clear();
+        }
+
+        pub fn has_timer(&self, id: clap_id) -> bool {
+            self.lock().timers.iter().any(|t| t.id == id)
+        }
+
+        pub fn has_fd(&self, fd: i32) -> bool {
+            self.lock().fds.iter().any(|&(f, _)| f == fd)
+        }
+
+        /// The timers due at `now`, rescheduled from `now` (a late UI frame fires each once
+        /// rather than replaying missed ticks).
+        pub fn due(&self, now: Instant) -> Vec<clap_id> {
+            let mut e = self.lock();
+            let mut out = Vec::new();
+            for t in e.timers.iter_mut().filter(|t| t.next <= now) {
+                t.next = now + t.every;
+                out.push(t.id);
+            }
+            out
+        }
+
+        /// The registered descriptors that are ready for what they asked for (or failed), with
+        /// the matching CLAP flags, without waiting.
+        pub fn ready(&self) -> Vec<(i32, clap_posix_fd_flags)> {
+            let fds = self.lock().fds.clone();
+            if fds.is_empty() {
+                return Vec::new();
+            }
+            let mut polled: Vec<libc::pollfd> = fds
+                .iter()
+                .map(|&(fd, flags)| {
+                    let mut events = 0;
+                    if flags & CLAP_POSIX_FD_READ != 0 {
+                        events |= libc::POLLIN;
+                    }
+                    if flags & CLAP_POSIX_FD_WRITE != 0 {
+                        events |= libc::POLLOUT;
+                    }
+                    libc::pollfd { fd, events, revents: 0 }
+                })
+                .collect();
+            // SAFETY: `polled` is a valid, writable array of `polled.len()` entries; a zero
+            // timeout never blocks.
+            if unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, 0) } <= 0 {
+                return Vec::new();
+            }
+            polled
+                .iter()
+                .filter_map(|p| {
+                    let mut flags = 0;
+                    if p.revents & libc::POLLIN != 0 {
+                        flags |= CLAP_POSIX_FD_READ;
+                    }
+                    if p.revents & libc::POLLOUT != 0 {
+                        flags |= CLAP_POSIX_FD_WRITE;
+                    }
+                    if p.revents & (libc::POLLERR | libc::POLLHUP) != 0 {
+                        flags |= CLAP_POSIX_FD_ERROR;
+                    }
+                    (flags != 0).then_some((p.fd, flags))
+                })
+                .collect()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn timers_and_descriptors_follow_registration() {
+            let rl = RunLoop::default();
+            let a = rl.add_timer(10).unwrap();
+            let b = rl.add_timer(0).unwrap();
+            assert_ne!(a, b, "ids are unique");
+            let t0 = Instant::now();
+            assert!(rl.due(t0).is_empty(), "not due yet");
+            let mut due = rl.due(t0 + Duration::from_secs(1));
+            due.sort_unstable();
+            assert_eq!(due, vec![a, b], "a late frame fires each timer once");
+            assert!(rl.remove_timer(a) && !rl.remove_timer(a));
+            assert_eq!(rl.due(t0 + Duration::from_secs(2)), vec![b]);
+            let mut fds = [0; 2];
+            // SAFETY: `fds` holds the two descriptors `pipe` writes.
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            assert!(rl.add_fd(fds[0], CLAP_POSIX_FD_READ));
+            assert!(!rl.add_fd(fds[0], CLAP_POSIX_FD_READ), "registered once");
+            assert!(!rl.add_fd(-1, CLAP_POSIX_FD_READ));
+            assert!(rl.ready().is_empty(), "nothing to read");
+            // SAFETY: a valid one-byte buffer written to our own pipe.
+            assert_eq!(unsafe { libc::write(fds[1], b"x".as_ptr().cast(), 1) }, 1);
+            assert_eq!(rl.ready(), vec![(fds[0], CLAP_POSIX_FD_READ)]);
+            assert!(rl.modify_fd(fds[0], CLAP_POSIX_FD_WRITE));
+            assert!(rl.ready().is_empty(), "a read end never becomes writable");
+            assert!(rl.remove_fd(fds[0]) && !rl.has_fd(fds[0]));
+            rl.clear();
+            assert!(!rl.has_timer(b));
+            // SAFETY: closing the pipe we opened.
+            unsafe {
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+            }
+        }
+    }
+}
+
+/// The X11 host window for embedded editors (Linux and the BSDs): a top-level window on our own
+/// connection to the X server (XWayland on Wayland desktops) that the plugin parents its GUI in.
+/// The close button only hides it (`WM_DELETE_WINDOW`); the editor link notices in `idle`,
+/// destroys the plugin's GUI, then the window. Our connection's events are read whenever a
+/// window's visibility is asked, which the UI does every frame while an editor is open.
+#[cfg(all(unix, not(target_os = "macos")))]
 mod hostwin {
+    use clap_sys::ext::gui::clap_window_handle;
+    use std::collections::HashSet;
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, OnceLock, PoisonError};
+    use x11rb::connection::Connection;
+    use x11rb::properties::WmSizeHints;
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xproto::{
+        AtomEnum, ConfigureWindowAux, ConnectionExt as _, CreateWindowAux, EventMask, PropMode, StackMode, Window, WindowClass,
+    };
+    use x11rb::rust_connection::RustConnection;
+    use x11rb::wrapper::ConnectionExt as _;
+
+    pub const SUPPORTED: bool = true;
+
+    /// Rust names the process's first thread "main"; the app runs its UI (and event loop) there.
+    fn on_main_thread() -> bool {
+        std::thread::current().name() == Some("main")
+    }
+
+    struct X {
+        conn: RustConnection,
+        root: Window,
+        visual: u32,
+        background: u32,
+        wm_protocols: u32,
+        wm_delete: u32,
+        net_wm_name: u32,
+        utf8: u32,
+        /// Windows whose close button was pressed (hidden, not yet destroyed).
+        closed: Mutex<HashSet<Window>>,
+    }
+
+    /// The process-wide connection, opened on first use (`None` without an X server).
+    fn x() -> Option<&'static X> {
+        static X: OnceLock<Option<X>> = OnceLock::new();
+        X.get_or_init(|| match connect() {
+            Ok(x) => Some(x),
+            Err(e) => {
+                log::warn!("clap: no X11 display for plugin editors: {e}");
+                None
+            }
+        })
+        .as_ref()
+    }
+
+    fn connect() -> Result<X, Box<dyn std::error::Error>> {
+        let (conn, screen) = x11rb::connect(None)?;
+        let s = conn.setup().roots.get(screen).ok_or("no X11 screen")?;
+        let (root, visual, background) = (s.root, s.root_visual, s.black_pixel);
+        let atom = |name: &[u8]| -> Result<u32, Box<dyn std::error::Error>> { Ok(conn.intern_atom(false, name)?.reply()?.atom) };
+        Ok(X {
+            wm_protocols: atom(b"WM_PROTOCOLS")?,
+            wm_delete: atom(b"WM_DELETE_WINDOW")?,
+            net_wm_name: atom(b"_NET_WM_NAME")?,
+            utf8: atom(b"UTF8_STRING")?,
+            root,
+            visual,
+            background,
+            closed: Mutex::new(HashSet::new()),
+            conn,
+        })
+    }
+
+    impl X {
+        fn closed(&self) -> std::sync::MutexGuard<'_, HashSet<Window>> {
+            self.closed.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        /// Reads pending events: a close request hides its window and marks it closed.
+        fn pump(&self) {
+            while let Ok(Some(ev)) = self.conn.poll_for_event() {
+                if let Event::ClientMessage(m) = ev
+                    && m.type_ == self.wm_protocols
+                    && m.format == 32
+                    && m.data.as_data32().first() == Some(&self.wm_delete)
+                {
+                    let _ = self.conn.unmap_window(m.window);
+                    self.closed().insert(m.window);
+                }
+            }
+            let _ = self.conn.flush();
+        }
+
+        /// Fixes the window's size for the window manager (plugins resize through the host).
+        fn size_hints(&self, w: Window, width: u32, height: u32) {
+            let (width, height) = (width as i32, height as i32);
+            let hints = WmSizeHints { min_size: Some((width, height)), max_size: Some((width, height)), ..WmSizeHints::new() };
+            let _ = hints.set_normal_hints(&self.conn, w);
+        }
+    }
+
+    fn dims(w: f64, h: f64) -> (u16, u16) {
+        (w.clamp(1.0, 16_384.0) as u16, h.clamp(1.0, 16_384.0) as u16)
+    }
+
+    pub struct HostWindow {
+        id: Window,
+        shown: AtomicBool,
+    }
+
+    impl HostWindow {
+        pub fn new(title: &str, w: f64, h: f64) -> Result<HostWindow, String> {
+            if !on_main_thread() {
+                return Err("plugin editors must be opened on the main thread".into());
+            }
+            let x = x().ok_or_else(|| "plugin editors need an X11 display (XWayland on Wayland desktops)".to_string())?;
+            let err = |e: &dyn std::fmt::Display| format!("cannot create the editor window: {e}");
+            let id = x.conn.generate_id().map_err(|e| err(&e))?;
+            let (width, height) = dims(w, h);
+            let aux = CreateWindowAux::new().background_pixel(x.background).event_mask(EventMask::STRUCTURE_NOTIFY);
+            x.conn
+                .create_window(x11rb::COPY_DEPTH_FROM_PARENT, id, x.root, 0, 0, width, height, 0, WindowClass::INPUT_OUTPUT, x.visual, &aux)
+                .map_err(|e| err(&e))?;
+            let _ = x.conn.change_property8(PropMode::REPLACE, id, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes());
+            let _ = x.conn.change_property8(PropMode::REPLACE, id, x.net_wm_name, x.utf8, title.as_bytes());
+            let _ = x.conn.change_property8(PropMode::REPLACE, id, AtomEnum::WM_CLASS, AtomEnum::STRING, b"soundcraft\0SoundCraft\0");
+            let _ = x.conn.change_property32(PropMode::REPLACE, id, x.wm_protocols, AtomEnum::ATOM, &[x.wm_delete]);
+            x.size_hints(id, width.into(), height.into());
+            // A round trip, so the window exists before the plugin (on its own connection)
+            // parents its GUI in it.
+            x.conn.get_input_focus().map_err(|e| err(&e))?.reply().map_err(|e| err(&e))?;
+            Ok(HostWindow { id, shown: AtomicBool::new(false) })
+        }
+
+        /// The window id (for resizes).
+        pub fn raw(&self) -> *mut c_void {
+            self.id as usize as *mut c_void
+        }
+
+        pub fn handle(&self) -> clap_window_handle {
+            clap_window_handle { x11: u64::from(self.id) }
+        }
+
+        pub fn raise(&self) {
+            let Some(x) = x().filter(|_| on_main_thread()) else { return };
+            x.closed().remove(&self.id);
+            let _ = x.conn.map_window(self.id);
+            let _ = x.conn.configure_window(self.id, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE));
+            let _ = x.conn.flush();
+            self.shown.store(true, Ordering::Relaxed);
+        }
+
+        pub fn is_visible(&self) -> bool {
+            let Some(x) = x().filter(|_| on_main_thread()) else { return false };
+            x.pump();
+            self.shown.load(Ordering::Relaxed) && !x.closed().contains(&self.id)
+        }
+
+        pub fn close(self) {
+            let Some(x) = x().filter(|_| on_main_thread()) else { return };
+            x.closed().remove(&self.id);
+            let _ = x.conn.destroy_window(self.id);
+            let _ = x.conn.flush();
+        }
+    }
+
+    /// Resizes a host window (`window` from [`HostWindow::raw`]); main thread only.
+    pub fn resize(window: *mut c_void, w: f64, h: f64) {
+        let Some(x) = x().filter(|_| on_main_thread()) else { return };
+        let Ok(id) = Window::try_from(window as usize) else { return };
+        if id == 0 {
+            return;
+        }
+        let (width, height) = dims(w, h);
+        x.size_hints(id, width.into(), height.into());
+        let _ = x.conn.configure_window(id, &ConfigureWindowAux::new().width(u32::from(width)).height(u32::from(height)));
+        let _ = x.conn.flush();
+    }
+}
+
+/// Other platforms: embedded editors are not hosted (floating ones still are).
+#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+mod hostwin {
+    use clap_sys::ext::gui::clap_window_handle;
     use std::ffi::c_void;
 
     pub const SUPPORTED: bool = false;
@@ -1613,8 +2128,8 @@ mod hostwin {
         pub fn raw(&self) -> *mut c_void {
             std::ptr::null_mut()
         }
-        pub fn parent(&self) -> *mut c_void {
-            std::ptr::null_mut()
+        pub fn handle(&self) -> clap_window_handle {
+            clap_window_handle { ptr: std::ptr::null_mut() }
         }
         pub fn raise(&self) {}
         pub fn is_visible(&self) -> bool {
