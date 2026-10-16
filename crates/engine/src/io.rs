@@ -889,7 +889,7 @@ pub fn save_copy(e: &Engine, path: &str) -> Result<usize> {
 /// File › Save Session Copy In: a normal session folder that does not rename, retarget or
 /// clean the session that stays open.
 pub fn save_session_copy(e: &Engine, path: &str) -> Result<usize> {
-    write_session(e.session(), path, false).map(|(_, n, _)| n)
+    crate::session_copy::save(e, path).map(|copy| copy.audio_files_written)
 }
 
 /// Write `session` to `path`; returns the session with updated media paths, the number of audio
@@ -1071,10 +1071,22 @@ fn same_path(a: &Path, b: &Path) -> bool {
 /// holds exactly these bytes, so saving never replaces audio; returns the name and whether it was
 /// written.
 fn store_wav(dir: &Path, stem: &str, bytes: &[u8]) -> Result<(String, bool)> {
+    store_wav_with_policy(dir, stem, bytes, false)
+}
+
+/// Explicit portable copies must not reuse a symlink to media outside their folder.
+pub(crate) fn store_copy_wav(dir: &Path, stem: &str, bytes: &[u8]) -> Result<(String, bool)> {
+    store_wav_with_policy(dir, stem, bytes, true)
+}
+
+fn store_wav_with_policy(dir: &Path, stem: &str, bytes: &[u8], reject_links: bool) -> Result<(String, bool)> {
     use std::io::Write;
     for k in 0..10_000u32 {
         let name = if k == 0 { format!("{stem}.wav") } else { format!("{stem}_{k:02}.wav") };
         let path = dir.join(&name);
+        if reject_links {
+            crate::file_access::check_write(&path).map_err(EngineError::Io)?;
+        }
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut f) => {
                 if let Err(err) = f.write_all(bytes).and_then(|()| f.sync_all()) {
@@ -1084,7 +1096,13 @@ fn store_wav(dir: &Path, stem: &str, bytes: &[u8]) -> Result<(String, bool)> {
                 return Ok((name, true));
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                if std::fs::metadata(&path).is_ok_and(|m| m.len() == bytes.len() as u64) && std::fs::read(&path).is_ok_and(|b| b == bytes) {
+                if reject_links && std::fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file() || m.file_type().is_symlink()) {
+                    return Err(EngineError::Io(format!("{}: portable copies can reuse only regular media files", path.display())));
+                }
+                if (!reject_links || crate::file_access::check_read(&path).is_ok())
+                    && std::fs::metadata(&path).is_ok_and(|m| m.len() == bytes.len() as u64)
+                    && std::fs::read(&path).is_ok_and(|b| b == bytes)
+                {
                     return Ok((name, false));
                 }
             }
@@ -1408,6 +1426,192 @@ pub fn live_span(start: Samples, pass: Option<Samples>, punch: Option<Range>, le
     let origin = start.saturating_sub(pass.filter(|p| *p > 0).map_or(0, |p| len / p * p));
     let span = Range::new(start, origin.saturating_add(len));
     Some((origin, span.intersect(&punch.unwrap_or(span))?))
+}
+
+/// Filesystem gateway for explicit audio-complete copies; ordinary saves keep their policy.
+pub(crate) mod session_copy_files {
+    use super::*;
+    use std::io::Write;
+    use std::path::Component;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    pub(crate) fn destination_issues(e: &Engine, file: &Path, issues: &mut Vec<String>) {
+        if let Err(err) = crate::file_access::check_write(file) {
+            issues.push(err);
+            return;
+        }
+        let mut own_identity_unavailable = false;
+        if let Some(own) = &e.path {
+            // Identity metadata may be inspected under either authority. Copying loaded PCM
+            // does not read the original session's contents.
+            if crate::file_access::check_read(own).is_ok() || crate::file_access::check_write(own).is_ok() {
+                match (resolved(file), resolved(Path::new(own))) {
+                    (Ok(copy), Ok(original)) if copy == original || same_inode(file, Path::new(own)) => {
+                        issues.push("choose a copy destination different from the open session file".into());
+                    }
+                    (Err(err), _) | (_, Err(err)) => issues.push(err),
+                    _ => {}
+                }
+            } else {
+                own_identity_unavailable = true;
+            }
+        }
+        if let Ok(metadata) = std::fs::symlink_metadata(file) {
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                issues.push("copy destination must be a regular file, not a directory or symlink".into());
+            } else if own_identity_unavailable {
+                issues.push("choose a fresh destination; open-session file identity cannot be verified with the current authority".into());
+                return;
+            } else if let Err(err) = crate::file_access::check_read(file) {
+                issues.push(err);
+                return;
+            }
+        }
+        let dir = file.parent().unwrap_or(Path::new(""));
+        let audio_dir = dir.join("Audio Files");
+        if let Err(err) = crate::file_access::check_write(&audio_dir) {
+            issues.push(err);
+            return;
+        }
+        if let Ok(metadata) = std::fs::symlink_metadata(&audio_dir) {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                issues.push("the destination Audio Files must be a directory, not a symlink".into());
+            } else if crate::file_access::check_read(&audio_dir).is_ok() {
+                match std::fs::read_dir(&audio_dir) {
+                    Ok(entries) => {
+                        for (index, entry) in entries.enumerate() {
+                            if index >= 10_000 {
+                                issues.push("destination media folder has more than 10000 entries; choose another folder".into());
+                                break;
+                            }
+                            match entry.and_then(|entry| entry.file_type()) {
+                                Ok(kind) if kind.is_symlink() => {
+                                    issues.push("the destination Audio Files contains symlinks; choose a regular media folder".into());
+                                    break;
+                                }
+                                Err(err) => {
+                                    issues.push(format!("cannot inspect destination media: {err}"));
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Err(err) => issues.push(format!("cannot inspect destination media: {err}")),
+                }
+            }
+        }
+    }
+
+    fn same_inode(a: &Path, b: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if x.dev() == y.dev() && x.ino() == y.ino())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (a, b);
+            false
+        }
+    }
+
+    // Resolve an existing ancestor first, so symlink parents and `..` aliases cannot bypass the own-file guard.
+    fn resolved(path: &Path) -> std::result::Result<PathBuf, String> {
+        if let Ok(full) = path.canonicalize() {
+            return Ok(full);
+        }
+        let mut remaining = Vec::new();
+        let mut ancestor = path;
+        loop {
+            if let Ok(mut full) = ancestor.canonicalize() {
+                for part in remaining.iter().rev() {
+                    full.push(part);
+                }
+                return Ok(normalized(&full));
+            }
+            let Some(name) = ancestor.file_name() else {
+                let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
+                return Ok(normalized(&cwd.join(path)));
+            };
+            remaining.push(name.to_os_string());
+            ancestor = ancestor.parent().unwrap_or(Path::new(""));
+        }
+    }
+
+    fn normalized(path: &Path) -> PathBuf {
+        let mut out = PathBuf::new();
+        for part in path.components() {
+            match part {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    out.pop();
+                }
+                _ => out.push(part.as_os_str()),
+            }
+        }
+        out
+    }
+
+    // Create a bounded, unique staging file; never open an existing staging path for writing.
+    pub(crate) fn publish(file: &Path, audio_dir: &Path, bytes: &[u8]) -> Result<()> {
+        crate::file_access::check_write(file).map_err(EngineError::Io)?;
+        crate::file_access::check_write(audio_dir).map_err(EngineError::Io)?;
+        if std::fs::symlink_metadata(file).is_ok() {
+            let old = super::read_file(file)?;
+            if old != bytes {
+                let backups = file.parent().unwrap_or(Path::new("")).join("Backups");
+                crate::file_access::check_read(&backups).map_err(EngineError::Io)?;
+                super::back_up(file);
+            }
+        }
+        super::sync_dir(audio_dir);
+        static NEXT_STAGE: AtomicUsize = AtomicUsize::new(0);
+        let dir = file.parent().unwrap_or(Path::new(""));
+        let ioerr = |err: std::io::Error| EngineError::Io(format!("{}: {err}", file.display()));
+        for _ in 0..100 {
+            let nonce = NEXT_STAGE.fetch_add(1, Ordering::Relaxed);
+            let tmp = dir.join(format!(".scraft-copy-{}-{nonce}.tmp", std::process::id()));
+            crate::file_access::check_write(&tmp).map_err(EngineError::Io)?;
+            let mut handle = match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+                Ok(handle) => handle,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(ioerr(err)),
+            };
+            let owned = handle.metadata().ok();
+            let persisted = handle.write_all(bytes).and_then(|()| handle.sync_all());
+            drop(handle);
+            let persisted = persisted.and_then(|()| crate::file_access::check_write(file).map_err(std::io::Error::other));
+            if let Err(err) = persisted.and_then(|()| std::fs::rename(&tmp, file)) {
+                remove_owned_stage(&tmp, owned.as_ref());
+                return Err(ioerr(err));
+            }
+            super::sync_dir(dir);
+            return Ok(());
+        }
+        Err(EngineError::Io(format!("{}: no unused copy staging path after 100 attempts", file.display())))
+    }
+
+    fn remove_owned_stage(path: &Path, owned: Option<&std::fs::Metadata>) {
+        if crate::file_access::check_write(path).is_err() {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            if let (Some(owned), Ok(current)) = (owned, std::fs::symlink_metadata(path))
+                && current.is_file()
+                && !current.file_type().is_symlink()
+                && owned.dev() == current.dev()
+                && owned.ino() == current.ino()
+            {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        // Leave an error-stage artifact when this platform cannot prove it still names our file.
+        #[cfg(not(unix))]
+        let _ = (path, owned);
+    }
 }
 
 #[cfg(test)]
