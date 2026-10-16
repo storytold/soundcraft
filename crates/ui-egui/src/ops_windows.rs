@@ -30,6 +30,9 @@ pub struct OpsState {
     pub rtp_transpose: i64,
     pub rtp_duration: f64,
     pub rtp_delay: i64,
+    /// The MIDI tracks the Real-Time Properties form was last filled from: the form re-reads the
+    /// tracks when the target selection changes (#444).
+    pub rtp_targets: Vec<soundcraft_model::TrackId>,
     pub identify_bars: u32,
 }
 
@@ -57,6 +60,7 @@ impl Default for OpsState {
             rtp_transpose: 0,
             rtp_duration: 100.0,
             rtp_delay: 0,
+            rtp_targets: Vec::new(),
             identify_bars: 1,
         }
     }
@@ -261,15 +265,25 @@ fn rtp(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
+    // Fill the form from the tracks it edits whenever the target selection changes, so it never
+    // shows (and a control change never writes back) stale defaults (#444).
+    let targets = app.engine.target_tracks();
+    if app.ops.rtp_targets != targets {
+        app.ops.rtp_targets = targets.clone();
+        let (velocity, transpose, duration, delay) = rtp_form_values(app.engine.session(), &targets);
+        app.ops.rtp_velocity = velocity;
+        app.ops.rtp_transpose = transpose;
+        app.ops.rtp_duration = duration;
+        app.ops.rtp_delay = delay;
+    }
     egui::Window::new("MIDI Real-Time Properties").open(&mut open).default_size(vec2(340.0, 200.0)).show(ctx, |ui| {
         ui.label("Non-destructive, applied at playback to the selected MIDI tracks.");
-        let mut changed = false;
-        changed |= ui.add(egui::Slider::new(&mut app.ops.rtp_velocity, -127..=127).text("Velocity +")).changed();
-        changed |= ui.add(egui::Slider::new(&mut app.ops.rtp_transpose, -48..=48).text("Transpose")).changed();
-        changed |= ui.add(egui::Slider::new(&mut app.ops.rtp_duration, 1.0..=400.0).text("Duration %")).changed();
-        changed |= ui.add(egui::Slider::new(&mut app.ops.rtp_delay, -960..=960).text("Delay (ticks)")).changed();
-        if changed {
-            let p = json!({"velocity": app.ops.rtp_velocity, "transpose": app.ops.rtp_transpose, "duration": app.ops.rtp_duration, "delay": app.ops.rtp_delay});
+        let mut changed = RtpChanged::default();
+        changed.velocity = ui.add(egui::Slider::new(&mut app.ops.rtp_velocity, -127..=127).text("Velocity +")).changed();
+        changed.transpose = ui.add(egui::Slider::new(&mut app.ops.rtp_transpose, -48..=48).text("Transpose")).changed();
+        changed.duration = ui.add(egui::Slider::new(&mut app.ops.rtp_duration, 1.0..=400.0).text("Duration %")).changed();
+        changed.delay = ui.add(egui::Slider::new(&mut app.ops.rtp_delay, -960..=960).text("Delay (ticks)")).changed();
+        if let Some(p) = rtp_params(changed, &app.ops) {
             let _ = app.engine.execute_merged("event.midi_rtp", &p, "rtp");
         }
         ui.horizontal(|ui| {
@@ -286,6 +300,47 @@ fn rtp(app: &mut SoundApp, ctx: &egui::Context) {
         });
     });
     app.ui.show_rtp = open;
+}
+
+/// Which of the form's controls the user changed this frame.
+#[derive(Default, Clone, Copy)]
+struct RtpChanged {
+    velocity: bool,
+    transpose: bool,
+    duration: bool,
+    delay: bool,
+}
+
+/// A form change submits only the properties the user touched: the command stores each key it is
+/// sent, so sending untouched ones would overwrite the target's values with the form's (#444).
+fn rtp_params(changed: RtpChanged, ops: &OpsState) -> Option<Value> {
+    let mut p = serde_json::Map::new();
+    if changed.velocity {
+        p.insert("velocity".into(), json!(ops.rtp_velocity));
+    }
+    if changed.transpose {
+        p.insert("transpose".into(), json!(ops.rtp_transpose));
+    }
+    if changed.duration {
+        p.insert("duration".into(), json!(ops.rtp_duration));
+    }
+    if changed.delay {
+        p.insert("delay".into(), json!(ops.rtp_delay));
+    }
+    (!p.is_empty()).then_some(Value::Object(p))
+}
+
+/// The values the form shows for `targets`: the first target's own Real-Time Properties, or the
+/// neutral defaults when nothing is selected.
+fn rtp_form_values(s: &soundcraft_model::Session, targets: &[soundcraft_model::TrackId]) -> (i64, i64, f64, i64) {
+    let Some(&t) = targets.first() else { return (0, 0, 100.0, 0) };
+    let value = |key: &str, d: f64| s.edit.value(&format!("rtp.{}.{key}", t.0), d);
+    (
+        value("velocity", 0.0).clamp(-127.0, 127.0) as i64,
+        value("transpose", 0.0).clamp(-127.0, 127.0) as i64,
+        value("duration", 100.0).clamp(1.0, 1000.0),
+        value("delay", 0.0).clamp(-1e7, 1e7) as i64,
+    )
 }
 
 #[cfg(test)]
@@ -307,5 +362,28 @@ mod tests {
         let (id, p) = tempo_ops_apply("linear", 100.0, 140.0);
         assert_eq!(id, "event.tempo_linear");
         assert_eq!(p["end_bpm"], 140.0);
+    }
+
+    /// One control moved: only its property is submitted, so the command cannot overwrite the
+    /// target's other Real-Time Properties with the form's values (#444).
+    #[test]
+    fn rtp_submits_only_the_property_that_changed() {
+        let ops = OpsState { rtp_velocity: 12, rtp_transpose: 7, rtp_duration: 50.0, rtp_delay: 480, ..OpsState::default() };
+        let only_velocity = RtpChanged { velocity: true, ..RtpChanged::default() };
+        assert_eq!(rtp_params(only_velocity, &ops), Some(json!({"velocity": 12})));
+        let only_duration = RtpChanged { duration: true, ..RtpChanged::default() };
+        assert_eq!(rtp_params(only_duration, &ops), Some(json!({"duration": 50.0})));
+        assert_eq!(rtp_params(RtpChanged::default(), &ops), None, "no control moved, no command");
+    }
+
+    /// The form reads the target's own values when the window opens or the selection changes.
+    #[test]
+    fn the_rtp_form_shows_the_target_tracks_values() {
+        let mut e = soundcraft_engine::Engine::default();
+        e.execute("track.new", &json!({"kind": "instrument", "name": "Synth"})).unwrap();
+        let t = e.session().tracks.last().unwrap().id;
+        e.execute("event.midi_rtp", &json!({"track": t.0, "velocity": -12, "transpose": 7, "duration": 50.0, "delay": 480})).unwrap();
+        assert_eq!(rtp_form_values(e.session(), &[]), (0, 0, 100.0, 0), "no target: the neutral defaults");
+        assert_eq!(rtp_form_values(e.session(), &[t]), (-12, 7, 50.0, 480));
     }
 }
