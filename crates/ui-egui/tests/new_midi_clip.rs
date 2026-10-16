@@ -135,3 +135,18 @@ fn a_click_in_the_empty_midi_editor_adds_a_clip_at_the_insertion_point() {
     assert_eq!(r.clips(), vec![(r.bar(3), r.bar(4))]);
     assert_eq!(midi_editor::target_clip(&r.app), Some(r.app.engine.session().tracks[0].clips()[0].id));
 }
+
+#[test]
+fn a_pencil_click_on_a_clip_selects_it_for_the_midi_editor() {
+    let mut r = Rig::new("instrument");
+    r.app.ui.show_midi_editor = true;
+    r.drag((r.bar(2) + r.bar(3)) / 2, (r.bar(3) + r.bar(4)) / 2);
+    r.drag((r.bar(6) + r.bar(7)) / 2, (r.bar(7) + r.bar(8)) / 2);
+    let ids: Vec<_> = r.app.engine.session().tracks[0].clips().iter().map(|c| c.id).collect();
+    assert_eq!(r.clips(), vec![(r.bar(2), r.bar(4)), (r.bar(6), r.bar(8))]);
+    assert_eq!(midi_editor::target_clip(&r.app), Some(ids[1]));
+    r.click((r.bar(2) + r.bar(3)) / 2);
+    assert_eq!(r.clips().len(), 2);
+    assert_eq!(r.app.engine.session().edit.selected_clips, vec![ids[0]]);
+    assert_eq!(midi_editor::target_clip(&r.app), Some(ids[0]));
+}

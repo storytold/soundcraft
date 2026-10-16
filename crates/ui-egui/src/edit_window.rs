@@ -2177,8 +2177,13 @@ fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, 
                         "automation.set_point",
                         json!({"track": track.id.0, "param": automation_id(param), "at": at, "value": lo + (hi - lo) * k}),
                     );
-                } else if track.kind.is_midi() && hit.is_none() {
-                    new_midi_clip(app, &s, track.id, at, at);
+                } else if track.kind.is_midi() {
+                    match &hit {
+                        Some(c) => {
+                            let _ = app.run("edit.select", json!({"clips": [c.id.0]}));
+                        }
+                        None => new_midi_clip(app, &s, track.id, at, at),
+                    }
                 }
             }
             _ if !selector_press => place_insertion(app, ui, &s, track.id, at, mods.shift),
