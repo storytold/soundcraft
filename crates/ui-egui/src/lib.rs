@@ -459,9 +459,13 @@ impl SoundApp {
         (fresh && !self.engine.session().tracks.iter().any(|t| t.mixer.record_arm)).then_some(why)
     }
 
-    /// Current transport position (playhead while playing, else the edit insertion).
+    /// Current transport position (playhead while playing or paused, else the edit insertion).
     pub fn position(&self) -> Samples {
-        if self.engine.transport.playing { self.engine.transport.position } else { self.engine.session().edit.selection.start }
+        if self.engine.transport.playing || self.engine.transport.paused {
+            self.engine.transport.position
+        } else {
+            self.engine.session().edit.selection.start
+        }
     }
 
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
@@ -472,6 +476,7 @@ impl SoundApp {
             self.sim = Some((from, end, looped));
         }
         self.engine.transport.playing = true;
+        self.engine.transport.paused = false;
         self.engine.transport.position = from;
         self.last_write_at = i64::MIN;
         // A fresh start resumes the playhead follow: clear a manual hold and
@@ -493,6 +498,7 @@ impl SoundApp {
         }
         self.sim = None;
         self.engine.transport.playing = false;
+        self.engine.transport.paused = false;
         self.engine.transport.recording = false;
         let stop_at = self.engine.transport.position;
         // Snapshot the session flags first: `session_mut` below needs a
@@ -521,6 +527,20 @@ impl SoundApp {
             }
         }
         self.edit_layout.follow_hold = false;
+    }
+
+    fn pause_play(&mut self) {
+        if !self.engine.transport.playing {
+            return;
+        }
+        if let Some(p) = &self.player {
+            p.stop();
+        }
+        self.sim = None;
+        self.engine.transport.playing = false;
+        self.engine.transport.paused = true;
+        let pos = self.engine.transport.position;
+        self.engine.session_mut().edit.playhead = pos;
     }
 
     fn start_recording(&mut self) {
@@ -970,11 +990,23 @@ impl SoundApp {
     }
 
     /// Play from the selection, honouring loop playback and selection end.
+    /// After Pause, continue from the playhead instead of restarting the selection.
     pub fn play_from_selection(&mut self) {
         let s = self.engine.session();
         let sel = s.edit.selection;
         let preroll = if s.edit.pre_post_roll { s.edit.pre_roll } else { 0 };
         let postroll = if s.edit.pre_post_roll { s.edit.post_roll } else { 0 };
+        if self.engine.transport.paused {
+            let from = self.engine.transport.position.max(0);
+            if s.edit.loop_playback && !sel.is_empty() {
+                self.start_play(from, None, Some(sel));
+            } else if !sel.is_empty() && from < sel.end {
+                self.start_play(from, Some(sel.end + postroll), None);
+            } else {
+                self.start_play(from, None, None);
+            }
+            return;
+        }
         if s.edit.loop_playback && !sel.is_empty() {
             self.start_play(sel.start, None, Some(sel));
         } else if !sel.is_empty() {
@@ -1012,10 +1044,11 @@ impl SoundApp {
                         self.play_from_selection();
                     }
                 }
-                TransportRequest::Stop | TransportRequest::Pause => self.stop_play(),
+                TransportRequest::Stop => self.stop_play(),
+                TransportRequest::Pause => self.pause_play(),
                 TransportRequest::TogglePlay => {
                     if self.is_playing() {
-                        self.stop_play();
+                        self.pause_play();
                     } else {
                         self.play_from_selection();
                     }
@@ -1330,6 +1363,47 @@ mod tests {
             assert!(app.is_playing());
             assert_eq!(app.position(), insertion + i64::from(app.engine.session().sample_rate.hz()) / 4);
         }
+    }
+
+    #[test]
+    fn pause_keeps_the_playhead_and_play_resumes_from_there() {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        app.run("transport.play", json!({"from": 48_000})).unwrap();
+        app.handle_transport(0.5);
+        assert!(app.is_playing());
+        let paused_at = app.position();
+        assert!(paused_at > 48_000);
+        app.run("transport.pause", json!({})).unwrap();
+        app.handle_transport(0.25);
+        assert!(!app.is_playing());
+        assert!(app.engine.transport.paused);
+        assert_eq!(app.position(), paused_at);
+        app.handle_transport(0.25);
+        assert_eq!(app.position(), paused_at, "pause must not keep the clock running");
+        app.run("transport.play", json!({})).unwrap();
+        app.handle_transport(0.25);
+        assert!(app.is_playing());
+        assert!(!app.engine.transport.paused);
+        assert_eq!(app.position(), paused_at + i64::from(app.engine.session().sample_rate.hz()) / 4);
+    }
+
+    #[test]
+    fn space_toggle_pauses_instead_of_stopping_to_the_selection() {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        app.run("edit.select", json!({"start": 0, "end": 192_000})).unwrap();
+        app.run("transport.toggle", json!({})).unwrap();
+        app.handle_transport(0.5);
+        let paused_at = app.position();
+        assert!(paused_at > 0);
+        app.run("transport.toggle", json!({})).unwrap();
+        app.handle_transport(0.0);
+        assert!(!app.is_playing());
+        assert_eq!(app.position(), paused_at);
+        assert_eq!(app.engine.session().edit.selection.start, 0, "pause leaves the edit selection");
+        app.run("transport.toggle", json!({})).unwrap();
+        app.handle_transport(0.25);
+        assert!(app.is_playing());
+        assert!(app.position() > paused_at, "resume must continue from the pause, not the selection start");
     }
 
     #[test]

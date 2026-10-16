@@ -274,6 +274,7 @@ fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                 ("rewind", "transport.rewind"),
                 ("stop", "transport.stop"),
                 ("play", "transport.play"),
+                ("pause", "transport.pause"),
                 ("ffwd", "transport.fast_forward"),
                 ("end", "transport.go_to_end"),
                 ("record", "transport.record"),
@@ -282,7 +283,9 @@ fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                     ui,
                     vec2(34.0, 26.0),
                     icon,
-                    (cmd == "transport.play" && app.is_playing()) || (cmd == "transport.record" && app.engine.transport.recording),
+                    (cmd == "transport.play" && app.is_playing())
+                        || (cmd == "transport.pause" && app.engine.transport.paused)
+                        || (cmd == "transport.record" && app.engine.transport.recording),
                     cmd,
                 );
                 if cmd == "transport.record"
