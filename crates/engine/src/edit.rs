@@ -856,6 +856,7 @@ mod tests {
             format: soundcraft_audio_io::FileFormat::Wav,
             time_reference: 0,
             unsaved: false,
+            audio_identity: None,
         });
         let id = s.new_clip_id();
         if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {

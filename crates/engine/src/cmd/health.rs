@@ -43,7 +43,7 @@ fn report(e: &mut Engine, _: &Value) -> Result<Value> {
                 let Some(audio) = audio else {
                     add(
                         "unavailable_audio",
-                        "Audio is not loaded; this clip will be silent. Restore the media and reopen the session, or reimport it.",
+                        "Audio is not loaded; this clip will be silent. Use Relink Audio to select the original media, or reimport it.",
                     );
                     continue;
                 };

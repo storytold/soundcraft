@@ -439,11 +439,12 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
         let mut ns = src.clone();
         ns.id = SourceId(s.alloc());
         ns.path = abs.to_string_lossy().into_owned();
-        match crate::io::decode_file(&mut files, &abs, sr) {
-            Ok(audio) => {
+        match crate::io::decode_verified_file(&mut files, &abs, src, sr) {
+            Ok((audio, identity)) => {
                 ns.frames = audio.buffer.frames() as u64;
                 ns.sample_rate = sr;
                 ns.unsaved = true;
+                ns.audio_identity = Some(identity);
                 s.pool.insert(ns.id, audio);
             }
             Err(_) => {

@@ -318,15 +318,19 @@ fn media_a_session_names_outside_the_read_root_is_not_loaded() {
     let f = fixture("media");
     let session = f.read.join("song.scraft");
     let text = std::fs::read_to_string(&session).unwrap();
-    let outside_wav = s(f.outside.join("tone.wav"));
     let swapped = {
-        let v: Value = serde_json::from_str(&text).unwrap();
-        let mut rel = vec![];
-        for src in v["sources"].as_array().unwrap() {
-            rel.push(src["path"].as_str().unwrap().to_string());
-        }
+        let mut v: Value = serde_json::from_str(&text).unwrap();
+        let rel = v["sources"].as_array_mut().unwrap();
         assert!(!rel.is_empty());
-        rel.iter().fold(text.clone(), |t, r| t.replace(&format!("\"{r}\""), &format!("{}", json!(outside_wav))))
+        for src in rel {
+            let original = Path::new(src["path"].as_str().unwrap());
+            let original = if original.is_absolute() { original.to_path_buf() } else { f.read.join(original) };
+            let outside = f.outside.join(format!("relink-source-{}.wav", src["id"].as_u64().unwrap()));
+            // Keep each source's actual PCM and metadata; only its location crosses the root.
+            std::fs::copy(original, &outside).unwrap();
+            src["path"] = json!(s(outside));
+        }
+        serde_json::to_string(&v).unwrap()
     };
     std::fs::write(&session, swapped).unwrap();
     let mut srv = server(Some(&f.read), None);

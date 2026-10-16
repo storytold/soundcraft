@@ -5,6 +5,8 @@
 //! Script lines are control requests (`{"method": "...", "params": {...}}`), `{"shot": "path.png"}`
 //! or `{"steps": n}`. `{"system_theme": "light"}` (also `"dark"` or `"none"`) changes the
 //! simulated OS appearance for subsequent frames. The demo session is loaded unless `--blank`.
+//! `--relink-dialog` opens the missing-audio recovery dialog over a synthetic missing demo source.
+//! Add `--relink-legacy` to render its explicit legacy-content confirmation.
 
 use soundcraft_ui_egui::{ControlRequest, Services, SoundApp};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,9 +44,29 @@ fn main() {
         .and_then(|s| s.split_once('x'))
         .and_then(|(a, b)| Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?)))
         .unwrap_or((1600.0, 1000.0));
-    let engine = if blank { soundcraft_engine::Engine::default() } else { soundcraft_engine::demo::demo_engine() };
+    let mut engine = if blank { soundcraft_engine::Engine::default() } else { soundcraft_engine::demo::demo_engine() };
+    // Synthetic missing-media fixture for visual review of the recovery workflow.
+    let relink = if args.iter().any(|a| a == "--relink-dialog") {
+        let id = engine.session().sources.first().map(|src| src.id);
+        if let Some(id) = id {
+            engine.session_mut().pool.remove(id);
+            if args.iter().any(|a| a == "--relink-legacy")
+                && let Some(src) = engine.session_mut().sources.iter_mut().find(|src| src.id == id)
+            {
+                src.audio_identity = None;
+            }
+        }
+        id
+    } else {
+        None
+    };
     let (tx, rx) = mpsc::channel::<ControlRequest>();
-    let app = SoundApp::new(engine, None, Services::default()).with_control(rx);
+    let services = if relink.is_some() { Services { pick_open: Some(Box::new(|_, _| None)), ..Services::default() } } else { Services::default() };
+    let mut app = SoundApp::new(engine, None, services).with_control(rx);
+    if let Some(id) = relink {
+        app.ui.show_audio_health = true;
+        app.dialogs.open_relink(&app.engine, id);
+    }
     let mut harness =
         egui_kittest::Harness::builder().with_size(egui::vec2(w, h)).with_pixels_per_point(2.0).with_max_steps(1_000_000).wgpu().build_ui_state(
             |ui, app: &mut SoundApp| {

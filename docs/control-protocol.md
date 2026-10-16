@@ -68,6 +68,16 @@ Errors: `{"id": 1, "ok": false, "error": "bad parameters for `mix.volume`: no tr
 
 ## Examples
 
+Native missing-audio recovery uses `media.relink` (alias `source.relink`) with a source ID and an
+explicit filesystem path. It checks metadata and saved PCM identity before changing the session,
+is undoable, and never opens a dialog. Legacy sources lacking identity require a boolean
+`allow_unverified: true` confirmation; that flag cannot override a known content mismatch.
+See [media-relink.md](media-relink.md) for bounds, persistence and limitations.
+
+```json
+{"id": 1, "method": "engine.execute", "params": {"command": "media.relink", "params": {"source": 12, "path": "/audio/original.wav", "allow_unverified": false}}}
+```
+
 ```sh
 P=$(soundcraft --demo --control 0 | sed -n 's/SOUNDCRAFT_CONTROL_PORT=//p')   # or read stderr
 soundcraft-cli app --port $P mix.solo '{"track":"Bass"}'

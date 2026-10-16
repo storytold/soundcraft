@@ -17,6 +17,7 @@ pub enum Dialog {
     RenameClip { id: ClipId, name: String },
     RenameMarker { id: soundcraft_model::MarkerId, name: String },
     ClearClips { clips: Vec<ClipId>, sources: Vec<SourceId>, message: String },
+    RelinkAudio { source: SourceId, name: String, expected: String, path: String, has_identity: bool, allow_unverified: bool, error: String },
     PathPrompt { cmd: String, title: String, path: String, key: String },
     Number { cmd: String, title: String, key: String, value: f64, suffix: String },
     TempoChange { at: Samples, bpm: f64 }, // from double-clicking the tempo ruler
@@ -46,6 +47,7 @@ impl Dialogs {
             Dialog::RenameClip { .. } => "rename_clip",
             Dialog::RenameMarker { .. } => "rename_marker",
             Dialog::ClearClips { .. } => "clear_clips",
+            Dialog::RelinkAudio { .. } => "relink_audio",
             Dialog::PathPrompt { .. } => "path",
             Dialog::Number { .. } => "number",
             Dialog::TempoChange { .. } => "tempo_change",
@@ -69,6 +71,24 @@ impl Dialogs {
 
     pub fn open_rename_marker(&mut self, id: soundcraft_model::MarkerId, name: &str) {
         self.open = Some(Dialog::RenameMarker { id, name: name.to_string() });
+    }
+
+    /// Explicit UI action for an existing, missing audio source. Engine commands never open dialogs.
+    pub fn open_relink(&mut self, e: &Engine, source: SourceId) -> bool {
+        let Some(src) = e.session().source(source) else { return false };
+        if e.session().pool.contains(source) {
+            return false;
+        }
+        self.open = Some(Dialog::RelinkAudio {
+            source,
+            name: src.name.clone(),
+            expected: format!("{} channels · {} frames · {} Hz", src.channels, src.frames, src.sample_rate),
+            path: String::new(),
+            has_identity: src.audio_identity.is_some(),
+            allow_unverified: false,
+            error: String::new(),
+        });
+        true
     }
 
     /// Clip List › Clear: confirm before clips and files leave the session. False when there is nothing to clear.
@@ -278,6 +298,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::RenameClip { .. } => "Rename Clip",
         Dialog::RenameMarker { .. } => "Rename Marker",
         Dialog::ClearClips { .. } => "Clear",
+        Dialog::RelinkAudio { .. } => "Relink Missing Audio",
         Dialog::PathPrompt { title, .. } | Dialog::Number { title, .. } => title.as_str(),
         Dialog::TempoChange { .. } => "Tempo Change (BPM)",
         Dialog::Spot(_) => "Spot",
@@ -299,6 +320,42 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             match &mut d {
+                Dialog::RelinkAudio { source, name, expected, path, has_identity, allow_unverified, error } => {
+                    ui.set_min_width(460.0);
+                    ui.label(egui::RichText::new(name.as_str()).strong());
+                    ui.label(expected.as_str());
+                    ui.label("Select the original audio. Existing clips and timing stay in place.");
+                    ui.horizontal(|ui| {
+                        ui.label("Audio file");
+                        ui.add(egui::TextEdit::singleline(path).desired_width(320.0));
+                        if let Some(pick) = &app.services.pick_open
+                            && ui.button("Browse…").clicked()
+                            && let Some(selected) = pick("media.relink", &[])
+                        {
+                            *path = selected;
+                            error.clear();
+                        }
+                    });
+                    if *has_identity {
+                        ui.label("The decoded audio must match its saved content identity and metadata.");
+                    } else {
+                        ui.label("This legacy source has no content identity. Metadata alone cannot verify the recording.");
+                        ui.checkbox(allow_unverified, "I have checked that this is the original audio");
+                    }
+                    if !error.is_empty() {
+                        ui.colored_label(Tokens::current().rec, error.as_str());
+                    }
+                    let ready = !path.trim().is_empty() && (*has_identity || *allow_unverified);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            keep = false;
+                        }
+                        if ui.add_enabled(ready, egui::Button::new("Relink Audio")).clicked() || (ready && enter) {
+                            action = Some(("media.relink".into(), json!({"source": source.0, "path": path, "allow_unverified": allow_unverified})));
+                        }
+                    });
+                }
                 Dialog::NewTracks { count, format, kind, timebase, name } => {
                     ui.horizontal(|ui| {
                         ui.label("Create");
@@ -617,8 +674,15 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             Ok(v) if cmd == "file.export_clips" => {
                 app.ui.status = format!("Exported {} clip(s) to {}", v["written"], v["dir"].as_str().unwrap_or_default());
             }
+            Ok(_) if cmd == "media.relink" => app.ui.status = "Audio relinked".into(),
             Ok(_) => {}
-            Err(e) => app.ui.status = e,
+            Err(e) => {
+                if let Dialog::RelinkAudio { error, .. } = &mut d {
+                    *error = e.clone();
+                    keep = true;
+                }
+                app.ui.status = e;
+            }
         }
     }
     if saving

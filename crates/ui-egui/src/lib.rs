@@ -428,6 +428,15 @@ impl SoundApp {
                 if replacing || (id.starts_with("session.save") && !self.engine.is_dirty()) {
                     self.release_autosave(false);
                 }
+                if replacing {
+                    if matches!(self.dialogs.open, Some(dialogs::Dialog::RelinkAudio { .. })) {
+                        self.dialogs.open = None;
+                    }
+                    self.audio_health_report = None;
+                }
+                if matches!(id, "media.relink" | "source.relink" | "edit.undo" | "edit.redo") {
+                    self.audio_health_report = None;
+                }
                 if id == "app.quit" {
                     self.quit_requested = true;
                 }

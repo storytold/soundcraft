@@ -169,7 +169,7 @@ fn report(failure: &Mutex<Option<String>>, e: String) {
 struct Autosave {
     dir: PathBuf,
     lock: Option<std::fs::File>,
-    copies: BTreeMap<SourceId, (Weak<SourceAudio>, String)>,
+    copies: BTreeMap<SourceId, (Weak<SourceAudio>, String, String)>,
     next: u64,
     /// A recording's plan is in the folder.
     recording: bool,
@@ -196,6 +196,11 @@ impl Autosave {
         for src in &mut s.sources {
             let file = if Path::new(&src.path).is_absolute() { Some(PathBuf::from(&src.path)) } else { base.as_ref().map(|b| b.join(&src.path)) };
             let audio = s.pool.get(src.id);
+            if src.audio_identity.is_none()
+                && let Some(audio) = audio
+            {
+                src.audio_identity = Some(crate::media::audio_identity(&audio.buffer));
+            }
             if let Some(f) = &file
                 && (!src.unsaved && f.is_file() || audio.is_none())
             {
@@ -203,27 +208,30 @@ impl Autosave {
                 continue;
             }
             let Some(audio) = audio else { continue };
-            let name = match self.copies.remove(&src.id) {
-                Some((copy, name)) if copy.upgrade().is_some_and(|a| Arc::ptr_eq(&a, audio)) => name,
+            let (name, identity) = match self.copies.remove(&src.id) {
+                Some((copy, name, identity)) if copy.upgrade().is_some_and(|a| Arc::ptr_eq(&a, audio)) => (name, identity),
                 _ => {
                     let name = format!("{} {}.wav", sanitize_name(&src.name), self.next);
                     self.next += 1;
                     let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
                     let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
+                    let (_, saved) = soundcraft_audio_io::decode(&bytes, Some("wav")).map_err(|err| EngineError::Io(err.to_string()))?;
+                    let identity = crate::media::audio_identity(&saved);
                     std::fs::create_dir_all(&audio_dir)
                         .and_then(|()| write_synced(&audio_dir.join(&name), &bytes))
                         .map_err(|err| io_error(&audio_dir, err))?;
-                    name
+                    (name, identity)
                 }
             };
+            src.audio_identity = Some(identity.clone());
             src.path = audio_dir.join(&name).to_string_lossy().into_owned();
             src.unsaved = true;
-            copies.insert(src.id, (Arc::downgrade(audio), name));
+            copies.insert(src.id, (Arc::downgrade(audio), name, identity));
         }
         let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
         write_atomically(&self.dir.join(ORIGIN), origin.unwrap_or_default().as_bytes())?;
         write_atomically(&self.dir.join(SESSION), text.as_bytes())?;
-        for (_, name) in std::mem::replace(&mut self.copies, copies).into_values() {
+        for (_, name, _) in std::mem::replace(&mut self.copies, copies).into_values() {
             let _ = std::fs::remove_file(audio_dir.join(name));
         }
         if let Some(r) = recording {

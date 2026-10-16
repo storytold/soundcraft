@@ -54,6 +54,7 @@ fn tracks(mode: &str, tool: &str, lanes: &[&[(i64, i64)]]) -> (SoundApp, egui::C
         format: soundcraft_audio_io::FileFormat::Wav,
         time_reference: 0,
         unsaved: false,
+        audio_identity: None,
     });
     let mut ids = Vec::new();
     for (t, spans) in tracks.iter().zip(lanes) {

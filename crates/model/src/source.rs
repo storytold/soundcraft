@@ -23,6 +23,9 @@ pub struct Source {
     /// True when the file has not been written to disk yet (recorded/rendered this session).
     #[serde(default)]
     pub unsaved: bool,
+    /// Versioned identity of decoded PCM at the source's sample rate. Old sessions may omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_identity: Option<String>,
 }
 
 /// A movie used by Video track clips (serialised). The pictures themselves are never stored in
