@@ -442,7 +442,10 @@ pub(crate) fn header(
     if is_float {
         push_chunk(&mut meta, b"fact", &u32::try_from(frames).unwrap_or(u32::MAX).to_le_bytes());
     }
-    let total = (4 + (8 + rf64_body_len) + meta.len() + 8) as u64 + data_len + (data_len & 1);
+    let total = ((4 + (8 + rf64_body_len) + meta.len() + 8) as u64)
+        .checked_add(data_len)
+        .and_then(|t| t.checked_add(data_len & 1))
+        .ok_or_else(|| AudioError::TooLarge("WAV size overflow".into()))?;
     let rf64 = force_rf64 || u32::try_from(total).is_err();
 
     if rf64 {

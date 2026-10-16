@@ -284,3 +284,10 @@ fn float_wav_header_is_rewritten_in_place_as_the_file_grows() {
     assert_eq!((&big[..4], big.len()), (&b"RF64"[..], len));
     assert!(wav_float_header(0, 48_000, 0).is_err());
 }
+
+#[test]
+fn float_wav_header_rejects_a_frame_count_whose_total_size_overflows() {
+    // 4 bytes per frame: the data length fits in u64, but adding the header to it does not.
+    let frames = u64::MAX / 4;
+    assert!(matches!(wav_float_header(1, 48_000, frames), Err(soundcraft_audio_io::AudioError::TooLarge(_))));
+}
