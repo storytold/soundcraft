@@ -13,7 +13,7 @@ summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimens
 
 | Number | Value | Kind |
 |---|---|---|
-| Menu breadth (engine + UI layer) | **482 / 512 menu leaves (94.1 %)** | **measured**: the 512-leaf catalog `crates/engine/catalog/menus.txt` against the command registry; engine alone 397 / 512 (77.5 %) from `cargo xtask parity` ([`parity-checklist.md`](parity-checklist.md)); the 85 UI-layer matches re-counted on 2026-10-10 from `crates/ui-egui/src/menus.rs` (`UI_COMMANDS`, `AUDIOSUITE`, `MENU_WINDOWS`, Mix Window Views) by script |
+| Menu breadth (engine + UI layer) | **486 / 512 menu leaves (94.9 %)** | **measured**: the 512-leaf catalog `crates/engine/catalog/menus.txt` against the command registry; engine alone 401 / 512 (78.3 %) from `cargo xtask parity` ([`parity-checklist.md`](parity-checklist.md)); the 85 UI-layer matches updated on 2026-10-17 from `crates/ui-egui/src/menus.rs` (`UI_COMMANDS`, `AUDIOSUITE`, `MENU_WINDOWS`, Mix Window Views) |
 | Feature breadth (menus plus everything not in a menu: plugins, hardware, formats, immersive, cloud) | **~70 %** | estimated (area table below, presence only) |
 | **Ready for real work** (whole of Pro Tools) | **~40 %** | estimated: written dimension weights × values = 40.6 % ([By dimension](#by-dimension)) |
 | **Mainstream practitioner** (a working tracking/mixing engineer) | **~36 %** | estimated: written area weights and discounts ([below](#mainstream-practitioner-and-essentials-user)) |

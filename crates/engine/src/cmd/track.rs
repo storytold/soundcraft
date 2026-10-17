@@ -56,6 +56,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             change_width
         ),
+        cmd!(
+            noundo "track.change_width_show_hide",
+            "Show / Hide...",
+            ["Track", "Change Track Width"],
+            None,
+            "{formats?: [string], show?: bool} — configures visible formats in the Change Track Width menu",
+            always,
+            change_width_show_hide
+        ),
         cmd!("track.delete", "Delete", ["Track"], None, "{tracks?}", has_selection, delete),
         cmd!("track.rename", "Rename Track", [], None, "{track, name}", has_tracks, rename),
         cmd!("track.comments", "Track Comments", [], None, "{track, comments}", has_tracks, comments),
@@ -574,6 +583,20 @@ fn change_width(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"format": f}))
 }
 
+fn change_width_show_hide(e: &mut Engine, p: &Value) -> Result<Value> {
+    let s = e.session_mut();
+    if let Some(arr) = p.get("formats").and_then(Value::as_array) {
+        let show = bool_or(p, "show", true);
+        for item in arr.iter().filter_map(Value::as_str) {
+            let key = format!("track.width_visible.{item}");
+            s.edit.set_flag(&key, show);
+        }
+    }
+    let mut visible: Vec<String> = s.edit.flags.iter().filter_map(|f| f.strip_prefix("track.width_visible.")).map(str::to_string).collect();
+    visible.sort();
+    Ok(json!({"visible": visible}))
+}
+
 fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.delete", p)?;
     let s = e.session_mut();
@@ -982,5 +1005,14 @@ mod tests {
         assert_eq!(vca(&e), None);
         assert!(e.undo());
         assert_eq!(vca(&e), Some(master.0));
+    }
+
+    #[test]
+    fn change_width_show_hide_formats() {
+        let mut e = Engine::default();
+        let r = e.execute("track.change_width_show_hide", &json!({"formats": ["Stereo", "5.1"], "show": true})).unwrap();
+        assert_eq!(r["visible"], json!(["5.1", "Stereo"]));
+        let r = e.execute("track.change_width_show_hide", &json!({"formats": ["Stereo"], "show": false})).unwrap();
+        assert_eq!(r["visible"], json!(["5.1"]));
     }
 }

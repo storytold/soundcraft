@@ -205,6 +205,25 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         }
         y = sec.max.y + 4.0;
     }
+    if all || has("heat") {
+        let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 34.0));
+        inset(ui.painter(), sec, t.strip_section);
+        section_label(ui, sec, "HEAT", narrow);
+        if has_input {
+            let hr = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0), vec2(inner_w - 4.0, 15.0));
+            let heat_on = app.engine.session().edit.flag("options.activate_heat");
+            let mut c = ui.new_child(egui::UiBuilder::new().max_rect(hr));
+            let label = egui::RichText::new(if heat_on { "HEAT" } else { "BYP" }).font(bold(9.0));
+            let col = if heat_on { t.meter_yellow } else { t.text_dim };
+            if c.add_sized(hr.size(), egui::Button::new(label.color(col)).selected(heat_on))
+                .on_hover_text("HEAT Harmonic Enhancement — click to toggle")
+                .clicked()
+            {
+                let _ = app.run("options.activate_heat", json!({}));
+            }
+        }
+        y = sec.max.y + 4.0;
+    }
     if all || has("object") {
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 20.0));
         if has_input {
@@ -275,6 +294,23 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         let hint = if narrow { "" } else { "comments" };
         if child.add(egui::TextEdit::multiline(&mut c).desired_width(inner_w).desired_rows(2).hint_text(hint).font(regular(10.0))).changed() {
             let _ = app.engine.execute_merged("track.comments", &json!({"track": id.0, "comments": c}), &format!("comments:{}", id.0));
+        }
+        y = sec.max.y + 4.0;
+    }
+    if all || has("delay_compensation") {
+        let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 34.0));
+        inset(ui.painter(), sec, t.strip_section);
+        section_label(ui, sec, "DLY COMP", narrow);
+        let dc_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0), vec2(inner_w - 4.0, 15.0));
+        let dc_on = app.engine.session().edit.delay_compensation;
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(dc_r));
+        let label = egui::RichText::new(if dc_on { "0 dly" } else { "OFF" }).font(bold(9.0));
+        let col = if dc_on { t.meter_green } else { t.text_dim };
+        if c.add_sized(dc_r.size(), egui::Button::new(label.color(col)).selected(dc_on))
+            .on_hover_text("Delay compensation status — click to toggle")
+            .clicked()
+        {
+            let _ = app.run("options.delay_compensation", json!({}));
         }
         y = sec.max.y + 4.0;
     }

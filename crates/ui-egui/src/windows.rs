@@ -25,6 +25,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     io_setup(app, ctx);
     shortcuts_window(app, ctx);
     clip_effects(app, ctx);
+    machine_track_arming(app, ctx);
 }
 
 fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
@@ -197,6 +198,26 @@ fn task_manager(app: &mut SoundApp, ctx: &egui::Context) {
         );
     });
     app.ui.show_task_manager = open;
+}
+
+fn machine_track_arming(app: &mut SoundApp, ctx: &egui::Context) {
+    let mut open = app.ui.show_machine_track_arming;
+    win(ctx, &mut open, "Machine Track Arming", vec2(340.0, 180.0), |ui| {
+        let s = app.engine.session();
+        ui.label("Remote machine track arming status:");
+        egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+            for (i, t) in s.tracks.iter().enumerate() {
+                let armed = t.mixer.record_arm;
+                let status = if armed { "ARMED" } else { "SAFE" };
+                let col = if armed { Color32::from_rgb(255, 90, 80) } else { Tokens::current().text_dim };
+                ui.horizontal(|ui| {
+                    ui.label(format!("Ch {:02}: {:<16}", i + 1, t.name));
+                    ui.colored_label(col, status);
+                });
+            }
+        });
+    });
+    app.ui.show_machine_track_arming = open;
 }
 
 fn metadata(app: &mut SoundApp, ctx: &egui::Context) {

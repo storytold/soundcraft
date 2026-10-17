@@ -15,7 +15,7 @@ menu checklist).
 
 | Number | Value | Kind |
 |---|---|---|
-| Menu breadth | **482 / 512 Pro Tools menu leaves (94.1 %)**; engine alone 397 / 512 | measured (`cargo xtask parity` + UI-layer aliases) |
+| Menu breadth | **486 / 512 Pro Tools menu leaves (94.9 %)**; engine alone 401 / 512 (78.3 %) | measured (`cargo xtask parity` + UI-layer aliases) |
 | Feature breadth | **~70 %** | estimated (menus plus plugins, hardware, formats, immersive, cloud) |
 | **Ready for real work** | **~40 %** | estimated, weighted by dimension |
 | Mainstream practitioner (tracking/mixing engineer) | **~36 %** | estimated: 50.6 % weekly-area depth × 0.90 interaction × 0.92 stability × 0.85 file exchange ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |

@@ -32,6 +32,7 @@ pub fn specs() -> Vec<CommandSpec> {
         option!("options.keyboard_lock", "Edit/Tool Mode Keyboard Lock", "options.edit_tool_mode_keyboard_lock"),
         option!("options.calibration_mode", "Calibration Mode", "options.calibration_mode"),
         option!("options.midi_live_mode", "MIDI Live Mode", "options.midi_live_mode"),
+        option!("options.activate_heat", "Activate HEAT", "options.activate_heat"),
         option!("options.low_latency_monitoring", "Low Latency Monitoring", "options.low_latency_monitoring"),
         cmd!(
             "options.prepare_dpe_tracks",
@@ -51,6 +52,15 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(noundo "setup.disk_allocation", "Disk Allocation...", ["Setup"], None, "{path?, track?} — the record folder for the session, or for one track", always, disk_allocation),
         cmd!(noundo "setup.peripherals", "Peripherals...", ["Setup"], None, "{settings?: {name: number|bool|string}} — control surface / sync device settings", always, peripherals),
+        cmd!(
+            noundo "setup.machine_track_arming_profiles",
+            "Machine Track Arming Profiles...",
+            ["Setup"],
+            None,
+            "{profiles?: [string], active?: string} — machine track arming profiles for machine control",
+            always,
+            machine_track_arming_profiles
+        ),
         cmd!(
             "setup.io",
             "I/O...",
@@ -215,6 +225,21 @@ fn peripherals(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     let flags: Vec<&String> = s.edit.flags.iter().filter(|f| f.starts_with("peripherals.")).collect();
     Ok(json!({"values": values_with_prefix(&s.edit, "peripherals."), "flags": flags}))
+}
+
+fn machine_track_arming_profiles(e: &mut Engine, p: &Value) -> Result<Value> {
+    let s = e.session_mut();
+    if let Some(arr) = p.get("profiles").and_then(Value::as_array) {
+        let list: Vec<String> = arr.iter().filter_map(Value::as_str).map(str::to_string).take(64).collect();
+        set_text(&mut s.edit, "machine.track_arming.profiles", Some(&list.join("|")));
+    }
+    if let Some(active) = p.get("active").and_then(Value::as_str) {
+        set_text(&mut s.edit, "machine.track_arming.active", Some(active));
+    }
+    let profiles: Vec<String> =
+        text(&s.edit, "machine.track_arming.profiles").map(|t| t.split('|').map(str::to_string).collect()).unwrap_or_default();
+    let active = text(&s.edit, "machine.track_arming.active");
+    Ok(json!({"profiles": profiles, "active": active}))
 }
 
 fn io_state(s: &Session) -> Value {
@@ -535,6 +560,21 @@ mod tests {
         assert_eq!(e.session().outputs.len(), 2);
         assert!(e.execute("setup.io", &json!({"action": "nope", "name": "x"})).is_err());
         assert!(e.can_undo());
+    }
+
+    #[test]
+    fn activate_heat_and_machine_track_arming_profiles() {
+        let mut e = Engine::default();
+        let r = e.execute("options.activate_heat", &json!({})).unwrap();
+        assert_eq!(r["value"], true);
+        assert!(e.session().edit.flag("options.activate_heat"));
+        let r = e.execute("options.activate_heat", &json!({"value": false})).unwrap();
+        assert_eq!(r["value"], false);
+        assert!(!e.session().edit.flag("options.activate_heat"));
+
+        let r = e.execute("setup.machine_track_arming_profiles", &json!({"profiles": ["Sony 9-Pin", "DA-88"], "active": "Sony 9-Pin"})).unwrap();
+        assert_eq!(r["profiles"], json!(["Sony 9-Pin", "DA-88"]));
+        assert_eq!(r["active"], "Sony 9-Pin");
     }
 
     #[test]

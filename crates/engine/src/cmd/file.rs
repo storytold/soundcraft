@@ -84,6 +84,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 crate::io::import_video_bytes(e, &path, bytes, at)
             }
         ),
+        cmd!(
+            "file.import_venue_channel_names",
+            "VENUE Channel Names as Track Names",
+            ["File", "Import"],
+            None,
+            "{path?: string, names?: [string], start_track?: 0} — imports channel names from a VENUE channel list file or array and applies them to session tracks",
+            has_tracks,
+            import_venue_channel_names
+        ),
         cmd!(noundo "file.bounce_mix", "Bounce Mix...", ["File"], Some("Cmd+Alt+B"), "{path, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, source?: main|bus name, normalize?: false, dither?: true, fold_down?: stereo}", always, bounce),
         cmd!(noundo "file.bounce_stems", "Bounce Stems...", [], None, "{dir, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, fold_down?: stereo}", has_tracks, |e, p| {
             let dir = str_param(p, "dir").ok_or_else(|| bad("file.bounce_stems", "`dir` required"))?.to_string();
@@ -243,6 +252,54 @@ fn import_audio(e: &mut Engine, p: &Value) -> Result<Value> {
         out.push(r);
     }
     Ok(json!({"imported": out}))
+}
+
+fn import_venue_channel_names(e: &mut Engine, p: &Value) -> Result<Value> {
+    let id = "file.import_venue_channel_names";
+    let mut names: Vec<String> = Vec::new();
+    if let Some(arr) = p.get("names").and_then(Value::as_array) {
+        for v in arr {
+            if let Some(s) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                names.push(s.chars().take(64).collect());
+            }
+        }
+    } else if let Some(path) = str_param(p, "path") {
+        let bytes = crate::io::read_file(path)?;
+        let text = String::from_utf8_lossy(&bytes);
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let name = if let Some((_, rest)) = trimmed.split_once(['\t', ',']) {
+                rest.trim()
+            } else if let Some((_, rest)) = trimmed.split_once(':') {
+                rest.trim()
+            } else {
+                let non_digit = trimmed.trim_start_matches(|c: char| c.is_ascii_digit());
+                if non_digit.starts_with(char::is_whitespace) { non_digit.trim() } else { trimmed }
+            };
+            if !name.is_empty() {
+                names.push(name.chars().take(64).collect());
+            }
+        }
+    } else {
+        return Err(bad(id, "`path` or `names` required"));
+    }
+
+    if names.is_empty() {
+        return Err(bad(id, "no channel names found in input"));
+    }
+
+    let start = p.get("start_track").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let s = e.session_mut();
+    let mut renamed = 0usize;
+    for (name, track) in names.iter().zip(s.tracks.iter_mut().skip(start)) {
+        track.name = name.clone();
+        renamed += 1;
+    }
+
+    Ok(json!({"renamed": renamed, "names": names}))
 }
 
 /// Destination for `file.import_audio`: an explicit `track` wins; otherwise `new_tracks`
@@ -683,6 +740,28 @@ mod tests {
         from_copy.execute("session.open", &json!({"path": copy.to_string_lossy()})).unwrap();
         assert_eq!(from_copy.session().tracks.len(), 2);
         assert!(from_copy.session().track_by_name("Extra").is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn venue_channel_names_import() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"count": 3, "format": "mono"})).unwrap();
+        let r = e.execute("file.import_venue_channel_names", &json!({"names": ["Kick In", "Kick Out", "Snare Top"]})).unwrap();
+        assert_eq!(r["renamed"], 3);
+        assert_eq!(e.session().tracks[0].name, "Kick In");
+        assert_eq!(e.session().tracks[1].name, "Kick Out");
+        assert_eq!(e.session().tracks[2].name, "Snare Top");
+
+        let dir = std::env::temp_dir().join(format!("sc-venue-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("channels.txt");
+        std::fs::write(&file, "1\tLead Vocal\n2\tBV 1\n3\tBV 2\n").unwrap();
+        let r = e.execute("file.import_venue_channel_names", &json!({"path": file.to_string_lossy()})).unwrap();
+        assert_eq!(r["renamed"], 3);
+        assert_eq!(e.session().tracks[0].name, "Lead Vocal");
+        assert_eq!(e.session().tracks[1].name, "BV 1");
+        assert_eq!(e.session().tracks[2].name, "BV 2");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
