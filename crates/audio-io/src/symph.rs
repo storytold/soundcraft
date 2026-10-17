@@ -36,13 +36,24 @@ fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| Err(AudioError::Malformed("decoder failed on malformed input".into())))
 }
 
+/// Data no format reader claims is a format we don't read, not a damaged file.
+fn no_reader(bytes: &[u8]) -> AudioError {
+    // AC-3 and E-AC-3 elementary streams start with the sync word 0x0B77.
+    let what = if bytes.starts_with(&[0x0B, 0x77]) { "AC-3 and E-AC-3 are not supported" } else { "no supported audio format found" };
+    AudioError::Unsupported(what.into())
+}
+
 /// Symphonia's probe loop (`Probe::format`, whose hint 0.5 ignores), checking the container it
 /// finds before its reader allocates whatever the file claims.
 fn open(bytes: &[u8]) -> Result<Box<dyn FormatReader>> {
     let mut mss = MediaSourceStream::new(Box::new(Cursor::new(bytes.to_vec())), MediaSourceStreamOptions::default());
     let fmt_opts = FormatOptions { enable_gapless: true, ..FormatOptions::default() };
     loop {
-        let found = symphonia::default::get_probe().next(&mut mss).map_err(map_err)?;
+        let found = symphonia::default::get_probe().next(&mut mss).map_err(|e| match e {
+            // The probe ran to the end of the data without any reader claiming it.
+            SymError::IoError(io) if io.kind() == std::io::ErrorKind::UnexpectedEof => no_reader(bytes),
+            other => map_err(other),
+        })?;
         let at = usize::try_from(mss.pos()).unwrap_or(usize::MAX);
         let head = bytes.get(at..).unwrap_or_default();
         match (found, head.get(..10)) {

@@ -485,3 +485,14 @@ proptest! {
         prop_assert_eq!(flac, wav);
     }
 }
+
+/// AC-3 / E-AC-3 streams (sync word 0x0B77) have no reader; they must be reported as unsupported, not as damaged.
+#[test]
+fn ac3_is_unsupported_not_malformed() {
+    let mut ac3 = vec![0x0b, 0x77];
+    ac3.extend((0..2000u32).map(|i| (i % 251) as u8));
+    assert!(matches!(decode(&ac3, None), Err(AudioError::Unsupported(m)) if m.contains("AC-3")));
+    assert!(matches!(probe(&ac3, None), Err(AudioError::Unsupported(_))));
+    // Data no reader claims at all is unsupported too, without naming AC-3.
+    assert!(matches!(decode(&[0x42; 64], None), Err(AudioError::Unsupported(m)) if !m.contains("AC-3")));
+}
