@@ -576,8 +576,8 @@ fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
             let base = s.tempo.samples_to_ticks(c.start, s.sample_rate);
             let end = s.tempo.samples_to_ticks(c.end(), s.sample_rate);
             for n in &sequence.notes {
-                let a = base + n.start;
-                let b = (base + n.end()).min(end);
+                let a = base.saturating_add(n.start);
+                let b = base.saturating_add(n.end()).min(end);
                 if b > a {
                     notes.push((a, b, n.pitch));
                 }
@@ -941,6 +941,17 @@ mod tests {
         let r = e.execute("event.beat_detective", &json!({"tracks": [kick.id.0], "start": c.start, "end": c.start + 48_000 * 8})).unwrap();
         assert!(r["count"].as_u64().unwrap() > 4, "{r}");
         assert!(r["bpm"].as_f64().is_some());
+    }
+
+    #[test]
+    fn extract_chords_survives_huge_note_start() {
+        let (mut e, t) = midi_engine();
+        let r = e.execute("midi.new_clip", &json!({"track": t.0, "start": 48_000, "end": 96_000})).unwrap();
+        let clip = r["clip"].as_u64().unwrap();
+        e.execute("midi.note_add", &json!({"clip": clip, "pitch": 60, "start_ticks": i64::MAX, "length_ticks": 480})).unwrap();
+        e.execute("edit.select", &json!({"tracks": [t.0], "start": 0, "end": 96_000})).unwrap();
+        let r = e.execute("event.extract_chords", &json!({}));
+        assert!(r.is_ok(), "{r:?}");
     }
 
     #[test]
