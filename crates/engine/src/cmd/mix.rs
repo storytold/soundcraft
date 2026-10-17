@@ -513,7 +513,7 @@ pub(crate) fn current_value(tr: &soundcraft_model::Track, param: &AutoParam) -> 
 
 fn clear_lane(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "automation.clear", p)?;
-    let param = str_param(p, "param").and_then(AutoParam::parse);
+    let param = if str_param(p, "param").is_some() { Some(lane_param(p, "automation.clear")?) } else { None };
     let r = range_param(e, "automation.clear", p)?;
     let (a, b) = if r.is_empty() { (i64::MIN, i64::MAX) } else { (r.start, r.end) };
     let s = e.session_mut();
@@ -885,5 +885,20 @@ mod tests {
         let delay = e.session().busses.iter().find(|b| b.name == "Delay").unwrap().id;
         assert_eq!(sl.target, soundcraft_model::Route::Bus(delay));
         assert_eq!((sl.level_db, sl.pan, sl.mute, sl.pre_fader), (-9.0, 0.5, true, true));
+    }
+
+    #[test]
+    fn clear_with_unknown_param_keeps_lanes() {
+        let (mut e, t) = tone_session(&[(0, -6.0), (100, -3.0)]);
+        e.session_mut().track_mut(t).unwrap().lane_mut(&AutoParam::Pan(0)).set_point(0, 0.5);
+        e.session_mut().edit.selection = Range::new(0, 0);
+        let count = |e: &Engine| e.session().track(t).unwrap().automation.iter().map(|l| l.points.len()).sum::<usize>();
+        let r = e.execute("automation.clear", &json!({"track": t.0, "param": "volum"}));
+        assert!(r.is_err(), "unknown param succeeded: {r:?}");
+        assert_eq!(count(&e), 3, "unknown param changed the lanes");
+        e.execute("automation.clear", &json!({"track": t.0, "param": "volume"})).unwrap();
+        assert_eq!(count(&e), 1, "named param cleared the wrong lanes");
+        e.execute("automation.clear", &json!({"track": t.0})).unwrap();
+        assert_eq!(count(&e), 0, "absent param must still clear every lane");
     }
 }
