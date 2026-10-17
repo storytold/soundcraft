@@ -669,23 +669,34 @@ fn clip_gain_to_vol(e: &mut Engine, p: &Value) -> Result<Value> {
     for t in &tracks {
         let Some(tr) = s.track_mut(*t) else { continue };
         let base = tr.mixer.volume_db;
+        // An existing lane overrides the fader, so the clip gain rides on top of the lane value.
+        let old = tr.lane(&AutoParam::Volume).cloned();
+        let level = |at: i64| old.as_ref().map_or(base, |l| l.value_at(at, base));
+        let mut pins = Vec::new();
         let mut pts = Vec::new();
         if let Some(pl) = tr.playlist_mut() {
             for c in pl.clips.iter_mut().filter(|c| c.range().overlaps(&r)) {
-                if c.gain_env.is_empty() {
-                    pts.push((c.start, base + c.gain_db));
-                    pts.push((c.end() - 1, base + c.gain_db));
-                } else {
-                    for (o, db) in &c.gain_env {
-                        pts.push((c.start + o, base + c.gain_db + db));
-                    }
+                // Pin the unchanged level just outside the clip so the neighbouring segments keep their shape.
+                if c.start > 0 {
+                    pins.push((c.start - 1, level(c.start - 1)));
+                }
+                pins.push((c.end(), level(c.end())));
+                let mut ats: Vec<i64> =
+                    if c.gain_env.is_empty() { vec![c.start, c.end() - 1] } else { c.gain_env.iter().map(|&(o, _)| c.start + o).collect() };
+                // The lane's own points inside the clip carry the clip gain too.
+                if let Some(l) = &old {
+                    ats.extend(l.points.iter().map(|pt| pt.at).filter(|&at| at > c.start && at < c.end() - 1));
+                }
+                for at in ats {
+                    pts.push((at, level(at) + c.gain_db + env_db(&c.gain_env, at - c.start)));
                 }
                 c.gain_db = 0.0;
                 c.gain_env.clear();
             }
         }
         let lane = tr.lane_mut(&AutoParam::Volume);
-        for (at, v) in pts {
+        // Pins first, so a neighbouring clip's converted points win where they meet.
+        for (at, v) in pins.into_iter().chain(pts) {
             lane.set_point(at, v);
         }
     }
@@ -835,6 +846,61 @@ mod tests {
         for (start, end) in [(2048, 3000), (3500, 4500), (5000, 6144)] {
             let delta = rms_db(&before[start..end], &after[start..end]);
             assert!(delta.abs() < 0.2, "{start}..{end} changed by {delta} dB");
+        }
+    }
+
+    #[test]
+    fn clip_gain_to_volume_keeps_the_existing_lane() {
+        let clip_gain_to_volume = |points: &[(i64, f32)], env: Vec<(i64, f32)>| {
+            let (mut e, t) = tone_session(points);
+            let clip = e.session().track(t).unwrap().clips()[0].id;
+            let c = e.session_mut().find_clip_mut(clip).unwrap();
+            c.gain_db = 6.0;
+            c.gain_env = env;
+            let before = rendered(e.session());
+            e.execute("automation.clip_gain_to_volume", &json!({"track": t.0, "start": 0, "end": 8192})).unwrap();
+            let after = rendered(e.session());
+            assert!(e.session().find_clip(clip).unwrap().1.gain_db == 0.0);
+            (before, after)
+        };
+        let (before, after) = clip_gain_to_volume(&[(0, -6.0), (8192, -6.0)], Vec::new());
+        let delta = rms_db(&before, &after);
+        assert!(delta.abs() < 0.02, "level changed by {delta} dB");
+
+        // A moving lane keeps its shape, and its points inside the clip carry the gain.
+        let (before, after) = clip_gain_to_volume(&[(0, -12.0), (4096, -6.0), (8192, -12.0)], Vec::new());
+        for (start, end) in [(0, 2048), (2048, 4096), (4096, 6144), (6144, 8192)] {
+            let delta = rms_db(&before[start..end], &after[start..end]);
+            assert!(delta.abs() < 0.1, "{start}..{end} changed by {delta} dB");
+        }
+
+        // The clip's own gain envelope rides on the lane value as well.
+        let (before, after) = clip_gain_to_volume(&[(0, -6.0), (8192, -6.0)], vec![(2000, 0.0), (6000, -10.0)]);
+        for (start, end) in [(3900, 4100), (5000, 5200)] {
+            let delta = rms_db(&before[start..end], &after[start..end]);
+            assert!(delta.abs() < 0.2, "{start}..{end} changed by {delta} dB");
+        }
+    }
+
+    #[test]
+    fn clip_gain_to_volume_leaves_audio_outside_the_clip_alone() {
+        // Three clips in a row; only the middle one is converted, and the lane extends past it on both sides.
+        let (mut e, t) = tone_session(&[(0, -6.0), (16384, -6.0)]);
+        let (middle, last) = (e.session_mut().new_clip_id(), e.session_mut().new_clip_id());
+        let pl = e.session_mut().track_mut(t).unwrap().playlist_mut().unwrap();
+        if let Some(c) = pl.clips.first_mut() {
+            c.length = 2048;
+        }
+        pl.clips.push(Clip::audio(middle, "mid", SourceId(910), 2048, 2048, 4096));
+        pl.clips.push(Clip::audio(last, "end", SourceId(910), 6144, 6144, 2048));
+        e.session_mut().find_clip_mut(middle).unwrap().gain_db = 6.0;
+        let before = rendered(e.session());
+        e.execute("automation.clip_gain_to_volume", &json!({"track": t.0, "start": 2048, "end": 6144})).unwrap();
+        let after = rendered(e.session());
+        assert!(e.session().find_clip(middle).unwrap().1.gain_db == 0.0);
+        for (start, end) in [(0, 2040), (2056, 6136), (6152, 8192)] {
+            let delta = rms_db(&before[start..end], &after[start..end]);
+            assert!(delta.abs() < 0.1, "{start}..{end} changed by {delta} dB");
         }
     }
 
