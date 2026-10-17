@@ -835,6 +835,8 @@ pub fn delete_fades(s: &mut Session, track: TrackId, range: Range) -> usize {
             }
         }
     }
+    // Trimming can move a start past a later clip's start when one clip overlapped several.
+    pl.sort();
     n
 }
 
@@ -1040,5 +1042,19 @@ mod tests {
         assert_eq!(clips(&s, t), vec![(1500, 4000, 1000)]);
         s.find_clip_mut(id).unwrap().time_locked = true;
         assert_eq!(move_clips(&mut s, &[id], 500, &[]), 0);
+    }
+
+    #[test]
+    fn delete_fades_keeps_playlist_sorted_when_a_clip_overlaps_several() {
+        let (mut s, t) = session_with_clip();
+        let pl = s.track_mut(t).and_then(|t| t.playlist_mut()).expect("track has a playlist");
+        pl.clips.clear();
+        pl.clips.push(Clip::audio(ClipId(901), "a", SourceId(500), 0, 0, 1000));
+        pl.clips.push(Clip::audio(ClipId(902), "b", SourceId(500), 100, 100, 100));
+        pl.clips.push(Clip::audio(ClipId(903), "c", SourceId(500), 150, 150, 750));
+        delete_fades(&mut s, t, Range::new(0, 10_000));
+        let got = clips(&s, t);
+        assert!(got.windows(2).all(|w| w[0].0 <= w[1].0), "playlist not sorted: {got:?}");
+        assert!(got.iter().all(|c| c.1 > 0), "empty clip: {got:?}");
     }
 }
