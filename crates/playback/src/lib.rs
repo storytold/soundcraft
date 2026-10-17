@@ -9,8 +9,8 @@
 //!
 //! Surround: the device is opened with as many output channels as it offers, up to the width of
 //! the session's main format. Main channels (SMPTE/WAV order) go to device channels in order; when
-//! the device has fewer channels than the main mix, the mix is folded down to stereo (ITU-R
-//! BS.775) on the first two device channels.
+//! the device has fewer channels than the main mix, surround is folded down to stereo (ITU-R
+//! BS.775). A mono device receives the average of the stereo channels, before output clipping.
 //!
 //! Plugins and threads: hosted third-party plugins (CLAP/VST3) are created, given their stored
 //! state and prepared on the thread that calls [`Player::update_session`] (the UI thread), and
@@ -365,18 +365,26 @@ impl AudioState {
                 let b = ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a);
                 a + (b - a) * fr
             };
-            if nch > 2 && channels < nch {
-                // Fewer device channels than the main mix: ITU fold-down to stereo.
+            if channels < nch {
+                // Fold surround to stereo first; a mono device averages the two sides.
                 let (mut l, mut r) = (0.0f32, 0.0f32);
                 if sounding {
-                    for (c, (gl, gr)) in self.fold.iter().enumerate().take(nch) {
-                        let v = sample(c);
-                        l += v * gl;
-                        r += v * gr;
+                    if nch == 2 {
+                        (l, r) = (sample(0), sample(1));
+                    } else {
+                        for (c, (gl, gr)) in self.fold.iter().enumerate().take(nch) {
+                            let v = sample(c);
+                            l += v * gl;
+                            r += v * gr;
+                        }
                     }
                 }
                 for (c, o) in frame.iter_mut().enumerate() {
                     *o = match c {
+                        0 if channels == 1 => {
+                            let mono = (0.5 * l + 0.5 * r).clamp(-1.0, 1.0);
+                            if mono.is_finite() { mono } else { 0.0 }
+                        }
                         0 => l.clamp(-1.0, 1.0),
                         1 => r.clamp(-1.0, 1.0),
                         _ => 0.0,
@@ -384,7 +392,6 @@ impl AudioState {
                 }
             } else {
                 for (c, o) in frame.iter_mut().enumerate() {
-                    // Stereo mixes on a mono device play the left channel (as before).
                     *o = if c < nch.max(1) && sounding { sample(c).clamp(-1.0, 1.0) } else { 0.0 };
                 }
             }
@@ -1055,6 +1062,80 @@ mod tests {
         let mut out = vec![0.0f32; 2 * 64];
         st.fill(&mut out, 2);
         assert_eq!(shared.position.load(Ordering::Relaxed), 64);
+    }
+
+    fn audio_output_state(format: soundcraft_model::ChannelFormat, channels: Vec<Vec<f32>>) -> AudioState {
+        use soundcraft_model::{Clip, SourceAudio, SourceId, TrackKind};
+        let mut s = Session::default();
+        s.edit.click = false;
+        s.outputs[0].format = format;
+        let t = s.add_track(TrackKind::Audio, format, None);
+        let frames = channels[0].len();
+        s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels })));
+        let id = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "output", SourceId(5), 0, 0, frames as i64));
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        });
+        let (tx, rx) = channel();
+        let st = AudioState::new(rx, shared, Arc::new(s), 48_000.0, channel().0);
+        tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+        st
+    }
+
+    #[test]
+    fn mono_device_averages_stereo_before_clipping() {
+        use soundcraft_model::ChannelFormat;
+        // Right only, left only, identical, opposite polarity, and levels that must be averaged
+        // before clipping either side to the device's range.
+        let left = [0.0, 0.8, 0.8, 0.8, 2.0, -2.0, 2.0];
+        let right = [0.8, 0.0, 0.8, -0.8, -0.5, 0.5, 2.0];
+        let expected = [0.4, 0.4, 0.8, 0.0, 0.75, -0.75, 1.0];
+        for callback in [1, 37, 512] {
+            let channels = [left, right].map(|pattern| (0..2048).map(|i| pattern[i % pattern.len()]).collect());
+            let mut st = audio_output_state(ChannelFormat::Stereo, channels.into());
+            let mut out = vec![0.0; callback];
+            for block in 0..3 {
+                st.fill(&mut out, 1);
+                for (i, actual) in out.iter().enumerate() {
+                    let at = block * callback + i;
+                    assert!((actual - expected[at % expected.len()]).abs() < 1e-6, "callback {callback}, sample {at}: {actual}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mono_device_preserves_centered_mono_level_and_includes_surround_right_channels() {
+        use soundcraft_model::ChannelFormat;
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let mut mono = audio_output_state(ChannelFormat::Mono, vec![vec![0.8; 512]]);
+        let mut out = [0.0; 128];
+        mono.fill(&mut out, 1);
+        let centered = 0.8 * soundcraft_dsp::db_to_gain(-3.0);
+        assert!(out.iter().all(|x| (*x - centered).abs() < 1e-6), "a centered mono track keeps its rendered level under the -3 dB pan law");
+
+        // Independently exercise each SMPTE 5.1 channel: L, R, C, LFE, Ls, Rs.
+        let channels = (0..6).map(|c| (0..512).map(|i| if i % 6 == c { 0.8 } else { 0.0 }).collect()).collect();
+        let mut surround = audio_output_state(ChannelFormat::Surround51, channels);
+        surround.fill(&mut out, 1);
+        let expected = [0.4, 0.4, 0.8 * h, 0.0, 0.4 * h, 0.4 * h];
+        for (i, actual) in out.iter().enumerate() {
+            assert!((actual - expected[i % expected.len()]).abs() < 1e-6, "surround sample {i}: {actual}");
+        }
+    }
+
+    #[test]
+    fn mono_device_contains_overflow_from_opposite_surround_sides() {
+        use soundcraft_model::ChannelFormat;
+        let channels = [f32::MAX, -f32::MAX, 0.0, 0.0, f32::MAX, -f32::MAX].map(|v| vec![v; 128]);
+        let mut st = audio_output_state(ChannelFormat::Surround51, channels.into());
+        let mut out = [0.5; 128];
+        st.fill(&mut out, 1);
+        assert!(out.iter().all(|x| *x == 0.0), "overflow in the stereo fold-down must not send NaN to a mono device");
     }
 
     #[test]
