@@ -5,7 +5,7 @@ use crate::theme::{Tokens, bold};
 use egui::{Align2, vec2};
 use serde_json::{Value, json};
 use soundcraft_engine::Engine;
-use soundcraft_model::{ClipId, Session, SourceId, TrackId};
+use soundcraft_model::{ClipId, GroupId, Session, SourceId, TrackId};
 use soundcraft_time::Samples;
 
 #[derive(Debug, Clone)]
@@ -23,7 +23,8 @@ pub enum Dialog {
     Spot(crate::spot::Spot),
     Fades { shape: String },
     StripSilence { threshold: f64, min_ms: f64, pre_ms: f64, post_ms: f64 },
-    Group { name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
+    // `id: None` creates (Track › Group…); `id: Some` modifies that group (Groups list › Modify Group…).
+    Group { id: Option<GroupId>, name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
     Session { frame_rate: String, bit_depth: String },
     ScoreSetup { title: String, composer: String, bars_per_system: u32, show_track_names: bool },
     SaveChanges { then: (String, Value) },
@@ -52,7 +53,8 @@ impl Dialogs {
             Dialog::Spot(_) => "spot",
             Dialog::Fades { .. } => "fades",
             Dialog::StripSilence { .. } => "strip_silence",
-            Dialog::Group { .. } => "group",
+            Dialog::Group { id: None, .. } => "group",
+            Dialog::Group { id: Some(_), .. } => "modify_group",
             Dialog::Session { .. } => "session",
             Dialog::ScoreSetup { .. } => "score_setup",
             Dialog::SaveChanges { .. } => "save_changes",
@@ -69,6 +71,16 @@ impl Dialogs {
 
     pub fn open_rename_marker(&mut self, id: soundcraft_model::MarkerId, name: &str) {
         self.open = Some(Dialog::RenameMarker { id, name: name.to_string() });
+    }
+
+    /// Groups list › Modify Group…: the creation dialog, pre-filled from an existing group. False
+    /// when the group is gone (deleted between the click and the menu).
+    pub fn open_modify_group(&mut self, e: &Engine, id: GroupId) -> bool {
+        let s = e.session();
+        let Some(g) = s.group(id) else { return false };
+        let members = s.tracks.iter().map(|t| (t.id.0, t.name.clone(), g.members.contains(&t.id))).collect();
+        self.open = Some(Dialog::Group { id: Some(id), name: g.name.clone(), edit: g.edit, mix: g.mix, members });
+        true
     }
 
     /// Clip List › Clear: confirm before clips and files leave the session. False when there is nothing to clear.
@@ -131,7 +143,7 @@ impl Dialogs {
             "track.group" => {
                 let s = e.session();
                 let members = s.tracks.iter().map(|t| (t.id.0, t.name.clone(), s.edit.selected_tracks.contains(&t.id))).collect();
-                Dialog::Group { name: format!("Group {}", s.groups.len() + 1), edit: true, mix: true, members }
+                Dialog::Group { id: None, name: format!("Group {}", s.groups.len() + 1), edit: true, mix: true, members }
             }
             "setup.session" => Dialog::Session { frame_rate: e.session().frame_rate.label().into(), bit_depth: "24".into() },
             "file.score_setup" => {
@@ -283,7 +295,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::Spot(_) => "Spot",
         Dialog::Fades { .. } => "Fades",
         Dialog::StripSilence { .. } => "Strip Silence",
-        Dialog::Group { .. } => "Create Group",
+        Dialog::Group { id: None, .. } => "Create Group",
+        Dialog::Group { id: Some(_), .. } => "Modify Group",
         Dialog::Session { .. } => "Session Setup",
         Dialog::ScoreSetup { .. } => "Score Setup",
         Dialog::SaveChanges { then } if then.0 == "session.revert" => "Revert to Saved",
@@ -508,7 +521,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         ));
                     }
                 }
-                Dialog::Group { name, edit, mix, members } => {
+                Dialog::Group { id, name, edit, mix, members } => {
                     ui.horizontal(|ui| {
                         ui.label("Name");
                         ui.text_edit_singleline(name);
@@ -523,9 +536,18 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                             crate::widgets::checkbox(ui, on, n.as_str());
                         }
                     });
-                    if buttons(ui, "OK", enter) {
-                        let ids: Vec<u64> = members.iter().filter(|m| m.2).map(|m| m.0).collect();
-                        action = Some(("track.group".into(), json!({"name": name, "edit": edit, "mix": mix, "tracks": ids})));
+                    let ids: Vec<u64> = members.iter().filter(|m| m.2).map(|m| m.0).collect();
+                    // Both commands reject an empty group, so don't offer an OK that can only fail.
+                    if buttons_enabled(ui, "OK", enter, !ids.is_empty()) {
+                        let mut params = json!({"name": name, "edit": edit, "mix": mix, "tracks": ids});
+                        let cmd = match id {
+                            Some(g) => {
+                                params["group"] = json!(g.0);
+                                "track.group_modify"
+                            }
+                            None => "track.group",
+                        };
+                        action = Some((cmd.into(), params));
                     }
                 }
                 Dialog::Session { frame_rate, bit_depth } => {
@@ -635,13 +657,19 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
 
 /// Cancel/OK row; returns true when OK was pressed (or Enter).
 fn buttons(ui: &mut egui::Ui, ok: &str, enter: bool) -> bool {
-    let mut pressed = enter;
+    buttons_enabled(ui, ok, enter, true)
+}
+
+/// `buttons`, but a greyed-out OK when the dialog's values can't be submitted yet. Cancel always works.
+fn buttons_enabled(ui: &mut egui::Ui, ok: &str, enter: bool, ready: bool) -> bool {
+    let mut pressed = enter && ready;
     ui.separator();
     ui.horizontal(|ui| {
         if ui.button("Cancel").clicked() {
             ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::new("dlg_cancel"), true));
         }
-        if ui.add(egui::Button::new(egui::RichText::new(ok).strong()).fill(Tokens::current().accent)).clicked() {
+        let b = egui::Button::new(egui::RichText::new(ok).strong()).fill(Tokens::current().accent);
+        if ui.add_enabled(ready, b).clicked() {
             pressed = true;
         }
     });

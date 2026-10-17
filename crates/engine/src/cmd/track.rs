@@ -19,6 +19,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("track.group", "Group...", ["Track"], Some("Cmd+G"), "{name?, tracks?, edit?: true, mix?: true}", has_selection, group),
         cmd!("track.ungroup", "Delete Group", [], None, "{group: id|name}", always, delete_group),
         cmd!("track.group_toggle", "Toggle Group Active", [], None, "{group: id|name}", always, toggle_group),
+        cmd!("track.group_modify", "Modify Group", [], None, "{group: id|name, name?, tracks?, edit?, mix?}", always, modify_group),
         cmd!(
             "track.duplicate",
             "Duplicate...",
@@ -318,6 +319,55 @@ fn toggle_group(e: &mut Engine, p: &Value) -> Result<Value> {
         active = gr.active;
     }
     Ok(json!({"active": active}))
+}
+
+/// Change an existing group's name, membership and Edit/Mix linking. Omitted fields keep their value.
+fn modify_group(e: &mut Engine, p: &Value) -> Result<Value> {
+    const CMD: &str = "track.group_modify";
+    let g = find_group(e, p, CMD)?;
+    // Absent `tracks` leaves membership alone; present, it replaces it. Only an array counts, so a
+    // mistyped param can't silently swap the members for whatever happens to be selected.
+    let members = match p.get("tracks") {
+        None => None,
+        Some(Value::Array(_)) => {
+            let mut t = tracks_param(e, CMD, p)?;
+            // A track listed twice would take every linked move twice over.
+            let mut seen = std::collections::HashSet::new();
+            t.retain(|id| seen.insert(*id));
+            if t.is_empty() {
+                return Err(bad(CMD, "a group needs at least one track"));
+            }
+            Some(t)
+        }
+        Some(_) => return Err(bad(CMD, "`tracks` must be an array of track ids or names")),
+    };
+    let name = match str_param(p, "name") {
+        None => None,
+        Some(n) => {
+            let n = n.trim();
+            if n.is_empty() {
+                return Err(bad(CMD, "`name` must not be empty"));
+            }
+            // `find_group` resolves by name, so duplicates would make a group unaddressable.
+            if e.session().groups.iter().any(|x| x.name == n && x.id != g) {
+                return Err(bad(CMD, format!("a group named `{n}` already exists")));
+            }
+            let mut n = n.to_string();
+            soundcraft_model::truncate_chars(&mut n, soundcraft_model::MAX_NAME_CHARS);
+            Some(n)
+        }
+    };
+    let s = e.session_mut();
+    let Some(gr) = s.groups.iter_mut().find(|x| x.id == g) else { return Err(bad(CMD, "unknown `group`")) };
+    if let Some(n) = name {
+        gr.name = n;
+    }
+    if let Some(m) = members {
+        gr.members = m;
+    }
+    gr.edit = bool_or(p, "edit", gr.edit);
+    gr.mix = bool_or(p, "mix", gr.mix);
+    Ok(json!({"group": g, "name": gr.name, "tracks": gr.members, "edit": gr.edit, "mix": gr.mix}))
 }
 
 fn duplicate(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -870,6 +920,35 @@ mod tests {
         e.execute("track.playlist_promote", &json!({"track": kick, "playlist": 0, "start": {"seconds": 10.0}, "end": {"seconds": 12.0}})).unwrap();
         assert!(!gap(&e));
         assert!(e.execute("track.playlist_promote", &json!({"track": kick, "playlist": 1, "start": 0, "end": 10})).is_err());
+    }
+
+    #[test]
+    fn group_modify_changes_name_membership_and_linking() {
+        let mut e = crate::demo::demo_engine();
+        let g = e.execute("track.group", &json!({"tracks": ["Kick", "Snare"], "name": "Drums"})).unwrap()["group"].as_u64().unwrap();
+        // Every field at once, the way the dialog submits it.
+        let r = e.execute("track.group_modify", &json!({"group": g, "name": "Rhythm", "tracks": ["Kick", "Bass"], "edit": false})).unwrap();
+        assert_eq!(r["name"], "Rhythm");
+        let gr = e.session().groups.iter().find(|x| x.id.0 == g).unwrap().clone();
+        assert_eq!(gr.name, "Rhythm");
+        assert_eq!(gr.members, vec![e.session().track_by_name("Kick").unwrap().id, e.session().track_by_name("Bass").unwrap().id]);
+        assert!(!gr.edit);
+        assert!(gr.mix, "an omitted field keeps its value");
+        assert_eq!(gr.letter, 'a', "the letter is the group's stable id and never changes");
+        // Omitting `tracks` leaves membership alone rather than falling back to the selection.
+        e.execute("edit.select", &json!({"tracks": ["Pad"], "exact": true})).unwrap();
+        e.execute("track.group_modify", &json!({"group": g, "name": "Rhythm Section"})).unwrap();
+        assert_eq!(e.session().groups.iter().find(|x| x.id.0 == g).unwrap().members, gr.members);
+        // Resolving the group by its new name keeps working, so names stay unique and non-empty.
+        e.execute("track.group", &json!({"tracks": ["Pad"], "name": "Pads"})).unwrap();
+        assert!(e.execute("track.group_modify", &json!({"group": "Pads", "name": "Rhythm Section"})).is_err());
+        assert!(e.execute("track.group_modify", &json!({"group": g, "name": "  "})).is_err());
+        assert!(e.execute("track.group_modify", &json!({"group": g, "tracks": []})).is_err());
+        assert!(e.execute("track.group_modify", &json!({"group": g, "tracks": "Kick"})).is_err(), "`tracks` must be an array");
+        assert!(e.execute("track.group_modify", &json!({"group": g, "tracks": ["Kick", "Kick"]})).is_ok());
+        assert_eq!(e.session().groups.iter().find(|x| x.id.0 == g).unwrap().members.len(), 1, "a repeated track is listed once");
+        assert!(e.execute("track.group_modify", &json!({"group": 9999, "name": "x"})).is_err());
+        assert_eq!(e.session().groups.iter().find(|x| x.id.0 == g).unwrap().name, "Rhythm Section", "a rejected call changes nothing");
     }
 
     #[test]

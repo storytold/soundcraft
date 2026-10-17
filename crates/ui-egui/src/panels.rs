@@ -133,6 +133,10 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
                     let _ = app.run("track.group_toggle", json!({"group": id}));
                     ui.close();
                 }
+                if ui.button("Modify Group…").clicked() {
+                    let _ = app.dialogs.open_modify_group(&app.engine, soundcraft_model::GroupId(id));
+                    ui.close();
+                }
                 if ui.button("Delete Group").clicked() {
                     let _ = app.run("track.ungroup", json!({"group": id}));
                     ui.close();
