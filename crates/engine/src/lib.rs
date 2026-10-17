@@ -369,7 +369,15 @@ impl Engine {
         let key = self.merge_hold.clone().unwrap_or_else(|| key.to_string());
         let continuing = self.merge_key.as_ref() == Some(&key);
         let before_len = self.undo.len();
-        let r = self.execute(id, params)?;
+        // The step pushed for a continuing tick is dropped again below, so it must not trim the
+        // oldest entry first when the history is full.
+        let limit = self.history_limit;
+        if continuing && before_len > 0 {
+            self.history_limit = limit.max(before_len.saturating_add(1));
+        }
+        let r = self.execute(id, params);
+        self.history_limit = limit;
+        let r = r?;
         if continuing && self.undo.len() == before_len + 1 && before_len > 0 {
             // Drop the step just pushed; the earlier one still holds the pre-gesture document.
             self.undo.pop();
