@@ -54,7 +54,8 @@ use soundcraft_dsp::pan::{PanLaw, SpeakerPos, SurroundParams, gains};
 use soundcraft_dsp::{Plugin, SampleSource, Transport, db_to_gain};
 use soundcraft_midi::CtrlKind;
 use soundcraft_model::{
-    AutoParam, BusId, ChannelFormat, Clip, ClipContent, Route, Session, SourceAudio, Speaker, SurroundPan, Track, TrackId, TrackKind,
+    AutoParam, BusId, ChannelFormat, Clip, ClipContent, MasterInsertOrder, Route, Session, SourceAudio, Speaker, SurroundPan, Track, TrackId,
+    TrackKind,
 };
 use soundcraft_time::{Range, Samples, TICKS_PER_QUARTER};
 use std::collections::HashMap;
@@ -746,9 +747,23 @@ impl MixEngine {
         let transport = transport_at(s, pos, !self.monitor_only, self.recording);
         for t in s.tracks.iter().filter(|t| t.kind == TrackKind::Master && !t.inactive) {
             if let Some(strip) = self.strips.get_mut(&t.id) {
-                for (dst, src) in strip.buf.iter_mut().zip(self.main.iter()) {
-                    if let (Some(d), Some(sr)) = (dst.get_mut(..frames), src.get(..frames)) {
-                        d.copy_from_slice(sr);
+                let post_fader = t.mixer.master_insert_order == MasterInsertOrder::PostFader;
+                if post_fader {
+                    let last = pos.saturating_add(i64::try_from(frames.saturating_sub(1)).unwrap_or(i64::MAX));
+                    let v0 = volume_db_at(t, pos);
+                    let v1 = volume_db_at(t, last);
+                    for (dst, src) in strip.buf.iter_mut().zip(self.main.iter()) {
+                        if let (Some(d), Some(sr)) = (dst.get_mut(..frames), src.get(..frames)) {
+                            for (i, (d, x)) in d.iter_mut().zip(sr).enumerate() {
+                                *d = x * lerp_gain(v0, v1, i, frames.saturating_sub(1));
+                            }
+                        }
+                    }
+                } else {
+                    for (dst, src) in strip.buf.iter_mut().zip(self.main.iter()) {
+                        if let (Some(d), Some(sr)) = (dst.get_mut(..frames), src.get(..frames)) {
+                            d.copy_from_slice(sr);
+                        }
                     }
                 }
                 for (i, ins) in t.mixer.inserts.iter().enumerate() {
@@ -765,14 +780,22 @@ impl MixEngine {
                         }
                     }
                 }
-                let v0 = volume_db_at(t, pos);
-                let v1 = volume_db_at(t, pos + frames as i64);
-                for (ch, src) in strip.buf.iter().enumerate().take(self.main.len()) {
-                    if let Some(m) = self.main.get_mut(ch) {
-                        for i in 0..frames {
-                            let g = lerp_gain(v0, v1, i, frames);
-                            if let (Some(d), Some(x)) = (m.get_mut(i), src.get(i)) {
-                                *d = x * g;
+                if post_fader {
+                    for (dst, src) in self.main.iter_mut().zip(strip.buf.iter()) {
+                        if let (Some(d), Some(sr)) = (dst.get_mut(..frames), src.get(..frames)) {
+                            d.copy_from_slice(sr);
+                        }
+                    }
+                } else {
+                    let v0 = volume_db_at(t, pos);
+                    let v1 = volume_db_at(t, pos.saturating_add(i64::try_from(frames).unwrap_or(i64::MAX)));
+                    for (ch, src) in strip.buf.iter().enumerate().take(self.main.len()) {
+                        if let Some(m) = self.main.get_mut(ch) {
+                            for i in 0..frames {
+                                let g = lerp_gain(v0, v1, i, frames);
+                                if let (Some(d), Some(x)) = (m.get_mut(i), src.get(i)) {
+                                    *d = x * g;
+                                }
                             }
                         }
                     }

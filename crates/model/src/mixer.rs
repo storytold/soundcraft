@@ -492,6 +492,21 @@ impl SendSlot {
     }
 }
 
+/// Placement of a Master Fader's inserts relative to its volume control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MasterInsertOrder {
+    #[default]
+    PreFader,
+    PostFader,
+}
+
+impl MasterInsertOrder {
+    fn is_pre_fader(&self) -> bool {
+        matches!(self, Self::PreFader)
+    }
+}
+
 /// The channel strip.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Mixer {
@@ -513,6 +528,9 @@ pub struct Mixer {
     pub inserts: Vec<Option<Insert>>,
     pub sends: Vec<Option<SendSlot>>,
     pub automation_mode: AutomationMode,
+    /// Masters retain legacy insert-before-volume order unless explicitly changed.
+    #[serde(default, skip_serializing_if = "MasterInsertOrder::is_pre_fader")]
+    pub master_insert_order: MasterInsertOrder,
     /// Input gain / trim, dB.
     #[serde(default)]
     pub trim_db: f32,
@@ -545,6 +563,7 @@ impl Mixer {
             inserts: vec![None; INSERT_SLOTS],
             sends: vec![None; SEND_SLOTS],
             automation_mode: AutomationMode::Read,
+            master_insert_order: MasterInsertOrder::PreFader,
             trim_db: 0.0,
             vca: None,
             surround: None,

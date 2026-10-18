@@ -8,7 +8,7 @@ use crate::widgets::{
 };
 use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
-use soundcraft_model::{ChannelFormat, Route, SurroundPan, Track, TrackId, TrackKind};
+use soundcraft_model::{ChannelFormat, MasterInsertOrder, Route, SurroundPan, Track, TrackId, TrackKind};
 use soundcraft_playback::MeterSnapshot;
 
 pub fn strip_width(narrow: bool) -> f32 {
@@ -403,6 +403,23 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         if text_toggle(&mut row, vec2(bw, 18.0), "M", track.mixer.mute, t.mute, "Mute").clicked() {
             let _ = app.run("mix.mute", json!({"track": id.0}));
         }
+    } else {
+        let order = track.mixer.master_insert_order;
+        let (label, tooltip) = match order {
+            MasterInsertOrder::PreFader => (if narrow { "pre" } else { "ins pre" }, "Master insert order: inserts before the fader"),
+            MasterInsertOrder::PostFader => (if narrow { "post" } else { "ins post" }, "Master insert order: inserts after the fader"),
+        };
+        let resp = selector_box_with_tooltip(&mut row, inner_w, 18.0, label, t.text, tooltip);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "Master insert order"));
+        egui::Popup::menu(&resp).show(|ui| {
+            for (value, label, parameter) in
+                [(MasterInsertOrder::PreFader, "Pre-fader", "pre_fader"), (MasterInsertOrder::PostFader, "Post-fader", "post_fader")]
+            {
+                if ui.selectable_label(order == value, label).clicked() {
+                    let _ = app.run("mix.master_insert_order", json!({"track": id.0, "order": parameter}));
+                }
+            }
+        });
     }
     y += 26.0;
     // Fader + meter.
