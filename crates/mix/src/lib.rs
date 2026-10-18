@@ -241,6 +241,8 @@ struct Strip {
     align_pre: DelayLine,
     out_extra: DelayLine,
     outbuf: Vec<Vec<f32>>,
+    /// Last output coefficients; keep the matrix out of the strip moved between workspaces.
+    output_matrix: Option<Box<PreparedOutputMatrix>>,
     failures: PluginFailures,
 }
 
@@ -320,6 +322,7 @@ impl Strip {
             align_pre: DelayLine::default(),
             out_extra: DelayLine::default(),
             outbuf: Vec::new(),
+            output_matrix: None,
             failures: PluginFailures::default(),
         }
     }
@@ -878,8 +881,8 @@ impl MixEngine {
         while start < frames {
             let (at, end) = pan_segment(t, pos, start, frames);
             let spec = PanSpec { stereo: [pan_at(t, 0, at), pan_at(t, 1, at)], surround: t.mixer.surround.as_ref() };
-            let m = build_matrix(src_fmt, src.len(), dst_fmt, dst.len(), &spec, law);
-            apply_matrix_span(src, start..end, dst, &m, 1.0);
+            let m = output_matrix(&mut strip.output_matrix, src_fmt, src.len(), dst_fmt, dst.len(), &spec, law);
+            apply_matrix_span(src, start..end, dst, m, 1.0);
             start = end;
         }
     }
@@ -1769,6 +1772,61 @@ struct PanSpec<'a> {
     surround: Option<&'a SurroundPan>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct OutputMatrixKey {
+    source_format: ChannelFormat,
+    source_channels: usize,
+    destination_format: ChannelFormat,
+    destination_channels: usize,
+    law: PanLaw,
+    stereo: [u32; 2],
+    surround: Option<[u32; 6]>,
+}
+
+struct PreparedOutputMatrix {
+    key: OutputMatrixKey,
+    matrix: Matrix,
+}
+
+/// Validate the effective coefficients on every existing pan segment. Route identity and live
+/// fader/mute state do not enter the key: destinations are resolved anew before this call.
+fn output_matrix<'a>(
+    cached: &'a mut Option<Box<PreparedOutputMatrix>>,
+    source_format: ChannelFormat,
+    source_channels: usize,
+    destination_format: ChannelFormat,
+    destination_channels: usize,
+    pan: &PanSpec<'_>,
+    law: PanLaw,
+) -> &'a Matrix {
+    let key = OutputMatrixKey {
+        source_format,
+        source_channels,
+        destination_format,
+        destination_channels,
+        law,
+        stereo: pan.stereo.map(f32::to_bits),
+        surround: pan.surround.map(|p| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), p.divergence.to_bits(), p.center.to_bits(), p.lfe_db.to_bits()]),
+    };
+    let prepared = cached.get_or_insert_with(|| {
+        Box::new(PreparedOutputMatrix {
+            key,
+            matrix: build_output_matrix(source_format, source_channels, destination_format, destination_channels, pan, law),
+        })
+    });
+    if prepared.key != key {
+        prepared.matrix = build_output_matrix(source_format, source_channels, destination_format, destination_channels, pan, law);
+        prepared.key = key;
+    }
+    &prepared.matrix
+}
+
+fn build_output_matrix(src_fmt: ChannelFormat, ns: usize, dst_fmt: ChannelFormat, nd: usize, pan: &PanSpec<'_>, law: PanLaw) -> Matrix {
+    #[cfg(test)]
+    output_matrix_tests::record_construction();
+    build_matrix(src_fmt, ns, dst_fmt, nd, pan, law)
+}
+
 fn identity_matrix(n: usize) -> Matrix {
     let mut m = [[0.0; MAX_CHANNELS]; MAX_CHANNELS];
     for (i, row) in m.iter_mut().enumerate().take(n) {
@@ -2267,6 +2325,209 @@ mod audio_thread_tests {
     fn strips_rendered_for_the_audio_thread_count_as_the_audio_thread_and_only_then() {
         assert!(seen_by_strips(true).iter().all(|&rt| rt), "a worker rendering for the audio thread is on it");
         assert!(seen_by_strips(false).iter().all(|&rt| !rt), "the workers don't stay marked afterwards");
+    }
+}
+
+#[cfg(test)]
+mod output_matrix_tests {
+    use super::*;
+    use soundcraft_audio_io::AudioBuffer;
+    use soundcraft_model::{AutomationMode, SourceId};
+
+    std::thread_local! {
+        static CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    pub(super) fn record_construction() {
+        CONSTRUCTIONS.set(CONSTRUCTIONS.get() + 1);
+    }
+    fn constructions() -> usize {
+        CONSTRUCTIONS.get()
+    }
+
+    fn fixture() -> (Session, TrackId, MixEngine) {
+        CONSTRUCTIONS.set(0);
+        let mut session = Session::default();
+        let track = session.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let source = SourceId(900);
+        session.pool.insert(source, Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 4096]] })));
+        let id = session.new_clip_id();
+        session.track_mut(track).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "dc", source, 0, 0, 4096));
+        (session, track, MixEngine::new(48_000.0, 512))
+    }
+
+    fn render(engine: &mut MixEngine, session: &Session, at: Samples, frames: usize) -> Vec<Vec<f32>> {
+        let mut output = vec![vec![0.0; frames]; MAX_CHANNELS];
+        engine.render(session, at, frames, &mut output);
+        output
+    }
+
+    fn address(engine: &MixEngine, track: TrackId) -> *const PreparedOutputMatrix {
+        std::ptr::from_ref(engine.strips.get(&track).unwrap().output_matrix.as_deref().unwrap())
+    }
+
+    #[test]
+    fn unchanged_output_reuses_coefficients_across_render_and_sync() {
+        let (session, track, mut engine) = fixture();
+        engine.sync(&session);
+        assert!(engine.strips.get(&track).unwrap().output_matrix.is_none());
+        assert_eq!(constructions(), 0);
+        let first = render(&mut engine, &session, 0, 64);
+        assert!(first[0][0] > 0.1);
+        assert_eq!(constructions(), 1);
+        let allocated = address(&engine, track);
+        for at in [64, 128, 192] {
+            engine.sync(&session);
+            assert_eq!(constructions(), 1, "sync must retain unchanged coefficients");
+            assert_eq!(render(&mut engine, &session, at, 64), first);
+        }
+        assert_eq!(constructions(), 1, "no coefficient constructions after warmup");
+        assert_eq!(address(&engine, track), allocated);
+    }
+
+    #[test]
+    fn live_controls_and_retargeting_keep_output_live_without_rebuilding() {
+        let (mut session, track, mut engine) = fixture();
+        let first = render(&mut engine, &session, 0, 64)[0][0];
+        session.track_mut(track).unwrap().mixer.volume_db = -6.0;
+        let quieter = render(&mut engine, &session, 64, 64)[0][0];
+        assert!((quieter - first * db_to_gain(-6.0)).abs() < 1e-6);
+        session.track_mut(track).unwrap().mixer.mute = true;
+        assert!(render(&mut engine, &session, 128, 64).iter().flatten().all(|x| *x == 0.0));
+        session.track_mut(track).unwrap().mixer.mute = false;
+        let a = session.add_bus("A", ChannelFormat::Stereo);
+        let b = session.add_bus("B", ChannelFormat::Stereo);
+        for bus in [a, b] {
+            session.track_mut(track).unwrap().mixer.output = Route::Bus(bus);
+            assert!(render(&mut engine, &session, 192, 64).iter().flatten().all(|x| *x == 0.0));
+            assert!((engine.busses.get(&bus).unwrap().buf[0][0] - quieter).abs() < 1e-6);
+        }
+        assert!(engine.busses.get(&a).unwrap().buf.iter().flatten().all(|x| *x == 0.0));
+        for route in [Route::None, Route::Bus(BusId(999))] {
+            session.track_mut(track).unwrap().mixer.output = route;
+            render(&mut engine, &session, 256, 64);
+            assert_eq!(constructions(), 1);
+        }
+        session.track_mut(track).unwrap().mixer.output = Route::Main;
+        assert!((render(&mut engine, &session, 320, 64)[0][0] - quieter).abs() < 1e-6);
+        assert_eq!(constructions(), 1, "route identity and live controls are not coefficients");
+        session.tracks.clear();
+        engine.sync(&session);
+        assert!(engine.strips.is_empty());
+    }
+
+    #[test]
+    fn effective_coefficient_edits_refresh_the_same_box_including_float_bits() {
+        let (mut session, track, mut engine) = fixture();
+        render(&mut engine, &session, 0, 64);
+        let allocated = address(&engine, track);
+        let mut count = constructions();
+        for pan in [-0.0, f32::from_bits(0x7fc00001), f32::from_bits(0x7fc00002)] {
+            session.track_mut(track).unwrap().mixer.pan[0] = pan;
+            render(&mut engine, &session, 0, 64);
+            count += 1;
+            assert_eq!(constructions(), count);
+            render(&mut engine, &session, 0, 64);
+            assert_eq!(constructions(), count, "identical NaN payloads must reuse coefficients too");
+        }
+        session.track_mut(track).unwrap().mixer.pan = vec![-1.0, -0.0];
+        render(&mut engine, &session, 0, 64);
+        count += 1;
+        session.track_mut(track).unwrap().mixer.pan[1] = 0.0;
+        render(&mut engine, &session, 0, 64);
+        count += 1;
+        assert_eq!(constructions(), count, "the second stereo value retains signed-zero identity");
+        engine.pan_law = PanLaw::Minus6;
+        render(&mut engine, &session, 0, 64);
+        count += 1;
+        assert_eq!(constructions(), count);
+        for format in [ChannelFormat::Stereo, ChannelFormat::Quad, ChannelFormat::Lcrs] {
+            session.track_mut(track).unwrap().format = format;
+            render(&mut engine, &session, 0, 64);
+            count += 1;
+            assert_eq!(constructions(), count);
+        }
+        for format in [ChannelFormat::Surround51, ChannelFormat::Surround60, ChannelFormat::Atmos714] {
+            session.outputs[0].format = format;
+            render(&mut engine, &session, 0, 64);
+            count += 1;
+            assert_eq!(constructions(), count);
+        }
+        // Duplicate ids retain current effective-buffer behavior. Both widths below fall
+        // back to the same source format, so width itself must still invalidate the cache.
+        let mut duplicate = session.track(track).unwrap().clone();
+        duplicate.format = ChannelFormat::Atmos702;
+        session.tracks.push(duplicate);
+        render(&mut engine, &session, 0, 64);
+        count += 1;
+        assert_eq!(constructions(), count);
+        session.tracks.last_mut().unwrap().format = ChannelFormat::Atmos712;
+        render(&mut engine, &session, 0, 64);
+        count += 1;
+        assert_eq!(constructions(), count);
+        session.tracks.pop();
+        render(&mut engine, &session, 0, 64);
+        count += 1;
+        assert_eq!(constructions(), count);
+        session.track_mut(track).unwrap().mixer.surround = Some(SurroundPan::default());
+        render(&mut engine, &session, 0, 64);
+        count += 1;
+        for field in 0..6 {
+            let mut pan = SurroundPan::default();
+            match field {
+                0 => pan.x = 0.5,
+                1 => pan.y = -0.5,
+                2 => pan.z = 0.5,
+                3 => pan.divergence = 0.5,
+                4 => pan.center = 0.0,
+                _ => pan.lfe_db = -6.0,
+            }
+            session.track_mut(track).unwrap().mixer.surround = Some(pan);
+            render(&mut engine, &session, 0, 64);
+            count += 1;
+            assert_eq!(constructions(), count, "surround field {field}");
+            render(&mut engine, &session, 0, 64);
+            assert_eq!(constructions(), count);
+            session.track_mut(track).unwrap().mixer.surround = Some(SurroundPan::default());
+            render(&mut engine, &session, 0, 64);
+            count += 1;
+            assert_eq!(constructions(), count);
+        }
+        session.track_mut(track).unwrap().mixer.surround = None;
+        render(&mut engine, &session, 0, 64);
+        count += 1;
+        assert_eq!(constructions(), count);
+        assert_eq!(address(&engine, track), allocated, "refresh must update the existing allocation");
+    }
+
+    #[test]
+    fn constant_automation_reuses_and_dynamic_automation_keeps_the_timeline_grid() {
+        let (mut session, track, mut engine) = fixture();
+        session.track_mut(track).unwrap().mixer.pan[0] = -1.0;
+        let lane = session.track_mut(track).unwrap().lane_mut(&AutoParam::Pan(0));
+        lane.set_point(0, -1.0);
+        lane.set_point(256, -1.0);
+        render(&mut engine, &session, 0, 256);
+        render(&mut engine, &session, 256, 256);
+        assert_eq!(constructions(), 1, "flat automation shares coefficients across all segments");
+        session.track_mut(track).unwrap().mixer.automation_mode = AutomationMode::Off;
+        render(&mut engine, &session, 0, 256);
+        assert_eq!(constructions(), 1);
+        session.track_mut(track).unwrap().mixer.automation_mode = AutomationMode::Read;
+        session.track_mut(track).unwrap().lane_mut(&AutoParam::Pan(0)).set_point(256, 1.0);
+        render(&mut engine, &session, 0, 256);
+        assert_eq!(constructions(), 4, "only distinct 64-sample pan values build coefficients");
+        render(&mut engine, &session, 256, 64);
+        render(&mut engine, &session, 320, 64);
+        assert_eq!(constructions(), 5, "the final automated value remains reusable");
+        let mut other = MixEngine::new(48_000.0, 512);
+        CONSTRUCTIONS.set(0);
+        render(&mut other, &session, 31, 100);
+        assert_eq!(constructions(), 3, "unaligned blocks retain the existing timeline grid");
+        let mut negative = MixEngine::new(48_000.0, 512);
+        CONSTRUCTIONS.set(0);
+        render(&mut negative, &session, -17, 100);
+        assert_eq!(constructions(), 2, "negative positions still use Euclidean grid alignment");
     }
 }
 
