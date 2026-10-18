@@ -3662,6 +3662,7 @@ dependencies = [
  "craft-docpath",
  "log",
  "proptest",
+ "same-file",
  "serde",
  "serde_json",
  "soundcraft-au-host",
@@ -3674,6 +3675,7 @@ dependencies = [
  "soundcraft-time",
  "soundcraft-video",
  "soundcraft-vst3-host",
+ "tempfile",
  "thiserror 2.0.21",
  "zip",
 ]
