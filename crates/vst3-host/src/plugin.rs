@@ -222,17 +222,19 @@ impl Plugin for Vst3Plugin {
         let Some(i) = self.info.params.iter().position(|p| p.id == id) else { return false };
         let (Some(pi), Some(&vid)) = (self.info.params.get(i), self.ids.get(i)) else { return false };
         let v = pi.clamp(value);
-        if let Some(slot) = self.values.get_mut(i) {
-            *slot = v;
-        }
-        let Some(n) = self.normalized_from_plain(i, v) else { return true };
-        if let Some(u) = self.unsynced.get(i) {
-            u.store(n.to_bits(), Ordering::Relaxed);
-        }
+        let Some(n) = self.normalized_from_plain(i, v) else { return false };
         if let Some(e) = self.pending.iter_mut().find(|(pid, _)| *pid == vid) {
             e.1 = n;
         } else if self.pending.len() < self.pending.capacity() {
             self.pending.push((vid, n));
+        } else {
+            return false;
+        }
+        if let Some(slot) = self.values.get_mut(i) {
+            *slot = v;
+        }
+        if let Some(u) = self.unsynced.get(i) {
+            u.store(n.to_bits(), Ordering::Relaxed);
         }
         true
     }

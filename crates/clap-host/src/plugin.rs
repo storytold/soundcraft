@@ -79,14 +79,14 @@ impl ClapPlugin {
         self.queue.retain(|e| !matches!(e, Event::Param { .. }));
     }
 
-    /// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
-    /// allocates on the audio thread).
-    fn push(&mut self, e: Event) {
+    /// Inserts keeping the queue time-sorted; refuses a full queue without allocation.
+    fn push(&mut self, e: Event) -> bool {
         if self.queue.len() >= self.queue.capacity() {
-            return;
+            return false;
         }
         let pos = self.queue.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
         self.queue.insert(pos, e);
+        true
     }
 }
 
@@ -146,14 +146,14 @@ impl Plugin for ClapPlugin {
         let Some(i) = self.info.params.iter().position(|p| p.id == id) else { return false };
         let (Some(pi), Some(&cid)) = (self.info.params.get(i), self.ids.get(i)) else { return false };
         let v = pi.clamp(value);
-        if let Some(slot) = self.values.get_mut(i) {
-            *slot = v;
-        }
         // Coalesce with a pending change of the same parameter.
         if let Some(Event::Param { value, .. }) = self.queue.iter_mut().find(|e| matches!(e, Event::Param { id, .. } if *id == cid)) {
             *value = f64::from(v);
-        } else {
-            self.push(Event::Param { time: 0, id: cid, value: f64::from(v) });
+        } else if !self.push(Event::Param { time: 0, id: cid, value: f64::from(v) }) {
+            return false;
+        }
+        if let Some(slot) = self.values.get_mut(i) {
+            *slot = v;
         }
         true
     }
@@ -234,11 +234,11 @@ impl Plugin for ClapPlugin {
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
         let vel = velocity.min(127);
-        match self.notes {
+        let _ = match self.notes {
             NoteMode::Clap => self.push(Event::NoteOn { time, key: note, velocity: f64::from(vel) / 127.0 }),
             NoteMode::Midi => self.push(Event::Midi { time, data: [0x90, note, vel] }),
             NoteMode::None => return,
-        }
+        };
         if let Some(h) = self.held.get_mut(note as usize) {
             *h = true;
         }
@@ -249,11 +249,11 @@ impl Plugin for ClapPlugin {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        match self.notes {
+        let _ = match self.notes {
             NoteMode::Clap => self.push(Event::NoteOff { time, key: note }),
             NoteMode::Midi => self.push(Event::Midi { time, data: [0x80, note, 0] }),
             NoteMode::None => return,
-        }
+        };
         if let Some(h) = self.held.get_mut(note as usize) {
             *h = false;
         }

@@ -196,7 +196,9 @@ pub trait Plugin: Send {
     fn info(&self) -> &'static PluginInfo;
     fn prepare(&mut self, sample_rate: f32, max_block: usize, channels: usize);
     fn reset(&mut self);
-    /// Sets a parameter (clamped into range; NaN becomes the default). `false` if `id` is unknown.
+    /// Sets a parameter (clamped into range; NaN becomes the default). Returns false for an
+    /// unknown ID or refused admission. True means the setter accepted/queued the target,
+    /// not that a later processor call consumed it. A refused target remains eligible for retry.
     fn set_param(&mut self, id: &str, value: f32) -> bool;
     fn param(&self, id: &str) -> Option<f32>;
     /// In-place processing of `channels` planar buffers each `frames` long.
