@@ -50,6 +50,8 @@
 //! [`Insert::sample`]: soundcraft_model::Insert::sample
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod output_pdc;
+
 use soundcraft_dsp::pan::{PanLaw, SpeakerPos, SurroundParams, gains};
 use soundcraft_dsp::{Plugin, SampleSource, Transport, db_to_gain};
 use soundcraft_midi::CtrlKind;
@@ -370,6 +372,8 @@ pub struct MixEngine {
     retired: Vec<Box<dyn Plugin>>,
     /// Ownership workspace reused for parallel strip processing.
     work: Vec<(usize, Strip)>,
+    output_pdc: Option<output_pdc::OutputPdc>,
+    output_pdc_scratch: output_pdc::Scratch,
 }
 
 /// What `sync` needs to fill a slot.
@@ -443,6 +447,8 @@ impl MixEngine {
             adopt: HashMap::new(),
             retired: Vec::new(),
             work: Vec::new(),
+            output_pdc: None,
+            output_pdc_scratch: output_pdc::Scratch::default(),
         }
     }
 
@@ -500,6 +506,10 @@ impl MixEngine {
 
     /// Reset all plugin state (on stop / seek).
     pub fn reset(&mut self) {
+        if let Some(plan) = &mut self.output_pdc {
+            plan.clear();
+        }
+        self.output_pdc_scratch.retry();
         for s in self.strips.values_mut() {
             for p in s.plugins.iter_mut().flatten() {
                 p.plugin.reset();
@@ -680,11 +690,51 @@ impl MixEngine {
                 }
             }
         }
+        // Routes-only compensation uses raw declared insert sums before the legacy caps.
+        // No additional parameter or processor calls are made by this projection.
+        let raw_valid = if pdc
+            && s.tracks.len().checked_add(s.busses.len()).is_some_and(|count| count <= output_pdc::MAX_NODES)
+            && self.output_pdc_scratch.prepare_raw(s.tracks.len(), s.busses.len()).is_some()
+        {
+            let mut valid = true;
+            for (index, track) in s.tracks.iter().enumerate() {
+                let strip = work.iter().find(|(i, _)| *i == index).map(|(_, strip)| strip).or_else(|| self.strips.get(&track.id));
+                match strip.and_then(|strip| raw_insert_latency(track, strip)) {
+                    Some(latency) => self.output_pdc_scratch.raw.push(latency),
+                    None if track.inactive || matches!(track.kind, TrackKind::Vca) => self.output_pdc_scratch.raw.push(0),
+                    None => {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+            valid
+        } else {
+            false
+        };
+        let raw_master = raw_valid
+            .then(|| {
+                s.tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, track)| track.kind == TrackKind::Master && !track.inactive)
+                    .try_fold(0usize, |sum, (index, _)| sum.checked_add(*self.output_pdc_scratch.raw.get(index)?))
+            })
+            .flatten();
+        let changed = output_pdc::OutputPdc::update(&mut self.output_pdc, s, &order, &mut self.output_pdc_scratch, raw_master);
+        if changed {
+            // Do not release stale alignment samples after a path/policy transition.
+            for strip in self.strips.values_mut().chain(work.iter_mut().map(|(_, strip)| strip)) {
+                strip.align.clear();
+                strip.align_pre.clear();
+                strip.out_extra.clear();
+            }
+        }
         let lmax_t = if pdc { work.iter().map(|(_, st)| st.latency).max().unwrap_or(0) } else { 0 };
         let lmax_a =
             if pdc { self.strips.iter().filter(|(id, _)| s.track(**id).is_some_and(is_aux)).map(|(_, st)| st.latency).max().unwrap_or(0) } else { 0 };
         self.track_latency = lmax_t;
-        self.latency = lmax_t + lmax_a + lmax_m;
+        self.latency = self.output_pdc.as_ref().map_or(lmax_t + lmax_a + lmax_m, |plan| plan.latency());
         // An aux that returns onto a bus delays it by the slowest aux return, so the tracks routed
         // to that bus wait as well (as the ones routed to the main mix do) and the bus lines up.
         self.aux_latency = lmax_a;
@@ -701,6 +751,13 @@ impl MixEngine {
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
             let ch = st.buf.len();
+            if let Some(plan) = &mut self.output_pdc {
+                st.align.set(0, ch);
+                st.align_pre.set(0, ch);
+                st.out_extra.set(0, ch);
+                plan.process(t.id, &mut st.buf, frames);
+                continue;
+            }
             st.align.set(lmax_t.saturating_sub(st.latency), ch);
             st.align.process(&mut st.buf, frames);
             if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
@@ -735,9 +792,16 @@ impl MixEngine {
             let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
             process_strip(s, t, &mut st, &self.busses, &live_in, pos, frames, any_solo);
             let ch = st.buf.len();
-            st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
-            st.align.process(&mut st.buf, frames);
-            st.out_extra.set(0, ch);
+            if let Some(plan) = &mut self.output_pdc {
+                st.align.set(0, ch);
+                st.align_pre.set(0, ch);
+                st.out_extra.set(0, ch);
+                plan.process(t.id, &mut st.buf, frames);
+            } else {
+                st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
+                st.align.process(&mut st.buf, frames);
+                st.out_extra.set(0, ch);
+            }
             self.route_strip(t, &mut st, pos, frames);
             self.strips.insert(t.id, st);
         }
@@ -805,7 +869,9 @@ impl MixEngine {
     /// The delay-compensation latency written onto `bus`: the slowest track insert, plus the
     /// slowest aux return when an aux returns onto this bus.
     fn bus_latency(&self, bus: BusId) -> usize {
-        self.track_latency + if self.aux_fed.contains(&bus) { self.aux_latency } else { 0 }
+        self.output_pdc
+            .as_ref()
+            .map_or_else(|| self.track_latency + if self.aux_fed.contains(&bus) { self.aux_latency } else { 0 }, |plan| plan.bus_latency(bus))
     }
 
     /// Copy one rendered block of `bus` into `out`. A missing bus stays silent.
@@ -1631,6 +1697,17 @@ fn sync_sample(strip: &mut Strip, want: Option<&soundcraft_model::Insert>, s: &S
         inst.plugin.set_sample(shared);
     }
     strip.sample = audio.cloned();
+}
+
+/// Check raw supported insert sums before legacy latency clipping, without setting parameters.
+fn raw_insert_latency(track: &Track, strip: &Strip) -> Option<usize> {
+    track.mixer.inserts.iter().zip(&strip.plugins).try_fold(0usize, |sum, (insert, slot)| {
+        let (Some(insert), Some(slot)) = (insert, slot) else { return Some(sum) };
+        if !insert.active || insert.bypass || slot.failed {
+            return Some(sum);
+        }
+        sum.checked_add(slot.plugin.latency()).filter(|latency| *latency <= MAX_LATENCY)
+    })
 }
 
 /// Record insert latency without processing audio, so this block can compensate for it.
