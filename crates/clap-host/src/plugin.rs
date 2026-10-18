@@ -2,7 +2,10 @@
 
 use crate::ffi::{EVENT_CAP, Event, GuiLink, Instance, NotePort, PortBuffers};
 use clap_sys::ext::note_ports::{CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI};
-use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport};
+use soundcraft_dsp::{
+    BlockDeliveryCapacity, BlockDeliveryError, BlockDeliveryReceipt, BlockNote, BlockNoteMessage, BlockTarget, Plugin, PluginEditor, PluginInfo,
+    Transport,
+};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -16,6 +19,23 @@ enum NoteMode {
     None,
     Clap,
     Midi,
+}
+
+struct BlockDelivery {
+    capacity: BlockDeliveryCapacity,
+    index: Vec<(&'static str, usize)>,
+    latest: Vec<Option<f32>>,
+    acknowledged: Vec<Option<f32>>,
+    candidate: Vec<Option<f32>>,
+    events: Vec<Event>,
+    ready: bool,
+}
+
+fn delivery_slots(count: usize) -> Result<Vec<Option<f32>>, BlockDeliveryError> {
+    let mut slots = Vec::new();
+    slots.try_reserve_exact(count).map_err(|_| BlockDeliveryError::Allocation)?;
+    slots.resize(count, None);
+    Ok(slots)
 }
 
 /// A hosted CLAP plugin. Parameter ids are the CLAP param ids as decimal strings ("0", "17", …);
@@ -41,6 +61,7 @@ pub struct ClapPlugin {
     latency: usize,
     steady: i64,
     transport: Option<Transport>,
+    delivery: Option<BlockDelivery>,
 }
 
 impl ClapPlugin {
@@ -65,6 +86,18 @@ impl ClapPlugin {
             latency: 0,
             steady: 0,
             transport: None,
+            delivery: None,
+        }
+    }
+
+    fn invalidate_block_delivery(&mut self, clear_targets: bool) {
+        if let Some(delivery) = &mut self.delivery {
+            delivery.ready = false;
+            delivery.acknowledged.fill(None);
+            if clear_targets {
+                delivery.latest.fill(None);
+                delivery.candidate.fill(None);
+            }
         }
     }
 
@@ -108,6 +141,7 @@ impl Plugin for ClapPlugin {
     }
 
     fn prepare(&mut self, sample_rate: f32, max_block: usize, channels: usize) {
+        self.invalidate_block_delivery(false);
         let sr = if sample_rate.is_finite() && sample_rate > 0.0 { f64::from(sample_rate) } else { 48_000.0 };
         let mb = max_block.clamp(1, MAX_BLOCK);
         self.channels = channels.clamp(1, MAX_CHANNELS);
@@ -137,12 +171,16 @@ impl Plugin for ClapPlugin {
     }
 
     fn reset(&mut self) {
+        if let Some(delivery) = &mut self.delivery {
+            delivery.acknowledged.fill(None);
+        }
         self.inst.reset();
         self.queue.retain(|e| matches!(e, Event::Param { .. }));
         self.held = [false; 128];
     }
 
     fn set_param(&mut self, id: &str, value: f32) -> bool {
+        self.invalidate_block_delivery(true);
         let Some(i) = self.info.params.iter().position(|p| p.id == id) else { return false };
         let (Some(pi), Some(&cid)) = (self.info.params.get(i), self.ids.get(i)) else { return false };
         let v = pi.clamp(value);
@@ -164,6 +202,7 @@ impl Plugin for ClapPlugin {
     }
 
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.invalidate_block_delivery(true);
         if !self.inst.is_active() || self.max_block == 0 {
             return;
         }
@@ -220,6 +259,183 @@ impl Plugin for ClapPlugin {
         }
     }
 
+    fn prepare_block_delivery(&mut self, capacity: BlockDeliveryCapacity) -> Result<(), BlockDeliveryError> {
+        self.invalidate_block_delivery(false);
+        if !self.inst.is_active() || self.max_block == 0 {
+            return Err(BlockDeliveryError::NotPrepared);
+        }
+        if !self.queue.is_empty() {
+            return Err(BlockDeliveryError::MixedLegacy);
+        }
+        let count = self.info.params.len();
+        if count > 4096 || capacity.targets > 4096 || capacity.notes > 1024 {
+            return Err(BlockDeliveryError::InvalidCapacity);
+        }
+        let total = capacity.targets.checked_add(capacity.notes).ok_or(BlockDeliveryError::InvalidCapacity)?;
+        let mut index = Vec::new();
+        index.try_reserve_exact(count).map_err(|_| BlockDeliveryError::Allocation)?;
+        for (i, param) in self.info.params.iter().enumerate() {
+            if param.id.len() > 10
+                || param.id.parse::<u32>().ok() != self.ids.get(i).copied()
+                || !param.min.is_finite()
+                || !param.max.is_finite()
+                || !param.default.is_finite()
+                || param.min > param.max
+            {
+                return Err(BlockDeliveryError::InvalidTarget);
+            }
+            index.push((param.id, i));
+        }
+        index.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        if index.windows(2).any(|pair| matches!(pair, [a, b] if a.0 == b.0)) {
+            return Err(BlockDeliveryError::InvalidTarget);
+        }
+        let mut latest = delivery_slots(count)?;
+        if let Some(prior) = &self.delivery {
+            if prior.latest.len() != count {
+                return Err(BlockDeliveryError::InvalidCapacity);
+            }
+            latest.clone_from_slice(&prior.latest);
+        }
+        if latest.iter().flatten().count() > capacity.targets {
+            return Err(BlockDeliveryError::InvalidCapacity);
+        }
+        let acknowledged = delivery_slots(count)?;
+        let candidate = delivery_slots(count)?;
+        let mut events = Vec::new();
+        events.try_reserve_exact(total).map_err(|_| BlockDeliveryError::Allocation)?;
+        self.inst.reserve_block_events(total)?;
+        self.delivery = Some(BlockDelivery { capacity, index, latest, acknowledged, candidate, events, ready: true });
+        Ok(())
+    }
+
+    fn process_block_delivery(
+        &mut self,
+        io: &mut [Vec<f32>],
+        frames: usize,
+        targets: &[BlockTarget<'_>],
+        notes: &[BlockNote],
+    ) -> Result<BlockDeliveryReceipt, BlockDeliveryError> {
+        let delivery = self.delivery.as_mut().filter(|d| d.ready).ok_or(BlockDeliveryError::NotPrepared)?;
+        if !self.queue.is_empty() {
+            return Err(BlockDeliveryError::MixedLegacy);
+        }
+        if !self.inst.is_active()
+            || frames == 0
+            || frames > self.max_block
+            || io.len() != self.channels
+            || io.iter().any(|channel| channel.len() < frames)
+        {
+            return Err(BlockDeliveryError::InvalidBlock);
+        }
+        let output = self.out_main.filter(|p| self.outputs.channels(*p) > 0).ok_or(BlockDeliveryError::NotPrepared)?;
+        if targets.len() > 4096 || notes.len() > delivery.capacity.notes {
+            return Err(BlockDeliveryError::InvalidCapacity);
+        }
+        delivery.candidate.clone_from_slice(&delivery.latest);
+        for target in targets {
+            if target.id.len() > 10 {
+                return Err(BlockDeliveryError::InvalidTarget);
+            }
+            let index = delivery.index.binary_search_by(|entry| entry.0.cmp(target.id)).map_err(|_| BlockDeliveryError::InvalidTarget)?;
+            let (_, index) = delivery.index.get(index).copied().ok_or(BlockDeliveryError::InvalidTarget)?;
+            let param = self.info.params.get(index).ok_or(BlockDeliveryError::InvalidTarget)?;
+            *delivery.candidate.get_mut(index).ok_or(BlockDeliveryError::InvalidTarget)? = Some(param.clamp(target.value));
+        }
+        if delivery.candidate.iter().flatten().count() > delivery.capacity.targets {
+            return Err(BlockDeliveryError::InvalidCapacity);
+        }
+        let mut last_offset = 0;
+        for note in notes {
+            if note.offset >= frames || note.offset < last_offset {
+                return Err(BlockDeliveryError::InvalidBlock);
+            }
+            match note.message {
+                BlockNoteMessage::On { note, .. } | BlockNoteMessage::Off { note } if note > 127 => return Err(BlockDeliveryError::InvalidTarget),
+                BlockNoteMessage::On { .. } | BlockNoteMessage::Off { .. } if self.notes == NoteMode::None => {
+                    return Err(BlockDeliveryError::Unsupported);
+                }
+                BlockNoteMessage::Midi(_) if !self.midi_in => return Err(BlockDeliveryError::Unsupported),
+                _ => {}
+            }
+            last_offset = note.offset;
+        }
+        // Every admission check precedes mutation of latest targets or a processor call.
+        delivery.events.clear();
+        for (index, (value, acknowledged)) in delivery.candidate.iter().zip(&delivery.acknowledged).enumerate() {
+            if let Some(value) = value
+                && acknowledged.is_none_or(|prior| prior.to_bits() != value.to_bits())
+            {
+                let id = self.ids.get(index).copied().ok_or(BlockDeliveryError::InvalidTarget)?;
+                delivery.events.push(Event::Param { time: 0, id, value: f64::from(*value) });
+            }
+        }
+        let target_count = delivery.events.len();
+        for note in notes {
+            let time = u32::try_from(note.offset).map_err(|_| BlockDeliveryError::InvalidBlock)?;
+            let event = match (note.message, self.notes) {
+                (BlockNoteMessage::On { note, velocity }, NoteMode::Clap) => {
+                    Event::NoteOn { time, key: note, velocity: f64::from(velocity.min(127)) / 127.0 }
+                }
+                (BlockNoteMessage::Off { note }, NoteMode::Clap) => Event::NoteOff { time, key: note },
+                (BlockNoteMessage::On { note, velocity }, _) => Event::Midi { time, data: [0x90, note, velocity.min(127)] },
+                (BlockNoteMessage::Off { note }, _) => Event::Midi { time, data: [0x80, note, 0] },
+                (BlockNoteMessage::Midi(data), _) => Event::Midi { time, data },
+            };
+            delivery.events.push(event);
+        }
+        delivery.latest.clone_from_slice(&delivery.candidate);
+        if let Some(port) = self.in_main {
+            for channel in 0..self.inputs.channels(port) {
+                if let (Some(src), Some(dst)) = (
+                    io.get(channel.min(self.channels.saturating_sub(1))).and_then(|v| v.get(..frames)),
+                    self.inputs.channel_mut(port, channel).and_then(|v| v.get_mut(..frames)),
+                ) {
+                    dst.copy_from_slice(src);
+                }
+            }
+        }
+        let result =
+            self.inst.process_block_checked(frames, self.steady, &mut self.inputs, &mut self.outputs, &delivery.events, self.transport.as_ref());
+        delivery.events.clear();
+        self.steady = self.steady.saturating_add(i64::try_from(frames).unwrap_or(0));
+        let status = match result {
+            Ok(status) => status,
+            Err(error) => {
+                delivery.acknowledged.fill(None);
+                for channel in io.iter_mut() {
+                    if let Some(samples) = channel.get_mut(..frames) {
+                        samples.fill(0.0);
+                    }
+                }
+                return Err(error);
+            }
+        };
+        delivery.acknowledged.clone_from_slice(&delivery.latest);
+        let output_channels = self.outputs.channels(output);
+        for (channel, dst) in io.iter_mut().enumerate() {
+            let Some(dst) = dst.get_mut(..frames) else { continue };
+            if self.channels == 1 && output_channels >= 2 {
+                if let (Some(left), Some(right)) = (self.outputs.channel(output, 0), self.outputs.channel(output, 1)) {
+                    for ((sample, left), right) in dst.iter_mut().zip(left).zip(right) {
+                        *sample = 0.5 * (left + right);
+                    }
+                }
+            } else if let Some(src) = self.outputs.channel(output, channel.min(output_channels.saturating_sub(1))).and_then(|v| v.get(..frames)) {
+                dst.copy_from_slice(src);
+            }
+        }
+        Ok(BlockDeliveryReceipt { frames, targets: target_count, notes: notes.len(), status })
+    }
+
+    fn clear_block_delivery_targets(&mut self) -> Result<(), BlockDeliveryError> {
+        let delivery = self.delivery.as_mut().ok_or(BlockDeliveryError::NotPrepared)?;
+        delivery.latest.fill(None);
+        delivery.acknowledged.fill(None);
+        delivery.candidate.fill(None);
+        Ok(())
+    }
+
     fn latency(&self) -> usize {
         self.latency
     }
@@ -229,6 +445,7 @@ impl Plugin for ClapPlugin {
     }
 
     fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
+        self.invalidate_block_delivery(true);
         if note > 127 {
             return;
         }
@@ -245,6 +462,7 @@ impl Plugin for ClapPlugin {
     }
 
     fn note_off(&mut self, offset: usize, note: u8) {
+        self.invalidate_block_delivery(true);
         if note > 127 {
             return;
         }
@@ -260,12 +478,14 @@ impl Plugin for ClapPlugin {
     }
 
     fn midi(&mut self, offset: usize, msg: [u8; 3]) {
+        self.invalidate_block_delivery(true);
         if self.midi_in {
             self.push(Event::Midi { time: u32::try_from(offset).unwrap_or(u32::MAX), data: msg });
         }
     }
 
     fn all_notes_off(&mut self) {
+        self.invalidate_block_delivery(true);
         for k in 0..128u8 {
             if self.held.get(k as usize).copied().unwrap_or(false) {
                 self.note_off(0, k);
@@ -275,6 +495,13 @@ impl Plugin for ClapPlugin {
 
     fn load_state(&mut self, data: &[u8]) -> bool {
         let ok = self.inst.load_state(data);
+        if let Some(delivery) = &mut self.delivery {
+            delivery.acknowledged.fill(None);
+            if ok {
+                delivery.latest.fill(None);
+                delivery.candidate.fill(None);
+            }
+        }
         if ok {
             self.refresh_values();
         }

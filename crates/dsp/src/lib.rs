@@ -187,6 +187,69 @@ pub struct Transport {
     pub bar: i64,
 }
 
+/// Control-side limits for opt-in whole-block delivery (4096 targets, 1024 notes maximum).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockDeliveryCapacity {
+    pub targets: usize,
+    pub notes: usize,
+}
+
+/// An explicit absolute registered parameter value, in the plugin's declared units.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BlockTarget<'a> {
+    pub id: &'a str,
+    pub value: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockNoteMessage {
+    On {
+        note: u8,
+        velocity: u8,
+    },
+    Off {
+        note: u8,
+    },
+    /// Raw three-byte MIDI payload, passed through without interpreting message bytes.
+    Midi([u8; 3]),
+}
+
+/// Explicit notes must be ordered by offset within this block. They are never retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockNote {
+    pub offset: usize,
+    pub message: BlockNoteMessage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockProcessStatus {
+    Continue,
+    ContinueIfNotQuiet,
+    Tail,
+    Sleep,
+}
+
+/// Actual successful whole-block invocation; not proof an arbitrary processor obeyed events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockDeliveryReceipt {
+    pub frames: usize,
+    pub targets: usize,
+    pub notes: usize,
+    pub status: BlockProcessStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockDeliveryError {
+    Unsupported,
+    NotPrepared,
+    InvalidCapacity,
+    Allocation,
+    InvalidTarget,
+    InvalidBlock,
+    MixedLegacy,
+    ProcessFailed,
+}
+
 /// A realtime audio processor or instrument.
 ///
 /// Contract: `process` never allocates or panics. It processes `min(frames, io[c].len())` frames
@@ -201,6 +264,25 @@ pub trait Plugin: Send {
     fn param(&self, id: &str) -> Option<f32>;
     /// In-place processing of `channels` planar buffers each `frames` long.
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize);
+    /// Opt-in control-side reservation after ordinary audio preparation. Other backends refuse.
+    fn prepare_block_delivery(&mut self, _capacity: BlockDeliveryCapacity) -> Result<(), BlockDeliveryError> {
+        Err(BlockDeliveryError::Unsupported)
+    }
+    /// Validate the entire explicit batch before mutation, then invoke one normal processor block.
+    /// A failed attempted block retries latest absolute targets, but never its uncertain notes.
+    fn process_block_delivery(
+        &mut self,
+        _io: &mut [Vec<f32>],
+        _frames: usize,
+        _targets: &[BlockTarget<'_>],
+        _notes: &[BlockNote],
+    ) -> Result<BlockDeliveryReceipt, BlockDeliveryError> {
+        Err(BlockDeliveryError::Unsupported)
+    }
+    /// Discard configured targets without changing processor state or synthesizing defaults.
+    fn clear_block_delivery_targets(&mut self) -> Result<(), BlockDeliveryError> {
+        Err(BlockDeliveryError::Unsupported)
+    }
     /// Processing latency in samples (for delay compensation).
     fn latency(&self) -> usize {
         0
