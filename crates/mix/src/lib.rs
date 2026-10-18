@@ -205,6 +205,45 @@ struct BusBuf {
     buf: Vec<Vec<f32>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SendMatrixKey {
+    source_format: ChannelFormat,
+    source_channels: usize,
+    destination_format: ChannelFormat,
+    destination_channels: usize,
+    law: PanLaw,
+    stereo: [u32; 2],
+    surround: Option<[u32; 6]>,
+}
+
+impl SendMatrixKey {
+    fn new(
+        source_format: ChannelFormat,
+        source_channels: usize,
+        destination_format: ChannelFormat,
+        destination_channels: usize,
+        pan: &PanSpec<'_>,
+        law: PanLaw,
+    ) -> Self {
+        Self {
+            source_format,
+            source_channels,
+            destination_format,
+            destination_channels,
+            law,
+            stereo: pan.stereo.map(f32::to_bits),
+            surround: pan
+                .surround
+                .map(|p| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), p.divergence.to_bits(), p.center.to_bits(), p.lfe_db.to_bits()]),
+        }
+    }
+}
+
+struct PreparedSendMatrix {
+    key: SendMatrixKey,
+    matrix: Matrix,
+}
+
 struct PluginSlot {
     id: String,
     /// Channel count the plugin was prepared for.
@@ -217,6 +256,8 @@ struct PluginSlot {
 
 struct Strip {
     buf: Vec<Vec<f32>>,
+    /// Fixed nominal pointer cells; matrix storage is boxed only on an eligible send's first use.
+    send_matrices: Vec<Option<Box<PreparedSendMatrix>>>,
     /// Pre-fader copy for pre-fader sends.
     pre: Vec<Vec<f32>>,
     scratch: Vec<f32>,
@@ -304,6 +345,7 @@ impl Strip {
     fn new() -> Self {
         Strip {
             buf: Vec::new(),
+            send_matrices: Vec::new(),
             pre: Vec::new(),
             scratch: Vec::new(),
             plugins: Vec::new(),
@@ -542,6 +584,9 @@ impl MixEngine {
         for t in &s.tracks {
             let ch = strip_channels(t, main_ch);
             let strip = self.strips.entry(t.id).or_insert_with(Strip::new);
+            // Reserve every nominal slot even when the document's send vector is shorter.
+            // Moving a same-target send between slots need not change its structural hash.
+            strip.send_matrices.resize_with(soundcraft_model::SEND_SLOTS, || None);
             if strip.buf.len() != ch || strip.buf.first().map_or(0, Vec::len) != mb {
                 strip.buf = vec![vec![0.0; mb]; ch];
             }
@@ -849,8 +894,22 @@ impl MixEngine {
             // Mono sends use the send's own pan; stereo sends go straight to L/R.
             let stereo = if src.len() == 1 { [snd.pan, 0.0] } else { [-1.0, 1.0] };
             let surround = snd.surround.as_ref().or(if snd.follow_main_pan { t.mixer.surround.as_ref() } else { None });
-            let m = build_matrix(src_fmt, src.len(), dst.fmt, dst.buf.len(), &PanSpec { stereo, surround }, law);
-            apply_matrix(src, frames, &mut dst.buf, &m, gain);
+            let spec = PanSpec { stereo, surround };
+            let key = SendMatrixKey::new(src_fmt, src.len(), dst.fmt, dst.buf.len(), &spec, law);
+            let fallback;
+            let matrix = if let Some(cell) = strip.send_matrices.get_mut(i) {
+                let prepared = cell.get_or_insert_with(|| Box::new(PreparedSendMatrix { key, matrix: build_send_matrix(key, &spec) }));
+                if prepared.key != key {
+                    prepared.matrix = build_send_matrix(key, &spec);
+                    prepared.key = key;
+                }
+                &prepared.matrix
+            } else {
+                // Oversized documents keep every send audible without growing the cache.
+                fallback = build_send_matrix(key, &spec);
+                &fallback
+            };
+            apply_matrix(src, frames, &mut dst.buf, matrix, gain);
         }
         let src: &[Vec<f32>] = match &t.mixer.output {
             Route::Main | Route::Bus(_) if strip.out_extra.len > 0 => {
@@ -1769,6 +1828,12 @@ struct PanSpec<'a> {
     surround: Option<&'a SurroundPan>,
 }
 
+fn build_send_matrix(key: SendMatrixKey, pan: &PanSpec<'_>) -> Matrix {
+    #[cfg(test)]
+    send_matrix_tests::note_construction();
+    build_matrix(key.source_format, key.source_channels, key.destination_format, key.destination_channels, pan, key.law)
+}
+
 fn identity_matrix(n: usize) -> Matrix {
     let mut m = [[0.0; MAX_CHANNELS]; MAX_CHANNELS];
     for (i, row) in m.iter_mut().enumerate().take(n) {
@@ -2224,6 +2289,173 @@ fn create_plugin(id: &str) -> Option<Box<dyn Plugin>> {
         .or_else(|| soundcraft_clap_host::create(id))
         .or_else(|| soundcraft_vst3_host::create(id))
         .or_else(|| soundcraft_au_host::create(id))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod send_matrix_tests {
+    use super::*;
+    use soundcraft_audio_io::AudioBuffer;
+    use soundcraft_model::{SEND_SLOTS, SendSlot, SourceId};
+
+    std::thread_local! {
+        static CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    pub(super) fn note_construction() {
+        CONSTRUCTIONS.set(CONSTRUCTIONS.get().saturating_add(1));
+    }
+    fn fixture() -> (Session, TrackId, MixEngine) {
+        CONSTRUCTIONS.set(0);
+        let mut s = Session::default();
+        let bus = s.add_bus("Send", ChannelFormat::Stereo);
+        let source = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let aux = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, None);
+        s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
+        s.pool.insert(SourceId(901), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 512]] })));
+        let clip = s.new_clip_id();
+        let track = s.track_mut(source).unwrap();
+        track.playlist_mut().unwrap().clips.push(Clip::audio(clip, "Send", SourceId(901), 0, 0, 512));
+        track.mixer.output = Route::None;
+        let mut send = SendSlot::new(Route::Bus(bus));
+        send.level_db = 0.0;
+        track.mixer.sends[0] = Some(send);
+        let mut engine = MixEngine::new(48_000.0, 64);
+        engine.pan_law = PanLaw::Zero;
+        (s, source, engine)
+    }
+    fn render(engine: &mut MixEngine, s: &Session) -> Vec<Vec<f32>> {
+        let mut pcm = vec![vec![0.875; 32]; 2];
+        engine.render(s, 0, 32, &mut pcm);
+        pcm
+    }
+    fn assert_level(pcm: &[Vec<f32>], level: f32) {
+        assert!(pcm.iter().flatten().all(|sample| (*sample - level).abs() < 1e-6));
+    }
+
+    #[test]
+    fn unchanged_render_and_sync_reuse_send_coefficients() {
+        let (s, source, mut engine) = fixture();
+        assert_level(&render(&mut engine, &s), 0.25);
+        assert_eq!(CONSTRUCTIONS.get(), 1);
+        for _ in 0..3 {
+            engine.sync(&s);
+            assert_level(&render(&mut engine, &s), 0.25);
+        }
+        assert_eq!(CONSTRUCTIONS.get(), 1);
+        let cache = &engine.strips.get(&source).unwrap().send_matrices;
+        assert_eq!(cache.len(), SEND_SLOTS);
+        assert_eq!(cache.iter().flatten().count(), 1);
+    }
+
+    #[test]
+    fn live_controls_reuse_coefficients_and_resolved_float_bits_refresh() {
+        let (mut s, source, mut engine) = fixture();
+        render(&mut engine, &s);
+        let gain = db_to_gain(-6.0);
+        s.track_mut(source).unwrap().mixer.sends[0].as_mut().unwrap().level_db = -6.0;
+        assert_level(&render(&mut engine, &s), 0.25 * gain);
+        s.track_mut(source).unwrap().mixer.sends[0].as_mut().unwrap().mute = true;
+        assert_level(&render(&mut engine, &s), 0.0);
+        let track = s.track_mut(source).unwrap();
+        track.mixer.volume_db = -6.0;
+        let send = track.mixer.sends[0].as_mut().unwrap();
+        send.mute = false;
+        send.pre_fader = true;
+        assert_level(&render(&mut engine, &s), 0.25 * gain);
+        s.track_mut(source).unwrap().mixer.sends[0].as_mut().unwrap().pre_fader = false;
+        assert_level(&render(&mut engine, &s), 0.25 * gain * gain);
+        assert_eq!(CONSTRUCTIONS.get(), 1);
+        engine.pan_law = PanLaw::Minus6;
+        render(&mut engine, &s);
+        assert_eq!(CONSTRUCTIONS.get(), 2);
+        for (count, pan) in [(3, -0.0), (4, f32::from_bits(0x7fc0_0011)), (5, f32::from_bits(0x7fc0_0012))] {
+            s.track_mut(source).unwrap().mixer.sends[0].as_mut().unwrap().pan = pan;
+            render(&mut engine, &s);
+            render(&mut engine, &s);
+            assert_eq!(CONSTRUCTIONS.get(), count, "stable signed-zero/NaN bits must reuse their matrix");
+        }
+        s.busses[0].format = ChannelFormat::Surround51;
+        let send = s.track_mut(source).unwrap().mixer.sends[0].as_mut().unwrap();
+        send.pan = 0.0;
+        send.surround = Some(SurroundPan::default());
+        render(&mut engine, &s);
+        assert_eq!(CONSTRUCTIONS.get(), 6);
+        for field in 0..6 {
+            let pan = s.track_mut(source).unwrap().mixer.sends[0].as_mut().unwrap().surround.as_mut().unwrap();
+            match field {
+                0 => pan.x = 0.25,
+                1 => pan.y = 0.25,
+                2 => pan.z = 0.5,
+                3 => pan.divergence = 0.5,
+                4 => pan.center = 50.0,
+                _ => pan.lfe_db = -6.0,
+            }
+            render(&mut engine, &s);
+            render(&mut engine, &s);
+            assert_eq!(CONSTRUCTIONS.get(), 7 + field);
+        }
+        s.track_mut(source).unwrap().mixer.surround = Some(SurroundPan::default());
+        render(&mut engine, &s);
+        assert_eq!(CONSTRUCTIONS.get(), 12, "an explicit send surround overrides the main surround");
+        s.track_mut(source).unwrap().mixer.sends[0].as_mut().unwrap().surround = None;
+        render(&mut engine, &s);
+        assert_eq!(CONSTRUCTIONS.get(), 13);
+        s.track_mut(source).unwrap().mixer.surround.as_mut().unwrap().x = 0.5;
+        render(&mut engine, &s);
+        assert_eq!(CONSTRUCTIONS.get(), 14);
+        s.track_mut(source).unwrap().mixer.sends[0].as_mut().unwrap().follow_main_pan = false;
+        render(&mut engine, &s);
+        assert_eq!(CONSTRUCTIONS.get(), 15);
+    }
+
+    #[test]
+    fn slot_moves_tail_growth_and_overflow_preserve_audio_with_bounded_cache() {
+        let (mut s, source, mut engine) = fixture();
+        render(&mut engine, &s);
+        let fingerprint = structure_fingerprint(&s);
+        let sends = &mut s.track_mut(source).unwrap().mixer.sends;
+        sends[9] = sends[0].take();
+        assert_eq!(structure_fingerprint(&s), fingerprint);
+        assert_level(&render(&mut engine, &s), 0.25);
+        assert_eq!(CONSTRUCTIONS.get(), 2);
+        let sends = &mut s.track_mut(source).unwrap().mixer.sends;
+        sends[0] = sends[9].take();
+        sends.truncate(1);
+        sends.resize_with(SEND_SLOTS + 3, || None);
+        sends[SEND_SLOTS + 2] = sends[0].take();
+        assert_eq!(structure_fingerprint(&s), fingerprint);
+        assert_level(&render(&mut engine, &s), 0.25);
+        assert_eq!(CONSTRUCTIONS.get(), 3);
+        assert_level(&render(&mut engine, &s), 0.25);
+        assert_eq!(CONSTRUCTIONS.get(), 4, "overflow coefficients are uncached");
+        let sends = &mut s.track_mut(source).unwrap().mixer.sends;
+        sends[0] = sends[SEND_SLOTS + 2].clone();
+        assert_level(&render(&mut engine, &s), 0.5);
+        assert_eq!(CONSTRUCTIONS.get(), 5);
+        let cache = &engine.strips.get(&source).unwrap().send_matrices;
+        assert_eq!(cache.len(), SEND_SLOTS);
+        assert_eq!(cache.iter().flatten().count(), 2);
+    }
+
+    #[test]
+    fn effective_formats_and_actual_widths_refresh_send_coefficients() {
+        let (mut s, source, mut engine) = fixture();
+        render(&mut engine, &s);
+        s.track_mut(source).unwrap().format = ChannelFormat::Stereo;
+        render(&mut engine, &s);
+        assert_eq!(CONSTRUCTIONS.get(), 2);
+        s.busses[0].format = ChannelFormat::Quad;
+        render(&mut engine, &s);
+        assert_eq!(CONSTRUCTIONS.get(), 3);
+        s.busses[0].format = ChannelFormat::Lcrs;
+        render(&mut engine, &s);
+        assert_eq!(CONSTRUCTIONS.get(), 4);
+        let key = engine.strips.get(&source).unwrap().send_matrices[0].as_ref().unwrap().key;
+        assert_eq!(key.source_format, ChannelFormat::Stereo);
+        assert_eq!(key.source_channels, 2);
+        assert_eq!(key.destination_format, ChannelFormat::Lcrs);
+        assert_eq!(key.destination_channels, 4);
+    }
 }
 
 #[cfg(test)]
