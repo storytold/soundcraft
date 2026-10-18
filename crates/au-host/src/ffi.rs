@@ -408,9 +408,13 @@ pub struct RawComponent {
     pub version: u32,
 }
 
-/// Every component of type `ty` that can be instantiated synchronously.
-pub fn components(ty: u32) -> Vec<RawComponent> {
-    let desc = AudioComponentDescription { component_type: ty, ..Default::default() };
+/// Synchronously instantiable components of `ty`, optionally restricted before enumeration.
+pub fn components(ty: u32, manufacturer: Option<u32>) -> Vec<RawComponent> {
+    // Zero is the component manager's wildcard, never a restricted manufacturer query.
+    if manufacturer == Some(0) {
+        return Vec::new();
+    }
+    let desc = AudioComponentDescription { component_type: ty, component_manufacturer: manufacturer.unwrap_or(0), ..Default::default() };
     let mut out = Vec::new();
     let mut comp: AudioComponent = ptr::null_mut();
     for _ in 0..MAX_COMPONENTS {
