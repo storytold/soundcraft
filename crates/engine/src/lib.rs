@@ -8,6 +8,7 @@
 pub mod autosave;
 pub mod catalog;
 pub mod catalog_more;
+pub mod clip_capture;
 pub mod clip_group_file;
 pub mod cmd;
 pub mod demo;

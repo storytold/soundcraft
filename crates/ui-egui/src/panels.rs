@@ -194,12 +194,30 @@ pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
         }
         v
     };
+    let definitions: Vec<_> = app
+        .engine
+        .session()
+        .clip_definitions
+        .iter()
+        .map(|definition| {
+            let kind = match &definition.template.content {
+                soundcraft_model::ClipContent::Audio { .. } => "Audio",
+                soundcraft_model::ClipContent::Midi { .. } => "MIDI",
+                soundcraft_model::ClipContent::Video { .. } => "Video",
+            };
+            (definition.id.0, definition.name.clone(), kind, definition.template.color.unwrap_or([150, 150, 150]))
+        })
+        .collect();
     let fkey = egui::Id::new("clip_filter");
     let mut filter: String = ui.ctx().memory(|m| m.data.get_temp(fkey)).unwrap_or_default();
     ui.add(egui::TextEdit::singleline(&mut filter).hint_text("🔍 Find clips").desired_width(f32::INFINITY));
     ui.ctx().memory_mut(|m| m.data.insert_temp(fkey, filter.clone()));
     let needle = filter.to_lowercase();
     let items: Vec<_> = items.into_iter().filter(|(_, n, _, _, _)| needle.is_empty() || n.to_lowercase().contains(&needle)).collect();
+    let definitions: Vec<_> = definitions
+        .into_iter()
+        .filter(|(_, name, kind, _)| needle.is_empty() || name.to_lowercase().contains(&needle) || kind.to_lowercase().contains(&needle))
+        .collect();
     egui::ScrollArea::vertical().id_salt("clips_scroll").auto_shrink([false, false]).show(ui, |ui| {
         for (id, name, whole, color, selected) in items {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), if whole { Sense::click_and_drag() } else { Sense::click() });
@@ -245,6 +263,48 @@ pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
             if resp.clicked() {
                 let _ = app.run("edit.select", if whole { json!({"sources": [id]}) } else { json!({"clips": [id]}) });
             }
+        }
+        if !definitions.is_empty() {
+            panel_header(ui, "REUSABLE");
+        }
+        for (id, name, kind, color) in definitions {
+            ui.push_id(("reusable_clip", id), |ui| {
+                let label = format!("{name} ({kind})");
+                let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::click());
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label));
+                resp.context_menu(|ui| {
+                    if ui.button("Place on New Track").clicked() {
+                        let _ = app.run("clip.place_definition", json!({"definition": id}));
+                        ui.close();
+                    }
+                    let selected = {
+                        let session = app.engine.session();
+                        session.edit.selected_tracks.first().and_then(|id| session.track(*id)).map(|track| (track.id.0, track.kind))
+                    };
+                    if let Some((track, track_kind)) = selected {
+                        let compatible = matches!(
+                            (kind, track_kind),
+                            ("Audio", soundcraft_model::TrackKind::Audio)
+                                | ("MIDI", soundcraft_model::TrackKind::Midi | soundcraft_model::TrackKind::Instrument)
+                                | ("Video", soundcraft_model::TrackKind::Video)
+                        );
+                        if ui.add_enabled(compatible, egui::Button::new("Place on Selected Track")).clicked() {
+                            let _ = app.run("clip.place_definition", json!({"definition": id, "track": track}));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Remove Definition").clicked() {
+                        let _ = app.run("clip.clear_definitions", json!({"definitions": [id]}));
+                        ui.close();
+                    }
+                });
+                if resp.hovered() {
+                    ui.painter().rect_filled(r, 0.0, t.row_selected);
+                }
+                ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 4.0), vec2(9.0, 9.0)), 1.0, rgb(color));
+                ui.painter().with_clip_rect(r).text(pos2(r.min.x + 22.0, r.center().y), Align2::LEFT_CENTER, label, regular(11.0), t.text);
+            });
         }
     });
 }

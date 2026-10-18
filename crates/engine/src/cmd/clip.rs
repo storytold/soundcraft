@@ -163,18 +163,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"clip": id, "track": t}))
             }
         ),
-        cmd!("clip.capture", "Capture...", ["Clip"], Some("Cmd+R"), "{name?}", has_range, |e, p| {
-            // Captures the selection as a new whole-file-referencing clip in the clip list (we keep it on the track).
-            let name = str_param(p, "name").unwrap_or("Captured").to_string();
-            let ids = clip_ids_param(e, p);
-            let s = e.session_mut();
-            for id in &ids {
-                if let Some(c) = s.find_clip_mut(*id) {
-                    c.name = name.clone()
-                }
-            }
-            Ok(json!({"clips": ids.len()}))
-        }),
+        cmd!(
+            "clip.capture",
+            "Capture...",
+            ["Clip"],
+            Some("Cmd+R"),
+            "{clip?|clips?, name?} — capture complete clips as reusable definitions",
+            has_range,
+            crate::clip_capture::capture
+        ),
     ]
 }
 

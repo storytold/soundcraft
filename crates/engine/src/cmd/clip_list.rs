@@ -14,7 +14,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Clear Clips",
         [],
         Some("Cmd+Shift+B"),
-        "{clips?: [id], sources?: [id], with_clips?: bool} — removes clips and audio files from the session (files stay on disk); default: the Clip List selection. A file still used on the timeline needs `with_clips: true`, which removes those clips too",
+        "{clips?: [id], sources?: [id], with_clips?: bool} — removes clips and audio files from the session (files stay on disk); default: the Clip List selection. A file still used on the timeline needs `with_clips: true`, which removes those clips too. Reusable definitions retaining a file must be cleared separately first",
         has_list_selection,
         clear
     )]
@@ -40,6 +40,9 @@ fn clear(e: &mut Engine, p: &Value) -> Result<Value> {
         return Err(bad(CLEAR, format!("no clip with id {c}")));
     }
     let files = sources.iter().map(|f| s.source(*f).ok_or_else(|| bad(CLEAR, format!("no audio file with id {f}")))).collect::<Result<Vec<_>>>()?;
+    if let Some(definition) = s.clip_definitions.iter().find(|definition| definition.audio_sources().any(|source| sources.contains(&source))) {
+        return Err(bad(CLEAR, format!("audio file is retained by reusable definition {}; clear that definition first", definition.id)));
+    }
     if clips.is_empty() && files.is_empty() {
         return Err(bad(CLEAR, "nothing to clear: pass `clips` or `sources`, or select them in the Clip List"));
     }

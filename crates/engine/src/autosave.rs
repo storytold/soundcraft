@@ -144,6 +144,7 @@ impl Writer {
         let Some((session, origin, recording)) = self.pending.take() else { return };
         self.last = Some(Instant::now());
         let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+            session.validate_definitions().map_err(|err| EngineError::Io(err.to_string()))?;
             if self.folder.is_none() {
                 self.folder = Some(Autosave::create(&self.root, &session.name)?);
             }
