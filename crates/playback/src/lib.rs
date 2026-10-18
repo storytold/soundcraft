@@ -2,8 +2,8 @@
 //! PipeWire via ALSA, JACK, WebAudio).
 //!
 //! The UI thread owns a [`Player`]; the audio callback owns the [`MixEngine`] and a snapshot of
-//! the session (`Arc<Session>`) that the UI swaps whenever the document changes. Commands go to
-//! the callback through a channel; position and meters come back through atomics and a
+//! the session paired with automation reads prepared on the UI thread before each document
+//! update. Commands go to the callback through a channel; position and meters come back through atomics and a
 //! `try_lock`ed snapshot, so the callback never blocks. When no device is available the player
 //! falls back to a silent clock thread so the transport, meters and automation still run.
 //!
@@ -28,7 +28,7 @@ pub mod record;
 pub use devices::AudioConfig;
 
 use soundcraft_dsp::{Plugin, PluginEditor, PluginStateReader};
-use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
+use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, PreparedSession, StripMeter, itu_stereo_fold, main_channels};
 use soundcraft_model::{Session, TrackId};
 use soundcraft_time::{Range, Samples};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -58,11 +58,19 @@ pub type PluginStates = Vec<(TrackId, usize, Vec<u8>)>;
 /// A parameter edit made in a plugin's own editor: `(track, slot, param id, value)`.
 pub type EditorEdit = (TrackId, usize, String, f32);
 
+type PreparedSnapshot = Arc<PreparedSession<'static>>;
+
+/// Prepare the immutable document/read-index pair on the control thread, before it is sent
+/// to a callback or installed in a newly constructed callback state.
+fn prepare_snapshot(source: Arc<Session>) -> PreparedSnapshot {
+    Arc::new(PreparedSession::owned(source))
+}
+
 enum Cmd {
     /// A new snapshot plus the third-party instances it needs (created on the UI thread).
-    Session(Arc<Session>, Vec<PreparedInstance>),
+    Session(PreparedSnapshot, Vec<PreparedInstance>),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
-    OldSessions(SyncSender<Arc<Session>>),
+    OldSessions(SyncSender<PreparedSnapshot>),
     Input(Arc<record::InputRing>),
     Recording(bool),
     Play {
@@ -153,7 +161,7 @@ fn guarded_block(fault: &Fault, shared: &Shared, out: &mut [f32], fill: impl FnO
 struct AudioState {
     rx: Receiver<Cmd>,
     shared: Arc<Shared>,
-    session: Arc<Session>,
+    session: PreparedSnapshot,
     mix: MixEngine,
     pos: Samples,
     playing: bool,
@@ -170,7 +178,7 @@ struct AudioState {
     recording: bool,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
-    old_sessions: Option<SyncSender<Arc<Session>>>,
+    old_sessions: Option<SyncSender<PreparedSnapshot>>,
 }
 
 fn new_engine(sr: f32) -> MixEngine {
@@ -182,12 +190,13 @@ fn new_engine(sr: f32) -> MixEngine {
 
 impl AudioState {
     fn new(rx: Receiver<Cmd>, shared: Arc<Shared>, session: Arc<Session>, device_rate: f64, garbage: Sender<Vec<Box<dyn Plugin>>>) -> Self {
-        let sr = session.sample_rate.as_f64() as f32;
-        let nch = main_channels(&session);
+        let session = prepare_snapshot(session);
+        let sr = session.source().sample_rate.as_f64() as f32;
+        let nch = main_channels(session.source());
         AudioState {
             garbage,
             old_sessions: None,
-            fold: fold_gains(&session),
+            fold: fold_gains(session.source()),
             rx,
             shared,
             mix: new_engine(sr),
@@ -213,19 +222,19 @@ impl AudioState {
                 Cmd::Recording(r) => self.recording = r,
                 Cmd::Session(s, instances) => {
                     changed = true;
-                    if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
-                        let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
+                    if (s.source().sample_rate.as_f64() - self.session.source().sample_rate.as_f64()).abs() > 0.5 {
+                        let mut old = std::mem::replace(&mut self.mix, new_engine(s.source().sample_rate.as_f64() as f32));
                         let _ = self.garbage.send(old.drain_plugins());
                     }
                     self.mix.adopt(instances);
                     // The main format changed (a document edit, not steady state): resize.
-                    let nch = main_channels(&s);
+                    let nch = main_channels(s.source());
                     if self.pending.len() != nch {
                         self.pending = vec![vec![0.0; BLOCK]; nch];
                         self.pending_len = 0;
                         self.read = 0.0;
                     }
-                    self.fold = fold_gains(&s);
+                    self.fold = fold_gains(s.source());
                     let old = std::mem::replace(&mut self.session, s);
                     if let Some(tx) = &self.old_sessions {
                         let _ = tx.try_send(old);
@@ -258,7 +267,7 @@ impl AudioState {
         if changed {
             // Place adopted instances now (not only once playback starts), so editors see them;
             // `sync` creates no third-party plugins here.
-            self.mix.ensure_synced(&self.session);
+            self.mix.ensure_synced(self.session.source());
         }
         self.send_garbage();
         self.shared.playing.store(self.playing, Ordering::Relaxed);
@@ -303,11 +312,11 @@ impl AudioState {
             if self.mix.input.len() != ch {
                 self.mix.input = vec![vec![0.0; BLOCK]; ch];
             }
-            ring.pop_into(&mut self.mix.input, n, self.session.sample_rate.hz());
+            ring.pop_into(&mut self.mix.input, n, self.session.source().sample_rate.hz());
         }
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
-        self.mix.render(&self.session, self.pos, n, &mut self.pending);
+        self.mix.render_prepared(&self.session, self.pos, n, &mut self.pending);
         self.send_garbage();
         self.pending_len = n;
         if let Ok(mut m) = self.shared.meters.try_lock() {
@@ -331,7 +340,7 @@ impl AudioState {
     fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
         let channels = channels.max(1);
-        let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        let monitoring = self.input.is_some() && self.session.source().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
         if !self.playing && !monitoring {
             out.iter_mut().for_each(|x| *x = 0.0);
             if let Ok(mut m) = self.shared.meters.try_lock() {
@@ -341,7 +350,7 @@ impl AudioState {
             return;
         }
         let speed = f64::from(self.shared.speed.load(Ordering::Relaxed)) / 1000.0;
-        let step = self.session.sample_rate.as_f64() / self.device_rate.max(1.0) * speed.clamp(0.1, 4.0);
+        let step = self.session.source().sample_rate.as_f64() / self.device_rate.max(1.0) * speed.clamp(0.1, 4.0);
         let callback_frames = out.len() / channels;
         let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
         for frame in out.chunks_mut(channels) {
@@ -407,7 +416,7 @@ struct Side {
     /// is opened.
     refused: HashSet<(TrackId, usize)>,
     garbage: Receiver<Vec<Box<dyn Plugin>>>,
-    old_sessions: Option<Receiver<Arc<Session>>>,
+    old_sessions: Option<Receiver<PreparedSnapshot>>,
 }
 
 impl Side {
@@ -661,11 +670,11 @@ impl Player {
         }
     }
 
-    /// Sends a new session snapshot to the audio thread, with freshly created (state-restored,
-    /// prepared) instances of any third-party plugin it newly needs. Call on the UI thread.
+    /// Prepares and sends a paired session/automation snapshot to the audio thread, with freshly
+    /// created (state-restored, prepared) third-party instances. Call on the UI thread.
     pub fn update_session(&self, s: Arc<Session>) {
         let instances = self.side().prepare(&s);
-        let _ = self.tx.send(Cmd::Session(s, instances));
+        let _ = self.tx.send(Cmd::Session(prepare_snapshot(s), instances));
     }
 
     /// Reads the state of every live third-party plugin, for saving the session.
@@ -1111,24 +1120,28 @@ mod tests {
         let (gtx, grx) = channel();
         let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(soundcraft_model::Session::default()), 48_000.0, gtx);
         let plugin = soundcraft_dsp::create("gain").unwrap();
-        tx.send(Cmd::Session(Arc::clone(&s), vec![PreparedInstance { track: t, slot: 1, id: "clap:test.fake".into(), ch: 2, plugin }])).unwrap();
+        tx.send(Cmd::Session(
+            prepare_snapshot(Arc::clone(&s)),
+            vec![PreparedInstance { track: t, slot: 1, id: "clap:test.fake".into(), ch: 2, plugin }],
+        ))
+        .unwrap();
         let mut out = vec![0.0f32; 256];
         st.fill(&mut out, 2);
         assert!(grx.try_recv().is_err(), "nothing retired yet");
         // A session without the insert retires the instance to the return channel.
-        tx.send(Cmd::Session(Arc::new(soundcraft_model::Session::default()), Vec::new())).unwrap();
+        tx.send(Cmd::Session(prepare_snapshot(Arc::new(soundcraft_model::Session::default())), Vec::new())).unwrap();
         st.fill(&mut out, 2);
         assert_eq!(grx.try_recv().unwrap().len(), 1);
         // A sample-rate change rebuilds the engine without dropping plugins on this thread.
         tx.send(Cmd::Session(
-            Arc::clone(&s),
+            prepare_snapshot(Arc::clone(&s)),
             vec![PreparedInstance { track: t, slot: 1, id: "clap:test.fake".into(), ch: 2, plugin: soundcraft_dsp::create("gain").unwrap() }],
         ))
         .unwrap();
         st.fill(&mut out, 2);
         let mut s44 = (*s).clone();
         s44.sample_rate = soundcraft_time::SampleRate::new(44_100).unwrap();
-        tx.send(Cmd::Session(Arc::new(s44), Vec::new())).unwrap();
+        tx.send(Cmd::Session(prepare_snapshot(Arc::new(s44)), Vec::new())).unwrap();
         st.fill(&mut out, 2);
         assert_eq!(grx.try_recv().unwrap().len(), 1);
     }
@@ -1210,7 +1223,7 @@ mod tests {
             let s = Arc::new(soundcraft_model::Session::default());
             watched.push(Arc::downgrade(&s));
             side.collect_garbage();
-            tx.send(Cmd::Session(s, Vec::new())).unwrap();
+            tx.send(Cmd::Session(prepare_snapshot(s), Vec::new())).unwrap();
             st.fill(&mut out, 2);
             let replaced = watched.len().checked_sub(2).and_then(|i| watched.get(i));
             assert!(replaced.is_none_or(|w| w.strong_count() == 1), "freed on the audio thread");
@@ -1307,3 +1320,6 @@ mod tests {
         assert!(shared.meters.lock().unwrap().tracks.get(&t).is_some_and(|m| m.peak[0] > 0.1), "and metered");
     }
 }
+
+#[cfg(test)]
+mod prepared_automation_tests;
