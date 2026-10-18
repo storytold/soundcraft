@@ -743,7 +743,7 @@ mod tests {
     }
 
     fn rendered(s: &Session) -> Vec<f32> {
-        soundcraft_mix::render_range(s, Range::new(0, 8192), 1024).into_iter().next().unwrap_or_default()
+        soundcraft_mix::render_range(s, Range::new(0, 8192), 1024).unwrap().into_iter().next().unwrap_or_default()
     }
 
     fn convert(e: &mut Engine, t: TrackId, start: i64, end: i64) {

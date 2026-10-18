@@ -94,8 +94,9 @@ proptest! {
             s.pool = demo.session().pool.clone();
             let start = s.edit.selection.start.clamp(0, 1 << 40);
             let r = soundcraft_time::Range::new(start, start + 2048);
-            let out = soundcraft_mix::render_range(&s, r, 512);
-            prop_assert!(out.iter().all(|c| c.iter().all(|x| x.is_finite())));
+            if let Ok(out) = soundcraft_mix::render_range(&s, r, 512) {
+                prop_assert!(out.iter().all(|c| c.iter().all(|x| x.is_finite())));
+            }
             let mut e = soundcraft_engine::Engine::new(s);
             let _ = e.execute("session.inspect", &serde_json::json!({}));
             let _ = e.execute("edit.select_all", &serde_json::json!({}));

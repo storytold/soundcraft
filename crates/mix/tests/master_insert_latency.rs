@@ -36,13 +36,13 @@ fn peak_at(ch: &[f32]) -> usize {
 
 #[test]
 fn a_master_insert_with_lookahead_does_not_delay_the_bounce() {
-    let control = render_range(&session(None), Range::new(0, 12_000), 512);
+    let control = render_range(&session(None), Range::new(0, 12_000), 512).unwrap();
     assert_eq!(peak_at(&control[0]), AT);
     let mut maximizer = Insert::new("maximizer");
     maximizer.params.insert("threshold".into(), -7.0);
     maximizer.params.insert("ceiling".into(), -1.0);
     let s = session(Some(maximizer));
-    let out = render_range(&s, Range::new(0, 12_000), 512);
+    let out = render_range(&s, Range::new(0, 12_000), 512).unwrap();
     assert_eq!(out[0].len(), 12_000);
     assert_eq!(peak_at(&out[0]), AT, "the limited impulse lines up with the mix without the master insert");
     assert_eq!(peak_at(&out[1]), AT);
@@ -53,14 +53,14 @@ fn a_master_insert_with_lookahead_does_not_delay_the_bounce() {
     // With Delay Compensation off nothing is compensated (and nothing is dropped).
     let mut off = s.clone();
     off.edit.delay_compensation = false;
-    let late = render_range(&off, Range::new(0, 12_000), 512);
+    let late = render_range(&off, Range::new(0, 12_000), 512).unwrap();
     assert_eq!(peak_at(&late[0]), AT + probe.latency);
 }
 
 #[test]
 fn master_inserts_without_latency_change_nothing() {
-    let control = render_range(&session(None), Range::new(0, 12_000), 512);
-    let gain = render_range(&session(Some(Insert::new("gain"))), Range::new(0, 12_000), 512);
+    let control = render_range(&session(None), Range::new(0, 12_000), 512).unwrap();
+    let gain = render_range(&session(Some(Insert::new("gain"))), Range::new(0, 12_000), 512).unwrap();
     assert_eq!(peak_at(&gain[0]), AT);
     assert_eq!(gain[0].len(), control[0].len());
 }

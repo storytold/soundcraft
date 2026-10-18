@@ -339,7 +339,7 @@ mod tests {
         assert!(s.master().is_some());
         let sr = s.sample_rate;
         let r = soundcraft_time::Range::new(sr.samples(10.0), sr.samples(12.0));
-        let out = soundcraft_mix::render_range(&s, r, 1024);
+        let out = soundcraft_mix::render_range(&s, r, 1024).unwrap();
         let pk = out.iter().flat_map(|c| c.iter()).fold(0.0f32, |m, v| m.max(v.abs()));
         assert!(pk > 0.05, "demo should be audible, peak {pk}");
         assert!(pk <= 1.5, "demo should not be wildly clipping, peak {pk}");

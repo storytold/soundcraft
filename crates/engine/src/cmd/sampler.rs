@@ -152,7 +152,7 @@ mod tests {
     }
 
     fn render(e: &Engine, secs: i64) -> Vec<Vec<f32>> {
-        soundcraft_mix::render_range(e.session(), Range::new(0, 48_000 * secs), 512)
+        soundcraft_mix::render_range(e.session(), Range::new(0, 48_000 * secs), 512).unwrap()
     }
 
     fn peak(x: &[f32]) -> f32 {
