@@ -205,6 +205,32 @@ struct BusBuf {
     buf: Vec<Vec<f32>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AuxInputMatrixKey {
+    bus: BusId,
+    source_format: ChannelFormat,
+    source_channels: usize,
+    destination_format: ChannelFormat,
+    destination_channels: usize,
+}
+
+impl AuxInputMatrixKey {
+    fn new(bus: BusId, source: &BusBuf, track: &Track, destination_channels: usize) -> Self {
+        Self {
+            bus,
+            source_format: source.fmt,
+            source_channels: source.buf.len(),
+            destination_format: strip_format(track, destination_channels),
+            destination_channels,
+        }
+    }
+}
+
+struct PreparedAuxInputMatrix {
+    key: AuxInputMatrixKey,
+    matrix: Matrix,
+}
+
 struct PluginSlot {
     id: String,
     /// Channel count the plugin was prepared for.
@@ -217,6 +243,8 @@ struct PluginSlot {
 
 struct Strip {
     buf: Vec<Vec<f32>>,
+    /// A boxed input matrix keeps strips small when their ownership moves for rendering.
+    input_matrix: Option<Box<PreparedAuxInputMatrix>>,
     /// Pre-fader copy for pre-fader sends.
     pre: Vec<Vec<f32>>,
     scratch: Vec<f32>,
@@ -304,6 +332,7 @@ impl Strip {
     fn new() -> Self {
         Strip {
             buf: Vec::new(),
+            input_matrix: None,
             pre: Vec::new(),
             scratch: Vec::new(),
             plugins: Vec::new(),
@@ -595,6 +624,26 @@ impl MixEngine {
             }
         }
         self.busses.retain(|id, _| s.bus(*id).is_some());
+        // Use the finalized buffers, including the effective format of repeated bus IDs.
+        // Only Aux/Folder bus inputs need a matrix; an unrelated edit retains its allocation.
+        for t in &s.tracks {
+            let Some(strip) = self.strips.get_mut(&t.id) else { continue };
+            let key = if matches!(t.kind, TrackKind::Aux | TrackKind::Folder) {
+                match &t.mixer.input {
+                    Route::Bus(bus) => self.busses.get(bus).map(|source| AuxInputMatrixKey::new(*bus, source, t, strip.buf.len())),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            match key {
+                Some(key) if strip.input_matrix.as_ref().is_none_or(|prepared| prepared.key != key) => {
+                    strip.input_matrix = Some(Box::new(PreparedAuxInputMatrix { key, matrix: build_aux_input_matrix(key) }));
+                }
+                None => strip.input_matrix = None,
+                _ => {}
+            }
+        }
     }
 
     /// Re-syncs plugin instances and the routing order when the session's structure changed
@@ -961,21 +1010,17 @@ fn process_strip(
             if let Route::Bus(b) = &t.mixer.input
                 && let Some(src) = busses.get(b)
             {
-                let (ns, nd) = (src.buf.len(), strip.buf.len());
-                let dst_fmt = strip_format(t, nd);
-                let m = if src.fmt == dst_fmt && ns == nd {
-                    identity_matrix(ns)
-                } else if ns == 1 && nd == 2 {
-                    // A mono bus feeds both sides of a stereo aux.
-                    let mut m = [[0.0; MAX_CHANNELS]; MAX_CHANNELS];
-                    m[0][0] = 1.0;
-                    m[0][1] = 1.0;
-                    m
+                let key = AuxInputMatrixKey::new(*b, src, t, strip.buf.len());
+                let fallback;
+                let matrix = if let Some(prepared) = strip.input_matrix.as_ref().filter(|prepared| prepared.key == key) {
+                    &prepared.matrix
                 } else {
-                    let stereo = if ns == 1 { [0.0, 0.0] } else { [-1.0, 1.0] };
-                    build_matrix(src.fmt, ns, dst_fmt, nd, &PanSpec { stereo, surround: None }, PanLaw::Minus3)
+                    // Duplicate track IDs can reuse one strip with differing input geometry.
+                    // Preserve the original conversion instead of applying stale coefficients.
+                    fallback = build_aux_input_matrix(key);
+                    &fallback
                 };
-                apply_matrix(&src.buf, frames, &mut strip.buf, &m, 1.0);
+                apply_matrix(&src.buf, frames, &mut strip.buf, matrix, 1.0);
             }
         }
         TrackKind::Instrument | TrackKind::Midi => {
@@ -1769,6 +1814,25 @@ struct PanSpec<'a> {
     surround: Option<&'a SurroundPan>,
 }
 
+/// Bus-input conversion has its own mono duplication rule and a fixed pan law.
+fn build_aux_input_matrix(key: AuxInputMatrixKey) -> Matrix {
+    #[cfg(test)]
+    aux_input_tests::note_construction();
+    let (ns, nd) = (key.source_channels, key.destination_channels);
+    if key.source_format == key.destination_format && ns == nd {
+        identity_matrix(ns)
+    } else if ns == 1 && nd == 2 {
+        // A mono bus feeds both sides of a stereo aux.
+        let mut matrix = [[0.0; MAX_CHANNELS]; MAX_CHANNELS];
+        matrix[0][0] = 1.0;
+        matrix[0][1] = 1.0;
+        matrix
+    } else {
+        let stereo = if ns == 1 { [0.0, 0.0] } else { [-1.0, 1.0] };
+        build_matrix(key.source_format, ns, key.destination_format, nd, &PanSpec { stereo, surround: None }, PanLaw::Minus3)
+    }
+}
+
 fn identity_matrix(n: usize) -> Matrix {
     let mut m = [[0.0; MAX_CHANNELS]; MAX_CHANNELS];
     for (i, row) in m.iter_mut().enumerate().take(n) {
@@ -2224,6 +2288,111 @@ fn create_plugin(id: &str) -> Option<Box<dyn Plugin>> {
         .or_else(|| soundcraft_clap_host::create(id))
         .or_else(|| soundcraft_vst3_host::create(id))
         .or_else(|| soundcraft_au_host::create(id))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod aux_input_tests {
+    use super::*;
+    use soundcraft_audio_io::AudioBuffer;
+    use soundcraft_model::SourceId;
+
+    std::thread_local! {
+        static CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    pub(super) fn note_construction() {
+        CONSTRUCTIONS.set(CONSTRUCTIONS.get().saturating_add(1));
+    }
+    fn fixture() -> (Session, TrackId, BusId, MixEngine) {
+        CONSTRUCTIONS.set(0);
+        let mut s = Session::default();
+        let bus = s.add_bus("Input", ChannelFormat::Stereo);
+        let source = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+        let aux = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, None);
+        s.pool
+            .insert(SourceId(901), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 512], vec![-0.5; 512]] })));
+        let clip = s.new_clip_id();
+        let track = s.track_mut(source).unwrap();
+        track.playlist_mut().unwrap().clips.push(Clip::audio(clip, "Input", SourceId(901), 0, 0, 512));
+        track.mixer.pan = vec![-1.0, 1.0];
+        track.mixer.output = Route::Bus(bus);
+        let track = s.track_mut(aux).unwrap();
+        track.mixer.input = Route::Bus(bus);
+        track.mixer.pan = vec![-1.0, 1.0];
+        (s, aux, bus, MixEngine::new(48_000.0, 64))
+    }
+    fn render(engine: &mut MixEngine, s: &Session, pos: Samples, frames: usize) -> Vec<Vec<f32>> {
+        let mut pcm = vec![vec![0.875; frames]; 2];
+        engine.render(s, pos, frames, &mut pcm);
+        pcm
+    }
+
+    #[test]
+    fn prepared_input_is_reused_by_render_and_sync() {
+        let (mut s, aux, bus, mut engine) = fixture();
+        assert_eq!(render(&mut engine, &s, 0, 64), vec![vec![0.25; 64], vec![-0.5; 64]]);
+        assert_eq!(CONSTRUCTIONS.get(), 1);
+        for pos in [64, 96, 128] {
+            assert_eq!(render(&mut engine, &s, pos, 32), vec![vec![0.25; 32], vec![-0.5; 32]]);
+            engine.sync(&s);
+        }
+        s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        engine.sync(&s);
+        assert_eq!(CONSTRUCTIONS.get(), 1, "unchanged keys retain coefficients across structural synchronization");
+        let mut repeated = s.bus(bus).unwrap().clone();
+        repeated.name = "Effective input".into();
+        repeated.format = ChannelFormat::Mono;
+        s.busses.push(repeated);
+        engine.sync(&s);
+        let prepared = engine.strips.get(&aux).unwrap().input_matrix.as_ref().unwrap();
+        assert_eq!(prepared.key.source_format, ChannelFormat::Mono);
+        assert_eq!(prepared.key.source_channels, 1);
+        assert_eq!(CONSTRUCTIONS.get(), 2);
+        render(&mut engine, &s, 160, 64);
+        assert_eq!(CONSTRUCTIONS.get(), 2, "finalized bus metadata avoids a runtime cache miss");
+    }
+
+    #[test]
+    fn input_geometry_edits_refresh_and_invalid_routes_clear() {
+        let (mut s, aux, bus, mut engine) = fixture();
+        render(&mut engine, &s, 0, 64);
+        s.track_mut(aux).unwrap().format = ChannelFormat::Mono;
+        render(&mut engine, &s, 64, 64);
+        assert_eq!(CONSTRUCTIONS.get(), 2);
+        s.track_mut(aux).unwrap().mixer.input = Route::None;
+        assert!(render(&mut engine, &s, 128, 64).iter().flatten().all(|sample| *sample == 0.0));
+        assert!(engine.strips.get(&aux).unwrap().input_matrix.is_none());
+        let track = s.track_mut(aux).unwrap();
+        track.mixer.input = Route::Bus(bus);
+        track.kind = TrackKind::Audio;
+        render(&mut engine, &s, 192, 64);
+        assert!(engine.strips.get(&aux).unwrap().input_matrix.is_none());
+        assert_eq!(CONSTRUCTIONS.get(), 2);
+        s.track_mut(aux).unwrap().kind = TrackKind::Folder;
+        render(&mut engine, &s, 256, 64);
+        assert_eq!(CONSTRUCTIONS.get(), 3);
+        let removed = s.bus(bus).unwrap().clone();
+        s.busses.retain(|entry| entry.id != bus);
+        assert!(render(&mut engine, &s, 320, 64).iter().flatten().all(|sample| *sample == 0.0));
+        assert!(engine.strips.get(&aux).unwrap().input_matrix.is_none());
+        assert_eq!(CONSTRUCTIONS.get(), 3);
+        s.busses.push(removed);
+        render(&mut engine, &s, 384, 64);
+        assert_eq!(CONSTRUCTIONS.get(), 4);
+    }
+
+    #[test]
+    fn duplicate_track_ids_use_guarded_original_input_conversion() {
+        let (mut s, aux, _, mut engine) = fixture();
+        let other_bus = s.add_bus("Other input", ChannelFormat::Mono);
+        let mut repeated = s.track(aux).unwrap().clone();
+        repeated.mixer.input = Route::Bus(other_bus);
+        s.tracks.push(repeated);
+        assert_eq!(render(&mut engine, &s, 0, 64), vec![vec![0.25; 64], vec![-0.5; 64]]);
+        assert_eq!(CONSTRUCTIONS.get(), 3, "two prepared keys plus the earlier duplicate's guarded conversion");
+        assert_eq!(render(&mut engine, &s, 64, 64), vec![vec![0.25; 64], vec![-0.5; 64]]);
+        assert_eq!(CONSTRUCTIONS.get(), 4, "only the malformed duplicate needs a runtime conversion");
+    }
 }
 
 #[cfg(test)]
