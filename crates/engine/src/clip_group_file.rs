@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn export_then_import_round_trips_audio_clips() {
-        let dir = std::env::temp_dir().join(format!("sc-grp-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-grp-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("drums.scgrp");
         let path = path.to_string_lossy().to_string();
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn positions_in_a_group_file_are_kept_within_reach() {
-        let dir = std::env::temp_dir().join(format!("sc-grp-far-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-grp-far-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let p = dir.join("far.scgrp");
         let note = json!({"pitch": 60, "velocity": 100, "release_velocity": 64, "channel": 0, "start": i64::MAX, "length": i64::MAX});
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn a_file_named_by_many_ids_becomes_one_source() {
-        let dir = std::env::temp_dir().join(format!("sc-grp-shared-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-grp-shared-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let audio = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 480]] };
         std::fs::write(dir.join("k.wav"), soundcraft_audio_io::encode(&audio, &soundcraft_audio_io::EncodeOptions::default()).unwrap()).unwrap();
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn rejects_foreign_files_and_escaping_paths() {
-        let dir = std::env::temp_dir().join(format!("sc-grp-bad-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-grp-bad-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let p = dir.join("x.scgrp");
         std::fs::write(

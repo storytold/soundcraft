@@ -35,9 +35,9 @@ fn video(app: &mut SoundApp, ctx: &egui::Context) {
         .clamp(0.2, 5.0);
     let mut open = true;
     let mut burn = app.ui.video_burn_in;
-    egui::Window::new("Video").open(&mut open).default_size(vec2(480.0, 480.0 / aspect + 28.0)).resizable(true).show(ctx, |ui| {
+    egui::Window::new(crate::i18n::t("Video")).open(&mut open).default_size(vec2(480.0, 480.0 / aspect + 28.0)).resizable(true).show(ctx, |ui| {
         ui.horizontal(|ui| {
-            crate::widgets::checkbox(ui, &mut burn, "Timecode burn-in");
+            crate::widgets::checkbox(ui, &mut burn, crate::i18n::t("Timecode burn-in"));
             let text = match &pic {
                 Some((_, Err(why), ..)) => why.clone(),
                 Some((k, ..)) => match app.video.info(*k) {
@@ -113,7 +113,7 @@ fn universe(app: &mut SoundApp, ctx: &egui::Context) {
     let pos = app.position();
     let mut open = true;
     let mut locate = None;
-    egui::Window::new("Video Universe").open(&mut open).default_size(vec2(640.0, 90.0)).resizable(true).show(ctx, |ui| {
+    egui::Window::new(crate::i18n::t("Video Universe")).open(&mut open).default_size(vec2(640.0, 90.0)).resizable(true).show(ctx, |ui| {
         let avail = ui.available_rect_before_wrap();
         let (r, resp) = ui.allocate_exact_size(vec2(avail.width().max(120.0), 64.0), Sense::click_and_drag());
         let painter = ui.painter_at(r);

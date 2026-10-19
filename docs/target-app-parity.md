@@ -1,6 +1,6 @@
 # Target-app parity: SoundCraft vs Avid Pro Tools
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (hours to ~95 % for each audience; full number confirmed as an additive weighted sum) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
+> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-10-19 · **Change:** minor (localization 12 % → 25 %: Simplified Chinese shipped) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
 
 The authoritative assessment of how close SoundCraft is to Pro Tools. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimension docs go deeper:
@@ -15,7 +15,7 @@ summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimens
 |---|---|---|
 | Menu breadth (engine + UI layer) | **482 / 512 menu leaves (94.1 %)** | **measured**: the 512-leaf catalog `crates/engine/catalog/menus.txt` against the command registry; engine alone 397 / 512 (77.5 %) from `cargo xtask parity` ([`parity-checklist.md`](parity-checklist.md)); the 85 UI-layer matches re-counted on 2026-10-10 from `crates/ui-egui/src/menus.rs` (`UI_COMMANDS`, `AUDIOSUITE`, `MENU_WINDOWS`, Mix Window Views) by script |
 | Feature breadth (menus plus everything not in a menu: plugins, hardware, formats, immersive, cloud) | **~70 %** | estimated (area table below, presence only) |
-| **Ready for real work** (whole of Pro Tools) | **~40 %** | estimated: written dimension weights × values = 40.6 % ([By dimension](#by-dimension)) |
+| **Ready for real work** (whole of Pro Tools) | **~40 %** | estimated: written dimension weights × values = 40.9 % ([By dimension](#by-dimension)) |
 | **Mainstream practitioner** (a working tracking/mixing engineer) | **~36 %** | estimated: written area weights and discounts ([below](#mainstream-practitioner-and-essentials-user)) |
 | **Essentials user** (making a song or podcast with the core features) | **~57 %** | estimated: written feature weights and discounts ([below](#mainstream-practitioner-and-essentials-user)) |
 | Stage | **pre-alpha** (core-workflow gate fails) | see [Stage](#stage) |
@@ -65,7 +65,8 @@ size selection, no localization, and a macOS release that cannot load signed thi
   Rust; 524 `#[test]` functions plus proptest suites; ~350 macro-registered engine command ids;
   26 built-in processors and 2 instruments in `crates/dsp/src/plugins`; audio I/O in
   `crates/audio-io`; device I/O in `crates/playback` (cpal default output and default input only);
-  no MIDI device crate (no `midir`/CoreMIDI anywhere); no string catalog.
+  no MIDI device crate (no `midir`/CoreMIDI anywhere); no string catalog (this commit predates
+  the 2026-10-19 catalog).
 - **Users.** The 37 open and 21 closed GitHub issues, and the 42 merged and 29 open pull
   requests up to 2026-10-10, are the only field evidence. Nothing has been benchmarked against
   Pro Tools.
@@ -87,7 +88,7 @@ post-production, tracking) can switch. "Ready" is depth, correctness and fidelit
 | Performance | 5 % | **~35 %** | estimated (unmeasured) | 40–70 | [hardware-parity.md](hardware-parity.md) | Parallel strip rendering and PDC exist; whole files decoded into RAM, recording into RAM (#84 open), no track-count or latency benchmarks |
 | Ecosystem / plugins | 4 % | **~30 %** | estimated | in Features + Hardware | [plugin-parity.md](plugin-parity.md) | CLAP/VST3/AU hosting; no AAX (Pro Tools' only format), no ARA, no sidechain, no control-surface ecosystem, no content library |
 | Platforms | 3 % | **~65 %** | estimated | 20–40 | [ROADMAP.md](../ROADMAP.md) | Builds for macOS, Windows x64/x86/arm64, Linux, FreeBSD, Web (Pro Tools: macOS, Windows), but only macOS is exercised at runtime; Web lacks file pickers (#63, #64) |
-| Localization | 2 % | **~12 %** | measured (catalog count) | 70–110 | [localization-parity.md](localization-parity.md) | English only, no string catalog; Pro Tools ships 8 UI languages; FR/ES PR #143 open |
+| Localization | 2 % | **~25 %** | measured (2 of 8 languages, coverage gated by tests) | 30–45 | [localization-parity.md](localization-parity.md) | Catalog + Simplified Chinese shipped (1,114 entries, every menu path / command label / literal covered); 6 Pro Tools languages and RTL open; FR/ES PR #143 open |
 | AI features | 1 % | **~5 %** | estimated | 30–50 | [gaps.md](gaps.md) | Pro Tools has speech-to-text transcription (upgraded in 2026.4); we have only an audio-to-MIDI pitch tracker |
 | **Weighted** | 100 % | **~40 %** | | **~950–1,450** (overlaps removed) | | |
 
@@ -245,6 +246,7 @@ serializes more, because it needs hands-on testing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-19 | minor | Localization 12 % → 25 %: string catalog, language selector and Simplified Chinese shipped (2 of Pro Tools' 8 languages); dimension hours 70–110 → 30–45 |
 | 2026-10-10 | minor | Readiness-by-audience table: hours to ~95 % for full (950–1,450 h), mainstream (380–600 h) and essentials (110–200 h). The full number is already the additive weighted sum over the written dimension table (40.6 %); method unchanged |
 | 2026-10-10 | minor | Added the mainstream-practitioner (~36 %) and essentials-user (~57 %) numbers with written weights, discounts and user evidence. Checked the full ~40 %: it is the written dimension weights × values (40.6 %), so it doesn't move |
 | 2026-10-10 | minor | Stage alpha → pre-alpha under the core-workflow gate; alpha distance ~110–180 h |

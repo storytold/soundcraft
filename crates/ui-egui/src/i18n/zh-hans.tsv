@@ -1,0 +1,1142 @@
+# Simplified Chinese (zh-Hans) catalog. UTF-8, TAB-separated columns:
+# context <TAB> English source <TAB> Simplified Chinese translation
+#
+# Empty context: plain UI text. @id: stable command ID. @plural: one|other source
+# with a single Chinese form. Other contexts disambiguate the English meaning.
+# Escapes inside columns: \n, \t, \\. Keep {name} placeholders and trailing ….
+#
+# Original translations of SoundCraft's English source keys (menus, panels, dialogs and
+# messages). No proprietary translation resources were consulted or extracted.
+# Licensed MIT OR Apache-2.0, as the code. Product and technology names keep their spelling.
+# See docs/localization-zh-hans.md.
+
+	1	1
+	1st Order Ambisonics	一阶环绕声
+	2	2
+	2nd Order Ambisonics	二阶环绕声
+	3	3
+	3rd Order Ambisonics	三阶环绕声
+	4	4
+	4th Order Ambisonics	四阶环绕声
+	5	5
+	5.0	5.0
+	5.0.2	5.0.2
+	5.0.4	5.0.4
+	5.1	5.1
+	5.1.2	5.1.2
+	5.1.4	5.1.4
+	5th Order Ambisonics	五阶环绕声
+	6.0	6.0
+	6.1	6.1
+	6th Order Ambisonics	六阶环绕声
+	7.0	7.0
+	7.0 SDDS	7.0 SDDS
+	7.0.2	7.0.2
+	7.0.4	7.0.4
+	7.0.6	7.0.6
+	7.1	7.1
+	7.1 SDDS	7.1 SDDS
+	7.1.2	7.1.2
+	7.1.4	7.1.4
+	7.1.6	7.1.6
+	7th Order Ambisonics	七阶环绕声
+	9.0.4	9.0.4
+	9.0.6	9.0.6
+	9.1.4	9.1.4
+	9.1.6	9.1.6
+	AFL (After Fader Listen)	推子后监听 (AFL)
+	ARA Note Overlay	ARA 音符叠加
+	ARA Plugins	ARA 插件
+	Ableton Link	Ableton Link
+	Activate HEAT	启用 HEAT
+	Add Key Change...	添加调号变化...
+	After Playback	播放后
+	All	全部
+	All Automation	所有自动化
+	All MIDI Notes Off	关闭所有 MIDI 音符
+	All Marker Rulers	所有标记标尺
+	Arrange	排列
+	At Selection	在选区
+	At Transients	在瞬态
+	Audio as MIDI	音频转为 MIDI
+	Audio...	音频...
+	AudioSuite	AudioSuite
+	Auto-Spot Clips	自动定位片段
+	Auto-Update Active Configuration	自动更新当前配置
+	Automation	自动化
+	Automation Follows Edit	自动化跟随编辑
+	BF-76	BF-76
+	Bars|Beats	小节|拍
+	Beat Detective	节拍探测
+	Big Counter	大计数器
+	Bounce Mix...	导出混音...
+	Bounce...	导出...
+	Bring to Front	移到前面
+	Bypass	旁通
+	Bypass Inserts	旁通插入
+	Calibration Mode	校准模式
+	Can't Redo	无法重做
+	Can't Undo	无法撤销
+	Capture...	捕获...
+	Cascade	层叠
+	Center Playhead	播放头居中
+	Change Duration...	更改时长...
+	Change Edit to Match Timeline	使编辑匹配时间线
+	Change Meter...	更改拍号...
+	Change Timeline to Match Edit	使时间线匹配编辑
+	Change Track Width	更改轨道宽度
+	Change Velocity...	更改力度...
+	Channel Name	通道名称
+	Channel Strip	通道条
+	Chord Symbols	和弦符号
+	Clear	清除
+	Clear All Clip Indicators	清除所有片段指示
+	Clear Special	特殊清除
+	Clear Trim Automation	清除 Trim 自动化
+	Click	节拍器
+	Click/Countoff...	节拍器/预备拍...
+	Clip	片段
+	Clip Effects	片段效果
+	Clip Effects Status	片段效果状态
+	Clip Gain	片段增益
+	Clip Gain Info	片段增益信息
+	Clip Gain Line	片段增益线
+	Clip Groups...	片段组...
+	Clip List	片段列表
+	Close All Workspaces	关闭所有工作区
+	Close Session	关闭会话
+	Close Window	关闭窗口
+	Coalesce Clip Gain to Volume Automation	将片段增益合并到音量自动化
+	Coalesce Pan Guide Automation	合并声像引导自动化
+	Coalesce Trim Automation	合并 Trim 自动化
+	Coalesce VCA Controller Automation	合并 VCA 控制器自动化
+	Coalesce Volume Automation to Clip Gain	将音量自动化合并到片段增益
+	Collaboration	协作
+	Color Palette	调色板
+	Comments	注释
+	Commit...	提交...
+	Composite Playlist	合成播放列表
+	Configurations	配置
+	Conform to Tempo	匹配速度
+	Consolidate	合并
+	Constant...	恒定...
+	Continuous	连续
+	Convert Aux to Routing Folder	将辅助轨转换为路由文件夹
+	Convert Clip Gain to Volume Automation	将片段增益转换为音量自动化
+	Convert Volume Automation to Clip Gain	将音量自动化转换为片段增益
+	Copy	复制
+	Copy Selection to...	复制选区到...
+	Copy Special	特殊复制
+	Copy to Send...	复制到发送...
+	Copy/Move Indicators	复制/移动指示
+	Counters	计数器
+	Create Click Track	创建节拍器轨
+	Create...	创建...
+	Current Feet+Frames Position...	当前英尺+帧位置...
+	Current Time	当前时间
+	Current Timecode Position...	当前时间码位置...
+	Cut	剪切
+	Cut Special	特殊剪切
+	Cut Time...	剪切时间...
+	D-Verb	D-Verb
+	DC Offset Removal	去除直流偏移
+	Dashboard...	仪表板...
+	Default	默认
+	Delay	延迟
+	Delay Compensation	延迟补偿
+	Delete	删除
+	Designate as Target Playlist	指定为目标播放列表
+	Destructive Record	破坏性录音
+	DestructivePunch	破坏性穿插
+	Disk Allocation...	磁盘分配...
+	Disk Usage	磁盘用量
+	Display on All Channels	在所有通道上显示
+	Double Edit	双倍编辑
+	Dropped Video Frame Indicator	视频丢帧指示
+	Duplicate	复制
+	Duplicate Dolby Atmos Plugin Automation to Pan Automation	将 Dolby Atmos 插件自动化复制到声像自动化
+	Duplicate Pan Automation to Dolby Atmos Plugin Automation	将声像自动化复制到 Dolby Atmos 插件自动化
+	Duplicate and Extend Edit	复制并扩展编辑
+	Duplicate of Main Playlist	主播放列表副本
+	Duplicate...	复制...
+	Dyn3 Compressor/Limiter	Dyn3 压缩器/限制器
+	Dyn3 De-Esser	Dyn3 齿音消除器
+	Dyn3 Expander/Gate	Dyn3 扩展器/噪声门
+	Dynamic Transport	动态走带
+	Dynamics	动态
+	EQ	均衡
+	EQ Curve	均衡曲线
+	EQ3 1-Band	EQ3 单段
+	EQ3 7-Band	EQ3 七段
+	Edit	编辑
+	Edit Lock/Unlock	编辑锁定/解锁
+	Edit Window Scrolling	编辑窗口滚动
+	Edit Window Views	编辑窗口视图
+	Edit/Tool Mode Keyboard Lock	编辑/工具模式键盘锁定
+	Elastic Properties	弹性属性
+	Eleven Lite	Eleven Lite
+	End to Fill Selection	结尾填充选区
+	End to Insertion	结尾到插入点
+	Event	事件
+	Expanded	展开
+	Expanded Sends	展开的发送
+	Export	导出
+	Extend Edit Down	向下扩展编辑
+	Extend Edit Down to Members	向下扩展到编组成员
+	Extend Edit Selection To Marker Lane Above	将编辑选区扩展到上方标记道
+	Extend Edit Selection To Marker Lane Below	将编辑选区扩展到下方标记道
+	Extend Edit Up	向上扩展编辑
+	Extend Edit Up to Members	向上扩展到编组成员
+	External Timecode Offset...	外部时间码偏移...
+	Extract Chords from Selection	从选区提取和弦
+	Extract MIDI to New Track	将 MIDI 提取到新轨道
+	Fade to End	淡出到结尾
+	Fade to Start	淡入到开头
+	Fades	淡入淡出
+	Feet+Frames	英尺+帧
+	File	文件
+	Find Talent	寻找人员
+	Flatten Performance...	展平演奏...
+	Folder Lines	文件夹连线
+	Freeze	冻结
+	Gain	增益
+	Get Info...	获取信息...
+	Glide Pan Only	仅滑变声像
+	Glide to All Enabled	滑变到所有已启用项
+	Glide to Current	滑变到当前项
+	Group	编组
+	Group...	编组...
+	HEAT	HEAT
+	Halve Edit	减半编辑
+	Hardware...	硬件...
+	Harmonic	谐波
+	Heal Separation	修复分离
+	Hide All Floating Windows	隐藏所有浮动窗口
+	I/O	I/O
+	I/O...	I/O...
+	Identify Beat...	识别节拍...
+	Identify Sync Point	识别同步点
+	Import	导入
+	Input Quantize...	输入量化...
+	Insert Silence	插入静音
+	Insert Time...	插入时间...
+	Insertion Follows Playback	插入点跟随播放
+	Inserts A-E	插入 A-E
+	Inserts F-J	插入 F-J
+	Instruments	乐器
+	Invert	反相
+	Key Signature	调号
+	Key Signature Staff	调号谱表
+	Keyboard Shortcuts...	键盘快捷键...
+	LCR	LCR
+	LCRS	LCRS
+	Latch	锁存
+	Layered Editing	分层编辑
+	Learn	学习
+	Linear...	线性...
+	Link Timeline and Edit Selection	链接时间线与编辑选区
+	Link Track and Edit Selection	链接轨道与编辑选区
+	Lo-Fi	Lo-Fi
+	Loop Playback	循环播放
+	Loop Record	循环录音
+	Loop...	循环...
+	Low Latency Monitoring	低延迟监听
+	Lower Dock	下方停靠区
+	MIDI	MIDI
+	MIDI Beat Clock...	MIDI 节拍时钟...
+	MIDI Controls	MIDI 控制
+	MIDI Editor	MIDI 编辑器
+	MIDI Editors	MIDI 编辑器
+	MIDI Event List	MIDI 事件列表
+	MIDI Input Devices...	MIDI 输入设备...
+	MIDI Input Display	MIDI 输入显示
+	MIDI Input Filter...	MIDI 输入过滤器...
+	MIDI Keyboard	MIDI 键盘
+	MIDI Live Mode	MIDI 实时模式
+	MIDI Operations	MIDI 操作
+	MIDI Operations Window	MIDI 操作窗口
+	MIDI Real-Time Properties	MIDI 实时属性
+	MIDI Studio...	MIDI 工作室...
+	MIDI Thru	MIDI 直通
+	MIDI Track Offsets	MIDI 轨道偏移
+	MIDI...	MIDI...
+	Machine Track Arming	机器轨道待录
+	Machine Track Arming Profiles...	机器轨道待录配置文件...
+	Main Counter	主计数器
+	Make Inactive	设为非活动
+	Marker Controls	标记控制
+	Marker Displays	标记显示
+	Marker Target Follows First Selected Track	标记目标跟随首个所选轨道
+	Markers	标记
+	Markers 2	标记 2
+	Markers 3	标记 3
+	Markers 4	标记 4
+	Markers 5	标记 5
+	Markers Follow Edit	标记跟随编辑
+	Maxim	Maxim
+	Melodyne	Melodyne
+	Memory Locations	记忆位置
+	Merge MIDI	合并 MIDI
+	Merge Markers	合并标记
+	Messages	消息
+	Metadata Inspector	元数据检查器
+	Meter	拍号
+	Meters and Faders	电平表与推子
+	Mic Preamps	麦克风前置放大
+	Min:Secs	分:秒
+	Minimal	精简
+	Mirrored MIDI Editing	镜像 MIDI 编辑
+	Mix	混音
+	Mix Window Views	混音窗口视图
+	Mod Delay III	Mod Delay III
+	Modify Group	修改编组
+	Modify Group…	修改编组…
+	Modulation	调制
+	Momentary	瞬时
+	Mono	单声道
+	Move Edit Left	向左移动编辑
+	Move Edit Right	向右移动编辑
+	Move Edit Selection To Marker Lane Above	将编辑选区移到上方标记道
+	Move Edit Selection To Marker Lane Below	将编辑选区移到下方标记道
+	Move Selection to...	将选区移到...
+	Move Song Start...	移动乐曲起点...
+	Move to New Folder...	移到新文件夹...
+	Mute	静音
+	Mute Sends	静音发送
+	Name	名称
+	Narrow Mix	窄混音
+	New Configuration...	新建配置...
+	New Playlist	新建播放列表
+	New Workspace	新建工作区
+	New...	新建...
+	Next	下一个
+	No Scrolling	不滚动
+	No Time	无时间基准
+	None	无
+	Normalize	标准化
+	Object	对象
+	On Grid	对齐网格
+	Open	打开
+	Options	选项
+	Original Time Stamp	原始时间戳
+	Other	其他
+	Other Displays	其他显示
+	Outlines	轮廓
+	Output Meters	输出电平表
+	Overlap Shadows	重叠阴影
+	Overlapped Crossfades	重叠交叉淡化
+	Overwrite Indicator	覆盖指示
+	PFL (Pre Fader Listen)	推子前监听 (PFL)
+	Page	翻页
+	Pan Automation	声像自动化
+	Parabolic...	抛物线...
+	Paste	粘贴
+	Paste Special	特殊粘贴
+	Peak	峰值
+	Peripherals...	外围设备...
+	Pinned Tracks	固定轨道
+	Pitch II	Pitch II
+	Pitch Shift	移调
+	Pitch Shift Legacy	旧版移调
+	Play Edit	播放编辑选区
+	Play Timeline	播放时间线
+	Playback Engine...	播放引擎...
+	Plugin Automation	插件自动化
+	Power	电源
+	Pre-Fader Metering	推子前电平显示
+	Pre/Post-Roll	预卷/后卷
+	Preferences...	首选项...
+	Prepare DPE Tracks	准备 DPE 轨道
+	Previous	上一个
+	Print Score...	打印乐谱...
+	Pro Tools Projects	Pro Tools 工程
+	Pro Tools Search	Pro Tools 搜索
+	Processing State	处理状态
+	Project...	工程...
+	Quad	四声道
+	Quantize to Grid	量化到网格
+	Quantize...	量化...
+	QuickPunch	快速穿插
+	Rating	评分
+	Real-Time Properties	实时属性
+	Recti-Fi	Recti-Fi
+	Rectified	整流
+	Regroup	重新编组
+	Remove Duplicate Notes	移除重复音符
+	Remove Edit from Bottom	从底部移除编辑
+	Remove Edit from Top	从顶部移除编辑
+	Remove Pitch Shift	移除移调
+	Remove Sync Point	移除同步点
+	Remove Warp	移除扭曲
+	Rename...	重命名...
+	Render	渲染
+	Renderer	渲染器
+	Renumber Bars...	重新编号小节...
+	Repeat to Fill Selection	重复填充选区
+	Repeat...	重复...
+	Restore Last Selection	恢复上次选区
+	Restore Performance...	恢复演奏...
+	Retrospective Record	追溯录音
+	Reverb	混响
+	Reverse	反转
+	Revert Session to Saved...	将会话恢复到已保存状态...
+	Ruler Lane Color	标尺道颜色
+	Ruler Lines	标尺线
+	Rulers	标尺
+	S-Curve...	S 曲线...
+	SIP (Solo In Place)	就地独奏 (SIP)
+	Samples	采样
+	SansAmp PSA-1	SansAmp PSA-1
+	Save As Template...	另存为模板...
+	Save Session	保存会话
+	Save Session As...	会话另存为...
+	Save Session Copy In...	将会话副本保存到...
+	Save Track Preset...	保存轨道预设...
+	Scale...	缩放...
+	Scene And Take	场景与版本
+	Sci-Fi	Sci-Fi
+	Score Editor	乐谱编辑器
+	Score Setup...	乐谱设置...
+	Scroll to Track...	滚动到轨道...
+	Select All	全选
+	Select/Split Notes...	选择/分割音符...
+	Selected Tracks as New AAF/OMF...	将所选轨道存为新的 AAF/OMF...
+	Selected Tracks as New Media Composer Compatible Session...	将所选轨道存为兼容 Media Composer 的新会话...
+	Selected Tracks as New Session...	将所选轨道存为新会话...
+	Selection	选区
+	Send A	发送 A
+	Send B	发送 B
+	Send C	发送 C
+	Send D	发送 D
+	Send E	发送 E
+	Send F	发送 F
+	Send G	发送 G
+	Send H	发送 H
+	Send I	发送 I
+	Send J	发送 J
+	Send To...	发送到...
+	Send to Back	移到后面
+	Sends A-E	发送 A-E
+	Sends F-J	发送 F-J
+	Separate	分离
+	Session	会话
+	Session Data...	会话数据...
+	Session Info as Text...	会话信息存为文本...
+	Session...	会话...
+	Set Record Tracks to Input Only	将录音轨道设为仅输入
+	Setup	设置
+	Shift...	移位...
+	Show / Hide...	显示/隐藏...
+	Show Target Playlist	显示目标播放列表
+	Sibelius	Sibelius
+	Sibelius...	Sibelius...
+	Sign In	登录
+	Signal Generator	信号发生器
+	Sketch to Front	速写到前面
+	Sketch...	速写...
+	Snap to	吸附到
+	Solo Mode	独奏模式
+	SoundFlow	SoundFlow
+	Soundbase	Soundbase
+	Space Clips…	分散片段…
+	Splice	Splice
+	Split into Mono	拆分为单声道
+	Start Collaboration...	开始协作...
+	Start to Fill Selection	开头填充选区
+	Start to Insertion	开头到插入点
+	Step Input...	步进输入...
+	Stereo	立体声
+	Stretch...	拉伸...
+	Strip Silence	去除无声
+	Sync Point	同步点
+	Synchronization	同步
+	System Usage	系统用量
+	TCE Edit to Timeline Selection	TCE 编辑到时间线选区
+	Tab to Transient	Tab 至瞬态
+	Target Playlist	目标播放列表
+	Task Manager	任务管理器
+	Tempo	速度
+	Tempo Editor	速度编辑器
+	Tempo Operations	速度操作
+	Tempo Operations Window	速度操作窗口
+	Thin	精简
+	Thin All	全部精简
+	Tile	平铺
+	Tile Horizontal	水平平铺
+	Tile Vertical	垂直平铺
+	Time Compression Expansion	时间压缩扩展
+	Time Lock/Unlock	时间锁定/解锁
+	Time Operations	时间操作
+	Time Operations Window	时间操作窗口
+	Time Shift	时间偏移
+	Timecode	时间码
+	Timecode 2	时间码 2
+	To Current Automation Type	到当前自动化类型
+	To File Boundaries	到文件边界
+	To File End	到文件结尾
+	To File Start	到文件开头
+	To Fill Selection	到填充选区
+	To Selection	到选区
+	Toggle Recent Playlist	切换最近的播放列表
+	Track	轨道
+	Track Color	轨道颜色
+	Track Lane	轨道道
+	Track Lane Color	轨道道颜色
+	Track List	轨道列表
+	Track Number	轨道编号
+	Track Presets	轨道预设
+	Track Transcription Lane	轨道转写层
+	TrackPunch	轨道穿插
+	Transcript	转写
+	Transcription Settings...	转写设置...
+	Transparency	透明度
+	Transport	走带
+	Transport Online	走带在线
+	Transpose...	移调...
+	Trim	修剪
+	Trim Playlist	修剪播放列表
+	Trim and Downmix	修剪并缩混
+	Trim to All Enabled	修剪到所有已启用项
+	Trim to Current	修剪到当前项
+	UI Customization	界面自定义
+	Undo History	撤销历史
+	Ungroup	取消编组
+	Ungroup All	全部取消编组
+	Universe	总览
+	Unloop...	取消循环...
+	Update Active Configuration	更新当前配置
+	User Time Stamp	用户时间戳
+	VENUE Channel Names as Track Names	VENUE 通道名称作为轨道名称
+	Vari-Fi	Vari-Fi
+	Video	视频
+	Video Sync Offset...	视频同步偏移...
+	Video Track Online	视频轨在线
+	Video Universe	视频总览
+	Video...	视频...
+	View	视图
+	Waveforms	波形
+	Window	窗口
+	Window Configuration List	窗口配置列表
+	Workspaces	工作区
+	Write MIDI Real-Time Properties	写入 MIDI 实时属性
+	Write to All Enabled	写入所有已启用项
+	Write to Current	写入当前项
+	X-OR (Cancels Previous Solo)	异或独奏（取消先前独奏）
+	none	无
+	+ Marker	+ 标记
+	+ Selection	+ 选区
+	0 dB	0 dB
+	<factory default>	<出厂默认>
+	About SoundCraft	关于 SoundCraft
+	Add	添加
+	All audio clips have loaded media within source bounds.	所有音频片段已加载的媒体都在源文件范围内。
+	An open-source digital audio workstation from the ArtCraft team.	ArtCraft 团队打造的开源数字音频工作站。
+	Analyses the edit selection on the selected tracks.	分析所选轨道上的编辑选区。
+	Analyze	分析
+	Appearance	外观
+	Applies across the edit selection (constant: at the insertion point; scale: factor = end / start; stretch: factor = start / end).	应用于整个编辑选区（恒定：作用于插入点；缩放：系数 = 结尾 / 开头；拉伸：系数 = 开头 / 结尾）。
+	Applies to the selected MIDI clips (or those under the selection).	应用于所选 MIDI 片段（或选区覆盖的片段）。
+	Apply	应用
+	Apply to selected tracks (Shift: selected clips)	应用于所选轨道（Shift：所选片段）
+	Audio Units	Audio Units
+	Audio input: {cause}. {then}	音频输入：{cause}。{then}
+	Audio output: {cause}. {then}	音频输出：{cause}。{then}
+	Audio system	音频系统
+	Auto ({name})	自动（{name}）
+	Auto-update configuration	自动更新配置
+	Autosave failed: {error}	自动保存失败：{error}
+	Bars per system	每行小节数
+	Bit Depth	位深
+	Bounces the edit selection, or the whole session when nothing is selected.	导出编辑选区；未选择时导出整个会话。
+	Browse…	浏览…
+	Buffer size	缓冲区大小
+	Built-in	内置
+	Bus	总线
+	Busses	总线
+	CLAP	CLAP
+	Cancel	取消
+	Cannot record: {error}	无法录音：{error}
+	Check the disk, then record again.	请检查磁盘，然后重新录音。
+	Checks loaded media only, not files on disk, signal levels, plugins or routing.	仅检查已加载的媒体，不检查磁盘上的文件、信号电平、插件或路由。
+	Clear Recent	清除最近记录
+	Clear…	清除…
+	Click a take (or the selection) to promote it to the main playlist	单击一个版本（或选区）将其提升为主播放列表
+	Click keys to step-enter notes into the selected MIDI clip at the insertion point.	单击琴键以步进方式在插入点向所选 MIDI 片段输入音符。
+	Click: open instrument · right-click: change	单击：打开乐器 · 右键单击：更换
+	Clip effects gain (dB)	片段效果增益（dB）
+	Clip end pad ms	片段结尾留白毫秒
+	Clip start pad ms	片段开头留白毫秒
+	Close Plugin Editor	关闭插件编辑器
+	Columns beside the track headers: inserts, sends, I/O…	轨道头部旁的列：插入、发送、I/O…
+	Composer	作曲者
+	Couldn't recover “{name}”: {error}	无法恢复“{name}”：{error}
+	Create	创建
+	Curve	曲线
+	DESTINATION	目标
+	Delay (ticks)	延迟（tick）
+	Delete Group	删除编组
+	Delete Unused...	删除未使用项...
+	Device default	设备默认
+	Discard	放弃
+	Don't Save	不保存
+	Double-click to import audio/MIDI at the insertion point or open a session.	双击可在插入点导入音频/MIDI，或打开会话。
+	Drag to change the tempo (Shift: fine steps), or click to type it	拖动可更改速度（Shift：微调步长），或单击输入数值
+	Drop an audio file on this window	将音频文件拖到此窗口
+	Dual-licensed MIT OR Apache-2.0. Made with Rust and egui.	双重许可 MIT OR Apache-2.0。使用 Rust 与 egui 构建。
+	Duration	时长
+	Duration %	时长 %
+	Edit Parameters…	编辑参数…
+	Elastic Audio	弹性音频
+	Enabled parameters	已启用参数
+	End	结尾
+	Format	格式
+	Grab bag	杂项
+	Grid	网格
+	Identify Beat: selection is	识别节拍：选区为
+	Includes alternate takes and muted clips. Refresh after editing.	包含备用版本与静音片段。编辑后请刷新。
+	Input	输入
+	Input device	输入设备
+	Instrument	乐器
+	Interface scale	界面缩放
+	Language	语言
+	Length ratio	长度比例
+	Level	电平
+	Load Sample…	加载采样…
+	Load and edit sounds in the plugin's own editor.	在插件自带的编辑器中加载与编辑音色。
+	Main output	主输出
+	Min strip duration ms	最短去除时长（毫秒）
+	Mix in Separate Window	在单独窗口中混音
+	Move to Folder	移到文件夹
+	Name:	名称：
+	New Bus	新建总线
+	New Configuration…	新建配置…
+	New Group…	新建编组…
+	No Recent Sessions	没有最近的会话
+	No audio input: {error}	无音频输入：{error}
+	No background tasks are running.	没有正在运行的后台任务。
+	No contributor data was built into this copy.	此版本未内置贡献者数据。
+	No matches	没有匹配项
+	No model credits were built into this copy.	此版本未内置模型署名数据。
+	No object tracks. Use the Object view in the Mix window to route tracks as objects.	没有对象轨道。请在混音窗口的对象视图中将轨道路由为对象。
+	No parameters.	没有参数。
+	Non-destructive, applied at playback to the selected MIDI tracks.	非破坏性处理，在播放时应用于所选 MIDI 轨道。
+	Notation view of the MIDI clip; edit notes in the MIDI Editor or Event List.	MIDI 片段的乐谱视图；请在 MIDI 编辑器或事件列表中编辑音符。
+	Open Plugin Editor	打开插件编辑器
+	Open Recent	打开最近项
+	Operation	操作
+	Output	输出
+	Output device	输出设备
+	Outputs	输出
+	Pan	声像
+	Parent folder	父文件夹
+	Peak dB	峰值 dB
+	Place on New Track	放在新轨道
+	Place on Selected Track	放在所选轨道
+	Play (Space)	播放（空格）
+	Play	播放
+	Playback stopped: {cause}. {then}	播放已停止：{cause}。{then}
+	Playlists	播放列表
+	Plug it back in, then use Reconnect audio device in Setup ▸ Playback Engine.	请重新连接，然后使用“设置 ▸ 播放引擎”中的“重新连接音频设备”。
+	Post-roll	后卷
+	Pre-roll	预卷
+	Presets ▾	预设 ▾
+	Processes selected clips offline	离线处理所选片段
+	Quantize to the grid	量化到网格
+	Quit	退出
+	Recall	调用
+	Reconnect audio device	重新连接音频设备
+	Reconnect it, then use Reconnect audio device in Setup ▸ Playback Engine.	请重新连接，然后使用“设置 ▸ 播放引擎”中的“重新连接音频设备”。
+	Record (Cmd+Space)	录音（Cmd+Space）
+	Recording stopped: {cause}. The take is kept up to there. {then}	录音已停止：{cause}。此前的录音已保留。{then}
+	Recover	恢复
+	Recover Unsaved Work	恢复未保存的工作
+	Recovered “{name}”, but {n} audio file(s) are missing. Save it to keep the changes.	已恢复“{name}”，但有 {n} 个音频文件缺失。请保存以保留更改。
+	Recovered “{name}”. Save it to keep the changes.	已恢复“{name}”。请保存以保留更改。
+	Reduce motion	减少动态效果
+	Refresh Report	刷新报告
+	Refresh devices	刷新设备
+	Remove from Folder	从文件夹中移除
+	Remove send	移除发送
+	Rename bus…	重命名总线…
+	Renders and AudioSuite processes run to completion before returning.	渲染与 AudioSuite 处理会执行完毕后返回。
+	Reopen the audio devices with these settings	使用这些设置重新打开音频设备
+	Reset	重置
+	Reverse the order	反转顺序
+	Revert	恢复
+	Route as an immersive object or to the bed	作为沉浸声对象或送入底层声床
+	Sample Rate	采样率
+	Sample rate	采样率
+	Save	保存
+	Scan CLAP	扫描 CLAP
+	Scan VST3	扫描 VST3
+	Search	搜索
+	Select Tracks in Group	选择编组中的轨道
+	Select a MIDI clip or MIDI track.	请选择一个 MIDI 片段或 MIDI 轨道。
+	Select a MIDI clip.	请选择一个 MIDI 片段。
+	Select an audio clip.	请选择一个音频片段。
+	Semitones	半音
+	Sensitivity	灵敏度
+	Session Audio Health	会话音频健康
+	Session Info	会话信息
+	Session comments	会话注释
+	Session rate	会话采样率
+	Set Tempo	设置速度
+	Show	显示
+	Show Edit and Mix at once, e.g. one per monitor	同时显示编辑与混音窗口，例如各占一台显示器
+	Show grid lines	显示网格线
+	Show in the Mix window	在混音窗口中显示
+	Smart Tool (F6+F7 / F7+F8)	智能工具（F6+F7 / F7+F8）
+	Sort	排序
+	SoundCraft	SoundCraft
+	SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe.	SoundCraft 遇到内部错误（详见日志）。为安全起见，请重新启动 SoundCraft。
+	SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft.	SoundCraft 遇到内部错误（详见日志）。你的更改已自动保存：请先保存，然后重新启动 SoundCraft。
+	Speed	速度
+	Spot to where it was recorded	定位到录制位置
+	Start	开头
+	Stop (Space)	停止（空格）
+	Stop recording before recovering other work.	请先停止录音，再恢复其他工作。
+	Stop recording first	请先停止录音
+	Strength %	强度 %
+	Swing %	摇摆 %
+	Table	表格
+	The disk is too slow: this take has lost {lost} ms of input so far.	磁盘速度过慢：本次录音已丢失 {lost} 毫秒输入。
+	Theme	主题
+	This plugin has no editor of its own, or it is not loaded	此插件没有自带编辑器，或尚未加载
+	Threshold dB	阈值 dB
+	Ticks	Tick
+	Time Scale	时间刻度
+	Timecode Rate	时间码帧率
+	Title	标题
+	Track Height	轨道高度
+	Track options	轨道选项
+	Track tint in the Edit window	编辑窗口中的轨道着色
+	Tracks	轨道
+	Transpose	移调
+	Use	使用
+	Use Reconnect audio device in Setup ▸ Playback Engine, or restart SoundCraft.	请使用“设置 ▸ 播放引擎”中的“重新连接音频设备”，或重新启动 SoundCraft。
+	Use Reconnect audio device in Setup ▸ Playback Engine.	请使用“设置 ▸ 播放引擎”中的“重新连接音频设备”。
+	User presets need the desktop app.	用户预设需要桌面版。
+	Uses the edit selection.	使用编辑选区。
+	VST3	VST3
+	Velocity +	力度 +
+	Voice: dyn plays the track, off makes it inactive	声部：dyn 播放该轨道，off 使其变为非活动
+	Workspace	工作区
+	Write automation for the selected tracks:	为所选轨道写入自动化：
+	Write to Notes	写入音符
+	bar(s)	小节
+	the audio engine hit an internal error (see the log)	音频引擎遇到内部错误（详见日志）
+	{menu} — {command}	{menu} — {command}
+	“{name}” stopped asking for audio	“{name}”不再请求音频
+	“{name}” was disconnected	“{name}”已断开连接
+	Import Audio	导入音频
+	Import MIDI	导入 MIDI
+	Open Session	打开会话
+	Save Session As	会话另存为
+	Repeat	重复
+	Shift (seconds)	移位（秒）
+	Quantize strength	量化强度
+	New Tracks	新建轨道
+	New Session	新建会话
+	Bounce Mix	导出混音
+	Rename Track	重命名轨道
+	Rename Clip	重命名片段
+	Rename Marker	重命名标记
+	Tempo Change (BPM)	速度更改（BPM）
+	Spot	定位
+	Create Group	创建编组
+	Session Setup	会话设置
+	Score Setup	乐谱设置
+	Revert to Saved	恢复到已保存状态
+	Unsaved Changes	未保存的更改
+	times	次
+	semitones	半音
+	Dark	深色
+	Light	浅色
+	System	跟随系统
+	The file stays on disk.	文件仍保留在磁盘上。
+	The files stay on disk.	文件仍保留在磁盘上。
+	the clip "{name}"	片段“{name}”
+	the file "{name}"	文件“{name}”
+	{clips} and {files}	{clips}和{files}
+	Remove {what} from the session?	要从会话中移除{what}吗？
+	a clip on the timeline, which is removed too.	时间线上的 1 个片段，该片段也会被移除。
+	{n} clips on the timeline, which are removed too.	时间线上的 {n} 个片段，这些片段也会被移除。
+	It is used by {users}	它被{users}使用
+	They are used by {users}	它们被{users}使用
+	"{name}" is used by {users}	“{name}”被{users}使用
+	{n} of the files are used by {users}	其中 {n} 个文件被{users}使用
+	Open {path}	打开 {path}
+	Search {n} commands	搜索 {n} 条命令
+	Ctrl	Ctrl
+	Shift	Shift
+	Alt	Alt
+	Cmd	Cmd
+	Save Changes?	保存更改？
+	Save it	保存
+	Close without saving	不保存并关闭
+# --- Command ids whose wording differs from the menu leaf ---
+@id	edit.undo	撤销
+@id	edit.redo	重做
+@id	edit.cut	剪切
+@id	edit.copy	复制
+@id	edit.paste	粘贴
+
+# --- Counts: Chinese has one form ---
+@plural	{n} clip|{n} clips	{n} 个片段
+@plural	{n} file|{n} files	{n} 个文件
+@plural	{n} take|{n} takes	{n} 个版本
+
+# --- Words that read differently in the automation panel ---
+automation	off	关闭
+automation	read	读取
+automation	touch	触碰
+automation	latch	锁存
+automation	touch/latch	触碰/锁存
+automation	write	写入
+automation	trim	微调
+
+# --- Track kinds, channel formats, tools, grid, fades and automation parameters ---
+	Audio Track	音频轨道
+	Aux Input	辅助输入
+	Master Fader	主推子
+	MIDI Track	MIDI 轨道
+	Instrument Track	乐器轨道
+	VCA Master	VCA 主控
+	Routing Folder Track	路由文件夹轨道
+	Video Track	视频轨道
+	Zoomer	缩放工具
+	Selector	选择工具
+	Grabber	抓取工具
+	Scrubber	擦洗工具
+	Pencil	铅笔工具
+	Smart Tool	智能工具
+	1 bar	1 小节
+	1/2 note	1/2 音符
+	1/4 note	1/4 音符
+	1/8 note	1/8 音符
+	1/16 note	1/16 音符
+	1/32 note	1/32 音符
+	1/64 note	1/64 音符
+	Linear	线性
+	Equal Power	等功率
+	S-Curve	S 曲线
+	Exponential	指数
+	Logarithmic	对数
+	volume	音量
+	pan	声像
+	mute	静音
+	send level	发送电平
+	send pan	发送声像
+	send mute	发送静音
+	plugin	插件
+
+# --- Sentence glue in composite dialogs ---
+	new	个新
+	in	时基
+	bpm	BPM
+	no insert	无插入
+	new bus...	新建总线...
+	OK	确定
+	Revert “{name}” to its last saved version? Your changes will be lost.	将“{name}”恢复到上次保存的版本？你的更改将丢失。
+	Close “{name}” without saving? Your changes will be lost.	不保存就关闭“{name}”？你的更改将丢失。
+	Save changes to “{name}” before closing?	关闭前要保存对“{name}”的更改吗？
+# --- Window and UI-command leaves that are not in the menu catalog ---
+	Arrange Panel	排列面板
+	Audio Device	音频设备
+	Bounce Mix…	导出混音…
+	I/O Setup	I/O 设置
+	Interface Language	界面语言
+	Keyboard Shortcuts	键盘快捷键
+	MIDI Editors to Back	将 MIDI 编辑器移到后面
+	MIDI Editors to Front	将 MIDI 编辑器移到前面
+	Mix Window View	混音窗口视图
+	New Configuration	新建配置
+	New MIDI Clip	新建 MIDI 片段
+	New Tracks…	新建轨道…
+	Playback Engine	播放引擎
+	Reset Panel Layout	重置面板布局
+	Set UI State	设置界面状态
+	Toggle Mix/Edit	切换混音/编辑
+	Workspaces to Front	将工作区移到前面
+	Length	长度
+	Sub	副计数
+	Nudge	微移
+	modified	已修改
+	saved	已保存
+	no audio engine	无音频引擎
+	silent clock	静默时钟
+	audio on	音频输出中
+	16-bit	16 位
+	24-bit	24 位
+	32-bit float	32 位浮点
+	Undo {action}	撤销{action}
+	Redo {action}	重做{action}
+	Middle	居中
+	TRACKS	轨道
+	GROUPS	编组
+	CLIPS	片段
+	MIDI EDITOR	MIDI 编辑器
+	MEMORY LOCATIONS	记忆位置
+	UNDO HISTORY	撤销历史
+@plural	{n} track|{n} tracks	{n} 条轨道
+	SHUFFLE	随机
+	SPOT	定位
+	SLIP	滑移
+	GRID	网格
+	REL GRID	相对网格
+	Shuffle	随机
+	Slip	滑移
+	Tracks and Groups	轨道与编组
+	Clips	片段
+	Key	调号
+	Chords	和弦
+	Shuffle is locked ({cmd}-click to unlock)	随机模式已锁定（{cmd} 单击可解锁）
+	Shuffle mode ({fkey}); {cmd}-click locks it out	随机模式（{fkey}）；{cmd} 单击可将其锁定
+	Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes	网格模式（{fkey}；再次按下切换到相对网格）；Shift 单击：在其他模式中吸附到网格
+	{mode} mode ({fkey}); Shift-click adds Snap to Grid	{mode}模式（{fkey}）；Shift 单击可加入吸附到网格
+	INSERTS A-E	插入 A-E
+	INSERTS F-J	插入 F-J
+	SENDS A-E	发送 A-E
+	SENDS F-J	发送 F-J
+	INSTRUMENT	乐器
+	PREAMP	前置放大
+	COMMENTS	注释
+	I / O	I / O
+	I A-E	插 A-E
+	I F-J	插 F-J
+	S A-E	送 A-E
+	S F-J	送 F-J
+	INST	乐器
+	no group	无编组
+	nogrp	无编组
+	no output	无输出
+	no input	无输入
+	Views	视图
+	🔍 Find clips	🔍 搜索片段
+
+# Composed diagnostics, recovery and inspector labels (filled at draw time).
+	{clips} audio clips checked · {issues} issues	已检查 {clips} 个音频片段 · {issues} 个问题
+	Active audio ends at {seconds} seconds	有效音频结束于 {seconds} 秒
+	Active audio end time is unknown (invalid session sample rate)	有效音频结束时间未知（会话采样率无效）
+	 (alternate playlist)	（备用播放列表）
+	Session media: {files} files, {size} MB in memory (32-bit float)	会话媒体：{files} 个文件，内存中 {size} MB（32 位浮点）
+	Recording at 24-bit uses {size} MB per mono track-minute	24 位录音每单声道轨道分钟占用 {size} MB
+	Session file: {path}	会话文件：{path}
+	UI frame time: {ms} ms	界面帧时间：{ms} 毫秒
+	Audio: {device}	音频：{device}
+	no engine	无音频引擎
+	Active plugin instances: {n}	活动插件实例：{n}
+	Tracks: {n}	轨道：{n}
+	Undo steps: {n}	撤销步数：{n}
+	Bouncing {path} ({percent}%)	正在导出 {path}（{percent}%）
+	no device (silent clock)	无设备（静默时钟）
+	default buffer	默认缓冲区
+	{n} samples	{n} 个采样
+	{device} · {rate} Hz · {channels} ch · {buffer}	{device} · {rate} Hz · {channels} 声道 · {buffer}
+	{device} · {rate} Hz · {channels} ch	{device} · {rate} Hz · {channels} 声道
+	opened on first record or monitor	首次录音或监听时打开
+	{rate} Hz (resampled to the device rate)	{rate} Hz（已重采样至设备采样率）
+	{n} ch	{n} 声道
+	{name} — {format} from channel {channel}	{name} — {format}，起始通道 {channel}
+	“{name}” already exists. Do you want to replace it?	“{name}” 已存在。要替换它吗？
+	recently	刚刚
+	unsaved changes and an unfinished recording	未保存的更改和一段未完成的录音
+	unsaved changes	未保存的更改
+	“{name}” has {what} from an earlier run, autosaved {age}.	“{name}” 有上次运行留下的{what}，{age}自动保存。
+	less than a minute ago	不到一分钟前
+@plural	{n} minute ago|{n} minutes ago	{n} 分钟前
+@plural	{n} hour ago|{n} hours ago	{n} 小时前
+@plural	{n} day ago|{n} days ago	{n} 天前
+	Version {version}	版本 {version}
+	The mix runs in 512-sample blocks; the buffer size sets the device's own latency.	混音以 512 个采样为一帧运行；缓冲区大小决定设备自身的延迟。
+	Velocity	力度
+	MIDI in: all	MIDI 输入：全部
+	<ALL>	<全部>
+	Count Off	预备拍
+@plural	{n} bar|{n} bars	{n} 小节
+	Start from the demo session	从演示会话开始
+	Normalize to -0.1 dBFS	归一化至 -0.1 dBFS
+	Edit group	编辑编组
+	Mix group	混音编组
+	Show track names	显示轨道名称
+	Pre-fader	推子前
+	Separate clips at detected beats	在检测到的节拍处分割片段
+	Set the session tempo from the beats	用这些节拍设定会话速度
+	Timecode burn-in	烧录时间码
+	Delay compensation	延迟补偿
+	Volume	音量
+	Pan {n}	声像 {n}
+	Send {slot} level	发送 {slot} 电平
+	Send {slot} pan	发送 {slot} 声像
+	Send {slot} mute	发送 {slot} 静音
+	Insert {slot} {param}	插入 {slot} {param}
+	Notes	音符
+	Regions	区域
+	Blocks	块
+	Waveform	波形
+	Main output: {format}	主输出：{format}
+	auto {mode}	自动 {mode}
+	t/l	触/锁
+	{note} dotted	{note} 附点
+	{note} triplet	{note} 三连音
+	{note} dotted triplet	{note} 附点三连音
+	{value} sec	{value} 秒
+@plural	{n} frame|{n} frames	{n} 帧
+	1 msec	1 毫秒
+	10 msec	10 毫秒
+	100 msec	100 毫秒
+	1 second	1 秒
+	1 frame	1 帧
+	100 samples	100 个采样
+	custom	自定义
+	micro	极窄
+	mini	很窄
+	small	窄
+	medium	中
+	large	高
+	jumbo	很高
+	extreme	极高
+	fit to window	适配窗口
+
+# Command labels (menu items, the shortcuts window and command dialogs).
+	Add Automation Breakpoint	添加自动化断点
+	Add MIDI Note	添加 MIDI 音符
+	Add Note	添加音符
+	Assign Send	分配发送
+	Assign to VCA	分配到 VCA
+	AudioSuite Process	AudioSuite 处理
+	Automation Mode	自动化模式
+	Bounce Stems...	导出分轨...
+	Bypass Insert	旁通插入
+	Clear All Mutes	清除全部静音
+	Clear All Solos	清除全部独奏
+	Clear Automation	清除自动化
+	Clear Clips	清除片段
+	Clear Sampler Sample	清除采样器样本
+	Clip Color	片段颜色
+	Decrease Track Height	减小轨道高度
+	Delete Memory Location	删除记忆位置
+	Delete Notes	删除音符
+	Delete Unused Playlists	删除未使用的播放列表
+	Deselect All	取消全部选择
+	Duplicate Playlist	复制播放列表
+	Edit Memory Location	编辑记忆位置
+	Edit Mode	编辑模式
+	Edit Note	编辑音符
+	Edit Tool	编辑工具
+	Export Clip Groups...	导出片段组...
+	Export Clips as Files...	将片段导出为文件...
+	Fast Forward	快进
+	Fill Window With Session	用会话填满窗口
+	Format Time	时间格式
+	Go to End	到结尾
+	Go to Next Marker	到下一个标记
+	Go to Previous Marker	到上一个标记
+	Grid Value	网格值
+	Half-Speed Playback	半速播放
+	Hide Track	隐藏轨道
+	Increase Track Height	增大轨道高度
+	Input Monitoring	输入监听
+	Input Trim	输入微调
+	Insert Plugin	插入插件
+	Inspect Clip	检查片段
+	Inspect Session	检查会话
+	Inspect Track	检查轨道
+	Keyboard Focus	键盘焦点
+	List CLAP Plugins	列出 CLAP 插件
+	List Commands	列出命令
+	List MIDI Notes	列出 MIDI 音符
+	List Plugins	列出插件
+	List VST3 Plugins	列出 VST3 插件
+	Load Sampler Sample	载入采样器样本
+	Load Track Preset	载入轨道预设
+	Locate	定位
+	MIDI Merge	MIDI 合并
+	Main Output Format	主输出格式
+	Move Clips	移动片段
+	Move Insert	移动插入
+	Move Notes	移动音符
+	Move Track	移动轨道
+	Movies	影片
+	New Memory Location	新建记忆位置
+	Nudge Clip Gain Down	向下微调片段增益
+	Nudge Clip Gain Up	向上微调片段增益
+	Nudge Value	微调值
+	Object / Bed	对象/床
+	Open Session...	打开会话...
+	Open/Close Folder	展开/折叠文件夹
+	Parity Report	对等报告
+	Paste Clip Effects	粘贴片段效果
+	Paste Clip Gain	粘贴片段增益
+	Pause	暂停
+	Phase Invert	相位反转
+	Pin Track	固定轨道
+	Place Audio File	放置音频文件
+	Play/Stop	播放/停止
+	Post-Roll Amount	后卷量
+	Pre-Roll Amount	预卷量
+	Promote to Main Playlist	提升为主播放列表
+	Recall Memory Location	调取记忆位置
+	Record	录音
+	Record Enable	启用录音
+	Redo	重做
+	Remove Insert	移除插入
+	Remove Send	移除发送
+	Remove Tempo Change	移除速度变更
+	Reset Edit Settings	重置编辑设置
+	Return to Zero	回到零点
+	Rewind	倒回
+	Scroll Timeline	滚动时间轴
+	Select Playlist	选择播放列表
+	Send Level	发送电平
+	Set Clip Effects	设置片段效果
+	Set Edit Selection	设置编辑选区
+	Set Instrument	设置乐器
+	Set Instrument Parameter	设置乐器参数
+	Set Pan	设置声像
+	Set Plugin Parameter	设置插件参数
+	Set Plugin Parameters	批量设置插件参数
+	Set Send Surround Pan	设置发送环绕声像
+	Set Surround Pan	设置环绕声像
+	Set Video Start	设置视频起点
+	Set Volume	设置音量
+	Set Zoom	设置缩放
+	Show Grid Lines	显示网格线
+	Shuffle Lock	随机锁定
+	Snap to Grid	对齐网格
+	Solo	独奏
+	Solo Safe	独奏安全
+	Stop	停止
+	Store Plugin State	保存插件状态
+	Sub Counter	副计数器
+	Tab	切换
+	Tempo Change	速度变更
+	Toggle Group Active	切换编组启用
+	Track Comments	轨道注释
+	Track Input	轨道输入
+	Track Output	轨道输出
+	Track Timebase	轨道时基
+	Track View	轨道视图
+	Transport Status	传输状态
+	Trim Clip	修剪片段
+	Undo	撤销
+	View Flags	视图标记
+	Waveform Zoom	波形缩放
+	Write Automation	写入自动化
+	Write Trim Automation	写入微调自动化
+	Zoom By	缩放倍数
+	Zoom In	放大
+	Zoom Out	缩小
+	Zoom Preset	缩放预设
+	Zoom Toggle	缩放切换
+	Zoom to Selection	缩放到选区
+
+# Short track-kind tags under each mix strip's fader.
+	audio	音频
+	aux	辅助
+	master	主控
+	midi	MIDI
+	inst	乐器
+	vca	VCA
+	folder	文件夹
+	video	视频

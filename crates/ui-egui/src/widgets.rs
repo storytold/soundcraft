@@ -110,7 +110,7 @@ pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &st
         let s = r.height().min(r.width()) * 0.78;
         icons::draw(ui.painter(), Rect::from_center_size(r.center(), vec2(s, s)), icon, tint);
     });
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::t(tip))
 }
 
 /// Square text toggle used for S / M / I / record etc.
@@ -120,7 +120,7 @@ pub fn text_toggle(ui: &mut Ui, size: egui::Vec2, text: &str, on: bool, on_color
     key(ui.painter(), r, &resp, if on { on_color } else { key_fill(&resp) });
     let col = if on { t.text_dark } else { t.text };
     ui.painter().text(r.center(), Align2::CENTER_CENTER, text, bold((size.y * 0.62).clamp(8.0, 13.0)), col);
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::t(tip))
 }
 
 /// Record-enable button (red dot); the caller owns track arming and command dispatch.
@@ -143,7 +143,7 @@ pub fn rec_toggle(ui: &mut Ui, size: egui::Vec2, on: bool, tip: &str) -> Respons
         }
         ui.painter().circle_stroke(r.center(), rad, Stroke::new(1.0, Color32::from_black_alpha(90)));
     });
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::t(tip))
 }
 
 /// A dropdown-looking selector box. Returns the response (caller opens a menu on click).
@@ -204,7 +204,7 @@ pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response 
     p.circle_stroke(c, rad - 0.75, Stroke::new(1.5, t.knob_ring));
     let d = vec2(at.cos(), at.sin());
     p.line_segment([c + d * rad * 0.15, c + d * (rad - 2.5)], Stroke::new(2.0, t.knob_pointer));
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::t(tip))
 }
 
 /// Format a pan value like a console: "<45", "0", "45>".
@@ -496,6 +496,23 @@ pub fn multi_meter(ui: &Ui, r: Rect, levels: &[f32], labels: &[String], clip: bo
             let pos = pos2(br.center().x - gh * 0.5, mr.max.y + 2.0 + gw.min(label_h - 2.0));
             ui.painter().add(egui::epaint::TextShape::new(pos, galley, Tokens::current().text_dim).with_angle(-std::f32::consts::FRAC_PI_2));
         }
+    }
+}
+
+/// How an automation lane names its parameter. The model keeps protocol ids (`volume`,
+/// `send A level`, `insert A gain`), so only the words are translated, at draw time.
+pub fn auto_param_label(p: &soundcraft_model::AutoParam) -> String {
+    use soundcraft_model::AutoParam;
+    let slot = |i: u8| char::from(b'A'.saturating_add(i.min(25))).to_string();
+    match p {
+        AutoParam::Volume => crate::i18n::t("Volume").to_string(),
+        AutoParam::Pan(0) => crate::i18n::t("Pan").to_string(),
+        AutoParam::Pan(i) => crate::i18n::fmt(crate::i18n::t("Pan {n}"), &[("n", &(i + 1).to_string())]),
+        AutoParam::Mute => crate::i18n::t("Mute").to_string(),
+        AutoParam::SendLevel(i) => crate::i18n::fmt(crate::i18n::t("Send {slot} level"), &[("slot", &slot(*i))]),
+        AutoParam::SendPan(i) => crate::i18n::fmt(crate::i18n::t("Send {slot} pan"), &[("slot", &slot(*i))]),
+        AutoParam::SendMute(i) => crate::i18n::fmt(crate::i18n::t("Send {slot} mute"), &[("slot", &slot(*i))]),
+        AutoParam::Plugin { slot: i, param } => crate::i18n::fmt(crate::i18n::t("Insert {slot} {param}"), &[("slot", &slot(*i)), ("param", param)]),
     }
 }
 

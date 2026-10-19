@@ -9,22 +9,29 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let Some(left) = app.leftovers.first().cloned() else { return };
     let mut open = true;
     let mut recover = None;
-    egui::Window::new(egui::RichText::new("Recover Unsaved Work").font(bold(13.0)))
+    egui::Window::new(egui::RichText::new(crate::i18n::t("Recover Unsaved Work")).font(bold(13.0)))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, -80.0))
         .show(ctx, |ui| {
-            let age = left.saved.elapsed().map_or_else(|_| "recently".into(), |d| ago(d.as_secs()));
-            let what = if left.recording { "unsaved changes and an unfinished recording" } else { "unsaved changes" };
-            ui.label(format!("“{}” has {what} from an earlier run, autosaved {age}.", left.name));
+            let age = left.saved.elapsed().map_or_else(|_| crate::i18n::t("recently").to_string(), |d| ago(d.as_secs()));
+            let what = if left.recording { crate::i18n::t("unsaved changes and an unfinished recording") } else { crate::i18n::t("unsaved changes") };
+            ui.label(crate::i18n::fmt(
+                crate::i18n::t("“{name}” has {what} from an earlier run, autosaved {age}."),
+                &[("name", &left.name), ("what", what), ("age", &age)],
+            ));
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.button("Discard").clicked() {
+                if ui.button(crate::i18n::t("Discard")).clicked() {
                     recover = Some(false);
                 }
-                let recover_button = egui::Button::new(egui::RichText::new("Recover").strong()).fill(Tokens::current().accent);
-                if ui.add_enabled(!app.engine.transport.recording, recover_button).on_disabled_hover_text("Stop recording first").clicked() {
+                let recover_button = egui::Button::new(egui::RichText::new(crate::i18n::t("Recover")).strong()).fill(Tokens::current().accent);
+                if ui
+                    .add_enabled(!app.engine.transport.recording, recover_button)
+                    .on_disabled_hover_text(crate::i18n::t("Stop recording first"))
+                    .clicked()
+                {
                     recover = Some(true);
                 }
             });
@@ -40,11 +47,11 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
 }
 
 fn ago(secs: u64) -> String {
-    let (n, unit) = match secs {
-        0..60 => return "less than a minute ago".into(),
-        60..3_600 => (secs / 60, "minute"),
-        3_600..86_400 => (secs / 3_600, "hour"),
-        _ => (secs / 86_400, "day"),
+    let (n, one, other) = match secs {
+        0..60 => return crate::i18n::t("less than a minute ago").to_string(),
+        60..3_600 => (secs / 60, "{n} minute ago", "{n} minutes ago"),
+        3_600..86_400 => (secs / 3_600, "{n} hour ago", "{n} hours ago"),
+        _ => (secs / 86_400, "{n} day ago", "{n} days ago"),
     };
-    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+    crate::i18n::trn(crate::i18n::current(), n, one, other)
 }
