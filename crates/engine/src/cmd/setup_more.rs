@@ -49,7 +49,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             engine_settings(e, p)
         }),
-        cmd!(noundo "setup.disk_allocation", "Disk Allocation...", ["Setup"], None, "{path?, track?} — the record folder for the session, or for one track", always, disk_allocation),
+        cmd!(noundo "setup.disk_allocation", "Disk Allocation...", ["Setup"], None, "{path?: string|null, track?} — recording folder (absolute existing folder or relative to session); null restores inherited/default allocation", always, disk_allocation),
         cmd!(noundo "setup.peripherals", "Peripherals...", ["Setup"], None, "{settings?: {name: number|bool|string}} — control surface / sync device settings", always, peripherals),
         cmd!(
             "setup.io",
@@ -177,11 +177,29 @@ fn engine_settings(e: &mut Engine, p: &Value) -> Result<Value> {
 fn disk_allocation(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "setup.disk_allocation";
     let t = track_param(e, id, p, "track")?;
-    let s = e.session_mut();
-    if let Some(path) = str_param(p, "path") {
+    if let Some(path) = p.get("path") {
+        if t.is_some_and(|t| e.session().track(t).is_some_and(|t| t.kind != TrackKind::Audio)) {
+            return Err(bad(id, "disk allocation is only available for audio tracks"));
+        }
+        let path = if path.is_null() {
+            None
+        } else {
+            let path = path.as_str().ok_or_else(|| bad(id, "path must be a string or null"))?;
+            if path.is_empty() || path.len() > 32_768 || path.contains('\0') {
+                return Err(bad(id, "path must be nonempty, at most 32768 bytes, and contain no NUL"));
+            }
+            Some(path)
+        };
         let key = t.map_or_else(|| "disk.root".to_string(), |t| format!("disk.track.{}", t.0));
-        set_text(&mut s.edit, &key, Some(path));
+        let prefix = format!("{key}=");
+        let edit = &mut e.session_mut().edit;
+        edit.flags.retain(|f| !f.starts_with(&prefix));
+        if let Some(path) = path {
+            // Paths must not be silently trimmed or shortened by the generic text helper.
+            edit.flags.insert(format!("{prefix}{path}"));
+        }
     }
+    let s = e.session();
     let root = text(&s.edit, "disk.root").unwrap_or_else(|| "Audio Files".into());
     let rows: Vec<Value> = s
         .tracks
