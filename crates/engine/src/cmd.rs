@@ -31,6 +31,7 @@ mod setup_more;
 mod strip_silence;
 mod surround;
 mod tab;
+mod tempo_follow;
 mod track;
 mod track_more;
 mod transport;

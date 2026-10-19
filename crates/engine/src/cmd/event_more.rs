@@ -8,6 +8,7 @@ use super::{
 };
 
 use super::more_util::{store_value, track_key, values_with_prefix};
+use super::tempo_follow::following_tempo;
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_midi::Note;
@@ -49,7 +50,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{start?, end?, start_bpm?, end_bpm, resolution?: '1/8'|ticks}",
             always,
-            |e, p| tempo_curve(e, p, Curve::Linear, "event.tempo_linear")
+            |e, p| following_tempo(e, |e| tempo_curve(e, p, Curve::Linear, "event.tempo_linear"))
         ),
         cmd!(
             "event.tempo_parabolic",
@@ -58,7 +59,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{start?, end?, start_bpm?, end_bpm, curvature?: -1..1 (0.5), resolution?}",
             always,
-            |e, p| tempo_curve(e, p, Curve::Parabolic, "event.tempo_parabolic")
+            |e, p| following_tempo(e, |e| tempo_curve(e, p, Curve::Parabolic, "event.tempo_parabolic"))
         ),
         cmd!(
             "event.tempo_s_curve",
@@ -67,7 +68,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{start?, end?, start_bpm?, end_bpm, resolution?}",
             always,
-            |e, p| tempo_curve(e, p, Curve::Sigmoid, "event.tempo_s_curve")
+            |e, p| following_tempo(e, |e| tempo_curve(e, p, Curve::Sigmoid, "event.tempo_s_curve"))
         ),
         cmd!(
             "event.tempo_stretch",
@@ -76,7 +77,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{start?, end?, factor? | length?: new length} — scales the tempo inside the selection so it lasts `factor` times as long",
             always,
-            tempo_stretch
+            |e, p| following_tempo(e, |e| tempo_stretch(e, p))
         ),
         cmd!(
             "event.select_split_notes",

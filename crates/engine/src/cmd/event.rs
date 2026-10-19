@@ -1,6 +1,7 @@
 //! Event menu: time/tempo operations, MIDI operations, markers.
 use super::{CommandSpec, always, bad, clip_ids_param, f32_or, f64_or, has_selection, has_tracks, i64_or, position_param, range_param, str_param};
 
+use super::tempo_follow::following_tempo;
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_midi::ops::{DurationOp, QuantizeOptions, VelocityOp};
@@ -9,7 +10,9 @@ use soundcraft_time::TICKS_PER_QUARTER;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!("event.tempo", "Tempo Change", [], None, "{bpm, at?: position (default session start)}", always, tempo),
+        cmd!("event.tempo", "Tempo Change", [], None, "{bpm, at?: position (default session start)}", always, |e, p| following_tempo(e, |e| tempo(
+            e, p
+        ))),
         cmd!("event.tempo_remove", "Remove Tempo Change", [], None, "{at}", always, |e, p| {
             let at = position_param(e, "event.tempo_remove", p, "at")?.unwrap_or(0);
             let s = e.session_mut();
@@ -17,12 +20,15 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"removed": s.tempo.remove_tempo(tick)}))
         }),
         cmd!("event.meter", "Change Meter...", ["Event", "Time Operations"], None, "{numerator, denominator, at?: position}", always, meter),
-        cmd!("event.tempo_scale", "Scale...", ["Event", "Tempo Operations"], None, "{factor}", always, |e, p| {
+        cmd!("event.tempo_scale", "Scale...", ["Event", "Tempo Operations"], None, "{factor}", always, |e, p| following_tempo(e, |e| {
             let f = f64_or(p, "factor", 1.0);
             e.session_mut().tempo.scale_tempos(f).map_err(|err| bad("event.tempo_scale", err.to_string()))?;
             Ok(json!({}))
-        }),
-        cmd!("event.tempo_constant", "Constant...", ["Event", "Tempo Operations"], None, "{bpm, start?, end?}", always, tempo_constant),
+        })),
+        cmd!("event.tempo_constant", "Constant...", ["Event", "Tempo Operations"], None, "{bpm, start?, end?}", always, |e, p| following_tempo(
+            e,
+            |e| tempo_constant(e, p)
+        )),
         cmd!("event.insert_time", "Insert Time...", ["Event", "Time Operations"], None, "{start?, length | end}", has_tracks, insert_time),
         cmd!("event.cut_time", "Cut Time...", ["Event", "Time Operations"], None, "{start?, end?}", has_tracks, cut_time),
         cmd!(
