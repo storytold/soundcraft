@@ -1409,6 +1409,7 @@ fn view_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
 }
 
 pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
+    crate::batch_rename::context_menu(app, ui, id);
     let tid = id.0;
     let items: [(&str, &str); 10] = [
         ("Rename...", "ui.rename_track"),

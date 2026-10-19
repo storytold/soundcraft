@@ -5,7 +5,10 @@
 //! Script lines are control requests (`{"method": "...", "params": {...}}`), `{"shot": "path.png"}`
 //! or `{"steps": n}`. `{"system_theme": "light"}` (also `"dark"` or `"none"`) changes the
 //! simulated OS appearance for subsequent frames. The demo session is loaded unless `--blank`.
+//! A `widget` object queries a unique `label`: `click: true`, `text: "…"`, or `enabled: bool`.
+//! Optional `count` asserts repeated labels; a failed widget assertion exits with status 2.
 
+use egui_kittest::kittest::{NodeT, Queryable};
 use soundcraft_ui_egui::{ControlRequest, Services, SoundApp};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -83,6 +86,37 @@ fn main() {
                 eprintln!("bad line: {line}");
                 continue;
             };
+            if let Some(widget) = v.get("widget") {
+                let Some(label) = widget.get("label").and_then(serde_json::Value::as_str) else {
+                    eprintln!("widget requires a label: {line}");
+                    std::process::exit(2);
+                };
+                let nodes: Vec<_> = harness.query_all_by_label(label).collect();
+                let count = widget.get("count").and_then(serde_json::Value::as_u64).unwrap_or(1);
+                if nodes.len() as u64 != count {
+                    eprintln!("widget {label:?}: expected {count} matches, found {}", nodes.len());
+                    std::process::exit(2);
+                }
+                for node in nodes {
+                    if let Some(enabled) = widget.get("enabled").and_then(serde_json::Value::as_bool)
+                        && node.accesskit_node().is_disabled() == enabled
+                    {
+                        eprintln!("widget {label:?}: enabled state differs from {enabled}");
+                        std::process::exit(2);
+                    }
+                    if widget.get("click").and_then(serde_json::Value::as_bool) == Some(true) {
+                        node.click();
+                    }
+                    if let Some(text) = widget.get("text").and_then(serde_json::Value::as_str) {
+                        node.type_text(text);
+                    }
+                }
+                for _ in 0..4 {
+                    step(&mut harness);
+                }
+                println!("widget verified: {widget}");
+                continue;
+            }
             if let Some(value) = v.get("system_theme") {
                 let Some(appearance) = value.as_str().and_then(system_theme) else {
                     eprintln!("system_theme requires light, dark or none: {line}");

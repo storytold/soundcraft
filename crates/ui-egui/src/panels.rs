@@ -80,6 +80,7 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
             if resp.clicked() {
                 crate::edit_window::click_track(app, soundcraft_model::TrackId(id), ui.input(|i| i.modifiers), |_, _| true);
             }
+            resp.context_menu(|ui| crate::batch_rename::context_menu(app, ui, soundcraft_model::TrackId(id)));
             if resp.dragged() || resp.drag_stopped() {
                 drag_track(app, ui, r, id, resp.drag_stopped());
             }

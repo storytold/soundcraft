@@ -149,6 +149,7 @@ pub const AUDIOSUITE: &[(&str, &str)] = &[
 const DIALOG_COMMANDS: &[&str] = &[
     "clip.clear",
     "track.new",
+    "track.batch_rename",
     "file.bounce_mix",
     "session.new",
     "file.import_audio",
@@ -202,6 +203,7 @@ pub fn tree() -> Vec<MenuNode> {
         insert_path(&mut roots, line);
     }
     insert_path(&mut roots, "Window > Reset Panel Layout");
+    insert_path(&mut roots, "Track > Batch Rename Tracks");
     // Not in the incumbent catalog, but the only UI path to an empty MIDI clip (#282).
     // It creates a clip rather than acting on the selected ones, so it leads the Clip menu.
     insert_path(&mut roots, "Clip > New MIDI Clip");
