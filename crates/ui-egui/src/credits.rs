@@ -2,7 +2,7 @@
 //! with recorded consent) and the AI models that helped. The tables are baked into the binary by
 //! build.rs from contributors/contributors.json (craftrules standards/contributors.md); nothing is
 //! read at run time.
-
+use crate::i18n::tr;
 use std::cmp::Ordering;
 
 use egui::RichText;
@@ -49,9 +49,9 @@ impl NameMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            NameMode::Username => "Username",
-            NameMode::DisplayName => "Display name",
-            NameMode::RealName => "Real name",
+            NameMode::Username => tr("Username"),
+            NameMode::DisplayName => tr("Display name"),
+            NameMode::RealName => tr("Real name"),
         }
     }
 }
@@ -88,16 +88,16 @@ impl SortKey {
     /// Menu label and table header.
     pub fn label(self) -> (&'static str, &'static str) {
         match self {
-            SortKey::Name => ("Name (A–Z)", "Name"),
-            SortKey::Prs => ("Merged PRs", "PRs"),
-            SortKey::Commits => ("Commits", "Commits"),
-            SortKey::LinesAdded => ("Lines added", "+LOC"),
-            SortKey::LinesDeleted => ("Lines deleted", "−LOC"),
-            SortKey::LinesDelta => ("Line delta", "ΔLOC"),
-            SortKey::BinaryAdded => ("Binary assets added", "+Bin"),
-            SortKey::BinaryDeleted => ("Binary assets removed", "−Bin"),
-            SortKey::FirstCommit => ("First commit", "First"),
-            SortKey::LastCommit => ("Last commit", "Last"),
+            SortKey::Name => (tr("Name (A–Z)"), tr("Name")),
+            SortKey::Prs => (tr("Merged PRs"), tr("PRs")),
+            SortKey::Commits => (tr("Commits"), tr("Commits")),
+            SortKey::LinesAdded => (tr("Lines added"), tr("+LOC")),
+            SortKey::LinesDeleted => (tr("Lines deleted"), tr("−LOC")),
+            SortKey::LinesDelta => (tr("Line delta"), tr("ΔLOC")),
+            SortKey::BinaryAdded => (tr("Binary assets added"), tr("+Bin")),
+            SortKey::BinaryDeleted => (tr("Binary assets removed"), tr("−Bin")),
+            SortKey::FirstCommit => (tr("First commit"), tr("First")),
+            SortKey::LastCommit => (tr("Last commit"), tr("Last")),
         }
     }
 
@@ -123,18 +123,20 @@ impl Contributor {
 
     /// One line with everything we know, for tooltips.
     pub fn summary(&self) -> String {
-        format!(
+        crate::i18n::trf(
             "@{}: {} PRs, {} commits, +{} / −{} lines (Δ {}), +{} / −{} binary assets, {} – {}",
-            self.login,
-            self.prs,
-            self.commits,
-            group(self.lines_added),
-            group(self.lines_deleted),
-            signed(self.lines_delta()),
-            self.binary_added,
-            self.binary_deleted,
-            day(self.first_commit),
-            day(self.last_commit),
+            &[
+                &self.login,
+                &self.prs,
+                &self.commits,
+                &group(self.lines_added),
+                &group(self.lines_deleted),
+                &signed(self.lines_delta()),
+                &self.binary_added,
+                &self.binary_deleted,
+                &day(self.first_commit),
+                &day(self.last_commit),
+            ],
         )
     }
 }
@@ -215,14 +217,14 @@ pub fn contributors_ui(ui: &mut egui::Ui) {
     let id = egui::Id::new("credits_view");
     let mut v = ui.data_mut(|d| d.get_temp::<View>(id)).unwrap_or_default();
     ui.horizontal_wrapped(|ui| {
-        ui.label("Show");
+        ui.label(tr("Show"));
         for m in NameMode::ALL {
             if ui.selectable_label(v.names == m, m.label()).clicked() {
                 v.names = m;
             }
         }
         ui.separator();
-        ui.label("Sort");
+        ui.label(tr("Sort"));
         egui::ComboBox::from_id_salt("credits_sort").selected_text(v.key.label().0).show_ui(ui, |ui| {
             for k in SortKey::ALL {
                 if ui.selectable_label(v.key == k, k.label().0).clicked() {
@@ -231,23 +233,23 @@ pub fn contributors_ui(ui: &mut egui::Ui) {
                 }
             }
         });
-        if ui.button(if v.ascending { "⏶" } else { "⏷" }).on_hover_text("Reverse the order").clicked() {
+        if ui.button(if v.ascending { "⏶" } else { "⏷" }).on_hover_text(tr("Reverse the order")).clicked() {
             v.ascending = !v.ascending;
         }
         ui.separator();
-        if ui.selectable_label(!v.table, "Grab bag").clicked() {
+        if ui.selectable_label(!v.table, tr("Grab bag")).clicked() {
             v.table = false;
         }
-        if ui.selectable_label(v.table, "Table").clicked() {
+        if ui.selectable_label(v.table, tr("Table")).clicked() {
             v.table = true;
         }
     });
     let list = sorted(CONTRIBUTORS, v.names, v.key, v.ascending);
-    ui.label(RichText::new(format!("{} contributors · {} commits", list.len(), group(TOTAL_COMMITS))).small().weak());
+    ui.label(RichText::new(crate::i18n::trf("{} contributors · {} commits", &[&list.len(), &group(TOTAL_COMMITS)])).small().weak());
     ui.separator();
     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
         if list.is_empty() {
-            ui.label("No contributor data was built into this copy.");
+            ui.label(tr("No contributor data was built into this copy."));
         } else if v.table {
             table(ui, &list, &mut v);
         } else {
@@ -297,14 +299,14 @@ fn table(ui: &mut egui::Ui, list: &[&Contributor], v: &mut View) {
 /// About ▸ Models: AI models credited in Co-Authored-By trailers.
 pub fn models_ui(ui: &mut egui::Ui) {
     if MODELS.is_empty() {
-        ui.label("No model credits were built into this copy.");
+        ui.label(tr("No model credits were built into this copy."));
         return;
     }
     let assisted: u64 = MODELS.iter().map(|m| m.commits).max().unwrap_or(0).max(1);
     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
         egui::Grid::new("credits_models").striped(true).num_columns(6).show(ui, |ui| {
             for h in ["Company", "Model", "Version", "Commits", "% of all commits", "Lines +/−"] {
-                ui.label(RichText::new(h).strong());
+                ui.label(RichText::new(tr(h)).strong());
             }
             ui.end_row();
             for m in MODELS {

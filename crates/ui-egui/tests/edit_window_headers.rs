@@ -104,7 +104,7 @@ fn edit_window_insert_slots_open_change_and_add_plugins() {
 
     let plugin = soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap();
     click(&mut h, slot(2));
-    let category = h.get_by_label(&format!("{:?} ⏵", plugin.category)).rect().center();
+    let category = h.get_by_label(&format!("{} ⏵", category_label(plugin.category))).rect().center();
     h.state_mut().synthetic.push(Event::PointerMoved(category));
     for _ in 0..10 {
         step(&mut h);
@@ -127,7 +127,7 @@ fn short_tracks_show_insert_slots_as_squares() {
 
     click(&mut h, square(4));
     let plugin = soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap();
-    assert!(h.query_by_label(&format!("{:?} ⏵", plugin.category)).is_some());
+    assert!(h.query_by_label(&format!("{} ⏵", category_label(plugin.category))).is_some());
 }
 
 #[test]
@@ -175,4 +175,13 @@ fn only_a_sends_fader_icon_opens_its_level() {
     click(&mut h, send_a(65.5));
     assert_eq!(h.state().ui.send_window, Some((snare, 0)));
     assert!(h.query_by_label("DESTINATION").is_none());
+}
+
+/// The English caption of a plugin category's submenu.
+fn category_label(c: soundcraft_dsp::Category) -> String {
+    match c {
+        soundcraft_dsp::Category::Eq => "EQ".into(),
+        soundcraft_dsp::Category::PitchShift => "Pitch Shift".into(),
+        other => format!("{other:?}"),
+    }
 }
