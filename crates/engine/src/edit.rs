@@ -835,6 +835,8 @@ pub fn delete_fades(s: &mut Session, track: TrackId, range: Range) -> usize {
             }
         }
     }
+    // Trimming a start forward can move it past a later clip's start.
+    pl.sort();
     n
 }
 
@@ -876,6 +878,23 @@ mod tests {
         assert_eq!(separate_at(&mut s, t, 1000), 0);
         assert_eq!(heal(&mut s, t, Range::new(0, 10_000)), 1);
         assert_eq!(clips(&s, t), vec![(1000, 4000, 1000)]);
+    }
+
+    #[test]
+    fn delete_fades_keeps_the_playlist_sorted_when_a_trim_passes_a_later_clip() {
+        let (mut s, t) = session_with_clip();
+        if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+            pl.clips.clear();
+        }
+        for (start, len) in [(0, 100), (50, 200), (60, 20)] {
+            let id = s.new_clip_id();
+            if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+                pl.clips.push(Clip::audio(id, "a", SourceId(500), start, 0, len));
+            }
+        }
+        delete_fades(&mut s, t, Range::new(0, 300));
+        let starts: Vec<Samples> = s.track(t).unwrap().clips().iter().map(|c| c.start).collect();
+        assert!(starts.windows(2).all(|w| w[0] <= w[1]), "{starts:?}");
     }
 
     #[test]
