@@ -200,22 +200,28 @@ impl TempoMap {
 
     /// Ticks → samples (exact for constant-tempo segments).
     pub fn tick_to_samples(&self, tick: i64, sr: SampleRate) -> Samples {
+        to_samples(self.tick_to_samples_f(tick as f64, sr))
+    }
+
+    /// Fractional ticks → samples. Clips keep sub-tick positions so a tempo change moves them
+    /// without rounding each one to the tick grid.
+    pub fn ticks_f_to_samples(&self, tick: f64, sr: SampleRate) -> Samples {
         to_samples(self.tick_to_samples_f(tick, sr))
     }
 
-    fn tick_to_samples_f(&self, tick: i64, sr: SampleRate) -> f64 {
+    fn tick_to_samples_f(&self, tick: f64, sr: SampleRate) -> f64 {
         let mut acc = 0.0;
         let mut seg_tick = 0i64;
         let mut bpm = self.tempos.first().map_or(120.0, |e| e.bpm);
         for e in self.tempos.iter().skip(1) {
-            if e.tick >= tick {
+            if e.tick as f64 >= tick {
                 break;
             }
             acc += (e.tick - seg_tick) as f64 * Self::samples_per_tick(bpm, sr);
             seg_tick = e.tick;
             bpm = e.bpm;
         }
-        acc + (tick - seg_tick) as f64 * Self::samples_per_tick(bpm, sr)
+        acc + (tick - seg_tick as f64) * Self::samples_per_tick(bpm, sr)
     }
 
     /// Samples → ticks (fractional).

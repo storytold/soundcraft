@@ -29,6 +29,7 @@ pub(crate) mod sampler;
 mod setup_more;
 mod surround;
 mod tab;
+mod tempo_follow;
 mod track;
 mod track_more;
 mod transport;
