@@ -49,7 +49,13 @@ impl ImportState {
         self.path = path;
         self.composition.clear();
         self.compositions.clear();
+        self.invalidate();
+    }
+    /// Drops the current preview and any analysis still running, whose plan would belong to the
+    /// previous file or folder. The worker's late result goes to a closed channel.
+    fn invalidate(&mut self) {
         self.preview = None;
+        self.busy = None;
         self.error = None;
     }
     pub fn inspect(&self) -> Value {
@@ -92,6 +98,7 @@ pub fn command(app: &mut SoundApp, p: &Value) -> Result<Value, String> {
     }
     if let Some(dir) = p.get("media_dir").and_then(Value::as_str) {
         app.aaf_import.media_dir = dir.to_string();
+        app.aaf_import.invalidate();
     }
     app.aaf_import.open = true;
     Ok(app.aaf_import.inspect())
@@ -303,6 +310,18 @@ mod tests {
             [("Reel 1".to_string(), "urn:smpte:umid:060a2b34.01".to_string()), ("Alt cut".to_string(), "urn:smpte:umid:060a2b34.02".to_string())]
         );
         assert!(composition_choices("Missing media: x.wav").is_empty());
+    }
+    #[test]
+    fn a_new_file_discards_the_analysis_still_running_for_the_previous_one() {
+        let mut state = ImportState::default();
+        let (tx, rx) = mpsc::channel();
+        state.set_path("/a/first.aaf".into());
+        state.busy = Some(rx);
+        state.set_path("/b/second.aaf".into());
+        assert!(state.busy.is_none());
+        assert!(tx.send(Ok(json!({"plan": {}}))).is_err());
+        assert!(state.preview.is_none());
+        assert_eq!(state.media_dir, "/b");
     }
     #[test]
     fn menu_opens_preview_but_programmatic_import_does_not_open_a_dialog() {
