@@ -153,10 +153,13 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 ui.horizontal(|ui| {
                     ui.label("Composition");
                     let current=state.compositions.iter().find(|(_,id)|*id==state.composition).map_or("Choose one…".to_string(),|(n,_)|n.clone());
-                    egui::ComboBox::from_id_salt("aaf_composition").selected_text(current).show_ui(ui,|ui|{
-                        for (name,id) in &state.compositions {
-                            if ui.selectable_label(state.composition==*id,format!("{name}  ({id})")).clicked() { state.composition=id.clone(); state.preview=None; }
-                        }
+                    // Locked while analyzing, so a finished analysis always matches the selection.
+                    ui.add_enabled_ui(state.busy.is_none(),|ui|{
+                        egui::ComboBox::from_id_salt("aaf_composition").selected_text(current).show_ui(ui,|ui|{
+                            for (name,id) in &state.compositions {
+                                if ui.selectable_label(state.composition==*id,format!("{name}  ({id})")).clicked() { state.composition=id.clone(); state.preview=None; }
+                            }
+                        });
                     });
                 });
             }
