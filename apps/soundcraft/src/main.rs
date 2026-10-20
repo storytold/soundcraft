@@ -109,6 +109,8 @@ fn open_path(app: &mut SoundApp, p: &str) {
     let lower = p.to_ascii_lowercase();
     let r = if lower.ends_with(".scraft") {
         dialogs::run_or_ask(app, "session.open", serde_json::json!({"path": p}))
+    } else if lower.ends_with(".aaf") {
+        app.run("window.import_aaf", serde_json::json!({"path":p}))
     } else if lower.ends_with(".mid") || lower.ends_with(".midi") || lower.ends_with(".smf") {
         app.run("file.import_midi", serde_json::json!({"path": p}))
     } else {
@@ -165,6 +167,7 @@ fn services() -> Services {
             let d = rfd::FileDialog::new();
             let d = match purpose {
                 "session.open" => d.add_filter("SoundCraft Session", &["scraft"]),
+                "file.import_aaf" => d.add_filter("AAF session data", &["aaf"]),
                 "file.import_midi" => d.add_filter("MIDI", &["mid", "midi", "smf"]),
                 _ => d.add_filter(
                     "Audio",

@@ -4,6 +4,7 @@
 //! executing commands. It can be replaced without touching anything below it.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod aaf_import;
 pub mod bounce;
 pub mod control;
 pub mod credits;
@@ -283,6 +284,7 @@ pub struct SoundApp {
     pub preset_dir: Option<std::path::PathBuf>,
     last_autosave: Option<std::time::Instant>,
     pub dialogs: dialogs::Dialogs,
+    pub aaf_import: aaf_import::ImportState,
     pub meters: HashMap<TrackId, MeterDisplay>,
     pub main_meter: MeterDisplay,
     /// Reused multichannel snapshot; populated at an adaptive rate by `logic`.
@@ -371,6 +373,7 @@ impl SoundApp {
             preset_dir: None,
             last_autosave: None,
             dialogs: dialogs::Dialogs::default(),
+            aaf_import: aaf_import::ImportState::default(),
             meters: HashMap::new(),
             main_meter: MeterDisplay::default(),
             meter_snapshot: soundcraft_playback::MeterSnapshot::default(),
@@ -1263,6 +1266,7 @@ impl SoundApp {
         score_editor::show(self, &ctx);
         palette::show(self, &ctx);
         dialogs::show(self, &ctx);
+        aaf_import::show(self, &ctx);
         // Here, not in logic(): a covered or minimized window runs only logic(), with no vsync to pace it.
         if self.meters_live() {
             let hz = if self.ui.window == MainWindow::Mix { 60 } else { 30 };
