@@ -588,6 +588,14 @@ impl<F: Read + Seek> Builder<'_, F> {
     }
 
     fn file_source(&mut self, mob: &Obj, slot: &Obj, desc: &Obj, key: String, offset: Q) -> Result<(String, Q)> {
+        // Full interleaved WAV only: selecting one physical channel needs a channel map.
+        if !matches!(slot.opt_u32(PID_SLOT_PHYSICAL, "PhysicalTrackNumber")?, None | Some(0)) {
+            return Err(fail("Physical channel selection / split stereo unsupported"));
+        }
+        // Each source file is located, probed and reported once, however many edits use it.
+        if self.sources.iter().any(|s| s.key == key) {
+            return Ok((key, offset));
+        }
         let name = mob.string(PID_MOB_NAME);
         let locators = self.store.vector(desc, PID_DESCRIPTOR_LOCATORS, "locators", false)?;
         let urls: Vec<String> = locators.iter().map(|l| l.data(PID_URL_STRING).map(utf16).unwrap_or_default()).collect();
@@ -611,21 +619,15 @@ impl<F: Read + Seek> Builder<'_, F> {
         if u64::try_from(desc.i64(PID_FILE_LENGTH, "descriptor Length")?).ok() != Some(info.frames) {
             return Err(fail(format!("Descriptor/file lengths differ: {}", name.unwrap_or_default())));
         }
-        // Full interleaved WAV only: selecting one physical channel needs a channel map.
-        if !matches!(slot.opt_u32(PID_SLOT_PHYSICAL, "PhysicalTrackNumber")?, None | Some(0)) {
-            return Err(fail("Physical channel selection / split stereo unsupported"));
-        }
-        if !self.sources.iter().any(|s| s.key == key) {
-            let stem = Path::new(&info.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            self.sources.push(Media {
-                key: key.clone(),
-                name: name.unwrap_or(stem),
-                path: info.path,
-                channels: info.channels,
-                frames: info.frames,
-                sample_rate: info.sample_rate,
-            });
-        }
+        let stem = Path::new(&info.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        self.sources.push(Media {
+            key: key.clone(),
+            name: name.unwrap_or(stem),
+            path: info.path,
+            channels: info.channels,
+            frames: info.frames,
+            sample_rate: info.sample_rate,
+        });
         Ok((key, offset))
     }
 }

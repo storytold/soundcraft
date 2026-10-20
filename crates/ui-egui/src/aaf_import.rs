@@ -9,6 +9,10 @@ pub struct ImportState {
     pub open: bool,
     pub path: String,
     pub media_dir: String,
+    /// CompositionMob to read when the AAF holds several; empty lets the reader require one.
+    composition: String,
+    /// (name, MobID) choices reported by the reader for a multi-composition AAF.
+    compositions: Vec<(String, String)>,
     preview: Option<Value>,
     selected: Vec<bool>,
     filter: String,
@@ -25,6 +29,8 @@ impl Default for ImportState {
             open: false,
             path: String::new(),
             media_dir: String::new(),
+            composition: String::new(),
+            compositions: Vec::new(),
             preview: None,
             selected: Vec::new(),
             filter: String::new(),
@@ -41,6 +47,8 @@ impl ImportState {
     pub fn set_path(&mut self, path: String) {
         self.media_dir = std::path::Path::new(&path).parent().map_or(String::new(), |p| p.display().to_string());
         self.path = path;
+        self.composition.clear();
+        self.compositions.clear();
         self.preview = None;
         self.error = None;
     }
@@ -56,13 +64,17 @@ impl ImportState {
         self.preview = None;
         let path = self.path.clone();
         let media = self.media_dir.clone();
+        let mut params = json!({"path":path,"media_dir":media});
+        if !self.composition.is_empty() {
+            params["composition"] = json!(self.composition);
+        }
         let roots = soundcraft_engine::file_access::current();
         let ctx = ctx.clone();
         let (tx, rx) = mpsc::channel();
         self.busy = Some(rx);
         std::thread::spawn(move || {
             let result = soundcraft_engine::file_access::confine(roots.as_ref(), || {
-                soundcraft_engine::Engine::default().execute("file.preview_aaf", &json!({"path":path,"media_dir":media})).map_err(|e| e.to_string())
+                soundcraft_engine::Engine::default().execute("file.preview_aaf", &params).map_err(|e| e.to_string())
             });
             let _ = tx.send(result);
             ctx.request_repaint();
@@ -96,6 +108,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 state.busy = None;
             }
             Ok(Err(e)) => {
+                let choices = composition_choices(&e);
+                if !choices.is_empty() {
+                    state.compositions = choices;
+                }
                 state.error = Some(e);
                 state.busy = None;
             }
@@ -133,6 +149,17 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 if ui.add_enabled(state.busy.is_none()&&!state.path.is_empty()&&!state.media_dir.is_empty(),egui::Button::new("Analyze AAF")).clicked() { state.analyze(ctx); }
             });
             if state.busy.is_some() { ui.horizontal(|ui|{ui.spinner();ui.label("Reading source properties and locating media…");}); }
+            if !state.compositions.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label("Composition");
+                    let current=state.compositions.iter().find(|(_,id)|*id==state.composition).map_or("Choose one…".to_string(),|(n,_)|n.clone());
+                    egui::ComboBox::from_id_salt("aaf_composition").selected_text(current).show_ui(ui,|ui|{
+                        for (name,id) in &state.compositions {
+                            if ui.selectable_label(state.composition==*id,format!("{name}  ({id})")).clicked() { state.composition=id.clone(); state.preview=None; }
+                        }
+                    });
+                });
+            }
             if let Some(error)=&state.error { ui.colored_label(ui.visuals().error_fg_color,error); }
             ui.separator();
             let preview=state.preview.clone();
@@ -156,7 +183,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         ui.label("Locate source WAV files in:");
                         if ui.add_enabled(state.busy.is_none(),egui::TextEdit::singleline(&mut state.media_dir).desired_width(275.0)).changed(){state.preview=None;}
                         if ui.add_enabled(state.busy.is_none(),egui::Button::new("Choose media folder…")).clicked()
-                            && let Some(dir)=app.services.pick_folder.as_ref().and_then(|pick|pick("AAF source media")){state.media_dir=dir;state.preview=None;}
+                            && let Some(dir)=app.services.pick_folder.as_ref().and_then(|pick|pick(&state.media_dir)){state.media_dir=dir;state.preview=None;}
                         ui.label("Copy full sources when saving");
                         ui.small("Save the session before moving or removing original files.");
                         ui.small("All available handles are retained. Sources are not consolidated or trimmed.");
@@ -249,9 +276,31 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     app.aaf_import = state;
 }
 
+/// (name, MobID) pairs from the reader's "Choose exactly one composition" error, so the window
+/// can offer a choice instead of asking for an ID it gives no way to enter.
+fn composition_choices(error: &str) -> Vec<(String, String)> {
+    let Some(list) = error.split_once("Choose exactly one composition by MobID: ").map(|(_, l)| l) else { return Vec::new() };
+    list.split("(\"")
+        .filter_map(|entry| {
+            let (name, rest) = entry.split_once("\", \"")?;
+            let id = rest.split('"').next()?;
+            id.starts_with("urn:smpte:umid:").then(|| (name.to_string(), id.to_string()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn several_compositions_become_choices() {
+        let e = r#"io: interchange: Choose exactly one composition by MobID: [("Reel 1", "urn:smpte:umid:060a2b34.01"), ("Alt cut", "urn:smpte:umid:060a2b34.02")]"#;
+        assert_eq!(
+            composition_choices(e),
+            [("Reel 1".to_string(), "urn:smpte:umid:060a2b34.01".to_string()), ("Alt cut".to_string(), "urn:smpte:umid:060a2b34.02".to_string())]
+        );
+        assert!(composition_choices("Missing media: x.wav").is_empty());
+    }
     #[test]
     fn menu_opens_preview_but_programmatic_import_does_not_open_a_dialog() {
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());

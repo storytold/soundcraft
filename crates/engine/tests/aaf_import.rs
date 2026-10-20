@@ -197,3 +197,30 @@ fn rust_reader_requires_every_locator_in_the_chosen_media_folder() {
     std::fs::write(f.dir.join("Diálogo á #1.wav"), b"RIFF\0\0\0\0WAVEnot audio").unwrap();
     assert!(f.preview().is_err());
 }
+
+#[test]
+fn relinked_sources_are_reported_once_however_many_edits_use_them() {
+    let f = AafFolder::new();
+    let moved = f.dir.join("moved media");
+    std::fs::create_dir(&moved).unwrap();
+    for name in ["Diálogo á #1.wav", "Ambiente estéreo.wav"] {
+        std::fs::rename(f.dir.join(name), moved.join(name)).unwrap();
+    }
+    let aaf = f.dir.join("Montaje sintético.aaf");
+    let preview = Engine::default().execute("file.preview_aaf", &json!({"path": aaf, "media_dir": moved})).unwrap();
+    let relinks = preview["plan"]["warnings"].as_array().unwrap().iter().filter(|w| w.as_str().unwrap().starts_with("Relinked ")).count();
+    // Three edits, two source files: the dialogue source is used twice.
+    assert_eq!(relinks, 2);
+    assert_eq!(preview["plan"]["sources"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn an_unknown_composition_id_is_refused() {
+    let f = AafFolder::new();
+    let aaf = f.dir.join("Montaje sintético.aaf");
+    let err = Engine::default()
+        .execute("file.preview_aaf", &json!({"path": aaf, "media_dir": f.dir, "composition": "urn:smpte:umid:00"}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Choose exactly one composition"), "{err}");
+}
