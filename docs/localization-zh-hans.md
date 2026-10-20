@@ -74,7 +74,7 @@ Two details worth knowing:
 | `crates/ui-egui/src/i18n/mod.rs` | registry `LANGUAGES`, `Lang`, lookup API, plural rules, tests |
 | `crates/ui-egui/src/i18n/catalog.rs` | TSV parser and lookup tables |
 | `crates/ui-egui/src/i18n/system.rs` | locale detection from the environment, read once at startup |
-| `crates/ui-egui/src/i18n/zh-hans.tsv` | the translations (1,114 entries) |
+| `crates/ui-egui/src/i18n/zh-hans.tsv` | the translations (1,109 entries) |
 | `crates/ui-egui/src/fonts.rs` | simplified-Chinese font fallback (`system-han`) |
 
 Lookups, in order of preference:
@@ -98,19 +98,27 @@ Keep the English key, placeholders, contexts and any trailing `…` intact.
 | English | Simplified Chinese | Note |
 |---|---|---|
 | Session / Track / Clip | 会话 / 轨道 / 片段 | |
-| Playlist / Take | 播放列表 / 版本 | |
+| Playlist / Take | 播放列表 / 版本 | playlist version; film scene/take metadata is 场次/镜次 |
 | Region group | 片段组 | |
 | Insert / Send | 插入 / 发送 | `Inserts A-E` → `插入 A-E` |
 | Bus / Main output | 总线 / 主输出 | |
 | Fader / Pan | 推子 / 声像 | |
-| Automation: Off/Read/Touch/Latch/Write/Trim | 关闭/读取/触碰/锁存/写入/微调 | `context = automation` |
+| Automation: Off/Read/Touch/Latch/Write/Trim | 关闭/读取/触碰/锁存/写入/微调 | `context = automation`; clip trim = 修剪 |
 | Grid / Nudge | 网格 / 微移 | |
-| Edit modes: Shuffle/Spot/Slip/Grid/Rel Grid | 随机/定位/滑移/网格/相对网格 | |
+| Snap to Grid / On Grid | 吸附到网格 / 在网格 | `Snap to` = 吸附到 everywhere |
+| Edit modes: Shuffle/Spot/Slip/Grid/Rel Grid | 随机/定位/滑动/网格/相对网格 | |
 | Bars\|Beats / Min:Secs / Timecode / Feet+Frames / Samples | 小节\|拍 / 分:秒 / 时间码 / 英尺+帧 / 采样 | |
 | Bounce / Commit | 导出 / 提交 | |
 | Memory Location / Marker | 记忆位置 / 标记 | |
 | Pre-roll / Post-roll | 预卷 / 后卷 | |
 | Solo / Mute / Record-enable | 独奏 / 静音 / 启用录音 | |
+| Composer | 作曲家 | metadata |
+| Normalize / Normalize to -0.1 dBFS | 标准化 / 标准化至 -0.1 dBFS | one word family; 归一化 is not used |
+| All (command-label prefix) | 全部 | running sentences keep 所有 |
+| Online / offline (console) | 联机 / 脱机 | 在线/离线 is the internet sense |
+| Scene / Take (clip metadata) | 场次 / 镜次 | playlist Take = 版本 |
+| Ticks | Tick | unit token, like dB/Hz |
+| Lane | 道 | marker lane 标记道, transcription lane 转写道 |
 
 SoundCraft, ArtCraft, AudioSuite, CLAP, VST3, MIDI, AAX, Pro Tools, kHz, dB, Hz and file
 extensions keep their spelling. Numeric formats (sample rates, frame rates, timecode) are not
@@ -163,6 +171,13 @@ cargo run -p soundcraft-ui-egui --example ui_shot -- out.png script.jsonl
 #   {"steps":3}
 #   {"shot":"zh-main.png"}
 ```
+
+Before coining or revising wording, consult the translation knowledge base in
+[`docs/i18n/`](i18n/README.md): it cross-checks this catalog against the Chinese
+UIs of six open-source DAWs (`python3 docs/i18n/tools/cross_check.py` regenerates
+`docs/i18n/cross-check-report.md`) and records the curated conclusions in
+[`docs/i18n/glossary.md`](i18n/glossary.md). Decisions made there feed back into
+the terminology table above.
 
 Compare with the English render (`"language":"en"`, or `LANG=en_US.UTF-8`) and with
 `plan/protools/screenshots/`. Check the edit window, the mix window, the menus, the shortcuts

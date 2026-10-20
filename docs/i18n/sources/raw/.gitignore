@@ -1,0 +1,4 @@
+# Local reference corpora only — downloaded, not committed.
+# Index and licenses: ../SOURCES.md
+*
+!.gitignore

@@ -52,9 +52,9 @@
 	Add Key Change...	添加调号变化...
 	After Playback	播放后
 	All	全部
-	All Automation	所有自动化
-	All MIDI Notes Off	关闭所有 MIDI 音符
-	All Marker Rulers	所有标记标尺
+	All Automation	全部自动化
+	All MIDI Notes Off	关闭全部 MIDI 音符
+	All Marker Rulers	全部标记标尺
 	Arrange	排列
 	At Selection	在选区
 	At Transients	在瞬态
@@ -90,9 +90,9 @@
 	Channel Strip	通道条
 	Chord Symbols	和弦符号
 	Clear	清除
-	Clear All Clip Indicators	清除所有片段指示
+	Clear All Clip Indicators	清除全部片段指示
 	Clear Special	特殊清除
-	Clear Trim Automation	清除 Trim 自动化
+	Clear Trim Automation	清除微调自动化
 	Click	节拍器
 	Click/Countoff...	节拍器/预备拍...
 	Clip	片段
@@ -103,12 +103,12 @@
 	Clip Gain Line	片段增益线
 	Clip Groups...	片段组...
 	Clip List	片段列表
-	Close All Workspaces	关闭所有工作区
+	Close All Workspaces	关闭全部工作区
 	Close Session	关闭会话
 	Close Window	关闭窗口
 	Coalesce Clip Gain to Volume Automation	将片段增益合并到音量自动化
 	Coalesce Pan Guide Automation	合并声像引导自动化
-	Coalesce Trim Automation	合并 Trim 自动化
+	Coalesce Trim Automation	合并微调自动化
 	Coalesce VCA Controller Automation	合并 VCA 控制器自动化
 	Coalesce Volume Automation to Clip Gain	将音量自动化合并到片段增益
 	Collaboration	协作
@@ -202,7 +202,7 @@
 	Gain	增益
 	Get Info...	获取信息...
 	Glide Pan Only	仅滑变声像
-	Glide to All Enabled	滑变到所有已启用项
+	Glide to All Enabled	滑变到全部已启用项
 	Glide to Current	滑变到当前项
 	Group	编组
 	Group...	编组...
@@ -211,7 +211,7 @@
 	Hardware...	硬件...
 	Harmonic	谐波
 	Heal Separation	修复分离
-	Hide All Floating Windows	隐藏所有浮动窗口
+	Hide All Floating Windows	隐藏全部浮动窗口
 	I/O	I/O
 	I/O...	I/O...
 	Identify Beat...	识别节拍...
@@ -282,9 +282,9 @@
 	Metadata Inspector	元数据检查器
 	Meter	拍号
 	Meters and Faders	电平表与推子
-	Mic Preamps	麦克风前置放大
+	Mic Preamps	麦克风前置放大器
 	Min:Secs	分:秒
-	Minimal	精简
+	Minimal	最简
 	Mirrored MIDI Editing	镜像 MIDI 编辑
 	Mix	混音
 	Mix Window Views	混音窗口视图
@@ -315,7 +315,7 @@
 	None	无
 	Normalize	标准化
 	Object	对象
-	On Grid	对齐网格
+	On Grid	在网格
 	Open	打开
 	Options	选项
 	Original Time Stamp	原始时间戳
@@ -342,7 +342,7 @@
 	Play Timeline	播放时间线
 	Playback Engine...	播放引擎...
 	Plugin Automation	插件自动化
-	Power	电源
+	Power	功率
 	Pre-Fader Metering	推子前电平显示
 	Pre/Post-Roll	预卷/后卷
 	Preferences...	首选项...
@@ -393,7 +393,7 @@
 	Save Session Copy In...	将会话副本保存到...
 	Save Track Preset...	保存轨道预设...
 	Scale...	缩放...
-	Scene And Take	场景与版本
+	Scene And Take	场次与镜次
 	Sci-Fi	Sci-Fi
 	Score Editor	乐谱编辑器
 	Score Setup...	乐谱设置...
@@ -450,7 +450,7 @@
 	Strip Silence	去除无声
 	Sync Point	同步点
 	Synchronization	同步
-	System Usage	系统用量
+	System Usage	系统使用情况
 	TCE Edit to Timeline Selection	TCE 编辑到时间线选区
 	Tab to Transient	Tab 至瞬态
 	Target Playlist	目标播放列表
@@ -480,24 +480,24 @@
 	Toggle Recent Playlist	切换最近的播放列表
 	Track	轨道
 	Track Color	轨道颜色
-	Track Lane	轨道道
-	Track Lane Color	轨道道颜色
+	Track Lane	轨道标记道
+	Track Lane Color	轨道标记道颜色
 	Track List	轨道列表
 	Track Number	轨道编号
 	Track Presets	轨道预设
-	Track Transcription Lane	轨道转写层
+	Track Transcription Lane	轨道转写道
 	TrackPunch	轨道穿插
 	Transcript	转写
 	Transcription Settings...	转写设置...
 	Transparency	透明度
 	Transport	走带
-	Transport Online	走带在线
+	Transport Online	走带联机
 	Transpose...	移调...
 	Trim	修剪
-	Trim Playlist	修剪播放列表
+	Trim Playlist	微调播放列表
 	Trim and Downmix	修剪并缩混
-	Trim to All Enabled	修剪到所有已启用项
-	Trim to Current	修剪到当前项
+	Trim to All Enabled	微调到全部已启用项
+	Trim to Current	微调到当前项
 	UI Customization	界面自定义
 	Undo History	撤销历史
 	Ungroup	取消编组
@@ -510,7 +510,7 @@
 	Vari-Fi	Vari-Fi
 	Video	视频
 	Video Sync Offset...	视频同步偏移...
-	Video Track Online	视频轨在线
+	Video Track Online	视频轨联机
 	Video Universe	视频总览
 	Video...	视频...
 	View	视图
@@ -519,7 +519,7 @@
 	Window Configuration List	窗口配置列表
 	Workspaces	工作区
 	Write MIDI Real-Time Properties	写入 MIDI 实时属性
-	Write to All Enabled	写入所有已启用项
+	Write to All Enabled	写入全部已启用项
 	Write to Current	写入当前项
 	X-OR (Cancels Previous Solo)	异或独奏（取消先前独奏）
 	none	无
@@ -568,12 +568,12 @@
 	Clip start pad ms	片段开头留白毫秒
 	Close Plugin Editor	关闭插件编辑器
 	Columns beside the track headers: inserts, sends, I/O…	轨道头部旁的列：插入、发送、I/O…
-	Composer	作曲者
+	Composer	作曲家
 	Couldn't recover “{name}”: {error}	无法恢复“{name}”：{error}
 	Create	创建
 	Curve	曲线
 	DESTINATION	目标
-	Delay (ticks)	延迟（tick）
+	Delay (ticks)	延迟（Tick）
 	Delete Group	删除编组
 	Delete Unused...	删除未使用项...
 	Device default	设备默认
@@ -643,7 +643,7 @@
 	Processes selected clips offline	离线处理所选片段
 	Quantize to the grid	量化到网格
 	Quit	退出
-	Recall	调用
+	Recall	调取
 	Reconnect audio device	重新连接音频设备
 	Reconnect it, then use Reconnect audio device in Setup ▸ Playback Engine.	请重新连接，然后使用“设置 ▸ 播放引擎”中的“重新连接音频设备”。
 	Record (Cmd+Space)	录音（Cmd+Space）
@@ -658,7 +658,7 @@
 	Remove from Folder	从文件夹中移除
 	Remove send	移除发送
 	Rename bus…	重命名总线…
-	Renders and AudioSuite processes run to completion before returning.	渲染与 AudioSuite 处理会执行完毕后返回。
+	Renders and AudioSuite processes run to completion before returning.	渲染与 AudioSuite 处理会执行完毕后再返回。
 	Reopen the audio devices with these settings	使用这些设置重新打开音频设备
 	Reset	重置
 	Reverse the order	反转顺序
@@ -771,9 +771,6 @@
 	Shift	Shift
 	Alt	Alt
 	Cmd	Cmd
-	Save Changes?	保存更改？
-	Save it	保存
-	Close without saving	不保存并关闭
 # --- Command ids whose wording differs from the menu leaf ---
 @id	edit.undo	撤销
 @id	edit.redo	重做
@@ -865,13 +862,12 @@ automation	trim	微调
 	saved	已保存
 	no audio engine	无音频引擎
 	silent clock	静默时钟
-	audio on	音频输出中
+	audio on	音频已开启
 	16-bit	16 位
 	24-bit	24 位
 	32-bit float	32 位浮点
 	Undo {action}	撤销{action}
 	Redo {action}	重做{action}
-	Middle	居中
 	TRACKS	轨道
 	GROUPS	编组
 	CLIPS	片段
@@ -881,11 +877,10 @@ automation	trim	微调
 @plural	{n} track|{n} tracks	{n} 条轨道
 	SHUFFLE	随机
 	SPOT	定位
-	SLIP	滑移
+	SLIP	滑动
 	GRID	网格
 	REL GRID	相对网格
-	Shuffle	随机
-	Slip	滑移
+	Slip	滑动
 	Tracks and Groups	轨道与编组
 	Clips	片段
 	Key	调号
@@ -920,7 +915,7 @@ automation	trim	微调
 	Active audio end time is unknown (invalid session sample rate)	有效音频结束时间未知（会话采样率无效）
 	 (alternate playlist)	（备用播放列表）
 	Session media: {files} files, {size} MB in memory (32-bit float)	会话媒体：{files} 个文件，内存中 {size} MB（32 位浮点）
-	Recording at 24-bit uses {size} MB per mono track-minute	24 位录音每单声道轨道分钟占用 {size} MB
+	Recording at 24-bit uses {size} MB per mono track-minute	24 位录音下，每条单声道轨道每分钟占用 {size} MB
 	Session file: {path}	会话文件：{path}
 	UI frame time: {ms} ms	界面帧时间：{ms} 毫秒
 	Audio: {device}	音频：{device}
@@ -948,14 +943,14 @@ automation	trim	微调
 @plural	{n} hour ago|{n} hours ago	{n} 小时前
 @plural	{n} day ago|{n} days ago	{n} 天前
 	Version {version}	版本 {version}
-	The mix runs in 512-sample blocks; the buffer size sets the device's own latency.	混音以 512 个采样为一帧运行；缓冲区大小决定设备自身的延迟。
+	The mix runs in 512-sample blocks; the buffer size sets the device's own latency.	混音以 512 个采样为一块运行；缓冲区大小决定设备自身的延迟。
 	Velocity	力度
 	MIDI in: all	MIDI 输入：全部
 	<ALL>	<全部>
 	Count Off	预备拍
 @plural	{n} bar|{n} bars	{n} 小节
 	Start from the demo session	从演示会话开始
-	Normalize to -0.1 dBFS	归一化至 -0.1 dBFS
+	Normalize to -0.1 dBFS	标准化至 -0.1 dBFS
 	Edit group	编辑编组
 	Mix group	混音编组
 	Show track names	显示轨道名称
@@ -977,9 +972,9 @@ automation	trim	微调
 	Main output: {format}	主输出：{format}
 	auto {mode}	自动 {mode}
 	t/l	触/锁
-	{note} dotted	{note} 附点
-	{note} triplet	{note} 三连音
-	{note} dotted triplet	{note} 附点三连音
+	{note} dotted	附点 {note}
+	{note} triplet	{note}三连音
+	{note} dotted triplet	附点 {note}三连音
 	{value} sec	{value} 秒
 @plural	{n} frame|{n} frames	{n} 帧
 	1 msec	1 毫秒
@@ -1008,8 +1003,8 @@ automation	trim	微调
 	Automation Mode	自动化模式
 	Bounce Stems...	导出分轨...
 	Bypass Insert	旁通插入
-	Clear All Mutes	清除全部静音
-	Clear All Solos	清除全部独奏
+	Clear All Mutes	取消全部静音
+	Clear All Solos	取消全部独奏
 	Clear Automation	清除自动化
 	Clear Clips	清除片段
 	Clear Sampler Sample	清除采样器样本
@@ -1018,7 +1013,7 @@ automation	trim	微调
 	Delete Memory Location	删除记忆位置
 	Delete Notes	删除音符
 	Delete Unused Playlists	删除未使用的播放列表
-	Deselect All	取消全部选择
+	Deselect All	取消全选
 	Duplicate Playlist	复制播放列表
 	Edit Memory Location	编辑记忆位置
 	Edit Mode	编辑模式
@@ -1061,8 +1056,8 @@ automation	trim	微调
 	New Memory Location	新建记忆位置
 	Nudge Clip Gain Down	向下微调片段增益
 	Nudge Clip Gain Up	向上微调片段增益
-	Nudge Value	微调值
-	Object / Bed	对象/床
+	Nudge Value	微移值
+	Object / Bed	对象/声床
 	Open Session...	打开会话...
 	Open/Close Folder	展开/折叠文件夹
 	Parity Report	对等报告
@@ -1082,11 +1077,11 @@ automation	trim	微调
 	Redo	重做
 	Remove Insert	移除插入
 	Remove Send	移除发送
-	Remove Tempo Change	移除速度变更
+	Remove Tempo Change	移除速度更改
 	Reset Edit Settings	重置编辑设置
 	Return to Zero	回到零点
 	Rewind	倒回
-	Scroll Timeline	滚动时间轴
+	Scroll Timeline	滚动时间线
 	Select Playlist	选择播放列表
 	Send Level	发送电平
 	Set Clip Effects	设置片段效果
@@ -1103,21 +1098,21 @@ automation	trim	微调
 	Set Zoom	设置缩放
 	Show Grid Lines	显示网格线
 	Shuffle Lock	随机锁定
-	Snap to Grid	对齐网格
+	Snap to Grid	吸附到网格
 	Solo	独奏
 	Solo Safe	独奏安全
 	Stop	停止
 	Store Plugin State	保存插件状态
 	Sub Counter	副计数器
-	Tab	切换
-	Tempo Change	速度变更
+	Tab	Tab
+	Tempo Change	速度更改
 	Toggle Group Active	切换编组启用
 	Track Comments	轨道注释
 	Track Input	轨道输入
 	Track Output	轨道输出
 	Track Timebase	轨道时基
 	Track View	轨道视图
-	Transport Status	传输状态
+	Transport Status	走带状态
 	Trim Clip	修剪片段
 	Undo	撤销
 	View Flags	视图标记
