@@ -3,7 +3,9 @@
 Reference material for translating SoundCraft's UI accurately. This directory is
 **documentation and tooling only** — the shipped catalog stays
 `crates/ui-egui/src/i18n/zh-hans.tsv`, and the shipped terminology decisions stay
-in [`../localization-zh-hans.md`](../localization-zh-hans.md).
+in [`../localization-zh-hans.md`](../localization-zh-hans.md). How the catalog is
+built, packed, switched and tested is in [`../localization.md`](../localization.md);
+this directory is about *wording*.
 
 ## Why this exists
 
@@ -62,6 +64,10 @@ composition.
 # see sources/SOURCES.md for the exact commands per project
 python3 docs/i18n/tools/cross_check.py          # regenerate the report
 ```
+
+The current report compares **1,032** deduplicated catalog keys: 171 consensus,
+56 majority-differs, 43 split and 762 with no data in the corpora (corpus and
+catalog of 2026-10-20).
 
 When the English catalog grows, re-run the cross-check before translating new
 strings: a term the ecosystem already agrees on should not be reinvented, and a

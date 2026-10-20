@@ -11,10 +11,10 @@ Advisory only — nothing here changes the catalog automatically. Wording change
 |---|---:|
 | consensus | 171 |
 | differs | 56 |
-| split | 42 |
-| no-data | 766 |
+| split | 43 |
+| no-data | 762 |
 
-Catalog keys compared: 1035 (deduplicated, length ≥ 3).
+Catalog keys compared: 1032 (deduplicated, length ≥ 3).
 
 
 ## Majority differs from our wording (review first)
@@ -61,7 +61,7 @@ Catalog keys compared: 1035 (deduplicated, length ≥ 3).
 | Grabber | 抓取工具 | Audacity: 获取器 | 0/1 | differs |
 | Exponential | 指数 | Ardour: 指数的 | 0/1 | differs |
 | GROUPS | 编组 | Hydrogen: 组 · MuseScore: 组 | 0/2 | differs |
-| SHUFFLE | 随机 | Mixxx: 随机排序 | 0/1 | differs |
+| SHUFFLE | 推移 | Mixxx: 随机排序 | 0/1 | differs |
 | Key | 调号 | Audacity: 关键字(&K)/键 · Mixxx: 调性/音调 · MuseScore: 键/音高 | 0/3 | differs |
 | no group | 无编组 | Ardour: 无群组 | 0/1 | differs |
 | Edit group | 编辑编组 | Ardour: 编辑分组... | 0/1 | differs |
@@ -95,6 +95,7 @@ Catalog keys compared: 1035 (deduplicated, length ≥ 3).
 | Other | 其他 | Ardour: 其它 · Audacity: 其他(&O).../其它/其它... · LMMS: 其他 · MuseScore: 其他... (&R)/其它/其它: | 1/4 | split |
 | Pitch Shift | 移调 | Ardour: 音高替换/音高替换... · Audacity: 变调 · Mixxx: 音高偏移 | 0/3 | split |
 | Project... | 工程... | Audacity: 项目/项目(&P) · Hydrogen: 项目(&J) · LMMS: 工程文件/项目: | 0/3 | split |
+| Reset Preferences | 重置首选项 | Audacity: 重置首选项 · MuseScore: 重置偏好设置 | 1/2 | split |
 | Reverse | 反转 | Ardour: 反转 · Audacity: 反向/反向(时间) · Hydrogen: 反向 · Mixxx: 反向 | 1/4 | split |
 | Samples | 采样 | Ardour: 样本 · Audacity: 采样 | 1/2 | split |
 | Selection | 选区 | Ardour: 已选择部分/已选择部分... · Audacity: 选区/选区(&S)/选择 · MuseScore: 节选 | 1/3 | split |

@@ -5,7 +5,9 @@ Conclusions drawn from the generated [`cross-check-report.md`](cross-check-repor
 references — see [`sources/SOURCES.md`](sources/SOURCES.md). This file records
 *decisions and their evidence*; the shipped strings stay in
 `crates/ui-egui/src/i18n/zh-hans.tsv`, and the short-form terminology table in
-`docs/localization-zh-hans.md` stays in sync with the **Decision** column.
+[`docs/localization-zh-hans.md`](../localization-zh-hans.md) stays in sync with the
+**Decision** column. How the catalog is built and switched is in
+[`docs/localization.md`](../localization.md).
 
 Verdicts: **keep** — our wording is right, evidence noted; **consider** — a real
 case for changing it (the 2026-10-20 pass applied the ones it had — see §3);
@@ -65,6 +67,7 @@ next pass; do not re-open a row without new evidence.
 | Normalize to -0.1 dBFS | 归一化至 | 标准化至 | One word family: Normalize = 标准化 (2/3 consensus). 归一化 is the loudness-community word, but two families in one catalog was worse — switching Normalize too was considered and rejected |
 | Power (waveform style) | 电源 | 功率 | Context is View ▸ Waveforms (peak vs power display), not the plug-in enable the old row assumed; mains power is meaningless here. Audacity's 开关 is the plug-in sense — noise |
 | Slip / SLIP (edit mode) | 滑移 | 滑动 | Community usage is 滑动模式; 滑移 has no corpus support. Applied to the edit-mode row and the SLIP toolbar tag |
+| Shuffle / SHUFFLE (edit mode) | 随机 | 推移 | 随机 reads as "random order" (playlist shuffle, Mixxx 随机排序). The edit mode ripples later clips when one moves, so 推移 is the movement metaphor; applied to the edit-mode tag, the toolbar tag, `推移模式`/`推移锁定` tooltips and Shuffle Lock = 推移锁定 (PR review, 2026-10-20) |
 | Strip Silence | 去除无声 | 去除无声 (kept) | No consensus (only Ardour 片段无声, a poor phrase). 去除静音 would clash with Mute = 静音; the command deletes silent ranges, so 去除无声 stays. Revisit only if the incumbent's Chinese UI can be observed |
 | Deselect All | 取消全部选择 | 取消全选 | Pairs with Select All = 全选; 取消全部选择 is merely longer |
 | All (command-label quantifier) | 所有… | 全部… | 全部 3/5. All labels now use it: All Automation 全部自动化, All Marker Rulers 全部标记标尺, All MIDI Notes Off 关闭全部 MIDI 音符, Clear All Clip Indicators 清除全部片段指示, Close All Workspaces 关闭全部工作区, Glide to All Enabled 滑变到全部已启用项, Write to All Enabled 写入全部已启用项, Hide All Floating Windows 隐藏全部浮动窗口. Running sentences keep 所有 (Display on All Channels 在所有通道上显示) |
@@ -106,6 +109,7 @@ Same English word, different sense — the cross-check cannot know the context:
 | Object → 对象物体 (Ardour) | One-off coinage |
 | Rectified → 已矫正 (Ardour) | Different rectifier context (waveform rectify = 整流, ours) |
 | Swing % → 摆动 (Ardour) | 摇摆 is the established swing-feel word (Hydrogen agrees) |
+| SHUFFLE → 随机排序 (Mixxx) | Mixxx's shuffle randomises playlist order; our Shuffle ripples clips (edit mode, §3). Same English word, different sense |
 | Power → 开关 (Audacity) | Audacity's switch enables a plug-in; our Power is the waveform display style (功率, §3) — same English word, different sense |
 | Ticks → 颗粒刻 (Hydrogen) / 拍子记号 (MuseScore) | Sequencer tick marks and score beat marks; our Tick is the timebase unit (§3) |
 | Minimal → 最小 (Audacity) | A different Audacity feature; ours is the Edit-window view preset 最简 (§3) |
@@ -113,12 +117,15 @@ Same English word, different sense — the cross-check cannot know the context:
 
 ## 5. Corpus coverage
 
-1,035 deduplicated catalog keys compared: 171 consensus, 56 majority-differs,
-42 split, 766 no-data (SoundCraft-specific command labels — clip gain plumbing,
+1,032 deduplicated catalog keys compared: 171 consensus, 56 majority-differs,
+43 split, 762 no-data (SoundCraft-specific command labels — clip gain plumbing,
 memory locations, per-slot sends/inserts — have no counterpart in the
 corpora). The 2026-10-20 wording pass rewrote 48 catalog rows and removed 5 dead
-ones (superseded save/close strings plus Middle and Shuffle, which no code looks
-up), leaving 1,109 entries.
+ones (superseded save/close strings, Middle, and a Shuffle row no code looked
+up). The review that followed landed the Shuffle decision (§3), folded the
+`@id` command-id rows into plain rows, and added the preference commands; the
+catalog now has 1,106 entries (the last dead row, `Interface Language`, was
+dropped when its `ui.language` command went away).
 
 For no-data terms the glossary above and the terminology table are
 the only authority; when coining new wording, prefer §2's rationale over

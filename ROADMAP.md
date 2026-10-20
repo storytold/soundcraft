@@ -96,7 +96,8 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Korean | ko | none | 0 % |
 | Vietnamese | vi | none | 0 % |
 
-Other languages shipped: 1 (Simplified Chinese). Detail: [localization-parity.md](docs/localization-parity.md).
+Other languages shipped: 1 (Simplified Chinese). Detail: [localization-parity.md](docs/localization-parity.md);
+the mechanism is in [localization.md](docs/localization.md).
 
 ## Upcoming
 
