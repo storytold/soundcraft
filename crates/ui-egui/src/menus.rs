@@ -73,7 +73,6 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("ui.bounce_dialog", "Bounce Mix…", "", None),
     ("ui.set", "Set UI State", "", None),
     ("ui.theme", "Appearance", "", None),
-    ("ui.language", "Interface Language", "", None),
 ];
 
 /// Extra catalog mappings handled by the UI layer.
@@ -676,23 +675,6 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.ui.theme = mode;
             json!({"mode": mode.id()})
         }
-        "ui.language" => {
-            let Some(code) = p.get("language").and_then(Value::as_str).map(str::trim) else {
-                return Some(Ok(json!({"language": app.ui.language, "resolved": crate::i18n::current().code()})));
-            };
-            // `auto` follows the desktop; a code or a locale tag (`zh-CN`) picks a registered catalog.
-            let chosen = if code.eq_ignore_ascii_case("auto") {
-                "auto".to_string()
-            } else {
-                match crate::i18n::Lang::from_code(code).or_else(|| crate::i18n::lang_from_tag(code)) {
-                    Some(lang) => lang.code().to_string(),
-                    None => return Some(Err(format!("unknown language `{code}` (auto or a registered code)"))),
-                }
-            };
-            app.ui.language = chosen;
-            let lang = crate::i18n::apply_preference(&app.ui.language);
-            json!({"language": app.ui.language, "resolved": lang.code()})
-        }
         "ui.set" => match serde_json::to_value(&app.ui) {
             Ok(mut cur) => {
                 if let (Some(obj), Some(patch)) = (cur.as_object_mut(), p.as_object()) {
@@ -788,17 +770,16 @@ mod tests {
         assert_eq!(instrument_track(e.session()).map(|t| t.0), Some(inst));
     }
 
-    /// `ui.language` stores and reports the registry's canonical spelling (`zh-Hans`, the form the
-    /// parity docs use) whatever casing or locale tag the caller passes.
+    /// The interface language is an engine preference, not a UI-only command: programmatic
+    /// callers use `prefs.set`, and the Appearance window only previews a draft before applying it.
     #[test]
-    fn the_language_command_reports_the_canonical_code() {
+    fn language_is_an_engine_preference_not_a_ui_command() {
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
-        for requested in ["zh-Hans", "zh-hans", "zh-Hans-CN", "zh_CN.UTF-8"] {
-            let answered = app.run("ui.language", json!({"language": requested}));
-            assert_eq!(answered, Ok(json!({"language": "zh-Hans", "resolved": "zh-Hans"})), "{requested}");
-            assert_eq!(app.ui.language, "zh-Hans");
-        }
-        assert!(app.run("ui.language", json!({"language": "xx-unknown"})).is_err());
-        app.run("ui.language", json!({"language": "en"})).unwrap();
+        assert!(!UI_COMMANDS.iter().any(|(id, ..)| *id == "ui.language"));
+        assert_eq!(app.run("prefs.get", json!({"path": "interface.language"})), Ok(json!("auto")));
+        app.run("prefs.set", json!({"path": "interface.language", "value": "zh-hans"})).unwrap();
+        assert_eq!(app.engine.prefs().interface.language, "zh-hans");
+        assert_eq!(app.run("prefs.get", json!({"path": "interface.language"})), Ok(json!("zh-hans")));
+        assert!(app.run("ui.language", json!({"language": "en"})).is_err());
     }
 }

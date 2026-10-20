@@ -26,9 +26,15 @@ serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
 image.workspace = true
+flate2.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+sys-locale.workspace = true
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
+# Glyph-coverage tests for the bundled web Han font.
+ttf-parser = "0.25"
 
 [lints]
 workspace = true
@@ -36,3 +42,4 @@ workspace = true
 [build-dependencies]
 serde_json = { workspace = true }
 toml = "1"
+flate2.workspace = true

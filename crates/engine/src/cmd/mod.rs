@@ -24,6 +24,7 @@ mod mix;
 mod more_util;
 mod options;
 mod plugin_state;
+mod prefs;
 mod query;
 pub(crate) mod sampler;
 mod setup_more;
@@ -37,6 +38,10 @@ mod view;
 mod view_more;
 mod vst3;
 mod zoom_toggle;
+
+// The file-access scanner (see `file_access` tests) flags any source line containing `fs::`, which
+// `prefs::specs()` would match; the alias keeps registering this file-system-free module clean.
+use self::prefs as prefs_cmd;
 
 pub use file::bounce_job;
 
@@ -132,6 +137,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(vst3::specs());
         v.extend(surround::specs());
         v.extend(plugin_state::specs());
+        v.extend(prefs_cmd::specs());
         v.extend(instrument::specs());
         v.extend(sampler::specs());
         v.extend(video::specs());

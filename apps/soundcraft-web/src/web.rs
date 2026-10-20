@@ -11,6 +11,8 @@ use wasm_bindgen::JsCast as _;
 
 const CANVAS_ID: &str = "soundcraft_canvas";
 const LOADING_ID: &str = "soundcraft_loading";
+/// Where the engine preference document lives in the browser (same JSON as `preferences.json`).
+const PREFERENCES_KEY: &str = "soundcraft.preferences";
 
 pub fn start() {
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
@@ -38,11 +40,14 @@ pub fn start() {
                     if let Some(rs) = &cc.wgpu_render_state {
                         log::info!("soundcraft-web: wgpu backend {:?}", rs.adapter.get_info().backend);
                     }
-                    let engine = if query().contains("empty") { Engine::default() } else { soundcraft_engine::demo::demo_engine() };
+                    let mut engine = if query().contains("empty") { Engine::default() } else { soundcraft_engine::demo::demo_engine() };
+                    load_preferences(&mut engine);
                     let player = soundcraft_playback::Player::new(Arc::new(engine.session().clone()));
-                    soundcraft_ui_egui::i18n::init_system_locale();
+                    // `Auto` follows the browser's language list, before the first frame.
+                    soundcraft_ui_egui::i18n::init_system_locale_with(navigator_languages());
                     let app = SoundApp::new(engine, Some(player), Services::default());
-                    Ok(Box::new(WebShell { app, inbox: Rc::default(), samples: Rc::default() }))
+                    let saved_prefs_revision = app.engine.prefs_revision();
+                    Ok(Box::new(WebShell { app, inbox: Rc::default(), samples: Rc::default(), saved_prefs_revision }))
                 }),
             )
             .await;
@@ -57,6 +62,53 @@ pub fn start() {
 
 fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
+}
+
+/// The browser's preferred languages, bounded: `Auto` resolves through the same registry as the
+/// desktop's locale detection.
+fn navigator_languages() -> Vec<String> {
+    const MAX_TAGS: usize = 64;
+    let Some(navigator) = web_sys::window().map(|w| w.navigator()) else { return Vec::new() };
+    let languages = navigator.languages();
+    let mut tags = Vec::new();
+    for index in 0..languages.length().min(MAX_TAGS as u32) {
+        if let Some(tag) = languages.get(index).as_string() {
+            tags.push(tag);
+        }
+    }
+    tags
+}
+
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
+/// Load the preference document from the browser's local storage (lenient, like the desktop file).
+fn load_preferences(engine: &mut Engine) {
+    let Some(storage) = local_storage() else { return };
+    let Ok(Some(json)) = storage.get_item(PREFERENCES_KEY) else { return };
+    if json.len() as u64 > soundcraft_engine::prefs::MAX_BYTES {
+        log::warn!("preferences: the saved document exceeds the {} KiB limit", soundcraft_engine::prefs::MAX_BYTES / 1024);
+        return;
+    }
+    for warning in engine.load_prefs_json(json.as_bytes()) {
+        log::warn!("preferences: {warning}");
+    }
+}
+
+/// Store the preference document when it changed (the same JSON as the desktop's file).
+fn save_preferences(engine: &Engine) {
+    let Some(storage) = local_storage() else { return };
+    let json = match engine.prefs_json() {
+        Ok(json) => json,
+        Err(error) => return log::warn!("preferences: {error}"),
+    };
+    if json.len() as u64 > soundcraft_engine::prefs::MAX_BYTES {
+        return log::warn!("preferences: refusing to store a {} KiB document", json.len() / 1024);
+    }
+    if let Err(error) = storage.set_item(PREFERENCES_KEY, &json) {
+        log::warn!("preferences: could not be stored: {error:?}");
+    }
 }
 
 /// What a file read from the browser is for.
@@ -116,6 +168,8 @@ struct WebShell {
     app: SoundApp,
     inbox: Inbox,
     samples: SampleInbox,
+    /// The engine preferences revision last stored in `localStorage`.
+    saved_prefs_revision: u64,
 }
 
 impl WebShell {
@@ -205,6 +259,12 @@ impl eframe::App for WebShell {
             self.app.load_sample_bytes(&read, bytes);
         }
         self.app.logic(ctx);
+        // Preferences change rarely (the Appearance window, agents): store them when they do.
+        let prefs_revision = self.app.engine.prefs_revision();
+        if prefs_revision != self.saved_prefs_revision {
+            self.saved_prefs_revision = prefs_revision;
+            save_preferences(&self.app.engine);
+        }
         // A prompt opened during this frame becomes a picker on the next one.
         self.take_path_prompt(ctx);
     }

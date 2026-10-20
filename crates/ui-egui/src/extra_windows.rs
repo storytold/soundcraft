@@ -18,6 +18,8 @@ pub struct ExtraState {
     pub ui_scale: f32,
     pub reduce_motion: bool,
     pub tooltips: bool,
+    /// A language choice shown by the Appearance window but not committed yet (Apply commits it).
+    pub language_draft: Option<String>,
     last_auto_update: f64,
     applied: Option<(f32, bool)>,
 }
@@ -31,6 +33,7 @@ impl Default for ExtraState {
             ui_scale: 1.0,
             reduce_motion: false,
             tooltips: true,
+            language_draft: None,
             last_auto_update: 0.0,
             applied: None,
         }
@@ -150,16 +153,36 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
     app.extra.show_renderer = open;
 }
 
+/// The stored preference in canonical form: `auto` or the registry's lowercase code. An older
+/// build may have saved `zh-Hans`; it loads, and the window shows and applies the canonical form.
+fn canonical_language(preference: &str) -> String {
+    if preference.trim().eq_ignore_ascii_case("auto") {
+        return "auto".to_owned();
+    }
+    crate::i18n::Lang::from_code(preference).map_or_else(|| preference.to_owned(), |lang| lang.code().to_owned())
+}
+
 fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.extra.show_ui_customization;
     if !open {
+        // Closing the window throws an unapplied language choice away, like Cancel.
+        app.extra.language_draft = None;
         return;
     }
+    // The committed language is the engine preference; a choice is a draft until Apply.
+    let committed = canonical_language(&app.engine.prefs().interface.language);
+    let draft = app.extra.language_draft.clone().unwrap_or_else(|| committed.clone());
+    let preview = crate::i18n::Lang::from_pref(&draft);
+    let mut apply = false;
+    let mut cancel = false;
+    let mut reset = false;
     egui::Window::new(egui::RichText::new(crate::i18n::t("Appearance")).font(bold(13.0)))
         .open(&mut open)
-        .default_size(vec2(380.0, 210.0))
+        .default_size(vec2(380.0, 250.0))
         .resizable(false)
         .show(ctx, |ui| {
+            // The window previews a pending language; the rest of the app keeps the committed one.
+            let _preview = crate::i18n::language_scope(preview);
             egui::Grid::new("ui_custom").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
                 ui.label(crate::i18n::t("Interface scale"));
                 ui.add(egui::Slider::new(&mut app.extra.ui_scale, 0.75..=1.5).step_by(0.05).custom_formatter(|v, _| format!("{:.0} %", v * 100.0)));
@@ -184,31 +207,53 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                 crate::widgets::checkbox(ui, &mut app.extra.auto_update_config, "");
                 ui.end_row();
                 ui.label(crate::i18n::t("Language"));
-                // Same catalog the menus use: a change is visible on the next frame.
-                let automatic = app.ui.language.eq_ignore_ascii_case("auto");
+                let automatic = draft.eq_ignore_ascii_case("auto");
                 let mut chosen: Option<String> = None;
                 let auto_label = crate::i18n::fmt(crate::i18n::t("Auto ({name})"), &[("name", crate::i18n::system_lang().name())]);
-                let selected = if automatic { auto_label.clone() } else { crate::i18n::Lang::from_pref(&app.ui.language).name().to_string() };
+                let selected = if automatic { auto_label.clone() } else { crate::i18n::Lang::from_pref(&draft).name().to_string() };
                 egui::ComboBox::from_id_salt("interface_language").selected_text(selected).show_ui(ui, |ui| {
                     if ui.selectable_label(automatic, &auto_label).clicked() {
                         chosen = Some("auto".to_string());
                     }
                     for lang in crate::i18n::Lang::all() {
-                        if ui.selectable_label(app.ui.language == lang.code(), lang.name()).clicked() {
+                        if ui.selectable_label(draft.eq_ignore_ascii_case(lang.code()), lang.name()).clicked() {
                             chosen = Some(lang.code().to_string());
                         }
                     }
                 });
                 if let Some(code) = chosen {
-                    let _ = app.run("ui.language", json!({"language": code}));
+                    // Choosing the committed value again means there is nothing left to apply.
+                    app.extra.language_draft = (code != committed).then_some(code);
                 }
                 ui.end_row();
             });
-            if ui.button(crate::i18n::t("Reset")).clicked() {
-                app.extra.ui_scale = 1.0;
-                app.extra.reduce_motion = false;
-                let _ = app.run("ui.theme", json!({"mode": crate::theme::ThemeMode::default().id()}));
-            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                // Nothing to apply until a different language is chosen; both buttons stay greyed.
+                let pending = app.extra.language_draft.is_some();
+                apply = ui.add_enabled(pending, egui::Button::new(crate::i18n::t("Apply"))).clicked();
+                cancel = ui.add_enabled(pending, egui::Button::new(crate::i18n::t("Cancel"))).clicked();
+                if ui.button(crate::i18n::t("Reset")).clicked() {
+                    reset = true;
+                }
+            });
         });
+    if apply {
+        let chosen = app.extra.language_draft.clone().unwrap_or_else(|| committed.clone());
+        // A committed change is picked up by `logic` on the next frame, which also reinstalls fonts.
+        if app.run("prefs.set", json!({"path": "interface.language", "value": chosen})).is_ok() {
+            app.extra.language_draft = None;
+        }
+    }
+    if reset {
+        app.extra.ui_scale = 1.0;
+        app.extra.reduce_motion = false;
+        app.extra.language_draft = None;
+        let _ = app.run("ui.theme", json!({"mode": crate::theme::ThemeMode::default().id()}));
+        let _ = app.run("prefs.reset", json!({"path": "interface.language"}));
+    }
+    if cancel || !open {
+        app.extra.language_draft = None;
+    }
     app.extra.show_ui_customization = open;
 }

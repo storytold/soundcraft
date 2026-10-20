@@ -1,16 +1,18 @@
-//! UI localisation. Strings in code stay English and are the default lookup keys; a per-language
-//! catalog (`*.tsv`, see `zh-hans.tsv` for the format) maps them to display text at render time.
-//! Command ids, menu paths used for logic, the control channel, the CLI and MCP never see
-//! translated text, so agents and scripts are unaffected. A string without a translation is shown
-//! in English.
+//! UI localisation. English strings in code are the source keys; each language ships one UTF-8
+//! catalog (`src/i18n/<code>.tsv`, `context<TAB>source<TAB>translation`) that `build.rs` packs and
+//! deflates into the binary. Command ids, menu paths used for logic, the control channel, the CLI
+//! and MCP never see translated text, so agents and scripts are unaffected; a string without a
+//! translation is shown in English.
 //!
 //! # Adding a language
 //! 1. Add `xx.tsv` next to `zh-hans.tsv` (copy its header; translate from the *meaning* of the
-//!    English text, clean-room).
-//! 2. Add one row to [`LANGUAGES`] (code, native name, catalog, plural rule).
+//!    English text, clean-room: no proprietary translation resources).
+//! 2. Add one row to [`LANGUAGES`]: the lowercase BCP 47 code, the language's native name,
+//!    `catalog!("xx")`, the plural rule, and `complete_menus` when the catalog translates every
+//!    menu string (the tests hold complete catalogs to that promise).
 //!
-//! That is all: the Appearance dropdown, the system-locale match and the catalog tests (parse,
-//! placeholders, plural forms, menu coverage) pick it up from the registry.
+//! That is all: the Appearance language choice, the system-locale match and the catalog tests pick
+//! it up from the registry, and `build.rs` packs it on the next build.
 //!
 //! # Looking strings up
 //! - [`t`]: a plain string. [`tr_ctx`]: when one English word needs different translations.
@@ -19,33 +21,51 @@
 //! - [`trn`]: plural-aware (`{n}` is filled in). [`fmt`]: fill `{name}` placeholders after [`t`];
 //!   translators may reorder placeholders freely.
 //!
-//! Unlike the reference implementation the catalog is compiled in as plain UTF-8 rather than
-//! deflated by `build.rs`: `include_str!` costs no build script, and a desktop binary's size
-//! budget is not the web build's.
+//! Catalogs are deflated and packed by `build.rs` (see its header): the desktop binary and the web
+//! build share one compact representation, and a catalog is inflated once on first use. The
+//! preference value (`interface.language`) is `auto` or a lowercase code such as `zh-hans`;
+//! [`Lang::from_code`] still accepts the canonical BCP 47 spelling (`zh-Hans`) for older saves.
+//! English is the fallback when a string or the whole system locale is untranslated.
 
 mod catalog;
 mod system;
 
-pub use system::{LOCALE_OVERRIDE, init_system_locale, system_lang};
+pub use system::{LOCALE_OVERRIDE, init_system_locale, init_system_locale_with, system_lang};
 
 use std::cell::Cell;
+use std::io::Read as _;
 use std::sync::OnceLock;
 
 use catalog::Catalog;
 
+/// Upper bound on an inflated catalog (the packed blob is a handful of bytes per entry; a corrupted
+/// or hostile blob must not allocate without limit).
+const MAX_CATALOG_BYTES: usize = 16 << 20;
+
+/// The deflated catalog that `build.rs` packed for `$code`.
+macro_rules! catalog {
+    ($code:literal) => {
+        include_bytes!(concat!(env!("OUT_DIR"), "/i18n/", $code, ".tsv.deflate"))
+    };
+}
+
+/// The keys table shared by every packed catalog (deflated lines of `context<TAB>source`).
+const KEYS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/i18n/keys.deflate"));
+
 /// One supported UI language.
 pub struct LangInfo {
-    /// BCP 47 code in canonical case: language lowercase, script titlecase (`en`, `zh-Hans`). This
-    /// is also the `ui.language` value, so it is matched case-insensitively.
+    /// Lowercase BCP 47 code: language lowercase, script lowercase (`en`, `zh-hans`). This is also
+    /// the `interface.language` value; lookups accept any casing, so a preference written before
+    /// the casing changed (`zh-Hans`) still resolves.
     pub code: &'static str,
     /// The language's name in itself, shown in the Appearance dropdown.
     pub name: &'static str,
-    /// Catalog file contents (empty for the built-in English).
-    pub source: &'static str,
+    /// The deflated, packed catalog (empty for the built-in English source language).
+    pub source: &'static [u8],
     /// Plural form index for a count (English: 0 = one, 1 = other; Chinese: always 0, the noun
     /// never changes). A catalog's `@plural` entries list one form per index.
     pub plural: fn(u64) -> usize,
-    /// Must the catalog cover every menu string? (checked by the tests)
+    /// Must the catalog cover every menu, command and menu-path string? (checked by the tests)
     pub complete_menus: bool,
     catalog: OnceLock<Catalog>,
 }
@@ -60,11 +80,11 @@ fn plural_none(_: u64) -> usize {
 
 /// The registry. English first: it is the fallback and the source language.
 pub static LANGUAGES: [LangInfo; 2] = [
-    LangInfo { code: "en", name: "English", source: "", plural: plural_one_other, complete_menus: false, catalog: OnceLock::new() },
+    LangInfo { code: "en", name: "English", source: b"", plural: plural_one_other, complete_menus: false, catalog: OnceLock::new() },
     LangInfo {
-        code: "zh-Hans",
+        code: "zh-hans",
         name: "简体中文",
-        source: include_str!("zh-hans.tsv"),
+        source: catalog!("zh-hans"),
         // Chinese nouns do not inflect for number: "1 个片段" and "3 个片段".
         plural: plural_none,
         complete_menus: true,
@@ -72,9 +92,80 @@ pub static LANGUAGES: [LangInfo; 2] = [
     },
 ];
 
+/// Inflate one deflated blob, refusing to grow past [`MAX_CATALOG_BYTES`].
+fn inflate(bytes: &[u8], what: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut decoder = flate2::read::DeflateDecoder::new(bytes);
+    let mut capped = std::io::Read::take(&mut decoder, MAX_CATALOG_BYTES as u64 + 1);
+    if let Err(e) = capped.read_to_end(&mut out) {
+        eprintln!("i18n: inflating {what}: {e}");
+        return None;
+    }
+    if out.len() > MAX_CATALOG_BYTES {
+        eprintln!("i18n: {what} inflates past the {MAX_CATALOG_BYTES}-byte cap");
+        return None;
+    }
+    Some(out)
+}
+
+/// Expand one packed catalog back into `context<TAB>source<TAB>translation` text, using the shared
+/// keys table; the result is exactly the source file (minus its trailing newline).
+fn unpack(source: &[u8]) -> Option<String> {
+    let keys = inflate(KEYS, "the keys table")?;
+    let keys = String::from_utf8(keys).ok()?;
+    let keys: Vec<&str> = keys.lines().collect();
+    let packed = inflate(source, "the catalog")?;
+    let packed = String::from_utf8(packed).ok()?;
+    let mut text = String::with_capacity(packed.len() * 2);
+    let mut next = 0usize;
+    for (n, line) in packed.lines().enumerate() {
+        if n > 0 {
+            text.push('\n');
+        }
+        match line.chars().next() {
+            Some('\u{1}') => {
+                // The next expected key, in the keys table's order.
+                text.push_str(keys.get(next)?);
+                text.push('\t');
+                text.push_str(&line[1..]);
+                next = next.saturating_add(1);
+            }
+            Some('\u{2}') => {
+                let (offset, translation) = line[1..].split_once('\t')?;
+                let offset: i64 = offset.parse().ok()?;
+                let index = usize::try_from((next as i64).checked_add(offset)?).ok()?;
+                text.push_str(keys.get(index)?);
+                text.push('\t');
+                text.push_str(translation);
+                next = index.saturating_add(1);
+            }
+            Some('\u{3}') => text.push_str(&line[1..]),
+            _ => text.push_str(line),
+        }
+    }
+    Some(text)
+}
+
 impl LangInfo {
     fn catalog(&self) -> &Catalog {
-        self.catalog.get_or_init(|| Catalog::parse(self.source))
+        self.catalog.get_or_init(|| {
+            if self.source.is_empty() {
+                return Catalog::default();
+            }
+            match unpack(self.source) {
+                Some(text) => Catalog::parse(&text),
+                None => {
+                    eprintln!("i18n: the {} catalog is unreadable; showing English", self.code);
+                    Catalog::default()
+                }
+            }
+        })
+    }
+
+    /// The expanded source text of the bundled catalog (tests only; the UI uses [`Self::catalog`]).
+    #[cfg(test)]
+    fn expanded_source(&self) -> Option<String> {
+        if self.source.is_empty() { Some(String::new()) } else { unpack(self.source) }
     }
 }
 
@@ -103,13 +194,13 @@ impl Lang {
         self.0.code
     }
 
-    /// A language by its exact code.
+    /// A language by its code; casing is ignored (`zh-Hans` finds `zh-hans`).
     pub fn from_code(code: &str) -> Option<Lang> {
         LANGUAGES.iter().find(|l| l.code.eq_ignore_ascii_case(code)).map(Lang)
     }
 
-    /// Resolve the saved `language` preference: a language code, or `auto` (and anything unknown,
-    /// e.g. a code written by a newer version) to follow the desktop locale.
+    /// Resolve the saved `interface.language` preference: a language code, or `auto` (and anything
+    /// unknown, e.g. a code written by a newer version) to follow the desktop locale.
     pub fn from_pref(pref: &str) -> Lang {
         if pref.trim().eq_ignore_ascii_case("auto") || pref.trim().is_empty() {
             return system_lang();
@@ -206,7 +297,8 @@ pub fn language_scope(lang: Lang) -> impl Drop {
 }
 
 /// Apply the saved preference to this thread's drawing language; returns the resolved language.
-/// Called once per frame by the shell, so a change in Appearance takes effect immediately.
+/// Called once per frame by the shell, so a change in the language preference takes effect
+/// immediately.
 pub fn apply_preference(pref: &str) -> Lang {
     let lang = Lang::from_pref(pref);
     set_current(lang);
@@ -239,11 +331,33 @@ pub fn tr_id<'a>(lang: Lang, id: &str, label: &'a str) -> &'a str {
 }
 
 /// Fill `{name}` placeholders. Unknown placeholders are left as written.
+///
+/// The template is scanned once: a substituted value is never scanned again, so user data that
+/// happens to look like a placeholder (a session named `Mix {n}`, say) stays literal, and only
+/// placeholders that the template itself contains are replaced.
 pub fn fmt(template: &str, args: &[(&str, &str)]) -> String {
-    let mut out = template.to_string();
-    for (k, v) in args {
-        out = out.replace(&format!("{{{k}}}"), v);
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            // An unclosed `{` is literal text.
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let name = &after[..close];
+        match args.iter().find(|(k, _)| *k == name) {
+            Some((_, value)) => out.push_str(value),
+            None => {
+                out.push('{');
+                out.push_str(name);
+                out.push('}');
+            }
+        }
+        rest = &after[close + 1..];
     }
+    out.push_str(rest);
     out
 }
 
@@ -257,8 +371,8 @@ pub fn trn(lang: Lang, n: u64, one: &str, other: &str) -> String {
 /// Separator between two sentences of a composed message: scripts writing full-width punctuation
 /// (Chinese) need none, others take a space. Messages that are one `fmt` template never need this.
 pub fn sentence_space() -> &'static str {
-    // Keyed on the language rather than the whole code, so the canonical spelling (`zh-Hans`) and
-    // any region variant (`zh_CN`, `zh_TW`) get the same full-width punctuation.
+    // Keyed on the language rather than the whole code, so every region variant (`zh-CN`, `zh-Hans`)
+    // gets the same full-width punctuation.
     match current().code().split(['-', '_']).next() {
         Some(language) if language.eq_ignore_ascii_case("zh") => "",
         _ => " ",
@@ -270,7 +384,7 @@ mod tests {
     use super::catalog::parse_entries;
     use super::*;
 
-    const ZH: fn() -> Lang = || Lang::from_code("zh-Hans").expect("zh-Hans registered");
+    const ZH: fn() -> Lang = || Lang::from_code("zh-hans").expect("zh-hans registered");
 
     #[test]
     fn chinese_tags_resolve_to_simplified() {
@@ -289,10 +403,13 @@ mod tests {
     }
 
     #[test]
-    fn the_code_keeps_the_canonical_bcp_47_spelling() {
-        assert_eq!(Lang::from_code("zh-Hans").map(Lang::code), Some("zh-Hans"));
-        // A preference saved with any other casing still resolves to the same language.
-        for code in ["zh-hans", "ZH-HANS", "zh-Hans"] {
+    fn codes_are_lowercase_bcp_47() {
+        for lang in Lang::all() {
+            assert_eq!(lang.code(), lang.code().to_ascii_lowercase(), "{} is not lowercase", lang.code());
+        }
+        assert_eq!(Lang::from_code("zh-hans").map(Lang::code), Some("zh-hans"));
+        // The canonical BCP 47 spelling, and any other casing, still resolves (older preferences).
+        for code in ["zh-hans", "zh-Hans", "ZH-HANS"] {
             assert_eq!(Lang::from_code(code), Some(ZH()), "{code}");
         }
     }
@@ -307,7 +424,7 @@ mod tests {
     #[test]
     fn preferences_resolve_with_fallback() {
         assert_eq!(Lang::from_pref("zh-hans"), ZH());
-        assert_eq!(Lang::from_pref("ZH-Hans"), ZH());
+        assert_eq!(Lang::from_pref("zh-Hans"), ZH());
         assert_eq!(Lang::from_pref("zh-CN"), ZH());
         assert_eq!(Lang::from_pref("en"), Lang::EN);
         // `auto`, an empty value and unknown codes follow the desktop (English under test).
@@ -317,13 +434,27 @@ mod tests {
     }
 
     #[test]
-    fn bundled_catalogs_parse_without_errors() {
+    fn bundled_catalogs_unpack_and_parse_without_errors() {
         for lang in Lang::all() {
-            let (entries, errors) = parse_entries(lang.0.source);
+            let text = lang.0.expanded_source().unwrap_or_else(|| panic!("{} catalog unpacks", lang.code()));
+            let (entries, errors) = parse_entries(&text);
             assert!(errors.is_empty(), "{}: {errors:?}", lang.code());
-            assert_eq!(entries.len(), lang.0.source.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count());
+            assert_eq!(entries.len(), text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count());
         }
-        assert!(Lang::EN.0.source.is_empty());
+        assert!(Lang::EN.0.source.is_empty(), "English is the source language and has no catalog");
+    }
+
+    /// The packed catalogs must expand back to exactly the files in the tree, so a reviewer can
+    /// read and edit plain TSV while the binary carries the small deflated form.
+    #[test]
+    fn packed_catalogs_round_trip_to_their_sources() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/i18n");
+        for lang in Lang::all().filter(|l| *l != Lang::EN) {
+            let expanded = lang.0.expanded_source().unwrap_or_else(|| panic!("{} catalog unpacks", lang.code()));
+            let path = dir.join(format!("{}.tsv", lang.code()));
+            let Ok(original) = std::fs::read_to_string(&path) else { continue };
+            assert_eq!(expanded, original.trim_end_matches('\n'), "{} does not round-trip", lang.code());
+        }
     }
 
     /// Duplicate keys silently shadow each other; placeholders and trailing ellipses must survive
@@ -331,7 +462,8 @@ mod tests {
     #[test]
     fn catalogs_have_unique_keys_and_matching_placeholders() {
         for lang in Lang::all().filter(|l| *l != Lang::EN) {
-            let (entries, _) = parse_entries(lang.0.source);
+            let text = lang.0.expanded_source().unwrap_or_default();
+            let (entries, _) = parse_entries(&text);
             let mut seen = std::collections::HashSet::new();
             for (ctx, src, tr) in &entries {
                 let key = format!("{ctx}\u{1}{src}");
@@ -354,42 +486,41 @@ mod tests {
         }
     }
 
-    /// The parity gate: a translated interface must not leave English menu items behind. Every
-    /// node the menu bar draws, and every label of a menu-only UI command, needs an entry.
+    /// The parity gate: a translated interface must not leave English text behind. It covers every
+    /// node the menu bar draws, every label of a menu-only UI command, every engine command label
+    /// and every segment of every engine menu path — the whole composed interface, not just leaves.
     #[test]
-    fn simplified_chinese_covers_every_menu_label() {
+    fn simplified_chinese_covers_the_composed_interface() {
         let zh = ZH();
         assert!(zh.complete_menus(), "Simplified Chinese participates in the coverage gate");
-        let mut missing: Vec<&str> = Vec::new();
+        let mut missing: Vec<String> = Vec::new();
         for root in crate::menus::tree() {
             let mut stack = vec![root];
             while let Some(node) = stack.pop() {
                 if !has(zh, &node.label) {
-                    missing.push(Box::leak(node.label.clone().into_boxed_str()));
+                    missing.push(node.label.clone());
                 }
                 stack.extend(node.children);
             }
         }
         for (_, label, _, _) in crate::menus::UI_COMMANDS {
             if !has(zh, label) {
-                missing.push(label);
+                missing.push((*label).to_owned());
+            }
+        }
+        for spec in soundcraft_engine::command_specs() {
+            if !has(zh, spec.label) {
+                missing.push(spec.label.to_owned());
+            }
+            for segment in spec.menu {
+                if !has(zh, segment) {
+                    missing.push((*segment).to_owned());
+                }
             }
         }
         missing.sort_unstable();
         missing.dedup();
-        assert!(missing.is_empty(), "Simplified Chinese is missing {} menu label(s): {missing:?}", missing.len());
-    }
-
-    /// Command labels reach the shortcuts window and the command dialogs, so they are held to the
-    /// same coverage as menu paths — a translated menu over English shortcuts would be half a
-    /// translation. (The parity report and MCP keep the English labels: they are machine surfaces.)
-    #[test]
-    fn simplified_chinese_covers_every_command_label() {
-        let zh = ZH();
-        let mut missing: Vec<&str> = soundcraft_engine::command_specs().iter().filter(|c| !has(zh, c.label)).map(|c| c.label).collect();
-        missing.sort_unstable();
-        missing.dedup();
-        assert!(missing.is_empty(), "Simplified Chinese is missing {} command label(s): {missing:?}", missing.len());
+        assert!(missing.is_empty(), "Simplified Chinese is missing {} label(s): {missing:?}", missing.len());
     }
 
     #[test]
@@ -401,7 +532,7 @@ mod tests {
         assert_eq!(tr(Lang::EN, "Play"), "Play");
         // Context disambiguates a word the menu and a panel use differently.
         assert_eq!(tr_ctx(zh, "transport", "Play"), "播放");
-        // A command-id entry wins over the label's translation.
+        // A command-id entry wins over the label's translation (and falls back to the label).
         assert_eq!(tr_id(zh, "edit.undo", "Undo"), "撤销");
         assert_eq!(tr_id(zh, "no.such.id", "Play"), "播放");
     }
@@ -425,6 +556,18 @@ mod tests {
         assert_eq!(line, "打开 /tmp/Song.scraft");
         // A translator may move the placeholder.
         assert_eq!(fmt(tr(zh, "Search {n} commands"), &[("n", "3")]), "搜索 3 条命令");
+    }
+
+    /// A substituted value is user data: placeholder-looking text inside it must stay literal, and
+    /// a template placeholder with no argument stays a placeholder.
+    #[test]
+    fn fmt_does_not_rescan_substituted_values() {
+        assert_eq!(fmt("{a} and {b}", &[("a", "{b}"), ("b", "X")]), "{b} and X");
+        assert_eq!(fmt("Mix {n}", &[("n", "{n}")]), "Mix {n}");
+        assert_eq!(fmt("Open {path}", &[("other", "x")]), "Open {path}");
+        assert_eq!(fmt("no placeholders", &[("a", "b")]), "no placeholders");
+        assert_eq!(fmt("{unclosed", &[]), "{unclosed");
+        assert_eq!(fmt("{a}{a}", &[("a", "x")]), "xx");
     }
 
     #[test]

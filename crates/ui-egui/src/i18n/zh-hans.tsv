@@ -1,14 +1,18 @@
-# Simplified Chinese (zh-Hans) catalog. UTF-8, TAB-separated columns:
+# Simplified Chinese (zh-hans) catalog. UTF-8, TAB-separated columns:
 # context <TAB> English source <TAB> Simplified Chinese translation
 #
-# Empty context: plain UI text. @id: stable command ID. @plural: one|other source
-# with a single Chinese form. Other contexts disambiguate the English meaning.
-# Escapes inside columns: \n, \t, \\. Keep {name} placeholders and trailing ….
+# This file is the source of truth. build.rs packs and deflates it into the binary (a shared
+# keys table plus one packed file per language, see build.rs and docs/localization.md); do not
+# edit the packed blobs by hand, they are regenerated from this file.
+#
+# Empty context: plain UI text. @id: stable command ID. @plural: one|other source with the
+# forms this language needs (Chinese has one). Other contexts disambiguate the English meaning.
+# Escapes inside columns: \n, \t, \\. Keep {name} placeholders and a trailing ….
 #
 # Original translations of SoundCraft's English source keys (menus, panels, dialogs and
-# messages). No proprietary translation resources were consulted or extracted.
-# Licensed MIT OR Apache-2.0, as the code. Product and technology names keep their spelling.
-# See docs/localization-zh-hans.md.
+# messages), written clean-room: no proprietary translation resources were consulted or
+# extracted. Licensed MIT OR Apache-2.0, as the code. Product and technology names keep their
+# spelling. See docs/localization.md and docs/localization-zh-hans.md.
 
 	1	1
 	1st Order Ambisonics	一阶环绕声
@@ -201,6 +205,7 @@
 	Freeze	冻结
 	Gain	增益
 	Get Info...	获取信息...
+	Get Preferences	获取首选项
 	Glide Pan Only	仅滑变声像
 	Glide to All Enabled	滑变到全部已启用项
 	Glide to Current	滑变到当前项
@@ -374,6 +379,7 @@
 	Renumber Bars...	重新编号小节...
 	Repeat to Fill Selection	重复填充选区
 	Repeat...	重复...
+	Reset Preferences	重置首选项
 	Restore Last Selection	恢复上次选区
 	Restore Performance...	恢复演奏...
 	Retrospective Record	追溯录音
@@ -384,6 +390,7 @@
 	Ruler Lines	标尺线
 	Rulers	标尺
 	S-Curve...	S 曲线...
+	Set Preferences	设置首选项
 	SIP (Solo In Place)	就地独奏 (SIP)
 	Samples	采样
 	SansAmp PSA-1	SansAmp PSA-1
@@ -771,12 +778,6 @@
 	Shift	Shift
 	Alt	Alt
 	Cmd	Cmd
-# --- Command ids whose wording differs from the menu leaf ---
-@id	edit.undo	撤销
-@id	edit.redo	重做
-@id	edit.cut	剪切
-@id	edit.copy	复制
-@id	edit.paste	粘贴
 
 # --- Counts: Chinese has one form ---
 @plural	{n} clip|{n} clips	{n} 个片段
@@ -842,7 +843,6 @@ automation	trim	微调
 	Audio Device	音频设备
 	Bounce Mix…	导出混音…
 	I/O Setup	I/O 设置
-	Interface Language	界面语言
 	Keyboard Shortcuts	键盘快捷键
 	MIDI Editors to Back	将 MIDI 编辑器移到后面
 	MIDI Editors to Front	将 MIDI 编辑器移到前面
@@ -875,7 +875,7 @@ automation	trim	微调
 	MEMORY LOCATIONS	记忆位置
 	UNDO HISTORY	撤销历史
 @plural	{n} track|{n} tracks	{n} 条轨道
-	SHUFFLE	随机
+	SHUFFLE	推移
 	SPOT	定位
 	SLIP	滑动
 	GRID	网格
@@ -885,8 +885,8 @@ automation	trim	微调
 	Clips	片段
 	Key	调号
 	Chords	和弦
-	Shuffle is locked ({cmd}-click to unlock)	随机模式已锁定（{cmd} 单击可解锁）
-	Shuffle mode ({fkey}); {cmd}-click locks it out	随机模式（{fkey}）；{cmd} 单击可将其锁定
+	Shuffle is locked ({cmd}-click to unlock)	推移模式已锁定（{cmd} 单击可解锁）
+	Shuffle mode ({fkey}); {cmd}-click locks it out	推移模式（{fkey}）；{cmd} 单击可将其锁定
 	Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes	网格模式（{fkey}；再次按下切换到相对网格）；Shift 单击：在其他模式中吸附到网格
 	{mode} mode ({fkey}); Shift-click adds Snap to Grid	{mode}模式（{fkey}）；Shift 单击可加入吸附到网格
 	INSERTS A-E	插入 A-E
@@ -1097,7 +1097,7 @@ automation	trim	微调
 	Set Volume	设置音量
 	Set Zoom	设置缩放
 	Show Grid Lines	显示网格线
-	Shuffle Lock	随机锁定
+	Shuffle Lock	推移锁定
 	Snap to Grid	吸附到网格
 	Solo	独奏
 	Solo Safe	独奏安全

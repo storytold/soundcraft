@@ -1,17 +1,20 @@
-//! The desktop's UI-language preference, read from the standard locale environment once.
+//! The desktop's UI-language preference, read once at startup.
 //!
-//! SoundCraft takes no dependency on a platform locale API: the POSIX variables below are what
-//! Linux, the BSDs and a macOS terminal session set, and [`LOCALE_OVERRIDE`] covers any other
-//! case (Windows, a locked-down desktop, scripted runs). Nothing here runs a subprocess, so
-//! startup cost and failure modes stay nil; a missing or unsupported preference means English.
+//! Native builds ask the platform's locale API through `sys-locale` (the preferred-language list on
+//! macOS and Windows, `LC_*`/`LANG` on Linux and the BSDs) and keep the POSIX environment variables
+//! as a fallback for terminals and headless runs. [`LOCALE_OVERRIDE`] wins over both, and the web
+//! shell supplies `navigator.languages` through [`init_system_locale_with`]. A missing or
+//! unsupported preference means English. Nothing here runs a subprocess, and every value taken from
+//! the environment or the platform is bounded before it reaches the resolver.
 
 use super::{Lang, lang_from_tag};
 
-/// A tag to trust above the environment (`zh_CN.UTF-8`, `de-DE`). Handy for scripts and tests.
+/// A tag to trust above the platform and the environment (`zh_CN.UTF-8`, `de-DE`). Handy for
+/// scripts and tests.
 pub const LOCALE_OVERRIDE: &str = "SOUNDCRAFT_LOCALE";
 
-/// At most this many tags are considered, each at most this long (an absurd environment must not
-/// grow the candidate list without bound).
+/// At most this many tags are considered, each at most this long (an absurd environment or platform
+/// list must not grow the candidate list without bound).
 const MAX_SYSTEM_TAGS: usize = 64;
 const MAX_SYSTEM_TAG_BYTES: usize = 128;
 
@@ -25,11 +28,26 @@ pub fn init_system_locale() {
     #[cfg(not(test))]
     {
         // A second call (two windows, a reloaded page) keeps the first answer.
-        let _ = SYSTEM.set(detect_system_tags());
+        let _ = SYSTEM.set(bounded_tags(detect_system_tags()));
     }
 }
 
-/// Resolve Auto against the desktop's preference. Missing or unsupported values give English.
+/// Read Auto from a caller-supplied preference list, most preferred first. The web build has no
+/// platform locale API: its shell passes `navigator.languages`, and the list is bounded like any
+/// other input. `init_system_locale` remains the entry point for native builds.
+pub fn init_system_locale_with(tags: Vec<String>) {
+    #[cfg(not(test))]
+    {
+        let _ = SYSTEM.set(bounded_tags(tags));
+    }
+    #[cfg(test)]
+    {
+        // Keep the thread-local test hook authoritative; still validate the input like production.
+        let _ = bounded_tags(tags);
+    }
+}
+
+/// Resolve Auto against the platform's preference. Missing or unsupported values give English.
 pub fn system_lang() -> Lang {
     #[cfg(test)]
     {
@@ -59,8 +77,23 @@ fn bounded_tags(tags: impl IntoIterator<Item = String>) -> Vec<String> {
         .collect()
 }
 
-/// The override, then `LANGUAGE` (a colon-separated priority list), then the POSIX precedence
-/// `LC_ALL` › `LC_MESSAGES` › `LANG`.
+/// The platform's preferred-language list (native, non-test builds only). The call goes through
+/// `catch_unwind`: a locale library must never take the UI down with it.
+#[cfg(not(any(test, target_arch = "wasm32")))]
+fn platform_tags() -> Vec<String> {
+    let read = || sys_locale::get_locales().take(MAX_SYSTEM_TAGS).collect::<Vec<_>>();
+    // A locale library must never take the UI down with it: fall back to no preference.
+    std::panic::catch_unwind(read).unwrap_or_default()
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+#[allow(dead_code)] // Unused in unit tests (they inject tags); wasm never has a platform list.
+fn platform_tags() -> Vec<String> {
+    Vec::new()
+}
+
+/// The override, then the platform list, then `LANGUAGE` (a colon-separated priority list) and the
+/// POSIX precedence `LC_ALL` › `LC_MESSAGES` › `LANG` as a terminal/headless fallback.
 #[cfg(not(test))]
 fn detect_system_tags() -> Vec<String> {
     let mut tags = Vec::new();
@@ -69,6 +102,7 @@ fn detect_system_tags() -> Vec<String> {
     {
         tags.extend(bounded_tags([tag]));
     }
+    tags.extend(bounded_tags(platform_tags()));
     for name in ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"] {
         if let Ok(value) = std::env::var(name) {
             tags.extend(bounded_tags(value.split(':').map(str::to_owned)));
@@ -103,9 +137,9 @@ mod tests {
     #[test]
     fn system_preferences_are_negotiated_in_order() {
         for (tags, expected) in [
-            (vec!["zh_CN.UTF-8", "en_US.UTF-8"], "zh-Hans"),
-            (vec!["zh-CN", "en-US"], "zh-Hans"),
-            (vec!["zh_SG.UTF-8"], "zh-Hans"),
+            (vec!["zh_CN.UTF-8", "en_US.UTF-8"], "zh-hans"),
+            (vec!["zh-CN", "en-US"], "zh-hans"),
+            (vec!["zh_SG.UTF-8"], "zh-hans"),
             (vec!["en_US.UTF-8"], "en"),
             (vec!["de_DE.UTF-8", "en_US.UTF-8"], "en"),
             (vec!["C"], "en"),
@@ -119,10 +153,10 @@ mod tests {
     fn test_preferences_restore_and_stay_thread_local() {
         with_system_tags(&["zh_CN.UTF-8"], || {
             with_system_tags(&["en_GB.UTF-8"], || assert_eq!(system_lang(), Lang::EN));
-            assert_eq!(system_lang().code(), "zh-Hans");
+            assert_eq!(system_lang().code(), "zh-hans");
             std::thread::spawn(|| assert_eq!(system_lang(), Lang::EN)).join().unwrap();
             assert!(std::panic::catch_unwind(|| with_system_tags(&["zh_CN"], || panic!("unwind"))).is_err());
-            assert_eq!(system_lang().code(), "zh-Hans");
+            assert_eq!(system_lang().code(), "zh-hans");
         });
         assert_eq!(system_lang(), Lang::EN);
     }

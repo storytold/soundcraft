@@ -4,18 +4,6 @@
 //! executing commands. It can be replaced without touching anything below it.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-/// Translate an English UI literal into the current interface language.
-///
-/// The literal stays the source key, so a missing translation simply shows English:
-/// `ui.label(tl!("Track"))`. Use [`i18n::fmt`] for `{name}` placeholders and [`i18n::trn`]
-/// for counts.
-#[macro_export]
-macro_rules! tl {
-    ($s:expr) => {
-        $crate::i18n::t($s)
-    };
-}
-
 pub mod bounce;
 pub mod control;
 pub mod credits;
@@ -133,9 +121,6 @@ pub struct UiState {
     pub configurations: Vec<(String, Value)>,
     /// Appearance (`ui.theme`): dark by default, light or follow the system on request.
     pub theme: theme::ThemeMode,
-    /// Interface language: a code (`en`, `zh-Hans`) or `auto` to follow the desktop locale. Only
-    /// display text changes; command ids, menu paths and the control channel stay English.
-    pub language: String,
     /// The main window's size (logical points) and maximized state, and the interface scale, as
     /// the desktop app last saw them; it restores them at launch.
     pub window_size: [f32; 2],
@@ -198,7 +183,6 @@ impl Default for UiState {
             workspace_dir: String::new(),
             configurations: Vec::new(),
             theme: theme::ThemeMode::Dark,
-            language: "auto".into(),
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
@@ -223,16 +207,25 @@ pub fn preset_folder_name(plugin: &str) -> String {
 /// systems mount on a small tmpfs that a full test run fills.
 #[cfg(test)]
 pub(crate) fn scratch(name: &str) -> std::path::PathBuf {
-    // `<workspace>/crates/<crate>` → `<workspace>/target/tmp`, by walking up: a `join("../../…")`
-    // would leave `..` in the path, and panels that show a path would show it.
-    let base = option_env!("CARGO_TARGET_TMPDIR").map_or_else(
-        || {
-            let krate = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-            krate.parent().and_then(std::path::Path::parent).map_or_else(|| krate.join("target/tmp"), |ws| ws.join("target/tmp"))
-        },
-        std::path::PathBuf::from,
-    );
-    base.join(format!("{name}-{}", std::process::id()))
+    let leaf = format!("{name}-{}", std::process::id());
+    // Best effort: a caller that only joins a name still gets the path.
+    let temp = |base: std::path::PathBuf| {
+        let dir = base.join(&leaf);
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    };
+    if let Some(base) = option_env!("CARGO_TARGET_TMPDIR") {
+        return temp(std::path::PathBuf::from(base));
+    }
+    // Unit tests run from `<target>/<profile>/deps/`, so three parents give the target directory:
+    // this honours `CARGO_TARGET_DIR` and works from a read-only checkout.
+    if let Some(target) = std::env::current_exe().ok().and_then(|exe| exe.parent()?.parent()?.parent().map(std::path::Path::to_path_buf)) {
+        return temp(target.join("tmp"));
+    }
+    // Last resort: `<workspace>/target/tmp`, by walking up (`crates/<crate>` → workspace).
+    let krate = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let base = krate.parent().and_then(std::path::Path::parent).map_or_else(|| krate.join("target/tmp"), |ws| ws.join("target/tmp"));
+    temp(base)
 }
 
 /// On the first frame, maximizes a window too big for the screen it opened on (sized on a larger
@@ -339,7 +332,8 @@ pub struct SoundApp {
     pub(crate) pending_open: Option<(TrackId, usize)>,
     last_rev: u64,
     fonts_ready: bool,
-    fonts_installed: bool,
+    /// The language code the installed font fallback order was built for.
+    fonts_language: Option<&'static str>,
     /// The palette last applied to the context (light?), so visuals are set only on a change.
     theme_applied: Option<bool>,
     /// Last panel host context, used to cancel renderer-owned gestures on explicit replacement.
@@ -423,7 +417,7 @@ impl SoundApp {
             pending_open: None,
             last_rev: 0,
             fonts_ready: false,
-            fonts_installed: false,
+            fonts_language: None,
             theme_applied: None,
             docking_context: None,
             sim: None,
@@ -1194,16 +1188,18 @@ impl SoundApp {
             return;
         }
         // The interface language is a preference like the theme: resolve it before anything draws.
-        i18n::apply_preference(&self.ui.language);
-        // Fonts set now take effect next frame, so draw only from the frame after.
-        if !self.fonts_ready {
-            if self.fonts_installed {
-                self.fonts_ready = true;
-            } else {
-                fonts::install(ctx);
-                self.fonts_installed = true;
-                ctx.request_repaint();
-            }
+        let language = i18n::apply_preference(&self.engine.prefs().interface.language);
+        // The font fallback order follows the language and set fonts take effect next frame, so
+        // install it on a language change and draw only from the frame after.
+        if self.fonts_language != Some(language.code()) {
+            self.fonts_language = Some(language.code());
+            // An agent may have changed the preference: an unapplied draft would be stale.
+            self.extra.language_draft = None;
+            fonts::install(ctx);
+            self.fonts_ready = false;
+            ctx.request_repaint();
+        } else if !self.fonts_ready {
+            self.fonts_ready = true;
         }
         let light = theme::wants_light(ctx, self.ui.theme);
         if self.theme_applied != Some(light) || theme::is_light() != light {

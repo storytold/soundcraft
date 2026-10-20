@@ -436,15 +436,72 @@ impl TakeWriter {
 #[cfg(test)]
 mod tests {
     /// Scratch files live beside the build, not in a `/tmp` some systems mount on a small tmpfs.
+    ///
+    /// `CARGO_TARGET_TMPDIR` is only set for integration tests and benches, never for unit tests, so
+    /// the directory is derived from this test binary's own path instead: a unit-test executable
+    /// lives in `<target>/<profile>/deps/`, and `<target>/tmp` follows `CARGO_TARGET_DIR` and needs
+    /// no writable source tree (the crate may be built from a read-only checkout). The workspace
+    /// fallback stays for a runner that copies the test binary out of the build tree.
     fn scratch() -> std::path::PathBuf {
-        option_env!("CARGO_TARGET_TMPDIR").map_or_else(
-            || {
-                // `<workspace>/crates/<crate>` → `<workspace>/target/tmp`, without a literal `..`.
-                let krate = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-                krate.parent().and_then(std::path::Path::parent).map_or_else(|| krate.join("target/tmp"), |ws| ws.join("target/tmp"))
-            },
-            std::path::PathBuf::from,
-        )
+        let dir = scratch_dir(
+            option_env!("CARGO_TARGET_TMPDIR"),
+            std::env::current_exe().ok().as_deref(),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+        );
+        // Best effort: the caller reports a directory it still cannot create after this.
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    /// Picks [`scratch`]'s directory: Cargo's per-target temp dir first, then `<target>/tmp` derived
+    /// from the executable's location (`<target>/<profile>/deps/<test>`), then the workspace
+    /// `target/tmp`, then a relative `target/tmp`.
+    fn scratch_dir(cargo_tmp: Option<&str>, exe: Option<&std::path::Path>, manifest: &std::path::Path) -> std::path::PathBuf {
+        let beside_build = exe
+            .and_then(std::path::Path::parent)
+            .and_then(std::path::Path::parent)
+            .and_then(std::path::Path::parent)
+            .map(|target| target.join("tmp"));
+        // `<workspace>/crates/<crate>` → `<workspace>/target/tmp`, without a literal `..`.
+        let workspace = manifest.parent().and_then(std::path::Path::parent).map(|ws| ws.join("target/tmp"));
+        cargo_tmp.map(std::path::PathBuf::from).or(beside_build).or(workspace).unwrap_or_else(|| std::path::PathBuf::from("target/tmp"))
+    }
+
+    #[test]
+    fn scratch_dir_follows_the_build_before_the_workspace() {
+        let manifest = std::path::Path::new("/ws/crates/playback");
+        let exe = std::path::Path::new("/build/debug/deps/soundcraft_playback-0123abcd");
+        // Cargo's own per-target temp dir wins when it set one (integration tests, benches).
+        assert_eq!(
+            scratch_dir(Some("/cargo/tmp/soundcraft-playback"), Some(exe), manifest),
+            std::path::PathBuf::from("/cargo/tmp/soundcraft-playback")
+        );
+        // Then the target directory the test binary lives in — not the source tree.
+        assert_eq!(scratch_dir(None, Some(exe), manifest), std::path::PathBuf::from("/build/tmp"));
+        // With no usable executable path, the workspace fallback, then a relative one.
+        assert_eq!(scratch_dir(None, Some(std::path::Path::new("test-binary")), manifest), std::path::PathBuf::from("/ws/target/tmp"));
+        assert_eq!(scratch_dir(None, None, std::path::Path::new("playback")), std::path::PathBuf::from("target/tmp"));
+    }
+
+    #[test]
+    fn scratch_directory_is_writable_beside_the_build() {
+        let dir = scratch();
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let probe = dir.join(format!("soundcraft-scratch-probe-{}-{nanos}", std::process::id()));
+        std::fs::write(&probe, b"soundcraft scratch").expect("the scratch directory is writable");
+        assert_eq!(std::fs::read(&probe).expect("the probe reads back"), b"soundcraft scratch");
+        std::fs::remove_file(&probe).expect("the probe is removable");
+        if option_env!("CARGO_TARGET_TMPDIR").is_none() {
+            // A unit test gets no Cargo temp dir: the path comes from the test binary, under the
+            // target directory, so the source tree's writability never matters.
+            let exe = std::env::current_exe().expect("the test binary has a path");
+            let target = exe
+                .parent()
+                .and_then(std::path::Path::parent)
+                .and_then(std::path::Path::parent)
+                .expect("a test binary lives in <target>/<profile>/deps");
+            assert_eq!(dir, target.join("tmp"));
+        }
     }
 
     use super::*;
