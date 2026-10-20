@@ -51,6 +51,17 @@ impl ImportState {
         self.compositions.clear();
         self.invalidate();
     }
+    /// A typed path is a different file: forget its compositions, and follow it with the media
+    /// folder unless the user pointed that folder somewhere other than the previous AAF's folder.
+    fn path_edited(&mut self, previous: &str) {
+        let parent = |p: &str| std::path::Path::new(p).parent().map_or(String::new(), |d| d.display().to_string());
+        if self.media_dir == parent(previous) {
+            self.media_dir = parent(&self.path);
+        }
+        self.composition.clear();
+        self.compositions.clear();
+        self.invalidate();
+    }
     /// Drops the current preview and any analysis still running, whose plan would belong to the
     /// previous file or folder. The worker's late result goes to a closed channel.
     fn invalidate(&mut self) {
@@ -149,9 +160,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         egui::Window::new("Import Session Data — AAF").id(egui::Id::new("import_aaf")).open(&mut open).default_size([1080.0,690.0]).min_size([850.0,560.0]).show(ctx,|ui| {
             ui.horizontal(|ui| {
                 ui.label("AAF file");
+                let before=state.path.clone();
                 let edited=ui.add_enabled(state.busy.is_none(),egui::TextEdit::singleline(&mut state.path).desired_width((ui.available_width()-200.0).max(200.0))).changed();
-                // A different file has its own compositions; a previous choice must not filter it.
-                if edited { state.preview=None; state.composition.clear(); state.compositions.clear(); }
+                if edited { state.path_edited(&before); }
                 if ui.add_enabled(state.busy.is_none(),egui::Button::new("Browse…")).clicked()
                     && let Some(path)=app.services.pick_open.as_ref().and_then(|pick|pick("file.import_aaf",&["aaf"])) { state.set_path(path); }
                 if ui.add_enabled(state.busy.is_none()&&!state.path.is_empty()&&!state.media_dir.is_empty(),egui::Button::new("Analyze AAF")).clicked() { state.analyze(ctx); }
@@ -323,6 +334,20 @@ mod tests {
         assert!(tx.send(Ok(json!({"plan": {}}))).is_err());
         assert!(state.preview.is_none());
         assert_eq!(state.media_dir, "/b");
+    }
+    #[test]
+    fn a_typed_path_moves_the_derived_media_folder_but_keeps_a_chosen_one() {
+        let mut state = ImportState::default();
+        state.set_path("/a/first.aaf".into());
+        state.composition = "urn:smpte:umid:01".into();
+        state.path = "/b/second.aaf".into();
+        state.path_edited("/a/first.aaf");
+        assert_eq!(state.media_dir, "/b");
+        assert!(state.composition.is_empty());
+        state.media_dir = "/media/elsewhere".into();
+        state.path = "/c/third.aaf".into();
+        state.path_edited("/b/second.aaf");
+        assert_eq!(state.media_dir, "/media/elsewhere");
     }
     #[test]
     fn menu_opens_preview_but_programmatic_import_does_not_open_a_dialog() {
