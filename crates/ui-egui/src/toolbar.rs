@@ -325,7 +325,7 @@ fn grid_value_label(value: &soundcraft_time::GridValue) -> String {
     use soundcraft_time::GridValue;
     match value {
         GridValue::Note { value, dotted, triplet } => {
-            let note = value.label().to_string();
+            let note = crate::i18n::t(value.label()).to_string();
             let template = match (dotted, triplet) {
                 (true, true) => "{note} dotted triplet",
                 (true, false) => "{note} dotted",
@@ -474,5 +474,33 @@ fn output_meter(app: &mut SoundApp, ui: &mut Ui) {
     for c in 0..2 {
         let rr = Rect::from_min_size(pos2(r.min.x + 2.0 + c as f32 * (w + 2.0), r.min.y), vec2(w, r.height()));
         crate::widgets::meter(ui, rr, m.level[c], m.hold[c], m.clip);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::{Lang, language_scope};
+    use soundcraft_time::{GridValue, NoteValue};
+
+    fn zh() -> Lang {
+        Lang::from_code("zh-Hans").expect("zh-Hans is registered")
+    }
+
+    fn note_label(value: NoteValue, dotted: bool, triplet: bool) -> String {
+        grid_value_label(&GridValue::Note { value, dotted, triplet })
+    }
+
+    #[test]
+    fn grid_and_nudge_values_are_translated() {
+        let _scope = language_scope(zh());
+        assert_eq!(note_label(NoteValue::Bar, false, false), "1 小节");
+        assert_eq!(note_label(NoteValue::Quarter, false, false), "1/4 音符");
+        assert_eq!(note_label(NoteValue::Quarter, true, false), "附点 1/4 音符");
+        assert_eq!(note_label(NoteValue::Quarter, false, true), "1/4 音符三连音");
+        assert_eq!(note_label(NoteValue::Quarter, true, true), "附点 1/4 音符三连音");
+        assert_eq!(grid_value_label(&GridValue::Seconds(0.5)), "0.500 秒");
+        assert_eq!(grid_value_label(&GridValue::Frames(1)), "1 帧");
+        assert_eq!(grid_value_label(&GridValue::Samples(100)), "100 个采样");
     }
 }
