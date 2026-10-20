@@ -150,7 +150,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.label("AAF file");
                 let edited=ui.add_enabled(state.busy.is_none(),egui::TextEdit::singleline(&mut state.path).desired_width((ui.available_width()-200.0).max(200.0))).changed();
-                if edited { state.preview=None; }
+                // A different file has its own compositions; a previous choice must not filter it.
+                if edited { state.preview=None; state.composition.clear(); state.compositions.clear(); }
                 if ui.add_enabled(state.busy.is_none(),egui::Button::new("Browse…")).clicked()
                     && let Some(path)=app.services.pick_open.as_ref().and_then(|pick|pick("file.import_aaf",&["aaf"])) { state.set_path(path); }
                 if ui.add_enabled(state.busy.is_none()&&!state.path.is_empty()&&!state.media_dir.is_empty(),egui::Button::new("Analyze AAF")).clicked() { state.analyze(ctx); }
