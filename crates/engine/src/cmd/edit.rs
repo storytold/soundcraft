@@ -5,7 +5,7 @@ use super::*;
 use crate::edit as ops;
 use crate::{Clipboard, cmd};
 use serde_json::json;
-use soundcraft_model::{EditMode, Fade, FadeShape, Session};
+use soundcraft_model::{EditMode, Fade, FadeShape, Session, Tool, ZoomMode};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -161,11 +161,9 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             shuffle_lock
         ),
-        cmd!(noundo "edit.tool", "Edit Tool", [], Some("F5-F10"), "{tool: zoom|trim|selector|grabber|scrubber|pencil|smart}", always, |e, p| {
-            let t = str_param(p, "tool").and_then(soundcraft_model::Tool::from_id).ok_or_else(|| bad("edit.tool", "unknown tool"))?;
-            e.session_mut().edit.tool = t;
-            Ok(json!({"tool": t}))
-        }),
+        cmd!(noundo "edit.tool", "Edit Tool", [], Some("F5-F10"), "{tool: zoom|trim|selector|grabber|scrubber|pencil|smart}", always, set_tool),
+        cmd!(noundo "edit.zoom_mode", "Zoom Tool Mode", [], None, "{mode: normal|single}", always, set_zoom_mode),
+        cmd!(noundo "edit.zoom_complete", "Complete Zoom Tool Gesture", [], None, "{}", always, complete_zoom),
         cmd!(
             "edit.move_clips",
             "Move Clips",
@@ -190,6 +188,32 @@ pub fn specs() -> Vec<CommandSpec> {
 
 fn shuffle(s: &Session) -> bool {
     s.edit.edit_mode == EditMode::Shuffle
+}
+
+fn set_tool(e: &mut Engine, p: &Value) -> Result<Value> {
+    let tool = str_param(p, "tool").and_then(Tool::from_id).ok_or_else(|| bad("edit.tool", "unknown tool"))?;
+    let edit = &mut e.session_mut().edit;
+    if tool == Tool::Zoom && edit.tool != Tool::Zoom {
+        edit.zoom_return_tool = Some(edit.tool);
+    } else if tool != Tool::Zoom {
+        edit.zoom_return_tool = None;
+    }
+    edit.tool = tool;
+    Ok(json!({"tool": tool}))
+}
+
+fn set_zoom_mode(e: &mut Engine, p: &Value) -> Result<Value> {
+    let mode = str_param(p, "mode").and_then(ZoomMode::from_id).ok_or_else(|| bad("edit.zoom_mode", "mode must be normal|single"))?;
+    e.session_mut().edit.zoom_mode = mode;
+    Ok(json!({"mode": mode.id()}))
+}
+
+fn complete_zoom(e: &mut Engine, _: &Value) -> Result<Value> {
+    let edit = &mut e.session_mut().edit;
+    if edit.tool == Tool::Zoom && edit.zoom_mode == ZoomMode::Single {
+        edit.tool = edit.zoom_return_tool.take().filter(|tool| *tool != Tool::Zoom).unwrap_or(Tool::Selector);
+    }
+    Ok(json!({"tool": edit.tool.id(), "mode": edit.zoom_mode.id()}))
 }
 
 fn set_mode(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -966,6 +990,39 @@ fn consolidate(e: &mut Engine, p: &Value) -> Result<Value> {
 mod tests {
     use super::*;
     use soundcraft_model::{ChannelFormat, Clip, ClipContent, TrackId, TrackKind};
+
+    #[test]
+    fn single_zoom_restores_the_tool_selected_before_zoom() {
+        let mut e = crate::demo::demo_engine();
+        assert_eq!(e.session().edit.tool, Tool::Smart);
+        assert_eq!(e.session().edit.zoom_mode, ZoomMode::Normal);
+
+        e.execute("edit.zoom_mode", &json!({"mode": "single"})).unwrap();
+        e.execute("edit.tool", &json!({"tool": "zoom"})).unwrap();
+        assert_eq!(e.session().edit.zoom_return_tool, Some(Tool::Smart));
+        assert_eq!(e.execute("edit.zoom_complete", &json!({})).unwrap(), json!({"tool": "smart", "mode": "single"}));
+        assert_eq!(e.session().edit.tool, Tool::Smart);
+        assert_eq!(e.session().edit.zoom_return_tool, None);
+
+        e.execute("edit.tool", &json!({"tool": "trim"})).unwrap();
+        e.execute("edit.tool", &json!({"tool": "zoom"})).unwrap();
+        e.execute("edit.zoom_complete", &json!({})).unwrap();
+        assert_eq!(e.session().edit.tool, Tool::Trim);
+    }
+
+    #[test]
+    fn normal_zoom_stays_selected_and_zoom_mode_round_trips() {
+        let mut e = crate::demo::demo_engine();
+        e.execute("edit.tool", &json!({"tool": "zoom"})).unwrap();
+        e.execute("edit.zoom_complete", &json!({})).unwrap();
+        assert_eq!(e.session().edit.tool, Tool::Zoom);
+
+        e.execute("edit.zoom_mode", &json!({"mode": "single"})).unwrap();
+        let reopened = Session::from_json(&e.session().to_json().unwrap()).unwrap();
+        assert_eq!(reopened.edit.zoom_mode, ZoomMode::Single);
+        assert_eq!(reopened.edit.zoom_return_tool, None);
+        assert!(e.execute("edit.zoom_mode", &json!({"mode": "other"})).is_err());
+    }
 
     #[test]
     fn targeted_fade_curvature_saves_reopens_and_undoes_without_changing_lengths() {
