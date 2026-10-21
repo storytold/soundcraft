@@ -722,3 +722,51 @@ fn ring_mod_modulation_sources_move_the_frequency() {
     steps.dedup_by(|a, b| a.abs_diff(*b) <= 2);
     assert!(steps.len() >= 3, "sample and hold steps: {steps:?}");
 }
+
+#[test]
+fn body_resonance_gives_notes_near_body_modes_a_two_stage_decay() {
+    let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+    // Early (5-40 ms) over late (300-400 ms) level of a held sine note.
+    let shape = |note: u8, body: f32| {
+        let mut p = prepared("subtractive_synth");
+        for (id, v) in
+            [("osc1_wave", 2.0), ("osc_mix", 0.0), ("cutoff", 20_000.0), ("filter_env_amount", 0.0), ("amp_sustain", 100.0), ("body", body)]
+        {
+            p.set_param(id, v);
+        }
+        p.note_on(0, note, 110);
+        let out = run(p.as_mut(), &[vec![0.0; 19_200]]);
+        rms(&out[0][240..1920]) / rms(&out[0][14_400..19_200])
+    };
+    // A2 (110 Hz) sits near the 100 Hz air mode; E4 (330 Hz) is between modes.
+    let (near, far) = (shape(45, 100.0), shape(64, 100.0));
+    assert!(near > 1.5, "a fast first stage near a mode: {near}");
+    assert!((far - 1.0).abs() < 0.05, "one stage between modes: {far}");
+    // Off by default: no change from the plain synth.
+    assert!((shape(45, 0.0) - 1.0).abs() < 0.05);
+}
+
+#[test]
+fn a_restrike_near_a_body_mode_ramps_in_without_a_click() {
+    let step = |x: &[f32]| x.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0_f32, f32::max);
+    let mut worst = 0.0_f32;
+    let mut steady = 0.0_f32;
+    for offset in (0..440).step_by(11) {
+        let mut p = prepared("subtractive_synth");
+        for (id, v) in
+            [("osc1_wave", 2.0), ("osc_mix", 0.0), ("cutoff", 20_000.0), ("filter_env_amount", 0.0), ("amp_sustain", 100.0), ("body", 100.0)]
+        {
+            p.set_param(id, v);
+        }
+        // A2: near the 100 Hz air mode, so each strike adds the body stage.
+        p.note_on(0, 45, 110);
+        let before = run(p.as_mut(), &[vec![0.0; 24_000 + offset]]);
+        p.note_off(0, 45);
+        p.note_on(0, 45, 110);
+        let after = run(p.as_mut(), &[vec![0.0; 4800]]);
+        steady = steady.max(step(&after[0][..]));
+        worst = worst.max(step(&[&before[0][23_900..], &after[0][..8]].concat()));
+    }
+    // The re-strike's body stage ramps in: no step beyond the louder note's own.
+    assert!(worst <= steady * 1.05, "{worst} vs {steady}");
+}
