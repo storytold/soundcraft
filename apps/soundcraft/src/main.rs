@@ -79,11 +79,11 @@ impl eframe::App for App {
         if self.app.take_recent_changed() {
             save_prefs(&self.app.ui);
         }
-        // Preferences change rarely (the Appearance window, agents): save them when they do.
+        // Preferences change rarely (the Appearance window, agents): save them when they do, and
+        // only record the revision once the file actually kept them.
         let prefs_revision = self.app.engine.prefs_revision();
-        if prefs_revision != self.saved_prefs_revision {
+        if prefs_revision != self.saved_prefs_revision && save_engine_prefs(&self.app.engine) {
             self.saved_prefs_revision = prefs_revision;
-            save_engine_prefs(&self.app.engine);
         }
         // With the system menu bar there is no egui bar showing the window and dirty state, so the
         // title carries them; elsewhere the egui menu bar already does.
@@ -204,18 +204,25 @@ fn load_engine_prefs(engine: &mut Engine) {
     }
 }
 
-fn save_engine_prefs(engine: &Engine) {
+/// Persist the engine preferences; true when they are stored (disabled or absent paths are a
+/// successful no-op, but a failed write is retried on the next frame).
+fn save_engine_prefs(engine: &Engine) -> bool {
     if !prefs_enabled() {
-        return;
+        return true;
     }
-    let Some(path) = preferences_path() else { return };
+    let Some(path) = preferences_path() else { return true };
     match engine.prefs_json() {
-        Ok(json) => {
-            if let Err(error) = config::save_preferences(&path, &json) {
+        Ok(json) => match config::save_preferences(&path, &json) {
+            Ok(()) => true,
+            Err(error) => {
                 log::warn!("preferences: {error}");
+                false
             }
+        },
+        Err(error) => {
+            log::warn!("preferences: {error}");
+            false
         }
-        Err(error) => log::warn!("preferences: {error}"),
     }
 }
 

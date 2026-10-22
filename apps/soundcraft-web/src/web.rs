@@ -96,18 +96,27 @@ fn load_preferences(engine: &mut Engine) {
     }
 }
 
-/// Store the preference document when it changed (the same JSON as the desktop's file).
-fn save_preferences(engine: &Engine) {
-    let Some(storage) = local_storage() else { return };
+/// Store the preference document (the same JSON as the desktop's file); true when it persisted, so
+/// the caller records the revision it saved and retries after a failed write.
+fn save_preferences(engine: &Engine) -> bool {
+    let Some(storage) = local_storage() else { return false };
     let json = match engine.prefs_json() {
         Ok(json) => json,
-        Err(error) => return log::warn!("preferences: {error}"),
+        Err(error) => {
+            log::warn!("preferences: {error}");
+            return false;
+        }
     };
     if json.len() as u64 > soundcraft_engine::prefs::MAX_BYTES {
-        return log::warn!("preferences: refusing to store a {} KiB document", json.len() / 1024);
+        log::warn!("preferences: refusing to store a {} KiB document", json.len() / 1024);
+        return false;
     }
-    if let Err(error) = storage.set_item(PREFERENCES_KEY, &json) {
-        log::warn!("preferences: could not be stored: {error:?}");
+    match storage.set_item(PREFERENCES_KEY, &json) {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!("preferences: could not be stored: {error:?}");
+            false
+        }
     }
 }
 
@@ -259,11 +268,11 @@ impl eframe::App for WebShell {
             self.app.load_sample_bytes(&read, bytes);
         }
         self.app.logic(ctx);
-        // Preferences change rarely (the Appearance window, agents): store them when they do.
+        // Preferences change rarely (the Appearance window, agents): store them when they do, and
+        // only record the revision once the browser actually kept the document.
         let prefs_revision = self.app.engine.prefs_revision();
-        if prefs_revision != self.saved_prefs_revision {
+        if prefs_revision != self.saved_prefs_revision && save_preferences(&self.app.engine) {
             self.saved_prefs_revision = prefs_revision;
-            save_preferences(&self.app.engine);
         }
         // A prompt opened during this frame becomes a picker on the next one.
         self.take_path_prompt(ctx);
