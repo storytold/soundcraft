@@ -76,6 +76,8 @@ pub struct TransportStatus {
     pub playing: bool,
     pub recording: bool,
     pub position: Samples,
+    /// True after Pause: the next Play continues from `position` instead of the edit selection.
+    pub paused: bool,
 }
 
 /// Clipboard contents: per-track clip copies relative to the copied range start.

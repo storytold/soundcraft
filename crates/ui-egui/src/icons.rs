@@ -14,6 +14,10 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
         "play" => {
             painter.add(Shape::convex_polygon(vec![p(r, 0.28, 0.18), p(r, 0.82, 0.5), p(r, 0.28, 0.82)], c, Stroke::NONE));
         }
+        "pause" => {
+            painter.rect_filled(Rect::from_min_max(p(r, 0.26, 0.22), p(r, 0.42, 0.78)), 1.0, c);
+            painter.rect_filled(Rect::from_min_max(p(r, 0.58, 0.22), p(r, 0.74, 0.78)), 1.0, c);
+        }
         "stop" => {
             painter.rect_filled(Rect::from_min_max(p(r, 0.26, 0.26), p(r, 0.74, 0.74)), 1.0, c);
         }
