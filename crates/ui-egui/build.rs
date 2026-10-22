@@ -268,5 +268,13 @@ fn deflate(bytes: &[u8]) -> Vec<u8> {
         println!("cargo::warning=deflating a catalog: {e}");
         return Vec::new();
     }
-    encoder.finish().unwrap_or_default()
+    match encoder.finish() {
+        Ok(done) => done,
+        // An empty blob would unpack to an empty catalog at run time — warn loudly instead of
+        // shipping it silently (the catalog tests also fail on it).
+        Err(e) => {
+            println!("cargo::warning=finishing a deflated catalog: {e}");
+            Vec::new()
+        }
+    }
 }
