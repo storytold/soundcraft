@@ -372,7 +372,7 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                 if let Some(why) = app.record_hint() {
                     // Below the whole group, so the hint covers none of its buttons.
                     let below = Rect::from_min_max(r.min, pos2(r.max.x, g.max.y));
-                    egui::Tooltip::always_open(ui.ctx().clone(), resp.layer_id, resp.id, below).show(|ui| ui.label(why));
+                    egui::Tooltip::always_open(ui.ctx().clone(), resp.layer_id, resp.id, below).show(|ui| ui.label(crate::i18n::t(why)));
                 }
                 if resp.clicked() {
                     let _ = app.run("transport.record", json!({}));

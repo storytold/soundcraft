@@ -295,7 +295,7 @@ fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                 if cmd == "transport.record"
                     && let Some(why) = app.record_hint()
                 {
-                    egui::Tooltip::for_widget(&resp).show(|ui| ui.label(why));
+                    egui::Tooltip::for_widget(&resp).show(|ui| ui.label(crate::i18n::t(why)));
                 }
                 if resp.clicked() {
                     let _ = app.run(cmd, json!({}));

@@ -1151,6 +1151,8 @@ automation	trim	微调
 	Location	位置
 	Loop Playback (Cmd+Shift+L)	循环播放 (Cmd+Shift+L)
 	Mute send	发送静音
+	No track is record-enabled: click the R button on the track to record.	没有启用录音的轨道：单击轨道上的 R 按钮即可录音。
+	Nothing to record on yet: add a track with Track › New…, then click its R button.	还没有可录音的轨道：先用 轨道 › 新建… 添加一条轨道，再单击它的 R 按钮。
 	OBJECT	对象
 	Quantize	量化
 	Return to Zero (Home)	回到零点 (Home)
