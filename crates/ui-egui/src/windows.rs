@@ -467,6 +467,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     let mut draft = ctx.data(|d| d.get_temp::<AudioConfig>(draft_id)).unwrap_or_else(|| app.ui.audio.clone());
     let mut refresh = false;
     let mut apply = false;
+    let mut panel = false;
     let systems = audio_systems(ctx, false);
     win(ctx, &mut open, "Playback Engine", vec2(460.0, 360.0), |ui| {
         let t = Tokens::current();
@@ -516,6 +517,12 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
                 draft = app.ui.audio.clone();
             }
         });
+        if soundcraft_playback::devices::ASIO_CONTROL_PANEL && app.ui.audio.system.as_deref() == Some(soundcraft_playback::devices::ASIO_SYSTEM) {
+            let hint = "The driver's own settings: devices (ASIO4ALL), buffer size, clock. Then use Reconnect audio device below to pick them up.";
+            if ui.button("ASIO Control Panel…").on_hover_text(hint).clicked() {
+                panel = true;
+            }
+        }
         ui.separator();
         egui::Grid::new("pe-state").num_columns(2).show(ui, |ui| {
             ui.label("Output");
@@ -555,6 +562,9 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     if refresh {
         audio_systems(ctx, true);
     }
+    if panel && let Err(e) = soundcraft_playback::devices::asio_control_panel() {
+        app.ui.status = format!("ASIO control panel: {e}");
+    }
     if apply && let Err(e) = app.apply_audio_config(draft.clone()) {
         app.ui.status = e;
     }
@@ -572,10 +582,15 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
 
 /// `ui.audio_device`: `{list?: bool}` returns the audio systems and their devices;
 /// `{system?, output?, input?, sample_rate?, buffer_size?}` (a `null` value means "default") sets
-/// the choice and reopens the devices. Always returns the choice and the open device.
+/// the choice and reopens the devices; `{reopen: true}` reopens them as they are (after changes in
+/// a driver's control panel); `{control_panel: true}` opens the open ASIO driver's control panel.
+/// Always returns the choice and the open device.
 pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
-    let mut changed = false;
+    if p.get("control_panel").and_then(Value::as_bool).unwrap_or(false) {
+        soundcraft_playback::devices::asio_control_panel()?;
+    }
+    let mut changed = p.get("reopen").and_then(Value::as_bool).unwrap_or(false);
     let mut cfg = app.ui.audio.clone();
     for (key, slot) in [("system", &mut cfg.system), ("output", &mut cfg.output), ("input", &mut cfg.input)] {
         if let Some(v) = p.get(key) {
