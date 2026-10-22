@@ -20,7 +20,7 @@ Language 0 is always English, the fallback.
 | Language | Code | Catalog | Plural forms | Menus complete |
 |---|---|---|---|---|
 | English (source) | `en` | — (strings live in the code) | one / other | — (source) |
-| 简体中文 — Simplified Chinese | `zh-hans` | [`crates/ui-egui/src/i18n/zh-hans.tsv`](../crates/ui-egui/src/i18n/zh-hans.tsv) · 1,139 entries | one (Chinese has no plural inflection) | yes |
+| 简体中文 — Simplified Chinese | `zh-hans` | [`crates/ui-egui/src/i18n/zh-hans.tsv`](../crates/ui-egui/src/i18n/zh-hans.tsv) · 1,141 entries | one (Chinese has no plural inflection) | yes |
 
 `code` is the lowercase BCP 47 tag stored in the preference; `name` is the native name shown in the
 Appearance window; `plural` picks the form to use for a count; `complete_menus` promises that the
@@ -148,7 +148,7 @@ automation	Off	关闭
 |---|---|
 | empty | A plain key: menus, command labels, window titles, dialogs, tooltips. |
 | `@id` | A key by stable command id instead of the English label, so a label can change without breaking translations; lookup uses `tr_id`. The shipped catalogs currently use none — plain rows cover every command. |
-| `@plural` | Column 2 is the English `one|other` pair (a language may need more forms); column 3 is that language's forms, `|`-separated. `trn` picks the form with the registry's plural rule, then fills `{n}`. |
+| `@plural` | Column 2 is the English `one\|other` pair (a language may need more forms); column 3 is that language's forms, separated by `\|`. `trn` picks the form with the registry's plural rule, then fills `{n}`. |
 | any other text | A namespace (`automation`) for strings that read the same in English but differ by meaning. Layout uses `tr_ctx`. |
 
 Rules the tests enforce:
@@ -165,7 +165,7 @@ Rules the tests enforce:
   tests fail; the app itself never panics on a bad catalog.
 - Escapes inside source and translation: `\n`, `\t` and `\\`.
 
-The shipped Simplified Chinese catalog has **1,139 entries**: 1,123 plain, 9 `@plural` and 7 in the
+The shipped Simplified Chinese catalog has **1,141 entries**: 1,125 plain, 9 `@plural` and 7 in the
 `automation` namespace. For example `SHUFFLE` is 推移 (edit-mode toolbar), `Shuffle Lock` is
 推移锁定, and the Shuffle tooltips are 推移模式.
 

@@ -103,7 +103,15 @@ def _po_unquote(s: str) -> str:
     s = s.strip()
     if s.startswith('"') and s.endswith('"'):
         s = s[1:-1]
-    return s.encode("utf-8").decode("unicode_escape") if "\\" in s else s
+    # Unescape only the sequences .po files use; decoding the whole string as UTF-8 through
+    # `unicode_escape` would mangle every non-ASCII character once a backslash appears.
+    escapes = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
+    return re.sub(r"\\(.)", lambda m: escapes.get(m.group(1), m.group(0)), s)
+
+
+def md_cell(text: str) -> str:
+    """Escape a value for a Markdown table cell."""
+    return text.replace("|", "\\|").replace("\n", " ")
 
 
 def parse_ts(path: Path) -> list[tuple[str, str]]:
@@ -254,10 +262,11 @@ def build_report(catalog: list[tuple[str, str, str]], corpus: dict[str, dict[str
         per_daw = " · ".join(
             f"{daw}: {'/'.join(sorted(v))}" for daw, v in votes.items()
         )
-        en_cell = en.replace("|", "\\|")
-        zh_cell = zh.replace("|", "\\|")
+        en_cell = md_cell(en)
+        zh_cell = md_cell(zh)
+        per_daw_cell = md_cell(per_daw)
         buckets[verdict].append(f"| {en_cell} | {zh_cell} | {agree}/{total} | {verdict} |")
-        detail_buckets[verdict].append(f"| {en_cell} | {zh_cell} | {per_daw} | {agree}/{total} | {verdict} |")
+        detail_buckets[verdict].append(f"| {en_cell} | {zh_cell} | {per_daw_cell} | {agree}/{total} | {verdict} |")
 
     lines.append("\n## Summary\n")
     lines.append("| verdict | count |")
@@ -301,7 +310,7 @@ def main() -> int:
         return 1
     report, detail = build_report(catalog, corpus)
     args.out.write_text(report, encoding="utf-8")
-    n = sum(1 for _ in args.out.open())
+    n = len(args.out.read_text(encoding="utf-8").splitlines())
     print(f"wrote {args.out} ({n} lines)")
     args.detail.write_text(detail, encoding="utf-8")
     print(f"wrote {args.detail} (local, gitignored)")

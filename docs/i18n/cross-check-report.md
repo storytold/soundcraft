@@ -14,9 +14,9 @@ The reference corpora are GPL-licensed, so this committed report records only te
 | consensus | 174 |
 | differs | 57 |
 | split | 43 |
-| no-data | 785 |
+| no-data | 787 |
 
-Catalog keys compared: 1059 (deduplicated, length ≥ 3).
+Catalog keys compared: 1061 (deduplicated, length ≥ 3).
 
 
 ## Majority differs from our wording (review first)

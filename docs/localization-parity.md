@@ -19,7 +19,7 @@ the Taiwan/HK terminology), then native-speaker review (human). Arabic and Hindi
 
 What is done:
 
-- **The catalog**: `zh-hans.tsv`, 1,139 entries — plain strings, plural forms (`@plural`) and a
+- **The catalog**: `zh-hans.tsv`, 1,141 entries — plain strings, plural forms (`@plural`) and a
   disambiguating `automation` context; parser support for command-id keys (`@id`) stays but no row
   needs it. Chinese takes one plural form.
 - **The build**: `build.rs` packs the TSV into a shared key table plus per-language marker streams
@@ -59,9 +59,9 @@ Open work: Traditional Chinese (needs a `zh-hant` catalog — the tag negotiatio
 layout, IME testing, and native-speaker review of the Chinese wording.
 
 | Language | Code | UI strings translated | Dialogs / tooltips / help | Script support | Native review | Status | Est. to full (h) | In Pro Tools |
-|---|---|---|---|---|---|---|---|---:|---|
+|---|---|---|---|---|---|---|---|---|---:|
 | English | en | all (source) | ✅ | Latin ✅ | — | **full** | 0 | ✅ |
-| Simplified Chinese | zh-hans | all (1,139 entries; menus, commands, dialogs, tooltips, status) | ✅ | ✅ Han fallback; bundled web subset; IME untested | no | **full** (engine diagnostics stay English) | 3–5 (review) | ✅ |
+| Simplified Chinese | zh-hans | all (1,141 entries; menus, commands, dialogs, tooltips, status) | ✅ | ✅ Han fallback; bundled web subset; IME untested | no | **full** (engine diagnostics stay English) | 3–5 (review) | ✅ |
 | Spanish | es | 0 (0 %) — PR #143 pending | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
 | Hindi | hi | 0 (0 %) | ❌ | ❌ no Devanagari font or shaping | no | none | 8–15 | ❌ |
 | Arabic | ar | 0 (0 %) | ❌ | ❌ no RTL layout, no shaping | no | none | 15–25 | ❌ |
@@ -82,7 +82,7 @@ Per-language hours exclude the shared catalog and script work, which are done.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-22 | trivial | Catalog 1,106 → 1,139 entries: the remaining UI literals that bypassed `t()` (toolbar icon tooltips, send headers and tooltips, bounce status, Memory Locations headers, Freeze/Unfreeze, MIDI editor buttons) now translate; the coverage test also scans `icon_button`/`text_toggle` tooltip literals; malformed catalog lines are reported at run time |
+| 2026-10-22 | trivial | Catalog 1,106 → 1,141 entries: the remaining UI literals that bypassed `t()` (toolbar icon tooltips, send headers and tooltips, bounce status, Memory Locations headers, Freeze/Unfreeze, MIDI editor buttons, record-hint tooltips) now translate; the coverage test also scans `icon_button`/`text_toggle` tooltip literals; malformed catalog lines are reported at run time |
 | 2026-10-20 | minor | Wording pass and review: catalog 1,106 entries (Shuffle = 推移, new preference command labels); `interface.language` preference with `prefs.*` commands, Appearance preview and persistence (native `preferences.json`, web `localStorage`), legacy `ui.json` migration; catalogs packed and deflated at build time; Han-before-Hangul fallback order; bundled Noto Sans SC subset for the web; docs refreshed and wording knowledge base re-cross-checked (1,032 keys) |
 | 2026-10-19 | major | Simplified Chinese shipped: catalog (1,114 entries), language selector, locale detection, Han font fallback, coverage gates; localization re-measured 12 % → 25 % |
 | 2026-10-10 | major | Created: English only, no catalog; the twelve key languages at 0 %; Pro Tools' 8 languages listed from its bundle |
