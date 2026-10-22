@@ -62,6 +62,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         soundcraft_ui_egui::fit_window_to_screen(ctx);
+        soundcraft_ui_egui::keep_window_drawable(ctx);
         let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized.unwrap_or(false)));
         self.0.ui.window_maximized = maximized;
         if let Some(r) = inner.filter(|_| !maximized) {
@@ -267,6 +268,12 @@ fn main() -> eframe::Result {
         "SoundCraft",
         options,
         Box::new(move |cc| {
+            // wgpu treats any uncaught error as fatal. A window resized beyond the GPU's texture
+            // limit (seen with a tiling window manager: a 29423-pixel-wide surface) then closed
+            // the app at launch; log it instead, and the windows are brought back within the limit.
+            if let Some(rs) = &cc.wgpu_render_state {
+                rs.device.on_uncaptured_error(Arc::new(|e: eframe::wgpu::Error| log::error!("graphics error (not fatal): {e}")));
+            }
             let player =
                 if no_audio { None } else { Some(soundcraft_playback::Player::with_config(Arc::new(engine.session().clone()), &prefs.audio)) };
             let mut app = SoundApp::new(engine, player, services());

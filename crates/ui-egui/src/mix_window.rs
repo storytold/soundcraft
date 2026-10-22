@@ -27,6 +27,7 @@ pub fn show_separate(app: &mut SoundApp, ctx: &egui::Context) {
     let builder = egui::ViewportBuilder::default().with_title(title).with_inner_size([1100.0, 720.0]).with_min_inner_size([480.0, 320.0]);
     ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("soundcraft.mix"), builder, |ui, _class| {
         ui.set_style(ui.ctx().global_style());
+        crate::keep_window_drawable(ui.ctx());
         if std::mem::take(&mut app.focus_mix) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
         }
@@ -47,18 +48,38 @@ pub(crate) fn content(app: &mut SoundApp, ui: &mut Ui) {
     let ids: Vec<TrackId> = app.engine.session().tracks.iter().filter(|x| !x.hidden && x.kind != TrackKind::Video).map(|x| x.id).collect();
     // Per-channel peaks for multichannel meters (read once per frame).
     let snap = app.player.as_ref().filter(|_| app.meters_live()).map(|p| p.meters());
-    egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 1.0;
-            for id in ids {
-                strip(app, ui, id, snap.as_ref());
+    // A solid, always-visible bar: with many tracks the strips run past the window, and a bar
+    // that only appears on hover hid that they scroll. The wheel scrolls them sideways too (no
+    // mixer control takes the wheel), as in Pro Tools' Mix window.
+    ui.spacing_mut().scroll = egui::style::ScrollStyle {
+        bar_width: 12.0,
+        foreground_color: true,
+        dormant_handle_opacity: 0.55,
+        active_handle_opacity: 0.75,
+        interact_handle_opacity: 0.9,
+        ..egui::style::ScrollStyle::solid()
+    };
+    egui::ScrollArea::horizontal()
+        .id_salt("mix_strips")
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+        .show(ui, |ui| {
+            let wheel = ui.input(|i| i.smooth_scroll_delta);
+            let over_mix = ui.ui_contains_pointer() && ui.ctx().pointer_hover_pos().and_then(|p| ui.ctx().layer_id_at(p)) == Some(ui.layer_id());
+            if wheel.x == 0.0 && wheel.y != 0.0 && over_mix {
+                ui.scroll_with_delta(egui::vec2(wheel.y, 0.0));
             }
-            let rest = Rect::from_min_max(pos2(ui.cursor().min.x, ui.clip_rect().min.y), ui.clip_rect().max);
-            if rest.width() > 4.0 && ui.interact(rest, ui.id().with("past_strips"), Sense::click()).double_clicked() {
-                let _ = app.dialogs.open_for_command(&app.engine, "track.new");
-            }
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 1.0;
+                for id in ids {
+                    strip(app, ui, id, snap.as_ref());
+                }
+                let rest = Rect::from_min_max(pos2(ui.cursor().min.x, ui.clip_rect().min.y), ui.clip_rect().max);
+                if rest.width() > 4.0 && ui.interact(rest, ui.id().with("past_strips"), Sense::click()).double_clicked() {
+                    let _ = app.dialogs.open_for_command(&app.engine, "track.new");
+                }
+            });
         });
-    });
 }
 
 /// Format of the destination a track's output feeds (the main mix, a bus, or stereo).
