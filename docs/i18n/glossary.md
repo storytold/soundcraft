@@ -124,8 +124,9 @@ corpora). The 2026-10-20 wording pass rewrote 48 catalog rows and removed 5 dead
 ones (superseded save/close strings, Middle, and a Shuffle row no code looked
 up). The review that followed landed the Shuffle decision (§3), folded the
 `@id` command-id rows into plain rows, and added the preference commands; the
-catalog now has 1,106 entries (the last dead row, `Interface Language`, was
-dropped when its `ui.language` command went away).
+catalog now has 1,139 entries (the last dead row, `Interface Language`, was
+dropped when its `ui.language` command went away; a 2026-10-22 pass then added the
+remaining toolbar, send, bounce and Memory Locations strings).
 
 For no-data terms the glossary above and the terminology table are
 the only authority; when coining new wording, prefer §2's rationale over

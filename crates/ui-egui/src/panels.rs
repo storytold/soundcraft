@@ -387,9 +387,9 @@ pub(crate) fn memory_locations(app: &mut SoundApp, ui: &mut Ui) {
             .iter()
             .map(|m| {
                 let kind = match m.kind {
-                    soundcraft_model::MarkerKind::Marker => "marker",
-                    soundcraft_model::MarkerKind::Selection => "selection",
-                    soundcraft_model::MarkerKind::None => "none",
+                    soundcraft_model::MarkerKind::Marker => crate::i18n::t("marker"),
+                    soundcraft_model::MarkerKind::Selection => crate::i18n::t("selection"),
+                    soundcraft_model::MarkerKind::None => crate::i18n::t("none"),
                 };
                 let len = if m.kind == soundcraft_model::MarkerKind::Selection { f(m.end - m.start) } else { String::new() };
                 (m.number, m.name.clone(), f(m.start), len, kind.to_string())
@@ -398,7 +398,7 @@ pub(crate) fn memory_locations(app: &mut SoundApp, ui: &mut Ui) {
     };
     egui::ScrollArea::vertical().show(ui, |ui| {
         egui::Grid::new("mem_grid").striped(true).num_columns(6).show(ui, |ui| {
-            for h in ["#", "Name", "Location", "Length", "Type", ""] {
+            for h in ["#", crate::i18n::t("Name"), crate::i18n::t("Location"), crate::i18n::t("Length"), crate::i18n::t("Type"), ""] {
                 ui.label(egui::RichText::new(h).strong());
             }
             ui.end_row();

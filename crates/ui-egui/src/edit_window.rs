@@ -1085,7 +1085,7 @@ fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, sele
                 let d = vec2(a.to_radians().sin(), a.to_radians().cos()) * 3.5;
                 ui.painter().line_segment([r.center() - d, r.center() + d], Stroke::new(1.5, t.text));
             }
-            if resp.on_hover_text(if track.frozen { "Unfreeze" } else { "Freeze" }).clicked() {
+            if resp.on_hover_text(if track.frozen { crate::i18n::t("Unfreeze") } else { crate::i18n::t("Freeze") }).clicked() {
                 let _ = app.run("track.freeze", json!({"tracks": [id.0]}));
             }
         }

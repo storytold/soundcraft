@@ -140,7 +140,7 @@ fn section_label(ui: &Ui, r: Rect, text: &str, narrow: bool) {
 
 pub(crate) fn route_name(app: &SoundApp, r: &Route) -> String {
     match r {
-        Route::None => "no output".into(),
+        Route::None => crate::i18n::t("no output").into(),
         Route::Main => app.engine.session().outputs.first().map_or_else(|| "Out 1-2".into(), |o| o.name.clone()),
         Route::Bus(b) => app.engine.session().bus(*b).map_or_else(|| "bus?".into(), |b| b.name.clone()),
         Route::Hardware(h) => h.clone(),
@@ -218,7 +218,7 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         if has_input {
             let on = app.engine.session().edit.flag(&format!("object.{}", id.0));
             let mut c = ui.new_child(egui::UiBuilder::new().max_rect(sec));
-            let label = egui::RichText::new(if on { "OBJECT" } else { "BED" }).font(bold(9.0));
+            let label = egui::RichText::new(if on { crate::i18n::t("OBJECT") } else { crate::i18n::t("BED") }).font(bold(9.0));
             if c.add_sized(sec.size(), egui::Button::new(label).selected(on))
                 .on_hover_text(crate::i18n::t("Route as an immersive object or to the bed"))
                 .clicked()
@@ -938,7 +938,10 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
     let level_r = if compact { r } else { level_icon(r).expand2(vec2(3.0, 0.0)).with_min_y(r.min.y).with_max_y(r.max.y) };
     let route_r = Rect::from_min_max(r.min, pos2((level_r.min.x - 1.0).max(r.min.x), r.max.y));
     let route_resp = ui.interact(if snd.is_some() { route_r } else { r }, ui.id().with(("snd-route", id.0, slot)), Sense::click());
-    route_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Send {}", (b'A' + slot as u8) as char)));
+    route_resp.widget_info(|| {
+        let which = (b'A' + slot as u8) as char;
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::fmt(crate::i18n::t("Send {which}"), &[("which", &which.to_string())]))
+    });
     let mark = if compact { Mark::Arrow } else { Mark::Letter((b'a' + slot as u8) as char) };
     match &snd {
         Some(s) => {
@@ -949,7 +952,13 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
             let which = (b'A' + slot as u8) as char;
             let shown = app.ui.send_window == Some((id, slot));
             let level_resp = ui.interact(level_r, ui.id().with(("send-value", id.0, slot)), Sense::click_and_drag());
-            level_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Send {which} level")));
+            level_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    crate::i18n::fmt(crate::i18n::t("Send {slot} level"), &[("slot", &which.to_string())]),
+                )
+            });
             if shown {
                 ui.painter().rect_stroke(level_r.shrink(0.5), 1.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
             }
@@ -968,9 +977,11 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
                 let _ =
                     app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
             }
-            let _ = level_resp.clone().on_hover_text(format!(
-                "Send {which} to {name}: {} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options",
-                db_text(s.level_db)
+            let _ = level_resp.clone().on_hover_text(crate::i18n::fmt(
+                crate::i18n::t(
+                    "Send {which} to {name}: {db} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options",
+                ),
+                &[("which", &which.to_string()), ("name", &name), ("db", &db_text(s.level_db))],
             ));
             level_resp.context_menu(|ui| send_options_menu(app, ui, id, slot, s));
         }
@@ -980,7 +991,8 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
         egui::Popup::menu(&route_resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             ui.set_min_width(250.0);
             ui.horizontal(|ui| {
-                ui.strong(format!("Send {}", (b'A' + slot as u8) as char));
+                let which = (b'A' + slot as u8) as char;
+                ui.strong(crate::i18n::fmt(crate::i18n::t("Send {which}"), &[("which", &which.to_string())]));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(route_name(app, &send.target)).color(Tokens::current().counter_text));
                 });
@@ -996,7 +1008,8 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
     } else {
         egui::Popup::menu(&route_resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             ui.set_min_width(250.0);
-            ui.strong(format!("Send {} · Choose destination", (b'A' + slot as u8) as char));
+            let which = (b'A' + slot as u8) as char;
+            ui.strong(crate::i18n::fmt(crate::i18n::t("Send {which} · Choose destination"), &[("which", &which.to_string())]));
             send_route_menu(app, ui, id, slot, None);
         });
     }
@@ -1081,7 +1094,9 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
 /// Secondary controls live behind the amount readout, separate from the bus selector like Logic.
 fn send_options_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, send: &soundcraft_model::SendSlot) {
     ui.set_min_width(230.0);
-    ui.strong(format!("Send {} · {}", (b'A' + slot as u8) as char, route_name(app, &send.target)));
+    let which = (b'A' + slot as u8) as char;
+    let name = route_name(app, &send.target);
+    ui.strong(crate::i18n::fmt(crate::i18n::t("Send {which} · {name}"), &[("which", &which.to_string()), ("name", &name)]));
     let mut db = send.level_db.max(-60.0);
     if ui.add(egui::Slider::new(&mut db, -60.0..=12.0).text(crate::i18n::t("Level")).suffix(" dB")).changed() {
         let _ = app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
@@ -1270,7 +1285,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, cu
 fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
     let key = if input { "input" } else { "output" };
     let cmd = if input { "track.input" } else { "track.output" };
-    if ui.button(if input { "no input" } else { "no output" }).clicked() {
+    if ui.button(if input { crate::i18n::t("no input") } else { crate::i18n::t("no output") }).clicked() {
         let _ = app.run(cmd, json!({"track": id.0, key: "none"}));
         ui.close();
     }

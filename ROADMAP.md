@@ -2,7 +2,7 @@
 
 **Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
 
-> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-10-19 · **Change:** minor (localization ~12 % → ~25 %: string catalog and Simplified Chinese shipped) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-10-22 · **Change:** trivial (localization follow-up: remaining UI literals translated, zh-hans code spelling, packing-format doc corrected) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -84,7 +84,7 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Language | Code | Status | Translated |
 |---|---|---|---:|
 | English | en | full | 100 % |
-| Simplified Chinese | zh-Hans | full (engine diagnostics stay English) | 100 % |
+| Simplified Chinese | zh-hans | full (engine diagnostics stay English) | 100 % |
 | Spanish | es | none (PR #143 open) | 0 % |
 | Hindi | hi | none | 0 % |
 | Arabic | ar | none | 0 % |
@@ -162,6 +162,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | trivial | Localization follow-up: remaining UI literals (toolbar tooltips, send/bounce/status strings, Memory Locations headers) translated, so the "100 %" claim now covers them; languages table uses the registry's zh-hans spelling; catalog packing-format doc corrected |
 | 2026-10-19 | minor | Localization 12 % → 25 %: string catalog, language selector and Simplified Chinese shipped (2 of Pro Tools' 8 languages); languages table marks zh-Hans full |
 | 2026-10-18 | trivial | Mono device playback retains both stereo sides and surround fold-down channels; readiness estimates unchanged |
 | 2026-10-16 | trivial | Master volume automation block boundaries corrected; readiness estimates unchanged |

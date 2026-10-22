@@ -63,7 +63,12 @@ pub fn parse_entries(text: &str) -> (Vec<Entry>, Vec<String>) {
 impl Catalog {
     pub fn parse(text: &str) -> Catalog {
         let mut c = Catalog::default();
-        for (ctx, src, tr) in parse_entries(text).0 {
+        let (entries, errors) = parse_entries(text);
+        if !errors.is_empty() {
+            // A bad line is skipped, not fatal: the UI falls back to English for those strings.
+            eprintln!("i18n: skipping {} malformed catalog line(s): {}", errors.len(), errors.join("; "));
+        }
+        for (ctx, src, tr) in entries {
             match ctx.as_str() {
                 "" => {
                     c.plain.insert(src, tr);

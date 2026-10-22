@@ -1135,3 +1135,38 @@ automation	trim	微调
 	vca	VCA
 	folder	文件夹
 	video	视频
+
+# Toolbar tooltips, mixer/send labels, bounce status and the Memory Locations table.
+	A bounce is already running	已有导出任务正在进行
+	BED	声床
+	Bounce cancelled	导出已取消
+	Bounced {name} (peak {peak} dBFS, {lufs} LUFS)	已导出 {name}（峰值 {peak} dBFS，{lufs} LUFS）
+	Bouncing {name}	正在导出 {name}
+	Commands Keyboard Focus (single-key editing)	命令键盘焦点（单键编辑）
+	Fill window with session (Alt+A)	让会话填满窗口 (Alt+A)
+	Finish or cancel the bounce first	请先完成或取消当前导出
+	Go to End (End)	到结尾 (End)
+	Input monitoring	输入监听
+	Legato	连奏
+	Location	位置
+	Loop Playback (Cmd+Shift+L)	循环播放 (Cmd+Shift+L)
+	Mute send	发送静音
+	OBJECT	对象
+	Quantize	量化
+	Return to Zero (Home)	回到零点 (Home)
+	Select an instrument track	请选择一条乐器轨道
+	Send {which}	发送 {which}
+	Send {which} · Choose destination	发送 {which} · 选择目标
+	Send {which} · {name}	发送 {which} · {name}
+	Send {which} to {name}: {db} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options	发送 {which} 至 {name}：{db} dB\n点击打开发送推子 · 垂直拖动调整 · Shift 拖动微调 · Alt 点击归零 · 右键打开选项
+	Type	类型
+	Unfreeze	解冻
+	Vel +10	力度 +10
+	Vel −10	力度 −10
+	Waveform zoom in (Cmd+Alt+])	波形放大 (Cmd+Alt+])
+	Zoom Toggle (E)	缩放切换 (E)
+	Zoom in (Cmd+])	放大 (Cmd+])
+	Zoom out (Cmd+[)	缩小 (Cmd+[)
+	Zoom preset (click to recall, Cmd-click to store)	缩放预设（点击召回，Cmd+点击存储）
+	marker	标记
+	selection	选区

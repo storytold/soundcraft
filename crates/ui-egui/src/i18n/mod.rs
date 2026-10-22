@@ -583,8 +583,10 @@ mod tests {
     }
 
     /// Every plainly looked-up literal in the UI crate must have an entry: a missing key is a
-    /// silent English fallback, which is exactly the drift this guards against. The sources are
-    /// read from disk (tests only), so a new UI file is covered without touching this test.
+    /// silent English fallback, which is exactly the drift this guards against. Literals passed
+    /// to the translating widget helpers (`icon_button`, `text_toggle`) are covered too. The
+    /// sources are read from disk (tests only), so a new UI file is covered without touching
+    /// this test.
     #[test]
     fn every_looked_up_literal_has_a_translation() {
         let Ok(entries) = std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) else {
@@ -596,7 +598,7 @@ mod tests {
         let mut missing = Vec::new();
         for path in files.iter().filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs")) {
             let Ok(text) = std::fs::read_to_string(path) else { continue };
-            for key in looked_up_literals(&text) {
+            for key in looked_up_literals(&text).into_iter().chain(helper_tip_literals(&text)) {
                 if !has(zh, &key) {
                     let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
                     missing.push(format!("{name}: {key}"));
@@ -659,5 +661,89 @@ mod tests {
             }
         }
         out
+    }
+
+    /// `widgets::icon_button`/`text_toggle` translate their tooltip themselves, so a literal tip
+    /// never sits inside a `t("…")` call and the plain scan misses it. The tip is the call's last
+    /// argument: take a call's last string literal, only when nothing but an optional trailing
+    /// comma and the closing paren follow it (an icon-name literal with a variable tip, or the
+    /// function definition itself, is skipped). These calls contain no char literals, so depth
+    /// counting is quote-safe.
+    fn helper_tip_literals(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for helper in ["icon_button(", "text_toggle("] {
+            let mut rest = text;
+            while let Some(at) = rest.find(helper) {
+                let args = &rest[at + helper.len()..];
+                let mut chars = args.char_indices();
+                let mut depth = 1usize;
+                let mut last_lit: Option<(String, usize)> = None;
+                let mut close = None;
+                while let Some((i, c)) = chars.next() {
+                    match c {
+                        '"' => {
+                            let mut key = String::new();
+                            let mut end = None;
+                            while let Some((j, c2)) = chars.next() {
+                                match c2 {
+                                    '"' => {
+                                        end = Some(j);
+                                        break;
+                                    }
+                                    '\\' => {
+                                        if let Some((_, escaped)) = chars.next() {
+                                            key.push(match escaped {
+                                                'n' => '\n',
+                                                't' => '\t',
+                                                other => other,
+                                            });
+                                        }
+                                    }
+                                    _ => key.push(c2),
+                                }
+                            }
+                            let Some(j) = end else { break };
+                            last_lit = Some((key, j + 1));
+                        }
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                close = Some(i);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let (Some((key, after)), Some(close)) = (last_lit, close) {
+                    let tail = args[after..close].trim();
+                    if tail.is_empty() || tail == "," {
+                        out.push(key);
+                    }
+                }
+                rest = args;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn helper_tip_literals_finds_only_final_tips() {
+        let text = r#"
+            if icon_button(ui, vec2(28.0, 22.0), "minus", false, "Zoom out (Cmd+[)").clicked() {}
+            let r = crate::widgets::text_toggle(
+                ui,
+                vec2(22.0, 18.0),
+                &i.to_string(),
+                false,
+                Color32::GRAY,
+                "Zoom preset (click to recall, Cmd-click to store)",
+            );
+            icon_button(ui, vec2(36.0, 26.0), icon, on, tip);
+            icon_button(&mut ui.new_child(egui::UiBuilder::new().max_rect(plus)), plus.size(), "plus", false, &tip);
+            pub fn text_toggle(ui: &mut Ui, size: egui::Vec2, text: &str, on: bool, on_color: Color32, tip: &str) -> Response {}
+        "#;
+        assert_eq!(helper_tip_literals(text), ["Zoom out (Cmd+[)".to_string(), "Zoom preset (click to recall, Cmd-click to store)".to_string()]);
     }
 }
