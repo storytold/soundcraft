@@ -249,9 +249,21 @@ per process; `SOUNDCRAFT_NO_SYSTEM_FONTS` disables loading them.
 The web build has no system fonts, so it ships a **Noto Sans SC subset** under the SIL Open Font
 License ([`assets/fonts/NotoSansSC-SoundCraftSubset.ttf`](../assets/fonts/NotoSansSC-SoundCraftSubset.ttf),
 attributed in [`ATTRIBUTION.md`](../ATTRIBUTION.md)) and adds it as the lowest-priority fallback of
-every family. The subset carries weight 400 and exactly the UI glyph set, not the whole font: a
-test fails when the Chinese catalog uses a character the subset lacks, so the asset is regenerated
-with the catalog. Chinese labels therefore render on the web as well as on the desktop under 2 MiB.
+every family. The subset carries weight 400 and a superset of the UI glyph set, not the whole font:
+printable ASCII and Latin-1, the GB 2312 level-1 common Han characters (3,755), the UI's
+punctuation, arrows and symbols, and every BMP character any shipped catalog uses — about 4,000
+codepoints and 1.1 MiB. A test fails when the Chinese catalog uses a character the subset lacks, so
+the asset is regenerated with the catalog:
+
+```
+python3 docs/i18n/tools/subset_web_font.py --check        # does the shipped subset still match?
+python3 docs/i18n/tools/subset_web_font.py NotoSansSC-VariableFont_wght.ttf   # regenerate
+```
+
+The full font is a [noto-cjk release](https://github.com/notofonts/noto-cjk); the script pins
+weight 400 with fontTools' instancer, collects the codepoints above and runs the subsetter, keeping
+the OFL name table. Chinese labels therefore render on the web as well as on the desktop under
+2 MiB.
 
 Localization is text-only: the UI has no complex-script shaping and no right-to-left layout, so
 scripts that need joining or bidi order are not supported yet. Input methods (IME) are provided by

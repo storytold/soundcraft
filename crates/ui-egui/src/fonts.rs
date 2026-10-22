@@ -93,8 +93,10 @@ static HAN_CACHE: std::sync::OnceLock<Resolved> = std::sync::OnceLock::new();
 
 /// The Han-capable TrueType font bundled for the web build only: egui's default fonts carry no Han
 /// glyphs and a browser cannot reach the operating system's fonts, so Simplified Chinese labels
-/// would render as boxes. It is a Noto Sans SC (OFL-1.1) subset at weight 400 covering the UI
-/// glyph set; see `assets/fonts/OFL.txt` and `ATTRIBUTION.md`. Native builds never embed it: the
+/// would render as boxes. It is a Noto Sans SC (OFL-1.1) subset at weight 400 covering a superset
+/// of the UI glyph set (ASCII, Latin-1, GB 2312 level-1 Han, UI symbols, every catalog character);
+/// regenerate it with `docs/i18n/tools/subset_web_font.py`. See `assets/fonts/OFL.txt` and
+/// `ATTRIBUTION.md`. Native builds never embed it: the
 /// include is compiled out of them (`test` keeps it available to the glyph-coverage tests).
 #[cfg(any(target_arch = "wasm32", test))]
 const BUNDLED_HAN: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/NotoSansSC-SoundCraftSubset.ttf"));
@@ -338,7 +340,7 @@ mod tests {
         let missing_non_emoji: Vec<char> = missing.iter().copied().filter(|c| !matches!(u32::from(*c), 0x1F000..=0x1FAFF)).collect();
         assert!(
             missing_non_emoji.is_empty(),
-            "the bundled web font has no glyph for {missing_non_emoji:?} — regenerate assets/fonts/NotoSansSC-SoundCraftSubset.ttf"
+            "the bundled web font has no glyph for {missing_non_emoji:?} — regenerate assets/fonts/NotoSansSC-SoundCraftSubset.ttf with docs/i18n/tools/subset_web_font.py"
         );
     }
 
