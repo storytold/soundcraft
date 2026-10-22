@@ -117,8 +117,8 @@ Same English word, different sense — the cross-check cannot know the context:
 
 ## 5. Corpus coverage
 
-1,032 deduplicated catalog keys compared: 171 consensus, 56 majority-differs,
-43 split, 762 no-data (SoundCraft-specific command labels — clip gain plumbing,
+1,059 deduplicated catalog keys compared: 174 consensus, 57 majority-differs,
+43 split, 785 no-data (SoundCraft-specific command labels — clip gain plumbing,
 memory locations, per-slot sends/inserts — have no counterpart in the
 corpora). The 2026-10-20 wording pass rewrote 48 catalog rows and removed 5 dead
 ones (superseded save/close strings, Middle, and a Shuffle row no code looked
@@ -126,7 +126,8 @@ up). The review that followed landed the Shuffle decision (§3), folded the
 `@id` command-id rows into plain rows, and added the preference commands; the
 catalog now has 1,139 entries (the last dead row, `Interface Language`, was
 dropped when its `ui.language` command went away; a 2026-10-22 pass then added the
-remaining toolbar, send, bounce and Memory Locations strings).
+remaining toolbar, send, bounce and Memory Locations strings, which raised the
+comparable-key count from 1,032 to 1,059).
 
 For no-data terms the glossary above and the terminology table are
 the only authority; when coining new wording, prefer §2's rationale over
