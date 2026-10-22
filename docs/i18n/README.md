@@ -36,8 +36,12 @@ composition.
 2. **Cross-check** — `python3 docs/i18n/tools/cross_check.py` folds every
    English key (punctuation, case, trailing `…`/colons are normalised away) and
    collects the Chinese renderings each DAW uses for the same key, then votes.
-   Nothing in the catalog is modified.
-3. **Curation** — the raw vote table is full of false positives (same English
+   Nothing in the catalog is modified. The committed report
+   (`cross-check-report.md`) carries only verdicts and counts; the per-DAW vote
+   table is written to `sources/raw/cross-check-detail.md`, inside the
+   gitignored corpus directory.
+3. **Curation** — the raw vote table (local, gitignored) is full of false
+   positives (same English
    word in a different sense, DAW-specific bugs, older corpora). The human/agent
    pass distils the report into `glossary.md`, marking each row *keep* (our
    wording is right and deliberate), *consider* (majority disagrees for a real
@@ -47,14 +51,20 @@ composition.
 
 ## Clean-room rules, restated for translations
 
-- No proprietary translation memory: no Pro Tools, Cubase, Ableton, Logic
-  language packs or manuals are consulted, extracted or copied. Feature-name
-  observation of the incumbent stays within the usual bounds.
+- No proprietary translation memory: Pro Tools, Cubase, Ableton and Logic
+  language packs and manuals are never downloaded, extracted or copied.
+  Community articles that paraphrase vendor terminology (indexed in
+  `sources/SOURCES.md`) are read as terminology facts only — which tool uses
+  which term — never as text to reproduce. Feature-name observation of the
+  incumbent stays within the usual bounds.
 - The reference corpora are GPL-licensed projects' translation data. They live
-  outside version control; `glossary.md` records terminology *facts* (which
-  term which project uses) in our own words, and the shipped catalog keeps its
-  original, MIT/Apache-licensed translations. A terminology fact is not a
-  copied string; wholesale reuse of a corpus would be, and is not done.
+  outside version control, and their strings stay out: the committed
+  cross-check report carries verdicts and counts only, while the per-DAW
+  renderings live in a gitignored local file. `glossary.md` records terminology
+  *facts* (which term which project uses) in our own words, and the shipped
+  catalog keeps its original, MIT/Apache-licensed translations. A terminology
+  fact is not a copied string; wholesale reuse of a corpus would be, and is not
+  done.
 - SoundCraft, AudioSuite, CLAP, VST3, MIDI, dB, kHz and file extensions keep
   their spelling.
 
