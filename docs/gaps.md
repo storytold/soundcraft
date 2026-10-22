@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-10-19 · **Change:** minor (G-09: catalog and Simplified Chinese shipped) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-22 · **Last updated:** 2026-10-22 · **Change:** trivial (G-09: packed catalog, interface-language preference, web Han font landed; docs refreshed) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -138,10 +138,12 @@ parametric request #139. ≈ 80–120 h.
 
 ### G-09. Localization
 
-See [`localization-parity.md`](localization-parity.md): the catalog, the language selector, locale
-detection and a Han font fallback exist, and Simplified Chinese is complete ([how it works](localization-zh-hans.md)). German, Spanish, French, Japanese, Korean and Traditional Chinese are
-missing (≈ 3–5 h each, ≈ 6–10 h for ja/zh-Hant), and egui still has no complex-script shaping or
-RTL. ≈ 30–45 h plus native-speaker review.
+See [`localization-parity.md`](localization-parity.md): the packed catalog, the
+`interface.language` preference (the old `ui.language` command is gone), locale detection, the
+language-aware Han/Hangul fallback, a bundled Han subset for the web and complete Simplified
+Chinese exist ([how it works](localization-zh-hans.md)). German, Spanish, French, Japanese, Korean and
+Traditional Chinese are missing (≈ 3–5 h each, ≈ 6–10 h for ja/zh-Hant), and egui still has no
+complex-script shaping or RTL. ≈ 30–45 h plus native-speaker review.
 
 ### G-10. Control surfaces
 
@@ -215,6 +217,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | trivial | G-09: localization follow-up documented — packed catalogs, `interface.language` preference, web Han font subset; remaining languages/RTL scope unchanged |
 | 2026-10-19 | minor | G-09 shrunk: string catalog, language selector, locale detection and Simplified Chinese shipped; 6 languages and RTL remain (70–110 h → 30–45 h) |
 | 2026-10-18 | trivial | G-04: mono device stereo/surround fold-down fixed and regression-tested; estimates unchanged |
 | 2026-10-16 | trivial | G-04: master volume automation block boundaries fixed and regression-tested; estimates unchanged |

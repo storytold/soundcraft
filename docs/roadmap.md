@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-10-19 · **Change:** minor (M15 localization: catalog and Simplified Chinese done) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-22 · **Last updated:** 2026-10-22 · **Change:** trivial (M15 localization follow-up: packed catalog, interface-language preference, web Han font; docs refreshed) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -89,6 +89,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | trivial | M15 localization follow-up: catalogs pack at build time, the `interface.language` preference replaces the `ui.language` command, the remaining UI literals are translated, and the web ships a Han font subset; remaining scope unchanged (6 languages + RTL) |
 | 2026-10-19 | minor | M15 moved to 🟡: string catalog, language selector and Simplified Chinese shipped; 6 languages and RTL remain (70–110 h → 30–45 h) |
 | 2026-10-14 | trivial | M8: reject oversized MCP batches before execution (#460) |
 | 2026-10-10 | minor | Added the alpha gate (3 of 6 core workflows fail → pre-alpha) |

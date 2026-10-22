@@ -272,8 +272,10 @@ tests.
 
 ## Tests and gates
 
-The localization tests live in `crates/ui-egui/src/i18n/mod.rs`, `catalog.rs` and `system.rs`, and
-run in `cargo xtask ci`:
+The localization tests live next to the code they check — `crates/ui-egui/src/i18n/`
+(`mod.rs`, `catalog.rs`, `system.rs`), `crates/ui-egui/src/fonts.rs`,
+`crates/ui-egui/src/menus.rs`, `crates/engine/src/prefs.rs` / `cmd/prefs.rs` and
+`apps/soundcraft/src/config.rs` — and run in `cargo xtask ci`:
 
 | Test / gate | Enforces |
 |---|---|
@@ -281,7 +283,7 @@ run in `cargo xtask ci`:
 | `bundled_catalogs_unpack_and_parse_without_errors` | every shipped catalog inflates, parses and has no malformed lines |
 | `catalogs_have_unique_keys_and_matching_placeholders` | no duplicate keys; placeholders, trailing ellipsis and colon match the English source |
 | `simplified_chinese_covers_the_composed_interface` | Simplified Chinese (the catalog with `complete_menus`) covers every menu-tree label, UI command label, engine command label and menu path segment |
-| `every_looked_up_literal_has_a_translation` | every bare `t("…")` literal in the UI crate has an entry |
+| `every_looked_up_literal_has_a_translation` | every literal UI string has an entry: a bare `t("…")` and the last argument (the tooltip) of the `icon_button` / `text_toggle` helpers |
 | `cjk_fallback_order_follows_the_interface_language`, `every_family_puts_han_before_hangul_for_chinese` | the CJK fallback order follows the interface language (Han first except Korean) |
 | `bundled_web_font_covers_the_zh_hans_catalog`, `bundled_web_font_draws_the_zh_hans_catalog_in_every_family`, `bundled_web_font_stays_within_its_size_budget` | the bundled web font covers every catalog glyph in every family and stays inside its 2 MiB budget |
 | `every_family_draws_hangul_and_han_with_system_fonts` | both CJK fallbacks reach every family on a system that has the fonts (skipped otherwise) |
