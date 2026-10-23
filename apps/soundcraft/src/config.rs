@@ -138,6 +138,86 @@ pub fn save_ui(path: &std::path::Path, ui: &soundcraft_ui_egui::UiState) -> Resu
     written.map_err(|error| format!("Settings could not be saved: {error}"))
 }
 
+/// Read the engine-owned preference document (`interface.language`, …), bounded and `None` when
+/// this profile has none yet.
+pub fn load_preferences(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read as _;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Preferences could not be read: {error}")),
+    };
+    let mut bytes = Vec::new();
+    file.take(soundcraft_engine::prefs::MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|error| format!("Preferences could not be read: {error}"))?;
+    if bytes.len() as u64 > soundcraft_engine::prefs::MAX_BYTES {
+        return Err(format!("Preferences exceed the {} KiB limit", soundcraft_engine::prefs::MAX_BYTES / 1024));
+    }
+    Ok(Some(bytes))
+}
+
+/// Write the preference document atomically (temporary file + rename), so a crash mid-write
+/// leaves the previous file in place.
+pub fn save_preferences(path: &Path, json: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    let bytes = json.as_bytes();
+    if bytes.len() as u64 > soundcraft_engine::prefs::MAX_BYTES {
+        return Err(format!("Preferences exceed the {} KiB limit", soundcraft_engine::prefs::MAX_BYTES / 1024));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| format!("Preferences could not be saved: {error}"))?;
+    }
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error| error.to_string())?.as_nanos();
+    let temporary = path.with_extension(format!("json.{}.{nonce}.tmp", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| format!("Preferences could not be saved: {error}"))?;
+    let written = (|| -> std::io::Result<()> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written.map_err(|error| format!("Preferences could not be saved: {error}"))
+}
+
+/// The interface language older builds saved in `ui.json`, for the one-time migration into
+/// `preferences.json`. Anything else in that file is ignored (and still loaded as UI state).
+pub fn legacy_language(path: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(MAX_UI_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MAX_UI_BYTES {
+        return None;
+    }
+    let saved: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let language = saved.get("language")?.as_str()?.trim();
+    // Only a value the preference accepts is worth migrating; anything else stays behind.
+    soundcraft_engine::prefs::valid_language(language).then(|| language.to_owned())
+}
+
+/// A one-time migration: when there is no preference document yet, adopt the language `ui.json`
+/// keeps from the version that stored the setting there. Returns whether it wrote the file.
+pub fn migrate_language(engine: &mut soundcraft_engine::Engine, ui_path: &Path, preferences_path: &Path) -> Result<bool, String> {
+    if preferences_path.is_file() {
+        return Ok(false);
+    }
+    let Some(language) = legacy_language(ui_path) else { return Ok(false) };
+    if language.eq_ignore_ascii_case("auto") {
+        return Ok(false);
+    }
+    // Store the registry's canonical lowercase code: an old `zh-Hans` becomes `zh-hans`.
+    let language = soundcraft_ui_egui::i18n::Lang::from_code(&language).map_or(language, |lang| lang.code().to_owned());
+    engine
+        .execute("prefs.set", &serde_json::json!({"path": soundcraft_engine::prefs::LANGUAGE, "value": language}))
+        .map_err(|error| format!("Preferences could not be migrated: {error}"))?;
+    save_preferences(preferences_path, &engine.prefs_json().map_err(|error| error.to_string())?)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod config_tests {
     use super::*;
@@ -302,5 +382,69 @@ mod config_tests {
         use std::os::unix::ffi::OsStringExt as _;
         let value = OsString::from_vec(b"isolated/\xff".to_vec());
         assert_eq!(config_dir_with(Platform::Mac, |_| Some(value.clone()), None), Some(PathBuf::from(value)));
+    }
+
+    #[test]
+    fn preferences_round_trip_atomically_and_are_size_capped() {
+        let directory = std::env::temp_dir().join(format!("soundcraft-preferences-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("preferences.json");
+        assert_eq!(load_preferences(&path).unwrap(), None, "a fresh profile has no file");
+        let document = r#"{"interface":{"language":"zh-hans"}}"#;
+        save_preferences(&path, document).unwrap();
+        assert_eq!(load_preferences(&path).unwrap(), Some(document.as_bytes().to_vec()), "a missing parent directory is created");
+        let oversized = " ".repeat(soundcraft_engine::prefs::MAX_BYTES as usize + 1);
+        assert!(save_preferences(&path, &oversized).is_err());
+        std::fs::write(&path, &oversized).unwrap();
+        assert!(load_preferences(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap().len(), oversized.len(), "the oversized file is preserved");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn the_legacy_ui_json_language_migrates_once_into_the_preferences_file() {
+        let directory = std::env::temp_dir().join(format!("soundcraft-language-migration-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let ui = directory.join("ui.json");
+        let preferences = directory.join("preferences.json");
+        let mut engine = soundcraft_engine::Engine::default();
+        assert!(!migrate_language(&mut engine, &ui, &preferences).unwrap(), "nothing to migrate without ui.json");
+        assert_eq!(legacy_language(&ui), None);
+        std::fs::write(&ui, br#"{"theme":"Light","language":"zh-Hans"}"#).unwrap();
+        assert_eq!(legacy_language(&ui).as_deref(), Some("zh-Hans"), "the old file's spelling is read as-is");
+        assert!(migrate_language(&mut engine, &ui, &preferences).unwrap());
+        assert_eq!(engine.prefs().interface.language, "zh-hans", "the preference stores the registry's canonical code");
+        assert!(load_preferences(&preferences).unwrap().is_some());
+        // Once migrated, `ui.json` no longer matters.
+        std::fs::write(&ui, br#"{"language":"en"}"#).unwrap();
+        assert!(!migrate_language(&mut engine, &ui, &preferences).unwrap());
+        // `auto` is the default, so there is nothing worth writing.
+        std::fs::remove_file(&preferences).unwrap();
+        std::fs::write(&ui, br#"{"language":"auto"}"#).unwrap();
+        assert!(!migrate_language(&mut engine, &ui, &preferences).unwrap());
+        std::fs::write(&ui, b"damaged settings").unwrap();
+        assert_eq!(legacy_language(&ui), None);
+        // A value the preference would reject is left behind rather than failing every start.
+        std::fs::write(&ui, br#"{"language":"zh Hans"}"#).unwrap();
+        assert_eq!(legacy_language(&ui), None);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn an_old_ui_json_with_a_language_field_still_loads_unchanged() {
+        // Removing `UiState::language` must not strand a profile: unknown fields are ignored and
+        // loading never rewrites the file (the migration reads it separately).
+        let directory = std::env::temp_dir().join(format!("soundcraft-legacy-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("ui.json");
+        let document = br#"{"theme":"light","language":"zh-Hans","show_transport":true}"#;
+        std::fs::write(&path, document).unwrap();
+        let ui = load_ui(&path).unwrap().expect("an old file still loads");
+        assert!(matches!(ui.theme, soundcraft_ui_egui::theme::ThemeMode::Light));
+        assert!(ui.show_transport);
+        assert_eq!(std::fs::read(&path).unwrap(), document, "loading does not rewrite the file");
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

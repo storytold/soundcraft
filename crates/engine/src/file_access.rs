@@ -273,7 +273,7 @@ mod tests {
 
     /// A fresh folder holding `in` (read root), `out` (write root) and `outside`.
     fn folders(name: &str) -> (PathBuf, Arc<AutomationRoots>) {
-        let base = std::env::temp_dir().join(format!("sc-file-access-{name}-{}", std::process::id()));
+        let base = crate::test_scratch::root().join(format!("sc-file-access-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         for d in ["in/sub", "out", "outside", "in2"] {
             std::fs::create_dir_all(base.join(d)).unwrap();
@@ -445,7 +445,8 @@ mod tests {
     /// it (import, open, sampler load), so playback and bounce read nothing from disk and need no
     /// check of their own. Plug-in scans live in the host crates. The one engine module that reads
     /// and writes a fixed folder is `autosave.rs`: crash-recovery copies in the app's own data
-    /// folder, which no command names, so it is skipped too.
+    /// folder, which no command names, so it is skipped too. `test_scratch.rs` is test-only: it
+    /// creates the folder tests write into, and no command can reach it.
     #[test]
     fn commands_do_not_touch_the_file_system_themselves() {
         fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
@@ -458,6 +459,21 @@ mod tests {
                 }
             }
         }
+        /// True when the line uses the file system directly. `fs::` counts only at an identifier
+        /// boundary, so a module path such as `prefs::Store` is not mistaken for `std::fs`.
+        fn touches_the_filesystem(line: &str) -> bool {
+            let mut rest = line;
+            while let Some(at) = rest.find("fs::") {
+                let before = rest[..at].chars().next_back();
+                if !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    return true;
+                }
+                rest = &rest[at + 3..];
+            }
+            ["std::fs", "File::open", "File::create", "OpenOptions", ".is_file()", ".exists()", ".is_dir()", "canonicalize"]
+                .iter()
+                .any(|w| line.contains(w))
+        }
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = vec![];
         walk(&src, &mut files);
@@ -466,8 +482,11 @@ mod tests {
         for path in files {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             // `io` and this module are the checked gateway; `autosave` writes the app's own
-            // recovery folder; `tests*.rs` are test-only modules.
-            if path.parent() == Some(src.as_path()) && matches!(name, "io.rs" | "file_access.rs" | "autosave.rs") || name.starts_with("tests") {
+            // recovery folder; `test_scratch` only makes the folder tests write into; `tests*.rs`
+            // are test-only modules.
+            if path.parent() == Some(src.as_path()) && matches!(name, "io.rs" | "file_access.rs" | "autosave.rs" | "test_scratch.rs")
+                || name.starts_with("tests")
+            {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
@@ -475,11 +494,7 @@ mod tests {
             let code = text.split("#[cfg(test)]").next().unwrap_or("");
             for (n, line) in code.lines().enumerate() {
                 let line = line.trim_start();
-                let touches =
-                    ["std::fs", "fs::", "File::open", "File::create", "OpenOptions", ".is_file()", ".exists()", ".is_dir()", "canonicalize"]
-                        .iter()
-                        .any(|w| line.contains(w));
-                if !line.starts_with("//") && touches {
+                if !line.starts_with("//") && touches_the_filesystem(line) {
                     offenders.push(format!("{}:{}: {line}", path.display(), n + 1));
                 }
             }

@@ -421,8 +421,11 @@ mod tests {
     use soundcraft_audio_io::AudioBuffer;
     use soundcraft_model::{ChannelFormat, Clip, TrackKind};
 
+    /// Scratch folders live beside the build, not in `/tmp`: some systems mount `/tmp` on a small
+    /// tmpfs that a full test run fills, and a full disk would make these autosaves fail with
+    /// `ENOSPC` instead of testing what they mean to.
     fn folder(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("soundcraft-{name}-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("soundcraft-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

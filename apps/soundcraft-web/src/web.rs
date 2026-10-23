@@ -11,6 +11,8 @@ use wasm_bindgen::JsCast as _;
 
 const CANVAS_ID: &str = "soundcraft_canvas";
 const LOADING_ID: &str = "soundcraft_loading";
+/// Where the engine preference document lives in the browser (same JSON as `preferences.json`).
+const PREFERENCES_KEY: &str = "soundcraft.preferences";
 
 pub fn start() {
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
@@ -38,10 +40,21 @@ pub fn start() {
                     if let Some(rs) = &cc.wgpu_render_state {
                         log::info!("soundcraft-web: wgpu backend {:?}", rs.adapter.get_info().backend);
                     }
-                    let engine = if query().contains("empty") { Engine::default() } else { soundcraft_engine::demo::demo_engine() };
+                    let mut engine = if query().contains("empty") { Engine::default() } else { soundcraft_engine::demo::demo_engine() };
+                    load_preferences(&mut engine);
                     let player = soundcraft_playback::Player::new(Arc::new(engine.session().clone()));
+                    // `Auto` follows the browser's language list, before the first frame.
+                    soundcraft_ui_egui::i18n::init_system_locale_with(navigator_languages());
                     let app = SoundApp::new(engine, Some(player), Services::default());
-                    Ok(Box::new(WebShell { app, inbox: Rc::default(), samples: Rc::default() }))
+                    let saved_prefs_revision = app.engine.prefs_revision();
+                    Ok(Box::new(WebShell {
+                        app,
+                        inbox: Rc::default(),
+                        samples: Rc::default(),
+                        saved_prefs_revision,
+                        prefs_save_attempt: None,
+                        prefs_save_error: None,
+                    }))
                 }),
             )
             .await;
@@ -56,6 +69,49 @@ pub fn start() {
 
 fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
+}
+
+/// The browser's preferred languages, bounded: `Auto` resolves through the same registry as the
+/// desktop's locale detection.
+fn navigator_languages() -> Vec<String> {
+    const MAX_TAGS: usize = 64;
+    let Some(navigator) = web_sys::window().map(|w| w.navigator()) else { return Vec::new() };
+    let languages = navigator.languages();
+    let mut tags = Vec::new();
+    for index in 0..languages.length().min(MAX_TAGS as u32) {
+        if let Some(tag) = languages.get(index).as_string() {
+            tags.push(tag);
+        }
+    }
+    tags
+}
+
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
+/// Load the preference document from the browser's local storage (lenient, like the desktop file).
+fn load_preferences(engine: &mut Engine) {
+    let Some(storage) = local_storage() else { return };
+    let Ok(Some(json)) = storage.get_item(PREFERENCES_KEY) else { return };
+    if json.len() as u64 > soundcraft_engine::prefs::MAX_BYTES {
+        log::warn!("preferences: the saved document exceeds the {} KiB limit", soundcraft_engine::prefs::MAX_BYTES / 1024);
+        return;
+    }
+    for warning in engine.load_prefs_json(json.as_bytes()) {
+        log::warn!("preferences: {warning}");
+    }
+}
+
+/// Store the preference document (the same JSON as the desktop's file). The caller records the
+/// revision only when this succeeds and retries a failure.
+fn save_preferences(engine: &Engine) -> Result<(), String> {
+    let Some(storage) = local_storage() else { return Err("no localStorage".to_string()) };
+    let json = engine.prefs_json().map_err(|error| error.to_string())?;
+    if json.len() as u64 > soundcraft_engine::prefs::MAX_BYTES {
+        return Err(format!("refusing to store a {} KiB document", json.len() / 1024));
+    }
+    storage.set_item(PREFERENCES_KEY, &json).map_err(|error| format!("could not be stored: {error:?}"))
 }
 
 /// What a file read from the browser is for.
@@ -115,6 +171,13 @@ struct WebShell {
     app: SoundApp,
     inbox: Inbox,
     samples: SampleInbox,
+    /// The engine preferences revision last stored in `localStorage`.
+    saved_prefs_revision: u64,
+    /// When the frame loop last tried to store a preference change (egui seconds); a failed store
+    /// is retried at most once a second instead of on every frame.
+    prefs_save_attempt: Option<f64>,
+    /// The last store failure: logged once, and again only when it changes.
+    prefs_save_error: Option<String>,
 }
 
 impl WebShell {
@@ -204,6 +267,31 @@ impl eframe::App for WebShell {
             self.app.load_sample_bytes(&read, bytes);
         }
         self.app.logic(ctx);
+        // Preferences change rarely (the Appearance window, agents): store them when they do, and
+        // only record the revision once the browser actually kept the document. A failure (private
+        // mode, quota) is retried at most once a second instead of on every frame.
+        let prefs_revision = self.app.engine.prefs_revision();
+        if prefs_revision != self.saved_prefs_revision {
+            let now = ctx.input(|i| i.time);
+            if self.prefs_save_attempt.is_none_or(|at| now - at >= 1.0) {
+                self.prefs_save_attempt = Some(now);
+                match save_preferences(&self.app.engine) {
+                    Ok(()) => {
+                        self.saved_prefs_revision = prefs_revision;
+                        self.prefs_save_error = None;
+                    }
+                    Err(error) => {
+                        if self.prefs_save_error.as_deref() != Some(error.as_str()) {
+                            log::warn!("preferences: {error}");
+                        }
+                        self.prefs_save_error = Some(error);
+                        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+                    }
+                }
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs(1));
+            }
+        }
         // A prompt opened during this frame becomes a picker on the next one.
         self.take_path_prompt(ctx);
     }

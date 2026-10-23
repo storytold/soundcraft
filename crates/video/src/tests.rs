@@ -207,13 +207,27 @@ fn ffmpeg_h264_high_with_bframes() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Scratch files live beside the build, not in a `/tmp` some systems mount on a small tmpfs.
+fn scratch() -> std::path::PathBuf {
+    option_env!("CARGO_TARGET_TMPDIR").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        // Unit tests run from `<target>/<profile>/deps/`, so three parents give the target
+        // directory: this honours `CARGO_TARGET_DIR` and works from a read-only checkout.
+        if let Some(target) = std::env::current_exe().ok().and_then(|exe| exe.parent()?.parent()?.parent().map(std::path::Path::to_path_buf)) {
+            return target.join("tmp");
+        }
+        // Last resort: `<workspace>/target/tmp`, without a literal `..`.
+        let krate = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        krate.parent().and_then(std::path::Path::parent).map_or_else(|| krate.join("target/tmp"), |ws| ws.join("target/tmp"))
+    })
+}
+
 fn ffmpeg_dir() -> Option<std::path::PathBuf> {
     let found = std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success());
     if !found {
         eprintln!("skipping: ffmpeg not on PATH");
         return None;
     }
-    let dir = std::env::temp_dir().join(format!("soundcraft-video-test-{}", std::process::id()));
+    let dir = scratch().join(format!("soundcraft-video-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }

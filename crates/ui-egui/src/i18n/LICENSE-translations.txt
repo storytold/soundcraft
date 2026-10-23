@@ -1,0 +1,18 @@
+SoundCraft UI translations — license and clean-room statement
+=============================================================
+
+The files in this directory (src/i18n/*.tsv) are original translations of SoundCraft's
+English source strings.
+
+Clean room: they were not derived from any proprietary translation memory, glossary or
+shipped UI strings of a commercial product. Terminology facts (which Chinese term an
+open-source application uses for a feature) were observed black-box in public open-source
+translations and are recorded under docs/i18n/; no translated strings were copied.
+
+License: MIT OR Apache-2.0, the same terms as the SoundCraft code. See LICENSE-MIT and
+LICENSE-APACHE in the repository root. The translations are bundled only in the SoundCraft
+UI; the English source strings in the code remain the canonical text.
+
+Adding or editing a translation: keep the format documented at the top of each .tsv file,
+keep `{name}` placeholders and a trailing ellipsis, and run the catalog tests (they check
+coverage, placeholders and the packed round-trip).

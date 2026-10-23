@@ -12,6 +12,7 @@ pub mod docking;
 pub mod edit_window;
 pub mod extra_windows;
 pub mod fonts;
+pub mod i18n;
 pub mod icons;
 pub mod menus;
 pub mod midi_editor;
@@ -202,6 +203,31 @@ pub fn preset_folder_name(plugin: &str) -> String {
     plugin.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
+/// A scratch folder for a test, unique to this process: beside the build, not in a `/tmp` some
+/// systems mount on a small tmpfs that a full test run fills.
+#[cfg(test)]
+pub(crate) fn scratch(name: &str) -> std::path::PathBuf {
+    let leaf = format!("{name}-{}", std::process::id());
+    // Best effort: a caller that only joins a name still gets the path.
+    let temp = |base: std::path::PathBuf| {
+        let dir = base.join(&leaf);
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    };
+    if let Some(base) = option_env!("CARGO_TARGET_TMPDIR") {
+        return temp(std::path::PathBuf::from(base));
+    }
+    // Unit tests run from `<target>/<profile>/deps/`, so three parents give the target directory:
+    // this honours `CARGO_TARGET_DIR` and works from a read-only checkout.
+    if let Some(target) = std::env::current_exe().ok().and_then(|exe| exe.parent()?.parent()?.parent().map(std::path::Path::to_path_buf)) {
+        return temp(target.join("tmp"));
+    }
+    // Last resort: `<workspace>/target/tmp`, by walking up (`crates/<crate>` → workspace).
+    let krate = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let base = krate.parent().and_then(std::path::Path::parent).map_or_else(|| krate.join("target/tmp"), |ws| ws.join("target/tmp"));
+    temp(base)
+}
+
 /// On the first frame, maximizes a window too big for the screen it opened on (sized on a larger
 /// monitor) instead of letting it run off the edge; its saved size is kept for that monitor.
 pub fn fit_window_to_screen(ctx: &egui::Context) {
@@ -306,7 +332,8 @@ pub struct SoundApp {
     pub(crate) pending_open: Option<(TrackId, usize)>,
     last_rev: u64,
     fonts_ready: bool,
-    fonts_installed: bool,
+    /// The language code the installed font fallback order was built for.
+    fonts_language: Option<&'static str>,
     /// The palette last applied to the context (light?), so visuals are set only on a change.
     theme_applied: Option<bool>,
     /// Last panel host context, used to cancel renderer-owned gestures on explicit replacement.
@@ -390,7 +417,7 @@ impl SoundApp {
             pending_open: None,
             last_rev: 0,
             fonts_ready: false,
-            fonts_installed: false,
+            fonts_language: None,
             theme_applied: None,
             docking_context: None,
             sim: None,
@@ -445,7 +472,10 @@ impl SoundApp {
                 Ok(v)
             }
             Err(e) => {
-                self.ui.status = e.to_string();
+                // Engine messages are English keys too: a catalog entry translates the static ones
+                // (a message built with ids and numbers falls back to English).
+                let message = e.to_string();
+                self.ui.status = crate::i18n::t(&message).to_string();
                 log::warn!("{id}: {e}");
                 Err(e.to_string())
             }
@@ -535,7 +565,7 @@ impl SoundApp {
             } else {
                 "No track is record-enabled: click the R button on the track to record."
             };
-            self.ui.status = why.into();
+            self.ui.status = crate::i18n::t(why).into();
             self.record_hint = Some((self.last_frame.unwrap_or_default(), why));
             return;
         }
@@ -543,7 +573,7 @@ impl SoundApp {
         let takes = match self.arm_recorder() {
             Ok(takes) => takes,
             Err(err) => {
-                self.ui.status = format!("Cannot record: {err}");
+                self.ui.status = crate::i18n::fmt(crate::i18n::t("Cannot record: {error}"), &[("error", &err.to_string())]);
                 return;
             }
         };
@@ -671,7 +701,7 @@ impl SoundApp {
     /// plugins' own state reaches the session every two minutes (`autosave`).
     fn autosave_changes(&mut self) {
         if let Some(e) = self.autosaver.as_ref().and_then(soundcraft_engine::autosave::Autosaver::failure) {
-            self.ui.status = format!("Autosave failed: {e}");
+            self.ui.status = crate::i18n::fmt(crate::i18n::t("Autosave failed: {error}"), &[("error", &e.to_string())]);
         }
         if self.autosave_dir.is_none() || self.engine.revision == self.autosaved_rev {
             return;
@@ -697,7 +727,7 @@ impl SoundApp {
         let Some(w) = &self.autosaver else { return false };
         let written = w.flush();
         if let Err(e) = &written {
-            self.ui.status = format!("Autosave failed: {e}");
+            self.ui.status = crate::i18n::fmt(crate::i18n::t("Autosave failed: {error}"), &[("error", &e.to_string())]);
         }
         written.is_ok()
     }
@@ -742,16 +772,16 @@ impl SoundApp {
         self.panic_rev = self.engine.revision;
         let saved = self.engine.is_dirty() && self.write_autosave();
         self.ui.status = if saved {
-            "SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft.".into()
+            crate::i18n::t("SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft.").into()
         } else {
-            "SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe.".into()
+            crate::i18n::t("SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe.").into()
         };
     }
 
     /// Replace the open session with unsaved work an earlier run left behind.
     pub fn recover(&mut self, left: &soundcraft_engine::autosave::Leftover) {
         if self.engine.transport.recording {
-            self.ui.status = "Stop recording before recovering other work.".into();
+            self.ui.status = crate::i18n::t("Stop recording before recovering other work.").into();
             return;
         }
         self.close_autosave();
@@ -761,12 +791,24 @@ impl SoundApp {
                     soundcraft_engine::autosave::discard(left);
                 }
                 self.ui.status = match missing.len() {
-                    0 => format!("Recovered “{}”. Save it to keep the changes.", left.name),
-                    n => format!("Recovered “{}”, but {n} audio file(s) are missing. Save it to keep the changes.", left.name),
+                    0 => crate::i18n::fmt(crate::i18n::t("Recovered “{name}”. Save it to keep the changes."), &[("name", &left.name)]),
+                    n => crate::i18n::fmt(
+                        crate::i18n::t("Recovered “{name}”, but {n} audio file(s) are missing. Save it to keep the changes."),
+                        &[("name", &left.name), ("n", &n.to_string())],
+                    ),
                 };
             }
-            Err(e) => self.ui.status = format!("Couldn't recover “{}”: {e}", left.name),
+            Err(e) => {
+                self.ui.status =
+                    crate::i18n::fmt(crate::i18n::t("Couldn't recover “{name}”: {error}"), &[("name", &left.name), ("error", &e.to_string())])
+            }
         }
+    }
+
+    /// The newest autosave failure since the last call, if any: a full disk, a folder that stays
+    /// locked. Tests read it so a failed write names its reason.
+    pub fn autosave_failure(&self) -> Option<String> {
+        self.autosaver.as_ref().and_then(soundcraft_engine::autosave::Autosaver::failure)
     }
 
     /// The most recent autosave, if any.
@@ -832,7 +874,7 @@ impl SoundApp {
             }
             Err(e) => {
                 self.recorder_failed = true;
-                self.ui.status = format!("No audio input: {e}");
+                self.ui.status = crate::i18n::fmt(crate::i18n::t("No audio input: {error}"), &[("error", &e.to_string())]);
             }
         }
     }
@@ -844,24 +886,28 @@ impl SoundApp {
         let name = p.device_name.clone();
         let (cause, then) = match trouble {
             OutputTrouble::Bug => (
-                "the audio engine hit an internal error (see the log)".to_string(),
-                "Use Reconnect audio device in Setup ▸ Playback Engine, or restart SoundCraft.",
+                crate::i18n::t("the audio engine hit an internal error (see the log)").to_string(),
+                crate::i18n::t("Use Reconnect audio device in Setup ▸ Playback Engine, or restart SoundCraft."),
             ),
-            OutputTrouble::Gone => {
-                (format!("“{name}” was disconnected"), "Plug it back in, then use Reconnect audio device in Setup ▸ Playback Engine.")
-            }
-            OutputTrouble::Stalled => (format!("“{name}” stopped asking for audio"), "Use Reconnect audio device in Setup ▸ Playback Engine."),
+            OutputTrouble::Gone => (
+                crate::i18n::fmt(crate::i18n::t("“{name}” was disconnected"), &[("name", &name)]),
+                crate::i18n::t("Plug it back in, then use Reconnect audio device in Setup ▸ Playback Engine."),
+            ),
+            OutputTrouble::Stalled => (
+                crate::i18n::fmt(crate::i18n::t("“{name}” stopped asking for audio"), &[("name", &name)]),
+                crate::i18n::t("Use Reconnect audio device in Setup ▸ Playback Engine."),
+            ),
         };
         let (recording, playing) = (self.engine.transport.recording, self.engine.transport.playing);
         if recording || playing {
             self.stop_play();
         }
         self.ui.status = if recording {
-            format!("Recording stopped: {cause}. The take is kept up to there. {then}")
+            crate::i18n::fmt(crate::i18n::t("Recording stopped: {cause}. The take is kept up to there. {then}"), &[("cause", &cause), ("then", then)])
         } else if playing {
-            format!("Playback stopped: {cause}. {then}")
+            crate::i18n::fmt(crate::i18n::t("Playback stopped: {cause}. {then}"), &[("cause", &cause), ("then", then)])
         } else {
-            format!("Audio output: {cause}. {then}")
+            crate::i18n::fmt(crate::i18n::t("Audio output: {cause}. {then}"), &[("cause", &cause), ("then", then)])
         };
     }
 
@@ -874,7 +920,10 @@ impl SoundApp {
             let lost = r.lost_ms();
             if recording && lost > self.lost_shown {
                 self.lost_shown = lost;
-                self.ui.status = format!("The disk is too slow: this take has lost {lost} ms of input so far.");
+                self.ui.status = crate::i18n::fmt(
+                    crate::i18n::t("The disk is too slow: this take has lost {lost} ms of input so far."),
+                    &[("lost", &lost.to_string())],
+                );
             }
             return;
         };
@@ -885,14 +934,15 @@ impl SoundApp {
             Trouble::Device(what) => {
                 self.recorder = None;
                 self.recorder_failed = true;
-                (what, "Reconnect it, then use Reconnect audio device in Setup ▸ Playback Engine.")
+                (what, crate::i18n::t("Reconnect it, then use Reconnect audio device in Setup ▸ Playback Engine."))
             }
-            Trouble::Disk(what) => (what, "Check the disk, then record again."),
+            Trouble::Disk(what) => (what, crate::i18n::t("Check the disk, then record again.")),
         };
+        let what = crate::i18n::t(&what);
         self.ui.status = if recording {
-            format!("Recording stopped: {what}. The take is kept up to there. {then}")
+            crate::i18n::fmt(crate::i18n::t("Recording stopped: {cause}. The take is kept up to there. {then}"), &[("cause", what), ("then", then)])
         } else {
-            format!("Audio input: {what}. {then}")
+            crate::i18n::fmt(crate::i18n::t("Audio input: {cause}. {then}"), &[("cause", what), ("then", then)])
         };
     }
 
@@ -1137,15 +1187,19 @@ impl SoundApp {
         if ctx.current_pass_index() > 0 {
             return;
         }
-        // Fonts set now take effect next frame, so draw only from the frame after.
-        if !self.fonts_ready {
-            if self.fonts_installed {
-                self.fonts_ready = true;
-            } else {
-                fonts::install(ctx);
-                self.fonts_installed = true;
-                ctx.request_repaint();
-            }
+        // The interface language is a preference like the theme: resolve it before anything draws.
+        let language = i18n::apply_preference(&self.engine.prefs().interface.language);
+        // The font fallback order follows the language and set fonts take effect next frame, so
+        // install it on a language change and draw only from the frame after.
+        if self.fonts_language != Some(language.code()) {
+            self.fonts_language = Some(language.code());
+            // An agent may have changed the preference: an unapplied draft would be stale.
+            self.extra.language_draft = None;
+            fonts::install(ctx);
+            self.fonts_ready = false;
+            ctx.request_repaint();
+        } else if !self.fonts_ready {
+            self.fonts_ready = true;
         }
         let light = theme::wants_light(ctx, self.ui.theme);
         if self.theme_applied != Some(light) || theme::is_light() != light {
@@ -1405,7 +1459,7 @@ mod tests {
 
     #[test]
     fn a_hidden_window_still_autosaves() {
-        let dir = std::env::temp_dir().join(format!("soundcraft-hidden-autosave-{}", std::process::id()));
+        let dir = crate::scratch("soundcraft-hidden-autosave");
         let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
         app.autosave_dir = Some(dir.clone());
         app.run("track.new", json!({"count": 1, "format": "mono"})).unwrap();

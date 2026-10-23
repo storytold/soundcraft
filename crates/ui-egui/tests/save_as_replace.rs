@@ -6,7 +6,7 @@ use soundcraft_ui_egui::{Services, SoundApp, dialogs::Dialog};
 
 #[test]
 fn saving_over_another_session_takes_the_replace_button() {
-    let dir = std::env::temp_dir().join(format!("soundcraft-ui-replace-{}", std::process::id()));
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("soundcraft-ui-replace-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("Song.scraft");

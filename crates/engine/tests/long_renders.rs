@@ -29,7 +29,7 @@ fn refused(e: &mut Engine, cmd: &str, params: &Value) {
 #[test]
 fn clips_longer_than_one_render_are_refused() {
     let (mut e, id) = long_clip(MAX_RENDER_SAMPLES / 2 + 1);
-    let dir = std::env::temp_dir().join(format!("soundcraft-long-renders-{}", std::process::id()));
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("soundcraft-long-renders-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     refused(&mut e, "clip.gain_render", &json!({"clips": [id.0]}));
     refused(&mut e, "clip.effects_render", &json!({"clips": [id.0]}));

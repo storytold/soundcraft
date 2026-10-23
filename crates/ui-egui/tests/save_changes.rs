@@ -68,7 +68,7 @@ fn closing_a_modified_session_asks_first() {
 
 #[test]
 fn save_in_the_question_saves_before_closing() {
-    let dir = std::env::temp_dir().join(format!("soundcraft-save-changes-{}", std::process::id()));
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("soundcraft-save-changes-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("Song.scraft").to_string_lossy().into_owned();
 

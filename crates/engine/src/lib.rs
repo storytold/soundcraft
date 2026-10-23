@@ -15,6 +15,7 @@ pub mod edit;
 pub mod file_access;
 pub mod inspect;
 pub mod io;
+pub mod prefs;
 pub mod score;
 
 use serde_json::{Value, json};
@@ -139,6 +140,9 @@ pub struct Engine {
     /// The edit selection (range, tracks) before the last change, for Restore Last Selection.
     /// Kept out of the document so selecting never marks the session modified.
     pub last_selection: Option<(soundcraft_time::Range, Vec<TrackId>)>,
+    /// Shell-owned interface settings (`interface.language`); not part of the session document or
+    /// its undo history. Frontends persist them through [`Engine::prefs_json`].
+    prefs: prefs::Store,
 }
 
 impl Default for Engine {
@@ -169,6 +173,7 @@ impl Engine {
             merge_hold: None,
             messages: Vec::new(),
             last_selection: None,
+            prefs: prefs::Store::default(),
         }
     }
 
@@ -191,6 +196,35 @@ impl Engine {
     pub fn zoom_mut(&mut self) -> &mut ZoomState {
         self.dirty = true;
         &mut Arc::make_mut(&mut self.doc).edit.zoom
+    }
+
+    /// The interface preferences: shell-owned values such as `interface.language`. They are not
+    /// part of the session document, so changing them never dirties it or enters undo.
+    pub fn prefs(&self) -> &prefs::Preferences {
+        self.prefs.get()
+    }
+
+    /// Bumps on every preferences change, so a frontend saves exactly once per edit.
+    pub fn prefs_revision(&self) -> u64 {
+        self.prefs.revision()
+    }
+
+    /// Apply one frontend edit to the preferences store and bump the revision once.
+    pub(crate) fn edit_prefs<R>(&mut self, edit: impl FnOnce(&mut prefs::Preferences) -> R) -> R {
+        self.prefs.edit(edit)
+    }
+
+    /// Serialize the preferences for the frontend's settings file.
+    pub fn prefs_json(&self) -> Result<String> {
+        self.prefs.get().to_json().map_err(|error| EngineError::Internal("prefs".to_owned(), error))
+    }
+
+    /// Leniently load a frontend's preferences file (bad or partial values keep their defaults).
+    /// Returns the load warnings for the log.
+    pub fn load_prefs_json(&mut self, bytes: &[u8]) -> Vec<String> {
+        let (values, warnings) = prefs::Preferences::from_json(bytes);
+        self.prefs = prefs::Store::new(values);
+        warnings
     }
 
     /// Replace the whole document (open / new); clears history.
@@ -451,6 +485,11 @@ fn install_panic_hook() {
 fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
     p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
 }
+
+/// Test-only scratch folder: creates the directory tests write into, not file access a command
+/// can reach. Below the last non-test item so the file-access audit scan sees the whole file.
+#[cfg(test)]
+mod test_scratch;
 
 #[cfg(test)]
 mod merge_tests {

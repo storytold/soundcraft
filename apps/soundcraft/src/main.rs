@@ -23,7 +23,20 @@ use soundcraft_engine::Engine;
 use soundcraft_ui_egui::{Services, SoundApp, UiState, dialogs};
 use std::sync::Arc;
 
-struct App(SoundApp, Option<&'static logging::AppLogger>, #[cfg(target_os = "macos")] Option<native_menu::NativeMenu>);
+struct App {
+    app: SoundApp,
+    logger: Option<&'static logging::AppLogger>,
+    #[cfg(target_os = "macos")]
+    menu: Option<native_menu::NativeMenu>,
+    /// The engine preferences revision last written to `preferences.json`; `None` while a
+    /// migration that changed the preferences still has to be written by the frame loop.
+    saved_prefs_revision: Option<u64>,
+    /// When the frame loop last tried to save a preference change (egui seconds); a failed save
+    /// is retried at most once a second instead of on every frame.
+    prefs_save_attempt: Option<f64>,
+    /// The last save failure: logged once, and again only when it changes.
+    prefs_save_error: Option<String>,
+}
 
 /// Sends the title only when it changes, remembered here as X11 and Wayland can't read it back.
 fn set_title(ctx: &egui::Context, title: String) {
@@ -37,70 +50,99 @@ fn set_title(ctx: &egui::Context, title: String) {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // What the realtime audio thread logged is written here, off that thread.
-        if let Some(logger) = self.1 {
+        if let Some(logger) = self.logger {
             logger.report_audio_thread();
         }
         #[cfg(target_os = "macos")]
-        if let Some(menu) = &mut self.2 {
-            menu.process(&mut self.0);
+        if let Some(menu) = &mut self.menu {
+            menu.process(&mut self.app);
         }
-        self.0.guarded(|app| app.logic(ctx));
+        self.app.guarded(|app| app.logic(ctx));
         #[cfg(target_os = "macos")]
-        if let Some(menu) = &mut self.2 {
-            menu.sync(&self.0);
+        if let Some(menu) = &mut self.menu {
+            menu.sync(&self.app);
         }
         // Files dropped on the window: audio on an instrument track or a Sampler window loads
         // the sampler; otherwise sessions open and audio/MIDI import.
         let dropped: Vec<String> =
-            self.0.take_dropped_files(ctx).iter().map(|f| f.path().to_string_lossy().into_owned()).filter(|s| !s.is_empty()).collect();
+            self.app.take_dropped_files(ctx).iter().map(|f| f.path().to_string_lossy().into_owned()).filter(|s| !s.is_empty()).collect();
         for p in dropped {
-            open_path(&mut self.0, &p);
+            open_path(&mut self.app, &p);
         }
-        if self.0.quit_requested {
+        if self.app.quit_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if ctx.input(|i| i.viewport().close_requested()) && dialogs::ask_to_save(&mut self.0, "app.quit", &serde_json::json!({})) {
+        } else if ctx.input(|i| i.viewport().close_requested()) && dialogs::ask_to_save(&mut self.app, "app.quit", &serde_json::json!({})) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         soundcraft_ui_egui::fit_window_to_screen(ctx);
         let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized.unwrap_or(false)));
-        self.0.ui.window_maximized = maximized;
+        self.app.ui.window_maximized = maximized;
         if let Some(r) = inner.filter(|_| !maximized) {
-            self.0.ui.window_size = (r.size() * ctx.zoom_factor()).round().into();
+            self.app.ui.window_size = (r.size() * ctx.zoom_factor()).round().into();
         }
-        self.0.ui.ui_scale = self.0.extra.ui_scale;
+        self.app.ui.ui_scale = self.app.extra.ui_scale;
         // Saved now rather than at exit: the recent list matters most after a crash.
-        if self.0.take_recent_changed() {
-            save_prefs(&self.0.ui);
+        if self.app.take_recent_changed() {
+            save_prefs(&self.app.ui);
+        }
+        // Preferences change rarely (the Appearance window, agents): save them when they do, and
+        // only record the revision once the file actually kept them. A failure (read-only settings
+        // folder, full disk) is retried at most once a second — not on every frame, which would
+        // write a temp file and log a warning sixty times a second.
+        let prefs_revision = self.app.engine.prefs_revision();
+        if self.saved_prefs_revision != Some(prefs_revision) {
+            let now = ctx.input(|i| i.time);
+            if self.prefs_save_attempt.is_none_or(|at| now - at >= 1.0) {
+                self.prefs_save_attempt = Some(now);
+                match save_engine_prefs(&self.app.engine) {
+                    Ok(()) => {
+                        self.saved_prefs_revision = Some(prefs_revision);
+                        self.prefs_save_error = None;
+                    }
+                    Err(error) => {
+                        if self.prefs_save_error.as_deref() != Some(error.as_str()) {
+                            log::warn!("preferences: {error}");
+                        }
+                        self.prefs_save_error = Some(error);
+                        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+                    }
+                }
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs(1));
+            }
         }
         // With the system menu bar there is no egui bar showing the window and dirty state, so the
         // title carries them; elsewhere the egui menu bar already does.
-        let title = if self.0.native_menu_bar {
+        let title = if self.app.native_menu_bar {
             format!(
                 "{}{} — SoundCraft — {}",
-                self.0.engine.session().name,
-                if self.0.engine.is_dirty() { " *" } else { "" },
-                if self.0.ui.window == soundcraft_ui_egui::MainWindow::Edit { "Edit" } else { "Mix" }
+                self.app.engine.session().name,
+                if self.app.engine.is_dirty() { " *" } else { "" },
+                if self.app.ui.window == soundcraft_ui_egui::MainWindow::Edit { "Edit" } else { "Mix" }
             )
         } else {
-            format!("{} — SoundCraft", self.0.engine.session().name)
+            format!("{} — SoundCraft", self.app.engine.session().name)
         };
         set_title(ctx, title);
     }
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        self.0.raw_input_hook(raw);
+        self.app.raw_input_hook(raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.0.guarded(|app| app.ui(ui));
+        self.app.guarded(|app| app.ui(ui));
     }
     fn on_exit(&mut self) {
-        self.0.close_autosave();
-        save_prefs(&self.0.ui);
-        if let Some(logger) = self.1 {
+        self.app.close_autosave();
+        save_prefs(&self.app.ui);
+        if let Err(error) = save_engine_prefs(&self.app.engine) {
+            log::warn!("preferences: {error}");
+        }
+        if let Some(logger) = self.logger {
             logger.report_audio_thread();
         }
         // The system Quit (⌘Q) ends the process from inside the event loop, so `run_native` never
         // returns: release the player's plugin instances and shut plugin hosting down here.
-        self.0.player = None;
+        self.app.player = None;
         soundcraft_engine::shutdown_plugin_hosts();
     }
 }
@@ -157,6 +199,60 @@ fn save_prefs(ui: &UiState) {
     {
         log::warn!("{error}");
     }
+}
+
+/// The engine-owned preference document (`interface.language`, …) beside `ui.json`.
+fn preferences_path() -> Option<std::path::PathBuf> {
+    config_dir().map(|b| b.join("preferences.json"))
+}
+
+/// Load the preference document leniently (a damaged value keeps its default, with a log line)
+/// and, on the first run with it, adopt the language older builds saved in `ui.json`.
+///
+/// Returns true when that migration changed the preferences but could not be written yet: the
+/// frame loop must retry the save instead of recording the revision as already persisted.
+fn load_engine_prefs(engine: &mut Engine) -> bool {
+    if !prefs_enabled() {
+        return false;
+    }
+    let Some(path) = preferences_path() else { return false };
+    match config::load_preferences(&path) {
+        Ok(Some(bytes)) => {
+            for warning in engine.load_prefs_json(&bytes) {
+                log::warn!("preferences: {warning}");
+            }
+            false
+        }
+        Ok(None) => {
+            let mut pending = false;
+            if let Some(ui_path) = prefs_path() {
+                match config::migrate_language(engine, &ui_path, &path) {
+                    Ok(true) => log::info!("preferences: adopted the interface language saved in ui.json"),
+                    Ok(false) => {}
+                    Err(error) => {
+                        log::warn!("preferences: {error}");
+                        pending = true;
+                    }
+                }
+            }
+            pending
+        }
+        Err(error) => {
+            log::warn!("preferences: {error}");
+            false
+        }
+    }
+}
+
+/// Persist the engine preferences. Disabled or absent paths are a successful no-op; a failed
+/// write is reported so the frame loop can retry it.
+fn save_engine_prefs(engine: &Engine) -> Result<(), String> {
+    if !prefs_enabled() {
+        return Ok(());
+    }
+    let Some(path) = preferences_path() else { return Ok(()) };
+    let json = engine.prefs_json().map_err(|error| error.to_string())?;
+    config::save_preferences(&path, &json)
 }
 
 fn services() -> Services {
@@ -245,7 +341,8 @@ fn main() -> eframe::Result {
         }
     }
 
-    let engine = if demo { soundcraft_engine::demo::demo_engine() } else { Engine::default() };
+    let mut engine = if demo { soundcraft_engine::demo::demo_engine() } else { Engine::default() };
+    let migration_needs_save = load_engine_prefs(&mut engine);
     let prefs = load_prefs().unwrap_or_default();
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -263,6 +360,8 @@ fn main() -> eframe::Result {
     // Before eframe creates the wgpu instance: default Windows to DirectX 12 with FXC (see graphics.rs).
     #[cfg(target_os = "windows")]
     graphics::configure(&mut options, eframe::wgpu::Backends::from_env(), eframe::wgpu::Dx12Compiler::from_env());
+    // Read the desktop's UI language once, before the first frame (Auto follows it).
+    soundcraft_ui_egui::i18n::init_system_locale();
     eframe::run_native(
         "SoundCraft",
         options,
@@ -294,12 +393,16 @@ fn main() -> eframe::Result {
                     None
                 }
             };
-            Ok(Box::new(App(
+            let prefs_revision = app.engine.prefs_revision();
+            Ok(Box::new(App {
+                saved_prefs_revision: (!migration_needs_save).then_some(prefs_revision),
+                prefs_save_attempt: None,
+                prefs_save_error: None,
                 app,
                 logger,
                 #[cfg(target_os = "macos")]
                 menu,
-            )))
+            }))
         }),
     )
 }
