@@ -96,7 +96,7 @@ pub fn audio_systems() -> Vec<AudioSystem> {
     cpal::available_hosts()
         .into_iter()
         .filter_map(|id| {
-            let host = cpal::host_from_id(id).ok()?;
+            let host = host_for(id)?;
             let def_out = host.default_output_device().as_ref().and_then(device_name);
             let def_in = host.default_input_device().as_ref().and_then(device_name);
             let outputs = host.output_devices().map(|ds| ds.filter_map(|d| describe(&d, def_out.as_deref(), true)).collect()).unwrap_or_default();
@@ -106,22 +106,53 @@ pub fn audio_systems() -> Vec<AudioSystem> {
         .collect()
 }
 
+/// An audio system handle: ASIO's is shared by the whole process, the others are made per call.
+pub(crate) enum HostRef {
+    Owned(cpal::Host),
+    Shared(&'static cpal::Host),
+}
+
+impl std::ops::Deref for HostRef {
+    type Target = cpal::Host;
+    fn deref(&self) -> &cpal::Host {
+        match self {
+            HostRef::Owned(h) => h,
+            HostRef::Shared(h) => h,
+        }
+    }
+}
+
+/// The host for `id`. ASIO gets one host for the process: asio-sys remembers the loaded driver
+/// per host, so a second host would load and initialise the driver again under the streams
+/// already running on it (and drop it again with its last device), silencing them.
+fn host_for(id: cpal::HostId) -> Option<HostRef> {
+    if id.name().eq_ignore_ascii_case("ASIO") {
+        static ASIO: std::sync::OnceLock<Option<cpal::Host>> = std::sync::OnceLock::new();
+        return ASIO.get_or_init(|| cpal::host_from_id(id).ok()).as_ref().map(HostRef::Shared);
+    }
+    cpal::host_from_id(id).ok().map(HostRef::Owned)
+}
+
 /// The chosen audio system, else the default one.
-pub(crate) fn host(cfg: &AudioConfig) -> cpal::Host {
+pub(crate) fn host(cfg: &AudioConfig) -> HostRef {
     cfg.system
         .as_deref()
         .and_then(|want| cpal::available_hosts().into_iter().find(|id| id.name().eq_ignore_ascii_case(want)))
-        .and_then(|id| cpal::host_from_id(id).ok())
+        .and_then(host_for)
         .unwrap_or_else(|| {
             if let Some(s) = &cfg.system {
                 log::warn!("audio system `{s}` is not available; using the default");
             }
-            cpal::default_host()
+            host_for(cpal::default_host().id()).unwrap_or_else(|| HostRef::Owned(cpal::default_host()))
         })
 }
 
 /// The named output (or input) device of `host`, else its default device.
 pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
+    shared_asio(host, find_device(host, name, output))
+}
+
+fn find_device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
     if let Some(want) = name {
         let found = if output { host.output_devices().ok() } else { host.input_devices().ok() }
             .and_then(|mut ds| ds.find(|d| device_name(d).as_deref() == Some(want)));
@@ -131,6 +162,26 @@ pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Opt
         log::warn!("audio device `{want}` is not available; using the default");
     }
     if output { host.default_output_device() } else { host.default_input_device() }
+}
+
+/// One device value per ASIO driver for the whole process. An ASIO driver has a single set of
+/// buffers for input and output together, and cpal keeps the record of that set in the device
+/// value: an input opened from a second value of the same driver would recreate the buffers for
+/// input only, leaving the output stream (opened from the first value) writing into buffers the
+/// driver has disposed, and silent. Sharing the value makes cpal create both sides together.
+fn shared_asio(host: &cpal::Host, found: Option<cpal::Device>) -> Option<cpal::Device> {
+    let d = found?;
+    if !host.id().name().eq_ignore_ascii_case("ASIO") {
+        return Some(d);
+    }
+    let Some(name) = device_name(&d) else { return Some(d) };
+    static SHARED: std::sync::OnceLock<std::sync::Mutex<Vec<(String, cpal::Device)>>> = std::sync::OnceLock::new();
+    let mut shared = SHARED.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, kept)) = shared.iter().find(|(n, _)| *n == name) {
+        return Some(kept.clone());
+    }
+    shared.push((name, d.clone()));
+    Some(d)
 }
 
 /// The buffer to request: the chosen size when the device's range allows it, else the default.
