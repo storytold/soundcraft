@@ -1333,11 +1333,125 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
         let pan = m.pan.first().map_or("-".into(), |p| crate::widgets::pan_text(*p));
         // The readout is black in both themes, so it takes the dark palette's green.
         let ink = Tokens::DARK.counter_text;
-        for (y, label, value) in [(7.5, "vol", crate::widgets::db_text(m.volume_db)), (22.0, "pan", pan)] {
+        // The two rows are buttons: a click opens a fader or pan sliders, an Alt-click resets.
+        // The Mix window's strip has no stereo pan for a VCA or for a track on a multichannel output (it shows a surround panner), so the pan stays text.
+        // ponytail: surround-panned tracks are placed in the Mix window. Upgrade: `widgets::surround_panner` in the pan popup.
+        let pannable = !m.pan.is_empty() && track.kind != TrackKind::Vca && !crate::mix_window::surround_panned(app, track);
+        let vol_row = Rect::from_x_y_ranges(vr.x_range(), vr.min.y + 1.5..=vr.min.y + 14.0).shrink2(vec2(1.5, 0.0));
+        let pan_row = Rect::from_x_y_ranges(vr.x_range(), vr.min.y + 15.0..=vr.max.y - 1.5).shrink2(vec2(1.5, 0.0));
+        let vol_text = crate::widgets::db_text(m.volume_db);
+        let vol = readout_button(&ui, vol_row, ui.id().with(("vol", id.0)), "Volume", &vol_text, "Volume: click for a fader, Alt-click for 0 dB");
+        let pan_resp =
+            pannable.then(|| readout_button(&ui, pan_row, ui.id().with(("pan", id.0)), "Pan", &pan, "Pan: click for sliders, Alt-click to reset"));
+        let alt = ui.input(|i| i.modifiers.alt);
+        if vol.clicked() && alt && m.volume_db.abs() > f32::EPSILON {
+            // Merged, so a reset during an automation pass joins the pass's undo step; the merge ends by itself on the next frame.
+            let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": 0.0}), &format!("fader:{}", id.0));
+        }
+        if let Some(resp) = &pan_resp
+            && resp.clicked()
+            && alt
+        {
+            reset_pan(app, track);
+        }
+        for (y, label, value) in [(7.5, "vol", vol_text), (22.0, "pan", pan)] {
             ui.painter().text(pos2(vr.min.x + 7.0, vr.min.y + y), Align2::LEFT_CENTER, label, bold(10.0), ink);
             ui.painter().text(pos2(vr.max.x - 6.5, vr.min.y + y), Align2::RIGHT_CENTER, value, bold(10.0), ink);
         }
         ui.painter().hline(vr.min.x + 7.0..=vr.max.x - 6.0, vr.min.y + 14.5, Stroke::new(1.0, Color32::from_gray(35)));
+        readout_popup(&vol, !alt).show(|ui| volume_fader(app, ui, track));
+        if let Some(resp) = &pan_resp {
+            readout_popup(resp, !alt).show(|ui| pan_sliders(app, ui, track));
+        }
+    }
+}
+
+/// A readout row of the I/O column as a button. It lights up under the pointer, with the keyboard focus or while its popup is open,
+/// and paints nothing otherwise, so an untouched column looks the same as before.
+fn readout_button(ui: &Ui, r: Rect, id: egui::Id, name: &str, value: &str, tip: &str) -> egui::Response {
+    let resp = ui.interact(r, id, Sense::click()).on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{name} {value}")));
+    if resp.hovered() || resp.has_focus() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp)) {
+        ui.painter().rect_filled(r, 1.5, Color32::from_gray(38));
+    }
+    resp
+}
+
+/// The popup of a readout button, to its right so it doesn't hide the tracks below. An Alt-click
+/// resets instead of opening (`toggle` false). Clicks inside it keep it open; Escape or a click outside closes it.
+fn readout_popup(resp: &egui::Response, toggle: bool) -> egui::Popup<'static> {
+    egui::Popup::from_response(resp)
+        .open_memory((toggle && resp.clicked()).then_some(egui::SetOpenCommand::Toggle))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .align(egui::RectAlign::RIGHT_START)
+        .gap(2.0)
+}
+
+/// What a panner returns to: centre on a mono track, hard left or right on a stereo one, as on a new track.
+fn default_pan(track: &Track, index: usize) -> f32 {
+    soundcraft_model::Mixer::new(track.format).pan.get(index).copied().unwrap_or(0.0)
+}
+
+/// Put every panner of the track (L and R on a stereo one) back to its default, as one undo step. The merge ends by itself on the next frame.
+fn reset_pan(app: &mut SoundApp, track: &Track) {
+    let key = format!("pan-reset:{}", track.id.0);
+    for (i, now) in track.mixer.pan.iter().enumerate().take(2) {
+        let to = default_pan(track, i);
+        // Only a real change may start the merged step: a no-op first call would leave the next one folded into an older edit.
+        if (now - to).abs() > f32::EPSILON {
+            let _ = app.engine.execute_merged("mix.pan", &json!({"track": track.id.0, "pan": to, "index": i}), &key);
+        }
+    }
+}
+
+/// The volume popup: a fader like the Mix window's, over a readout that takes a typed value.
+/// A drag is one undo step and goes through [`Gesture::Fader`], so Touch and Latch automation write it.
+fn volume_fader(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
+    let t = Tokens::current();
+    let id = track.id;
+    let db = track.mixer.volume_db;
+    let key = format!("fader:{}", id.0);
+    let (well, _) = ui.allocate_exact_size(vec2(56.0, 16.0), Sense::hover());
+    crate::widgets::inset(ui.painter(), well, t.counter_bg);
+    let readout_id = ui.id().with(("io-vol", id.0));
+    let (_, typed) = crate::mix_window::editable_readout(
+        ui,
+        well,
+        readout_id,
+        &crate::widgets::db_text(db),
+        &format!("{db:.1}"),
+        crate::mix_window::parse_db,
+        0.0,
+    );
+    if let Some(db) = typed {
+        let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": db}), &key);
+    }
+    ui.add_space(4.0);
+    // ponytail: the fader is drawn, not focusable, so the keyboard sets the volume in the readout above it. Upgrade: arrow keys in `widgets::fader`.
+    let (slot, _) = ui.allocate_exact_size(vec2(56.0, 170.0), Sense::hover());
+    if let Some(moved) = crate::widgets::fader(ui, slot, db, ui.id().with(("io-fader", id.0))) {
+        app.gesture = Some(Gesture::Fader { track: id, start_db: db });
+        let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": moved}), &key);
+    }
+}
+
+/// The pan popup: one slider, or L and R on a stereo track. A drag is one undo step per panner.
+fn pan_sliders(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
+    ui.spacing_mut().slider_width = 120.0;
+    let stereo = track.mixer.pan.len() > 1;
+    for (i, side) in ["L", "R"].into_iter().enumerate().take(track.mixer.pan.len()) {
+        let before = track.mixer.pan.get(i).copied().unwrap_or(0.0);
+        let mut pan = before;
+        // ponytail: no double-click reset on the sliders; the readout's Alt-click resets every panner at once.
+        // No step either: a slider rounds to it when drawn, which would rewrite a pan off the grid just by opening the popup.
+        let slider = egui::Slider::new(&mut pan, -1.0..=1.0)
+            .text(if stereo { side } else { "Pan" })
+            .custom_formatter(|v, _| crate::widgets::pan_text(v as f32))
+            .custom_parser(|s| crate::mix_window::parse_pan(s).map(f64::from));
+        ui.add(slider);
+        if (pan - before).abs() > f32::EPSILON {
+            let _ = app.engine.execute_merged("mix.pan", &json!({"track": track.id.0, "pan": pan, "index": i}), &format!("pan:{}:{i}", track.id.0));
+        }
     }
 }
 
