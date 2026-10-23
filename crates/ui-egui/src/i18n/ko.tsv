@@ -1,0 +1,1176 @@
+# Korean (ko) catalog. UTF-8, TAB-separated columns:
+# context <TAB> English source <TAB> Korean translation
+#
+# This file is the source of truth. build.rs packs and deflates it into the binary (a shared
+# keys table plus one packed file per language, see build.rs and docs/localization.md); do not
+# edit the packed blobs by hand, they are regenerated from this file.
+#
+# Empty context: plain UI text. @id: stable command ID. @plural: one|other source with the
+# forms this language needs (Korean has one). Other contexts disambiguate the English meaning.
+# Escapes inside columns: \n, \t, \\. Keep {name} placeholders and a trailing ….
+#
+# Original translations of SoundCraft's English source keys (menus, panels, dialogs and
+# messages), written clean-room from the meaning of the English text: no proprietary
+# translation resources were consulted or extracted. Some entries start from the Korean strings
+# contributed in #835 by arksky1. Licensed MIT OR Apache-2.0, as the code. Product, plug-in and
+# technology names keep their spelling. See docs/localization.md and docs/localization-ko.md.
+
+	1	1
+	1st Order Ambisonics	1차 앰비소닉스
+	2	2
+	2nd Order Ambisonics	2차 앰비소닉스
+	3	3
+	3rd Order Ambisonics	3차 앰비소닉스
+	4	4
+	4th Order Ambisonics	4차 앰비소닉스
+	5	5
+	5.0	5.0
+	5.0.2	5.0.2
+	5.0.4	5.0.4
+	5.1	5.1
+	5.1.2	5.1.2
+	5.1.4	5.1.4
+	5th Order Ambisonics	5차 앰비소닉스
+	6.0	6.0
+	6.1	6.1
+	6th Order Ambisonics	6차 앰비소닉스
+	7.0	7.0
+	7.0 SDDS	7.0 SDDS
+	7.0.2	7.0.2
+	7.0.4	7.0.4
+	7.0.6	7.0.6
+	7.1	7.1
+	7.1 SDDS	7.1 SDDS
+	7.1.2	7.1.2
+	7.1.4	7.1.4
+	7.1.6	7.1.6
+	7th Order Ambisonics	7차 앰비소닉스
+	9.0.4	9.0.4
+	9.0.6	9.0.6
+	9.1.4	9.1.4
+	9.1.6	9.1.6
+	AFL (After Fader Listen)	페이더 후 모니터링(AFL)
+	ARA Note Overlay	ARA 음표 오버레이
+	ARA Plugins	ARA 플러그인
+	Ableton Link	Ableton Link
+	Activate HEAT	HEAT 활성화
+	Add Key Change...	조표 변경 추가...
+	After Playback	재생 후
+	All	모두
+	All Automation	모든 오토메이션
+	All MIDI Notes Off	모든 MIDI 음표 끄기
+	All Marker Rulers	모든 마커 룰러
+	Arrange	창 배열
+	At Selection	선택 위치에서
+	At Transients	트랜지언트에서
+	Audio as MIDI	오디오를 MIDI로
+	Audio...	오디오...
+	AudioSuite	AudioSuite
+	Auto-Spot Clips	클립 자동 스팟
+	Auto-Update Active Configuration	활성 구성 자동 업데이트
+	Automation	오토메이션
+	Automation Follows Edit	오토메이션이 편집을 따름
+	BF-76	BF-76
+	Bars|Beats	마디|비트
+	Beat Detective	비트 탐지
+	Big Counter	큰 카운터
+	Bounce Mix...	믹스 바운스...
+	Bounce...	바운스...
+	Bring to Front	맨 앞으로 가져오기
+	Bypass	바이패스
+	Bypass Inserts	인서트 바이패스
+	Calibration Mode	보정 모드
+	Can't Redo	다시 실행할 수 없음
+	Can't Undo	실행 취소할 수 없음
+	Capture...	캡처...
+	Cascade	계단식 배열
+	Center Playhead	재생 헤드 가운데 고정
+	Change Duration...	길이 변경...
+	Change Edit to Match Timeline	편집 영역을 타임라인에 맞추기
+	Change Meter...	박자표 변경...
+	Change Timeline to Match Edit	타임라인을 편집 영역에 맞추기
+	Change Track Width	트랙 채널 형식 변경
+	Change Velocity...	벨로시티 변경...
+	Channel Name	채널 이름
+	Channel Strip	채널 스트립
+	Chord Symbols	코드 기호
+	Clear	지우기
+	Clear All Clip Indicators	모든 클립 표시기 지우기
+	Clear Special	선택하여 지우기
+	Clear Trim Automation	트림 오토메이션 지우기
+	Click	클릭
+	Click/Countoff...	클릭/카운트오프...
+	Clip	클립
+	Clip Effects	클립 이펙트
+	Clip Effects Status	클립 이펙트 상태
+	Clip Gain	클립 게인
+	Clip Gain Info	클립 게인 정보
+	Clip Gain Line	클립 게인 라인
+	Clip Groups...	클립 그룹...
+	Clip List	클립 목록
+	Close All Workspaces	모든 워크스페이스 닫기
+	Close Session	세션 닫기
+	Close Window	창 닫기
+	Coalesce Clip Gain to Volume Automation	클립 게인을 볼륨 오토메이션에 병합
+	Coalesce Pan Guide Automation	팬 가이드 오토메이션 병합
+	Coalesce Trim Automation	트림 오토메이션 병합
+	Coalesce VCA Controller Automation	VCA 컨트롤러 오토메이션 병합
+	Coalesce Volume Automation to Clip Gain	볼륨 오토메이션을 클립 게인에 병합
+	Collaboration	공동 작업
+	Color Palette	색상 팔레트
+	Comments	코멘트
+	Commit...	커밋...
+	Composite Playlist	컴포지트 플레이리스트
+	Configurations	구성
+	Conform to Tempo	템포에 맞추기
+	Consolidate	통합
+	Constant...	고정값...
+	Continuous	연속
+	Convert Aux to Routing Folder	Aux를 라우팅 폴더로 변환
+	Convert Clip Gain to Volume Automation	클립 게인을 볼륨 오토메이션으로 변환
+	Convert Volume Automation to Clip Gain	볼륨 오토메이션을 클립 게인으로 변환
+	Copy	복사
+	Copy Selection to...	선택 영역 복사 대상...
+	Copy Special	선택하여 복사
+	Copy to Send...	센드로 복사...
+	Copy/Move Indicators	복사/이동 표시기
+	Counters	카운터
+	Create Click Track	클릭 트랙 만들기
+	Create...	만들기...
+	Current Feet+Frames Position...	현재 피트+프레임 위치...
+	Current Time	현재 시간
+	Current Timecode Position...	현재 타임코드 위치...
+	Cut	잘라내기
+	Cut Special	선택하여 잘라내기
+	Cut Time...	시간 잘라내기...
+	D-Verb	D-Verb
+	DC Offset Removal	DC 오프셋 제거
+	Dashboard...	대시보드...
+	Default	기본값
+	Delay	딜레이
+	Delay Compensation	지연 보정
+	Delete	삭제
+	Designate as Target Playlist	대상 플레이리스트로 지정
+	Destructive Record	파괴적 녹음
+	DestructivePunch	DestructivePunch
+	Disk Allocation...	디스크 할당...
+	Disk Usage	디스크 사용량
+	Display on All Channels	모든 채널에 표시
+	Double Edit	편집 영역 두 배로
+	Dropped Video Frame Indicator	비디오 프레임 누락 표시기
+	Duplicate	복제
+	Duplicate Dolby Atmos Plugin Automation to Pan Automation	Dolby Atmos 플러그인 오토메이션을 팬 오토메이션으로 복제
+	Duplicate Pan Automation to Dolby Atmos Plugin Automation	팬 오토메이션을 Dolby Atmos 플러그인 오토메이션으로 복제
+	Duplicate and Extend Edit	복제 후 편집 영역 확장
+	Duplicate of Main Playlist	메인 플레이리스트 복제본
+	Duplicate...	복제...
+	Dyn3 Compressor/Limiter	Dyn3 Compressor/Limiter
+	Dyn3 De-Esser	Dyn3 De-Esser
+	Dyn3 Expander/Gate	Dyn3 Expander/Gate
+	Dynamic Transport	다이내믹 트랜스포트
+	Dynamics	다이내믹스
+	EQ	EQ
+	EQ Curve	EQ 커브
+	EQ3 1-Band	EQ3 1-Band
+	EQ3 7-Band	EQ3 7-Band
+	Edit	편집
+	Edit Lock/Unlock	편집 잠금/해제
+	Edit Window Scrolling	편집 창 스크롤
+	Edit Window Views	편집 창 보기
+	Edit/Tool Mode Keyboard Lock	편집/도구 모드 키보드 잠금
+	Elastic Properties	Elastic Audio 속성
+	Eleven Lite	Eleven Lite
+	End to Fill Selection	끝을 선택 영역에 맞추기
+	End to Insertion	끝을 삽입 위치까지
+	Event	이벤트
+	Expanded	확장
+	Expanded Sends	센드 펼쳐 보기
+	Export	내보내기
+	Extend Edit Down	편집 영역 아래로 확장
+	Extend Edit Down to Members	편집 영역을 아래쪽 멤버까지 확장
+	Extend Edit Selection To Marker Lane Above	편집 선택 영역을 위쪽 마커 레인까지 확장
+	Extend Edit Selection To Marker Lane Below	편집 선택 영역을 아래쪽 마커 레인까지 확장
+	Extend Edit Up	편집 영역 위로 확장
+	Extend Edit Up to Members	편집 영역을 위쪽 멤버까지 확장
+	External Timecode Offset...	외부 타임코드 오프셋...
+	Extract Chords from Selection	선택 영역에서 코드 추출
+	Extract MIDI to New Track	MIDI를 새 트랙으로 추출
+	Fade to End	끝까지 페이드
+	Fade to Start	시작부터 페이드
+	Fades	페이드
+	Feet+Frames	피트+프레임
+	File	파일
+	Find Talent	인재 찾기
+	Flatten Performance...	퍼포먼스 확정...
+	Folder Lines	폴더 선
+	Freeze	프리즈
+	Gain	게인
+	Get Info...	정보 보기...
+	Get Preferences	환경설정 가져오기
+	Glide Pan Only	팬만 글라이드
+	Glide to All Enabled	활성 항목 전체에 글라이드
+	Glide to Current	현재 항목으로 글라이드
+	Group	그룹
+	Group...	그룹...
+	HEAT	HEAT
+	Halve Edit	편집 영역 절반으로
+	Hardware...	하드웨어...
+	Harmonic	하모닉
+	Heal Separation	분리 복구
+	Hide All Floating Windows	모든 플로팅 창 숨기기
+	I/O	I/O
+	I/O...	I/O...
+	Identify Beat...	비트 지정...
+	Identify Sync Point	싱크 포인트 지정
+	Import	가져오기
+	Input Quantize...	입력 퀀타이즈...
+	Insert Silence	무음 삽입
+	Insert Time...	시간 삽입...
+	Insertion Follows Playback	삽입 위치가 재생을 따름
+	Inserts A-E	인서트 A-E
+	Inserts F-J	인서트 F-J
+	Instruments	악기
+	Invert	반전
+	Key Signature	조표
+	Key Signature Staff	조표 보표
+	Keyboard Shortcuts...	키보드 단축키...
+	LCR	LCR
+	LCRS	LCRS
+	Latch	래치
+	Layered Editing	레이어 편집
+	Learn	학습
+	Linear...	선형...
+	Link Timeline and Edit Selection	타임라인과 편집 선택 영역 연결
+	Link Track and Edit Selection	트랙과 편집 선택 영역 연결
+	Lo-Fi	Lo-Fi
+	Loop Playback	루프 재생
+	Loop Record	루프 녹음
+	Loop...	루프...
+	Low Latency Monitoring	저지연 모니터링
+	Lower Dock	하단 도크
+	MIDI	MIDI
+	MIDI Beat Clock...	MIDI 비트 클록...
+	MIDI Controls	MIDI 컨트롤
+	MIDI Editor	MIDI 편집기
+	MIDI Editors	MIDI 편집기
+	MIDI Event List	MIDI 이벤트 목록
+	MIDI Input Devices...	MIDI 입력 장치...
+	MIDI Input Display	MIDI 입력 표시
+	MIDI Input Filter...	MIDI 입력 필터...
+	MIDI Keyboard	MIDI 키보드
+	MIDI Live Mode	MIDI 라이브 모드
+	MIDI Operations	MIDI 작업
+	MIDI Operations Window	MIDI 작업 창
+	MIDI Real-Time Properties	MIDI 실시간 속성
+	MIDI Studio...	MIDI 스튜디오...
+	MIDI Thru	MIDI 스루
+	MIDI Track Offsets	MIDI 트랙 오프셋
+	MIDI...	MIDI...
+	Machine Track Arming	머신 트랙 녹음 대기
+	Machine Track Arming Profiles...	머신 트랙 녹음 대기 프로필...
+	Main Counter	메인 카운터
+	Make Inactive	비활성화
+	Marker Controls	마커 컨트롤
+	Marker Displays	마커 표시
+	Marker Target Follows First Selected Track	마커 대상이 첫 번째 선택 트랙을 따름
+	Markers	마커
+	Markers 2	마커 2
+	Markers 3	마커 3
+	Markers 4	마커 4
+	Markers 5	마커 5
+	Markers Follow Edit	마커가 편집을 따름
+	Maxim	Maxim
+	Melodyne	Melodyne
+	Memory Locations	메모리 위치
+	Merge MIDI	MIDI 병합
+	Merge Markers	마커 병합
+	Messages	메시지
+	Metadata Inspector	메타데이터 인스펙터
+	Meter	박자표
+	Meters and Faders	미터와 페이더
+	Mic Preamps	마이크 프리앰프
+	Min:Secs	분:초
+	Minimal	최소
+	Mirrored MIDI Editing	미러 MIDI 편집
+	Mix	믹스
+	Mix Window Views	믹스 창 보기
+	Mod Delay III	Mod Delay III
+	Modify Group	그룹 수정
+	Modify Group…	그룹 수정…
+	Modulation	모듈레이션
+	Momentary	모멘터리
+	Mono	모노
+	Move Edit Left	편집 영역 왼쪽으로 이동
+	Move Edit Right	편집 영역 오른쪽으로 이동
+	Move Edit Selection To Marker Lane Above	편집 선택 영역을 위쪽 마커 레인으로 이동
+	Move Edit Selection To Marker Lane Below	편집 선택 영역을 아래쪽 마커 레인으로 이동
+	Move Selection to...	선택 영역 이동 대상...
+	Move Song Start...	곡 시작 위치 이동...
+	Move to New Folder...	새 폴더로 이동...
+	Mute	뮤트
+	Mute Sends	센드 뮤트
+	Name	이름
+	Narrow Mix	좁은 믹스
+	New Configuration...	새 구성...
+	New Playlist	새 플레이리스트
+	New Workspace	새 워크스페이스
+	New...	새로 만들기...
+	Next	다음
+	No Scrolling	스크롤 안 함
+	No Time	시간 표시 안 함
+	None	없음
+	Normalize	노멀라이즈
+	Object	오브젝트
+	On Grid	그리드에서
+	Open	열기
+	Options	옵션
+	Original Time Stamp	원본 타임스탬프
+	Other	기타
+	Other Displays	기타 표시
+	Outlines	윤곽선
+	Output Meters	출력 미터
+	Overlap Shadows	겹침 그림자
+	Overlapped Crossfades	겹친 크로스페이드
+	Overwrite Indicator	덮어쓰기 표시기
+	PFL (Pre Fader Listen)	페이더 전 모니터링(PFL)
+	Page	페이지
+	Pan Automation	팬 오토메이션
+	Parabolic...	포물선...
+	Paste	붙여넣기
+	Paste Special	선택하여 붙여넣기
+	Peak	피크
+	Peripherals...	주변 장치...
+	Pinned Tracks	고정된 트랙
+	Pitch II	Pitch II
+	Pitch Shift	피치 시프트
+	Pitch Shift Legacy	피치 시프트 레거시
+	Play Edit	편집 영역 재생
+	Play Timeline	타임라인 재생
+	Playback Engine...	재생 엔진...
+	Plugin Automation	플러그인 오토메이션
+	Power	파워
+	Pre-Fader Metering	페이더 전 미터링
+	Pre/Post-Roll	프리롤/포스트롤
+	Preferences...	환경설정...
+	Prepare DPE Tracks	DPE 트랙 준비
+	Previous	이전
+	Print Score...	악보 인쇄...
+	Pro Tools Projects	Pro Tools 프로젝트
+	Pro Tools Search	Pro Tools 검색
+	Processing State	처리 상태
+	Project...	프로젝트...
+	Quad	쿼드
+	Quantize to Grid	그리드에 퀀타이즈
+	Quantize...	퀀타이즈...
+	QuickPunch	QuickPunch
+	Rating	평점
+	Real-Time Properties	실시간 속성
+	Recti-Fi	Recti-Fi
+	Rectified	정류
+	Regroup	다시 그룹화
+	Remove Duplicate Notes	중복 음표 제거
+	Remove Edit from Bottom	편집 선택에서 맨 아래 트랙 제거
+	Remove Edit from Top	편집 선택에서 맨 위 트랙 제거
+	Remove Pitch Shift	피치 시프트 제거
+	Remove Sync Point	싱크 포인트 제거
+	Remove Warp	워프 제거
+	Rename...	이름 변경...
+	Render	렌더링
+	Renderer	렌더러
+	Renumber Bars...	마디 번호 다시 매기기...
+	Repeat to Fill Selection	선택 영역 채우도록 반복
+	Repeat...	반복...
+	Reset Preferences	환경설정 초기화
+	Restore Last Selection	마지막 선택 영역 복원
+	Restore Performance...	퍼포먼스 복원...
+	Retrospective Record	소급 녹음
+	Reverb	리버브
+	Reverse	리버스
+	Revert Session to Saved...	세션을 저장된 상태로 되돌리기...
+	Ruler Lane Color	룰러 레인 색상
+	Ruler Lines	룰러 선
+	Rulers	룰러
+	S-Curve...	S자 커브...
+	Set Preferences	환경설정 적용
+	SIP (Solo In Place)	SIP(솔로 인 플레이스)
+	Samples	샘플
+	SansAmp PSA-1	SansAmp PSA-1
+	Save As Template...	템플릿으로 저장...
+	Save Session	세션 저장
+	Save Session As...	다른 이름으로 세션 저장...
+	Save Session Copy In...	세션 사본을 다른 위치에 저장...
+	Save Track Preset...	트랙 프리셋 저장...
+	Scale...	배율 조정...
+	Scene And Take	씬 및 테이크
+	Sci-Fi	Sci-Fi
+	Score Editor	악보 편집기
+	Score Setup...	악보 설정...
+	Scroll to Track...	트랙으로 스크롤...
+	Select All	모두 선택
+	Select/Split Notes...	음표 선택/분할...
+	Selected Tracks as New AAF/OMF...	선택한 트랙을 새 AAF/OMF로...
+	Selected Tracks as New Media Composer Compatible Session...	선택한 트랙을 Media Composer 호환 새 세션으로...
+	Selected Tracks as New Session...	선택한 트랙을 새 세션으로...
+	Selection	선택 영역
+	Send A	센드 A
+	Send B	센드 B
+	Send C	센드 C
+	Send D	센드 D
+	Send E	센드 E
+	Send F	센드 F
+	Send G	센드 G
+	Send H	센드 H
+	Send I	센드 I
+	Send J	센드 J
+	Send To...	보내기...
+	Send to Back	맨 뒤로 보내기
+	Sends A-E	센드 A-E
+	Sends F-J	센드 F-J
+	Separate	분리
+	Session	세션
+	Session Data...	세션 데이터...
+	Session Info as Text...	세션 정보를 텍스트로...
+	Session...	세션...
+	Set Record Tracks to Input Only	녹음 트랙을 입력 전용으로 설정
+	Setup	설정
+	Shift...	이동...
+	Show / Hide...	표시/숨기기...
+	Show Target Playlist	대상 플레이리스트 표시
+	Sibelius	Sibelius
+	Sibelius...	Sibelius...
+	Sign In	로그인
+	Signal Generator	신호 발생기
+	Sketch to Front	스케치를 앞으로
+	Sketch...	스케치...
+	Snap to	스냅 대상
+	Solo Mode	솔로 모드
+	SoundFlow	SoundFlow
+	Soundbase	Soundbase
+	Space Clips…	클립 간격 지정…
+	Splice	Splice
+	Split into Mono	모노로 분할
+	Start Collaboration...	공동 작업 시작...
+	Start to Fill Selection	시작을 선택 영역에 맞추기
+	Start to Insertion	시작을 삽입 위치까지
+	Step Input...	스텝 입력...
+	Stereo	스테레오
+	Stretch...	늘이기...
+	Strip Silence	무음 제거
+	Sync Point	싱크 포인트
+	Synchronization	동기화
+	System Usage	시스템 사용량
+	TCE Edit to Timeline Selection	TCE: 편집 영역을 타임라인 선택 영역에 맞추기
+	Tab to Transient	Tab으로 트랜지언트 이동
+	Target Playlist	대상 플레이리스트
+	Task Manager	작업 관리자
+	Tempo	템포
+	Tempo Editor	템포 편집기
+	Tempo Operations	템포 작업
+	Tempo Operations Window	템포 작업 창
+	Thin	간소화
+	Thin All	모두 간소화
+	Tile	바둑판식 배열
+	Tile Horizontal	가로 바둑판식 배열
+	Tile Vertical	세로 바둑판식 배열
+	Time Compression Expansion	타임 압축/확장
+	Time Lock/Unlock	시간 잠금/해제
+	Time Operations	시간 작업
+	Time Operations Window	시간 작업 창
+	Time Shift	타임 시프트
+	Timecode	타임코드
+	Timecode 2	타임코드 2
+	To Current Automation Type	현재 오토메이션 유형으로
+	To File Boundaries	파일 경계까지
+	To File End	파일 끝까지
+	To File Start	파일 시작까지
+	To Fill Selection	선택 영역 채우기
+	To Selection	선택 영역으로
+	Toggle Recent Playlist	최근 플레이리스트 전환
+	Track	트랙
+	Track Color	트랙 색상
+	Track Lane	트랙 레인
+	Track Lane Color	트랙 레인 색상
+	Track List	트랙 목록
+	Track Number	트랙 번호
+	Track Presets	트랙 프리셋
+	Track Transcription Lane	트랙 전사 레인
+	TrackPunch	TrackPunch
+	Transcript	전사
+	Transcription Settings...	전사 설정...
+	Transparency	투명도
+	Transport	트랜스포트
+	Transport Online	트랜스포트 온라인
+	Transpose...	조옮김...
+	Trim	트림
+	Trim Playlist	플레이리스트 트림
+	Trim and Downmix	트림 및 다운믹스
+	Trim to All Enabled	활성 항목 전체에 트림
+	Trim to Current	현재 항목으로 트림
+	UI Customization	UI 사용자 지정
+	Undo History	실행 취소 기록
+	Ungroup	그룹 해제
+	Ungroup All	모든 그룹 해제
+	Universe	세션 개요
+	Unloop...	루프 해제...
+	Update Active Configuration	활성 구성 업데이트
+	User Time Stamp	사용자 타임스탬프
+	VENUE Channel Names as Track Names	VENUE 채널 이름을 트랙 이름으로
+	Vari-Fi	Vari-Fi
+	Video	비디오
+	Video Sync Offset...	비디오 싱크 오프셋...
+	Video Track Online	비디오 트랙 온라인
+	Video Universe	비디오 개요
+	Video...	비디오...
+	View	보기
+	Waveforms	파형
+	Window	창
+	Window Configuration List	창 구성 목록
+	Workspaces	워크스페이스
+	Write MIDI Real-Time Properties	MIDI 실시간 속성 기록
+	Write to All Enabled	활성 항목 전체에 기록
+	Write to Current	현재 항목에 기록
+	X-OR (Cancels Previous Solo)	X-OR(이전 솔로 취소)
+	none	없음
+	+ Marker	+ 마커
+	+ Selection	+ 선택 영역
+	0 dB	0dB
+	<factory default>	<공장 기본값>
+	About SoundCraft	SoundCraft 정보
+	Add	추가
+	All audio clips have loaded media within source bounds.	모든 오디오 클립의 미디어를 불러왔으며 원본 범위 안에 있습니다.
+	An open-source digital audio workstation from the ArtCraft team.	ArtCraft 팀이 만든 오픈 소스 디지털 오디오 워크스테이션입니다.
+	Analyses the edit selection on the selected tracks.	선택한 트랙의 편집 선택 영역을 분석합니다.
+	Analyze	분석
+	Appearance	모양
+	Applies across the edit selection (constant: at the insertion point; scale: factor = end / start; stretch: factor = start / end).	편집 선택 영역 전체에 적용됩니다(고정값: 삽입 위치의 값, 배율 조정: 계수 = 끝 / 시작, 늘이기: 계수 = 시작 / 끝).
+	Applies to the selected MIDI clips (or those under the selection).	선택한 MIDI 클립(또는 선택 영역 아래의 클립)에 적용됩니다.
+	Apply	적용
+	Apply to selected tracks (Shift: selected clips)	선택한 트랙에 적용(Shift: 선택한 클립)
+	Audio Units	Audio Units
+	Audio input: {cause}. {then}	오디오 입력: {cause}. {then}
+	Audio output: {cause}. {then}	오디오 출력: {cause}. {then}
+	Audio system	오디오 시스템
+	Auto ({name})	자동({name})
+	Auto-update configuration	구성 자동 업데이트
+	Autosave failed: {error}	자동 저장 실패: {error}
+	Bars per system	단당 마디 수
+	Bit Depth	비트 심도
+	Bounces the edit selection, or the whole session when nothing is selected.	편집 선택 영역을 바운스합니다. 선택 영역이 없으면 세션 전체를 바운스합니다.
+	Browse…	찾아보기…
+	Buffer size	버퍼 크기
+	Built-in	기본 제공
+	Bus	버스
+	Busses	버스
+	CLAP	CLAP
+	Cancel	취소
+	Cannot record: {error}	녹음할 수 없음: {error}
+	Check the disk, then record again.	디스크를 확인한 다음 다시 녹음하세요.
+	Checks loaded media only, not files on disk, signal levels, plugins or routing.	불러온 미디어만 검사하며 디스크의 파일, 신호 레벨, 플러그인, 라우팅은 검사하지 않습니다.
+	Clear Recent	최근 항목 지우기
+	Clear…	지우기…
+	Click a take (or the selection) to promote it to the main playlist	테이크(또는 선택 영역)를 클릭하면 메인 플레이리스트로 올립니다
+	Click keys to step-enter notes into the selected MIDI clip at the insertion point.	건반을 클릭하면 선택한 MIDI 클립의 삽입 위치에 음표를 스텝 입력합니다.
+	Click: open instrument · right-click: change	클릭: 악기 열기 · 오른쪽 클릭: 변경
+	Clip effects gain (dB)	클립 이펙트 게인(dB)
+	Clip end pad ms	클립 끝 여유 ms
+	Clip start pad ms	클립 시작 여유 ms
+	Close Plugin Editor	플러그인 편집기 닫기
+	Columns beside the track headers: inserts, sends, I/O…	트랙 헤더 옆의 열: 인서트, 센드, I/O…
+	Composer	작곡가
+	Couldn't recover “{name}”: {error}	“{name}”을(를) 복구하지 못했습니다: {error}
+	Create	만들기
+	Curve	커브
+	DESTINATION	대상
+	Delay (ticks)	지연(틱)
+	Delete Group	그룹 삭제
+	Delete Unused...	사용하지 않는 항목 삭제...
+	Device default	장치 기본값
+	Discard	버리기
+	Don't Save	저장 안 함
+	Double-click to import audio/MIDI at the insertion point or open a session.	더블 클릭하면 삽입 위치에 오디오/MIDI를 가져오거나 세션을 엽니다.
+	Drag to change the tempo (Shift: fine steps), or click to type it	드래그하여 템포 변경(Shift: 미세 조정), 클릭하여 직접 입력
+	Drop an audio file on this window	이 창에 오디오 파일을 놓으세요
+	Dual-licensed MIT OR Apache-2.0. Made with Rust and egui.	MIT OR Apache-2.0 이중 라이선스. Rust와 egui로 만들었습니다.
+	Duration	길이
+	Duration %	길이 %
+	Edit Parameters…	파라미터 편집…
+	Elastic Audio	Elastic Audio
+	Enabled parameters	활성화된 파라미터
+	End	끝
+	Format	형식
+	Grab bag	모아 보기
+	Grid	그리드
+	Identify Beat: selection is	비트 지정: 선택 영역 길이
+	Includes alternate takes and muted clips. Refresh after editing.	대체 테이크와 뮤트된 클립을 포함합니다. 편집한 뒤 새로 고치세요.
+	Input	입력
+	Input device	입력 장치
+	Instrument	악기
+	Interface scale	인터페이스 배율
+	Language	언어
+	Length ratio	길이 비율
+	Level	레벨
+	Load Sample…	샘플 불러오기…
+	Load and edit sounds in the plugin's own editor.	플러그인 자체 편집기에서 사운드를 불러오고 편집하세요.
+	Main output	메인 출력
+	Min strip duration ms	최소 제거 길이 ms
+	Mix in Separate Window	믹스를 별도 창으로
+	Move to Folder	폴더로 이동
+	Name:	이름:
+	New Bus	새 버스
+	New Configuration…	새 구성…
+	New Group…	새 그룹…
+	No Recent Sessions	최근 세션 없음
+	No audio input: {error}	오디오 입력 없음: {error}
+	No background tasks are running.	실행 중인 백그라운드 작업이 없습니다.
+	No contributor data was built into this copy.	이 빌드에는 기여자 데이터가 포함되지 않았습니다.
+	No matches	일치하는 항목 없음
+	No model credits were built into this copy.	이 빌드에는 모델 크레딧이 포함되지 않았습니다.
+	No object tracks. Use the Object view in the Mix window to route tracks as objects.	오브젝트 트랙이 없습니다. 믹스 창의 오브젝트 보기에서 트랙을 오브젝트로 라우팅하세요.
+	No parameters.	파라미터가 없습니다.
+	Non-destructive, applied at playback to the selected MIDI tracks.	비파괴 방식이며 재생할 때 선택한 MIDI 트랙에 적용됩니다.
+	Notation view of the MIDI clip; edit notes in the MIDI Editor or Event List.	MIDI 클립의 악보 보기입니다. 음표는 MIDI 편집기나 이벤트 목록에서 편집하세요.
+	Open Plugin Editor	플러그인 편집기 열기
+	Open Recent	최근 항목 열기
+	Operation	작업
+	Output	출력
+	Output device	출력 장치
+	Outputs	출력
+	Pan	팬
+	Parent folder	상위 폴더
+	Peak dB	피크 dB
+	Place on New Track	새 트랙에 배치
+	Place on Selected Track	선택한 트랙에 배치
+	Play (Space)	재생(Space)
+	Play	재생
+	Playback stopped: {cause}. {then}	재생 중지됨: {cause}. {then}
+	Playlists	플레이리스트
+	Plug it back in, then use Reconnect audio device in Setup ▸ Playback Engine.	장치를 다시 연결한 다음 설정 ▸ 재생 엔진에서 '오디오 장치 다시 연결'을 사용하세요.
+	Post-roll	포스트롤
+	Pre-roll	프리롤
+	Presets ▾	프리셋 ▾
+	Processes selected clips offline	선택한 클립을 오프라인으로 처리합니다
+	Quantize to the grid	그리드에 퀀타이즈
+	Quit	종료
+	Recall	불러오기
+	Reconnect audio device	오디오 장치 다시 연결
+	Reconnect it, then use Reconnect audio device in Setup ▸ Playback Engine.	장치를 다시 연결한 다음 설정 ▸ 재생 엔진에서 '오디오 장치 다시 연결'을 사용하세요.
+	Record (Cmd+Space)	녹음(Cmd+Space)
+	Recording stopped: {cause}. The take is kept up to there. {then}	녹음 중지됨: {cause}. 테이크는 그 시점까지 보존됩니다. {then}
+	Recover	복구
+	Recover Unsaved Work	저장하지 않은 작업 복구
+	Recovered “{name}”, but {n} audio file(s) are missing. Save it to keep the changes.	“{name}”을(를) 복구했지만 오디오 파일 {n}개가 없습니다. 변경 내용을 유지하려면 저장하세요.
+	Recovered “{name}”. Save it to keep the changes.	“{name}”을(를) 복구했습니다. 변경 내용을 유지하려면 저장하세요.
+	Reduce motion	동작 줄이기
+	Refresh Report	보고서 새로 고침
+	Refresh devices	장치 새로 고침
+	Remove from Folder	폴더에서 제거
+	Remove send	센드 제거
+	Rename bus…	버스 이름 변경…
+	Renders and AudioSuite processes run to completion before returning.	렌더링과 AudioSuite 처리는 끝난 뒤에 반환됩니다.
+	Reopen the audio devices with these settings	이 설정으로 오디오 장치 다시 열기
+	Reset	초기화
+	Reverse the order	순서 뒤집기
+	Revert	되돌리기
+	Route as an immersive object or to the bed	이머시브 오브젝트 또는 베드로 라우팅
+	Sample Rate	샘플 레이트
+	Sample rate	샘플 레이트
+	Save	저장
+	Scan CLAP	CLAP 스캔
+	Scan VST3	VST3 스캔
+	Search	검색
+	Select Tracks in Group	그룹의 트랙 선택
+	Select a MIDI clip or MIDI track.	MIDI 클립이나 MIDI 트랙을 선택하세요.
+	Select a MIDI clip.	MIDI 클립을 선택하세요.
+	Select an audio clip.	오디오 클립을 선택하세요.
+	Semitones	반음
+	Sensitivity	감도
+	Session Audio Health	세션 오디오 상태
+	Session Info	세션 정보
+	Session comments	세션 코멘트
+	Session rate	세션 샘플 레이트
+	Set Tempo	템포 설정
+	Show	표시
+	Show Edit and Mix at once, e.g. one per monitor	편집 창과 믹스 창을 함께 표시합니다(예: 모니터마다 하나씩)
+	Show grid lines	그리드 선 표시
+	Show in the Mix window	믹스 창에 표시
+	Smart Tool (F6+F7 / F7+F8)	스마트 도구(F6+F7 / F7+F8)
+	Sort	정렬
+	SoundCraft	SoundCraft
+	SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe.	SoundCraft에서 내부 오류가 발생했습니다(로그 참조). 안전을 위해 SoundCraft를 다시 시작하세요.
+	SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft.	SoundCraft에서 내부 오류가 발생했습니다(로그 참조). 변경 내용은 자동 저장되었습니다. 저장한 다음 SoundCraft를 다시 시작하세요.
+	Speed	속도
+	Spot to where it was recorded	녹음된 위치로 스팟
+	Start	시작
+	Stop (Space)	정지(Space)
+	Stop recording before recovering other work.	다른 작업을 복구하기 전에 녹음을 중지하세요.
+	Stop recording first	먼저 녹음을 중지하세요
+	Strength %	강도 %
+	Swing %	스윙 %
+	Table	표
+	The disk is too slow: this take has lost {lost} ms of input so far.	디스크가 너무 느립니다. 이 테이크에서 지금까지 입력이 {lost}ms만큼 유실되었습니다.
+	Theme	테마
+	This plugin has no editor of its own, or it is not loaded	이 플러그인에는 자체 편집기가 없거나 아직 불러오지 않았습니다
+	Threshold dB	임계값 dB
+	Ticks	틱
+	Time Scale	시간 형식
+	Timecode Rate	타임코드 레이트
+	Title	제목
+	Track Height	트랙 높이
+	Track options	트랙 옵션
+	Track tint in the Edit window	편집 창의 트랙 색조
+	Tracks	트랙
+	Transpose	조옮김
+	Use	사용
+	Use Reconnect audio device in Setup ▸ Playback Engine, or restart SoundCraft.	설정 ▸ 재생 엔진에서 '오디오 장치 다시 연결'을 사용하거나 SoundCraft를 다시 시작하세요.
+	Use Reconnect audio device in Setup ▸ Playback Engine.	설정 ▸ 재생 엔진에서 '오디오 장치 다시 연결'을 사용하세요.
+	User presets need the desktop app.	사용자 프리셋은 데스크톱 앱에서만 사용할 수 있습니다.
+	Uses the edit selection.	편집 선택 영역을 사용합니다.
+	VST3	VST3
+	Velocity +	벨로시티 +
+	Voice: dyn plays the track, off makes it inactive	보이스: dyn은 트랙을 재생하고, off는 비활성화합니다
+	Workspace	워크스페이스
+	Write automation for the selected tracks:	선택한 트랙에 오토메이션 기록:
+	Write to Notes	음표에 기록
+	bar(s)	마디
+	the audio engine hit an internal error (see the log)	오디오 엔진에서 내부 오류가 발생했습니다(로그 참조)
+	{menu} — {command}	{menu} — {command}
+	“{name}” stopped asking for audio	“{name}”이(가) 오디오 요청을 멈췄습니다
+	“{name}” was disconnected	“{name}”의 연결이 끊겼습니다
+	Import Audio	오디오 가져오기
+	Import MIDI	MIDI 가져오기
+	Open Session	세션 열기
+	Save Session As	다른 이름으로 세션 저장
+	Repeat	반복
+	Shift (seconds)	이동(초)
+	Quantize strength	퀀타이즈 강도
+	New Tracks	새 트랙
+	New Session	새 세션
+	Bounce Mix	믹스 바운스
+	Rename Track	트랙 이름 변경
+	Rename Clip	클립 이름 변경
+	Rename Marker	마커 이름 변경
+	Tempo Change (BPM)	템포 변경(BPM)
+	Spot	스팟
+	Create Group	그룹 만들기
+	Session Setup	세션 설정
+	Score Setup	악보 설정
+	Revert to Saved	저장된 상태로 되돌리기
+	Unsaved Changes	저장하지 않은 변경 내용
+	times	회
+	semitones	반음
+	Dark	다크
+	Light	라이트
+	System	시스템 설정 따르기
+	The file stays on disk.	파일은 디스크에 남아 있습니다.
+	The files stay on disk.	파일은 디스크에 남아 있습니다.
+	the clip "{name}"	클립 "{name}"
+	the file "{name}"	파일 "{name}"
+	{clips} and {files}	{clips} 및 {files}
+	Remove {what} from the session?	세션에서 {what}을(를) 제거할까요?
+	a clip on the timeline, which is removed too.	타임라인에 있는 클립 1개도 함께 제거됩니다.
+	{n} clips on the timeline, which are removed too.	타임라인에 있는 클립 {n}개도 함께 제거됩니다.
+	It is used by {users}	{users}에서 사용 중입니다
+	They are used by {users}	{users}에서 사용 중입니다
+	"{name}" is used by {users}	"{name}"은(는) {users}에서 사용 중입니다
+	{n} of the files are used by {users}	파일 중 {n}개를 {users}에서 사용 중입니다
+	Open {path}	{path} 열기
+	Search {n} commands	명령 {n}개 검색
+	Ctrl	Ctrl
+	Shift	Shift
+	Alt	Alt
+	Cmd	Cmd
+
+# --- Counts: Chinese has one form ---
+@plural	{n} clip|{n} clips	클립 {n}개
+@plural	{n} file|{n} files	파일 {n}개
+@plural	{n} take|{n} takes	테이크 {n}개
+
+# --- Words that read differently in the automation panel ---
+automation	off	끄기
+automation	read	읽기
+automation	touch	터치
+automation	latch	래치
+automation	touch/latch	터치/래치
+automation	write	쓰기
+automation	trim	트림
+
+# --- Track kinds, channel formats, tools, grid, fades and automation parameters ---
+	Audio Track	오디오 트랙
+	Aux Input	Aux 입력
+	Master Fader	마스터 페이더
+	MIDI Track	MIDI 트랙
+	Instrument Track	악기 트랙
+	VCA Master	VCA 마스터
+	Routing Folder Track	라우팅 폴더 트랙
+	Video Track	비디오 트랙
+	Zoomer	줌 도구
+	Selector	선택 도구
+	Grabber	잡기 도구
+	Scrubber	스크럽 도구
+	Pencil	연필 도구
+	Smart Tool	스마트 도구
+	1 bar	1마디
+	1/2 note	2분음표
+	1/4 note	4분음표
+	1/8 note	8분음표
+	1/16 note	16분음표
+	1/32 note	32분음표
+	1/64 note	64분음표
+	Linear	선형
+	Equal Power	등전력
+	S-Curve	S자 커브
+	Exponential	지수
+	Logarithmic	로그
+	volume	볼륨
+	pan	팬
+	mute	뮤트
+	send level	센드 레벨
+	send pan	센드 팬
+	send mute	센드 뮤트
+	plugin	플러그인
+
+# --- Sentence glue in composite dialogs ---
+	new	개의 새
+	in	타임베이스
+	bpm	BPM
+	no insert	인서트 없음
+	new bus...	새 버스...
+	OK	확인
+	Revert “{name}” to its last saved version? Your changes will be lost.	“{name}”을(를) 마지막으로 저장한 버전으로 되돌릴까요? 변경 내용은 사라집니다.
+	Close “{name}” without saving? Your changes will be lost.	“{name}”을(를) 저장하지 않고 닫을까요? 변경 내용은 사라집니다.
+	Save changes to “{name}” before closing?	닫기 전에 “{name}”의 변경 내용을 저장할까요?
+# --- Window and UI-command leaves that are not in the menu catalog ---
+	Arrange Panel	패널 배치
+	Audio Device	오디오 장치
+	Bounce Mix…	믹스 바운스…
+	I/O Setup	I/O 설정
+	Keyboard Shortcuts	키보드 단축키
+	MIDI Editors to Back	MIDI 편집기를 뒤로
+	MIDI Editors to Front	MIDI 편집기를 앞으로
+	Mix Window View	믹스 창 보기
+	New Configuration	새 구성
+	New MIDI Clip	새 MIDI 클립
+	New Tracks…	새 트랙…
+	Playback Engine	재생 엔진
+	Reset Panel Layout	패널 레이아웃 초기화
+	Set UI State	UI 상태 설정
+	Toggle Mix/Edit	믹스/편집 전환
+	Workspaces to Front	워크스페이스를 앞으로
+	Length	길이
+	Sub	보조
+	Nudge	넛지
+	modified	수정됨
+	saved	저장됨
+	no audio engine	오디오 엔진 없음
+	silent clock	무음 클록
+	audio on	오디오 켜짐
+	16-bit	16비트
+	24-bit	24비트
+	32-bit float	32비트 부동소수점
+	Undo {action}	{action} 실행 취소
+	Redo {action}	{action} 다시 실행
+	TRACKS	트랙
+	GROUPS	그룹
+	CLIPS	클립
+	MIDI EDITOR	MIDI 편집기
+	MEMORY LOCATIONS	메모리 위치
+	UNDO HISTORY	실행 취소 기록
+@plural	{n} track|{n} tracks	트랙 {n}개
+	SHUFFLE	셔플
+	SPOT	스팟
+	SLIP	슬립
+	GRID	그리드
+	REL GRID	상대 그리드
+	Slip	슬립
+	Tracks and Groups	트랙 및 그룹
+	Clips	클립
+	Key	조표
+	Chords	코드
+	Shuffle is locked ({cmd}-click to unlock)	셔플이 잠겨 있습니다({cmd}+클릭하여 해제)
+	Shuffle mode ({fkey}); {cmd}-click locks it out	셔플 모드({fkey}); {cmd}+클릭하면 잠급니다
+	Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes	그리드 모드({fkey}, 한 번 더 누르면 상대 그리드); Shift+클릭: 다른 모드에서 그리드에 스냅
+	{mode} mode ({fkey}); Shift-click adds Snap to Grid	{mode} 모드({fkey}); Shift+클릭하면 그리드 스냅 추가
+	INSERTS A-E	인서트 A-E
+	INSERTS F-J	인서트 F-J
+	SENDS A-E	센드 A-E
+	SENDS F-J	센드 F-J
+	INSTRUMENT	악기
+	PREAMP	프리앰프
+	COMMENTS	코멘트
+	I / O	I / O
+	I A-E	I A-E
+	I F-J	I F-J
+	S A-E	S A-E
+	S F-J	S F-J
+	INST	악기
+	no group	그룹 없음
+	nogrp	없음
+	no output	출력 없음
+	no input	입력 없음
+	Views	보기
+	🔍 Find clips	🔍 클립 찾기
+
+# Composed diagnostics, recovery and inspector labels (filled at draw time).
+	{clips} audio clips checked · {issues} issues	오디오 클립 {clips}개 검사 · 문제 {issues}개
+	Active audio ends at {seconds} seconds	활성 오디오가 {seconds}초에 끝납니다
+	Active audio end time is unknown (invalid session sample rate)	활성 오디오의 끝 시간을 알 수 없습니다(세션 샘플 레이트가 잘못됨)
+	 (alternate playlist)	 (대체 플레이리스트)
+	Session media: {files} files, {size} MB in memory (32-bit float)	세션 미디어: 파일 {files}개, 메모리 {size}MB(32비트 부동소수점)
+	Recording at 24-bit uses {size} MB per mono track-minute	24비트 녹음 시 모노 트랙 1분당 {size}MB를 사용합니다
+	Session file: {path}	세션 파일: {path}
+	UI frame time: {ms} ms	UI 프레임 시간: {ms}ms
+	Audio: {device}	오디오: {device}
+	no engine	엔진 없음
+	Active plugin instances: {n}	활성 플러그인 인스턴스: {n}
+	Tracks: {n}	트랙: {n}
+	Undo steps: {n}	실행 취소 단계: {n}
+	Bouncing {path} ({percent}%)	{path} 바운스 중({percent}%)
+	no device (silent clock)	장치 없음(무음 클록)
+	default buffer	기본 버퍼
+	{n} samples	{n} 샘플
+	{device} · {rate} Hz · {channels} ch · {buffer}	{device} · {rate}Hz · {channels}채널 · {buffer}
+	{device} · {rate} Hz · {channels} ch	{device} · {rate}Hz · {channels}채널
+	opened on first record or monitor	처음 녹음하거나 모니터링할 때 열림
+	{rate} Hz (resampled to the device rate)	{rate}Hz(장치 샘플 레이트로 리샘플링됨)
+	{n} ch	{n}채널
+	{name} — {format} from channel {channel}	{name} — 채널 {channel}의 {format}
+	“{name}” already exists. Do you want to replace it?	“{name}”이(가) 이미 있습니다. 바꾸시겠습니까?
+	recently	최근
+	unsaved changes and an unfinished recording	저장하지 않은 변경 내용과 끝나지 않은 녹음
+	unsaved changes	저장하지 않은 변경 내용
+	“{name}” has {what} from an earlier run, autosaved {age}.	“{name}”에 이전 실행에서 남은 {what}이(가) 있습니다. {age} 자동 저장되었습니다.
+	less than a minute ago	1분 이내
+@plural	{n} minute ago|{n} minutes ago	{n}분 전
+@plural	{n} hour ago|{n} hours ago	{n}시간 전
+@plural	{n} day ago|{n} days ago	{n}일 전
+	Version {version}	버전 {version}
+	The mix runs in 512-sample blocks; the buffer size sets the device's own latency.	믹스는 512샘플 블록으로 처리됩니다. 버퍼 크기는 장치 자체의 지연 시간을 정합니다.
+	Velocity	벨로시티
+	MIDI in: all	MIDI 입력: 전체
+	<ALL>	<전체>
+	Count Off	카운트오프
+@plural	{n} bar|{n} bars	{n}마디
+	Start from the demo session	데모 세션으로 시작
+	Normalize to -0.1 dBFS	-0.1dBFS로 노멀라이즈
+	Edit group	편집 그룹
+	Mix group	믹스 그룹
+	Show track names	트랙 이름 표시
+	Pre-fader	페이더 전
+	Separate clips at detected beats	감지된 비트에서 클립 분리
+	Set the session tempo from the beats	비트로 세션 템포 설정
+	Timecode burn-in	타임코드 번인
+	Delay compensation	지연 보정
+	Volume	볼륨
+	Pan {n}	팬 {n}
+	Send {slot} level	센드 {slot} 레벨
+	Send {slot} pan	센드 {slot} 팬
+	Send {slot} mute	센드 {slot} 뮤트
+	Insert {slot} {param}	인서트 {slot} {param}
+	Notes	음표
+	Regions	클립
+	Blocks	블록
+	Waveform	파형
+	Main output: {format}	메인 출력: {format}
+	auto {mode}	오토 {mode}
+	t/l	t/l
+	{note} dotted	점{note}
+	{note} triplet	셋잇단 {note}
+	{note} dotted triplet	셋잇단 점{note}
+	{value} sec	{value}초
+@plural	{n} frame|{n} frames	{n}프레임
+	1 msec	1밀리초
+	10 msec	10밀리초
+	100 msec	100밀리초
+	1 second	1초
+	1 frame	1프레임
+	100 samples	100샘플
+	custom	사용자 지정
+	micro	최소
+	mini	아주 작게
+	small	작게
+	medium	보통
+	large	크게
+	jumbo	아주 크게
+	extreme	최대
+	fit to window	창에 맞추기
+
+# Command labels (menu items, the shortcuts window and command dialogs).
+	Add Automation Breakpoint	오토메이션 포인트 추가
+	Add MIDI Note	MIDI 음표 추가
+	Add Note	음표 추가
+	Assign Send	센드 할당
+	Assign to VCA	VCA에 할당
+	AudioSuite Process	AudioSuite 처리
+	Automation Mode	오토메이션 모드
+	Bounce Stems...	스템 바운스...
+	Bypass Insert	인서트 바이패스
+	Clear All Mutes	모든 뮤트 해제
+	Clear All Solos	모든 솔로 해제
+	Clear Automation	오토메이션 지우기
+	Clear Clips	클립 지우기
+	Clear Sampler Sample	샘플러 샘플 지우기
+	Clip Color	클립 색상
+	Decrease Track Height	트랙 높이 줄이기
+	Delete Memory Location	메모리 위치 삭제
+	Delete Notes	음표 삭제
+	Delete Unused Playlists	사용하지 않는 플레이리스트 삭제
+	Deselect All	모두 선택 해제
+	Duplicate Playlist	플레이리스트 복제
+	Edit Memory Location	메모리 위치 편집
+	Edit Mode	편집 모드
+	Edit Note	음표 편집
+	Edit Tool	편집 도구
+	Export Clip Groups...	클립 그룹 내보내기...
+	Export Clips as Files...	클립을 파일로 내보내기...
+	Fast Forward	빨리 감기
+	Fill Window With Session	세션을 창에 맞추기
+	Format Time	시간 형식
+	Go to End	끝으로 이동
+	Go to Next Marker	다음 마커로 이동
+	Go to Previous Marker	이전 마커로 이동
+	Grid Value	그리드 값
+	Half-Speed Playback	절반 속도 재생
+	Hide Track	트랙 숨기기
+	Increase Track Height	트랙 높이 늘리기
+	Input Monitoring	입력 모니터링
+	Input Trim	입력 트림
+	Insert Plugin	플러그인 삽입
+	Inspect Clip	클립 검사
+	Inspect Session	세션 검사
+	Inspect Track	트랙 검사
+	Keyboard Focus	키보드 포커스
+	List CLAP Plugins	CLAP 플러그인 목록
+	List Commands	명령 목록
+	List MIDI Notes	MIDI 음표 목록
+	List Plugins	플러그인 목록
+	List VST3 Plugins	VST3 플러그인 목록
+	Load Sampler Sample	샘플러 샘플 불러오기
+	Load Track Preset	트랙 프리셋 불러오기
+	Locate	위치로 이동
+	MIDI Merge	MIDI 병합
+	Main Output Format	메인 출력 형식
+	Move Clips	클립 이동
+	Move Insert	인서트 이동
+	Move Notes	음표 이동
+	Move Track	트랙 이동
+	Movies	동영상
+	New Memory Location	새 메모리 위치
+	Nudge Clip Gain Down	클립 게인 조금 내리기
+	Nudge Clip Gain Up	클립 게인 조금 올리기
+	Nudge Value	넛지 값
+	Object / Bed	오브젝트 / 베드
+	Open Session...	세션 열기...
+	Open/Close Folder	폴더 열기/닫기
+	Parity Report	기능 동등성 보고서
+	Paste Clip Effects	클립 이펙트 붙여넣기
+	Paste Clip Gain	클립 게인 붙여넣기
+	Pause	일시 정지
+	Phase Invert	위상 반전
+	Pin Track	트랙 고정
+	Place Audio File	오디오 파일 배치
+	Play/Stop	재생/정지
+	Post-Roll Amount	포스트롤 길이
+	Pre-Roll Amount	프리롤 길이
+	Promote to Main Playlist	메인 플레이리스트로 올리기
+	Recall Memory Location	메모리 위치 불러오기
+	Record	녹음
+	Record Enable	녹음 대기
+	Redo	다시 실행
+	Remove Insert	인서트 제거
+	Remove Send	센드 제거
+	Remove Tempo Change	템포 변경 제거
+	Reset Edit Settings	편집 설정 초기화
+	Return to Zero	처음으로 이동
+	Rewind	되감기
+	Scroll Timeline	타임라인 스크롤
+	Select Playlist	플레이리스트 선택
+	Send Level	센드 레벨
+	Set Clip Effects	클립 이펙트 설정
+	Set Edit Selection	편집 선택 영역 설정
+	Set Instrument	악기 설정
+	Set Instrument Parameter	악기 파라미터 설정
+	Set Pan	팬 설정
+	Set Plugin Parameter	플러그인 파라미터 설정
+	Set Plugin Parameters	플러그인 파라미터 일괄 설정
+	Set Send Surround Pan	센드 서라운드 팬 설정
+	Set Surround Pan	서라운드 팬 설정
+	Set Video Start	비디오 시작 위치 설정
+	Set Volume	볼륨 설정
+	Set Zoom	줌 설정
+	Show Grid Lines	그리드 선 표시
+	Shuffle Lock	셔플 잠금
+	Snap to Grid	그리드에 스냅
+	Solo	솔로
+	Solo Safe	솔로 세이프
+	Stop	정지
+	Store Plugin State	플러그인 상태 저장
+	Sub Counter	보조 카운터
+	Tab	탭
+	Tempo Change	템포 변경
+	Toggle Group Active	그룹 활성 상태 전환
+	Track Comments	트랙 코멘트
+	Track Input	트랙 입력
+	Track Output	트랙 출력
+	Track Timebase	트랙 타임베이스
+	Track View	트랙 보기
+	Transport Status	트랜스포트 상태
+	Trim Clip	클립 트림
+	Undo	실행 취소
+	View Flags	보기 플래그
+	Waveform Zoom	파형 줌
+	Write Automation	오토메이션 기록
+	Write Trim Automation	트림 오토메이션 기록
+	Zoom By	줌 배율
+	Zoom In	확대
+	Zoom Out	축소
+	Zoom Preset	줌 프리셋
+	Zoom Toggle	줌 토글
+	Zoom to Selection	선택 영역으로 줌
+
+# Short track-kind tags under each mix strip's fader.
+	audio	오디오
+	aux	Aux
+	master	마스터
+	midi	MIDI
+	inst	악기
+	vca	VCA
+	folder	폴더
+	video	비디오
+
+# Toolbar tooltips, mixer/send labels, bounce status and the Memory Locations table.
+	A bounce is already running	이미 바운스가 진행 중입니다
+	BED	베드
+	Bounce cancelled	바운스 취소됨
+	Bounced {name} (peak {peak} dBFS, {lufs} LUFS)	{name} 바운스 완료(피크 {peak}dBFS, {lufs}LUFS)
+	Bouncing {name}	{name} 바운스 중
+	Commands Keyboard Focus (single-key editing)	명령 키보드 포커스(단일 키 편집)
+	Fill window with session (Alt+A)	세션을 창에 맞추기(Alt+A)
+	Finish or cancel the bounce first	먼저 바운스를 끝내거나 취소하세요
+	Go to End (End)	끝으로 이동(End)
+	Input monitoring	입력 모니터링
+	Legato	레가토
+	Location	위치
+	Loop Playback (Cmd+Shift+L)	루프 재생(Cmd+Shift+L)
+	Mute send	센드 뮤트
+	No track is record-enabled: click the R button on the track to record.	녹음 대기 중인 트랙이 없습니다. 녹음하려면 트랙의 R 버튼을 클릭하세요.
+	Nothing to record on yet: add a track with Track › New…, then click its R button.	아직 녹음할 트랙이 없습니다. 트랙 › 새로 만들기…로 트랙을 추가한 다음 R 버튼을 클릭하세요.
+	OBJECT	오브젝트
+	Quantize	퀀타이즈
+	Return to Zero (Home)	처음으로 이동(Home)
+	Select an instrument track	악기 트랙을 선택하세요
+	Send {which}	센드 {which}
+	Send {which} · Choose destination	센드 {which} · 대상 선택
+	Send {which} · {name}	센드 {which} · {name}
+	Send {which} to {name}: {db} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options	센드 {which} → {name}: {db}dB\n클릭: 센드 페이더 · 세로로 드래그: 조정 · Shift+드래그: 미세 조정 · Alt+클릭: 0dB · 오른쪽 클릭: 옵션
+	Type	유형
+	Unfreeze	프리즈 해제
+	Vel +10	Vel +10
+	Vel −10	Vel −10
+	Waveform zoom in (Cmd+Alt+])	파형 확대(Cmd+Alt+])
+	Zoom Toggle (E)	줌 토글(E)
+	Zoom in (Cmd+])	확대(Cmd+])
+	Zoom out (Cmd+[)	축소(Cmd+[)
+	Zoom preset (click to recall, Cmd-click to store)	줌 프리셋(클릭하면 불러오기, Cmd+클릭하면 저장)
+	marker	마커
+	selection	선택 영역
+

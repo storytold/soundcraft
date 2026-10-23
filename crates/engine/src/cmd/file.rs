@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn import_audio_honours_new_tracks() {
-        let dir = std::env::temp_dir().join(format!("sc-import-new-tracks-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-import-new-tracks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let wav = tone_wav(&dir, "tone.wav");
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn bounce_refuses_formats_it_cannot_write() {
         let mut e = Engine::default();
-        let dir = std::env::temp_dir().join(format!("sc-bounce-ext-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-bounce-ext-{}", std::process::id()));
         assert!(std::fs::create_dir_all(&dir).is_ok());
         for name in ["mix.mp3", "mix.ogg", "mix.xyz"] {
             let path = dir.join(name);
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn bounce_source_renders_the_named_bus() {
-        let dir = std::env::temp_dir().join(format!("sc-bounce-source-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-bounce-source-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let wav = tone_wav(&dir, "tone.wav");
@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn session_open_reports_missing_media() {
         let mut e = crate::demo::demo_engine();
-        let dir = std::env::temp_dir().join(format!("soundcraft-open-missing-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("soundcraft-open-missing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("Gone.scraft").to_string_lossy().into_owned();
         e.execute("session.save_as", &json!({"path": path})).unwrap();
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn saving_a_session_without_audio_creates_its_folder() {
-        let dir = std::env::temp_dir().join(format!("soundcraft-new-folder-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("soundcraft-new-folder-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("Song").join("Song.scraft");
         Engine::default().execute("session.save_as", &json!({"path": path.to_string_lossy()})).unwrap();
@@ -525,7 +525,7 @@ mod tests {
         for id in [first, second] {
             e.session_mut().find_clip_mut(id).unwrap().name = "Take".into();
         }
-        let dir = std::env::temp_dir().join(format!("sc-export-clips-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-export-clips-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let n = e.execute("file.export_clips", &json!({"dir": dir.to_string_lossy(), "clips": [first.0, second.0]})).unwrap();
@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn exports_the_selected_clips_and_refuses_an_empty_selection() {
         let mut e = crate::demo::demo_engine();
-        let dir = std::env::temp_dir().join(format!("soundcraft-clips-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("soundcraft-clips-{}", std::process::id()));
         let p = json!({"dir": dir.to_string_lossy()});
         e.execute("edit.select_none", &json!({})).unwrap();
         assert!(e.execute("file.export_clips", &p).is_err());
@@ -586,7 +586,7 @@ mod tests {
     #[test]
     fn midi_export_keeps_controllers_and_honours_tracks() {
         let mut e = midi_engine();
-        let dir = std::env::temp_dir().join(format!("sc-midi-export-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-midi-export-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let all = dir.join("all.mid");
@@ -642,7 +642,7 @@ mod tests {
         assert_eq!(consolidated.len(), 2, "{consolidated:?}");
         assert_ne!(consolidated[0], consolidated[1]);
 
-        let dir = std::env::temp_dir().join(format!("sc-consolidate-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-consolidate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Tone.scraft");
@@ -660,7 +660,7 @@ mod tests {
     #[test]
     fn save_copy_leaves_the_open_session_alone() {
         let (mut e, _) = tone_engine();
-        let dir = std::env::temp_dir().join(format!("sc-save-copy-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-save-copy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let original = dir.join("Original.scraft");

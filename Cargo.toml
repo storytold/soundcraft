@@ -32,6 +32,10 @@ thiserror = "2"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 log = "0.4"
+# Localization: catalogs are packed deflated by the UI crate's build.rs.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Localization: the platform's preferred UI languages (native only).
+sys-locale = "=0.3.2"
 rayon = "1"
 proptest = "1"
 

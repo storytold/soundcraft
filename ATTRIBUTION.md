@@ -21,9 +21,17 @@ are bundled.
 
 ## Fonts
 
-SoundCraft bundles no font files. It uses the default fonts shipped inside the `egui` crate
-(Ubuntu-Light: Ubuntu Font Licence 1.0; Hack: MIT; Noto Emoji: OFL-1.1; emoji-icon-font: OFL-1.1/MIT)
-and, at runtime, the operating system's own UI fonts when available (never redistributed).
+SoundCraft uses the default fonts shipped inside the `egui` crate (Ubuntu-Light: Ubuntu Font
+Licence 1.0; Hack: MIT; Noto Emoji: OFL-1.1; emoji-icon-font: OFL-1.1/MIT) and, at runtime, the
+operating system's own UI fonts when available (never redistributed; native builds only).
+
+The web build has no operating-system fonts, and egui's bundled fonts carry no Han glyphs. It alone
+bundles `assets/fonts/NotoSansSC-SoundCraftSubset.ttf`: a subset of the Noto Sans SC variable font,
+pinned at weight 400 and reduced with fontTools to the UI glyph set (the zh-Hans catalog, the
+GB 2312 level-1 common characters, ASCII, Latin-1 letters and the UI's punctuation, arrows and
+triangles; about 1.1 MiB). It is SIL Open Font License 1.1 — see `assets/fonts/OFL.txt`. The full
+font is never bundled, and native builds do not embed the subset (they keep using the system's
+fonts, which also cover user-typed text outside the subset).
 
 ## Files
 
@@ -45,3 +53,7 @@ and, at runtime, the operating system's own UI fonts when available (never redis
 | `assets/app-icon/soundcraft.ico` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
 | `assets/app-icon/hicolor/` | SoundCraft contributors | original, rendered from `icon.svg` (16–512 px PNGs and the scalable SVG) | MIT OR Apache-2.0 |
 | `docs/images/` | SoundCraft contributors | screenshots of SoundCraft rendered from the synthesised demo session | MIT OR Apache-2.0 |
+| `assets/fonts/NotoSansSC-SoundCraftSubset.ttf` | Google LLC / Noto Project Authors | Noto Sans SC variable font, subset to the UI glyph set and pinned at weight 400 (generated with fontTools) | SIL Open Font License 1.1 (`assets/fonts/OFL.txt`) |
+| `assets/fonts/OFL.txt` | Noto Project Authors / SIL | SIL Open Font License 1.1 text | OFL-1.1 |
+| `crates/ui-egui/src/i18n/zh-hans.tsv` | SoundCraft contributors (AI-assisted) | original translation of SoundCraft's English source keys (clean-room; no proprietary translation resources) | MIT OR Apache-2.0 |
+| `crates/ui-egui/src/i18n/LICENSE-translations.txt` | SoundCraft contributors (AI-assisted) | original clean-room statement and translation license | MIT OR Apache-2.0 |

@@ -130,7 +130,7 @@ mod tests {
         let (mut e, t) = video_engine();
         assert!(matches!(e.session().track(t).unwrap().clips()[0].content, ClipContent::Video { .. }));
         e.session_mut().add_track(TrackKind::Master, ChannelFormat::Stereo, None);
-        let dir = std::env::temp_dir().join(format!("sc-video-bounce-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-video-bounce-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("mix.wav");
         e.execute("file.bounce_mix", &json!({"path": out.to_string_lossy(), "start": 0, "end": 96_000, "dither": false})).unwrap();
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn import_video_adds_a_video_track_and_survives_save_and_open() {
-        let dir = std::env::temp_dir().join(format!("sc-video-import-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-video-import-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let movie = dir.join("picture.mp4");

@@ -253,12 +253,13 @@ SoundCraft is **pre-alpha**: it covers 94 % of the incumbent's menu items (measu
 its features by presence, and is roughly 40 % of the way to replacing it for real work: record,
 edit, mix and bounce work end to end, but choosing an audio interface and buffer size,
 recording MIDI from a controller and session interchange (AAF/OMF) are still missing, and those
-are the alpha checklist. Translations are missing too. The status, the stage and our effort
-estimates are in [`ROADMAP.md`](ROADMAP.md); the full assessment is in
+are the alpha checklist. Most translations are missing too — English and 简体中文 ship. The status,
+the stage and our effort estimates are in [`ROADMAP.md`](ROADMAP.md); the full assessment is in
 [`docs/target-app-parity.md`](docs/target-app-parity.md), the ranked list of what's missing in
 [`docs/gaps.md`](docs/gaps.md), and the menu-by-menu comparison in
-[`docs/parity-checklist.md`](docs/parity-checklist.md). Bug reports and wish lists are
-very welcome, in the issues or on Discord.
+[`docs/parity-checklist.md`](docs/parity-checklist.md). How the interface is localized, packed and
+switched at run time is in [`docs/localization.md`](docs/localization.md). Bug reports and wish
+lists are very welcome, in the issues or on Discord.
 
 ## Downloads
 
