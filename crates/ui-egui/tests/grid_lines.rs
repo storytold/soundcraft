@@ -68,3 +68,32 @@ fn grid_lines_are_drawn_over_clips_while_shown() {
         }
     }
 }
+
+#[test]
+fn clips_markers_grid_draws_a_line_at_a_memory_location() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let ctx = egui::Context::default();
+    let kick = app.engine.session().track_by_name("Kick").unwrap();
+    let clip = &kick.clips()[0];
+    let marker = clip.start + clip.length / 3;
+    app.run("markers.add", json!({"at": marker, "name": "Grid target"})).unwrap();
+    app.run("view.grid", json!({"format": "clips_markers", "lines": true})).unwrap();
+
+    frame(&ctx, &mut app);
+    let out = frame(&ctx, &mut app);
+    let session = app.engine.session();
+    let kick = session.track_by_name("Kick").unwrap();
+    let [x0, y0, x1, y1] = app.edit_layout.timeline;
+    let timeline = Rect::from_min_max(pos2(x0, y0), pos2(x1, y1));
+    let row = app.edit_layout.rows.iter().find(|(id, _)| *id == kick.id.0).unwrap().1;
+    let lane = Rect::from_min_max(pos2(timeline.min.x, row[1]), pos2(timeline.max.x, row[1] + kick.height.points()));
+    let expected_x = edit_window::x_of(session, timeline, marker);
+
+    assert!(out.shapes.iter().any(|shape| {
+        matches!(
+            &shape.shape,
+            Shape::LineSegment { points: [a, b], .. }
+                if a.x == expected_x && b.x == expected_x && a.y == lane.min.y && b.y == lane.max.y
+        )
+    }));
+}

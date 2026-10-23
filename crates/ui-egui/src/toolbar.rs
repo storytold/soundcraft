@@ -3,11 +3,11 @@
 use crate::theme::{Tokens, bold, mono, regular};
 use crate::widgets::{icon_button, key, key_fill};
 use crate::{SoundApp, icons};
-use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{Align2, Color32, CornerRadius, Painter, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
 use soundcraft_engine::edit::{SHUFFLE_LOCK, SNAP_TO_GRID};
-use soundcraft_model::{EditMode, Tool};
-use soundcraft_time::{TimeFormat, format_length};
+use soundcraft_model::{EditMode, Session, Tool};
+use soundcraft_time::{FeetFramesValue, GridScale, GridValue, NoteValue, TimeFormat, TimecodeValue, format_length};
 
 pub const HEIGHT: f32 = 78.0;
 
@@ -260,9 +260,9 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
 
 fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
-    let (grid, nudge, lines) = {
+    let (grid, nudge, lines, grid_follow, nudge_follow, clips_markers) = {
         let e = &app.engine.session().edit;
-        (e.grid, e.nudge, e.grid_lines)
+        (e.grid, e.nudge, e.grid_lines, e.grid_follow_main, e.nudge_follow_main, e.grid_clips_markers)
     };
     let (r, _) = ui.allocate_exact_size(vec2(170.0, 64.0), Sense::hover());
     ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
@@ -274,39 +274,229 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
         let _ = app.run("view.grid_lines", json!({}));
     }
     let gr = Rect::from_min_max(pos2(r.min.x + 60.0, r.min.y + 6.0), pos2(r.max.x - 4.0, r.min.y + 26.0));
-    ui.painter().text(pos2(gr.max.x - 14.0, gr.center().y), Align2::RIGHT_CENTER, grid.label(), mono(11.0), t.counter_text);
+    let grid_label = if clips_markers { GridScale::ClipsMarkers.label().to_string() } else { compact_grid_label(app.engine.session(), grid) };
+    draw_compact_note_icon(ui.painter(), gr, grid, t.counter_text);
+    ui.painter().text(pos2(gr.max.x - 14.0, gr.center().y), Align2::RIGHT_CENTER, grid_label, mono(11.0), t.counter_text);
     let gresp = ui.interact(gr, ui.id().with("grid_value"), Sense::click());
-    value_menu(app, &gresp, "view.grid");
+    value_menu(app, &gresp, "view.grid", grid, grid_follow, clips_markers, true);
     ui.painter().text(pos2(r.min.x + 10.0, r.min.y + 44.0), Align2::LEFT_CENTER, "Nudge", regular(11.0), t.counter_label);
     let nr = Rect::from_min_max(pos2(r.min.x + 60.0, r.min.y + 34.0), pos2(r.max.x - 4.0, r.min.y + 54.0));
-    ui.painter().text(pos2(nr.max.x - 14.0, nr.center().y), Align2::RIGHT_CENTER, nudge.label(), mono(11.0), t.counter_text);
+    draw_compact_note_icon(ui.painter(), nr, nudge, t.counter_text);
+    ui.painter().text(
+        pos2(nr.max.x - 14.0, nr.center().y),
+        Align2::RIGHT_CENTER,
+        compact_grid_label(app.engine.session(), nudge),
+        mono(11.0),
+        t.counter_text,
+    );
     let nresp = ui.interact(nr, ui.id().with("nudge_value"), Sense::click());
-    value_menu(app, &nresp, "view.nudge");
+    value_menu(app, &nresp, "view.nudge", nudge, nudge_follow, false, false);
     for rr in [gr, nr] {
         icons::draw(ui.painter(), Rect::from_center_size(pos2(rr.max.x - 6.0, rr.center().y), vec2(10.0, 10.0)), "triangle_down", t.text_dim);
     }
 }
 
-fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str) {
-    egui::Popup::menu(resp).show(|ui| {
-        for v in ["1 bar", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64", "1/8t", "1/16t", "1/4."] {
-            if ui.button(v).clicked() {
-                let _ = app.run(cmd, json!({"value": v}));
+fn compact_grid_label(session: &Session, value: GridValue) -> String {
+    match value {
+        GridValue::Note { value, dotted, triplet } => {
+            let at_tick = session.tempo.samples_to_ticks(session.edit.selection.start, session.sample_rate);
+            let meter = session.tempo.meter_at_tick(at_tick);
+            let mut ticks = if value == NoteValue::Bar { meter.ticks_per_bar() } else { value.ticks() };
+            if dotted {
+                ticks = ticks * 3 / 2;
             }
+            if triplet {
+                ticks = ticks * 2 / 3;
+            }
+            let per_bar = meter.ticks_per_bar().max(1);
+            let per_beat = meter.ticks_per_beat().max(1);
+            let bars = ticks / per_bar;
+            let remaining = ticks % per_bar;
+            format!("{bars}|{}|{:03}", remaining / per_beat, remaining % per_beat)
+        }
+        GridValue::Seconds(seconds) => {
+            let samples = session.sample_rate.samples(seconds);
+            format_length(session.edit.selection.start, samples, TimeFormat::MinSecs, session.sample_rate, &session.tempo, session.frame_rate)
+        }
+        GridValue::Frames(frames) => {
+            let samples = session.frame_rate.samples_at_frame(frames, session.sample_rate);
+            format!(
+                "{}.00",
+                format_length(session.edit.selection.start, samples, TimeFormat::Timecode, session.sample_rate, &session.tempo, session.frame_rate)
+            )
+        }
+        GridValue::Timecode(value) => match value {
+            TimecodeValue::Second => "00:00:01:00.00",
+            TimecodeValue::FiveFrames => "00:00:00:05.00",
+            TimecodeValue::Frame => "00:00:00:01.00",
+            TimecodeValue::HalfFrame => "00:00:00:00.50",
+            TimecodeValue::QuarterFrame => "00:00:00:00.25",
+            TimecodeValue::SubFrame => "00:00:00:00.01",
+        }
+        .to_string(),
+        GridValue::FeetFrames(value) => match value {
+            FeetFramesValue::Foot => "1+00",
+            FeetFramesValue::Frame => "0+01",
+            FeetFramesValue::QuarterFrame => "0+00.25",
+            FeetFramesValue::SubFrame => "0+00.01",
+        }
+        .to_string(),
+        GridValue::Samples(samples) => samples.to_string(),
+    }
+}
+
+fn draw_compact_note_icon(painter: &Painter, rect: Rect, value: GridValue, color: Color32) {
+    let GridValue::Note { value, dotted, triplet } = value else { return };
+    draw_note_value_icon(painter, Rect::from_min_size(pos2(rect.min.x + 1.0, rect.min.y + 2.0), vec2(14.0, 16.0)), value, dotted, triplet, color);
+}
+
+fn draw_note_value_icon(painter: &Painter, rect: Rect, value: NoteValue, dotted: bool, triplet: bool, color: Color32) {
+    let stroke = Stroke::new(1.2, color);
+    let head = pos2(rect.min.x + 4.0, rect.max.y - 3.5);
+    if value == NoteValue::Bar {
+        painter.line_segment([pos2(rect.min.x + 2.0, rect.min.y + 2.0), pos2(rect.min.x + 2.0, rect.max.y - 2.0)], stroke);
+        painter.line_segment([pos2(rect.min.x + 5.0, rect.min.y + 2.0), pos2(rect.min.x + 5.0, rect.max.y - 2.0)], stroke);
+        painter.line_segment([pos2(rect.min.x + 2.0, rect.min.y + 3.0), pos2(rect.min.x + 10.0, rect.min.y + 3.0)], stroke);
+    } else {
+        let hollow = matches!(value, NoteValue::Whole | NoteValue::Half);
+        if hollow {
+            painter.circle_stroke(head, 2.2, stroke);
+        } else {
+            painter.circle_filled(head, 2.2, color);
+        }
+        if value != NoteValue::Whole {
+            let stem_x = head.x + 2.0;
+            painter.line_segment([pos2(stem_x, head.y), pos2(stem_x, rect.min.y + 2.0)], stroke);
+            let flags = match value {
+                NoteValue::Eighth => 1,
+                NoteValue::Sixteenth => 2,
+                NoteValue::ThirtySecond => 3,
+                NoteValue::SixtyFourth => 4,
+                _ => 0,
+            };
+            for flag in 0..flags {
+                let y = rect.min.y + 2.0 + flag as f32 * 2.0;
+                painter.line_segment([pos2(stem_x, y), pos2(stem_x + 4.0, y + 2.5)], stroke);
+            }
+        }
+    }
+    if dotted {
+        painter.circle_filled(pos2(rect.max.x - 1.5, head.y), 1.0, color);
+    }
+    if triplet {
+        painter.text(pos2(rect.min.x, rect.min.y), Align2::LEFT_TOP, "3", regular(7.0), color);
+    }
+}
+
+fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str, current: GridValue, follow_main: bool, clips_markers: bool, allow_clips: bool) {
+    egui::Popup::menu(resp).show(|ui| {
+        ui.set_min_width(210.0);
+        match current.scale() {
+            GridScale::BarsBeats => {
+                let selected = match current {
+                    GridValue::Note { value, .. } => value,
+                    _ => NoteValue::Sixteenth,
+                };
+                for value in NoteValue::ALL {
+                    let id = match value {
+                        NoteValue::Bar => "1 bar",
+                        NoteValue::Whole => "1/1",
+                        NoteValue::Half => "1/2",
+                        NoteValue::Quarter => "1/4",
+                        NoteValue::Eighth => "1/8",
+                        NoteValue::Sixteenth => "1/16",
+                        NoteValue::ThirtySecond => "1/32",
+                        NoteValue::SixtyFourth => "1/64",
+                    };
+                    menu_note_value(ui, app, cmd, selected == value, value, json!(id));
+                }
+                ui.separator();
+                let (value, dotted, triplet) = match current {
+                    GridValue::Note { value, dotted, triplet } => (value, dotted, triplet),
+                    _ => (NoteValue::Sixteenth, false, false),
+                };
+                let base = match value {
+                    NoteValue::Bar => "1 bar",
+                    NoteValue::Whole => "1/1",
+                    NoteValue::Half => "1/2",
+                    NoteValue::Quarter => "1/4",
+                    NoteValue::Eighth => "1/8",
+                    NoteValue::Sixteenth => "1/16",
+                    NoteValue::ThirtySecond => "1/32",
+                    NoteValue::SixtyFourth => "1/64",
+                };
+                menu_modifier(ui, app, cmd, dotted, "Dotted", "·", json!(if dotted { base.to_string() } else { format!("{base}.") }));
+                menu_modifier(ui, app, cmd, triplet, "Triplet", "3", json!(if triplet { base.to_string() } else { format!("{base}t") }));
+            }
+            GridScale::MinSecs => {
+                for seconds in [1.0, 0.5, 0.1, 0.01, 0.001] {
+                    let value = GridValue::Seconds(seconds);
+                    menu_value(ui, app, cmd, current == value, &value.label(), json!({"seconds": seconds}));
+                }
+            }
+            GridScale::Timecode => {
+                for value in TimecodeValue::ALL {
+                    let selected = current == GridValue::Timecode(value)
+                        || matches!(
+                            (current, value),
+                            (GridValue::Frames(5), TimecodeValue::FiveFrames) | (GridValue::Frames(1), TimecodeValue::Frame)
+                        );
+                    menu_value(ui, app, cmd, selected, value.label(), json!({"timecode": value.id()}));
+                }
+            }
+            GridScale::FeetFrames => {
+                for value in FeetFramesValue::ALL {
+                    menu_value(ui, app, cmd, current == GridValue::FeetFrames(value), value.label(), json!({"feet_frames": value.id()}));
+                }
+            }
+            GridScale::Samples => {
+                for samples in [10_000, 1_000, 100, 10, 2, 1] {
+                    let value = GridValue::Samples(samples);
+                    menu_value(ui, app, cmd, current == value, &value.label(), json!({"samples": samples}));
+                }
+            }
+            GridScale::ClipsMarkers => {}
         }
         ui.separator();
-        for (label, v) in [
-            ("1 msec", json!({"seconds": 0.001})),
-            ("10 msec", json!({"seconds": 0.01})),
-            ("100 msec", json!({"seconds": 0.1})),
-            ("1 second", json!({"seconds": 1.0})),
-            ("1 frame", json!({"frames": 1})),
-            ("100 samples", json!({"samples": 100})),
-        ] {
-            if ui.button(label).clicked() {
-                let _ = app.run(cmd, json!({"value": v}));
+        for scale in GridScale::TIME {
+            let selected = !clips_markers && current.scale() == scale;
+            if ui.selectable_label(selected, scale.label()).clicked() {
+                let _ = app.run(cmd, json!({"format": scale.id(), "follow_main": false}));
+                ui.close();
             }
         }
+        if allow_clips && ui.selectable_label(clips_markers, GridScale::ClipsMarkers.label()).clicked() {
+            let _ = app.run(cmd, json!({"format": GridScale::ClipsMarkers.id(), "follow_main": false}));
+            ui.close();
+        }
+        ui.separator();
+        if ui.selectable_label(follow_main, "Follow Main Time Scale").clicked() {
+            let _ = app.run(cmd, json!({"follow_main": !follow_main}));
+            ui.close();
+        }
+    });
+}
+
+fn menu_value(ui: &mut Ui, app: &mut SoundApp, cmd: &str, selected: bool, label: &str, value: serde_json::Value) {
+    if ui.selectable_label(selected, label).clicked() {
+        let _ = app.run(cmd, json!({"value": value}));
+        ui.close();
+    }
+}
+
+fn menu_note_value(ui: &mut Ui, app: &mut SoundApp, cmd: &str, selected: bool, note: NoteValue, value: serde_json::Value) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+        draw_note_value_icon(ui.painter(), rect, note, false, false, ui.visuals().text_color());
+        menu_value(ui, app, cmd, selected, note.label(), value);
+    });
+}
+
+fn menu_modifier(ui: &mut Ui, app: &mut SoundApp, cmd: &str, selected: bool, label: &str, symbol: &str, value: serde_json::Value) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, symbol, regular(11.0), ui.visuals().text_color());
+        menu_value(ui, app, cmd, selected, label, value);
     });
 }
 
@@ -432,5 +622,91 @@ fn output_meter(app: &mut SoundApp, ui: &mut Ui) {
     for c in 0..2 {
         let rr = Rect::from_min_size(pos2(r.min.x + 2.0 + c as f32 * (w + 2.0), r.min.y), vec2(w, r.height()));
         crate::widgets::meter(ui, rr, m.level[c], m.hold[c], m.clip);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Services;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    fn harness() -> Harness<'static, SoundApp> {
+        let app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let mut harness = Harness::builder().with_size(vec2(700.0, 700.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let edit = &app.engine.session().edit;
+                let (grid, grid_follow, clips, nudge, nudge_follow) =
+                    (edit.grid, edit.grid_follow_main, edit.grid_clips_markers, edit.nudge, edit.nudge_follow_main);
+                let grid_anchor = ui.button("Grid menu");
+                value_menu(app, &grid_anchor, "view.grid", grid, grid_follow, clips, true);
+                let nudge_anchor = ui.button("Nudge menu");
+                value_menu(app, &nudge_anchor, "view.nudge", nudge, nudge_follow, false, false);
+            },
+            app,
+        );
+        harness.run_steps(3);
+        harness
+    }
+
+    fn open(harness: &mut Harness<SoundApp>, label: &str) {
+        harness.get_by_label(label).click();
+        harness.run_steps(3);
+    }
+
+    #[test]
+    fn compact_grid_values_use_their_counter_formats() {
+        let session = Session::default();
+        let note = |value, dotted, triplet| GridValue::Note { value, dotted, triplet };
+        assert_eq!(compact_grid_label(&session, note(NoteValue::Quarter, false, false)), "0|1|000");
+        assert_eq!(compact_grid_label(&session, note(NoteValue::Eighth, false, true)), "0|0|320");
+        assert_eq!(compact_grid_label(&session, GridValue::Seconds(0.001)), "0:00.001");
+        assert_eq!(compact_grid_label(&session, GridValue::Timecode(TimecodeValue::Second)), "00:00:01:00.00");
+        assert_eq!(compact_grid_label(&session, GridValue::Timecode(TimecodeValue::QuarterFrame)), "00:00:00:00.25");
+        assert_eq!(compact_grid_label(&session, GridValue::FeetFrames(FeetFramesValue::Foot)), "1+00");
+        assert_eq!(compact_grid_label(&session, GridValue::Samples(10_000)), "10000");
+    }
+
+    #[test]
+    fn grid_menu_exposes_each_scale_and_keeps_the_increment_in_clips_markers_mode() {
+        let mut harness = harness();
+        open(&mut harness, "Grid menu");
+        for label in ["Bars|Beats", "Min:Secs", "Timecode", "Feet+Frames", "Samples", "Clips/Markers", "Follow Main Time Scale"] {
+            let _ = harness.get_by_label(label);
+        }
+        for label in ["1 bar", "Whole note", "1/2 note", "1/4 note", "1/8 note", "1/16 note", "1/32 note", "1/64 note", "Dotted", "Triplet"] {
+            let _ = harness.get_by_label(label);
+        }
+
+        harness.get_by_label("Timecode").click();
+        harness.run_steps(3);
+        open(&mut harness, "Grid menu");
+        for label in ["1 second", "5 frames", "1 frame", "1/2 frame", "1/4 frame", "1 subframe"] {
+            let _ = harness.get_by_label(label);
+        }
+        harness.get_by_label("1/4 frame").click();
+        harness.run_steps(3);
+        open(&mut harness, "Grid menu");
+        harness.get_by_label("Clips/Markers").click();
+        harness.run_steps(3);
+        let edit = &harness.state().engine.session().edit;
+        assert_eq!(edit.grid, GridValue::Timecode(TimecodeValue::QuarterFrame));
+        assert!(edit.grid_clips_markers);
+    }
+
+    #[test]
+    fn nudge_menu_has_every_numeric_scale_but_no_clips_markers_mode() {
+        let mut harness = harness();
+        open(&mut harness, "Nudge menu");
+        for label in ["Bars|Beats", "Min:Secs", "Timecode", "Feet+Frames", "Samples", "Follow Main Time Scale"] {
+            let _ = harness.get_by_label(label);
+        }
+        assert_eq!(harness.query_all_by_label("Clips/Markers").count(), 0);
+        harness.get_by_label("Samples").click();
+        harness.run_steps(3);
+        open(&mut harness, "Nudge menu");
+        for label in ["10000 samples", "1000 samples", "100 samples", "10 samples", "2 samples", "1 sample"] {
+            let _ = harness.get_by_label(label);
+        }
     }
 }
