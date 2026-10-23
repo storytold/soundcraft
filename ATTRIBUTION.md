@@ -21,9 +21,12 @@ are bundled.
 
 ## Fonts
 
-SoundCraft bundles no font files. It uses the default fonts shipped inside the `egui` crate
-(Ubuntu-Light: Ubuntu Font Licence 1.0; Hack: MIT; Noto Emoji: OFL-1.1; emoji-icon-font: OFL-1.1/MIT)
-and, at runtime, the operating system's own UI fonts when available (never redistributed).
+SoundCraft bundles one font file: Droid Sans Mono (Apache-2.0, listed under Files below), the first
+face of the monospace family (counters, readouts, values) because its zero is plain: no slash, no dot.
+It also uses the default fonts shipped inside the `egui` crate (Ubuntu-Light: Ubuntu Font Licence 1.0;
+Hack: MIT, kept as the monospace fallback for glyphs Droid Sans Mono lacks; Noto Emoji: OFL-1.1;
+emoji-icon-font: OFL-1.1/MIT) and, at runtime, the operating system's own UI fonts when available
+(never redistributed).
 
 ## Files
 
@@ -37,6 +40,7 @@ and, at runtime, the operating system's own UI fonts when available (never redis
 | `docs/brand/artcraft-mark.png` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
 | `docs/brand/artcraft-mark-black.svg` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
 | `docs/brand/artcraft-mark-black.png` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
+| `assets/fonts/droid-sans-mono/DroidSansMono.ttf` | Ascender Corporation for Google (© 2007 Google Corporation) | Android Open Source Project, `platform/frameworks/base` `data/fonts/DroidSansMono.ttf` (<https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/data/fonts/DroidSansMono.ttf>), unmodified; license text in `assets/fonts/droid-sans-mono/LICENSE.txt` (the AOSP `data/fonts/NOTICE`) | Apache-2.0 |
 | `assets/app-icon/icon.svg` | SoundCraft contributors | original (hand-placed SVG paths; placeholder app icon) | MIT OR Apache-2.0 |
 | `packaging/macos/dmg/` (all files) | @XusBadia | original (macOS DMG window background and layout, from the app icon; see `packaging/macos/dmg/README.md`) | MIT OR Apache-2.0 |
 | `assets/app-icon/soundcraft-1024.png` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
