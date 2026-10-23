@@ -13,8 +13,22 @@ use std::fmt::Write as _;
 const UNIT: i64 = TICKS_PER_QUARTER / 4;
 /// Upper bound on engraved measures, so a hostile session cannot make a huge document.
 const MAX_MEASURES: usize = 2000;
+/// Upper bound on output size, so a hostile session cannot make a huge document.
+const MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
+/// Upper bound on items per measure, so a hostile session cannot make a huge document.
+const MAX_ITEMS_PER_MEASURE: usize = 128;
+/// Upper bound on pitches per chord, so a hostile session cannot make a huge document.
+const MAX_PITCHES_PER_CHORD: usize = 16;
 /// Note values a single notehead can show, in sixteenths (longest first).
 const VALUES: [u32; 8] = [16, 12, 8, 6, 4, 3, 2, 1];
+
+/// The output has grown past the byte budget: refuse to grow it further.
+fn over_budget(buf: &str) -> Result<(), String> {
+    if buf.len() > MAX_OUTPUT_BYTES {
+        return Err(format!("score too large: over {} MiB", MAX_OUTPUT_BYTES / (1024 * 1024)));
+    }
+    Ok(())
+}
 
 /// Score Setup (File › Score Setup…). Stored in the session's edit flags/values.
 #[derive(Debug, Clone, PartialEq)]
@@ -159,6 +173,10 @@ fn fill(bars: &[(i64, i64, u32, u32)], notes: &[(i64, i64, u8)]) -> Vec<Measure>
         if !e.1.contains(p) {
             e.1.push(*p);
         }
+        // Cap chord size to avoid pathological memory use.
+        if e.1.len() > MAX_PITCHES_PER_CHORD {
+            e.1.truncate(MAX_PITCHES_PER_CHORD);
+        }
     }
     let starts: Vec<i64> = onsets.keys().copied().collect();
     let mut spans: Vec<(i64, i64, Vec<u8>)> = Vec::new();
@@ -196,9 +214,17 @@ fn fill(bars: &[(i64, i64, u32, u32)], notes: &[(i64, i64, u8)]) -> Vec<Measure>
             }
             emit(from, to, ps, *a < *ms, *b > me, &mut items);
             cursor = to;
+            // Cap items per measure to avoid pathological memory use.
+            if items.len() > MAX_ITEMS_PER_MEASURE {
+                break;
+            }
         }
         if cursor < me {
             emit(cursor, me, &[], false, false, &mut items);
+        }
+        // Truncate if we hit the cap.
+        if items.len() > MAX_ITEMS_PER_MEASURE {
+            items.truncate(MAX_ITEMS_PER_MEASURE);
         }
         measures.push(Measure { numerator: *num, denominator: *den, items });
     }
@@ -231,7 +257,7 @@ fn note_type(units: u32) -> (&'static str, bool) {
 }
 
 /// MusicXML 4.0 (partwise) for `parts`.
-pub fn musicxml(parts: &[Part], setup: &ScoreSetup) -> String {
+pub fn musicxml(parts: &[Part], setup: &ScoreSetup) -> Result<String, String> {
     let mut x = String::new();
     x.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
     x.push_str("<!DOCTYPE score-partwise PUBLIC \"-//Recordare//DTD MusicXML 4.0 Partwise//EN\" \"http://www.musicxml.org/dtds/partwise.dtd\">\n");
@@ -312,11 +338,12 @@ pub fn musicxml(parts: &[Part], setup: &ScoreSetup) -> String {
                 }
             }
             x.push_str("    </measure>\n");
+            over_budget(&x)?;
         }
         x.push_str("  </part>\n");
     }
     x.push_str("</score-partwise>\n");
-    x
+    Ok(x)
 }
 
 /// Staff position of `pitch` in half-spaces above the bottom line (treble E4 / bass G2).
@@ -328,7 +355,7 @@ fn staff_step(pitch: u8, bass: bool) -> i32 {
 }
 
 /// An engraved score as a printable SVG page (A4 portrait width, as tall as needed).
-pub fn svg(parts: &[Part], setup: &ScoreSetup) -> String {
+pub fn svg(parts: &[Part], setup: &ScoreSetup) -> Result<String, String> {
     const W: f64 = 794.0;
     const MARGIN: f64 = 48.0;
     const SP: f64 = 7.0; // staff space
@@ -462,6 +489,7 @@ pub fn svg(parts: &[Part], setup: &ScoreSetup) -> String {
                         let _ = writeln!(o, "<path d=\"M{:.1} {y:.1} q 8 5 16 0\" fill=\"none\" stroke=\"black\" stroke-width=\"0.9\"/>", x + 3.0);
                     }
                 }
+                over_budget(&o)?;
             }
         }
         // System bracket.
@@ -474,7 +502,7 @@ pub fn svg(parts: &[Part], setup: &ScoreSetup) -> String {
         );
     }
     o.push_str("</svg>\n");
-    o
+    Ok(o)
 }
 
 fn rest(o: &mut String, x: f64, y0: f64, sp: f64, units: u32) {
@@ -552,10 +580,48 @@ mod tests {
         let parts = layout(e.session(), &[]);
         assert!(!parts.is_empty(), "demo has MIDI tracks");
         let setup = ScoreSetup::from_session(e.session());
-        let x = musicxml(&parts, &setup);
+        let x = musicxml(&parts, &setup).expect("demo musicxml fits");
         assert!(x.contains("<score-partwise") && x.contains("<pitch>") && x.trim_end().ends_with("</score-partwise>"));
         assert_eq!(x.matches("<measure ").count(), x.matches("</measure>").count());
-        let s = svg(&parts, &setup);
+        let s = svg(&parts, &setup).expect("demo svg fits");
         assert!(s.starts_with("<svg") && s.contains("<ellipse"));
+    }
+
+    #[test]
+    fn output_is_bounded_by_byte_budget() {
+        // A part with many notes must not produce an unbounded document.
+        let bars: Vec<_> = (0..100).map(|i| (i * 16, 16, 4, 4)).collect();
+        let mut notes = Vec::new();
+        for i in 0..2000 {
+            notes.push((i * 2, i * 2 + 1, 60 + (i % 24) as u8));
+        }
+        let measures = fill(&bars, &notes);
+        let part = Part { name: "dense".into(), bass: false, measures };
+        let setup = ScoreSetup { title: "t".into(), composer: String::new(), bars_per_system: 4, show_track_names: false };
+        let s = svg(&[part], &setup);
+        assert!(s.is_ok(), "dense but bounded score fits");
+        let s = s.unwrap();
+        assert!(s.len() <= MAX_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn oversize_score_is_refused_not_aborted() {
+        // Many dense parts drive the output past the byte budget: the call must
+        // return an error, not grow a multi-GB string or abort.
+        let bars: Vec<_> = (0..MAX_MEASURES as i64).map(|i| (i * 16, 16, 4, 4)).collect();
+        let mut notes = Vec::new();
+        for i in 0..(MAX_MEASURES * 8) as i64 {
+            let onset = i * 2;
+            notes.push((onset, onset + 1, 60 + (i % 24) as u8));
+        }
+        let measures = fill(&bars, &notes);
+        let part = Part { name: "dense".into(), bass: false, measures };
+        let setup = ScoreSetup { title: "t".into(), composer: String::new(), bars_per_system: 1, show_track_names: true };
+        // Enough copies of the dense part to exceed the byte budget.
+        let parts: Vec<Part> = (0..256).map(|i| Part { name: format!("part{i}"), ..part.clone() }).collect();
+        let err = svg(&parts, &setup).unwrap_err();
+        assert!(err.contains("score too large"), "{err}");
+        let err = musicxml(&parts, &setup).unwrap_err();
+        assert!(err.contains("score too large"), "{err}");
     }
 }
