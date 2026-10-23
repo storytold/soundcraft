@@ -1,13 +1,15 @@
 //! The process-wide VST3 registry: scan cache, leaked `PluginInfo`s, instantiation.
 
+use crate::cache::{self, Entry, Stamp};
 use crate::ffi::{Bundle, Instance, PARAM_BYPASS, PARAM_HIDDEN, PARAM_READ_ONLY, RawParam};
 use crate::plugin::Vst3Plugin;
 use crate::scan as paths;
-use crate::{AUDIO_MODULE_CLASS, Vst3Descriptor, Vst3Error, parse_id};
+use crate::{AUDIO_MODULE_CLASS, ScanProgress, Vst3Descriptor, Vst3Error, parse_id};
 use soundcraft_dsp::{ParamInfo, Plugin, PluginInfo, Taper, Unit};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 /// Most labels read for a stepped parameter (more steps are shown as a plain range).
 const MAX_CHOICES: i32 = 128;
@@ -21,6 +23,81 @@ struct Registry {
     infos: HashMap<String, &'static PluginInfo>,
     /// Ids that failed to instantiate (not retried every UI frame).
     failed: HashSet<String>,
+    /// Where the scan cache lives (`None`: scans are not cached on disk).
+    cache_file: Option<PathBuf>,
+    /// The scan under way, advanced a bundle at a time by [`scan_step`].
+    job: Option<ScanJob>,
+}
+
+/// A scan in progress: the bundles still to list and what the finished ones held.
+struct ScanJob {
+    pending: VecDeque<PathBuf>,
+    total: usize,
+    /// The cache read at the start (empty when rescanning: every bundle is loaded again).
+    known: HashMap<PathBuf, Entry>,
+    found: Vec<Vst3Descriptor>,
+    entries: Vec<Entry>,
+}
+
+impl ScanJob {
+    fn new(dirs: &[PathBuf], known: HashMap<PathBuf, Entry>) -> ScanJob {
+        let pending: VecDeque<PathBuf> = paths::find_bundles(dirs).into();
+        ScanJob { total: pending.len(), pending, known, found: Vec::new(), entries: Vec::new() }
+    }
+
+    /// Adds `bundles` the scan has not listed or queued yet (a folder added while it runs).
+    fn include(&mut self, bundles: Vec<PathBuf>) {
+        for b in bundles {
+            if !self.pending.contains(&b) && !self.entries.iter().any(|e| e.path == b) {
+                self.pending.push_back(b);
+                self.total += 1;
+            }
+        }
+    }
+
+    fn progress(&self) -> ScanProgress {
+        let next = self.pending.front().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        ScanProgress::Scanning { done: self.total.saturating_sub(self.pending.len()), total: self.total, next }
+    }
+
+    /// Lists bundles until `budget` is spent; a bundle that must be loaded (new, changed or never
+    /// cached) is the slow part, so at most one is loaded per call once any work has been done.
+    fn step(&mut self, budget: Duration) {
+        let start = Instant::now();
+        let mut loaded = false;
+        while let Some(path) = self.pending.front().cloned() {
+            let stamp = Stamp::of(&path);
+            let cached = stamp.and_then(|st| self.known.get(&path).filter(|e| e.stamp == st)).cloned();
+            if cached.is_none() && loaded {
+                break;
+            }
+            self.pending.pop_front();
+            let entry = match (cached, stamp) {
+                (Some(e), _) => e,
+                (None, stamp) => {
+                    loaded = true;
+                    let (descriptors, error) = match load_bundle(&path) {
+                        Ok(ds) => (ds, None),
+                        Err(e) => {
+                            log::warn!("{e}");
+                            (Vec::new(), Some(e.to_string()))
+                        }
+                    };
+                    let stamp = stamp.unwrap_or(Stamp { size: 0, modified_ns: 0 });
+                    Entry { path: path.clone(), stamp, descriptors, error }
+                }
+            };
+            for d in &entry.descriptors {
+                if !self.found.iter().any(|o| o.id == d.id) {
+                    self.found.push(d.clone());
+                }
+            }
+            self.entries.push(entry);
+            if start.elapsed() >= budget {
+                break;
+            }
+        }
+    }
 }
 
 fn registry() -> &'static Mutex<Registry> {
@@ -73,11 +150,46 @@ pub fn scan_paths(dirs: &[PathBuf]) -> Vec<Vst3Descriptor> {
     out
 }
 
+fn search_dirs(r: &Registry) -> Vec<PathBuf> {
+    let mut dirs = paths::default_search_paths();
+    dirs.extend(r.extra_dirs.iter().cloned());
+    dirs
+}
+
+/// Starts a scan (unless one is under way): from the disk cache, or loading every bundle when `fresh`.
+fn start_job(r: &mut Registry, fresh: bool) {
+    if r.job.is_none() {
+        let known = match (&r.cache_file, fresh) {
+            (Some(f), false) => cache::read(f),
+            _ => HashMap::new(),
+        };
+        r.job = Some(ScanJob::new(&search_dirs(r), known));
+    }
+}
+
+/// Advances the scan; when it has finished, publishes the list and saves the cache.
+fn advance(r: &mut Registry, budget: Duration) -> ScanProgress {
+    let Some(job) = r.job.as_mut() else { return ScanProgress::Done };
+    job.step(budget);
+    if !job.pending.is_empty() {
+        return job.progress();
+    }
+    let Some(job) = r.job.take() else { return ScanProgress::Done };
+    let mut found = job.found;
+    found.sort_by_key(|d| d.name.to_lowercase());
+    r.scanned = Some(found);
+    if let Some(f) = &r.cache_file
+        && let Err(e) = cache::write(f, job.entries)
+    {
+        log::warn!("vst3: cannot save the scan cache {}: {e}", f.display());
+    }
+    ScanProgress::Done
+}
+
 fn ensure_scanned(r: &mut Registry) -> &Vec<Vst3Descriptor> {
     if r.scanned.is_none() {
-        let mut dirs = paths::default_search_paths();
-        dirs.extend(r.extra_dirs.iter().cloned());
-        r.scanned = Some(scan_paths(&dirs));
+        start_job(r, false);
+        while advance(r, Duration::MAX) != ScanProgress::Done {}
     }
     r.scanned.get_or_insert_with(Vec::new)
 }
@@ -94,8 +206,27 @@ pub fn cached() -> Option<Vec<Vst3Descriptor>> {
 pub fn rescan() -> Vec<Vst3Descriptor> {
     let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
     r.scanned = None;
+    r.job = None;
     r.failed.clear();
+    start_job(&mut r, true);
     ensure_scanned(&mut r).clone()
+}
+
+pub fn scan_step(budget: Duration) -> ScanProgress {
+    let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
+    if r.scanned.is_some() {
+        return ScanProgress::Done;
+    }
+    start_job(&mut r, false);
+    advance(&mut r, budget)
+}
+
+pub fn scan_in_progress() -> bool {
+    registry().lock().unwrap_or_else(PoisonError::into_inner).job.is_some()
+}
+
+pub fn set_cache_file(path: &Path) {
+    registry().lock().unwrap_or_else(PoisonError::into_inner).cache_file = Some(path.to_path_buf());
 }
 
 pub fn add_search_dir(dir: &Path) -> usize {
@@ -105,6 +236,14 @@ pub fn add_search_dir(dir: &Path) -> usize {
     }
     let found = scan_paths(&[dir.to_path_buf()]);
     let n = found.len();
+    // A scan under way lists the folder too (its bundles are loaded now, so that is cheap):
+    // a list of only this folder would end it with the standard folders' plugins missing.
+    if r.scanned.is_none()
+        && let Some(job) = r.job.as_mut()
+    {
+        job.include(paths::find_bundles(&[dir.to_path_buf()]));
+        return n;
+    }
     let list = r.scanned.get_or_insert_with(Vec::new);
     for d in found {
         if !list.iter().any(|o| o.id == d.id) {
@@ -268,5 +407,40 @@ mod tests {
         assert_eq!(unit_from_label("cents"), Unit::Cents);
         assert_eq!(unit_from_label("st"), Unit::Semitones);
         assert_eq!(unit_from_label("furlongs"), Unit::None);
+    }
+
+    fn folder_with(name: &str, bundles: &[&str]) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sc-vst3-job-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for b in bundles {
+            // Not a loadable module: the scan records why and moves on.
+            std::fs::write(d.join(b), b"not a plugin").unwrap();
+        }
+        d
+    }
+
+    #[test]
+    fn a_folder_added_during_a_scan_joins_it_and_unchanged_bundles_come_from_the_cache() {
+        let (a, b) = (folder_with("a", &["One.vst3"]), folder_with("b", &["Two.vst3", "Three.vst3"]));
+        let mut job = ScanJob::new(std::slice::from_ref(&a), HashMap::new());
+        assert_eq!(job.total, 1);
+        job.include(paths::find_bundles(std::slice::from_ref(&b)));
+        job.include(paths::find_bundles(std::slice::from_ref(&b)));
+        assert_eq!(job.total, 3, "an added folder's bundles are queued once");
+        // At most one bundle is loaded per step: three steps for three uncached bundles.
+        for _ in 0..3 {
+            job.step(Duration::MAX);
+        }
+        assert!(job.pending.is_empty());
+        assert_eq!(job.entries.len(), 3);
+        assert!(job.entries.iter().all(|e| e.error.is_some() && e.descriptors.is_empty()));
+        // A later scan lists every unchanged bundle from the cache in one step, loading none.
+        let known: HashMap<PathBuf, Entry> = job.entries.iter().map(|e| (e.path.clone(), e.clone())).collect();
+        let mut again = ScanJob::new(&[a.clone(), b.clone()], known);
+        again.step(Duration::MAX);
+        assert!(again.pending.is_empty(), "nothing had to be loaded");
+        assert_eq!(again.entries, job.entries, "the same entries, in the same (path) order");
+        let _ = (std::fs::remove_dir_all(&a), std::fs::remove_dir_all(&b));
     }
 }

@@ -245,6 +245,13 @@ fn main() -> eframe::Result {
         }
     }
 
+    // Unchanged plugins are then listed from disk instead of loading every binary on each launch.
+    if prefs_enabled()
+        && let Some(dir) = config_dir()
+    {
+        soundcraft_vst3_host::set_cache_file(&dir.join("vst3-cache.json"));
+    }
+
     let engine = if demo { soundcraft_engine::demo::demo_engine() } else { Engine::default() };
     let prefs = load_prefs().unwrap_or_default();
     let mut options = eframe::NativeOptions {

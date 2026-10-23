@@ -44,6 +44,8 @@
 pub mod scan;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod cache;
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(unsafe_code)]
 mod ffi;
 #[cfg(not(target_arch = "wasm32"))]
@@ -56,6 +58,7 @@ pub use plugin::Vst3Plugin;
 
 use soundcraft_dsp::{Category, Plugin, PluginInfo};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Prefix of every hosted-VST3 plugin id.
 pub const ID_PREFIX: &str = "vst3:";
@@ -78,7 +81,7 @@ pub fn parse_id(id: &str) -> Option<[u8; 16]> {
 }
 
 /// One plugin found by a scan.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Vst3Descriptor {
     /// SoundCraft id: `vst3:<class_id>`.
     pub id: String,
@@ -112,6 +115,15 @@ pub enum Vst3Error {
     Unsupported,
 }
 
+/// Where a scan advanced with [`scan_step`] has got to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanProgress {
+    /// The list is ready ([`cached`] returns it).
+    Done,
+    /// `done` of `total` bundles listed; `next` is the one being listed next.
+    Scanning { done: usize, total: usize, next: String },
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod api {
     use super::{Path, PathBuf, Plugin, PluginInfo, Vst3Descriptor, Vst3Error, ffi, registry};
@@ -124,6 +136,15 @@ mod api {
     }
     pub fn rescan() -> Vec<Vst3Descriptor> {
         registry::rescan()
+    }
+    pub fn scan_step(budget: Duration) -> ScanProgress {
+        registry::scan_step(budget)
+    }
+    pub fn scan_in_progress() -> bool {
+        registry::scan_in_progress()
+    }
+    pub fn set_cache_file(path: &Path) {
+        registry::set_cache_file(path)
     }
     pub fn add_search_dir(dir: &Path) -> usize {
         registry::add_search_dir(dir)
@@ -158,6 +179,13 @@ mod api {
     pub fn rescan() -> Vec<Vst3Descriptor> {
         Vec::new()
     }
+    pub fn scan_step(_budget: Duration) -> ScanProgress {
+        ScanProgress::Done
+    }
+    pub fn scan_in_progress() -> bool {
+        false
+    }
+    pub fn set_cache_file(_path: &Path) {}
     pub fn add_search_dir(_dir: &Path) -> usize {
         0
     }
@@ -177,15 +205,36 @@ mod api {
 }
 
 /// Every plugin in the standard VST3 folders, `VST3_PATH` and folders added with
-/// [`add_search_dir`]. Scanned on first call (loads each binary and reads its factory, but
-/// creates no plugin instances), then cached in memory.
+/// [`add_search_dir`]. Scanned on first call (loads each new or changed binary and reads its
+/// factory, but creates no plugin instances; see [`set_cache_file`]), then cached in memory.
 pub fn scan() -> Vec<Vst3Descriptor> {
     api::scan()
 }
 
-/// Forgets the cached scan (and remembered failures) and scans again.
+/// Forgets the cached scan (and remembered failures) and scans again, loading every bundle
+/// (the disk cache is rewritten, not consulted).
 pub fn rescan() -> Vec<Vst3Descriptor> {
     api::rescan()
+}
+
+/// Advances the scan without blocking for long, for a UI that must keep drawing: bundles the
+/// disk cache knows (unchanged binary) are listed without loading them; at most one bundle that
+/// has to be loaded is loaded per call once any work is done. Starts the scan if needed. Call it
+/// on the main thread: modules adopt the thread that loads them (JUCE ties its message thread to
+/// it), so loading on a worker would break their editors later.
+pub fn scan_step(budget: Duration) -> ScanProgress {
+    api::scan_step(budget)
+}
+
+/// Whether a scan started by [`scan_step`] is still under way.
+pub fn scan_in_progress() -> bool {
+    api::scan_in_progress()
+}
+
+/// Caches scans in `path` (JSON): later scans list unchanged bundles without loading them, and
+/// skip bundles that failed to load until they change. Call once at startup.
+pub fn set_cache_file(path: &Path) {
+    api::set_cache_file(path)
 }
 
 /// Adds a folder to the search path and merges its plugins into the cache. Returns how many

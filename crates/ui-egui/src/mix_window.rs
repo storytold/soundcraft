@@ -759,12 +759,15 @@ fn plugin_search(ui: &mut Ui, search: &MenuSearch, instruments: bool) -> Option<
     }
     if clap.is_none() || vst3.is_none() {
         ui.separator();
+        if vst3.is_none() && soundcraft_vst3_host::scan_in_progress() {
+            vst3_scan_status(ui);
+        }
         ui.horizontal(|ui| {
             if clap.is_none() && ui.small_button("Scan CLAP").clicked() {
                 soundcraft_clap_host::scan();
             }
-            if vst3.is_none() && ui.small_button("Scan VST3").clicked() {
-                soundcraft_vst3_host::scan();
+            if vst3.is_none() && !soundcraft_vst3_host::scan_in_progress() && ui.small_button("Scan VST3").clicked() {
+                vst3_scan_status(ui);
             }
         });
     }
@@ -851,6 +854,25 @@ struct MenuPlugin {
     vendor: String,
 }
 
+/// UI time given to the VST3 scan per frame. Bundles the scan cache knows cost a file stat; a
+/// new or changed one is loaded (at most one per frame), which can take a second or more.
+const VST3_SCAN_BUDGET: std::time::Duration = std::time::Duration::from_millis(30);
+
+/// Advances the VST3 scan a step (starting it if needed) and, while it runs, shows its progress
+/// and keeps frames coming. True once the list is ready. The scan stays on the UI thread: plugin
+/// modules adopt the thread that loads them, and their editors must open on this one.
+fn vst3_scan_status(ui: &mut Ui) -> bool {
+    match soundcraft_vst3_host::scan_step(VST3_SCAN_BUDGET) {
+        soundcraft_vst3_host::ScanProgress::Done => true,
+        soundcraft_vst3_host::ScanProgress::Scanning { done, total, next } => {
+            ui.label(format!("Scanning VST3 plugins… {done} of {total}"));
+            ui.weak(next);
+            ui.ctx().request_repaint();
+            false
+        }
+    }
+}
+
 /// The CLAP, VST3 and (on macOS) Audio Units submenus, of effects or of instruments; returns the
 /// id picked. Each format is scanned the first time its submenu opens, then cached by its host.
 fn hosted_menus(ui: &mut Ui, instruments: bool) -> Option<String> {
@@ -862,7 +884,10 @@ fn hosted_menus(ui: &mut Ui, instruments: bool) -> Option<String> {
         }
     });
     ui.menu_button("VST3", |ui| {
-        let list = soundcraft_vst3_host::scan().into_iter().filter(|d| d.is_instrument == instruments);
+        if !vst3_scan_status(ui) {
+            return;
+        }
+        let list = soundcraft_vst3_host::cached().unwrap_or_default().into_iter().filter(|d| d.is_instrument == instruments);
         if let Some(p) = vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), "No VST3 plugins found") {
             picked = Some(p);
         }
