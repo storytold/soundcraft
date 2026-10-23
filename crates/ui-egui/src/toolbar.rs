@@ -170,8 +170,22 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
                 ] {
                     let smart_member = cur == Tool::Smart && matches!(tool, Tool::Trim | Tool::Selector | Tool::Grabber);
                     let tip = format!("{}{}", tool.label(), tool.fkey().map(|k| format!(" ({k})")).unwrap_or_default());
-                    if icon_button(ui, vec2(36.0, 26.0), icon, cur == tool || smart_member, &tip).clicked() {
+                    let shape = app.engine.session().edit.pencil_shape;
+                    // Right-click the Pencil for its shapes.
+                    let resp = icon_button(ui, vec2(36.0, 26.0), icon, cur == tool || smart_member, &tip);
+                    if resp.clicked() {
                         let _ = app.run("edit.tool", json!({"tool": tool.id()}));
+                    }
+                    if tool == Tool::Pencil {
+                        resp.context_menu(|ui| {
+                            for s in soundcraft_midi::PencilShape::ALL {
+                                if ui.selectable_label(shape == s, s.label()).clicked() {
+                                    let _ = app.run("edit.pencil_shape", json!({"shape": s.id()}));
+                                    let _ = app.run("edit.tool", json!({"tool": "pencil"}));
+                                    ui.close();
+                                }
+                            }
+                        });
                     }
                 }
             });

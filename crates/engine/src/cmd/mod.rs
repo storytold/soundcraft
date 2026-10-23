@@ -20,6 +20,7 @@ mod file;
 mod health;
 mod instrument;
 mod midi;
+mod midi_ctrl;
 mod mix;
 mod more_util;
 mod options;
@@ -122,6 +123,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(audiosuite::specs());
         v.extend(audio_midi::specs());
         v.extend(midi::specs());
+        v.extend(midi_ctrl::specs());
         v.extend(view_more::specs());
         v.extend(track_more::specs());
         v.extend(clip_more::specs());

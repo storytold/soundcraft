@@ -25,7 +25,7 @@ impl Note {
 }
 
 /// Kind of a continuous / channel controller event.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CtrlKind {
     /// Control change with the controller number 0..=127. Value 0..=127.
     Cc(u8),

@@ -244,6 +244,9 @@ pub struct Track {
     /// Pinned to top in the Edit window.
     #[serde(default)]
     pub pinned: bool,
+    /// The controller lanes the MIDI Editor shows under the Velocity lane, top to bottom.
+    #[serde(default)]
+    pub midi_lanes: Vec<soundcraft_midi::CtrlKind>,
 }
 
 fn yes() -> bool {
@@ -283,6 +286,7 @@ impl Track {
             ticks_timebase: kind.is_midi(),
             elastic: None,
             pinned: false,
+            midi_lanes: Vec::new(),
         }
     }
 

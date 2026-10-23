@@ -221,6 +221,9 @@ pub struct EditState {
     /// Numeric settings keyed by id (e.g. `click.volume_db`, `engine.buffer_size`).
     #[serde(default)]
     pub values: std::collections::BTreeMap<String, f64>,
+    /// What the Pencil draws (Free Hand, Line, Triangle, Square, Random, Parabolic, S-Curve).
+    #[serde(default)]
+    pub pencil_shape: soundcraft_midi::PencilShape,
 }
 
 impl EditState {
@@ -291,6 +294,7 @@ impl Default for EditState {
                 .map(|s| s.to_string())
                 .collect(),
             values: std::collections::BTreeMap::new(),
+            pencil_shape: soundcraft_midi::PencilShape::FreeHand,
         }
     }
 }
@@ -565,6 +569,22 @@ impl Session {
             t.mixer.sanitize();
             truncate_chars(&mut t.name, MAX_NAME_CHARS);
             truncate_chars(&mut t.comments, MAX_COMMENT_CHARS);
+            // `midi_lanes` comes from the file: keep only what `midi.lanes` would accept, so the
+            // header menu can still send the list back. An id `CtrlKind::from_id` rejects, a
+            // duplicate, or a lane on a non-MIDI track makes every edit of that track's lanes fail.
+            if t.kind.is_midi() {
+                let mut kept: Vec<soundcraft_midi::CtrlKind> = Vec::new();
+                t.midi_lanes.retain(|k| {
+                    let ok = soundcraft_midi::CtrlKind::from_id(&k.id()) == Some(*k) && !kept.contains(k);
+                    if ok {
+                        kept.push(*k);
+                    }
+                    ok
+                });
+                t.midi_lanes.truncate(MAX_MIDI_LANES);
+            } else {
+                t.midi_lanes.clear();
+            }
             if t.playlists.is_empty() {
                 t.playlists.push(crate::Playlist::new(t.name.clone()));
             }
@@ -638,6 +658,8 @@ impl Session {
 /// The most characters kept of a name read from a file: longer ones can't be shown, and drawing
 /// a name of a million characters overflows the renderer's buffers.
 pub const MAX_NAME_CHARS: usize = 256;
+/// The most controller lanes a track keeps: the same cap `midi.lanes` enforces.
+pub const MAX_MIDI_LANES: usize = 128;
 /// The most characters kept of a comment read from a file.
 pub const MAX_COMMENT_CHARS: usize = 4096;
 
@@ -784,5 +806,37 @@ mod tests {
         assert_eq!(tr.active_playlist, 0);
         assert_eq!(tr.mixer.volume_db, 0.0);
         assert!(s.next_id > t.0);
+    }
+
+    #[test]
+    fn sanitize_keeps_only_the_lanes_midi_lanes_accepts() {
+        use soundcraft_midi::CtrlKind;
+        let mut s = Session::default();
+        let midi = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+        let audio = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        if let Some(t) = s.track_mut(midi) {
+            // An id `CtrlKind::from_id` rejects (`cc200`), a duplicate, and two valid lanes.
+            t.midi_lanes = vec![CtrlKind::Cc(200), CtrlKind::Cc(1), CtrlKind::Cc(1), CtrlKind::PolyPressure(60)];
+        }
+        if let Some(t) = s.track_mut(audio) {
+            t.midi_lanes = vec![CtrlKind::Cc(7)];
+        }
+        s.sanitize();
+        assert_eq!(s.track(midi).unwrap().midi_lanes, vec![CtrlKind::Cc(1), CtrlKind::PolyPressure(60)]);
+        assert!(s.track(audio).unwrap().midi_lanes.is_empty(), "an audio track keeps no lanes");
+    }
+
+    #[test]
+    fn sanitize_caps_the_lane_list() {
+        use soundcraft_midi::CtrlKind;
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+        let mut lanes: Vec<CtrlKind> = (0..=127u8).map(CtrlKind::Cc).collect();
+        lanes.extend([CtrlKind::PolyPressure(0), CtrlKind::PolyPressure(1)]);
+        if let Some(tr) = s.track_mut(t) {
+            tr.midi_lanes = lanes;
+        }
+        s.sanitize();
+        assert_eq!(s.track(t).unwrap().midi_lanes.len(), MAX_MIDI_LANES);
     }
 }
