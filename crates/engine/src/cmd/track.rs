@@ -93,6 +93,7 @@ pub fn specs() -> Vec<CommandSpec> {
             |t, v| t.frozen = v,
             |t| t.frozen
         )),
+        cmd!("track.freeze_all", "Freeze All Eligible Tracks", [], None, "{value?: bool}; skips hidden and inactive tracks", has_tracks, freeze_all),
         cmd!("track.commit", "Commit...", ["Track"], Some("Alt+Shift+C"), "{tracks?}", has_selection, commit),
         cmd!("track.bounce", "Bounce...", ["Track"], Some("Cmd+Alt+Shift+B"), "{tracks?}", has_selection, commit),
         cmd!("track.bypass_inserts", "All", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, bypass_inserts),
@@ -460,6 +461,25 @@ fn flag(
         }
     }
     Ok(json!({"value": target, "tracks": tracks}))
+}
+
+fn freeze_all(e: &mut Engine, p: &Value) -> Result<Value> {
+    let eligible = |track: &soundcraft_model::Track| {
+        !track.hidden && !track.inactive && matches!(track.kind, TrackKind::Audio | TrackKind::Aux | TrackKind::Instrument)
+    };
+    let s = e.session();
+    let any = s.tracks.iter().any(|track| eligible(track) && track.frozen);
+    let value = p.get("value").and_then(Value::as_bool).unwrap_or(!any);
+    let changed: Vec<TrackId> = s.tracks.iter().filter(|track| eligible(track) && track.frozen != value).map(|track| track.id).collect();
+    if changed.is_empty() {
+        return Ok(json!({"value": value, "tracks": 0}));
+    }
+    let s = e.session_mut();
+    for id in &changed {
+        let Some(track) = s.track_mut(*id) else { continue };
+        track.frozen = value;
+    }
+    Ok(json!({"value": value, "tracks": changed.len()}))
 }
 
 /// A routing folder owns its summing bus; never reuse a user bus with the same name.
@@ -1110,5 +1130,20 @@ mod tests {
         assert_eq!(vca(&e), None);
         assert!(e.undo());
         assert_eq!(vca(&e), Some(master.0));
+    }
+
+    #[test]
+    fn freeze_all_is_scriptable_and_skips_hidden_or_inactive_tracks() {
+        let mut e = Engine::default();
+        let audio = TrackId(e.execute("track.new", &json!({"kind": "audio", "name": "Audio"})).unwrap()["tracks"][0].as_u64().unwrap());
+        let aux = TrackId(e.execute("track.new", &json!({"kind": "aux", "name": "Aux"})).unwrap()["tracks"][0].as_u64().unwrap());
+        let midi = TrackId(e.execute("track.new", &json!({"kind": "midi", "name": "MIDI"})).unwrap()["tracks"][0].as_u64().unwrap());
+        e.session_mut().track_mut(aux).unwrap().hidden = true;
+        e.execute("track.freeze_all", &json!({"value": true})).unwrap();
+        assert!(e.session().track(audio).unwrap().frozen);
+        assert!(!e.session().track(aux).unwrap().frozen);
+        assert!(!e.session().track(midi).unwrap().frozen);
+        e.execute("track.freeze_all", &json!({})).unwrap();
+        assert!(!e.session().track(audio).unwrap().frozen);
     }
 }

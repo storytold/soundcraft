@@ -163,6 +163,30 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
                 .collect();
             painter.add(Shape::line(pts, s));
         }
+        "timeline_status" => {
+            painter.line_segment([p(r, 0.14, 0.3), p(r, 0.86, 0.3)], s);
+            painter.line_segment([p(r, 0.14, 0.7), p(r, 0.86, 0.7)], s);
+            for x in [0.26, 0.5, 0.74] {
+                painter.line_segment([p(r, x, 0.18), p(r, x, 0.82)], Stroke::new(s.width * 0.8, c));
+            }
+        }
+        "session_status" => {
+            let back = Rect::from_min_max(p(r, 0.2, 0.18), p(r, 0.68, 0.7));
+            let front = Rect::from_min_max(p(r, 0.36, 0.34), p(r, 0.84, 0.86));
+            painter.rect_stroke(back, 1.0, s, egui::StrokeKind::Middle);
+            painter.rect_stroke(front, 1.0, s, egui::StrokeKind::Middle);
+        }
+        "task_status" => {
+            painter.circle_stroke(r.center(), r.width() * 0.27, s);
+            painter.circle_filled(r.center(), r.width() * 0.08, c);
+            painter.line_segment([r.center(), p(r, 0.5, 0.18)], s);
+        }
+        "freeze" => {
+            for angle in [0.0f32, std::f32::consts::FRAC_PI_3, 2.0 * std::f32::consts::FRAC_PI_3] {
+                let d = vec2(angle.cos(), angle.sin()) * r.width() * 0.34;
+                painter.line_segment([r.center() - d, r.center() + d], s);
+            }
+        }
         "tab_transient" => {
             painter.line_segment([p(r, 0.08, 0.5), p(r, 0.3, 0.5)], s);
             painter.add(Shape::convex_polygon(vec![p(r, 0.42, 0.5), p(r, 0.28, 0.36), p(r, 0.28, 0.64)], c, Stroke::NONE));
