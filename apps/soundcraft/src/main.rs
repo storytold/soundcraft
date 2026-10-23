@@ -100,6 +100,8 @@ impl eframe::App for App {
         }
         // The system Quit (⌘Q) ends the process from inside the event loop, so `run_native` never
         // returns: release the player's plugin instances and shut plugin hosting down here.
+        // Input before output: closing either while the other's callbacks run deadlocks cpal's ASIO host; `close_input` pauses the output around it.
+        self.0.close_input();
         self.0.player = None;
         soundcraft_engine::shutdown_plugin_hosts();
     }

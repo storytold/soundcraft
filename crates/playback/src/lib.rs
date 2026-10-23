@@ -121,6 +121,15 @@ impl Fault {
     }
 }
 
+/// How long to wait after pausing the output for a callback in flight to return: two device
+/// buffer periods (512 frames when the buffer is the device default), clamped to 5..=50 ms.
+#[cfg(not(target_arch = "wasm32"))]
+fn reconfigure_settle(buffer: Option<u32>, rate: u32) -> std::time::Duration {
+    let frames = f64::from(buffer.unwrap_or(512));
+    let ms = 2.0 * frames * 1000.0 / f64::from(rate.max(1));
+    std::time::Duration::from_secs_f64(ms.clamp(5.0, 50.0) / 1000.0)
+}
+
 /// How long a playing output may go without a block before it counts as stalled.
 #[cfg(not(target_arch = "wasm32"))]
 const STALL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -489,6 +498,35 @@ impl Player {
         // Hand the initial session's third-party plugins over.
         p.update_session(session);
         p
+    }
+
+    /// Runs `f` with the output stream paused, for opening or closing the input stream.
+    ///
+    /// cpal's ASIO host (0.16) deadlocks otherwise: building or dropping an input stream
+    /// recreates the driver's buffers under the device's stream mutex (`Device::
+    /// get_or_create_input_stream`), which stops a running driver, and `ASIOStop` waits for the
+    /// callback in flight, which waits for that same mutex. A paused stream's callbacks return
+    /// before taking the mutex, so the output is paused, given two device buffer periods
+    /// (`reconfigure_settle`) for the callback in flight to return, and resumed after `f`.
+    /// Done for every audio system, not only ASIO: elsewhere the pause is a 5–50 ms gap at a
+    /// moment the engine is being reconfigured anyway, and the code needs no backend check.
+    /// Without a stream (silent clock) `f` just runs. `f`'s result is returned even when the
+    /// output does not resume (logged).
+    pub fn with_output_paused<R>(&self, f: impl FnOnce() -> R) -> R {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(stream) = &self._stream {
+            use cpal::traits::StreamTrait;
+            if let Err(e) = stream.pause() {
+                log::warn!("audio stream failed to pause: {e}");
+            }
+            std::thread::sleep(reconfigure_settle(self.device_buffer, self.device_rate));
+            let out = f();
+            if let Err(e) = stream.play() {
+                log::warn!("audio stream failed to resume: {e}");
+            }
+            return out;
+        }
+        f()
     }
 
     /// What stopped the audio output, once: a bug in the engine, or the device went away or
@@ -1501,5 +1539,36 @@ mod tests {
         st.fill(&mut out, 2);
         assert!(out.iter().any(|x| x.abs() > 0.1), "the input is heard");
         assert!(shared.meters.lock().unwrap().tracks.get(&t).is_some_and(|m| m.peak[0] > 0.1), "and metered");
+    }
+
+    #[test]
+    fn with_output_paused_runs_once_and_returns_on_the_silent_clock() {
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        });
+        let (tx, rx) = channel();
+        let (gtx, grx) = channel();
+        let player = Player::silent_clock(shared, tx, rx, 48_000, Mutex::new(Side::new(48_000.0, grx)), gtx);
+        assert!(player._stream.is_none());
+        let mut runs = 0;
+        let out = player.with_output_paused(|| {
+            runs += 1;
+            42
+        });
+        assert_eq!((runs, out), (1, 42));
+    }
+
+    #[test]
+    fn reconfigure_settle_is_two_buffers_clamped() {
+        let ms = |b, r| reconfigure_settle(b, r).as_secs_f64() * 1000.0;
+        assert!((ms(Some(128), 48_000) - 5.33).abs() < 0.01, "5.3 ms, at the 5 ms floor: {}", ms(Some(128), 48_000));
+        assert!((ms(Some(32), 48_000) - 5.0).abs() < 0.01, "1.3 ms, clamped up to 5: {}", ms(Some(32), 48_000));
+        assert!((ms(Some(1024), 44_100) - 46.44).abs() < 0.1, "{}", ms(Some(1024), 44_100));
+        assert!((ms(None, 48_000) - 21.33).abs() < 0.1, "512-frame default: {}", ms(None, 48_000));
+        assert!((ms(Some(8192), 48_000) - 50.0).abs() < 0.01, "clamped to 50: {}", ms(Some(8192), 48_000));
+        assert!((ms(Some(128), 0) - 50.0).abs() < 0.01, "a zero rate is not a division by zero");
     }
 }
