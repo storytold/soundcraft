@@ -73,7 +73,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         ui.label(egui::RichText::new(format!("Bouncing {name}")).font(bold(13.0)));
         ui.add(egui::ProgressBar::new(job.progress()));
         ui.horizontal(|ui| {
-            cancel |= ui.button("Cancel").clicked();
+            cancel |= ui.button(crate::i18n::t("Cancel")).clicked();
             ui.label(egui::RichText::new(format!("{:.0}%", job.progress() * 100.0)).color(Tokens::current().text_dim));
         });
     });

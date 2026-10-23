@@ -102,10 +102,16 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
             (tr.name.clone(), sp.x, sp.y, sp.z)
         })
         .collect();
-    egui::Window::new(egui::RichText::new("Renderer").font(bold(13.0))).open(&mut open).default_size(vec2(380.0, 440.0)).resizable(true).show(
-        ctx,
-        |ui| {
-            ui.label(egui::RichText::new(format!("Main output: {}", fmt.label())).font(regular(11.0)).color(t.text));
+    egui::Window::new(egui::RichText::new(crate::i18n::t("Renderer")).font(bold(13.0)))
+        .open(&mut open)
+        .default_size(vec2(380.0, 440.0))
+        .resizable(true)
+        .show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(crate::i18n::fmt(crate::i18n::t("Main output: {format}"), &[("format", crate::i18n::t(fmt.label()))]))
+                    .font(regular(11.0))
+                    .color(t.text),
+            );
             let side = ui.available_width().min(360.0);
             let (r, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
             let p = ui.painter_at(r);
@@ -133,15 +139,14 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
             ui.add_space(4.0);
             if objects.is_empty() {
                 ui.label(
-                    egui::RichText::new("No object tracks. Use the Object view in the Mix window to route tracks as objects.")
+                    egui::RichText::new(crate::i18n::t("No object tracks. Use the Object view in the Mix window to route tracks as objects."))
                         .small()
                         .color(t.text_dim),
                 );
             } else {
                 ui.label(egui::RichText::new(format!("{} object track(s)", objects.len())).small().color(t.text_dim));
             }
-        },
-    );
+        });
     app.extra.show_renderer = open;
 }
 
@@ -150,21 +155,23 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new(egui::RichText::new("Appearance").font(bold(13.0))).open(&mut open).default_size(vec2(320.0, 180.0)).resizable(false).show(
-        ctx,
-        |ui| {
+    egui::Window::new(egui::RichText::new(crate::i18n::t("Appearance")).font(bold(13.0)))
+        .open(&mut open)
+        .default_size(vec2(380.0, 210.0))
+        .resizable(false)
+        .show(ctx, |ui| {
             egui::Grid::new("ui_custom").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
-                ui.label("Interface scale");
+                ui.label(crate::i18n::t("Interface scale"));
                 ui.add(egui::Slider::new(&mut app.extra.ui_scale, 0.75..=1.5).step_by(0.05).custom_formatter(|v, _| format!("{:.0} %", v * 100.0)));
                 ui.end_row();
-                ui.label("Reduce motion");
+                ui.label(crate::i18n::t("Reduce motion"));
                 crate::widgets::checkbox(ui, &mut app.extra.reduce_motion, "");
                 ui.end_row();
-                ui.label("Theme");
+                ui.label(crate::i18n::t("Theme"));
                 let mut chosen = None;
-                egui::ComboBox::from_id_salt("theme_mode").selected_text(app.ui.theme.label()).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("theme_mode").selected_text(crate::i18n::t(app.ui.theme.label())).show_ui(ui, |ui| {
                     for mode in crate::theme::ThemeMode::ALL {
-                        if ui.selectable_label(app.ui.theme == mode, mode.label()).clicked() {
+                        if ui.selectable_label(app.ui.theme == mode, crate::i18n::t(mode.label())).clicked() {
                             chosen = Some(mode);
                         }
                     }
@@ -173,16 +180,35 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                     let _ = app.run("ui.theme", json!({"mode": mode.id()}));
                 }
                 ui.end_row();
-                ui.label("Auto-update configuration");
+                ui.label(crate::i18n::t("Auto-update configuration"));
                 crate::widgets::checkbox(ui, &mut app.extra.auto_update_config, "");
                 ui.end_row();
+                ui.label(crate::i18n::t("Language"));
+                // Same catalog the menus use: a change is visible on the next frame.
+                let automatic = app.ui.language.eq_ignore_ascii_case("auto");
+                let mut chosen: Option<String> = None;
+                let auto_label = crate::i18n::fmt(crate::i18n::t("Auto ({name})"), &[("name", crate::i18n::system_lang().name())]);
+                let selected = if automatic { auto_label.clone() } else { crate::i18n::Lang::from_pref(&app.ui.language).name().to_string() };
+                egui::ComboBox::from_id_salt("interface_language").selected_text(selected).show_ui(ui, |ui| {
+                    if ui.selectable_label(automatic, &auto_label).clicked() {
+                        chosen = Some("auto".to_string());
+                    }
+                    for lang in crate::i18n::Lang::all() {
+                        if ui.selectable_label(app.ui.language == lang.code(), lang.name()).clicked() {
+                            chosen = Some(lang.code().to_string());
+                        }
+                    }
+                });
+                if let Some(code) = chosen {
+                    let _ = app.run("ui.language", json!({"language": code}));
+                }
+                ui.end_row();
             });
-            if ui.button("Reset").clicked() {
+            if ui.button(crate::i18n::t("Reset")).clicked() {
                 app.extra.ui_scale = 1.0;
                 app.extra.reduce_motion = false;
                 let _ = app.run("ui.theme", json!({"mode": crate::theme::ThemeMode::default().id()}));
             }
-        },
-    );
+        });
     app.extra.show_ui_customization = open;
 }

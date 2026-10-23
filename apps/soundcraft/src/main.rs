@@ -187,8 +187,12 @@ fn services() -> Services {
             }
             d.save_file().map(|p| p.to_string_lossy().into_owned())
         })),
-        pick_folder: Some(Box::new(|start: &str| {
-            rfd::FileDialog::new().set_directory(start).pick_folder().map(|p| p.to_string_lossy().into_owned())
+        pick_folder: Some(Box::new(|purpose: &str, start: &str| {
+            let mut d = rfd::FileDialog::new().set_directory(start);
+            if purpose == "file.import_aaf" {
+                d = d.set_title(soundcraft_ui_egui::i18n::t(soundcraft_ui_egui::dialogs::AAF_FOLDER_HELP));
+            }
+            d.pick_folder().map(|p| p.to_string_lossy().into_owned())
         })),
     }
 }
@@ -263,6 +267,8 @@ fn main() -> eframe::Result {
     // Before eframe creates the wgpu instance: default Windows to DirectX 12 with FXC (see graphics.rs).
     #[cfg(target_os = "windows")]
     graphics::configure(&mut options, eframe::wgpu::Backends::from_env(), eframe::wgpu::Dx12Compiler::from_env());
+    // Read the desktop's UI language once, before the first frame (Auto follows it).
+    soundcraft_ui_egui::i18n::init_system_locale();
     eframe::run_native(
         "SoundCraft",
         options,

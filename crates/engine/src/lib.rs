@@ -5,6 +5,7 @@
 //! The engine owns the [`Session`] behind an `Arc` (copy-on-write), so undo snapshots are cheap.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod aaf;
 pub mod autosave;
 pub mod catalog;
 pub mod catalog_more;
@@ -16,6 +17,9 @@ pub mod file_access;
 pub mod inspect;
 pub mod io;
 pub mod score;
+#[cfg(test)]
+#[cfg(test)]
+mod test_scratch;
 
 use serde_json::{Value, json};
 use soundcraft_model::{Clip, Session, TrackId, ZoomState};

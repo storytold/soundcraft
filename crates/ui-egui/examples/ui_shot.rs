@@ -43,6 +43,8 @@ fn main() {
         .and_then(|(a, b)| Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?)))
         .unwrap_or((1600.0, 1000.0));
     let engine = if blank { soundcraft_engine::Engine::default() } else { soundcraft_engine::demo::demo_engine() };
+    // Auto behaves as it does in the app: a preview follows the desktop's language.
+    soundcraft_ui_egui::i18n::init_system_locale();
     let (tx, rx) = mpsc::channel::<ControlRequest>();
     let app = SoundApp::new(engine, None, Services::default()).with_control(rx);
     let mut harness =

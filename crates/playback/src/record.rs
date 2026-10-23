@@ -434,6 +434,20 @@ impl TakeWriter {
 
 #[cfg(test)]
 mod tests {
+    /// Scratch files live beside the build, not in a `/tmp` some systems mount on a small tmpfs.
+    fn scratch() -> std::path::PathBuf {
+        option_env!("CARGO_TARGET_TMPDIR").map_or_else(
+            || {
+                // `<workspace>/crates/<crate>` → `<workspace>/target/tmp`, without a literal `..`.
+                let krate = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+                let ws = krate.parent().and_then(std::path::Path::parent).unwrap_or(krate);
+                let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| ws.join("target"), |t| ws.join(t));
+                target.join("tmp")
+            },
+            std::path::PathBuf::from,
+        )
+    }
+
     use super::*;
 
     fn decode(path: &PathBuf) -> Vec<Vec<f32>> {
@@ -501,7 +515,7 @@ mod tests {
 
     #[test]
     fn a_failed_write_is_trouble_while_still_recording() {
-        let dir = std::env::temp_dir().join(format!("soundcraft-failed-take-{}", std::process::id()));
+        let dir = scratch().join(format!("soundcraft-failed-take-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut take = TakeWriter::create(TrackId(1), vec![0], dir.join("Vox_01.wav"), 48_000).unwrap();
         take.file = File::open(&take.path).unwrap();
@@ -524,7 +538,7 @@ mod tests {
 
     #[test]
     fn takes_stream_into_their_files() {
-        let dir = std::env::temp_dir().join(format!("soundcraft-takes-{}", std::process::id()));
+        let dir = scratch().join(format!("soundcraft-takes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let gtr = TakeWriter::create(TrackId(1), vec![1, 2], dir.join("Gtr_01.wav"), 48_000).unwrap();
         let mut vox = TakeWriter::create(TrackId(2), vec![0], dir.join("Vox_01.wav"), 48_000).unwrap();
@@ -552,7 +566,7 @@ mod tests {
 
     #[test]
     fn a_take_sums_itself_up_for_drawing_while_it_records() {
-        let dir = std::env::temp_dir().join(format!("soundcraft-live-take-{}", std::process::id()));
+        let dir = scratch().join(format!("soundcraft-live-take-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut take = TakeWriter::create(TrackId(4), vec![2, 0], dir.join("Gtr_01.wav"), 48_000).unwrap();
         let input: Vec<f32> = (0..300).flat_map(|f| [f as f32, -1.0, -(f as f32)]).collect();

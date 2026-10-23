@@ -73,6 +73,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("ui.bounce_dialog", "Bounce Mix…", "", None),
     ("ui.set", "Set UI State", "", None),
     ("ui.theme", "Appearance", "", None),
+    ("ui.language", "Interface Language", "", None),
 ];
 
 /// Extra catalog mappings handled by the UI layer.
@@ -213,6 +214,15 @@ pub fn tree() -> Vec<MenuNode> {
     if let Some(clip) = roots.iter_mut().find(|n| n.label == "Clip") {
         clip.children.rotate_right(1);
     }
+    // The AAF importer is ours (Pro Tools has no such item); it sits right after MIDI.
+    insert_path(&mut roots, "File > Import > Import Session...");
+    if let Some(import) = roots.iter_mut().find(|n| n.label == "File").and_then(|f| f.children.iter_mut().find(|n| n.label == "Import"))
+        && let Some(from) = import.children.iter().position(|n| n.label == "Import Session...")
+    {
+        let node = import.children.remove(from);
+        let at = import.children.iter().position(|n| n.label == "MIDI...").map_or(import.children.len(), |i| i + 1);
+        import.children.insert(at, node);
+    }
     for (path, _) in MENU_WINDOWS {
         insert_path(&mut roots, path);
     }
@@ -225,24 +235,26 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
         ui,
         |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("SoundCraft", |ui| {
-                    if ui.button("About SoundCraft").clicked() {
+                ui.menu_button(crate::i18n::t("SoundCraft"), |ui| {
+                    if ui.button(crate::i18n::t("About SoundCraft")).clicked() {
                         app.ui.show_about = true;
                     }
-                    if ui.button("Session Info").clicked() {
+                    if ui.button(crate::i18n::t("Session Info")).clicked() {
                         app.ui.show_session_info = true;
                     }
-                    if ui.button("Session Audio Health").clicked() {
+                    if ui.button(crate::i18n::t("Session Audio Health")).clicked() {
                         let _ = app.run("window.audio_health", json!({"value": true}));
                     }
                     ui.separator();
-                    if ui.button("Quit").clicked() {
+                    if ui.button(crate::i18n::t("Quit")).clicked() {
                         let _ = crate::dialogs::run_or_ask(app, "app.quit", json!({}));
                     }
                 });
                 let extra = ui_aliases();
                 for root in tree() {
-                    ui.menu_button(&root.label, |ui| {
+                    // Paths stay English (they are the command lookup key); only what is drawn is
+                    // translated.
+                    ui.menu_button(crate::i18n::t(&root.label), |ui| {
                         for c in &root.children {
                             menu_node(app, ui, c, &extra);
                             if c.path == "File > Open" {
@@ -254,14 +266,14 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                         }
                         if root.label == "AudioSuite" {
                             ui.separator();
-                            ui.label(egui::RichText::new("Processes selected clips offline").small().color(t.text_dim));
+                            ui.label(egui::RichText::new(crate::i18n::t("Processes selected clips offline")).small().color(t.text_dim));
                         }
                         if root.label == "Window" {
                             ui.separator();
                             let mut separate = app.ui.mix_separate;
                             if ui
-                                .checkbox(&mut separate, "Mix in Separate Window")
-                                .on_hover_text("Show Edit and Mix at once, e.g. one per monitor")
+                                .checkbox(&mut separate, crate::i18n::t("Mix in Separate Window"))
+                                .on_hover_text(crate::i18n::t("Show Edit and Mix at once, e.g. one per monitor"))
                                 .changed()
                             {
                                 let _ = run_ui_command(app, "window.mix_separate", &json!({"value": separate}));
@@ -274,7 +286,7 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                     "{}{}  —  {}",
                     app.engine.session().name,
                     if app.engine.is_dirty() { " *" } else { "" },
-                    if app.ui.window == MainWindow::Edit || app.ui.mix_separate { "Edit" } else { "Mix" }
+                    crate::i18n::t(if app.ui.window == MainWindow::Edit || app.ui.mix_separate { "Edit" } else { "Mix" })
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(title).color(t.text_dim));
@@ -303,7 +315,7 @@ fn instrument_track(s: &soundcraft_model::Session) -> Option<soundcraft_model::T
 
 fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str, &str)]) {
     if !n.children.is_empty() {
-        ui.menu_button(&n.label, |ui| {
+        ui.menu_button(crate::i18n::t(&n.label), |ui| {
             for c in &n.children {
                 menu_node(app, ui, c, extra);
             }
@@ -312,7 +324,8 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
     }
     let id = command_for_path(&n.path, extra);
     let (enabled, checked) = item_state(app, &n.path, id.as_deref());
-    let label = live_label(app, id.as_deref()).unwrap_or_else(|| n.label.clone());
+    let label = live_label(app, id.as_deref())
+        .unwrap_or_else(|| crate::i18n::tr_id(crate::i18n::current(), id.as_deref().unwrap_or(""), &n.label).to_string());
     let label = if checked { format!("✔ {label}") } else { label };
     let shortcut = id.as_deref().and_then(shortcut_for).unwrap_or("");
     let btn = egui::Button::new(label).shortcut_text(crate::shortcuts::shortcut_label(shortcut, ui.ctx().os().is_mac()));
@@ -322,6 +335,12 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
         invoke_menu(app, &id, &n.path);
         ui.close();
     }
+}
+
+/// A menu path for display: every segment translated, joined as the Keyboard Shortcuts window
+/// shows it. The English path stays the lookup key everywhere else.
+pub fn translated_path(segments: &[&str]) -> String {
+    segments.iter().map(|s| crate::i18n::t(s)).collect::<Vec<_>>().join(" › ")
 }
 
 /// Resolve the command behind a menu leaf, including UI dialog overrides.
@@ -453,9 +472,12 @@ pub fn shortcut_for(id: &str) -> Option<&'static str> {
 /// Undo and Redo name the step they would undo or redo; other items keep their catalog label.
 pub fn live_label(app: &SoundApp, id: Option<&str>) -> Option<String> {
     let e = &app.engine;
+    let named = |none: &str, template: &str, step: Option<&str>| {
+        Some(step.map_or_else(|| crate::i18n::t(none).to_string(), |l| crate::i18n::fmt(crate::i18n::t(template), &[("action", crate::i18n::t(l))])))
+    };
     match id? {
-        "edit.undo" => Some(e.undo_label().map_or_else(|| "Can't Undo".into(), |l| format!("Undo {l}"))),
-        "edit.redo" => Some(e.redo_label().map_or_else(|| "Can't Redo".into(), |l| format!("Redo {l}"))),
+        "edit.undo" => named("Can't Undo", "Undo {action}", e.undo_label()),
+        "edit.redo" => named("Can't Redo", "Redo {action}", e.redo_label()),
         _ => None,
     }
 }
@@ -663,6 +685,23 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.ui.theme = mode;
             json!({"mode": mode.id()})
         }
+        "ui.language" => {
+            let Some(code) = p.get("language").and_then(Value::as_str).map(str::trim) else {
+                return Some(Ok(json!({"language": app.ui.language, "resolved": crate::i18n::current().code()})));
+            };
+            // `auto` follows the desktop; a code or a locale tag (`zh-CN`) picks a registered catalog.
+            let chosen = if code.eq_ignore_ascii_case("auto") {
+                "auto".to_string()
+            } else {
+                match crate::i18n::Lang::from_code(code).or_else(|| crate::i18n::lang_from_tag(code)) {
+                    Some(lang) => lang.code().to_string(),
+                    None => return Some(Err(format!("unknown language `{code}` (auto or a registered code)"))),
+                }
+            };
+            app.ui.language = chosen;
+            let lang = crate::i18n::apply_preference(&app.ui.language);
+            json!({"language": app.ui.language, "resolved": lang.code()})
+        }
         "ui.set" => match serde_json::to_value(&app.ui) {
             Ok(mut cur) => {
                 if let (Some(obj), Some(patch)) = (cur.as_object_mut(), p.as_object()) {
@@ -727,6 +766,20 @@ mod tests {
     }
 
     #[test]
+    fn import_menu_lists_aaf_after_midi_and_asks_for_the_file() {
+        let roots = tree();
+        let import = roots.iter().find(|n| n.label == "File").and_then(|f| f.children.iter().find(|n| n.label == "Import")).unwrap();
+        let labels: Vec<&str> = import.children.iter().map(|n| n.label.as_str()).collect();
+        let midi = labels.iter().position(|l| *l == "MIDI...").unwrap();
+        assert_eq!(labels.get(midi + 1), Some(&"Import Session..."));
+        assert_eq!(command_for_path("File > Import > Import Session...", &ui_aliases()).as_deref(), Some("file.import_aaf"));
+
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        invoke_menu(&mut app, "file.import_aaf", "File > Import > Import Session...");
+        assert!(matches!(&app.dialogs.open, Some(crate::dialogs::Dialog::PathPrompt { cmd, .. }) if cmd == "file.import_aaf"));
+    }
+
+    #[test]
     fn save_asks_for_a_path_until_the_session_has_one() {
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
         invoke_menu(&mut app, "session.save", "File > Save Session");
@@ -735,7 +788,7 @@ mod tests {
         assert!(invoke_shortcut_dialog(&mut app, "session.save"));
         app.dialogs.open = None;
 
-        let dir = std::env::temp_dir().join(format!("soundcraft-save-{}", std::process::id()));
+        let dir = crate::scratch("soundcraft-save");
         let path = dir.join("Song.scraft");
         app.run("session.save_as", json!({"path": path.to_string_lossy()})).unwrap();
         app.run("track.new", json!({})).unwrap();
@@ -756,5 +809,19 @@ mod tests {
         assert_eq!(instrument_track(e.session()), None, "an audio track has no instrument");
         e.execute("edit.select", &json!({"tracks": [audio, inst]})).unwrap();
         assert_eq!(instrument_track(e.session()).map(|t| t.0), Some(inst));
+    }
+
+    /// `ui.language` stores and reports the registry's canonical spelling (`zh-Hans`, the form the
+    /// parity docs use) whatever casing or locale tag the caller passes.
+    #[test]
+    fn the_language_command_reports_the_canonical_code() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        for requested in ["zh-Hans", "zh-hans", "zh-Hans-CN", "zh_CN.UTF-8"] {
+            let answered = app.run("ui.language", json!({"language": requested}));
+            assert_eq!(answered, Ok(json!({"language": "zh-Hans", "resolved": "zh-Hans"})), "{requested}");
+            assert_eq!(app.ui.language, "zh-Hans");
+        }
+        assert!(app.run("ui.language", json!({"language": "xx-unknown"})).is_err());
+        app.run("ui.language", json!({"language": "en"})).unwrap();
     }
 }

@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn export_then_import_round_trips_audio_clips() {
-        let dir = std::env::temp_dir().join(format!("sc-grp-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-grp-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("drums.scgrp");
         let path = path.to_string_lossy().to_string();
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn positions_in_a_group_file_are_kept_within_reach() {
-        let dir = std::env::temp_dir().join(format!("sc-grp-far-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-grp-far-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let p = dir.join("far.scgrp");
         let note = json!({"pitch": 60, "velocity": 100, "release_velocity": 64, "channel": 0, "start": i64::MAX, "length": i64::MAX});
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn a_file_named_by_many_ids_becomes_one_source() {
-        let dir = std::env::temp_dir().join(format!("sc-grp-shared-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-grp-shared-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let audio = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 480]] };
         std::fs::write(dir.join("k.wav"), soundcraft_audio_io::encode(&audio, &soundcraft_audio_io::EncodeOptions::default()).unwrap()).unwrap();
@@ -308,18 +308,23 @@ mod tests {
 
     #[test]
     fn rejects_foreign_files_and_escaping_paths() {
-        let dir = std::env::temp_dir().join(format!("sc-grp-bad-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-grp-bad-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let p = dir.join("x.scgrp");
-        std::fs::write(
-            &p,
-            r#"{"format":"soundcraft.clipgroup","version":1,"sample_rate":48000,"length":1,"lanes":[],"audio":{"1":"../../etc/passwd"}}"#,
-        )
-        .unwrap();
+        // A real WAV beside the group folder, so only the `..` can be what the import refuses.
+        let sibling = format!("sc-grp-bad-{}-sibling.wav", std::process::id());
+        let sibling_path = dir.parent().map(|d| d.join(&sibling)).unwrap();
+        let audio = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 480]] };
+        std::fs::write(&sibling_path, soundcraft_audio_io::encode(&audio, &soundcraft_audio_io::EncodeOptions::default()).unwrap()).unwrap();
+        let rel = format!("../{sibling}");
+        let file = json!({"format": "soundcraft.clipgroup", "version": 1, "sample_rate": 48000, "length": 1, "lanes": [], "audio": {"1": rel}});
+        std::fs::write(&p, file.to_string()).unwrap();
         let mut e = crate::demo::demo_engine();
-        assert!(e.execute("file.import_clip_groups", &json!({"path": p.to_string_lossy()})).is_err());
+        let err = e.execute("file.import_clip_groups", &json!({"path": p.to_string_lossy()})).unwrap_err();
+        assert!(err.to_string().contains(&format!("audio path escapes the group folder: {rel}")), "{err}");
         std::fs::write(&p, "{}").unwrap();
         assert!(e.execute("file.import_clip_groups", &json!({"path": p.to_string_lossy()})).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&sibling_path);
     }
 }

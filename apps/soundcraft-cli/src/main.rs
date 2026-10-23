@@ -3,6 +3,14 @@
 //! ```text
 //! soundcraft-cli info FILE                       audio file or .scraft summary
 //! soundcraft-cli convert IN OUT [--bit-depth 16|24|32f] [--rate HZ] [--normalize]
+//! soundcraft-cli import-aaf INPUT.aaf OUTPUT.scraft [--media-dir DIR] [--midi PATH] [--session-report PATH]
+//!                                                 imports an AAF timeline (audio tracks, clip placement,
+//!                                                 external WAV references). WAV files are linked by
+//!                                                 name from the AAF's own folder (keep the AAF, WAVs,
+//!                                                 MIDI and report together); `--media-dir` overrides it,
+//!                                                 `--midi` adds a Standard MIDI File's tempo map
+//!                                                 and tracks, `--session-report` surfaces migration notes
+//!                                                 from a plain-text session report. No PTX is read.
 //! soundcraft-cli run [--in S.scraft | --demo] [--cmd ID[=JSON]]… [--bounce OUT] [--start T --end T] [--save S.scraft] [--inspect]
 //! soundcraft-cli script FILE [--in S | --demo] [--save S] [--bounce OUT]   (one `ID JSON` per line)
 //! soundcraft-cli commands [FILTER]               list commands
@@ -60,7 +68,7 @@ fn help_text() -> String {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = args.first().cloned() else {
-        eprintln!("usage: soundcraft-cli <info|convert|run|script|commands|describe|app|mcp|parity|plugins> …  (see --help)");
+        eprintln!("usage: soundcraft-cli <info|convert|import-aaf|run|script|commands|describe|app|mcp|parity|plugins> …  (see --help)");
         return ExitCode::FAILURE;
     };
     let rest: Vec<String> = args.iter().skip(1).cloned().collect();
@@ -75,6 +83,7 @@ fn main() -> ExitCode {
         }
         "info" => info(&rest),
         "convert" => convert(&rest),
+        "import-aaf" => import_aaf(&rest),
         "run" => run(&rest),
         "script" => script(&rest),
         "commands" => commands(&rest),
@@ -157,6 +166,111 @@ fn convert(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => fail(e),
+    }
+}
+
+/// Options parsed from `import-aaf`'s flags, beyond the two positional paths.
+struct ImportAafArgs {
+    media_dir: Option<String>,
+    midi: Option<String>,
+    session_report: Option<String>,
+}
+
+fn parse_import_aaf_args(args: &[String]) -> Result<ImportAafArgs, String> {
+    let mut out = ImportAafArgs { media_dir: None, midi: None, session_report: None };
+    let mut i = 2;
+    while i < args.len() {
+        match args.get(i).map(String::as_str) {
+            Some("--media-dir") => {
+                let Some(dir) = args.get(i + 1) else { return Err("import-aaf: `--media-dir` needs a directory".into()) };
+                if out.media_dir.replace(dir.clone()).is_some() {
+                    return Err("import-aaf: `--media-dir` may be passed once".into());
+                }
+                i += 2;
+            }
+            Some("--midi") => {
+                let Some(path) = args.get(i + 1) else { return Err("import-aaf: `--midi` needs a file path".into()) };
+                if out.midi.replace(path.clone()).is_some() {
+                    return Err("import-aaf: `--midi` may be passed once".into());
+                }
+                i += 2;
+            }
+            Some("--session-report") => {
+                let Some(path) = args.get(i + 1) else { return Err("import-aaf: `--session-report` needs a file path".into()) };
+                if out.session_report.replace(path.clone()).is_some() {
+                    return Err("import-aaf: `--session-report` may be passed once".into());
+                }
+                i += 2;
+            }
+            Some(other) => return Err(format!("import-aaf: unknown option `{other}`")),
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Imports an AAF timeline (plus optional external MIDI and a plain-text session report) and
+/// writes a new `.scraft` session. Nothing is written if any requested step fails: a half-done
+/// import is worse than a clear error.
+fn import_aaf(args: &[String]) -> ExitCode {
+    let (Some(input), Some(output)) = (args.first(), args.get(1)) else {
+        return fail("import-aaf INPUT.aaf OUTPUT.scraft [--media-dir DIR] [--midi PATH] [--session-report PATH]");
+    };
+    let opts = match parse_import_aaf_args(args) {
+        Ok(opts) => opts,
+        Err(err) => return fail(err),
+    };
+
+    let mut e = Engine::default();
+    let mut params = json!({"path": input, "companions": false});
+    if let Some(dir) = &opts.media_dir {
+        params["media_dir"] = json!(dir);
+    }
+    let report = match e.execute("file.import_aaf", &params) {
+        Ok(report) => report,
+        Err(err) => return fail(err),
+    };
+    for warning in report.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+        eprintln!("warning: {warning}");
+    }
+
+    let midi_tracks = match &opts.midi {
+        Some(midi_path) => match e.execute("file.import_midi", &json!({"path": midi_path})) {
+            Ok(result) => result.get("tracks").and_then(Value::as_array).map_or(0, Vec::len),
+            Err(err) => return fail(format!("import-aaf: --midi {midi_path}: {err}")),
+        },
+        None => 0,
+    };
+
+    let notes = match &opts.session_report {
+        Some(report_path) => match soundcraft_engine::aaf::session_report_notes(std::path::Path::new(report_path)) {
+            Ok(notes) => notes,
+            Err(err) => return fail(format!("import-aaf: --session-report {report_path}: {err}")),
+        },
+        None => Vec::new(),
+    };
+
+    match e.execute("session.save", &json!({"path": output})) {
+        Ok(saved) => {
+            outln!(
+                "imported AAF into {output}: {} audio tracks, {} clips, {} WAV files linked",
+                report["audio_tracks"],
+                report["clips"],
+                report["linked_wav_files"]
+            );
+            if opts.midi.is_some() {
+                outln!("imported MIDI: {midi_tracks} tracks");
+            }
+            if !notes.is_empty() {
+                outln!("session report notes ({}):", notes.len());
+                for note in &notes {
+                    outln!("  {note}");
+                }
+            }
+            outln!("{saved}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(err),
     }
 }
 
@@ -528,6 +642,23 @@ mod tests {
     fn cmd_spec_rejects_truncated_json() {
         let err = parse_cmd_spec("a.b={\"x\":").unwrap_err();
         assert!(err.starts_with("a.b: bad JSON"), "{err}");
+    }
+
+    #[test]
+    fn import_aaf_args_parse_flags_and_reject_duplicates_and_unknown() {
+        let args = |rest: &[&str]| -> Vec<String> { ["in.aaf", "out.scraft"].iter().chain(rest).map(|s| s.to_string()).collect() };
+
+        let opts = parse_import_aaf_args(&args(&[])).unwrap();
+        assert!(opts.media_dir.is_none() && opts.midi.is_none() && opts.session_report.is_none());
+
+        let opts = parse_import_aaf_args(&args(&["--media-dir", "media", "--midi", "song.mid", "--session-report", "notes.txt"])).unwrap();
+        assert_eq!(opts.media_dir.as_deref(), Some("media"));
+        assert_eq!(opts.midi.as_deref(), Some("song.mid"));
+        assert_eq!(opts.session_report.as_deref(), Some("notes.txt"));
+
+        assert!(parse_import_aaf_args(&args(&["--media-dir"])).is_err());
+        assert!(parse_import_aaf_args(&args(&["--media-dir", "a", "--media-dir", "b"])).is_err());
+        assert!(parse_import_aaf_args(&args(&["--bogus"])).is_err());
     }
 
     #[test]
