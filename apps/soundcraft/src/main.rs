@@ -263,6 +263,8 @@ fn main() -> eframe::Result {
     // Before eframe creates the wgpu instance: default Windows to DirectX 12 with FXC (see graphics.rs).
     #[cfg(target_os = "windows")]
     graphics::configure(&mut options, eframe::wgpu::Backends::from_env(), eframe::wgpu::Dx12Compiler::from_env());
+    // Read the desktop's UI language once, before the first frame (Auto follows it).
+    soundcraft_ui_egui::i18n::init_system_locale();
     eframe::run_native(
         "SoundCraft",
         options,

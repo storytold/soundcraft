@@ -87,7 +87,7 @@ fn built_in_instruments_show_their_parameters() {
 
 #[test]
 fn dropping_audio_with_a_path_loads_the_sampler() {
-    let dir = std::env::temp_dir().join(format!("sc-sampler-window-{}", std::process::id()));
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("sc-sampler-window-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("pluck.wav");
     std::fs::write(&path, wav(0.5)).unwrap();

@@ -205,7 +205,7 @@ mod tests {
             s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "dc", SourceId(77), 0, 0, 4800));
         }
         e.execute("mix.surround_pan", &json!({"track": t.0, "x": 0.0, "y": 1.0})).unwrap();
-        let dir = std::env::temp_dir().join(format!("sc-surround-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-surround-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("mix.wav");
         let ps = path.to_string_lossy().to_string();

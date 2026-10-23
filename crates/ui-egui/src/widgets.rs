@@ -110,7 +110,7 @@ pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &st
         let s = r.height().min(r.width()) * 0.78;
         icons::draw(ui.painter(), Rect::from_center_size(r.center(), vec2(s, s)), icon, tint);
     });
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::t(tip))
 }
 
 /// Square text toggle used for S / M / I / record etc.
@@ -120,7 +120,7 @@ pub fn text_toggle(ui: &mut Ui, size: egui::Vec2, text: &str, on: bool, on_color
     key(ui.painter(), r, &resp, if on { on_color } else { key_fill(&resp) });
     let col = if on { t.text_dark } else { t.text };
     ui.painter().text(r.center(), Align2::CENTER_CENTER, text, bold((size.y * 0.62).clamp(8.0, 13.0)), col);
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::t(tip))
 }
 
 /// Record-enable button (red dot); the caller owns track arming and command dispatch.
@@ -143,7 +143,7 @@ pub fn rec_toggle(ui: &mut Ui, size: egui::Vec2, on: bool, tip: &str) -> Respons
         }
         ui.painter().circle_stroke(r.center(), rad, Stroke::new(1.0, Color32::from_black_alpha(90)));
     });
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::t(tip))
 }
 
 /// A dropdown-looking selector box. Returns the response (caller opens a menu on click).
@@ -204,7 +204,7 @@ pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response 
     p.circle_stroke(c, rad - 0.75, Stroke::new(1.5, t.knob_ring));
     let d = vec2(at.cos(), at.sin());
     p.line_segment([c + d * rad * 0.15, c + d * (rad - 2.5)], Stroke::new(2.0, t.knob_pointer));
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::t(tip))
 }
 
 /// Format a pan value like a console: "<45", "0", "45>".
@@ -499,6 +499,23 @@ pub fn multi_meter(ui: &Ui, r: Rect, levels: &[f32], labels: &[String], clip: bo
     }
 }
 
+/// How an automation lane names its parameter. The model keeps protocol ids (`volume`,
+/// `send A level`, `insert A gain`), so only the words are translated, at draw time.
+pub fn auto_param_label(p: &soundcraft_model::AutoParam) -> String {
+    use soundcraft_model::AutoParam;
+    let slot = |i: u8| char::from(b'A'.saturating_add(i.min(25))).to_string();
+    match p {
+        AutoParam::Volume => crate::i18n::t("Volume").to_string(),
+        AutoParam::Pan(0) => crate::i18n::t("Pan").to_string(),
+        AutoParam::Pan(i) => crate::i18n::fmt(crate::i18n::t("Pan {n}"), &[("n", &(i + 1).to_string())]),
+        AutoParam::Mute => crate::i18n::t("Mute").to_string(),
+        AutoParam::SendLevel(i) => crate::i18n::fmt(crate::i18n::t("Send {slot} level"), &[("slot", &slot(*i))]),
+        AutoParam::SendPan(i) => crate::i18n::fmt(crate::i18n::t("Send {slot} pan"), &[("slot", &slot(*i))]),
+        AutoParam::SendMute(i) => crate::i18n::fmt(crate::i18n::t("Send {slot} mute"), &[("slot", &slot(*i))]),
+        AutoParam::Plugin { slot: i, param } => crate::i18n::fmt(crate::i18n::t("Insert {slot} {param}"), &[("slot", &slot(*i)), ("param", param)]),
+    }
+}
+
 /// egui's checkbox, plus drag-to-set (#399): press one box and drag over its neighbours, and each
 /// box the pointer passes takes the state the first one switched to. A click toggles one box.
 pub fn checkbox(ui: &mut Ui, on: &mut bool, label: impl Into<egui::WidgetText>) -> Response {
@@ -666,7 +683,7 @@ mod selector_visual_regressions {
             let mut harness = egui_kittest::Harness::builder().with_size(vec2(320.0, 120.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
                 move |ui, regions: &mut serde_json::Map<String, serde_json::Value>| {
                     if !ready {
-                        crate::fonts::install(ui.ctx());
+                        crate::fonts::install(ui.ctx(), "en");
                         crate::theme::apply(ui.ctx(), false);
                         ready = true;
                         return;
@@ -719,7 +736,7 @@ mod selector_visual_regressions {
             for mode in soundcraft_model::AutomationMode::ALL {
                 for scale in [1.0, 1.5, 2.0] {
                     let ctx = egui::Context::default();
-                    crate::fonts::install(&ctx);
+                    crate::fonts::install(&ctx, "en");
                     crate::theme::apply(&ctx, false);
                     let mut app = mixer_app(narrow, mode);
                     let mut output = ctx.run_ui(scaled_input(vec2(320.0, 640.0), scale), |ui| crate::mix_window::show(&mut app, ui));
@@ -766,7 +783,7 @@ mod selector_visual_regressions {
                         egui_kittest::Harness::builder().with_size(vec2(320.0, 640.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
                             move |ui, app: &mut crate::SoundApp| {
                                 if !ready {
-                                    crate::fonts::install(ui.ctx());
+                                    crate::fonts::install(ui.ctx(), "en");
                                     crate::theme::apply(ui.ctx(), false);
                                     ready = true;
                                     return;
@@ -814,7 +831,7 @@ mod selector_visual_regressions {
             for label in ["auto read", "no group", "A very long mixer group name"] {
                 for scale in [1.0, 1.5, 2.0] {
                     let ctx = egui::Context::default();
-                    crate::fonts::install(&ctx);
+                    crate::fonts::install(&ctx, "en");
                     crate::theme::apply(&ctx, false);
                     let mut rect = Rect::NOTHING;
                     let mut output = ctx.run_ui(scaled_input(vec2(320.0, 120.0), scale), |ui| {

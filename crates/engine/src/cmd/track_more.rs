@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn preset_round_trip() {
-        let dir = std::env::temp_dir().join(format!("sc-preset-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-preset-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("bass.json").to_string_lossy().into_owned();
         let mut e = crate::demo::demo_engine();

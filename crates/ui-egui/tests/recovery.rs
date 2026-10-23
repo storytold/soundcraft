@@ -14,8 +14,11 @@ fn one_at_a_time() -> MutexGuard<'static, ()> {
     ONE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Scratch folders live beside the build, not in `/tmp`: some systems mount `/tmp` on a small
+/// tmpfs (10 MB here) that a full test run fills, and a full disk fails the autosaves these tests
+/// are about with `ENOSPC`.
 fn folder(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("soundcraft-{name}-{}", std::process::id()));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("soundcraft-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -44,6 +47,14 @@ fn launch(root: &Path) -> SoundApp {
     app
 }
 
+/// Fail with the reason an autosave couldn't be written (a full disk, say) rather than an empty
+/// recovery list that says nothing about why.
+fn assert_autosaved(app: &SoundApp) {
+    if let Some(e) = app.autosave_failure() {
+        panic!("autosave failed: {e}");
+    }
+}
+
 #[test]
 fn an_exit_without_quit_offers_unsaved_changes_at_the_next_launch() {
     let _one = one_at_a_time();
@@ -54,6 +65,7 @@ fn an_exit_without_quit_offers_unsaved_changes_at_the_next_launch() {
     first.run("session.save_as", json!({"path": path})).unwrap();
     first.run("track.new", json!({"name": "Vocal"})).unwrap();
     first.close_autosave();
+    assert_autosaved(&first);
     drop(first);
 
     let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
@@ -104,6 +116,7 @@ fn recovering_keeps_the_unsaved_work_it_replaces() {
     let mut first = launch(&root);
     first.run("track.new", json!({"name": "Vocal"})).unwrap();
     first.close_autosave();
+    assert_autosaved(&first);
     let left = leftovers(&root);
     assert_eq!((left.len(), left[0].name.as_str(), left[0].origin.as_deref()), (1, "Untitled", None));
     let mut next = launch(&root);
@@ -127,6 +140,7 @@ fn closing_the_session_or_quitting_drops_its_autosave() {
         let mut first = launch(&root);
         first.run("track.new", json!({"name": "Vocal"})).unwrap();
         first.close_autosave();
+        assert_autosaved(&first);
         let mut next = launch(&root);
         let left = next.leftovers[0].clone();
         next.recover(&left);

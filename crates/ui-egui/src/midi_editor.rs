@@ -64,7 +64,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().rect_filled(full, 0.0, t.panel_bg);
     let header = Rect::from_min_size(full.min, vec2(full.width(), 22.0));
     ui.painter().rect_filled(header, 0.0, t.panel_bg2);
-    ui.painter().text(pos2(header.min.x + 8.0, header.center().y), Align2::LEFT_CENTER, "MIDI EDITOR", bold(11.5), t.header_text);
+    ui.painter().text(pos2(header.min.x + 8.0, header.center().y), Align2::LEFT_CENTER, crate::i18n::t("MIDI EDITOR"), bold(11.5), t.header_text);
     let Some(cid) = target_clip(app) else {
         let track = {
             let s = app.engine.session();
@@ -128,7 +128,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     if tb.small_button("Vel +10").clicked() {
         op = Some(("event.change_velocity", json!({"add": 10})));
     }
-    if tb.small_button("Quantize").on_hover_text("Quantize to the grid").clicked() {
+    if tb.small_button("Quantize").on_hover_text(crate::i18n::t("Quantize to the grid")).clicked() {
         op = Some(("event.quantize", json!({"grid": grid_ticks, "strength": 100})));
     }
     if let Some((id, mut p)) = op {
@@ -358,7 +358,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     }
     // Velocity lane.
     ui.painter().rect_filled(vel, 0.0, Color32::from_rgb(28, 28, 30));
-    ui.painter().text(pos2(full.min.x + 6.0, vel.center().y), Align2::LEFT_CENTER, "Velocity", regular(10.0), t.text_dim);
+    ui.painter().text(pos2(full.min.x + 6.0, vel.center().y), Align2::LEFT_CENTER, crate::i18n::t("Velocity"), regular(10.0), t.text_dim);
     let vresp = ui.interact(vel, ui.id().with(("vel", cid.0)), Sense::click_and_drag());
     for (i, n) in sequence.notes.iter().enumerate() {
         let x = x_of(n.start);

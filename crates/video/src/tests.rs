@@ -207,13 +207,28 @@ fn ffmpeg_h264_high_with_bframes() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Scratch files live beside the build, not in a `/tmp` some systems mount on a small tmpfs.
+fn scratch() -> std::path::PathBuf {
+    option_env!("CARGO_TARGET_TMPDIR").map_or_else(
+        || {
+            // `<workspace>/crates/<crate>` → `<workspace>`, without a literal `..`; an external
+            // `CARGO_TARGET_DIR` wins over `target`.
+            let krate = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let ws = krate.parent().and_then(std::path::Path::parent).unwrap_or(krate);
+            let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| ws.join("target"), |t| ws.join(t));
+            target.join("tmp")
+        },
+        std::path::PathBuf::from,
+    )
+}
+
 fn ffmpeg_dir() -> Option<std::path::PathBuf> {
     let found = std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success());
     if !found {
         eprintln!("skipping: ffmpeg not on PATH");
         return None;
     }
-    let dir = std::env::temp_dir().join(format!("soundcraft-video-test-{}", std::process::id()));
+    let dir = scratch().join(format!("soundcraft-video-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }

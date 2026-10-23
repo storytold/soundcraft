@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn import_session_data_brings_tracks_and_audio() {
-        let dir = std::env::temp_dir().join(format!("sc-import-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-import-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("donor.scraft").to_string_lossy().into_owned();
         let mut donor = crate::demo::demo_engine();
@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn import_session_data_brings_a_samplers_sample() {
-        let dir = std::env::temp_dir().join(format!("sc-import-sampler-{}", std::process::id()));
+        let dir = crate::test_scratch::root().join(format!("sc-import-sampler-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let wav = dir.join("hit.wav");
