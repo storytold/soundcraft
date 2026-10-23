@@ -1,18 +1,18 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-20 · **Last updated:** 2026-10-22 · **Change:** trivial (remaining UI literals translated; coverage gate extended to widget-helper tooltips) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (Korean catalog) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
-SoundCraft ships **English** (the source language) and **简体中文**. Every menu path segment,
+SoundCraft ships **English** (the source language), **简体中文** and **한국어**. Every menu path segment,
 every command label, every panel title, dialog, tooltip and status message the UI draws goes
-through a catalog compiled into the binary (`crates/ui-egui/src/i18n/`), and the Chinese catalog
-covers all of them; engine-side diagnostics (audio trouble text, health-report issue text, plugin
+through a catalog compiled into the binary (`crates/ui-egui/src/i18n/`), and the Chinese and Korean
+catalogs cover all of them; engine-side diagnostics (audio trouble text, health-report issue text, plugin
 names) stay English because the control channel, the CLI and MCP report the same strings. Pro Tools
 ships its UI in **8 languages** (bundle `.lproj` folders: English, German, Spanish, French,
 Japanese, Korean, Simplified Chinese, Traditional Chinese).
 
-**Localization: ~25 %** (measured: 2 of the target's 8 UI languages complete; menu, command and
+**Localization: ~38 %** (measured: 3 of the target's 8 UI languages complete; menu, command and
 literal coverage enforced by tests). Remaining ≈ 30–45 h: ≈ 3–5 h of agent translation per
-language for the six missing Pro Tools languages (German, Spanish, French, Japanese, Korean,
+language for the five missing Pro Tools languages (German, Spanish, French, Japanese,
 Traditional Chinese — Japanese and Traditional Chinese ≈ 6–10 h each for the kana/JIS faces and
 the Taiwan/HK terminology), then native-speaker review (human). Arabic and Hindi would add
 ≈ 25–40 h for RTL layout and complex-script shaping, which egui does not have.
@@ -55,7 +55,7 @@ What is done:
   base.
 
 Open work: Traditional Chinese (needs a `zh-hant` catalog — the tag negotiation already routes
-`zh-TW`/`zh-HK`/`zh-Hant` to it — plus a Taiwan/HK terminology pass), Japanese/Korean catalogs, RTL
+`zh-TW`/`zh-HK`/`zh-Hant` to it — plus a Taiwan/HK terminology pass), a Japanese catalog, a Hangul face for the web build, RTL
 layout, IME testing, and native-speaker review of the Chinese wording.
 
 | Language | Code | UI strings translated | Dialogs / tooltips / help | Script support | Native review | Status | Est. to full (h) | In Pro Tools |
@@ -70,11 +70,11 @@ layout, IME testing, and native-speaker review of the Chinese wording.
 | Indonesian | id | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ❌ |
 | Japanese | ja | 0 (0 %) | ❌ | 🟡 Han fallback covers most glyphs; kana need the JIS face set, untested | no | none | 6–10 | ✅ |
 | German | de | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
-| Korean | ko | 0 (0 %) | ❌ | ✅ Hangul fallback | no | none | 6–10 | ✅ |
+| Korean | ko | all (1,141 entries; menus, commands, dialogs, tooltips, status) | ✅ | ✅ Hangul fallback (desktop); ❌ no web Hangul face yet; IME untested | in progress | **full** on desktop (engine diagnostics stay English) | 2–4 (web font) | ✅ |
 | Vietnamese | vi | 0 (0 %) | ❌ | 🟡 Latin with stacked diacritics, untested | no | none | 3–5 | ❌ |
 | Traditional Chinese | zh-hant | 0 (0 %) | ❌ | ✅ Han fallback | no | none | 6–10 | ✅ |
 
-Other languages shipped: **1** (Simplified Chinese, plus the English source).
+Other languages shipped: **2** (Simplified Chinese and Korean, plus the English source).
 
 Per-language hours exclude the shared catalog and script work, which are done.
 
@@ -82,6 +82,7 @@ Per-language hours exclude the shared catalog and script work, which are done.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | Korean shipped: `ko.tsv` (1,141 entries, key-for-key with zh-hans; native-speaker review in progress), registry row, Korean tests; localization re-measured 25 % → 38 %; web Hangul face left open |
 | 2026-10-22 | trivial | Catalog 1,106 → 1,141 entries: the remaining UI literals that bypassed `t()` (toolbar icon tooltips, send headers and tooltips, bounce status, Memory Locations headers, Freeze/Unfreeze, MIDI editor buttons, record-hint tooltips) now translate; the coverage test also scans `icon_button`/`text_toggle` tooltip literals; malformed catalog lines are reported at run time |
 | 2026-10-20 | minor | Wording pass and review: catalog 1,106 entries (Shuffle = 推移, new preference command labels); `interface.language` preference with `prefs.*` commands, Appearance preview and persistence (native `preferences.json`, web `localStorage`), legacy `ui.json` migration; catalogs packed and deflated at build time; Han-before-Hangul fallback order; bundled Noto Sans SC subset for the web; docs refreshed and wording knowledge base re-cross-checked (1,032 keys) |
 | 2026-10-19 | major | Simplified Chinese shipped: catalog (1,114 entries), language selector, locale detection, Han font fallback, coverage gates; localization re-measured 12 % → 25 % |

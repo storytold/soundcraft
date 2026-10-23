@@ -79,13 +79,22 @@ fn plural_none(_: u64) -> usize {
 }
 
 /// The registry. English first: it is the fallback and the source language.
-pub static LANGUAGES: [LangInfo; 2] = [
+pub static LANGUAGES: [LangInfo; 3] = [
     LangInfo { code: "en", name: "English", source: b"", plural: plural_one_other, complete_menus: false, catalog: OnceLock::new() },
     LangInfo {
         code: "zh-hans",
         name: "简体中文",
         source: catalog!("zh-hans"),
         // Chinese nouns do not inflect for number: "1 个片段" and "3 个片段".
+        plural: plural_none,
+        complete_menus: true,
+        catalog: OnceLock::new(),
+    },
+    LangInfo {
+        code: "ko",
+        name: "한국어",
+        source: catalog!("ko"),
+        // Korean counts with a counter and no plural noun: "클립 1개" and "클립 3개".
         plural: plural_none,
         complete_menus: true,
         catalog: OnceLock::new(),
@@ -385,6 +394,48 @@ mod tests {
     use super::*;
 
     const ZH: fn() -> Lang = || Lang::from_code("zh-hans").expect("zh-hans registered");
+    const KO: fn() -> Lang = || Lang::from_code("ko").expect("ko registered");
+
+    #[test]
+    fn korean_tags_resolve_to_korean() {
+        for tag in ["ko", "ko-KR", "ko_KR.UTF-8", "ko-Kore-KR", "KO"] {
+            assert_eq!(lang_from_tag(tag), Some(KO()), "{tag}");
+        }
+        assert_eq!(Lang::from_pref("ko"), KO());
+        assert_eq!(KO().name(), "한국어");
+    }
+
+    /// Simplified Chinese is the gated reference (see `simplified_chinese_covers_the_composed_interface`
+    /// and `every_looked_up_literal_has_a_translation`). Korean must carry exactly the same keys, so
+    /// those gates cover it too and a key added for one language can't be forgotten in the other.
+    #[test]
+    fn korean_matches_the_reference_catalog_key_for_key() {
+        let keys = |lang: Lang| -> std::collections::BTreeSet<(String, String)> {
+            let text = lang.0.expanded_source().unwrap_or_default();
+            parse_entries(&text).0.into_iter().map(|(ctx, src, _)| (ctx, src)).collect()
+        };
+        let (zh, ko) = (keys(ZH()), keys(KO()));
+        let missing: Vec<_> = zh.difference(&ko).collect();
+        let extra: Vec<_> = ko.difference(&zh).collect();
+        assert!(missing.is_empty() && extra.is_empty(), "Korean differs from zh-hans: missing {missing:?}, extra {extra:?}");
+        assert!(KO().complete_menus(), "Korean participates in the coverage gate");
+    }
+
+    #[test]
+    fn korean_reads_korean() {
+        let ko = KO();
+        assert_eq!(tr(ko, "Play"), "재생");
+        assert_eq!(tr(ko, "Track"), "트랙");
+        assert_eq!(tr_id(ko, "edit.undo", "Undo"), "실행 취소");
+        assert_eq!(tr_ctx(ko, "automation", "latch"), "래치");
+        // Insert category, not a time value.
+        assert_eq!(tr(ko, "Delay"), "딜레이");
+        for n in [0, 1, 2, 11, 100] {
+            assert_eq!(trn(ko, n, "{n} clip", "{n} clips"), format!("클립 {n}개"));
+        }
+        assert_eq!(fmt(tr(ko, "Search {n} commands"), &[("n", "3")]), "명령 3개 검색");
+        with_language(ko, || assert_eq!(sentence_space(), " "));
+    }
 
     #[test]
     fn chinese_tags_resolve_to_simplified() {

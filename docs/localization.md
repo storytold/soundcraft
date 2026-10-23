@@ -21,6 +21,7 @@ Language 0 is always English, the fallback.
 |---|---|---|---|---|
 | English (source) | `en` | — (strings live in the code) | one / other | — (source) |
 | 简体中文 — Simplified Chinese | `zh-hans` | [`crates/ui-egui/src/i18n/zh-hans.tsv`](../crates/ui-egui/src/i18n/zh-hans.tsv) · 1,141 entries | one (Chinese has no plural inflection) | yes |
+| 한국어 — Korean | `ko` | [`crates/ui-egui/src/i18n/ko.tsv`](../crates/ui-egui/src/i18n/ko.tsv) · 1,141 entries | one (Korean counts with a counter word) | yes |
 
 `code` is the lowercase BCP 47 tag stored in the preference; `name` is the native name shown in the
 Appearance window; `plural` picks the form to use for a count; `complete_menus` promises that the
@@ -345,6 +346,7 @@ itself is original work under SoundCraft's licence.
 ## Related docs
 
 - [`localization-zh-hans.md`](localization-zh-hans.md) — the Simplified Chinese UI: what is translated, terminology, font and acceptance notes.
+- [`localization-ko.md`](localization-ko.md) — the Korean UI: terminology, fonts and what is not covered yet.
 - [`localization-parity.md`](localization-parity.md) — coverage versus the incumbent, language roadmap, estimates.
 - [`i18n/README.md`](i18n/README.md) — the corpus knowledge base and how to use it.
 - [`i18n/glossary.md`](i18n/glossary.md) — curated terminology decisions.

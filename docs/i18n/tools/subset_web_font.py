@@ -16,7 +16,8 @@ The codepoint set is a superset of the UI glyph set:
   - printable ASCII (U+0020-007E) and Latin-1 (U+00A0-00FF);
   - the GB 2312 level-1 common Han characters (3,755, rows 16-55), so the
     catalog can grow new everyday words without touching this script;
-  - every BMP, non-control character used in `crates/ui-egui/src/i18n/*.tsv`
+  - every BMP, non-control character used in the Chinese catalogs
+    (`crates/ui-egui/src/i18n/zh-*.tsv`; a Hangul catalog needs its own face)
     (sources, translations and comments — emoji outside the BMP come from
     egui's bundled emoji fonts, see `fonts.rs`);
   - `EXTRA_SYMBOLS` below: the punctuation, arrows and symbols the UI draws
@@ -69,7 +70,8 @@ def collect_codepoints() -> set[int]:
                 points.add(ord(bytes([0xA0 + row, 0xA0 + col]).decode("gb2312")))
             except UnicodeDecodeError:
                 continue
-    for path in sorted(CATALOG_DIR.glob("*.tsv")):
+    # Only the Han catalogs: this is a Noto Sans SC subset, which has no Hangul to carry.
+    for path in sorted(CATALOG_DIR.glob("zh-*.tsv")):
         for ch in path.read_text(encoding="utf-8"):
             cp = ord(ch)
             if cp <= 0xFFFF and not ch.isspace() and not unicodedata_category_cc(ch):
