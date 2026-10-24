@@ -276,6 +276,7 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("Write MIDI Real-Time Properties", "写入 MIDI 实时属性"),
     ("Set Record Tracks to Input Only", "将录音轨设为仅输入"),
     ("Scroll to Track...", "滚动到轨道..."),
+    ("Scroll Into View", "滚动到可见区域"),
     ("Clear All Clip Indicators", "清除所有剪辑指示器"),
     ("Coalesce VCA Controller Automation", "合并 VCA 控制自动化"),
     ("Coalesce Trim Automation", "合并修剪自动化"),
