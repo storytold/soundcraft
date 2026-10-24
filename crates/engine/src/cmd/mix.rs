@@ -542,8 +542,13 @@ pub(crate) fn current_value(tr: &soundcraft_model::Track, param: &AutoParam) -> 
 fn clear_lane(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "automation.clear", p)?;
     let param = if str_param(p, "param").is_some() { Some(lane_param(p, "automation.clear")?) } else { None };
-    let r = range_param(e, "automation.clear", p)?;
-    let (a, b) = if r.is_empty() { (i64::MIN, i64::MAX) } else { (r.start, r.end) };
+    let explicit = p.get("start").is_some() || p.get("end").is_some() || p.get("length").is_some();
+    let (a, b) = if explicit {
+        let r = range_param(e, "automation.clear", p)?;
+        (r.start, r.end)
+    } else {
+        (i64::MIN, i64::MAX)
+    };
     let s = e.session_mut();
     let mut n = 0;
     for t in &tracks {
@@ -987,6 +992,23 @@ mod tests {
         assert_eq!(count(&e), 1, "named param cleared the wrong lanes");
         e.execute("automation.clear", &json!({"track": t.0})).unwrap();
         assert_eq!(count(&e), 0, "absent param must still clear every lane");
+    }
+
+    /// #871: `automation.clear` without `start`/`end` must clear the whole lane, even the point
+    /// sitting exactly at the end of the edit selection (clear_range is `[start, end)`).
+    #[test]
+    fn clear_without_range_removes_the_point_at_the_selection_end() {
+        let (mut e, t) = tone_session(&[(0, -6.0), (2048, 0.0), (6144, -80.0)]);
+        // Selection [2048, 6144): the point at 6144 is outside it, so a range-limited clear keeps it.
+        e.session_mut().edit.selection = Range::new(2048, 6144);
+        let r = e.execute("automation.clear", &json!({"track": t.0, "param": "volume"})).unwrap();
+        assert_eq!(r["removed"], 3, "clear without a range must remove every point");
+        assert_eq!(e.session().track(t).unwrap().automation.iter().map(|l| l.points.len()).sum::<usize>(), 0);
+        // With an explicit range, only the in-range points go.
+        let (mut e, t) = tone_session(&[(0, -6.0), (2048, 0.0), (6144, -80.0)]);
+        e.execute("automation.clear", &json!({"track": t.0, "param": "volume", "start": 2048, "end": 6144})).unwrap();
+        let left: Vec<i64> = e.session().track(t).unwrap().automation.iter().flat_map(|l| l.points.iter().map(|p| p.at)).collect();
+        assert_eq!(left, vec![0, 6144], "explicit range must keep points outside it");
     }
 
     #[test]
