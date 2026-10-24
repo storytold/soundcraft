@@ -242,6 +242,18 @@ impl Engine {
         self.undo.iter().map(|h| h.label.clone()).collect()
     }
 
+    /// Change the retained document-history depth, dropping the oldest excess entries now.
+    pub fn set_history_limit(&mut self, limit: usize) {
+        let limit = limit.max(1);
+        self.history_limit = limit;
+        if self.undo.len() > limit {
+            self.undo.drain(..self.undo.len() - limit);
+        }
+        if self.redo.len() > limit {
+            self.redo.drain(..self.redo.len() - limit);
+        }
+    }
+
     pub fn undo(&mut self) -> bool {
         let Some(h) = self.undo.pop() else { return false };
         let cur = std::mem::replace(&mut self.doc, h.doc);
@@ -508,6 +520,20 @@ mod merge_tests {
 #[cfg(test)]
 mod dirty_tests {
     use super::*;
+
+    #[test]
+    fn reducing_the_history_limit_drops_the_oldest_steps_immediately() {
+        let mut e = Engine::default();
+        for _ in 0..4 {
+            e.execute("track.new", &json!({})).unwrap();
+        }
+        assert_eq!(e.undo_history().len(), 4);
+        e.set_history_limit(2);
+        assert_eq!(e.undo_history().len(), 2);
+        assert!(e.undo());
+        assert!(e.undo());
+        assert!(!e.undo());
+    }
 
     #[test]
     fn selecting_locating_and_zooming_leave_the_session_clean() {

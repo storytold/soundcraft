@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-16 · **Last updated:** 2026-10-16 · **Change:** minor (Scroll Into View in the track name menu) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-20 · **Last updated:** 2026-10-20 · **Change:** minor (fixed non-scrolling Preferences layout and additional command-backed settings) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 How SoundCraft feels in the hands of a Pro Tools user: tools, modes, modifiers, shortcuts,
 windows, meters. Measured from `crates/model/src/session.rs` (tools, modes), the command
@@ -48,7 +48,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | Transport, Big Counter, Memory Locations, Automation, Video, Universe, Renderer, UI Customization | ✅ present | |
 | Workspace / sound browser with previews | ❌ | G-16 |
 | I/O Setup | 🟡 | Busses and paths; no hardware channel matrix (G-01) |
-| Preferences | 🟡 | Many settings stored, fewer honoured |
+| Preferences | 🟡 | Fixed, non-scrolling searchable nine-page window and platform tab shortcuts; UI theme, visual-effects reduction and undo depth are command-backed, unavailable settings remain visible and disabled |
 | Window configurations, Tile/Cascade | 🟡 | Configurations ✅; Tile/Cascade in PR #151 |
 | Plugin windows | 🟡 | Generic parameter sliders; Pro Tools plugins have bespoke GUIs (#138 asks for skeuomorphic design); multi-page plugin views (#6) |
 | A plugin opens when it's inserted | ✅ | #486; a hosted plugin's own editor, else its plugin window |
@@ -69,6 +69,8 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | Preferences uses one fixed non-scrolling size with compact stacked choices, removes the duplicate meter-type list, and command-backs visual-effects reduction and undo depth alongside the UI theme |
+| 2026-10-19 | minor | Preferences opens from Setup with nine searchable pages, compact grouped controls, staged apply/cancel, platform tab shortcuts and disabled placeholders for unavailable settings |
 | 2026-10-16 | minor | Track name menu: Scroll Into View brings the track to the top of the Edit window and the left of the Mix. Readiness estimate unchanged |
 | 2026-10-13 | minor | A plugin opens when it's inserted (#486) |
 | 2026-10-13 | minor | Drag across checkboxes (#399) |
