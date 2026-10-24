@@ -6,6 +6,7 @@ use crate::{SoundApp, icons};
 use egui::{Align2, Color32, CornerRadius, Painter, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
 use soundcraft_engine::edit::{SHUFFLE_LOCK, SNAP_TO_GRID};
+use soundcraft_l10n::{t as tr, td, tf};
 use soundcraft_model::{EditMode, EditState, Session, Tool};
 use soundcraft_time::{FeetFramesValue, GridScale, GridValue, NoteValue, TimeFormat, TimecodeValue, format_length};
 
@@ -51,10 +52,10 @@ struct ModeCellState {
 
 fn edit_mode_tooltip(m: EditMode, locked: bool, cmd: &str, fkey: &str) -> String {
     match m {
-        EditMode::Shuffle if locked => format!("Shuffle is locked ({cmd}-click to unlock)"),
-        EditMode::Shuffle => format!("Shuffle mode ({fkey}); {cmd}-click locks it out"),
-        EditMode::Grid => format!("Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes"),
-        _ => format!("{} mode ({fkey}); Shift-click adds Snap to Grid", if m == EditMode::Slip { "Slip" } else { "Spot" }),
+        EditMode::Shuffle if locked => tf("Shuffle is locked ({cmd}-click to unlock)", &[("cmd", cmd)]).into_owned(),
+        EditMode::Shuffle => tf("Shuffle mode ({fkey}); {cmd}-click locks it out", &[("fkey", fkey), ("cmd", cmd)]).into_owned(),
+        EditMode::Grid => tf("Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes", &[("fkey", fkey)]).into_owned(),
+        _ => tf("{mode} mode ({fkey}); Shift-click adds Snap to Grid", &[("mode", if m == EditMode::Slip { "Slip" } else { "Spot" }), ("fkey", fkey)]).into_owned(),
     }
 }
 
@@ -133,16 +134,16 @@ fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
             ui.spacing_mut().item_spacing = vec2(2.0, 3.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if icon_button(ui, vec2(28.0, 22.0), "minus", false, "Zoom out (Cmd+[)").clicked() {
+                if icon_button(ui, vec2(28.0, 22.0), "minus", false, tr("Zoom out (Cmd+[)")).clicked() {
                     let _ = app.run("view.zoom_out", json!({}));
                 }
-                if icon_button(ui, vec2(30.0, 22.0), "wave", false, "Waveform zoom in (Cmd+Alt+])").clicked() {
+                if icon_button(ui, vec2(30.0, 22.0), "wave", false, tr("Waveform zoom in (Cmd+Alt+])")).clicked() {
                     let _ = app.run("view.waveform_zoom", json!({"factor": 2.0}));
                 }
-                if icon_button(ui, vec2(28.0, 22.0), "plus", false, "Zoom in (Cmd+])").clicked() {
+                if icon_button(ui, vec2(28.0, 22.0), "plus", false, tr("Zoom in (Cmd+])")).clicked() {
                     let _ = app.run("view.zoom_in", json!({}));
                 }
-                if icon_button(ui, vec2(28.0, 22.0), "zoom", false, "Fill window with session (Alt+A)").clicked() {
+                if icon_button(ui, vec2(28.0, 22.0), "zoom", false, tr("Fill window with session (Alt+A)")).clicked() {
                     let w = ui.ctx().content_rect().width() - 420.0;
                     let _ = app.run("view.zoom_fit", json!({"width_px": w}));
                 }
@@ -156,7 +157,7 @@ fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
                         &i.to_string(),
                         false,
                         Color32::GRAY,
-                        "Zoom preset (click to recall, Cmd-click to store)",
+                        tr("Zoom preset (click to recall, Cmd-click to store)"),
                     );
                     if r.clicked() {
                         let store = ui.input(|x| x.modifiers.command);
@@ -177,7 +178,7 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             ui.spacing_mut().item_spacing = vec2(2.0, 3.0);
             let row = ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if icon_button(ui, vec2(36.0, 26.0), "zoom_toggle", app.engine.session().edit.zoom_toggle.is_some(), "Zoom Toggle (E)").clicked() {
+                if icon_button(ui, vec2(36.0, 26.0), "zoom_toggle", app.engine.session().edit.zoom_toggle.is_some(), tr("Zoom Toggle (E)")).clicked() {
                     crate::edit_window::zoom_toggle(app);
                 }
                 for (tool, icon) in [
@@ -189,7 +190,7 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
                     (Tool::Pencil, "pencil"),
                 ] {
                     let smart_member = cur == Tool::Smart && matches!(tool, Tool::Trim | Tool::Selector | Tool::Grabber);
-                    let tip = format!("{}{}", tool.label(), tool.fkey().map(|k| format!(" ({k})")).unwrap_or_default());
+                    let tip = format!("{}{}", tr(tool.label()), tool.fkey().map(|k| format!(" ({k})")).unwrap_or_default());
                     if icon_button(ui, vec2(36.0, 26.0), icon, cur == tool || smart_member, &tip).clicked() {
                         let _ = app.run("edit.tool", json!({"tool": tool.id()}));
                     }
@@ -202,7 +203,7 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             let bracket = Rect::from_min_max(pos2(bx0 - 2.0, r.min.y + 1.0), pos2(bx1 + 2.0, r.min.y + 5.0));
             let resp = ui.interact(bracket.expand2(vec2(0.0, 2.0)), ui.scope_id().with("smart"), Sense::click());
             ui.painter().rect_filled(bracket, 1.0, if cur == Tool::Smart { t.accent } else { t.tool_bracket_off });
-            if resp.on_hover_text("Smart Tool (F6+F7 / F7+F8)").clicked() {
+            if resp.on_hover_text(tr("Smart Tool (F6+F7 / F7+F8)")).clicked() {
                 let _ = app.run("edit.tool", json!({"tool": "smart"}));
             }
             ui.horizontal(|ui| {
@@ -214,7 +215,7 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
                     }
                 }
                 let focus = e.keyboard_focus == "commands";
-                if crate::widgets::text_toggle(ui, vec2(36.0, 18.0), "a-z", focus, t.accent, "Commands Keyboard Focus (single-key editing)").clicked()
+                if crate::widgets::text_toggle(ui, vec2(36.0, 18.0), "a-z", focus, t.accent, tr("Commands Keyboard Focus (single-key editing)")).clicked()
                 {
                     let _ = app.run("options.keyboard_focus", json!({}));
                 }
@@ -226,12 +227,12 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
 /// The Edit-window toolbar's option toggles: (command id, icon, on, tooltip).
 fn option_toggles(e: &EditState) -> [(&'static str, &'static str, bool, &'static str); 6] {
     [
-        ("options.tab_to_transient", "tab_transient", e.tab_to_transient, "Tab to Transient"),
-        ("options.link_timeline_edit", "link", e.link_timeline_edit, "Link Timeline and Edit Selection"),
-        ("options.link_track_edit", "link_track", e.link_track_edit, "Link Track and Edit Selection"),
-        ("options.insertion_follows_playback", "insertion_follows", e.insertion_follows_playback, "Insertion Follows Playback"),
-        ("options.mirrored_midi", "note", e.mirrored_midi, "Mirrored MIDI Editing"),
-        ("options.automation_follows_edit", "wave", e.automation_follows_edit, "Automation Follows Edit"),
+        ("options.tab_to_transient", "tab_transient", e.tab_to_transient, tr("Tab to Transient")),
+        ("options.link_timeline_edit", "link", e.link_timeline_edit, tr("Link Timeline and Edit Selection")),
+        ("options.link_track_edit", "link_track", e.link_track_edit, tr("Link Track and Edit Selection")),
+        ("options.insertion_follows_playback", "insertion_follows", e.insertion_follows_playback, tr("Insertion Follows Playback")),
+        ("options.mirrored_midi", "note", e.mirrored_midi, tr("Mirrored MIDI Editing")),
+        ("options.automation_follows_edit", "wave", e.automation_follows_edit, tr("Automation Follows Edit")),
     ]
 }
 
@@ -259,9 +260,9 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     // Start / End / Length.
     let s = app.engine.session();
     let rows = [
-        ("Start", fmt_pos(app, sel.start, main_fmt)),
-        ("End", fmt_pos(app, sel.end, main_fmt)),
-        ("Length", format_length(sel.start, sel.len(), main_fmt, s.sample_rate, &s.tempo, s.frame_rate)),
+        (tr("Start"), fmt_pos(app, sel.start, main_fmt)),
+        (tr("End"), fmt_pos(app, sel.end, main_fmt)),
+        (tr("Length"), format_length(sel.start, sel.len(), main_fmt, s.sample_rate, &s.tempo, s.frame_rate)),
     ];
     for (i, (label, val)) in rows.iter().enumerate() {
         let y = r.min.y + 10.0 + i as f32 * 13.0;
@@ -271,14 +272,14 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     // Sub counter row.
     let y = r.max.y - 11.0;
     ui.painter().line_segment([pos2(r.min.x + 6.0, r.max.y - 21.0), pos2(r.max.x - 6.0, r.max.y - 21.0)], Stroke::new(1.0, t.counter_rule));
-    ui.painter().text(pos2(r.min.x + 10.0, y), Align2::LEFT_CENTER, "Sub", regular(11.0), t.counter_label);
+    ui.painter().text(pos2(r.min.x + 10.0, y), Align2::LEFT_CENTER, tr("Sub"), regular(11.0), t.counter_label);
     ui.painter().text(pos2(r.min.x + 150.0, y), Align2::RIGHT_CENTER, fmt_pos(app, pos, sub_fmt), mono(11.0), t.counter_text);
     let sub_r = Rect::from_min_max(pos2(r.min.x + 6.0, r.max.y - 20.0), pos2(r.min.x + 164.0, r.max.y - 2.0));
     let sub_resp = ui.interact(sub_r, ui.scope_id().with("sub_counter"), Sense::click());
     icons::draw(ui.painter(), Rect::from_center_size(pos2(r.min.x + 158.0, y), vec2(8.0, 8.0)), "triangle_down", t.text_dim);
     format_menu(app, &sub_resp, sub_fmt, "view.sub_counter");
-    let st = if app.engine.is_dirty() { "modified" } else { "saved" };
-    let dev = app.player.as_ref().map_or("no audio engine", |p| if p.silent { "silent clock" } else { "audio on" });
+    let st = if app.engine.is_dirty() { tr("modified") } else { tr("saved") };
+    let dev = app.player.as_ref().map_or(tr("no audio engine"), |p| if p.silent { tr("silent clock") } else { tr("audio on") });
     ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, format!("{st} · {dev}"), regular(10.0), t.text_dim);
 }
 
@@ -287,7 +288,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
 fn format_menu(app: &mut SoundApp, resp: &egui::Response, current: TimeFormat, command: &str) {
     egui::Popup::menu(resp).show(|ui| {
         for f in TimeFormat::ALL {
-            if ui.selectable_label(current == f, f.label()).clicked() {
+            if ui.selectable_label(current == f, tr(f.label())).clicked() {
                 let _ = app.run(command, json!({"format": f.id()}));
             }
         }
@@ -306,19 +307,19 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
     let gl = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 8.0), vec2(48.0, 16.0));
     let resp = ui.interact(gl, ui.scope_id().with("grid_lines"), Sense::click());
     key(ui.painter(), gl, &resp, if lines { t.mode_on } else { t.counter_off });
-    ui.painter().text(gl.center(), Align2::CENTER_CENTER, "Grid", bold(11.0), if lines { t.mode_on_text } else { t.mode_off_text });
-    if resp.on_hover_text("Show grid lines").clicked() {
+    ui.painter().text(gl.center(), Align2::CENTER_CENTER, tr("Grid"), bold(11.0), if lines { t.mode_on_text } else { t.mode_off_text });
+    if resp.on_hover_text(tr("Show grid lines")).clicked() {
         let _ = app.run("view.grid_lines", json!({}));
     }
     let gr = Rect::from_min_max(pos2(r.min.x + 60.0, r.min.y + 6.0), pos2(r.max.x - 4.0, r.min.y + 26.0));
-    let grid_label = if clips_markers { GridScale::ClipsMarkers.label().to_string() } else { compact_grid_label(app.engine.session(), grid) };
+    let grid_label = if clips_markers { td(&GridScale::ClipsMarkers.label().to_string()).into_owned() } else { compact_grid_label(app.engine.session(), grid) };
     if !clips_markers {
         draw_compact_note_icon(ui.painter(), gr, grid, t.counter_text);
     }
     ui.painter().text(pos2(gr.max.x - 14.0, gr.center().y), Align2::RIGHT_CENTER, grid_label, mono(11.0), t.counter_text);
     let gresp = ui.interact(gr, ui.scope_id().with("grid_value"), Sense::click());
     value_menu(app, &gresp, "view.grid", grid, grid_follow, clips_markers, true);
-    ui.painter().text(pos2(r.min.x + 10.0, r.min.y + 44.0), Align2::LEFT_CENTER, "Nudge", regular(11.0), t.counter_label);
+    ui.painter().text(pos2(r.min.x + 10.0, r.min.y + 44.0), Align2::LEFT_CENTER, tr("Nudge"), regular(11.0), t.counter_label);
     let nr = Rect::from_min_max(pos2(r.min.x + 60.0, r.min.y + 34.0), pos2(r.max.x - 4.0, r.min.y + 54.0));
     draw_compact_note_icon(ui.painter(), nr, nudge, t.counter_text);
     ui.painter().text(
@@ -473,13 +474,13 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str, current: Gri
                     NoteValue::ThirtySecond => "1/32",
                     NoteValue::SixtyFourth => "1/64",
                 };
-                menu_modifier(ui, app, cmd, dotted, "Dotted", "·", json!(if dotted { base.to_string() } else { format!("{base}.") }));
-                menu_modifier(ui, app, cmd, triplet, "Triplet", "3", json!(if triplet { base.to_string() } else { format!("{base}t") }));
+                menu_modifier(ui, app, cmd, dotted, tr("Dotted"), "·", json!(if dotted { base.to_string() } else { format!("{base}.") }));
+                menu_modifier(ui, app, cmd, triplet, tr("Triplet"), "3", json!(if triplet { base.to_string() } else { format!("{base}t") }));
             }
             GridScale::MinSecs => {
                 for seconds in [1.0, 0.5, 0.1, 0.01, 0.001] {
                     let value = GridValue::Seconds(seconds);
-                    menu_value(ui, app, cmd, current == value, &value.label(), json!({"seconds": seconds}));
+                    menu_value(ui, app, cmd, current == value, &td(&value.label()), json!({"seconds": seconds}));
                 }
             }
             GridScale::Timecode => {
@@ -489,18 +490,18 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str, current: Gri
                             (current, value),
                             (GridValue::Frames(5), TimecodeValue::FiveFrames) | (GridValue::Frames(1), TimecodeValue::Frame)
                         );
-                    menu_value(ui, app, cmd, selected, value.label(), json!({"timecode": value.id()}));
+                    menu_value(ui, app, cmd, selected, tr(value.label()), json!({"timecode": value.id()}));
                 }
             }
             GridScale::FeetFrames => {
                 for value in FeetFramesValue::ALL {
-                    menu_value(ui, app, cmd, current == GridValue::FeetFrames(value), value.label(), json!({"feet_frames": value.id()}));
+                    menu_value(ui, app, cmd, current == GridValue::FeetFrames(value), tr(value.label()), json!({"feet_frames": value.id()}));
                 }
             }
             GridScale::Samples => {
                 for samples in [10_000, 1_000, 100, 10, 2, 1] {
                     let value = GridValue::Samples(samples);
-                    menu_value(ui, app, cmd, current == value, &value.label(), json!({"samples": samples}));
+                    menu_value(ui, app, cmd, current == value, &td(&value.label()), json!({"samples": samples}));
                 }
             }
             GridScale::ClipsMarkers => {}
@@ -508,17 +509,17 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str, current: Gri
         ui.separator();
         for scale in GridScale::TIME {
             let selected = !clips_markers && current.scale() == scale;
-            if ui.selectable_label(selected, scale.label()).clicked() {
+            if ui.selectable_label(selected, tr(scale.label())).clicked() {
                 let _ = app.run(cmd, json!({"format": scale.id(), "follow_main": false}));
                 ui.close();
             }
         }
-        if allow_clips && ui.selectable_label(clips_markers, GridScale::ClipsMarkers.label()).clicked() {
+        if allow_clips && ui.selectable_label(clips_markers, tr(GridScale::ClipsMarkers.label())).clicked() {
             let _ = app.run(cmd, json!({"format": GridScale::ClipsMarkers.id(), "follow_main": false}));
             ui.close();
         }
         ui.separator();
-        if ui.selectable_label(follow_main, "Follow Main Time Scale").clicked() {
+        if ui.selectable_label(follow_main, tr("Follow Main Time Scale")).clicked() {
             let _ = app.run(cmd, json!({"follow_main": !follow_main}));
             ui.close();
         }
@@ -538,7 +539,7 @@ fn menu_note_value(ui: &mut Ui, app: &mut SoundApp, cmd: &str, selected: bool, n
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
         draw_note_value_icon(ui.painter(), rect, note, false, false, ui.visuals().text_color());
-        menu_value(ui, app, cmd, selected, note.label(), value);
+        menu_value(ui, app, cmd, selected, tr(note.label()), value);
     });
 }
 
@@ -561,26 +562,26 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
             ui.spacing_mut().item_spacing = vec2(3.0, 4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
-                if icon_button(ui, vec2(38.0, 28.0), "loop", looped, "Loop Playback (Cmd+Shift+L)").clicked() {
+                if icon_button(ui, vec2(38.0, 28.0), "loop", looped, tr("Loop Playback (Cmd+Shift+L)")).clicked() {
                     let _ = app.run("options.loop_playback", json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, key_fill(&resp));
                 icons::draw(ui.painter(), r.shrink(5.0), "stop", if playing { t.text } else { t.accent });
-                if resp.on_hover_text("Stop (Space)").clicked() {
+                if resp.on_hover_text(tr("Stop (Space)")).clicked() {
                     let _ = app.run("transport.stop", json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, if playing { Color32::from_rgb(40, 90, 50) } else { key_fill(&resp) });
                 icons::draw(ui.painter(), r.shrink(5.0), "play", if playing { Color32::from_rgb(120, 255, 140) } else { t.counter_text });
-                if resp.on_hover_text("Play (Space)").clicked() {
+                if resp.on_hover_text(tr("Play (Space)")).clicked() {
                     let _ = app.run("transport.play", json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, if recording { Color32::from_rgb(110, 30, 30) } else { key_fill(&resp) });
                 icons::draw(ui.painter(), r.shrink(5.0), "record", t.rec);
                 // macOS gives Cmd+Space to Spotlight unless the user frees it, so name F12 first.
-                let resp = resp.on_hover_text("Record (F12 or Cmd+Space)");
+                let resp = resp.on_hover_text(tr("Record (F12 or Cmd+Space)"));
                 if let Some(why) = app.record_hint() {
                     // Below the whole group, so the hint covers none of its buttons.
                     let below = Rect::from_min_max(r.min, pos2(r.max.x, g.max.y));
@@ -593,10 +594,10 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
                 for (icon, cmd, tip) in [
-                    ("rtz", "transport.rtz", "Return to Zero (Home)"),
-                    ("rewind", "transport.rewind", "Rewind"),
-                    ("ffwd", "transport.fast_forward", "Fast Forward"),
-                    ("end", "transport.go_to_end", "Go to End (End)"),
+                    ("rtz", "transport.rtz", tr("Return to Zero (Home)")),
+                    ("rewind", "transport.rewind", tr("Rewind")),
+                    ("ffwd", "transport.fast_forward", tr("Fast Forward")),
+                    ("end", "transport.go_to_end", tr("Go to End (End)")),
                 ] {
                     if icon_button(ui, vec2(38.0, 22.0), icon, false, tip).clicked() {
                         let _ = app.run(cmd, json!({}));
@@ -621,19 +622,25 @@ fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
     let co = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 6.0), vec2(64.0, 15.0));
     let resp = ui.interact(co, ui.scope_id().with("countoff"), Sense::click());
     key(ui.painter(), co, &resp, if countoff { t.mode_on } else { t.counter_off });
-    ui.painter().text(co.center(), Align2::CENTER_CENTER, "Count Off", bold(10.0), if countoff { t.mode_on_text } else { t.mode_off_text });
+    ui.painter().text(co.center(), Align2::CENTER_CENTER, tr("Count Off"), bold(10.0), if countoff { t.mode_on_text } else { t.mode_off_text });
     if resp.clicked() {
         let _ = app.run("options.countoff", json!({}));
     }
-    ui.painter().text(pos2(r.max.x - 8.0, co.center().y), Align2::RIGHT_CENTER, format!("{bars} bars"), mono(11.0), t.counter_text);
-    ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 32.0), Align2::RIGHT_CENTER, "Meter", regular(11.0), t.counter_label);
+    ui.painter().text(
+        pos2(r.max.x - 8.0, co.center().y),
+        Align2::RIGHT_CENTER,
+        tf("{bars} bars", &[("bars", &bars.to_string())]),
+        mono(11.0),
+        t.counter_text,
+    );
+    ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 32.0), Align2::RIGHT_CENTER, tr("Meter"), regular(11.0), t.counter_label);
     ui.painter().text(pos2(r.max.x - 8.0, r.min.y + 32.0), Align2::RIGHT_CENTER, meter, mono(11.0), t.counter_text);
-    ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 48.0), Align2::RIGHT_CENTER, "Tempo", regular(11.0), t.counter_label);
+    ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 48.0), Align2::RIGHT_CENTER, tr("Tempo"), regular(11.0), t.counter_label);
     icons::draw(ui.painter(), Rect::from_center_size(pos2(r.min.x + 82.0, r.min.y + 48.0), vec2(13.0, 13.0)), "note", t.counter_text);
     tempo_value(app, ui, r.max.x - 8.0, r.min.y + 48.0, bpm);
     let clk = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 40.0), vec2(18.0, 18.0));
     icons::draw(ui.painter(), clk, "click", if click { t.counter_text } else { t.text_dim });
-    if ui.interact(clk, ui.scope_id().with("click"), Sense::click()).on_hover_text("Click").clicked() {
+    if ui.interact(clk, ui.scope_id().with("click"), Sense::click()).on_hover_text(tr("Click")).clicked() {
         let _ = app.run("options.click", json!({}));
     }
 }
@@ -666,7 +673,7 @@ fn tempo_value(app: &mut SoundApp, ui: &mut Ui, right: f32, y: f32, bpm: f64) {
     if resp.drag_stopped() || resp.lost_focus() {
         app.engine.end_merge();
     }
-    resp.on_hover_text("Drag to change the tempo (Shift: fine steps), or click to type it");
+    resp.on_hover_text(tr("Drag to change the tempo (Shift: fine steps), or click to type it"));
 }
 
 /// Draws the compact stereo main-output meter.
