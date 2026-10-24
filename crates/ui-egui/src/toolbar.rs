@@ -54,14 +54,11 @@ fn edit_mode_tooltip(m: EditMode, locked: bool, cmd: &str, fkey: &str) -> String
     match m {
         EditMode::Shuffle if locked => tf("Shuffle is locked ({cmd}-click to unlock)", &[("cmd", cmd)]).into_owned(),
         EditMode::Shuffle => tf("Shuffle mode ({fkey}); {cmd}-click locks it out", &[("fkey", fkey), ("cmd", cmd)]).into_owned(),
-        EditMode::Grid => {
-            tf("Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes", &[("fkey", fkey)]).into_owned()
+        EditMode::Grid => tf("Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes", &[("fkey", fkey)]).into_owned(),
+        _ => {
+            tf("{mode} mode ({fkey}); Shift-click adds Snap to Grid", &[("mode", if m == EditMode::Slip { "Slip" } else { "Spot" }), ("fkey", fkey)])
+                .into_owned()
         }
-        _ => tf(
-            "{mode} mode ({fkey}); Shift-click adds Snap to Grid",
-            &[("mode", if m == EditMode::Slip { "Slip" } else { "Spot" }), ("fkey", fkey)],
-        )
-        .into_owned(),
     }
 }
 
