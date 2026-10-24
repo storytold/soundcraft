@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-13 · **Change:** trivial (WAV: empty data chunk with trailing metadata (#466); previously minor: continuous fade curvature in SoundCraft sessions) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-22 · **Change:** trivial (a sixth fade shape, S-Curve Equal Power; previously trivial: WAV: empty data chunk with trailing metadata (#466)) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every format Pro Tools reads or writes, and ours. The Pro Tools list comes from the document types
 its bundle declares (`CFBundleDocumentTypes` in Info.plist: names only, nothing else read) and its
@@ -23,7 +23,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 | OMF | import/export | ❌ | ❌ | Legacy, still delivered by some editors |
 | Media Composer–compatible session | export | ❌ | ❌ | AAF variant |
 | ADM BWF (Dolby Atmos master) | import/export | ❌ | ❌ | G-12 |
-| SoundCraft session `.scraft` + `Audio Files/` | — | ✅ | ✅ | JSON (serde); mutated-file property test loads or fails cleanly; plugin state embedded. Fades save optional `curvature` (-1..1); missing values default to 0 and preserve legacy envelopes |
+| SoundCraft session `.scraft` + `Audio Files/` | — | ✅ | ✅ | JSON (serde); mutated-file property test loads or fails cleanly; plugin state embedded. Fades save optional `curvature` (-1..1); missing values default to 0 and preserve legacy envelopes. A fade shape may be `SCurvePower` (S-Curve with the Equal Power law); older sessions load unchanged, but older versions cannot open a session that uses it |
 | Import Session Data (from another session) | Pro Tools sessions | 🟡 | — | From `.scraft` only |
 | Session info as text | export | — | ✅ | `file.export_session_text` |
 | Clip groups `.rgrp` / ours `.scgrp` | read/write | 🟡 | 🟡 | Our own `.scgrp` format; Pro Tools' clip-group files not read |
@@ -80,6 +80,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | trivial | Fade shape `SCurvePower` (S-Curve with the Equal Power law). Format version and readiness estimate unchanged |
 | 2026-10-13 | trivial | WAV: empty data chunk with trailing metadata (#466) |
 | 2026-10-13 | minor | Fade curvature round-trips in sessions with a zero default for older files. Format version and readiness estimate unchanged |
 | 2026-10-10 | major | Created: format inventory against Pro Tools 2026.4.1's declared document types and import/bounce options |

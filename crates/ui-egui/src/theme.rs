@@ -210,6 +210,11 @@ pub struct Tokens {
     pub slot_face: [Color32; 2],
     pub slot_bypassed: [Color32; 2],
     pub slot_mark: Color32,
+    /// The combined waveform of a fade dialog (outgoing and incoming summed). The outgoing and
+    /// incoming colours are track colours (`fade_colors`).
+    // ponytail: the same purple as the REL GRID mode colour (`mode_grid_relative`), which is not on main yet
+    // (branch fix/edit-mode-colors); once it lands, use that token and drop this one.
+    pub fade_combined: Color32,
 }
 
 impl Tokens {
@@ -296,6 +301,7 @@ impl Tokens {
         slot_face: [Color32::from_rgb(92, 92, 92), Color32::from_rgb(75, 75, 75)],
         slot_bypassed: [Color32::from_rgb(66, 96, 146), Color32::from_rgb(50, 76, 120)],
         slot_mark: Color32::from_rgb(159, 159, 159),
+        fade_combined: Color32::from_rgb(176, 134, 238),
     };
 
     pub const LIGHT: Tokens = Tokens {
@@ -381,6 +387,7 @@ impl Tokens {
         slot_face: [Color32::from_rgb(244, 245, 247), Color32::from_rgb(214, 216, 220)],
         slot_bypassed: [Color32::from_rgb(190, 210, 240), Color32::from_rgb(160, 186, 228)],
         slot_mark: Color32::from_rgb(92, 95, 102),
+        fade_combined: Color32::from_rgb(124, 82, 178),
     };
 
     pub fn current() -> Tokens {
@@ -432,6 +439,12 @@ pub fn clip_colors(rgb: [u8; 3], selected: bool) -> (Color32, Color32, Color32) 
     }
     // A dark body and a light waveform in the clip's own colour; selection inverts them.
     if selected { (shade(0.7), bar, Color32::from_rgb(16, 16, 18)) } else { (shade(0.34), bar, tint(0.35)) }
+}
+
+/// The two sides of a fade dialog: the outgoing clip (amber) and the incoming clip (turquoise), two of the track colours.
+pub fn fade_colors() -> [Color32; 2] {
+    let pick = |i: usize| rgb(soundcraft_model::TRACK_COLORS.get(i).copied().unwrap_or([128, 128, 128]));
+    [pick(6), pick(2)]
 }
 
 pub fn rgb(c: [u8; 3]) -> Color32 {

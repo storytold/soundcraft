@@ -15,6 +15,7 @@ mod docking_workflows;
 mod edit_menu;
 mod edit_modes;
 mod edit_window_headers;
+mod fade_dialogs;
 mod group_dialog;
 mod hide_floating;
 mod idle;

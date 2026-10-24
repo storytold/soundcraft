@@ -1,6 +1,7 @@
 //! The Edit window: toolbar, rulers, track headers and playlists.
 
-use crate::dialogs::Dialog;
+use crate::dialogs::{Dialog, FadeTarget};
+use crate::fade_dialog::FadeEditor;
 use crate::spot::Spot;
 use crate::theme::{Tokens, bold, clip_colors, regular, rgb};
 use crate::widgets::{groove, level_pos, meter_pos, raised_key, shade};
@@ -1889,7 +1890,7 @@ fn draw_clip(app: &SoundApp, painter: &egui::Painter, s: &Session, track: &Track
 }
 
 /// The earlier clip of a crossfade pair: the one before `clip` in its playlist, overlapping its start.
-fn crossfade_partner<'a>(track: &'a Track, clip: &Clip) -> Option<&'a Clip> {
+pub(crate) fn crossfade_partner<'a>(track: &'a Track, clip: &Clip) -> Option<&'a Clip> {
     let (p, i) = track.playlists.iter().find_map(|p| {
         let i = p.clips.partition_point(|c| c.start < clip.start);
         p.clips.get(i).is_some_and(|c| c.id == clip.id).then_some((p, i))
@@ -2336,6 +2337,18 @@ fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, 
         }
     }
     if resp.double_clicked()
+        && auto_view.is_none()
+        && point_hit.is_none()
+        && gain_icon_at(origin).is_none()
+        && !matches!(eff, Tool::Pencil | Tool::Zoom | Tool::Scrubber)
+        && let Some(target) = fades_target_at(track, at)
+        && let Some(editor) = FadeEditor::for_target(app.engine.session(), target)
+    {
+        if let Some(c) = &hit {
+            let _ = app.run("edit.select", json!({"clips": [c.id.0]}));
+        }
+        app.dialogs.open = Some(Dialog::FadeEditor(Box::new(editor)));
+    } else if resp.double_clicked()
         && curve_handle.is_none()
         && point_hit.is_none()
         && eff != Tool::Pencil
@@ -2365,6 +2378,27 @@ fn place_insertion(app: &mut SoundApp, ui: &Ui, s: &Session, track: TrackId, at:
     if app.engine.revision != rev {
         ui.ctx().request_discard("insertion point moved");
     }
+}
+
+/// What a double-click at `at` opens the Fades dialog on: the crossfade there (both of its fades), else the
+/// fade-in or fade-out there.
+fn fades_target_at(track: &Track, at: Samples) -> Option<FadeTarget> {
+    let c = clip_at(track, at).filter(|c| c.is_audio())?;
+    // Only a pair the engine treats as a crossfade: the clip before ends inside this one.
+    if crossfade_partner(track, c).is_some_and(|a| a.is_audio() && a.end() <= c.end() && at < a.end()) {
+        return Some(FadeTarget::Crossfade { later: c.id });
+    }
+    let in_fade = c.fade_in.len > 0 && at < c.start.saturating_add(c.fade_in.len);
+    let out_fade = c.fade_out.len > 0 && at >= c.end().saturating_sub(c.fade_out.len);
+    let fade_in = match (in_fade, out_fade) {
+        (true, false) => true,
+        (false, true) => false,
+        // Fades that meet: the nearer end.
+        (true, true) if at - c.start <= c.end() - at => true,
+        (true, true) => false,
+        (false, false) => return None,
+    };
+    Some(FadeTarget::Single { clip: c.id, fade_in })
 }
 
 /// The same bounded range drives the preview and the committed fade.

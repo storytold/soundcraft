@@ -3,6 +3,7 @@
 mod bounce;
 mod clap_e2e;
 mod consolidate_selection;
+mod crossfade_fades;
 mod current_feet_frames_position;
 mod edit_modes;
 mod fader_merge_full_history;

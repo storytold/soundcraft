@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-16 · **Last updated:** 2026-10-16 · **Change:** minor (Scroll Into View in the track name menu) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-16 · **Last updated:** 2026-10-22 · **Change:** minor (Fade In, Fade Out and Crossfade dialogs; previously minor: Scroll Into View in the track name menu) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 How SoundCraft feels in the hands of a Pro Tools user: tools, modes, modifiers, shortcuts,
 windows, meters. Measured from `crates/model/src/session.rs` (tools, modes), the command
@@ -19,6 +19,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | Smart-tool Fade In / Fade Out drag bounds and preview | ✅ | One thin curve replaces the dragged side's previous curve and matches its appearance after release; bounded to the clip, including full-clip fades. Hovering the curve's upper endpoint shows the fade cursor and lets the existing fade be dragged |
 | Fade midpoint curvature | ✅ | Visible fades retain a small midpoint handle in Smart mode, including after release and extreme bends. Hover shows the vertical resize cursor; repeated drags change curvature without changing length. Curves sample at physical-pixel resolution; preview, playback and bounce share the envelope. Length drags retain curvature |
 | Live waveform fade preview | ✅ | Waveform amplitude updates during fade-length and midpoint-curvature drags, sharing the curve's temporary envelope. Mono/stereo, waveform styles, zoom and clip gain remain effective; release preserves the displayed waveform with one undo step and cached peaks |
+| Fade In / Fade Out / Crossfade dialogs | 🟡 | Double-click a fade or crossfade, or Edit › Fades › Create (Cmd+F) over one clip start, clip end or clip boundary. Shape (Standard, S-Curve, preset curve) and slope, or Link Out / In for a crossfade; the curves are drawn live over the clips' waveforms in four display modes; five presets per dialog (Cmd-click stores, kept with the interface preferences), COMPARE, one undo step. Missing: Audition, dragging the curves in the graph, Batch Fades |
 | Edit modes: Shuffle, Slip, Spot, Grid (absolute/relative) | ✅ | Spot dialog present |
 | Grid and nudge values, all timebases | ✅ | Bars/Beats, Min:Secs, Timecode, Feet+Frames, Samples |
 | Keyboard focus modes (Commands, Clip List, Groups) | 🟡 | Commands focus single-key editing ✅; list focus partial |
@@ -69,6 +70,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | minor | Fade In, Fade Out and Crossfade dialogs with live curves over the waveforms, presets and COMPARE. Readiness estimate unchanged |
 | 2026-10-16 | minor | Track name menu: Scroll Into View brings the track to the top of the Edit window and the left of the Mix. Readiness estimate unchanged |
 | 2026-10-13 | minor | A plugin opens when it's inserted (#486) |
 | 2026-10-13 | minor | Drag across checkboxes (#399) |

@@ -8,6 +8,25 @@ use soundcraft_engine::Engine;
 use soundcraft_model::{ClipId, GroupId, Session, SourceId, TrackId};
 use soundcraft_time::Samples;
 
+/// What a Fade In, Fade Out or Crossfade dialog is about: what a double-click landed on, or the one fade a selection covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FadeTarget {
+    /// The fade-in or fade-out of one clip.
+    Single { clip: ClipId, fade_in: bool },
+    /// The crossfade leading into this clip, the later of the pair.
+    Crossfade { later: ClipId },
+}
+
+impl FadeTarget {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            FadeTarget::Single { fade_in: true, .. } => "Fade In",
+            FadeTarget::Single { fade_in: false, .. } => "Fade Out",
+            FadeTarget::Crossfade { .. } => "Crossfade",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Dialog {
     NewTracks { count: u32, format: String, kind: String, timebase: String, name: String },
@@ -21,7 +40,10 @@ pub enum Dialog {
     Number { cmd: String, title: String, key: String, value: f64, suffix: String },
     TempoChange { at: Samples, bpm: f64 }, // from double-clicking the tempo ruler
     Spot(crate::spot::Spot),
+    // Edit › Fades › Create… over a selection that is not one fade: one shape for all of them.
     Fades { shape: String },
+    // One fade or crossfade: Edit › Fades › Create… over a selection that is one, or a double-click on it.
+    FadeEditor(Box<crate::fade_dialog::FadeEditor>),
     StripSilence { threshold: f64, min_ms: f64, pre_ms: f64, post_ms: f64 },
     // `id: None` creates (Track › Group…); `id: Some` modifies that group (Groups list › Modify Group…).
     Group { id: Option<GroupId>, name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
@@ -54,6 +76,7 @@ impl Dialogs {
             Dialog::TempoChange { .. } => "tempo_change",
             Dialog::Spot(_) => "spot",
             Dialog::Fades { .. } => "fades",
+            Dialog::FadeEditor(f) => f.dialog_name(),
             Dialog::StripSilence { .. } => "strip_silence",
             Dialog::Group { id: None, .. } => "group",
             Dialog::Group { id: Some(_), .. } => "modify_group",
@@ -140,7 +163,10 @@ impl Dialogs {
             "event.quantize" => {
                 Dialog::Number { cmd: id.into(), title: "Quantize strength".into(), key: "strength".into(), value: 100.0, suffix: "%".into() }
             }
-            "edit.fades_create" => Dialog::Fades { shape: "equal power".into() },
+            "edit.fades_create" => match crate::fade_dialog::FadeEditor::for_selection(e) {
+                Some(editor) => Dialog::FadeEditor(Box::new(editor)),
+                None => Dialog::Fades { shape: "equal power".into() },
+            },
             "edit.strip_silence" => Dialog::StripSilence { threshold: -48.0, min_ms: 50.0, pre_ms: 5.0, post_ms: 20.0 },
             "track.group" => {
                 let s = e.session();
@@ -324,6 +350,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::TempoChange { .. } => "Tempo Change (BPM)",
         Dialog::Spot(_) => "Spot",
         Dialog::Fades { .. } => "Fades",
+        Dialog::FadeEditor(f) => f.title(),
         Dialog::StripSilence { .. } => "Strip Silence",
         Dialog::Group { id: None, .. } => "Create Group",
         Dialog::Group { id: Some(_), .. } => "Modify Group",
@@ -333,8 +360,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::SaveChanges { .. } => "Unsaved Changes",
     }
     .to_string();
-    let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
-    let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    // In the fade dialogs, a menu that is open has Enter and Esc before the dialog does.
+    let menu_open = matches!(d, Dialog::FadeEditor(_)) && egui::Popup::is_any_open(ctx);
+    let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter)) && !menu_open;
+    let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !menu_open;
     egui::Window::new(egui::RichText::new(&title).font(bold(13.0)))
         .collapsible(false)
         .resizable(false)
@@ -539,6 +568,12 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         action = Some(("edit.fades_create".into(), json!({"shape": shape})));
                     }
                 }
+                Dialog::FadeEditor(f) => {
+                    if crate::fade_dialog::ui(ui, f, app.engine.session(), &mut app.ui.fade_presets, enter) {
+                        keep = false;
+                        action = f.command(app.engine.session());
+                    }
+                }
                 Dialog::StripSilence { threshold, min_ms, pre_ms, post_ms } => {
                     ui.add(egui::Slider::new(threshold, -96.0..=0.0).text("Threshold dB"));
                     ui.add(egui::Slider::new(min_ms, 0.0..=2000.0).text("Min strip duration ms"));
@@ -695,6 +730,11 @@ fn run_then(app: &mut SoundApp, cmd: &str, params: Value) -> Result<Value, Strin
     app.run(cmd, params)
 }
 
+/// Cancel was pressed: the dialog closes at the end of this frame.
+pub(crate) fn request_cancel(ctx: &egui::Context) {
+    ctx.memory_mut(|m| m.data.insert_temp(egui::Id::new("dlg_cancel"), true));
+}
+
 /// Cancel/OK row; returns true when OK was pressed (or Enter).
 fn buttons(ui: &mut egui::Ui, ok: &str, enter: bool) -> bool {
     buttons_enabled(ui, ok, enter, true)
@@ -706,7 +746,7 @@ fn buttons_enabled(ui: &mut egui::Ui, ok: &str, enter: bool, ready: bool) -> boo
     ui.separator();
     ui.horizontal(|ui| {
         if ui.button("Cancel").clicked() {
-            ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::new("dlg_cancel"), true));
+            request_cancel(ui.ctx());
         }
         let b = egui::Button::new(egui::RichText::new(ok).strong()).fill(Tokens::current().accent);
         if ui.add_enabled(ready, b).clicked() {
