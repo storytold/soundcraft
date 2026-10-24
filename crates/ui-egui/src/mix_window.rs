@@ -497,6 +497,27 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     ui.painter().line_segment([pos2(r.max.x, r.min.y), pos2(r.max.x, r.max.y)], Stroke::new(1.0, t.border));
 }
 
+/// Opens a plugin's own editor when it has one, otherwise its generic parameter window.
+/// Clicking an insert with a native editor must not also open the generic window: doing both
+/// left a ghost panel behind the plugin's own UI.
+pub(crate) fn open_plugin(app: &mut SoundApp, track: TrackId, slot: usize) {
+    if app.player.as_ref().is_some_and(|p| p.has_editor(track, slot)) {
+        let name =
+            app.engine.session().track(track).and_then(|t| {
+                if slot == soundcraft_mix::INSTRUMENT_SLOT { t.instrument.clone() } else { t.mixer.inserts.get(slot).cloned().flatten() }
+            });
+        let name = name.map(|i| plugin_info(&i.plugin).map_or_else(|| i.plugin.clone(), |p| p.name.to_string()));
+        let result = app.player.as_ref().map(|p| p.open_editor(track, slot));
+        if let Some(Err(e)) = result {
+            app.ui.status = format!("{}: {e}", name.unwrap_or_else(|| "Plugin".to_string()));
+        }
+        return;
+    }
+    if !app.ui.plugin_windows.contains(&(track, slot)) {
+        app.ui.plugin_windows.push((track, slot));
+    }
+}
+
 /// An instrument track's INSTRUMENT row: click opens a hosted instrument's plugin window,
 /// right-click (or click, when none is set) picks another instrument. A built-in's parameters
 /// open from that menu. Dropping an audio file on it loads the sampler.
@@ -512,8 +533,8 @@ pub(crate) fn instrument_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, r:
         None => empty_slot(ui.painter(), r, resp.hovered(), Mark::Dot),
     }
     let hosted = ins.is_some_and(|i| soundcraft_mix::is_third_party(&i.plugin));
-    if resp.clicked() && hosted && !app.ui.plugin_windows.contains(&(id, slot)) {
-        app.ui.plugin_windows.push((id, slot));
+    if resp.clicked() && hosted {
+        open_plugin(app, id, slot);
     }
     let menu_resp = if hosted { resp.clone().on_hover_text("Click: open instrument · right-click: change") } else { resp.clone() };
     let popup = if hosted { egui::Popup::context_menu(&menu_resp) } else { egui::Popup::menu(&menu_resp) };
@@ -611,8 +632,8 @@ pub(crate) fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: 
     if resp.clicked() && ins.is_some() {
         if ui.input(|i| i.modifiers.command) {
             let _ = app.run("mix.insert_bypass", json!({"track": id.0, "slot": slot}));
-        } else if !app.ui.plugin_windows.contains(&(id, slot)) {
-            app.ui.plugin_windows.push((id, slot));
+        } else {
+            open_plugin(app, id, slot);
         }
     }
     let cmd = if ui.ctx().os().is_mac() { "⌘" } else { "Ctrl+" };
@@ -634,6 +655,26 @@ pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, oc
         return;
     }
     if occupied {
+        if app.player.as_ref().is_some_and(|p| p.has_editor(id, slot)) {
+            let open = app.player.as_ref().is_some_and(|p| p.editor_open(id, slot));
+            if ui.button(if open { "Close Plugin Editor" } else { "Open Plugin Editor" }).clicked() {
+                if open {
+                    if let Some(p) = &app.player {
+                        p.close_editor(id, slot);
+                    }
+                } else {
+                    open_plugin(app, id, slot);
+                }
+                ui.close();
+            }
+        }
+        if ui.button("Edit Parameters…").clicked() {
+            if !app.ui.plugin_windows.contains(&(id, slot)) {
+                app.ui.plugin_windows.push((id, slot));
+            }
+            ui.close();
+        }
+        ui.separator();
         if ui.button("Bypass").clicked() {
             run_pick(app, ui, "mix.insert_bypass", json!({"track": id.0, "slot": slot}));
         }
@@ -677,7 +718,7 @@ pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     let current = app.engine.session().track(id).and_then(|t| t.instrument.clone());
     if let Some(info) = current.as_ref().and_then(|i| plugin_info(&i.plugin)) {
         ui.label(egui::RichText::new(info.name).strong());
-        if current.as_ref().is_some_and(|i| !soundcraft_mix::is_third_party(&i.plugin)) && ui.button("Edit Parameters…").clicked() {
+        if ui.button("Edit Parameters…").clicked() {
             if !app.ui.plugin_windows.contains(&(id, slot)) {
                 app.ui.plugin_windows.push((id, slot));
             }

@@ -675,22 +675,38 @@ impl SoundApp {
     /// Opens the insert just picked from its menu: a hosted plugin's own editor, else (a built-in
     /// plugin, no audio engine, or an editor that can't open here) its plugin window.
     fn open_inserted(&mut self) {
-        let Some((track, slot)) = self.pending_open.take() else { return };
+        let Some((track, slot)) = self.pending_open else { return };
         let Some(plugin) = self.engine.session().track(track).and_then(|t| t.mixer.inserts.get(slot).cloned().flatten()).map(|i| i.plugin) else {
+            self.pending_open = None;
             return;
         };
-        if soundcraft_mix::is_third_party(&plugin)
-            && let Some(p) = &self.player
-            && p.has_editor(track, slot)
-        {
-            match p.open_editor(track, slot) {
-                Ok(()) => return,
-                Err(e) => self.ui.status = format!("{}: {e}", mix_window::plugin_info(&plugin).map_or(plugin.as_str(), |i| i.name)),
+        if soundcraft_mix::is_third_party(&plugin) {
+            let Some((ready, has_editor)) = self.player.as_ref().map(|p| (p.plugin_ready(track, slot), p.has_editor(track, slot))) else {
+                // No player (headless or failed audio): fall back to the generic window.
+                self.pending_open = None;
+                mix_window::open_plugin(self, track, slot);
+                return;
+            };
+            if !ready {
+                // The player is still creating the instance; its editor handle appears with it.
+                // Keep the request for the next frame instead of opening the generic window now,
+                // which used to leave a ghost panel behind the plugin's own editor.
+                return;
             }
+            self.pending_open = None;
+            if has_editor {
+                if let Some(p) = &self.player
+                    && let Err(e) = p.open_editor(track, slot)
+                {
+                    self.ui.status = format!("{}: {e}", mix_window::plugin_info(&plugin).map_or(plugin.as_str(), |i| i.name));
+                }
+                return;
+            }
+            mix_window::open_plugin(self, track, slot);
+            return;
         }
-        if !self.ui.plugin_windows.contains(&(track, slot)) {
-            self.ui.plugin_windows.push((track, slot));
-        }
+        self.pending_open = None;
+        mix_window::open_plugin(self, track, slot);
     }
 
     /// Parameter edits made in plugin editors go into the session (one undo step per gesture).

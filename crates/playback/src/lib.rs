@@ -712,6 +712,13 @@ impl Player {
         out
     }
 
+    /// True once the plugin instance for this slot has been prepared (or its creation
+    /// refused). The editor handle is known by then, so the UI can tell a plugin without a
+    /// native editor from one whose instance is still being created.
+    pub fn plugin_ready(&self, track: TrackId, slot: usize) -> bool {
+        self.side().shadow.contains_key(&(track, slot))
+    }
+
     /// True when the plugin in this slot has its own editor.
     pub fn has_editor(&self, track: TrackId, slot: usize) -> bool {
         self.side().editors.contains_key(&(track, slot))
