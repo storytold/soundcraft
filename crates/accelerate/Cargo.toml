@@ -1,0 +1,20 @@
+[package]
+name = "soundcraft-accelerate"
+description = "Safe realtime vector DSP primitives backed by Apple Accelerate/vDSP with portable scalar fallbacks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"
+
+[dev-dependencies]
+rustfft.workspace = true

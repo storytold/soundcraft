@@ -3623,6 +3623,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-accelerate"
+version = "0.5.0"
+dependencies = [
+ "rustfft",
+]
+
+[[package]]
 name = "soundcraft-au-host"
 version = "0.12.1"
 dependencies = [
@@ -3687,6 +3694,7 @@ dependencies = [
  "rustfft",
  "serde",
  "serde_json",
+ "soundcraft-accelerate",
 ]
 
 [[package]]
