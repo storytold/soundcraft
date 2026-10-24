@@ -26,6 +26,12 @@ use std::sync::Arc;
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
 pub use soundcraft_model as model;
 
+/// Upper bound on journaled commands, so a long session cannot grow memory without limit.
+const MAX_JOURNAL_ENTRIES: usize = 10_000;
+/// Upper bound on a single journaled entry's params (serialized), so junk fields from MCP or the
+/// control channel cannot keep a huge blob alive for the life of the process.
+const MAX_JOURNAL_ENTRY_BYTES: usize = 64 * 1024; // 64 KiB
+
 /// Shuts the third-party plugin hosts down, running the module exit of every plugin binary they
 /// loaded. Call it at the end of `main`, once every plugin instance (mixer, player) is gone: a
 /// plugin that has been used can crash when its module exit only runs from an exit handler.
@@ -119,8 +125,9 @@ pub struct Engine {
     pub clipboard: Clipboard,
     pub transport_requests: Vec<TransportRequest>,
     pub transport: TransportStatus,
-    /// Command journal (id, params) for macro recording / agents.
-    pub journal: Vec<(String, Value)>,
+    /// Command journal (id, params) for macro recording / agents. Ring buffer: capped at
+    /// [`MAX_JOURNAL_ENTRIES`] entries of up to [`MAX_JOURNAL_ENTRY_BYTES`] params each.
+    pub journal: std::collections::VecDeque<(String, Value)>,
     /// Path of the session file, if saved.
     pub path: Option<String>,
     /// Revision counter; bumps on every document change but zoom/scroll (UI caches key on it).
@@ -160,7 +167,7 @@ impl Engine {
             clipboard: Clipboard::default(),
             transport_requests: Vec::new(),
             transport: TransportStatus::default(),
-            journal: Vec::new(),
+            journal: std::collections::VecDeque::new(),
             path: None,
             revision: 1,
             dirty: false,
@@ -339,7 +346,19 @@ impl Engine {
                     self.push_undo(spec.label, before);
                 }
                 if spec.journal {
-                    self.journal.push((id.to_string(), params.clone()));
+                    // Ring buffer with a per-entry cap: a hostile/large params value (junk fields,
+                    // huge arrays from MCP or the control channel) must not be kept whole for the
+                    // life of the process, and the journal must not grow without bound.
+                    let entry = (id.to_string(), params.clone());
+                    let clamped: (String, Value) = if serde_json::to_vec(&entry.1).map(|b| b.len() > MAX_JOURNAL_ENTRY_BYTES).unwrap_or(true) {
+                        (entry.0, json!({"__truncated__": true}))
+                    } else {
+                        entry
+                    };
+                    self.journal.push_back(clamped);
+                    if self.journal.len() > MAX_JOURNAL_ENTRIES {
+                        self.journal.pop_front();
+                    }
                 }
                 Ok(v)
             }
@@ -457,6 +476,39 @@ fn install_panic_hook() {
 
 fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
     p.downcast_ref::<&str>().map(ToString::to_string).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use super::*;
+
+    fn journaled_command(e: &mut Engine) {
+        // `track.new` is journaled (see its CommandSpec).
+        e.execute("track.new", &json!({})).unwrap();
+    }
+
+    #[test]
+    fn journal_is_bounded_to_max_entries() {
+        let mut e = Engine::default();
+        for _ in 0..MAX_JOURNAL_ENTRIES + 500 {
+            journaled_command(&mut e);
+        }
+        assert_eq!(e.journal.len(), MAX_JOURNAL_ENTRIES);
+        // The oldest entries were dropped: the first remaining id is not the first pushed.
+        assert!(e.journal.iter().all(|(id, _)| id == "track.new"));
+    }
+
+    #[test]
+    fn oversized_params_are_truncated_in_the_journal() {
+        let mut e = Engine::default();
+        let big = "x".repeat(MAX_JOURNAL_ENTRY_BYTES * 4);
+        e.execute("track.new", &json!({"name": big})).unwrap();
+        let (id, params) = e.journal.back().expect("a journaled entry");
+        assert_eq!(id, "track.new");
+        let sz = serde_json::to_vec(params).map(|b| b.len()).unwrap_or(usize::MAX);
+        assert!(sz <= 1024, "params are truncated, got {sz} bytes");
+        assert_eq!(params, &json!({"__truncated__": true}));
+    }
 }
 
 #[cfg(test)]
