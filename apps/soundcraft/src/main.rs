@@ -34,6 +34,19 @@ fn set_title(ctx: &egui::Context, title: String) {
     }
 }
 
+/// Closes the window after SoundCraft's Quit, and keeps it open while unsaved changes are asked
+/// about. On macOS a close that goes ahead is canceled and the app quits through
+/// `-[NSApplication terminate:]`, which still runs `on_exit`. Returns whether the app quits that way.
+/// On a Mac with a Touch Bar, AppKit crashes after eframe drops the window (storytold/craft-libs#3).
+fn close_window(app: &mut SoundApp, ctx: &egui::Context) -> bool {
+    if app.quit_requested {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    } else if ctx.input(|i| i.viewport().close_requested()) && dialogs::ask_to_save(app, "app.quit", &serde_json::json!({})) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    }
+    craft_quit::on_close_request(ctx)
+}
+
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // What the realtime audio thread logged is written here, off that thread.
@@ -56,11 +69,7 @@ impl eframe::App for App {
         for p in dropped {
             open_path(&mut self.0, &p);
         }
-        if self.0.quit_requested {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if ctx.input(|i| i.viewport().close_requested()) && dialogs::ask_to_save(&mut self.0, "app.quit", &serde_json::json!({})) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        }
+        close_window(&mut self.0, ctx);
         soundcraft_ui_egui::fit_window_to_screen(ctx);
         let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized.unwrap_or(false)));
         self.0.ui.window_maximized = maximized;
@@ -311,7 +320,61 @@ fn sane_window_size([w, h]: [f32; 2]) -> [f32; 2] {
 
 #[cfg(test)]
 mod tests {
-    use super::set_title;
+    use super::{close_window, set_title};
+    use egui::ViewportCommand::{CancelClose, Close};
+    use soundcraft_ui_egui::{Services, SoundApp, menus};
+
+    fn demo_app() -> SoundApp {
+        SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default())
+    }
+
+    /// Runs one frame of `close_window` in the root window, with or without a click on its close button.
+    /// Returns whether the app quits through the platform, and the root window's commands from that frame.
+    /// On macOS that quit is `terminate:` scheduled on the main queue, which a test binary never runs.
+    fn close_frame(app: &mut SoundApp, close: bool) -> (bool, Vec<egui::ViewportCommand>) {
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        if close {
+            input.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        }
+        let mut quits = false;
+        let mut out = ctx.run_ui(input, |ui| quits = close_window(app, ui.ctx()));
+        out.textures_delta.clear();
+        (quits, out.viewport_output.remove(&egui::ViewportId::ROOT).map(|o| o.commands).unwrap_or_default())
+    }
+
+    #[test]
+    fn closing_a_saved_session_quits_through_the_platform_on_macos() {
+        let mut app = demo_app();
+        let (quits, commands) = close_frame(&mut app, true);
+        assert!(app.dialogs.open.is_none());
+        assert_eq!(quits, cfg!(target_os = "macos"));
+        assert_eq!(commands.contains(&CancelClose), cfg!(target_os = "macos"), "on macOS the window stays for terminate: to close");
+    }
+
+    #[test]
+    fn closing_with_unsaved_changes_asks_and_does_not_quit() {
+        let mut app = demo_app();
+        app.run("mix.mute", serde_json::json!({"track": "Kick"})).unwrap();
+        let (quits, commands) = close_frame(&mut app, true);
+        assert_eq!(app.dialogs.open_name(), Some("save_changes"));
+        assert!(!quits);
+        assert!(commands.contains(&CancelClose));
+        assert!(!app.quit_requested);
+    }
+
+    #[test]
+    fn quit_from_the_menu_closes_the_window_then_quits_through_the_platform_on_macos() {
+        let mut app = demo_app();
+        menus::invoke_menu(&mut app, "app.quit", "");
+        assert!(app.quit_requested);
+        let (quits, commands) = close_frame(&mut app, false);
+        assert!(!quits);
+        assert!(commands.contains(&Close));
+        let (quits, commands) = close_frame(&mut app, true);
+        assert_eq!(quits, cfg!(target_os = "macos"));
+        assert_eq!(commands.contains(&CancelClose), cfg!(target_os = "macos"));
+    }
 
     #[test]
     fn the_title_is_sent_only_when_it_changes() {

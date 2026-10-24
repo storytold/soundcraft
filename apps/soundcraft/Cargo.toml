@@ -20,6 +20,7 @@ soundcraft-ui-egui.workspace = true
 soundcraft-playback.workspace = true
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links"] }
 egui.workspace = true
+craft-quit = { workspace = true, features = ["egui"] }
 serde_json.workspace = true
 log.workspace = true
 chrono.workspace = true
