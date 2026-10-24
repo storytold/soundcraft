@@ -80,7 +80,7 @@ fn load_from_fontconfig(pattern: &str, lang: Option<&str>) -> Option<FontData> {
     // The upper 16 bits carry a variable font's named instance; the face index is the lower 16.
     let index = lines.next()?.trim().parse::<u32>().ok()? & 0xFFFF;
     if let Some(lang) = lang
-        && !lines.next().unwrap_or_default().split('|').any(|l| lang_matches(l.trim(), lang))
+        && !lines.next().unwrap_or_default().split('|').any(|l| l.trim() == lang)
     {
         return None;
     }
@@ -95,19 +95,6 @@ fn load_from_fontconfig(pattern: &str, lang: Option<&str>) -> Option<FontData> {
     let mut font = FontData::from_owned(bytes);
     font.index = index;
     Some(font)
-}
-
-/// Does a fontconfig-reported language support `want`? `zh` matches any Chinese locale
-/// (`zh-cn`, `zh-hans`, `zh-tw`…): a Traditional-only face still draws most shared Han glyphs.
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-fn lang_matches(supported: &str, want: &str) -> bool {
-    supported == want || (want == "zh" && supported.starts_with("zh"))
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-#[allow(dead_code)]
-fn lang_matches(supported: &str, want: &str) -> bool {
-    supported == want
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -160,7 +147,9 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
     }
     fonts.families.insert(FontFamily::Name("bold".into()), bold_family);
     // Simplified Chinese before Hangul, so Han glyphs prefer the Simplified face (see CJK_SC).
-    if let Some(c) = load(CJK_SC, "sans-serif:lang=zh-cn", Some("zh"), system_fonts) {
+    // The lang check is exact: a Traditional-only face would render the simplified interface
+    // with Traditional glyph variants; such systems fall through to the candidate list below.
+    if let Some(c) = load(CJK_SC, "sans-serif:lang=zh-cn", Some("zh-cn"), system_fonts) {
         fonts.font_data.insert("system-cjk".into(), Arc::new(c));
         for family in fonts.families.values_mut() {
             family.push("system-cjk".into());
