@@ -373,6 +373,76 @@ pub fn pitch_shift(ch: &[Vec<f32>], semitones: f32, sample_rate: f32) -> Vec<Vec
     out
 }
 
+/// Which way [`vari_fi`] ramps the playback speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariFiChange {
+    /// From normal speed down to a complete stop.
+    SlowDown,
+    /// From a complete stop up to normal speed.
+    SpeedUp,
+}
+
+/// How much of the input [`vari_fi`] plays, and how long the result is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariFiSelection {
+    /// The result is as long as the input. Two thirds of the input are played: the first two
+    /// thirds for Speed Up, the last two thirds for Slow Down.
+    FitTo,
+    /// All of the input is played, and the result is 150 % of its length.
+    Extend,
+}
+
+/// Plays `ch` with the speed ramping between normal speed and a complete stop, so the pitch follows
+/// the speed. The speed is `1 - u²` for Slow Down and `1 - (1 - u)²` for Speed Up, where `u`
+/// runs from 0 to 1 over the result; both curves average 2/3 of normal speed. With `fades`, the
+/// gain follows the same curve: a fade-out for Slow Down and a fade-in for Speed Up. Every channel
+/// is read at the same positions.
+pub fn vari_fi(ch: &[Vec<f32>], change: VariFiChange, selection: VariFiSelection, fades: bool) -> Vec<Vec<f32>> {
+    let len = max_len(ch) as f64;
+    let (total, first, played) = match selection {
+        VariFiSelection::Extend => ((len * 1.5).round(), 0.0, len),
+        VariFiSelection::FitTo => {
+            let played = len * 2.0 / 3.0;
+            (len, if change == VariFiChange::SlowDown { len - played } else { 0.0 }, played)
+        }
+    };
+    let out_len = (total as usize).min(MAX_OFFLINE_SAMPLES);
+    let table = SincTable::new(0.97);
+    let hw = table.half_width;
+    // The fraction of the played input reached at `u`, and the speed there (0 to 1).
+    let at = |u: f64| -> (f64, f64) {
+        match change {
+            VariFiChange::SlowDown => ((3.0 * u - u * u * u) / 2.0, 1.0 - u * u),
+            VariFiChange::SpeedUp => {
+                let r = 1.0 - u;
+                (1.0 - (3.0 * r - r * r * r) / 2.0, 1.0 - r * r)
+            }
+        }
+    };
+    ch.iter()
+        .map(|x| {
+            let last = x.len() as i64 - 1;
+            (0..out_len)
+                .map(|n| {
+                    let (pos, speed) = at(n as f64 / total);
+                    let t = first + played * pos;
+                    let lo = (t - hw).ceil().max(0.0) as i64;
+                    let hi = ((t + hw).floor() as i64).min(last);
+                    let mut acc = 0.0f32;
+                    let mut j = lo;
+                    while j <= hi {
+                        if let Some(&v) = x.get(j as usize) {
+                            acc += v * table.at(t - j as f64);
+                        }
+                        j += 1;
+                    }
+                    if fades { acc * speed as f32 } else { acc }
+                })
+                .collect()
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------------------------
 // Generators and analysis
 

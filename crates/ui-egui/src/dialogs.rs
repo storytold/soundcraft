@@ -732,6 +732,13 @@ fn tempo_change_action(at: Samples, bpm: f64) -> (String, Value) {
     ("event.tempo".into(), json!({"bpm": bpm, "at": at}))
 }
 
+/// Vari-Fi's choices in the AudioSuite window: param id, label, default, and (value, name) pairs.
+const VARI_FI_CHOICES: [(&str, &str, f32, &[(f32, &str)]); 3] = [
+    ("change", "Change", 0.0, &[(0.0, "Slow Down"), (1.0, "Speed Up")]),
+    ("selection", "Selection", 0.0, &[(0.0, "Fit To"), (1.0, "Extend")]),
+    ("fades", "Fades", 1.0, &[(1.0, "On"), (0.0, "Off")]),
+];
+
 fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
     let Some(process) = app.ui.audiosuite.clone() else { return };
     let mut open = true;
@@ -761,6 +768,17 @@ fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
                 "varispeed" => {
                     let v = params.entry("speed".into()).or_insert(1.0);
                     ui.add(egui::Slider::new(v, 0.25..=4.0).text("Speed"));
+                }
+                "vari_fi" => {
+                    for (id, label, default, choices) in VARI_FI_CHOICES {
+                        let v = params.entry(id.to_string()).or_insert(default);
+                        ui.horizontal(|ui| {
+                            ui.label(label);
+                            for &(value, name) in choices {
+                                ui.radio_value(v, value, name);
+                            }
+                        });
+                    }
                 }
                 _ => {
                     ui.label("No parameters.");
@@ -821,6 +839,30 @@ mod tests {
         e.execute("edit.select", &json!({"clips": [clip.id.0]})).unwrap();
         assert!(d.open_for_command(&e, "clip.rename"));
         assert!(matches!(d.open, Some(Dialog::RenameClip { id, ref name }) if id == clip.id && *name == clip.name));
+    }
+
+    #[test]
+    fn vari_fi_menu_opens_the_speed_ramp_and_its_choices_reach_the_engine() {
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        crate::menus::invoke_menu(&mut app, "audiosuite.process", "AudioSuite > Pitch Shift > Vari-Fi");
+        assert_eq!(app.ui.audiosuite.as_deref(), Some("vari_fi"));
+        // Renders the Kick clip with `params` and returns its new length and samples.
+        let render = |params: Value| {
+            let mut e = soundcraft_engine::demo::demo_engine();
+            let clip = e.session().track_by_name("Kick").unwrap().clips()[0].id;
+            e.execute("audiosuite.process", &json!({"process": "vari_fi", "params": params, "clips": [clip.0]})).unwrap();
+            let c = e.session().track_by_name("Kick").unwrap().clips()[0].clone();
+            (c.length, e.session().pool.get(c.source().unwrap()).unwrap().buffer.channels.clone())
+        };
+        let defaults: serde_json::Map<String, Value> = VARI_FI_CHOICES.iter().map(|(id, _, d, _)| (id.to_string(), json!(d))).collect();
+        let (length, audio) = render(Value::Object(defaults));
+        assert!(render(json!({})) == (length, audio.clone()), "the window's defaults are the engine's");
+        let (extended, _) = render(json!({"selection": 1.0}));
+        assert_eq!(extended, (length as f64 * 1.5).round() as i64, "Extend makes the clip 150 % long");
+        let (_, fast) = render(json!({"change": 1.0}));
+        assert_ne!(fast, audio, "Speed Up renders a different ramp");
+        let (_, unfaded) = render(json!({"fades": 0.0}));
+        assert_ne!(unfaded, audio, "Fades Off renders without the fade");
     }
 
     #[test]

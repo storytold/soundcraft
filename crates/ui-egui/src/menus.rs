@@ -128,7 +128,7 @@ pub const AUDIOSUITE: &[(&str, &str)] = &[
     ("AudioSuite > Pitch Shift > Pitch II", "pitch_shift"),
     ("AudioSuite > Pitch Shift > Pitch Shift Legacy", "pitch_shift"),
     ("AudioSuite > Pitch Shift > Time Shift", "time_stretch"),
-    ("AudioSuite > Pitch Shift > Vari-Fi", "varispeed"),
+    ("AudioSuite > Pitch Shift > Vari-Fi", "vari_fi"),
     ("AudioSuite > Reverb > D-Verb", "room_reverb"),
     ("AudioSuite > Delay > Mod Delay III", "mod_delay"),
     ("AudioSuite > Modulation > Sci-Fi", "flanger"),

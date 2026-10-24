@@ -5,3 +5,4 @@ mod offline_meters;
 mod offline_normalize;
 mod plugins;
 mod transients;
+mod vari_fi;

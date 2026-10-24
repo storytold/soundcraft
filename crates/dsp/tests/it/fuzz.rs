@@ -46,6 +46,9 @@ proptest! {
         let _ = offline::detect_transients(&ch, a, a);
         let _ = offline::time_stretch(&ch, r, a);
         let _ = offline::pitch_shift(&ch, a, a);
+        let change = if n % 2 == 0 { offline::VariFiChange::SpeedUp } else { offline::VariFiChange::SlowDown };
+        let selection = if n % 3 == 0 { offline::VariFiSelection::Extend } else { offline::VariFiSelection::FitTo };
+        let _ = offline::vari_fi(&ch, change, selection, n % 5 == 0);
         let _ = offline::resample(&ch, n as u32, (n as u32).wrapping_mul(3) % 200_000);
         let mut m = ch.clone();
         offline::normalize(&mut m, a, n % 2 == 0);
