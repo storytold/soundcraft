@@ -66,6 +66,8 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().rect_filled(header, 0.0, t.panel_bg2);
     ui.painter().text(pos2(header.min.x + 8.0, header.center().y), Align2::LEFT_CENTER, "MIDI EDITOR", bold(11.5), t.header_text);
     let Some(cid) = target_clip(app) else {
+        // No clip to edit: the notes selected were another clip's.
+        app.midi.selected.clear();
         let track = {
             let s = app.engine.session();
             s.tracks.iter().find(|t| t.kind.is_midi() && s.edit.selected_tracks.contains(&t.id)).map(|t| (t.id, t.name.clone()))
@@ -145,6 +147,8 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     // Vertical range: centre on the notes the first time.
     let rows = (roll.height() / ROW_H).floor() as i32;
     if app.midi.clip != Some(cid) {
+        // Note numbers of another clip mean nothing in this one.
+        app.midi.selected.clear();
         let hi = sequence.notes.iter().map(|n| i32::from(n.pitch)).max().unwrap_or(72);
         let lo = sequence.notes.iter().map(|n| i32::from(n.pitch)).min().unwrap_or(48);
         app.midi.scroll = (127 - (hi + lo) / 2 - rows / 2) as f32 * ROW_H;

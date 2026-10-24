@@ -174,6 +174,7 @@ pub fn import(e: &mut Engine, path: &str, first: Option<TrackId>, at: Samples) -
             c.fade_in.len = scale(c.fade_in.len);
             c.fade_out.len = scale(c.fade_out.len);
             c.sync_point = scale(c.sync_point);
+            c.cut = c.cut.map(scale);
             c.gain_env.iter_mut().for_each(|(at, _)| *at = scale(*at));
             c.group = Some(group_id);
             c.sanitize();

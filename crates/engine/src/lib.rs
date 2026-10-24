@@ -305,7 +305,8 @@ impl Engine {
         if let Err(reason) = (spec.enabled)(self) {
             // A call that names its targets (tracks, clips, a range) does not need a selection;
             // the command itself validates them.
-            let names_targets = ["track", "tracks", "clip", "clips", "sources", "start", "end", "at"].iter().any(|k| params.get(k).is_some());
+            let names_targets =
+                ["track", "tracks", "clip", "clips", "crossfade", "sources", "start", "end", "at"].iter().any(|k| params.get(k).is_some());
             if !names_targets {
                 return Err(EngineError::Disabled(id.to_string(), reason));
             }
@@ -439,6 +440,7 @@ fn same_document(saved: &Session, doc: &Session) -> bool {
     to.timeline_selection = from.timeline_selection;
     to.selected_tracks.clone_from(&from.selected_tracks);
     to.selected_clips.clone_from(&from.selected_clips);
+    to.selected_crossfade = from.selected_crossfade;
     to.playhead = from.playhead;
     to.zoom = from.zoom;
     *saved == doc
