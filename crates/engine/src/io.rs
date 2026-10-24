@@ -1064,13 +1064,25 @@ fn back_up(file: &Path) {
     }
     let prefix = format!("{stem} backup ");
     let suffix = format!(".{ext}");
-    let numbers: Vec<u32> = std::fs::read_dir(&backups)
+    // #917: a symlinked `Backups/` still sends `create_dir_all`, the copy and every prune
+    // through the link, so the backups land wherever the link points. Refuse it outright.
+    if std::fs::symlink_metadata(&backups).is_ok_and(|m| m.file_type().is_symlink()) {
+        log::warn!("no backup of {}: {} is a link", file.display(), backups.display());
+        return;
+    }
+    let numbers: std::collections::BTreeSet<u32> = std::fs::read_dir(&backups)
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|f| f.file_name().to_str()?.strip_prefix(&prefix)?.strip_suffix(&suffix)?.parse().ok())
         .collect();
-    let Some(next) = numbers.iter().max().map_or(Some(1), |n| n.checked_add(1)) else {
+    // #917: the next number comes from the run the app itself wrote, not from the highest
+    // number on disk. A planted `Song backup 4294967295.scraft` used to make every save bail
+    // out (`checked_add` overflows) and turn backups off for good, and a planted
+    // `Song backup 4294967285.scraft` made every save prune the real backups, because pruning
+    // kept only the ten highest. Walk up from 1 while the name is taken, bounded by the run we
+    // actually recognise.
+    let Some(next) = (1..=BACKUP_RUN_LIMIT).find(|n| !numbers.contains(n)) else {
         log::warn!("no backup of {}: backup numbers are exhausted", file.display());
         return;
     };
@@ -1083,10 +1095,17 @@ fn back_up(file: &Path) {
         log::warn!("no backup of {}: {err}", file.display());
         return;
     }
-    for n in numbers.into_iter().filter(|n| n.saturating_add(10) <= next) {
+    // Keep the newest ten of the run, pruning only numbers this save could have written.
+    for n in numbers.range(..next).rev().skip(BACKUPS_KEPT - 1) {
         let _ = std::fs::remove_file(backups.join(format!("{prefix}{n}{suffix}")));
     }
 }
+
+/// How many backups of a session are kept (#426).
+const BACKUPS_KEPT: usize = 10;
+/// The highest backup number a save will look for. Ten backups cannot legitimately reach this,
+/// so anything at or above it came from outside the run this app writes.
+const BACKUP_RUN_LIMIT: u32 = 10_000;
 
 /// The file a session saved to `path` goes to: `path`, with `.scraft` added when it has no
 /// extension and isn't an existing file.
@@ -1788,10 +1807,56 @@ mod save_tests {
         std::fs::write(&path, b"session").unwrap();
         std::os::unix::fs::symlink(&outside, dir.join(format!("Project/Backups/Song backup {}.scraft", u32::MAX))).unwrap();
         back_up(&path);
-        let link = dir.join("Project/Backups/Song backup 1.scraft");
-        std::os::unix::fs::symlink(&outside, &link).unwrap();
-        assert!(copy_new(&path, &link).is_err());
+        // #917: the planted `u32::MAX` name no longer takes part in numbering, so the backup
+        // lands on the run the app actually writes and the link is left alone.
+        let made = dir.join("Project/Backups/Song backup 1.scraft");
+        assert_eq!(std::fs::read(&made).unwrap(), b"session", "the real backup was written");
+        assert_eq!(std::fs::read(&outside).unwrap(), b"sentinel", "the link target is untouched");
+        // A link at the number this save would use is still refused rather than followed.
+        let taken = dir.join("Project/Backups/Song backup 2.scraft");
+        std::os::unix::fs::symlink(&outside, &taken).unwrap();
+        back_up(&path);
+        assert!(copy_new(&path, &taken).is_err());
         assert_eq!(std::fs::read(&outside).unwrap(), b"sentinel");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #917: a planted `Song backup 4294967295.scraft` in a shared folder used to turn backups
+    /// off silently and permanently — `max().checked_add(1)` overflowed, so every save logged
+    /// "numbers are exhausted" and wrote nothing. Numbering now walks the run from 1.
+    #[test]
+    fn a_planted_high_backup_number_does_not_turn_backups_off() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-backups-planted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Backups")).unwrap();
+        let path = dir.join("Song.scraft");
+        std::fs::write(&path, b"session").unwrap();
+        std::fs::write(dir.join(format!("Backups/Song backup {}.scraft", u32::MAX)), b"planted").unwrap();
+        back_up(&path);
+        assert_eq!(std::fs::read(dir.join("Backups/Song backup 1.scraft")).unwrap(), b"session");
+        assert_eq!(std::fs::read(dir.join(format!("Backups/Song backup {}.scraft", u32::MAX))).unwrap(), b"planted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #917: a planted name inside the run still occupies its number, so pruning cannot be
+    /// talked into deleting the real backups around it.
+    #[test]
+    fn a_planted_number_inside_the_run_does_not_prune_the_real_backups() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-backups-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Backups")).unwrap();
+        let path = dir.join("Song.scraft");
+        for n in 1..=4 {
+            std::fs::write(&path, format!("version {n}").as_bytes()).unwrap();
+            back_up(&path);
+        }
+        // Plant a high in-run name, then save again: the newest ten are kept and the planted
+        // entry does not shift the numbering.
+        std::fs::write(dir.join("Backups/Song backup 900.scraft"), b"planted").unwrap();
+        std::fs::write(&path, b"version 5").unwrap();
+        back_up(&path);
+        assert_eq!(std::fs::read(dir.join("Backups/Song backup 1.scraft")).unwrap(), b"version 1");
+        assert_eq!(std::fs::read(dir.join("Backups/Song backup 900.scraft")).unwrap(), b"planted");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
