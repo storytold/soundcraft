@@ -1284,10 +1284,10 @@ fn as_audio_thread(audio: bool, f: impl FnOnce()) {
 #[cfg(not(target_arch = "wasm32"))]
 fn run_strips<T: Send>(work: &mut [T], f: impl Fn(&mut T) + Sync + Send) {
     use rayon::prelude::*;
-    if work.len() >= 4 {
-        // The workers render on behalf of this thread: on the audio thread, they are it too.
-        let audio = on_audio_thread();
-        work.par_iter_mut().for_each(|w| as_audio_thread(audio, || f(w)));
+    // The audio thread is not a rayon worker, so it would park on a latch waiting for the shared
+    // pool (also busy with offline work): it renders its strips itself.
+    if work.len() >= 4 && !on_audio_thread() {
+        work.par_iter_mut().for_each(|w| as_audio_thread(false, || f(w)));
     } else {
         work.iter_mut().for_each(f);
     }
@@ -2278,8 +2278,24 @@ mod audio_thread_tests {
 
     #[test]
     fn strips_rendered_for_the_audio_thread_count_as_the_audio_thread_and_only_then() {
-        assert!(seen_by_strips(true).iter().all(|&rt| rt), "a worker rendering for the audio thread is on it");
+        assert!(seen_by_strips(true).iter().all(|&rt| rt), "strips rendered for the audio thread are on it");
         assert!(seen_by_strips(false).iter().all(|&rt| !rt), "the workers don't stay marked afterwards");
+    }
+
+    #[test]
+    fn the_audio_thread_never_hands_strips_to_the_rayon_pool() {
+        let on_pool = std::thread::spawn(|| {
+            mark_audio_thread();
+            let mut work = vec![false; 8];
+            run_strips(&mut work, |w| {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                *w = rayon::current_thread_index().is_some();
+            });
+            work.into_iter().filter(|&p| p).count()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(on_pool, 0, "the audio thread must not block on the rayon pool");
     }
 }
 
