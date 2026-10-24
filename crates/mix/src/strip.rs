@@ -409,6 +409,12 @@ fn gate_mute_automation(t: &Track, strip: &mut Strip, blk: Block) {
     }
 }
 
+/// A strip keeps a pre-fader copy of its signal for pre-fader sends, and for its meter under
+/// Options › Pre-Fader Metering.
+pub(crate) fn needs_pre_tap(s: &Session, t: &Track) -> bool {
+    s.edit.pre_fader_metering || t.mixer.sends.iter().flatten().any(|x| x.pre_fader)
+}
+
 pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, live: &LiveInput<'_>, blk: Block) {
     let Block { pos, frames, any_solo } = blk;
     zero_buf(&mut strip.buf, frames);
@@ -433,7 +439,7 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
     run_inserts(t, strip, blk, &transport);
     let soloed_out = any_solo && !t.mixer.solo && !t.mixer.solo_safe && !receives_solo(s, t);
     strip.muted = t.mixer.mute || soloed_out;
-    if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
+    if needs_pre_tap(s, t) {
         strip.pre.resize_with(strip.buf.len(), Vec::new);
         for (d, src) in strip.pre.iter_mut().zip(strip.buf.iter()) {
             d.clear();

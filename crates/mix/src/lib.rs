@@ -82,7 +82,8 @@ pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
 use routing::{processing_order, structure_fingerprint};
 use strip::{
-    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
+    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, needs_pre_tap, note_insert_latency, process_strip, strip_channels,
+    strip_format,
 };
 #[cfg(test)]
 use strip::{DelayLine, MAX_LATENCY};
@@ -115,6 +116,8 @@ pub struct MixEngine {
     main_fmt: ChannelFormat,
     pub meters: HashMap<TrackId, StripMeter>,
     pub main_meter: StripMeter,
+    /// This block's Options › Pre-Fader Metering.
+    pre_fader_metering: bool,
     pub pan_law: PanLaw,
     /// Last rendered position end (to detect seeks).
     last_end: Samples,
@@ -163,6 +166,7 @@ impl MixEngine {
             main: vec![vec![0.0; max_block]; MAIN_CHANNELS],
             main_fmt: ChannelFormat::Stereo,
             meters: HashMap::new(),
+            pre_fader_metering: false,
             main_meter: StripMeter::default(),
             pan_law: PanLaw::Minus3,
             last_end: 0,
@@ -393,6 +397,7 @@ impl MixEngine {
 
     /// Silence what a seek leaves ringing, sync to the session and clear the block's accumulators.
     fn begin_block(&mut self, s: &Session, pos: Samples, frames: usize) {
+        self.pre_fader_metering = s.edit.pre_fader_metering;
         if pos != self.last_end {
             // Seek: silence held notes and ringing plugins.
             for st in self.strips.values_mut() {
@@ -460,7 +465,7 @@ impl MixEngine {
             let ch = st.buf.len();
             st.align.set(lmax_t.saturating_sub(st.latency), ch);
             st.align.process(&mut st.buf, frames);
-            if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
+            if needs_pre_tap(s, t) {
                 st.align_pre.set(lmax_t.saturating_sub(st.latency), ch);
                 st.align_pre.process(&mut st.pre, frames);
             }
@@ -602,7 +607,10 @@ impl MixEngine {
     /// Send, meter and pan a processed strip into the busses / main mix.
     fn route_strip(&mut self, t: &Track, strip: &mut Strip, pos: Samples, frames: usize) {
         let m = self.meters.entry(t.id).or_default();
-        m.measure(&strip.buf, frames, strip.gr);
+        // Options › Pre-Fader Metering: the pre-fader tap (after the inserts, before fader and
+        // VCA). On tracks it's delay-compensated like the post-fader signal; on auxes it isn't.
+        let pre = self.pre_fader_metering && strip.pre.len() == strip.buf.len();
+        m.measure(if pre { &strip.pre } else { &strip.buf }, frames, strip.gr);
         m.plugin_failures = strip.failures;
         let src_fmt = strip_format(t, strip.buf.len());
         let law = self.pan_law;
