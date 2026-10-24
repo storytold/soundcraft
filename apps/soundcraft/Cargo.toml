@@ -35,3 +35,7 @@ winresource = "0.1"
 muda = { version = "0.21.2", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSResponder"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Native GNOME/Wayland controls without a bundled title font.
+winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita-notitle"] }
