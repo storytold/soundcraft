@@ -45,3 +45,23 @@ and, at runtime, the operating system's own UI fonts when available (never redis
 | `assets/app-icon/soundcraft.ico` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
 | `assets/app-icon/hicolor/` | SoundCraft contributors | original, rendered from `icon.svg` (16–512 px PNGs and the scalable SVG) | MIT OR Apache-2.0 |
 | `docs/images/` | SoundCraft contributors | screenshots of SoundCraft rendered from the synthesised demo session | MIT OR Apache-2.0 |
+
+## Android launcher icons (soundcraft)
+
+`apps/soundcraft-android` ships the Android Studio new-project template's default launcher art, unmodified.
+The adaptive icon in `res/mipmap-anydpi-v26/` composes the foreground drawable with the template's
+background colour; the density folders hold the same stand-in at each scale.
+
+| Asset | Author | Source | Licence |
+|---|---|---|---|
+| `apps/soundcraft-android/android/app/src/main/res/drawable/ic_launcher_foreground.png` | The Android Open Source Project | Android Studio new-project template (default launcher art), unmodified | Apache-2.0 |
+| `apps/soundcraft-android/android/app/src/main/res/mipmap-hdpi/ic_launcher.png` | The Android Open Source Project | Android Studio new-project template (default launcher art), unmodified | Apache-2.0 |
+| `apps/soundcraft-android/android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png` | The Android Open Source Project | Android Studio new-project template (default launcher art), unmodified | Apache-2.0 |
+| `apps/soundcraft-android/android/app/src/main/res/mipmap-mdpi/ic_launcher.png` | The Android Open Source Project | Android Studio new-project template (default launcher art), unmodified | Apache-2.0 |
+| `apps/soundcraft-android/android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png` | The Android Open Source Project | Android Studio new-project template (default launcher art), unmodified | Apache-2.0 |
+| `apps/soundcraft-android/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png` | The Android Open Source Project | Android Studio new-project template (default launcher art), unmodified | Apache-2.0 |
+| `apps/soundcraft-android/android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png` | The Android Open Source Project | Android Studio new-project template (default launcher art), unmodified | Apache-2.0 |
+| `apps/soundcraft-android/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png` | The Android Open Source Project | Android Studio new-project template (default launcher art), unmodified | Apache-2.0 |
+| `apps/soundcraft-android/android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png` | The Android Open Source Project | Android Studio new-project template (default launcher art), unmodified | Apache-2.0 |
+| `apps/soundcraft-android/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png` | The Android Open Source Project | Android Studio new-project template (default launcher art), unmodified | Apache-2.0 |
+| `apps/soundcraft-android/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png` | The Android Open Source Project | Android Studio new-project template (default launcher art), unmodified | Apache-2.0 |

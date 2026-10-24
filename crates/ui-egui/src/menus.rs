@@ -222,7 +222,13 @@ pub fn tree() -> Vec<MenuNode> {
 
 pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::current();
-    egui::Panel::top("menu_bar").exact_size(24.0).frame(egui::Frame::NONE.fill(t.menu_bar).inner_margin(egui::Margin::symmetric(8, 2))).show(
+    // `MenuBar` makes its row exactly `interact_size.y` tall and centres the buttons in it.
+    // The desktop style leaves that at 18 pt, which fits the 24 pt bar, but the Android touch
+    // shell raises it to 40 pt: a fixed 24 pt bar then centres the text below its own bottom
+    // edge and the lower half of every label is clipped. Keep the desktop height and grow with
+    // the style, adding the frame's 2 pt top + 2 pt bottom margin.
+    let bar_height = 24.0_f32.max(ui.spacing().interact_size.y + 4.0);
+    egui::Panel::top("menu_bar").exact_size(bar_height).frame(egui::Frame::NONE.fill(t.menu_bar).inner_margin(egui::Margin::symmetric(8, 2))).show(
         ui,
         |ui| {
             egui::MenuBar::new().ui(ui, |ui| {

@@ -36,6 +36,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("playback", 4),
     ("automation", 5),
     ("ui-egui", 6),
+    ("android", 6),
 ];
 /// Standalone format crates: no workspace dependencies at all (publishable on their own).
 const STANDALONE: &[&str] = &["time", "audio-io", "midi", "video", "dsp"];
