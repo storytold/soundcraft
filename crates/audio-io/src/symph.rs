@@ -273,6 +273,9 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
     let mut scratch: Vec<Vec<f32>> = Vec::new();
     let mut frames: u64 = 0;
     let mut errors = 0usize;
+    // Frames of packets that failed to decode, written as silence once the channel count is known
+    // so that the audio after them keeps its place.
+    let mut lost: u64 = 0;
     loop {
         let packet = match reader.next_packet() {
             Ok(Some(packet)) => packet,
@@ -294,10 +297,12 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
             Ok(d) => d,
             Err(SymError::DecodeError(m)) => {
                 errors += 1;
-                log::debug!("skipping corrupt packet: {m}");
+                log::debug!("replacing corrupt packet with silence: {m}");
                 if errors > 1000 && frames == 0 {
                     return Err(AudioError::Malformed(format!("no decodable packets: {m}")));
                 }
+                let dur = packet.dur.saturating_sub(u64::from(packet.trim_start)).saturating_sub(u64::from(packet.trim_end));
+                lost = lost.saturating_add(dur.min(MAX_PACKET_FRAMES));
                 continue;
             }
             Err(SymError::IoError(_)) => break,
@@ -318,6 +323,7 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
         if frames.saturating_mul(ch as u64) > MAX_DECODE_SAMPLES {
             return Err(AudioError::TooLarge("decoded audio exceeds the 4 GiB limit".into()));
         }
+        frames = add_silence(&mut planar, ch, frames, &mut lost, count_only)?;
         if count_only {
             continue;
         }
@@ -332,9 +338,30 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
     if planar.is_empty() {
         planar = (0..usize::from(info.channels)).map(|_| Vec::new()).collect();
     }
+    frames = add_silence(&mut planar, usize::from(info.channels), frames, &mut lost, count_only)?;
     info.frames = if count_only { frames } else { planar.iter().map(Vec::len).min().unwrap_or(0) as u64 };
     let sample_rate = info.sample_rate;
     Ok((info, AudioBuffer { sample_rate, channels: planar }))
+}
+
+/// Count the pending `lost` frames of silence in place of undecodable packets toward `frames`,
+/// and append them to every one of `channels` channels unless `count_only`. `lost` is cleared.
+fn add_silence(planar: &mut [Vec<f32>], channels: usize, frames: u64, lost: &mut u64, count_only: bool) -> Result<u64> {
+    if *lost == 0 || channels == 0 {
+        return Ok(frames);
+    }
+    let n = std::mem::take(lost);
+    let frames = frames.saturating_add(n);
+    if frames.saturating_mul(channels as u64) > MAX_DECODE_SAMPLES {
+        return Err(AudioError::TooLarge("decoded audio exceeds the 4 GiB limit".into()));
+    }
+    if !count_only {
+        let n = usize::try_from(n).map_err(|_| AudioError::TooLarge("decoded audio exceeds the address space".into()))?;
+        for ch in planar.iter_mut() {
+            ch.resize(ch.len().saturating_add(n), 0.0);
+        }
+    }
+    Ok(frames)
 }
 
 pub(crate) fn probe(bytes: &[u8], detected: FileFormat) -> Result<AudioInfo> {
