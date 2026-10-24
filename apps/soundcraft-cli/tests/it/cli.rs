@@ -24,6 +24,20 @@ fn tmpdir(tag: &str) -> PathBuf {
     dir
 }
 
+/// `path` made absolute with links followed (`/var` becomes `/private/var` on macOS), as the server
+/// prints a root: without the `\\?\` prefix that `canonicalize` adds on Windows.
+fn resolved(path: &Path) -> PathBuf {
+    let path = std::fs::canonicalize(path).unwrap();
+    if !cfg!(windows) {
+        return path;
+    }
+    let text = path.to_str().unwrap();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    text.strip_prefix(r"\\?\").map_or(path.clone(), PathBuf::from)
+}
+
 /// Send `calls` (tool name, arguments) to `soundcraft-cli mcp <args>`; returns whether it exited
 /// cleanly, its stderr, and the stdout lines after `initialize`, one per call.
 fn mcp_session(args: &[&str], calls: &[(&str, Value)]) -> (bool, String, Vec<Value>) {
@@ -114,8 +128,7 @@ fn mcp_automation_roots_confine_the_server() {
 /// the two roots' common parent, `..` out of a root and a link out of one stay refused.
 #[test]
 fn mcp_automation_roots_take_several_folders() {
-    // Resolved, as the server shows the roots (`/var` is `/private/var` on macOS).
-    let base = std::fs::canonicalize(tmpdir("several")).unwrap();
+    let base = resolved(&tmpdir("several"));
     for d in ["in", "in2", "out", "out2", "outside"] {
         std::fs::create_dir_all(base.join(d)).unwrap();
     }
