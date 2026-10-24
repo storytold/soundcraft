@@ -145,7 +145,12 @@ pub(crate) fn is_wav(b: &[u8]) -> bool {
 /// missing): the metadata of a finished file, not samples.
 fn only_chunks_follow(b: &[u8], from: usize) -> bool {
     let mut pos = from;
+    let mut chunks = 0usize;
     while pos < b.len() {
+        chunks += 1;
+        if chunks > 100_000 {
+            return false;
+        }
         let (Some(id), Some(size)) = (tag(b, pos), le_u32(b, pos + 4)) else { return false };
         if !id.iter().all(|c| (0x20..0x7f).contains(c)) {
             return false;
@@ -195,8 +200,9 @@ pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
             // A size of 0 in a file whose RIFF size is right and that has only chunks after it is an
             // empty data chunk followed by metadata (LIST, bext, …); otherwise it is a recording
             // that was never finalised, and what follows is audio.
+            // Only the first data chunk is used, so its emptiness is decided once, not per chunk.
             let finished = u64::from(le_u32(b, 4).unwrap_or(0)) + 8 == b.len() as u64;
-            let empty = size32 == 0 && !is_rf64 && finished && only_chunks_follow(b, body);
+            let empty = data.is_none() && size32 == 0 && !is_rf64 && finished && only_chunks_follow(b, body);
             let len = if size32 == 0 && !is_rf64 && !empty { remaining } else { declared.min(remaining) };
             if data.is_none() {
                 data = Some((body, len));

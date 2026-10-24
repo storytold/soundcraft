@@ -85,3 +85,23 @@ fn a_data_chunk_with_audio_is_unchanged() {
     let file = riff(&[chunk(b"fmt ", &fmt16(1, 44_100)), chunk(b"data", &samples), list_info()]);
     assert_eq!(probe(&file, Some("wav")).unwrap().frames, 100);
 }
+
+/// #893: `only_chunks_follow` used to run for every empty `data` chunk, walking to the end of
+/// the file each time: parsing grew quadratically with the number of chunks and hung the app on
+/// import. Only the first `data` chunk's emptiness matters, so it is decided once.
+#[test]
+fn many_empty_data_chunks_parse_in_linear_time() {
+    let mut b = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0".to_vec();
+    b.extend_from_slice(&[1, 0, 1, 0, 0x80, 0xBB, 0, 0, 0, 0x77, 1, 0, 2, 0, 16, 0]);
+    for _ in 0..100_000 {
+        b.extend_from_slice(b"data\0\0\0\0");
+    }
+    for _ in 0..400_000 {
+        b.extend_from_slice(b"junk\0\0\0\0");
+    }
+    let n = u32::try_from(b.len() - 8).unwrap_or(u32::MAX);
+    b[4..8].copy_from_slice(&n.to_le_bytes());
+    let t = std::time::Instant::now();
+    let _ = probe(&b, Some("wav")).unwrap();
+    assert!(t.elapsed() < std::time::Duration::from_secs(1), "parse took {:?}", t.elapsed());
+}
