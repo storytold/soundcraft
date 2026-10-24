@@ -355,17 +355,17 @@ pub(crate) struct Writer<W> {
     failed: bool,
 }
 
+/// The optional header parts of a WAV file: BWF metadata, speaker mask, and whether to force RF64.
+#[derive(Clone, Copy)]
+pub(crate) struct HeaderExtras<'a> {
+    pub(crate) bwf: Option<&'a BwfInfo>,
+    pub(crate) mask: Option<u32>,
+    pub(crate) force_rf64: bool,
+}
+
 impl<W: Write + Seek> Writer<W> {
-    pub(crate) fn new(
-        mut out: W,
-        channels: usize,
-        sample_rate: u32,
-        depth: BitDepth,
-        dither: bool,
-        bwf: Option<&BwfInfo>,
-        mask: Option<u32>,
-        force_rf64: bool,
-    ) -> Result<Self> {
+    pub(crate) fn new(mut out: W, channels: usize, sample_rate: u32, depth: BitDepth, dither: bool, extras: HeaderExtras<'_>) -> Result<Self> {
+        let HeaderExtras { bwf, mask, force_rf64 } = extras;
         validate_layout(channels, sample_rate)?;
         let format = sample_format(depth);
         let start = out.stream_position()?;
@@ -449,7 +449,7 @@ pub(crate) fn encode(
     let mut out = Vec::new();
     out.try_reserve_exact(head.len().saturating_add(data_len).saturating_add(1))
         .map_err(|_| AudioError::TooLarge(format!("cannot allocate {data_len} bytes for WAV output")))?;
-    let mut w = Writer::new(Cursor::new(out), channels, buf.sample_rate, depth, dither, bwf, mask, force_rf64)?;
+    let mut w = Writer::new(Cursor::new(out), channels, buf.sample_rate, depth, dither, HeaderExtras { bwf, mask, force_rf64 })?;
     w.write(&buf.channels, frames)?;
     Ok(w.finish()?.into_inner())
 }
