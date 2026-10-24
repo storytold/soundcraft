@@ -51,6 +51,9 @@ sync_github_name = false
 [people.Momentum96]
 sync_github_name = true
 
+[people.justinjohn0306]
+sync_github_name = true
+
 [people.marcoarnulfo]
 real_name = "Marco Arnulfo"
 display_name = "Marco Arnulfo"
