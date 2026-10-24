@@ -612,6 +612,76 @@ fn env_db(env: &[(i64, f32)], at: i64) -> f32 {
     prev.map_or(0.0, |(_, v)| v)
 }
 
+/// Fold the volume `lane` into the gain envelope of clip `c` over the selection `r`.
+fn bake_volume_into_clip(c: &mut soundcraft_model::Clip, lane: &soundcraft_model::AutomationLane, base: f32, r: soundcraft_time::Range) {
+    let delta = |at: i64| lane.value_at(at, base) - base;
+    let sel0 = r.start.max(c.start);
+    let sel1 = r.end.min(c.end());
+    if sel1 <= sel0 {
+        return;
+    }
+    let rel = |at: i64| at - c.start;
+    let rel0 = rel(sel0);
+    let rel1 = rel(sel1);
+    // Later writes win, so the selection anchors replace any point they land on.
+    let mut pts: Vec<(i64, f32)> =
+        c.gain_env.iter().copied().filter(|&(at, _)| at < rel0.saturating_sub(1) || (sel1 < c.end() && at > rel1)).collect();
+    if rel0 > 0 {
+        pts.push((rel0 - 1, env_db(&c.gain_env, rel0 - 1)));
+    }
+    pts.push((rel0, env_db(&c.gain_env, rel0) + delta(sel0)));
+    for pt in lane.points.iter().filter(|pt| pt.at > sel0 && pt.at < sel1) {
+        let at = rel(pt.at);
+        pts.push((at, env_db(&c.gain_env, at) + delta(pt.at)));
+    }
+    // The clip's own gain points inside the selection keep their shape, offset by the lane.
+    for &(at, _) in c.gain_env.iter().filter(|&&(at, _)| at > rel0 && at < rel1) {
+        pts.push((at, env_db(&c.gain_env, at) + delta(c.start.saturating_add(at))));
+    }
+    if sel1 - 1 > sel0 {
+        let at = rel(sel1 - 1);
+        pts.push((at, env_db(&c.gain_env, at) + delta(sel1 - 1)));
+    }
+    if sel1 < c.end() {
+        pts.push((rel1, env_db(&c.gain_env, rel1)));
+    }
+    pts.sort_by_key(|p| p.0);
+    let mut env = Vec::new();
+    for p in pts {
+        if env.last().is_some_and(|q: &(i64, f32)| q.0 == p.0) {
+            env.pop();
+        }
+        env.push(p);
+    }
+    c.gain_env = env;
+}
+
+/// Clear the volume lane over `r` when the clips all sit inside it, else hold the fader there.
+fn reset_volume_lane(tr: &mut soundcraft_model::Track, lane: &soundcraft_model::AutomationLane, base: f32, r: soundcraft_time::Range) {
+    // Clearing the lane is only safe when no audio plays outside the selection; otherwise the
+    // held edge values outside would fall back to the fader level.
+    let clips_inside = tr.clips().iter().all(|c| c.start >= r.start && c.end() <= r.end);
+    let covers_all = clips_inside && lane.points.iter().all(|pt| pt.at >= r.start && pt.at < r.end);
+    let lane_m = tr.lane_mut(&AutoParam::Volume);
+    if covers_all {
+        lane_m.clear_range(r.start, r.end);
+    } else {
+        // Hold the fader across the selection and anchor the samples on either side, so the
+        // curve outside does not interpolate through the gap or keep the old level inside.
+        let before = (r.start > 0).then(|| lane.value_at(r.start - 1, base));
+        let after = lane.value_at(r.end, base);
+        lane_m.clear_range(r.start, r.end);
+        if let Some(v) = before {
+            lane_m.set_point(r.start - 1, v);
+        }
+        lane_m.set_point(r.start, base);
+        if r.end - 1 > r.start {
+            lane_m.set_point(r.end - 1, base);
+        }
+        lane_m.set_point(r.end, after);
+    }
+}
+
 fn vol_to_clip_gain(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "automation.volume_to_clip_gain", p)?;
     let r = range_param(e, "automation.volume_to_clip_gain", p)?;
@@ -620,72 +690,12 @@ fn vol_to_clip_gain(e: &mut Engine, p: &Value) -> Result<Value> {
         let Some(tr) = s.track_mut(*t) else { continue };
         let Some(lane) = tr.lane(&AutoParam::Volume).cloned().filter(|l| !l.points.is_empty()) else { continue };
         let base = tr.mixer.volume_db;
-        let delta = |at: i64| lane.value_at(at, base) - base;
         if let Some(pl) = tr.playlist_mut() {
             for c in pl.clips.iter_mut().filter(|c| c.range().overlaps(&r)) {
-                let sel0 = r.start.max(c.start);
-                let sel1 = r.end.min(c.end());
-                if sel1 <= sel0 {
-                    continue;
-                }
-                let rel = |at: i64| at - c.start;
-                let rel0 = rel(sel0);
-                let rel1 = rel(sel1);
-                // Later writes win, so the selection anchors replace any point they land on.
-                let mut pts: Vec<(i64, f32)> =
-                    c.gain_env.iter().copied().filter(|&(at, _)| at < rel0.saturating_sub(1) || (sel1 < c.end() && at > rel1)).collect();
-                if rel0 > 0 {
-                    pts.push((rel0 - 1, env_db(&c.gain_env, rel0 - 1)));
-                }
-                pts.push((rel0, env_db(&c.gain_env, rel0) + delta(sel0)));
-                for pt in lane.points.iter().filter(|pt| pt.at > sel0 && pt.at < sel1) {
-                    let at = rel(pt.at);
-                    pts.push((at, env_db(&c.gain_env, at) + delta(pt.at)));
-                }
-                // The clip's own gain points inside the selection keep their shape, offset by the lane.
-                for &(at, _) in c.gain_env.iter().filter(|&&(at, _)| at > rel0 && at < rel1) {
-                    pts.push((at, env_db(&c.gain_env, at) + delta(c.start.saturating_add(at))));
-                }
-                if sel1 - 1 > sel0 {
-                    let at = rel(sel1 - 1);
-                    pts.push((at, env_db(&c.gain_env, at) + delta(sel1 - 1)));
-                }
-                if sel1 < c.end() {
-                    pts.push((rel1, env_db(&c.gain_env, rel1)));
-                }
-                pts.sort_by_key(|p| p.0);
-                let mut env = Vec::new();
-                for p in pts {
-                    if env.last().is_some_and(|q: &(i64, f32)| q.0 == p.0) {
-                        env.pop();
-                    }
-                    env.push(p);
-                }
-                c.gain_env = env;
+                bake_volume_into_clip(c, &lane, base, r);
             }
         }
-        // Clearing the lane is only safe when no audio plays outside the selection; otherwise the
-        // held edge values outside would fall back to the fader level.
-        let clips_inside = tr.clips().iter().all(|c| c.start >= r.start && c.end() <= r.end);
-        let covers_all = clips_inside && lane.points.iter().all(|pt| pt.at >= r.start && pt.at < r.end);
-        let lane_m = tr.lane_mut(&AutoParam::Volume);
-        if covers_all {
-            lane_m.clear_range(r.start, r.end);
-        } else {
-            // Hold the fader across the selection and anchor the samples on either side, so the
-            // curve outside does not interpolate through the gap or keep the old level inside.
-            let before = (r.start > 0).then(|| lane.value_at(r.start - 1, base));
-            let after = lane.value_at(r.end, base);
-            lane_m.clear_range(r.start, r.end);
-            if let Some(v) = before {
-                lane_m.set_point(r.start - 1, v);
-            }
-            lane_m.set_point(r.start, base);
-            if r.end - 1 > r.start {
-                lane_m.set_point(r.end - 1, base);
-            }
-            lane_m.set_point(r.end, after);
-        }
+        reset_volume_lane(tr, &lane, base, r);
     }
     Ok(json!({}))
 }

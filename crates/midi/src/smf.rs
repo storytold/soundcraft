@@ -231,6 +231,84 @@ fn close_note(open: &mut OpenNotes, notes: &mut Vec<Note>, channel: u8, pitch: u
     notes.push(Note { pitch, velocity, release_velocity: release, channel, start, length });
 }
 
+fn data_byte(cur: &mut Cursor<'_>, event_at: usize) -> Result<u8, MidiError> {
+    let d = cur.u8()?;
+    if d & 0x80 != 0 {
+        return Err(MidiError::Invalid { offset: event_at, reason: "status byte where a data byte was expected" });
+    }
+    Ok(d)
+}
+
+/// Apply a meta event (other than End of Track) to the track name and the file-wide maps.
+fn apply_meta(kind: u8, data: &[u8], tick: i64, name: &mut Option<String>, g: &mut Globals) {
+    match kind {
+        0x03 if name.is_none() => {
+            *name = Some(String::from_utf8_lossy(data).into_owned());
+        }
+        0x06 => g.markers.push((tick, String::from_utf8_lossy(data).into_owned())),
+        0x51 => {
+            if let [a, b, c] = data {
+                let us = (u32::from(*a) << 16) | (u32::from(*b) << 8) | u32::from(*c);
+                if us > 0 {
+                    g.tempos.push((tick, 60_000_000.0 / f64::from(us)));
+                }
+            }
+        }
+        0x58 => {
+            if let [nn, dd, ..] = data
+                && *nn > 0
+                && *dd <= 7
+            {
+                g.meters.push((tick, *nn, 1u8 << *dd));
+            }
+        }
+        0x59 => {
+            if let [sf, mi, ..] = data {
+                let sf = *sf as i8;
+                if (-7..=7).contains(&sf) {
+                    g.key_sigs.push((tick, sf, *mi == 1));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Apply a channel voice event `(status, d1, d2)` at `tick`.
+fn channel_event(open: &mut OpenNotes, seq: &mut Sequence, (status, d1, d2): (u8, u8, u8), tick: i64) {
+    let channel = status & 0x0F;
+    match status & 0xF0 {
+        0x80 => close_note(open, &mut seq.notes, channel, d1, tick, d2),
+        0x90 if d2 == 0 => close_note(open, &mut seq.notes, channel, d1, tick, DEFAULT_RELEASE),
+        0x90 => {
+            if let Some(stack) = open.get_mut(usize::from(channel) * 128 + usize::from(d1)) {
+                stack.push_back((tick, d2));
+            }
+        }
+        0xA0 => seq.ctrls.push(CtrlEvent { tick, channel, kind: CtrlKind::PolyPressure(d1), value: i32::from(d2) }),
+        0xB0 => seq.ctrls.push(CtrlEvent { tick, channel, kind: CtrlKind::Cc(d1), value: i32::from(d2) }),
+        0xC0 => seq.ctrls.push(CtrlEvent { tick, channel, kind: CtrlKind::Program, value: i32::from(d1) }),
+        0xD0 => seq.ctrls.push(CtrlEvent { tick, channel, kind: CtrlKind::ChannelPressure, value: i32::from(d1) }),
+        _ => {
+            // 0xE0 pitch bend: LSB then MSB, centred on 8192.
+            let v = (i32::from(d2) << 7 | i32::from(d1)) - 8192;
+            seq.ctrls.push(CtrlEvent { tick, channel, kind: CtrlKind::PitchBend, value: v });
+        }
+    }
+}
+
+/// Close hanging notes at the end of the track.
+fn close_hanging(open: &mut OpenNotes, seq: &mut Sequence, tick: i64) {
+    for (key, stack) in open.iter_mut().enumerate() {
+        let channel = u8::try_from(key / 128).unwrap_or(0);
+        let pitch = u8::try_from(key % 128).unwrap_or(0);
+        for (start, velocity) in stack.drain(..) {
+            let length = tick.saturating_sub(start).max(1);
+            seq.notes.push(Note { pitch, velocity, release_velocity: DEFAULT_RELEASE, channel, start, length });
+        }
+    }
+}
+
 fn read_track(body: &[u8], base: usize, conv: TickConv, g: &mut Globals, budget: &mut usize) -> Result<SmfTrack, MidiError> {
     let mut cur = Cursor { data: body, pos: 0, base };
     let mut name: Option<String> = None;
@@ -265,38 +343,10 @@ fn read_track(body: &[u8], base: usize, conv: TickConv, g: &mut Globals, budget:
                 let kind = cur.u8()?;
                 let len = cur.vlq()?;
                 let data = cur.bytes(usize::try_from(len).unwrap_or(usize::MAX))?;
-                match kind {
-                    0x2F => break, // End of Track
-                    0x03 if name.is_none() => {
-                        name = Some(String::from_utf8_lossy(data).into_owned());
-                    }
-                    0x06 => g.markers.push((tick, String::from_utf8_lossy(data).into_owned())),
-                    0x51 => {
-                        if let [a, b, c] = data {
-                            let us = (u32::from(*a) << 16) | (u32::from(*b) << 8) | u32::from(*c);
-                            if us > 0 {
-                                g.tempos.push((tick, 60_000_000.0 / f64::from(us)));
-                            }
-                        }
-                    }
-                    0x58 => {
-                        if let [nn, dd, ..] = data
-                            && *nn > 0
-                            && *dd <= 7
-                        {
-                            g.meters.push((tick, *nn, 1u8 << *dd));
-                        }
-                    }
-                    0x59 => {
-                        if let [sf, mi, ..] = data {
-                            let sf = *sf as i8;
-                            if (-7..=7).contains(&sf) {
-                                g.key_sigs.push((tick, sf, *mi == 1));
-                            }
-                        }
-                    }
-                    _ => {}
+                if kind == 0x2F {
+                    break; // End of Track
                 }
+                apply_meta(kind, data, tick, &mut name, g);
             }
             0xF0 | 0xF7 => {
                 running = None;
@@ -305,53 +355,16 @@ fn read_track(body: &[u8], base: usize, conv: TickConv, g: &mut Globals, budget:
             }
             0x80..=0xEF => {
                 running = Some(status);
-                let channel = status & 0x0F;
-                let d1 = cur.u8()?;
-                if d1 & 0x80 != 0 {
-                    return Err(MidiError::Invalid { offset: event_at, reason: "status byte where a data byte was expected" });
-                }
+                let d1 = data_byte(&mut cur, event_at)?;
                 let needs_two = !matches!(status & 0xF0, 0xC0 | 0xD0);
-                let d2 = if needs_two {
-                    let d = cur.u8()?;
-                    if d & 0x80 != 0 {
-                        return Err(MidiError::Invalid { offset: event_at, reason: "status byte where a data byte was expected" });
-                    }
-                    d
-                } else {
-                    0
-                };
-                match status & 0xF0 {
-                    0x80 => close_note(&mut open, &mut seq.notes, channel, d1, tick, d2),
-                    0x90 if d2 == 0 => close_note(&mut open, &mut seq.notes, channel, d1, tick, DEFAULT_RELEASE),
-                    0x90 => {
-                        if let Some(stack) = open.get_mut(usize::from(channel) * 128 + usize::from(d1)) {
-                            stack.push_back((tick, d2));
-                        }
-                    }
-                    0xA0 => seq.ctrls.push(CtrlEvent { tick, channel, kind: CtrlKind::PolyPressure(d1), value: i32::from(d2) }),
-                    0xB0 => seq.ctrls.push(CtrlEvent { tick, channel, kind: CtrlKind::Cc(d1), value: i32::from(d2) }),
-                    0xC0 => seq.ctrls.push(CtrlEvent { tick, channel, kind: CtrlKind::Program, value: i32::from(d1) }),
-                    0xD0 => seq.ctrls.push(CtrlEvent { tick, channel, kind: CtrlKind::ChannelPressure, value: i32::from(d1) }),
-                    _ => {
-                        // 0xE0 pitch bend: LSB then MSB, centred on 8192.
-                        let v = (i32::from(d2) << 7 | i32::from(d1)) - 8192;
-                        seq.ctrls.push(CtrlEvent { tick, channel, kind: CtrlKind::PitchBend, value: v });
-                    }
-                }
+                let d2 = if needs_two { data_byte(&mut cur, event_at)? } else { 0 };
+                channel_event(&mut open, &mut seq, (status, d1, d2), tick);
             }
             _ => return Err(MidiError::Invalid { offset: event_at, reason: "system real-time/common status in a track" }),
         }
     }
 
-    // Close hanging notes at the end of the track.
-    for (key, stack) in open.iter_mut().enumerate() {
-        let channel = u8::try_from(key / 128).unwrap_or(0);
-        let pitch = u8::try_from(key % 128).unwrap_or(0);
-        for (start, velocity) in stack.drain(..) {
-            let length = tick.saturating_sub(start).max(1);
-            seq.notes.push(Note { pitch, velocity, release_velocity: DEFAULT_RELEASE, channel, start, length });
-        }
-    }
+    close_hanging(&mut open, &mut seq, tick);
     seq.sort();
     Ok(SmfTrack { name: name.unwrap_or_default(), sequence: seq })
 }
@@ -434,25 +447,8 @@ fn write_track(out: &mut Vec<u8>, mut events: Vec<WEvent>) -> Result<(), MidiErr
     Ok(())
 }
 
-/// Writes a format-1 Standard MIDI File at [`PPQ`] (960) ticks per quarter note.
-///
-/// Track 1 is a conductor track holding tempos, meters, key signatures and markers; every
-/// [`SmfTrack`] follows as its own track. Negative ticks are clamped to 0, data values are
-/// clamped to their MIDI ranges, and note-on velocity 0 is written as 1 (0 would mean
-/// note-off). At each tick note-offs are written before controllers, then note-ons.
-///
-/// Errors: invalid tempo (non-finite or <= 0 bpm), meter denominator that is not a power of two
-/// (1..=128), more than 65535 tracks, or a gap between events beyond the 28-bit delta limit.
-pub fn write_smf(smf: &Smf) -> Result<Vec<u8>, MidiError> {
-    let ntrks = u16::try_from(smf.tracks.len().saturating_add(1)).map_err(|_| MidiError::Write("more than 65535 tracks".into()))?;
-    let mut out = Vec::new();
-    out.extend_from_slice(b"MThd");
-    out.extend_from_slice(&6u32.to_be_bytes());
-    out.extend_from_slice(&1u16.to_be_bytes());
-    out.extend_from_slice(&ntrks.to_be_bytes());
-    out.extend_from_slice(&u16::try_from(PPQ).unwrap_or(960).to_be_bytes());
-
-    // Conductor track.
+/// The conductor track: tempos, meters, key signatures and markers.
+fn conductor_events(smf: &Smf) -> Result<Vec<WEvent>, MidiError> {
     let mut ev = Vec::new();
     for &(t, bpm) in &smf.tempos {
         if !bpm.is_finite() || bpm <= 0.0 {
@@ -476,75 +472,105 @@ pub fn write_smf(smf: &Smf) -> Result<Vec<u8>, MidiError> {
     for (t, text) in &smf.markers {
         ev.push(WEvent { tick: clamp_tick(*t), order: 3, bytes: meta(0x06, text.as_bytes())? });
     }
-    write_track(&mut out, ev)?;
+    Ok(ev)
+}
 
-    for track in &smf.tracks {
-        let mut ev = Vec::new();
-        if !track.name.is_empty() {
-            ev.push(WEvent { tick: 0, order: 0, bytes: meta(0x03, track.name.as_bytes())? });
-        }
-        let notes = &track.sequence.notes;
-        let mut ends: Vec<u64> = notes.iter().map(|n| clamp_tick(n.end()).max(clamp_tick(n.start).saturating_add(1))).collect();
-        let mut dropped = vec![false; notes.len()];
-        // The reader pairs offs with ons first-in first-out, so a note still sounding when the next
-        // same-pitch note starts would swap ends with it: trim it to that start. When two same-pitch
-        // notes start on the same tick they cannot be told apart, so only the longer one is written.
-        let mut order: Vec<usize> = (0..notes.len()).collect();
-        order.sort_by_key(|&i| {
-            notes.get(i).map_or((0, 0, 0, std::cmp::Reverse(0)), |n| {
-                (n.channel & 0x0F, n.pitch.min(127), clamp_tick(n.start), std::cmp::Reverse(ends.get(i).copied().unwrap_or(0)))
-            })
-        });
-        let mut prev: Option<usize> = None;
-        for &b in &order {
-            let Some(nb) = notes.get(b) else { continue };
-            if let Some(a) = prev
-                && let Some(na) = notes.get(a)
-                && na.channel & 0x0F == nb.channel & 0x0F
-                && na.pitch.min(127) == nb.pitch.min(127)
-            {
-                let (sa, sb) = (clamp_tick(na.start), clamp_tick(nb.start));
-                if sa == sb {
-                    if let Some(d) = dropped.get_mut(b) {
-                        *d = true;
-                    }
-                    continue;
+/// Trim notes still sounding when the next same-pitch note starts, and drop duplicates.
+fn trim_overlaps(notes: &[Note], ends: &mut [u64], dropped: &mut [bool]) {
+    // The reader pairs offs with ons first-in first-out, so a note still sounding when the next
+    // same-pitch note starts would swap ends with it: trim it to that start. When two same-pitch
+    // notes start on the same tick they cannot be told apart, so only the longer one is written.
+    let mut order: Vec<usize> = (0..notes.len()).collect();
+    order.sort_by_key(|&i| {
+        notes.get(i).map_or((0, 0, 0, std::cmp::Reverse(0)), |n| {
+            (n.channel & 0x0F, n.pitch.min(127), clamp_tick(n.start), std::cmp::Reverse(ends.get(i).copied().unwrap_or(0)))
+        })
+    });
+    let mut prev: Option<usize> = None;
+    for &b in &order {
+        let Some(nb) = notes.get(b) else { continue };
+        if let Some(a) = prev
+            && let Some(na) = notes.get(a)
+            && na.channel & 0x0F == nb.channel & 0x0F
+            && na.pitch.min(127) == nb.pitch.min(127)
+        {
+            let (sa, sb) = (clamp_tick(na.start), clamp_tick(nb.start));
+            if sa == sb {
+                if let Some(d) = dropped.get_mut(b) {
+                    *d = true;
                 }
-                if let Some(ea) = ends.get_mut(a)
-                    && sb < *ea
-                {
-                    *ea = sb;
-                }
-            }
-            prev = Some(b);
-        }
-        for (i, n) in notes.iter().enumerate() {
-            if dropped.get(i).copied().unwrap_or(false) {
                 continue;
             }
-            let ch = n.channel & 0x0F;
-            let pitch = n.pitch.min(127);
-            let start = clamp_tick(n.start);
-            let end = ends.get(i).copied().unwrap_or(start.saturating_add(1));
-            ev.push(WEvent { tick: start, order: 3, bytes: vec![0x90 | ch, pitch, n.velocity.clamp(1, 127)] });
-            ev.push(WEvent { tick: end, order: 1, bytes: vec![0x80 | ch, pitch, n.release_velocity.min(127)] });
+            if let Some(ea) = ends.get_mut(a)
+                && sb < *ea
+            {
+                *ea = sb;
+            }
         }
-        for c in &track.sequence.ctrls {
-            let ch = c.channel & 0x0F;
-            let v7 = c.value.clamp(0, 127) as u8;
-            let bytes = match c.kind {
-                CtrlKind::Cc(num) => vec![0xB0 | ch, num.min(127), v7],
-                CtrlKind::Program => vec![0xC0 | ch, v7],
-                CtrlKind::ChannelPressure => vec![0xD0 | ch, v7],
-                CtrlKind::PolyPressure(p) => vec![0xA0 | ch, p.min(127), v7],
-                CtrlKind::PitchBend => {
-                    let v = (c.value.saturating_add(8192)).clamp(0, 16383);
-                    vec![0xE0 | ch, (v & 0x7F) as u8, ((v >> 7) & 0x7F) as u8]
-                }
-            };
-            ev.push(WEvent { tick: clamp_tick(c.tick), order: 2, bytes });
+        prev = Some(b);
+    }
+}
+
+/// One track's events: its name, notes (with overlap trimming) and controllers.
+fn track_events(track: &SmfTrack) -> Result<Vec<WEvent>, MidiError> {
+    let mut ev = Vec::new();
+    if !track.name.is_empty() {
+        ev.push(WEvent { tick: 0, order: 0, bytes: meta(0x03, track.name.as_bytes())? });
+    }
+    let notes = &track.sequence.notes;
+    let mut ends: Vec<u64> = notes.iter().map(|n| clamp_tick(n.end()).max(clamp_tick(n.start).saturating_add(1))).collect();
+    let mut dropped = vec![false; notes.len()];
+    trim_overlaps(notes, &mut ends, &mut dropped);
+    for (i, n) in notes.iter().enumerate() {
+        if dropped.get(i).copied().unwrap_or(false) {
+            continue;
         }
-        write_track(&mut out, ev)?;
+        let ch = n.channel & 0x0F;
+        let pitch = n.pitch.min(127);
+        let start = clamp_tick(n.start);
+        let end = ends.get(i).copied().unwrap_or(start.saturating_add(1));
+        ev.push(WEvent { tick: start, order: 3, bytes: vec![0x90 | ch, pitch, n.velocity.clamp(1, 127)] });
+        ev.push(WEvent { tick: end, order: 1, bytes: vec![0x80 | ch, pitch, n.release_velocity.min(127)] });
+    }
+    for c in &track.sequence.ctrls {
+        let ch = c.channel & 0x0F;
+        let v7 = c.value.clamp(0, 127) as u8;
+        let bytes = match c.kind {
+            CtrlKind::Cc(num) => vec![0xB0 | ch, num.min(127), v7],
+            CtrlKind::Program => vec![0xC0 | ch, v7],
+            CtrlKind::ChannelPressure => vec![0xD0 | ch, v7],
+            CtrlKind::PolyPressure(p) => vec![0xA0 | ch, p.min(127), v7],
+            CtrlKind::PitchBend => {
+                let v = (c.value.saturating_add(8192)).clamp(0, 16383);
+                vec![0xE0 | ch, (v & 0x7F) as u8, ((v >> 7) & 0x7F) as u8]
+            }
+        };
+        ev.push(WEvent { tick: clamp_tick(c.tick), order: 2, bytes });
+    }
+    Ok(ev)
+}
+
+/// Writes a format-1 Standard MIDI File at [`PPQ`] (960) ticks per quarter note.
+///
+/// Track 1 is a conductor track holding tempos, meters, key signatures and markers; every
+/// [`SmfTrack`] follows as its own track. Negative ticks are clamped to 0, data values are
+/// clamped to their MIDI ranges, and note-on velocity 0 is written as 1 (0 would mean
+/// note-off). At each tick note-offs are written before controllers, then note-ons.
+///
+/// Errors: invalid tempo (non-finite or <= 0 bpm), meter denominator that is not a power of two
+/// (1..=128), more than 65535 tracks, or a gap between events beyond the 28-bit delta limit.
+pub fn write_smf(smf: &Smf) -> Result<Vec<u8>, MidiError> {
+    let ntrks = u16::try_from(smf.tracks.len().saturating_add(1)).map_err(|_| MidiError::Write("more than 65535 tracks".into()))?;
+    let mut out = Vec::new();
+    out.extend_from_slice(b"MThd");
+    out.extend_from_slice(&6u32.to_be_bytes());
+    out.extend_from_slice(&1u16.to_be_bytes());
+    out.extend_from_slice(&ntrks.to_be_bytes());
+    out.extend_from_slice(&u16::try_from(PPQ).unwrap_or(960).to_be_bytes());
+
+    write_track(&mut out, conductor_events(smf)?)?;
+    for track in &smf.tracks {
+        write_track(&mut out, track_events(track)?)?;
     }
     Ok(out)
 }
