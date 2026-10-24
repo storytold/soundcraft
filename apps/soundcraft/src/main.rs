@@ -52,6 +52,14 @@ impl eframe::App for App {
             menu.process(&mut self.0);
         }
         self.0.guarded(|app| app.logic(ctx));
+        // A language switch rebuilds the system menu bar in the new language.
+        #[cfg(target_os = "macos")]
+        if self.2.as_ref().is_some_and(|m| m.labelled_in != soundcraft_l10n::current()) {
+            match native_menu::NativeMenu::new(&self.0, ctx) {
+                Ok(m) => self.2 = Some(m),
+                Err(e) => log::warn!("could not rebuild the system menu bar for the new language: {e}"),
+            }
+        }
         #[cfg(target_os = "macos")]
         if let Some(menu) = &mut self.3 {
             menu.sync(&self.0);
@@ -86,7 +94,7 @@ impl eframe::App for App {
                 "{}{} — SoundCraft — {}",
                 self.0.engine.session().name,
                 if self.0.engine.is_dirty() { " *" } else { "" },
-                if self.0.ui.window == soundcraft_ui_egui::MainWindow::Edit { "Edit" } else { "Mix" }
+                if self.0.ui.window == soundcraft_ui_egui::MainWindow::Edit { soundcraft_l10n::t("Edit") } else { soundcraft_l10n::t("Mix") }
             )
         } else {
             format!("{} — SoundCraft", self.0.engine.session().name)

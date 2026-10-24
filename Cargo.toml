@@ -13,6 +13,7 @@ repository = "https://github.com/storytold/soundcraft"
 [workspace.dependencies]
 # internal
 soundcraft-time = { path = "crates/time" }
+soundcraft-l10n = { path = "crates/l10n" }
 soundcraft-audio-io = { path = "crates/audio-io" }
 soundcraft-midi = { path = "crates/midi" }
 soundcraft-video = { path = "crates/video" }

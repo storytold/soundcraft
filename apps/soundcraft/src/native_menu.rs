@@ -2,12 +2,14 @@
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSApplication;
+use soundcraft_l10n::Language;
 use soundcraft_ui_egui::{SoundApp, menus};
 use std::sync::mpsc::{Receiver, channel};
 
 struct Entry {
     item: CheckMenuItem,
     command: Option<String>,
+    /// The catalog path, or the language id for `ui.language` items.
     path: String,
     enabled: bool,
     checked: bool,
@@ -19,28 +21,37 @@ pub struct NativeMenu {
     events: Receiver<MenuEvent>,
     /// When `sync` last walked the entries; see `SYNC_EVERY`.
     last_sync: Option<std::time::Instant>,
+    /// The language the menu was built in: a switch rebuilds the whole bar (`main.rs`).
+    pub labelled_in: Language,
 }
 
 /// `sync` walks every menu leaf (~500), so it runs a few times a second rather than every frame,
 /// and right after a menu click.
 const SYNC_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// The translated text for an English source label.
+fn label(en: &str) -> String {
+    soundcraft_l10n::td(en).into_owned()
+}
+
 impl NativeMenu {
     /// Called on the UI thread after eframe has created NSApplication.
     pub fn new(app: &SoundApp, ctx: &egui::Context) -> muda::Result<Self> {
         let menu = Menu::new();
         let (tx, events) = channel();
-        let mut native = Self { menu, entries: Vec::new(), events, last_sync: None };
+        let mut native = Self { menu, entries: Vec::new(), events, last_sync: None, labelled_in: soundcraft_l10n::current() };
         let app_menu = Submenu::new("SoundCraft", true);
         native.add_item(app, &app_menu, "About SoundCraft", "", Some("window.about".into()))?;
         native.add_item(app, &app_menu, "Session Info", "", Some("window.session_info".into()))?;
         native.add_item(app, &app_menu, "Session Audio Health", "", Some("window.audio_health".into()))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
+        native.add_language_menu(app, &app_menu)?;
+        app_menu.append(&PredefinedMenuItem::separator())?;
         app_menu.append(&PredefinedMenuItem::services(None))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
         // muda's own Hide items take ⌘H and ⌥⌘H, which are Heal Separation and Copy to Send.
-        app_menu.append(&MenuItem::with_id("hide", "Hide SoundCraft", true, None))?;
-        app_menu.append(&MenuItem::with_id("hide_others", "Hide Others", true, None))?;
+        app_menu.append(&MenuItem::with_id("hide", soundcraft_l10n::t("Hide SoundCraft"), true, None))?;
+        app_menu.append(&MenuItem::with_id("hide_others", soundcraft_l10n::t("Hide Others"), true, None))?;
         app_menu.append(&PredefinedMenuItem::show_all(None))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
         native.add_item(app, &app_menu, "Quit SoundCraft", "", Some("app.quit".into()))?;
@@ -60,8 +71,23 @@ impl NativeMenu {
         Ok(native)
     }
 
+    /// SoundCraft › Language: one item per supported language, checked for the current one.
+    /// Items dispatch `ui.language` and carry the language id in `path`.
+    fn add_language_menu(&mut self, app: &SoundApp, parent: &Submenu) -> muda::Result<()> {
+        let submenu = Submenu::new(soundcraft_l10n::t("Language"), true);
+        let current = soundcraft_l10n::current();
+        for lang in Language::ALL {
+            let name = lang.native_name();
+            let item = CheckMenuItem::new(name, true, current == lang, None)?;
+            submenu.append(&item)?;
+            self.entries.push(Entry { item, command: Some("ui.language".into()), path: lang.id().into(), enabled: true, checked: current == lang });
+        }
+        let _ = app;
+        parent.append(&submenu)
+    }
+
     fn add_branch(&mut self, app: &SoundApp, node: &menus::MenuNode, aliases: &[(&str, &str)]) -> muda::Result<Submenu> {
-        let submenu = Submenu::new(&node.label, true);
+        let submenu = Submenu::new(label(&node.label), true);
         for child in &node.children {
             if child.children.is_empty() {
                 self.add_item(app, &submenu, &child.label, &child.path, menus::command_for_path(&child.path, aliases))?;
@@ -72,10 +98,10 @@ impl NativeMenu {
         Ok(submenu)
     }
 
-    fn add_item(&mut self, app: &SoundApp, parent: &Submenu, label: &str, path: &str, command: Option<String>) -> muda::Result<()> {
+    fn add_item(&mut self, app: &SoundApp, parent: &Submenu, en_label: &str, path: &str, command: Option<String>) -> muda::Result<()> {
         let (enabled, checked) = menus::item_state(app, path, command.as_deref());
         // egui owns keyboard shortcuts, so a key press is dispatched only once.
-        let item = CheckMenuItem::new(label, enabled, checked, None);
+        let item = CheckMenuItem::new(label(en_label), enabled, checked, None)?;
         parent.append(&item)?;
         self.entries.push(Entry { item, command, path: path.into(), enabled, checked });
         Ok(())
@@ -92,13 +118,16 @@ impl NativeMenu {
                 if event.id == "hide" { ns.hide(None) } else { ns.hideOtherApplications(None) }
             } else if let Some(entry) = self.entries.iter().find(|e| e.item.id() == &event.id)
                 && let Some(command) = &entry.command
-                && menus::item_state(app, &entry.path, Some(command)).0
             {
-                if entry.path.is_empty() && command.starts_with("window.") {
-                    // The application menu's About / Session Info open their window (never close it).
-                    let _ = app.run(command, serde_json::json!({"value": true}));
-                } else {
-                    menus::invoke_menu(app, command, &entry.path);
+                if command == "ui.language" {
+                    let _ = app.run(command, serde_json::json!({"language": entry.path}));
+                } else if menus::item_state(app, &entry.path, Some(command)).0 {
+                    if entry.path.is_empty() && command.starts_with("window.") {
+                        // The application menu's About / Session Info open their window (never close it).
+                        let _ = app.run(command, serde_json::json!({"value": true}));
+                    } else {
+                        menus::invoke_menu(app, command, &entry.path);
+                    }
                 }
             }
         }

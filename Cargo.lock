@@ -4296,6 +4296,7 @@ dependencies = [
  "soundcraft-audio-io",
  "soundcraft-automation",
  "soundcraft-engine",
+ "soundcraft-l10n",
  "soundcraft-playback",
  "soundcraft-ui-egui",
  "winit",
@@ -4402,6 +4403,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-l10n"
+version = "0.12.1"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "soundcraft-midi"
 version = "0.15.0"
 dependencies = [
@@ -4482,6 +4490,7 @@ dependencies = [
  "soundcraft-clap-host",
  "soundcraft-dsp",
  "soundcraft-engine",
+ "soundcraft-l10n",
  "soundcraft-midi",
  "soundcraft-mix",
  "soundcraft-model",

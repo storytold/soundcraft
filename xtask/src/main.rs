@@ -23,6 +23,7 @@ fn cargo(args: &[&str]) -> Result<(), String> {
 /// Layer table: crate name (minus `soundcraft-`) → layer. Apps and xtask are exempt.
 const LAYERS: &[(&str, u8)] = &[
     ("time", 0),
+    ("l10n", 0),
     ("audio-io", 0),
     ("midi", 0),
     ("video", 0),
