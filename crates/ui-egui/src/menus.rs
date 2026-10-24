@@ -222,28 +222,29 @@ pub fn tree() -> Vec<MenuNode> {
 
 pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::current();
+    crate::i18n::set_current(crate::i18n::resolve(&app.ui.language));
     egui::Panel::top("menu_bar").exact_size(24.0).frame(egui::Frame::NONE.fill(t.menu_bar).inner_margin(egui::Margin::symmetric(8, 2))).show(
         ui,
         |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("SoundCraft", |ui| {
-                    if ui.button("About SoundCraft").clicked() {
+                ui.menu_button(crate::i18n::tr("SoundCraft"), |ui| {
+                    if ui.button(crate::i18n::tr("About SoundCraft")).clicked() {
                         app.ui.show_about = true;
                     }
-                    if ui.button("Session Info").clicked() {
+                    if ui.button(crate::i18n::tr("Session Info")).clicked() {
                         app.ui.show_session_info = true;
                     }
-                    if ui.button("Session Audio Health").clicked() {
+                    if ui.button(crate::i18n::tr("Session Audio Health")).clicked() {
                         let _ = app.run("window.audio_health", json!({"value": true}));
                     }
                     ui.separator();
-                    if ui.button("Quit").clicked() {
+                    if ui.button(crate::i18n::tr("Quit")).clicked() {
                         let _ = crate::dialogs::run_or_ask(app, "app.quit", json!({}));
                     }
                 });
                 let extra = ui_aliases();
                 for root in tree() {
-                    ui.menu_button(&root.label, |ui| {
+                    ui.menu_button(crate::i18n::tr(&root.label), |ui| {
                         for c in &root.children {
                             menu_node(app, ui, c, &extra);
                             if c.path == "File > Open" {
@@ -255,7 +256,7 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                         }
                         if root.label == "AudioSuite" {
                             ui.separator();
-                            ui.label(egui::RichText::new("Processes selected clips offline").small().color(t.text_dim));
+                            ui.label(egui::RichText::new(crate::i18n::tr("Processes selected clips offline")).small().color(t.text_dim));
                         }
                         if root.label == "Window" {
                             ui.separator();
@@ -304,7 +305,7 @@ fn instrument_track(s: &soundcraft_model::Session) -> Option<soundcraft_model::T
 
 fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str, &str)]) {
     if !n.children.is_empty() {
-        ui.menu_button(&n.label, |ui| {
+        ui.menu_button(crate::i18n::tr(&n.label), |ui| {
             for c in &n.children {
                 menu_node(app, ui, c, extra);
             }
@@ -313,7 +314,7 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
     }
     let id = command_for_path(&n.path, extra);
     let (enabled, checked) = item_state(app, &n.path, id.as_deref());
-    let label = live_label(app, id.as_deref()).unwrap_or_else(|| n.label.clone());
+    let label = live_label(app, id.as_deref()).unwrap_or_else(|| crate::i18n::tr(&n.label).to_string());
     let label = if checked { format!("✔ {label}") } else { label };
     let shortcut = id.as_deref().and_then(shortcut_for).unwrap_or("");
     let btn = egui::Button::new(label).shortcut_text(crate::shortcuts::shortcut_label(shortcut, ui.ctx().os().is_mac()));

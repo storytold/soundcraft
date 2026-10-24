@@ -13,6 +13,7 @@ pub mod docking;
 pub mod edit_window;
 pub mod extra_windows;
 pub mod fonts;
+pub mod i18n;
 pub mod icons;
 pub mod menus;
 pub mod midi_editor;
@@ -126,6 +127,13 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// Interface language: "auto" (follow the system) or a catalog code (see [`i18n`]).
+    #[serde(default = "language_default")]
+    pub language: String,
+}
+
+fn language_default() -> String {
+    "auto".to_string()
 }
 
 impl Default for UiState {
@@ -186,6 +194,7 @@ impl Default for UiState {
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
+            language: language_default(),
         }
     }
 }
