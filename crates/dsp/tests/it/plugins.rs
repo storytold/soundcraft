@@ -513,6 +513,103 @@ fn saturator_adds_harmonics_and_stays_bounded() {
     assert!(spec[third - 1..=third + 1].iter().cloned().fold(f32::MIN, f32::max) > -30.0);
 }
 
+/// Amplitude of the `freq` component of `x` (a whole number of cycles keeps it exact).
+fn tone_level(x: &[f32], freq: f32) -> f32 {
+    let (mut re, mut im) = (0.0f64, 0.0f64);
+    for (i, v) in x.iter().enumerate() {
+        let w = f64::from(TAU * freq / SR) * i as f64;
+        re += f64::from(*v) * w.cos();
+        im += f64::from(*v) * w.sin();
+    }
+    (2.0 * (re * re + im * im).sqrt() / x.len() as f64) as f32
+}
+
+/// A Subharmonic with only the wet path and wide filters, so a band's octave reaches the output.
+fn subharmonic_wet() -> Box<dyn Plugin> {
+    let mut p = prepared("subharmonic");
+    p.set_param("mix", 100.0);
+    p.set_param("hp_freq", 5.0);
+    p.set_param("lp_freq", 1000.0);
+    p
+}
+
+#[test]
+fn subharmonic_adds_the_octave_below_each_range_band() {
+    for (range, lower, upper) in [(0.0, 120.0, 180.0), (1.0, 80.0, 120.0), (2.0, 60.0, 90.0), (3.0, 40.0, 60.0)] {
+        for (band, freq) in [("lower", lower), ("upper", upper)] {
+            let mut p = subharmonic_wet();
+            p.set_param("range", range);
+            p.set_param("lower_gain", if band == "lower" { 0.0 } else { -120.0 });
+            p.set_param("upper_gain", if band == "upper" { 0.0 } else { -120.0 });
+            let out = run(p.as_mut(), &[sine(freq, 0.5, 96_000)]);
+            // One second after the filters settle: a whole number of cycles of both tones.
+            let tail = &out[0][48_000..];
+            let sub = tone_level(tail, freq / 2.0);
+            assert!(sub > 0.2, "range {range} {band} band: {sub} at {} Hz", freq / 2.0);
+            assert!(sub > 4.0 * tone_level(tail, freq), "range {range} {band} band keeps its input tone");
+        }
+    }
+}
+
+#[test]
+fn subharmonic_mix_keeps_one_path_at_full_level() {
+    // A 1 kHz tone is far above every band, so the output is the dry path alone.
+    for (mix, dry) in [(0.0, 1.0), (25.0, 1.0), (50.0, 1.0), (75.0, 0.5), (100.0, 0.0)] {
+        let mut p = prepared("subharmonic");
+        p.set_param("mix", mix);
+        let out = run(p.as_mut(), &[sine(1000.0, 0.5, 48_000)]);
+        let level = tone_level(&out[0][24_000..], 1000.0);
+        assert!((level - 0.5 * dry).abs() < 0.01, "mix {mix}: dry level {level}");
+    }
+    // The wet path is at full level from 50 % up and at half level at 25 %.
+    let wet = |mix: f32| {
+        let mut p = prepared("subharmonic");
+        p.set_param("mix", mix);
+        p.set_param("wet_solo", 1.0);
+        let out = run(p.as_mut(), &[sine(60.0, 0.5, 96_000)]);
+        tone_level(&out[0][48_000..], 30.0)
+    };
+    let full = wet(50.0);
+    assert!(full > 0.1, "wet level {full}");
+    assert!((wet(100.0) - full).abs() < 0.01 * full);
+    assert!((wet(25.0) - 0.5 * full).abs() < 0.01 * full);
+}
+
+#[test]
+fn subharmonic_solo_plays_one_band_and_mutes_the_dry_signal() {
+    let level = |solo: &str, gain: f32| {
+        let mut p = prepared("subharmonic");
+        p.set_param("lower_gain", gain);
+        p.set_param(solo, 1.0);
+        let x = sine(60.0, 0.5, 96_000).iter().zip(sine(1000.0, 0.5, 96_000)).map(|(a, b)| a + b).collect();
+        let out = run(p.as_mut(), &[x]);
+        let tail = &out[0][48_000..];
+        (tone_level(tail, 30.0), tone_level(tail, 1000.0))
+    };
+    let (sub, dry) = level("lower_solo", 0.0);
+    assert!(sub > 0.1 && dry < 0.01, "lower solo: sub {sub}, dry {dry}");
+    // With the soloed band turned off nothing else plays, though the upper band is on.
+    let (sub, dry) = level("lower_solo", -120.0);
+    assert!(sub < 0.01 && dry < 0.01, "silent lower solo: sub {sub}, dry {dry}");
+    let (sub, dry) = level("upper_solo", -120.0);
+    assert!(sub > 0.05 && dry < 0.01, "upper solo: sub {sub}, dry {dry}");
+}
+
+#[test]
+fn subharmonic_drive_keeps_every_character_bounded() {
+    for character in 0..6 {
+        let mut p = subharmonic_wet();
+        p.set_param("input", 18.0);
+        p.set_param("lower_gain", 24.0);
+        p.set_param("upper_gain", 24.0);
+        p.set_param("drive", 18.0);
+        p.set_param("character", character as f32);
+        let out = run(p.as_mut(), &[sine(60.0, 1.0, 48_000)]);
+        let top = peak(&out[0][24_000..]);
+        assert!(top > 0.5 && top < 1.5, "character {character}: peak {top}");
+    }
+}
+
 #[test]
 fn lofi_quantizes() {
     let mut p = prepared("lofi");
