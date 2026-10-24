@@ -251,12 +251,13 @@ fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
     }
     app.edit_layout.content_h = content_h;
     let clip_rect = Rect::from_min_max(pos2(full.min.x, tl.min.y), pos2(full.max.x, tl.max.y));
+    let solo_muted = soundcraft_mix::solo_muted_tracks(app.engine.session());
     for (id, r) in app.edit_layout.rows.clone() {
         let row = rect(r);
         if row.max.y >= clip_rect.min.y && row.min.y <= clip_rect.max.y {
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(row));
             child.set_clip_rect(clip_rect);
-            track_row(app, &mut child, TrackId(id), row, tl, &cols);
+            track_row(app, &mut child, TrackId(id), row, tl, &cols, &solo_muted);
         }
     }
     // Below the tracks a click clears the selection and a double-click opens New Tracks.
@@ -808,7 +809,7 @@ fn views_button(app: &mut SoundApp, ui: &mut Ui, rulers: Rect) {
 
 // ---- track rows ------------------------------------------------------------------------------
 
-fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect, tl: Rect, cols: &[Column]) {
+fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect, tl: Rect, cols: &[Column], solo_muted: &[bool]) {
     let t = Tokens::current();
     let s = app.engine.session_arc();
     let Some(track) = s.track(id) else { return };
@@ -826,7 +827,8 @@ fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect, tl: Rect, 
     ui.painter().rect_filled(Rect::from_min_size(head.min, vec2(STRIP_W, head.height())), 0.0, rgb(track.color));
     ui.painter().line_segment([pos2(head.min.x, row.max.y + 0.5), pos2(tl.max.x, row.max.y + 0.5)], Stroke::new(1.0, t.border));
     ui.painter().hline(head.min.x + STRIP_W..=head.max.x, head.min.y + 0.5, Stroke::new(1.0, t.edge_light));
-    track_header(app, ui, track, head, selected, head_bg);
+    let implied = s.track_index(id).and_then(|i| solo_muted.get(i).copied()).unwrap_or(false);
+    track_header(app, ui, track, head, selected, head_bg, implied);
     // Lane.
     ui.painter().vline(tl.min.x - 0.5, row.y_range(), Stroke::new(1.0, t.border));
     let painter = ui.painter().with_clip_rect(lane.intersect(ui.clip_rect()));
@@ -908,7 +910,8 @@ fn playlist_lanes(app: &mut SoundApp, ui: &mut Ui, track: &Track, row: Rect, mai
     }
 }
 
-fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, selected: bool, head_bg: Color32) {
+/// `solo_muted`: the solo mutes this track (the implied-mute shade of its Mute key).
+fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, selected: bool, head_bg: Color32, solo_muted: bool) {
     let t = Tokens::current();
     let id = track.id;
     // Drag the bottom edge to resize (snaps to the height presets).
@@ -1057,12 +1060,11 @@ fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, sele
     let m = &track.mixer;
     if h >= 37.0 {
         let (records, mixes) = (track.kind.has_playlist(), track.kind != TrackKind::Master);
-        let implied = !m.solo && app.engine.session().tracks.iter().any(|t| t.mixer.solo);
         let keys = [
             (HeaderKey::Rec, m.record_arm, false, "mix.record_arm", records),
             (HeaderKey::Input, m.input_monitor, false, "mix.input_monitor", records),
             (HeaderKey::Solo, m.solo, false, "mix.solo", mixes),
-            (HeaderKey::Mute, m.mute, implied, "mix.mute", mixes),
+            (HeaderKey::Mute, m.mute, solo_muted, "mix.mute", mixes),
         ];
         for (i, (key, lit, implied, cmd, shown)) in keys.into_iter().enumerate() {
             if shown && header_toggle(ui, at(23.0 + i as f32 * 26.0, 20.0, 16.0, 16.0), id, key, lit, implied).clicked() {
