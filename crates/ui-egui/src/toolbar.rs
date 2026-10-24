@@ -132,6 +132,7 @@ fn mode_click(app: &mut SoundApp, m: EditMode, mods: egui::Modifiers) {
     };
 }
 
+/// Zoom out, waveform zoom, zoom in, fit-to-window, and the five zoom presets below them.
 fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
     group(ui, 128.0, 52.0, |ui, _| {
         ui.vertical(|ui| {
@@ -316,6 +317,8 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
     }
 }
 
+/// The grid/nudge picker: musical values send their English source string to the engine (it is
+/// the value id), the rest are plain quantities.
 fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str) {
     egui::Popup::menu(resp).show(|ui| {
         // The value sent stays the English source; only the label is translated.
@@ -340,6 +343,7 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str) {
     });
 }
 
+/// Loop, stop, play, record on top; return-to-zero, rewind, fast forward and go-to-end below.
 fn transport(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let playing = app.is_playing();

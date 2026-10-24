@@ -455,7 +455,8 @@ fn strip_silence_form(
     (action, rename_from)
 }
 
-/// Show the open dialog, if any.
+/// Show the open dialog, if any. Titles and buttons are translated at display time; the
+/// `Dialog` payload keeps the English source strings so a language switch can't corrupt values.
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     audiosuite_window(app, ctx);
     crate::bounce::show(app, ctx);

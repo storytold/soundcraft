@@ -147,6 +147,8 @@ pub struct UiState {
 }
 
 impl Default for UiState {
+    /// The interface out of the box: Edit window with the track and clip lists, English, dark
+    /// theme, 1× scale.
     fn default() -> Self {
         UiState {
             recent_sessions: Vec::new(),

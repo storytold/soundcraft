@@ -224,6 +224,8 @@ pub fn tree() -> Vec<MenuNode> {
     roots
 }
 
+/// The in-window menu bar: the SoundCraft app menu (About, Language, Quit) followed by the
+/// incumbent's catalog tree, translated at display time.
 pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::current();
     egui::Panel::top("menu_bar").exact_size(24.0).frame(egui::Frame::NONE.fill(t.menu_bar).inner_margin(egui::Margin::symmetric(8, 2))).show(
@@ -320,6 +322,8 @@ fn instrument_track(s: &soundcraft_model::Session) -> Option<soundcraft_model::T
     s.tracks.iter().find(|t| t.kind == soundcraft_model::TrackKind::Instrument && s.edit.selected_tracks.contains(&t.id)).map(|t| t.id)
 }
 
+/// One menu entry: submenus recurse, leaves resolve their command through the English catalog
+/// path and show the translated label.
 fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str, &str)]) {
     if !n.children.is_empty() {
         ui.menu_button(td(&n.label), |ui| {
@@ -364,6 +368,8 @@ pub fn item_state(app: &SoundApp, path: &str, id: Option<&str>) -> (bool, bool) 
     (enabled, checked_state(app, path, id))
 }
 
+/// Whether the item shows a check mark. Match keys are English paths and command ids; the
+/// native Language items carry the language id in `path`.
 fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
     let e = &app.engine.session().edit;
     match id {
@@ -391,8 +397,9 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
         Some("window.ui_customization") => app.extra.show_ui_customization,
         Some("window.config_auto_update") => app.extra.auto_update_config,
         Some("view.mix_section") => path.rsplit(" > ").next().map(mix_section_id).is_some_and(|s| app.ui.mix_views.iter().any(|v| v == s)),
-        // Native Language items carry the language id in `path`.
-        Some("ui.language") => app.ui.language == path,
+        // Native Language items carry the language id in `path`; both sides parse, so a stored
+        // alias (`zh-CN`) still marks the zh-Hans item.
+        Some("ui.language") => Language::parse(path) == Language::parse(&app.ui.language),
         _ => false,
     }
 }

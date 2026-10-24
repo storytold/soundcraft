@@ -156,12 +156,8 @@ mod tests {
     fn english_is_the_identity() {
         for s in ["File", "Bounce Mix...", ""] {
             assert_eq!(Language::English.translate(s), s);
-            assert_eq!(td_dyn(s), s);
+            assert_eq!(Language::English.translate_dyn(s).as_ref(), s);
         }
-    }
-
-    fn td_dyn(s: &str) -> String {
-        Language::English.translate_dyn(s).into_owned()
     }
 
     /// Every zh-Hans entry is a real translation: non-empty, no stray whitespace. An entry
@@ -191,17 +187,14 @@ mod tests {
         assert_eq!(zh_hans::ENTRIES.len(), zh_hans::ENTRIES.iter().map(|(en, _)| *en).collect::<std::collections::HashSet<_>>().len());
     }
 
-    /// Templates fill their placeholders. (Sets the global language; restored after.)
+    /// Templates fill their placeholders. (Sets the global language; other tests pass explicit
+    /// `Language` values, so the global doesn't affect them.)
     #[test]
     fn templates_fill_placeholders() {
-        soundcraft_l10n_set_current_for_test();
+        set_current(Language::SimplifiedChinese);
         assert_eq!(tf("Undo {step}", &[("step", "剪切")]), "撤销 剪切");
         assert_eq!(tf("No template here", &[]), "No template here");
         // An unknown template falls back to English and still fills in.
         assert_eq!(tf("No {x} entry", &[("x", "zh")]), "No zh entry");
-    }
-
-    fn soundcraft_l10n_set_current_for_test() {
-        set_current(Language::SimplifiedChinese);
     }
 }

@@ -170,8 +170,9 @@ impl SoundApp {
         self.last_frame = Some(self.uptime);
         crate::control::expire_gestures(self);
         crate::control::drain(self, ctx);
-        // The catalog reads the global, so follow the state even when it was patched
-        // (`ui.set`, a restored ui.json) rather than set through `ui.language`.
+        // The catalog reads the global, so follow the state even when it was patched (`ui.set`,
+        // a restored ui.json) rather than set through `ui.language` — after the drain above, so
+        // a request that just landed applies to this frame's draw and menu rebuild check.
         soundcraft_l10n::set_current(soundcraft_l10n::Language::parse(&self.ui.language).unwrap_or_default());
         self.note_recent_session();
         self.apply_editor_edits();

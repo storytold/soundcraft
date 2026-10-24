@@ -86,6 +86,7 @@ impl NativeMenu {
         parent.append(&submenu)
     }
 
+    /// One catalog subtree, translated at display time; leaves go through `add_item`.
     fn add_branch(&mut self, app: &SoundApp, node: &menus::MenuNode, aliases: &[(&str, &str)]) -> muda::Result<Submenu> {
         let submenu = Submenu::new(label(&node.label), true);
         for child in &node.children {
@@ -98,6 +99,7 @@ impl NativeMenu {
         Ok(submenu)
     }
 
+    /// One leaf: a checked menu item whose label is the translation of the English source.
     fn add_item(&mut self, app: &SoundApp, parent: &Submenu, en_label: &str, path: &str, command: Option<String>) -> muda::Result<()> {
         let (enabled, checked) = menus::item_state(app, path, command.as_deref());
         // egui owns keyboard shortcuts, so a key press is dispatched only once.
@@ -107,6 +109,8 @@ impl NativeMenu {
         Ok(())
     }
 
+    /// Dispatches menu clicks: Hide items locally, Language items through `ui.language`, the
+    /// rest through the shared menu dispatch.
     pub fn process(&mut self, app: &mut SoundApp) {
         while let Ok(event) = self.events.try_recv() {
             // A click changes state (and Cocoa flips the item's check mark): sync on the next pass.
