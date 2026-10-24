@@ -680,4 +680,43 @@ mod tests {
         assert_eq!(ch[0][50], 1.0);
         fade(&mut ch, 1000, 1000, FadeShape::SCurve);
     }
+
+    /// #922: a peak near zero makes the f32 gain `target / peak` overflow to infinity, so
+    /// nonzero samples became ±inf and zeros became NaN. `scale_to` falls back to f64 for that
+    /// case; AudioSuite Normalize stores the result as a new source, so the NaNs persist.
+    #[test]
+    fn normalize_leaves_a_subnormal_peak_finite() {
+        for per_channel in [false, true] {
+            let mut ch = vec![vec![1e-40, 0.0, -1e-40]];
+            normalize(&mut ch, 0.0, per_channel);
+            for v in ch[0].iter() {
+                assert!(v.is_finite(), "per_channel={per_channel}: {v} is not finite");
+            }
+            // A near-silent buffer still normalizes: the peaks reach the target, computed in f64.
+            assert!((ch[0][0] - 1.0).abs() < 1e-6, "per_channel={per_channel}: {:?}", ch[0]);
+            assert!((ch[0][1] - 0.0).abs() < 1e-6, "per_channel={per_channel}: {:?}", ch[0]);
+            assert!((ch[0][2] + 1.0).abs() < 1e-6, "per_channel={per_channel}: {:?}", ch[0]);
+        }
+    }
+
+    #[test]
+    fn normalize_still_works_on_ordinary_audio() {
+        // The peak (here -0.5) reaches the target; everything else scales with it.
+        let mut ch = vec![vec![0.25f32, -0.5, 0.25]];
+        normalize(&mut ch, 0.0, false);
+        assert!((ch[0][0] - 0.5).abs() < 1e-6, "{:?}", ch[0]);
+        assert!((ch[0][1] + 1.0).abs() < 1e-6, "{:?}", ch[0]);
+
+        // Per-channel normalizes each channel to the target on its own.
+        let mut ch = vec![vec![0.5f32, -0.5], vec![0.25, -0.25]];
+        normalize(&mut ch, -6.0, true);
+        let half = db_to_gain(-6.0);
+        assert!((ch[0][0] - half).abs() < 1e-6, "{:?}", ch[0]);
+        assert!((ch[1][0] - half).abs() < 1e-6, "{:?}", ch[1]);
+
+        // Silence is still left alone.
+        let mut ch = vec![vec![0.0f32; 4]];
+        normalize(&mut ch, 0.0, false);
+        assert_eq!(ch[0], vec![0.0f32; 4]);
+    }
 }
