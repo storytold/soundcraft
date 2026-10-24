@@ -53,12 +53,21 @@ pub fn load_bundle(path: &Path) -> Result<Vec<Vst3Descriptor>, Vst3Error> {
         .collect())
 }
 
+/// Loads and instantiates one class from an explicitly named bundle. Desktop hosts call this in
+/// a disposable helper before admitting the same plugin into the main process.
+pub fn validate_bundle_instance(path: &Path, id: &str) -> Result<(), Vst3Error> {
+    let cid = parse_id(id).ok_or_else(|| Vst3Error::NotFound(id.to_string()))?;
+    let bundle = Bundle::load(path)?;
+    let _instance = bundle.instantiate(&cid)?;
+    Ok(())
+}
+
 /// Scans `dirs` (uncached). Unloadable files are logged and skipped; the first plugin with a
 /// given id wins.
 pub fn scan_paths(dirs: &[PathBuf]) -> Vec<Vst3Descriptor> {
     let mut out: Vec<Vst3Descriptor> = Vec::new();
     for path in paths::find_bundles(dirs) {
-        match load_bundle(&path) {
+        match crate::isolated_scan::probe(&path) {
             Ok(ds) => {
                 for d in ds {
                     if !out.iter().any(|o| o.id == d.id) {
@@ -77,7 +86,7 @@ fn ensure_scanned(r: &mut Registry) -> &Vec<Vst3Descriptor> {
     if r.scanned.is_none() {
         let mut dirs = paths::default_search_paths();
         dirs.extend(r.extra_dirs.iter().cloned());
-        r.scanned = Some(scan_paths(&dirs));
+        r.scanned = Some(crate::isolated_scan::scan_cached(&dirs, false));
     }
     r.scanned.get_or_insert_with(Vec::new)
 }
@@ -93,9 +102,13 @@ pub fn cached() -> Option<Vec<Vst3Descriptor>> {
 
 pub fn rescan() -> Vec<Vst3Descriptor> {
     let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
-    r.scanned = None;
     r.failed.clear();
-    ensure_scanned(&mut r).clone()
+    crate::isolated_scan::clear_failed_validations();
+    let mut dirs = paths::default_search_paths();
+    dirs.extend(r.extra_dirs.iter().cloned());
+    let scanned = crate::isolated_scan::scan_cached(&dirs, true);
+    r.scanned = Some(scanned.clone());
+    scanned
 }
 
 pub fn add_search_dir(dir: &Path) -> usize {
@@ -207,6 +220,8 @@ fn instantiate_raw(id: &str) -> Result<(Instance, &'static PluginInfo), Vst3Erro
         }
         ensure_scanned(&mut r).iter().find(|d| d.id == id).cloned().ok_or_else(|| Vst3Error::NotFound(id.to_string()))?
     };
+    // Desktop discovery already validated this exact bundle stamp in a disposable child. Create
+    // the one live instance here instead of repeating a blocking 15-second safety check.
     let made = Bundle::load(&desc.path).and_then(|b| b.instantiate(&cid));
     let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
     match made {

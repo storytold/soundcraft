@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 soundcraft-dsp.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 log.workspace = true
 
@@ -21,7 +22,7 @@ libloading = "0.9"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSString"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSWindow", "NSGraphics"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSRunningApplication", "NSResponder", "NSView", "NSWindow", "NSGraphics"] }
 
 # The Windows editor host window (a top-level HWND the plugin view's child window lives in).
 [target.'cfg(windows)'.dependencies]

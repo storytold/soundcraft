@@ -41,6 +41,8 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod isolated_scan;
 pub mod scan;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -63,6 +65,14 @@ pub const ID_PREFIX: &str = "vst3:";
 /// The factory class category of audio processors (the only classes SoundCraft lists).
 pub const AUDIO_MODULE_CLASS: &str = "Audio Module Class";
 
+/// Marks a disposable scanner/validator process as a background helper before any plugin can
+/// initialise AppKit. On macOS this prevents the helper executable from creating another
+/// SoundCraft icon in the Dock; elsewhere it is a no-op.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn prepare_isolated_helper() {
+    ffi::prepare_isolated_helper();
+}
+
 /// The 16-byte class id inside a `vst3:<32 hex digits>` SoundCraft id (`None` for other ids).
 pub fn parse_id(id: &str) -> Option<[u8; 16]> {
     let hex = id.strip_prefix(ID_PREFIX)?;
@@ -78,7 +88,7 @@ pub fn parse_id(id: &str) -> Option<[u8; 16]> {
 }
 
 /// One plugin found by a scan.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Vst3Descriptor {
     /// SoundCraft id: `vst3:<class_id>`.
     pub id: String,
@@ -216,6 +226,13 @@ pub fn shutdown() {
 /// The audio module classes in one `.vst3` bundle or file.
 pub fn load_bundle(path: &Path) -> Result<Vec<Vst3Descriptor>, Vst3Error> {
     api::load_bundle(path)
+}
+
+/// Loads and instantiates one class from an explicitly named bundle. The desktop executable uses
+/// this only in its disposable VST3 validator process.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn validate_bundle_instance(path: &Path, id: &str) -> Result<(), Vst3Error> {
+    registry::validate_bundle_instance(path, id)
 }
 
 /// Creates a plugin by `vst3:<class id>`, prepared for 48 kHz stereo with 1024-frame blocks (like
