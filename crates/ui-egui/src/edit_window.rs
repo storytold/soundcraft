@@ -4,7 +4,7 @@ use crate::dialogs::Dialog;
 use crate::spot::Spot;
 use crate::theme::{Tokens, bold, clip_colors, regular, rgb};
 use crate::widgets::{groove, level_pos, meter_pos, raised_key, shade};
-use crate::{Gesture, SoundApp, toolbar};
+use crate::{Gesture, MainWindow, SoundApp, toolbar};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
 use soundcraft_engine::edit as ops;
@@ -209,12 +209,16 @@ fn universe(app: &mut SoundApp, ui: &mut Ui) {
     }
 }
 
-fn dock_tabs(app: &mut SoundApp, ui: &mut Ui) {
+pub(crate) fn dock_tabs(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let r = ui.max_rect();
     let mut x = r.min.x + 10.0;
+    let edit_on = app.ui.mix_separate || app.ui.window == MainWindow::Edit;
+    let mix_on = !app.ui.mix_separate && app.ui.window == MainWindow::Mix;
     for (label, on, id) in [
+        ("EDIT", edit_on, "window.edit"),
         ("MIDI EDITOR", app.ui.show_midi_editor, "window.midi_editor"),
+        ("MIXER", mix_on, "window.mix"),
         ("MEMORY LOCATIONS", app.ui.show_memory_locations, "window.memory_locations"),
         ("UNDO HISTORY", app.ui.show_undo_history, "window.undo_history"),
     ] {
@@ -231,7 +235,7 @@ fn dock_tabs(app: &mut SoundApp, ui: &mut Ui) {
     }
 }
 
-fn status_bar(app: &mut SoundApp, ui: &mut Ui) {
+pub(crate) fn status_bar(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let r = ui.max_rect();
     let s = app.engine.session();

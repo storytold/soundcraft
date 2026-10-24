@@ -16,6 +16,16 @@ pub fn strip_width(narrow: bool) -> f32 {
 }
 
 pub fn show(app: &mut SoundApp, ui: &mut Ui) {
+    // The same status line and switch bar as the Edit window, so the bar does not move when the
+    // page changes. Distinct panel ids keep the separate Mix viewport independent.
+    egui::Panel::bottom("edit_status_mix")
+        .exact_size(22.0)
+        .frame(egui::Frame::NONE.fill(Tokens::current().toolbar_bg))
+        .show(ui, |ui| crate::edit_window::status_bar(app, ui));
+    egui::Panel::bottom("lower_dock_tabs_mix")
+        .exact_size(22.0)
+        .frame(egui::Frame::NONE.fill(Tokens::current().panel_bg2))
+        .show(ui, |ui| crate::edit_window::dock_tabs(app, ui));
     crate::docking::show(app, ui, crate::MainWindow::Mix);
 }
 
