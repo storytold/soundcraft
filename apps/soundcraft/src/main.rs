@@ -204,10 +204,21 @@ fn app_icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result {
+    // A plugin scan's child process (see `plugin_folders::start`): load one file, answer, exit.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(reply) = soundcraft_ui_egui::plugin_folders::scan_child(&args) {
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), "{reply}");
+        let _ = std::io::stdout().flush();
+        // Run the module exits now, from `main`, not from the exit handler: a plugin whose
+        // `ExitDll` waits for its own threads deadlocks inside `exit()` (Native Instruments' Bite
+        // never ends the process and the scan waits for its timeout), but ends in a second here.
+        soundcraft_engine::shutdown_plugin_hosts();
+        return Ok(());
+    }
     // First, so every start-up record (and the engine's panic hook, installed with the first
     // Engine) is captured; see `logging`.
     let logger = logging::install();
-    let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("SoundCraft {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -275,6 +286,9 @@ fn main() -> eframe::Result {
             app.preset_dir = prefs_path().and_then(|p| p.parent().map(|d| d.join("Presets")));
             app.extra.ui_scale = prefs.ui_scale;
             app.ui = prefs;
+            // Runs without preferences (agents' tests) keep no scan cache and scan when a menu asks.
+            let settings = config_dir().filter(|_| prefs_enabled());
+            soundcraft_ui_egui::plugin_folders::start(&app.ui.plugin_dirs, settings.as_deref(), std::env::current_exe().ok());
             if let Some(port) = control_port {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);
