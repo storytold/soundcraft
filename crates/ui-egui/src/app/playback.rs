@@ -1,4 +1,3 @@
-use super::audio::feed_meter;
 use super::plugins::failed_plugin_status;
 use super::{Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, json};
 
@@ -415,10 +414,14 @@ impl SoundApp {
                 p.take_meters(&mut self.meter_snapshot);
                 self.last_meter_poll = now;
             }
+            // Stopped meters fall below, once per frame: their hold times run on `dt`.
+            let live = self.meters_live();
             let snap = &self.meter_snapshot;
             for (id, m) in &snap.tracks {
                 let d = self.meters.entry(*id).or_default();
-                feed_meter(d, m.peak, m.gain_reduction_db, dt);
+                if live {
+                    crate::meters::feed(d, &crate::meters::Reading::of(m), dt, &self.ui.meters);
+                }
                 if m.plugin_failures.count != d.plugin_failures {
                     d.plugin_failures = m.plugin_failures.count;
                     if let Some(msg) = failed_plugin_status(self.engine.session(), *id, m.plugin_failures.last) {
@@ -426,8 +429,9 @@ impl SoundApp {
                     }
                 }
             }
-            let main = snap.main.peak;
-            feed_meter(&mut self.main_meter, main, 0.0, dt);
+            if live {
+                crate::meters::feed(&mut self.main_meter, &crate::meters::Reading::of(&snap.main), dt, &self.ui.meters);
+            }
             if ended {
                 self.stop_play();
             }
@@ -446,10 +450,11 @@ impl SoundApp {
             }
         }
         if !self.meters_live() {
+            let silence = crate::meters::Reading::default();
             for d in self.meters.values_mut() {
-                feed_meter(d, [0.0, 0.0], 0.0, dt);
+                crate::meters::feed(d, &silence, dt, &self.ui.meters);
             }
-            feed_meter(&mut self.main_meter, [0.0, 0.0], 0.0, dt);
+            crate::meters::feed(&mut self.main_meter, &silence, dt, &self.ui.meters);
         }
     }
 }

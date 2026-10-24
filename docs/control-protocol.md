@@ -91,6 +91,17 @@ a portal answer it uses Dark. Manual Light and Dark stay fixed when the OS appea
 An offscreen render without `--system-theme` supplies no OS appearance and therefore resolves
 System to Dark, or on Linux to the desktop's portal setting when one is available.
 
+Meters (UI state, saved per machine): `ui.meters {"peak_hold":"none|timed|infinite",
+"clip_hold":"none|timed|infinite","release":"fast|medium|slow"}` sets any of the options and
+returns them all (`{}` just reads them; "timed" is 3 seconds). Peak hold defaults to 3 seconds;
+clip lights latch (infinite) until cleared. `ui.meters.reset {"track": id or name}` clears that
+meter's peak hold, clip light and peak readout (`{"main": true}` for the output meters, nothing
+for every meter; `{"track": "main"}` also works unless a track has that name), the same as clicking a meter (Alt-click: all); Track › Clear All Clip Indicators
+(`track.clear_clip_indicators`, Alt+C) clears only the clip lights. Right-click a meter for the
+options. The meters show the highest peak of every audio block since the UI last polled them
+(60 times a second while the Mix window is in front, 20 otherwise); a surround strip's clip light
+and peak readout watch all its channels, and it draws no peak hold line.
+
 `view.scroll_into_view {"track":"Bass"}` (a track id or name; without it, the first selected
 track) brings the track to the top of the Edit window and the left of the Mix window, the same as
 Scroll Into View in the track name menu. A window not on screen catches up when it is next shown.

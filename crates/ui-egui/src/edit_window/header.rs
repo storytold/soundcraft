@@ -23,7 +23,9 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
     voice_row(app, ui, track, head);
     field_row(app, ui, track, head, head_bg);
     let md = app.meters.get(&id).copied().unwrap_or_default();
-    header_meter(ui, Rect::from_min_max(pos2(head.max.x - 8.0, head.min.y + 1.0), pos2(head.max.x, head.max.y - 1.5)), &md, track.channels() >= 2);
+    let mr = Rect::from_min_max(pos2(head.max.x - 8.0, head.min.y + 1.0), pos2(head.max.x, head.max.y - 1.5));
+    header_meter(ui, mr, &md, track.channels() >= 2);
+    crate::meters::interact(app, ui, mr, crate::meters::MeterTarget::Track(id));
 }
 
 /// Drag the bottom edge of the header to resize the track (snaps to the height presets).
@@ -432,7 +434,7 @@ fn header_meter(ui: &Ui, r: Rect, md: &crate::MeterDisplay, stereo: bool) {
     let body = inner.with_min_y(clip.max.y + 1.0);
     let n = if stereo { 2 } else { 1 };
     let w = (body.width() - (n - 1) as f32) / n as f32;
-    let (amber, red) = (meter_pos(-12.0), meter_pos(-3.0));
+    let (amber, red) = (meter_pos(crate::meters::YELLOW_FROM_DB), meter_pos(crate::meters::RED_FROM_DB));
     for ch in 0..n {
         let bar = Rect::from_min_size(pos2(body.min.x + ch as f32 * (w + 1.0), body.min.y), vec2(w, body.height()));
         let y = |f: f32| bar.max.y - bar.height() * f;
@@ -444,7 +446,7 @@ fn header_meter(ui: &Ui, r: Rect, md: &crate::MeterDisplay, stereo: bool) {
             }
         }
         let hv = level_pos(md.hold[ch]);
-        if hv > 0.01 {
+        if hv > 0.01 && hv > lv + 0.002 {
             p.hline(bar.x_range(), y(hv), Stroke::new(1.0, if hv > red { t.meter_red } else { t.meter_yellow }));
         }
     }

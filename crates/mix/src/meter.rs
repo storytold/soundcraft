@@ -9,6 +9,9 @@ pub struct StripMeter {
     pub peak: [f32; 2],
     /// Every channel of the strip (or of the main mix).
     pub peaks: Vec<f32>,
+    /// The highest of `peaks`: what the clip indicator and peak readout watch, so a surround
+    /// strip clips on any channel, not only on the two its stereo bars show.
+    pub peak_all: f32,
     /// Gain reduction of the first dynamics insert, dB.
     pub gain_reduction_db: f32,
     pub plugin_failures: PluginFailures,
@@ -19,6 +22,7 @@ impl StripMeter {
     pub fn copy_from(&mut self, o: &StripMeter) {
         self.peak = o.peak;
         self.peaks.clone_from(&o.peaks);
+        self.peak_all = o.peak_all;
         self.gain_reduction_db = o.gain_reduction_db;
         self.plugin_failures = o.plugin_failures;
     }
@@ -39,6 +43,7 @@ impl StripMeter {
                 *p = max_level(*p, q);
             }
         }
+        self.peak_all = max_level(self.peak_all, o.peak_all);
         self.gain_reduction_db = max_level(self.gain_reduction_db, o.gain_reduction_db);
         self.plugin_failures = o.plugin_failures;
     }
@@ -48,6 +53,7 @@ impl StripMeter {
     pub fn reset_levels(&mut self) {
         self.peak = [0.0; 2];
         self.peaks.iter_mut().for_each(|p| *p = 0.0);
+        self.peak_all = 0.0;
         self.gain_reduction_db = 0.0;
     }
 
@@ -60,6 +66,7 @@ impl StripMeter {
         }
         let last = self.peaks.len().saturating_sub(1);
         self.peak = [self.peaks.first().copied().unwrap_or(0.0), self.peaks.get(1.min(last)).copied().unwrap_or(0.0)];
+        self.peak_all = self.peaks.iter().copied().fold(0.0, f32::max);
         self.gain_reduction_db = gr;
     }
 }
