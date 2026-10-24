@@ -265,6 +265,8 @@ pub fn tree() -> Vec<MenuNode> {
     roots
 }
 
+/// The in-window menu bar: the SoundCraft app menu (About, Language, Quit) followed by the
+/// incumbent's catalog tree, translated at display time.
 pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::current();
     let menu_entries_enabled = !app.ui.show_preferences;
@@ -378,6 +380,8 @@ fn instrument_track(s: &soundcraft_model::Session) -> Option<soundcraft_model::T
     s.tracks.iter().find(|t| t.kind == soundcraft_model::TrackKind::Instrument && s.edit.selected_tracks.contains(&t.id)).map(|t| t.id)
 }
 
+/// One menu entry: submenus recurse, leaves resolve their command through the English catalog
+/// path and show the translated label.
 fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str, &str)]) {
     if !n.children.is_empty() {
         ui.menu_button(td(&n.label), |ui| {
@@ -437,6 +441,8 @@ fn preferences_menu_enabled(app: &SoundApp) -> bool {
     !app.ui.show_preferences && !app.is_playing() && !app.engine.transport.recording
 }
 
+/// Whether the item shows a check mark. Match keys are English paths and command ids; the
+/// native Language items carry the language id in `path`.
 fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
     let e = &app.engine.session().edit;
     match id {

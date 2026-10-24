@@ -139,7 +139,9 @@ fn load(_: &[(&str, u32)], _: &str, _: Option<&str>, _: bool) -> Option<FontData
     None
 }
 
-/// The font set: the bundled faces, plus the system ones when `system_fonts` is true.
+/// The font set: egui's bundled faces plus the system's when `system_fonts` is true — the desktop
+/// UI font for regular and bold, then the Simplified Chinese and Hangul fallbacks appended to
+/// every family.
 pub fn definitions(system_fonts: bool) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let base: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
