@@ -1210,7 +1210,7 @@ pub const BUNDLE_EXTENSION: &str = "scraftz";
 
 /// Most entries and bytes a bundle may unpack to (bundles are hostile input).
 const MAX_BUNDLE_ENTRIES: usize = 10_000;
-const MAX_BUNDLE_BYTES: u64 = 1 << 30;
+pub const MAX_BUNDLE_BYTES: u64 = 1 << 30;
 
 /// Hands a finished file (name, bytes) to the person on a host without a filesystem: the web app
 /// installs one that starts a download. Native builds write files and never install it.
