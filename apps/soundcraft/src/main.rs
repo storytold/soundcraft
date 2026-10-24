@@ -52,12 +52,15 @@ impl eframe::App for App {
             menu.process(&mut self.0);
         }
         self.0.guarded(|app| app.logic(ctx));
-        // A language switch rebuilds the system menu bar in the new language.
+        // A language switch relabels the system menu bar in place: same bar, event channel and
+        // global handler (a second NativeMenu would re-register the handler, then drop the old
+        // one whose Drop unsets it).
         #[cfg(target_os = "macos")]
-        if self.2.as_ref().is_some_and(|m| m.labelled_in != soundcraft_l10n::current()) {
-            match native_menu::NativeMenu::new(&self.0, ctx) {
-                Ok(m) => self.2 = Some(m),
-                Err(e) => log::warn!("could not rebuild the system menu bar for the new language: {e}"),
+        if let Some(menu) = &mut self.3
+            && menu.labelled_in != soundcraft_l10n::current()
+        {
+            if let Err(e) = menu.relabel(&self.0) {
+                log::warn!("could not rebuild the system menu bar for the new language: {e}");
             }
         }
         #[cfg(target_os = "macos")]

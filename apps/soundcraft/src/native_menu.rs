@@ -21,7 +21,7 @@ pub struct NativeMenu {
     events: Receiver<MenuEvent>,
     /// When `sync` last walked the entries; see `SYNC_EVERY`.
     last_sync: Option<std::time::Instant>,
-    /// The language the menu was built in: a switch rebuilds the whole bar (`main.rs`).
+    /// The language the menu was built in: a switch relabels the whole bar in place (`main.rs`).
     pub labelled_in: Language,
 }
 
@@ -40,27 +40,7 @@ impl NativeMenu {
         let menu = Menu::new();
         let (tx, events) = channel();
         let mut native = Self { menu, entries: Vec::new(), events, last_sync: None, labelled_in: soundcraft_l10n::current() };
-        let app_menu = Submenu::new("SoundCraft", true);
-        native.add_item(app, &app_menu, "About SoundCraft", "", Some("window.about".into()))?;
-        native.add_item(app, &app_menu, "Session Info", "", Some("window.session_info".into()))?;
-        native.add_item(app, &app_menu, "Session Audio Health", "", Some("window.audio_health".into()))?;
-        app_menu.append(&PredefinedMenuItem::separator())?;
-        native.add_language_menu(app, &app_menu)?;
-        app_menu.append(&PredefinedMenuItem::separator())?;
-        app_menu.append(&PredefinedMenuItem::services(None))?;
-        app_menu.append(&PredefinedMenuItem::separator())?;
-        // muda's own Hide items take ⌘H and ⌥⌘H, which are Heal Separation and Copy to Send.
-        app_menu.append(&MenuItem::with_id("hide", soundcraft_l10n::t("Hide SoundCraft"), true, None))?;
-        app_menu.append(&MenuItem::with_id("hide_others", soundcraft_l10n::t("Hide Others"), true, None))?;
-        app_menu.append(&PredefinedMenuItem::show_all(None))?;
-        app_menu.append(&PredefinedMenuItem::separator())?;
-        native.add_item(app, &app_menu, "Quit SoundCraft", "", Some("app.quit".into()))?;
-        native.menu.append(&app_menu)?;
-        let aliases = menus::ui_aliases();
-        for root in menus::tree() {
-            let submenu = native.add_branch(app, &root, &aliases)?;
-            native.menu.append(&submenu)?;
-        }
+        native.populate(app)?;
         native.menu.init_for_nsapp();
         let ctx = ctx.clone();
         MenuEvent::set_event_handler(Some(move |event| {
@@ -71,6 +51,44 @@ impl NativeMenu {
         Ok(native)
     }
 
+    /// Rebuilds every item in the current language, in place: the same `Menu` stays installed as
+    /// the system bar, and the event channel and global handler keep running. Building a second
+    /// `NativeMenu` instead would register a new handler and then drop the old one, whose `Drop`
+    /// unsets it — after one switch, no click would dispatch again.
+    pub fn relabel(&mut self, app: &SoundApp) -> muda::Result<()> {
+        self.entries.clear();
+        while self.menu.remove_at(0).is_some() {}
+        self.last_sync = None;
+        self.labelled_in = soundcraft_l10n::current();
+        self.populate(app)
+    }
+
+    /// The whole bar: the application submenu, then one submenu per menu-tree root.
+    fn populate(&mut self, app: &SoundApp) -> muda::Result<()> {
+        let app_menu = Submenu::new("SoundCraft", true);
+        self.add_item(app, &app_menu, "About SoundCraft", "", Some("window.about".into()))?;
+        self.add_item(app, &app_menu, "Session Info", "", Some("window.session_info".into()))?;
+        self.add_item(app, &app_menu, "Session Audio Health", "", Some("window.audio_health".into()))?;
+        app_menu.append(&PredefinedMenuItem::separator())?;
+        self.add_language_menu(app, &app_menu)?;
+        app_menu.append(&PredefinedMenuItem::separator())?;
+        app_menu.append(&PredefinedMenuItem::services(None))?;
+        app_menu.append(&PredefinedMenuItem::separator())?;
+        // muda's own Hide items take ⌘H and ⌥⌘H, which are Heal Separation and Copy to Send.
+        app_menu.append(&MenuItem::with_id("hide", soundcraft_l10n::t("Hide SoundCraft"), true, None))?;
+        app_menu.append(&MenuItem::with_id("hide_others", soundcraft_l10n::t("Hide Others"), true, None))?;
+        app_menu.append(&PredefinedMenuItem::show_all(None))?;
+        app_menu.append(&PredefinedMenuItem::separator())?;
+        self.add_item(app, &app_menu, "Quit SoundCraft", "", Some("app.quit".into()))?;
+        self.menu.append(&app_menu)?;
+        let aliases = menus::ui_aliases();
+        for root in menus::tree() {
+            let submenu = self.add_branch(app, &root, &aliases)?;
+            self.menu.append(&submenu)?;
+        }
+        Ok(())
+    }
+
     /// SoundCraft › Language: one item per supported language, checked for the current one.
     /// Items dispatch `ui.language` and carry the language id in `path`.
     fn add_language_menu(&mut self, app: &SoundApp, parent: &Submenu) -> muda::Result<()> {
@@ -78,7 +96,7 @@ impl NativeMenu {
         let current = soundcraft_l10n::current();
         for lang in Language::ALL {
             let name = lang.native_name();
-            let item = CheckMenuItem::new(name, true, current == lang, None)?;
+            let item = CheckMenuItem::new(name, true, current == lang, None);
             submenu.append(&item)?;
             self.entries.push(Entry { item, command: Some("ui.language".into()), path: lang.id().into(), enabled: true, checked: current == lang });
         }
@@ -103,7 +121,7 @@ impl NativeMenu {
     fn add_item(&mut self, app: &SoundApp, parent: &Submenu, en_label: &str, path: &str, command: Option<String>) -> muda::Result<()> {
         let (enabled, checked) = menus::item_state(app, path, command.as_deref());
         // egui owns keyboard shortcuts, so a key press is dispatched only once.
-        let item = CheckMenuItem::new(label(en_label), enabled, checked, None)?;
+        let item = CheckMenuItem::new(label(en_label), enabled, checked, None);
         parent.append(&item)?;
         self.entries.push(Entry { item, command, path: path.into(), enabled, checked });
         Ok(())
