@@ -904,7 +904,7 @@ fn plugin_display_text_in_an_error_is_bounded_and_has_no_control_characters() {
 #[test]
 fn text_for_a_built_in_never_loads_a_temporary_instance() {
     let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
-    let mut resolver = ParameterValueResolver::new("mix.insert_param", &Insert::new("gain"), 48_000.0);
+    let mut resolver = ParameterValueResolver::new("mix.insert_param", &Insert::new("gain"), 48_000.0, TrackId(0), 0, None);
 
     assert_eq!(resolver.resolve(gain, &json!(" -3 ")).unwrap(), -3.0);
     let err = resolver.resolve(gain, &json!("loud")).unwrap_err().to_string();

@@ -1,11 +1,11 @@
 //! Read-only plugin parameter metadata for agents (`mix.plugin_params`).
-use super::mix::{PluginSlot, track_plugin_slot};
+use super::mix::{PluginSlot, plugin_slot_index, track_plugin_slot};
 use super::{CommandSpec, bad, has_selection};
 
-use crate::{Engine, Result, cmd};
+use crate::{Engine, LivePlugins, Result, cmd};
 use serde_json::{Value, json};
-use soundcraft_dsp::{ParamInfo, PluginInfo, Unit};
-use soundcraft_model::Insert;
+use soundcraft_dsp::{ParamInfo, Plugin, PluginInfo, Taper, Unit};
+use soundcraft_model::{Insert, TrackId};
 
 const CMD: &str = "mix.plugin_params";
 const DEFAULT_LIMIT: usize = 200;
@@ -17,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "List Plugin Parameters",
         [],
         None,
-        "{track?, slot: 0..9 | a..j | \"instrument\", filter?: string (max 200 characters), offset?: 0, limit?: 200 (1..1000), probe?: false} → {plugin, name, total, offset, limit, has_more, next_offset (null on the last page), params: [{id, name, min, max, default, unit, taper, steps, values, value, value_source, display, display_min?, display_max?}]}. Filter is a Unicode-lowercase substring of id or name; total is the filtered count before pagination. Unit is None|Db|Hz|Ms|Percent|Ratio|Semitones|Cents|Seconds|Toggle|Choice; taper is Linear|Log. Toggle/Choice value is a numeric index into values; Toggle values are always [\"Off\",\"On\"] (host-provided toggle strings are not yet read), and continuous values is []. Non-finite min/max/default/value is null. Without probe, value/value_source come from the session map or default; display uses SoundCraft formatting for built-ins and is null for hosted plugins. With probe, SoundCraft instantiates the plugin once, restores its state and stored parameters, reads live values with value_source \"plugin\", and asks it for display, display_min and display_max text (falling back to SoundCraft formatting). Probing is read-only with no session side effects, but large hosted instruments can take seconds to instantiate.",
+        "{track?, slot: 0..9 | a..j | \"instrument\", filter?: string (max 200 characters), offset?: 0, limit?: 200 (1..1000), probe?: false} → {plugin, name, total, offset, limit, has_more, next_offset (null on the last page), params: [{id, name, min, max, default, unit, taper, steps, values, value, value_source, display, display_min?, display_max?}]}. Filter is a Unicode-lowercase substring of id or name; total is the filtered count before pagination. Unit is None|Db|Hz|Ms|Percent|Ratio|Semitones|Cents|Seconds|Toggle|Choice; taper is Linear|Log. Toggle/Choice value is a numeric index into values; Toggle values are always [\"Off\",\"On\"] (host-provided toggle strings are not yet read), and continuous values is []. Non-finite min/max/default/value is null. Without probe, value/value_source come from the session map or default; display uses SoundCraft formatting for built-ins and is null for hosted plugins. With probe, when the app has the same plugin loaded in that slot, value_source \"plugin\" and the display text come from that live instance and no temporary instance is created. Otherwise SoundCraft instantiates the plugin once, restores its state and stored parameters, reads live values with value_source \"plugin\", and asks it for display, display_min and display_max text (falling back to SoundCraft formatting). Probing is read-only with no session side effects. A temporary instance of a large hosted instrument can take seconds; the live instance does not.",
         has_selection,
         plugin_params
     )]
@@ -53,14 +53,49 @@ fn stored_value(param: &ParamInfo, insert: &Insert) -> (f32, &'static str) {
     insert.params.get(param.id).map_or((param.default, "default"), |value| (*value, "session"))
 }
 
-fn parameter_json(param: &ParamInfo, insert: &Insert, hosted: bool, plugin: Option<&mut dyn soundcraft_dsp::Plugin>) -> Value {
+/// A source of live parameter values for one probe. The temporary plugin and the desktop player's
+/// live instance both answer through this, so the JSON shape stays one function.
+trait Probe {
+    fn value(&mut self, id: &str) -> Option<f32>;
+    fn value_text(&mut self, id: &str, value: f32) -> Option<String>;
+}
+
+struct PluginProbe<'a>(&'a mut dyn Plugin);
+
+impl Probe for PluginProbe<'_> {
+    fn value(&mut self, id: &str) -> Option<f32> {
+        self.0.param(id)
+    }
+
+    fn value_text(&mut self, id: &str, value: f32) -> Option<String> {
+        self.0.value_text(id, value)
+    }
+}
+
+struct LiveProbe<'a> {
+    live: &'a mut dyn LivePlugins,
+    track: TrackId,
+    slot: usize,
+}
+
+impl Probe for LiveProbe<'_> {
+    fn value(&mut self, id: &str) -> Option<f32> {
+        self.live.value(self.track, self.slot, id).filter(|value| value.is_finite())
+    }
+
+    fn value_text(&mut self, id: &str, value: f32) -> Option<String> {
+        self.live.value_text(self.track, self.slot, id, value)
+    }
+}
+
+fn parameter_json(param: &ParamInfo, insert: &Insert, hosted: bool, mut probe: Option<&mut dyn Probe>) -> Value {
     let (steps, values): (Option<usize>, Vec<&str>) = match param.unit {
         Unit::Toggle => (Some(2), vec!["Off", "On"]),
         Unit::Choice => (Some(param.choices.len()), param.choices.to_vec()),
         _ => (None, Vec::new()),
     };
     let (stored, stored_source) = stored_value(param, insert);
-    let (value, value_source) = plugin.as_ref().and_then(|plugin| plugin.param(param.id)).map_or((stored, stored_source), |value| (value, "plugin"));
+    let (value, value_source) = probe.as_mut().and_then(|probe| probe.value(param.id)).map_or((stored, stored_source), |value| (value, "plugin"));
     let mut result = json!({
         "id": param.id,
         "name": param.name,
@@ -73,13 +108,13 @@ fn parameter_json(param: &ParamInfo, insert: &Insert, hosted: bool, plugin: Opti
         "values": values,
         "value": finite(value),
         "value_source": value_source,
-        "display": if plugin.is_some() || !hosted { Some(param.format(value)) } else { None },
+        "display": if probe.is_some() || !hosted { Some(param.format(value)) } else { None },
     });
-    if let Some(plugin) = plugin {
+    if let Some(probe) = probe {
         let shown = |text: Option<String>, value: f32| text.map_or_else(|| param.format(value), |text| super::mix::shown_text(&text));
-        let display = shown(plugin.value_text(param.id, value), value);
-        let display_min = shown(plugin.value_text(param.id, param.min), param.min);
-        let display_max = shown(plugin.value_text(param.id, param.max), param.max);
+        let display = shown(probe.value_text(param.id, value), value);
+        let display_min = shown(probe.value_text(param.id, param.min), param.min);
+        let display_max = shown(probe.value_text(param.id, param.max), param.max);
         if let Some(object) = result.as_object_mut() {
             object.insert("display".into(), json!(display));
             object.insert("display_min".into(), json!(display_min));
@@ -89,20 +124,13 @@ fn parameter_json(param: &ParamInfo, insert: &Insert, hosted: bool, plugin: Opti
     result
 }
 
-fn response(
-    info: &PluginInfo,
-    insert: &Insert,
-    filter: Option<&str>,
-    offset: usize,
-    limit: usize,
-    plugin: Option<&mut dyn soundcraft_dsp::Plugin>,
-) -> Value {
+fn response(info: &PluginInfo, insert: &Insert, filter: Option<&str>, offset: usize, limit: usize, probe: Option<&mut dyn Probe>) -> Value {
     let matching: Vec<_> = info.params.iter().filter(|param| filter.is_none_or(|needle| matches_filter(param, needle))).collect();
     let total = matching.len();
     let hosted = soundcraft_mix::is_third_party(&insert.plugin);
     let page = matching.into_iter().skip(offset).take(limit);
-    let params: Vec<_> = match plugin {
-        Some(plugin) => page.map(|param| parameter_json(param, insert, hosted, Some(&mut *plugin))).collect(),
+    let params: Vec<_> = match probe {
+        Some(probe) => page.map(|param| parameter_json(param, insert, hosted, Some(&mut *probe))).collect(),
         None => page.map(|param| parameter_json(param, insert, hosted, None)).collect(),
     };
     let end = offset.saturating_add(params.len());
@@ -125,15 +153,59 @@ fn page_has_params(info: &PluginInfo, filter: Option<&str>, offset: usize) -> bo
     info.params.iter().filter(|param| filter.is_none_or(|needle| matches_filter(param, needle))).nth(offset).is_some()
 }
 
+/// Probe of a plugin the registry does not list. Only the stored keys are rows: there is no
+/// parameter table to invent min, max or names from. Values come from the live instance.
+fn unlisted_live_response(
+    insert: &Insert,
+    filter: Option<&str>,
+    offset: usize,
+    limit: usize,
+    live: &mut dyn LivePlugins,
+    track: TrackId,
+    slot: usize,
+) -> Value {
+    let matching: Vec<&String> = insert.params.keys().filter(|id| filter.is_none_or(|needle| id.to_lowercase().contains(needle))).collect();
+    let total = matching.len();
+    let params: Vec<Value> = matching
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|id| {
+            let stored = insert.params.get(id).copied().filter(|value| value.is_finite());
+            let (value, value_source) = match live.value(track, slot, id).filter(|value| value.is_finite()) {
+                Some(value) => (Some(value), "plugin"),
+                None => (stored, "session"),
+            };
+            let display = value.and_then(|value| live.value_text(track, slot, id, value)).map(|text| super::mix::shown_text(&text));
+            json!({
+                "id": id,
+                "name": id,
+                "min": Value::Null,
+                "max": Value::Null,
+                "default": Value::Null,
+                "unit": Unit::None,
+                "taper": Taper::Linear,
+                "steps": Value::Null,
+                "values": [],
+                "value": value,
+                "value_source": value_source,
+                "display": display,
+            })
+        })
+        .collect();
+    json!({"plugin": insert.plugin, "name": insert.plugin, "total": total, "offset": offset, "params": params})
+}
+
 fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
     let (track, slot) = track_plugin_slot(e, p, CMD)?;
-    let tr = e.session().track(track).ok_or_else(|| bad(CMD, "no track"))?;
-    let insert = match slot {
-        PluginSlot::Insert(index) => tr.mixer.inserts.get(index).and_then(Option::as_ref).ok_or_else(|| bad(CMD, "empty slot"))?,
-        PluginSlot::Instrument => tr.instrument.as_ref().ok_or_else(|| bad(CMD, "the track has no instrument"))?,
-    }
-    .clone();
-    let info = super::clap::plugin_info(&insert.plugin).ok_or_else(|| bad(CMD, format!("unknown plugin `{}`", insert.plugin)))?;
+    let index = plugin_slot_index(slot);
+    let insert = {
+        let tr = e.session().track(track).ok_or_else(|| bad(CMD, "no track"))?;
+        match slot {
+            PluginSlot::Insert(index) => tr.mixer.inserts.get(index).and_then(Option::as_ref).cloned().ok_or_else(|| bad(CMD, "empty slot")),
+            PluginSlot::Instrument => tr.instrument.clone().ok_or_else(|| bad(CMD, "the track has no instrument")),
+        }?
+    };
     let filter = match p.get("filter") {
         None => None,
         Some(value) => {
@@ -149,6 +221,25 @@ fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
         None => false,
         Some(value) => value.as_bool().ok_or_else(|| bad(CMD, "`probe` must be a boolean"))?,
     };
+    let Some(info) = super::clap::plugin_info(&insert.plugin) else {
+        if probe {
+            let matched = e.live_plugins_mut().and_then(|live| live.plugin_id(track, index)).is_some_and(|id| id == insert.plugin);
+            if matched {
+                let Some(live) = e.live_plugins_mut() else { return Err(bad(CMD, format!("unknown plugin `{}`", insert.plugin))) };
+                return Ok(unlisted_live_response(&insert, filter.as_deref(), offset, limit, live, track, index));
+            }
+        }
+        return Err(bad(CMD, format!("unknown plugin `{}`", insert.plugin)));
+    };
+    // A matching live instance answers the whole probe. Individual parameters may still be absent;
+    // that is not a reason to create a temporary instance.
+    if probe
+        && let Some(live) = e.live_plugins_mut()
+        && live.plugin_id(track, index).as_deref() == Some(insert.plugin.as_str())
+    {
+        let mut source = LiveProbe { live, track, slot: index };
+        return Ok(response(info, &insert, filter.as_deref(), offset, limit, Some(&mut source)));
+    }
     let mut instance = if probe && page_has_params(info, filter.as_deref(), offset) {
         let state = insert.state_bytes();
         let sample_rate = e.session().sample_rate.as_f64() as f32;
@@ -161,8 +252,13 @@ fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
     } else {
         None
     };
-    let plugin = instance.as_mut().map(|instance| &mut *instance.plugin as &mut dyn soundcraft_dsp::Plugin);
-    Ok(response(info, &insert, filter.as_deref(), offset, limit, plugin))
+    match instance.as_mut() {
+        Some(instance) => {
+            let mut source = PluginProbe(&mut *instance.plugin);
+            Ok(response(info, &insert, filter.as_deref(), offset, limit, Some(&mut source)))
+        }
+        None => Ok(response(info, &insert, filter.as_deref(), offset, limit, None)),
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 # Plugin parity: built-in processors and plugin hosting
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** trivial (plugin parameters accept text; previously trivial: `mix.plugin_params` parameter discovery; hosted instruments' parameters and automation by command (#1065); previously trivial: Auto Pan stereo balance; previously minor: AudioSuite speed ramps (speed_ramp); Auto Pan; Subharmonic; previously minor: Ring Modulator; VST3 host messages: IMessage and IAttributeList; previously trivial: Sampler ping-pong loop phase (#463); previously trivial: mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** trivial (in the app, parameter text and `mix.plugin_params` probe read the live plugin instance instead of creating a temporary one; previously trivial: plugin parameters accept text; previously trivial: `mix.plugin_params` parameter discovery; hosted instruments' parameters and automation by command (#1065); previously trivial: Auto Pan stereo balance; previously minor: AudioSuite speed ramps (speed_ramp); Auto Pan; Subharmonic; previously minor: Ring Modulator; VST3 host messages: IMessage and IAttributeList; previously trivial: Sampler ping-pong loop phase (#463); previously trivial: mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Pro Tools users live in plugins: the bundled set covers everyday mixing, and third-party plugins
 cover the rest. This doc tracks both. Our plugins have our own names and are written from
@@ -40,7 +40,7 @@ User report #152: a saved instrument level does not reach the bounce.
 | Plugin format | AAX only (Native and DSP) | CLAP, VST3, Audio Units (macOS) | Users' libraries mostly ship VST3/AU too. AAX (#109) needs Avid's SDK licence and PACE signing: owner decision, likely never |
 | VST2, LV2, LADSPA | — | ❌ (#30) | Beyond Pro Tools; VST2 SDK is no longer licensable |
 | Scan, vendor menus, instrument picker | ✅ | ✅ | #23 |
-| Audio, parameters, automation, latency (PDC) | ✅ | ✅ | `mix.plugin_params` lists built-in and hosted plugins' parameter ids and metadata. Parameter values may also be text: a Toggle/Choice label or the plugin's own text. Hosted instruments too: `mix.insert_param` with `slot: "instrument"`, `plugin:instrument:<id>` lanes (#1065) |
+| Audio, parameters, automation, latency (PDC) | ✅ | ✅ | `mix.plugin_params` lists built-in and hosted plugins' parameter ids and metadata. Parameter values may also be text: a Toggle/Choice label or the plugin's own text. In the app, text and a probe read the live instance in that slot instead of creating a temporary one. Hosted instruments too: `mix.insert_param` with `slot: "instrument"`, `plugin:instrument:<id>` lanes (#1065) |
 | Notes / MIDI to instruments | ✅ | ✅ | But no live MIDI input (G-02) |
 | State saved in sessions, presets | ✅ | ✅ | |
 | Create/destroy off the audio thread | ✅ | ✅ | |
@@ -58,6 +58,7 @@ User report #152: a saved instrument level does not reach the bounce.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | trivial | In the app, parameter text and mix.plugin_params probe read the live plugin instance instead of creating a temporary one |
 | 2026-10-25 | trivial | Plugin parameters accept text: a Toggle/Choice label or the plugin's own text (`mix.insert`, `mix.insert_param`, `mix.insert_params`, `mix.instrument`, `mix.instrument_param`) |
 | 2026-10-25 | trivial | `mix.plugin_params` lists parameter ids, metadata and stored/default values for built-in and hosted inserts and instruments (#1065) |
 | 2026-10-25 | trivial | Hosted instruments' parameters: `mix.insert_param`/`mix.insert_params` take `slot: "instrument"`, `mix.instrument_param` sets hosted instruments, `plugin:instrument:<id>` automation, numeric parameter ids (#1065) |

@@ -114,7 +114,7 @@ Resources: `soundcraft://session` (full session JSON), `soundcraft://commands`.
 - Positions: samples, `{"seconds": x}`, or `"bars_beats:5|1|000"`-style strings.
 - Tracks by name or id; clips by id.
 - Use `mix.plugin_params` through `execute` to discover parameter ids and metadata for an insert or instrument, including hosted plugins without an editor.
-- `mix.insert`, `mix.insert_param`, `mix.insert_params`, `mix.instrument` and `mix.instrument_param` accept a parameter value as a number, or as text: a Toggle/Choice label or the plugin's own text, e.g. `"29"`. Text that needs the plugin's own parsing instantiates it temporarily.
+- `mix.insert`, `mix.insert_param`, `mix.insert_params`, `mix.instrument` and `mix.instrument_param` accept a parameter value as a number, or as text: a Toggle/Choice label or the plugin's own text, e.g. `"29"`. Text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily.
 - Every command is undoable through `edit.undo` unless it is a query or a view setting.
 
 The acceptance test `crates/automation/tests/it/agent_tasks.rs` drives a realistic session end to end

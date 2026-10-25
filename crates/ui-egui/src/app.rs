@@ -28,7 +28,10 @@ impl SoundApp {
 
     /// Build an app around an engine and optional player, initialising UI, recording, autosave, control and
     /// synthetic-input state.
-    pub fn new(engine: Engine, player: Option<Player>, services: Services) -> Self {
+    pub fn new(mut engine: Engine, player: Option<Player>, services: Services) -> Self {
+        if let Some(player) = &player {
+            audio::install_live_plugins(&mut engine, player);
+        }
         SoundApp {
             recent_seen: engine.path.clone(),
             recent_changed: false,

@@ -28,6 +28,7 @@ pub mod record;
 pub use devices::AudioConfig;
 
 use soundcraft_dsp::{Plugin, PluginEditor, PluginStateReader};
+use soundcraft_engine::LivePlugins;
 use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
 use soundcraft_model::{Session, TrackId};
 use soundcraft_time::{Range, Samples};
@@ -157,7 +158,7 @@ pub struct Player {
     #[cfg(not(target_arch = "wasm32"))]
     watch: Mutex<Option<(u64, std::time::Instant)>>,
     tx: Sender<Cmd>,
-    side: Mutex<Side>,
+    side: Arc<Mutex<Side>>,
     #[cfg(not(target_arch = "wasm32"))]
     _stream: Option<cpal::Stream>,
     #[cfg(target_arch = "wasm32")]
@@ -221,7 +222,7 @@ impl Player {
         let new_side = |garbage: Receiver<Vec<Box<dyn Plugin>>>| {
             let mut side = Side::new(side_rate, garbage);
             side.gone_tracks(&session);
-            Mutex::new(side)
+            Arc::new(Mutex::new(side))
         };
         match open_device(want, want_ch, cfg) {
             Ok((device, config, format, name)) => {
@@ -297,7 +298,7 @@ impl Player {
         tx: Sender<Cmd>,
         rx: Receiver<Cmd>,
         rate: u32,
-        side: Mutex<Side>,
+        side: Arc<Mutex<Side>>,
         gtx: Sender<Vec<Box<dyn Plugin>>>,
     ) -> Player {
         let s = Arc::new(Session::new("Untitled", soundcraft_time::SampleRate::new(rate).unwrap_or_default()));
@@ -310,7 +311,7 @@ impl Player {
         tx: Sender<Cmd>,
         rx: Receiver<Cmd>,
         session: Arc<Session>,
-        side: Mutex<Side>,
+        side: Arc<Mutex<Side>>,
         gtx: Sender<Vec<Box<dyn Plugin>>>,
     ) -> Player {
         let rate = session.sample_rate.hz();
@@ -359,7 +360,7 @@ impl Player {
         tx: Sender<Cmd>,
         _rx: Receiver<Cmd>,
         session: Arc<Session>,
-        side: Mutex<Side>,
+        side: Arc<Mutex<Side>>,
         _gtx: Sender<Vec<Box<dyn Plugin>>>,
     ) -> Player {
         Player {
@@ -525,6 +526,46 @@ impl Player {
     pub fn take_meters(&self, out: &mut MeterSnapshot) {
         let mut source = self.shared.meters.lock().unwrap_or_else(PoisonError::into_inner);
         take_meter_snapshot(&mut source, out);
+    }
+
+    /// Live parameter text and values for the engine. The handle shares this player's UI-thread
+    /// bookkeeping; each call locks it only for that call.
+    pub fn live_plugins(&self) -> Box<dyn LivePlugins> {
+        Box::new(PlayerLive { side: Arc::clone(&self.side) })
+    }
+}
+
+/// Forwards [`LivePlugins`] to the editor handles in [`Side`].
+struct PlayerLive {
+    side: Arc<Mutex<Side>>,
+}
+
+impl PlayerLive {
+    fn side(&self) -> std::sync::MutexGuard<'_, Side> {
+        self.side.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl LivePlugins for PlayerLive {
+    fn plugin_id(&mut self, track: TrackId, slot: usize) -> Option<String> {
+        let side = self.side();
+        let (id, _, created) = side.shadow.get(&(track, slot))?;
+        if !created || !side.editors.contains_key(&(track, slot)) {
+            return None;
+        }
+        Some(id.clone())
+    }
+
+    fn value_text(&mut self, track: TrackId, slot: usize, id: &str, value: f32) -> Option<String> {
+        self.side().editors.get_mut(&(track, slot))?.value_text(id, value)
+    }
+
+    fn value_from_text(&mut self, track: TrackId, slot: usize, id: &str, text: &str) -> Option<f32> {
+        self.side().editors.get_mut(&(track, slot))?.value_from_text(id, text)
+    }
+
+    fn value(&mut self, track: TrackId, slot: usize, id: &str) -> Option<f32> {
+        self.side().editors.get(&(track, slot))?.param(id)
     }
 }
 
