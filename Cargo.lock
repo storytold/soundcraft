@@ -6136,7 +6136,6 @@ dependencies = [
  "serde",
  "serde_json",
  "soundcraft-dsp",
- "soundcraft-engine",
  "soundcraft-mix",
  "soundcraft-model",
  "soundcraft-time",
