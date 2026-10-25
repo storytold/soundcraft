@@ -23,6 +23,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod devices;
+pub mod midi_in;
 pub mod record;
 
 pub use devices::AudioConfig;
@@ -128,6 +129,36 @@ enum Cmd {
     Locate(Samples),
     /// Tracks the latest session no longer has (worked out on the UI thread): their meters go.
     Forget(Vec<TrackId>),
+    /// A MIDI 1.0 channel message from a MIDI input device, to play live (see [`MidiSink`]).
+    Midi([u8; 3]),
+}
+
+/// Where a MIDI input device hands its messages to the player: they reach the instruments of the
+/// tracks taking MIDI input at the next audio block (see `soundcraft_mix::takes_midi_input`).
+/// Cheap to clone; sending never blocks.
+#[derive(Clone)]
+pub struct MidiSink {
+    player: u64,
+    tx: Sender<Cmd>,
+}
+
+impl MidiSink {
+    /// Hand one channel message (`[status, data1, data2]`) to the player. False once the player is
+    /// gone (the audio device was reopened): route to the new one with [`Player::midi_sink`].
+    pub fn send(&self, msg: [u8; 3]) -> bool {
+        self.tx.send(Cmd::Midi(msg)).is_ok()
+    }
+
+    /// The [`Player::id`] of the player this sink feeds.
+    pub fn player(&self) -> u64 {
+        self.player
+    }
+}
+
+/// A different number for each player made in this process.
+fn next_player_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 struct Shared {
@@ -151,6 +182,8 @@ pub enum OutputTrouble {
 
 /// The transport and audio device.
 pub struct Player {
+    /// Unique in this process (see [`Player::id`]).
+    id: u64,
     shared: Arc<Shared>,
     fault: Arc<Fault>,
     /// The block count last seen while playing, and since when.
@@ -203,6 +236,16 @@ impl Player {
 
     fn side(&self) -> std::sync::MutexGuard<'_, Side> {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// A number unique to this player in the process; [`MidiSink`]s name the player they feed.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Where a MIDI input device hands its messages to this player (live, at the next block).
+    pub fn midi_sink(&self) -> MidiSink {
+        MidiSink { player: self.id, tx: self.tx.clone() }
     }
 
     /// Open the output device for `session`, trying the requested buffer size before the device default, then build
@@ -261,6 +304,7 @@ impl Player {
                             buffer.map_or("default".to_string(), |n| n.to_string())
                         );
                         Player {
+                            id: next_player_id(),
                             shared,
                             fault,
                             #[cfg(not(target_arch = "wasm32"))]
@@ -339,6 +383,7 @@ impl Player {
             log::warn!("clock thread failed: {e}");
         }
         Player {
+            id: next_player_id(),
             shared,
             fault,
             watch: Mutex::new(None),
@@ -363,6 +408,7 @@ impl Player {
         _gtx: Sender<Vec<Box<dyn Plugin>>>,
     ) -> Player {
         Player {
+            id: next_player_id(),
             shared,
             fault: Arc::default(),
             tx,

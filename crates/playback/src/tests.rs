@@ -718,3 +718,44 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     assert!(out.iter().any(|x| x.abs() > 0.1), "the input is heard");
     assert!(shared.meters.lock().unwrap().tracks.get(&t).is_some_and(|m| m.peak[0] > 0.1), "and metered");
 }
+
+#[test]
+fn live_midi_reaches_the_mix_once_and_a_flood_is_capped() {
+    let s = Arc::new(soundcraft_model::Session::default());
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
+    let sink = MidiSink { player: 1, tx: tx.clone() };
+    assert!(sink.send([0x90, 60, 100]));
+    st.drain();
+    assert_eq!(st.mix.live_midi, vec![[0x90, 60, 100]]);
+    // Stopped with no track taking MIDI input: nothing renders, and nothing piles up.
+    let mut out = vec![0.0f32; 4096];
+    st.fill(&mut out, 2);
+    assert!(st.mix.live_midi.is_empty());
+    // An armed instrument track: stopped, the block renders and plays the message.
+    let mut armed = soundcraft_model::Session::default();
+    let t = armed.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, None);
+    if let Some(tr) = armed.track_mut(t) {
+        tr.mixer.record_arm = true;
+    }
+    tx.send(Cmd::Session(Arc::new(armed), Vec::new())).unwrap();
+    sink.send([0x90, 60, 100]);
+    st.drain();
+    assert_eq!(st.mix.live_midi.len(), 1);
+    let mut out = vec![0.0f32; 4096];
+    st.fill(&mut out, 2);
+    assert!(st.mix.live_midi.is_empty());
+    for _ in 0..soundcraft_mix::LIVE_MIDI_CAPACITY + 50 {
+        sink.send([0xB0, 1, 2]);
+    }
+    st.drain();
+    assert_eq!(st.mix.live_midi.len(), soundcraft_mix::LIVE_MIDI_CAPACITY);
+    drop(st);
+    assert!(!sink.send([0x80, 60, 0]), "a gone player refuses messages");
+}

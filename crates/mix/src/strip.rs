@@ -1,7 +1,7 @@
 use super::automation::{GainRamp, transport_at, volume_db_at};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance, is_third_party};
-use super::midi::{chase_controllers, schedule_notes};
+use super::midi::{chase_controllers, play_live_midi, schedule_notes, takes_midi_input};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
 use super::routing::receives_solo;
 use super::{
@@ -200,6 +200,9 @@ impl SlotCtx<'_> {
 /// Live input routed to monitored tracks.
 pub(crate) struct LiveInput<'a> {
     pub(crate) input: &'a [Vec<f32>],
+    /// Live MIDI for this block, and the track that plays it when no track is armed.
+    pub(crate) midi: &'a [[u8; 3]],
+    pub(crate) thru: Option<TrackId>,
     pub(crate) monitor_only: bool,
     pub(crate) recording: bool,
 }
@@ -290,7 +293,7 @@ fn read_aux_bus(t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, f
 }
 
 /// Render the track's instrument into the strip.
-fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, transport: &Transport) {
+fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, transport: &Transport, live: &LiveInput<'_>) {
     let Block { pos, frames, .. } = blk;
     if let Some(inst) = strip.instrument.as_mut().filter(|i| !i.failed) {
         // #152: push the instrument's stored parameter values into the live plugin
@@ -302,10 +305,16 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
             apply_params(inst, ins, t, INSTRUMENT_SLOT, pos);
         }
         inst.plugin.set_transport(transport);
-        if std::mem::take(&mut strip.chase) {
-            chase_controllers(s, t, pos, inst);
+        // Stopped, a track taking MIDI input plays only what comes in live.
+        if !live.monitor_only {
+            if std::mem::take(&mut strip.chase) {
+                chase_controllers(s, t, pos, inst);
+            }
+            schedule_notes(s, t, pos, frames, inst, &mut strip.held);
         }
-        schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+        if !live.midi.is_empty() && takes_midi_input(t, live.thru) {
+            play_live_midi(inst, live.midi, &mut strip.held);
+        }
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
         } else if let Some(c0) = strip.buf.first_mut() {
@@ -418,10 +427,10 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
             monitor_input(t, strip, live, frames);
         }
         TrackKind::Audio if live.monitor_only => {}
-        TrackKind::Instrument | TrackKind::Midi if live.monitor_only => {}
+        TrackKind::Instrument | TrackKind::Midi if live.monitor_only && !takes_midi_input(t, live.thru) => {}
         TrackKind::Audio => render_audio_clips(s, t, strip, blk),
         TrackKind::Aux | TrackKind::Folder => read_aux_bus(t, strip, busses, frames),
-        TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, blk, &transport),
+        TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, blk, &transport, live),
         _ => {}
     }
     let trim = db_to_gain(t.mixer.trim_db) * if t.mixer.phase_invert { -1.0 } else { 1.0 };

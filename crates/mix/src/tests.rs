@@ -505,6 +505,105 @@ fn real_time_properties_reach_the_instrument() {
     assert_eq!(*heard.lock().unwrap(), vec![(72, 80)]);
 }
 
+/// Records what an instrument is sent: (kind, a, b) with kind 'n' note on, 'f' note off,
+/// 'm' other message (a = status, b = first data byte).
+struct LiveKeys {
+    inner: Box<dyn Plugin>,
+    heard: Arc<std::sync::Mutex<Vec<(char, u8, u8)>>>,
+}
+
+impl Plugin for LiveKeys {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+    }
+    fn note_on(&mut self, _offset: usize, note: u8, velocity: u8) {
+        self.heard.lock().unwrap().push(('n', note, velocity));
+    }
+    fn note_off(&mut self, _offset: usize, note: u8) {
+        self.heard.lock().unwrap().push(('f', note, 0));
+    }
+    fn midi(&mut self, _offset: usize, msg: [u8; 3]) {
+        if msg != [0xB0, 121, 0] {
+            self.heard.lock().unwrap().push(('m', msg[0], msg[1]));
+        }
+    }
+}
+
+fn live_session() -> (Session, TrackId, TrackId, MixEngine, Arc<std::sync::Mutex<Vec<(char, u8, u8)>>>) {
+    let mut s = Session::default();
+    let a = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let b = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(a).unwrap().instrument = Some(Insert::new("clap:test.live"));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let p = LiveKeys { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance { track: a, slot: INSTRUMENT_SLOT, id: "clap:test.live".into(), ch: 2, plugin: Box::new(p) }]);
+    (s, a, b, eng, heard)
+}
+
+#[test]
+fn live_midi_plays_the_armed_instrument_while_stopped() {
+    let (mut s, a, _, mut eng, heard) = live_session();
+    s.track_mut(a).unwrap().mixer.record_arm = true;
+    eng.monitor_only = true;
+    // Note on (channel 3), sustain pedal, pitch bend, then the same note off as velocity 0.
+    eng.live_midi.extend([[0x92, 60, 100], [0xB2, 64, 127], [0xE2, 0, 80]]);
+    render_block(&mut eng, &s, 0);
+    assert!(eng.live_midi.is_empty(), "live MIDI is played once");
+    // Stopped, the same position renders again: not a seek, the note keeps sounding.
+    eng.live_midi.push([0x92, 60, 0]);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(*heard.lock().unwrap(), vec![('n', 60, 100), ('m', 0xB0, 64), ('m', 0xE0, 0), ('f', 60, 0)]);
+}
+
+#[test]
+fn live_midi_goes_to_the_selected_instrument_when_none_is_armed() {
+    let (mut s, a, b, mut eng, heard) = live_session();
+    eng.monitor_only = true;
+    // Nothing armed, nothing selected: nobody plays.
+    eng.live_midi.push([0x90, 64, 90]);
+    render_block(&mut eng, &s, 0);
+    assert!(heard.lock().unwrap().is_empty());
+    // Selected (MIDI Thru): it plays.
+    s.edit.selected_tracks = vec![a];
+    eng.live_midi.push([0x90, 64, 90]);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![('n', 64, 90)]);
+    // Another instrument track armed: only the armed one takes the input.
+    s.track_mut(b).unwrap().mixer.record_arm = true;
+    eng.live_midi.push([0x90, 65, 90]);
+    render_block(&mut eng, &s, 0);
+    assert!(heard.lock().unwrap().is_empty());
+    assert_eq!(midi_thru_track(&s), None);
+}
+
+#[test]
+fn live_midi_plays_over_the_clips_while_playing() {
+    let (mut s, a, _, mut eng, heard) = live_session();
+    s.track_mut(a).unwrap().mixer.input_monitor = true;
+    eng.live_midi.push([0x90, 48, 70]);
+    render_block(&mut eng, &s, 0);
+    eng.live_midi.push([0x80, 48, 0]);
+    render_block(&mut eng, &s, 512);
+    assert_eq!(*heard.lock().unwrap(), vec![('n', 48, 70), ('f', 48, 0)]);
+}
+
 fn render_block(eng: &mut MixEngine, s: &Session, pos: i64) -> f32 {
     let mut out = vec![vec![0.0f32; 512]; 2];
     eng.render(s, pos, 512, &mut out);

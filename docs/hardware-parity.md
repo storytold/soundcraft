@@ -31,9 +31,9 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Feature | Pro Tools | SoundCraft (all platforms) |
 |---|---|---|
-| MIDI input devices (keyboards, pads) | ✅ | ❌ no MIDI device layer at all (`setup.midi_input_devices` stores names) |
+| MIDI input devices (keyboards, pads) | ✅ | 🟡 Setup › MIDI › MIDI Input Devices lists and opens the ports (`midir`: WinMM, CoreMIDI, ALSA; none on the web or FreeBSD); playing sounds the armed instrument/MIDI tracks live. No MIDI recording yet |
 | MIDI output to external gear | ✅ | ❌ |
-| MIDI Thru, input filter | ✅ | ❌ (stored flags only) |
+| MIDI Thru, input filter | ✅ | 🟡 Thru to the selected instrument track when none is armed; input filter still stored flags only |
 | MIDI Beat Clock out, MTC generate/chase | ✅ | ❌ |
 | MIDI learn / controller mapping | ✅ (via surfaces and plug-in maps) | ❌ |
 | Virtual MIDI keyboard | ✅ (MIDI Keyboard window) | 🟡 window exists, no live audition path |

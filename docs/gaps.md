@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** trivial (G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** trivial (G-02: MIDI input devices played live; previously trivial: G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -65,13 +65,18 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 ### G-02. MIDI devices
 
-- **Missing:** all MIDI hardware I/O. No `midir`/CoreMIDI/WinMM/ALSA sequencer code exists;
-  `setup.midi_input_devices` and `setup.midi_studio` only store names. You cannot record from a
-  keyboard, play a hosted instrument live, drive external synths, or send MIDI clock/MTC.
-  `midi_editor.rs:288` notes audition "needs a live MIDI input path".
-- **Impact:** MIDI production is limited to drawing notes and importing SMF.
-- **Estimate:** ≈ 20–35 h (device layer, realtime input to armed tracks and instruments with
-  timestamps, MIDI record/merge/loop, thru, output tracks, clock out).
+- **Done:** MIDI input devices (`soundcraft_playback::midi_in`, `midir`): Setup › MIDI › MIDI
+  Input Devices lists the ports and turns them on or off (kept per machine with the preferences);
+  what is played reaches the instruments of record-armed or input-monitored instrument and MIDI
+  tracks at the next audio block, transport running or not, or the selected one when none is
+  armed (Thru). Notes, controllers, pitch bend, pressure and program change.
+- **Missing:** recording from a keyboard (merge/replace/loop, timestamps for sub-block timing),
+  the input filter applied to input, MIDI output to external synths, MIDI clock/MTC.
+  `midi_editor.rs:288` audition could now use the live path.
+- **Impact:** a keyboard can be played live, but parts are still entered by drawing notes,
+  step input or SMF import.
+- **Estimate:** ≈ 14–25 h (MIDI record/merge/loop with timestamps, input filter, output tracks,
+  clock out).
 
 ### G-03. Session interchange with Pro Tools
 

@@ -1,6 +1,6 @@
 use super::clips::Key;
 use super::strip::{PluginSlot, Strip};
-use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track};
+use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track, TrackId, TrackKind};
 use std::sync::Arc;
 
 /// The track's MIDI Track Offset (`midi.offset.<id>` in the edit values), in samples. Looked up
@@ -15,6 +15,47 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
         .map(|(_, v)| *v)
         .filter(|v| v.is_finite())
         .map_or(0, |v| v as i64)
+}
+
+/// Live MIDI messages kept for one block at most; more are dropped (a burst no one can play).
+pub const LIVE_MIDI_CAPACITY: usize = 1024;
+
+/// True when the instrument or MIDI track `t` plays live MIDI input: it is record-armed or
+/// input-monitored, or it is `thru`, the track that plays when no track is armed.
+pub fn takes_midi_input(t: &Track, thru: Option<TrackId>) -> bool {
+    matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && (t.mixer.record_arm || t.mixer.input_monitor || thru == Some(t.id))
+}
+
+/// MIDI Thru: when no instrument or MIDI track is armed or monitored, the first selected one
+/// plays what comes in, so a keyboard sounds as soon as a track is clicked.
+pub fn midi_thru_track(s: &Session) -> Option<TrackId> {
+    let midi = |t: &&Track| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && !t.inactive;
+    if s.tracks.iter().filter(midi).any(|t| t.mixer.record_arm || t.mixer.input_monitor) {
+        return None;
+    }
+    s.edit.selected_tracks.iter().find(|id| s.tracks.iter().filter(midi).any(|t| t.id == **id)).copied()
+}
+
+/// Hand live MIDI to an instrument at the start of the block: notes (velocity 0 is a note off)
+/// and the other channel messages, all on channel 1 like the clips' events.
+pub(crate) fn play_live_midi(inst: &mut PluginSlot, events: &[[u8; 3]], held: &mut Vec<u8>) {
+    for &[status, d1, d2] in events {
+        let (d1, d2) = (d1 & 0x7F, d2 & 0x7F);
+        match status & 0xF0 {
+            0x90 if d2 > 0 => {
+                inst.plugin.note_on(0, d1, d2);
+                if !held.contains(&d1) && held.len() < 128 {
+                    held.push(d1);
+                }
+            }
+            0x80 | 0x90 => {
+                inst.plugin.note_off(0, d1);
+                held.retain(|p| *p != d1);
+            }
+            kind @ (0xA0 | 0xB0 | 0xC0 | 0xD0 | 0xE0) => inst.plugin.midi(0, [kind, d1, d2]),
+            _ => {}
+        }
+    }
 }
 
 /// Send note on/offs and controllers for MIDI clips overlapping the block.

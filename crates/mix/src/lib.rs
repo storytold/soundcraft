@@ -75,6 +75,7 @@ use automation::{GainRamp, pan_at, pan_segment, send_level, transport_at, volume
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
 pub use meter::StripMeter;
 use midi::sync_sample;
+pub use midi::{LIVE_MIDI_CAPACITY, midi_thru_track, takes_midi_input};
 pub use offline::{
     MAX_RENDER_SAMPLES, RangeRender, fold_down_stereo, render_bus, render_clips, render_range, render_track_pre_fader, source_channels,
 };
@@ -135,6 +136,10 @@ pub struct MixEngine {
     aux_latency: usize,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
     pub input: Vec<Vec<f32>>,
+    /// Live MIDI for the next block (MIDI 1.0 channel messages from keyboards and controllers),
+    /// set by the audio host. Played by the instruments of tracks that take MIDI input (see
+    /// [`takes_midi_input`]) whether or not the transport runs; emptied by each render.
+    pub live_midi: Vec<[u8; 3]>,
     /// Transport stopped: only monitored inputs sound (no clips).
     pub monitor_only: bool,
     /// Recording: record-armed tracks hear their input (auto input).
@@ -173,6 +178,7 @@ impl MixEngine {
             aux_fed: Vec::new(),
             aux_latency: 0,
             input: Vec::new(),
+            live_midi: Vec::with_capacity(LIVE_MIDI_CAPACITY),
             monitor_only: false,
             recording: false,
             metronome: false,
@@ -373,7 +379,8 @@ impl MixEngine {
             }
         }
         let busses = std::mem::take(&mut self.busses);
-        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+        let thru = midi_thru_track(s);
+        let live_in = LiveInput { input: &self.input, midi: &self.live_midi, thru, monitor_only: self.monitor_only, recording: self.recording };
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
                 process_strip(s, t, st, &busses, &live_in, blk);
@@ -393,7 +400,9 @@ impl MixEngine {
 
     /// Silence what a seek leaves ringing, sync to the session and clear the block's accumulators.
     fn begin_block(&mut self, s: &Session, pos: Samples, frames: usize) {
-        if pos != self.last_end {
+        // Stopped, the host renders the same position block after block: that is not a seek, and
+        // must not silence notes being played live (play, stop and locate reset on their own).
+        if pos != self.last_end && !self.monitor_only {
             // Seek: silence held notes and ringing plugins.
             for st in self.strips.values_mut() {
                 if let Some(i) = &mut st.instrument {
@@ -493,7 +502,7 @@ impl MixEngine {
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
-            let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+            let live_in = LiveInput { input: &self.input, midi: &[], thru: None, monitor_only: self.monitor_only, recording: self.recording };
             process_strip(s, t, &mut st, &self.busses, &live_in, blk);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
@@ -573,6 +582,8 @@ impl MixEngine {
             }
         }
         self.main_meter.measure(&self.main, frames, 0.0);
+        // Live MIDI is played once (keeps its capacity: no allocation on the audio thread).
+        self.live_midi.clear();
     }
 
     /// The delay-compensation latency written onto `bus`: the slowest track insert, plus the

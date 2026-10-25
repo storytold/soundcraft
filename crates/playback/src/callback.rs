@@ -80,6 +80,9 @@ pub(crate) struct AudioState {
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
+    /// A MIDI input device has sent something: tracks taking MIDI input render while stopped,
+    /// so what is played on it sounds (see `fill`).
+    midi_seen: bool,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
@@ -125,12 +128,13 @@ impl AudioState {
             device_rate,
             input: None,
             recording: false,
+            midi_seen: false,
             unsent: MeterSnapshot::default(),
             forget_shared: Vec::new(),
         }
     }
 
-    fn drain(&mut self) {
+    pub(crate) fn drain(&mut self) {
         let mut changed = false;
         while let Ok(c) = self.rx.try_recv() {
             match c {
@@ -145,6 +149,12 @@ impl AudioState {
                     self.forget_meters();
                 }
                 Cmd::Recording(r) => self.recording = r,
+                Cmd::Midi(msg) if self.mix.live_midi.len() < soundcraft_mix::LIVE_MIDI_CAPACITY => {
+                    self.mix.live_midi.push(msg);
+                    self.midi_seen = true;
+                }
+                // Full for this block: dropped, as is a message after the player stopped.
+                Cmd::Midi(_) => {}
                 Cmd::Session(s, instances) => {
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
@@ -276,8 +286,13 @@ impl AudioState {
     pub(crate) fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
         let channels = channels.max(1);
-        let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        let monitoring = (self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm))
+            || (self.midi_seen
+                && (self.session.tracks.iter().any(|t| soundcraft_mix::takes_midi_input(t, None))
+                    || soundcraft_mix::midi_thru_track(&self.session).is_some()));
         if !self.playing && !monitoring {
+            // Nothing renders: live MIDI would otherwise pile up and sound later in a burst.
+            self.mix.live_midi.clear();
             out.iter_mut().for_each(|x| *x = 0.0);
             self.unsent.silence();
             self.forget_meters();

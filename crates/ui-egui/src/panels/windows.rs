@@ -23,6 +23,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     workspace(app, ctx);
     configurations(app, ctx);
     playback_engine(app, ctx);
+    midi_input_devices(app, ctx);
     io_setup(app, ctx);
     shortcuts_window(app, ctx);
     clip_effects(app, ctx);
@@ -475,6 +476,80 @@ fn number_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<u32>
 }
 
 /// Setup › Playback Engine / Hardware: choose the audio system, devices, rate and buffer size.
+/// The MIDI input ports present, read once per opening of the window (and on Refresh).
+fn midi_ports(ctx: &egui::Context, refresh: bool) -> Arc<Vec<String>> {
+    let id = egui::Id::unique("midi_input_ports");
+    if !refresh && let Some(p) = ctx.data(|d| d.get_temp::<Arc<Vec<String>>>(id)) {
+        return p;
+    }
+    let ports = Arc::new(soundcraft_playback::midi_in::input_ports());
+    ctx.data_mut(|d| d.insert_temp(id, Arc::clone(&ports)));
+    ports
+}
+
+/// Setup › MIDI › MIDI Input Devices: which keyboards and controllers SoundCraft listens to.
+pub fn midi_input_devices(app: &mut SoundApp, ctx: &egui::Context) {
+    let mut open = app.ui.show_midi_input_devices;
+    if !open {
+        return;
+    }
+    let mut refresh = false;
+    let mut changed = false;
+    let ports = midi_ports(ctx, false);
+    let opened = app.midi_inputs.open_ports();
+    let failed = app.midi_inputs.failed_ports().to_vec();
+    let silent = app.player.as_ref().is_none_or(|p| p.silent);
+    win(ctx, &mut open, "MIDI Input Devices", vec2(420.0, 260.0), |ui| {
+        let t = Tokens::current();
+        if ports.is_empty() {
+            ui.label("No MIDI input device found. Connect a keyboard or controller, then Refresh.");
+        }
+        for name in ports.iter() {
+            let mut on = !app.ui.midi_inputs_disabled.contains(name);
+            ui.horizontal(|ui| {
+                if crate::widgets::checkbox(ui, &mut on, name.as_str()).changed() {
+                    app.ui.midi_inputs_disabled.retain(|n| n != name);
+                    if !on {
+                        app.ui.midi_inputs_disabled.push(name.clone());
+                    }
+                    changed = true;
+                }
+                let (state, color) = if !on {
+                    ("off".to_string(), t.text_dim)
+                } else if let Some(f) = failed.iter().find(|f| f.port == *name) {
+                    (format!("not available: {}", f.error), t.text_dim)
+                } else if opened.contains(name) {
+                    ("listening".to_string(), t.text)
+                } else {
+                    ("opening…".to_string(), t.text_dim)
+                };
+                ui.label(egui::RichText::new(state).small().color(color));
+            });
+        }
+        ui.add_space(4.0);
+        if ui.button("Refresh").on_hover_text("Look for connected devices again and retry the ones that failed").clicked() {
+            refresh = true;
+        }
+        ui.separator();
+        let note = if silent {
+            "No audio output is open: open one in Setup › Playback Engine to hear MIDI input."
+        } else {
+            "What you play goes to the record-enabled or input-monitored instrument and MIDI tracks; when none is, to the selected one."
+        };
+        ui.label(egui::RichText::new(note).small().color(t.text_dim));
+    });
+    if refresh {
+        midi_ports(ctx, true);
+    }
+    if refresh || changed {
+        app.service_midi_inputs(refresh);
+    }
+    if !open {
+        ctx.data_mut(|d| d.remove_temp::<Arc<Vec<String>>>(egui::Id::unique("midi_input_ports")));
+    }
+    app.ui.show_midi_input_devices = open;
+}
+
 pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_playback_engine;
     if !open {
