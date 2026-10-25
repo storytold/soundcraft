@@ -17,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "List Plugin Parameters",
         [],
         None,
-        "{track?, slot: 0..9 | a..j | \"instrument\", filter?: string (max 200 characters), offset?: 0, limit?: 200 (1..1000)} → {plugin, name, total, offset, limit, has_more, next_offset (null on the last page), params: [{id, name, min, max, default, unit, taper, steps, values, value, value_source}]}. Filter is a Unicode-lowercase substring of id or name; total is the filtered count before pagination. Unit is None|Db|Hz|Ms|Percent|Ratio|Semitones|Cents|Seconds|Toggle|Choice; taper is Linear|Log. Toggle/Choice value is a numeric index into values; Toggle values are always [\"Off\",\"On\"] (host-provided toggle strings are not yet read), and continuous values is []. Non-finite min/max/default/value is null. value_source \"session\" means the insert's stored parameter map holds the key (mix.insert stores every default; track.new's instrument starts empty); \"default\" means it does not. For hosted plugins the real value may instead live in the plugin state blob or automation; reading it live is a later addition.",
+        "{track?, slot: 0..9 | a..j | \"instrument\", filter?: string (max 200 characters), offset?: 0, limit?: 200 (1..1000), probe?: false} → {plugin, name, total, offset, limit, has_more, next_offset (null on the last page), params: [{id, name, min, max, default, unit, taper, steps, values, value, value_source, display, display_min?, display_max?}]}. Filter is a Unicode-lowercase substring of id or name; total is the filtered count before pagination. Unit is None|Db|Hz|Ms|Percent|Ratio|Semitones|Cents|Seconds|Toggle|Choice; taper is Linear|Log. Toggle/Choice value is a numeric index into values; Toggle values are always [\"Off\",\"On\"] (host-provided toggle strings are not yet read), and continuous values is []. Non-finite min/max/default/value is null. Without probe, value/value_source come from the session map or default; display uses SoundCraft formatting for built-ins and is null for hosted plugins. With probe, SoundCraft instantiates the plugin once, restores its state and stored parameters, reads live values with value_source \"plugin\", and asks it for display, display_min and display_max text (falling back to SoundCraft formatting). Probing is read-only with no session side effects, but large hosted instruments can take seconds to instantiate.",
         has_selection,
         plugin_params
     )]
@@ -49,14 +49,19 @@ fn finite(value: f32) -> Option<f32> {
     value.is_finite().then_some(value)
 }
 
-fn parameter_json(param: &ParamInfo, insert: &Insert) -> Value {
+fn stored_value(param: &ParamInfo, insert: &Insert) -> (f32, &'static str) {
+    insert.params.get(param.id).map_or((param.default, "default"), |value| (*value, "session"))
+}
+
+fn parameter_json(param: &ParamInfo, insert: &Insert, hosted: bool, plugin: Option<&mut dyn soundcraft_dsp::Plugin>) -> Value {
     let (steps, values): (Option<usize>, Vec<&str>) = match param.unit {
         Unit::Toggle => (Some(2), vec!["Off", "On"]),
         Unit::Choice => (Some(param.choices.len()), param.choices.to_vec()),
         _ => (None, Vec::new()),
     };
-    let (value, value_source) = insert.params.get(param.id).map_or((param.default, "default"), |value| (*value, "session"));
-    json!({
+    let (stored, stored_source) = stored_value(param, insert);
+    let (value, value_source) = plugin.as_ref().and_then(|plugin| plugin.param(param.id)).map_or((stored, stored_source), |value| (value, "plugin"));
+    let mut result = json!({
         "id": param.id,
         "name": param.name,
         "min": finite(param.min),
@@ -68,13 +73,37 @@ fn parameter_json(param: &ParamInfo, insert: &Insert) -> Value {
         "values": values,
         "value": finite(value),
         "value_source": value_source,
-    })
+        "display": if plugin.is_some() || !hosted { Some(param.format(value)) } else { None },
+    });
+    if let Some(plugin) = plugin {
+        let display = plugin.value_text(param.id, value).unwrap_or_else(|| param.format(value));
+        let display_min = plugin.value_text(param.id, param.min).unwrap_or_else(|| param.format(param.min));
+        let display_max = plugin.value_text(param.id, param.max).unwrap_or_else(|| param.format(param.max));
+        if let Some(object) = result.as_object_mut() {
+            object.insert("display".into(), json!(display));
+            object.insert("display_min".into(), json!(display_min));
+            object.insert("display_max".into(), json!(display_max));
+        }
+    }
+    result
 }
 
-fn response(info: &PluginInfo, insert: &Insert, filter: Option<&str>, offset: usize, limit: usize) -> Value {
+fn response(
+    info: &PluginInfo,
+    insert: &Insert,
+    filter: Option<&str>,
+    offset: usize,
+    limit: usize,
+    plugin: Option<&mut dyn soundcraft_dsp::Plugin>,
+) -> Value {
     let matching: Vec<_> = info.params.iter().filter(|param| filter.is_none_or(|needle| matches_filter(param, needle))).collect();
     let total = matching.len();
-    let params: Vec<_> = matching.into_iter().skip(offset).take(limit).map(|param| parameter_json(param, insert)).collect();
+    let hosted = soundcraft_mix::is_third_party(&insert.plugin);
+    let page = matching.into_iter().skip(offset).take(limit);
+    let params: Vec<_> = match plugin {
+        Some(plugin) => page.map(|param| parameter_json(param, insert, hosted, Some(&mut *plugin))).collect(),
+        None => page.map(|param| parameter_json(param, insert, hosted, None)).collect(),
+    };
     let end = offset.saturating_add(params.len());
     let next_offset = (end < total).then_some(end);
     json!({
@@ -95,7 +124,8 @@ fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
     let insert = match slot {
         PluginSlot::Insert(index) => tr.mixer.inserts.get(index).and_then(Option::as_ref).ok_or_else(|| bad(CMD, "empty slot"))?,
         PluginSlot::Instrument => tr.instrument.as_ref().ok_or_else(|| bad(CMD, "the track has no instrument"))?,
-    };
+    }
+    .clone();
     let info = super::clap::plugin_info(&insert.plugin).ok_or_else(|| bad(CMD, "unknown plugin"))?;
     let filter = match p.get("filter") {
         None => None,
@@ -108,7 +138,24 @@ fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     };
     let (offset, limit) = pagination(p)?;
-    Ok(response(info, insert, filter.as_deref(), offset, limit))
+    let probe = match p.get("probe") {
+        None => false,
+        Some(value) => value.as_bool().ok_or_else(|| bad(CMD, "`probe` must be a boolean"))?,
+    };
+    let mut instance = if probe {
+        let state = insert.state_bytes();
+        let sample_rate = e.session().sample_rate.as_f64() as f32;
+        let mut instance = soundcraft_mix::create_instance(&insert.plugin, state.as_deref(), sample_rate, 512, 2)
+            .ok_or_else(|| bad(CMD, format!("could not instantiate plugin `{}`", insert.plugin)))?;
+        for (id, value) in &insert.params {
+            instance.plugin.set_param(id, *value);
+        }
+        Some(instance)
+    } else {
+        None
+    };
+    let plugin = instance.as_mut().map(|instance| &mut *instance.plugin as &mut dyn soundcraft_dsp::Plugin);
+    Ok(response(info, &insert, filter.as_deref(), offset, limit, plugin))
 }
 
 #[cfg(test)]
@@ -168,6 +215,24 @@ mod tests {
         assert_eq!(defaulted.get("value_source"), Some(&json!("default")));
         assert_eq!(defaulted.get("steps"), Some(&Value::Null));
         assert_eq!(defaulted.get("values"), Some(&json!([])));
+        assert_eq!(changed.get("display"), Some(&json!(info.param("mid_gain").unwrap().format(7.5))));
+        assert!(changed.get("display_min").is_none());
+        assert!(changed.get("display_max").is_none());
+    }
+
+    #[test]
+    fn built_in_probe_reads_live_values_and_range_displays() {
+        let mut e = Engine::default();
+        let track = insert_eq(&mut e);
+        e.execute("mix.insert_param", &json!({"track": track, "slot": 0, "param": "mid_gain", "value": 7.5})).unwrap();
+        let result = e.execute(CMD, &json!({"track": track, "slot": 0, "filter": "mid_gain", "probe": true})).unwrap();
+        let param = listed_params(&result).iter().find(|param| param.get("id") == Some(&json!("mid_gain"))).unwrap();
+        let info = soundcraft_dsp::plugin_info("eq_7band").unwrap().param("mid_gain").unwrap();
+        assert_eq!(param.get("value"), Some(&json!(7.5)));
+        assert_eq!(param.get("value_source"), Some(&json!("plugin")));
+        assert_eq!(param.get("display"), Some(&json!(info.format(7.5))));
+        assert_eq!(param.get("display_min"), Some(&json!(info.format(info.min))));
+        assert_eq!(param.get("display_max"), Some(&json!(info.format(info.max))));
     }
 
     #[test]
@@ -241,7 +306,7 @@ mod tests {
             taper: Taper::Linear,
             choices: &[],
         };
-        let value = parameter_json(&param, &Insert::new("test"));
+        let value = parameter_json(&param, &Insert::new("test"), false, None);
         assert_eq!(value.get("id"), Some(&json!("hostile")));
         for field in ["min", "max", "default", "value"] {
             assert_eq!(value.get(field), Some(&Value::Null), "{field}");
@@ -264,6 +329,9 @@ mod tests {
             json!({"track": track, "slot": 0, "offset": "1"}),
             json!({"track": track, "slot": 0, "limit": null}),
             json!({"track": track, "slot": 0, "limit": "200"}),
+            json!({"track": track, "slot": 0, "probe": null}),
+            json!({"track": track, "slot": 0, "probe": 1}),
+            json!({"track": track, "slot": 0, "probe": "true"}),
         ] {
             assert!(e.execute(CMD, &params).is_err(), "accepted {params}");
         }
@@ -274,6 +342,7 @@ mod tests {
         let mut e = Engine::default();
         let audio = new_track(&mut e, None);
         assert!(e.execute(CMD, &json!({"track": audio, "slot": 0})).unwrap_err().to_string().contains("empty slot"));
+        assert!(e.execute(CMD, &json!({"track": audio, "slot": 0, "probe": true})).unwrap_err().to_string().contains("empty slot"));
         assert!(e.execute(CMD, &json!({"track": audio, "slot": "instrument"})).unwrap_err().to_string().contains("the track has no instrument"));
         assert!(e.execute(CMD, &json!({"track": audio, "slot": "unknown"})).is_err());
 
@@ -306,11 +375,13 @@ mod tests {
         let journal = e.journal.clone();
         e.mark_clean();
         let dirty = e.is_dirty();
-        e.execute(CMD, &json!({"track": track, "slot": 0})).unwrap();
-        assert_eq!(e.revision, revision);
-        assert_eq!(e.undo_history(), undo);
-        assert_eq!(e.journal, journal);
-        assert_eq!(e.is_dirty(), dirty);
+        for probe in [false, true] {
+            e.execute(CMD, &json!({"track": track, "slot": 0, "probe": probe})).unwrap();
+            assert_eq!(e.revision, revision);
+            assert_eq!(e.undo_history(), undo);
+            assert_eq!(e.journal, journal);
+            assert_eq!(e.is_dirty(), dirty);
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -325,6 +396,15 @@ mod tests {
             return; // no parameters reported on this system
         }
         assert!(params.iter().all(|param| param.get("id").and_then(Value::as_str).and_then(|id| id.parse::<u32>().ok()).is_some()));
+        assert!(params.iter().all(|param| param.get("display") == Some(&Value::Null)));
+
+        let probed = e.execute(CMD, &json!({"track": track, "slot": "instrument", "limit": 1000, "probe": true})).unwrap();
+        let params = listed_params(&probed);
+        assert!(!params.is_empty());
+        assert!(params.iter().all(|param| param.get("value_source") == Some(&json!("plugin"))));
+        assert!(params.iter().all(|param| param.get("display").and_then(Value::as_str).is_some()));
+        assert!(params.iter().all(|param| param.get("display_min").and_then(Value::as_str).is_some()));
+        assert!(params.iter().all(|param| param.get("display_max").and_then(Value::as_str).is_some()));
     }
 
     /// Surge XT reports 775 parameters: more than one default page.
@@ -341,7 +421,7 @@ mod tests {
         let mut seen = Vec::new();
         let mut offset = 0;
         loop {
-            let page = response(&info, &insert, None, offset, DEFAULT_LIMIT);
+            let page = response(&info, &insert, None, offset, DEFAULT_LIMIT, None);
             assert_eq!(page["total"], 775);
             assert_eq!(page["offset"], offset);
             assert_eq!(page["limit"], DEFAULT_LIMIT);
@@ -361,7 +441,7 @@ mod tests {
             }
         }
         assert_eq!(seen, ids);
-        let past_end = response(&info, &insert, None, 10_000, DEFAULT_LIMIT);
+        let past_end = response(&info, &insert, None, 10_000, DEFAULT_LIMIT, None);
         assert_eq!(past_end["has_more"], false);
         assert!(listed_params(&past_end).is_empty());
     }
