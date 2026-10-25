@@ -9,6 +9,7 @@ mod automation;
 pub mod b64;
 mod clip;
 mod ids;
+mod live;
 mod markers;
 mod mixer;
 mod session;
@@ -18,6 +19,7 @@ mod track;
 pub use automation::{AutoParam, AutomationLane, AutomationMode, AutomationPoint, INSTRUMENT_AUTO_SLOT};
 pub use clip::{Clip, ClipContent, Fade, FadeShape};
 pub use ids::{BusId, ClipId, GroupId, MarkerId, SourceId, TrackId};
+pub use live::LivePlugins;
 pub use markers::{Group, MarkerKind, MemoryLocation};
 pub use mixer::{
     Bus, ChannelFormat, INSERT_SLOTS, Insert, Mixer, OutputPath, Route, SEND_SLOTS, SendSlot, Speaker, SurroundPan, fader_db_to_pos, fader_pos_to_db,
