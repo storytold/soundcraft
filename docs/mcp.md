@@ -115,7 +115,7 @@ Resources: `soundcraft://session` (full session JSON), `soundcraft://commands`.
 - Tracks by name or id; clips by id.
 - Use `mix.plugin_params` through `execute` to discover parameter ids and metadata for an insert or instrument, including hosted plugins without an editor.
 - `mix.insert`, `mix.insert_param`, `mix.insert_params`, `mix.instrument` and `mix.instrument_param` accept a parameter value as a number, or as text: a Toggle/Choice label or the plugin's own text, e.g. `"29"`. Text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily.
-- A parameter key on those commands, and on `automation.set_point`, `automation.write_range` and `automation.clear`, may be an id, a number, or a name (case-insensitive; ids win). The session stores the id. An empty automation slot keeps the key as parsed (lowercased).
+- A parameter key on those commands, and on `automation.set_point`, `automation.write_range` and `automation.clear`, may be an id, a number, or a name (case-insensitive; ids win), at most 200 characters. The session stores the id. An empty automation slot keeps the key as parsed (lowercased). An occupied slot with no parameter list is an error; `automation.clear` still removes a lane when the key is its exact stored id.
 - Every command is undoable through `edit.undo` unless it is a query or a view setting.
 
 The acceptance test `crates/automation/tests/it/agent_tasks.rs` drives a realistic session end to end

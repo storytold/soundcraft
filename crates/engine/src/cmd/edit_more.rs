@@ -123,7 +123,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "To Current Automation Type",
             ["Edit", "Paste Special"],
             None,
-            "{tracks?, at?, param?: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>} — pastes copied automation into the shown lane (track view) or `param`, rescaled to its range. Plugin keys: id, number, or name (case-insensitive; ids win). A known plugin stores the id. An empty slot keeps the key as parsed (lowercased).",
+            "{tracks?, at?, param?: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>} — pastes copied automation into the shown lane (track view) or `param`, rescaled to its range. Plugin keys: id, number, or name (case-insensitive; ids win), at most 200 characters. A known plugin stores the id. An empty slot keeps the key as parsed (lowercased). An occupied slot with no parameter list is an error.",
             has_automation_clipboard,
             paste_to_current_automation
         ),

@@ -156,7 +156,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Automation Breakpoint",
             [],
             None,
-            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, at, value, from?}. Plugin keys: id, number, or name (case-insensitive; ids win). A known plugin stores the id. An empty slot keeps the key as parsed (lowercased).",
+            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, at, value, from?}. Plugin keys: id, number, or name (case-insensitive; ids win), at most 200 characters. A known plugin stores the id. An empty slot keeps the key as parsed (lowercased). An occupied slot with no parameter list is an error.",
             has_selection,
             set_point
         ),
@@ -165,7 +165,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Write Automation",
             [],
             None,
-            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, start?, end?, value}. Plugin keys: id, number, or name (case-insensitive; ids win). A known plugin stores the id. An empty slot keeps the key as parsed (lowercased).",
+            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, start?, end?, value}. Plugin keys: id, number, or name (case-insensitive; ids win), at most 200 characters. A known plugin stores the id. An empty slot keeps the key as parsed (lowercased). An occupied slot with no parameter list is an error.",
             has_selection,
             write_range
         ),
@@ -174,7 +174,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Clear Automation",
             [],
             None,
-            "{track?, param?: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, start?, end?}. Plugin keys: id, number, or name (case-insensitive; ids win). A known plugin stores the id. An empty slot keeps the key as parsed (lowercased).",
+            "{track?, param?: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, start?, end?}. Plugin keys: id, number, or name (case-insensitive; ids win), at most 200 characters. A known plugin stores the id. An empty slot keeps the key as parsed (lowercased). An occupied slot with no parameter list is cleared only when the key is the lane's exact stored id.",
             has_selection,
             clear_lane
         ),
@@ -981,28 +981,53 @@ fn parsed_lane(p: &Value, cmd: &str) -> Result<AutoParam> {
 /// A `plugin:<slot>:<key>` lane against the plugin in that slot.
 ///
 /// [`AutoParam::parse`] ASCII-lowercases the whole lane, so ids and names are matched
-/// case-insensitively and the stored lane uses the parameter's id. An empty slot, or a
-/// plugin with no parameter list, keeps that parsed key unchanged. AU and VST3 have no
-/// group separate from the name; CLAP names already include `Module/Name`.
+/// case-insensitively and the stored lane uses the parameter's id. Every plugin key is
+/// capped at [`super::param_key::MAX_PARAM_KEY_CHARS`] before an empty slot keeps it.
+/// An occupied slot whose plugin has no parameter list is an error. [`clear_lane`] is
+/// the exception: pass `exact_id_if_unknown` so that command can still match a stored
+/// id exactly. AU and VST3 have no group separate from the name; CLAP names already
+/// include `Module/Name`.
 pub(super) fn resolve_automation_lane(tr: &soundcraft_model::Track, param: &AutoParam, cmd: &str) -> Result<AutoParam> {
+    resolve_automation_lane_in(tr, param, cmd, false)
+}
+
+fn resolve_automation_lane_in(tr: &soundcraft_model::Track, param: &AutoParam, cmd: &str, exact_id_if_unknown: bool) -> Result<AutoParam> {
     let AutoParam::Plugin { slot, param: key } = param else {
         return Ok(param.clone());
     };
+    // Before either early return: an empty slot must not store a key the resolver would reject.
+    if key.chars().nth(super::param_key::MAX_PARAM_KEY_CHARS).is_some() {
+        return Err(bad(cmd, super::param_key::ResolveError::TooLong.to_string()));
+    }
     let Some(insert) = tr.plugin_at(*slot) else {
         return Ok(param.clone());
     };
     let Some(info) = super::clap::plugin_info(&insert.plugin) else {
-        return Ok(param.clone());
+        if exact_id_if_unknown {
+            return Ok(param.clone());
+        }
+        return Err(bad(cmd, format!("unknown plugin {} in slot {}; use the parameter id", insert.plugin, automation_slot_label(*slot))));
     };
     let resolved = super::param_key::resolve_automation_param(info, key).map_err(|err| bad(cmd, err.to_string()))?;
     Ok(AutoParam::Plugin { slot: *slot, param: resolved.id.to_string() })
 }
 
-fn resolve_automation_lanes(session: &Session, tracks: &[TrackId], param: &AutoParam, cmd: &str) -> Result<Vec<(TrackId, AutoParam)>> {
+/// Insert slots are `A`–`J`. The instrument lane is `instrument`.
+fn automation_slot_label(slot: u8) -> String {
+    if slot == soundcraft_model::INSTRUMENT_AUTO_SLOT { "instrument".to_string() } else { char::from(b'A'.saturating_add(slot.min(25))).to_string() }
+}
+
+fn resolve_automation_lanes(
+    session: &Session,
+    tracks: &[TrackId],
+    param: &AutoParam,
+    cmd: &str,
+    exact_id_if_unknown: bool,
+) -> Result<Vec<(TrackId, AutoParam)>> {
     let mut out = Vec::with_capacity(tracks.len());
     for id in tracks {
         let tr = session.track(*id).ok_or_else(|| bad(cmd, "no track"))?;
-        out.push((*id, resolve_automation_lane(tr, param, cmd)?));
+        out.push((*id, resolve_automation_lane_in(tr, param, cmd, exact_id_if_unknown)?));
     }
     Ok(out)
 }
@@ -1016,7 +1041,7 @@ fn set_point(e: &mut Engine, p: &Value) -> Result<Value> {
     let from = position_param(e, cmd, p, "from")?;
     let v = p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(cmd, "`value` required"))? as f32;
     // Resolve every track before writing, so one unknown name leaves the others untouched.
-    let lanes = resolve_automation_lanes(e.session(), &tracks, &parsed, cmd)?;
+    let lanes = resolve_automation_lanes(e.session(), &tracks, &parsed, cmd, false)?;
     let s = e.session_mut();
     for (t, param) in &lanes {
         if let Some(tr) = s.track_mut(*t) {
@@ -1036,7 +1061,7 @@ fn write_range(e: &mut Engine, p: &Value) -> Result<Value> {
     let parsed = parsed_lane(p, cmd)?;
     let r = range_param(e, cmd, p)?;
     let v = p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(cmd, "`value` required"))? as f32;
-    let lanes = resolve_automation_lanes(e.session(), &tracks, &parsed, cmd)?;
+    let lanes = resolve_automation_lanes(e.session(), &tracks, &parsed, cmd, false)?;
     let s = e.session_mut();
     for (t, param) in &lanes {
         if let Some(tr) = s.track_mut(*t) {
@@ -1075,7 +1100,7 @@ fn clear_lane(e: &mut Engine, p: &Value) -> Result<Value> {
     let r = range_param(e, cmd, p)?;
     let (a, b) = if r.is_empty() { (i64::MIN, i64::MAX) } else { (r.start, r.end) };
     let lanes: Vec<(TrackId, Option<AutoParam>)> = match &parsed {
-        Some(param) => resolve_automation_lanes(e.session(), &tracks, param, cmd)?.into_iter().map(|(t, param)| (t, Some(param))).collect(),
+        Some(param) => resolve_automation_lanes(e.session(), &tracks, param, cmd, true)?.into_iter().map(|(t, param)| (t, Some(param))).collect(),
         None => tracks.iter().copied().map(|t| (t, None)).collect(),
     };
     let s = e.session_mut();
