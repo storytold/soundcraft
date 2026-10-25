@@ -70,6 +70,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.rtp", "MIDI Real-Time Properties", "", None),
     ("window.playback_engine", "Playback Engine", "", None),
     ("ui.audio_device", "Audio Device", "", None),
+    ("ui.audio_load", "Audio Load", "", None),
     ("window.io_setup", "I/O Setup", "", None),
     ("window.shortcuts", "Keyboard Shortcuts", "", None),
     ("view.mix_section", "Mix Window View", "", None),
@@ -596,6 +597,9 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
     }
     if id == "ui.audio_device" {
         return Some(crate::windows::audio_device_command(app, p));
+    }
+    if id == "ui.audio_load" {
+        return Some(crate::windows::audio_load_command(app, p));
     }
     // Menu clicks never get here: Setup › Playback Engine / Hardware open the window
     // (`MENU_WINDOWS`). A programmatic call applies the open device instead.

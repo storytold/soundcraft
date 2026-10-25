@@ -23,9 +23,11 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod devices;
+mod load;
 pub mod record;
 
 pub use devices::AudioConfig;
+pub use load::AudioLoad;
 
 use soundcraft_dsp::{Plugin, PluginEditor, PluginStateReader};
 use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
@@ -55,7 +57,7 @@ use callback::{STALL, copy_meter_snapshot};
 use callback::{guarded_block, stalled};
 #[cfg(test)]
 use stream::pick_output_config;
-use stream::{Opened, build_output, first_started, open_device, start_stream};
+use stream::{Opened, Output, build_output, first_started, open_device, start_stream};
 
 /// Meter values for the UI: the highest peak (and gain reduction) of every block rendered since
 /// the UI last took them with [`Player::take_meters`]. The audio thread renders blocks faster than
@@ -153,6 +155,7 @@ pub enum OutputTrouble {
 pub struct Player {
     shared: Arc<Shared>,
     fault: Arc<Fault>,
+    load: Arc<load::LoadMeter>,
     /// The block count last seen while playing, and since when.
     #[cfg(not(target_arch = "wasm32"))]
     watch: Mutex<Option<(u64, std::time::Instant)>>,
@@ -186,6 +189,17 @@ impl Player {
         // Hand the initial session's third-party plugins over.
         p.update_session(session);
         p
+    }
+
+    /// How much of each device callback's time the render takes, and how many were late
+    /// (dropouts). Not measured without a device.
+    pub fn audio_load(&self) -> AudioLoad {
+        self.load.snapshot()
+    }
+
+    /// Starts the worst load and the late count again.
+    pub fn reset_audio_load(&self) {
+        self.load.reset();
     }
 
     /// What stopped the audio output, once: a bug in the engine, or the device went away or
@@ -239,17 +253,19 @@ impl Player {
                         let (gtx, grx) = channel();
                         let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
                         let fault = Arc::new(Fault::default());
+                        let load = Arc::new(load::LoadMeter::default());
+                        let out = Output { channels, rate: f64::from(rate), fault: &fault, shared: &shared, load: &load };
                         let stream = match format {
-                            cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, channels, &fault, &shared),
-                            cpal::SampleFormat::I16 => build_output::<i16>(&device, *config, state, channels, &fault, &shared),
-                            _ => build_output::<f32>(&device, *config, state, channels, &fault, &shared),
+                            cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, &out),
+                            cpal::SampleFormat::I16 => build_output::<i16>(&device, *config, state, &out),
+                            _ => build_output::<f32>(&device, *config, state, &out),
                         }?;
-                        Ok(Opened { stream, tx, grx, fault })
+                        Ok(Opened { stream, tx, grx, fault, load })
                     },
                     |opened| start_stream(&opened.stream),
                 );
                 match opened {
-                    Some((config, Opened { stream, tx, grx, fault })) => {
+                    Some((config, Opened { stream, tx, grx, fault, load })) => {
                         let rate = config.sample_rate;
                         let channels = usize::from(config.channels);
                         let buffer = match config.buffer_size {
@@ -263,6 +279,7 @@ impl Player {
                         Player {
                             shared,
                             fault,
+                            load,
                             #[cfg(not(target_arch = "wasm32"))]
                             watch: Mutex::new(None),
                             tx,
@@ -341,6 +358,7 @@ impl Player {
         Player {
             shared,
             fault,
+            load: Arc::default(),
             watch: Mutex::new(None),
             tx,
             side,
@@ -365,6 +383,7 @@ impl Player {
         Player {
             shared,
             fault: Arc::default(),
+            load: Arc::default(),
             tx,
             side,
             _stream: None,

@@ -1,4 +1,5 @@
 use super::callback::{AudioState, Fault, guarded_block};
+use super::load::{LoadMeter, LoadWindow};
 use super::{Arc, AudioConfig, Cmd, Ordering, Plugin, Receiver, Sender, Shared, devices, mark_audio_thread};
 
 /// Start a freshly built output stream. `false` when the device refuses to start it, so the caller
@@ -19,6 +20,7 @@ pub(crate) struct Opened {
     pub(crate) tx: Sender<Cmd>,
     pub(crate) grx: Receiver<Vec<Box<dyn Plugin>>>,
     pub(crate) fault: Arc<Fault>,
+    pub(crate) load: Arc<LoadMeter>,
 }
 
 /// Build and start the attempts in order; the first that builds and starts wins. A build error or
@@ -39,28 +41,42 @@ pub(crate) fn first_started<A: std::fmt::Debug, S, E: std::fmt::Display>(
     None
 }
 
+/// What an output stream's callback shares with the player.
+pub(crate) struct Output<'a> {
+    pub(crate) channels: usize,
+    /// Device frames per second.
+    pub(crate) rate: f64,
+    pub(crate) fault: &'a Arc<Fault>,
+    pub(crate) shared: &'a Arc<Shared>,
+    pub(crate) load: &'a Arc<LoadMeter>,
+}
+
 /// The output stream: the mix renders f32 into a scratch buffer allocated here (so the callback
-/// never allocates), converted to the device's sample type.
+/// never allocates), converted to the device's sample type. Each callback is timed for the load
+/// meter.
 pub(crate) fn build_output<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
     mut state: AudioState,
-    channels: usize,
-    fault: &Arc<Fault>,
-    shared: &Arc<Shared>,
+    out: &Output,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
     use cpal::traits::DeviceTrait;
+    let (channels, rate) = (out.channels, out.rate);
     let frame = channels.max(1);
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
-    let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
+    let (failed, guard, gone) = (Arc::clone(out.fault), Arc::clone(out.shared), Arc::clone(out.fault));
+    let meter = Arc::clone(out.load);
+    let mut window = LoadWindow::default();
     device.build_output_stream(
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             mark_audio_thread();
+            #[cfg(not(target_arch = "wasm32"))]
+            let started = std::time::Instant::now();
             for out in data.chunks_mut(chunk) {
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
@@ -68,6 +84,10 @@ where
                     *o = T::from_sample(*x);
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            meter.record(&mut window, started.elapsed().as_secs_f64(), (data.len() / frame) as f64 / rate);
+            #[cfg(target_arch = "wasm32")]
+            let _ = (&meter, &mut window, rate);
         },
         // cpal may call this on the audio thread (on ALSA in a loop while the device stays
         // broken): marked, so the logger hands the record off instead of writing it.

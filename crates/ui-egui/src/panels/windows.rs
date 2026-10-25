@@ -169,10 +169,27 @@ fn disk_usage(app: &mut SoundApp, ctx: &egui::Context) {
 
 fn system_usage(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_system_usage;
-    win(ctx, &mut open, "System Usage", vec2(320.0, 140.0), |ui| {
+    win(ctx, &mut open, "System Usage", vec2(320.0, 200.0), |ui| {
         ui.label(format!("UI frame time: {:.1} ms", app.frame_ms));
         ui.label(format!("Audio: {}", app.player.as_ref().map_or("no engine".to_string(), |p| format!("{} @ {} Hz", p.device_name, p.device_rate))));
-        let plugins: usize = app.engine.session().tracks.iter().map(|t| t.mixer.inserts.iter().flatten().count()).sum();
+        let load = app.player.as_ref().map(|p| p.audio_load()).unwrap_or_default();
+        if load.measured {
+            ui.label(format!("Audio load: {:.0}% (peak {:.0}%) of {:.1} ms", load.average * 100.0, load.peak * 100.0, load.buffer_ms));
+            ui.add(egui::ProgressBar::new(load.peak.clamp(0.0, 1.0)).desired_height(6.0));
+            ui.horizontal(|ui| {
+                ui.label(format!("Late callbacks (dropouts): {} · worst {:.0}%", load.late, load.worst * 100.0));
+                if ui.small_button("Reset").clicked()
+                    && let Some(p) = &app.player
+                {
+                    p.reset_audio_load();
+                }
+            });
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        } else {
+            ui.label("Audio load: not measured");
+        }
+        let session = app.engine.session();
+        let plugins: usize = session.tracks.iter().map(|t| t.mixer.inserts.iter().flatten().count() + usize::from(t.instrument.is_some())).sum();
         ui.label(format!("Active plugin instances: {plugins}"));
         ui.label(format!("Tracks: {}", app.engine.session().tracks.len()));
         ui.label(format!("Undo steps: {}", app.engine.undo_history().len()));
@@ -595,6 +612,22 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         });
     }
     app.ui.show_playback_engine = open;
+}
+
+/// `ui.audio_load`: `{reset?: bool}` → the audio callback's load (`soundcraft_playback::AudioLoad`):
+/// render time over buffer duration, averaged (`average`) and at its heaviest (`peak`) over the
+/// last half second, the heaviest (`worst`) and the callbacks that ran past their buffer (`late`,
+/// dropouts) since the stream opened. `reset: true` starts `worst` and the counts again after
+/// returning them. Without an audio device `measured` is false.
+pub fn audio_load_command(app: &mut SoundApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let Some(player) = &app.player else {
+        return serde_json::to_value(soundcraft_playback::AudioLoad::default()).map_err(|e| e.to_string());
+    };
+    let load = player.audio_load();
+    if p.get("reset").and_then(serde_json::Value::as_bool) == Some(true) {
+        player.reset_audio_load();
+    }
+    serde_json::to_value(load).map_err(|e| e.to_string())
 }
 
 /// `ui.audio_device`: `{list?: bool}` returns the audio systems and their devices;
