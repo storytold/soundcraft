@@ -216,7 +216,7 @@ mod tests {
         })));
         let err =
             e.execute("mix.insert_param", &json!({"track": track.0, "slot": 0, "param": "mid_gain", "value": "twintig"})).unwrap_err().to_string();
-        assert!(err.contains("`twintig` is not a value of `mid_gain`"), "{err}");
+        assert!(err.contains("`twintig` is not a value of MF Gain (mid_gain)"), "{err}");
         assert!(err.contains("0.0 dB"), "{err}");
         assert!(!err.contains("out of range"), "{err}");
         assert_eq!(stored_insert(&e, track, "mid_gain"), Some(7.5));
