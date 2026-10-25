@@ -597,16 +597,25 @@ fn subharmonic_solo_plays_one_band_and_mutes_the_dry_signal() {
 
 #[test]
 fn subharmonic_drive_keeps_every_character_bounded() {
-    for character in 0..6 {
+    let driven = |character: usize, q: f32| {
         let mut p = subharmonic_wet();
         p.set_param("input", 18.0);
         p.set_param("lower_gain", 24.0);
         p.set_param("upper_gain", 24.0);
         p.set_param("drive", 18.0);
         p.set_param("character", character as f32);
-        let out = run(p.as_mut(), &[sine(60.0, 1.0, 48_000)]);
+        p.set_param("hp_q", q);
+        p.set_param("lp_q", q);
+        run(p.as_mut(), &[sine(60.0, 1.0, 48_000)])
+    };
+    for character in 0..6 {
+        let out = driven(character, 0.707);
         let top = peak(&out[0][24_000..]);
         assert!(top > 0.5 && top < 1.5, "character {character}: peak {top}");
+        // Q 5 filters after the saturator ring well above full scale, but never to infinity.
+        let out = driven(character, 5.0);
+        assert!(out[0].iter().all(|v| v.is_finite()), "character {character} at Q 5");
+        assert!(peak(&out[0][24_000..]) > 0.5, "character {character} at Q 5 is silent");
     }
 }
 

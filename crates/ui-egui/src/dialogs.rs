@@ -907,8 +907,9 @@ fn run_then(app: &mut SoundApp, cmd: &str, params: Value) -> Result<Value, Strin
 /// with the values of the open Strip Silence window (or of the one Rename Selected Clips goes back
 /// to). The Edit window draws them as the Strip Silence rectangles. Empty when neither window is
 /// open. A scan runs again only when the session or a value changes. Off the web it runs on a worker
-/// thread, one at a time, and the rectangles last found stay until it ends. A scan for older values,
-/// or one that runs on after the window closes, stops before its next window of audio.
+/// thread, one at a time, and the rectangles last found stay until it ends. On the web it runs on the
+/// frame thread once no pointer button is down, so a slider drag scans once, on release. A scan for
+/// older values, or one that runs on after the window closes, stops before its next window of audio.
 pub fn strip_silence_rectangles(app: &mut SoundApp, ctx: &egui::Context) -> StripRects {
     let values = match &app.dialogs.open {
         Some(Dialog::StripSilence { threshold, min_ms, pre_ms, post_ms }) => [*threshold, *min_ms, *pre_ms, *post_ms],
@@ -936,8 +937,9 @@ pub fn strip_silence_rectangles(app: &mut SoundApp, ctx: &egui::Context) -> Stri
     let shown = r.shown.as_ref().map(|(k, rects)| (*k == key, Arc::clone(rects)));
     #[cfg(not(target_arch = "wasm32"))]
     let busy = r.running.is_some();
+    // The browser's scan blocks the frame, so it waits for the release that ends a slider drag.
     #[cfg(target_arch = "wasm32")]
-    let busy = false;
+    let busy = ctx.input(|i| i.pointer.any_down());
     if let Some((true, rects)) = shown {
         return rects;
     }
@@ -968,8 +970,6 @@ pub fn strip_silence_rectangles(app: &mut SoundApp, ctx: &egui::Context) -> Stri
             return shown.map(|(_, rects)| rects).unwrap_or_default();
         }
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = ctx;
     // The browser has no threads, and without a thread to spare the scan runs on this one.
     let rects: StripRects = Arc::new(scan.run().unwrap_or_default());
     app.dialogs.strip_rectangles.shown = Some((key, Arc::clone(&rects)));
@@ -1105,10 +1105,6 @@ fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
                 "pitch_shift" => {
                     let v = params.entry("semitones".into()).or_insert(0.0);
                     ui.add(egui::Slider::new(v, -24.0..=24.0).text("Semitones"));
-                }
-                "varispeed" => {
-                    let v = params.entry("speed".into()).or_insert(1.0);
-                    ui.add(egui::Slider::new(v, 0.25..=4.0).text("Speed"));
                 }
                 "speed_ramp" => {
                     for (id, label, default, choices) in SPEED_RAMP_CHOICES {

@@ -52,6 +52,7 @@ craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-l
 
 # Video containers and bitstreams, shared with the other craft apps.
 craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "16fb3d46e1eaa0d455465e4e66a3ac7b17b55bd3" }
+craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "5b0f3c572a3b5c1e51bdb90d7ff788e0212ec1cc", features = ["egui"] }
 
 # ui
 # 650b1c0b058017c4eb3af06d5b39586d6732e07b is the revision produced by the separate craft-libs current-main-0135

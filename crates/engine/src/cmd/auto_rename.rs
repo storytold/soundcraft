@@ -189,6 +189,26 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_paste_leaves_the_clipboard_as_it_was() {
+        let mut e = crate::demo::demo_engine();
+        let (t, id, start, len) = first_kick(&e);
+        e.execute("clip.auto_rename", &json!({"clips": [id], "name": "SFX"})).unwrap();
+        e.execute("edit.copy", &json!({"tracks": [t], "start": start, "end": start + len})).unwrap();
+        // Without its scheme in the session, a paste puts the scheme back under a new key.
+        e.session_mut().auto_names.clear();
+        let copied = e.clipboard.clone();
+        // A time-locked clip at the paste point leaves Shuffle no room.
+        e.session_mut().find_clip_mut(id).unwrap().time_locked = true;
+        e.session_mut().edit.edit_mode = soundcraft_model::EditMode::Shuffle;
+        assert!(e.execute("edit.paste", &json!({"tracks": [t], "at": start})).is_err());
+        assert_eq!(e.clipboard, copied);
+        e.session_mut().edit.edit_mode = soundcraft_model::EditMode::Slip;
+        let at = e.session().content_end() + 48_000;
+        e.execute("edit.paste", &json!({"tracks": [t], "at": at})).unwrap();
+        assert_ne!(e.clipboard, copied, "a paste that succeeds keeps the scheme's new key");
+    }
+
+    #[test]
     fn bad_auto_rename_params_are_refused() {
         let mut e = crate::demo::demo_engine();
         let (_, id, _, _) = first_kick(&e);

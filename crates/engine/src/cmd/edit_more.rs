@@ -510,6 +510,7 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
             }
         }
     }
+    e.clipboard = cb;
     Ok(json!({"merged": merged, "placed": placed}))
 }
 

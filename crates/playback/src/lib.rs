@@ -45,11 +45,53 @@ const OLD_SESSIONS: usize = 16;
 /// renders on worker threads; the cpal callbacks here set it.
 pub use soundcraft_mix::{mark_audio_thread, on_audio_thread};
 
-/// Meter values for the UI.
+/// Meter values for the UI: the highest peak (and gain reduction) of every block rendered since
+/// the UI last took them with [`Player::take_meters`]. The audio thread renders blocks faster than
+/// the UI draws (about 94 blocks a second at 512 frames and 48 kHz against 20-60 polls), so
+/// keeping only the latest block would miss most transients.
 #[derive(Debug, Clone, Default)]
 pub struct MeterSnapshot {
     pub tracks: HashMap<TrackId, StripMeter>,
     pub main: StripMeter,
+    /// Something was written since the UI last took the values.
+    fresh: bool,
+}
+
+impl MeterSnapshot {
+    /// Fold one rendered block's meters in (max). Allocation-free once the tracks are known.
+    fn accumulate(&mut self, main: &StripMeter, tracks: &HashMap<TrackId, StripMeter>) {
+        self.main.accumulate(main);
+        for (k, v) in tracks {
+            match self.tracks.get_mut(k) {
+                Some(d) => d.accumulate(v),
+                None => {
+                    self.tracks.insert(*k, v.clone());
+                }
+            }
+        }
+        self.fresh = true;
+    }
+
+    /// Start a new accumulation period, keeping every entry and its storage.
+    fn reset_levels(&mut self) {
+        self.main.reset_levels();
+        self.tracks.values_mut().for_each(StripMeter::reset_levels);
+        self.fresh = false;
+    }
+
+    /// Nothing is playing or monitored: every meter reads silence. Levels are zeroed in place,
+    /// so starting again does not allocate the tracks' entries anew.
+    fn silence(&mut self) {
+        self.reset_levels();
+        self.fresh = true;
+    }
+
+    /// Drop the entries of deleted tracks.
+    fn forget(&mut self, gone: &[TrackId]) {
+        for id in gone {
+            self.tracks.remove(id);
+        }
+    }
 }
 
 /// Plugin states read from the live instances: `(track, slot or INSTRUMENT_SLOT, state)`.
@@ -72,6 +114,8 @@ enum Cmd {
     },
     Stop,
     Locate(Samples),
+    /// Tracks the latest session no longer has (worked out on the UI thread): their meters go.
+    Forget(Vec<TrackId>),
 }
 
 struct Shared {
@@ -172,6 +216,11 @@ struct AudioState {
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
+    /// Meters of blocks rendered while the UI held the shared snapshot (`try_lock` failed), so
+    /// their peaks reach it with the next block instead of being lost.
+    unsent: MeterSnapshot,
+    /// Deleted tracks still to drop from the shared snapshot (it was locked when they went).
+    forget_shared: Vec<TrackId>,
 }
 
 fn new_engine(sr: f32) -> MixEngine {
@@ -203,6 +252,8 @@ impl AudioState {
             device_rate,
             input: None,
             recording: false,
+            unsent: MeterSnapshot::default(),
+            forget_shared: Vec::new(),
         }
     }
 
@@ -211,6 +262,15 @@ impl AudioState {
         while let Ok(c) = self.rx.try_recv() {
             match c {
                 Cmd::Input(r) => self.input = Some(r),
+                Cmd::Forget(gone) => {
+                    self.unsent.forget(&gone);
+                    if self.forget_shared.is_empty() {
+                        self.forget_shared = gone;
+                    } else {
+                        self.forget_shared.extend_from_slice(&gone);
+                    }
+                    self.forget_meters();
+                }
                 Cmd::Recording(r) => self.recording = r,
                 Cmd::Session(s, instances) => {
                     changed = true;
@@ -311,20 +371,31 @@ impl AudioState {
         self.mix.render(&self.session, self.pos, n, &mut self.pending);
         self.send_garbage();
         self.pending_len = n;
-        if let Ok(mut m) = self.shared.meters.try_lock() {
-            m.main.copy_from(&self.mix.main_meter);
-            for (k, v) in &self.mix.meters {
-                match m.tracks.get_mut(k) {
-                    Some(d) => d.copy_from(v),
-                    None => {
-                        m.tracks.insert(*k, v.clone());
-                    }
-                }
-            }
-        }
+        self.publish_meters();
         if self.playing {
             self.pos += n as i64;
             self.shared.position.store(self.pos, Ordering::Relaxed);
+        }
+    }
+
+    /// Drop deleted tracks' meters from the shared snapshot, unless the UI holds it right now.
+    fn forget_meters(&mut self) {
+        if !self.forget_shared.is_empty()
+            && let Ok(mut m) = self.shared.meters.try_lock()
+        {
+            m.forget(&self.forget_shared);
+            self.forget_shared.clear();
+        }
+    }
+
+    /// Hand this block's meters to the UI without blocking: they are folded (max) into what the
+    /// UI has not taken yet. If the UI holds the snapshot right now, they wait in `unsent`.
+    fn publish_meters(&mut self) {
+        self.unsent.accumulate(&self.mix.main_meter, &self.mix.meters);
+        self.forget_meters();
+        if let Ok(mut m) = self.shared.meters.try_lock() {
+            m.accumulate(&self.unsent.main, &self.unsent.tracks);
+            self.unsent.reset_levels();
         }
     }
 
@@ -335,9 +406,10 @@ impl AudioState {
         let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
         if !self.playing && !monitoring {
             out.iter_mut().for_each(|x| *x = 0.0);
+            self.unsent.silence();
+            self.forget_meters();
             if let Ok(mut m) = self.shared.meters.try_lock() {
-                m.main = StripMeter::default();
-                m.tracks.clear();
+                m.silence();
             }
             return;
         }
@@ -419,11 +491,30 @@ struct Side {
     refused: HashSet<(TrackId, usize)>,
     garbage: Receiver<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<Receiver<Arc<Session>>>,
+    /// The tracks of the session last sent, to tell the audio thread which ones went.
+    tracks: HashSet<TrackId>,
 }
 
 impl Side {
     fn new(rate: f32, garbage: Receiver<Vec<Box<dyn Plugin>>>) -> Side {
-        Side { shadow: HashMap::new(), rate, editors: HashMap::new(), states: BTreeMap::new(), refused: HashSet::new(), garbage, old_sessions: None }
+        Side {
+            shadow: HashMap::new(),
+            rate,
+            editors: HashMap::new(),
+            states: BTreeMap::new(),
+            refused: HashSet::new(),
+            garbage,
+            old_sessions: None,
+            tracks: HashSet::new(),
+        }
+    }
+
+    /// Note `s`'s tracks; the ones the previous session had and `s` doesn't.
+    fn gone_tracks(&mut self, s: &Session) -> Vec<TrackId> {
+        let now: HashSet<TrackId> = s.tracks.iter().map(|t| t.id).collect();
+        let gone = self.tracks.difference(&now).copied().collect();
+        self.tracks = now;
+        gone
     }
 
     /// Drops retired instances (closing their editors first, inside the plugin's drop) and
@@ -525,7 +616,11 @@ impl Player {
         let want = session.sample_rate.hz();
         let want_ch = u16::try_from(main_channels(&session)).unwrap_or(2);
         let side_rate = session.sample_rate.as_f64() as f32;
-        let new_side = |garbage: Receiver<Vec<Box<dyn Plugin>>>| Mutex::new(Side::new(side_rate, garbage));
+        let new_side = |garbage: Receiver<Vec<Box<dyn Plugin>>>| {
+            let mut side = Side::new(side_rate, garbage);
+            side.gone_tracks(&session);
+            Mutex::new(side)
+        };
         match open_device(want, want_ch, cfg) {
             Ok((device, config, format, name)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
@@ -682,8 +777,14 @@ impl Player {
     /// Sends a new session snapshot to the audio thread, with freshly created (state-restored,
     /// prepared) instances of any third-party plugin it newly needs. Call on the UI thread.
     pub fn update_session(&self, s: Arc<Session>) {
-        let instances = self.side().prepare(&s);
+        let (instances, gone) = {
+            let mut side = self.side();
+            (side.prepare(&s), side.gone_tracks(&s))
+        };
         let _ = self.tx.send(Cmd::Session(s, instances));
+        if !gone.is_empty() {
+            let _ = self.tx.send(Cmd::Forget(gone));
+        }
     }
 
     /// Reads the state of every live third-party plugin, for saving the session.
@@ -805,16 +906,33 @@ impl Player {
         self.shared.playing.load(Ordering::Relaxed)
     }
 
+    /// A copy of the meters accumulated since the last [`Player::take_meters`], leaving them in
+    /// place (for inspection; the UI takes them instead).
     pub fn meters(&self) -> MeterSnapshot {
         self.shared.meters.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
-    /// Copy meters into reusable UI storage. Once track/channel counts are stable this performs
-    /// no allocation, unlike cloning a new snapshot every video frame.
-    pub fn copy_meters(&self, out: &mut MeterSnapshot) {
-        let source = self.shared.meters.lock().unwrap_or_else(PoisonError::into_inner);
-        copy_meter_snapshot(&source, out);
+    /// Take the meters accumulated since the last call into reusable UI storage and start a new
+    /// period: `out` gets the highest peak of every block rendered in between. If no block was
+    /// rendered since (a large device buffer renders several blocks per callback), `out` keeps
+    /// the previous values rather than dropping to silence. Call it from one place only (two
+    /// readers would split the peaks between them). Once track/channel counts are stable this
+    /// performs no allocation. The audio thread only ever `try_lock`s, so holding the lock here
+    /// never blocks it; blocks rendered meanwhile reach the next call.
+    pub fn take_meters(&self, out: &mut MeterSnapshot) {
+        let mut source = self.shared.meters.lock().unwrap_or_else(PoisonError::into_inner);
+        take_meter_snapshot(&mut source, out);
     }
+}
+
+fn take_meter_snapshot(source: &mut MeterSnapshot, out: &mut MeterSnapshot) {
+    if !source.fresh {
+        // No block since the last take: keep the readings, but not those of deleted tracks.
+        out.tracks.retain(|id, _| source.tracks.contains_key(id));
+        return;
+    }
+    copy_meter_snapshot(source, out);
+    source.reset_levels();
 }
 
 fn copy_meter_snapshot(source: &MeterSnapshot, out: &mut MeterSnapshot) {
@@ -1199,6 +1317,122 @@ mod tests {
         assert_eq!(out.tracks.len(), 1);
         assert_eq!(out.tracks[&keep], source.tracks[&keep]);
         assert_eq!(out.main, source.main);
+    }
+
+    /// A mono track playing a quiet signal with one short spike in the block starting at
+    /// `spike_at`, and an audio thread ready to play it.
+    fn spike_session(spike_at: usize) -> (Arc<Shared>, AudioState, std::sync::mpsc::Sender<Cmd>, TrackId) {
+        use soundcraft_model::{ChannelFormat, Clip, SourceAudio, SourceId, TrackKind};
+        let mut s = soundcraft_model::Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let mut x = vec![0.01f32; 48_000];
+        x[spike_at..spike_at + 32].fill(0.9);
+        s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![x] })));
+        let id = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "x", SourceId(5), 0, 0, 48_000));
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        });
+        let (tx, rx) = channel();
+        let st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
+        tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+        (shared, st, tx, t)
+    }
+
+    #[test]
+    fn a_spike_in_one_block_among_quiet_ones_reaches_the_ui() {
+        // Eight 512-frame blocks per callback, as between two UI polls; the spike is in the 3rd.
+        let (shared, mut st, _tx, t) = spike_session(2 * 512 + 100);
+        let mut out = vec![0.0f32; 2 * 8 * 512];
+        st.fill(&mut out, 2);
+        // The last block alone (what the UI used to see) is quiet.
+        assert!(st.mix.meters[&t].peak[0] < 0.05);
+        let mut ui = MeterSnapshot::default();
+        take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui);
+        assert!(ui.tracks[&t].peak[0] > 0.85, "{:?}", ui.tracks[&t]);
+        assert!(ui.tracks[&t].peaks[0] > 0.85);
+        assert!(ui.main.peak[0] > 0.5 && ui.main.peaks.iter().all(|p| *p > 0.5), "{:?}", ui.main);
+        // Taking starts a new period: the next quiet blocks read quiet.
+        st.fill(&mut out, 2);
+        take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui);
+        assert!(ui.tracks[&t].peak[0] < 0.05 && ui.main.peak[0] < 0.05);
+        // No block since the last take: the reading stays rather than dropping to silence.
+        take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui);
+        assert!(ui.tracks[&t].peak[0] > 0.005);
+    }
+
+    #[test]
+    fn a_spike_rendered_while_the_ui_holds_the_meters_arrives_later() {
+        let (shared, mut st, _tx, t) = spike_session(100);
+        let mut out = vec![0.0f32; 2 * 512];
+        {
+            let _held = shared.meters.lock().unwrap();
+            st.fill(&mut out, 2);
+        }
+        st.fill(&mut out, 2);
+        let mut ui = MeterSnapshot::default();
+        take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui);
+        assert!(ui.tracks[&t].peak[0] > 0.85, "{:?}", ui.tracks[&t]);
+    }
+
+    #[test]
+    fn stopping_zeroes_meters_in_place_and_removed_tracks_are_pruned() {
+        let (shared, mut st, tx, t) = spike_session(100);
+        let mut out = vec![0.0f32; 2 * 512];
+        st.fill(&mut out, 2);
+        tx.send(Cmd::Stop).unwrap();
+        st.fill(&mut out, 2);
+        {
+            let m = shared.meters.lock().unwrap();
+            let e = m.tracks.get(&t).expect("kept while stopped, so playing again does not allocate it");
+            assert!(e.peak == [0.0; 2] && e.peaks.iter().all(|p| *p == 0.0) && e.peaks.len() == 1, "{e:?}");
+            assert!(m.fresh, "the UI sees the silence");
+        }
+        // The track is deleted: the UI side works out which tracks went and says so.
+        let mut side = Side::new(48_000.0, channel().1);
+        side.gone_tracks(&st.session);
+        let empty = soundcraft_model::Session::default();
+        let gone = side.gone_tracks(&empty);
+        assert_eq!(gone, vec![t]);
+        tx.send(Cmd::Session(Arc::new(empty), Vec::new())).unwrap();
+        tx.send(Cmd::Forget(gone)).unwrap();
+        tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+        st.fill(&mut out, 2);
+        assert!(!shared.meters.lock().unwrap().tracks.contains_key(&t));
+        assert!(!st.unsent.tracks.contains_key(&t) && !st.mix.meters.contains_key(&t));
+    }
+
+    #[test]
+    fn a_take_without_new_blocks_still_drops_deleted_tracks() {
+        let gone = TrackId(7);
+        let mut source = MeterSnapshot::default();
+        source.accumulate(&StripMeter::default(), &HashMap::from([(gone, StripMeter::default())]));
+        let mut ui = MeterSnapshot::default();
+        take_meter_snapshot(&mut source, &mut ui);
+        source.forget(&[gone]);
+        take_meter_snapshot(&mut source, &mut ui);
+        assert!(ui.tracks.is_empty());
+    }
+
+    #[test]
+    fn a_channel_count_change_takes_the_new_stereo_peaks() {
+        let mut acc = StripMeter { peak: [0.9, 0.9], peaks: vec![0.9], ..StripMeter::default() };
+        acc.accumulate(&StripMeter { peak: [0.9, 0.0], peaks: vec![0.9, 0.0], ..StripMeter::default() });
+        assert_eq!(acc.peak, [0.9, 0.0]);
+    }
+
+    #[test]
+    fn gain_reduction_keeps_its_maximum_until_taken() {
+        let mut acc = StripMeter::default();
+        for gr in [1.0, 9.0, 2.0, f32::NAN] {
+            acc.accumulate(&StripMeter { peak: [0.1, 0.1], peaks: vec![0.1], gain_reduction_db: gr, ..StripMeter::default() });
+        }
+        assert_eq!(acc.gain_reduction_db, 9.0);
+        acc.reset_levels();
+        assert_eq!((acc.gain_reduction_db, acc.peak, acc.peaks.len()), (0.0, [0.0; 2], 1));
     }
 
     #[test]

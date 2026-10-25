@@ -327,12 +327,12 @@ fn cut_track(s: &mut Session, t: TrackId, r: soundcraft_time::Range, sh: bool, f
 }
 
 /// The clipboard for a paste, with the Auto Rename schemes of its clips put into the session first
-/// ([`Clipboard::adopt_auto_names`]).
+/// ([`Clipboard::adopt_auto_names`]). A paste that succeeds stores it back in `e.clipboard`, so later
+/// pastes find its schemes under their session keys; a refused paste leaves the clipboard as it was.
 pub(super) fn clipboard_for_paste(e: &mut Engine) -> Clipboard {
     let mut cb = e.clipboard.clone();
     if cb.tracks.iter().flatten().any(|c| c.auto_name.is_some()) {
         cb.adopt_auto_names(e.session_mut());
-        e.clipboard = cb.clone();
     }
     cb
 }
@@ -373,6 +373,7 @@ fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     s.edit.selection = soundcraft_time::Range::new(at, at + cb.length);
+    e.clipboard = cb;
     Ok(json!({"pasted": pasted}))
 }
 
@@ -462,6 +463,7 @@ fn repeat_to_fill(e: &mut Engine, p: &Value) -> Result<Value> {
         at += len;
         n += 1;
     }
+    e.clipboard = cb;
     Ok(json!({"repeats": n}))
 }
 

@@ -94,9 +94,12 @@ fn duration_bars(duration: usize) -> Option<i64> {
     }
 }
 
-/// Pans the mono sum of the first two channels between them. The pan position is
-/// `manual · (1 - width) + modulator · width`, where the modulator is the LFO or the envelope
-/// follower in -1..=1. A signal that is the same on both channels keeps its level at the center.
+/// Moves the balance of the first two channels with a constant-power law: as the pan position
+/// moves right the left channel's gain falls and the right's rises, and each channel stays on its
+/// own side. The pan position is `manual · (1 - width) + modulator · width`, where the modulator is
+/// the LFO or the envelope follower in -1..=1. At the center both gains are 1, so a stereo signal
+/// passes unchanged; a signal that is the same on both channels pans across the field at a
+/// constant level.
 pub struct AutoPan {
     p: Params,
     sr: f32,
@@ -277,8 +280,10 @@ impl Plugin for AutoPan {
         let release_samples = ms_to_samples(self.p.v(13), self.sr) as u64;
         for n in 0..frames {
             let sample = |io: &[Vec<f32>], c: usize| io.get(c).and_then(|b| b.get(n)).copied().filter(|v| v.is_finite()).unwrap_or(0.0);
-            let mono = if ch >= 2 { 0.5 * (sample(io, 0) + sample(io, 1)) } else { sample(io, 0) };
-            let level = mono.abs();
+            let left = sample(io, 0);
+            let right = if ch >= 2 { sample(io, 1) } else { left };
+            // The louder channel drives the follower, so anti-phase material still has a level.
+            let level = left.abs().max(right.abs());
             let k = if level > self.env { attack } else { release };
             self.env = level + (self.env - level) * k;
             if self.env < 1.0e-12 {
@@ -332,14 +337,14 @@ impl Plugin for AutoPan {
             let position = self.position.next();
             let out = self.output.next();
             if ch >= 2 {
-                // Constant power: sin² + cos² = 1 across the field.
+                // Constant power: sin² + cos² = 1 across the field, and both gains are 1 at the center.
                 let theta = (position.clamp(-1.0, 1.0) + 1.0) * FRAC_PI_4;
                 let (l, r) = (theta.cos().max(0.0), theta.sin().max(0.0));
                 if let Some(x) = io.get_mut(0).and_then(|b| b.get_mut(n)) {
-                    *x = mono * l * SQRT_2 * out;
+                    *x = left * l * SQRT_2 * out;
                 }
                 if let Some(x) = io.get_mut(1).and_then(|b| b.get_mut(n)) {
-                    *x = mono * r * SQRT_2 * out;
+                    *x = right * r * SQRT_2 * out;
                 }
                 for c in 2..ch {
                     if let Some(x) = io.get_mut(c).and_then(|b| b.get_mut(n)) {
@@ -347,7 +352,7 @@ impl Plugin for AutoPan {
                     }
                 }
             } else if let Some(x) = io.get_mut(0).and_then(|b| b.get_mut(n)) {
-                *x = mono * out;
+                *x = left * out;
             }
         }
         self.since_transport = self.since_transport.saturating_add(frames as u64);

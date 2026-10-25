@@ -1,4 +1,4 @@
-use std::f32::consts::PI;
+use std::f32::consts::{FRAC_PI_4, PI, TAU};
 
 use soundcraft_dsp::{Plugin, Transport, create, db_to_gain};
 
@@ -293,4 +293,52 @@ fn auto_pan_output_gain_and_mono_tracks() {
     let mut buf = vec![vec![0.5f32; BLOCK]];
     p.process(&mut buf, BLOCK);
     assert_near(buf[0][BLOCK - 1], 0.5 * db_to_gain(-6.0), 1e-4, "mono output");
+}
+
+#[test]
+fn auto_pan_balances_a_stereo_signal_without_summing_it() {
+    // A sine on the left, the same sine inverted plus an offset on the right: the channels differ,
+    // and a mono sum would cancel the sine.
+    let len = at(0.2);
+    let left: Vec<f32> = (0..len).map(|i| 0.5 * (TAU * 440.0 * i as f32 / SR).sin()).collect();
+    let right: Vec<f32> = left.iter().map(|x| 0.25 - x).collect();
+    let run = |p: &mut dyn Plugin| {
+        let mut out = vec![Vec::new(), Vec::new()];
+        for start in (0..len).step_by(BLOCK) {
+            let end = (start + BLOCK).min(len);
+            let mut buf = vec![left[start..end].to_vec(), right[start..end].to_vec()];
+            p.process(&mut buf, end - start);
+            out[0].extend_from_slice(&buf[0]);
+            out[1].extend_from_slice(&buf[1]);
+        }
+        out
+    };
+
+    let mut p = auto_pan(&[("width", 0.0)]);
+    let out = run(p.as_mut());
+    for i in 0..len {
+        assert_near(out[0][i], left[i], 1e-5, "center passes the left channel");
+        assert_near(out[1][i], right[i], 1e-5, "center passes the right channel");
+    }
+
+    // Half left: each channel keeps its own content, the left louder and the right quieter.
+    let mut p = auto_pan(&[("width", 0.0), ("manual", -50.0)]);
+    let out = run(p.as_mut());
+    let theta = 0.5 * FRAC_PI_4;
+    let (gl, gr) = (2f32.sqrt() * theta.cos(), 2f32.sqrt() * theta.sin());
+    for i in at(0.05)..len {
+        assert_near(out[0][i], left[i] * gl, 1e-5, "half left, left channel");
+        assert_near(out[1][i], right[i] * gr, 1e-5, "half left, right channel");
+    }
+
+    // Anti-phase channels still drive the envelope follower to the right.
+    let mut p = auto_pan(&[("source", 1.0), ("threshold", -30.0)]);
+    let mut buf = vec![vec![1.0f32; BLOCK], vec![-1.0f32; BLOCK]];
+    for _ in 0..at(0.5) / BLOCK {
+        buf[0].fill(1.0);
+        buf[1].fill(-1.0);
+        p.process(&mut buf, BLOCK);
+    }
+    assert_near(buf[0][BLOCK - 1], 0.0, 1e-3, "anti-phase at full scale pans right: left");
+    assert_near(buf[1][BLOCK - 1], -(2f32.sqrt()), 1e-3, "anti-phase at full scale pans right: right");
 }

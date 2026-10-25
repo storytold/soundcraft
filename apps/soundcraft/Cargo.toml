@@ -35,3 +35,6 @@ winresource = "0.1"
 muda = { version = "0.21.2", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSResponder"] }
+
+[target.'cfg(windows)'.dependencies]
+craft-update = { workspace = true }

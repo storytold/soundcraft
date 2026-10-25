@@ -47,8 +47,9 @@ pub fn separate_closed(app: &mut SoundApp) {
 /// New Tracks when the space past the last strip is double-clicked.
 pub(crate) fn content(app: &mut SoundApp, ui: &mut Ui) {
     let ids: Vec<TrackId> = app.engine.session().tracks.iter().filter(|x| !x.hidden && x.kind != TrackKind::Video).map(|x| x.id).collect();
-    // Per-channel peaks for multichannel meters (read once per frame).
-    let snap = app.player.as_ref().filter(|_| app.meters_live()).map(|p| p.meters());
+    // Per-channel peaks for multichannel meters, from the snapshot `logic` takes from the player
+    // (taking them here too would split each period's peaks between two readers).
+    let snap = (app.player.is_some() && app.meters_live()).then(|| app.meter_snapshot.clone());
     // Taken for this frame only: a strip that isn't drawn (hidden track) must not scroll the Mix
     // whenever it comes back. A request made during this frame (the strip's menu) waits for the next.
     let scroll_to = app.mix_scroll_into_view.take();
