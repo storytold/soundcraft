@@ -14,6 +14,8 @@ fn main() {
     let dir = common::fixture_dir();
     let gain = soundcraft_vst3_host::scan_paths(&[dir.to_path_buf()]).into_iter().find(|d| d.name == "Fixture Gain").expect("fixture").id;
     let mut p = soundcraft_vst3_host::instantiate_plugin(&gain).expect("instantiate");
+    let info = soundcraft_vst3_host::plugin_info(&gain).expect("info");
+    assert_eq!(info.param("3").expect("mode").choices, &["A", "B", "C"], "the main thread reads the plugin's choice text");
     // Editor windows are hosted on macOS and Windows; elsewhere the probe reports "unsupported".
     if cfg!(any(target_os = "macos", windows)) {
         assert_eq!(p.editor_size(), Ok((320, 240)));
@@ -38,6 +40,12 @@ fn main() {
     assert_eq!(ed.value_text("nope", 0.5), None);
     assert!((soundcraft_dsp::Plugin::value_from_text(&mut p, "13", "-6.0 dB").unwrap_or(-1.0) - 0.375).abs() < 1e-6);
     assert_eq!(soundcraft_dsp::Plugin::value_from_text(&mut p, "13", "bad"), None);
+    // The fixture's text for "Level" has no unit, and its parser does not strip "dB". The host
+    // appends the unit on the way out and takes that one suffix back off on the way in.
+    let shown = soundcraft_dsp::Plugin::value_text(&mut p, "13", 0.375).expect("level text");
+    assert_eq!(shown, "\u{2212}6.0 dB");
+    let back = soundcraft_dsp::Plugin::value_from_text(&mut p, "13", &shown).expect("round trip");
+    assert!((back - 0.375).abs() < 1e-6, "{shown} -> {back}");
     drop(p);
     assert_eq!(ed.value_text("13", 0.375), None, "the plugin is gone");
     assert!(!ed.is_open());

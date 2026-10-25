@@ -32,6 +32,8 @@ pub struct Vst3Plugin {
     info: &'static PluginInfo,
     /// VST3 id of each `info.params` entry (same order).
     ids: Vec<u32>,
+    /// The plugin's own unit label of each param (same order as `ids`), read once.
+    units: Vec<String>,
     maps: Vec<Mapping>,
     values: Vec<f32>,
     /// Normalized values waiting for the next block (coalesced per id; bounded).
@@ -84,6 +86,8 @@ impl Vst3Plugin {
                 }
             })
             .collect();
+        let reported = inst.params();
+        let units: Vec<String> = ids.iter().map(|id| reported.iter().find(|p| p.id == *id).map(|p| p.units.clone()).unwrap_or_default()).collect();
         let mut p = Vst3Plugin {
             info,
             values: Vec::with_capacity(ids.len()),
@@ -105,6 +109,7 @@ impl Vst3Plugin {
             position: 0,
             transport: None,
             ids,
+            units,
             maps,
             inst,
         };
@@ -171,6 +176,30 @@ impl Vst3Plugin {
     fn push_note(&mut self, e: NoteEvent) {
         push_sorted(&mut self.notes, e);
     }
+}
+
+/// Drops the one `" {units}"` suffix `value_text` appends, matched without regard to case.
+/// `None` when `units` is empty or `text` does not end with that suffix.
+fn without_appended_unit<'a>(text: &'a str, units: &str) -> Option<&'a str> {
+    let units = units.trim();
+    if units.is_empty() {
+        return None;
+    }
+    let trimmed = text.trim_end();
+    let unit_chars = units.chars().count();
+    let text_chars: Vec<char> = trimmed.chars().collect();
+    let split = text_chars.len().checked_sub(unit_chars + 1)?;
+    if text_chars.get(split) != Some(&' ') {
+        return None;
+    }
+    let tail = text_chars.get(split + 1..)?;
+    let same_unit =
+        tail.len() == unit_chars && tail.iter().copied().zip(units.chars()).all(|(got, expected)| got.to_lowercase().eq(expected.to_lowercase()));
+    if !same_unit {
+        return None;
+    }
+    let end = trimmed.char_indices().nth(split)?.0;
+    Some(&trimmed[..end])
 }
 
 fn push_sorted(notes: &mut Vec<NoteEvent>, e: NoteEvent) {
@@ -307,14 +336,18 @@ impl Plugin for Vst3Plugin {
         }
         let vid = *self.ids.get(i)?;
         let text = self.inst.value_text(vid, self.normalized_from_plain(i, value)?)?;
-        let units = self.inst.params().into_iter().find(|p| p.id == vid).map_or(String::new(), |p| p.units);
-        let units = units.trim();
+        let units = self.units.get(i).map_or("", |u| u.trim());
         if units.is_empty() || text.trim_end().to_lowercase().ends_with(&units.to_lowercase()) { Some(text) } else { Some(format!("{text} {units}")) }
     }
 
     fn value_from_text(&mut self, id: &str, text: &str) -> Option<f32> {
         let i = self.info.params.iter().position(|p| p.id == id)?;
-        let normalized = self.inst.value_from_text(*self.ids.get(i)?, text)?;
+        let vid = *self.ids.get(i)?;
+        let normalized = self.inst.value_from_text(vid, text).or_else(|| {
+            let units = self.units.get(i).map_or("", |u| u.trim());
+            let stripped = without_appended_unit(text, units)?;
+            self.inst.value_from_text(vid, stripped)
+        })?;
         self.plain_from_normalized(i, normalized).map(|value| self.info.params.get(i).map_or(value, |p| p.clamp(value)))
     }
 
@@ -594,5 +627,17 @@ mod tests {
         for key in 0..128u8 {
             assert!(notes.iter().any(|e| matches!(*e, NoteEvent::Off { key: k, .. } if k == key)), "key {key} was never released");
         }
+    }
+
+    #[test]
+    fn appended_unit_suffix_comes_off_once() {
+        assert_eq!(without_appended_unit("\u{2212}6.0 dB", "dB"), Some("\u{2212}6.0"));
+        assert_eq!(without_appended_unit("-6.0 DB", " dB "), Some("-6.0"));
+        assert_eq!(without_appended_unit("\u{2212}6.0 dB  ", "dB"), Some("\u{2212}6.0"));
+        assert_eq!(without_appended_unit("1 dB dB", "dB"), Some("1 dB"));
+        assert_eq!(without_appended_unit("3.0dB", "dB"), None, "only the spaced suffix value_text appends");
+        assert_eq!(without_appended_unit("3.0 Hz", "dB"), None);
+        assert_eq!(without_appended_unit("3.0 dB", ""), None);
+        assert_eq!(without_appended_unit("3.0 dB", "   "), None);
     }
 }
