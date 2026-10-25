@@ -24,6 +24,7 @@ mod midi;
 mod mix;
 mod more_util;
 mod options;
+mod param_key;
 mod plugin_params;
 mod plugin_state;
 mod query;
