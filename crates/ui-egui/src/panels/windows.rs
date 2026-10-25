@@ -512,6 +512,9 @@ pub fn midi_input_devices(app: &mut SoundApp, ctx: &egui::Context) {
                     if !on {
                         app.ui.midi_inputs_disabled.push(name.clone());
                     }
+                    // Mirrored into the session, where agents and scripts read which inputs are on.
+                    let key = if on { "enable" } else { "disable" };
+                    let _ = app.run("setup.midi_input_devices", json!({ key: [name] }));
                     changed = true;
                 }
                 let (state, color) = if !on {
