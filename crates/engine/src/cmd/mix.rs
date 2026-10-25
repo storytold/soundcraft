@@ -398,36 +398,6 @@ pub(super) fn plugin_slot_index(slot: PluginSlot) -> usize {
     }
 }
 
-/// Stores one text value of a plugin the registry does not know, when the live instance parses it.
-/// A number, a plugin-id mismatch, or a live parser that declines stays `unknown`: a temporary
-/// instance cannot be created for an id that is not registered.
-pub(super) fn resolve_unlisted_text(
-    e: &mut crate::Engine,
-    cmd: &'static str,
-    track: TrackId,
-    slot: usize,
-    plugin: &str,
-    param: &str,
-    value: &Value,
-    unknown: impl FnOnce() -> EngineError,
-) -> Result<f32> {
-    let Some(text) = value.as_str() else {
-        return Err(unknown());
-    };
-    if text_too_long(text) {
-        let shown = shown_text(text);
-        return Err(bad(cmd, format!("`{shown}` is not a value of `{param}`; examples: ")));
-    }
-    let parsed = e.live_plugins_mut().and_then(|live| {
-        let loaded = live.plugin_id(track, slot)?;
-        if loaded != plugin {
-            return None;
-        }
-        live.value_from_text(track, slot, param, text).filter(|parsed| parsed.is_finite())
-    });
-    parsed.ok_or_else(unknown)
-}
-
 pub(super) struct ParameterValueResolver<'a> {
     cmd: &'static str,
     insert: Insert,
@@ -864,12 +834,7 @@ fn insert_param(e: &mut Engine, p: &Value) -> Result<Value> {
     let ins = plugin_ref(e.session(), t, slot, "mix.insert_param")?.clone();
     let index = plugin_slot_index(slot);
     let Some(info) = super::clap::plugin_info(&ins.plugin) else {
-        let v = resolve_unlisted_text(e, "mix.insert_param", t, index, &ins.plugin, &param, value, || {
-            bad("mix.insert_param", format!("unknown plugin `{}`", ins.plugin))
-        })?;
-        let ins = plugin_mut(e.session_mut(), t, slot, "mix.insert_param")?;
-        ins.params.insert(param, v);
-        return Ok(json!({"value": v}));
+        return Err(bad("mix.insert_param", format!("unknown plugin `{}`", ins.plugin)));
     };
     let pi =
         info.params.iter().find(|x| x.id == param).ok_or_else(|| bad("mix.insert_param", format!("`{}` has no parameter `{param}`", info.id)))?;
