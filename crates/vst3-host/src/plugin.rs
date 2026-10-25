@@ -297,6 +297,27 @@ impl Plugin for Vst3Plugin {
         self.values.get(i).copied()
     }
 
+    fn value_text(&mut self, id: &str, value: f32) -> Option<String> {
+        let i = self.info.params.iter().position(|p| p.id == id)?;
+        let pi = self.info.params.get(i)?;
+        // Identity-mapped parameters are the ones whose real units exist only in the plugin's
+        // text. Other mappings already have accurate SoundCraft ranges and formatting.
+        if !matches!(self.maps.get(i)?, Mapping::Plain) || pi.min != 0.0 || pi.max != 1.0 {
+            return None;
+        }
+        let vid = *self.ids.get(i)?;
+        let text = self.inst.value_text(vid, self.normalized_from_plain(i, value)?)?;
+        let units = self.inst.params().into_iter().find(|p| p.id == vid).map_or(String::new(), |p| p.units);
+        let units = units.trim();
+        if units.is_empty() || text.trim_end().to_lowercase().ends_with(&units.to_lowercase()) { Some(text) } else { Some(format!("{text} {units}")) }
+    }
+
+    fn value_from_text(&mut self, id: &str, text: &str) -> Option<f32> {
+        let i = self.info.params.iter().position(|p| p.id == id)?;
+        let normalized = self.inst.value_from_text(*self.ids.get(i)?, text)?;
+        self.plain_from_normalized(i, normalized).map(|value| self.info.params.get(i).map_or(value, |p| p.clamp(value)))
+    }
+
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
         if !self.inst.is_active() || self.max_block == 0 {
             return;
