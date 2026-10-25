@@ -5,9 +5,16 @@
 //! for every region of the current preset whose key and velocity ranges hold it (a stereo sample
 //! is two regions panned apart, a layered sound several). A voice reads its sample with linear
 //! interpolation at the pitch the region and the key give, loops as the region says, and follows
-//! the region's delay–attack–hold–decay–sustain–release volume envelope. Sustain pedal (CC 64),
-//! pitch bend (±2 semitones), All Notes Off and exclusive classes (an open hi-hat cut by a closed
-//! one) are honoured. A Program Change picks the bank's preset for that program.
+//! the region's delay–attack–hold–decay–sustain–release volume envelope. Exclusive classes (an
+//! open hi-hat cut by a closed one) are honoured, and a Program Change picks the bank's preset for
+//! that program.
+//!
+//! The usual controllers of a keyboard, synth or keytar act on it (General MIDI meanings):
+//! volume (CC 7) and expression (CC 11), pan (CC 10), modulation wheel (CC 1) and channel
+//! pressure for vibrato, brightness (CC 74) and resonance (CC 71) through a low-pass filter,
+//! attack (CC 73) and release (CC 72) times, sustain pedal (CC 64), pitch bend with its range set
+//! by RPN 0 (CC 101/100 then 6/38, ±2 semitones by default), Reset All Controllers (CC 121) and
+//! All Notes/Sound Off (CC 123/120).
 
 use std::sync::Arc;
 
@@ -48,6 +55,114 @@ const SILENT: f32 = 1.0e-5;
 const CUT_SECONDS: f32 = 0.005;
 /// Fastest playback step in sample points per output frame (keeps hostile pitch bounded).
 const MAX_STEP: f64 = 256.0;
+/// Vibrato at full modulation wheel or pressure, in cents each way, and its rate.
+const VIBRATO_CENTS: f32 = 50.0;
+const VIBRATO_HZ: f32 = 5.5;
+
+/// The controller values a channel holds (MIDI 0..=127), at their General MIDI defaults.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Controllers {
+    volume: u8,
+    expression: u8,
+    pan: u8,
+    modulation: u8,
+    pressure: u8,
+    brightness: u8,
+    resonance: u8,
+    attack: u8,
+    release: u8,
+    /// Pitch bend range in semitones (RPN 0).
+    bend_range: f32,
+    /// The registered parameter selected by CC 101/100 (127/127: none).
+    rpn: (u8, u8),
+    /// The last pitch bend, -8192..=8191, kept to re-apply when the range changes.
+    bend: i32,
+}
+
+impl Controllers {
+    const DEFAULT: Controllers = Controllers {
+        volume: 100,
+        expression: 127,
+        pan: 64,
+        modulation: 0,
+        pressure: 0,
+        brightness: 64,
+        resonance: 64,
+        attack: 64,
+        release: 64,
+        bend_range: BEND_RANGE,
+        rpn: (127, 127),
+        bend: 0,
+    };
+
+    /// Volume × expression as a gain (each squared, the usual MIDI volume curve), unity at the
+    /// default volume of 100 so a bank sounds as loud as before any volume is sent.
+    fn gain(&self) -> f32 {
+        let v = f32::from(self.volume.min(127)) / 100.0;
+        let e = f32::from(self.expression.min(127)) / 127.0;
+        v * v * e * e
+    }
+
+    /// Equal-power balance gains for the pan controller (64: centre, unity on both sides).
+    fn balance(&self) -> (f32, f32) {
+        let x = ((f32::from(self.pan.min(127)) - 64.0) / 63.0).clamp(-1.0, 1.0);
+        let a = (x + 1.0) * std::f32::consts::FRAC_PI_4;
+        (a.cos() * std::f32::consts::SQRT_2, a.sin() * std::f32::consts::SQRT_2)
+    }
+
+    /// Vibrato depth in cents (modulation wheel or pressure, whichever is further on).
+    fn vibrato(&self) -> f32 {
+        f32::from(self.modulation.max(self.pressure).min(127)) / 127.0 * VIBRATO_CENTS
+    }
+
+    /// Low-pass cutoff in Hz and resonance (Q), or `None` when the filter is open. Brightness at
+    /// 64 or above leaves the sound as the bank made it; below, it closes down to 150 Hz.
+    fn filter(&self) -> Option<(f32, f32)> {
+        let q = if self.resonance <= 64 { 0.707 } else { 0.707 + f32::from(self.resonance - 64) / 63.0 * 9.3 };
+        if self.brightness >= 64 && self.resonance <= 64 {
+            return None;
+        }
+        let b = f32::from(self.brightness.min(64)) / 64.0;
+        Some((150.0 * (20_000.0f32 / 150.0).powf(b), q))
+    }
+
+    /// Attack or release time scale for a controller value: ×1/8 at 0, ×1 at 64, ×8 at 127.
+    fn scale(v: u8) -> f32 {
+        2f32.powf((f32::from(v.min(127)) - 64.0) / 64.0 * 3.0)
+    }
+
+    /// Pitch bend as a frequency ratio.
+    fn bend_ratio(&self) -> f32 {
+        2f32.powf(self.bend as f32 / 8192.0 * self.bend_range / 12.0)
+    }
+}
+
+/// Topology-preserving-transform state-variable low-pass, one per output channel.
+#[derive(Debug, Clone, Copy, Default)]
+struct Svf {
+    ic1: f32,
+    ic2: f32,
+}
+
+impl Svf {
+    #[inline]
+    fn lowpass(&mut self, x: f32, g: f32, k: f32) -> f32 {
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let a2 = g * a1;
+        let a3 = g * a2;
+        let v3 = x - self.ic2;
+        let v1 = a1 * self.ic1 + a2 * v3;
+        let v2 = self.ic2 + a2 * self.ic1 + a3 * v3;
+        self.ic1 = crate::util::flush(2.0 * v1 - self.ic1);
+        self.ic2 = crate::util::flush(2.0 * v2 - self.ic2);
+        if v2.is_finite() {
+            v2
+        } else {
+            *self = Svf::default();
+            0.0
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Stage {
@@ -140,6 +255,18 @@ pub struct SoundFontPlayer {
     sustain: bool,
     /// Pitch bend as a frequency ratio.
     bend: f32,
+    ctl: Controllers,
+    /// Volume × expression, and the pan balance, smoothed so moving a control never clicks.
+    chan_gain: Smoother,
+    bal_l: Smoother,
+    bal_r: Smoother,
+    /// Vibrato LFO phase (0..1) and depth in cents.
+    lfo: f32,
+    vibrato: f32,
+    /// Low-pass filter coefficients (`g`, `k`) when the brightness or resonance controller is
+    /// in use, and its state per output channel.
+    filter: Option<(f32, f32)>,
+    svf: [Svf; 2],
     voices: Vec<Voice>,
     events: EventQueue,
     started: u64,
@@ -183,6 +310,14 @@ impl SoundFontPlayer {
             level: Smoother::new(1.0),
             sustain: false,
             bend: 1.0,
+            ctl: Controllers::DEFAULT,
+            chan_gain: Smoother::new(Controllers::DEFAULT.gain()),
+            bal_l: Smoother::new(1.0),
+            bal_r: Smoother::new(1.0),
+            lfo: 0.0,
+            vibrato: 0.0,
+            filter: None,
+            svf: [Svf::default(); 2],
             voices: vec![Voice::idle(NO_REGION); VOICES],
             events: EventQueue::new(),
             started: 0,
@@ -215,6 +350,48 @@ impl SoundFontPlayer {
         }
     }
 
+    /// Bring everything the controllers drive in line with `self.ctl`.
+    fn controllers_changed(&mut self) {
+        let c = self.ctl;
+        self.chan_gain.set(c.gain());
+        let (l, r) = c.balance();
+        self.bal_l.set(l);
+        self.bal_r.set(r);
+        self.vibrato = c.vibrato();
+        self.bend = c.bend_ratio();
+        let was_open = self.filter.is_none();
+        self.filter = c.filter().map(|(hz, q)| {
+            let g = (std::f32::consts::PI * hz.min(self.sr * 0.45) / self.sr).tan();
+            (g, 1.0 / q.max(0.5))
+        });
+        if was_open && self.filter.is_some() {
+            self.svf = [Svf::default(); 2];
+        }
+    }
+
+    /// A control change (`cc`, value `v`).
+    fn control(&mut self, cc: u8, v: u8) {
+        let v = v & 0x7F;
+        let c = &mut self.ctl;
+        match cc {
+            1 => c.modulation = v,
+            7 => c.volume = v,
+            10 => c.pan = v,
+            11 => c.expression = v,
+            71 => c.resonance = v,
+            72 => c.release = v,
+            73 => c.attack = v,
+            74 => c.brightness = v,
+            101 => c.rpn.0 = v,
+            100 => c.rpn.1 = v,
+            // Data entry for RPN 0: the pitch bend range (semitones, then cents).
+            6 if c.rpn == (0, 0) => c.bend_range = f32::from(v.min(24)) + (c.bend_range.fract()),
+            38 if c.rpn == (0, 0) => c.bend_range = c.bend_range.trunc() + f32::from(v.min(99)) / 100.0,
+            _ => return,
+        }
+        self.controllers_changed();
+    }
+
     fn start_note(&mut self, note: u8, vel: u8) {
         if vel == 0 {
             self.stop_note(note);
@@ -243,7 +420,9 @@ impl SoundFontPlayer {
             let gain = db_to_gain(r.gain_db) * vel_gain;
             let slot = self.free_voice();
             self.started = self.started.wrapping_add(1);
-            let env = r.env;
+            let mut region = *r;
+            region.env.attack *= Controllers::scale(self.ctl.attack);
+            let env = region.env;
             let (stage, left) = if env.delay * sr >= 1.0 { (Stage::Delay, frames(env.delay, sr)) } else { (Stage::Attack, frames(env.attack, sr)) };
             if let Some(v) = self.voices.get_mut(slot) {
                 *v = Voice {
@@ -254,7 +433,7 @@ impl SoundFontPlayer {
                     note,
                     held: true,
                     sustained: false,
-                    region: *r,
+                    region,
                     pos: r.start as f64,
                     step: step.min(MAX_STEP),
                     gain_l: gain * angle.cos(),
@@ -284,12 +463,13 @@ impl SoundFontPlayer {
 
     fn stop_note(&mut self, note: u8) {
         let (sr, pedal) = (self.sr, self.sustain);
+        let rel_scale = Controllers::scale(self.ctl.release);
         for v in self.voices.iter_mut().filter(|v| v.active() && v.held && v.note == note) {
             v.held = false;
             if pedal {
                 v.sustained = true;
             } else {
-                let rel = v.region.env.release;
+                let rel = v.region.env.release * rel_scale;
                 Self::release(v, rel, sr);
             }
         }
@@ -297,6 +477,7 @@ impl SoundFontPlayer {
 
     fn apply(&mut self, kind: EventKind) {
         let sr = self.sr;
+        let rel_scale = Controllers::scale(self.ctl.release);
         match kind {
             EventKind::On(n, v) => self.start_note(n, v),
             EventKind::Off(n) => self.stop_note(n),
@@ -305,7 +486,7 @@ impl SoundFontPlayer {
                 for v in &mut self.voices {
                     v.held = false;
                     v.sustained = false;
-                    let rel = v.region.env.release;
+                    let rel = v.region.env.release * rel_scale;
                     Self::release(v, rel, sr);
                 }
             }
@@ -314,14 +495,21 @@ impl SoundFontPlayer {
                 if !on {
                     for v in self.voices.iter_mut().filter(|v| v.sustained) {
                         v.sustained = false;
-                        let rel = v.region.env.release;
+                        let rel = v.region.env.release * rel_scale;
                         Self::release(v, rel, sr);
                     }
                 }
             }
-            EventKind::Bend(ratio) => self.bend = if ratio.is_finite() && ratio > 0.0 { ratio } else { 1.0 },
+            // The bend value travels in the ratio's place (see `midi`): re-read with the range.
+            EventKind::Bend(raw) => {
+                self.ctl.bend = if raw.is_finite() { raw.clamp(-8192.0, 8191.0) as i32 } else { 0 };
+                self.bend = self.ctl.bend_ratio();
+            }
             EventKind::ResetControllers => {
-                self.bend = 1.0;
+                // Reset All Controllers keeps volume and pan (the General MIDI rule) and RPNs.
+                let keep = self.ctl;
+                self.ctl = Controllers { volume: keep.volume, pan: keep.pan, bend_range: keep.bend_range, ..Controllers::DEFAULT };
+                self.controllers_changed();
                 self.apply(EventKind::Sustain(false));
             }
         }
@@ -333,7 +521,12 @@ impl SoundFontPlayer {
         let Some(bank) = self.bank.as_deref() else { return };
         let data = &bank.samples;
         let sr = self.sr;
-        let bend = f64::from(self.bend);
+        let mut pitch = self.bend;
+        if self.vibrato > 0.0 {
+            self.lfo = (self.lfo + VIBRATO_HZ / sr).fract();
+            pitch *= 2f32.powf(self.vibrato * (self.lfo * std::f32::consts::TAU).sin() / 1200.0);
+        }
+        let bend = f64::from(pitch);
         let (mut l, mut r) = (0.0f32, 0.0f32);
         for v in &mut self.voices {
             if !v.active() {
@@ -362,7 +555,12 @@ impl SoundFontPlayer {
                 v.stage = Stage::Idle;
             }
         }
-        let (l, r) = (l * level, r * level);
+        let g = level * self.chan_gain.next();
+        let (mut l, mut r) = (l * g * self.bal_l.next(), r * g * self.bal_r.next());
+        if let Some((fg, fk)) = self.filter {
+            l = self.svf[0].lowpass(l, fg, fk);
+            r = self.svf[1].lowpass(r, fg, fk);
+        }
         match ch {
             0 => {}
             1 => {
@@ -442,6 +640,9 @@ impl Plugin for SoundFontPlayer {
         self.sr = sane_sr(sample_rate);
         self.ch = sane_channels(channels);
         self.level.set_time(20.0, self.sr);
+        for s in [&mut self.chan_gain, &mut self.bal_l, &mut self.bal_r] {
+            s.set_time(10.0, self.sr);
+        }
         self.update();
         self.reset();
     }
@@ -452,7 +653,13 @@ impl Plugin for SoundFontPlayer {
         }
         self.events.clear();
         self.sustain = false;
-        self.bend = 1.0;
+        // Controllers keep their values across play and stop (a volume knob stays where it is);
+        // Reset All Controllers (CC 121), which playback sends first, is what resets them.
+        self.lfo = 0.0;
+        self.svf = [Svf::default(); 2];
+        for s in [&mut self.chan_gain, &mut self.bal_l, &mut self.bal_r] {
+            s.snap();
+        }
         self.level.snap();
     }
 
@@ -514,9 +721,16 @@ impl Plugin for SoundFontPlayer {
             (0xB0, 64) => EventKind::Sustain(d2 >= 64),
             (0xB0, 120 | 123) => EventKind::AllOff,
             (0xB0, 121) => EventKind::ResetControllers,
-            (0xE0, _) => {
-                let v = (i32::from(d2 & 0x7F) << 7 | i32::from(d1 & 0x7F)) - 8192;
-                EventKind::Bend(2f32.powf(v as f32 / 8192.0 * BEND_RANGE / 12.0))
+            // The raw bend rides in the event; `apply` turns it into a ratio with the current range.
+            (0xE0, _) => EventKind::Bend((i32::from(d2 & 0x7F) << 7 | i32::from(d1 & 0x7F)) as f32 - 8192.0),
+            (0xB0, cc) => {
+                self.control(cc, d2);
+                return;
+            }
+            (0xD0, v) => {
+                self.ctl.pressure = v & 0x7F;
+                self.controllers_changed();
+                return;
             }
             (0xC0, program) => {
                 // New notes use the program's preset; sounding ones finish with theirs.
@@ -672,6 +886,84 @@ mod tests {
         q.midi(0, [0xC0, 99, 0]);
         q.note_on(0, 60, 100);
         assert_eq!(peak(&run(&mut q, 2_000)), 0.0);
+    }
+
+    /// Both channels of `len` frames.
+    fn run2(p: &mut SoundFontPlayer, len: usize) -> [Vec<f32>; 2] {
+        let mut out = [Vec::new(), Vec::new()];
+        let mut buf = vec![vec![0.0f32; 512]; 2];
+        let mut done = 0;
+        while done < len {
+            let n = 512.min(len - done);
+            p.process(&mut buf, n);
+            out[0].extend_from_slice(&buf[0][..n]);
+            out[1].extend_from_slice(&buf[1][..n]);
+            done += n;
+        }
+        out
+    }
+
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt()
+    }
+
+    #[test]
+    fn volume_expression_and_pan_controllers_shape_the_level() {
+        let mut p = player();
+        p.note_on(0, 69, 127);
+        let loud = rms(&run(&mut p, 9_600)[4_800..]);
+        // Volume halfway: (64/100)² of the level; expression at 0 silences it.
+        p.midi(0, [0xB0, 7, 64]);
+        let half = rms(&run(&mut p, 9_600)[4_800..]);
+        assert!((half / loud - 0.4096).abs() < 0.02, "{}", half / loud);
+        p.midi(0, [0xB0, 11, 0]);
+        assert!(rms(&run(&mut p, 9_600)[4_800..]) < 1e-4);
+        // Pan hard left: the right channel goes quiet.
+        let mut q = player();
+        q.midi(0, [0xB0, 10, 0]);
+        q.note_on(0, 69, 127);
+        let [l, r] = run2(&mut q, 9_600);
+        assert!(rms(&l[4_800..]) > 0.1 && rms(&r[4_800..]) < 1e-3);
+        // Reset All Controllers brings expression back but keeps volume and pan.
+        p.midi(0, [0xB0, 121, 0]);
+        let back = rms(&run(&mut p, 9_600)[4_800..]);
+        assert!((back / loud - 0.4096).abs() < 0.02, "{}", back / loud);
+    }
+
+    #[test]
+    fn bend_range_rpn_and_modulation_move_the_pitch() {
+        let mut p = player();
+        // RPN 0 = 12 semitones, then a full bend up: an octave.
+        for m in [[0xB0, 101, 0], [0xB0, 100, 0], [0xB0, 6, 12], [0xB0, 101, 127], [0xB0, 100, 127]] {
+            p.midi(0, m);
+        }
+        p.midi(0, [0xE0, 0x7F, 0x7F]);
+        p.note_on(0, 69, 127);
+        let out = run(&mut p, 4_000);
+        assert!((freq(&out[400..]) - 960.0).abs() < 15.0, "{}", freq(&out[400..]));
+        // Modulation wheel: the pitch wobbles (vibrato) around the note.
+        let mut q = player();
+        q.midi(0, [0xB0, 1, 127]);
+        q.note_on(0, 69, 127);
+        let out = run(&mut q, 48_000);
+        let (a, b) = (freq(&out[0..2_400]), freq(&out[4_400..6_800]));
+        assert!((a - b).abs() > 5.0, "no vibrato: {a} {b}");
+    }
+
+    #[test]
+    fn brightness_closes_a_low_pass_filter() {
+        // A high note (an octave and a half up: about 1.4 kHz) loses most of its level with
+        // brightness all the way down (150 Hz).
+        let mut p = player();
+        p.note_on(0, 88, 127);
+        let open = rms(&run(&mut p, 9_600)[4_800..]);
+        p.midi(0, [0xB0, 74, 0]);
+        let closed = rms(&run(&mut p, 9_600)[4_800..]);
+        assert!(closed < open * 0.2, "{closed} vs {open}");
+        // Back to 64: open again.
+        p.midi(0, [0xB0, 74, 64]);
+        let again = rms(&run(&mut p, 9_600)[4_800..]);
+        assert!((again / open - 1.0).abs() < 0.05, "{again} vs {open}");
     }
 
     #[test]

@@ -497,6 +497,7 @@ pub fn midi_input_devices(app: &mut SoundApp, ctx: &egui::Context) {
     let mut changed = false;
     let ports = midi_ports(ctx, false);
     let opened = app.midi_inputs.activity();
+    let recent = app.midi_inputs.recent();
     // Which tracks play what comes in, said in the window: the usual reason nothing sounds.
     let targets: Vec<String> = {
         let s = app.engine.session();
@@ -549,6 +550,13 @@ pub fn midi_input_devices(app: &mut SoundApp, ctx: &egui::Context) {
         ui.add_space(4.0);
         if ui.button("Refresh").on_hover_text("Look for connected devices again and retry the ones that failed").clicked() {
             refresh = true;
+        }
+        if !recent.is_empty() {
+            ui.separator();
+            ui.label(egui::RichText::new("Last received (newest first)").small().color(t.text_dim));
+            for m in recent.iter().rev() {
+                ui.label(egui::RichText::new(soundcraft_playback::midi_in::describe(*m)).small().monospace());
+            }
         }
         ui.separator();
         if targets.is_empty() {
