@@ -126,7 +126,7 @@ fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
         PluginSlot::Instrument => tr.instrument.as_ref().ok_or_else(|| bad(CMD, "the track has no instrument"))?,
     }
     .clone();
-    let info = super::clap::plugin_info(&insert.plugin).ok_or_else(|| bad(CMD, "unknown plugin"))?;
+    let info = super::clap::plugin_info(&insert.plugin).ok_or_else(|| bad(CMD, format!("unknown plugin `{}`", insert.plugin)))?;
     let filter = match p.get("filter") {
         None => None,
         Some(value) => {
