@@ -305,7 +305,7 @@ fn instrument_menu(app: &mut SoundApp, ui: &mut egui::Ui) {
 }
 
 /// The first selected instrument track, in track order.
-fn instrument_track(s: &soundcraft_model::Session) -> Option<soundcraft_model::TrackId> {
+pub(crate) fn instrument_track(s: &soundcraft_model::Session) -> Option<soundcraft_model::TrackId> {
     s.tracks.iter().find(|t| t.kind == soundcraft_model::TrackKind::Instrument && s.edit.selected_tracks.contains(&t.id)).map(|t| t.id)
 }
 

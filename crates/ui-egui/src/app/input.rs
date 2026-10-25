@@ -139,18 +139,20 @@ impl SoundApp {
         }
         let mut claimed = false;
         for (file, pos) in std::mem::take(&mut self.pending_drops) {
-            // A SoundFont dropped on an instrument slot becomes what that track plays.
-            if !claimed && file.path().is_absolute() && file.path().to_string_lossy().to_ascii_lowercase().ends_with(".sf2") {
-                if let Some(track) = self.drop_track(pos) {
-                    if let Ok(path) = crate::dialogs::unicode(file.path()) {
-                        claimed = true;
-                        self.ui.status = match self.run("mix.soundfont_load", json!({"track": track.0, "path": path})) {
-                            Ok(r) => format!("SoundFont loaded: {} preset(s)", r["presets"].as_array().map_or(0, Vec::len)),
-                            Err(e) => e,
-                        };
-                        continue;
-                    }
-                }
+            // A SoundFont dropped on an instrument slot becomes what that track plays; dropped
+            // anywhere else, the selected instrument track's.
+            if !claimed
+                && file.path().is_absolute()
+                && file.path().to_string_lossy().to_ascii_lowercase().ends_with(".sf2")
+                && let Some(track) = self.drop_track(pos).or_else(|| crate::menus::instrument_track(self.engine.session()))
+                && let Ok(path) = crate::dialogs::unicode(file.path())
+            {
+                claimed = true;
+                self.ui.status = match self.run("mix.soundfont_load", json!({"track": track.0, "path": path})) {
+                    Ok(r) => format!("SoundFont loaded: {} preset(s)", r["presets"].as_array().map_or(0, Vec::len)),
+                    Err(e) => e,
+                };
+                continue;
             }
             // As before, one dropped audio file goes to the sampler under the pointer; the rest
             // are left to the shell.
