@@ -215,17 +215,22 @@ impl Instance {
     }
 
     pub fn value_text(&self, id: u32, value: f64) -> Option<String> {
+        // `value_to_text` is [main-thread].
+        if !super::gui::on_main_thread() {
+            return None;
+        }
         // SAFETY: see `params`.
         let p = unsafe { self.params.as_ref() }?;
         let f = p.value_to_text?;
         let mut buf = [0 as c_char; 128];
-        // SAFETY: valid instance; we pass the buffer's true capacity.
+        // SAFETY: valid instance on the main thread; we pass the buffer's true capacity.
         let ok = unsafe { f(self.plugin, id, value, buf.as_mut_ptr(), buf.len() as u32) };
         ok.then(|| read_name(&buf)).filter(|s| !s.is_empty())
     }
 
     pub fn value_from_text(&self, id: u32, text: &str) -> Option<f64> {
-        if text.chars().count() > 256 {
+        // `text_to_value` is [main-thread].
+        if !super::gui::on_main_thread() || text.chars().count() > 256 {
             return None;
         }
         // SAFETY: see `params`.
@@ -233,7 +238,7 @@ impl Instance {
         let f = p.text_to_value?;
         let text = CString::new(text).ok()?;
         let mut value = 0.0;
-        // SAFETY: valid instance; `text` is NUL-terminated and `value` is writable.
+        // SAFETY: valid instance on the main thread; `text` is NUL-terminated and `value` is writable.
         let ok = unsafe { f(self.plugin, id, text.as_ptr(), &mut value) };
         (ok && value.is_finite()).then_some(value)
     }

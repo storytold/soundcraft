@@ -38,7 +38,13 @@ fn info_exposes_visible_params_with_names() {
     assert_eq!((gain.name, gain.min, gain.max, gain.default), ("Gain", 0.0, 2.0, 1.0));
     let mode = info.param("3").unwrap();
     assert_eq!(mode.unit, Unit::Choice);
-    assert_eq!(mode.choices, &["A", "B", "C"]);
+    // Choice labels come from `value_to_text`, which is [main-thread] (see `editor_main_thread`).
+    // Elsewhere the host's check is a stub and the labels are real.
+    if cfg!(target_os = "macos") {
+        assert_eq!(mode.choices, &["0", "1", "2"], "test threads are not the main thread");
+    } else {
+        assert_eq!(mode.choices, &["A", "B", "C"]);
+    }
     // Cached: the same leaked info every time.
     assert!(std::ptr::eq(info, soundcraft_clap_host::plugin_info(GAIN).unwrap()));
 }
@@ -47,6 +53,13 @@ fn info_exposes_visible_params_with_names() {
 fn parameter_text_round_trips_through_the_plugin() {
     fixture_dir();
     let mut p = soundcraft_clap_host::create(GAIN).unwrap();
+    // The standard harness never runs tests on the main thread. The real round trip is in
+    // `editor_main_thread`. Elsewhere `on_main_thread` is a stub.
+    if cfg!(target_os = "macos") {
+        assert_eq!(p.value_text("3", 1.0), None, "test threads are not the main thread");
+        assert_eq!(p.value_from_text("3", "b"), None, "test threads are not the main thread");
+        return;
+    }
     assert_eq!(p.value_text("3", 1.0).as_deref(), Some("B"));
     assert_eq!(p.value_from_text("3", "b"), Some(1.0));
     assert_eq!(p.value_from_text("3", "not a mode"), None);
