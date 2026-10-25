@@ -4,7 +4,7 @@ use super::{CommandSpec, bad, has_selection};
 
 use crate::{Engine, LivePlugins, Result, cmd};
 use serde_json::{Value, json};
-use soundcraft_dsp::{ParamInfo, Plugin, PluginInfo, Taper, Unit};
+use soundcraft_dsp::{ParamInfo, Plugin, PluginInfo, Unit};
 use soundcraft_model::{Insert, TrackId};
 
 const CMD: &str = "mix.plugin_params";
@@ -153,49 +153,6 @@ fn page_has_params(info: &PluginInfo, filter: Option<&str>, offset: usize) -> bo
     info.params.iter().filter(|param| filter.is_none_or(|needle| matches_filter(param, needle))).nth(offset).is_some()
 }
 
-/// Probe of a plugin the registry does not list. Only the stored keys are rows: there is no
-/// parameter table to invent min, max or names from. Values come from the live instance.
-fn unlisted_live_response(
-    insert: &Insert,
-    filter: Option<&str>,
-    offset: usize,
-    limit: usize,
-    live: &mut dyn LivePlugins,
-    track: TrackId,
-    slot: usize,
-) -> Value {
-    let matching: Vec<&String> = insert.params.keys().filter(|id| filter.is_none_or(|needle| id.to_lowercase().contains(needle))).collect();
-    let total = matching.len();
-    let params: Vec<Value> = matching
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|id| {
-            let stored = insert.params.get(id).copied().filter(|value| value.is_finite());
-            let (value, value_source) = match live.value(track, slot, id).filter(|value| value.is_finite()) {
-                Some(value) => (Some(value), "plugin"),
-                None => (stored, "session"),
-            };
-            let display = value.and_then(|value| live.value_text(track, slot, id, value)).map(|text| super::mix::shown_text(&text));
-            json!({
-                "id": id,
-                "name": id,
-                "min": Value::Null,
-                "max": Value::Null,
-                "default": Value::Null,
-                "unit": Unit::None,
-                "taper": Taper::Linear,
-                "steps": Value::Null,
-                "values": [],
-                "value": value,
-                "value_source": value_source,
-                "display": display,
-            })
-        })
-        .collect();
-    json!({"plugin": insert.plugin, "name": insert.plugin, "total": total, "offset": offset, "params": params})
-}
-
 fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
     let (track, slot) = track_plugin_slot(e, p, CMD)?;
     let index = plugin_slot_index(slot);
@@ -222,13 +179,6 @@ fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
         Some(value) => value.as_bool().ok_or_else(|| bad(CMD, "`probe` must be a boolean"))?,
     };
     let Some(info) = super::clap::plugin_info(&insert.plugin) else {
-        if probe {
-            let matched = e.live_plugins_mut().and_then(|live| live.plugin_id(track, index)).is_some_and(|id| id == insert.plugin);
-            if matched {
-                let Some(live) = e.live_plugins_mut() else { return Err(bad(CMD, format!("unknown plugin `{}`", insert.plugin))) };
-                return Ok(unlisted_live_response(&insert, filter.as_deref(), offset, limit, live, track, index));
-            }
-        }
         return Err(bad(CMD, format!("unknown plugin `{}`", insert.plugin)));
     };
     // A matching live instance answers the whole probe. Individual parameters may still be absent;

@@ -65,7 +65,52 @@ mod tests {
     }
 
     #[test]
-    fn an_unlisted_plugin_resolves_text_and_probes_through_the_live_instance() {
+    fn a_known_plugin_resolves_text_and_probes_through_the_live_instance() {
+        let mut e = Engine::default();
+        let audio = track(&mut e, None);
+        e.execute("mix.insert", &json!({"track": audio.0, "slot": 0, "plugin": "eq_7band"})).unwrap();
+        let instrument = track(&mut e, Some("instrument"));
+        e.set_live_plugins(Some(Box::new(Fake {
+            answers: vec![
+                Answer { plugin: "eq_7band", track: audio, slot: 0, from_text: Some(-3.0), value: Some(-3.0), display: "LIVE-29" },
+                Answer {
+                    plugin: "subtractive_synth",
+                    track: instrument,
+                    slot: soundcraft_mix::INSTRUMENT_SLOT,
+                    from_text: Some(440.0),
+                    value: Some(440.0),
+                    display: "LIVE-29",
+                },
+            ],
+        })));
+
+        // "LIVE-29" is not text a built-in parses. Storing it means the live instance answered
+        // and no temporary instance was created.
+        let set = e.execute("mix.insert_param", &json!({"track": audio.0, "slot": 0, "param": "mid_gain", "value": "LIVE-29"})).unwrap();
+        assert_eq!(set["value"], -3.0);
+        assert_eq!(stored_insert(&e, audio, "mid_gain"), Some(-3.0));
+
+        let probed = e.execute("mix.plugin_params", &json!({"track": audio.0, "slot": 0, "filter": "mid_gain", "probe": true})).unwrap();
+        let mid = param_row(&probed, "mid_gain");
+        assert_eq!(mid["value"], -3.0);
+        assert_eq!(mid["value_source"], "plugin");
+        assert_eq!(mid["display"], "LIVE-29");
+        assert_eq!(mid["name"], "MF Gain");
+        assert!(mid["min"].is_number());
+
+        let set = e.execute("mix.instrument_param", &json!({"track": instrument.0, "param": "cutoff", "value": "LIVE-29"})).unwrap();
+        assert_eq!(set["value"], 440.0);
+        let probed =
+            e.execute("mix.plugin_params", &json!({"track": instrument.0, "slot": "instrument", "filter": "cutoff", "probe": true})).unwrap();
+        let cutoff = param_row(&probed, "cutoff");
+        assert_eq!(cutoff["value_source"], "plugin");
+        assert_eq!(cutoff["value"], 440.0);
+        assert_eq!(cutoff["display"], "LIVE-29");
+        assert_eq!(cutoff["name"], "Cutoff");
+    }
+
+    #[test]
+    fn an_unknown_plugin_stays_unknown_even_when_the_live_instance_parses_text() {
         let mut e = Engine::default();
         let audio = track(&mut e, None);
         plant_insert(&mut e, audio, "clap:does.not.exist", "gain", 0.1);
@@ -77,50 +122,36 @@ mod tests {
         }
         e.set_live_plugins(Some(Box::new(Fake {
             answers: vec![
-                Answer { plugin: "clap:does.not.exist", track: audio, slot: 0, from_text: Some(0.5), value: Some(0.5), display: "LIVE" },
+                Answer { plugin: "clap:does.not.exist", track: audio, slot: 0, from_text: Some(0.5), value: Some(0.5), display: "LIVE-29" },
                 Answer {
                     plugin: "clap:does.not.exist",
                     track: instrument,
                     slot: soundcraft_mix::INSTRUMENT_SLOT,
                     from_text: Some(0.25),
                     value: Some(0.25),
-                    display: "SOFT",
+                    display: "LIVE-29",
                 },
             ],
         })));
 
-        // No registry entry and no probe: still the historical error. A temporary instance cannot
-        // exist for this id either.
-        let err = e.execute("mix.plugin_params", &json!({"track": audio.0, "slot": 0})).unwrap_err();
-        assert!(err.to_string().contains("unknown plugin"), "{err}");
+        for params in [json!({"track": audio.0, "slot": 0}), json!({"track": audio.0, "slot": 0, "probe": true})] {
+            let err = e.execute("mix.plugin_params", &params).unwrap_err().to_string();
+            assert!(err.contains("unknown plugin"), "{err}");
+        }
+        let err = e.execute("mix.insert_param", &json!({"track": audio.0, "slot": 0, "param": "gain", "value": "LIVE-29"})).unwrap_err().to_string();
+        assert!(err.contains("unknown plugin"), "{err}");
+        let err = e.execute("mix.insert_param", &json!({"track": audio.0, "slot": 0, "param": "gain", "value": 0.5})).unwrap_err().to_string();
+        assert!(err.contains("unknown plugin"), "{err}");
+        let err = e.execute("mix.insert_params", &json!({"track": audio.0, "slot": 0, "params": {"gain": "LIVE-29"}})).unwrap_err().to_string();
+        assert!(err.contains("unknown plugin"), "{err}");
+        assert_eq!(stored_insert(&e, audio, "gain"), Some(0.1));
 
-        let set = e.execute("mix.insert_param", &json!({"track": audio.0, "slot": 0, "param": "gain", "value": "warm"})).unwrap();
-        assert_eq!(set["value"], 0.5);
-        assert_eq!(stored_insert(&e, audio, "gain"), Some(0.5));
-
-        let probed = e.execute("mix.plugin_params", &json!({"track": audio.0, "slot": 0, "probe": true})).unwrap();
-        let gain = param_row(&probed, "gain");
-        assert_eq!(gain["value"], 0.5);
-        assert_eq!(gain["value_source"], "plugin");
-        assert_eq!(gain["display"], "LIVE");
-        assert_eq!(gain["name"], "gain");
-        assert_eq!(gain["min"], serde_json::Value::Null);
-        assert_eq!(gain["max"], serde_json::Value::Null);
-        assert_eq!(gain["default"], serde_json::Value::Null);
-        assert_eq!(gain["unit"], "None");
-        assert_eq!(gain["taper"], "Linear");
-        assert_eq!(gain["steps"], serde_json::Value::Null);
-        assert_eq!(gain["values"], json!([]));
-        assert!(gain.get("display_min").is_none());
-        assert!(gain.get("display_max").is_none());
-
-        let set = e.execute("mix.instrument_param", &json!({"track": instrument.0, "param": "tone", "value": "soft"})).unwrap();
-        assert_eq!(set["value"], 0.25);
-        let probed = e.execute("mix.plugin_params", &json!({"track": instrument.0, "slot": "instrument", "probe": true})).unwrap();
-        let tone = param_row(&probed, "tone");
-        assert_eq!(tone["value_source"], "plugin");
-        assert_eq!(tone["value"], 0.25);
-        assert_eq!(tone["display"], "SOFT");
+        let err = e.execute("mix.instrument_param", &json!({"track": instrument.0, "param": "tone", "value": "LIVE-29"})).unwrap_err().to_string();
+        assert!(err.contains("unknown plugin `clap:does.not.exist`"), "{err}");
+        let err = e.execute("mix.plugin_params", &json!({"track": instrument.0, "slot": "instrument", "probe": true})).unwrap_err().to_string();
+        assert!(err.contains("unknown plugin"), "{err}");
+        let stored = e.session().track(instrument).and_then(|tr| tr.instrument.as_ref()).and_then(|insert| insert.params.get("tone").copied());
+        assert_eq!(stored, Some(1.0));
     }
 
     #[test]
