@@ -342,12 +342,12 @@ fn track_slot(e: &Engine, p: &Value, cmd: &str, max: usize) -> Result<(TrackId, 
 /// The plugin a parameter command addresses: an insert slot, or the instrument of an
 /// instrument or MIDI track (`slot: "instrument"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PluginSlot {
+pub(super) enum PluginSlot {
     Insert(usize),
     Instrument,
 }
 
-fn track_plugin_slot(e: &Engine, p: &Value, cmd: &str) -> Result<(TrackId, PluginSlot)> {
+pub(super) fn track_plugin_slot(e: &Engine, p: &Value, cmd: &str) -> Result<(TrackId, PluginSlot)> {
     if p.get("slot").and_then(Value::as_str).is_some_and(|s| s.trim().eq_ignore_ascii_case("instrument")) {
         let t = tracks_required(e, cmd, p)?.first().copied().ok_or_else(|| bad(cmd, "no track"))?;
         return Ok((t, PluginSlot::Instrument));
