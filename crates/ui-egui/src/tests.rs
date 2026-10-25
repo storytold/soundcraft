@@ -554,6 +554,21 @@ fn queued_instrument_params_are_discarded_when_the_instrument_or_document_is_gon
 }
 
 #[test]
+fn a_player_installs_live_plugins_and_reconnect_keeps_them() {
+    let engine = soundcraft_engine::Engine::default();
+    assert!(!engine.has_live_plugins());
+    let bare = SoundApp::new(engine, None, Services::default());
+    assert!(!bare.engine.has_live_plugins());
+
+    let engine = soundcraft_engine::Engine::default();
+    let player = soundcraft_playback::Player::new(engine.session_arc());
+    let mut app = SoundApp::new(engine, Some(player), Services::default());
+    assert!(app.engine.has_live_plugins());
+    app.reconnect_audio();
+    assert!(app.engine.has_live_plugins());
+}
+
+#[test]
 fn two_instrument_editor_drags_store_its_state_twice() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let keys = app.engine.session().track_by_name("Keys").unwrap().id;
