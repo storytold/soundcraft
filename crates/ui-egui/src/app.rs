@@ -37,6 +37,9 @@ impl SoundApp {
             player,
             midi_inputs: soundcraft_playback::midi_in::MidiInputs::new(),
             midi_checked: None,
+            recording_midi: false,
+            recording_audio: false,
+            midi_take: Vec::new(),
             recorder: None,
             record_start: 0,
             punch: None,
@@ -193,6 +196,7 @@ impl SoundApp {
         self.watch_output();
         self.service_midi_inputs(false);
         self.watch_input();
+        self.collect_recorded_midi();
         // Stop the old playback before sending a replacement session to the audio thread.
         self.handle_transport(dt);
         if self.engine.revision != self.last_rev {

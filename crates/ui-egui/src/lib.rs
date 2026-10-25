@@ -271,6 +271,11 @@ pub struct SoundApp {
     /// were last checked for new or removed devices.
     pub midi_inputs: soundcraft_playback::midi_in::MidiInputs,
     midi_checked: Option<f64>,
+    /// This take records MIDI (armed instrument or MIDI tracks) and/or audio (armed audio tracks).
+    recording_midi: bool,
+    recording_audio: bool,
+    /// The MIDI played so far in this take: (timeline position, message).
+    midi_take: Vec<(Samples, [u8; 3])>,
     /// Input capture, opened on first record.
     pub recorder: Option<soundcraft_playback::record::Recorder>,
     record_start: Samples,

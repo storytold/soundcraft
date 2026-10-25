@@ -131,7 +131,12 @@ enum Cmd {
     Forget(Vec<TrackId>),
     /// A MIDI 1.0 channel message from a MIDI input device, to play live (see [`MidiSink`]).
     Midi([u8; 3]),
+    /// Where the callback sends the MIDI played while recording, stamped with its position.
+    MidiRecorder(SyncSender<(Samples, [u8; 3])>),
 }
+
+/// MIDI messages a take can hold before the UI collects them (it does every frame).
+const MIDI_RECORD_QUEUE: usize = 16_384;
 
 /// Where a MIDI input device hands its messages to the player: they reach the instruments of the
 /// tracks taking MIDI input at the next audio block (see `soundcraft_mix::takes_midi_input`).
@@ -184,6 +189,8 @@ pub enum OutputTrouble {
 pub struct Player {
     /// Unique in this process (see [`Player::id`]).
     id: u64,
+    /// MIDI played while recording, from the callback (see [`Player::take_recorded_midi`]).
+    midi_rec: Mutex<Option<Receiver<(Samples, [u8; 3])>>>,
     shared: Arc<Shared>,
     fault: Arc<Fault>,
     /// The block count last seen while playing, and since when.
@@ -216,6 +223,9 @@ impl Player {
     pub fn with_config(session: Arc<Session>, cfg: &AudioConfig) -> Player {
         let p = Player::open(Arc::clone(&session), cfg);
         p.side().return_old_sessions(&p.tx);
+        let (mtx, mrx) = sync_channel(MIDI_RECORD_QUEUE);
+        let _ = p.tx.send(Cmd::MidiRecorder(mtx));
+        *p.midi_rec.lock().unwrap_or_else(PoisonError::into_inner) = Some(mrx);
         // Hand the initial session's third-party plugins over.
         p.update_session(session);
         p
@@ -243,7 +253,17 @@ impl Player {
         self.id
     }
 
-    /// Where a MIDI input device hands its messages to this player (live, at the next block).
+    /// Move the MIDI played since the last call while recording into `out`: `(timeline position,
+    /// [status, data1, data2])`, in the order played. Call it every frame while recording, and
+    /// once more after stopping.
+    pub fn take_recorded_midi(&self, out: &mut Vec<(Samples, [u8; 3])>) {
+        let rx = self.midi_rec.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(rx) = rx.as_ref() {
+            out.extend(rx.try_iter());
+        }
+    }
+
+    /// Where MIDI input devices send what is played on them (see [`midi_in::MidiInputs`]).
     pub fn midi_sink(&self) -> MidiSink {
         MidiSink { player: self.id, tx: self.tx.clone() }
     }
@@ -305,6 +325,7 @@ impl Player {
                         );
                         Player {
                             id: next_player_id(),
+                            midi_rec: Mutex::new(None),
                             shared,
                             fault,
                             #[cfg(not(target_arch = "wasm32"))]
@@ -384,6 +405,7 @@ impl Player {
         }
         Player {
             id: next_player_id(),
+            midi_rec: Mutex::new(None),
             shared,
             fault,
             watch: Mutex::new(None),
@@ -409,6 +431,7 @@ impl Player {
     ) -> Player {
         Player {
             id: next_player_id(),
+            midi_rec: Mutex::new(None),
             shared,
             fault: Arc::default(),
             tx,

@@ -31,7 +31,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Feature | Pro Tools | SoundCraft (all platforms) |
 |---|---|---|
-| MIDI input devices (keyboards, pads) | ✅ | 🟡 Setup › MIDI › MIDI Input Devices lists and opens the ports (`midir`: WinMM, CoreMIDI, ALSA; none on the web or FreeBSD); playing sounds the armed instrument/MIDI tracks live. No MIDI recording yet |
+| MIDI input devices (keyboards, pads) | ✅ | 🟡 Setup › MIDI › MIDI Input Devices lists and opens the ports (`midir`: WinMM, CoreMIDI, ALSA; none on the web or FreeBSD); playing sounds the armed instrument/MIDI tracks live, and Record captures it into a MIDI clip (no MIDI Merge yet) |
 | MIDI output to external gear | ✅ | ❌ |
 | MIDI Thru, input filter | ✅ | 🟡 Thru to the selected instrument track when none is armed; input filter still stored flags only |
 | MIDI Beat Clock out, MTC generate/chase | ✅ | ❌ |

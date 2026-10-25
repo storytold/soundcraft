@@ -1,6 +1,6 @@
 use super::audio::feed_meter;
 use super::plugins::failed_plugin_status;
-use super::{Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, json};
+use super::{Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, Value, json};
 
 /// Whether another automation-write pass is due: the transport moved at least
 /// `step` since `last` in either direction. `last == i64::MIN` marks "never
@@ -90,6 +90,8 @@ impl SoundApp {
 
     fn start_recording(&mut self) {
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
+        let armed_midi = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm && t.kind.is_midi() && !t.inactive);
+        let armed_audio = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm && t.kind == soundcraft_model::TrackKind::Audio);
         if !armed {
             let why = if self.engine.session().tracks.is_empty() {
                 "Nothing to record on yet: add a track with Track › New…, then click its R button."
@@ -100,14 +102,27 @@ impl SoundApp {
             self.record_hint = Some((self.last_frame.unwrap_or_default(), why));
             return;
         }
-        self.ensure_input();
-        let takes = match self.arm_recorder() {
-            Ok(takes) => takes,
-            Err(err) => {
-                self.ui.status = format!("Cannot record: {err}");
-                return;
+        // Only MIDI armed: no audio input is needed (nor opened).
+        let takes = if armed_audio || !armed_midi {
+            self.ensure_input();
+            match self.arm_recorder() {
+                Ok(takes) => takes,
+                Err(err) => {
+                    self.ui.status = format!("Cannot record: {err}");
+                    return;
+                }
             }
+        } else {
+            Vec::new()
         };
+        self.recording_audio = armed_audio || !armed_midi;
+        self.recording_midi = armed_midi;
+        self.midi_take.clear();
+        if let Some(p) = &self.player {
+            // What was played before this take is not part of it.
+            let mut stale = Vec::new();
+            p.take_recorded_midi(&mut stale);
+        }
         self.lost_shown = 0;
         if let Some(p) = &self.player {
             p.set_recording(true);
@@ -182,6 +197,14 @@ impl SoundApp {
             p.set_recording(false);
         }
         let plan = self.take_plan.take();
+        let midi_note = if std::mem::take(&mut self.recording_midi) { self.place_midi_take(plan.as_ref()) } else { None };
+        if !std::mem::take(&mut self.recording_audio) {
+            self.punch = None;
+            if let Some(note) = midi_note {
+                self.ui.status = note;
+            }
+            return;
+        }
         let Some(r) = &mut self.recorder else { return };
         let (takes, problem) = r.finish();
         let tracks = takes.len().max(1);
@@ -200,6 +223,52 @@ impl SoundApp {
         if let Some(p) = problem {
             log::warn!("recording: {p}");
             self.ui.status = format!("{} ({p})", self.ui.status);
+        }
+        if let Some(note) = midi_note {
+            self.ui.status = format!("{} · {note}", self.ui.status);
+        }
+    }
+
+    /// Collect the MIDI played while recording (called every frame, so the player's queue never
+    /// fills).
+    pub(super) fn collect_recorded_midi(&mut self) {
+        /// A take keeps this many messages at most (hours of dense playing).
+        const MAX: usize = 500_000;
+        if !self.recording_midi || self.midi_take.len() >= MAX {
+            return;
+        }
+        if let Some(p) = &self.player {
+            p.take_recorded_midi(&mut self.midi_take);
+            self.midi_take.truncate(MAX);
+        }
+    }
+
+    /// Turn the MIDI played during the take into a clip on each armed instrument and MIDI track
+    /// (`midi.record_take`): the punch range when punching in, the loop when loop recording, else
+    /// from where recording started to where it stopped. Returns what to tell the user.
+    fn place_midi_take(&mut self, plan: Option<&soundcraft_engine::io::Recording>) -> Option<String> {
+        self.collect_recorded_midi();
+        let events = std::mem::take(&mut self.midi_take);
+        let start = self.record_start;
+        let last = events.iter().map(|(at, _)| *at).max().unwrap_or(start);
+        let range = match (self.punch, plan.and_then(|p| p.pass)) {
+            (Some(punch), _) => punch,
+            (None, Some(pass)) => Range::new(start, start.saturating_add(pass.max(1))),
+            (None, None) => Range::new(start, self.engine.transport.position.max(last.saturating_add(1)).max(start.saturating_add(1))),
+        };
+        if events.is_empty() {
+            return Some("No MIDI was played: nothing recorded on the MIDI tracks".into());
+        }
+        // Played right as recording began, a message can be stamped up to a device buffer early:
+        // it belongs at the start (not when punching: the pre-roll is not recorded).
+        let early = |at: Samples| self.punch.is_none() && at < range.start && range.start - at < 8_192;
+        let list: Vec<Value> = events.iter().map(|&(at, [st, a, b])| json!([if early(at) { range.start } else { at }, st, a, b])).collect();
+        match self.run("midi.record_take", json!({"start": range.start, "end": range.end, "events": list})) {
+            Ok(r) => {
+                let notes = r["notes"].as_u64().unwrap_or(0);
+                Some(format!("Recorded {notes} MIDI note(s)"))
+            }
+            Err(e) => Some(format!("MIDI not recorded: {e}")),
         }
     }
 

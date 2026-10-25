@@ -83,6 +83,11 @@ pub(crate) struct AudioState {
     /// A MIDI input device has sent something: tracks taking MIDI input render while stopped,
     /// so what is played on it sounds (see `fill`).
     midi_seen: bool,
+    /// Where MIDI played while recording goes (see [`Player::take_recorded_midi`]).
+    midi_rec: Option<SyncSender<(Samples, [u8; 3])>>,
+    /// The device's last callback in session samples: what is rendered now is heard that much
+    /// later, so MIDI played to it is stamped that much earlier.
+    out_latency: i64,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
@@ -129,6 +134,8 @@ impl AudioState {
             input: None,
             recording: false,
             midi_seen: false,
+            midi_rec: None,
+            out_latency: 0,
             unsent: MeterSnapshot::default(),
             forget_shared: Vec::new(),
         }
@@ -149,6 +156,7 @@ impl AudioState {
                     self.forget_meters();
                 }
                 Cmd::Recording(r) => self.recording = r,
+                Cmd::MidiRecorder(tx) => self.midi_rec = Some(tx),
                 Cmd::Midi(msg) if self.mix.live_midi.len() < soundcraft_mix::LIVE_MIDI_CAPACITY => {
                     self.mix.live_midi.push(msg);
                     self.midi_seen = true;
@@ -249,6 +257,16 @@ impl AudioState {
             }
             ring.pop_into(&mut self.mix.input, n, self.session.sample_rate.hz());
         }
+        if self.recording
+            && self.playing
+            && let Some(tx) = &self.midi_rec
+        {
+            // Bounded channel: never allocates or blocks; a full queue drops (the UI is stuck).
+            let at = self.pos.saturating_sub(self.out_latency);
+            for m in &self.mix.live_midi {
+                let _ = tx.try_send((at, *m));
+            }
+        }
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
         self.mix.render(&self.session, self.pos, n, &mut self.pending);
@@ -305,6 +323,7 @@ impl AudioState {
         let step = self.session.sample_rate.as_f64() / self.device_rate.max(1.0) * speed.clamp(0.1, 4.0);
         let callback_frames = out.len() / channels;
         let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
+        self.out_latency = (callback_frames as f64 * step).round() as i64;
         for frame in out.chunks_mut(channels) {
             while self.read >= self.pending_len as f64 {
                 self.read -= self.pending_len as f64;

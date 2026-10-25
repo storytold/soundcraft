@@ -786,3 +786,31 @@ fn a_key_played_on_the_selected_synth_sounds_while_stopped() {
     }
     assert!(peak > 0.01, "the synth stayed silent: {peak}");
 }
+
+#[test]
+fn midi_played_while_recording_is_stamped_with_its_position() {
+    let s = Arc::new(soundcraft_model::Session::default());
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
+    let (mtx, mrx) = sync_channel(16);
+    tx.send(Cmd::MidiRecorder(mtx)).unwrap();
+    tx.send(Cmd::Play { from: 48_000, end: None, looped: None }).unwrap();
+    // Playing but not recording: nothing is kept.
+    tx.send(Cmd::Midi([0x90, 60, 100])).unwrap();
+    let mut out = vec![0.0f32; 512];
+    st.fill(&mut out, 2);
+    assert!(mrx.try_recv().is_err());
+    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Midi([0x80, 60, 0])).unwrap();
+    st.fill(&mut out, 2);
+    let (at, m) = mrx.try_recv().unwrap();
+    assert_eq!(m, [0x80, 60, 0]);
+    // Stamped at the block it was played in, less the device's own buffer (256 frames).
+    assert!((48_000..48_000 + 512).contains(&(at + 256)), "{at}");
+}
