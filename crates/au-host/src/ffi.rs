@@ -801,7 +801,8 @@ impl Instance {
         let mut request = AudioUnitParameterStringFromValue { in_param_id: id, in_value: &value, out_string: ptr::null() };
         let mut size = std::mem::size_of::<AudioUnitParameterStringFromValue>() as u32;
         // SAFETY: the property uses the SDK-documented struct layout; `request` and `size` are
-        // writable locals, and the unit returns `out_string` with caller ownership.
+        // writable locals. A non-null `out_string` is an owned CFString even when the status is
+        // an error, and is released below.
         let status = unsafe {
             AudioUnitGetProperty(
                 self.unit,
@@ -812,12 +813,10 @@ impl Instance {
                 &mut size,
             )
         };
-        if status != 0 || request.out_string.is_null() {
-            return None;
-        }
-        let text = cf_string(request.out_string);
-        release(request.out_string);
-        (!text.is_empty()).then_some(text)
+        let string = request.out_string;
+        let text = if status == 0 { cf_string(string) } else { String::new() };
+        release(string);
+        (status == 0 && !text.is_empty()).then_some(text)
     }
 
     pub fn value_from_text(&self, id: u32, text: &str) -> Option<f32> {
