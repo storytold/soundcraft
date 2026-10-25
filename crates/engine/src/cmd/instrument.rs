@@ -3,7 +3,7 @@
 //! the instrument is otherwise only set when the track is created (`track.new`). Its parameters
 //! (`mix.instrument_param`, or `mix.insert_param` with `slot: "instrument"`) are applied on top
 //! of a hosted instrument's stored state, like an insert's.
-use super::mix::{ParameterValueResolver, resolve_unlisted_text};
+use super::mix::ParameterValueResolver;
 use super::{CommandSpec, bad, has_selection, param_id, str_param, tracks_required};
 
 use crate::{Engine, Result, cmd};
@@ -90,12 +90,7 @@ fn set_instrument_param(e: &mut Engine, p: &Value) -> Result<Value> {
     let ins = e.session().track(t).and_then(|tr| tr.instrument.as_ref()).cloned().ok_or_else(|| bad(id, "the track has no instrument"))?;
     let plugin_name = ins.plugin.clone();
     let Some(info) = super::clap::plugin_info(&ins.plugin) else {
-        let unknown_name = plugin_name.clone();
-        let unknown = move || bad(id, format!("unknown plugin `{unknown_name}`"));
-        let v = resolve_unlisted_text(e, id, t, soundcraft_mix::INSTRUMENT_SLOT, &plugin_name, &param, value, unknown)?;
-        let ins = e.session_mut().track_mut(t).and_then(|tr| tr.instrument.as_mut()).ok_or_else(|| bad(id, "the track has no instrument"))?;
-        ins.params.insert(param.clone(), v);
-        return Ok(json!({"track": t, "param": param, "value": v}));
+        return Err(bad(id, format!("unknown plugin `{plugin_name}`")));
     };
     let pi = info.param(&param).ok_or_else(|| bad(id, format!("`{}` has no parameter `{param}`", info.id)))?;
     let rate = e.session().sample_rate.as_f64() as f32;
