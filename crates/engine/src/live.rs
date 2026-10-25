@@ -93,7 +93,7 @@ mod tests {
         let probed = e.execute("mix.plugin_params", &json!({"track": audio.0, "slot": 0, "filter": "mid_gain", "probe": true})).unwrap();
         let mid = param_row(&probed, "mid_gain");
         assert_eq!(mid["value"], -3.0);
-        assert_eq!(mid["value_source"], "plugin");
+        assert_eq!(mid["value_source"], "session");
         assert_eq!(mid["display"], "LIVE-29");
         assert_eq!(mid["name"], "MF Gain");
         assert!(mid["min"].is_number());
@@ -103,7 +103,7 @@ mod tests {
         let probed =
             e.execute("mix.plugin_params", &json!({"track": instrument.0, "slot": "instrument", "filter": "cutoff", "probe": true})).unwrap();
         let cutoff = param_row(&probed, "cutoff");
-        assert_eq!(cutoff["value_source"], "plugin");
+        assert_eq!(cutoff["value_source"], "session");
         assert_eq!(cutoff["value"], 440.0);
         assert_eq!(cutoff["display"], "LIVE-29");
         assert_eq!(cutoff["name"], "Cutoff");
@@ -171,7 +171,8 @@ mod tests {
         e.execute("mix.insert_param", &json!({"track": track.0, "slot": 0, "param": "mid_gain", "value": 7.5})).unwrap();
         let probed = e.execute("mix.plugin_params", &json!({"track": track.0, "slot": 0, "filter": "mid_gain", "probe": true})).unwrap();
         let row = param_row(&probed, "mid_gain");
-        // A temporary probe would set the stored 7.5 and report value_source "plugin".
+        // mid_gain is stored, so the probe keeps 7.5. Display "LIVE" is the live text for that
+        // stored value, which a temporary instance of the built-in would not produce.
         assert_eq!(row["value"], 7.5);
         assert_eq!(row["value_source"], "session");
         assert_eq!(row["display"], "LIVE");
@@ -193,7 +194,7 @@ mod tests {
         let probed = e.execute("mix.plugin_params", &json!({"track": track.0, "slot": 0, "filter": "mid_gain", "probe": true})).unwrap();
         let row = param_row(&probed, "mid_gain");
         assert_eq!(row["value"], 7.5);
-        assert_eq!(row["value_source"], "plugin");
+        assert_eq!(row["value_source"], "session");
         assert_ne!(row["display"], "WRONG");
     }
 
@@ -218,5 +219,54 @@ mod tests {
         let set = e.execute("mix.insert_param", &json!({"track": track.0, "slot": 0, "param": "mid_gain", "value": "0.0 dB"})).unwrap();
         assert_eq!(set["value"], 0.0);
         assert_eq!(stored_insert(&e, track, "mid_gain"), Some(0.0));
+    }
+
+    /// The live instance still holds the previous block after `mix.insert_param`. A stored
+    /// parameter keeps the session value; display is the live text for that stored value.
+    /// A parameter the session does not store is read from the live instance.
+    struct StaleLive;
+
+    impl LivePlugins for StaleLive {
+        fn plugin_id(&mut self, _track: TrackId, _slot: usize) -> Option<String> {
+            Some("eq_7band".into())
+        }
+
+        fn value_text(&mut self, _track: TrackId, _slot: usize, id: &str, value: f32) -> Option<String> {
+            Some(format!("{id}={value}"))
+        }
+
+        fn value_from_text(&mut self, _track: TrackId, _slot: usize, _id: &str, _text: &str) -> Option<f32> {
+            None
+        }
+
+        fn value(&mut self, _track: TrackId, _slot: usize, id: &str) -> Option<f32> {
+            match id {
+                // Stale: the session already holds -3.
+                "mid_gain" => Some(0.0),
+                "input_gain" => Some(1.5),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn a_probe_keeps_a_stored_value_when_the_live_instance_is_stale() {
+        let mut e = Engine::default();
+        let audio = track(&mut e, None);
+        e.execute("mix.insert", &json!({"track": audio.0, "slot": 0, "plugin": "eq_7band"})).unwrap();
+        e.execute("mix.insert_param", &json!({"track": audio.0, "slot": 0, "param": "mid_gain", "value": -3.0})).unwrap();
+        e.session_mut().track_mut(audio).unwrap().mixer.inserts[0].as_mut().unwrap().params.remove("input_gain");
+        e.set_live_plugins(Some(Box::new(StaleLive)));
+
+        let probed = e.execute("mix.plugin_params", &json!({"track": audio.0, "slot": 0, "probe": true, "limit": 1000})).unwrap();
+        let mid = param_row(&probed, "mid_gain");
+        assert_eq!(mid["value"], -3.0);
+        assert_eq!(mid["value_source"], "session");
+        assert_eq!(mid["display"], "mid_gain=-3");
+
+        let input = param_row(&probed, "input_gain");
+        assert_eq!(input["value"], 1.5);
+        assert_eq!(input["value_source"], "plugin");
+        assert_eq!(input["display"], "input_gain=1.5");
     }
 }
