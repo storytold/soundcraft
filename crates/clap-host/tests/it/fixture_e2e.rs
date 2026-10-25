@@ -44,6 +44,16 @@ fn info_exposes_visible_params_with_names() {
 }
 
 #[test]
+fn parameter_text_round_trips_through_the_plugin() {
+    fixture_dir();
+    let mut p = soundcraft_clap_host::create(GAIN).unwrap();
+    assert_eq!(p.value_text("3", 1.0).as_deref(), Some("B"));
+    assert_eq!(p.value_from_text("3", "b"), Some(1.0));
+    assert_eq!(p.value_from_text("3", "not a mode"), None);
+    assert_eq!(p.value_from_text("3", &"x".repeat(257)), None);
+}
+
+#[test]
 fn gain_processes_audio_and_follows_params() {
     fixture_dir();
     let mut p = soundcraft_clap_host::create(GAIN).unwrap();

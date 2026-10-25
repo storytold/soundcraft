@@ -83,7 +83,7 @@ fn read_c16(buf: &[u16]) -> String {
 }
 
 /// Writes `s` into a UTF-16 buffer, truncated and always NUL-terminated.
-fn write_c16(s: &str, dst: &mut [u16]) {
+pub(crate) fn write_c16(s: &str, dst: &mut [u16]) {
     let Some(room) = dst.len().checked_sub(1) else { return };
     let mut n = 0;
     for (d, u) in dst.iter_mut().zip(s.encode_utf16().take(room)) {

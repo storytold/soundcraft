@@ -36,6 +36,8 @@ fn main() {
     assert_eq!(ed.value_text("7", 1.5), None);
     assert_eq!(ed.value_text("3", 1.0), None);
     assert_eq!(ed.value_text("nope", 0.5), None);
+    assert!((soundcraft_dsp::Plugin::value_from_text(&mut p, "13", "-6.0 dB").unwrap_or(-1.0) - 0.375).abs() < 1e-6);
+    assert_eq!(soundcraft_dsp::Plugin::value_from_text(&mut p, "13", "bad"), None);
     drop(p);
     assert_eq!(ed.value_text("13", 0.375), None, "the plugin is gone");
     assert!(!ed.is_open());

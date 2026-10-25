@@ -306,6 +306,19 @@ impl Plugin for ClapPlugin {
         self.values.get(i).copied()
     }
 
+    fn value_text(&mut self, id: &str, value: f32) -> Option<String> {
+        let i = self.info.params.iter().position(|p| p.id == id)?;
+        let (&cid, pi) = (self.ids.get(i)?, self.info.params.get(i)?);
+        self.inst.value_text(cid, f64::from(pi.clamp(value)))
+    }
+
+    fn value_from_text(&mut self, id: &str, text: &str) -> Option<f32> {
+        let i = self.info.params.iter().position(|p| p.id == id)?;
+        let (&cid, pi) = (self.ids.get(i)?, self.info.params.get(i)?);
+        let value = self.inst.value_from_text(cid, text)? as f32;
+        value.is_finite().then(|| pi.clamp(value))
+    }
+
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
         if !self.inst.is_active() || self.max_block == 0 {
             return;
