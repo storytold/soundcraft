@@ -501,7 +501,11 @@ pub fn midi_input_devices(app: &mut SoundApp, ctx: &egui::Context) {
     let targets: Vec<String> = {
         let s = app.engine.session();
         let thru = soundcraft_mix::midi_thru_track(s);
-        s.tracks.iter().filter(|t| !t.inactive && soundcraft_mix::takes_midi_input(t, thru)).map(|t| t.name.clone()).collect()
+        s.tracks
+            .iter()
+            .filter(|t| !t.inactive && soundcraft_mix::takes_midi_input(t, thru))
+            .map(|t| if t.instrument.is_some() { t.name.clone() } else { format!("{} (no instrument: it stays silent)", t.name) })
+            .collect()
     };
     // The message counts move while the window is open.
     ctx.request_repaint_after(std::time::Duration::from_millis(250));
@@ -548,9 +552,18 @@ pub fn midi_input_devices(app: &mut SoundApp, ctx: &egui::Context) {
         }
         ui.separator();
         if targets.is_empty() {
-            ui.label("Plays on: no track. Select an instrument or MIDI track, or record-enable one, to hear what you play.");
+            ui.label("Plays on: no track. Select an instrument track, or record-enable one, to hear what you play.");
         } else {
             ui.label(format!("Plays on: {}", targets.join(", ")));
+            if targets.iter().any(|t| t.ends_with("it stays silent)")) {
+                ui.label(
+                    egui::RichText::new(
+                        "A MIDI track has no sound of its own: use an instrument track (Track › New… › Instrument Track), which comes with a synth.",
+                    )
+                    .small()
+                    .color(t.text_dim),
+                );
+            }
         }
         let note = if silent {
             "No audio output is open: open one in Setup › Playback Engine to hear MIDI input."
