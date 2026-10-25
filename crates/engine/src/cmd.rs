@@ -29,7 +29,10 @@ mod plugin_state;
 mod query;
 pub(crate) mod sampler;
 mod setup_more;
+mod soundfont;
 mod strip_silence;
+pub(crate) use soundfont::reload_banks;
+pub use soundfont::track_bank;
 mod surround;
 mod tab;
 mod track;
@@ -161,6 +164,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(plugin_state::specs());
         v.extend(instrument::specs());
         v.extend(sampler::specs());
+        v.extend(soundfont::specs());
         v.extend(video::specs());
         v.extend(zoom_toggle::specs());
         v.extend(strip_silence::specs());

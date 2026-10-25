@@ -21,6 +21,7 @@ pub mod pan;
 mod params;
 pub mod pitch_detect;
 pub mod plugins;
+pub mod soundfont;
 pub mod spectrum;
 mod util;
 
@@ -227,6 +228,13 @@ pub trait Plugin: Send {
     /// The previous sample is dropped here, so hosts keep their own reference to it (the
     /// session's source pool does) to keep deallocation off the audio thread.
     fn set_sample(&mut self, _sample: Option<Arc<dyn SampleSource>>) -> bool {
+        false
+    }
+    /// SoundFont-playing instruments (the SoundFont Player): the parsed bank to play, `None` to
+    /// clear it. `false` when the plugin does not play SoundFonts. Does not allocate; sounding
+    /// voices stop. As with [`Plugin::set_sample`], hosts keep their own reference to the bank
+    /// so that dropping it never happens on the audio thread.
+    fn set_soundfont(&mut self, _bank: Option<Arc<crate::soundfont::SoundFont>>) -> bool {
         false
     }
     /// The plugin's complete internal state as an opaque blob (third-party plugins), as its

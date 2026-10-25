@@ -74,8 +74,8 @@ mod threads;
 use automation::{GainRamp, pan_at, pan_segment, send_level, transport_at, volume_db_at};
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
 pub use meter::StripMeter;
-use midi::sync_sample;
 pub use midi::{LIVE_MIDI_CAPACITY, midi_thru_track, takes_midi_input};
+use midi::{sync_sample, sync_soundfont};
 pub use offline::{
     MAX_RENDER_SAMPLES, RangeRender, fold_down_stereo, render_bus, render_clips, render_range, render_track_pre_fader, source_channels,
 };
@@ -322,8 +322,10 @@ impl MixEngine {
                 cx.retire(old);
                 strip.instrument = want.and_then(|i| cx.make(t.id, INSTRUMENT_SLOT, i, ich));
                 strip.sample = None;
+                strip.bank = None;
             }
             sync_sample(strip, want, s);
+            sync_soundfont(strip, want, s);
         }
         // Instances nobody claimed (the session changed again before they arrived).
         let leftovers: Vec<(TrackId, usize)> = cx.adopt.keys().copied().collect();

@@ -157,7 +157,7 @@ launch #142; Linux #45, #107.
 
 ### G-08. Built-in plugins
 
-See [`plugin-parity.md`](plugin-parity.md): 27 processors + 3 instruments against Pro Tools'
+See [`plugin-parity.md`](plugin-parity.md): 27 processors + 4 instruments (SoundFont Player included) against Pro Tools'
 roughly 80 bundled processors and instruments; no fidelity checks; generic parameter UIs; EQ
 parametric request #139. ≈ 80–120 h.
 

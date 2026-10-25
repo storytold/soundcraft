@@ -77,6 +77,7 @@ pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
         }
         ui.separator();
     }
+    soundfont_items(app, ui, id);
     let mut picked = None;
     ui.menu_button("Built-in", |ui| {
         for p in soundcraft_dsp::plugins().iter().filter(|p| p.is_instrument) {
@@ -91,6 +92,53 @@ pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     if let Some(plugin) = picked {
         run_pick(app, ui, "mix.instrument", json!({"track": id.0, "plugin": plugin}));
     }
+}
+
+/// The SoundFont part of an instrument menu: load a `.sf2` file, and when the track plays one,
+/// pick its preset.
+fn soundfont_items(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
+    let bank = soundcraft_engine::cmd::track_bank(app.engine.session(), id);
+    if let Some((path, bank)) = &bank {
+        let current = app
+            .engine
+            .session()
+            .track(id)
+            .and_then(|t| t.instrument.as_ref())
+            .and_then(|i| i.params.get("preset"))
+            .map_or(0, |v| v.max(0.0) as usize)
+            .min(bank.presets.len().saturating_sub(1));
+        let file = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path);
+        ui.label(egui::RichText::new(file).small());
+        let shown = bank.presets.get(current).map_or_else(String::new, |p| p.name.clone());
+        let mut chosen = None;
+        ui.menu_button(format!("Preset: {shown}"), |ui| {
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                for (i, p) in bank.presets.iter().enumerate() {
+                    let label = format!("{:03}:{:03}  {}", p.bank, p.program, p.name);
+                    if ui.selectable_label(i == current, label).clicked() {
+                        chosen = Some(i);
+                    }
+                }
+            });
+        });
+        if let Some(i) = chosen {
+            run_pick(app, ui, "mix.instrument_param", json!({"track": id.0, "param": "preset", "value": i}));
+        }
+    }
+    let can_pick = app.services.pick_open.is_some();
+    let load = ui.add_enabled(can_pick, egui::Button::new(if bank.is_some() { "Load Another SoundFont…" } else { "Load SoundFont (.sf2)…" }));
+    let load = if can_pick { load } else { load.on_disabled_hover_text("Drop a .sf2 file on the instrument slot") };
+    if load.clicked() {
+        let path = app.services.pick_open.as_ref().and_then(|pick| pick("mix.soundfont_load", &["sf2"]));
+        if let Some(path) = path {
+            app.ui.status = match app.run("mix.soundfont_load", json!({"track": id.0, "path": path})) {
+                Ok(r) => format!("SoundFont loaded: {} preset(s)", r["presets"].as_array().map_or(0, Vec::len)),
+                Err(e) => e,
+            };
+        }
+        ui.close();
+    }
+    ui.separator();
 }
 
 /// Inserts the plugin picked in an insert's menu and, as DAWs do, opens it once the audio engine has

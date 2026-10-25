@@ -221,3 +221,22 @@ pub(crate) fn sync_sample(strip: &mut Strip, want: Option<&soundcraft_model::Ins
     }
     strip.sample = audio.cloned();
 }
+
+/// Hands a strip's instrument its insert's SoundFont bank when it changed (a new file, a
+/// cleared one, or a new instance). A bank not loaded (missing file) plays nothing.
+pub(crate) fn sync_soundfont(strip: &mut Strip, want: Option<&soundcraft_model::Insert>, s: &Session) {
+    let bank = want.and_then(|i| i.soundfont.as_deref()).and_then(|p| s.pool.bank(p));
+    let same = match (strip.bank.as_ref(), bank) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    };
+    if same {
+        return;
+    }
+    if let Some(inst) = strip.instrument.as_mut() {
+        let typed = bank.and_then(|b| Arc::clone(b).downcast::<soundcraft_dsp::soundfont::SoundFont>().ok());
+        inst.plugin.set_soundfont(typed);
+    }
+    strip.bank = bank.cloned();
+}
