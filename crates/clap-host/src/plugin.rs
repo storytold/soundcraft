@@ -484,6 +484,26 @@ impl PluginEditor for ClapEditor {
     fn state_changed(&mut self) -> bool {
         self.link.host().dirty.swap(false, Ordering::Relaxed)
     }
+
+    fn value_text(&mut self, id: &str, value: f32) -> Option<String> {
+        let i = self.info.params.iter().position(|p| p.id == id)?;
+        let (&cid, pi) = (self.ids.get(i)?, self.info.params.get(i)?);
+        self.link.value_text(cid, f64::from(pi.clamp(value)))
+    }
+
+    fn value_from_text(&mut self, id: &str, text: &str) -> Option<f32> {
+        let i = self.info.params.iter().position(|p| p.id == id)?;
+        let (&cid, pi) = (self.ids.get(i)?, self.info.params.get(i)?);
+        let value = self.link.value_from_text(cid, text)? as f32;
+        value.is_finite().then(|| pi.clamp(value))
+    }
+
+    fn param(&self, id: &str) -> Option<f32> {
+        let i = self.info.params.iter().position(|p| p.id == id)?;
+        let (&cid, pi) = (self.ids.get(i)?, self.info.params.get(i)?);
+        let value = self.link.param_value(cid)? as f32;
+        value.is_finite().then(|| pi.clamp(value))
+    }
 }
 
 #[cfg(test)]
