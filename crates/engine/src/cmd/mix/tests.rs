@@ -732,6 +732,169 @@ fn apple_au_parameter_text_round_trips() {
     assert!((reported - candidate).abs() <= tolerance, "{result}");
 }
 
+#[test]
+fn parameter_text_matches_the_plugins_display() {
+    // Equal after trim, Unicode case fold and collapsed whitespace.
+    assert!(plugin_text_matches("29", "29"));
+    assert!(plugin_text_matches("  29  ", "29"));
+    assert!(plugin_text_matches("29 MS", "29 ms"));
+    assert!(plugin_text_matches("29   ms", "29 ms"));
+    // One trailing unit or label on the display, including a glued one.
+    assert!(plugin_text_matches("29", "29 ms"));
+    assert!(plugin_text_matches("50", "50%"));
+    // A suffix may not continue the number, and two display tokens are not one unit.
+    // "29" vs "29 ms extra" still agrees on the leading number, which is rule (b).
+    assert!(!plugin_text_matches("29", "290"));
+    assert!(!plugin_text_matches("1", "10 ms"));
+    assert!(plugin_text_matches("29", "29 ms extra"));
+    // The display's last digit sets the slack: no decimals → half of 1; one decimal → half of 0.1.
+    assert!(plugin_text_matches("29.0", "29"));
+    assert!(plugin_text_matches("30.4", "30"));
+    assert!(!plugin_text_matches("30.6", "30"));
+    assert!(plugin_text_matches("-6.04", "−6.0 dB"));
+    assert!(!plugin_text_matches("-6.06", "−6.0 dB"));
+    // 0.5% of the displayed 1000.00 is 5, which is wider than half of 0.01.
+    assert!(plugin_text_matches("1003", "1000.00"));
+    assert!(!plugin_text_matches("1006", "1000.00"));
+    // ASCII hyphen and Unicode minus U+2212 are the same number.
+    assert!(plugin_text_matches("-6", "−6.0 dB"));
+    assert!(plugin_text_matches("−6", "-6.0 dB"));
+    assert!(plugin_text_matches("−6.0", "−6.0 dB"));
+    // Garbage has no reading that lands on the displayed number.
+    assert!(!plugin_text_matches("twintig", "0"));
+    assert!(!plugin_text_matches("twintig", "0.0 dB"));
+    assert!(!plugin_text_matches("loud", "0.0 dB"));
+}
+
+#[test]
+fn parameter_text_outside_the_displayed_range_is_flagged() {
+    assert!(!text_outside_display_range("29", "0", "100"));
+    assert!(!text_outside_display_range("  29  ", "0 ms", "100 ms"));
+    assert!(!text_outside_display_range("30.4", "0", "30"), "half of a no-decimal step still counts as 30");
+    assert!(text_outside_display_range("30.6", "0", "30"));
+    assert!(!text_outside_display_range("100.4", "0", "100"));
+    assert!(text_outside_display_range("100.6", "0", "100"));
+    assert!(text_outside_display_range("500", "0", "100"));
+    assert!(text_outside_display_range("-30", "-24.0 dB", "12.0 dB"));
+    assert!(!text_outside_display_range("-6", "−24.0 dB", "12.0 dB"));
+    assert!(!text_outside_display_range("−6", "-24.0 dB", "12.0 dB"));
+    // Not a bare number, or an endpoint that is not numeric: no range error.
+    assert!(!text_outside_display_range("twintig", "0", "100"));
+    assert!(!text_outside_display_range("29 ms", "0", "100"));
+    assert!(!text_outside_display_range("500", "-inf dB", "24.0 dB"));
+    assert!(!text_outside_display_range("1", "Off", "On"));
+    // Endpoints are an interval even when the plugin lists the larger one first.
+    assert!(!text_outside_display_range("-3", "12.0 dB", "-24.0 dB"));
+    assert!(text_outside_display_range("30", "12.0 dB", "-24.0 dB"));
+}
+
+/// A parser that answers 0 for every unknown string, the Ample Guitar failure mode.
+struct GarbageParsesAsZero;
+
+impl Plugin for GarbageParsesAsZero {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        &soundcraft_dsp::plugins::utility::GAIN_INFO
+    }
+    fn prepare(&mut self, _sample_rate: f32, _max_block: usize, _channels: usize) {}
+    fn reset(&mut self) {}
+    fn set_param(&mut self, _id: &str, _value: f32) -> bool {
+        true
+    }
+    fn param(&self, _id: &str) -> Option<f32> {
+        None
+    }
+    fn process(&mut self, _io: &mut [Vec<f32>], _frames: usize) {}
+
+    fn value_from_text(&mut self, id: &str, text: &str) -> Option<f32> {
+        if id != "gain" {
+            return None;
+        }
+        // Display numbers become a plain value; 29 is the scaled control from the report.
+        // Everything else, including words, is reported as success with 0.
+        if let Some(n) = entire_number(text) {
+            if (n - 29.0).abs() <= 1e-9 {
+                return Some(0.028);
+            }
+            let clamped = n.clamp(0.0, 100.0);
+            return Some((clamped / 100.0) as f32);
+        }
+        Some(0.0)
+    }
+
+    fn value_text(&mut self, id: &str, value: f32) -> Option<String> {
+        if id != "gain" {
+            return None;
+        }
+        let param = self.info().params.iter().find(|param| param.id == id)?;
+        if (value - 0.028).abs() <= 1e-5 {
+            return Some("29 ms".to_string());
+        }
+        if (value - param.min).abs() <= 1e-3 {
+            return Some("0".to_string());
+        }
+        if (value - param.max).abs() <= 1e-3 {
+            return Some("100".to_string());
+        }
+        if value.abs() <= 1e-6 {
+            return Some("0".to_string());
+        }
+        Some(format!("{:.0}", f64::from(value) * 100.0))
+    }
+}
+
+#[test]
+fn a_plugin_that_parses_garbage_as_zero_is_rejected() {
+    let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
+    let mut resolver = ParameterValueResolver::with_instance("mix.insert_param", &Insert::new("gain"), 48_000.0, Box::new(GarbageParsesAsZero));
+
+    let zero = resolver.resolve(gain, &json!("0")).unwrap();
+    assert_eq!(zero, 0.0, "a displayed zero is a real value");
+    let twenty_nine = resolver.resolve(gain, &json!("29")).unwrap();
+    assert!((twenty_nine - 0.028).abs() < 1e-6, "{twenty_nine}");
+    let rounded = resolver.resolve(gain, &json!("30.4")).unwrap();
+    assert!((rounded - 0.304).abs() < 1e-4, "30.4 displays as 30, {rounded}");
+
+    let garbage = resolver.resolve(gain, &json!("twintig")).unwrap_err().to_string();
+    assert!(garbage.contains("`twintig` is not a value of `gain`"), "{garbage}");
+    assert!(garbage.contains("examples"), "{garbage}");
+    assert!(!garbage.contains("out of range"), "{garbage}");
+
+    let high = resolver.resolve(gain, &json!("500")).unwrap_err().to_string();
+    assert!(high.contains("`500` is out of range for `gain` (0 … 100)"), "{high}");
+    let low = resolver.resolve(gain, &json!("-1")).unwrap_err().to_string();
+    assert!(low.contains("out of range") && low.contains("(0 … 100)"), "{low}");
+    let edge = resolver.resolve(gain, &json!("100.6")).unwrap_err().to_string();
+    assert!(edge.contains("out of range"), "{edge}");
+    let just_inside = resolver.resolve(gain, &json!("100.4")).unwrap();
+    assert!((just_inside - 1.0).abs() < 1e-5, "{just_inside}");
+}
+
+/// The same Apple Delay unit rejects a string that is not one of its parameter values.
+#[cfg(target_os = "macos")]
+#[test]
+fn apple_au_garbage_parameter_text_is_rejected() {
+    let id = "au:aufx:dely:appl";
+    let Some(info) = super::super::clap::plugin_info(id) else {
+        eprintln!("{id} not installed; skipping");
+        return;
+    };
+    let Some(param) = info.params.iter().find(|param| !matches!(param.unit, soundcraft_dsp::Unit::Toggle | soundcraft_dsp::Unit::Choice)) else {
+        eprintln!("{id} exposes no continuous parameter; skipping");
+        return;
+    };
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": id})).unwrap();
+    let marker = [param.max, param.min, param.default].into_iter().find(|value| value.is_finite() && *value != 0.0).unwrap_or(param.default);
+    e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": param.id, "value": marker})).unwrap();
+    let before = insert_param_value(&e, t, param.id);
+    let err = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": param.id, "value": "twintig"})).unwrap_err().to_string();
+    assert!(err.contains("twintig") && err.contains(&format!("`{}`", param.id)), "{err}");
+    assert!(err.contains("is not a value of") || err.contains("out of range"), "{err}");
+    assert_eq!(insert_param_value(&e, t, param.id), before, "garbage must not be stored as 0");
+}
+
 /// Apple's DLS synth ships with every Mac: a hosted instrument's parameters can be set by
 /// numeric id on its slot, which used to answer "not a built-in instrument".
 #[cfg(target_os = "macos")]

@@ -440,10 +440,11 @@ impl ParameterValueResolver {
         if text_too_long(text) {
             return Err(self.invalid_text(param, text, false));
         }
-        if let Some(parsed) = self.instance()?.value_from_text(param.id, text)
-            && parsed.is_finite()
-        {
-            return Ok(self.store(param, parsed));
+        // The plugin's parser is not a guarantee: some units report success and return 0 for
+        // any string. Keep the value only when the plugin's own text for it agrees with what
+        // was typed, and refuse a number outside the displayed range instead of clamping it.
+        if let Some(parsed) = self.instance()?.value_from_text(param.id, text).filter(|parsed| parsed.is_finite()) {
+            return self.accept_plugin_text(param, text, parsed);
         }
         if !soundcraft_mix::is_third_party(&self.insert.plugin)
             && let Ok(parsed) = trimmed.parse::<f32>()
@@ -461,6 +462,30 @@ impl ParameterValueResolver {
         bad(self.cmd, format!("`{shown}` is not a value of `{id}`; examples: {examples}"))
     }
 
+    /// `value_from_text` succeeded. Accept `parsed` only when `text` round-trips through the
+    /// plugin's display, or report a range error when `text` is a number outside that display.
+    fn accept_plugin_text(&mut self, param: &soundcraft_dsp::ParamInfo, text: &str, parsed: f32) -> Result<f32> {
+        let rendered = self.rendered_text(param, parsed)?;
+        let min_text = self.rendered_text(param, param.min)?;
+        let max_text = self.rendered_text(param, param.max)?;
+        if text_outside_display_range(text, &min_text, &max_text) {
+            let shown = shown_text(text);
+            return Err(bad(self.cmd, format!("`{shown}` is out of range for `{}` ({min_text} … {max_text})", param.id)));
+        }
+        if !plugin_text_matches(text, &rendered) {
+            return Err(self.invalid_text(param, text, true));
+        }
+        Ok(self.store(param, parsed))
+    }
+
+    /// Plugin display for `value`, or [`soundcraft_dsp::ParamInfo::format`] when the plugin has none.
+    fn rendered_text(&mut self, param: &soundcraft_dsp::ParamInfo, value: f32) -> Result<String> {
+        Ok(match self.instance()?.value_text(param.id, value) {
+            Some(text) => text,
+            None => param.format(value),
+        })
+    }
+
     /// Display text at min, default and max: the plugin's own text when an instance already
     /// exists or this failure is allowed to create one, otherwise SoundCraft's formatting.
     fn examples(&mut self, param: &soundcraft_dsp::ParamInfo, allow_instance: bool) -> String {
@@ -476,6 +501,12 @@ impl ParameterValueResolver {
             return format!("{min}, {default}, {max}");
         }
         format!("{}, {}, {}", param.format(min), param.format(default), param.format(max))
+    }
+
+    /// Test seam: the next string parse uses `instance` instead of loading the insert's plugin.
+    #[cfg(test)]
+    fn with_instance(cmd: &'static str, insert: &Insert, sample_rate: f32, instance: Box<dyn soundcraft_dsp::Plugin>) -> Self {
+        Self { cmd, insert: insert.clone(), sample_rate, instance: Some(instance), tried_instance: true }
     }
 }
 
@@ -514,6 +545,162 @@ fn shown_text(text: &str) -> String {
         shown.push_str("...");
     }
     shown
+}
+
+/// A number written at the start of `text`: optional sign (`+`, `-` or Unicode minus U+2212),
+/// digits and one decimal point. `step` is the place of the last written digit (1, 0.1, …).
+struct LeadingNumber {
+    value: f64,
+    step: f64,
+    /// Bytes consumed in the trimmed input.
+    end: usize,
+}
+
+fn split_first(text: &str) -> Option<(char, &str)> {
+    let mut chars = text.chars();
+    Some((chars.next()?, chars.as_str()))
+}
+
+fn decimal_step(frac_digits: u32) -> f64 {
+    let mut step = 1.0_f64;
+    for _ in 0..frac_digits.min(12) {
+        step /= 10.0;
+    }
+    step
+}
+
+fn leading_float(text: &str) -> Option<LeadingNumber> {
+    let s = text.trim();
+    let mut rest = s;
+    let mut buf = String::new();
+    if let Some((c, next)) = split_first(rest)
+        && (c == '+' || c == '-' || c == '\u{2212}')
+    {
+        rest = next;
+        buf.push(if c == '\u{2212}' { '-' } else { c });
+    }
+    let mut saw_digit = false;
+    let mut saw_dot = false;
+    let mut frac: u32 = 0;
+    while let Some((c, next)) = split_first(rest) {
+        if c.is_ascii_digit() {
+            rest = next;
+            buf.push(c);
+            saw_digit = true;
+            if saw_dot {
+                frac = frac.saturating_add(1);
+            }
+        } else if c == '.' && !saw_dot {
+            rest = next;
+            buf.push('.');
+            saw_dot = true;
+        } else {
+            break;
+        }
+    }
+    if !saw_digit {
+        return None;
+    }
+    if buf.ends_with('.') {
+        buf.pop();
+    }
+    let value = buf.parse::<f64>().ok().filter(|value| value.is_finite())?;
+    let step = if frac == 0 { 1.0 } else { decimal_step(frac) };
+    Some(LeadingNumber { value, step, end: s.len().saturating_sub(rest.len()) })
+}
+
+/// The whole trimmed string is one number, not a number plus a unit.
+fn entire_number(text: &str) -> Option<f64> {
+    let trimmed = text.trim();
+    let lead = leading_float(trimmed)?;
+    (lead.end == trimmed.len()).then_some(lead.value)
+}
+
+/// Trim, Unicode-lowercase and collapse inner whitespace.
+fn normalize_param_text(text: &str) -> String {
+    let mut out = String::new();
+    let mut pending_space = false;
+    let mut started = false;
+    for ch in text.trim().chars() {
+        if ch.is_whitespace() {
+            if started {
+                pending_space = true;
+            }
+            continue;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        for lower in ch.to_lowercase() {
+            out.push(lower);
+        }
+        started = true;
+    }
+    out
+}
+
+/// `rendered` is `text` plus one trailing unit or label (`29` vs `29 ms`, `50` vs `50%`).
+fn display_has_one_extra_suffix(text: &str, rendered: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    let Some(rest) = rendered.strip_prefix(text) else {
+        return false;
+    };
+    let suffix = rest.trim_start();
+    if suffix.is_empty() || suffix.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let sep = rest.len().saturating_sub(suffix.len());
+    if sep > 1 {
+        return false;
+    }
+    match suffix.chars().next() {
+        Some(c) if c.is_ascii_digit() || c == '.' => false,
+        Some(_) => true,
+        None => false,
+    }
+}
+
+fn numbers_agree(input: f64, display: f64, display_step: f64) -> bool {
+    let diff = (input - display).abs();
+    // Half the last displayed digit, a 0.5% relative slack, and a floor for tiny values.
+    let tolerance = 1e-6_f64.max(0.5 * display_step.max(0.0)).max(0.005 * display.abs());
+    diff <= tolerance
+}
+
+/// True when the plugin's display `rendered` is a faithful reading of `text`.
+fn plugin_text_matches(text: &str, rendered: &str) -> bool {
+    let normalized = normalize_param_text(text);
+    let shown = normalize_param_text(rendered);
+    if normalized == shown || display_has_one_extra_suffix(&normalized, &shown) {
+        return true;
+    }
+    match (leading_float(text), leading_float(rendered)) {
+        (Some(input), Some(display)) => numbers_agree(input.value, display.value, display.step),
+        _ => false,
+    }
+}
+
+/// `text` is a bare number outside the numeric display at the parameter's endpoints.
+/// The slack is half the endpoint's last digit (so `30.4` is still inside a `30` that has no
+/// decimals) and not the round-trip's relative tolerance, which would widen the legal range.
+fn text_outside_display_range(text: &str, min_text: &str, max_text: &str) -> bool {
+    let Some(number) = entire_number(text) else {
+        return false;
+    };
+    let (Some(min_n), Some(max_n)) = (leading_float(min_text), leading_float(max_text)) else {
+        return false;
+    };
+    let (lo, lo_step, hi, hi_step) = if min_n.value <= max_n.value {
+        (min_n.value, min_n.step, max_n.value, max_n.step)
+    } else {
+        (max_n.value, max_n.step, min_n.value, min_n.step)
+    };
+    let lo_tol = 1e-6_f64.max(0.5 * lo_step.max(0.0));
+    let hi_tol = 1e-6_f64.max(0.5 * hi_step.max(0.0));
+    number < lo - lo_tol || number > hi + hi_tol
 }
 
 fn insert(e: &mut Engine, p: &Value) -> Result<Value> {
