@@ -5,7 +5,7 @@ use super::process::{BusBuffers, EventList, MemoryStream, NoteEvent, ParamChange
 use super::{
     Arc, ComPtr, ComWrapper, EVENT_CAP, IAudioProcessorTrait, IComponentTrait, IConnectionPointTrait, IEditControllerTrait, IMidiMappingTrait,
     IPluginBaseTrait, MAX_BUS_CHANNELS, MAX_BUSES, MAX_PARAMS, MAX_STATE_BYTES, Mutex, Ordering, PARAM_QUEUE_CAP, PITCH_BEND, STATE_MAGIC, Transport,
-    Vst3Error, ok, read_c16, sb, sv,
+    Vst3Error, ok, read_c16, sb, sv, write_c16,
 };
 
 // ---- instances -----------------------------------------------------------------------------
@@ -237,6 +237,19 @@ impl Instance {
         let mut s: sv::String128 = [0; 128];
         // SAFETY: valid controller; `s` is a writable String128.
         ok(unsafe { c.getParamStringByValue(id, normalized.clamp(0.0, 1.0), &mut s) }).then(|| read_c16(&s)).filter(|t| !t.is_empty())
+    }
+
+    pub fn value_from_text(&self, id: u32, text: &str) -> Option<f64> {
+        if text.chars().count() > 256 {
+            return None;
+        }
+        let c = self.controller.as_ref()?;
+        let mut s: sv::String128 = [0; 128];
+        write_c16(text, &mut s);
+        let mut value = 0.0;
+        // SAFETY: valid controller; `s` is NUL-terminated and `value` is writable.
+        let result = unsafe { c.getParamValueByString(id, s.as_mut_ptr(), &mut value) };
+        (ok(result) && value.is_finite()).then(|| value.clamp(0.0, 1.0))
     }
 
     pub fn latency(&self) -> u32 {
