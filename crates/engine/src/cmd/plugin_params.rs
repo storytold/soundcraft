@@ -17,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "List Plugin Parameters",
         [],
         None,
-        "{track?, slot: 0..9 | a..j | \"instrument\", filter?: string (max 200 characters), offset?: 0, limit?: 200 (1..1000), probe?: false} → {plugin, name, total, offset, limit, has_more, next_offset (null on the last page), params: [{id, name, min, max, default, unit, taper, steps, values, value, value_source, display, display_min?, display_max?}]}. Filter is a Unicode-lowercase substring of id or name; total is the filtered count before pagination. Unit is None|Db|Hz|Ms|Percent|Ratio|Semitones|Cents|Seconds|Toggle|Choice; taper is Linear|Log. Toggle/Choice value is a numeric index into values; Toggle values are always [\"Off\",\"On\"] (host-provided toggle strings are not yet read), and continuous values is []. Non-finite min/max/default/value is null. Without probe, value/value_source come from the session map or default; display uses SoundCraft formatting for built-ins and is null for hosted plugins. With probe, when the app has the same plugin loaded in that slot, value_source \"plugin\" and the display text come from that live instance and no temporary instance is created. Otherwise SoundCraft instantiates the plugin once, restores its state and stored parameters, reads live values with value_source \"plugin\", and asks it for display, display_min and display_max text (falling back to SoundCraft formatting). Probing is read-only with no session side effects. A temporary instance of a large hosted instrument can take seconds; the live instance does not.",
+        "{track?, slot: 0..9 | a..j | \"instrument\", filter?: string (max 200 characters), offset?: 0, limit?: 200 (1..1000), probe?: false} → {plugin, name, total, offset, limit, has_more, next_offset (null on the last page), params: [{id, name, min, max, default, unit, taper, steps, values, value, value_source, display, display_min?, display_max?}]}. Filter is a Unicode-lowercase substring of id or name; total is the filtered count before pagination. Unit is None|Db|Hz|Ms|Percent|Ratio|Semitones|Cents|Seconds|Toggle|Choice; taper is Linear|Log. Toggle/Choice value is a numeric index into values; Toggle values are always [\"Off\",\"On\"] (host-provided toggle strings are not yet read), and continuous values is []. Non-finite min/max/default/value is null. Without probe, value/value_source come from the session map or default; display uses SoundCraft formatting for built-ins and is null for hosted plugins. With probe, a parameter stored in the session is authoritative: value is that stored value and value_source is \"session\", because the live instance only receives the new value on the next UI frame or audio block. Its display is the plugin's own text for that stored value — the live instance's value_text when the app has the same plugin loaded in the slot (no temporary instance is created), otherwise a temporary instance's value_text, otherwise SoundCraft formatting. A parameter that is not stored is read from that same instance with value_source \"plugin\". display_min and display_max are the plugin's text at the endpoints. Probing is read-only with no session side effects. A temporary instance of a large hosted instrument can take seconds; the live instance does not.",
         has_selection,
         plugin_params
     )]
@@ -47,10 +47,6 @@ fn matches_filter(param: &ParamInfo, needle: &str) -> bool {
 
 fn finite(value: f32) -> Option<f32> {
     value.is_finite().then_some(value)
-}
-
-fn stored_value(param: &ParamInfo, insert: &Insert) -> (f32, &'static str) {
-    insert.params.get(param.id).map_or((param.default, "default"), |value| (*value, "session"))
 }
 
 /// A source of live parameter values for one probe. The temporary plugin and the desktop player's
@@ -94,8 +90,15 @@ fn parameter_json(param: &ParamInfo, insert: &Insert, hosted: bool, mut probe: O
         Unit::Choice => (Some(param.choices.len()), param.choices.to_vec()),
         _ => (None, Vec::new()),
     };
-    let (stored, stored_source) = stored_value(param, insert);
-    let (value, value_source) = probe.as_mut().and_then(|probe| probe.value(param.id)).map_or((stored, stored_source), |value| (value, "plugin"));
+    // A stored key is the value the command just wrote. The live instance, and a temporary one,
+    // can still be on the previous block, so the session wins and the plugin only renders that value.
+    let (value, value_source) = if let Some(stored) = insert.params.get(param.id).copied() {
+        (stored, "session")
+    } else if let Some(live) = probe.as_mut().and_then(|source| source.value(param.id)) {
+        (live, "plugin")
+    } else {
+        (param.default, "default")
+    };
     let mut result = json!({
         "id": param.id,
         "name": param.name,
@@ -181,8 +184,9 @@ fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
     let Some(info) = super::clap::plugin_info(&insert.plugin) else {
         return Err(bad(CMD, format!("unknown plugin `{}`", insert.plugin)));
     };
-    // A matching live instance answers the whole probe. Individual parameters may still be absent;
-    // that is not a reason to create a temporary instance.
+    // A matching live instance supplies display text, and the value of parameters the session has
+    // not stored. A stored parameter keeps the session value. An absent live value is not a reason
+    // to create a temporary instance.
     if probe
         && let Some(live) = e.live_plugins_mut()
         && live.plugin_id(track, index).as_deref() == Some(insert.plugin.as_str())
@@ -282,7 +286,7 @@ mod tests {
         let param = listed_params(&result).iter().find(|param| param.get("id") == Some(&json!("mid_gain"))).unwrap();
         let info = soundcraft_dsp::plugin_info("eq_7band").unwrap().param("mid_gain").unwrap();
         assert_eq!(param.get("value"), Some(&json!(7.5)));
-        assert_eq!(param.get("value_source"), Some(&json!("plugin")));
+        assert_eq!(param.get("value_source"), Some(&json!("session")));
         assert_eq!(param.get("display"), Some(&json!(info.format(7.5))));
         assert_eq!(param.get("display_min"), Some(&json!(info.format(info.min))));
         assert_eq!(param.get("display_max"), Some(&json!(info.format(info.max))));
