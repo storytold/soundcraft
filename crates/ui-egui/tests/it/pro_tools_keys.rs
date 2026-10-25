@@ -195,6 +195,7 @@ fn window_keys_open_their_windows() {
     }
 }
 
+/// Modified arrow keys stay with the global shortcuts, while an unmodified arrow still moves the selected note.
 #[test]
 fn the_piano_roll_leaves_modified_arrows_to_the_shortcuts() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
@@ -213,7 +214,7 @@ fn the_piano_roll_leaves_modified_arrows_to_the_shortcuts() {
     for _ in 0..6 {
         frame(&mut app, vec![]);
     }
-    let body = ctx.data(|d| d.get_temp::<Rect>(egui::Id::new("soundcraft-midi-body"))).unwrap();
+    let body = ctx.data(|d| d.get_temp::<Rect>(egui::Id::unique("soundcraft-midi-body"))).unwrap();
     frame(&mut app, vec![Event::PointerMoved(body.center())]);
     app.midi.selected = vec![0];
     let pitch = |app: &SoundApp| {
@@ -233,6 +234,7 @@ fn the_piano_roll_leaves_modified_arrows_to_the_shortcuts() {
     assert_eq!(pitch(&app), before + 1);
 }
 
+/// Shift+Up moves the selection to the same note an octave above, past intervening notes in the chord.
 #[test]
 fn the_piano_roll_selection_follows_notes_the_arrows_move_past_others() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
@@ -251,7 +253,7 @@ fn the_piano_roll_selection_follows_notes_the_arrows_move_past_others() {
     for _ in 0..6 {
         frame(&mut app, vec![]);
     }
-    let body = ctx.data(|d| d.get_temp::<Rect>(egui::Id::new("soundcraft-midi-body"))).unwrap();
+    let body = ctx.data(|d| d.get_temp::<Rect>(egui::Id::unique("soundcraft-midi-body"))).unwrap();
     frame(&mut app, vec![Event::PointerMoved(body.center())]);
     let notes = |app: &SoundApp| {
         let clip = soundcraft_ui_egui::midi_editor::target_clip(app).unwrap();

@@ -68,6 +68,7 @@ fn is_black(p: i32) -> bool {
     matches!(p.rem_euclid(12), 1 | 3 | 6 | 8 | 10)
 }
 
+/// Draw the MIDI editor for the target clip, with an empty-state prompt that adds a clip on the selected MIDI track.
 pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     // Painter-only contents do not advance the layout. Claim the resized
     // space, including the empty state, so the dock keeps its chosen height.
@@ -90,7 +91,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
         ui.painter().text(full.center(), Align2::CENTER_CENTER, msg, regular(13.0), t.text_dim);
         let body = Rect::from_min_max(pos2(full.min.x, header.max.y), full.max);
         if let Some((id, _)) = track
-            && ui.interact(body, ui.id().with("new_clip"), Sense::click()).clicked()
+            && ui.interact(body, ui.scope_id().with("new_clip"), Sense::click()).clicked()
         {
             let sel = app.engine.session().edit.selection;
             if let Ok(v) = app.run("midi.new_clip", json!({"track": id.0, "start": sel.start, "end": sel.end})) {
@@ -234,7 +235,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
         painter.rect(r, 2.0, fill, Stroke::new(1.0, Color32::BLACK), StrokeKind::Inside);
     }
     // Interaction.
-    let resp = ui.interact(roll, ui.id().with(("roll", cid.0)), Sense::click_and_drag());
+    let resp = ui.interact(roll, ui.scope_id().with(("roll", cid.0)), Sense::click_and_drag());
     let hit = |pos: egui::Pos2| -> Option<(usize, bool)> {
         sequence.notes.iter().enumerate().rev().find_map(|(i, n)| {
             let r = Rect::from_min_max(
@@ -375,7 +376,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     // Velocity lane.
     ui.painter().rect_filled(vel, 0.0, Color32::from_rgb(28, 28, 30));
     ui.painter().text(pos2(full.min.x + 6.0, vel.center().y), Align2::LEFT_CENTER, "Velocity", regular(10.0), t.text_dim);
-    let vresp = ui.interact(vel, ui.id().with(("vel", cid.0)), Sense::click_and_drag());
+    let vresp = ui.interact(vel, ui.scope_id().with(("vel", cid.0)), Sense::click_and_drag());
     for (i, n) in sequence.notes.iter().enumerate() {
         let x = x_of(n.start);
         let h = (vel.height() - 4.0) * f32::from(n.velocity) / 127.0;

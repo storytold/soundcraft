@@ -52,12 +52,14 @@ fn vox() -> soundcraft_engine::Engine {
     engine
 }
 
+/// Typing filters the insert menu immediately, a click in the search keeps it open, and arrow keys plus Enter choose
+/// the highlighted plugin.
 #[test]
 fn an_insert_menu_searches_as_soon_as_it_opens() {
     let reverbs = built_in(false, "reverb");
     assert!(reverbs.len() >= 2, "the test needs two built-in reverbs");
     let mut h = harness(vox());
-    open(&mut h, "Insert A");
+    open(&mut h, "Insert A for Vox");
     type_text(&mut h, "reverb");
     assert!(h.query_by_label(reverbs[0].name).is_some(), "typing went to the search");
     assert!(h.query_by_label_contains("Dynamics").is_none(), "the matches replace the categories");
@@ -74,15 +76,16 @@ fn an_insert_menu_searches_as_soon_as_it_opens() {
     assert!(h.query_by_label(reverbs[0].name).is_none(), "picking closes the menu");
 }
 
+/// Reopening a menu clears its old search, Escape closes it, and Enter with no matches picks nothing.
 #[test]
 fn a_menu_opens_with_an_empty_search() {
     let mut h = harness(vox());
-    open(&mut h, "Insert B");
+    open(&mut h, "Insert B for Vox");
     type_text(&mut h, "reverb");
     press(&mut h, Key::Escape);
     assert!(h.query_by_label(built_in(false, "reverb")[0].name).is_none(), "Escape closes the menu");
 
-    open(&mut h, "Insert B");
+    open(&mut h, "Insert B for Vox");
     let category = format!("{:?}", soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap().category);
     assert!(h.query_by_label_contains(&category).is_some(), "the old search is gone, so the categories show");
     type_text(&mut h, "zzzz");
@@ -91,14 +94,16 @@ fn a_menu_opens_with_an_empty_search() {
     assert!(h.state().engine.session().tracks[0].mixer.inserts.iter().all(Option::is_none), "Enter without a match picks nothing");
 }
 
+/// Choosing a plugin from a category closes the menu, whether it was opened by a primary click on an empty slot or
+/// a secondary click on the now-filled slot.
 #[test]
 fn picks_without_the_search_still_close_the_menu() {
     let first = soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap();
     let other = soundcraft_dsp::plugins().iter().find(|p| p.category == first.category && p.id != first.id).unwrap();
-    let category = format!("{:?} ⏵", first.category);
+    let category = format!("{:?}", first.category);
     let mut h = harness(vox());
     for (plugin, click) in [(first, egui::PointerButton::Primary), (other, egui::PointerButton::Secondary)] {
-        h.get_by_label("Insert C").click_button(click);
+        h.get_by_label("Insert C for Vox").click_button(click);
         h.run_steps(3);
         h.get_by_label(&category).hover();
         h.run_steps(3);
@@ -112,7 +117,7 @@ fn picks_without_the_search_still_close_the_menu() {
     h.run_steps(2);
 
     for (item, bypassed) in [("Bypass", Some(true)), ("no insert", None)] {
-        h.get_by_label("Insert C").click_secondary();
+        h.get_by_label("Insert C for Vox").click_secondary();
         h.run_steps(3);
         h.get_by_label(item).click();
         h.run_steps(3);
@@ -121,6 +126,7 @@ fn picks_without_the_search_still_close_the_menu() {
     }
 }
 
+/// Typing filters an instrument menu immediately and Enter inserts the highlighted built-in instrument.
 #[test]
 fn an_instrument_menu_searches_as_soon_as_it_opens() {
     let drums = built_in(true, "drum");
@@ -130,7 +136,7 @@ fn an_instrument_menu_searches_as_soon_as_it_opens() {
     let mut h = harness(engine);
     h.state_mut().ui.mix_views.push("instruments".into());
     h.run_steps(2);
-    open(&mut h, "Instrument");
+    open(&mut h, "Instrument for Keys");
     type_text(&mut h, "drum");
     press(&mut h, Key::Enter);
     let instrument = h.state().engine.session().tracks[0].instrument.clone().unwrap();
@@ -138,6 +144,7 @@ fn an_instrument_menu_searches_as_soon_as_it_opens() {
     assert!(h.query_by_label(drums[0].name).is_none(), "picking closes the menu");
 }
 
+/// Send and output menus filter buses as soon as they open, and Enter routes to the highlighted bus.
 #[test]
 fn send_and_output_menus_search_buses_as_soon_as_they_open() {
     let mut engine = vox();
@@ -149,25 +156,26 @@ fn send_and_output_menus_search_buses_as_soon_as_they_open() {
     let mut h = harness(engine);
     let bus = |h: &Harness<SoundApp>, name: &str| h.state().engine.session().busses.iter().find(|b| b.name == name).unwrap().id;
 
-    open(&mut h, "Send C");
+    open(&mut h, "Send C for Vox");
     type_text(&mut h, "del");
     assert!(h.query_by_label("Verb").is_none());
     press(&mut h, Key::Enter);
     let send = h.state().engine.session().tracks[0].mixer.sends[2].clone().expect("Enter picks the bus");
     assert_eq!(send.target, Route::Bus(bus(&h, "Delay")));
 
-    open(&mut h, "Output");
+    open(&mut h, "Output for Vox");
     type_text(&mut h, "ver");
     press(&mut h, Key::Enter);
     assert_eq!(h.state().engine.session().tracks[0].mixer.output, Route::Bus(bus(&h, "Verb")));
 }
 
+/// Scripted typing and Enter reach a menu search even when the host window is unfocused.
 #[test]
 fn scripted_keys_reach_the_search_with_the_window_in_the_background() {
     let plates = built_in(false, "plate");
     let mut h = harness(vox());
     h.input_mut().focused = false;
-    open(&mut h, "Insert A");
+    open(&mut h, "Insert A for Vox");
     type_text(&mut h, "plate");
     press(&mut h, Key::Enter);
     let insert = h.state().engine.session().tracks[0].mixer.inserts[0].clone().expect("Enter works without window focus, as typing does");

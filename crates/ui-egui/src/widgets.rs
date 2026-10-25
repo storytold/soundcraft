@@ -101,6 +101,16 @@ fn button_style(selected_fill: Color32, normal_icon: Color32, radius: u8) -> Ico
     }
 }
 
+/// Give a bare text field an accessible name without changing its visible layout.
+///
+/// `TextEdit` alone has a text-input node but no label; kittest 0.37 panics on a visible unnamed
+/// input after a settled step. A hint or a real adjacent label is preferred where the design has
+/// one; this covers fields whose name lives in the dialog title or a painted heading.
+pub(crate) fn named_text_field(resp: egui::Response, name: &str) -> egui::Response {
+    let _ = resp.ctx.accesskit_node_builder(resp.id, |node| node.set_label(name));
+    resp
+}
+
 /// A toolbar button with an icon; `on` draws the blue selected state.
 pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &str) -> Response {
     let t = Tokens::current();
@@ -113,10 +123,32 @@ pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &st
     resp.on_hover_text(tip)
 }
 
+/// A compact close/delete button whose cross is painted, not typeset.
+///
+/// U+2715 is missing from egui 0.37's bundled proportional face (and from the shared fallback set
+/// until the symbol font lands), so this control must not depend on a text glyph. `label` is both
+/// the accessible name and the tooltip.
+pub fn close_button(ui: &mut Ui, label: &str) -> Response {
+    let t = Tokens::current();
+    let size = Vec2::splat(ui.spacing().interact_size.y.max(14.0));
+    let style = IconButtonStyle {
+        normal: ButtonVisuals { fill: Color32::TRANSPARENT, stroke: Stroke::NONE, icon: t.text_dim },
+        hovered: ButtonVisuals { fill: t.button_hi, stroke: Stroke::new(1.0, t.button_border), icon: t.text },
+        pressed: Some(ButtonVisuals { fill: shade(t.button_hi, -0.1), stroke: Stroke::new(1.0, t.button_border), icon: t.text }),
+        selected: ButtonVisuals { fill: t.button, stroke: Stroke::new(1.0, t.button_border), icon: t.text },
+        corner_radius: CornerRadius::same(3),
+        focus_stroke: Stroke::new(1.0, t.accent),
+    };
+    IconButton::new(label, size, &style)
+        .show(ui, |ui, r, tint| icons::draw(ui.painter(), r.shrink(size.x * 0.28), "close", tint))
+        .on_hover_text(label)
+}
+
 /// Square text toggle used for S / M / I / record etc.
 pub fn text_toggle(ui: &mut Ui, size: egui::Vec2, text: &str, on: bool, on_color: Color32, tip: &str) -> Response {
     let t = Tokens::current();
     let (r, resp) = ui.allocate_exact_size(size, Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), on, tip));
     key(ui.painter(), r, &resp, if on { on_color } else { key_fill(&resp) });
     let col = if on { t.text_dark } else { t.text };
     ui.painter().text(r.center(), Align2::CENTER_CENTER, text, bold((size.y * 0.62).clamp(8.0, 13.0)), col);
@@ -153,8 +185,29 @@ pub fn selector_box(ui: &mut Ui, width: f32, height: f32, text: &str, color: Col
 
 /// A selector with a compact visible label and the complete meaning on hover.
 pub(crate) fn selector_box_with_tooltip(ui: &mut Ui, width: f32, height: f32, text: &str, color: Color32, tooltip: &str) -> Response {
+    selector_box_named(ui, width, height, text, color, SelectorLabels { name: tooltip, value: text, tooltip })
+}
+
+/// The accessibility strings for a custom selector: its unique name, current value and hover text.
+#[derive(Clone, Copy)]
+pub(crate) struct SelectorLabels<'a> {
+    pub name: &'a str,
+    pub value: &'a str,
+    pub tooltip: &'a str,
+}
+
+/// A selector whose accessible name is unique (for example per track), with its current value
+/// published separately in the accessibility tree.
+pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &str, color: Color32, labels: SelectorLabels<'_>) -> Response {
     let t = Tokens::current();
     let (r, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    // The compact visible text can be an abbreviation ("t/l"); the full meaning on hover is the
+    // accessible name, not the tooltip. `current_text_value` tells a screen reader the selection.
+    resp.widget_info(|| {
+        let mut info = egui::WidgetInfo::labeled(egui::Role::ComboBox, ui.is_enabled(), labels.name);
+        info.current_text_value = Some(labels.value.to_string());
+        info
+    });
     key(ui.painter(), r, &resp, key_fill(&resp));
     let tr = Rect::from_min_max(pos2(r.max.x - height * 0.8, r.min.y), r.max);
     icons::draw(ui.painter(), tr.shrink(height * 0.15), "triangle_down", t.text_dim);
@@ -166,13 +219,14 @@ pub(crate) fn selector_box_with_tooltip(ui: &mut Ui, width: f32, height: f32, te
     let galley = ui.painter().layout_job(job);
     let pos = text_rect.center() - galley.size() * 0.5;
     ui.painter().with_clip_rect(r.shrink(1.0)).galley(pos, galley, color);
-    resp.on_hover_text(tooltip)
+    resp.on_hover_text(labels.tooltip)
 }
 
 /// Rotary knob for pan / send pan (-1..1). Drag vertically; double-click resets.
 pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response {
     let t = Tokens::current();
     let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
+    resp.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(*value), tip));
     if resp.dragged() {
         let d = resp.drag_delta();
         *value = (*value + (d.x - d.y) * 0.01).clamp(-1.0, 1.0);
@@ -318,10 +372,12 @@ pub fn fader_slot(r: Rect) -> Rect {
     Rect::from_center_size(r.center(), vec2(4.0, r.height() - FADER_CAP_H))
 }
 
-/// A fader: returns the new dB value when dragged. `db` in -144..12.
-pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id) -> Option<f32> {
+/// A fader: returns the new dB value when dragged. `db` in -144..12. `name` is its accessible
+/// name; it must be unique enough that a label query picks one strip's control.
+pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> Option<f32> {
     let t = Tokens::current();
     let resp = ui.interact(r, id, Sense::click_and_drag());
+    resp.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(db), name));
     let p = ui.painter();
     let slot = fader_slot(r);
     let cap_w = (r.width() * 0.4).clamp(16.0, 18.0);
@@ -515,7 +571,7 @@ pub fn checkbox(ui: &mut Ui, on: &mut bool, label: impl Into<egui::WidgetText>) 
 /// released. Returns whether `on` changed.
 fn drag_toggle(ui: &Ui, resp: &Response, on: &mut bool) -> bool {
     let ctx = ui.ctx();
-    let key = egui::Id::new("soundcraft-checkbox-drag-target");
+    let key = egui::Id::unique("soundcraft-checkbox-drag-target");
     if !ctx.input(|i| i.pointer.primary_down()) {
         ctx.data_mut(|d| d.remove::<bool>(key));
     }
@@ -562,6 +618,38 @@ mod tests {
         h.run();
         let at = h.get_all_by_label("Box").map(|n| n.rect().center()).collect();
         (h, at)
+    }
+
+    /// Close/delete controls are painted crosses with an accessible name, not a glyph that depends
+    /// on a font family covering U+2715.
+    #[test]
+    fn a_close_button_is_a_named_clickable_icon() {
+        let mut h = Harness::new_ui_state(
+            |ui, clicked: &mut bool| {
+                if super::close_button(ui, "Delete marker").clicked() {
+                    *clicked = true;
+                }
+            },
+            false,
+        );
+        h.run();
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Delete marker").click();
+        h.run();
+        assert!(*h.state(), "the painted close control dispatches its command");
+    }
+
+    /// The compact visible label of a selector is an abbreviation; the full meaning it shows on
+    /// hover is what a screen reader must hear.
+    #[test]
+    fn a_compact_selector_is_named_by_its_full_meaning() {
+        let mut h = Harness::new_ui(|ui| {
+            super::selector_box_with_tooltip(ui, 80.0, 16.0, "t/l", egui::Color32::WHITE, "auto touch latch");
+        });
+        h.run();
+        let selector =
+            h.query_by_role_and_label(egui::accesskit::Role::ComboBox, "auto touch latch").expect("the full automation mode names the selector");
+        assert_eq!(selector.value().as_deref(), Some("t/l"), "the visible value stays available to a screen reader");
+        assert!(h.query_by_role_and_label(egui::accesskit::Role::ComboBox, "t/l").is_none(), "the abbreviation is not the name");
     }
 
     /// #399: pressing a box and dragging over its neighbours sets them all to the state the first
@@ -753,6 +841,8 @@ mod selector_visual_regressions {
         }
     }
 
+    /// Write real rendered mixer fixtures when `CRAFT_UI_VISUAL_FIXTURES` is set, covering automation modes, narrow
+    /// widths and display scales.
     #[test]
     fn capture_actual_mixer_visual_fixtures() {
         let _palette = crate::theme::lock_test_palette();
@@ -783,14 +873,12 @@ mod selector_visual_regressions {
                         .output()
                         .shapes
                         .iter()
+                        // The strip background is a gradient mesh, not a RectShape.
                         .filter_map(|shape| match &shape.shape {
-                            egui::Shape::Rect(rect)
-                                if (rect.rect.width() - crate::mix_window::strip_width(narrow)).abs() < 0.1 && rect.rect.height() >= 560.0 =>
-                            {
-                                Some(rect.rect)
-                            }
+                            egui::Shape::Mesh(mesh) => Some(mesh.calc_bounds()),
                             _ => None,
                         })
+                        .filter(|rect| (rect.width() - crate::mix_window::strip_width(narrow)).abs() < 0.1 && rect.height() >= 560.0)
                         .fold(Rect::NOTHING, Rect::union);
                     assert!(strips.is_finite());
                     std::fs::write(

@@ -210,6 +210,7 @@ impl Default for View {
     }
 }
 
+/// Controls for name style, sort key and sort direction above the contributor table.
 fn contributors_toolbar(ui: &mut egui::Ui, v: &mut View) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Show");
@@ -219,8 +220,8 @@ fn contributors_toolbar(ui: &mut egui::Ui, v: &mut View) {
             }
         }
         ui.separator();
-        ui.label("Sort");
-        egui::ComboBox::from_id_salt("credits_sort").selected_text(v.key.label().0).show_ui(ui, |ui| {
+        let sort = ui.label("Sort");
+        let combo = egui::ComboBox::from_id_salt("credits_sort").selected_text(v.key.label().0).show_ui(ui, |ui| {
             for k in SortKey::ALL {
                 if ui.selectable_label(v.key == k, k.label().0).clicked() {
                     v.key = k;
@@ -228,6 +229,7 @@ fn contributors_toolbar(ui: &mut egui::Ui, v: &mut View) {
                 }
             }
         });
+        combo.response.labelled_by(sort.id);
         if ui.button(if v.ascending { "⏶" } else { "⏷" }).on_hover_text("Reverse the order").clicked() {
             v.ascending = !v.ascending;
         }
@@ -252,9 +254,9 @@ fn contributors_grab_bag(ui: &mut egui::Ui, list: &[&Contributor], names: NameMo
     });
 }
 
-/// About ▸ Contributors: a name toggle, a sort, and the list as a grab bag or a table.
+/// About › Contributors: a name toggle, a sort, and the list as a grab bag or a table.
 pub fn contributors_ui(ui: &mut egui::Ui) {
-    let id = egui::Id::new("credits_view");
+    let id = egui::Id::unique("credits_view");
     let mut v = ui.data_mut(|d| d.get_temp::<View>(id)).unwrap_or_default();
     contributors_toolbar(ui, &mut v);
     let list = sorted(CONTRIBUTORS, v.names, v.key, v.ascending);
@@ -302,7 +304,7 @@ fn table(ui: &mut egui::Ui, list: &[&Contributor], v: &mut View) {
     });
 }
 
-/// About ▸ Models: AI models credited in Co-Authored-By trailers.
+/// About › Models: AI models credited in Co-Authored-By trailers.
 pub fn models_ui(ui: &mut egui::Ui) {
     if MODELS.is_empty() {
         ui.label("No model credits were built into this copy.");

@@ -2,8 +2,8 @@
 //! Document contents remain owned by their existing view implementations.
 
 use craft_ui::docking::{
-    Action, DockArea, DockCommand, DockError, DockOperation, DockStyle, FloatSpace, Floating, Layout, Node, PanelLimits, Permissions, Placement,
-    UiDock, Zone, ZoneName,
+    Action, DockArea, DockCommand, DockError, DockOperation, DockStyle, FloatSpace, Floating, Layout, Location, Node, PanelLimits, Permissions,
+    Placement, UiDock, Zone, ZoneName,
 };
 use craft_ui::layout::{SplitAxis, SplitSize};
 use serde::{Deserialize, Serialize};
@@ -64,7 +64,7 @@ fn split(axis: SplitAxis, size: SplitSize, first: Node<Panel>, second: Node<Pane
 
 /// The dock area that draws the Edit or Mix workspace.
 pub fn area_id(window: crate::MainWindow) -> egui::Id {
-    egui::Id::new(("soundcraft-docking", window == crate::MainWindow::Edit))
+    egui::Id::unique(("soundcraft-docking", window == crate::MainWindow::Edit))
 }
 
 fn area(edit: bool) -> egui::Id {
@@ -169,6 +169,41 @@ fn apply(workspace: &mut Workspace, action: Action<Panel>) -> Result<(), String>
     checked(workspace, |next| next.apply(action, permissions).map(drop))
 }
 
+/// Whether [`Workspace::set_visible`] can actually put `panel` back at its recorded place.
+/// It follows the recorded location and the chain of hidden anchors; when none of that
+/// restores, craft-ui falls back to an unanchored open, which since craft-ui 650b1c0b chooses
+/// a dock group or right edge instead of reporting the missing anchor. Probe each chain
+/// location with the public [`Layout::restore`] on a clone, so a deleted anchor is recognized
+/// before calling in; craft-ui still performs the restore and rewrites the chain itself.
+fn restores(workspace: &Workspace, panel: Panel) -> bool {
+    let recorded = |p: &Panel| workspace.hidden.iter().find(|(q, _)| q == p).map(|(_, location)| location.clone());
+    let mut chain: Vec<Location<Panel>> = Vec::new();
+    let mut seen = vec![panel];
+    let mut current = panel;
+    while let Some(location) = recorded(&current) {
+        let anchor = location.anchor;
+        chain.push(location);
+        let Some(anchor) = anchor.filter(|anchor| !seen.contains(anchor)) else { break };
+        seen.push(anchor);
+        current = anchor;
+    }
+    // Like the chain itself, the panel's own group/column state applies to every attempt.
+    let group = chain.first().and_then(|location| location.group.clone());
+    // Revisit this eligibility probe when updating the pinned craft-ui restore algorithm.
+    chain
+        .iter()
+        .rev()
+        .find_map(|location| {
+            let location = Location { group: group.clone().or_else(|| location.group.clone()), ..location.clone() };
+            let mut probe = workspace.layout.clone();
+            match probe.restore(panel, &location) {
+                Err(DockError::MissingTarget) => None,
+                result => Some(result.is_ok()),
+            }
+        })
+        .unwrap_or(false)
+}
+
 /// Show a panel at its recorded place, else beside the document view on its default side.
 fn set_visible(workspace: &mut Workspace, panel: Panel, visible: bool) -> Result<(), String> {
     if workspace.layout.contains(&panel) == visible {
@@ -178,7 +213,7 @@ fn set_visible(workspace: &mut Workspace, panel: Panel, visible: bool) -> Result
         if !visible {
             return next.apply(Action::Close { panel }, permissions).map(drop);
         }
-        if next.set_visible(panel, true, None, permissions).is_ok() {
+        if next.hidden.iter().any(|(p, _)| *p == panel) && restores(next, panel) && next.set_visible(panel, true, None, permissions).is_ok() {
             return Ok(());
         }
         next.apply(Action::OpenAt { panel, anchor: Panel::Canvas, placement: Placement::Split(panel.default_side()) }, permissions).map(drop)
@@ -333,6 +368,8 @@ pub(crate) fn arrange(app: &mut crate::SoundApp) -> Result<(), String> {
     Ok(())
 }
 
+/// Draw and edit the dock layout for the requested window, falling back to the default layout if validation or panel
+/// sync fails, then publish panel visibility, store the workspace and apply the frame's layout actions.
 pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWindow) {
     app.docking_context = Some(ui.ctx().clone());
     let t = crate::theme::Tokens::current();
@@ -376,7 +413,7 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
             Panel::Tracks => crate::panels::tracks_and_groups(app, ui),
             Panel::Clips => crate::panels::clip_list(app, ui),
             Panel::Midi => {
-                ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("soundcraft-midi-body"), ui.max_rect()));
+                ui.ctx().data_mut(|data| data.insert_temp(egui::Id::unique("soundcraft-midi-body"), ui.max_rect()));
                 minimum_body(ui, egui::vec2(420.0, 260.0), |ui| crate::midi_editor::show(app, ui));
             }
             Panel::Memory => crate::panels::memory_locations(app, ui),

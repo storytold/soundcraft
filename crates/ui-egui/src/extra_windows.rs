@@ -145,6 +145,7 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
     app.extra.show_renderer = open;
 }
 
+/// Appearance window: interface scale, reduce-motion, theme, auto-update configuration and Reset.
 fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.extra.show_ui_customization;
     if !open {
@@ -153,30 +154,29 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
     egui::Window::new(egui::RichText::new("Appearance").font(bold(13.0))).open(&mut open).default_size(vec2(320.0, 180.0)).resizable(false).show(
         ctx,
         |ui| {
-            egui::Grid::new("ui_custom").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
-                ui.label("Interface scale");
-                ui.add(egui::Slider::new(&mut app.extra.ui_scale, 0.75..=1.5).step_by(0.05).custom_formatter(|v, _| format!("{:.0} %", v * 100.0)));
-                ui.end_row();
-                ui.label("Reduce motion");
-                crate::widgets::checkbox(ui, &mut app.extra.reduce_motion, "");
-                ui.end_row();
-                ui.label("Theme");
-                let mut chosen = None;
-                egui::ComboBox::from_id_salt("theme_mode").selected_text(app.ui.theme.label()).show_ui(ui, |ui| {
-                    for mode in crate::theme::ThemeMode::ALL {
-                        if ui.selectable_label(app.ui.theme == mode, mode.label()).clicked() {
-                            chosen = Some(mode);
-                        }
+            // Each control carries its own visible label, which is also its accessible name. A
+            // label in a neighbouring grid cell is only painted text: a screen reader (and the
+            // kittest accessibility check) would see an unnamed slider, checkbox or combo box.
+            ui.add(
+                egui::Slider::new(&mut app.extra.ui_scale, 0.75..=1.5)
+                    .step_by(0.05)
+                    .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
+                    .text("Interface scale"),
+            );
+            crate::widgets::checkbox(ui, &mut app.extra.reduce_motion, "Reduce motion");
+            let mut chosen = None;
+            egui::ComboBox::from_label("Theme").selected_text(app.ui.theme.label()).show_ui(ui, |ui| {
+                for mode in crate::theme::ThemeMode::ALL {
+                    if ui.selectable_label(app.ui.theme == mode, mode.label()).clicked() {
+                        chosen = Some(mode);
                     }
-                });
-                if let Some(mode) = chosen {
-                    let _ = app.run("ui.theme", json!({"mode": mode.id()}));
                 }
-                ui.end_row();
-                ui.label("Auto-update configuration");
-                crate::widgets::checkbox(ui, &mut app.extra.auto_update_config, "");
-                ui.end_row();
             });
+            if let Some(mode) = chosen {
+                let _ = app.run("ui.theme", json!({"mode": mode.id()}));
+            }
+            crate::widgets::checkbox(ui, &mut app.extra.auto_update_config, "Auto-update configuration");
+            ui.add_space(4.0);
             if ui.button("Reset").clicked() {
                 app.extra.ui_scale = 1.0;
                 app.extra.reduce_motion = false;

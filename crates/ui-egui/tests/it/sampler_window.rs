@@ -33,13 +33,17 @@ fn wav(secs: f32) -> Vec<u8> {
     soundcraft_audio_io::encode(&buf, &opts).unwrap()
 }
 
+/// Feed one harness frame through the raw-input hook before stepping, so dropped files and scripted input are
+/// handled.
 fn step(h: &mut Harness<'_, SoundApp>) {
     let mut raw = std::mem::take(h.input_mut());
-    h.state_mut().raw_input_hook(&mut raw);
+    let ctx = h.ctx.clone();
+    h.state_mut().raw_input_hook(&ctx, &mut raw);
     *h.input_mut() = raw;
     h.step();
 }
 
+/// A demo app with the Keys sampler window open and six settled frames, plus that track's id.
 fn harness() -> (Harness<'static, SoundApp>, TrackId) {
     let engine = soundcraft_engine::demo::demo_engine();
     let keys = engine.session().tracks.iter().find(|t| t.name == "Keys").unwrap().id;
@@ -49,7 +53,6 @@ fn harness() -> (Harness<'static, SoundApp>, TrackId) {
         |ui, app: &mut SoundApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
-            let _ = app.take_dropped_files(&ctx);
             app.ui(ui);
         },
         app,
@@ -130,12 +133,17 @@ fn dropping_audio_without_a_path_reads_its_bytes() {
     assert_eq!(h.state().engine.session().sources.len(), before);
 }
 
+/// A non-audio drop goes to the shell exactly once and does not change the instrument or queue a sample read.
 #[test]
 fn non_audio_drops_are_left_to_the_shell() {
     let (mut h, keys) = harness();
     drop_on_window(&mut h, keys, Dropped { path: PathBuf::from("/tmp/song.scraft"), bytes: Vec::new() });
     assert_eq!(instrument(&h, keys).plugin, "subtractive_synth");
     assert!(h.state_mut().take_sample_reads().is_empty());
+    let host = h.state_mut().take_dropped_files();
+    assert_eq!(host.len(), 1, "a session drop is handed to the shell once");
+    assert!(host.first().is_some_and(|f| f.path().ends_with("song.scraft")));
+    assert!(h.state_mut().take_dropped_files().is_empty(), "later steps do not replay it");
 }
 
 #[test]

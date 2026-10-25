@@ -33,6 +33,8 @@ fn diatonic(pitch: u8) -> (i32, bool) {
     (oct * 7 + step, sharp)
 }
 
+/// Read-only score view for the target MIDI clip, drawing its notes as notation; notes are edited in the MIDI Editor
+/// or Event List.
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_score;
     if !open {
@@ -119,7 +121,14 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     p.add(Shape::ellipse_filled(head.center(), head.size() * 0.5, ink));
                 }
                 if sharp {
-                    p.text(pos2(x - 12.0, y), Align2::CENTER_CENTER, "♯", regular(12.0), ink);
+                    // An original drawn sharp sign: no bundled family covers U+266F.
+                    let cx = x - 12.0;
+                    for dx in [-2.6, 1.2] {
+                        p.line_segment([pos2(cx + dx - 1.0, y - 5.0), pos2(cx + dx + 1.0, y + 5.0)], Stroke::new(1.1, ink));
+                    }
+                    for dy in [-1.8, 1.8] {
+                        p.line_segment([pos2(cx - 5.0, y + dy), pos2(cx + 5.0, y + dy - 1.0)], Stroke::new(1.1, ink));
+                    }
                 }
                 if q < 3.5 {
                     // Stems up below the middle line of each staff, down above it.

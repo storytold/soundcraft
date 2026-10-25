@@ -4,7 +4,7 @@ members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/*", "xtask"]
 
 [workspace.package]
-version = "0.12.1"
+version = "0.13.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.90"
@@ -54,11 +54,16 @@ craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-l
 craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "16fb3d46e1eaa0d455465e4e66a3ac7b17b55bd3" }
 
 # ui
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "16fb3d46e1eaa0d455465e4e66a3ac7b17b55bd3", features = ["serde"] }
-# egui 0.37 needs craft-libs#199 (craft-ui) first; pin 0.36 until it lands.
-egui = "0.36"
-eframe = { version = "0.36", default-features = false }
-egui_kittest = "0.36"
+# 650b1c0b058017c4eb3af06d5b39586d6732e07b is the revision produced by the separate craft-libs current-main-0135
+# integration: 25da's egui-0.37 port + 6e7f's docking Workspace/DockCommand + final egui/winit
+# pins. Raw 6e7f/16fb3d46 contain the older egui 0.36 UI; keep this reviewed
+# immutable revision to retain the required docking APIs on egui 0.37.
+craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "650b1c0b058017c4eb3af06d5b39586d6732e07b", features = ["serde"] }
+egui = { version = "0.37" }
+eframe = { version = "0.37", default-features = false }
+# Monotonic clock on native and the browser (the `web_time::Instant` panics-free equivalent).
+web-time = "1.1"
+egui_kittest = "0.37"
 rfd = "0.17"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
@@ -84,3 +89,21 @@ opt-level = 3
 lto = "thin"
 codegen-units = 16
 debug = 0
+
+# Keep the complete egui family and native event bridge on reviewed fork commits.
+[patch.crates-io]
+ecolor = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+emath = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+epaint = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+epaint_default_fonts = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui-winit = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui-wgpu = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui_glow = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui_extras = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui_kittest = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui_system_font_provider = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+eframe = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui_demo_lib = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui_inspection = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }

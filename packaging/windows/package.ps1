@@ -90,6 +90,9 @@ Copy-Item (Join-Path $Bin 'soundcraft.exe'), (Join-Path $Bin 'soundcraft-cli.exe
 
 & (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage 'soundcraft.exe') (Join-Path $Stage 'soundcraft-cli.exe')
 
+# Required embedded-font notices ship independently of optional font inputs.
+Copy-Item -LiteralPath (Join-Path $Root 'NOTICE') -Destination $Stage
+
 # ---- MSI ---------------------------------------------------------------------------------------
 $Msi = Join-Path $Dist "soundcraft-$Version-windows-$Arch.msi"
 Invoke-Native 'wix build' {

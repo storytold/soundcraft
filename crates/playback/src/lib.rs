@@ -87,7 +87,7 @@ struct Shared {
 pub enum OutputTrouble {
     /// A block panicked; the output stays silent.
     Bug,
-    /// The device went away.
+    /// The device went away, or the stream was invalidated and must be rebuilt.
     Gone,
     /// The device stopped asking for audio while playing.
     Stalled,
@@ -98,6 +98,7 @@ pub enum OutputTrouble {
 struct Fault {
     /// A block panicked: output stays silent from then on.
     failed: AtomicBool,
+    /// The device went away or the stream was invalidated: only a reconnect can restore audio.
     gone: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     beats: std::sync::atomic::AtomicU64,
@@ -511,6 +512,9 @@ impl Player {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Open the output device for `session`, trying the requested buffer size before the device default, then build
+    /// the shared player state. If no configuration starts or the device cannot open, fall back to a silent clock at
+    /// the session rate.
     fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
@@ -539,9 +543,9 @@ impl Player {
                         let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
                         let fault = Arc::new(Fault::default());
                         let stream = match format {
-                            cpal::SampleFormat::I32 => build_output::<i32>(&device, config, state, channels, &fault, &shared),
-                            cpal::SampleFormat::I16 => build_output::<i16>(&device, config, state, channels, &fault, &shared),
-                            _ => build_output::<f32>(&device, config, state, channels, &fault, &shared),
+                            cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, channels, &fault, &shared),
+                            cpal::SampleFormat::I16 => build_output::<i16>(&device, *config, state, channels, &fault, &shared),
+                            _ => build_output::<f32>(&device, *config, state, channels, &fault, &shared),
                         }?;
                         Ok(Opened { stream, tx, grx, fault })
                     },
@@ -953,7 +957,7 @@ fn first_started<A: std::fmt::Debug, S, E: std::fmt::Display>(
 /// never allocates), converted to the device's sample type.
 fn build_output<T>(
     device: &cpal::Device,
-    config: &cpal::StreamConfig,
+    config: cpal::StreamConfig,
     mut state: AudioState,
     channels: usize,
     fault: &Arc<Fault>,
@@ -968,7 +972,7 @@ where
     let chunk = scratch.len();
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
     device.build_output_stream(
-        *config,
+        config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             mark_audio_thread();
             for out in data.chunks_mut(chunk) {
@@ -983,7 +987,11 @@ where
         // broken): marked, so the logger hands the record off instead of writing it.
         move |e: cpal::Error| {
             mark_audio_thread();
-            if e.kind() == cpal::ErrorKind::DeviceNotAvailable {
+            // cpal 0.18 uses one error type for every operation. A device that went away, or a
+            // stream that must be rebuilt (`StreamInvalidated`), stops playback until the user
+            // reconnects; a rerouted default device (`DeviceChanged`) keeps playing on the new
+            // route, and an xrun is transient, so neither counts as losing the stream.
+            if devices::stream_lost(&e) {
                 gone.gone.store(true, Ordering::Relaxed);
             }
             log::warn!("audio stream error: {e}");
@@ -1004,49 +1012,65 @@ fn open_device(want_rate: u32, want_ch: u16, cfg: &AudioConfig) -> Result<(cpal:
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let want_ch = want_ch.max(2);
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
-    let mut chosen: Option<(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)> = None;
-    // Better: a preferred format first, then more channels.
-    let better = |c: &cpal::SupportedStreamConfigRange, x: &(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)| {
-        let (rc, rx) = (devices::format_rank(c.sample_format()).unwrap_or(usize::MAX), devices::format_rank(x.2).unwrap_or(usize::MAX));
-        rc < rx || (rc == rx && c.channels() > x.0.channels)
-    };
-    if let Ok(configs) = device.supported_output_configs() {
-        let configs: Vec<cpal::SupportedStreamConfigRange> = configs.collect();
-        for rate in rates {
-            for c in &configs {
-                if devices::format_rank(c.sample_format()).is_some()
-                    && c.min_sample_rate() <= rate
-                    && c.max_sample_rate() >= rate
-                    && c.channels() >= 2
-                    && c.channels() <= want_ch
-                    && chosen.as_ref().is_none_or(|x| better(c, x))
-                {
-                    chosen = Some((c.with_sample_rate(rate).config(), *c.buffer_size(), c.sample_format()));
-                }
-            }
-            if chosen.is_some() {
-                break;
-            }
-        }
-    }
-    let (config, format) = match chosen {
+    let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_output_configs().map(|configs| configs.collect()).unwrap_or_default();
+    let (config, format) = match pick_output_config(&configs, &rates, want_ch) {
         Some((mut c, buffers, format)) => {
             c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
             (c, format)
         }
         None => {
             let d = device.default_output_config().map_err(|e| e.to_string())?;
-            if devices::format_rank(d.sample_format()).is_none() {
-                return Err(format!("unsupported device sample format {:?}", d.sample_format()));
-            }
-            let buffers = *d.buffer_size();
             let format = d.sample_format();
-            let mut c = d.config();
-            c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
-            (c, format)
+            // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
+            // open the same rate and channels in a format they do, rather than lose output.
+            let c = if devices::format_rank(format).is_some() {
+                d
+            } else {
+                // Same rate and channels first; else any usable channel count at the default
+                // rate; else the session rate (the mix resamples and folds channels). A device
+                // whose only decoded format is wider or at another rate would otherwise open no
+                // stream at all.
+                devices::supported_format_config(&configs, d.sample_rate(), d.channels())
+                    .or_else(|| devices::supported_format_config(&configs, want_rate, want_ch))
+                    .ok_or_else(|| format!("unsupported device sample format {format:?}"))?
+            };
+            let mut stream_config = c.config();
+            stream_config.buffer_size = devices::buffer_size(cfg.buffer_size, c.buffer_size());
+            (stream_config, c.sample_format())
         }
     };
     Ok((device, config, format, name))
+}
+
+/// Pick the output configuration for the first requested rate the device offers (the configured
+/// rate first, then the session rate), preferring the best sample format and then the most
+/// channels from stereo up to `want_ch`. `None` when the device offers none of the requested
+/// rates in a usable format; the caller then uses the device's default output configuration,
+/// which the mix resamples to the session rate.
+fn pick_output_config(
+    configs: &[cpal::SupportedStreamConfigRange],
+    rates: &[u32],
+    want_ch: u16,
+) -> Option<(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)> {
+    for &rate in rates {
+        let mut best: Option<(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat, usize, u16)> = None;
+        for c in configs {
+            let Some(rank) = devices::format_rank(c.sample_format()) else { continue };
+            if !c.contains_rate(rate) || c.channels() < 2 || c.channels() > want_ch {
+                continue;
+            }
+            let Some(config) = c.try_with_sample_rate(rate) else { continue };
+            // Better: a preferred format first, then more channels (ties keep the earlier range).
+            let better = (rank, std::cmp::Reverse(c.channels()));
+            if best.as_ref().is_none_or(|x| better < (x.3, std::cmp::Reverse(x.4))) {
+                best = Some((config.config(), *c.buffer_size(), c.sample_format(), rank, c.channels()));
+            }
+        }
+        if let Some((config, buffers, format, _, _)) = best {
+            return Some((config, buffers, format));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1068,13 +1092,13 @@ mod tests {
         fn pause(&self) -> Result<(), cpal::Error> {
             Ok(())
         }
-        /// The fake stream claims one fixed buffer.
+        /// The fake stream has no clock and no fixed buffer; neither is used by these tests.
         fn buffer_size(&self) -> Result<cpal::FrameCount, cpal::Error> {
-            Ok(1024)
+            Ok(0)
         }
-        /// The fake stream has no clock.
+        /// The fake stream has no usable clock; these tests do not read it.
         fn now(&self) -> cpal::StreamInstant {
-            cpal::StreamInstant::new(0, 0)
+            cpal::StreamInstant::from_nanos(0)
         }
     }
 
@@ -1104,6 +1128,47 @@ mod tests {
         let won =
             first_started([1u32, 2], |&n| if n == 1 { Err("no such buffer size".to_string()) } else { Ok(Fake { starts: true }) }, start_stream);
         assert_eq!(won.map(|(n, _)| n), Some(2));
+    }
+
+    /// Build a cpal configuration range for tests with a 64..1024-frame buffer.
+    fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
+        cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)
+    }
+
+    /// Rates are tried in order, so a stale configured rate falls through to the session rate; when no requested rate
+    /// is offered the caller uses the device default and resamples.
+    #[test]
+    fn output_config_uses_the_first_requested_rate_the_device_offers() {
+        let configs = [
+            range(2, 44_100, 48_000, cpal::SampleFormat::I16),
+            range(2, 44_100, 96_000, cpal::SampleFormat::F32),
+            range(8, 44_100, 96_000, cpal::SampleFormat::F32),
+        ];
+        let (config, buffers, format) = pick_output_config(&configs, &[96_000, 48_000], 8).unwrap();
+        assert_eq!((config.sample_rate, config.channels, config.buffer_size), (96_000, 8, cpal::BufferSize::Default));
+        assert_eq!(format, cpal::SampleFormat::F32);
+        assert_eq!(buffers, cpal::SupportedBufferSize::Range { min: 64, max: 1024 });
+        // 192 kHz is not offered: the session's 48 kHz is tried next.
+        let (config, _, format) = pick_output_config(&configs, &[192_000, 48_000], 8).unwrap();
+        assert_eq!((config.sample_rate, config.channels, format), (48_000, 8, cpal::SampleFormat::F32));
+        // No requested rate is offered: the caller uses the device's default config and resamples.
+        assert!(pick_output_config(&configs, &[192_000], 8).is_none());
+    }
+
+    /// At a supported rate, a preferred sample format wins over more channels; output stays between stereo and the
+    /// requested channel cap, and mono-only or wider devices take the default path.
+    #[test]
+    fn output_config_prefers_format_over_channels_and_needs_stereo_within_the_cap() {
+        let configs = [range(8, 44_100, 48_000, cpal::SampleFormat::I16), range(2, 44_100, 48_000, cpal::SampleFormat::F32)];
+        let (config, _, format) = pick_output_config(&configs, &[48_000], 8).unwrap();
+        assert_eq!((config.channels, format), (2, cpal::SampleFormat::F32), "a preferred format wins over more channels");
+        let (config, _, _) = pick_output_config(&configs, &[48_000], 2).unwrap();
+        assert_eq!(config.channels, 2, "the channel cap applies");
+        let mono = [range(1, 44_100, 48_000, cpal::SampleFormat::F32)];
+        assert!(pick_output_config(&mono, &[48_000], 8).is_none(), "a mono-only device takes the default config path");
+        let surround = [range(6, 44_100, 48_000, cpal::SampleFormat::F32)];
+        assert!(pick_output_config(&surround, &[48_000], 2).is_none(), "a wider device is not narrowed here");
+        assert_eq!(pick_output_config(&surround, &[48_000], 6).map(|(c, _, _)| c.channels), Some(6));
     }
 
     #[test]

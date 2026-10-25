@@ -88,6 +88,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     rtp(app, ctx);
 }
 
+/// Beat Detective window: sensitivity, separate and set-tempo options, Analyze and Apply results, and Identify Beat.
 fn beat_detective(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_beat_detective;
     if !open {
@@ -114,7 +115,7 @@ fn beat_detective(app: &mut SoundApp, ctx: &egui::Context) {
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("Identify Beat: selection is");
-            ui.add(egui::DragValue::new(&mut app.ops.identify_bars).range(1..=64));
+            ui.add(egui::DragValue::new(&mut app.ops.identify_bars).range(1..=64)).accessible_name("Identify beat bars");
             ui.label("bar(s)");
             if ui.button("Set Tempo").clicked() {
                 let r = app.run("event.identify_beat", json!({"bars": app.ops.identify_bars}));
@@ -144,6 +145,8 @@ pub(crate) fn tempo_ops_apply(curve: &str, start_bpm: f64, end_bpm: f64) -> (&'s
     }
 }
 
+/// Tempo Operations window: choose a curve and start/end tempo, then dispatch its command using the edit selection.
+/// Constant sends only the start BPM; without a nonempty range, its command defaults to sample zero.
 fn tempo_ops(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_tempo_ops;
     if !open {
@@ -155,8 +158,8 @@ fn tempo_ops(app: &mut SoundApp, ctx: &egui::Context) {
                 ui.selectable_value(&mut app.ops.tempo_curve, c.to_string(), c);
             }
         });
-        ui.add(egui::DragValue::new(&mut app.ops.tempo_start).range(5.0..=999.0).prefix("start bpm "));
-        ui.add(egui::DragValue::new(&mut app.ops.tempo_end).range(5.0..=999.0).prefix("end bpm "));
+        ui.add(egui::DragValue::new(&mut app.ops.tempo_start).range(5.0..=999.0).prefix("start bpm ")).accessible_name("Start tempo (BPM)");
+        ui.add(egui::DragValue::new(&mut app.ops.tempo_end).range(5.0..=999.0).prefix("end bpm ")).accessible_name("End tempo (BPM)");
         ui.label(
             egui::RichText::new(
                 "Applies across the edit selection (constant: at the insertion point; scale: factor = end / start; stretch: factor = start / end).",
@@ -172,6 +175,8 @@ fn tempo_ops(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_tempo_ops = open;
 }
 
+/// Time Operations window: insert a duration in seconds at the selection start, cut the edit selection, change the
+/// meter, or move the song start to the selection start.
 fn time_ops(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_time_ops;
     if !open {
@@ -186,17 +191,18 @@ fn time_ops(app: &mut SoundApp, ctx: &egui::Context) {
         match app.ops.time_op.as_str() {
             "change meter" => {
                 ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut app.ops.meter_num).range(1..=64));
+                    ui.add(egui::DragValue::new(&mut app.ops.meter_num).range(1..=64)).accessible_name("Meter numerator");
                     ui.label("/");
-                    egui::ComboBox::from_id_salt("den").selected_text(app.ops.meter_den.to_string()).show_ui(ui, |ui| {
+                    let den = egui::ComboBox::from_id_salt("den").selected_text(app.ops.meter_den.to_string()).show_ui(ui, |ui| {
                         for d in [2u32, 4, 8, 16] {
                             ui.selectable_value(&mut app.ops.meter_den, d, d.to_string());
                         }
                     });
+                    den.response.accessible_name("Meter denominator");
                 });
             }
             "insert" => {
-                ui.add(egui::DragValue::new(&mut app.ops.time_seconds).range(0.0..=3600.0).suffix(" s"));
+                ui.add(egui::DragValue::new(&mut app.ops.time_seconds).range(0.0..=3600.0).suffix(" s")).accessible_name("Time (seconds)");
             }
             _ => {
                 ui.label(egui::RichText::new("Uses the edit selection.").small());

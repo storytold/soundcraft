@@ -151,6 +151,29 @@ mod tests {
         assert!(HANGUL.iter().filter(|(p, _)| p.ends_with("NotoSansCJK-Regular.ttc")).all(|(_, i)| *i == 1));
     }
 
+    /// Every literal glyph the UI fixtures paint is covered by the bundled faces in every family,
+    /// without relying on an installed system font. This is the 0.37 font-feature regression test.
+    #[test]
+    fn bundled_faces_cover_the_ui_glyphs_in_every_family() {
+        let mut defs = FontDefinitions::default();
+        let proportional = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+        defs.families.insert(FontFamily::Name("bold".into()), proportional);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        // Status/menu text, transport/meter symbols, file/audio/search icons, music symbols and
+        // platform key hints used by the UI. Close/delete controls paint a cross in `icons.rs`
+        // instead of typesetting U+2715, which no bundled face covers in every family.
+        let glyphs = ["›", "v", "♩", "𝄞", "⌘", "📁", "🔊", "🔍", "⬆", "−", "∞"];
+        for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("bold".into())] {
+            let font = egui::FontId::new(13.0, family.clone());
+            for glyph in glyphs {
+                assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, glyph)), "{family:?} has no glyph for {glyph:?}");
+            }
+        }
+    }
+
     /// Korean names draw in every family, not as boxes; skipped when the system has no Korean font.
     #[test]
     fn every_family_draws_hangul_with_a_system_korean_font() {

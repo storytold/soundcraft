@@ -137,7 +137,7 @@ fn run_now(app: &mut SoundApp, params: Value) -> bool {
 /// A small, non-blocking note while files import: the rest of the app stays usable.
 pub fn show(app: &SoundApp, ctx: &egui::Context) {
     let Some((name, waiting)) = app.imports.label() else { return };
-    egui::Area::new(egui::Id::new("audio_import_progress")).anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -40.0)).interactable(false).show(
+    egui::Area::new(egui::Id::unique("audio_import_progress")).anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -40.0)).interactable(false).show(
         ctx,
         |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {

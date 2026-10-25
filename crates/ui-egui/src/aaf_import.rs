@@ -157,7 +157,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     }
     if state.open {
         let mut open = true;
-        egui::Window::new("Import Session Data — AAF").id(egui::Id::new("import_aaf")).open(&mut open).default_size([1080.0,690.0]).min_size([850.0,560.0]).show(ctx,|ui| {
+        egui::Window::new("Import Session Data — AAF").id(egui::Id::unique("import_aaf")).open(&mut open).default_size([1080.0,690.0]).min_size([850.0,560.0]).show(ctx,|ui| {
             ui.horizontal(|ui| {
                 ui.label("AAF file");
                 let before=state.path.clone();
@@ -271,26 +271,29 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     }
     if let Some(report) = &state.report {
         let mut open = true;
-        egui::Window::new("AAF Import Report").id(egui::Id::new("aaf_import_report")).open(&mut open).default_size([640.0, 400.0]).show(ctx, |ui| {
-            ui.heading("Session data imported");
-            ui.label(format!("{} new tracks • {} complete sources", report["tracks"].as_array().map_or(0, Vec::len), report["sources"]));
-            ui.label("Clips remain editable. Use Save Session to collect copied media.");
-            if ui.button("Go to first imported clip").clicked()
-                && let Some(at) = report["first_clip_sample"].as_i64()
-            {
-                let _ = app.run("transport.locate", json!({"at":at}));
-            }
-            if ui.button("Copy complete report").clicked() {
-                ctx.copy_text(serde_json::to_string_pretty(report).unwrap_or_default());
-            }
-            ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                if let Some(warnings) = report["warnings"].as_array() {
-                    for w in warnings {
-                        ui.label(w.as_str().unwrap_or(""));
-                    }
+        egui::Window::new("AAF Import Report").id(egui::Id::unique("aaf_import_report")).open(&mut open).default_size([640.0, 400.0]).show(
+            ctx,
+            |ui| {
+                ui.heading("Session data imported");
+                ui.label(format!("{} new tracks • {} complete sources", report["tracks"].as_array().map_or(0, Vec::len), report["sources"]));
+                ui.label("Clips remain editable. Use Save Session to collect copied media.");
+                if ui.button("Go to first imported clip").clicked()
+                    && let Some(at) = report["first_clip_sample"].as_i64()
+                {
+                    let _ = app.run("transport.locate", json!({"at":at}));
                 }
-            });
-        });
+                if ui.button("Copy complete report").clicked() {
+                    ctx.copy_text(serde_json::to_string_pretty(report).unwrap_or_default());
+                }
+                ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    if let Some(warnings) = report["warnings"].as_array() {
+                        for w in warnings {
+                            ui.label(w.as_str().unwrap_or(""));
+                        }
+                    }
+                });
+            },
+        );
         if !open {
             state.report = None;
         }

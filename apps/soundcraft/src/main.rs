@@ -27,7 +27,7 @@ struct App(SoundApp, Option<&'static logging::AppLogger>, #[cfg(target_os = "mac
 
 /// Sends the title only when it changes, remembered here as X11 and Wayland can't read it back.
 fn set_title(ctx: &egui::Context, title: String) {
-    let id = egui::Id::new("window_title");
+    let id = egui::Id::unique("window_title");
     if ctx.data(|d| d.get_temp::<String>(id)).as_deref() != Some(title.as_str()) {
         ctx.data_mut(|d| d.insert_temp(id, title.clone()));
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
@@ -35,6 +35,8 @@ fn set_title(ctx: &egui::Context, title: String) {
 }
 
 impl eframe::App for App {
+    /// Per-frame app logic: report audio-thread logs, run the shared app logic with the macOS menu driven around it,
+    /// then handle dropped paths, quit/close requests, window geometry, recent-list persistence and the window title.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // What the realtime audio thread logged is written here, off that thread.
         if let Some(logger) = self.1 {
@@ -52,7 +54,7 @@ impl eframe::App for App {
         // Files dropped on the window: audio on an instrument track or a Sampler window loads
         // the sampler; otherwise sessions open and audio/MIDI import.
         let dropped: Vec<String> =
-            self.0.take_dropped_files(ctx).iter().map(|f| f.path().to_string_lossy().into_owned()).filter(|s| !s.is_empty()).collect();
+            self.0.take_dropped_files().iter().map(|f| f.path().to_string_lossy().into_owned()).filter(|s| !s.is_empty()).collect();
         for p in dropped {
             open_path(&mut self.0, &p);
         }
@@ -86,8 +88,10 @@ impl eframe::App for App {
         };
         set_title(ctx, title);
     }
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        self.0.raw_input_hook(raw);
+    /// Forward raw input to the shared app hook so scripted gestures and host-key protection behave like the desktop
+    /// shell.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.0.raw_input_hook(ctx, raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.0.guarded(|app| app.ui(ui));

@@ -23,7 +23,7 @@ fn drag_track(app: &mut SoundApp, ui: &Ui, row: Rect, id: u64, dropped: bool) {
         let y = row.min.y + (gap - from as f32) * pitch - spacing / 2.0;
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         ui.ctx()
-            .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("track_list_reorder")))
+            .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("track_list_reorder")))
             .line_segment([pos2(row.min.x, y), pos2(row.max.x, y)], Stroke::new(2.0, Tokens::current().accent));
     }
 }
@@ -40,6 +40,7 @@ fn panel_header(ui: &mut Ui, title: &str) {
 /// the panel and the window beside it.
 const GUTTER_W: f32 = 10.0;
 
+/// Tracks and Groups panels: headers, track and group lists, and their scrollbars in the panel gutter.
 pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let full = ui.max_rect();
@@ -61,17 +62,19 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
         s.tracks.iter().map(|x| (x.id.0, x.name.clone(), !x.hidden, x.color, s.edit.selected_tracks.contains(&x.id))).collect()
     };
     let hidden = egui::scroll_area::ScrollBarVisibility::AlwaysHidden;
-    let lists =
-        egui::ScrollArea::vertical().id_salt("tracks_scroll").max_height(total * 0.62).auto_shrink([false, false]).scroll_bar_visibility(hidden);
+    let lists = with_pending_offset(egui::ScrollArea::vertical().id_salt("tracks_scroll"), ui, "tracks_scroll")
+        .max_height(total * 0.62)
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(hidden);
     let out = lists.show(ui, |ui| {
         for (id, name, shown, color, sel) in tracks {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::click_and_drag());
-            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, sel, &name));
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, sel, &name));
             if sel {
                 ui.painter().rect_filled(r, 0.0, t.row_selected);
             }
             let dot = Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(8.0, 8.0));
-            let dresp = ui.interact(dot.expand(3.0), ui.id().with(("vis", id)), Sense::click());
+            let dresp = ui.interact(dot.expand(3.0), ui.scope_id().with(("vis", id)), Sense::click());
             ui.painter().circle(dot.center(), 3.5, if shown { t.visible_dot } else { Color32::TRANSPARENT }, Stroke::new(1.0, t.text_dim));
             if dresp.clicked() {
                 let _ = app.run("track.hide", json!({"tracks": [id], "hidden": shown}));
@@ -97,11 +100,12 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
     panel_header(ui, "GROUPS");
     let groups: Vec<(u64, char, String, bool, [u8; 3])> =
         app.engine.session().groups.iter().map(|g| (g.id.0, g.letter, g.name.clone(), g.active, g.color)).collect();
-    let out = egui::ScrollArea::vertical().id_salt("groups_scroll").auto_shrink([false, false]).scroll_bar_visibility(hidden).show(ui, |ui| {
+    let groups_area = with_pending_offset(egui::ScrollArea::vertical().id_salt("groups_scroll"), ui, "groups_scroll");
+    let out = groups_area.auto_shrink([false, false]).scroll_bar_visibility(hidden).show(ui, |ui| {
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::hover());
         ui.painter().text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, "<ALL>", regular(11.5).clone(), t.text);
-        let all = ui.interact(r, ui.id().with("group_all"), Sense::click());
-        all.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "<ALL>"));
+        let all = ui.interact(r, ui.scope_id().with("group_all"), Sense::click());
+        all.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "<ALL>"));
         if all.double_clicked() {
             let _ = app.run("edit.select_all", json!({}));
         }
@@ -113,7 +117,7 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
         });
         for (id, letter, name, active, color) in groups {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::click());
-            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, active, &name));
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, active, &name));
             if active {
                 ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x + 4.0, r.min.y + 2.0), vec2(14.0, 13.0)), 1.0, rgb(color));
             }
@@ -156,8 +160,21 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
     gutter_scroll(ui, gutter, &out);
 }
 
+/// Apply a pending gutter page/drag target to the next frame's `ScrollArea`. `State::offset` is
+/// private in egui 0.37, so the target cannot be written directly; it is applied here before layout.
+fn with_pending_offset(area: egui::ScrollArea, ui: &Ui, salt: &str) -> egui::ScrollArea {
+    // Match `ScrollArea` exactly: it hashes an `IdSalt` into the persistent id.
+    let id = ui.make_persistent_id(egui::IdSalt::new(salt));
+    let pending = ui.ctx().memory_mut(|m| m.data.remove_temp::<f32>(id.with("gutter_target")));
+    match pending {
+        Some(y) => area.vertical_scroll_offset(y),
+        None => area,
+    }
+}
+
 /// A list's scroll thumb in the gutter beside it, when the list is longer than its space: drag it,
-/// or click above or below it to page.
+/// or click above or below it to page. The target applies on the next frame, because the public
+/// `ScrollArea` API has no way to write the current pass's offset.
 fn gutter_scroll<R>(ui: &Ui, gutter: Rect, out: &egui::scroll_area::ScrollAreaOutput<R>) {
     let t = Tokens::current();
     let (view, content) = (out.inner_rect.height(), out.content_size.y);
@@ -166,12 +183,12 @@ fn gutter_scroll<R>(ui: &Ui, gutter: Rect, out: &egui::scroll_area::ScrollAreaOu
     }
     let bar = Rect::from_x_y_ranges(gutter.x_range(), out.inner_rect.y_range());
     let (max, h) = (content - view, (bar.height() * view / content).max(20.0));
-    let mut state = out.state;
-    let thumb = Rect::from_min_size(pos2(bar.min.x + 2.0, bar.min.y + (bar.height() - h) * state.offset.y / max), vec2(bar.width() - 4.0, h));
+    let offset = out.state.clamped_offset().y;
+    let thumb = Rect::from_min_size(pos2(bar.min.x + 2.0, bar.min.y + (bar.height() - h) * offset / max), vec2(bar.width() - 4.0, h));
     let resp = ui.interact(bar, out.id.with("gutter"), Sense::click_and_drag());
     ui.painter().rect_filled(thumb, 3.0, if resp.hovered() || resp.dragged() { t.button_hi.lerp_to_gamma(Color32::WHITE, 0.1) } else { t.button_hi });
     let to = if resp.dragged() {
-        Some(state.offset.y + resp.drag_delta().y * max / (bar.height() - h).max(1.0))
+        Some(offset + resp.drag_delta().y * max / (bar.height() - h).max(1.0))
     } else if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.clicked()) {
         let page = if p.y < thumb.min.y {
             -view
@@ -180,13 +197,13 @@ fn gutter_scroll<R>(ui: &Ui, gutter: Rect, out: &egui::scroll_area::ScrollAreaOu
         } else {
             0.0
         };
-        Some(state.offset.y + page)
+        Some(offset + page)
     } else {
         None
     };
     if let Some(y) = to {
-        state.offset.y = y.clamp(0.0, max);
-        state.store(ui.ctx(), out.id);
+        ui.ctx().memory_mut(|m| m.data.insert_temp(out.id.with("gutter_target"), y.clamp(0.0, max)));
+        ui.ctx().request_repaint();
     }
 }
 
@@ -218,15 +235,16 @@ fn clip_rows(s: &soundcraft_model::Session, needle: &str) -> Vec<ClipRow> {
     sources.chain(clips).collect()
 }
 
+/// Clips panel with a filter and a revision-cached list of audio sources and clips.
 pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     panel_header(ui, "CLIPS");
-    let fkey = egui::Id::new("clip_filter");
+    let fkey = egui::Id::unique("clip_filter");
     let mut filter: String = ui.ctx().memory(|m| m.data.get_temp(fkey)).unwrap_or_default();
     ui.add(egui::TextEdit::singleline(&mut filter).hint_text("🔍 Find clips").desired_width(f32::INFINITY));
     ui.ctx().memory_mut(|m| m.data.insert_temp(fkey, filter.clone()));
     let needle = filter.to_lowercase();
-    let rkey = egui::Id::new("clip_rows");
+    let rkey = egui::Id::unique("clip_rows");
     let revision = app.engine.revision;
     let cached = ui.ctx().memory(|m| m.data.get_temp::<ClipRows>(rkey)).filter(|c| c.revision == revision && c.filter == needle);
     let rows = match cached {
@@ -238,7 +256,8 @@ pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
         }
     };
     let row_h = 17.0;
-    egui::ScrollArea::vertical().id_salt("clips_scroll").auto_shrink([false, false]).show_rows(ui, row_h, rows.len(), |ui, shown| {
+    let clips_area = with_pending_offset(egui::ScrollArea::vertical().id_salt("clips_scroll"), ui, "clips_scroll");
+    clips_area.auto_shrink([false, false]).show_rows(ui, row_h, rows.len(), |ui, shown| {
         // Only the rows in view: what they show is read now, before any of them acts on the session.
         let items: Vec<(u64, String, bool, [u8; 3], bool)> = {
             let s = app.engine.session();
@@ -426,13 +445,14 @@ fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_big_counter = open;
 }
 
+/// One recallable memory-location row: number button, editable name, time, length, kind and delete.
 fn memory_location_row(app: &mut SoundApp, ui: &mut Ui, n: u32, name: &str, loc: &str, len: &str, kind: &str) {
     if ui.button(n.to_string()).on_hover_text("Recall").clicked() {
         let _ = app.run("markers.recall", json!({"number": n}));
     }
-    let key = egui::Id::new(("mem_name", n));
+    let key = egui::Id::unique(("mem_name", n));
     let mut edit: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| name.to_string());
-    let r = ui.add(egui::TextEdit::singleline(&mut edit).desired_width(140.0));
+    let r = crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut edit).desired_width(140.0)), "Name");
     if r.changed() {
         ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
     }
@@ -443,7 +463,7 @@ fn memory_location_row(app: &mut SoundApp, ui: &mut Ui, n: u32, name: &str, loc:
     ui.label(egui::RichText::new(loc).font(mono(11.0)));
     ui.label(egui::RichText::new(len).font(mono(11.0)));
     ui.label(kind);
-    if ui.small_button("✕").on_hover_text("Delete").clicked() {
+    if crate::widgets::close_button(ui, "Delete marker").clicked() {
         let _ = app.run("markers.delete", json!({"number": n}));
     }
     ui.end_row();
@@ -504,6 +524,7 @@ pub(crate) fn undo_history(app: &mut SoundApp, ui: &mut Ui) {
     });
 }
 
+/// Draw plugin windows for instrument and insert slots that still exist, removing closed ones from the list.
 fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
     let wins = app.ui.plugin_windows.clone();
     let mut keep = Vec::new();
@@ -520,7 +541,7 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
         let place = if instrument { "instrument".to_string() } else { char::from(b'a'.saturating_add(slot as u8)).to_string() };
         let mut open = true;
         let shown = egui::Window::new(format!("{tname} · {place} · {}", info.name))
-            .id(egui::Id::new(("plugin", tid.0, slot)))
+            .id(egui::Id::unique(("plugin", tid.0, slot)))
             .open(&mut open)
             .default_width(340.0)
             .default_pos(egui::pos2(ctx.content_rect().width() - 380.0, 120.0))
@@ -533,7 +554,7 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                         if ui.button(label).clicked() {
                             let _ = app.run("mix.insert_bypass", json!({"track": tid.0, "slot": slot}));
                         }
-                        ui.menu_button("Presets ▾", |ui| preset_menu(app, ui, tid, slot, info, &ins));
+                        ui.menu_button("Presets v", |ui| preset_menu(app, ui, tid, slot, info, &ins));
                     }
                     if soundcraft_mix::is_third_party(&ins.plugin) {
                         let open = app.player.as_ref().is_some_and(|p| p.editor_open(tid, slot));
@@ -569,7 +590,7 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                     egui::Grid::new(("pg", tid.0, slot)).num_columns(3).show(ui, |ui| {
                         for p in info.params {
                             let v = ins.params.get(p.id).copied().unwrap_or(p.default);
-                            ui.label(p.name);
+                            let label = ui.label(p.name);
                             let mut x = v;
                             let resp = if !p.choices.is_empty() {
                                 let mut idx = x.round().max(0.0) as usize;
@@ -592,6 +613,9 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                                 }
                                 ui.add(sl)
                             };
+                            // The grid cell's painted label is not an accesskit name; tie the
+                            // combo box or slider to it so screen readers and label queries find it.
+                            let resp = resp.labelled_by(label.id);
                             if (x - v).abs() > f32::EPSILON && instrument {
                                 let _ = app.engine.execute_merged(
                                     "mix.instrument_param",
@@ -658,12 +682,13 @@ fn eq_curve(ui: &mut Ui, id: &str, ins: &soundcraft_model::Insert) {
     ui.painter().add(egui::Shape::line(pts, Stroke::new(2.0, t.counter_text)));
 }
 
+/// About window tabs for version information, contributors and models.
 fn about(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_about;
     if !open {
         return;
     }
-    let tab_id = egui::Id::new("about_tab");
+    let tab_id = egui::Id::unique("about_tab");
     egui::Window::new("About SoundCraft").open(&mut open).default_size(vec2(640.0, 420.0)).collapsible(false).show(ctx, |ui| {
         let mut tab = ui.data_mut(|d| d.get_temp::<u8>(tab_id)).unwrap_or(0);
         ui.horizontal(|ui| {
@@ -710,6 +735,7 @@ fn preset_dir(app: &SoundApp, plugin: &str) -> Option<std::path::PathBuf> {
     app.preset_dir.as_ref().map(|d| d.join(crate::preset_folder_name(plugin)))
 }
 
+/// Factory default plus user presets for a plugin insert; user presets need a desktop preset directory.
 fn preset_menu(
     app: &mut SoundApp,
     ui: &mut Ui,
@@ -751,10 +777,10 @@ fn preset_menu(
         }
     }
     ui.separator();
-    let key = egui::Id::new(("preset_name", tid.0, slot));
+    let key = egui::Id::unique(("preset_name", tid.0, slot));
     let mut name: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| format!("{} preset", info.name));
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut name).desired_width(140.0));
+        crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut name).desired_width(140.0)), "Preset name");
         if ui.button("Save").clicked() {
             let clean = soundcraft_engine::io::sanitize_name(&name);
             let body = json!({"format": "soundcraft-plugin-preset", "plugin": info.id, "params": ins.params});

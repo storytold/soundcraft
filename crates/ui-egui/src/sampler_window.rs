@@ -56,7 +56,7 @@ pub fn drop_target(app: &mut SoundApp, ctx: &egui::Context, r: Rect, t: TrackId)
     app.sample_drop_targets.push((r, t));
     let over = ctx.input(|i| !i.raw.hovered_files.is_empty() && i.pointer.latest_pos().is_some_and(|p| r.contains(p)));
     if over {
-        ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("sample_drop", t.0)))).rect_stroke(
+        ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique(("sample_drop", t.0)))).rect_stroke(
             r,
             2.0,
             Stroke::new(2.0, Tokens::current().accent),
@@ -82,38 +82,16 @@ impl SampleRead {
 }
 
 impl SoundApp {
-    /// Takes this frame's dropped files: audio dropped on an instrument track or a Sampler window
-    /// loads into that track's sampler (the sampler becomes its instrument). A file with a full
-    /// path loads straight away; one without (the browser) waits in [`SoundApp::take_sample_reads`]
-    /// for the shell to read. Everything else is returned for the shell to open or import.
-    pub fn take_dropped_files(&mut self, ctx: &egui::Context) -> Vec<egui::DroppedFileHandle> {
-        let (files, pos) = ctx.input(|i| (i.raw.dropped_files.clone(), i.pointer.latest_pos()));
-        if files.is_empty() {
-            return files;
-        }
-        let Some(track) = self.drop_track(pos) else { return files };
-        let mut rest = Vec::new();
-        let mut claimed = false;
-        for f in files {
-            if claimed || !is_audio_name(&f.path().to_string_lossy()) {
-                rest.push(f);
-                continue;
-            }
-            claimed = true;
-            if f.path().is_absolute() {
-                let path = f.path().to_string_lossy().into_owned();
-                let r = self.run("mix.sampler_load", json!({"track": track.0, "path": path}));
-                self.sample_loaded(track, &path, r);
-            } else {
-                self.sample_reads.push(SampleRead { track, file: f });
-            }
-        }
-        rest
+    /// Dropped files this frame's UI pass did not load into a sampler, for the shell to open or
+    /// import. The capture happened at the start of the UI pass, before the font gate; this only
+    /// takes the queued result, so it is safe (and needed) on a logic-only tick after a paint.
+    pub fn take_dropped_files(&mut self) -> Vec<egui::DroppedFileHandle> {
+        std::mem::take(&mut self.host_drops)
     }
 
     /// The track a drop at `pos` loads into. Without a position (some platforms report none
     /// during a drag), a single open Sampler window takes it.
-    fn drop_track(&self, pos: Option<egui::Pos2>) -> Option<TrackId> {
+    pub(crate) fn drop_track(&self, pos: Option<egui::Pos2>) -> Option<TrackId> {
         if let Some(p) = pos {
             return self.sample_drop_targets.iter().rev().find(|(r, _)| r.contains(p)).map(|(_, t)| *t);
         }
@@ -140,7 +118,8 @@ impl SoundApp {
         self.sample_loaded(read.track, &name, r);
     }
 
-    fn sample_loaded(&mut self, track: TrackId, what: &str, r: Result<serde_json::Value, String>) {
+    /// Report a sampler load and open its instrument window on success, or show the failure status.
+    pub(crate) fn sample_loaded(&mut self, track: TrackId, what: &str, r: Result<serde_json::Value, String>) {
         match r {
             Ok(v) => {
                 if !self.ui.plugin_windows.contains(&(track, soundcraft_mix::INSTRUMENT_SLOT)) {
@@ -246,7 +225,7 @@ pub fn sample_strip(app: &mut SoundApp, ui: &mut Ui, tid: TrackId, ins: &Insert)
         p.text(flag.center(), Align2::CENTER_CENTER, *tag, regular(9.0), t.text_dark);
     }
     // Dragging the nearest marker sets its parameter.
-    let grab_id = ui.id().with(("sample_marker", tid.0));
+    let grab_id = ui.scope_id().with(("sample_marker", tid.0));
     let nearest = |x: f32| {
         shown
             .iter()

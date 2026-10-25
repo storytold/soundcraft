@@ -4,12 +4,14 @@
 
 use egui::{Event, Modifiers, PointerButton, pos2, vec2};
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use soundcraft_ui_egui::{Services, SoundApp};
 
 /// One UI frame, with queued synthetic pointer input applied first (as the control channel does).
 fn step(h: &mut Harness<'_, SoundApp>) {
     let mut raw = std::mem::take(h.input_mut());
-    h.state_mut().raw_input_hook(&mut raw);
+    let ctx = h.ctx.clone();
+    h.state_mut().raw_input_hook(&ctx, &mut raw);
     *h.input_mut() = raw;
     h.step();
 }
@@ -27,6 +29,8 @@ fn kick_clip_count(h: &Harness<'_, SoundApp>) -> usize {
     s.tracks.iter().find(|t| t.name == "Kick").map_or(0, |t| t.clips().len())
 }
 
+/// Moving the pointer from a right-clicked clip onto the menu's Delete item keeps the menu open; clicking Delete
+/// removes one Kick clip.
 #[test]
 fn clip_menu_stays_open_while_moving_onto_delete() {
     let engine = soundcraft_engine::demo::demo_engine();
@@ -50,14 +54,15 @@ fn clip_menu_stays_open_while_moving_onto_delete() {
     for _ in 0..10 {
         step(&mut h);
     }
-    // Move (no click) into the menu, as a real pointer would, so the lane loses its hover.
-    for (x, y) in [(900.0, 300.0), (907.0, 442.0)] {
-        h.state_mut().synthetic.push(Event::PointerMoved(pos2(x, y)));
-        for _ in 0..10 {
-            step(&mut h);
-        }
+    // Move (no click) onto the menu's Delete item, as a real pointer would, so the lane loses
+    // its hover. Ask the newly laid-out menu where the item is instead of pinning coordinates
+    // that change with egui's item metrics.
+    let delete = h.get_by_label("Delete").rect().center();
+    h.state_mut().synthetic.push(Event::PointerMoved(delete));
+    for _ in 0..10 {
+        step(&mut h);
     }
-    press(&mut h, 907.0, 442.0, PointerButton::Primary);
+    press(&mut h, delete.x, delete.y, PointerButton::Primary);
     for _ in 0..15 {
         step(&mut h);
     }

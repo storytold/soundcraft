@@ -42,6 +42,9 @@
 
   <Fragment>
     <ComponentGroup Id="SoundcraftFiles" Directory="INSTALLFOLDER">
+      <Component Id="SoundcraftNotice">
+        <File Id="SoundcraftNoticeFile" Source="$(var.BinDir)\NOTICE" KeyPath="yes" />
+      </Component>
       <Component Id="SoundcraftApp" Guid="091136D7-205E-41A8-9D27-5E231F7CBBD4">
         <File Id="SoundcraftExe" Source="$(var.BinDir)\soundcraft.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="SoundCraft"

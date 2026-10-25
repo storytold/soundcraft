@@ -12,8 +12,9 @@ fn frame(ctx: &egui::Context, app: &mut SoundApp, events: Vec<Event>) {
     .clear();
 }
 
+/// The MIDI editor's last laid-out body rectangle, stored by the dock.
 fn panel(ctx: &egui::Context) -> Rect {
-    ctx.data(|data| data.get_temp::<Rect>(Id::new("soundcraft-midi-body"))).unwrap()
+    ctx.data(|data| data.get_temp::<Rect>(Id::unique("soundcraft-midi-body"))).unwrap()
 }
 
 fn button(pos: Pos2, pressed: bool) -> Event {

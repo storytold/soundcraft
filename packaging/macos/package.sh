@@ -117,6 +117,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # Executable and icon carry the display name (CFBundleExecutable / CFBundleIconFile).
 cp "$WORK/bin/soundcraft" "$APP/Contents/MacOS/SoundCraft"
 cp "$ROOT/assets/app-icon/soundcraft.icns" "$APP/Contents/Resources/SoundCraft.icns"
+# Required embedded-font notices are independent of optional font inputs.
+cp "$ROOT/NOTICE" "$APP/Contents/Resources/NOTICE"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" \
   -e "s/@BUILD_SHA@/${SOUNDCRAFT_BUILD_SHA:-unknown}/g" \
   "$HERE/Info.plist.in" >"$APP/Contents/Info.plist"

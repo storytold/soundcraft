@@ -15,10 +15,10 @@ path = "src/main.rs"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 soundcraft-engine = { workspace = true }
-soundcraft-ui-egui = { workspace = true }
+soundcraft-ui-egui.workspace = true
 soundcraft-playback = { workspace = true }
 soundcraft-model = { workspace = true }
-egui = { workspace = true }
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 log = { workspace = true }
 serde_json = { workspace = true }
 rfd = { workspace = true }

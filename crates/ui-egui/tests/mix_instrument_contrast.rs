@@ -72,6 +72,8 @@ fn contrast(a: Color32, b: Color32) -> f64 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
+/// In real frames, populated and empty instrument and insert slots use the active theme's readable palette across
+/// light, dark and system modes, and a plugin change leaves the rest of the session and audio pool intact.
 #[test]
 fn populated_mix_instrument_uses_readable_palette_in_real_frames() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
@@ -177,7 +179,7 @@ fn populated_mix_instrument_uses_readable_palette_in_real_frames() {
         harness.step();
     }
     harness.step(); // Let the popup finish its initial sizing pass.
-    harness.get_by_label("Built-in ⏵").hover();
+    harness.get_by_label("Built-in").hover();
     harness.step();
     harness.step();
     harness.get_by_label("Drum Synth").click();

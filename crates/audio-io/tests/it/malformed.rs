@@ -13,6 +13,17 @@ fn small(format: FileFormat, depth: BitDepth, channels: usize) -> Vec<u8> {
     encode(&b, &EncodeOptions { format, bit_depth: depth, dither: false, bwf: None }).unwrap()
 }
 
+/// An ID3v2.4 header whose syncsafe size field declares `size` bytes of tag body.
+fn id3_header(size: usize) -> [u8; 10] {
+    let size = size as u32;
+    [b'I', b'D', b'3', 4, 0, 0, ((size >> 21) & 0x7F) as u8, ((size >> 14) & 0x7F) as u8, ((size >> 7) & 0x7F) as u8, (size & 0x7F) as u8]
+}
+
+/// Wrap `body` in an ID3v2.4 tag.
+fn id3_tag(body: &[u8]) -> Vec<u8> {
+    [&id3_header(body.len())[..], body].concat()
+}
+
 /// Little helper for building RIFF files by hand.
 fn riff(chunks: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
     let mut body = b"WAVE".to_vec();
@@ -312,6 +323,190 @@ fn an_id3_tag_before_the_audio_is_skipped_unread() {
     let tag = [&b"ID3\x03\0\0\0\0\0"[..], &[frame.len() as u8], &frame].concat();
     let flac = small(FileFormat::Flac, BitDepth::Int16, 1);
     assert_eq!(decode(&[tag, flac].concat(), None).unwrap().1.frames(), 300);
+}
+
+/// Container magic inside an MP3 frame payload must not change detection or make probing reject the stream.
+#[test]
+fn a_valid_mp3_with_incidental_container_magic_still_probes() {
+    let mut frame = vec![0u8; 417];
+    frame[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x00]); // MPEG-1 Layer III, 128 kbps, 44.1 kHz, stereo
+    let mut f: Vec<u8> = (0..8).flat_map(|_| frame.clone()).collect();
+    let at = 417 * 2 + 10; // Inside frame 2's payload, leaving every frame header intact.
+    f[at..at + 8].copy_from_slice(b"caff\0\x01\0\0");
+    f[at + 8..at + 12].copy_from_slice(b"kuki");
+    f[at + 12..at + 20].copy_from_slice(&(1u64 << 50).to_be_bytes());
+    assert_eq!(detect_format(&f, None), FileFormat::Mp3);
+    let info = probe(&f, None).expect("valid MP3 with incidental container magic");
+    assert_eq!((info.format, info.sample_rate, info.channels), (FileFormat::Mp3, 44_100, 2));
+}
+
+/// Symphonia 0.6's CAF/FLAC/MP4 `Scoreable` implementations are unconditional
+/// (`Supported(255)`), so a container magic before the first audio frame *is* the reader the probe
+/// selects; there is no API to ask the probe to skip it. The preflight must therefore keep
+/// refusing an oversized CAF cookie instead of ignoring the marker and playing the MPEG frames
+/// behind it (which would also let a real malformed container bypass the size guard).
+#[test]
+fn a_container_marker_before_the_first_audio_frame_is_the_probed_candidate() {
+    let mut frame = vec![0u8; 417];
+    frame[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x00]); // MPEG-1 Layer III, 128 kbps, 44.1 kHz, stereo
+    let mp3: Vec<u8> = (0..8).flat_map(|_| frame.clone()).collect();
+    let malformed = caf(&[caf_desc(b"aac ", 0, 1024, 2, 0), (b"kuki", 1i64 << 50, vec![0; 8])]);
+    for f in [[vec![0u8], malformed.clone(), mp3.clone()].concat(), [vec![0u8; 32], malformed.clone(), mp3.clone()].concat()] {
+        // The hint still names the raw stream, but the probe sees the CAF marker first.
+        assert_eq!(detect_format(&f, Some("mp3")), FileFormat::Mp3);
+        assert!(matches!(probe(&f, Some("mp3")), Err(AudioError::Malformed(m)) if m.contains("larger than the file")));
+        assert!(matches!(decode(&f, Some("mp3")), Err(AudioError::Malformed(m)) if m.contains("larger than the file")));
+    }
+    // Plain leading junk without format magic is tolerated, as before.
+    let f = [vec![0u8; 32], mp3].concat();
+    assert_eq!(detect_format(&f, Some("mp3")), FileFormat::Mp3);
+    let info = probe(&f, Some("mp3")).expect("junk before a valid MP3");
+    assert_eq!((info.format, info.sample_rate, info.channels), (FileFormat::Mp3, 44_100, 2));
+}
+
+/// More false `0xFFEx` pairs than the preflight's scoring budget must not make a later container
+/// magic inside the valid audio payload authoritative. Past the cap the scan is unchecked and the
+/// probe selects the MPEG reader at the first real frame.
+#[test]
+fn an_exhausted_audio_score_budget_does_not_reject_the_mp3_behind_it() {
+    let mut frame = vec![0u8; 417];
+    frame[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+    let mut audio: Vec<u8> = (0..8).flat_map(|_| frame.clone()).collect();
+    let at = 417 * 2 + 10; // Inside frame 2's payload, leaving every frame header intact.
+    audio[at..at + 8].copy_from_slice(b"caff\0\x01\0\0");
+    audio[at + 8..at + 12].copy_from_slice(b"kuki");
+    audio[at + 12..at + 20].copy_from_slice(&(1u64 << 50).to_be_bytes());
+    let false_syncs: Vec<u8> = (0..256).flat_map(|_| [0xFFu8, 0xE2]).collect();
+    let f = [false_syncs, audio].concat();
+    assert_eq!(detect_format(&f, Some("mp3")), FileFormat::Mp3);
+    let info = probe(&f, Some("mp3")).expect("valid MP3 after an exhausted audio score budget");
+    assert_eq!((info.format, info.sample_rate, info.channels), (FileFormat::Mp3, 44_100, 2));
+    let (decoded, buf) = decode(&f, Some("mp3")).expect("decode the same MP3");
+    assert_eq!((decoded.format, decoded.sample_rate, decoded.channels), (FileFormat::Mp3, 44_100, 2));
+    assert_eq!(decoded.frames, buf.frames() as u64);
+}
+
+/// Past the score budget the preflight does not run, so if the probe then selects a container
+/// whose reader allocates from sizes in the file, the post-probe refusal still applies.
+#[test]
+fn a_container_selected_without_its_size_check_is_refused() {
+    let flac = small(FileFormat::Flac, BitDepth::Int16, 1);
+    // Exactly the cap of false candidates, then one more that the reader rejects (invalid
+    // bit-rate), so the preflight stops unchecked before reaching the FLAC marker behind it.
+    let mut false_syncs: Vec<u8> = (0..256).flat_map(|_| [0xFFu8, 0xE2]).collect();
+    false_syncs.extend_from_slice(&[0xFF, 0xFB, 0xF0, 0x00]);
+    let f = [false_syncs, flac].concat();
+    assert_eq!(detect_format(&f, None), FileFormat::Mp3);
+    assert!(matches!(probe(&f, None), Err(AudioError::Malformed(m)) if m.contains("was not size-checked")));
+    assert!(matches!(decode(&f, None), Err(AudioError::Malformed(m)) if m.contains("was not size-checked")));
+}
+
+/// A zero-frame FLAC after arbitrary bytes or ID3 tags is still detected and reported as an empty stream, not a
+/// decode failure.
+#[test]
+fn zero_frame_flac_after_a_prefix_is_still_empty() {
+    let flac =
+        encode(&AudioBuffer::new(48_000, 1, 0), &EncodeOptions { format: FileFormat::Flac, bit_depth: BitDepth::Int16, dither: false, bwf: None })
+            .unwrap();
+    let tag = id3_tag(b"tag");
+    for (f, detected) in [
+        ([vec![0x7A; 64], flac.clone()].concat(), FileFormat::Other),
+        ([tag.clone(), vec![0x7A; 16], flac.clone()].concat(), FileFormat::Mp3),
+        ([tag.clone(), tag, flac.clone()].concat(), FileFormat::Mp3),
+    ] {
+        assert_eq!(detect_format(&f, None), detected);
+        let info = probe(&f, None).expect("empty FLAC after a prefix");
+        assert_eq!((info.format, info.sample_rate, info.channels, info.frames), (FileFormat::Flac, 48_000, 1, 0));
+        assert_eq!(decode(&f, None).unwrap().1.frames(), 0);
+    }
+}
+
+/// Build one MPEG-4 AAC-LC ADTS frame at 48 kHz stereo around `payload`, with the 13-bit length covering the 7-byte
+/// header.
+fn adts_frame(payload: &[u8]) -> Vec<u8> {
+    // MPEG-4 AAC-LC, 48 kHz, stereo; the 13-bit frame length includes this 7-byte header.
+    let len = 7 + payload.len();
+    let mut h = [0xFF, 0xF1, 0x4C, 0x00, 0x00, 0x1F, 0xFC];
+    h[3] = 0x80 | ((len >> 11) & 0x03) as u8; // stereo channel config low bits
+    h[4] = ((len >> 3) & 0xFF) as u8;
+    h[5] = (((len & 0x07) as u8) << 5) | 0x1F;
+    [&h[..], payload].concat()
+}
+
+/// False MPEG sync prefixes must not stop a following zero-frame FLAC from probing as empty.
+#[test]
+fn zero_frame_flac_after_a_false_mpeg_sync_is_still_empty() {
+    let flac =
+        encode(&AudioBuffer::new(48_000, 1, 0), &EncodeOptions { format: FileFormat::Flac, bit_depth: BitDepth::Int16, dither: false, bwf: None })
+            .unwrap();
+    for junk in [vec![0xFF, 0xE0, 0x00], vec![0xFF, 0xF0, 0x00], vec![0xFF, 0xFB, 0xF0, 0x00]] {
+        let f = [junk, flac.clone()].concat();
+        let info = probe(&f, None).expect("empty FLAC after a false sync");
+        assert_eq!((info.format, info.sample_rate, info.channels, info.frames), (FileFormat::Flac, 48_000, 1, 0));
+        assert_eq!(decode(&f, None).unwrap().1.frames(), 0);
+    }
+}
+
+/// A false MPEG sync prefix must not let malformed CAF or MP4 size fields bypass the container preflight.
+#[test]
+fn a_false_sync_does_not_bypass_container_checks() {
+    let bad_caf = caf(&[
+        caf_desc(b"aac ", 0, 1024, 2, 0),
+        (b"pakt", 32, packet_table(1, 1024, &[0x82, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0])),
+        (b"data", -1, vec![0; 64]),
+    ]);
+    assert!(matches!(probe(&bad_caf, None), Err(AudioError::Malformed(m)) if m.contains("larger than the file")));
+    let f = [vec![0xFF, 0xE0, 0x00], bad_caf].concat();
+    assert!(matches!(probe(&f, None), Err(AudioError::Malformed(m)) if m.contains("larger than the file")));
+    assert!(matches!(decode(&f, None), Err(AudioError::Malformed(m)) if m.contains("larger than the file")));
+
+    let pcm = sample_entry(b"sowt", 0, &[], &[]);
+    let bad_mp4 = mp4(480, &pcm, |kind, mut a| {
+        if kind == b"stsz" {
+            a[12..16].copy_from_slice(&u32::MAX.to_be_bytes());
+        }
+        a
+    });
+    assert!(probe(&bad_mp4, None).is_err());
+    let f = [vec![0xFF, 0xE0, 0x00], bad_mp4].concat();
+    assert!(matches!(probe(&f, None), Err(AudioError::Malformed(m)) if m.contains("larger than the file")));
+    assert!(matches!(decode(&f, None), Err(AudioError::Malformed(m)) if m.contains("larger than the file")));
+}
+
+/// Container magic inside a valid ADTS payload must not override AAC detection or make probing fail.
+#[test]
+fn a_valid_adts_stream_with_incidental_container_magic_still_probes() {
+    let payload = [0u8; 400];
+    let mut frames: Vec<Vec<u8>> = (0..8).map(|_| adts_frame(&payload)).collect();
+    let at = 100; // Inside frame 2's payload, leaving every frame header intact.
+    frames[2][7 + at..7 + at + 12].copy_from_slice(b"caff\0\x01\0\0kuki");
+    let f: Vec<u8> = frames.concat();
+    assert_eq!(detect_format(&f, None), FileFormat::Aac);
+    let info = probe(&f, None).expect("valid ADTS with incidental container magic");
+    assert_eq!((info.format, info.sample_rate, info.channels), (FileFormat::Aac, 48_000, 2));
+}
+
+/// A later valid CAF must not excuse an earlier malformed container that the preflight or probe rejects.
+#[test]
+fn an_earlier_malformed_container_is_not_excused_by_a_later_valid_one() {
+    let malformed = caf(&[caf_desc(b"aac ", 0, 1024, 2, 0), (b"kuki", 1i64 << 50, vec![0; 8])]);
+    let pcm: Vec<u8> = (0..32i16).flat_map(|i| (i * 50).to_be_bytes()).collect();
+    let data = [vec![0; 4], pcm].concat();
+    let valid = caf(&[caf_desc(b"lpcm", 2, 1, 1, 16), (b"data", data.len() as i64, data)]);
+    let f = [vec![0u8; 32], malformed, valid].concat();
+    assert!(matches!(probe(&f, None), Err(AudioError::Malformed(m)) if m.contains("larger than the file")));
+    assert!(matches!(decode(&f, None), Err(AudioError::Malformed(m)) if m.contains("larger than the file")));
+}
+
+/// Truncated ID3 bodies, declared tag sizes beyond the file, and a complete tag with no audio after it are malformed
+/// for both probe and decode.
+#[test]
+fn truncated_or_oversized_id3_tags_are_malformed() {
+    let cases = vec![[&id3_header(100)[..], b"xx"].concat(), id3_header(0x0FFF_FFFF).to_vec(), id3_tag(b"tag")];
+    for f in cases {
+        assert!(matches!(probe(&f, None), Err(AudioError::Malformed(_))));
+        assert!(matches!(decode(&f, None), Err(AudioError::Malformed(_))));
+    }
 }
 
 #[test]

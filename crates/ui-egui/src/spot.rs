@@ -113,15 +113,17 @@ fn recorded_at(s: &Session, time_reference: u64) -> Samples {
     i64::try_from(time_reference).unwrap_or(0).saturating_sub(s.timecode_start)
 }
 
+/// One editable Spot field: accept the entered position when it parses and lies in `-MAX_POSITION..=MAX_POSITION`,
+/// or show the formatted value when read-only.
 fn spot_field_row(ui: &mut Ui, s: &Session, d: &mut Spot, i: usize, label: &str) {
     let show = |at: Samples, f: TimeFormat| s.format_position(at, f);
-    ui.label(label);
+    let lab = ui.label(label);
     if d.editable(i) {
-        let id = Id::new(("spot_field", i));
+        let id = Id::unique(("spot_field", i));
         if !ui.memory(|m| m.has_focus(id)) {
             d.text[i] = show(d.value(i), d.format);
         }
-        let r = ui.add(TextEdit::singleline(&mut d.text[i]).id(id).font(mono(13.0)).desired_width(150.0));
+        let r = ui.add(TextEdit::singleline(&mut d.text[i]).id(id).font(mono(13.0)).desired_width(150.0)).labelled_by(lab.id);
         if r.changed()
             && let Ok(v) = s.parse_position(&d.text[i], d.format)
             && (-MAX_POSITION..=MAX_POSITION).contains(&v)
@@ -152,12 +154,13 @@ fn original_time_stamp_row(ui: &mut Ui, s: &Session, d: &mut Spot, at: Samples) 
 /// The dialog's fields; the caller adds OK and Cancel.
 pub fn fields(ui: &mut Ui, s: &Session, d: &mut Spot) {
     egui::Grid::new("spot").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
-        ui.label("Time Scale");
-        egui::ComboBox::from_id_salt("spot_scale").selected_text(d.format.label()).show_ui(ui, |ui| {
+        let scale = ui.label("Time Scale");
+        let time_scale = egui::ComboBox::from_id_salt("spot_scale").selected_text(d.format.label()).show_ui(ui, |ui| {
             for f in TimeFormat::ALL {
                 ui.selectable_value(&mut d.format, f, f.label());
             }
         });
+        time_scale.response.labelled_by(scale.id);
         ui.end_row();
         for (i, label) in FIELDS.into_iter().enumerate() {
             if i == 1 && matches!(d.target, Target::Trim { .. }) {

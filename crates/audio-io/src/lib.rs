@@ -137,14 +137,17 @@ impl Default for EncodeOptions {
     }
 }
 
-/// Size of an ID3v2 tag at the start of `b`, if there is one.
+/// Size of an ID3v2 tag at the start of `b`, if there is one. The 10-byte footer flag (`0x10`)
+/// exists only in ID3v2.4; in v2.2/v2.3 that bit is reserved and must not extend the skip.
 fn id3v2_len(b: &[u8]) -> Option<usize> {
     if b.get(..3)? != b"ID3" {
         return None;
     }
+    let version = *b.get(3)?;
     let flags = *b.get(5)?;
     let size = b.get(6..10)?.iter().fold(0usize, |acc, &x| (acc << 7) | usize::from(x & 0x7F));
-    Some(10 + size + if flags & 0x10 != 0 { 10 } else { 0 })
+    let footer = version == 4 && flags & 0x10 != 0;
+    Some(10 + size + if footer { 10 } else { 0 })
 }
 
 fn detect_by_magic(b: &[u8], depth: u32) -> Option<FileFormat> {
