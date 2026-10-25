@@ -64,9 +64,9 @@ pub struct AudioSystem {
     pub inputs: Vec<DeviceInfo>,
 }
 
-#[allow(deprecated)]
-fn device_name(d: &cpal::Device) -> Option<String> {
-    d.name().ok()
+/// The name the host gives `d`, if it can produce a description for it.
+pub(crate) fn device_name(d: &cpal::Device) -> Option<String> {
+    d.description().ok().map(|description| description.name().to_owned())
 }
 
 fn describe(d: &cpal::Device, default_name: Option<&str>, output: bool) -> Option<DeviceInfo> {
@@ -78,7 +78,7 @@ fn describe(d: &cpal::Device, default_name: Option<&str>, output: bool) -> Optio
     };
     let max_channels = ranges.iter().map(cpal::SupportedStreamConfigRange::channels).max().unwrap_or(0);
     let sample_rates =
-        STANDARD_RATES.iter().copied().filter(|r| ranges.iter().any(|c| c.min_sample_rate().0 <= *r && c.max_sample_rate().0 >= *r)).collect();
+        STANDARD_RATES.iter().copied().filter(|r| ranges.iter().any(|c| c.min_sample_rate() <= *r && c.max_sample_rate() >= *r)).collect();
     let (mut buffer_min, mut buffer_max) = (None::<u32>, None::<u32>);
     for c in &ranges {
         if let cpal::SupportedBufferSize::Range { min, max } = c.buffer_size() {

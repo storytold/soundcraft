@@ -70,7 +70,7 @@ impl AutoParam {
         match self {
             AutoParam::Volume => "volume".into(),
             AutoParam::Pan(0) => "pan".into(),
-            AutoParam::Pan(i) => format!("pan {}", i + 1),
+            AutoParam::Pan(i) => format!("pan {}", u16::from(*i) + 1),
             AutoParam::Mute => "mute".into(),
             AutoParam::SendLevel(i) => format!("send {} level", slot_letter(*i)),
             AutoParam::SendPan(i) => format!("send {} pan", slot_letter(*i)),
@@ -199,7 +199,11 @@ impl AutomationLane {
         }
         self.set_point(start, value);
         self.set_point(end, value);
-        self.set_point(end.saturating_add(1), after);
+        let anchor = end.saturating_add(1);
+        // A real breakpoint already at `end + 1` keeps its own value.
+        if self.points.binary_search_by(|p| p.at.cmp(&anchor)).is_err() {
+            self.set_point(anchor, after);
+        }
     }
 
     /// Thin: remove points whose removal changes the curve by less than `tolerance`.
@@ -252,6 +256,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pan_label_max_does_not_overflow() {
+        assert_eq!(AutoParam::Pan(255).label(), "pan 256");
+    }
+
+    #[test]
     fn interpolation_and_steps() {
         let mut l = AutomationLane::new(AutoParam::Volume);
         assert_eq!(l.value_at(10, -3.0), -3.0);
@@ -264,6 +273,15 @@ mod tests {
         m.set_point(100, 1.0);
         assert_eq!(m.value_at(99, 0.0), 0.0);
         assert_eq!(m.value_at(100, 0.0), 1.0);
+    }
+
+    #[test]
+    fn write_range_keeps_point_right_after_end() {
+        let mut l = AutomationLane::new(AutoParam::Volume);
+        l.set_point(0, 0.0);
+        l.set_point(11, -100.0);
+        l.write_range(2, 10, -20.0, 0.0);
+        assert_eq!(l.value_at(11, 0.0), -100.0);
     }
 
     #[test]

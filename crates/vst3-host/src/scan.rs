@@ -79,7 +79,7 @@ pub fn os_search_paths(os: Os, home: Option<PathBuf>, common_program_files: Opti
 
 /// True when the path names a VST3 plugin (`*.vst3`, case-insensitive).
 pub fn is_vst3_path(p: &Path) -> bool {
-    p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("vst3"))
+    p.extension().and_then(std::ffi::OsStr::to_str).is_some_and(|e| e.eq_ignore_ascii_case("vst3"))
 }
 
 /// Recursively collects `.vst3` bundles and files under `dirs` (missing directories are skipped).
@@ -181,7 +181,7 @@ pub fn bundle_binary_for(os: Os, path: &Path) -> Option<PathBuf> {
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.is_file())
-            .filter(|p| ext.is_none_or(|e| p.extension().and_then(|x| x.to_str()).is_some_and(|x| x.eq_ignore_ascii_case(e))))
+            .filter(|p| ext.is_none_or(|e| p.extension().and_then(std::ffi::OsStr::to_str).is_some_and(|x| x.eq_ignore_ascii_case(e))))
             .take(64)
             .collect();
         files.sort();

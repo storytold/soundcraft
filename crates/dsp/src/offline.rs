@@ -65,16 +65,26 @@ pub fn normalize(ch: &mut [Vec<f32>], target_db: f32, per_channel: bool) {
         for c in ch.iter_mut() {
             let p = peak(std::slice::from_ref(c));
             if p > 0.0 {
-                let g = target / p;
-                c.iter_mut().for_each(|s| *s *= g);
+                scale_to(c.iter_mut(), target, p);
             }
         }
     } else {
         let p = peak(ch);
         if p > 0.0 {
-            let g = target / p;
-            ch.iter_mut().flatten().for_each(|s| *s *= g);
+            scale_to(ch.iter_mut().flatten(), target, p);
         }
+    }
+}
+
+/// Scales samples whose peak is `p` to `target`. A subnormal `p` makes the f32 gain overflow to
+/// infinity, so that case scales in f64.
+fn scale_to<'a>(samples: impl Iterator<Item = &'a mut f32>, target: f32, p: f32) {
+    let g = target / p;
+    if g.is_finite() {
+        samples.for_each(|s| *s *= g);
+    } else {
+        let g = f64::from(target) / f64::from(p);
+        samples.for_each(|s| *s = (f64::from(*s) * g) as f32);
     }
 }
 
@@ -216,16 +226,95 @@ fn resample_ratio(ch: &[Vec<f32>], ratio: f64, out_len: usize) -> Vec<Vec<f32>> 
     ch.iter().map(|c| resample_channel(c, ratio, out_len, &table)).collect()
 }
 
+/// Most kernel weights a [`Polyphase`] bank may hold (16 MiB of f32).
+const MAX_POLYPHASE_WEIGHTS: usize = 1 << 22;
+
+/// The windowed-sinc kernel of [`resample_channel`] precomputed for every phase of a rational
+/// rate change `from` → `to` (reduced to `step` / `phases`). Output sample `n` reads input time
+/// `n * step / phases`: whole part `i`, phase `p`. Its taps are input samples `i + first ..`, one
+/// weight each, so every output is one dot product over contiguous memory instead of a table
+/// lookup and interpolation per tap. The weights are the ones `resample_channel` computes, taps
+/// beyond the kernel's half width weigh 0, and taps are summed in the same order.
+struct Polyphase {
+    phases: u64,
+    step: u64,
+    /// Offset of the first tap from `i`.
+    first: i64,
+    taps: usize,
+    /// `phases * taps` weights, phase-major.
+    weights: Vec<f32>,
+}
+
+impl Polyphase {
+    /// `None` when the bank would be too large (rates with no small common ratio); the caller
+    /// then falls back to [`resample_channel`].
+    fn new(from: u32, to: u32, table: &SincTable) -> Option<Polyphase> {
+        let g = gcd(from, to);
+        let (step, phases) = (u64::from(from / g), u64::from(to / g));
+        let hw = table.half_width;
+        let first = (-hw).floor() as i64;
+        let last = hw.ceil() as i64 + 1;
+        let taps = usize::try_from(last - first + 1).ok()?;
+        if usize::try_from(phases).ok()?.checked_mul(taps)? > MAX_POLYPHASE_WEIGHTS {
+            return None;
+        }
+        let mut weights = Vec::with_capacity(taps * phases as usize);
+        for p in 0..phases {
+            let frac = p as f64 / phases as f64;
+            for k in first..first + taps as i64 {
+                let d = frac - k as f64;
+                weights.push(if d.abs() <= hw { table.at(d) } else { 0.0 });
+            }
+        }
+        Some(Polyphase { phases, step, first, taps, weights })
+    }
+
+    fn run(&self, x: &[f32], out_len: usize) -> Vec<f32> {
+        let len = x.len() as i64;
+        let mut out = Vec::with_capacity(out_len);
+        for n in 0..out_len as u64 {
+            let Some(pos) = n.checked_mul(self.step) else { break };
+            let (i, p) = ((pos / self.phases) as i64, (pos % self.phases) as usize);
+            let w = self.weights.get(p * self.taps..(p + 1) * self.taps).unwrap_or_default();
+            let start = i + self.first;
+            let acc = match usize::try_from(start).ok().and_then(|s| x.get(s..s + self.taps)) {
+                // Inside the signal: a plain dot product.
+                Some(xs) => xs.iter().zip(w).fold(0.0f32, |a, (v, k)| a + v * k),
+                // At the edges, taps outside the signal are skipped, as `resample_channel` does.
+                None => (0..self.taps as i64)
+                    .filter(|k| (0..len).contains(&(start + k)))
+                    .fold(0.0f32, |a, k| a + x.get((start + k) as usize).copied().unwrap_or(0.0) * w.get(k as usize).copied().unwrap_or(0.0)),
+            };
+            out.push(acc);
+        }
+        out.resize(out_len, 0.0);
+        out
+    }
+}
+
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a.max(1)
+}
+
 /// High-quality windowed-sinc sample-rate conversion from `from` Hz to `to` Hz.
 pub fn resample(ch: &[Vec<f32>], from: u32, to: u32) -> Vec<Vec<f32>> {
     if from == 0 || to == 0 || from == to {
         return ch.to_vec();
     }
     let ratio = f64::from(to) / f64::from(from);
+    let cutoff = if ratio < 1.0 { ratio * 0.94 } else { 0.97 };
+    let table = SincTable::new(cutoff);
+    let bank = Polyphase::new(from, to, &table);
     ch.iter()
         .map(|c| {
             let out_len = ((c.len() as f64 * ratio).round() as usize).min(MAX_OFFLINE_SAMPLES);
-            resample_ratio(std::slice::from_ref(c), ratio, out_len).into_iter().next().unwrap_or_default()
+            match &bank {
+                Some(b) => b.run(c, out_len),
+                None => resample_channel(c, ratio, out_len, &table),
+            }
         })
         .collect()
 }
@@ -361,6 +450,78 @@ pub fn pitch_shift(ch: &[Vec<f32>], semitones: f32, sample_rate: f32) -> Vec<Vec
         o.truncate(c.len());
     }
     out
+}
+
+/// Which way [`speed_ramp`] ramps the playback speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeedRampChange {
+    /// From normal speed down to a complete stop.
+    SlowDown,
+    /// From a complete stop up to normal speed.
+    SpeedUp,
+}
+
+/// How much of the input [`speed_ramp`] plays, and how long the result is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeedRampSelection {
+    /// The result is as long as the input. Two thirds of the input are played: the first two
+    /// thirds for Slow Down, the last two thirds for Speed Up, so each joins its neighbour
+    /// without a jump.
+    FitTo,
+    /// All of the input is played, and the result is 150 % of its length.
+    Extend,
+}
+
+/// Plays `ch` with the speed ramping between normal speed and a complete stop, so the pitch follows
+/// the speed. The speed is `1 - u²` for Slow Down and `1 - (1 - u)²` for Speed Up, where `u`
+/// runs from 0 to 1 over the result; both curves average 2/3 of normal speed. With `fades`, the
+/// gain follows the same curve: a fade-out for Slow Down and a fade-in for Speed Up. Every channel
+/// is read at the same positions, and a channel shorter than the others is silent past its end.
+pub fn speed_ramp(ch: &[Vec<f32>], change: SpeedRampChange, selection: SpeedRampSelection, fades: bool) -> Vec<Vec<f32>> {
+    let len = max_len(ch) as f64;
+    let (total, first, played) = match selection {
+        SpeedRampSelection::Extend => ((len * 1.5).round(), 0.0, len),
+        SpeedRampSelection::FitTo => {
+            let played = len * 2.0 / 3.0;
+            (len, if change == SpeedRampChange::SlowDown { 0.0 } else { len - played }, played)
+        }
+    };
+    let out_len = (total as usize).min(MAX_OFFLINE_SAMPLES);
+    let table = SincTable::new(0.97);
+    let hw = table.half_width;
+    // The fraction of the played input reached at `u`, and the speed there (0 to 1).
+    let at = |u: f64| -> (f64, f64) {
+        match change {
+            SpeedRampChange::SlowDown => ((3.0 * u - u * u * u) / 2.0, 1.0 - u * u),
+            SpeedRampChange::SpeedUp => {
+                let r = 1.0 - u;
+                (1.0 - (3.0 * r - r * r * r) / 2.0, 1.0 - r * r)
+            }
+        }
+    };
+    // The interpolation reads the first or last sample of the input for taps before or after it.
+    let last = (len as i64 - 1).max(0);
+    ch.iter()
+        .map(|x| {
+            (0..out_len)
+                .map(|n| {
+                    let (pos, speed) = at(n as f64 / total);
+                    let t = first + played * pos;
+                    let lo = (t - hw).ceil() as i64;
+                    let hi = (t + hw).floor() as i64;
+                    let mut acc = 0.0f32;
+                    let mut j = lo;
+                    while j <= hi {
+                        if let Some(&v) = x.get(j.clamp(0, last) as usize) {
+                            acc += v * table.at(t - j as f64);
+                        }
+                        j += 1;
+                    }
+                    if fades { acc * speed as f32 } else { acc }
+                })
+                .collect()
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -651,6 +812,36 @@ pub fn peak_db(ch: &[Vec<f32>]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The polyphase bank gives what the per-tap kernel gives (it only moves where the weights
+    /// are computed), at common rate pairs, both directions, and at the signal's edges.
+    #[test]
+    fn polyphase_resample_matches_the_per_tap_kernel() {
+        let x: Vec<f32> = (0..3_000).map(|i| (i as f32 * 0.071).sin() * 0.6 + (i as f32 * 0.53).sin() * 0.3).collect();
+        let pairs = [(44_100, 48_000), (48_000, 44_100), (48_000, 96_000), (96_000, 48_000), (22_050, 48_000), (8_000, 44_100), (48_000, 22_050)];
+        for (from, to) in pairs {
+            let ratio = f64::from(to) / f64::from(from);
+            let out_len = ((x.len() as f64 * ratio).round() as usize).min(MAX_OFFLINE_SAMPLES);
+            let cutoff = if ratio < 1.0 { ratio * 0.94 } else { 0.97 };
+            let table = SincTable::new(cutoff);
+            let reference = resample_channel(&x, ratio, out_len, &table);
+            let bank = Polyphase::new(from, to, &table).expect("small common ratio");
+            let fast = bank.run(&x, out_len);
+            assert_eq!(fast.len(), reference.len(), "{from}->{to}");
+            let worst = fast.iter().zip(&reference).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst < 1e-5, "{from}->{to}: worst difference {worst}");
+            assert_eq!(resample(std::slice::from_ref(&x), from, to)[0], fast, "resample uses the bank");
+        }
+        // Signals shorter than the kernel are all edge.
+        let short = [0.5f32, -0.25, 0.75];
+        let table = SincTable::new(0.97);
+        let reference = resample_channel(&short, 48_000.0 / 44_100.0, 3, &table);
+        let fast = Polyphase::new(44_100, 48_000, &table).expect("bank").run(&short, 3);
+        assert!(fast.iter().zip(&reference).all(|(a, b)| (a - b).abs() < 1e-6), "{fast:?} {reference:?}");
+        // Rates with no small common ratio fall back to the per-tap kernel.
+        assert!(Polyphase::new(44_100, 96_001, &table).is_none());
+        assert_eq!(resample(&[short.to_vec()], 44_100, 96_001)[0].len(), 7);
+    }
 
     #[test]
     fn fade_shapes_endpoints() {

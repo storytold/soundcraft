@@ -340,7 +340,6 @@ impl PluginEditor for ClapEditor {
 
     fn idle(&mut self) -> Vec<(String, f32)> {
         let raw = self.link.idle();
-        let _ = self.link.host().dirty.swap(false, Ordering::Relaxed);
         let mut out: Vec<(String, f32)> = Vec::new();
         for (cid, v) in raw {
             let Some(i) = self.ids.iter().position(|&x| x == cid) else { continue };
@@ -353,5 +352,9 @@ impl PluginEditor for ClapEditor {
             }
         }
         out
+    }
+
+    fn state_changed(&mut self) -> bool {
+        self.link.host().dirty.swap(false, Ordering::Relaxed)
     }
 }

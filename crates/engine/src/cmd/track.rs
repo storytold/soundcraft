@@ -1,9 +1,11 @@
 //! Track menu commands.
+use super::{
+    CommandSpec, always, bad, bool_or, has_selection, has_tracks, i64_or, range_param, str_param, track_param, tracks_param, tracks_required,
+};
 
-use super::*;
-use crate::cmd;
-use serde_json::json;
-use soundcraft_model::{ChannelFormat, Group, GroupId, Playlist, Route, Session, Track, TrackHeight, TrackKind};
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
+use soundcraft_model::{ChannelFormat, ClipContent, Group, GroupId, Playlist, Route, Session, Track, TrackHeight, TrackId, TrackKind};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -412,6 +414,8 @@ fn split_mono(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.split_into_mono", p)?;
     let s = e.session_mut();
     let mut out = Vec::new();
+    let mut mono_sources = std::collections::BTreeMap::new();
+    let mut copied_samples = 0usize;
     for t in tracks {
         let Some(src) = s.track(t).cloned() else { continue };
         if src.channels() < 2 || src.kind != TrackKind::Audio {
@@ -427,12 +431,46 @@ fn split_mono(e: &mut Engine, p: &Value) -> Result<Value> {
             let mut clips = src.clips().to_vec();
             for c in &mut clips {
                 c.id = s.new_clip_id();
-                // Mono tracks read channel 0 of the source; record the channel in the name for now.
+                if let ClipContent::Audio { source, .. } = &mut c.content {
+                    let audio =
+                        s.pool.get(*source).ok_or_else(|| bad("track.split_into_mono", format!("audio unavailable for clip `{}`", c.name)))?;
+                    let channels = audio.buffer.channels.len();
+                    if channels == 0 {
+                        return Err(bad("track.split_into_mono", format!("audio has no channels for clip `{}`", c.name)));
+                    }
+                    // Match the renderer's channel wrapping when a track is wider than its source.
+                    // An already-mono source can be shared without copying it.
+                    if channels > 1 {
+                        let key = (*source, ch % channels);
+                        let mono = if let Some(&id) = mono_sources.get(&key) {
+                            id
+                        } else {
+                            let samples =
+                                audio.buffer.channels.get(key.1).ok_or_else(|| bad("track.split_into_mono", "source channel unavailable"))?;
+                            copied_samples = copied_samples
+                                .checked_add(samples.len())
+                                .filter(|&n| n <= crate::io::MAX_IMPORT_SAMPLES)
+                                .ok_or_else(|| bad("track.split_into_mono", "split would copy too much audio"))?;
+                            // Keep the full channel: the cloned clips retain their offsets, stretch,
+                            // gain and fades, and every reader sees genuine mono media (including saves).
+                            let buf = soundcraft_audio_io::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![samples.clone()] };
+                            let original = s.source(*source);
+                            let name = format!("{}.{suffix}.wav", original.map_or(c.name.as_str(), |source| source.name.as_str()));
+                            let time_reference = original.map_or(0, |source| source.time_reference);
+                            let id = crate::io::add_source(s, &name, buf, None, soundcraft_audio_io::FileFormat::Wav);
+                            if let Some(source) = s.sources.iter_mut().find(|source| source.id == id) {
+                                source.time_reference = time_reference;
+                            }
+                            mono_sources.insert(key, id);
+                            id
+                        };
+                        *source = mono;
+                    }
+                }
                 c.name = format!("{}.{suffix}", c.name);
             }
             if let Some(tr) = s.track_mut(id) {
                 tr.mixer.pan = vec![if ch == 0 { -1.0 } else { 1.0 }];
-                tr.comments = format!("source_channel={ch}");
                 if let Some(pl) = tr.playlist_mut() {
                     pl.clips = clips;
                 }
@@ -702,15 +740,26 @@ fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
 fn rename(e: &mut Engine, p: &Value) -> Result<Value> {
     let t = track_param(e, "track.rename", p, "track")?.ok_or_else(|| bad("track.rename", "`track` required"))?;
     let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad("track.rename", "`name` required"))?;
-    let s = e.session_mut();
+    // Validate the stored name, including its existing 64-character limit.
+    let name: String = name.chars().take(64).collect();
+    let s = e.session();
     if s.tracks.iter().any(|x| x.name == name && x.id != t) {
         return Err(bad("track.rename", format!("a track named `{name}` already exists")));
     }
-    let name: String = name.chars().take(64).collect();
     let bus = s.track(t).and_then(|track| match (track.kind, &track.mixer.input) {
         (TrackKind::Folder, Route::Bus(bus)) => Some(*bus),
         _ => None,
     });
+    let track = s.track(t).ok_or_else(|| bad("track.rename", "unknown track"))?;
+    if track.name == name
+        && bus.is_none_or(|id| {
+            let expected = unique_folder_bus_name(s, &format!("{name} Bus"), Some(id));
+            s.bus(id).is_none_or(|bus| bus.name == expected)
+        })
+    {
+        return Ok(json!({"name": name}));
+    }
+    let s = e.session_mut();
     if let Some(track) = s.track_mut(t) {
         track.name.clone_from(&name);
     }
@@ -944,7 +993,6 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn comp_from_alternate_playlist() {
         let mut e = crate::demo::demo_engine();

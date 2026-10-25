@@ -1,10 +1,10 @@
 //! More Options toggles, the Setup menu (hardware, playback engine, I/O, timecode, click,
 //! shortcuts, MIDI setup) and File › Import › Session Data.
+use super::{CommandSpec, always, bad, command_specs, i64_or, str_param, track_param, tracks_param};
 
 use super::more_util::{set_text, store_value, text, toggle_flag, values_with_prefix};
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, EngineError, Result, cmd};
+use serde_json::{Value, json};
 use soundcraft_model::{BusId, ChannelFormat, ClipContent, OutputPath, Route, Session, SourceId, TrackId, TrackKind};
 use soundcraft_time::Timecode;
 use std::path::Path;
@@ -461,6 +461,8 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
         s.sources.push(ns);
     }
     let mut out = Vec::new();
+    // The donor's Auto Rename schemes come along under new keys, shared as they were.
+    let mut names: std::collections::BTreeMap<u64, u64> = Default::default();
     for mut tr in picked {
         tr.id = TrackId(s.alloc());
         tr.name = s.unique_track_name(&tr.name);
@@ -474,6 +476,14 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
                 {
                     *source = *n;
                 }
+                c.auto_name = c.auto_name.and_then(|k| {
+                    let scheme = other.auto_names.get(&k)?;
+                    Some(*names.entry(k).or_insert_with(|| {
+                        let (key, id) = (s.alloc(), crate::new_scheme_id(s));
+                        s.auto_names.insert(key, soundcraft_model::AutoName { id, ..scheme.clone() });
+                        key
+                    }))
+                });
             }
         }
         // The donor's source ids mean nothing here: remap the sample, or drop it when it didn't come along.
@@ -503,7 +513,6 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn option_flags_toggle() {
         let mut e = Engine::default();
@@ -599,6 +608,29 @@ mod tests {
         assert!(e.session().pool.get(src).is_some());
         assert_eq!(e.session().track_by_name("Keys").unwrap().clips().len(), 1);
         assert!(e.execute("file.import_session_data", &json!({"path": path, "tracks": ["Nope"]})).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_session_data_brings_auto_rename_schemes_under_new_keys() {
+        let dir = std::env::temp_dir().join(format!("sc-import-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("donor.scraft").to_string_lossy().into_owned();
+        let mut donor = crate::demo::demo_engine();
+        let kick: Vec<_> = donor.session().track_by_name("Kick").unwrap().clips().iter().map(|c| c.id.0).collect();
+        donor.execute("clip.auto_rename", &json!({"clips": kick, "name": "Hit", "number": 5})).unwrap();
+        crate::io::save_session(&mut donor, &path).unwrap();
+        let mut e = crate::demo::demo_engine();
+        let bass = e.session().track_by_name("Bass").unwrap().clips()[0].id;
+        e.execute("clip.auto_rename", &json!({"clips": [bass], "name": "Low"})).unwrap();
+        e.execute("file.import_session_data", &json!({"path": path, "tracks": ["Kick"]})).unwrap();
+        let s = e.session();
+        assert_eq!(s.auto_names.len(), 2, "the donor's scheme comes in beside this session's");
+        let imported = s.tracks.iter().rfind(|t| t.name.starts_with("Kick")).unwrap();
+        let keys: std::collections::BTreeSet<_> = imported.clips().iter().map(|c| c.auto_name).collect();
+        assert_eq!(keys.len(), 1, "the imported clips still share one scheme");
+        let key = keys.into_iter().next().flatten().unwrap();
+        assert_eq!((s.auto_names[&key].name.as_str(), s.auto_names[&key].number), ("Hit", 5));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

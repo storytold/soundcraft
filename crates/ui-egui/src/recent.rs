@@ -13,6 +13,7 @@
 
 use crate::SoundApp;
 use serde_json::json;
+use std::ffi::OsStr;
 use std::path::Path;
 
 /// How many sessions the menu keeps.
@@ -45,8 +46,8 @@ pub fn note(list: &mut Vec<String>, path: &str) -> bool {
 /// "name — folder" for a session path.
 fn label(path: &str) -> String {
     let p = Path::new(path);
-    let name = p.file_stem().and_then(|n| n.to_str()).unwrap_or(path);
-    match p.parent().and_then(|d| d.file_name()).and_then(|n| n.to_str()) {
+    let name = p.file_stem().and_then(OsStr::to_str).unwrap_or(path);
+    match p.parent().and_then(Path::file_name).and_then(OsStr::to_str) {
         Some(folder) => format!("{name}  —  {folder}"),
         None => name.to_string(),
     }

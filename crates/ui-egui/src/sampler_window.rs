@@ -8,6 +8,7 @@ use crate::theme::{Tokens, mono, regular};
 use egui::{Align2, Color32, CursorIcon, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
 use soundcraft_model::{Insert, TrackId};
+use std::ffi::OsStr;
 use std::path::Path;
 
 /// The built-in Sampler's plugin id.
@@ -21,7 +22,7 @@ const MARKERS: [(&str, bool); 3] = [("start", false), ("loop_start", true), ("lo
 
 /// Whether a file name looks like audio the sampler can load.
 pub fn is_audio_name(name: &str) -> bool {
-    Path::new(name).extension().and_then(|x| x.to_str()).is_some_and(|x| AUDIO_EXTS.contains(&x.to_ascii_lowercase().as_str()))
+    Path::new(name).extension().and_then(OsStr::to_str).is_some_and(|x| AUDIO_EXTS.contains(&x.to_ascii_lowercase().as_str()))
 }
 
 /// Sampler parameters that are MIDI notes.

@@ -52,6 +52,10 @@ fn an_exit_without_quit_offers_unsaved_changes_at_the_next_launch() {
     let path = dir.join("Song.scraft");
     let mut first = launch(&root);
     first.run("session.save_as", json!({"path": path})).unwrap();
+    // Leftovers are offered only when newer than their session file; on filesystems with coarse
+    // timestamps (tmpfs) the save and the autosave right after it can share one mtime (#579).
+    let then = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
+    std::fs::File::options().write(true).open(&path).unwrap().set_modified(then).unwrap();
     first.run("track.new", json!({"name": "Vocal"})).unwrap();
     first.close_autosave();
     drop(first);

@@ -27,6 +27,9 @@ serde_json.workspace = true
 log.workspace = true
 image.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5"
+
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 

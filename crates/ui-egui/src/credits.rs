@@ -210,10 +210,7 @@ impl Default for View {
     }
 }
 
-/// About ▸ Contributors: a name toggle, a sort, and the list as a grab bag or a table.
-pub fn contributors_ui(ui: &mut egui::Ui) {
-    let id = egui::Id::new("credits_view");
-    let mut v = ui.data_mut(|d| d.get_temp::<View>(id)).unwrap_or_default();
+fn contributors_toolbar(ui: &mut egui::Ui, v: &mut View) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Show");
         for m in NameMode::ALL {
@@ -242,6 +239,24 @@ pub fn contributors_ui(ui: &mut egui::Ui) {
             v.table = true;
         }
     });
+}
+
+fn contributors_grab_bag(ui: &mut egui::Ui, list: &[&Contributor], names: NameMode) {
+    ui.horizontal_wrapped(|ui| {
+        for (i, c) in list.iter().enumerate() {
+            if i > 0 {
+                ui.label(RichText::new("·").weak());
+            }
+            ui.hyperlink_to(c.name(names), format!("https://github.com/{}", c.login)).on_hover_text(c.summary());
+        }
+    });
+}
+
+/// About ▸ Contributors: a name toggle, a sort, and the list as a grab bag or a table.
+pub fn contributors_ui(ui: &mut egui::Ui) {
+    let id = egui::Id::new("credits_view");
+    let mut v = ui.data_mut(|d| d.get_temp::<View>(id)).unwrap_or_default();
+    contributors_toolbar(ui, &mut v);
     let list = sorted(CONTRIBUTORS, v.names, v.key, v.ascending);
     ui.label(RichText::new(format!("{} contributors · {} commits", list.len(), group(TOTAL_COMMITS))).small().weak());
     ui.separator();
@@ -251,14 +266,7 @@ pub fn contributors_ui(ui: &mut egui::Ui) {
         } else if v.table {
             table(ui, &list, &mut v);
         } else {
-            ui.horizontal_wrapped(|ui| {
-                for (i, c) in list.iter().enumerate() {
-                    if i > 0 {
-                        ui.label(RichText::new("·").weak());
-                    }
-                    ui.hyperlink_to(c.name(v.names), format!("https://github.com/{}", c.login)).on_hover_text(c.summary());
-                }
-            });
+            contributors_grab_bag(ui, &list, v.names);
         }
     });
     ui.data_mut(|d| d.insert_temp(id, v));

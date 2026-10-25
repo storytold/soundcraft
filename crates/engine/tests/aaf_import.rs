@@ -121,7 +121,7 @@ fn sample_rate_changes_and_confined_media_are_rejected() {
     assert!(e.execute("file.import_aaf", &f.params).unwrap_err().to_string().contains("sample rates differ"));
     let restricted = f.dir.join("allowed");
     std::fs::create_dir(&restricted).unwrap();
-    let roots = file_access::AutomationRoots::new(Some(&restricted), None).unwrap();
+    let roots = file_access::AutomationRoots::new(&[restricted.as_path()], &[]).unwrap();
     let mut e = existing();
     assert!(file_access::confine(roots.as_ref(), || e.execute("file.import_aaf", &f.params)).is_err());
     assert_eq!(e.session().tracks.len(), 1);

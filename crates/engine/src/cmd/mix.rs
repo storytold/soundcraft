@@ -1,8 +1,10 @@
 //! Mixer, insert, send and automation commands.
+use super::{
+    CommandSpec, always, bad, bool_or, f32_or, has_range, has_selection, has_tracks, i64_or, position_param, range_param, str_param, tracks_required,
+};
 
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, EngineError, Result, cmd};
+use serde_json::{Value, json};
 use soundcraft_model::{AutoParam, AutomationMode, INSERT_SLOTS, Insert, SEND_SLOTS, SendSlot, Session, TrackId};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -444,7 +446,7 @@ fn send(e: &mut Engine, p: &Value) -> Result<Value> {
     let t = tracks_required(e, "mix.send", p)?.first().copied().ok_or_else(|| bad("mix.send", "no track"))?;
     let explicit = optional_slot(p, "mix.send", SEND_SLOTS)?;
     let s = e.session_mut();
-    let bid = s.add_bus(&bus, soundcraft_model::ChannelFormat::Stereo);
+    let bid = s.bus_by_name(&bus).map(|b| b.id).ok_or_else(|| bad("mix.send", format!("no bus named \"{bus}\"")))?;
     let tr = s.track_mut(t).ok_or_else(|| bad("mix.send", "no track"))?;
     let slot = explicit.or_else(|| tr.mixer.sends.iter().position(Option::is_none)).ok_or_else(|| bad("mix.send", "all send slots are in use"))?;
     // Re-targeting an existing send keeps its level, pan, mute and pre/post setting.
@@ -695,23 +697,35 @@ fn clip_gain_to_vol(e: &mut Engine, p: &Value) -> Result<Value> {
     for t in &tracks {
         let Some(tr) = s.track_mut(*t) else { continue };
         let base = tr.mixer.volume_db;
+        // An existing lane overrides the fader, so the clip gain rides on top of the lane value.
+        let old = tr.lane(&AutoParam::Volume).cloned();
+        let level = |at: i64| old.as_ref().map_or(base, |l| l.value_at(at, base));
+        let mut pins = Vec::new();
         let mut pts = Vec::new();
         if let Some(pl) = tr.playlist_mut() {
             for c in pl.clips.iter_mut().filter(|c| c.range().overlaps(&r)) {
-                if c.gain_env.is_empty() {
-                    pts.push((c.start, base + c.gain_db));
-                    pts.push((c.end() - 1, base + c.gain_db));
-                } else {
-                    for (o, db) in &c.gain_env {
-                        pts.push((c.start + o, base + c.gain_db + db));
-                    }
+                // Pin the unchanged level just outside the clip so the neighbouring segments keep their shape.
+                if c.start > 0 {
+                    pins.push((c.start - 1, level(c.start - 1)));
+                }
+                pins.push((c.end(), level(c.end())));
+                // The clip edges always get a point, so the envelope's first and last values hold out to them.
+                let mut ats = vec![c.start, c.end() - 1];
+                ats.extend(c.gain_env.iter().map(|&(o, _)| c.start + o).filter(|&at| at > c.start && at < c.end() - 1));
+                // The lane's own points inside the clip carry the clip gain too.
+                if let Some(l) = &old {
+                    ats.extend(l.points.iter().map(|pt| pt.at).filter(|&at| at > c.start && at < c.end() - 1));
+                }
+                for at in ats {
+                    pts.push((at, level(at) + c.gain_db + env_db(&c.gain_env, at - c.start)));
                 }
                 c.gain_db = 0.0;
                 c.gain_env.clear();
             }
         }
         let lane = tr.lane_mut(&AutoParam::Volume);
-        for (at, v) in pts {
+        // Pins first, so a neighbouring clip's converted points win where they meet.
+        for (at, v) in pins.into_iter().chain(pts) {
             lane.set_point(at, v);
         }
     }
@@ -871,6 +885,77 @@ mod tests {
     }
 
     #[test]
+    fn clip_gain_to_volume_keeps_the_existing_lane() {
+        let clip_gain_to_volume = |points: &[(i64, f32)], env: Vec<(i64, f32)>| {
+            let (mut e, t) = tone_session(points);
+            let clip = e.session().track(t).unwrap().clips()[0].id;
+            let c = e.session_mut().find_clip_mut(clip).unwrap();
+            c.gain_db = 6.0;
+            c.gain_env = env;
+            let before = rendered(e.session());
+            e.execute("automation.clip_gain_to_volume", &json!({"track": t.0, "start": 0, "end": 8192})).unwrap();
+            let after = rendered(e.session());
+            assert!(e.session().find_clip(clip).unwrap().1.gain_db == 0.0);
+            (before, after)
+        };
+        let (before, after) = clip_gain_to_volume(&[(0, -6.0), (8192, -6.0)], Vec::new());
+        let delta = rms_db(&before, &after);
+        assert!(delta.abs() < 0.02, "level changed by {delta} dB");
+
+        // A moving lane keeps its shape, and its points inside the clip carry the gain.
+        let (before, after) = clip_gain_to_volume(&[(0, -12.0), (4096, -6.0), (8192, -12.0)], Vec::new());
+        for (start, end) in [(0, 2048), (2048, 4096), (4096, 6144), (6144, 8192)] {
+            let delta = rms_db(&before[start..end], &after[start..end]);
+            assert!(delta.abs() < 0.1, "{start}..{end} changed by {delta} dB");
+        }
+
+        // The clip's own gain envelope rides on the lane value as well.
+        let (before, after) = clip_gain_to_volume(&[(0, -6.0), (8192, -6.0)], vec![(2000, 0.0), (6000, -10.0)]);
+        for (start, end) in [(3900, 4100), (5000, 5200)] {
+            let delta = rms_db(&before[start..end], &after[start..end]);
+            assert!(delta.abs() < 0.2, "{start}..{end} changed by {delta} dB");
+        }
+    }
+
+    #[test]
+    fn clip_gain_to_volume_holds_the_envelope_ends_out_to_the_clip_edges() {
+        let (mut e, t) = tone_session(&[(0, -6.0), (8192, -6.0)]);
+        let clip = e.session().track(t).unwrap().clips()[0].id;
+        let c = e.session_mut().find_clip_mut(clip).unwrap();
+        c.gain_db = 6.0;
+        c.gain_env = vec![(2000, 0.0), (6000, -10.0)];
+        let before = rendered(e.session());
+        e.execute("automation.clip_gain_to_volume", &json!({"track": t.0, "start": 0, "end": 8192})).unwrap();
+        let after = rendered(e.session());
+        for (start, end) in [(0, 1000), (1000, 2000), (6000, 7000), (7000, 8192)] {
+            let delta = rms_db(&before[start..end], &after[start..end]);
+            assert!(delta.abs() < 0.2, "{start}..{end} changed by {delta} dB");
+        }
+    }
+
+    #[test]
+    fn clip_gain_to_volume_leaves_audio_outside_the_clip_alone() {
+        // Three clips in a row; only the middle one is converted, and the lane extends past it on both sides.
+        let (mut e, t) = tone_session(&[(0, -6.0), (16384, -6.0)]);
+        let (middle, last) = (e.session_mut().new_clip_id(), e.session_mut().new_clip_id());
+        let pl = e.session_mut().track_mut(t).unwrap().playlist_mut().unwrap();
+        if let Some(c) = pl.clips.first_mut() {
+            c.length = 2048;
+        }
+        pl.clips.push(Clip::audio(middle, "mid", SourceId(910), 2048, 2048, 4096));
+        pl.clips.push(Clip::audio(last, "end", SourceId(910), 6144, 6144, 2048));
+        e.session_mut().find_clip_mut(middle).unwrap().gain_db = 6.0;
+        let before = rendered(e.session());
+        e.execute("automation.clip_gain_to_volume", &json!({"track": t.0, "start": 2048, "end": 6144})).unwrap();
+        let after = rendered(e.session());
+        assert!(e.session().find_clip(middle).unwrap().1.gain_db == 0.0);
+        for (start, end) in [(0, 2040), (2056, 6136), (6152, 8192)] {
+            let delta = rms_db(&before[start..end], &after[start..end]);
+            assert!(delta.abs() < 0.1, "{start}..{end} changed by {delta} dB");
+        }
+    }
+
+    #[test]
     fn insert_params_rejects_unknown_and_non_numeric_keys() {
         let mut e = Engine::default();
         e.execute("track.new", &json!({})).unwrap();
@@ -930,8 +1015,10 @@ mod tests {
     fn retargeting_a_send_keeps_its_settings() {
         let mut e = Engine::default();
         e.execute("track.new", &json!({"count": 1, "name": "Gtr", "format": "mono"})).unwrap();
+        e.execute("mix.new_bus", &json!({"name": "Verb"})).unwrap();
         e.execute("mix.send", &json!({"track": "Gtr", "slot": 0, "bus": "Verb", "level_db": -9.0, "pre_fader": true})).unwrap();
         e.execute("mix.send_level", &json!({"track": "Gtr", "slot": 0, "pan": 0.5, "mute": true})).unwrap();
+        e.execute("mix.new_bus", &json!({"name": "Delay"})).unwrap();
         e.execute("mix.send", &json!({"track": "Gtr", "slot": 0, "bus": "Delay"})).unwrap();
         let sl = e.session().tracks[0].mixer.sends[0].clone().unwrap();
         let delay = e.session().busses.iter().find(|b| b.name == "Delay").unwrap().id;
@@ -986,9 +1073,23 @@ mod tests {
     }
 
     #[test]
+    fn send_rejects_unknown_bus() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"count": 1, "name": "Gtr", "format": "mono"})).unwrap();
+        e.execute("mix.new_bus", &json!({"name": "Verb"})).unwrap();
+        let err = e.execute("mix.send", &json!({"track": "Gtr", "bus": "Nowhere"})).unwrap_err();
+        assert!(err.to_string().contains("no bus named \"Nowhere\""), "{err}");
+        assert_eq!(e.session().busses.len(), 1);
+        assert!(e.session().tracks[0].mixer.sends.iter().all(Option::is_none));
+        e.execute("mix.send", &json!({"track": "Gtr", "bus": "verb"})).unwrap();
+        assert_eq!(e.session().busses.len(), 1);
+    }
+
+    #[test]
     fn insert_and_send_reject_invalid_slot() {
         let mut e = Engine::default();
         e.execute("track.new", &json!({"count": 1, "name": "Gtr", "format": "mono"})).unwrap();
+        e.execute("mix.new_bus", &json!({"name": "Verb"})).unwrap();
         for slot in [json!(12), json!("k"), json!("x1")] {
             let r = e.execute("mix.insert", &json!({"track": "Gtr", "slot": slot, "plugin": "compressor"}));
             assert!(r.is_err(), "insert slot {slot} accepted: {r:?}");

@@ -1,7 +1,10 @@
 //! Application panel identities and persistence around the shared docking renderer.
 //! Document contents remain owned by their existing view implementations.
 
-use craft_ui::docking::{Action, DockArea, DockStyle, Layout, Location, Node, PanelLimits, Permissions, Placement, Zone};
+use craft_ui::docking::{
+    Action, DockArea, DockCommand, DockError, DockOperation, DockStyle, FloatSpace, Floating, Layout, Node, PanelLimits, Permissions, Placement,
+    UiDock, Zone, ZoneName,
+};
 use craft_ui::layout::{SplitAxis, SplitSize};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -19,16 +22,6 @@ pub enum Panel {
 
 impl Panel {
     pub const ALL: &[Self] = &[Self::Canvas, Self::Tracks, Self::Clips, Self::Midi, Self::Memory, Self::History];
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::Canvas => "canvas",
-            Self::Tracks => "tracks",
-            Self::Clips => "clips",
-            Self::Midi => "midi",
-            Self::Memory => "memory",
-            Self::History => "history",
-        }
-    }
     fn label(self) -> &'static str {
         match self {
             Self::Canvas => "Session",
@@ -49,15 +42,16 @@ impl Panel {
             Self::History => Zone::Right,
         }
     }
-    fn parse(id: &str) -> Result<Self, String> {
-        Self::ALL.iter().copied().find(|panel| panel.id() == id).ok_or_else(|| format!("Unknown panel: {id}"))
-    }
 }
+
+/// An Edit or Mix panel arrangement, saved with the UI preferences.
+pub type Workspace = craft_ui::docking::Workspace<Panel>;
 
 const MIDI_TAB_HEIGHT: f32 = 26.0;
 
+/// The document view stays docked and open, and panels open in splits beside it.
 fn permissions(panel: &Panel) -> Permissions {
-    if *panel == Panel::Canvas { Permissions::PROTECTED } else { Permissions::default() }
+    if *panel == Panel::Canvas { Permissions { accepts_splits: true, ..Permissions::PROTECTED } } else { Permissions::default() }
 }
 
 fn tabs(panel: Panel) -> Node<Panel> {
@@ -68,232 +62,149 @@ fn split(axis: SplitAxis, size: SplitSize, first: Node<Panel>, second: Node<Pane
     Node::Split { axis, size, first: Box::new(first), second: Box::new(second) }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Workspace {
-    pub layout: Layout<Panel>,
-    /// Closed panels retain their most recent group, side, size or floating rectangle.
-    pub hidden: Vec<(Panel, Location<Panel>)>,
+/// The dock area that draws the Edit or Mix workspace.
+pub fn area_id(window: crate::MainWindow) -> egui::Id {
+    egui::Id::new(("soundcraft-docking", window == crate::MainWindow::Edit))
 }
 
-impl Default for Workspace {
-    fn default() -> Self {
-        Self {
-            layout: Layout {
-                root: Some(split(
-                    SplitAxis::Vertical,
-                    SplitSize::FixedSecond(320.0 + MIDI_TAB_HEIGHT),
-                    split(
-                        SplitAxis::Horizontal,
-                        SplitSize::FixedFirst(168.0),
-                        tabs(Panel::Tracks),
-                        split(SplitAxis::Horizontal, SplitSize::FixedSecond(230.0), tabs(Panel::Canvas), tabs(Panel::Clips)),
-                    ),
-                    tabs(Panel::Midi),
-                )),
-                floating: vec![
-                    craft_ui::docking::Floating { panels: vec![Panel::Memory], active: 0, rect: [160.0, 120.0, 480.0, 280.0] },
-                    craft_ui::docking::Floating { panels: vec![Panel::History], active: 0, rect: [680.0, 120.0, 260.0, 300.0] },
-                ],
-            },
-            hidden: Vec::new(),
-        }
-    }
+fn area(edit: bool) -> egui::Id {
+    area_id(if edit { crate::MainWindow::Edit } else { crate::MainWindow::Mix })
 }
 
-impl Workspace {
-    pub fn validate(&self) -> Result<(), String> {
-        self.layout.validate().map_err(|error| error.to_string())?;
-        if !self.layout.contains(&Panel::Canvas) || self.hidden.len() > Panel::ALL.len() {
-            return Err("The panel layout must contain its document view and bounded hidden panels".into());
-        }
-        // Saved settings cannot turn the protected document view into a floating or closable tab.
-        if self.layout.floating.iter().any(|group| group.panels.contains(&Panel::Canvas)) {
-            return Err("The document view cannot float".into());
-        }
-        let mut nodes: Vec<_> = self.layout.root.iter().collect();
-        while let Some(node) = nodes.pop() {
-            match node {
-                Node::Split { first, second, .. } => {
-                    nodes.push(first);
-                    nodes.push(second);
-                }
-                Node::Tabs { panels, .. } if panels.contains(&Panel::Canvas) && panels.len() != 1 => {
-                    return Err("The document view cannot share a tab group".into());
-                }
-                Node::Stack { entries } if entries.iter().any(|entry| entry.panel == Panel::Canvas) => {
-                    return Err("The document view cannot be collapsed".into());
-                }
-                _ => {}
-            }
-        }
-        let mut seen = std::collections::HashSet::new();
-        for (panel, location) in &self.hidden {
-            if *panel == Panel::Canvas || self.layout.contains(panel) || !seen.insert(*panel) {
-                return Err("A hidden panel has an invalid or duplicate identity".into());
-            }
-            if location.anchor == Some(Panel::Canvas) && matches!(location.placement, Placement::Tab { .. } | Placement::Split(Zone::Center)) {
-                return Err("A hidden panel cannot restore over the document view".into());
-            }
-            let mut probe = self.layout.clone();
-            if let Err(error) = probe.restore(*panel, location)
-                && error != craft_ui::docking::DockError::MissingTarget
-            {
-                return Err(error.to_string());
-            }
-        }
-        Ok(())
-    }
-
-    pub fn validate_mix(&self) -> Result<(), String> {
-        self.validate()?;
-        if self.layout.contains(&Panel::Clips) || self.layout.contains(&Panel::Midi) {
-            return Err("Clips and MIDI panels belong to the Edit window".into());
-        }
-        Ok(())
-    }
-
-    pub fn apply(&mut self, action: Action<Panel>) -> Result<(), String> {
-        self.validate()?;
-        let mut next = self.clone();
-        if let Action::Close { panel } = &action {
-            let location = next.layout.location(panel).map_err(|error| error.to_string())?;
-            next.hidden.retain(|(id, _)| id != panel);
-            next.hidden.push((*panel, location));
-        } else if let Action::Open { panel, .. } | Action::OpenAt { panel, .. } = &action {
-            next.hidden.retain(|(id, _)| id != panel);
-        }
-        next.layout.apply_with_permissions(action, permissions).map_err(|error| error.to_string())?;
-        next.validate()?;
-        *self = next;
-        Ok(())
-    }
-
-    pub fn set_visible(&mut self, panel: Panel, visible: bool) -> Result<(), String> {
-        if self.layout.contains(&panel) == visible {
-            return Ok(());
-        }
-        if !visible {
-            return self.apply(Action::Close { panel });
-        }
-        self.validate()?;
-        let mut next = self.clone();
-        let mut location = next.hidden.iter().find(|(id, _)| *id == panel).map(|(_, location)| location.clone());
-        next.hidden.retain(|(id, _)| *id != panel);
-        if let Some(saved) = &mut location
-            && saved.floating.is_some()
-            && saved.anchor.as_ref().is_some_and(|anchor| !next.layout.floating.iter().any(|group| group.panels.contains(anchor)))
-        {
-            // The other members of a floating group may have been closed too.
-            saved.anchor = None;
-            saved.placement = Placement::Tab { before: None };
-        }
-        let restored = location.as_ref().is_some_and(|location| next.layout.restore(panel, location).is_ok());
-        if !restored {
-            next.layout
-                .apply_with_permissions(
-                    Action::OpenAt { panel, anchor: Panel::Canvas, placement: Placement::Split(panel.default_side()) },
-                    permissions,
-                )
-                .map_err(|error| error.to_string())?;
-        }
-        next.validate()?;
-        *self = next;
-        Ok(())
-    }
-
-    fn command(&mut self, params: &Value) -> Result<(), String> {
-        self.validate()?;
-        if let Some(action) = params.get("action") {
-            let action: Action<Panel> = serde_json::from_value(action.clone()).map_err(|error| error.to_string())?;
-            return self.apply(action);
-        }
-        let operation = params.get("operation").and_then(Value::as_str).ok_or("operation is required")?;
-        if operation == "resizeSplit" {
-            let path: Vec<bool> =
-                serde_json::from_value(params.get("path").cloned().ok_or("path is required")?).map_err(|error| error.to_string())?;
-            let size: SplitSize =
-                serde_json::from_value(params.get("size").cloned().ok_or("size is required")?).map_err(|error| error.to_string())?;
-            return self.apply(Action::ResizeSplit { path, size });
-        }
-        let panel = Panel::parse(params.get("panel").and_then(Value::as_str).ok_or("panel is required")?)?;
-        let action = match operation {
-            "open" => return self.set_visible(panel, true),
-            "close" => Action::Close { panel },
-            "activate" => Action::Activate { panel },
-            "setStackOpen" => Action::SetStackOpen { panel, open: params.get("open").and_then(Value::as_bool).ok_or("open must be a boolean")? },
-            "resizeStack" => {
-                let value = params.get("height").ok_or("height is required")?;
-                let height = if value.is_null() {
-                    None
-                } else {
-                    Some(
-                        value
-                            .as_f64()
-                            .filter(|height| height.is_finite() && (0.0..=1_000_000.0).contains(height))
-                            .ok_or("height must be finite and bounded")? as f32,
-                    )
-                };
-                Action::ResizeStack { panel, height }
-            }
-            "float" | "moveFloating" => {
-                let rect = params.get("rect").and_then(Value::as_array).filter(|rect| rect.len() == 4).ok_or("rect must be [x,y,width,height]")?;
-                let mut values = [0.0f32; 4];
-                for (output, value) in values.iter_mut().zip(rect) {
-                    *output = value
-                        .as_f64()
-                        .filter(|number| number.is_finite() && number.abs() <= 1_000_000.0)
-                        .ok_or("rect values must be finite and bounded")? as f32;
-                }
-                if operation == "float" { Action::Float { panel, rect: values } } else { Action::MoveFloating { panel, rect: values } }
-            }
-            "move" => {
-                let anchor = Panel::parse(params.get("target").and_then(Value::as_str).ok_or("target is required")?)?;
-                let placement = match params.get("zone").and_then(Value::as_str).unwrap_or("center") {
-                    "center" => Placement::Split(Zone::Center),
-                    "left" => Placement::Split(Zone::Left),
-                    "right" => Placement::Split(Zone::Right),
-                    "top" => Placement::Split(Zone::Top),
-                    "bottom" => Placement::Split(Zone::Bottom),
-                    _ => return Err("zone must be center, left, right, top or bottom".into()),
-                };
-                let placement = if let Some(before) = params.get("before") {
-                    if !matches!(placement, Placement::Split(Zone::Center)) {
-                        return Err("before only applies to a center move".into());
-                    }
-                    Placement::Tab {
-                        before: if before.is_null() {
-                            None
-                        } else {
-                            Some(Panel::parse(before.as_str().ok_or("before must be a panel ID or null")?)?)
-                        },
-                    }
-                } else {
-                    placement
-                };
-                Action::Move { panel, anchor, placement }
-            }
-            _ => return Err("operation must be open, close, activate, float, move, moveFloating, resizeSplit, setStackOpen or resizeStack".into()),
-        };
-        self.apply(action)
-    }
+/// The Edit window's built-in arrangement.
+pub fn edit_default() -> Workspace {
+    Workspace::new(Layout {
+        root: Some(split(
+            SplitAxis::Vertical,
+            SplitSize::FixedSecond(320.0 + MIDI_TAB_HEIGHT),
+            split(
+                SplitAxis::Horizontal,
+                SplitSize::FixedFirst(168.0),
+                tabs(Panel::Tracks),
+                split(SplitAxis::Horizontal, SplitSize::FixedSecond(230.0), tabs(Panel::Canvas), tabs(Panel::Clips)),
+            ),
+            tabs(Panel::Midi),
+        )),
+        // Fixed ids: the default is rebuilt every frame and must stay the same windows.
+        floating: vec![
+            Floating::single(vec![Panel::Memory], 0, [160.0, 120.0, 480.0, 280.0]).with_id(1),
+            Floating::single(vec![Panel::History], 0, [680.0, 120.0, 260.0, 300.0]).with_id(2),
+        ],
+    })
 }
 
 /// Mix retains its own arrangement; the timeline-only Clips and MIDI panels stay in Edit.
 pub fn mix_default() -> Workspace {
-    let mut workspace = Workspace::default();
-    let _ = workspace.set_visible(Panel::Clips, false);
-    let _ = workspace.set_visible(Panel::Midi, false);
+    let mut workspace = edit_default();
+    let _ = set_visible(&mut workspace, Panel::Clips, false);
+    let _ = set_visible(&mut workspace, Panel::Midi, false);
     workspace
 }
 
+/// The document view where the Edit window's rules keep it: in the docked frames, alone in
+/// its tab group. `None` when `node` does not hold it.
+fn canvas_placement(node: &Node<Panel>) -> Option<Result<(), &'static str>> {
+    match node {
+        Node::Split { first, second, .. } => canvas_placement(first).or_else(|| canvas_placement(second)),
+        Node::Tabs { panels, .. } if panels.contains(&Panel::Canvas) => {
+            Some(if panels.len() == 1 { Ok(()) } else { Err("The document view cannot share a tab group") })
+        }
+        Node::Stack { entries } if entries.iter().any(|entry| entry.panel == Panel::Canvas) => Some(Err("The document view cannot be collapsed")),
+        Node::Dock { columns, .. } if columns.iter().flat_map(|column| &column.groups).any(|group| group.panels.contains(&Panel::Canvas)) => {
+            Some(Err("The document view cannot join a dock column"))
+        }
+        _ => None,
+    }
+}
+
+/// Check a workspace against craft-ui's rules and SoundCraft's own: saved settings cannot
+/// float, hide, collapse or share the protected document view.
+pub fn validate(workspace: &Workspace) -> Result<(), String> {
+    workspace.validate().map_err(|error| error.to_string())?;
+    let layout = &workspace.layout;
+    if !layout.contains(&Panel::Canvas) || workspace.hidden.len() > Panel::ALL.len() {
+        return Err("The panel layout must contain its document view and bounded hidden panels".into());
+    }
+    if layout.floating.iter().any(|window| window.contains(&Panel::Canvas)) {
+        return Err("The document view cannot float".into());
+    }
+    layout.root.as_ref().and_then(canvas_placement).unwrap_or(Err("The document view cannot float"))?;
+    for (panel, location) in &workspace.hidden {
+        if *panel == Panel::Canvas {
+            return Err("A hidden panel has an invalid or duplicate identity".into());
+        }
+        if location.anchor == Some(Panel::Canvas) && matches!(location.placement, Placement::Tab { .. } | Placement::Split(Zone::Center)) {
+            return Err("A hidden panel cannot restore over the document view".into());
+        }
+        let mut probe = layout.clone();
+        if let Err(error) = probe.restore(*panel, location)
+            && error != DockError::MissingTarget
+        {
+            return Err(error.to_string());
+        }
+    }
+    Ok(())
+}
+
+/// [`validate`] plus the Mix window's rule: Clips and MIDI stay in Edit.
+pub fn validate_mix(workspace: &Workspace) -> Result<(), String> {
+    validate(workspace)?;
+    if workspace.layout.contains(&Panel::Clips) || workspace.layout.contains(&Panel::Midi) {
+        return Err("Clips and MIDI panels belong to the Edit window".into());
+    }
+    Ok(())
+}
+
+/// Change a copy of `workspace` and keep it only when it passes [`validate`].
+fn checked(workspace: &mut Workspace, change: impl FnOnce(&mut Workspace) -> Result<(), DockError>) -> Result<(), String> {
+    validate(workspace)?;
+    let mut next = workspace.clone();
+    change(&mut next).map_err(|error| error.to_string())?;
+    validate(&next)?;
+    *workspace = next;
+    Ok(())
+}
+
+fn apply(workspace: &mut Workspace, action: Action<Panel>) -> Result<(), String> {
+    checked(workspace, |next| next.apply(action, permissions).map(drop))
+}
+
+/// Show a panel at its recorded place, else beside the document view on its default side.
+fn set_visible(workspace: &mut Workspace, panel: Panel, visible: bool) -> Result<(), String> {
+    if workspace.layout.contains(&panel) == visible {
+        return Ok(());
+    }
+    checked(workspace, |next| {
+        if !visible {
+            return next.apply(Action::Close { panel }, permissions).map(drop);
+        }
+        if next.set_visible(panel, true, None, permissions).is_ok() {
+            return Ok(());
+        }
+        next.apply(Action::OpenAt { panel, anchor: Panel::Canvas, placement: Placement::Split(panel.default_side()) }, permissions).map(drop)
+    })
+}
+
+/// Run a shared docking command. A hidden panel that is opened or activated comes back with
+/// [`set_visible`], so it gets SoundCraft's default place when it has no recorded one.
+fn run(workspace: &mut Workspace, command: &DockCommand<Panel>) -> Result<(), String> {
+    if let DockCommand::Activate { panel } | DockCommand::UiDock(UiDock::Operation(DockOperation::Open { panel } | DockOperation::Activate { panel })) =
+        command
+        && !workspace.layout.contains(panel)
+    {
+        return set_visible(workspace, *panel, true);
+    }
+    // Only `window.panel.float` reads the float space, and SoundCraft does not register it.
+    checked(workspace, |next| command.apply(next, false, &FloatSpace::new(egui::Rect::NOTHING), permissions).map(drop))
+}
+
 fn sync(workspace: &mut Workspace, app: &crate::SoundApp, edit: bool) -> Result<(), String> {
-    workspace.set_visible(Panel::Tracks, app.ui.show_tracks_list)?;
-    workspace.set_visible(Panel::Memory, app.ui.show_memory_locations)?;
-    workspace.set_visible(Panel::History, app.ui.show_undo_history)?;
+    set_visible(workspace, Panel::Tracks, app.ui.show_tracks_list)?;
+    set_visible(workspace, Panel::Memory, app.ui.show_memory_locations)?;
+    set_visible(workspace, Panel::History, app.ui.show_undo_history)?;
     if edit {
-        workspace.set_visible(Panel::Clips, app.ui.show_clip_list)?;
-        workspace.set_visible(Panel::Midi, app.ui.show_midi_editor)?;
+        set_visible(workspace, Panel::Clips, app.ui.show_clip_list)?;
+        set_visible(workspace, Panel::Midi, app.ui.show_midi_editor)?;
     }
     Ok(())
 }
@@ -316,20 +227,57 @@ fn store(app: &mut crate::SoundApp, workspace: Workspace, edit: bool) {
     }
 }
 
-pub fn command(app: &mut crate::SoundApp, reset: bool, params: &Value) -> Result<Value, String> {
+/// A `ui.dock` operation. Panels and zones are checked first so an error names the field;
+/// parsed through the untagged [`UiDock`], every mistake reads "did not match any variant".
+fn operation(fields: &serde_json::Map<String, Value>) -> Result<DockOperation<Panel>, String> {
+    let name = fields.get("operation").ok_or("operation is required")?.as_str().ok_or("operation must be a string")?;
+    if name != "resizeSplit" && !fields.contains_key("panel") {
+        return Err("panel is required".into());
+    }
+    for field in ["panel", "target"] {
+        if let Some(value) = fields.get(field) {
+            let id = value.as_str().ok_or_else(|| format!("{field} must be a panel ID"))?;
+            serde_json::from_value::<Panel>(json!(id)).map_err(|_| format!("Unknown panel: {id}"))?;
+        }
+    }
+    if let Some(zone) = fields.get("zone")
+        && serde_json::from_value::<ZoneName>(zone.clone()).is_err()
+    {
+        return Err("zone must be tab, center, left, right, top, bottom, above or below".into());
+    }
+    serde_json::from_value(Value::Object(fields.clone())).map_err(|error| error.to_string())
+}
+
+/// `ui.dock` and `ui.dock.reset`: the shared [`DockCommand`] vocabulary, applied to the
+/// front window's workspace.
+pub fn command(app: &mut crate::SoundApp, id: &str, params: &Value) -> Result<Value, String> {
     let edit = app.ui.window == crate::MainWindow::Edit;
+    if !edit && ["panel", "target"].iter().any(|field| matches!(params.get(*field).and_then(Value::as_str), Some("clips" | "midi"))) {
+        return Err("Clips and MIDI panels belong to the Edit window".into());
+    }
+    let mut fields = match params {
+        Value::Object(fields) => fields.clone(),
+        Value::Null => serde_json::Map::new(),
+        _ => return Err("Docking params must be an object".into()),
+    };
+    let command = if id == "ui.dock" && !fields.contains_key("action") {
+        DockCommand::UiDock(UiDock::Operation(operation(&fields)?))
+    } else {
+        fields.insert("command".into(), json!(id));
+        serde_json::from_value(Value::Object(fields)).map_err(|error| error.to_string())?
+    };
     let previous = if edit { app.ui.docking.clone() } else { app.ui.mix_docking.clone() };
-    let result = command_for(app, reset, params, edit)?;
+    let result = command_for(app, &command, edit)?;
     let next = if edit { &app.ui.docking } else { &app.ui.mix_docking };
     cancel_replaced_workspace(app, &previous, next, edit);
     Ok(result)
 }
 
 fn cancel_replaced_workspace(app: &crate::SoundApp, previous: &Workspace, next: &Workspace, edit: bool) {
-    if (previous.layout != next.layout || previous.hidden != next.hidden)
+    if previous != next
         && let Some(ctx) = &app.docking_context
     {
-        craft_ui::docking::cancel_drag::<Panel>(ctx, egui::Id::new(("soundcraft-docking", edit)));
+        craft_ui::docking::cancel_drag::<Panel>(ctx, area(edit));
     }
 }
 
@@ -339,22 +287,23 @@ pub(crate) fn cancel_replaced_state(app: &crate::SoundApp, next: &crate::UiState
     cancel_replaced_workspace(app, &app.ui.mix_docking, &next.mix_docking, false);
 }
 
-fn command_for(app: &mut crate::SoundApp, reset: bool, params: &Value, edit: bool) -> Result<Value, String> {
-    if !edit && ["panel", "target"].iter().any(|field| matches!(params.get(*field).and_then(Value::as_str), Some("clips" | "midi"))) {
-        return Err("Clips and MIDI panels belong to the Edit window".into());
-    }
+fn command_for(app: &mut crate::SoundApp, command: &DockCommand<Panel>, edit: bool) -> Result<Value, String> {
     let mut workspace = if edit { app.ui.docking.clone() } else { app.ui.mix_docking.clone() };
-    if !reset && !edit {
-        workspace.validate_mix()?;
-    }
-    if reset {
-        workspace = if edit { Workspace::default() } else { mix_default() };
+    if command.is_app_owned() {
+        // Reset is the only application-owned command SoundCraft registers.
+        if !matches!(command, DockCommand::ResetWorkspace {}) {
+            return Err("Named panel workspaces are not supported".into());
+        }
+        workspace = if edit { edit_default() } else { mix_default() };
         sync(&mut workspace, app, edit)?;
     } else {
-        sync(&mut workspace, app, edit)?;
-        workspace.command(params)?;
         if !edit {
-            workspace.validate_mix()?;
+            validate_mix(&workspace)?;
+        }
+        sync(&mut workspace, app, edit)?;
+        run(&mut workspace, command)?;
+        if !edit {
+            validate_mix(&workspace)?;
         }
     }
     publish_visibility(app, &workspace, edit);
@@ -368,16 +317,16 @@ pub(crate) fn arrange(app: &mut crate::SoundApp) -> Result<(), String> {
     let edit = app.ui.window == crate::MainWindow::Edit;
     let mut workspace = if edit { app.ui.docking.clone() } else { app.ui.mix_docking.clone() };
     if edit {
-        workspace.validate()?;
+        validate(&workspace)?;
     } else {
-        workspace.validate_mix()?;
+        validate_mix(&workspace)?;
     }
     let previous = workspace.clone();
-    let floating: Vec<_> = workspace.layout.floating.iter().filter_map(|group| group.panels.first().map(|panel| (*panel, group.rect))).collect();
+    let floating: Vec<_> = workspace.layout.floating.iter().filter_map(|window| window.panels().next().map(|panel| (*panel, window.rect))).collect();
     for (index, (panel, mut rect)) in floating.into_iter().enumerate() {
         rect[0] = 32.0 + index as f32 * 28.0;
         rect[1] = 80.0 + index as f32 * 28.0;
-        workspace.apply(Action::MoveFloating { panel, rect })?;
+        apply(&mut workspace, Action::MoveFloating { panel, rect })?;
     }
     cancel_replaced_workspace(app, &previous, &workspace, edit);
     store(app, workspace, edit);
@@ -388,11 +337,12 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
     app.docking_context = Some(ui.ctx().clone());
     let t = crate::theme::Tokens::current();
     let edit = window == crate::MainWindow::Edit;
-    let mut workspace = if edit { std::mem::take(&mut app.ui.docking) } else { std::mem::replace(&mut app.ui.mix_docking, mix_default()) };
+    let mut workspace =
+        if edit { std::mem::replace(&mut app.ui.docking, edit_default()) } else { std::mem::replace(&mut app.ui.mix_docking, mix_default()) };
     let before_sync = workspace.clone();
-    if let Err(error) = (if edit { workspace.validate() } else { workspace.validate_mix() }).and_then(|()| sync(&mut workspace, app, edit)) {
+    if let Err(error) = (if edit { validate(&workspace) } else { validate_mix(&workspace) }).and_then(|()| sync(&mut workspace, app, edit)) {
         app.ui.status = format!("Panel layout could not be restored: {error}");
-        workspace = if edit { Workspace::default() } else { mix_default() };
+        workspace = if edit { edit_default() } else { mix_default() };
         let _ = sync(&mut workspace, app, edit);
     }
     cancel_replaced_workspace(app, &before_sync, &workspace, edit);
@@ -407,7 +357,7 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
     style.border = egui::Stroke::new(1.0, t.border);
     style.accent = t.accent;
     style.font = crate::theme::regular(11.5);
-    let output = DockArea::new(egui::Id::new(("soundcraft-docking", edit))).show_with_limits(
+    let output = DockArea::new(area(edit)).show_with_limits(
         ui,
         &workspace.layout,
         &style,
@@ -437,10 +387,7 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
     publish_visibility(app, &workspace, edit);
     store(app, workspace, edit);
     for action in output.actions {
-        if let Err(error) = serde_json::to_value(action)
-            .map_err(|error| error.to_string())
-            .and_then(|action| command_for(app, false, &json!({"action": action}), edit))
-        {
+        if let Err(error) = command_for(app, &DockCommand::Layout { action }, edit) {
             app.ui.status = format!("Panel move was not applied: {error}");
         }
     }

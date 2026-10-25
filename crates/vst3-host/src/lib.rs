@@ -114,7 +114,7 @@ pub enum Vst3Error {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod api {
-    use super::*;
+    use super::{Path, PathBuf, Plugin, PluginInfo, Vst3Descriptor, Vst3Error, ffi, registry};
 
     pub fn cached() -> Option<Vec<Vst3Descriptor>> {
         registry::cached()
@@ -147,7 +147,7 @@ mod api {
 
 #[cfg(target_arch = "wasm32")]
 mod api {
-    use super::*;
+    use super::{Path, PathBuf, Plugin, PluginInfo, Vst3Descriptor, Vst3Error};
 
     pub fn cached() -> Option<Vec<Vst3Descriptor>> {
         Some(Vec::new())

@@ -43,10 +43,40 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
         });
 }
 
+struct ModeCellState {
+    cur: EditMode,
+    snap: bool,
+    locked: bool,
+}
+
+fn edit_mode_tooltip(m: EditMode, locked: bool, cmd: &str, fkey: &str) -> String {
+    match m {
+        EditMode::Shuffle if locked => format!("Shuffle is locked ({cmd}-click to unlock)"),
+        EditMode::Shuffle => format!("Shuffle mode ({fkey}); {cmd}-click locks it out"),
+        EditMode::Grid => format!("Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes"),
+        _ => format!("{} mode ({fkey}); Shift-click adds Snap to Grid", if m == EditMode::Slip { "Slip" } else { "Spot" }),
+    }
+}
+
+fn draw_mode_cell(p: &egui::Painter, cell: Rect, resp: &egui::Response, t: &Tokens, m: EditMode, state: &ModeCellState, label: &str) {
+    let on = state.cur == m || (m == EditMode::Grid && state.cur == EditMode::GridRelative);
+    key(p, cell, resp, if on { t.mode_on } else { t.mode_off });
+    let fg = if on { t.mode_on_text } else { t.mode_off_text };
+    if m == EditMode::Grid && state.snap {
+        p.rect_stroke(cell, 1.0, Stroke::new(1.5, t.mode_on), StrokeKind::Inside);
+    }
+    if m == EditMode::Shuffle && state.locked {
+        icons::draw(p, Rect::from_center_size(cell.center(), vec2(15.0, 15.0)), "lock", fg);
+    } else {
+        let txt = if m == EditMode::Grid && state.cur == EditMode::GridRelative { "REL GRID" } else { label };
+        p.text(cell.center(), Align2::CENTER_CENTER, txt, bold(10.5), fg);
+    }
+}
+
 fn edit_modes(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let ed = &app.engine.session().edit;
-    let (cur, snap, locked) = (ed.edit_mode, ed.flag(SNAP_TO_GRID), ed.flag(SHUFFLE_LOCK));
+    let state = ModeCellState { cur: ed.edit_mode, snap: ed.flag(SNAP_TO_GRID), locked: ed.flag(SHUFFLE_LOCK) };
     let cmd = crate::shortcuts::shortcut_label("Cmd", ui.ctx().os() == egui::os::OperatingSystem::Mac);
     let modes = [
         (EditMode::Shuffle, 0, 0, "SHUFFLE", "F1"),
@@ -63,28 +93,13 @@ fn edit_modes(app: &mut SoundApp, ui: &mut Ui) {
         for (m, cx, cy, label, fkey) in modes {
             let cell = Rect::from_min_size(pos2(inner.min.x + cw * cx as f32, inner.min.y + ch * cy as f32), vec2(cw, ch)).shrink(1.0);
             let resp = ui.interact(cell, ui.id().with(("mode", label)), Sense::click());
-            let on = cur == m || (m == EditMode::Grid && cur == EditMode::GridRelative);
-            key(ui.painter(), cell, &resp, if on { t.mode_on } else { t.mode_off });
-            let fg = if on { t.mode_on_text } else { t.mode_off_text };
-            if m == EditMode::Grid && snap {
-                ui.painter().rect_stroke(cell, 1.0, Stroke::new(1.5, t.mode_on), StrokeKind::Inside);
-            }
-            if m == EditMode::Shuffle && locked {
-                icons::draw(ui.painter(), Rect::from_center_size(cell.center(), vec2(15.0, 15.0)), "lock", fg);
-            } else {
-                let txt = if m == EditMode::Grid && cur == EditMode::GridRelative { "REL GRID" } else { label };
-                ui.painter().text(cell.center(), Align2::CENTER_CENTER, txt, bold(10.5), fg);
-            }
+            draw_mode_cell(ui.painter(), cell, &resp, &t, m, &state, label);
+            let on = state.cur == m || (m == EditMode::Grid && state.cur == EditMode::GridRelative);
             resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, label));
             if resp.clicked() {
                 mode_click(app, m, ui.input(|i| i.modifiers));
             }
-            resp.on_hover_text(match m {
-                EditMode::Shuffle if locked => format!("Shuffle is locked ({cmd}-click to unlock)"),
-                EditMode::Shuffle => format!("Shuffle mode ({fkey}); {cmd}-click locks it out"),
-                EditMode::Grid => format!("Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes"),
-                _ => format!("{} mode ({fkey}); Shift-click adds Snap to Grid", if m == EditMode::Slip { "Slip" } else { "Spot" }),
-            });
+            resp.on_hover_text(edit_mode_tooltip(m, state.locked, &cmd, fkey));
         }
     });
 }
@@ -338,7 +353,8 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, if recording { Color32::from_rgb(110, 30, 30) } else { key_fill(&resp) });
                 icons::draw(ui.painter(), r.shrink(5.0), "record", t.rec);
-                let resp = resp.on_hover_text("Record (Cmd+Space)");
+                // macOS gives Cmd+Space to Spotlight unless the user frees it, so name F12 first.
+                let resp = resp.on_hover_text("Record (F12 or Cmd+Space)");
                 if let Some(why) = app.record_hint() {
                     // Below the whole group, so the hint covers none of its buttons.
                     let below = Rect::from_min_max(r.min, pos2(r.max.x, g.max.y));

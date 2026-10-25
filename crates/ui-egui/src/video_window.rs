@@ -18,6 +18,43 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     }
 }
 
+fn video_status_text(app: &SoundApp, pic: Option<&(MovieKey, Result<String, String>, f64, f64)>) -> String {
+    match pic {
+        Some((_, Err(why), ..)) => why.clone(),
+        Some((k, ..)) => match app.video.info(*k) {
+            Some(Ok(i)) => format!("{}x{}  {:.3} fps  {}", i.width, i.height, i.frame_rate, i.codec_detail),
+            Some(Err(e)) => e.clone(),
+            None => "opening…".into(),
+        },
+        None => String::new(),
+    }
+}
+
+fn draw_video_surface(app: &SoundApp, painter: &egui::Painter, img: Rect, pic: Option<&(MovieKey, Result<String, String>, f64, f64)>, on: bool) {
+    let msg = if !on {
+        Some("Video Track Offline".to_string())
+    } else {
+        match pic {
+            None => None,
+            Some((_, Err(why), ..)) => Some(why.clone()),
+            Some((k, ..)) => match (app.video.current(*k), app.video.current_error(*k)) {
+                (Some(tex), _) => {
+                    painter.image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                    None
+                }
+                (None, Some(e)) => Some(e.to_string()),
+                (None, None) => match app.video.info(*k) {
+                    Some(Err(e)) => Some(e.clone()),
+                    _ => None,
+                },
+            },
+        }
+    };
+    if let Some(m) = msg {
+        painter.text(img.center(), Align2::CENTER_CENTER, m, regular(12.0), Color32::from_gray(170));
+    }
+}
+
 fn video(app: &mut SoundApp, ctx: &egui::Context) {
     app.video.poll(ctx);
     let pos = app.position();
@@ -38,15 +75,7 @@ fn video(app: &mut SoundApp, ctx: &egui::Context) {
     egui::Window::new("Video").open(&mut open).default_size(vec2(480.0, 480.0 / aspect + 28.0)).resizable(true).show(ctx, |ui| {
         ui.horizontal(|ui| {
             crate::widgets::checkbox(ui, &mut burn, "Timecode burn-in");
-            let text = match &pic {
-                Some((_, Err(why), ..)) => why.clone(),
-                Some((k, ..)) => match app.video.info(*k) {
-                    Some(Ok(i)) => format!("{}x{}  {:.3} fps  {}", i.width, i.height, i.frame_rate, i.codec_detail),
-                    Some(Err(e)) => e.clone(),
-                    None => "opening…".into(),
-                },
-                None => String::new(),
-            };
+            let text = video_status_text(app, pic.as_ref());
             ui.label(egui::RichText::new(text).font(regular(10.5)).color(Color32::from_gray(150)));
         });
         let avail = ui.available_rect_before_wrap();
@@ -60,28 +89,7 @@ fn video(app: &mut SoundApp, ctx: &egui::Context) {
             w = h * aspect;
         }
         let img = Rect::from_center_size(r.center(), vec2(w, h));
-        let msg = if !on {
-            Some("Video Track Offline".to_string())
-        } else {
-            match &pic {
-                None => None,
-                Some((_, Err(why), ..)) => Some(why.clone()),
-                Some((k, ..)) => match (app.video.current(*k), app.video.current_error(*k)) {
-                    (Some(tex), _) => {
-                        painter.image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-                        None
-                    }
-                    (None, Some(e)) => Some(e.to_string()),
-                    (None, None) => match app.video.info(*k) {
-                        Some(Err(e)) => Some(e.clone()),
-                        _ => None,
-                    },
-                },
-            }
-        };
-        if let Some(m) = msg {
-            painter.text(img.center(), Align2::CENTER_CENTER, m, regular(12.0), Color32::from_gray(170));
-        }
+        draw_video_surface(app, &painter, img, pic.as_ref(), on);
         if burn {
             let tc = s.format_position(pos, TimeFormat::Timecode);
             let size = (h / 12.0).clamp(10.0, 36.0);

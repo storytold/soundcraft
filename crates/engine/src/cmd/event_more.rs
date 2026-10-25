@@ -2,15 +2,18 @@
 //! operations (split notes, input quantize, step input, restore/flatten performance), MIDI track
 //! offsets and real-time properties, chord extraction, Beat Detective, Identify Beat and
 //! Retrospective Record.
+use super::{
+    CommandSpec, always, bad, bool_or, clip_ids_param, f32_or, f64_or, has_range, has_selection, has_tracks, i64_or, position_param, range_param,
+    str_param, track_param, tracks_param, tracks_required,
+};
 
 use super::more_util::{store_value, track_key, values_with_prefix};
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
 use soundcraft_midi::Note;
 use soundcraft_midi::ops::QuantizeOptions;
 use soundcraft_model::{ChannelFormat, Clip, ClipContent, ClipId, MarkerKind, Session, TrackId, TrackKind};
-use soundcraft_time::{Range, Samples, TICKS_PER_QUARTER, TempoMap};
+use soundcraft_time::{MAX_POSITION, Range, Samples, TICKS_PER_QUARTER, TempoMap};
 
 /// Most tempo events one curve may write.
 const MAX_TEMPO_EVENTS: i64 = 10_000;
@@ -782,7 +785,6 @@ fn retro_record(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn midi_engine() -> (Engine, TrackId) {
         let mut e = Engine::default();
         e.execute("track.new", &json!({"kind": "midi"})).unwrap();

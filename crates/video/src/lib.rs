@@ -14,24 +14,24 @@
 //!
 //! ## Origin
 //!
-//! The container, H.264 and ProRes code is a copy of the clean-room crates of our sibling app
-//! FilmCraft (`storytold/filmcraft`, same organisation, MIT OR Apache-2.0): `filmcraft-bitstream`
-//! → [`bitstream`], `filmcraft-isobmff` → [`isobmff`], `filmcraft-h264` → [`h264`] (without its
-//! test-only synthetic stream module), `filmcraft-prores` → [`prores`]. The crafting apps share no
-//! code as dependencies; each keeps its own copy. Only the module paths were changed; fixes found
-//! here should be offered back upstream. [`Movie`], the pixel conversion and the frame caches are
-//! SoundCraft's own.
+//! [`bitstream`] and [`isobmff`] are re-exports of `craft_media::bitstream` and
+//! `craft_media::isobmff` from craft-libs (`storytold/craft-libs`, the shared crate FilmCraft uses
+//! too). The H.264 and ProRes code is a copy of the clean-room crates of our sibling app FilmCraft
+//! (`storytold/filmcraft`, same organisation, MIT OR Apache-2.0): `filmcraft-h264` → [`h264`]
+//! (without its test-only synthetic stream module), `filmcraft-prores` → [`prores`]. Only the
+//! module paths were changed; fixes found here should be offered back upstream. [`Movie`], the
+//! pixel conversion and the frame caches are SoundCraft's own.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 // Codec code indexes fixed-size blocks; index loops read more clearly than iterator chains there.
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
-pub mod bitstream;
 pub mod convert;
 pub mod h264;
-pub mod isobmff;
 mod movie;
 pub mod prores;
 pub mod synth;
+
+pub use craft_media::{bitstream, isobmff};
 
 pub use isobmff::ByteSource;
 pub use movie::{Frame, Movie, MovieInfo, SharedSource, fit_size};

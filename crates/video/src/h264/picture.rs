@@ -319,7 +319,7 @@ fn plane_allocator() -> fn(usize) -> Vec<u8> {
 fn copy_line<const N: usize>(line: &[u8], x0: i32, out: &mut [u8], w: usize) {
     if w <= N
         && x0 >= 0
-        && let Some(src) = line.get(x0 as usize..).and_then(|l| l.first_chunk::<N>())
+        && let Some(src) = line.get(x0 as usize..).and_then(<[_]>::first_chunk::<N>)
         && let Some(dst) = out.first_chunk_mut::<N>()
     {
         *dst = *src;

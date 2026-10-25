@@ -176,11 +176,30 @@ struct Autosave {
 }
 
 impl Autosave {
-    /// A new folder under `root` for the session called `name`.
+    /// A new folder under `root` for the session called `name`. Two sessions started within the
+    /// same millisecond get folders of their own, never a shared one.
     fn create(root: &Path, name: &str) -> Result<Autosave> {
         let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_millis();
-        let dir = root.join(format!("{} {stamp}-{}", sanitize_name(name), std::process::id()));
-        let lock = std::fs::create_dir_all(&dir).and_then(|()| std::fs::File::create(dir.join(LOCK))).map_err(|err| io_error(&dir, err))?;
+        let base = format!("{} {stamp}-{}", sanitize_name(name), std::process::id());
+        create_folder(root).map_err(|err| io_error(root, err))?;
+        let mut dir = root.join(&base);
+        let mut n = 1;
+        loop {
+            // Not recursive, so a folder that already exists is reported and the next name tried.
+            #[cfg_attr(not(unix), allow(unused_mut))]
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            match builder.create(&dir) {
+                Ok(()) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    n += 1;
+                    dir = root.join(format!("{base}-{n}"));
+                }
+                Err(err) => return Err(io_error(&dir, err)),
+            }
+        }
+        let lock = std::fs::File::create(dir.join(LOCK)).map_err(|err| io_error(&dir, err))?;
         lock.try_lock().map_err(|err| EngineError::Io(format!("{}: {err}", dir.display())))?;
         Ok(Autosave { dir, lock: Some(lock), copies: BTreeMap::new(), next: 1, recording: false })
     }
@@ -210,9 +229,7 @@ impl Autosave {
                     self.next += 1;
                     let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
                     let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
-                    std::fs::create_dir_all(&audio_dir)
-                        .and_then(|()| write_synced(&audio_dir.join(&name), &bytes))
-                        .map_err(|err| io_error(&audio_dir, err))?;
+                    create_folder(&audio_dir).and_then(|()| write_synced(&audio_dir.join(&name), &bytes)).map_err(|err| io_error(&audio_dir, err))?;
                     name
                 }
             };
@@ -395,6 +412,18 @@ pub fn discard(left: &Leftover) {
     let _ = std::fs::remove_dir_all(&left.dir);
 }
 
+/// Create `dir` and its missing parents under the autosave root. On Unix every folder made here is
+/// owner-only (`0o700`): autosaves and the takes of a session never saved are unsaved work, and
+/// with the default mode other accounts on the machine could read them. A folder that already
+/// exists keeps its mode.
+pub fn create_folder(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
 fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut f = std::fs::File::create(path)?;
     f.write_all(bytes)?;
@@ -427,6 +456,14 @@ mod tests {
         dir
     }
 
+    /// Moves a saved session file's mtime a second into the past. Filesystems with coarse
+    /// timestamps (tmpfs) can give it and an autosave written right after it the same mtime,
+    /// and `leftovers` only offers autosaves strictly newer than the file they came from.
+    fn backdate(path: &Path) {
+        let then = SystemTime::now() - Duration::from_secs(1);
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(then).unwrap();
+    }
+
     fn record(e: &mut Engine, level: f32) {
         let before = e.session_arc();
         let s = e.session_mut();
@@ -453,6 +490,7 @@ mod tests {
         let mut e = Engine::default();
         record(&mut e, 0.5);
         crate::io::save_session(&mut e, &path.to_string_lossy()).unwrap();
+        backdate(&path);
         record(&mut e, -0.25);
         let mut a = Autosave::create(&dir.join("Autosave"), "Song").unwrap();
         a.write(e.session(), e.path.as_deref(), None).unwrap();
@@ -509,6 +547,50 @@ mod tests {
         recover(&mut r, &leftovers(&root)[0]).unwrap();
         assert_eq!(r.session().sources.len(), 6);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Autosaves are unsaved work: on Unix the folders the autosaver makes are owner-only, and an
+    /// autosave root that already exists keeps its mode.
+    #[cfg(unix)]
+    #[test]
+    fn the_autosaver_makes_owner_only_folders() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let base = folder("autosave-modes");
+        let mut e = Engine::default();
+        record(&mut e, 0.5);
+        // A root that doesn't exist yet is made with the first autosave, owner-only like the
+        // session's folder and the audio copied into it.
+        let new = base.join("Autosave");
+        let w = Autosaver::new(new.clone());
+        w.write(e.session_arc(), None, None);
+        w.flush().unwrap();
+        let session = std::fs::read_dir(&new).unwrap().flatten().map(|d| d.path()).next().unwrap();
+        assert_eq!((mode(&new), mode(&session), mode(&session.join("Audio Files"))), (0o700, 0o700, 0o700));
+        w.close(false);
+        w.flush().unwrap();
+        // A root that already exists keeps its mode; the folders made inside it are owner-only.
+        let old = base.join("old");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let w = Autosaver::new(old.clone());
+        w.write(e.session_arc(), None, None);
+        w.flush().unwrap();
+        let session = std::fs::read_dir(&old).unwrap().flatten().map(|d| d.path()).next().unwrap();
+        assert_eq!((mode(&old), mode(&session)), (0o755, 0o700));
+        // A session never saved records its takes into `<name>/Audio Files` under the root. Both
+        // are made owner-only, and so is `Audio Files` in a take folder an earlier version left.
+        let takes = old.join("Untitled").join("Audio Files");
+        create_folder(&takes).unwrap();
+        assert_eq!((mode(&old.join("Untitled")), mode(&takes)), (0o700, 0o700));
+        let earlier = old.join("Earlier");
+        std::fs::create_dir_all(&earlier).unwrap();
+        std::fs::set_permissions(&earlier, std::fs::Permissions::from_mode(0o755)).unwrap();
+        create_folder(&earlier.join("Audio Files")).unwrap();
+        assert_eq!((mode(&earlier), mode(&earlier.join("Audio Files"))), (0o755, 0o700));
+        w.close(false);
+        w.flush().unwrap();
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -591,6 +673,21 @@ mod tests {
     }
 
     #[test]
+    fn sessions_started_together_get_folders_of_their_own() {
+        // #579: the folder name has millisecond resolution, so two sessions created back to back
+        // shared one folder and the second overwrote the first's unsaved work.
+        let dir = folder("autosave-unique");
+        let root = dir.join("Autosave");
+        let made: Vec<Autosave> = (0..20).map(|_| Autosave::create(&root, "Song").unwrap()).collect();
+        let mut dirs: Vec<&PathBuf> = made.iter().map(|a| &a.dir).collect();
+        dirs.sort();
+        dirs.dedup();
+        assert_eq!(dirs.len(), made.len());
+        drop(made);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn unsaved_work_is_offered_once_its_session_closes() {
         let dir = folder("autosave-leftovers");
         let path = dir.join("Song.scraft").to_string_lossy().into_owned();
@@ -598,6 +695,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::default();
         crate::io::save_session(&mut e, &path).unwrap();
+        backdate(Path::new(&path));
         record(&mut e, 0.5);
         let mut a = Autosave::create(&root, "Song").unwrap();
         a.write(e.session(), e.path.as_deref(), None).unwrap();

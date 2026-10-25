@@ -1,10 +1,10 @@
 //! An instrument track's instrument (`mix.instrument`): the plugin that turns the track's MIDI
 //! into audio, built in or hosted (CLAP, VST3, Audio Units). The mixer plays `Track::instrument`;
 //! the instrument is otherwise only set when the track is created (`track.new`).
+use super::{CommandSpec, bad, has_selection, str_param, tracks_required};
 
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
 use soundcraft_model::{Insert, TrackKind};
 
 pub fn specs() -> Vec<CommandSpec> {

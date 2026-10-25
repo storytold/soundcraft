@@ -4,11 +4,11 @@
 //! The source is saved in `Audio Files/` with the session like any other audio, so a session that
 //! uses a sample reopens with it. Sampler parameters (root note, key range, ADSR, loop…) are set
 //! with `mix.instrument_param`, or all at once with `params` here.
+use super::{CommandSpec, bad, has_selection, str_param, tracks_required};
 
-use super::*;
-use crate::cmd;
-use serde_json::json;
-use soundcraft_model::{Insert, TrackKind};
+use crate::{Engine, EngineError, Result, cmd};
+use serde_json::{Value, json};
+use soundcraft_model::{Insert, TrackId, TrackKind};
 use std::path::Path;
 
 const SAMPLER: &str = "sampler";
@@ -56,7 +56,7 @@ fn load(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     let bytes = crate::io::read_file(&path)?;
-    let name = Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or("Sample").to_string();
+    let name = Path::new(&path).file_name().and_then(std::ffi::OsStr::to_str).unwrap_or("Sample").to_string();
     attach(e, t, &name, &bytes, Some(&path), values)
 }
 
@@ -69,7 +69,7 @@ pub(crate) fn attach(e: &mut Engine, t: TrackId, name: &str, bytes: &[u8], path:
         return Err(bad(id, "only instrument tracks have a sampler"));
     }
     let info = soundcraft_dsp::plugin_info(SAMPLER).ok_or_else(|| bad(id, "the sampler is not available"))?;
-    let ext = Path::new(name).extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase);
+    let ext = Path::new(name).extension().and_then(std::ffi::OsStr::to_str).map(str::to_ascii_lowercase);
     let (format, buf) = soundcraft_audio_io::decode(bytes, ext.as_deref()).map_err(|err| EngineError::Io(format!("{name}: {err}")))?;
     if buf.frames() == 0 || buf.num_channels() == 0 {
         return Err(EngineError::Io(format!("{name}: no audio")));

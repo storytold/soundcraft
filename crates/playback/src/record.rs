@@ -145,7 +145,7 @@ fn build_input<T>(
     config: &cpal::StreamConfig,
     shared: &Arc<Shared>,
     monitor: &Arc<InputRing>,
-) -> Result<cpal::Stream, cpal::BuildStreamError>
+) -> Result<cpal::Stream, cpal::Error>
 where
     T: cpal::SizedSample,
     f32: cpal::FromSample<T>,
@@ -158,7 +158,7 @@ where
     let chunk = scratch.len();
     let mut owed = 0;
     device.build_input_stream(
-        config,
+        *config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             crate::mark_audio_thread();
             sh.guarded(|| {
@@ -176,10 +176,10 @@ where
                 }
             });
         },
-        move |e| {
+        move |e: cpal::Error| {
             // Possibly the audio thread (see `crate::mark_audio_thread`).
             crate::mark_audio_thread();
-            if matches!(e, cpal::StreamError::DeviceNotAvailable) {
+            if e.kind() == cpal::ErrorKind::DeviceNotAvailable {
                 let _ = errors.fault.compare_exchange(0, GONE, Ordering::Relaxed, Ordering::Relaxed);
             }
             log::warn!("input stream error: {e}");
@@ -202,17 +202,16 @@ impl Recorder {
         use cpal::traits::{DeviceTrait, StreamTrait};
         let host = crate::devices::host(audio);
         let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
-        #[allow(deprecated)]
-        let name = device.name().unwrap_or_else(|_| "Input".into());
+        let name = crate::devices::device_name(&device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
         let at_rate = audio.sample_rate.and_then(|r| {
             device
                 .supported_input_configs()
                 .ok()?
-                .filter(|c| crate::devices::format_rank(c.sample_format()).is_some() && c.min_sample_rate().0 <= r && c.max_sample_rate().0 >= r)
+                .filter(|c| crate::devices::format_rank(c.sample_format()).is_some() && c.min_sample_rate() <= r && c.max_sample_rate() >= r)
                 .min_by_key(|c| (crate::devices::format_rank(c.sample_format()), std::cmp::Reverse(c.channels())))
-                .map(|c| c.with_sample_rate(cpal::SampleRate(r)))
+                .map(|c| c.with_sample_rate(r))
         });
         let cfg = match at_rate {
             Some(c) => c,
@@ -225,9 +224,9 @@ impl Recorder {
         let mut config = cfg.config();
         config.buffer_size = crate::devices::buffer_size(audio.buffer_size, cfg.buffer_size());
         let channels = usize::from(config.channels).max(1);
-        let ring = CaptureRing::new((config.sample_rate.0 as usize).saturating_mul(channels * RING_SECONDS).min(1 << 25));
+        let ring = CaptureRing::new((config.sample_rate as usize).saturating_mul(channels * RING_SECONDS).min(1 << 25));
         let shared = Arc::new(Shared::new(ring));
-        let monitor = InputRing::new(usize::from(config.channels), config.sample_rate.0);
+        let monitor = InputRing::new(usize::from(config.channels), config.sample_rate);
         let build = |config: &cpal::StreamConfig| match format {
             cpal::SampleFormat::I32 => build_input::<i32>(&device, config, &shared, &monitor),
             cpal::SampleFormat::I16 => build_input::<i16>(&device, config, &shared, &monitor),
@@ -245,7 +244,7 @@ impl Recorder {
         };
         stream.play().map_err(|e| e.to_string())?;
         let seen = (0, Instant::now());
-        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate.0, channels, writer: None, seen })
+        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
     }
 
     #[cfg(target_os = "freebsd")]

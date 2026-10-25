@@ -1,11 +1,15 @@
 //! Edit menu commands.
+use super::{
+    CommandSpec, always, bad, bool_or, can_redo, can_undo, clip_id, clip_ids_param, f32_or, f64_or, has_clipboard, has_range, has_selection,
+    has_tracks, i64_or, position_param, range_param, str_param, track_param, tracks_param, tracks_required,
+};
+use soundcraft_time::Samples;
 
 use super::more_util::toggle_flag;
-use super::*;
 use crate::edit as ops;
-use crate::{Clipboard, cmd};
-use serde_json::json;
-use soundcraft_model::{EditMode, Fade, FadeShape, Session};
+use crate::{Clipboard, Engine, Result, cmd};
+use serde_json::{Value, json};
+use soundcraft_model::{ClipId, EditMode, Fade, FadeShape, Session, TrackId};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -117,9 +121,18 @@ pub fn specs() -> Vec<CommandSpec> {
             "Strip Silence",
             ["Edit"],
             Some("Cmd+U"),
-            "{threshold_db?: -48, min_length_ms?: 50, pad_before_ms?: 5, pad_after_ms?: 20}",
+            "{threshold_db?: -48, min_length_ms?: 50, pad_before_ms?: 5, pad_after_ms?: 20, mode?: strip|extract|separate, name?, number?: 1, zeros?: 0, suffix?} (strip removes the silence; extract removes the audio and keeps the silence; separate separates the clips at the edges of the silence and does not remove any; with a name, the clips left in the selection are named name, zeros, a number counting up from number, suffix)",
             has_range,
             strip_silence
+        ),
+        cmd!(
+            query "edit.strip_silence_preview",
+            "Strip Silence Rectangles",
+            [],
+            None,
+            "{threshold_db?: -48, min_length_ms?: 50, pad_before_ms?: 5, pad_after_ms?: 20, tracks?, start?, end?} (the ranges edit.strip_silence finds with the same settings, padded, on each track: what Strip keeps and the Strip Silence window draws as rectangles; changes nothing)",
+            has_range,
+            strip_silence_preview
         ),
         cmd!(
             "edit.fades_create",
@@ -276,6 +289,7 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
             .unwrap_or_default();
         cb.automation.push(lanes);
     }
+    cb.keep_auto_names(e.session());
     cb.markers = e
         .session()
         .markers
@@ -312,10 +326,21 @@ fn cut_track(s: &mut Session, t: TrackId, r: soundcraft_time::Range, sh: bool, f
     ops::clear_range(s, t, r, sh);
 }
 
+/// The clipboard for a paste, with the Auto Rename schemes of its clips put into the session first
+/// ([`Clipboard::adopt_auto_names`]).
+pub(super) fn clipboard_for_paste(e: &mut Engine) -> Clipboard {
+    let mut cb = e.clipboard.clone();
+    if cb.tracks.iter().flatten().any(|c| c.auto_name.is_some()) {
+        cb.adopt_auto_names(e.session_mut());
+        e.clipboard = cb.clone();
+    }
+    cb
+}
+
 fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.paste", p)?;
     let given = position_param(e, "edit.paste", p, "at")?;
-    let cb = e.clipboard.clone();
+    let cb = clipboard_for_paste(e);
     let s = e.session();
     let at = match given {
         Some(at) => at,
@@ -413,7 +438,7 @@ fn repeat_to_fill(e: &mut Engine, p: &Value) -> Result<Value> {
     let range = range_param(e, "edit.paste_repeat_to_fill", p)?;
     let len = e.clipboard.length.max(1);
     let tracks = tracks_required(e, "edit.paste_repeat_to_fill", p)?;
-    let cb = e.clipboard.clone();
+    let cb = clipboard_for_paste(e);
     let s = e.session_mut();
     let mut at = range.start;
     let mut n = 0;
@@ -785,25 +810,94 @@ fn copy_to_new_playlist(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"tracks": tracks.len()}))
 }
 
-fn strip_silence(e: &mut Engine, p: &Value) -> Result<Value> {
-    let tracks = tracks_required(e, "edit.strip_silence", p)?;
-    let r = range_param(e, "edit.strip_silence", p)?;
+/// Strip Silence's tracks, range, threshold, minimum strip duration and clip start and end pads.
+type StripSettings = (Vec<TrackId>, soundcraft_time::Range, f32, Samples, (Samples, Samples));
+
+/// The [`StripSettings`] in Strip Silence's params, with their defaults and limits. `cmd` names the
+/// command in errors.
+fn strip_settings(e: &Engine, cmd: &str, p: &Value) -> Result<StripSettings> {
+    let tracks = tracks_required(e, cmd, p)?;
+    let r = range_param(e, cmd, p)?;
     let thr = f32_or(p, "threshold_db", -48.0).clamp(-96.0, 0.0);
     let sr = e.session().sample_rate;
     let ms = |k: &str, d: f64| sr.samples(f64_or(p, k, d).clamp(0.0, 10_000.0) / 1000.0);
-    let (min_len, pre, post) = (ms("min_length_ms", 50.0), ms("pad_before_ms", 5.0), ms("pad_after_ms", 20.0));
+    Ok((tracks, r, thr, ms("min_length_ms", 50.0), (ms("pad_before_ms", 5.0), ms("pad_after_ms", 20.0))))
+}
+
+/// The scan `edit.strip_silence_preview` runs with params `p`, on the session as it is now. The Edit
+/// window runs it while the Strip Silence window or its Rename Selected Clips dialog is open: on a
+/// worker thread outside the web build, and on the frame thread in the web build or when no thread
+/// can be started.
+pub fn strip_silence_scan(e: &Engine, p: &Value) -> Result<crate::io::StripScan> {
+    let (tracks, range, threshold_db, min_len, pad) = strip_settings(e, "edit.strip_silence_preview", p)?;
+    Ok(crate::io::StripScan { session: e.session_arc(), tracks, range, threshold_db, min_len, pad, stop: Default::default() })
+}
+
+fn strip_silence_preview(e: &mut Engine, p: &Value) -> Result<Value> {
+    let found = strip_silence_scan(e, p)?.run()?;
+    let tracks: Vec<Value> =
+        found.iter().map(|(t, ranges)| json!({"track": t.0, "ranges": ranges.iter().map(|x| [x.start, x.end]).collect::<Vec<_>>()})).collect();
+    Ok(json!({"tracks": tracks}))
+}
+
+fn strip_silence(e: &mut Engine, p: &Value) -> Result<Value> {
+    let (tracks, r, thr, min_len, (pre, post)) = strip_settings(e, "edit.strip_silence", p)?;
+    let mode = match p.get("mode") {
+        None => crate::io::StripMode::Strip,
+        Some(Value::String(m)) => crate::io::StripMode::from_id(m).ok_or_else(|| bad("edit.strip_silence", format!("unknown mode `{m}`")))?,
+        Some(_) => return Err(bad("edit.strip_silence", "mode must be strip, extract or separate")),
+    };
+    let names = strip_names("edit.strip_silence", p)?;
     let s = e.session_mut();
     let mut kept = 0;
+    let mut named = 0;
     for t in &tracks {
-        kept += crate::io::strip_silence(s, *t, r, thr, min_len, pre, post)?;
+        kept += crate::io::strip_silence(s, *t, r, thr, min_len, (pre, post), mode, names.is_some())?;
+        if let Some(names) = &names {
+            named += crate::io::name_stripped_clips(s, *t, r, names, named);
+        }
     }
-    Ok(json!({"clips": kept}))
+    Ok(json!({"clips": kept, "named": named}))
+}
+
+/// The naming scheme in the `name`, `number`, `zeros` and `suffix` params of `cmd`
+/// (`edit.strip_silence`, `clip.auto_rename`), or `None` when `name` is missing or blank.
+pub(super) fn strip_names(cmd: &str, p: &Value) -> Result<Option<crate::io::StripNames>> {
+    use crate::io::StripNames;
+    let text = |k: &str| match p.get(k) {
+        None => Ok(None),
+        Some(Value::String(v)) => Ok(Some(v.clone())),
+        Some(_) => Err(bad(cmd, format!("`{k}` must be text"))),
+    };
+    let whole = |k: &str, max: u64| match p.get(k) {
+        None => Ok(None),
+        Some(v) => v.as_u64().filter(|n| *n <= max).map(Some).ok_or_else(|| bad(cmd, format!("`{k}` must be a whole number from 0 to {max}"))),
+    };
+    let (name, suffix) = (text("name")?, text("suffix")?);
+    let (number, zeros) = (whole("number", StripNames::MAX_NUMBER)?, whole("zeros", StripNames::MAX_ZEROS as u64)?);
+    let Some(name) = name.filter(|n| !n.trim().is_empty()) else {
+        if suffix.is_some() || number.is_some() || zeros.is_some() {
+            return Err(bad(cmd, "`number`, `zeros` and `suffix` need a `name`"));
+        }
+        return Ok(None);
+    };
+    let d = StripNames::default();
+    let suffix = suffix.unwrap_or(d.suffix);
+    let max_text = soundcraft_model::AutoName::MAX_TEXT_CHARS;
+    if name.chars().count() + suffix.chars().count() > max_text {
+        return Err(bad(cmd, format!("`name` and `suffix` together must be at most {max_text} characters")));
+    }
+    Ok(Some(StripNames { name, number: number.unwrap_or(d.number), zeros: zeros.and_then(|z| usize::try_from(z).ok()).unwrap_or(d.zeros), suffix }))
 }
 
 fn fades_create(e: &mut Engine, p: &Value) -> Result<Value> {
-    let shape = str_param(p, "shape")
-        .map_or(Some(FadeShape::EqualPower), FadeShape::from_id)
-        .ok_or_else(|| bad("edit.fades_create", "unknown fade shape"))?;
+    let shape = match p.get("shape") {
+        None => FadeShape::EqualPower,
+        Some(v) => v
+            .as_str()
+            .and_then(FadeShape::from_id)
+            .ok_or_else(|| bad("edit.fades_create", "shape must be linear|equal power|s-curve|exponential|logarithmic"))?,
+    };
     if p.get("clip").is_some() || p.get("side").is_some() {
         let curvature = match p.get("curvature") {
             None => 0.0,
@@ -830,9 +924,6 @@ fn fades_create(e: &mut Engine, p: &Value) -> Result<Value> {
         let available = clip.length.min(clip.end().saturating_sub(clip.start));
         if available <= 0 {
             return Err(bad("edit.fades_create", "clip has no length"));
-        }
-        if p.get("shape").is_some_and(|v| !v.is_string()) {
-            return Err(bad("edit.fades_create", "shape must be a fade shape name"));
         }
         let fade = Fade { len: length.min(available), shape, curvature };
         let clip = e.session_mut().find_clip_mut(id).ok_or_else(|| bad("edit.fades_create", "clip not found"))?;
@@ -1068,6 +1159,19 @@ mod tests {
         let before = e.session().clone();
         assert!(e.execute("edit.fades_create", &json!({"clip": id, "side": "in", "length": 1})).is_err());
         assert_eq!(e.session(), &before);
+    }
+
+    #[test]
+    fn range_fades_refuse_a_shape_that_is_not_a_shape_name() {
+        for shape in [json!("bad"), json!(null), json!(true), json!(1)] {
+            let (mut e, t, _) = trim_session(&[(0, 10_000, 0), (10_000, 10_000, 10_000)]);
+            let before = e.session().clone();
+            let history = e.undo_history();
+            let params = json!({"tracks": [t], "start": 9_500, "end": 10_500, "shape": shape});
+            assert!(e.execute("edit.fades_create", &params).is_err(), "{params}");
+            assert_eq!(e.session(), &before, "{params}");
+            assert_eq!(e.undo_history(), history, "{params}");
+        }
     }
 
     #[test]

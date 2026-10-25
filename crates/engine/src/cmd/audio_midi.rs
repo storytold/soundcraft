@@ -1,9 +1,9 @@
 //! Edit › Copy Special › Audio as MIDI: pitch-track the selected audio into MIDI notes on the
 //! clipboard (paste them onto a MIDI or instrument track).
+use super::{CommandSpec, bad, has_range, range_param, tracks_required};
 
-use super::*;
-use crate::{Clipboard, cmd};
-use serde_json::json;
+use crate::{Clipboard, Engine, Result, cmd};
+use serde_json::{Value, json};
 use soundcraft_midi::{Note, Sequence};
 use soundcraft_model::{Clip, ClipId};
 

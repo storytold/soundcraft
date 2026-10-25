@@ -1,11 +1,13 @@
 //! More Edit menu commands: Cut/Copy/Clear Special variants, Paste Special, selection helpers,
 //! Space Clips, Snap to, Copy/Move Selection to playlists, TCE, and automation coalesce/trim/glide.
+use super::{
+    CommandSpec, always, bad, clip_ids_param, has_clipboard, has_range, has_selection, position_param, range_param, str_param, tracks_required,
+};
 
 use super::more_util::{clip_db, render_stretched, replace_clip, set_clip_env, target_playlist};
-use super::*;
 use crate::edit as ops;
-use crate::{Clipboard, TransportRequest, cmd};
-use serde_json::json;
+use crate::{Clipboard, Engine, Result, TransportRequest, cmd};
+use serde_json::{Value, json};
 use soundcraft_model::{AutoParam, AutomationLane, Clip, ClipContent, ClipId, EditMode, Playlist, Session};
 use soundcraft_time::{Range, Samples};
 
@@ -450,7 +452,7 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "edit.paste_merge_midi";
     let tracks = tracks_required(e, id, p)?;
     let at = position_param(e, id, p, "at")?.unwrap_or(e.session().edit.selection.start).max(0);
-    let cb = e.clipboard.clone();
+    let cb = super::edit::clipboard_for_paste(e);
     let s = e.session_mut();
     let tempo = s.tempo.clone();
     let sr = s.sample_rate;

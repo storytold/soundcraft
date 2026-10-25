@@ -169,11 +169,28 @@ impl Vst3Plugin {
     /// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
     /// allocates on the audio thread).
     fn push_note(&mut self, e: NoteEvent) {
-        if self.notes.len() >= self.notes.capacity() {
-            return;
-        }
-        let pos = self.notes.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
-        self.notes.insert(pos, e);
+        push_sorted(&mut self.notes, e);
+    }
+}
+
+fn push_sorted(notes: &mut Vec<NoteEvent>, e: NoteEvent) {
+    if notes.len() >= notes.capacity() {
+        return;
+    }
+    let pos = notes.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
+    notes.insert(pos, e);
+}
+
+/// Keeps only the pending releases, one per key and moved to the start of the next block, so at
+/// most 128 remain and `all_notes_off` always has room in the queue.
+fn keep_releases(notes: &mut Vec<NoteEvent>) {
+    let mut seen = [false; 128];
+    notes.retain(|e| match *e {
+        NoteEvent::Off { key, .. } => seen.get_mut(usize::from(key)).is_some_and(|s| !std::mem::replace(s, true)),
+        _ => false,
+    });
+    for e in notes.iter_mut() {
+        e.set_time(0);
     }
 }
 
@@ -214,8 +231,11 @@ impl Plugin for Vst3Plugin {
     }
 
     fn reset(&mut self) {
-        self.notes.clear();
+        // Keep pending releases and release whatever is still held, so the processor's voices stop
+        // on the next block instead of sounding on while the host forgets them.
+        keep_releases(&mut self.notes);
         self.controls.clear();
+        self.all_notes_off();
         self.held = [false; 128];
     }
 
@@ -515,5 +535,26 @@ impl PluginEditor for Vst3Editor {
         // but some plugins put them in both.
         let units = self.units.get(i).map_or("", |u| u.trim());
         if units.is_empty() || text.trim_end().to_lowercase().ends_with(&units.to_lowercase()) { Some(text) } else { Some(format!("{text} {units}")) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A queue full of releases still has room to release every held key after a reset.
+    #[test]
+    fn reset_keeps_room_to_release_every_held_key() {
+        let mut notes = Vec::with_capacity(EVENT_CAP);
+        for i in 0..EVENT_CAP {
+            push_sorted(&mut notes, NoteEvent::Off { time: i as u32, key: (i % 4) as u8 });
+        }
+        keep_releases(&mut notes);
+        for key in 0..128u8 {
+            push_sorted(&mut notes, NoteEvent::Off { time: 0, key });
+        }
+        for key in 0..128u8 {
+            assert!(notes.iter().any(|e| matches!(*e, NoteEvent::Off { key: k, .. } if k == key)), "key {key} was never released");
+        }
     }
 }

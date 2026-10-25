@@ -288,10 +288,44 @@ impl Default for EditState {
             timeline_selection: Range::default(),
             flags: ["view.clip.name", "view.clip.gain_line", "waveform.peak", "view.clip.overlap_shadows", "view.marker.ruler_lines"]
                 .iter()
-                .map(|s| s.to_string())
+                .map(ToString::to_string)
                 .collect(),
             values: std::collections::BTreeMap::new(),
         }
+    }
+}
+
+/// Clip List › Auto Rename: the names that editing gives the clips it separates from a clip.
+/// Each new clip is named `name`, then `zeros` zeros, then `number`, then `suffix`, and `number`
+/// counts up by one for the next clip.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct AutoName {
+    pub name: String,
+    /// The number the next new clip gets.
+    pub number: u64,
+    pub zeros: usize,
+    pub suffix: String,
+    /// Tells this scheme from another one under the same key after an undo or in another session,
+    /// for pastes from the clipboard. 0 matches no scheme.
+    #[serde(default)]
+    pub id: u64,
+}
+
+impl AutoName {
+    /// The largest starting number.
+    pub const MAX_NUMBER: u64 = 999_999_999;
+    /// The most zeros before the number.
+    pub const MAX_ZEROS: usize = 9;
+
+    /// Room for `name` and `suffix` together: 29 characters stay free for 9 zeros and the 20
+    /// digits of a u64, so a clip name never loses its number to [`MAX_NAME_CHARS`].
+    pub const MAX_TEXT_CHARS: usize = MAX_NAME_CHARS - 29;
+
+    /// Repair a scheme read from a file: names that can be drawn and at most [`Self::MAX_ZEROS`] zeros.
+    pub fn sanitize(&mut self) {
+        truncate_chars(&mut self.name, Self::MAX_TEXT_CHARS);
+        truncate_chars(&mut self.suffix, Self::MAX_TEXT_CHARS - self.name.chars().count());
+        self.zeros = self.zeros.min(Self::MAX_ZEROS);
     }
 }
 
@@ -317,6 +351,10 @@ pub struct Session {
     pub outputs: Vec<OutputPath>,
     pub markers: Vec<MemoryLocation>,
     pub groups: Vec<Group>,
+    /// Clip List › Auto Rename schemes, keyed by the ids in [`Clip::auto_name`]. The clips separated
+    /// from one clip share its scheme, so they count up one number sequence.
+    #[serde(default)]
+    pub auto_names: std::collections::BTreeMap<u64, crate::AutoName>,
     pub edit: EditState,
     pub next_id: u64,
     #[serde(default)]
@@ -358,6 +396,7 @@ impl Session {
             outputs: vec![OutputPath { name: "Out 1-2".into(), first_channel: 0, format: ChannelFormat::Stereo }],
             markers: Vec::new(),
             groups: Vec::new(),
+            auto_names: std::collections::BTreeMap::new(),
             edit: EditState::default(),
             next_id: 1,
             comments: String::new(),
@@ -526,6 +565,12 @@ impl Session {
         ClipId(self.alloc())
     }
 
+    /// Drop the Auto Rename schemes that no clip on any playlist uses.
+    pub fn prune_auto_names(&mut self) {
+        let used: std::collections::BTreeSet<u64> = self.all_clips().filter_map(|c| c.auto_name).collect();
+        self.auto_names.retain(|k, _| used.contains(k));
+    }
+
     // ---- persistence ---------------------------------------------------------------------
 
     pub fn to_json(&self) -> Result<String, SessionError> {
@@ -541,6 +586,7 @@ impl Session {
         }
         let mut s: Session = serde_json::from_value(v).map_err(|e| SessionError::Format(e.to_string()))?;
         s.sanitize();
+        s.validate()?;
         Ok(s)
     }
 
@@ -552,6 +598,7 @@ impl Session {
             .map(|t| t.id.0)
             .chain(self.tracks.iter().flat_map(|t| t.playlists.iter().flat_map(|p| p.clips.iter().map(|c| c.id.0))))
             .chain(self.sources.iter().map(|s| s.id.0))
+            .chain(self.auto_names.keys().copied())
             .chain(self.videos.iter().map(|v| v.id.0))
             .chain(self.busses.iter().map(|b| b.id.0))
             .chain(self.markers.iter().map(|m| m.id.0))
@@ -625,6 +672,8 @@ impl Session {
         let clip_ids: std::collections::BTreeSet<u64> =
             self.tracks.iter().flat_map(|t| t.playlists.iter().flat_map(|p| p.clips.iter().map(|c| c.id.0))).collect();
         self.midi_originals.retain(|id, _| clip_ids.contains(id));
+        self.prune_auto_names();
+        self.auto_names.values_mut().for_each(crate::AutoName::sanitize);
         if !self.edit.zoom.samples_per_px.is_finite() || self.edit.zoom.samples_per_px <= 0.0 {
             self.edit.zoom.samples_per_px = 1024.0;
         }
@@ -632,6 +681,25 @@ impl Session {
             self.sample_rate = SampleRate::default();
         }
         self.tempo.sanitize();
+    }
+
+    /// Reject a document whose ids are ambiguous or exhausted, run after [`Session::sanitize`] on
+    /// untrusted data. Duplicate ids in a namespace make commands, selections and source
+    /// associations act on an arbitrary one of the objects; a maximal `next_id` -- or a maximal
+    /// existing id, which `sanitize` folds into `next_id` -- makes every later allocation return
+    /// `u64::MAX` and repeat itself.
+    fn validate(&self) -> Result<(), SessionError> {
+        if self.next_id == u64::MAX {
+            return Err(SessionError::Invalid("the session id space is exhausted".into()));
+        }
+        distinct("track", self.tracks.iter().map(|t| t.id.0))?;
+        distinct("clip", self.tracks.iter().flat_map(|t| t.playlists.iter().flat_map(|p| p.clips.iter().map(|c| c.id.0))))?;
+        distinct("source", self.sources.iter().map(|s| s.id.0))?;
+        distinct("video", self.videos.iter().map(|v| v.id.0))?;
+        distinct("bus", self.busses.iter().map(|b| b.id.0))?;
+        distinct("marker", self.markers.iter().map(|m| m.id.0))?;
+        distinct("group", self.groups.iter().map(|g| g.id.0))?;
+        Ok(())
     }
 }
 
@@ -646,6 +714,17 @@ pub fn truncate_chars(s: &mut String, max: usize) {
     if let Some((end, _)) = s.char_indices().nth(max) {
         s.truncate(end);
     }
+}
+
+/// Every id in `ids` distinct, or an error naming the namespace and the repeated id.
+fn distinct(kind: &str, ids: impl Iterator<Item = u64>) -> Result<(), SessionError> {
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            return Err(SessionError::Invalid(format!("duplicate {kind} id {id}")));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -679,6 +758,19 @@ mod tests {
         let text = s.to_json().unwrap();
         let back = Session::from_json(&text).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn session_with_legacy_fit_height_loads() {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+        if let Some(track) = s.track_mut(t) {
+            track.height = crate::TrackHeight::Large;
+        }
+        let text = s.to_json().unwrap().replace("\"height\": \"Large\"", "\"height\": \"Fit\"");
+        assert!(text.contains("\"height\": \"Fit\""));
+        let back = Session::from_json(&text).unwrap();
+        assert_eq!(back.track(t).map(|tr| tr.height), Some(crate::TrackHeight::Medium));
     }
 
     #[test]
@@ -771,6 +863,33 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_ids_are_rejected_on_load() {
+        let mut s = Session::default();
+        s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let mut v = serde_json::to_value(&s).unwrap();
+        v["tracks"][1]["id"] = v["tracks"][0]["id"].clone();
+        let err = Session::from_json(&v.to_string()).unwrap_err();
+        assert!(matches!(&err, SessionError::Invalid(m) if m.contains("duplicate track id")), "{err}");
+    }
+
+    #[test]
+    fn an_exhausted_id_space_is_rejected_on_load() {
+        let mut s = Session::default();
+        s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let mut v = serde_json::to_value(&s).unwrap();
+        v["next_id"] = serde_json::json!(u64::MAX);
+        let err = Session::from_json(&v.to_string()).unwrap_err();
+        assert!(matches!(&err, SessionError::Invalid(m) if m.contains("exhausted")), "{err}");
+        // A maximal existing id is exhausted too, however `next_id` was written: every later
+        // allocation would return `u64::MAX` again.
+        let mut v = serde_json::to_value(&s).unwrap();
+        v["tracks"][0]["id"] = serde_json::json!(u64::MAX);
+        let err = Session::from_json(&v.to_string()).unwrap_err();
+        assert!(matches!(&err, SessionError::Invalid(m) if m.contains("exhausted")), "{err}");
+    }
+
+    #[test]
     fn sanitize_repairs() {
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
@@ -784,5 +903,12 @@ mod tests {
         assert_eq!(tr.active_playlist, 0);
         assert_eq!(tr.mixer.volume_db, 0.0);
         assert!(s.next_id > t.0);
+    }
+
+    #[test]
+    fn a_loaded_auto_name_scheme_leaves_room_for_its_number() {
+        let mut scheme = crate::AutoName { name: "n".repeat(300), suffix: "s".repeat(300), ..Default::default() };
+        scheme.sanitize();
+        assert_eq!(scheme.name.chars().count() + scheme.suffix.chars().count(), crate::AutoName::MAX_TEXT_CHARS);
     }
 }

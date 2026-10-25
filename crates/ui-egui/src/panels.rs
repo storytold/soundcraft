@@ -77,7 +77,13 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
                 let _ = app.run("track.hide", json!({"tracks": [id], "hidden": shown}));
             }
             ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x + 20.0, r.min.y + 3.0), vec2(4.0, 11.0)), 0.0, rgb(color));
-            ui.painter().text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, &name, regular(11.5), if shown { t.text } else { t.text_dim });
+            ui.painter().with_clip_rect(r).text(
+                pos2(r.min.x + 30.0, r.center().y),
+                Align2::LEFT_CENTER,
+                &name,
+                regular(11.5),
+                if shown { t.text } else { t.text_dim },
+            );
             if resp.clicked() {
                 crate::edit_window::click_track(app, soundcraft_model::TrackId(id), ui.input(|i| i.modifiers), |_, _| true);
             }
@@ -118,7 +124,7 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
                 bold(10.0),
                 if active { t.text_dark } else { t.text_dim },
             );
-            ui.painter().text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, &name, regular(11.5), t.text);
+            ui.painter().with_clip_rect(r).text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, &name, regular(11.5), t.text);
             if resp.clicked() {
                 let _ = app.run("track.group_toggle", json!({"group": id}));
             }
@@ -184,32 +190,75 @@ fn gutter_scroll<R>(ui: &Ui, gutter: Rect, out: &egui::scroll_area::ScrollAreaOu
     }
 }
 
+/// One row of the clip list: a whole file, or a clip on a track (positions in the session).
+#[derive(Clone, Copy)]
+enum ClipRow {
+    Source(usize),
+    Clip { track: usize, clip: usize },
+}
+
+/// The clip list's rows for one document revision and filter. A drum edit holds tens of thousands
+/// of clips: the rows are listed (and filtered) when either changes, not every frame.
+#[derive(Clone)]
+struct ClipRows {
+    revision: u64,
+    filter: String,
+    rows: std::sync::Arc<Vec<ClipRow>>,
+}
+
+fn clip_rows(s: &soundcraft_model::Session, needle: &str) -> Vec<ClipRow> {
+    let shown = |name: &str| needle.is_empty() || name.to_lowercase().contains(needle);
+    // Whole files first (bold), then clips on tracks.
+    let sources =
+        s.sources.iter().enumerate().filter(|(_, src)| shown(&format!("{} ({}ch)", src.name, src.channels))).map(|(i, _)| ClipRow::Source(i));
+    let clips =
+        s.tracks.iter().enumerate().flat_map(|(track, tr)| {
+            tr.clips().iter().enumerate().filter(|(_, c)| shown(&c.name)).map(move |(clip, _)| ClipRow::Clip { track, clip })
+        });
+    sources.chain(clips).collect()
+}
+
 pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     panel_header(ui, "CLIPS");
-    let items: Vec<(u64, String, bool, [u8; 3], bool)> = {
-        let s = app.engine.session();
-        let mut v = Vec::new();
-        // Whole files first (bold), then clips on tracks.
-        for src in &s.sources {
-            v.push((src.id.0, format!("{} ({}ch)", src.name, src.channels), true, [150, 150, 150], s.edit.selected_sources.contains(&src.id)));
-        }
-        for tr in &s.tracks {
-            for c in tr.clips() {
-                v.push((c.id.0, c.name.clone(), false, c.color.unwrap_or(tr.color), s.edit.selected_clips.contains(&c.id)));
-            }
-        }
-        v
-    };
     let fkey = egui::Id::new("clip_filter");
     let mut filter: String = ui.ctx().memory(|m| m.data.get_temp(fkey)).unwrap_or_default();
     ui.add(egui::TextEdit::singleline(&mut filter).hint_text("🔍 Find clips").desired_width(f32::INFINITY));
     ui.ctx().memory_mut(|m| m.data.insert_temp(fkey, filter.clone()));
     let needle = filter.to_lowercase();
-    let items: Vec<_> = items.into_iter().filter(|(_, n, _, _, _)| needle.is_empty() || n.to_lowercase().contains(&needle)).collect();
-    egui::ScrollArea::vertical().id_salt("clips_scroll").auto_shrink([false, false]).show(ui, |ui| {
+    let rkey = egui::Id::new("clip_rows");
+    let revision = app.engine.revision;
+    let cached = ui.ctx().memory(|m| m.data.get_temp::<ClipRows>(rkey)).filter(|c| c.revision == revision && c.filter == needle);
+    let rows = match cached {
+        Some(c) => c.rows,
+        None => {
+            let rows = std::sync::Arc::new(clip_rows(app.engine.session(), &needle));
+            ui.ctx().memory_mut(|m| m.data.insert_temp(rkey, ClipRows { revision, filter: needle, rows: rows.clone() }));
+            rows
+        }
+    };
+    let row_h = 17.0;
+    egui::ScrollArea::vertical().id_salt("clips_scroll").auto_shrink([false, false]).show_rows(ui, row_h, rows.len(), |ui, shown| {
+        // Only the rows in view: what they show is read now, before any of them acts on the session.
+        let items: Vec<(u64, String, bool, [u8; 3], bool)> = {
+            let s = app.engine.session();
+            rows.get(shown)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|row| match *row {
+                    ClipRow::Source(i) => s.sources.get(i).map(|src| {
+                        (src.id.0, format!("{} ({}ch)", src.name, src.channels), true, [150, 150, 150], s.edit.selected_sources.contains(&src.id))
+                    }),
+                    ClipRow::Clip { track, clip } => {
+                        let tr = s.tracks.get(track)?;
+                        let c = tr.clips().get(clip)?;
+                        Some((c.id.0, c.name.clone(), false, c.color.unwrap_or(tr.color), s.edit.selected_clips.contains(&c.id)))
+                    }
+                })
+                .collect()
+        };
         for (id, name, whole, color, selected) in items {
-            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), if whole { Sense::click_and_drag() } else { Sense::click() });
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), if whole { Sense::click_and_drag() } else { Sense::click() });
             resp.context_menu(|ui| {
                 if whole {
                     if ui.button("Place on New Track").clicked() {
@@ -224,6 +273,12 @@ pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
                         ui.close();
                     }
                     ui.separator();
+                }
+                if !whole && ui.button("Auto Rename…").clicked() {
+                    // The selected clips when the row is one of them, otherwise the row's clip.
+                    let clips = if selected { app.engine.session().edit.selected_clips.clone() } else { vec![ClipId(id)] };
+                    app.dialogs.open_auto_rename(&app.engine, clips);
+                    ui.close();
                 }
                 if ui.button("Clear…").clicked() {
                     let (clips, sources) = if whole { (vec![], vec![SourceId(id)]) } else { (vec![ClipId(id)], vec![]) };
@@ -371,6 +426,29 @@ fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_big_counter = open;
 }
 
+fn memory_location_row(app: &mut SoundApp, ui: &mut Ui, n: u32, name: &str, loc: &str, len: &str, kind: &str) {
+    if ui.button(n.to_string()).on_hover_text("Recall").clicked() {
+        let _ = app.run("markers.recall", json!({"number": n}));
+    }
+    let key = egui::Id::new(("mem_name", n));
+    let mut edit: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| name.to_string());
+    let r = ui.add(egui::TextEdit::singleline(&mut edit).desired_width(140.0));
+    if r.changed() {
+        ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
+    }
+    if r.lost_focus() && edit != name {
+        let _ = app.run("markers.edit", json!({"number": n, "rename": edit}));
+        ui.ctx().memory_mut(|m| m.data.remove::<String>(key));
+    }
+    ui.label(egui::RichText::new(loc).font(mono(11.0)));
+    ui.label(egui::RichText::new(len).font(mono(11.0)));
+    ui.label(kind);
+    if ui.small_button("✕").on_hover_text("Delete").clicked() {
+        let _ = app.run("markers.delete", json!({"number": n}));
+    }
+    ui.end_row();
+}
+
 pub(crate) fn memory_locations(app: &mut SoundApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         if ui.button("+ Marker").clicked() {
@@ -402,27 +480,8 @@ pub(crate) fn memory_locations(app: &mut SoundApp, ui: &mut Ui) {
                 ui.label(egui::RichText::new(h).strong());
             }
             ui.end_row();
-            for (n, name, loc, len, kind) in rows {
-                if ui.button(n.to_string()).on_hover_text("Recall").clicked() {
-                    let _ = app.run("markers.recall", json!({"number": n}));
-                }
-                let key = egui::Id::new(("mem_name", n));
-                let mut edit: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| name.clone());
-                let r = ui.add(egui::TextEdit::singleline(&mut edit).desired_width(140.0));
-                if r.changed() {
-                    ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
-                }
-                if r.lost_focus() && edit != name {
-                    let _ = app.run("markers.edit", json!({"number": n, "rename": edit}));
-                    ui.ctx().memory_mut(|m| m.data.remove::<String>(key));
-                }
-                ui.label(egui::RichText::new(loc).font(mono(11.0)));
-                ui.label(egui::RichText::new(len).font(mono(11.0)));
-                ui.label(kind);
-                if ui.small_button("✕").on_hover_text("Delete").clicked() {
-                    let _ = app.run("markers.delete", json!({"number": n}));
-                }
-                ui.end_row();
+            for (n, name, loc, len, kind) in &rows {
+                memory_location_row(app, ui, *n, name, loc, len, kind);
             }
         });
     });
@@ -669,7 +728,7 @@ fn preset_menu(
         return;
     };
     let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .map(|rd| rd.flatten().filter_map(|e| e.path().file_stem().and_then(|x| x.to_str()).map(str::to_string)).collect())
+        .map(|rd| rd.flatten().filter_map(|e| e.path().file_stem().and_then(std::ffi::OsStr::to_str).map(str::to_string)).collect())
         .unwrap_or_default();
     names.sort();
     for n in &names {
@@ -707,4 +766,33 @@ fn preset_menu(
         }
     });
     ui.ctx().memory_mut(|m| m.data.insert_temp(key, name));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
+
+    #[test]
+    fn clip_rows_list_every_clip_in_track_order_and_filter_by_name() {
+        let mut s = Session::default();
+        for names in [["Kick 1", "Snare 1"], ["Kick 2", "Tom"]] {
+            let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+            for (i, n) in names.into_iter().enumerate() {
+                let c = Clip::audio(s.new_clip_id(), n, SourceId(1), 0, i as i64 * 100, 100);
+                s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(c);
+            }
+        }
+        let names = |rows: Vec<ClipRow>| -> Vec<String> {
+            rows.into_iter()
+                .filter_map(|r| match r {
+                    ClipRow::Clip { track, clip } => Some(s.tracks[track].clips()[clip].name.clone()),
+                    ClipRow::Source(_) => None,
+                })
+                .collect()
+        };
+        assert_eq!(names(clip_rows(&s, "")), ["Kick 1", "Snare 1", "Kick 2", "Tom"]);
+        assert_eq!(names(clip_rows(&s, "kick")), ["Kick 1", "Kick 2"]);
+        assert!(clip_rows(&s, "cowbell").is_empty());
+    }
 }

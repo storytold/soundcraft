@@ -122,7 +122,7 @@ impl TickConv {
             let [hi, lo] = division.to_be_bytes();
             let fps = -i128::from(hi as i8);
             let tpf = i128::from(lo);
-            if fps <= 0 || tpf == 0 {
+            if !matches!(fps, 24 | 25 | 29 | 30) || tpf == 0 {
                 return Err(MidiError::Invalid { offset, reason: "invalid SMPTE division" });
             }
             let two_ppq = 2 * i128::from(PPQ);
@@ -204,7 +204,12 @@ pub fn read_smf(bytes: &[u8]) -> Result<Smf, MidiError> {
         tracks.push(track);
     }
 
-    if format == 1 && tracks.len() > 1 && tracks.first().is_some_and(|t| t.sequence.notes.is_empty() && t.sequence.ctrls.is_empty()) {
+    // A lone track is only a conductor track if it carried global data and has no name; otherwise it is kept.
+    let globals_present = !(globals.tempos.is_empty() && globals.meters.is_empty() && globals.markers.is_empty() && globals.key_sigs.is_empty());
+    if format == 1
+        && (tracks.len() > 1 || globals_present)
+        && tracks.first().is_some_and(|t| t.sequence.notes.is_empty() && t.sequence.ctrls.is_empty() && (tracks.len() > 1 || t.name.is_empty()))
+    {
         tracks.remove(0);
     }
 
@@ -444,7 +449,12 @@ fn write_track(out: &mut Vec<u8>, mut events: Vec<WEvent>) -> Result<(), MidiErr
 /// Errors: invalid tempo (non-finite or <= 0 bpm), meter denominator that is not a power of two
 /// (1..=128), more than 65535 tracks, or a gap between events beyond the 28-bit delta limit.
 pub fn write_smf(smf: &Smf) -> Result<Vec<u8>, MidiError> {
-    let ntrks = u16::try_from(smf.tracks.len().saturating_add(1)).map_err(|_| MidiError::Write("more than 65535 tracks".into()))?;
+    // The conductor track is omitted when there is nothing to put in it and no content tracks, so an
+    // empty `Smf` is written as a file with zero tracks and reads back as zero tracks.
+    let has_conductor =
+        !(smf.tempos.is_empty() && smf.meters.is_empty() && smf.key_sigs.is_empty() && smf.markers.is_empty() && smf.tracks.is_empty());
+    let ntrks =
+        u16::try_from(smf.tracks.len().saturating_add(usize::from(has_conductor))).map_err(|_| MidiError::Write("more than 65535 tracks".into()))?;
     let mut out = Vec::new();
     out.extend_from_slice(b"MThd");
     out.extend_from_slice(&6u32.to_be_bytes());
@@ -476,18 +486,58 @@ pub fn write_smf(smf: &Smf) -> Result<Vec<u8>, MidiError> {
     for (t, text) in &smf.markers {
         ev.push(WEvent { tick: clamp_tick(*t), order: 3, bytes: meta(0x06, text.as_bytes())? });
     }
-    write_track(&mut out, ev)?;
+    if has_conductor {
+        write_track(&mut out, ev)?;
+    }
 
     for track in &smf.tracks {
         let mut ev = Vec::new();
         if !track.name.is_empty() {
             ev.push(WEvent { tick: 0, order: 0, bytes: meta(0x03, track.name.as_bytes())? });
         }
-        for n in &track.sequence.notes {
+        let notes = &track.sequence.notes;
+        let mut ends: Vec<u64> = notes.iter().map(|n| clamp_tick(n.end()).max(clamp_tick(n.start).saturating_add(1))).collect();
+        let mut dropped = vec![false; notes.len()];
+        // The reader pairs offs with ons first-in first-out, so a note still sounding when the next
+        // same-pitch note starts would swap ends with it: trim it to that start. When two same-pitch
+        // notes start on the same tick they cannot be told apart, so only the longer one is written.
+        let mut order: Vec<usize> = (0..notes.len()).collect();
+        order.sort_by_key(|&i| {
+            notes.get(i).map_or((0, 0, 0, std::cmp::Reverse(0)), |n| {
+                (n.channel & 0x0F, n.pitch.min(127), clamp_tick(n.start), std::cmp::Reverse(ends.get(i).copied().unwrap_or(0)))
+            })
+        });
+        let mut prev: Option<usize> = None;
+        for &b in &order {
+            let Some(nb) = notes.get(b) else { continue };
+            if let Some(a) = prev
+                && let Some(na) = notes.get(a)
+                && na.channel & 0x0F == nb.channel & 0x0F
+                && na.pitch.min(127) == nb.pitch.min(127)
+            {
+                let (sa, sb) = (clamp_tick(na.start), clamp_tick(nb.start));
+                if sa == sb {
+                    if let Some(d) = dropped.get_mut(b) {
+                        *d = true;
+                    }
+                    continue;
+                }
+                if let Some(ea) = ends.get_mut(a)
+                    && sb < *ea
+                {
+                    *ea = sb;
+                }
+            }
+            prev = Some(b);
+        }
+        for (i, n) in notes.iter().enumerate() {
+            if dropped.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             let ch = n.channel & 0x0F;
             let pitch = n.pitch.min(127);
             let start = clamp_tick(n.start);
-            let end = clamp_tick(n.end()).max(start.saturating_add(1));
+            let end = ends.get(i).copied().unwrap_or(start.saturating_add(1));
             ev.push(WEvent { tick: start, order: 3, bytes: vec![0x90 | ch, pitch, n.velocity.clamp(1, 127)] });
             ev.push(WEvent { tick: end, order: 1, bytes: vec![0x80 | ch, pitch, n.release_velocity.min(127)] });
         }
@@ -528,6 +578,19 @@ mod tests {
     }
 
     #[test]
+    fn empty_smf_round_trips_with_no_tracks() {
+        let r = read_smf(&write_smf(&Smf::default()).unwrap()).unwrap();
+        assert_eq!(r.tracks.len(), 0);
+        let one = Smf { tracks: vec![SmfTrack::default()], ..Smf::default() };
+        let r = read_smf(&write_smf(&one).unwrap()).unwrap();
+        assert_eq!(r.tracks.len(), 1);
+        let cond = Smf { tempos: vec![(0, 90.0)], ..Smf::default() };
+        let r = read_smf(&write_smf(&cond).unwrap()).unwrap();
+        assert_eq!(r.tracks.len(), 0);
+        assert_eq!(r.tempos.len(), 1);
+    }
+
+    #[test]
     fn spec_vlq_examples() {
         let mut b = Vec::new();
         push_vlq(&mut b, 0x0800_0000).unwrap();
@@ -535,5 +598,27 @@ mod tests {
         let mut b = Vec::new();
         push_vlq(&mut b, 0x2000).unwrap();
         assert_eq!(b, [0xC0, 0x00]);
+    }
+
+    #[test]
+    fn same_pitch_overlaps_do_not_swap_ends() {
+        let mk = |start, length| Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start, length };
+        let smf = Smf {
+            format: 1,
+            tracks: vec![SmfTrack {
+                name: String::new(),
+                sequence: Sequence { notes: vec![mk(0, 1000), mk(100, 200), mk(1000, 100), mk(2000, 500), mk(2000, 900)], ..Sequence::default() },
+            }],
+            tempos: vec![],
+            meters: vec![],
+            markers: vec![],
+            key_sigs: vec![],
+        };
+        let back = read_smf(&write_smf(&smf).unwrap()).unwrap();
+        let mut got: Vec<(i64, i64)> = back.tracks.iter().flat_map(|t| t.sequence.notes.iter().map(|n| (n.start, n.length))).collect();
+        got.sort_unstable();
+        // The earlier note is trimmed to the start of the next same-pitch note; later notes keep their length;
+        // of two notes starting together only the longer survives.
+        assert_eq!(got, vec![(0, 100), (100, 200), (1000, 100), (2000, 900)]);
     }
 }

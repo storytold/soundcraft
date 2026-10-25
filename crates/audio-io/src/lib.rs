@@ -115,6 +115,7 @@ pub enum BitDepth {
     Int16,
     Int24,
     Int32,
+    /// Preserve finite samples, including values above full scale; map NaN to 0 and infinities to ±1.
     Float32,
 }
 

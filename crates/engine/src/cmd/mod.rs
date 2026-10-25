@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 mod aaf;
 mod audio_midi;
 mod audiosuite;
+mod auto_rename;
 mod clap;
 mod clip;
 mod clip_list;
@@ -39,9 +40,31 @@ mod view_more;
 mod vst3;
 mod zoom_toggle;
 
+#[cfg(test)]
+mod panic_probe {
+    use super::*;
+    use crate::cmd;
+
+    pub fn specs() -> Vec<CommandSpec> {
+        vec![cmd!(noundo "test.panic_probe", "Panic Probe", [], None, "{}", always, probe)]
+    }
+
+    fn probe(e: &mut Engine, p: &Value) -> Result<Value> {
+        if p.get("panic").is_none() {
+            return Ok(Value::Null);
+        }
+        e.clipboard.length = 123;
+        e.message("probe");
+        e.transport_requests.push(crate::TransportRequest::Play);
+        e.last_selection = Some((soundcraft_time::Range::new(0, 10), Vec::new()));
+        panic!("probe")
+    }
+}
+
 pub use file::bounce_job;
 
 pub(crate) use edit::remember_selection;
+pub use edit::strip_silence_scan;
 
 pub type Run = fn(&mut Engine, &Value) -> Result<Value>;
 /// `Err(reason)` = disabled.
@@ -82,7 +105,7 @@ impl CommandSpec {
         CommandInfo {
             id: self.id.into(),
             label: self.label.into(),
-            menu: self.menu.iter().map(|s| s.to_string()).collect(),
+            menu: self.menu.iter().map(ToString::to_string).collect(),
             shortcut: self.shortcut.map(str::to_string),
             params: self.params.into(),
             enabled: en.is_ok(),
@@ -128,6 +151,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(track_more::specs());
         v.extend(clip_more::specs());
         v.extend(clip_list::specs());
+        v.extend(auto_rename::specs());
         v.extend(event_more::specs());
         v.extend(setup_more::specs());
         v.extend(clap::specs());
@@ -138,6 +162,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(sampler::specs());
         v.extend(video::specs());
         v.extend(zoom_toggle::specs());
+        #[cfg(test)]
+        v.extend(panic_probe::specs());
         v
     })
 }
@@ -226,13 +252,19 @@ pub fn tracks_param(e: &Engine, cmd: &str, p: &Value) -> Result<Vec<TrackId>> {
     if let Some(arr) = p.get("tracks").and_then(Value::as_array) {
         let s = e.session();
         let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for v in arr {
             let id = match (v.as_u64(), v.as_str()) {
                 (Some(n), _) => s.track(TrackId(n)).map(|t| t.id),
                 (_, Some(name)) => s.track_by_name(name).map(|t| t.id),
                 _ => None,
             };
-            out.push(id.ok_or_else(|| bad(cmd, format!("unknown track {v}")))?);
+            let id = id.ok_or_else(|| bad(cmd, format!("unknown track {v}")))?;
+            // Duplicates multiply the work (each entry renders and keeps its own result), so drop
+            // repeated ids instead of letting them blow the budget.
+            if seen.insert(id) {
+                out.push(id);
+            }
         }
         return Ok(out);
     }

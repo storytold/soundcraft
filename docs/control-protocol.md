@@ -83,9 +83,15 @@ script events such as `{"system_theme": "dark"}` to change it on subsequent fram
 
 Appearance defaults to Dark. `ui.theme {"mode":"system"}` follows the appearance supplied by
 the native or web integration at launch and on later frames, while the saved choice stays System.
-When the integration cannot report an appearance, System uses Dark. Manual Light and Dark stay
-fixed when the OS appearance changes. An offscreen render without `--system-theme` supplies no
-OS appearance and therefore resolves System to Dark.
+When the integration cannot report an appearance, as on Linux, System reads the desktop's
+settings portal (`org.freedesktop.appearance` `color-scheme`) and follows its changes; without
+a portal answer it uses Dark. Manual Light and Dark stay fixed when the OS appearance changes.
+An offscreen render without `--system-theme` supplies no OS appearance and therefore resolves
+System to Dark, or on Linux to the desktop's portal setting when one is available.
+
+`view.scroll_into_view {"track":"Bass"}` (a track id or name; without it, the first selected
+track) brings the track to the top of the Edit window and the left of the Mix window, the same as
+Scroll Into View in the track name menu. A window not on screen catches up when it is next shown.
 
 ## Panel docking
 
@@ -93,7 +99,7 @@ Tracks and Groups, Clips, MIDI Editor, Memory Locations, and Undo History use mo
 
 Panel IDs: `tracks`, `clips`, `midi`, `memory`, `history`. The protected center is `canvas`.
 
-`ui.dock` accepts `operation` and `panel`. Operations are `open`, `close`, `activate`, `float` (with finite positive `rect: [x, y, width, height]`), or `move` (with `target` and `zone: center|left|right|top|bottom`). Center groups with the target; side zones split beside it. `ui.dock.reset` restores the default arrangement. Invalid moves return an error without changing the layout.
+`ui.dock` accepts `operation` and `panel`. Operations are `open`, `close`, `activate`, `float` (with finite positive `rect: [x, y, width, height]`), or `move` (with `target` and `zone: tab|center|left|right|top|bottom|above|below`; PascalCase names such as `Left` also parse). `open` and `activate` show a hidden panel at its saved location, or beside the session view when it has none, and bring a visible panel to the front. Center and `tab` group with the target; side zones split beside it; `above` and `below` stack the panel in a new group above or below a floating target's group. `ui.dock.reset` restores the default arrangement. Invalid moves return an error without changing the layout.
 
 Invoke these UI commands through `engine.execute`, for example `{"command":"ui.dock","params":{"operation":"float","panel":"tracks","rect":[100,100,320,440]}}`.
 

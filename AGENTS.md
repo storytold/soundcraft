@@ -32,6 +32,7 @@ People trust SoundCraft with their recordings; a crash loses takes. **This outra
 - The audio callback never blocks, allocates in steady state, or panics.
 - Every production crate root carries `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]`.
 - `Engine::execute` catches escaped panics and restores the document. Every crash fix lands with a regression test.
+- **Time goes through `chrono`** (workspace dependency). Never hand-roll UTC/calendar conversion (days-to-date algorithms, leap-year math); a crate owns only its output format string. The one exception is range extension: past the years chrono can represent, shift the date by whole 400-year Gregorian cycles (146,097 days, after which the calendar repeats), let chrono compute the month and day, and add the cycles back to the year (splitting seconds into hours, minutes and seconds is plain arithmetic).
 
 
 ## Architecture (layers enforced by `cargo xtask layers`)

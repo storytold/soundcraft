@@ -192,7 +192,7 @@ pub enum AuError {
 
 #[cfg(target_os = "macos")]
 mod api {
-    use super::*;
+    use super::{AuDescriptor, AuError, Plugin, PluginInfo, registry};
 
     pub fn scan() -> Vec<AuDescriptor> {
         registry::scan()
@@ -210,7 +210,7 @@ mod api {
 
 #[cfg(not(target_os = "macos"))]
 mod api {
-    use super::*;
+    use super::{AuDescriptor, AuError, Plugin, PluginInfo};
 
     pub fn scan() -> Vec<AuDescriptor> {
         Vec::new()

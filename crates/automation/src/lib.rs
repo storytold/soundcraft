@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use soundcraft_engine::Engine;
 use soundcraft_engine::file_access::{self, AutomationRoots};
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -97,9 +97,19 @@ impl Remote {
         if self.conn.is_some() {
             return Ok(());
         }
-        let sock = self.addr.parse().map_err(|e| format!("{}: {e}", self.addr))?;
-        let s =
-            TcpStream::connect_timeout(&sock, Duration::from_millis(800)).map_err(|e| format!("cannot reach SoundCraft at {}: {e}", self.addr))?;
+        let socks: Vec<_> = self.addr.to_socket_addrs().map_err(|e| format!("{}: {e}", self.addr))?.collect();
+        let mut last = "no addresses found".to_string();
+        let mut stream = None;
+        for sock in &socks {
+            match TcpStream::connect_timeout(sock, Duration::from_millis(800)) {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(e) => last = e.to_string(),
+            }
+        }
+        let s = stream.ok_or_else(|| format!("cannot reach SoundCraft at {}: {last}", self.addr))?;
         s.set_read_timeout(Some(Duration::from_secs(120))).map_err(|e| e.to_string())?;
         let r = s.try_clone().map_err(|e| e.to_string())?;
         self.conn = Some((s, BufReader::new(r)));
@@ -177,6 +187,14 @@ mod tests {
     fn remote_reports_unreachable() {
         let mut r = Remote::new("127.0.0.1:1");
         assert!(r.call("session.inspect", json!({})).is_err());
+    }
+
+    #[test]
+    fn remote_resolves_hostnames() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut r = Remote::new(&format!("localhost:{port}"));
+        assert_eq!(r.connect(), Ok(()));
     }
 
     /// Fake app: accepts one connection per entry in `replies`, counts the request line it reads,

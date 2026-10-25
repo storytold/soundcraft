@@ -1,9 +1,10 @@
 //! Zoom Toggle: zoom in on the edit selection, then back out to the view before.
-
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use super::{CommandSpec, always, f64_or};
 use soundcraft_model::{TrackHeight, ZoomToggle};
+use soundcraft_time::MAX_POSITION;
+
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![cmd!(noundo "view.zoom_toggle", "Zoom Toggle", [], None, "{width_px?: 1200, height_px?: 600}", always, toggle)]
@@ -37,8 +38,10 @@ fn toggle(e: &mut Engine, p: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    use super::TrackHeight::{Fit, Large, Medium};
     use super::*;
-    use TrackHeight::{Fit, Large, Medium};
+    use soundcraft_model::TrackId;
+    use soundcraft_time::Samples;
 
     fn engine(select: Value) -> Engine {
         let mut e = Engine::default();

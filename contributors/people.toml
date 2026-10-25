@@ -56,6 +56,12 @@ real_name = "Marco Arnulfo"
 display_name = "Marco Arnulfo"
 sync_github_name = false
 
+[people.mattburlage]
+display_name = "Matt Smith-Burlage"
+
+[people.ProdByBuddha]
+sync_github_name = true
+
 # Display name explicitly chosen by the contributor on 2026-10-19.
 [people.vhhr7]
 display_name = "Vic Herrera (@vhhr)"

@@ -6,12 +6,16 @@ use crate::h264::deblock;
 use crate::h264::error::{Result, ensure, invalid};
 use crate::h264::inter::{self, Weight};
 use crate::h264::intra::{self, Avail};
-use crate::h264::mbtypes::*;
+use crate::h264::mbtypes::{CBP_ME, MbTypeInfo, Part, SubMbInfo, SubPart, b_mb_type, b_sub_mb_type, intra_mb_type, p_mb_type, p_sub_mb_type};
 use crate::h264::params::{Pps, Sps};
-use crate::h264::picture::*;
+use crate::h264::picture::{Frame, FrameRef, MbKind, MbState, Planes, RefPic};
 use crate::h264::slice::{SliceHeader, SliceType};
-use crate::h264::tables::*;
+use crate::h264::tables::{BLK4_XY, QPC_TABLE, RASTER_TO_BLK4, ZIGZAG4, ZIGZAG8};
 use crate::h264::transform::{self, LevelScale};
+
+fn skip_run_fits(addr: usize, run: usize, total: usize) -> bool {
+    addr < total && run <= total - addr
+}
 
 /// Per-slice data kept with the picture (deblocking, motion field export).
 #[derive(Clone, Debug, Default)]
@@ -566,6 +570,19 @@ impl<'a> SliceDecoder<'a> {
         (refs, mvs, false)
     }
 
+    /// Temporal direct motion vectors (8.4.1.2.1): mvL0 = (mvCol * DistScaleFactor + 128) >> 8
+    /// and mvL1 = mvL0 − mvCol. Motion vectors are always within the spec's −2^15 to 2^15 − 1
+    /// range, which crafted streams leave (stored mvs wrap by design), so the derivation runs in
+    /// i32 and clamps to that range instead of overflowing.
+    fn temporal_direct_mvs(dsf: i32, mv_col: [i16; 2]) -> ([i16; 2], [i16; 2]) {
+        const MV_MIN: i32 = -(1 << 15);
+        const MV_MAX: i32 = (1 << 15) - 1;
+        // mvL1 comes from the unclamped scaled value, as in the spec; only the results are clamped.
+        let m0 = mv_col.map(|c| (dsf * i32::from(c) + 128) >> 8);
+        let clamp = |v: i32| v.clamp(MV_MIN, MV_MAX) as i16;
+        (m0.map(clamp), [clamp(m0[0] - i32::from(mv_col[0])), clamp(m0[1] - i32::from(mv_col[1]))])
+    }
+
     /// Derive direct-mode motion for the 8x8 blocks in `b8_mask` of the current MB.
     fn derive_direct(&mut self, b8_mask: u8) -> Result<()> {
         let spatial = self.sh.direct_spatial_mv_pred;
@@ -600,13 +617,7 @@ impl<'a> SliceDecoder<'a> {
                         }
                     };
                     let (dsf, ltr) = self.tdirect.get(ref0 as usize).copied().unwrap_or((256, true));
-                    let (mv0, mv1) = if ltr {
-                        (mv_col, [0, 0])
-                    } else {
-                        let s = |c: i16| ((dsf * c as i32 + 128) >> 8) as i16;
-                        let m0 = [s(mv_col[0]), s(mv_col[1])];
-                        (m0, [m0[0] - mv_col[0], m0[1] - mv_col[1]])
-                    };
+                    let (mv0, mv1) = if ltr { (mv_col, [0, 0]) } else { Self::temporal_direct_mvs(dsf, mv_col) };
                     ([ref0, 0], [mv0, mv1])
                 };
                 self.set_motion(x, y, unit, unit, refs, mvs);
@@ -907,7 +918,7 @@ impl<'a> SliceDecoder<'a> {
         let stride = self.pic.planes.width;
         let px = self.mb_x * 16 + (raster & 3) * 4;
         let py = self.mb_y * 16 + (raster >> 2) * 4;
-        let Some(blk) = self.s.coef.get_mut(raster * 16..).and_then(|c| c.first_chunk_mut::<16>()) else {
+        let Some(blk) = self.s.coef.get_mut(raster * 16..).and_then(<[_]>::first_chunk_mut::<16>) else {
             return;
         };
         transform::idct4_add(blk, &mut self.pic.planes.y[py * stride + px..], stride);
@@ -921,7 +932,7 @@ impl<'a> SliceDecoder<'a> {
         let stride = self.pic.planes.width;
         let px = self.mb_x * 16 + (b8 & 1) * 8;
         let py = self.mb_y * 16 + (b8 >> 1) * 8;
-        let Some(blk) = self.s.coef.get_mut(b8 * 64..).and_then(|c| c.first_chunk_mut::<64>()) else {
+        let Some(blk) = self.s.coef.get_mut(b8 * 64..).and_then(<[_]>::first_chunk_mut::<64>) else {
             return;
         };
         transform::idct8_add(blk, &mut self.pic.planes.y[py * stride + px..], stride);
@@ -940,7 +951,7 @@ impl<'a> SliceDecoder<'a> {
                 }
                 let px = self.mb_x * 8 + (b & 1) * 4;
                 let py = self.mb_y * 8 + (b >> 1) * 4;
-                let Some(blk) = self.s.coef_c[c].get_mut(b * 16..).and_then(|c| c.first_chunk_mut::<16>()) else {
+                let Some(blk) = self.s.coef_c[c].get_mut(b * 16..).and_then(<[_]>::first_chunk_mut::<16>) else {
                     continue;
                 };
                 let plane = if c == 0 { &mut self.pic.planes.cb } else { &mut self.pic.planes.cr };
@@ -1241,7 +1252,7 @@ impl<'a> SliceDecoder<'a> {
             let pos = r.byte_pos();
             let data = r.data();
             ensure!(data.len() >= pos + 384, "truncated I_PCM macroblock");
-            let Some(&samples) = data.get(pos..).and_then(|d| d.first_chunk::<384>()) else {
+            let Some(&samples) = data.get(pos..).and_then(<[_]>::first_chunk::<384>) else {
                 return invalid("truncated I_PCM macroblock");
             };
             r.skip(384 * 8)?;
@@ -1444,7 +1455,7 @@ impl<'a> SliceDecoder<'a> {
             ensure!(addr < total, "macroblock address {addr} out of range");
             if !intra_slice {
                 let run = r.read_ue()? as usize;
-                ensure!(addr + run <= total, "mb_skip_run out of range");
+                ensure!(skip_run_fits(addr, run, total), "mb_skip_run out of range");
                 for _ in 0..run {
                     self.start_mb(addr);
                     self.decode_skip()?;
@@ -1465,5 +1476,49 @@ impl<'a> SliceDecoder<'a> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Temporal direct (8.4.1.2.1) with co-located mvs at the i16 extremes: crafted streams get
+    /// there because stored mvs wrap by design (mvd is truncated, the mvp add wraps), so the
+    /// derivation must stay within the spec's −2^15 to 2^15 − 1 motion-vector range instead of
+    /// overflowing (it panicked in debug/overflow-checks builds).
+    #[test]
+    fn temporal_direct_mvs_at_i16_extremes_stay_in_the_spec_range() {
+        // DistScaleFactor extremes from the clamp in SliceDecoder::new (±1024/1023).
+        for dsf in [-1024, -1, 0, 1, 1023] {
+            for c0 in [i16::MAX, i16::MIN, 0, 40, -4] {
+                for c1 in [i16::MAX, i16::MIN, 0, 40, -4] {
+                    let (m0, m1) = SliceDecoder::temporal_direct_mvs(dsf, [c0, c1]);
+                    for mv in m0.into_iter().chain(m1) {
+                        assert!((-(1 << 15)..=(1 << 15) - 1).contains(&i32::from(mv)));
+                    }
+                }
+            }
+        }
+        // mvL0 = (mvCol * DistScaleFactor + 128) >> 8, mvL1 = mvL0 − mvCol (8.4.1.2.1).
+        let (m0, m1) = SliceDecoder::temporal_direct_mvs(-1024, [-32768, 32767]);
+        assert_eq!(m0, [32767, -32768]);
+        assert_eq!(m1, [32767, -32768]);
+        // mvL1 is derived from the unclamped mvL0: (512 * 32767 + 128) >> 8 = 65534, minus 32767.
+        let (m0, m1) = SliceDecoder::temporal_direct_mvs(512, [32767, 0]);
+        assert_eq!(m0, [32767, 0]);
+        assert_eq!(m1, [32767, 0]);
+        // DistScaleFactor 256 (tb == td) reproduces the co-located mv: mvL1 = 0.
+        let (m0, m1) = SliceDecoder::temporal_direct_mvs(256, [40, -4]);
+        assert_eq!(m0, [40, -4]);
+        assert_eq!(m1, [0, 0]);
+    }
+
+    #[test]
+    fn skip_run_must_fit_remaining_macroblocks_without_overflow() {
+        assert!(skip_run_fits(1, 98, 99));
+        assert!(!skip_run_fits(1, 99, 99));
+        assert!(!skip_run_fits(1, usize::MAX, 99));
+        assert!(!skip_run_fits(99, 0, 99));
     }
 }

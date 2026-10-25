@@ -1,8 +1,10 @@
 //! Clip menu commands.
+use super::{CommandSpec, always, bad, clip_ids_param, f64_or, has_range, has_selection, i64_or, position_param, str_param, track_param};
+use soundcraft_model::ClipId;
+use soundcraft_time::Samples;
 
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -65,7 +67,15 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({}))
         }),
-        cmd!("clip.loop", "Loop...", ["Clip"], Some("Cmd+Alt+L"), "{clips?, count?: n, length?: samples}", has_selection, loop_clips),
+        cmd!(
+            "clip.loop",
+            "Loop...",
+            ["Clip"],
+            Some("Cmd+Alt+L"),
+            "{clips?, count?: n, length?: samples, fill?: bool}: count is the clip plus its loops; length is the whole looped clip, with the last loop cut short to fit; fill loops up to the next clip on the track, or else to the session end",
+            has_selection,
+            loop_clips
+        ),
         cmd!("clip.rename", "Rename...", ["Clip"], Some("Cmd+Alt+Shift+R"), "{clip?, name}", has_selection, rename),
         cmd!("clip.gain", "Clip Gain", [], None, "{clips?, db | delta_db}", has_selection, gain),
         cmd!("clip.gain_nudge_up", "Nudge Clip Gain Up", [], Some("Ctrl+Shift+Up"), "{clips?}", has_selection, |e, p| nudge_gain(e, p, 1.0)),
@@ -285,15 +295,46 @@ fn layer(e: &mut Engine, p: &Value, front: bool) -> Result<Value> {
     Ok(json!({}))
 }
 
+/// The most loops `clip.loop` makes of one clip.
+const MAX_LOOPS: i64 = 1000;
+
 fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     let count = i64_or(p, "count", 4).clamp(1, 512);
     let total = position_param(e, "clip.loop", p, "length")?;
+    let fill = p.get("fill").and_then(Value::as_bool).unwrap_or(false);
     let s = e.session_mut();
+    let session_end = s.content_end();
     let mut made = 0;
     for id in ids {
         let Some((tid, mut c)) = s.find_clip(id).map(|(t, c)| (t, c.clone())) else { continue };
-        let reps = total.map_or(count - 1, |l| (l / c.length.max(1)).max(1) - 1).clamp(0, 1000);
+        if c.length <= 0 {
+            continue;
+        }
+        let len = c.length;
+        // Where the looped clip ends: the next clip or the session end, or `length` after the start.
+        let end = if fill {
+            let next = s.track(tid).and_then(|t| t.clips().iter().filter(|x| x.id != c.id && x.start >= c.end()).map(|x| x.start).min());
+            Some(next.unwrap_or(session_end))
+        } else {
+            total.map(|l| c.start.saturating_add(l))
+        };
+        // Whole iterations, then one cut short to reach `end` exactly.
+        let (reps, last) = match end {
+            Some(end) => {
+                let span = end.saturating_sub(c.end()).max(0);
+                let (whole, rest) = (span / len, span % len);
+                let reps = whole.saturating_add(i64::from(rest > 0));
+                if reps > MAX_LOOPS {
+                    return Err(bad(
+                        "clip.loop",
+                        format!("“{}” would need {reps} loops to fill that; a clip loops at most {MAX_LOOPS} times", c.name),
+                    ));
+                }
+                (reps, if rest > 0 { rest } else { len })
+            }
+            None => ((count - 1).clamp(0, MAX_LOOPS), len),
+        };
         if reps > 0 && c.loop_id.is_none() {
             let lid = s.alloc();
             if let Some(src) = s.find_clip_mut(id) {
@@ -305,10 +346,15 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
         for k in 1..=reps {
             let mut nc = c.clone();
             nc.start = 0;
+            if k == reps && last < c.length {
+                // `start` is 0 here, so the end is the length; the trim also shortens the fades to fit and removes a sync point past the cut.
+                nc.trim_end_to(last);
+            }
             copies.push((c.start + c.length * k, nc));
         }
         for (at, nc) in copies {
-            let _ = crate::edit::paste(s, tid, at, &[nc], c.length, false);
+            let length = nc.length;
+            let _ = crate::edit::paste(s, tid, at, &[nc], length, false);
             made += 1;
         }
     }

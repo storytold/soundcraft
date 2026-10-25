@@ -3,7 +3,7 @@
 
 use crate::h264::cabac::Cabac;
 use crate::h264::error::{Result, ensure, invalid};
-use crate::h264::mbtypes::*;
+use crate::h264::mbtypes::{MbTypeInfo, Part, SubMbInfo, b_mb_type, b_sub_mb_type, intra_mb_type, p_mb_type, p_sub_mb_type};
 use crate::h264::picture::MbKind;
 use crate::h264::slice::SliceType;
 use crate::h264::slicedec::{MbCur, SliceDecoder};
@@ -240,11 +240,11 @@ impl SliceDecoder<'_> {
         if c.decode_decision(base + inc) == 0 {
             return 0;
         }
-        let mut prefix = 1;
-        while prefix < 9 && c.decode_decision(base + (prefix + 2).min(6)) == 1 {
+        let mut prefix: i32 = 1;
+        while prefix < 9 && c.decode_decision(base + (prefix + 2).min(6) as usize) == 1 {
             prefix += 1;
         }
-        let mut val = prefix as i32;
+        let mut val = prefix;
         if prefix >= 9 {
             // EG3 suffix
             let mut k = 3;

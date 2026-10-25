@@ -34,6 +34,22 @@ pub fn shutdown_plugin_hosts() {
     soundcraft_vst3_host::shutdown();
 }
 
+/// A new [`soundcraft_model::AutoName::id`] for a scheme in `s`: a hash of a counter, never 0 and
+/// not held by another scheme in `s`. Native builds seed the hash from the system, so each run of
+/// the app gives other ids.
+pub fn new_scheme_id(s: &Session) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    loop {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let id = h.finish();
+        if id != 0 && !s.auto_names.values().any(|a| a.id == id) {
+            return id;
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum EngineError {
     #[error("unknown command `{0}`")]
@@ -95,6 +111,8 @@ pub struct Clipboard {
     pub grid_offset: Samples,
     /// Copy Special › Automation: pasting it leaves the clips alone, in Shuffle mode too.
     pub automation_only: bool,
+    /// The Auto Rename schemes of the copied clips, keyed as in their `auto_name`.
+    pub auto_names: std::collections::BTreeMap<u64, soundcraft_model::AutoName>,
 }
 
 impl Clipboard {
@@ -103,6 +121,39 @@ impl Clipboard {
         let line = s.edit.grid.line_at_or_before(range.start, s.sample_rate, &s.tempo, s.frame_rate);
         Clipboard { length: range.len(), grid_offset: range.start.saturating_sub(line), ..Clipboard::default() }
     }
+
+    /// Keep a copy of the Auto Rename schemes that the copied clips use, as `s` holds them.
+    pub fn keep_auto_names(&mut self, s: &Session) {
+        self.auto_names = self.tracks.iter().flatten().filter_map(|c| c.auto_name).filter_map(|k| Some((k, s.auto_names.get(&k)?.clone()))).collect();
+    }
+
+    /// Before a paste into `s`: point the copied clips at schemes that `s` holds. A scheme that `s`
+    /// holds with the same [`AutoName::id`](soundcraft_model::AutoName::id), name, zeros and suffix
+    /// is used as it is, and its numbers count on. Any other goes into `s` under a new key, counting
+    /// on from where it was when it was copied.
+    pub fn adopt_auto_names(&mut self, s: &mut Session) {
+        let mut keys = std::collections::BTreeMap::new();
+        for (k, a) in &self.auto_names {
+            let held = s
+                .auto_names
+                .iter()
+                .find(|(_, h)| a.id != 0 && h.id == a.id && h.name == a.name && h.zeros == a.zeros && h.suffix == a.suffix)
+                .map(|(key, _)| *key);
+            let key = match held {
+                Some(key) => key,
+                None => {
+                    let key = s.alloc();
+                    s.auto_names.insert(key, a.clone());
+                    key
+                }
+            };
+            keys.insert(*k, key);
+        }
+        for c in self.tracks.iter_mut().flatten() {
+            c.auto_name = c.auto_name.and_then(|k| keys.get(&k).copied());
+        }
+        self.auto_names = keys.values().filter_map(|k| Some((*k, s.auto_names.get(k)?.clone()))).collect();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +161,9 @@ struct HistoryEntry {
     label: String,
     doc: Arc<Session>,
 }
+
+/// Most decoded imports [`Engine::offer_import`] holds at once (each can be gigabytes).
+const MAX_OFFERED_IMPORTS: usize = 4;
 
 /// Engine state: the document, history, clipboard and transport plumbing.
 pub struct Engine {
@@ -140,6 +194,8 @@ pub struct Engine {
     /// The edit selection (range, tracks) before the last change, for Restore Last Selection.
     /// Kept out of the document so selecting never marks the session modified.
     pub last_selection: Option<(soundcraft_time::Range, Vec<TrackId>)>,
+    /// Audio decoded off the UI thread, waiting for its `file.import_audio` (see `offer_import`).
+    imports: Vec<io::DecodedImport>,
 }
 
 impl Default for Engine {
@@ -170,7 +226,31 @@ impl Engine {
             merge_hold: None,
             messages: Vec::new(),
             last_selection: None,
+            imports: Vec::new(),
         }
+    }
+
+    /// Hands over audio [`io::decode_import`] made off the UI thread: the next `file.import_audio`
+    /// of the same file at the session's rate places it instead of reading the file again. The
+    /// command still checks the path may be read. Only the few newest are kept.
+    pub fn offer_import(&mut self, d: io::DecodedImport) {
+        self.imports.retain(|x| x.key != d.key);
+        self.imports.push(d);
+        let extra = self.imports.len().saturating_sub(MAX_OFFERED_IMPORTS);
+        self.imports.drain(..extra);
+    }
+
+    /// Drops audio offered for imports that never ran (the command failed or was not sent).
+    pub fn drop_offered_imports(&mut self) {
+        self.imports.clear();
+    }
+
+    /// The offered audio of the file at `path`, if it was decoded for the session's current rate.
+    pub(crate) fn take_import(&mut self, path: &std::path::Path) -> Option<io::DecodedImport> {
+        let key = io::file_key(path);
+        let rate = self.session().sample_rate.hz();
+        let i = self.imports.iter().position(|d| d.key == key && d.rate == rate)?;
+        Some(self.imports.remove(i))
     }
 
     pub fn session(&self) -> &Session {
@@ -317,6 +397,7 @@ impl Engine {
         let before = Arc::clone(&self.doc);
         let rev = self.revision;
         let dirty = self.dirty;
+        let side_effects = (self.clipboard.clone(), self.messages.clone(), self.transport_requests.clone(), self.last_selection.clone());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, params)));
         let result = match result {
             Ok(r) => r,
@@ -324,6 +405,7 @@ impl Engine {
                 self.doc = before;
                 self.revision = rev.wrapping_add(1);
                 self.dirty = dirty;
+                (self.clipboard, self.messages, self.transport_requests, self.last_selection) = side_effects;
                 return Err(EngineError::Internal(id.to_string(), panic_message(&*p)));
             }
         };
@@ -395,6 +477,11 @@ impl Engine {
         }
     }
 
+    /// The gesture `execute_merged` is continuing, if any.
+    pub fn merge_key(&self) -> Option<&str> {
+        self.merge_key.as_deref()
+    }
+
     /// End a gesture started with `execute_merged`.
     pub fn end_merge(&mut self) {
         self.merge_key = None;
@@ -450,7 +537,7 @@ fn install_panic_hook() {
 }
 
 fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
-    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
+    p.downcast_ref::<&str>().map(ToString::to_string).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
 }
 
 #[cfg(test)]
@@ -520,5 +607,28 @@ mod dirty_tests {
         assert!(e.is_dirty());
         e.undo();
         assert!(!e.is_dirty());
+    }
+}
+
+#[cfg(test)]
+mod panic_tests {
+    use super::*;
+
+    #[test]
+    fn a_panicking_command_restores_side_effect_state() {
+        let mut e = Engine::default();
+        // Non-default values, so clearing them instead of restoring them would fail.
+        e.clipboard.length = 42;
+        e.messages.push("prior".into());
+        e.transport_requests.push(TransportRequest::Stop);
+        e.last_selection = Some((soundcraft_time::Range::new(20, 30), Vec::new()));
+        let (clipboard, messages, requests, selection) =
+            (e.clipboard.clone(), e.messages.clone(), e.transport_requests.clone(), e.last_selection.clone());
+        let r = e.execute("test.panic_probe", &json!({"panic": true}));
+        assert!(matches!(r, Err(EngineError::Internal(..))));
+        assert_eq!(e.clipboard, clipboard);
+        assert_eq!(e.messages, messages);
+        assert_eq!(e.transport_requests, requests);
+        assert_eq!(e.last_selection, selection);
     }
 }

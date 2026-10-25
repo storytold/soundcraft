@@ -15,7 +15,7 @@ log.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 vst3 = "0.3"
-libloading = "0.8"
+libloading = "0.9"
 
 # The macOS editor host window (an NSWindow whose content view the plugin's IPlugView attaches to).
 [target.'cfg(target_os = "macos")'.dependencies]

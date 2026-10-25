@@ -341,7 +341,7 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
                             return None;
                         }
                         let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
-                        let ext = std::path::Path::new(&name).extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
+                        let ext = std::path::Path::new(&name).extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase();
                         (is_dir || ["wav", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "m4b", "caf", "mid", "midi", "scraft"].contains(&ext.as_str()))
                             .then_some((name, is_dir))
                     })
@@ -363,7 +363,7 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
                         let _ = app.run("file.import_midi", json!({"path": path}));
                     } else {
                         let at = app.engine.session().edit.selection.start;
-                        let _ = app.run("file.import_audio", json!({"path": path, "at": at}));
+                        crate::import::start(app, json!({"path": path, "at": at}));
                     }
                 }
             }
@@ -391,7 +391,7 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
                 if ui.button(format!("{}  {name}", i + 1)).clicked()
                     && let Ok(mut st) = serde_json::from_value::<crate::UiState>(v.clone())
                 {
-                    if let Err(error) = st.docking.validate().and_then(|()| st.mix_docking.validate_mix()) {
+                    if let Err(error) = crate::docking::validate(&st.docking).and_then(|()| crate::docking::validate_mix(&st.mix_docking)) {
                         app.ui.status = format!("Window configuration could not be restored: {error}");
                     } else {
                         st.configurations = app.ui.configurations.clone();

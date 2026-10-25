@@ -162,8 +162,11 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             let _ = app.run("edit.tool", json!({"tool": tool}));
             true
         }
-        Key::Plus | Key::Minus if !m.command && app.ui.window == MainWindow::Edit => {
-            let dir = if key == Key::Plus { 1 } else { -1 };
+        // `=` is what a bare press of the unlabeled +/- key reports (it has no shift held, so it
+        // can never be `Key::Plus`); `Key::Plus` is kept for a keyboard that does send it (e.g. a
+        // numpad +). `!m.alt` leaves Alt+= to `window.event_list`'s registered shortcut.
+        Key::Plus | Key::Equals | Key::Minus if !m.command && !m.alt && app.ui.window == MainWindow::Edit => {
+            let dir = if key == Key::Minus { -1 } else { 1 };
             let _ = app.run("edit.nudge", json!({"direction": dir}));
             true
         }

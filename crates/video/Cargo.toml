@@ -14,6 +14,7 @@ default = []
 threads = ["dep:rayon"]
 
 [dependencies]
+craft-media.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 image = { workspace = true, features = ["jpeg"] }

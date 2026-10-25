@@ -112,28 +112,36 @@ fn matches(name: &str, target: &str) -> bool {
 }
 
 /// `2026-10-08T07:59:17.728Z` (UTC, milliseconds). A clock before 1970 reads as the epoch.
+/// A clock far past chrono's year range still converts (the calendar repeats every 400 years), so
+/// logging never panics and never silently resets to the epoch for a convertible instant.
 pub fn timestamp(t: SystemTime) -> String {
     let since = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let secs = since.as_secs();
-    let (days, rem) = (secs / 86_400, secs % 86_400);
-    let (y, m, d) = civil_from_days(days);
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", rem / 3600, rem % 3600 / 60, rem % 60, since.subsec_millis())
+    // Pre-1970 is clamped to the epoch by `unwrap_or_default` above. `as_secs` is `u64`; a value
+    // past `i64::MAX` seconds saturates rather than falling back to the epoch.
+    let secs = i64::try_from(since.as_secs()).unwrap_or(i64::MAX);
+    let (y, t) = utc_parts(secs, since.subsec_nanos());
+    // `{:04}` rather than `%Y`, which writes a `+` before years past 9999.
+    format!("{y:04}-{}", t.format("%m-%dT%H:%M:%S%.3fZ"))
 }
 
-/// Days since 1970-01-01 to a proleptic Gregorian (year, month, day) (Howard Hinnant's
-/// `civil_from_days`, unsigned because `timestamp` clamps at the epoch; saturating so an absurd
-/// clock can't overflow).
-fn civil_from_days(days: u64) -> (u64, u64, u64) {
-    let z = days.saturating_add(719_468);
-    let era = z / 146_097;
-    let doe = z % 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = era.saturating_mul(400).saturating_add(yoe).saturating_add(u64::from(m <= 2));
-    (y, m, d)
+/// Unix seconds (+ nanos) → (proleptic Gregorian year, the same wall-clock instant moved into
+/// chrono's range by whole 400-year cycles). The calendar repeats every 400 years (146_097 days),
+/// so month, day and time of day come from chrono and only the year is carried, which keeps every
+/// `i64` exact. Replaces the old hand-rolled `civil_from_days`; chrono is the only calendar logic.
+fn utc_parts(secs: i64, nanos: u32) -> (i64, chrono::NaiveDateTime) {
+    use chrono::Datelike;
+    let (days, sod) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let (cycles, rest) = (days.div_euclid(146_097), days.rem_euclid(146_097));
+    // `rest + 719_163` (1970-01-01 is CE day 719_163) is always a valid CE day, and `sod` < 86_400.
+    let date = i32::try_from(rest + 719_163).ok().and_then(chrono::NaiveDate::from_num_days_from_ce_opt);
+    let time = u32::try_from(sod).ok().and_then(|s| chrono::NaiveTime::from_num_seconds_from_midnight_opt(s, nanos.min(999_999_999)));
+    match (date, time) {
+        (Some(d), Some(t)) => {
+            let y = i128::from(d.year()) + i128::from(cycles) * 400;
+            (i64::try_from(y).unwrap_or(if y < 0 { i64::MIN } else { i64::MAX }), d.and_time(t))
+        }
+        _ => (1970, chrono::NaiveDateTime::default()), // unreachable
+    }
 }
 
 fn numbered(dir: &Path, n: usize) -> PathBuf {
@@ -533,6 +541,20 @@ mod tests {
         assert_eq!(timestamp(UNIX_EPOCH + Duration::from_secs(4_107_542_400)), "2100-03-01T00:00:00.000Z");
         // Before the epoch (a clock set wrong) clamps instead of panicking.
         assert_eq!(timestamp(UNIX_EPOCH - Duration::from_secs(5)), "1970-01-01T00:00:00.000Z");
+        // Past chrono's year range still converts via the 400-year cycle (the old code did too,
+        // through `civil_from_days`): never a silent reset to the epoch. Platform-safe: Windows'
+        // SystemTime can't hold this instant, so it is only checked where it exists.
+        // `u64::MAX / 2` seconds == `i64::MAX` seconds → year 292277026596 (old output).
+        if let Some(far) = UNIX_EPOCH.checked_add(Duration::from_secs(u64::MAX / 2)) {
+            assert_eq!(timestamp(far), "292277026596-12-04T15:30:07.000Z");
+        }
+        // Years past 9999 keep the plain zero-padded year (no `+`).
+        assert_eq!(timestamp(UNIX_EPOCH + Duration::from_secs(253_402_300_800)), "10000-01-01T00:00:00.000Z");
+        // 10_000_000_000_000 s is far beyond chrono's range; old output is year 318857.
+        // Windows' SystemTime holds only up to about year 30828, so this is checked where it fits.
+        if let Some(far) = UNIX_EPOCH.checked_add(Duration::from_secs(10_000_000_000_000)) {
+            assert_eq!(timestamp(far), "318857-05-20T17:46:40.000Z");
+        }
     }
 
     #[test]

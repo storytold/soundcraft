@@ -3,6 +3,8 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use soundcraft_ui_egui::docking;
+
 /// Portable mode (#268): this file beside the executable keeps settings, autosaves, presets and
 /// logs in [`PORTABLE_DATA_DIR`] next to it instead of the user profile.
 const PORTABLE_MARKER: &str = "portable.txt";
@@ -88,19 +90,18 @@ fn read_ui(path: &std::path::Path, recover_docking: bool) -> Result<Option<sound
     let mut saved: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| format!("Settings could not be restored: {error}"))?;
     if recover_docking && let Some(fields) = saved.as_object_mut() {
         for (field, mix) in [("docking", false), ("mix_docking", true)] {
-            let unreadable =
-                fields.get(field).is_some_and(|value| match serde_json::from_value::<soundcraft_ui_egui::docking::Workspace>(value.clone()) {
-                    Ok(workspace) => if mix { workspace.validate_mix() } else { workspace.validate() }.is_err(),
-                    Err(_) => true,
-                });
+            let unreadable = fields.get(field).is_some_and(|value| match serde_json::from_value::<docking::Workspace>(value.clone()) {
+                Ok(workspace) => if mix { docking::validate_mix(&workspace) } else { docking::validate(&workspace) }.is_err(),
+                Err(_) => true,
+            });
             if unreadable {
                 fields.remove(field);
             }
         }
     }
     let state: soundcraft_ui_egui::UiState = serde_json::from_value(saved).map_err(|error| format!("Settings could not be restored: {error}"))?;
-    state.docking.validate()?;
-    state.mix_docking.validate_mix()?;
+    docking::validate(&state.docking)?;
+    docking::validate_mix(&state.mix_docking)?;
     Ok(Some(state))
 }
 
@@ -111,8 +112,8 @@ pub fn save_ui(path: &std::path::Path, ui: &soundcraft_ui_egui::UiState) -> Resu
     use std::io::Write as _;
     // Loading can recover a future layout for this session, but saving must preserve its source.
     read_ui(path, false)?;
-    ui.docking.validate()?;
-    ui.mix_docking.validate_mix()?;
+    docking::validate(&ui.docking)?;
+    docking::validate_mix(&ui.mix_docking)?;
     let mut saved = ui.clone();
     saved.plugin_windows.clear();
     saved.status.clear();
@@ -160,18 +161,18 @@ mod config_tests {
         app.ui = load_ui(&path).unwrap().unwrap();
         assert_eq!(app.ui.theme, soundcraft_ui_egui::theme::ThemeMode::Light);
         assert_eq!(serde_json::to_value(&app.ui.docking).unwrap(), edit);
-        assert_eq!(app.ui.mix_docking.layout.floating.iter().find(|g| g.panels.contains(&Panel::Tracks)).unwrap().rect, [140.0, 150.0, 280.0, 420.0]);
+        assert_eq!(app.ui.mix_docking.layout.floating.iter().find(|g| g.contains(&Panel::Tracks)).unwrap().rect, [140.0, 150.0, 280.0, 420.0]);
         app.ui.window = MainWindow::Edit;
         app.run("ui.dock", serde_json::json!({"operation":"open","panel":"tracks"})).unwrap();
-        assert_eq!(app.ui.docking.layout.floating.iter().find(|g| g.panels.contains(&Panel::Tracks)).unwrap().rect, [80.0, 90.0, 260.0, 400.0]);
+        assert_eq!(app.ui.docking.layout.floating.iter().find(|g| g.contains(&Panel::Tracks)).unwrap().rect, [80.0, 90.0, 260.0, 400.0]);
         let mut invalid_mix = app.ui.clone();
-        invalid_mix.mix_docking = soundcraft_ui_egui::docking::Workspace::default();
+        invalid_mix.mix_docking = soundcraft_ui_egui::docking::edit_default();
         let invalid_bytes = serde_json::to_vec(&invalid_mix).unwrap();
         std::fs::write(&path, &invalid_bytes).unwrap();
         let recovered = load_ui(&path).unwrap().unwrap();
         assert_eq!(recovered.theme, app.ui.theme);
         assert_eq!(serde_json::to_value(recovered.docking).unwrap(), serde_json::to_value(&app.ui.docking).unwrap());
-        recovered.mix_docking.validate_mix().unwrap();
+        soundcraft_ui_egui::docking::validate_mix(&recovered.mix_docking).unwrap();
         assert!(save_ui(&path, &app.ui).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), invalid_bytes);
         std::fs::write(&path, b"damaged settings").unwrap();
@@ -201,8 +202,8 @@ mod config_tests {
                 let recovered = load_ui(&path).unwrap().unwrap();
                 assert_eq!(recovered.theme, app.ui.theme);
                 assert!(recovered.narrow_mix);
-                recovered.docking.validate().unwrap();
-                recovered.mix_docking.validate_mix().unwrap();
+                soundcraft_ui_egui::docking::validate(&recovered.docking).unwrap();
+                soundcraft_ui_egui::docking::validate_mix(&recovered.mix_docking).unwrap();
                 let other = if field == "docking" { "mix_docking" } else { "docking" };
                 assert_eq!(serde_json::to_value(&recovered).unwrap()[other], saved[other]);
                 assert!(save_ui(&path, &recovered).is_err());

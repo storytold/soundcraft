@@ -12,6 +12,14 @@ updates:
       cargo-dependencies:
         patterns:
           - "*"
+    # craft-ui is on egui 0.36 until storytold/craft-libs#199 lands.
+    ignore:
+      - dependency-name: "egui"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "eframe"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "egui_kittest"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     commit-message:
       prefix: "chore(deps)"
 

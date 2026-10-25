@@ -113,9 +113,44 @@ fn recorded_at(s: &Session, time_reference: u64) -> Samples {
     i64::try_from(time_reference).unwrap_or(0).saturating_sub(s.timecode_start)
 }
 
+fn spot_field_row(ui: &mut Ui, s: &Session, d: &mut Spot, i: usize, label: &str) {
+    let show = |at: Samples, f: TimeFormat| s.format_position(at, f);
+    ui.label(label);
+    if d.editable(i) {
+        let id = Id::new(("spot_field", i));
+        if !ui.memory(|m| m.has_focus(id)) {
+            d.text[i] = show(d.value(i), d.format);
+        }
+        let r = ui.add(TextEdit::singleline(&mut d.text[i]).id(id).font(mono(13.0)).desired_width(150.0));
+        if r.changed()
+            && let Ok(v) = s.parse_position(&d.text[i], d.format)
+            && (-MAX_POSITION..=MAX_POSITION).contains(&v)
+        {
+            d.set(i, v);
+        }
+        if std::mem::take(&mut d.fresh) {
+            r.request_focus();
+            select_all(ui, id, &d.text[i]);
+        }
+    } else {
+        ui.label(RichText::new(show(d.value(i), d.format)).font(mono(13.0)));
+    }
+    ui.end_row();
+}
+
+fn original_time_stamp_row(ui: &mut Ui, s: &Session, d: &mut Spot, at: Samples) {
+    ui.label("Original Time Stamp");
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(s.format_position(at, TimeFormat::Timecode)).font(mono(13.0)));
+        if ui.button("Use").on_hover_text("Spot to where it was recorded").clicked() {
+            d.start = at;
+        }
+    });
+    ui.end_row();
+}
+
 /// The dialog's fields; the caller adds OK and Cancel.
 pub fn fields(ui: &mut Ui, s: &Session, d: &mut Spot) {
-    let show = |at: Samples, f: TimeFormat| s.format_position(at, f);
     egui::Grid::new("spot").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
         ui.label("Time Scale");
         egui::ComboBox::from_id_salt("spot_scale").selected_text(d.format.label()).show_ui(ui, |ui| {
@@ -128,40 +163,13 @@ pub fn fields(ui: &mut Ui, s: &Session, d: &mut Spot) {
             if i == 1 && matches!(d.target, Target::Trim { .. }) {
                 continue;
             }
-            ui.label(label);
-            if d.editable(i) {
-                let id = Id::new(("spot_field", i));
-                if !ui.memory(|m| m.has_focus(id)) {
-                    d.text[i] = show(d.value(i), d.format);
-                }
-                let r = ui.add(TextEdit::singleline(&mut d.text[i]).id(id).font(mono(13.0)).desired_width(150.0));
-                if r.changed()
-                    && let Ok(v) = s.parse_position(&d.text[i], d.format)
-                    && (-MAX_POSITION..=MAX_POSITION).contains(&v)
-                {
-                    d.set(i, v);
-                }
-                if std::mem::take(&mut d.fresh) {
-                    r.request_focus();
-                    select_all(ui, id, &d.text[i]);
-                }
-            } else {
-                ui.label(RichText::new(show(d.value(i), d.format)).font(mono(13.0)));
-            }
-            ui.end_row();
+            spot_field_row(ui, s, d, i, label);
         }
         ui.label("Duration");
         ui.label(RichText::new(format_length(d.start, d.len, d.format, s.sample_rate, &s.tempo, s.frame_rate)).font(mono(13.0)));
         ui.end_row();
         if let Some(at) = d.stamp {
-            ui.label("Original Time Stamp");
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(show(at, TimeFormat::Timecode)).font(mono(13.0)));
-                if ui.button("Use").on_hover_text("Spot to where it was recorded").clicked() {
-                    d.start = at;
-                }
-            });
-            ui.end_row();
+            original_time_stamp_row(ui, s, d, at);
         }
     });
 }
