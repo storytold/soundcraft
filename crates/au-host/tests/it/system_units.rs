@@ -117,6 +117,20 @@ fn parameter_text_round_trips_through_an_apple_unit() {
     let tolerance = (max - min).abs().max(1.0) * 1e-4;
     assert!((parsed - value).abs() <= tolerance, "{value} -> {text:?} -> {parsed}");
     assert_eq!(p.value_from_text(id, &"x".repeat(257)), None);
+    // The editor handle is parameter-only: it converts text on this thread and cannot open a view.
+    let mut ed = p.editor().expect("parameter handle");
+    assert!(!ed.has_window());
+    assert!(ed.open().is_err());
+    assert_eq!(ed.value_text(id, value).as_deref(), Some(text.as_str()));
+    let live = ed.value_from_text(id, &text).expect("editor parses");
+    assert!((live - value).abs() <= tolerance, "{value} -> {text:?} -> {live}");
+    let current = ed.param(id).expect("live value");
+    let stored = p.param(id).expect("stored value");
+    assert!((current - stored).abs() <= tolerance, "editor {current} stored {stored}");
+    drop(p);
+    assert_eq!(ed.param(id), None, "the unit is gone");
+    assert_eq!(ed.value_from_text(id, &text), None, "the unit is gone");
+    assert_eq!(ed.value_text(id, value), None, "the unit is gone");
 }
 
 #[test]

@@ -631,6 +631,25 @@ impl PluginEditor for Vst3Editor {
         let units = self.units.get(i).map_or("", |u| u.trim());
         if units.is_empty() || text.trim_end().to_lowercase().ends_with(&units.to_lowercase()) { Some(text) } else { Some(format!("{text} {units}")) }
     }
+
+    fn value_from_text(&mut self, id: &str, text: &str) -> Option<f32> {
+        let &i = self.index.get(id)?;
+        let vid = *self.ids.get(i)?;
+        // Same as `Plugin::value_from_text`: try the text as typed, then with one appended unit
+        // removed. The fixture's parser does not strip "dB" itself.
+        let normalized = self.link.value_from_text(vid, text).or_else(|| {
+            let units = self.units.get(i).map_or("", |u| u.trim());
+            let stripped = without_appended_unit(text, units)?;
+            self.link.value_from_text(vid, stripped)
+        })?;
+        self.plain(i, normalized)
+    }
+
+    fn param(&self, id: &str) -> Option<f32> {
+        let &i = self.index.get(id)?;
+        let normalized = self.link.normalized_value(*self.ids.get(i)?)?;
+        self.plain(i, normalized)
+    }
 }
 
 #[cfg(test)]

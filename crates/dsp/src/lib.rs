@@ -304,6 +304,21 @@ pub trait PluginEditor: Send {
     fn value_text(&mut self, _id: &str, _value: f32) -> Option<String> {
         None
     }
+    /// Parses the plugin's own text for a parameter into a value in SoundCraft units. Main thread
+    /// only; `None` means the text is not a value of that parameter (or the instance is gone).
+    fn value_from_text(&mut self, _id: &str, _text: &str) -> Option<f32> {
+        None
+    }
+    /// The parameter's current value on the live instance, in SoundCraft units. Main thread only;
+    /// `None` when the instance is gone or the id is unknown.
+    fn param(&self, _id: &str) -> Option<f32> {
+        None
+    }
+    /// Whether this handle can open a window. Parameter-only handles (Audio Units, whose Cocoa
+    /// views are not hosted) return false so the UI does not offer an editor button.
+    fn has_window(&self) -> bool {
+        true
+    }
 }
 
 /// Reads a plugin's state on the main (UI) thread while the instance processes on the audio

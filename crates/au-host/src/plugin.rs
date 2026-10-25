@@ -1,7 +1,8 @@
 //! `AuPlugin`: a loaded Audio Unit behind the safe `soundcraft_dsp::Plugin` trait.
 
-use crate::ffi::Instance;
-use soundcraft_dsp::{Plugin, PluginInfo, Transport};
+use crate::ffi::{Instance, StateLink};
+use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport};
+use std::sync::Arc;
 
 /// Most MIDI events queued between two blocks (extra events are dropped).
 const EVENT_CAP: usize = 1024;
@@ -269,5 +270,56 @@ impl Plugin for AuPlugin {
     fn state_reader(&mut self) -> Option<Box<dyn soundcraft_dsp::PluginStateReader>> {
         let link = self.inst.state_link();
         Some(Box::new(move || link.save_state()))
+    }
+
+    fn editor(&mut self) -> Option<Box<dyn PluginEditor>> {
+        // Cocoa views are not hosted. The handle only reads and parses parameter text on the UI
+        // thread while this instance renders.
+        Some(Box::new(AuEditor { link: self.inst.state_link(), info: self.info, ids: self.ids.clone() }))
+    }
+}
+
+/// Parameter text and the current value of a live Audio Unit, usable on the UI thread while the
+/// instance renders. It cannot open a window: Audio Unit editor views are not hosted.
+struct AuEditor {
+    link: Arc<StateLink>,
+    info: &'static PluginInfo,
+    ids: Vec<u32>,
+}
+
+impl PluginEditor for AuEditor {
+    fn open(&mut self) -> Result<(), String> {
+        Err("Audio Unit editors are not hosted yet".to_string())
+    }
+
+    fn close(&mut self) {}
+
+    fn is_open(&self) -> bool {
+        false
+    }
+
+    fn idle(&mut self) -> Vec<(String, f32)> {
+        Vec::new()
+    }
+
+    fn has_window(&self) -> bool {
+        false
+    }
+
+    fn value_text(&mut self, id: &str, value: f32) -> Option<String> {
+        let i = self.info.params.iter().position(|p| p.id == id)?;
+        self.link.value_text(*self.ids.get(i)?, self.info.params.get(i)?.clamp(value))
+    }
+
+    fn value_from_text(&mut self, id: &str, text: &str) -> Option<f32> {
+        let i = self.info.params.iter().position(|p| p.id == id)?;
+        let value = self.link.value_from_text(*self.ids.get(i)?, text)?;
+        Some(self.info.params.get(i)?.clamp(value))
+    }
+
+    fn param(&self, id: &str) -> Option<f32> {
+        let i = self.info.params.iter().position(|p| p.id == id)?;
+        let value = self.link.param_value(*self.ids.get(i)?)?;
+        Some(self.info.params.get(i)?.clamp(value))
     }
 }

@@ -419,9 +419,10 @@ impl Player {
         out
     }
 
-    /// True when the plugin in this slot has its own editor.
+    /// True when the plugin in this slot has an editor window. Parameter-only handles (Audio Units)
+    /// stay in the map so text can be read, and do not count.
     pub fn has_editor(&self, track: TrackId, slot: usize) -> bool {
-        self.side().editors.contains_key(&(track, slot))
+        self.side().editors.get(&(track, slot)).is_some_and(|editor| editor.has_window())
     }
 
     /// Opens the plugin's own editor window. Main thread only.

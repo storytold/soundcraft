@@ -239,6 +239,20 @@ impl EditorLink {
         v.is_finite().then(|| v.clamp(0.0, 1.0))
     }
 
+    /// The controller's current normalized value. Main thread only (`None` elsewhere, and once the
+    /// instance is gone).
+    pub fn normalized_value(&self, id: u32) -> Option<f64> {
+        if !window::on_main_thread() {
+            return None;
+        }
+        let g = self.lock();
+        let c = g.controller.as_ref()?;
+        // SAFETY: valid controller (the instance clears it under this lock before it terminates),
+        // main thread.
+        let v = unsafe { c.getParamNormalized(id) };
+        v.is_finite().then(|| v.clamp(0.0, 1.0))
+    }
+
     /// The plugin's own text for a normalized value (`getParamStringByValue`). Main thread only
     /// (`None` elsewhere, and once the instance is gone).
     pub fn value_text(&self, id: u32, n: f64) -> Option<String> {

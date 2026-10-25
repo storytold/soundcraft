@@ -1,8 +1,8 @@
 use super::events::ostream_write;
 use super::host::HostState;
 use super::{
-    Arc, CStr, CString, Mutex, Ordering, PoisonError, c_void, clap_ostream, clap_plugin, clap_plugin_gui, clap_plugin_state, clap_window,
-    clap_window_handle, hostwin,
+    Arc, CStr, CString, Mutex, Ordering, PoisonError, c_char, c_void, clap_ostream, clap_plugin, clap_plugin_gui, clap_plugin_params,
+    clap_plugin_state, clap_window, clap_window_handle, hostwin, read_name,
 };
 
 // ---- editor (clap.gui) ---------------------------------------------------------------------
@@ -40,6 +40,9 @@ fn window_api() -> Option<&'static CStr> {
 pub(super) struct GuiInner {
     pub(super) plugin: *const clap_plugin,
     pub(super) gui: *const clap_plugin_gui,
+    /// `clap.params`, so the editor handle can read and parse values on the main thread while the
+    /// instance renders. Null when the plugin has no params extension.
+    pub(super) params: *const clap_plugin_params,
     pub(super) state: *const clap_plugin_state,
     /// The plugin instance exists (cleared by `Instance::drop` before it destroys the plugin).
     pub(super) alive: bool,
@@ -66,6 +69,7 @@ impl Default for GuiLink {
             inner: Mutex::new(GuiInner {
                 plugin: std::ptr::null(),
                 gui: std::ptr::null(),
+                params: std::ptr::null(),
                 state: std::ptr::null(),
                 alive: false,
                 created: false,
@@ -314,6 +318,59 @@ impl GuiLink {
         let out = e.clone();
         e.clear();
         out
+    }
+
+    /// The parameter's current value (`clap.params.get_value`). Main thread only (`None`
+    /// elsewhere, and once the instance is gone).
+    pub fn param_value(&self, id: u32) -> Option<f64> {
+        if !on_main_thread() {
+            return None;
+        }
+        let g = self.lock();
+        if !g.alive || g.params.is_null() {
+            return None;
+        }
+        // SAFETY: `params` is the plugin's static extension vtable, valid while `alive`.
+        let get = unsafe { g.params.as_ref() }?.get_value?;
+        let mut v = 0.0f64;
+        // SAFETY: live plugin, main thread (checked); `v` is writable.
+        (unsafe { get(g.plugin, id, &mut v) } && v.is_finite()).then_some(v)
+    }
+
+    /// The plugin's own text for a value (`value_to_text`). Main thread only.
+    pub fn value_text(&self, id: u32, value: f64) -> Option<String> {
+        if !on_main_thread() || !value.is_finite() {
+            return None;
+        }
+        let g = self.lock();
+        if !g.alive || g.params.is_null() {
+            return None;
+        }
+        // SAFETY: `params` is the plugin's static extension vtable, valid while `alive`.
+        let f = unsafe { g.params.as_ref() }?.value_to_text?;
+        let mut buf = [0 as c_char; 128];
+        // SAFETY: live plugin, main thread; we pass the buffer's true capacity.
+        let ok = unsafe { f(g.plugin, id, value, buf.as_mut_ptr(), buf.len() as u32) };
+        ok.then(|| read_name(&buf)).filter(|s| !s.is_empty())
+    }
+
+    /// Parses the plugin's own text (`text_to_value`). Main thread only; text longer than 256
+    /// scalars is refused before it reaches the plugin.
+    pub fn value_from_text(&self, id: u32, text: &str) -> Option<f64> {
+        if !on_main_thread() || text.chars().count() > 256 {
+            return None;
+        }
+        let g = self.lock();
+        if !g.alive || g.params.is_null() {
+            return None;
+        }
+        // SAFETY: `params` is the plugin's static extension vtable, valid while `alive`.
+        let f = unsafe { g.params.as_ref() }?.text_to_value?;
+        let text = CString::new(text).ok()?;
+        let mut value = 0.0;
+        // SAFETY: live plugin, main thread; `text` is NUL-terminated and `value` is writable.
+        let ok = unsafe { f(g.plugin, id, text.as_ptr(), &mut value) };
+        (ok && value.is_finite()).then_some(value)
     }
 
     /// Called by the instance before it destroys the plugin.

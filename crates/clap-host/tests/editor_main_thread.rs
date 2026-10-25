@@ -51,6 +51,12 @@ fn main() {
     p.prepare(48_000.0, 64, 2);
     let mut ed = p.editor().expect("editor handle");
     assert!(!ed.is_open());
+    // Text and the live value go through the same main-thread handle as the window, before any
+    // GUI edit.
+    assert_eq!(ed.value_text("3", 1.0).as_deref(), Some("B"));
+    assert_eq!(ed.value_from_text("3", "b"), Some(1.0));
+    assert_eq!(ed.value_from_text("3", "nope"), None);
+    assert!((ed.param("7").unwrap_or(-1.0) - 1.0).abs() < 1e-6);
     ed.open().expect("open on the main thread");
     assert!(ed.is_open());
     ed.open().expect("opening again just raises it");
@@ -79,6 +85,7 @@ fn main() {
         assert!(ed.is_open(), "{name:?}");
     }
     assert_eq!(ed.idle(), vec![("7".to_string(), 0.25)]);
+    assert!((ed.param("7").unwrap_or(-1.0) - 0.25).abs() < 1e-6, "the live value follows the edit");
     assert!(ed.idle().is_empty(), "drained");
     ed.close();
     assert!(!ed.is_open());
@@ -92,6 +99,8 @@ fn main() {
     ed.open().expect("reopen");
     drop(p);
     assert!(!ed.is_open());
+    assert_eq!(ed.param("7"), None, "the plugin is gone");
+    assert_eq!(ed.value_from_text("3", "b"), None, "the plugin is gone");
     assert!(ed.open().is_err());
     assert!(ed.idle().is_empty());
     ed.close();
