@@ -13,7 +13,6 @@ craft-audio.workspace = true
 soundcraft-model.workspace = true
 soundcraft-mix.workspace = true
 soundcraft-dsp.workspace = true
-soundcraft-engine.workspace = true
 log.workspace = true
 serde.workspace = true
 

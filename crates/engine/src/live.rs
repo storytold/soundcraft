@@ -1,33 +1,10 @@
-//! The desktop app's live plugin instances, consulted before a command creates a temporary one.
-//!
-//! The engine does not own the audio player (that would depend upward on playback). The UI
-//! installs an implementation while a player exists and removes it when the player goes away.
-
-use soundcraft_model::TrackId;
-
-/// Reads one live plugin instance, addressed the way the mixer does: `slot` is an insert index
-/// or [`soundcraft_mix::INSTRUMENT_SLOT`].
-///
-/// A method returns `None` when that slot has no live instance, or the instance cannot answer.
-/// Callers compare [`LivePlugins::plugin_id`] with the insert's plugin id and ignore the other
-/// answers when they differ, so a slot that still holds the previous plugin is not reused.
-pub trait LivePlugins: Send {
-    /// Plugin id of the live instance in this slot (`None` when nothing is loaded there).
-    fn plugin_id(&mut self, track: TrackId, slot: usize) -> Option<String>;
-    /// The plugin's own text for a value in SoundCraft units.
-    fn value_text(&mut self, track: TrackId, slot: usize, id: &str, value: f32) -> Option<String>;
-    /// Parses the plugin's own text into a value in SoundCraft units.
-    fn value_from_text(&mut self, track: TrackId, slot: usize, id: &str, text: &str) -> Option<f32>;
-    /// The parameter's current value on the live instance.
-    fn value(&mut self, track: TrackId, slot: usize, id: &str) -> Option<f32>;
-}
+//! Commands consult [`soundcraft_model::LivePlugins`] before they create a temporary plugin.
 
 #[cfg(test)]
 mod tests {
-    use super::LivePlugins;
     use crate::Engine;
     use serde_json::json;
-    use soundcraft_model::{Insert, TrackId};
+    use soundcraft_model::{Insert, LivePlugins, TrackId};
 
     struct Answer {
         plugin: &'static str,
