@@ -240,7 +240,7 @@ pub fn str_param<'a>(p: &'a Value, key: &str) -> Option<&'a str> {
 /// A plugin parameter id: a string, or a whole number in `u32` range (hosted plugins' ids are
 /// decimal `u32`s, such as an Audio Unit's `1575`).
 pub fn param_id(cmd: &str, p: &Value, key: &str) -> Result<String> {
-    let Some(v) = p.get(key) else { return Err(bad(cmd, format!("`{key}` required (a string, or a whole number)"))) };
+    let Some(v) = p.get(key) else { return Err(bad(cmd, format!("`{key}` required (an id, a whole number, or a name)"))) };
     if let Some(s) = v.as_str() {
         return Ok(s.to_string());
     }

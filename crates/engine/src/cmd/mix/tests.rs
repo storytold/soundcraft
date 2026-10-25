@@ -1,7 +1,7 @@
 use super::*;
 use craft_audio::AudioBuffer;
 use soundcraft_dsp::Plugin;
-use soundcraft_model::{ChannelFormat, Clip, SourceAudio, SourceId, TrackKind};
+use soundcraft_model::{ChannelFormat, Clip, INSTRUMENT_AUTO_SLOT, SourceAudio, SourceId, TrackKind};
 use soundcraft_time::Range;
 use std::sync::Arc;
 
@@ -622,7 +622,7 @@ fn bad_parameter_text_includes_examples() {
 
     let err = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "gain", "value": "loud"})).unwrap_err().to_string();
     assert!(err.contains("examples"), "{err}");
-    assert!(err.contains("loud") && err.contains("`gain`"), "{err}");
+    assert!(err.contains("loud") && err.contains("Gain (gain)"), "{err}");
     assert!(err.contains(&examples), "{err}");
     assert_eq!(insert_param_value(&e, t, "gain"), 0.0);
 
@@ -886,12 +886,12 @@ fn a_plugin_that_parses_garbage_as_zero_is_rejected() {
     assert!((rounded - 0.304).abs() < 1e-4, "30.4 displays as 30, {rounded}");
 
     let garbage = resolver.resolve(gain, &json!("twintig")).unwrap_err().to_string();
-    assert!(garbage.contains("`twintig` is not a value of `gain`"), "{garbage}");
+    assert!(garbage.contains("`twintig` is not a value of Gain (gain); examples:"), "{garbage}");
     assert!(garbage.contains("examples"), "{garbage}");
     assert!(!garbage.contains("out of range"), "{garbage}");
 
     let high = resolver.resolve(gain, &json!("500")).unwrap_err().to_string();
-    assert!(high.contains("`500` is out of range for `gain` (0 … 100)"), "{high}");
+    assert!(high.contains("`500` is out of range for Gain (gain) (0 … 100)"), "{high}");
     let low = resolver.resolve(gain, &json!("-1")).unwrap_err().to_string();
     assert!(low.contains("out of range") && low.contains("(0 … 100)"), "{low}");
     let edge = resolver.resolve(gain, &json!("100.6")).unwrap_err().to_string();
@@ -938,7 +938,7 @@ fn text_for_a_built_in_never_loads_a_temporary_instance() {
 
     assert_eq!(resolver.resolve(gain, &json!(" -3 ")).unwrap(), -3.0);
     let err = resolver.resolve(gain, &json!("loud")).unwrap_err().to_string();
-    assert!(err.contains("`loud` is not a value of `gain`") && err.contains("examples"), "{err}");
+    assert!(err.contains("`loud` is not a value of Gain (gain)") && err.contains("examples"), "{err}");
     assert!(!resolver.tried_instance, "a built-in parses and formats its own numbers");
 }
 
@@ -963,7 +963,7 @@ fn apple_au_garbage_parameter_text_is_rejected() {
     e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": param.id, "value": marker})).unwrap();
     let before = insert_param_value(&e, t, param.id);
     let err = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": param.id, "value": "twintig"})).unwrap_err().to_string();
-    assert!(err.contains("twintig") && err.contains(&format!("`{}`", param.id)), "{err}");
+    assert!(err.contains("twintig") && err.contains(&format!("{} ({})", param.name, param.id)), "{err}");
     assert!(err.contains("is not a value of") || err.contains("out of range"), "{err}");
     assert_eq!(insert_param_value(&e, t, param.id), before, "garbage must not be stored as 0");
 }
@@ -988,4 +988,168 @@ fn a_hosted_instruments_parameters_are_set_by_numeric_id() {
     assert_eq!(instrument_params(&e, t).get(pi.id), Some(&pi.max));
     let auto = format!("plugin:instrument:{n}");
     e.execute("automation.set_point", &json!({"tracks": [t.0], "param": auto, "at": 0, "value": pi.min})).unwrap();
+}
+
+fn plugin_lanes(e: &Engine, t: TrackId) -> Vec<(u8, String)> {
+    e.session()
+        .track(t)
+        .map(|tr| {
+            tr.automation
+                .iter()
+                .filter_map(|lane| match &lane.param {
+                    AutoParam::Plugin { slot, param } => Some((*slot, param.clone())),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `MF Gain` is eq_7band's name for `mid_gain`. Ids, numbers and that name all store the id.
+#[test]
+fn insert_parameters_are_set_by_name() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": "eq_7band", "params": {"MF Gain": -3.0, "mid_freq": 2500.0}})).unwrap();
+    assert_eq!(insert_param_value(&e, t, "mid_gain"), -3.0);
+    assert_eq!(insert_param_value(&e, t, "mid_freq"), 2500.0);
+    assert!(!e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().params.contains_key("MF Gain"));
+
+    let r = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "  mf   gain ", "value": -6.0})).unwrap();
+    assert_eq!(r["value"], -6.0);
+    assert_eq!(r["param"], "mid_gain");
+    assert_eq!(r["id"], "mid_gain");
+    assert_eq!(r["name"], "MF Gain");
+    assert_eq!(insert_param_value(&e, t, "mid_gain"), -6.0);
+
+    // The id still addresses the same parameter.
+    e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "mid_gain", "value": -1.5})).unwrap();
+    assert_eq!(insert_param_value(&e, t, "mid_gain"), -1.5);
+
+    let r = e.execute("mix.insert_params", &json!({"track": t, "slot": 0, "params": {"MF Gain": -4.0, "mid_freq": 1500.0}})).unwrap();
+    assert_eq!(r["set"], 2);
+    assert_eq!(insert_param_value(&e, t, "mid_gain"), -4.0);
+    assert_eq!(insert_param_value(&e, t, "mid_freq"), 1500.0);
+
+    // Two keys, one parameter: nothing is stored.
+    let depth = e.revision;
+    let err = e.execute("mix.insert_params", &json!({"track": t, "slot": 0, "params": {"mid_gain": 1.0, "MF Gain": 2.0}})).unwrap_err().to_string();
+    assert!(err.contains("both set") && err.contains("MF Gain (mid_gain)"), "{err}");
+    assert_eq!(insert_param_value(&e, t, "mid_gain"), -4.0);
+    assert_eq!(e.revision, depth);
+
+    // A later unknown key does not keep the earlier name.
+    let err = e.execute("mix.insert_params", &json!({"track": t, "slot": 0, "params": {"MF Gain": -9.0, "nope": 1.0}})).unwrap_err().to_string();
+    assert!(err.contains("nope is not a parameter of EQ 7-Band"), "{err}");
+    assert_eq!(insert_param_value(&e, t, "mid_gain"), -4.0);
+    assert_eq!(e.revision, depth);
+
+    // mix.insert resolves every key before it writes the slot.
+    let err = e
+        .execute("mix.insert", &json!({"track": t, "slot": 1, "plugin": "eq_7band", "params": {"MF Gain": -3.0, "nope": 1.0}}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("nope"), "{err}");
+    assert!(e.session().tracks[0].mixer.inserts[1].is_none());
+    assert_eq!(e.revision, depth);
+}
+
+#[test]
+fn automation_lanes_store_the_parameter_id_for_a_name() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let t = e.session().tracks[0].id;
+    // "Cutoff" lowercases to the id. "Filter Env" does not, so it has to match the name.
+    e.execute("automation.set_point", &json!({"track": t.0, "param": "plugin:instrument:Cutoff", "at": 0, "value": 400.0})).unwrap();
+    e.execute("automation.set_point", &json!({"track": t.0, "param": "plugin:instrument:Filter Env", "at": 100, "value": -10.0})).unwrap();
+    assert!(plugin_lanes(&e, t).contains(&(INSTRUMENT_AUTO_SLOT, "cutoff".to_string())));
+    assert!(plugin_lanes(&e, t).contains(&(INSTRUMENT_AUTO_SLOT, "filter_env_amount".to_string())));
+    assert!(!plugin_lanes(&e, t).iter().any(|(_, param)| param == "filter env" || param == "Cutoff"));
+
+    e.execute("track.new", &json!({})).unwrap();
+    let audio = e.session().tracks[1].id;
+    e.execute("mix.insert", &json!({"track": audio.0, "slot": 0, "plugin": "eq_7band"})).unwrap();
+    e.execute("automation.set_point", &json!({"track": audio.0, "param": "plugin:a:MF Gain", "at": 10, "value": -4.0})).unwrap();
+    e.execute("automation.write_range", &json!({"track": audio.0, "param": "plugin:a:MF   Gain", "start": 0, "end": 48_000, "value": -6.0})).unwrap();
+    let lane = AutoParam::Plugin { slot: 0, param: "mid_gain".into() };
+    let written = e.session().track(audio).and_then(|tr| tr.lane(&lane)).unwrap();
+    assert_eq!(written.value_at(1000, f32::NAN), -6.0);
+    assert!(!plugin_lanes(&e, audio).iter().any(|(_, param)| param.to_ascii_lowercase().contains("mf")));
+    let cleared = e.execute("automation.clear", &json!({"track": audio.0, "param": "plugin:a:mf gain", "start": 0, "end": 48_000})).unwrap();
+    assert!(cleared["removed"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(plugin_lanes(&e, audio), vec![(0, "mid_gain".to_string())]);
+
+    // Slot B is empty, so the parsed key is stored as AutoParam::parse left it.
+    e.execute("automation.set_point", &json!({"track": audio.0, "param": "plugin:b:MF   Gain", "at": 20, "value": 1.0})).unwrap();
+    assert!(plugin_lanes(&e, audio).contains(&(0, "mid_gain".to_string())));
+    assert!(plugin_lanes(&e, audio).contains(&(1, "MF   Gain".to_string())));
+
+    let depth = e.revision;
+    let before = plugin_lanes(&e, audio);
+    let err =
+        e.execute("automation.set_point", &json!({"track": audio.0, "param": "plugin:a:not-a-real-param", "at": 30, "value": 1.0})).unwrap_err();
+    assert!(err.to_string().contains("not-a-real-param is not a parameter of EQ 7-Band"), "{err}");
+    assert_eq!(plugin_lanes(&e, audio), before);
+    assert_eq!(e.revision, depth);
+}
+
+#[test]
+fn automation_names_resolve_per_track_before_anything_is_stored() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    e.execute("track.new", &json!({})).unwrap();
+    let (eq, empty) = (e.session().tracks[0].id, e.session().tracks[1].id);
+    e.execute("mix.insert", &json!({"track": eq.0, "slot": 0, "plugin": "eq_7band"})).unwrap();
+    e.execute("automation.set_point", &json!({"tracks": [eq.0, empty.0], "param": "plugin:a:MF Gain", "at": 10, "value": -4.0})).unwrap();
+    assert_eq!(plugin_lanes(&e, eq), vec![(0, "mid_gain".to_string())]);
+    assert_eq!(plugin_lanes(&e, empty), vec![(0, "MF Gain".to_string())]);
+
+    e.execute("track.new", &json!({})).unwrap();
+    e.execute("track.new", &json!({})).unwrap();
+    let (eq, gain) = (e.session().tracks[2].id, e.session().tracks[3].id);
+    e.execute("mix.insert", &json!({"track": eq.0, "slot": 0, "plugin": "eq_7band"})).unwrap();
+    e.execute("mix.insert", &json!({"track": gain.0, "slot": 0, "plugin": "gain"})).unwrap();
+    let depth = e.revision;
+    let err =
+        e.execute("automation.set_point", &json!({"tracks": [eq.0, gain.0], "param": "plugin:a:MF Gain", "at": 10, "value": -4.0})).unwrap_err();
+    assert!(err.to_string().contains("is not a parameter of Gain"), "{err}");
+    assert!(plugin_lanes(&e, eq).is_empty());
+    assert!(plugin_lanes(&e, gain).is_empty());
+    assert_eq!(e.revision, depth);
+}
+
+/// Apple's Delay unit: a parameter is set by the name `plugin_info` reports.
+#[cfg(target_os = "macos")]
+#[test]
+fn apple_au_parameter_is_set_by_name() {
+    let id = "au:aufx:dely:appl";
+    let Some(info) = super::super::clap::plugin_info(id) else {
+        eprintln!("{id} not installed; skipping");
+        return;
+    };
+    let norm = super::super::param_key::normalize_key;
+    let Some(param) = info.params.iter().find(|param| {
+        let name = norm(param.name);
+        !name.is_empty() && name != norm(param.id) && info.params.iter().filter(|other| norm(other.name) == name).count() == 1
+    }) else {
+        eprintln!("{id} exposes no uniquely named parameter; skipping");
+        return;
+    };
+    let target = [param.max, param.min].into_iter().find(|value| value.is_finite() && (*value - param.default).abs() > 1e-4);
+    let Some(target) = target else {
+        eprintln!("{id} parameter {} has no distinct finite value; skipping", param.id);
+        return;
+    };
+    let expected = param.clamp(target);
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": id})).unwrap();
+    let result = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": param.name, "value": target})).unwrap();
+    assert_eq!(result["id"], param.id);
+    assert_eq!(result["param"], param.id);
+    assert_eq!(result["name"], param.name);
+    assert_eq!(insert_param_value(&e, t, param.id), expected);
+    assert!(!e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().params.contains_key(param.name));
 }

@@ -123,7 +123,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "To Current Automation Type",
             ["Edit", "Paste Special"],
             None,
-            "{tracks?, at?, param?} — pastes copied automation into the shown lane (track view) or `param`, rescaled to its range",
+            "{tracks?, at?, param?: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>} — pastes copied automation into the shown lane (track view) or `param`, rescaled to its range. Plugin keys: id, number, or name (case-insensitive; ids win). A known plugin stores the id. An empty slot keeps the key as parsed (lowercased).",
             has_automation_clipboard,
             paste_to_current_automation
         ),
@@ -532,14 +532,23 @@ fn paste_to_current_automation(e: &mut Engine, p: &Value) -> Result<Value> {
         Some(x) => Some(AutoParam::parse(x).ok_or_else(|| bad(id, format!("unknown automation param `{x}`")))?),
         None => None,
     };
+    let mut destinations = Vec::with_capacity(tracks.len());
+    for t in &tracks {
+        let tr = e.session().track(*t).ok_or_else(|| bad(id, "no track"))?;
+        let parsed = match &forced {
+            Some(param) => param.clone(),
+            None => AutoParam::parse(&tr.view).unwrap_or(AutoParam::Volume),
+        };
+        destinations.push(super::mix::resolve_automation_lane(tr, &parsed, id)?);
+    }
     let cb = e.clipboard.clone();
     let s = e.session_mut();
     let mut written = 0;
-    for (i, t) in tracks.iter().enumerate() {
+    for (i, (t, dst)) in tracks.iter().zip(destinations.iter()).enumerate() {
         let Some(lanes) = cb.automation.get(i % cb.automation.len().max(1)) else { continue };
         let Some(src) = lanes.iter().max_by_key(|l| l.points.len()).filter(|l| !l.points.is_empty()) else { continue };
         let Some(tr) = s.track_mut(*t) else { continue };
-        let dst = forced.clone().unwrap_or_else(|| AutoParam::parse(&tr.view).unwrap_or(AutoParam::Volume));
+        let dst = dst.clone();
         let lane = tr.lane_mut(&dst);
         lane.clear_range(at, at.saturating_add(cb.length));
         for pt in &src.points {

@@ -101,7 +101,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Plugin",
             [],
             None,
-            "{track?, slot?: 0..9 | a..j, plugin: id, params?: {id: value}}. value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Unknown ids and invalid values are errors.",
+            "{track?, slot?: 0..9 | a..j, plugin: id, params?: {param: id, number, or name (case-insensitive; ids win): value}}. value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Unknown keys and invalid values are errors; two keys that resolve to the same id are an error and nothing is stored.",
             has_selection,
             insert
         ),
@@ -112,7 +112,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Plugin Parameter",
             [],
             None,
-            "{track?, slot: 0..9 | a..j | \"instrument\", param: id (string or number), value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily}",
+            "{track?, slot: 0..9 | a..j | \"instrument\", param: id, number, or name (case-insensitive; ids win), value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily}. The session stores the id.",
             has_selection,
             insert_param
         ),
@@ -121,7 +121,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Plugin Parameters",
             [],
             None,
-            "{track?, slot: 0..9 | a..j | \"instrument\", params: {id: value}, preset?: name}. value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Unknown ids and invalid values are errors; nothing is stored if any key fails.",
+            "{track?, slot: 0..9 | a..j | \"instrument\", params: {param: id, number, or name (case-insensitive; ids win): value}, preset?: name}. value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Every key is resolved before anything is stored. Unknown keys, invalid values and two keys that resolve to the same id are errors; nothing is stored if any key fails.",
             has_selection,
             insert_params
         ),
@@ -156,12 +156,28 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Automation Breakpoint",
             [],
             None,
-            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id>|plugin:instrument:<id>, at, value, from?}",
+            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, at, value, from?}. Plugin keys: id, number, or name (case-insensitive; ids win). A known plugin stores the id. An empty slot keeps the key as parsed (lowercased).",
             has_selection,
             set_point
         ),
-        cmd!("automation.write_range", "Write Automation", [], None, "{track?, param, start?, end?, value}", has_selection, write_range),
-        cmd!("automation.clear", "Clear Automation", [], None, "{track?, param?, start?, end?}", has_selection, clear_lane),
+        cmd!(
+            "automation.write_range",
+            "Write Automation",
+            [],
+            None,
+            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, start?, end?, value}. Plugin keys: id, number, or name (case-insensitive; ids win). A known plugin stores the id. An empty slot keeps the key as parsed (lowercased).",
+            has_selection,
+            write_range
+        ),
+        cmd!(
+            "automation.clear",
+            "Clear Automation",
+            [],
+            None,
+            "{track?, param?: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, start?, end?}. Plugin keys: id, number, or name (case-insensitive; ids win). A known plugin stores the id. An empty slot keeps the key as parsed (lowercased).",
+            has_selection,
+            clear_lane
+        ),
         cmd!("automation.thin", "Thin", ["Edit", "Automation"], Some("Cmd+Alt+T"), "{tracks?, tolerance?: 0.1}", has_selection, |e, p| thin(
             e, p, false
         )),
@@ -490,7 +506,7 @@ impl<'a> ParameterValueResolver<'a> {
         if let Some(number) = value.as_f64().filter(|number| number.is_finite()) {
             return Ok(self.store(param, number as f32));
         }
-        let text = value.as_str().ok_or_else(|| bad(self.cmd, format!("`{}` must be a finite number or string", param.id)))?;
+        let text = value.as_str().ok_or_else(|| bad(self.cmd, format!("{} must be a finite number or string", param_label(param))))?;
         let trimmed = text.trim();
         if let Some(labelled) = labelled_value(param, trimmed) {
             return Ok(self.store(param, labelled));
@@ -528,8 +544,7 @@ impl<'a> ParameterValueResolver<'a> {
     fn invalid_text(&mut self, param: &soundcraft_dsp::ParamInfo, text: &str, allow_instance: bool) -> EngineError {
         let examples = self.examples(param, allow_instance);
         let shown = shown_text(text);
-        let id = param.id;
-        bad(self.cmd, format!("`{shown}` is not a value of `{id}`; examples: {examples}"))
+        bad(self.cmd, format!("`{shown}` is not a value of {}; examples: {examples}", param_label(param)))
     }
 
     /// `value_from_text` succeeded. Accept `parsed` only when `text` round-trips through the
@@ -542,7 +557,7 @@ impl<'a> ParameterValueResolver<'a> {
         if text_outside_display_range(text, &min_text, &max_text) {
             let shown = shown_text(text);
             let (min_text, max_text) = (shown_text(&min_text), shown_text(&max_text));
-            return Err(bad(self.cmd, format!("`{shown}` is out of range for `{}` ({min_text} … {max_text})", param.id)));
+            return Err(bad(self.cmd, format!("`{shown}` is out of range for {} ({min_text} … {max_text})", param_label(param))));
         }
         if !plugin_text_matches(text, &rendered) {
             return Err(self.invalid_text(param, text, true));
@@ -591,6 +606,11 @@ impl<'a> ParameterValueResolver<'a> {
     fn with_instance(cmd: &'static str, insert: &Insert, sample_rate: f32, instance: Box<dyn soundcraft_dsp::Plugin>) -> Self {
         Self { cmd, insert: insert.clone(), sample_rate, instance: Some(instance), tried_instance: true, track: TrackId(0), slot: 0, live: None }
     }
+}
+
+/// `Name (id)` for errors and results that echo a parameter.
+fn param_label(param: &soundcraft_dsp::ParamInfo) -> String {
+    format!("{} ({})", param.name, param.id)
 }
 
 /// Toggle labels are Off/On (and true/false). Choice labels are the parameter's `choices`.
@@ -704,26 +724,7 @@ fn entire_number(text: &str) -> Option<f64> {
 
 /// Trim, Unicode-lowercase and collapse inner whitespace.
 fn normalize_param_text(text: &str) -> String {
-    let mut out = String::new();
-    let mut pending_space = false;
-    let mut started = false;
-    for ch in text.trim().chars() {
-        if ch.is_whitespace() {
-            if started {
-                pending_space = true;
-            }
-            continue;
-        }
-        if pending_space {
-            out.push(' ');
-            pending_space = false;
-        }
-        for lower in ch.to_lowercase() {
-            out.push(lower);
-        }
-        started = true;
-    }
-    out
+    super::param_key::normalize_key(text)
 }
 
 /// `rendered` is `text` plus one trailing unit or label (`29` vs `29 ms`, `50` vs `50%`).
@@ -789,6 +790,28 @@ fn text_outside_display_range(text: &str, min_text: &str, max_text: &str) -> boo
     number < lo - lo_tol || number > hi + hi_tol
 }
 
+/// One parameter key: an id, a whole number, or a name. The result is the parameter to store.
+pub(super) fn lookup_param<'a>(cmd: &str, info: &'a soundcraft_dsp::PluginInfo, key: &str) -> Result<&'a soundcraft_dsp::ParamInfo> {
+    super::param_key::resolve_param(info, key).map_err(|err| bad(cmd, err.to_string()))
+}
+
+/// Every key of a `params` object, resolved before any value is parsed or stored.
+pub(super) fn bind_param_values<'a>(
+    cmd: &str,
+    info: &'a soundcraft_dsp::PluginInfo,
+    obj: &'a serde_json::Map<String, Value>,
+) -> Result<Vec<(&'a soundcraft_dsp::ParamInfo, &'a Value)>> {
+    let bound = super::param_key::resolve_unique_params(info, obj.keys().map(String::as_str)).map_err(|err| bad(cmd, err.to_string()))?;
+    let mut out = Vec::with_capacity(bound.len());
+    for (key, param) in bound {
+        let Some(value) = obj.get(key) else {
+            return Err(bad(cmd, format!("`{key}` has no value")));
+        };
+        out.push((param, value));
+    }
+    Ok(out)
+}
+
 fn insert(e: &mut Engine, p: &Value) -> Result<Value> {
     let plugin = str_param(p, "plugin").ok_or_else(|| bad("mix.insert", "`plugin` required"))?.to_string();
     let info = super::clap::plugin_info(&plugin).ok_or_else(|| bad("mix.insert", format!("unknown plugin `{plugin}`")))?;
@@ -805,14 +828,13 @@ fn insert(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     if let Some(params) = p.get("params") {
         let obj = params.as_object().ok_or_else(|| bad("mix.insert", "`params` must be an object"))?;
+        // Every key resolves before a value is parsed or the slot is written.
+        let bound = bind_param_values("mix.insert", info, obj)?;
         let live = e.live_plugins_mut();
         let mut resolver = ParameterValueResolver::new("mix.insert", &ins, rate, t, slot, live);
-        for (k, v) in obj {
-            let Some(pi) = info.params.iter().find(|x| x.id == k) else {
-                return Err(bad("mix.insert", format!("`{plugin}` has no parameter `{k}`")));
-            };
+        for (pi, v) in bound {
             let val = resolver.resolve(pi, v)?;
-            ins.params.insert(k.clone(), val);
+            ins.params.insert(pi.id.to_string(), val);
         }
     }
     let s = e.session_mut();
@@ -855,8 +877,7 @@ fn insert_param(e: &mut Engine, p: &Value) -> Result<Value> {
     let Some(info) = super::clap::plugin_info(&ins.plugin) else {
         return Err(bad("mix.insert_param", format!("unknown plugin `{}`", ins.plugin)));
     };
-    let pi =
-        info.params.iter().find(|x| x.id == param).ok_or_else(|| bad("mix.insert_param", format!("`{}` has no parameter `{param}`", info.id)))?;
+    let pi = lookup_param("mix.insert_param", info, &param)?;
     let rate = e.session().sample_rate.as_f64() as f32;
     let v = {
         let live = e.live_plugins_mut();
@@ -864,11 +885,11 @@ fn insert_param(e: &mut Engine, p: &Value) -> Result<Value> {
         resolver.resolve(pi, value)?
     };
     let ins = plugin_mut(e.session_mut(), t, slot, "mix.insert_param")?;
-    ins.params.insert(param, v);
-    Ok(json!({"value": v}))
+    ins.params.insert(pi.id.to_string(), v);
+    Ok(json!({"value": v, "param": pi.id, "id": pi.id, "name": pi.name}))
 }
 
-/// Apply many parameters at once (preset recall); values are clamped. Unknown ids and
+/// Apply many parameters at once (preset recall); values are clamped. Unknown keys and
 /// invalid values are errors, not silent no-ops: a typo must not look like success.
 fn insert_params(e: &mut Engine, p: &Value) -> Result<Value> {
     let (t, slot) = track_plugin_slot(e, p, "mix.insert_params")?;
@@ -876,25 +897,16 @@ fn insert_params(e: &mut Engine, p: &Value) -> Result<Value> {
     let preset = str_param(p, "preset").map(str::to_string);
     let ins = plugin_ref(e.session(), t, slot, "mix.insert_params")?.clone();
     let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad("mix.insert_params", format!("unknown plugin `{}`", ins.plugin)))?;
-    let mut unknown: Vec<String> = Vec::new();
-    for k in obj.keys() {
-        if !info.params.iter().any(|x| x.id == k.as_str()) {
-            unknown.push(k.clone());
-        }
-    }
-    if !unknown.is_empty() {
-        unknown.sort_unstable();
-        return Err(bad("mix.insert_params", format!("`{}` has no parameter(s): {}", info.id, unknown.join(", "))));
-    }
+    // Keys first, including duplicates, so a later failure cannot store an earlier value.
+    let bound = bind_param_values("mix.insert_params", info, &obj)?;
     let index = plugin_slot_index(slot);
     let rate = e.session().sample_rate.as_f64() as f32;
-    let mut values = Vec::with_capacity(obj.len());
+    let mut values = Vec::with_capacity(bound.len());
     {
         let live = e.live_plugins_mut();
         let mut resolver = ParameterValueResolver::new("mix.insert_params", &ins, rate, t, index, live);
-        for (k, value) in obj {
-            let Some(pi) = info.params.iter().find(|x| x.id == k) else { continue };
-            values.push((k, resolver.resolve(pi, &value)?));
+        for (pi, value) in bound {
+            values.push((pi.id.to_string(), resolver.resolve(pi, value)?));
         }
     }
     let n = values.len();
@@ -962,21 +974,53 @@ fn send_level(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"send": sl.clone()}))
 }
 
-fn lane_param(p: &Value, cmd: &str) -> Result<AutoParam> {
+fn parsed_lane(p: &Value, cmd: &str) -> Result<AutoParam> {
     str_param(p, "param").map_or(Ok(AutoParam::Volume), |s| AutoParam::parse(s).ok_or_else(|| bad(cmd, format!("unknown automation param `{s}`"))))
+}
+
+/// A `plugin:<slot>:<key>` lane against the plugin in that slot.
+///
+/// [`AutoParam::parse`] ASCII-lowercases the whole lane, so ids and names are matched
+/// case-insensitively and the stored lane uses the parameter's id. An empty slot, or a
+/// plugin with no parameter list, keeps that parsed key unchanged. AU and VST3 have no
+/// group separate from the name; CLAP names already include `Module/Name`.
+pub(super) fn resolve_automation_lane(tr: &soundcraft_model::Track, param: &AutoParam, cmd: &str) -> Result<AutoParam> {
+    let AutoParam::Plugin { slot, param: key } = param else {
+        return Ok(param.clone());
+    };
+    let Some(insert) = tr.plugin_at(*slot) else {
+        return Ok(param.clone());
+    };
+    let Some(info) = super::clap::plugin_info(&insert.plugin) else {
+        return Ok(param.clone());
+    };
+    let resolved = super::param_key::resolve_automation_param(info, key).map_err(|err| bad(cmd, err.to_string()))?;
+    Ok(AutoParam::Plugin { slot: *slot, param: resolved.id.to_string() })
+}
+
+fn resolve_automation_lanes(session: &Session, tracks: &[TrackId], param: &AutoParam, cmd: &str) -> Result<Vec<(TrackId, AutoParam)>> {
+    let mut out = Vec::with_capacity(tracks.len());
+    for id in tracks {
+        let tr = session.track(*id).ok_or_else(|| bad(cmd, "no track"))?;
+        out.push((*id, resolve_automation_lane(tr, param, cmd)?));
+    }
+    Ok(out)
 }
 
 /// With `from` (a write pass's previous point), the points between `from` and `at` are removed first.
 fn set_point(e: &mut Engine, p: &Value) -> Result<Value> {
-    let tracks = tracks_required(e, "automation.set_point", p)?;
-    let param = lane_param(p, "automation.set_point")?;
-    let at = position_param(e, "automation.set_point", p, "at")?.unwrap_or(e.session().edit.selection.start).max(0);
-    let from = position_param(e, "automation.set_point", p, "from")?;
-    let v = p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad("automation.set_point", "`value` required"))? as f32;
+    let cmd = "automation.set_point";
+    let tracks = tracks_required(e, cmd, p)?;
+    let parsed = parsed_lane(p, cmd)?;
+    let at = position_param(e, cmd, p, "at")?.unwrap_or(e.session().edit.selection.start).max(0);
+    let from = position_param(e, cmd, p, "from")?;
+    let v = p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(cmd, "`value` required"))? as f32;
+    // Resolve every track before writing, so one unknown name leaves the others untouched.
+    let lanes = resolve_automation_lanes(e.session(), &tracks, &parsed, cmd)?;
     let s = e.session_mut();
-    for t in &tracks {
+    for (t, param) in &lanes {
         if let Some(tr) = s.track_mut(*t) {
-            let lane = tr.lane_mut(&param);
+            let lane = tr.lane_mut(param);
             if let Some(from) = from {
                 lane.clear_range(from.saturating_add(1), at);
             }
@@ -987,15 +1031,17 @@ fn set_point(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn write_range(e: &mut Engine, p: &Value) -> Result<Value> {
-    let tracks = tracks_required(e, "automation.write_range", p)?;
-    let param = lane_param(p, "automation.write_range")?;
-    let r = range_param(e, "automation.write_range", p)?;
-    let v = p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad("automation.write_range", "`value` required"))? as f32;
+    let cmd = "automation.write_range";
+    let tracks = tracks_required(e, cmd, p)?;
+    let parsed = parsed_lane(p, cmd)?;
+    let r = range_param(e, cmd, p)?;
+    let v = p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(cmd, "`value` required"))? as f32;
+    let lanes = resolve_automation_lanes(e.session(), &tracks, &parsed, cmd)?;
     let s = e.session_mut();
-    for t in &tracks {
+    for (t, param) in &lanes {
         if let Some(tr) = s.track_mut(*t) {
-            let def = current_value(tr, &param);
-            tr.lane_mut(&param).write_range(r.start, r.end, v, def);
+            let def = current_value(tr, param);
+            tr.lane_mut(param).write_range(r.start, r.end, v, def);
         }
     }
     Ok(json!({}))
@@ -1023,13 +1069,18 @@ pub(crate) fn current_value(tr: &soundcraft_model::Track, param: &AutoParam) -> 
 }
 
 fn clear_lane(e: &mut Engine, p: &Value) -> Result<Value> {
-    let tracks = tracks_required(e, "automation.clear", p)?;
-    let param = if str_param(p, "param").is_some() { Some(lane_param(p, "automation.clear")?) } else { None };
-    let r = range_param(e, "automation.clear", p)?;
+    let cmd = "automation.clear";
+    let tracks = tracks_required(e, cmd, p)?;
+    let parsed = if str_param(p, "param").is_some() { Some(parsed_lane(p, cmd)?) } else { None };
+    let r = range_param(e, cmd, p)?;
     let (a, b) = if r.is_empty() { (i64::MIN, i64::MAX) } else { (r.start, r.end) };
+    let lanes: Vec<(TrackId, Option<AutoParam>)> = match &parsed {
+        Some(param) => resolve_automation_lanes(e.session(), &tracks, param, cmd)?.into_iter().map(|(t, param)| (t, Some(param))).collect(),
+        None => tracks.iter().copied().map(|t| (t, None)).collect(),
+    };
     let s = e.session_mut();
     let mut n = 0;
-    for t in &tracks {
+    for (t, param) in &lanes {
         if let Some(tr) = s.track_mut(*t) {
             for l in &mut tr.automation {
                 if param.as_ref().is_none_or(|x| x == &l.param) {
@@ -1057,23 +1108,31 @@ fn thin(e: &mut Engine, p: &Value, all: bool) -> Result<Value> {
 }
 
 fn write_current(e: &mut Engine, p: &Value, all: bool) -> Result<Value> {
-    let tracks = tracks_required(e, "automation.write_to_current", p)?;
-    let r = range_param(e, "automation.write_to_current", p)?;
-    let s = e.session_mut();
+    let cmd = "automation.write_to_current";
+    let tracks = tracks_required(e, cmd, p)?;
+    let r = range_param(e, cmd, p)?;
+    // The shown lane may name a plugin parameter. Existing lanes are already stored keys.
+    let mut plan = Vec::with_capacity(tracks.len());
     for t in &tracks {
+        let tr = e.session().track(*t).ok_or_else(|| bad(cmd, "no track"))?;
+        let params = if all {
+            let mut v = vec![AutoParam::Volume, AutoParam::Pan(0), AutoParam::Mute];
+            v.extend(tr.automation.iter().map(|l| l.param.clone()));
+            v.sort();
+            v.dedup();
+            v
+        } else {
+            let parsed = AutoParam::parse(&tr.view).unwrap_or(AutoParam::Volume);
+            vec![resolve_automation_lane(tr, &parsed, cmd)?]
+        };
+        plan.push((*t, params));
+    }
+    let s = e.session_mut();
+    for (t, params) in &plan {
         if let Some(tr) = s.track_mut(*t) {
-            let params: Vec<AutoParam> = if all {
-                let mut v = vec![AutoParam::Volume, AutoParam::Pan(0), AutoParam::Mute];
-                v.extend(tr.automation.iter().map(|l| l.param.clone()));
-                v.sort();
-                v.dedup();
-                v
-            } else {
-                vec![AutoParam::parse(&tr.view).unwrap_or(AutoParam::Volume)]
-            };
             for param in params {
-                let v = current_value(tr, &param);
-                tr.lane_mut(&param).write_range(r.start, r.end, v, v);
+                let v = current_value(tr, param);
+                tr.lane_mut(param).write_range(r.start, r.end, v, v);
             }
         }
     }

@@ -66,7 +66,14 @@ fn clap_insert_renders_through_the_mix() {
     e.execute("mix.insert_param", &json!({"track": t.0, "slot": 0, "param": "7", "value": 0.5})).unwrap();
     let half = soundcraft_mix::render_range(e.session(), Range::new(0, 4800), 512)[0][2000];
     assert!((half - 0.5 * dry).abs() < 1e-4, "dry {dry} half {half}");
-    assert!(e.execute("mix.insert_param", &json!({"track": t.0, "slot": 0, "param": "Gain", "value": 1.0})).is_err());
+    // The parameter's name resolves to its id. The session stores "7", not "Gain".
+    let by_name = e.execute("mix.insert_param", &json!({"track": t.0, "slot": 0, "param": "Gain", "value": 1.0})).unwrap();
+    assert_eq!(by_name["id"], "7");
+    let stored = e.session().track(t).and_then(|tr| tr.mixer.inserts[0].as_ref()).and_then(|ins| ins.params.get("7").copied());
+    assert_eq!(stored, Some(1.0));
+    assert!(e.session().track(t).and_then(|tr| tr.mixer.inserts[0].as_ref()).is_some_and(|ins| !ins.params.contains_key("Gain")));
+    let unity = soundcraft_mix::render_range(e.session(), Range::new(0, 4800), 512)[0][2000];
+    assert!((unity - dry).abs() < 1e-4, "dry {dry} unity {unity}");
 }
 
 #[test]
