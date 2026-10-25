@@ -790,10 +790,7 @@ impl Instance {
     }
 
     pub fn get_param(&self, id: u32) -> Option<f32> {
-        let mut v = 0f32;
-        // SAFETY: the unit is live; `v` is a local `f32`.
-        let st = unsafe { AudioUnitGetParameter(self.unit, id, SCOPE_GLOBAL, 0, &mut v) };
-        (st == 0 && v.is_finite()).then_some(v)
+        unit_param(self.unit, id)
     }
 
     pub fn set_param(&self, id: u32, value: f32) -> bool {
@@ -802,55 +799,11 @@ impl Instance {
     }
 
     pub fn value_text(&self, id: u32, value: f32) -> Option<String> {
-        if !value.is_finite() {
-            return None;
-        }
-        let mut request = AudioUnitParameterStringFromValue { in_param_id: id, in_value: &value, out_string: ptr::null() };
-        let mut size = std::mem::size_of::<AudioUnitParameterStringFromValue>() as u32;
-        // SAFETY: the property uses the SDK-documented struct layout; `request` and `size` are
-        // writable locals. A non-null `out_string` is an owned CFString even when the status is
-        // an error, and is released below.
-        let status = unsafe {
-            AudioUnitGetProperty(
-                self.unit,
-                PROP_PARAMETER_STRING_FROM_VALUE,
-                SCOPE_GLOBAL,
-                0,
-                (&mut request as *mut AudioUnitParameterStringFromValue).cast(),
-                &mut size,
-            )
-        };
-        let string = request.out_string;
-        let text = if status == 0 { cf_string(string) } else { String::new() };
-        release(string);
-        (status == 0 && !text.is_empty()).then_some(text)
+        unit_value_text(self.unit, id, value)
     }
 
     pub fn value_from_text(&self, id: u32, text: &str) -> Option<f32> {
-        if !param_text_fits(text) {
-            return None;
-        }
-        // SAFETY: CoreFoundation copies the live UTF-8 byte slice into a new CFString.
-        let string = unsafe { CFStringCreateWithBytes(ptr::null(), text.as_ptr(), text.len() as CFIndex, CF_STRING_ENCODING_UTF8, 0) };
-        if string.is_null() {
-            return None;
-        }
-        let mut request = AudioUnitParameterValueFromString { in_param_id: id, in_string: string, out_value: 0.0 };
-        let mut size = std::mem::size_of::<AudioUnitParameterValueFromString>() as u32;
-        // SAFETY: the property uses the SDK-documented struct layout; `request` and `size` are
-        // writable locals and `in_string` stays live through the call.
-        let status = unsafe {
-            AudioUnitGetProperty(
-                self.unit,
-                PROP_PARAMETER_VALUE_FROM_STRING,
-                SCOPE_GLOBAL,
-                0,
-                (&mut request as *mut AudioUnitParameterValueFromString).cast(),
-                &mut size,
-            )
-        };
-        release(string);
-        (status == 0 && request.out_value.is_finite()).then_some(request.out_value)
+        unit_value_from_text(self.unit, id, text)
     }
 
     /// The global-scope parameters.
@@ -965,6 +918,70 @@ impl Instance {
     }
 }
 
+/// Current global-scope value. `unit` must still be alive for the call.
+fn unit_param(unit: AudioUnit, id: u32) -> Option<f32> {
+    let mut v = 0f32;
+    // SAFETY: `unit` is live for this call (the instance, or a state link that still holds it);
+    // `v` is a local `f32`.
+    let st = unsafe { AudioUnitGetParameter(unit, id, SCOPE_GLOBAL, 0, &mut v) };
+    (st == 0 && v.is_finite()).then_some(v)
+}
+
+/// The unit's own text for a value. `unit` must still be alive for the call.
+fn unit_value_text(unit: AudioUnit, id: u32, value: f32) -> Option<String> {
+    if !value.is_finite() {
+        return None;
+    }
+    let mut request = AudioUnitParameterStringFromValue { in_param_id: id, in_value: &value, out_string: ptr::null() };
+    let mut size = std::mem::size_of::<AudioUnitParameterStringFromValue>() as u32;
+    // SAFETY: the property uses the SDK-documented struct layout; `request` and `size` are
+    // writable locals. A non-null `out_string` is an owned CFString even when the status is
+    // an error, and is released below.
+    let status = unsafe {
+        AudioUnitGetProperty(
+            unit,
+            PROP_PARAMETER_STRING_FROM_VALUE,
+            SCOPE_GLOBAL,
+            0,
+            (&mut request as *mut AudioUnitParameterStringFromValue).cast(),
+            &mut size,
+        )
+    };
+    let string = request.out_string;
+    let text = if status == 0 { cf_string(string) } else { String::new() };
+    release(string);
+    (status == 0 && !text.is_empty()).then_some(text)
+}
+
+/// Parses the unit's own text. Text longer than 256 scalars never reaches the unit. `unit` must
+/// still be alive for the call.
+fn unit_value_from_text(unit: AudioUnit, id: u32, text: &str) -> Option<f32> {
+    if !param_text_fits(text) {
+        return None;
+    }
+    // SAFETY: CoreFoundation copies the live UTF-8 byte slice into a new CFString.
+    let string = unsafe { CFStringCreateWithBytes(ptr::null(), text.as_ptr(), text.len() as CFIndex, CF_STRING_ENCODING_UTF8, 0) };
+    if string.is_null() {
+        return None;
+    }
+    let mut request = AudioUnitParameterValueFromString { in_param_id: id, in_string: string, out_value: 0.0 };
+    let mut size = std::mem::size_of::<AudioUnitParameterValueFromString>() as u32;
+    // SAFETY: the property uses the SDK-documented struct layout; `request` and `size` are
+    // writable locals and `in_string` stays live through the call.
+    let status = unsafe {
+        AudioUnitGetProperty(
+            unit,
+            PROP_PARAMETER_VALUE_FROM_STRING,
+            SCOPE_GLOBAL,
+            0,
+            (&mut request as *mut AudioUnitParameterValueFromString).cast(),
+            &mut size,
+        )
+    };
+    release(string);
+    (status == 0 && request.out_value.is_finite()).then_some(request.out_value)
+}
+
 struct LinkedUnit(Option<AudioUnit>);
 
 // SAFETY: the pointer is only used under the link's mutex, while the instance keeps the unit alive.
@@ -1010,6 +1027,25 @@ impl StateLink {
         };
         release(data);
         out
+    }
+
+    /// The current global-scope value (`None` once the instance is gone). The unit pointer is
+    /// copied out of the lock before the property call.
+    pub fn param_value(&self, id: u32) -> Option<f32> {
+        let unit = self.lock().0?;
+        unit_param(unit, id)
+    }
+
+    /// The unit's own text for a value (`None` once the instance is gone).
+    pub fn value_text(&self, id: u32, value: f32) -> Option<String> {
+        let unit = self.lock().0?;
+        unit_value_text(unit, id, value)
+    }
+
+    /// Parses the unit's own text (`None` once the instance is gone).
+    pub fn value_from_text(&self, id: u32, text: &str) -> Option<f32> {
+        let unit = self.lock().0?;
+        unit_value_from_text(unit, id, text)
     }
 
     fn kill(&self) {

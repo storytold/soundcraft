@@ -47,8 +47,17 @@ fn main() {
     let back = soundcraft_dsp::Plugin::value_from_text(&mut p, "13", &shown).expect("round trip");
     assert!((back - 0.375).abs() < 1e-6, "{shown} -> {back}");
     assert_eq!(soundcraft_dsp::Plugin::value_from_text(&mut p, "13", &"x".repeat(257)), None, "over 256 scalars is refused before the plugin parse");
+    // The editor handle parses every mapping (not only the identity display) and reads the live
+    // value, on the main thread, through the same controller. It strips one appended unit too.
+    assert!((ed.value_from_text("13", "-6.0 dB").unwrap_or(-1.0) - 0.375).abs() < 1e-6);
+    let editor_back = ed.value_from_text("13", &shown).expect("editor round trip");
+    assert!((editor_back - back).abs() < 1e-6, "{shown} -> {editor_back}");
+    assert_eq!(ed.value_from_text("13", "bad"), None);
+    assert!((ed.param("7").unwrap_or(-1.0) - 1.5).abs() < 1e-6);
     drop(p);
     assert_eq!(ed.value_text("13", 0.375), None, "the plugin is gone");
+    assert_eq!(ed.param("7"), None, "the plugin is gone");
+    assert_eq!(ed.value_from_text("13", "-6.0 dB"), None, "the plugin is gone");
     assert!(!ed.is_open());
     assert!(ed.open().is_err(), "the plugin is gone");
     println!("editor_main_thread: ok");
