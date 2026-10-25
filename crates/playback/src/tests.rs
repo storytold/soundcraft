@@ -759,3 +759,30 @@ fn live_midi_reaches_the_mix_once_and_a_flood_is_capped() {
     drop(st);
     assert!(!sink.send([0x80, 60, 0]), "a gone player refuses messages");
 }
+
+#[test]
+fn a_key_played_on_the_selected_synth_sounds_while_stopped() {
+    let mut s = soundcraft_model::Session::default();
+    let t = s.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, Some("Keys"));
+    if let Some(tr) = s.track_mut(t) {
+        tr.instrument = Some(soundcraft_model::Insert::new("subtractive_synth"));
+    }
+    s.edit.selected_tracks = vec![t];
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
+    let sink = MidiSink { player: 1, tx };
+    sink.send([0x90, 60, 110]);
+    let mut peak = 0.0f32;
+    for _ in 0..20 {
+        let mut out = vec![0.0f32; 1024];
+        st.fill(&mut out, 2);
+        peak = out.iter().fold(peak, |m, x| m.max(x.abs()));
+    }
+    assert!(peak > 0.01, "the synth stayed silent: {peak}");
+}

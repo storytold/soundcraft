@@ -11,6 +11,8 @@
 //! ports and every call is a no-op.
 
 use crate::{MidiSink, Player};
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// The client name MIDI services show for SoundCraft.
@@ -31,7 +33,7 @@ pub struct PortError {
 pub struct MidiInputs {
     route: Route,
     #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-    open: Vec<(String, midir::MidiInputConnection<()>)>,
+    open: Vec<(String, midir::MidiInputConnection<()>, Arc<AtomicU64>)>,
     failed: Vec<PortError>,
 }
 
@@ -85,16 +87,17 @@ impl MidiInputs {
         };
         let ports = named_ports(&probe);
         // Dropping a connection closes the port.
-        self.open.retain(|(name, _)| !disabled.contains(name) && ports.iter().any(|(n, _)| n == name));
+        self.open.retain(|(name, _, _)| !disabled.contains(name) && ports.iter().any(|(n, _)| n == name));
         self.failed.retain(|f| ports.iter().any(|(n, _)| *n == f.port));
         for (name, id) in ports {
-            if disabled.contains(&name) || self.open.iter().any(|(n, _)| *n == name) || self.failed.iter().any(|f| f.port == name) {
+            if disabled.contains(&name) || self.open.iter().any(|(n, _, _)| *n == name) || self.failed.iter().any(|f| f.port == name) {
                 continue;
             }
-            match connect(&id, Arc::clone(&self.route)) {
+            let heard = Arc::new(AtomicU64::new(0));
+            match connect(&id, Arc::clone(&self.route), Arc::clone(&heard)) {
                 Ok(conn) => {
                     log::info!("MIDI input open: {name}");
-                    self.open.push((name, conn));
+                    self.open.push((name, conn, heard));
                 }
                 Err(error) => {
                     log::warn!("MIDI input {name}: {error}");
@@ -117,7 +120,15 @@ impl MidiInputs {
     /// The ports open now, by name.
     pub fn open_ports(&self) -> Vec<String> {
         #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-        return self.open.iter().map(|(n, _)| n.clone()).collect();
+        return self.open.iter().map(|(n, _, _)| n.clone()).collect();
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        Vec::new()
+    }
+
+    /// Each open port and how many channel messages it has delivered so far (to show activity).
+    pub fn activity(&self) -> Vec<(String, u64)> {
+        #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+        return self.open.iter().map(|(n, _, h)| (n.clone(), h.load(Ordering::Relaxed))).collect();
         #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
         Vec::new()
     }
@@ -164,7 +175,7 @@ fn unique_names(raw: Vec<(String, String)>) -> Vec<(String, String)> {
 
 /// Open the port with `id` (found again by id: a port belongs to the MIDI client that listed it).
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-fn connect(id: &str, route: Route) -> Result<midir::MidiInputConnection<()>, String> {
+fn connect(id: &str, route: Route, heard: Arc<AtomicU64>) -> Result<midir::MidiInputConnection<()>, String> {
     let mut input = midir::MidiInput::new(CLIENT).map_err(|e| e.to_string())?;
     // System exclusive, MIDI clock and active sensing are not played.
     input.ignore(midir::Ignore::All);
@@ -176,11 +187,12 @@ fn connect(id: &str, route: Route) -> Result<midir::MidiInputConnection<()>, Str
             "SoundCraft MIDI In",
             move |_stamp, bytes, _| {
                 let sink = route.lock().unwrap_or_else(PoisonError::into_inner);
-                if let Some(sink) = sink.as_ref() {
-                    parse(bytes, &mut running, |m| {
+                parse(bytes, &mut running, |m| {
+                    heard.fetch_add(1, Ordering::Relaxed);
+                    if let Some(sink) = sink.as_ref() {
                         sink.send(m);
-                    });
-                }
+                    }
+                });
             },
             (),
         )

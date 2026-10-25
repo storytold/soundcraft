@@ -496,7 +496,15 @@ pub fn midi_input_devices(app: &mut SoundApp, ctx: &egui::Context) {
     let mut refresh = false;
     let mut changed = false;
     let ports = midi_ports(ctx, false);
-    let opened = app.midi_inputs.open_ports();
+    let opened = app.midi_inputs.activity();
+    // Which tracks play what comes in, said in the window: the usual reason nothing sounds.
+    let targets: Vec<String> = {
+        let s = app.engine.session();
+        let thru = soundcraft_mix::midi_thru_track(s);
+        s.tracks.iter().filter(|t| !t.inactive && soundcraft_mix::takes_midi_input(t, thru)).map(|t| t.name.clone()).collect()
+    };
+    // The message counts move while the window is open.
+    ctx.request_repaint_after(std::time::Duration::from_millis(250));
     let failed = app.midi_inputs.failed_ports().to_vec();
     let silent = app.player.as_ref().is_none_or(|p| p.silent);
     win(ctx, &mut open, "MIDI Input Devices", vec2(420.0, 260.0), |ui| {
@@ -521,8 +529,13 @@ pub fn midi_input_devices(app: &mut SoundApp, ctx: &egui::Context) {
                     ("off".to_string(), t.text_dim)
                 } else if let Some(f) = failed.iter().find(|f| f.port == *name) {
                     (format!("not available: {}", f.error), t.text_dim)
-                } else if opened.contains(name) {
-                    ("listening".to_string(), t.text)
+                } else if let Some((_, n)) = opened.iter().find(|(p, _)| p == name) {
+                    let what = match n {
+                        0 => "listening · nothing received yet".to_string(),
+                        1 => "listening · 1 message received".to_string(),
+                        n => format!("listening · {n} messages received"),
+                    };
+                    (what, t.text)
                 } else {
                     ("opening…".to_string(), t.text_dim)
                 };
@@ -534,6 +547,11 @@ pub fn midi_input_devices(app: &mut SoundApp, ctx: &egui::Context) {
             refresh = true;
         }
         ui.separator();
+        if targets.is_empty() {
+            ui.label("Plays on: no track. Select an instrument or MIDI track, or record-enable one, to hear what you play.");
+        } else {
+            ui.label(format!("Plays on: {}", targets.join(", ")));
+        }
         let note = if silent {
             "No audio output is open: open one in Setup › Playback Engine to hear MIDI input."
         } else {
