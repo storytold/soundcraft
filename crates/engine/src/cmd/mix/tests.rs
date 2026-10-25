@@ -571,6 +571,167 @@ fn a_lane_written_on_an_unstored_instrument_parameter_starts_from_its_default() 
     assert_eq!(lane.value_at(72_000, f32::NAN), 300.0);
 }
 
+fn insert_param_value(e: &Engine, track: u64, id: &str) -> f32 {
+    e.session()
+        .track(TrackId(track))
+        .and_then(|tr| tr.mixer.inserts.first())
+        .and_then(|slot| slot.as_ref())
+        .and_then(|ins| ins.params.get(id).copied())
+        .unwrap_or(f32::NAN)
+}
+
+#[test]
+fn text_sets_toggle_and_choice_parameters() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    // mix.insert accepts both kinds of label in one call.
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": "eq_7band", "params": {"hpf_on": "On", "hpf_slope": "24 dB/oct"}})).unwrap();
+    assert_eq!(insert_param_value(&e, t, "hpf_on"), 1.0);
+    assert_eq!(insert_param_value(&e, t, "hpf_slope"), 3.0);
+
+    for (text, expected) in [("off", 0.0), ("true", 1.0), ("FALSE", 0.0), ("On", 1.0)] {
+        let r = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "hpf_on", "value": text})).unwrap();
+        assert_eq!(r["value"], expected, "{text}");
+        assert_eq!(insert_param_value(&e, t, "hpf_on"), expected, "{text}");
+    }
+    let r = e.execute("mix.insert_params", &json!({"track": t, "slot": 0, "params": {"hpf_slope": "18 db/oct"}})).unwrap();
+    assert_eq!(r["set"], 1);
+    assert_eq!(insert_param_value(&e, t, "hpf_slope"), 2.0, "choice labels are matched case-insensitively");
+}
+
+#[test]
+fn instrument_slot_accepts_cutoff_as_text() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let t = e.session().tracks[0].id;
+    let r = e.execute("mix.insert_param", &json!({"track": t.0, "slot": "instrument", "param": "cutoff", "value": "5000"})).unwrap();
+    assert_eq!(r["value"], 5000.0);
+    assert_eq!(instrument_params(&e, t).get("cutoff"), Some(&5000.0));
+}
+
+#[test]
+fn bad_parameter_text_includes_examples() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": "gain"})).unwrap();
+    let gain = soundcraft_dsp::plugin_info("gain").unwrap().param("gain").unwrap();
+    let examples = format!("{}, {}, {}", gain.format(gain.min), gain.format(gain.default), gain.format(gain.max));
+
+    let err = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "gain", "value": "loud"})).unwrap_err().to_string();
+    assert!(err.contains("examples"), "{err}");
+    assert!(err.contains("loud") && err.contains("`gain`"), "{err}");
+    assert!(err.contains(&examples), "{err}");
+    assert_eq!(insert_param_value(&e, t, "gain"), 0.0);
+
+    let huge = "x".repeat(257);
+    let err = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "gain", "value": huge})).unwrap_err().to_string();
+    assert!(err.contains("examples") && err.contains(&examples), "{err}");
+    assert_eq!(insert_param_value(&e, t, "gain"), 0.0);
+
+    // A bad string on mix.insert stores nothing: the slot stays empty.
+    let depth = e.revision;
+    let err = e.execute("mix.insert", &json!({"track": t, "slot": 1, "plugin": "gain", "params": {"gain": "loud"}})).unwrap_err().to_string();
+    assert!(err.contains("examples"), "{err}");
+    assert!(e.session().tracks[0].mixer.inserts[1].is_none());
+    assert_eq!(e.revision, depth);
+}
+
+#[test]
+fn insert_params_applies_nothing_when_one_text_value_is_bad() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": "trim"})).unwrap();
+    e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "gain", "value": -6.0})).unwrap();
+    let depth = e.revision;
+    let preset = e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().preset.clone();
+
+    // "gain" parses; "invert" does not. Neither value, nor the preset name, is stored.
+    let err = e
+        .execute("mix.insert_params", &json!({"track": t, "slot": 0, "preset": "Broken", "params": {"gain": "-3", "invert": "maybe"}}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("examples"), "{err}");
+    assert!(err.contains("maybe"), "{err}");
+    assert_eq!(insert_param_value(&e, t, "gain"), -6.0);
+    assert_eq!(insert_param_value(&e, t, "invert"), 0.0);
+    assert_eq!(e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().preset, preset);
+    assert_eq!(e.revision, depth);
+
+    let r = e.execute("mix.insert_params", &json!({"track": t, "slot": 0, "params": {"gain": "-3", "invert": "On"}})).unwrap();
+    assert_eq!(r["set"], 2);
+    assert_eq!(insert_param_value(&e, t, "gain"), -3.0);
+    assert_eq!(insert_param_value(&e, t, "invert"), 1.0);
+}
+
+/// Apple's Delay unit ships with macOS. A parameter is set from the text that unit itself
+/// produces, and the stored number round-trips.
+#[cfg(target_os = "macos")]
+#[test]
+fn apple_au_parameter_text_round_trips() {
+    let id = "au:aufx:dely:appl";
+    if super::super::clap::plugin_info(id).is_none() {
+        eprintln!("{id} not installed; skipping");
+        return;
+    }
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": id})).unwrap();
+    let rate = e.session().sample_rate.as_f64() as f32;
+    let Some(insert) = e.session().tracks[0].mixer.inserts[0].clone() else { return };
+    let state = insert.state_bytes();
+    let Some(mut probe) = soundcraft_mix::create_instance(id, state.as_deref(), rate, 512, 2) else {
+        eprintln!("{id} did not instantiate; skipping");
+        return;
+    };
+    for (pid, value) in &insert.params {
+        probe.plugin.set_param(pid, *value);
+    }
+    let info = probe.plugin.info();
+    let mut fallback = None;
+    let mut chosen = None;
+    for param in info.params.iter().filter(|param| !matches!(param.unit, soundcraft_dsp::Unit::Toggle | soundcraft_dsp::Unit::Choice)) {
+        let current = insert.params.get(param.id).copied().unwrap_or(param.default);
+        let span = (param.max - param.min).abs();
+        let mid = param.min + span / 2.0;
+        for candidate in [param.max, param.min, mid, param.default] {
+            if !candidate.is_finite() {
+                continue;
+            }
+            let Some(text) = probe.plugin.value_text(param.id, candidate) else { continue };
+            if text.is_empty() || text.chars().nth(256).is_some() {
+                continue;
+            }
+            let Some(parsed) = probe.plugin.value_from_text(param.id, &text) else { continue };
+            let tolerance = span.max(1.0) * 1e-4;
+            if !parsed.is_finite() || (parsed - candidate).abs() > tolerance {
+                continue;
+            }
+            let hit = (param.id, candidate, text, tolerance);
+            if (candidate - current).abs() > tolerance {
+                chosen = Some(hit);
+                break;
+            }
+            fallback = Some(hit);
+        }
+        if chosen.is_some() {
+            break;
+        }
+    }
+    let Some((pid, candidate, text, tolerance)) = chosen.or(fallback) else {
+        eprintln!("{id} exposes no parameter string conversion; skipping");
+        return;
+    };
+    let result = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": pid, "value": text})).unwrap();
+    let stored = insert_param_value(&e, t, pid);
+    assert!((stored - candidate).abs() <= tolerance, "{candidate} -> {text:?} -> {stored}");
+    let reported = result["value"].as_f64().unwrap_or(f64::NAN) as f32;
+    assert!((reported - candidate).abs() <= tolerance, "{result}");
+}
+
 /// Apple's DLS synth ships with every Mac: a hosted instrument's parameters can be set by
 /// numeric id on its slot, which used to answer "not a built-in instrument".
 #[cfg(target_os = "macos")]

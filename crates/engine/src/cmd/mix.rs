@@ -96,7 +96,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             automation_mode
         ),
-        cmd!("mix.insert", "Insert Plugin", [], None, "{track?, slot?: 0..9 | a..j, plugin: id, params?: {id: value}}", has_selection, insert),
+        cmd!(
+            "mix.insert",
+            "Insert Plugin",
+            [],
+            None,
+            "{track?, slot?: 0..9 | a..j, plugin: id, params?: {id: value}}. value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing instantiates it temporarily. Unknown ids and invalid values are errors.",
+            has_selection,
+            insert
+        ),
         cmd!("mix.insert_remove", "Remove Insert", [], None, "{track?, slot}", has_selection, insert_remove),
         cmd!("mix.insert_bypass", "Bypass Insert", [], None, "{track?, slot, value?: bool}", has_selection, insert_bypass),
         cmd!(
@@ -104,7 +112,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Plugin Parameter",
             [],
             None,
-            "{track?, slot: 0..9 | a..j | \"instrument\", param: id (string or number), value}",
+            "{track?, slot: 0..9 | a..j | \"instrument\", param: id (string or number), value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing instantiates it temporarily}",
             has_selection,
             insert_param
         ),
@@ -113,7 +121,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Plugin Parameters",
             [],
             None,
-            "{track?, slot: 0..9 | a..j | \"instrument\", params: {id: value}, preset?: name} (unknown ids and non-numeric values are errors)",
+            "{track?, slot: 0..9 | a..j | \"instrument\", params: {id: value}, preset?: name}. value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing instantiates it temporarily. Unknown ids and invalid values are errors; nothing is stored if any key fails.",
             has_selection,
             insert_params
         ),
@@ -363,6 +371,14 @@ fn plugin_mut<'a>(s: &'a mut Session, t: TrackId, slot: PluginSlot, cmd: &str) -
     }
 }
 
+fn plugin_ref<'a>(s: &'a Session, t: TrackId, slot: PluginSlot, cmd: &str) -> Result<&'a Insert> {
+    let tr = s.track(t).ok_or_else(|| bad(cmd, "no track"))?;
+    match slot {
+        PluginSlot::Insert(i) => tr.mixer.inserts.get(i).and_then(Option::as_ref).ok_or_else(|| bad(cmd, "empty slot")),
+        PluginSlot::Instrument => tr.instrument.as_ref().ok_or_else(|| bad(cmd, "the track has no instrument")),
+    }
+}
+
 /// An optional `slot`: absent (or null) means "first free"; a present but invalid value is
 /// an error, never silently treated as absent.
 fn optional_slot(p: &Value, cmd: &str, max: usize) -> Result<Option<usize>> {
@@ -372,28 +388,160 @@ fn optional_slot(p: &Value, cmd: &str, max: usize) -> Result<Option<usize>> {
     }
 }
 
+/// Text longer than this never reaches plugin FFI. The cap is in Unicode scalar values.
+const MAX_PARAM_TEXT_CHARS: usize = 256;
+
+pub(super) struct ParameterValueResolver {
+    cmd: &'static str,
+    insert: Insert,
+    sample_rate: f32,
+    instance: Option<Box<dyn soundcraft_dsp::Plugin>>,
+    tried_instance: bool,
+}
+
+impl ParameterValueResolver {
+    pub(super) fn new(cmd: &'static str, insert: &Insert, sample_rate: f32) -> Self {
+        Self { cmd, insert: insert.clone(), sample_rate, instance: None, tried_instance: false }
+    }
+
+    /// One temporary instance per resolver. Created only when a string needs the plugin's parser,
+    /// then reused for every later string in the same command. Stored parameters are applied first.
+    fn instance(&mut self) -> Result<&mut (dyn soundcraft_dsp::Plugin + 'static)> {
+        if !self.tried_instance {
+            self.tried_instance = true;
+            let state = self.insert.state_bytes();
+            if let Some(mut created) = soundcraft_mix::create_instance(&self.insert.plugin, state.as_deref(), self.sample_rate, 512, 2) {
+                for (id, value) in &self.insert.params {
+                    created.plugin.set_param(id, *value);
+                }
+                self.instance = Some(created.plugin);
+            }
+        }
+        let cmd = self.cmd;
+        let plugin = self.insert.plugin.clone();
+        self.instance.as_deref_mut().ok_or_else(move || bad(cmd, format!("could not instantiate plugin `{plugin}` to parse parameter text")))
+    }
+
+    /// Every command stores values the same way: clamped, toggles and choices rounded.
+    fn store(&self, param: &soundcraft_dsp::ParamInfo, value: f32) -> f32 {
+        param.clamp(value)
+    }
+
+    pub(super) fn resolve(&mut self, param: &soundcraft_dsp::ParamInfo, value: &Value) -> Result<f32> {
+        if let Some(number) = value.as_f64().filter(|number| number.is_finite()) {
+            return Ok(self.store(param, number as f32));
+        }
+        let text = value.as_str().ok_or_else(|| bad(self.cmd, format!("`{}` must be a finite number or string", param.id)))?;
+        let trimmed = text.trim();
+        if let Some(labelled) = labelled_value(param, trimmed) {
+            return Ok(self.store(param, labelled));
+        }
+        // Cap before any FFI. Label matching above does not call the plugin.
+        if text_too_long(text) {
+            return Err(self.invalid_text(param, text, false));
+        }
+        if let Some(parsed) = self.instance()?.value_from_text(param.id, text)
+            && parsed.is_finite()
+        {
+            return Ok(self.store(param, parsed));
+        }
+        if !soundcraft_mix::is_third_party(&self.insert.plugin)
+            && let Ok(parsed) = trimmed.parse::<f32>()
+            && parsed.is_finite()
+        {
+            return Ok(self.store(param, parsed));
+        }
+        Err(self.invalid_text(param, text, true))
+    }
+
+    fn invalid_text(&mut self, param: &soundcraft_dsp::ParamInfo, text: &str, allow_instance: bool) -> EngineError {
+        let examples = self.examples(param, allow_instance);
+        let shown = shown_text(text);
+        let id = param.id;
+        bad(self.cmd, format!("`{shown}` is not a value of `{id}`; examples: {examples}"))
+    }
+
+    /// Display text at min, default and max: the plugin's own text when an instance already
+    /// exists or this failure is allowed to create one, otherwise SoundCraft's formatting.
+    fn examples(&mut self, param: &soundcraft_dsp::ParamInfo, allow_instance: bool) -> String {
+        let min = param.min;
+        let default = param.default;
+        let max = param.max;
+        if (allow_instance || self.instance.is_some())
+            && let Ok(plugin) = self.instance()
+        {
+            let min = plugin.value_text(param.id, min).unwrap_or_else(|| param.format(min));
+            let default = plugin.value_text(param.id, default).unwrap_or_else(|| param.format(default));
+            let max = plugin.value_text(param.id, max).unwrap_or_else(|| param.format(max));
+            return format!("{min}, {default}, {max}");
+        }
+        format!("{}, {}, {}", param.format(min), param.format(default), param.format(max))
+    }
+}
+
+/// Toggle labels are Off/On (and true/false). Choice labels are the parameter's `choices`.
+fn labelled_value(param: &soundcraft_dsp::ParamInfo, text: &str) -> Option<f32> {
+    match param.unit {
+        soundcraft_dsp::Unit::Toggle => {
+            if text.eq_ignore_ascii_case("off") || text.eq_ignore_ascii_case("false") {
+                Some(0.0)
+            } else if text.eq_ignore_ascii_case("on") || text.eq_ignore_ascii_case("true") {
+                Some(1.0)
+            } else {
+                None
+            }
+        }
+        soundcraft_dsp::Unit::Choice => param.choices.iter().position(|choice| text.eq_ignore_ascii_case(choice)).map(|index| index as f32),
+        _ => None,
+    }
+}
+
+fn text_too_long(text: &str) -> bool {
+    text.chars().nth(MAX_PARAM_TEXT_CHARS).is_some()
+}
+
+fn shown_text(text: &str) -> String {
+    let mut shown = String::new();
+    let mut truncated = false;
+    for (i, ch) in text.chars().enumerate() {
+        if i >= MAX_PARAM_TEXT_CHARS {
+            truncated = true;
+            break;
+        }
+        shown.push(ch);
+    }
+    if truncated {
+        shown.push_str("...");
+    }
+    shown
+}
+
 fn insert(e: &mut Engine, p: &Value) -> Result<Value> {
     let plugin = str_param(p, "plugin").ok_or_else(|| bad("mix.insert", "`plugin` required"))?.to_string();
     let info = super::clap::plugin_info(&plugin).ok_or_else(|| bad("mix.insert", format!("unknown plugin `{plugin}`")))?;
     let t = tracks_required(e, "mix.insert", p)?.first().copied().ok_or_else(|| bad("mix.insert", "no track"))?;
     let explicit = optional_slot(p, "mix.insert", INSERT_SLOTS)?;
-    let s = e.session_mut();
-    let tr = s.track_mut(t).ok_or_else(|| bad("mix.insert", "no track"))?;
+    let rate = e.session().sample_rate.as_f64() as f32;
+    let tr = e.session().track(t).ok_or_else(|| bad("mix.insert", "no track"))?;
     let slot =
         explicit.or_else(|| tr.mixer.inserts.iter().position(Option::is_none)).ok_or_else(|| bad("mix.insert", "all insert slots are in use"))?;
     let mut ins = Insert::new(info.id);
     for pi in info.params {
         ins.params.insert(pi.id.to_string(), pi.default);
     }
-    if let Some(obj) = p.get("params").and_then(Value::as_object) {
+    if let Some(params) = p.get("params") {
+        let obj = params.as_object().ok_or_else(|| bad("mix.insert", "`params` must be an object"))?;
+        let mut resolver = ParameterValueResolver::new("mix.insert", &ins, rate);
         for (k, v) in obj {
             let Some(pi) = info.params.iter().find(|x| x.id == k) else {
                 return Err(bad("mix.insert", format!("`{plugin}` has no parameter `{k}`")));
             };
-            let val = v.as_f64().map_or(pi.default, |f| pi.clamp(f as f32));
+            let val = resolver.resolve(pi, v)?;
             ins.params.insert(k.clone(), val);
         }
     }
+    let s = e.session_mut();
+    let tr = s.track_mut(t).ok_or_else(|| bad("mix.insert", "no track"))?;
     if let Some(sl) = tr.mixer.inserts.get_mut(slot) {
         *sl = Some(ins);
     }
@@ -426,48 +574,46 @@ fn insert_bypass(e: &mut Engine, p: &Value) -> Result<Value> {
 fn insert_param(e: &mut Engine, p: &Value) -> Result<Value> {
     let (t, slot) = track_plugin_slot(e, p, "mix.insert_param")?;
     let param = param_id("mix.insert_param", p, "param")?;
-    let value =
-        p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad("mix.insert_param", "`value` must be a number"))? as f32;
-    let ins = plugin_mut(e.session_mut(), t, slot, "mix.insert_param")?;
+    let value = p.get("value").ok_or_else(|| bad("mix.insert_param", "`value` must be a finite number or string"))?;
+    let ins = plugin_ref(e.session(), t, slot, "mix.insert_param")?.clone();
     let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad("mix.insert_param", format!("unknown plugin `{}`", ins.plugin)))?;
     let pi =
         info.params.iter().find(|x| x.id == param).ok_or_else(|| bad("mix.insert_param", format!("`{}` has no parameter `{param}`", info.id)))?;
-    let v = pi.clamp(value);
+    let mut resolver = ParameterValueResolver::new("mix.insert_param", &ins, e.session().sample_rate.as_f64() as f32);
+    let v = resolver.resolve(pi, value)?;
+    let ins = plugin_mut(e.session_mut(), t, slot, "mix.insert_param")?;
     ins.params.insert(param, v);
     Ok(json!({"value": v}))
 }
 
 /// Apply many parameters at once (preset recall); values are clamped. Unknown ids and
-/// non-numeric values are errors, not silent no-ops: a typo must not look like success.
+/// invalid values are errors, not silent no-ops: a typo must not look like success.
 fn insert_params(e: &mut Engine, p: &Value) -> Result<Value> {
     let (t, slot) = track_plugin_slot(e, p, "mix.insert_params")?;
     let obj = p.get("params").and_then(Value::as_object).cloned().ok_or_else(|| bad("mix.insert_params", "`params` must be an object"))?;
     let preset = str_param(p, "preset").map(str::to_string);
-    let ins = plugin_mut(e.session_mut(), t, slot, "mix.insert_params")?;
+    let ins = plugin_ref(e.session(), t, slot, "mix.insert_params")?.clone();
     let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad("mix.insert_params", format!("unknown plugin `{}`", ins.plugin)))?;
-    let mut unknown: Vec<&str> = Vec::new();
-    let mut non_numeric: Vec<&str> = Vec::new();
-    for (k, v) in &obj {
+    let mut unknown: Vec<String> = Vec::new();
+    for k in obj.keys() {
         if !info.params.iter().any(|x| x.id == k.as_str()) {
-            unknown.push(k.as_str());
-        } else if v.as_f64().is_none_or(|f| !f.is_finite()) {
-            non_numeric.push(k.as_str());
+            unknown.push(k.clone());
         }
     }
     if !unknown.is_empty() {
         unknown.sort_unstable();
         return Err(bad("mix.insert_params", format!("`{}` has no parameter(s): {}", info.id, unknown.join(", "))));
     }
-    if !non_numeric.is_empty() {
-        non_numeric.sort_unstable();
-        return Err(bad("mix.insert_params", format!("parameter(s) need a numeric value: {}", non_numeric.join(", "))));
+    let mut resolver = ParameterValueResolver::new("mix.insert_params", &ins, e.session().sample_rate.as_f64() as f32);
+    let mut values = Vec::with_capacity(obj.len());
+    for (k, value) in obj {
+        let Some(pi) = info.params.iter().find(|x| x.id == k) else { continue };
+        values.push((k, resolver.resolve(pi, &value)?));
     }
-    let mut n = 0;
-    for (k, v) in obj {
-        if let (Some(pi), Some(f)) = (info.params.iter().find(|x| x.id == k), v.as_f64().filter(|f| f.is_finite())) {
-            ins.params.insert(k, pi.clamp(f as f32));
-            n += 1;
-        }
+    let n = values.len();
+    let ins = plugin_mut(e.session_mut(), t, slot, "mix.insert_params")?;
+    for (k, value) in values {
+        ins.params.insert(k, value);
     }
     if let Some(name) = preset {
         ins.preset = name;
