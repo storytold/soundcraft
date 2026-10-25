@@ -510,6 +510,69 @@ fn plugin_states_are_read_without_the_audio_thread() {
     assert_eq!(side.capture_states(), want[1..]);
 }
 
+/// Answers parameter text. `window` is false for a parameter-only handle.
+struct Answer {
+    window: bool,
+    text: &'static str,
+    from_text: Option<f32>,
+    value: Option<f32>,
+}
+
+impl PluginEditor for Answer {
+    fn open(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    fn close(&mut self) {}
+    fn is_open(&self) -> bool {
+        false
+    }
+    fn idle(&mut self) -> Vec<(String, f32)> {
+        Vec::new()
+    }
+    fn has_window(&self) -> bool {
+        self.window
+    }
+    fn value_text(&mut self, _id: &str, _value: f32) -> Option<String> {
+        Some(self.text.to_string())
+    }
+    fn value_from_text(&mut self, _id: &str, _text: &str) -> Option<f32> {
+        self.from_text
+    }
+    fn param(&self, _id: &str) -> Option<f32> {
+        self.value
+    }
+}
+
+#[test]
+fn live_plugins_follow_a_created_editor_and_a_window_is_optional() {
+    let player = Player::new(Arc::new(Session::default()));
+    let track = TrackId(7);
+    {
+        let mut side = player.side();
+        side.shadow.insert((track, 0), ("clap:live".into(), 2, true));
+        side.editors.insert((track, 0), Box::new(Answer { window: true, text: "LIVE", from_text: Some(0.5), value: Some(0.42) }));
+        side.shadow.insert((track, 1), ("clap:does.not.exist".into(), 2, false));
+        side.shadow.insert((track, 2), ("clap:no-editor".into(), 2, true));
+        side.shadow.insert((track, 3), ("au:param-only".into(), 2, true));
+        side.editors.insert((track, 3), Box::new(Answer { window: false, text: "AU", from_text: Some(1.0), value: Some(2.0) }));
+    }
+    assert!(player.has_editor(track, 0));
+    assert!(!player.has_editor(track, 1));
+    assert!(!player.has_editor(track, 2));
+    assert!(!player.has_editor(track, 3), "a parameter-only handle is not an editor window");
+
+    let mut live = player.live_plugins();
+    assert_eq!(live.plugin_id(track, 0).as_deref(), Some("clap:live"));
+    assert_eq!(live.value(track, 0, "gain"), Some(0.42));
+    assert_eq!(live.value_text(track, 0, "gain", 0.42).as_deref(), Some("LIVE"));
+    assert_eq!(live.value_from_text(track, 0, "gain", "x"), Some(0.5));
+    assert_eq!(live.plugin_id(track, 1), None, "a failed create is not a live source");
+    assert_eq!(live.plugin_id(track, 2), None, "no editor handle, so text cannot be read");
+    assert_eq!(live.plugin_id(track, 3).as_deref(), Some("au:param-only"));
+    assert_eq!(live.value(track, 3, "p"), Some(2.0));
+    assert_eq!(live.value_from_text(track, 3, "p", "1"), Some(1.0));
+}
+
 struct Window;
 
 impl PluginEditor for Window {
