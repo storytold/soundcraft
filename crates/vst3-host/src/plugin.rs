@@ -178,11 +178,32 @@ impl Vst3Plugin {
     }
 }
 
+/// Same bound as the AU and CLAP hosts: 256 Unicode scalars are still parsed, one more is refused
+/// before either attempt. Checked with `chars().nth` so a huge paste is not scanned or allocated.
+const MAX_PARAM_TEXT_SCALARS: usize = 256;
+
+fn param_text_too_long(text: &str) -> bool {
+    text.chars().nth(MAX_PARAM_TEXT_SCALARS).is_some()
+}
+
+/// The plugin's normalized value for `text`, then once more with the appended unit removed.
+/// `None` before either `parse` when `text` is longer than [`MAX_PARAM_TEXT_SCALARS`].
+fn normalized_from_param_text(text: &str, units: &str, mut parse: impl FnMut(&str) -> Option<f64>) -> Option<f64> {
+    if param_text_too_long(text) {
+        return None;
+    }
+    parse(text).or_else(|| {
+        let stripped = without_appended_unit(text, units)?;
+        parse(stripped)
+    })
+}
+
 /// Drops the one `" {units}"` suffix `value_text` appends, matched without regard to case.
-/// `None` when `units` is empty or `text` does not end with that suffix.
+/// `None` when `units` is empty, `text` does not end with that suffix, or `text` is longer than
+/// [`MAX_PARAM_TEXT_SCALARS`] (that check runs before the scalar buffer is built).
 fn without_appended_unit<'a>(text: &'a str, units: &str) -> Option<&'a str> {
     let units = units.trim();
-    if units.is_empty() {
+    if units.is_empty() || param_text_too_long(text) {
         return None;
     }
     let trimmed = text.trim_end();
@@ -341,13 +362,16 @@ impl Plugin for Vst3Plugin {
     }
 
     fn value_from_text(&mut self, id: &str, text: &str) -> Option<f32> {
+        // Refuse before the id lookup and both parses, so a huge paste never reaches the host or
+        // the suffix buffer in `without_appended_unit`.
+        if param_text_too_long(text) {
+            return None;
+        }
         let i = self.info.params.iter().position(|p| p.id == id)?;
         let vid = *self.ids.get(i)?;
-        let normalized = self.inst.value_from_text(vid, text).or_else(|| {
-            let units = self.units.get(i).map_or("", |u| u.trim());
-            let stripped = without_appended_unit(text, units)?;
-            self.inst.value_from_text(vid, stripped)
-        })?;
+        // Owned so the parse closure can borrow `self.inst` while the units stay available.
+        let units = self.units.get(i).map_or("", |u| u.trim()).to_string();
+        let normalized = normalized_from_param_text(text, &units, |piece| self.inst.value_from_text(vid, piece))?;
         self.plain_from_normalized(i, normalized).map(|value| self.info.params.get(i).map_or(value, |p| p.clamp(value)))
     }
 
@@ -639,5 +663,66 @@ mod tests {
         assert_eq!(without_appended_unit("3.0 Hz", "dB"), None);
         assert_eq!(without_appended_unit("3.0 dB", ""), None);
         assert_eq!(without_appended_unit("3.0 dB", "   "), None);
+    }
+
+    /// Both parse attempts (the text as typed, then the text with one unit suffix removed) are
+    /// skipped once the string is past 256 scalars. 256 scalars still tries both.
+    #[test]
+    fn param_text_over_256_scalars_is_refused_before_either_parse() {
+        let mut calls = 0u32;
+        let over = "1".repeat(257);
+        assert_eq!(
+            normalized_from_param_text(&over, "dB", |_| {
+                calls += 1;
+                Some(1.0)
+            }),
+            None
+        );
+        assert_eq!(calls, 0, "the raw parse and the suffix fallback both stay uncalled");
+        assert_eq!(without_appended_unit(&over, "dB"), None);
+
+        calls = 0;
+        let with_suffix = format!("{} dB", "1".repeat(254));
+        assert_eq!(with_suffix.chars().count(), 257);
+        assert!(param_text_too_long(&with_suffix));
+        assert_eq!(
+            normalized_from_param_text(&with_suffix, "dB", |_| {
+                calls += 1;
+                Some(1.0)
+            }),
+            None
+        );
+        assert_eq!(calls, 0);
+        assert_eq!(without_appended_unit(&with_suffix, "dB"), None);
+
+        calls = 0;
+        let body = "1".repeat(253);
+        let bounded = format!("{body} dB");
+        assert_eq!(bounded.chars().count(), 256);
+        let parsed = normalized_from_param_text(&bounded, "dB", |text| {
+            calls += 1;
+            if calls == 1 {
+                assert_eq!(text, bounded);
+                None
+            } else {
+                assert_eq!(text, body);
+                Some(0.25)
+            }
+        });
+        assert_eq!(parsed, Some(0.25));
+        assert_eq!(calls, 2, "a 256-scalar string still tries the raw text and the stripped suffix");
+        assert_eq!(without_appended_unit(&bounded, "dB"), Some(body.as_str()));
+
+        calls = 0;
+        let exact = "2".repeat(256);
+        assert_eq!(
+            normalized_from_param_text(&exact, "dB", |text| {
+                calls += 1;
+                assert_eq!(text, exact);
+                Some(0.5)
+            }),
+            Some(0.5)
+        );
+        assert_eq!(calls, 1, "a successful first parse does not try the suffix");
     }
 }

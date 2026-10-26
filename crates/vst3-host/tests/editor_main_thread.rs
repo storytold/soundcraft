@@ -46,6 +46,7 @@ fn main() {
     assert_eq!(shown, "\u{2212}6.0 dB");
     let back = soundcraft_dsp::Plugin::value_from_text(&mut p, "13", &shown).expect("round trip");
     assert!((back - 0.375).abs() < 1e-6, "{shown} -> {back}");
+    assert_eq!(soundcraft_dsp::Plugin::value_from_text(&mut p, "13", &"x".repeat(257)), None, "over 256 scalars is refused before the plugin parse");
     drop(p);
     assert_eq!(ed.value_text("13", 0.375), None, "the plugin is gone");
     assert!(!ed.is_open());
