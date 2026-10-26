@@ -633,15 +633,17 @@ impl PluginEditor for Vst3Editor {
     }
 
     fn value_from_text(&mut self, id: &str, text: &str) -> Option<f32> {
+        // Same bound as `Plugin::value_from_text`: refuse before either parse so a huge paste
+        // never reaches the controller or the suffix buffer.
+        if param_text_too_long(text) {
+            return None;
+        }
         let &i = self.index.get(id)?;
         let vid = *self.ids.get(i)?;
-        // Same as `Plugin::value_from_text`: try the text as typed, then with one appended unit
-        // removed. The fixture's parser does not strip "dB" itself.
-        let normalized = self.link.value_from_text(vid, text).or_else(|| {
-            let units = self.units.get(i).map_or("", |u| u.trim());
-            let stripped = without_appended_unit(text, units)?;
-            self.link.value_from_text(vid, stripped)
-        })?;
+        // Owned so the parse closure can borrow `self.link` while the units stay available.
+        let units = self.units.get(i).map_or("", |u| u.trim()).to_string();
+        // The fixture's parser does not strip "dB" itself; the helper removes one appended unit.
+        let normalized = normalized_from_param_text(text, &units, |piece| self.link.value_from_text(vid, piece))?;
         self.plain(i, normalized)
     }
 
