@@ -69,7 +69,7 @@ fn playback_engine_applies_the_device_choice_and_reports_the_open_device() {
     assert!(!app.engine.session().edit.delay_compensation);
     assert!(!app.ui.show_playback_engine, "a programmatic call does not open the window");
     assert_eq!(r["delay_compensation"], false);
-    let player = app.player.as_ref().unwrap();
+    let player = app.player().unwrap();
     assert_eq!(r["applied"], !player.silent);
     assert_eq!(r["device"], json!(player.device_name));
     assert_eq!(r["buffer_size"], json!(player.device_buffer));

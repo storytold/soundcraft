@@ -519,7 +519,7 @@ fn a_save_with_no_state_capture_keeps_queued_instrument_params() {
     app.engine.session_mut().track_mut(keys).and_then(|tr| tr.instrument.as_mut()).unwrap().set_state_bytes(b"keep");
     let kept = instrument_state(&app, keys);
     push_queued_param(&mut app, keys, "cutoff", 44.0);
-    assert!(app.player.is_none(), "this capture has no hosted instrument to ask");
+    assert!(app.player().is_none(), "this capture has no hosted instrument to ask");
     app.capture_plugin_states();
     let cutoff = soundcraft_dsp::plugin_info("subtractive_synth").and_then(|i| i.param("cutoff")).unwrap();
     assert_eq!(instrument_param(&app, keys, "cutoff"), Some(44.0f32.clamp(cutoff.min, cutoff.max)));
@@ -566,6 +566,23 @@ fn a_player_installs_live_plugins_and_reconnect_keeps_them() {
     assert!(app.engine.has_live_plugins());
     app.reconnect_audio();
     assert!(app.engine.has_live_plugins());
+}
+
+#[test]
+fn set_player_installs_live_plugins_and_none_clears_them() {
+    let engine = soundcraft_engine::Engine::default();
+    let mut app = super::SoundApp::new(engine, None, super::Services::default());
+    assert!(app.player().is_none());
+    assert!(!app.engine.has_live_plugins());
+
+    let player = soundcraft_playback::Player::new(app.engine.session_arc());
+    app.set_player(Some(player));
+    assert!(app.player().is_some());
+    assert!(app.engine.has_live_plugins(), "a player stored through set_player installs the live source");
+
+    app.set_player(None);
+    assert!(app.player().is_none());
+    assert!(!app.engine.has_live_plugins(), "clearing the player clears the live source");
 }
 
 #[test]
@@ -675,7 +692,7 @@ fn ordinary_play_after_stop_is_full_speed() {
     app.engine.execute("edit.select", &json!({"start": 0, "end": 48000})).unwrap();
     app.engine.execute("options.loop_playback", &json!({"value": true})).unwrap();
     app.engine.execute("options.pre_post_roll", &json!({"value": false})).unwrap();
-    let speed = |app: &super::SoundApp| app.player.as_ref().map(|p| p.speed()).unwrap_or(0.0);
+    let speed = |app: &super::SoundApp| app.player().map(|p| p.speed()).unwrap_or(0.0);
     assert!((speed(&app) - 1.0).abs() < 1e-3);
 
     app.engine.execute("transport.half_speed", &json!({})).unwrap();
@@ -699,7 +716,7 @@ fn ordinary_play_after_stop_is_full_speed() {
     app.engine.execute("transport.half_speed", &json!({})).unwrap();
     app.handle_transport(1.0 / 60.0);
     assert!((speed(&app) - 0.5).abs() < 1e-3);
-    app.player.as_ref().unwrap().stop();
+    app.player().unwrap().stop();
     app.handle_transport(1.0 / 60.0);
     assert!(!app.is_playing());
     assert!((speed(&app) - 1.0).abs() < 1e-3, "a half-speed pass that ends on its own restores full speed");
