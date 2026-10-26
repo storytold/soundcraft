@@ -80,6 +80,7 @@ fn identity_mapped_param_text_is_read_on_the_main_thread_only() {
         let back = soundcraft_dsp::Plugin::value_from_text(&mut p, "13", &shown).expect("round trip");
         assert!((back - 0.375).abs() < 1e-6, "{shown} -> {back}");
     }
+    assert_eq!(soundcraft_dsp::Plugin::value_from_text(&mut p, "13", &"x".repeat(257)), None, "over 256 scalars is refused before the plugin parse");
 }
 
 #[test]
