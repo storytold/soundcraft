@@ -984,19 +984,29 @@ fn parsed_lane(p: &Value, cmd: &str) -> Result<AutoParam> {
 /// case-insensitively and the stored lane uses the parameter's id. Every plugin key is
 /// capped at [`super::param_key::MAX_PARAM_KEY_CHARS`] before an empty slot keeps it.
 /// An occupied slot whose plugin has no parameter list is an error. [`clear_lane`] is
-/// the exception: pass `exact_id_if_unknown` so that command can still match a stored
-/// id exactly. AU and VST3 have no group separate from the name; CLAP names already
-/// include `Module/Name`.
+/// the exception: pass `exact_id_if_unknown` and the caller's original id text
+/// (`original_id`). Plugin ids are case-sensitive; only the `plugin:` prefix and the slot
+/// are not. With no metadata, clear matches that original text. When metadata does not
+/// resolve the key, clear matches a stored lane id exactly before it errors. AU and VST3
+/// have no group separate from the name; CLAP names already include `Module/Name`.
 pub(super) fn resolve_automation_lane(tr: &soundcraft_model::Track, param: &AutoParam, cmd: &str) -> Result<AutoParam> {
-    resolve_automation_lane_in(tr, param, cmd, false)
+    resolve_automation_lane_in(tr, param, cmd, false, None)
 }
 
-fn resolve_automation_lane_in(tr: &soundcraft_model::Track, param: &AutoParam, cmd: &str, exact_id_if_unknown: bool) -> Result<AutoParam> {
+fn resolve_automation_lane_in(
+    tr: &soundcraft_model::Track,
+    param: &AutoParam,
+    cmd: &str,
+    exact_id_if_unknown: bool,
+    original_id: Option<&str>,
+) -> Result<AutoParam> {
     let AutoParam::Plugin { slot, param: key } = param else {
         return Ok(param.clone());
     };
     // Before either early return: an empty slot must not store a key the resolver would reject.
-    if key.chars().nth(super::param_key::MAX_PARAM_KEY_CHARS).is_some() {
+    if key.chars().nth(super::param_key::MAX_PARAM_KEY_CHARS).is_some()
+        || original_id.is_some_and(|id| id.chars().nth(super::param_key::MAX_PARAM_KEY_CHARS).is_some())
+    {
         return Err(bad(cmd, super::param_key::ResolveError::TooLong.to_string()));
     }
     let Some(insert) = tr.plugin_at(*slot) else {
@@ -1004,12 +1014,36 @@ fn resolve_automation_lane_in(tr: &soundcraft_model::Track, param: &AutoParam, c
     };
     let Some(info) = super::clap::plugin_info(&insert.plugin) else {
         if exact_id_if_unknown {
-            return Ok(param.clone());
+            return Ok(plugin_lane(*slot, original_id.unwrap_or(key)));
         }
         return Err(bad(cmd, format!("unknown plugin {} in slot {}; use the parameter id", insert.plugin, automation_slot_label(*slot))));
     };
-    let resolved = super::param_key::resolve_automation_param(info, key).map_err(|err| bad(cmd, err.to_string()))?;
-    Ok(AutoParam::Plugin { slot: *slot, param: resolved.id.to_string() })
+    match super::param_key::resolve_automation_param(info, key) {
+        Ok(resolved) => Ok(AutoParam::Plugin { slot: *slot, param: resolved.id.to_string() }),
+        Err(err) if exact_id_if_unknown => {
+            let id = original_id.unwrap_or(key);
+            if has_stored_plugin_id(tr, *slot, id) { Ok(plugin_lane(*slot, id)) } else { Err(bad(cmd, err.to_string())) }
+        }
+        Err(err) => Err(bad(cmd, err.to_string())),
+    }
+}
+
+fn plugin_lane(slot: u8, id: &str) -> AutoParam {
+    AutoParam::Plugin { slot, param: id.to_string() }
+}
+
+/// `plugin:` and the slot are case-insensitive. The id after the second colon is not: it is the
+/// caller's text, trimmed with the whole lane but not lowercased.
+fn original_plugin_key(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let rest = trimmed.to_ascii_lowercase().strip_prefix("plugin:")?.to_string();
+    let (slot, _) = rest.split_once(':')?;
+    let prefix = "plugin:".len().checked_add(slot.len())?.checked_add(1)?;
+    trimmed.get(prefix..).map(str::to_string)
+}
+
+fn has_stored_plugin_id(tr: &soundcraft_model::Track, slot: u8, id: &str) -> bool {
+    tr.automation.iter().any(|lane| matches!(&lane.param, AutoParam::Plugin { slot: stored, param } if *stored == slot && param == id))
 }
 
 /// Insert slots are `A`–`J`. The instrument lane is `instrument`.
@@ -1027,7 +1061,7 @@ fn resolve_automation_lanes(
     let mut out = Vec::with_capacity(tracks.len());
     for id in tracks {
         let tr = session.track(*id).ok_or_else(|| bad(cmd, "no track"))?;
-        out.push((*id, resolve_automation_lane_in(tr, param, cmd, exact_id_if_unknown)?));
+        out.push((*id, resolve_automation_lane_in(tr, param, cmd, exact_id_if_unknown, None)?));
     }
     Ok(out)
 }
@@ -1096,11 +1130,20 @@ pub(crate) fn current_value(tr: &soundcraft_model::Track, param: &AutoParam) -> 
 fn clear_lane(e: &mut Engine, p: &Value) -> Result<Value> {
     let cmd = "automation.clear";
     let tracks = tracks_required(e, cmd, p)?;
-    let parsed = if str_param(p, "param").is_some() { Some(parsed_lane(p, cmd)?) } else { None };
+    let raw = str_param(p, "param");
+    let parsed = if raw.is_some() { Some(parsed_lane(p, cmd)?) } else { None };
+    let original_id = raw.and_then(original_plugin_key);
     let r = range_param(e, cmd, p)?;
     let (a, b) = if r.is_empty() { (i64::MIN, i64::MAX) } else { (r.start, r.end) };
     let lanes: Vec<(TrackId, Option<AutoParam>)> = match &parsed {
-        Some(param) => resolve_automation_lanes(e.session(), &tracks, param, cmd, true)?.into_iter().map(|(t, param)| (t, Some(param))).collect(),
+        Some(param) => {
+            let mut out = Vec::with_capacity(tracks.len());
+            for id in &tracks {
+                let tr = e.session().track(*id).ok_or_else(|| bad(cmd, "no track"))?;
+                out.push((*id, Some(resolve_automation_lane_in(tr, param, cmd, true, original_id.as_deref())?)));
+            }
+            out
+        }
         None => tracks.iter().copied().map(|t| (t, None)).collect(),
     };
     let s = e.session_mut();

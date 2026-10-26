@@ -1199,3 +1199,71 @@ fn an_occupied_slot_without_metadata_keeps_only_an_exact_clear() {
     assert_eq!(points, Some(0));
     assert!(!plugin_lanes(&e, t).iter().any(|(_, param)| param == "gain"));
 }
+
+#[test]
+fn clear_keeps_an_uppercase_id_when_the_plugin_has_no_metadata() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id;
+    let stored = AutoParam::Plugin { slot: 0, param: "Gain".into() };
+    {
+        let tr = e.session_mut().track_mut(t).unwrap();
+        tr.mixer.inserts[0] = Some(Insert::new("clap:vendor.missing"));
+        tr.lane_mut(&stored).set_point(0, 0.25);
+    }
+    // The lowercased id is a different parameter. It clears nothing.
+    let missed = e.execute("automation.clear", &json!({"track": t.0, "param": "plugin:a:gain"})).unwrap();
+    assert_eq!(missed["removed"], 0);
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len()), Some(1));
+
+    // The prefix may be any case. The id text is the caller's.
+    let cleared = e.execute("automation.clear", &json!({"track": t.0, "param": "PLUGIN:A:Gain"})).unwrap();
+    assert!(cleared["removed"].as_u64().unwrap_or(0) > 0, "{cleared}");
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len()), Some(0));
+
+    let depth = e.revision;
+    // Set and write still refuse a slot with no parameter list.
+    let err = e.execute("automation.set_point", &json!({"track": t.0, "param": "plugin:a:Gain", "at": 0, "value": 1.0})).unwrap_err().to_string();
+    assert!(err.contains("unknown plugin clap:vendor.missing in slot A; use the parameter id"), "{err}");
+    let err = e
+        .execute("automation.write_range", &json!({"track": t.0, "param": "plugin:a:Gain", "start": 0, "end": 10, "value": 1.0}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown plugin"), "{err}");
+    assert_eq!(e.revision, depth);
+
+    // The 200-character cap still applies to an exact clear.
+    let key = "G".repeat(201);
+    let err = e.execute("automation.clear", &json!({"track": t.0, "param": format!("plugin:a:{key}")})).unwrap_err().to_string();
+    assert!(err.contains("at most 200"), "{err}");
+    assert!(!err.contains(&key), "{err}");
+}
+
+#[test]
+fn clear_removes_a_lane_left_behind_by_a_replaced_plugin() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id;
+    e.execute("mix.insert", &json!({"track": t.0, "slot": 0, "plugin": "eq_7band"})).unwrap();
+    let stored = AutoParam::Plugin { slot: 0, param: "LegacyParam".into() };
+    e.session_mut().track_mut(t).unwrap().lane_mut(&stored).set_point(10, 0.5);
+    let depth = e.revision;
+
+    // A different case is not that stored id, and the new plugin does not know the name.
+    let err = e.execute("automation.clear", &json!({"track": t.0, "param": "plugin:a:legacyparam"})).unwrap_err().to_string();
+    assert!(err.contains("not a parameter of EQ 7-Band"), "{err}");
+    assert_eq!(e.revision, depth);
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len()), Some(1));
+
+    let cleared = e.execute("automation.clear", &json!({"track": t.0, "param": "Plugin:a:LegacyParam"})).unwrap();
+    assert!(cleared["removed"].as_u64().unwrap_or(0) > 0, "{cleared}");
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len()), Some(0));
+
+    // A key the current plugin does know still resolves, so clear removes that lane.
+    e.execute("automation.set_point", &json!({"track": t.0, "param": "plugin:a:MF Gain", "at": 0, "value": -3.0})).unwrap();
+    let cleared = e.execute("automation.clear", &json!({"track": t.0, "param": "plugin:a:mf gain"})).unwrap();
+    assert!(cleared["removed"].as_u64().unwrap_or(0) > 0, "{cleared}");
+    let mid = AutoParam::Plugin { slot: 0, param: "mid_gain".into() };
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&mid)).map(|lane| lane.points.len()), Some(0));
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len()), Some(0));
+}
