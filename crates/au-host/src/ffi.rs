@@ -918,16 +918,18 @@ impl Instance {
     }
 }
 
-/// Current global-scope value. `unit` must still be alive for the call.
+/// Current global-scope value. `unit` must still be alive for the call: an [`Instance`] uses its
+/// own unit, and [`StateLink`] holds its mutex until this returns.
 fn unit_param(unit: AudioUnit, id: u32) -> Option<f32> {
     let mut v = 0f32;
-    // SAFETY: `unit` is live for this call (the instance, or a state link that still holds it);
-    // `v` is a local `f32`.
+    // SAFETY: `unit` stays live for this call. The instance calls this on its own unit. A state
+    // link holds the mutex `Instance::drop` takes before it disposes the unit, so the pointer
+    // cannot be disposed under this call. `v` is a local `f32`.
     let st = unsafe { AudioUnitGetParameter(unit, id, SCOPE_GLOBAL, 0, &mut v) };
     (st == 0 && v.is_finite()).then_some(v)
 }
 
-/// The unit's own text for a value. `unit` must still be alive for the call.
+/// The unit's own text for a value. `unit` must still be alive for the call (see [`unit_param`]).
 fn unit_value_text(unit: AudioUnit, id: u32, value: f32) -> Option<String> {
     if !value.is_finite() {
         return None;
@@ -935,8 +937,8 @@ fn unit_value_text(unit: AudioUnit, id: u32, value: f32) -> Option<String> {
     let mut request = AudioUnitParameterStringFromValue { in_param_id: id, in_value: &value, out_string: ptr::null() };
     let mut size = std::mem::size_of::<AudioUnitParameterStringFromValue>() as u32;
     // SAFETY: the property uses the SDK-documented struct layout; `request` and `size` are
-    // writable locals. A non-null `out_string` is an owned CFString even when the status is
-    // an error, and is released below.
+    // writable locals. `unit` stays live for the same reason as [`unit_param`]. A non-null
+    // `out_string` is an owned CFString even when the status is an error, and is released below.
     let status = unsafe {
         AudioUnitGetProperty(
             unit,
@@ -954,7 +956,7 @@ fn unit_value_text(unit: AudioUnit, id: u32, value: f32) -> Option<String> {
 }
 
 /// Parses the unit's own text. Text longer than 256 scalars never reaches the unit. `unit` must
-/// still be alive for the call.
+/// still be alive for the call (see [`unit_param`]).
 fn unit_value_from_text(unit: AudioUnit, id: u32, text: &str) -> Option<f32> {
     if !param_text_fits(text) {
         return None;
@@ -967,7 +969,8 @@ fn unit_value_from_text(unit: AudioUnit, id: u32, text: &str) -> Option<f32> {
     let mut request = AudioUnitParameterValueFromString { in_param_id: id, in_string: string, out_value: 0.0 };
     let mut size = std::mem::size_of::<AudioUnitParameterValueFromString>() as u32;
     // SAFETY: the property uses the SDK-documented struct layout; `request` and `size` are
-    // writable locals and `in_string` stays live through the call.
+    // writable locals and `in_string` stays live through the call. `unit` stays live for the
+    // same reason as [`unit_param`].
     let status = unsafe {
         AudioUnitGetProperty(
             unit,
@@ -990,7 +993,8 @@ unsafe impl Send for LinkedUnit {}
 /// The link between an instance and its state handles: the unit's state is read on the main
 /// thread while the instance renders on the audio thread (hosts make property calls from other
 /// threads during rendering). The instance clears the link under its lock before it disposes of
-/// the unit, so a handle never reads a dead unit.
+/// the unit. Every property call holds that same lock for the whole call, so a handle never
+/// reads a disposed unit.
 pub(crate) struct StateLink(std::sync::Mutex<LinkedUnit>);
 
 impl StateLink {
@@ -1029,22 +1033,31 @@ impl StateLink {
         out
     }
 
-    /// The current global-scope value (`None` once the instance is gone). The unit pointer is
-    /// copied out of the lock before the property call.
+    /// The current global-scope value (`None` once the instance is gone).
+    ///
+    /// The lock is held for the whole property call, as in [`Self::save_state`].
+    /// [`Instance::drop`] clears this link and then disposes the unit; dropping the guard
+    /// before `AudioUnitGetParameter` would let that dispose run while the call still uses
+    /// the pointer.
     pub fn param_value(&self, id: u32) -> Option<f32> {
-        let unit = self.lock().0?;
+        let g = self.lock();
+        let unit = g.0?;
         unit_param(unit, id)
     }
 
-    /// The unit's own text for a value (`None` once the instance is gone).
+    /// The unit's own text for a value (`None` once the instance is gone). The lock is held for
+    /// the whole property call (see [`Self::param_value`]).
     pub fn value_text(&self, id: u32, value: f32) -> Option<String> {
-        let unit = self.lock().0?;
+        let g = self.lock();
+        let unit = g.0?;
         unit_value_text(unit, id, value)
     }
 
-    /// Parses the unit's own text (`None` once the instance is gone).
+    /// Parses the unit's own text (`None` once the instance is gone). The lock is held for the
+    /// whole property call (see [`Self::param_value`]).
     pub fn value_from_text(&self, id: u32, text: &str) -> Option<f32> {
-        let unit = self.lock().0?;
+        let g = self.lock();
+        let unit = g.0?;
         unit_value_from_text(unit, id, text)
     }
 
@@ -1082,6 +1095,18 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_cleared_state_link_answers_none_without_a_unit() {
+        let link = StateLink(std::sync::Mutex::new(LinkedUnit(None)));
+        assert_eq!(link.param_value(1), None);
+        assert_eq!(link.value_text(1, 0.5), None);
+        assert_eq!(link.value_from_text(1, "0.5"), None);
+        link.kill();
+        assert_eq!(link.param_value(1), None);
+        assert_eq!(link.value_text(1, 0.0), None);
+        assert_eq!(link.value_from_text(1, "1"), None);
+    }
 
     #[test]
     fn host_callbacks_report_the_transport() {
