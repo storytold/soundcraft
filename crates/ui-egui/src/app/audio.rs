@@ -21,21 +21,12 @@ impl SoundApp {
         }
         self.ui.audio = cfg;
         let at = self.position();
-        // Drop the old live source before the player, so it does not keep the retired instances.
-        self.engine.set_live_plugins(None);
-        if let Some(p) = self.player.take() {
-            p.stop();
-            // The old player's plugin instances go away with it; their editor windows must be
-            // closed here, on the main thread, or they would stay on screen orphaned.
-            p.close_editors();
-        }
         // The input reopens on the next record or monitor with the new choice.
         self.recorder = None;
         self.recorder_failed = false;
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
         player.locate(at);
-        install_live_plugins(&mut self.engine, &player);
-        self.player = Some(player);
+        self.set_player(Some(player));
         Ok(())
     }
 
@@ -122,17 +113,10 @@ impl SoundApp {
         if self.is_playing() || self.engine.transport.recording {
             self.stop_play();
         }
-        self.engine.set_live_plugins(None);
-        if let Some(p) = self.player.take() {
-            p.stop();
-            // Its plugin editors go with it; closed here, on the main thread (see `apply_audio_config`).
-            p.close_editors();
-        }
         self.recorder = None;
         self.recorder_failed = false;
         let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
-        install_live_plugins(&mut self.engine, &player);
-        self.player = Some(player);
+        self.set_player(Some(player));
     }
 }
 

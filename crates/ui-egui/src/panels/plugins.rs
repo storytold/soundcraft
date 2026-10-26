@@ -33,14 +33,14 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                         ui.menu_button("Presets v", |ui| preset_menu(app, ui, tid, slot, info, &ins));
                     }
                     if soundcraft_mix::is_third_party(&ins.plugin) {
-                        let open = app.player.as_ref().is_some_and(|p| p.editor_open(tid, slot));
-                        let available = app.player.as_ref().is_some_and(|p| p.has_editor(tid, slot));
+                        let open = app.player().is_some_and(|p| p.editor_open(tid, slot));
+                        let available = app.player().is_some_and(|p| p.has_editor(tid, slot));
                         let label = if open { "Close Plugin Editor" } else { "Open Plugin Editor" };
                         let resp = ui.add_enabled(available, egui::Button::new(label));
                         let resp =
                             if available { resp } else { resp.on_disabled_hover_text("This plugin has no editor of its own, or it is not loaded") };
                         if resp.clicked()
-                            && let Some(p) = &app.player
+                            && let Some(p) = app.player()
                         {
                             if open {
                                 p.close_editor(tid, slot);
@@ -104,7 +104,7 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                                     &json!({"track": tid.0, "slot": slot, "param": p.id, "value": x}),
                                     &format!("param:{}:{slot}:{}", tid.0, p.id),
                                 );
-                                if let Some(pl) = &app.player {
+                                if let Some(pl) = app.player() {
                                     // Keep the plugin's own editor in step.
                                     pl.editor_set_param(tid, slot, p.id, x);
                                 }
@@ -113,7 +113,7 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                             let shown = if instrument {
                                 crate::sampler_window::format_param(&ins.plugin, p, x)
                             } else {
-                                app.player.as_ref().and_then(|pl| pl.editor_value_text(tid, slot, p.id, x)).unwrap_or_else(|| p.format(x))
+                                app.player().and_then(|pl| pl.editor_value_text(tid, slot, p.id, x)).unwrap_or_else(|| p.format(x))
                             };
                             ui.label(egui::RichText::new(shown).font(mono(11.0)));
                             ui.end_row();
