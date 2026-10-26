@@ -7,6 +7,7 @@ use soundcraft_engine::catalog;
 
 /// UI-layer commands: (id, label, catalog path or "", shortcut).
 pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
+    ("app.checkForUpdates", "Check for Updates…", "", None),
     ("ui.dock", "Arrange Panel", "", None),
     ("ui.dock.reset", "Reset Panel Layout", "Window > Reset Panel Layout", None),
     ("window.mix", "Mix", "Window > Mix", Some("Cmd+=")),
@@ -231,6 +232,9 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                 ui.menu_button("SoundCraft", |ui| {
                     if ui.button("About SoundCraft").clicked() {
                         app.ui.show_about = true;
+                    }
+                    if ui.button("Check for Updates…").clicked() {
+                        let _ = app.run("app.checkForUpdates", json!({}));
                     }
                     if ui.button("Session Info").clicked() {
                         app.ui.show_session_info = true;
@@ -519,6 +523,10 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         json!({"value": *v})
     };
     let r = match id {
+        "app.checkForUpdates" | "help.checkForUpdates" => {
+            crate::updates_ui::check(app);
+            json!({})
+        }
         "window.mix" => {
             app.ui.window = MainWindow::Mix;
             app.focus_mix = app.ui.mix_separate;
@@ -598,6 +606,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             }
             let mut snap = app.ui.clone();
             snap.configurations.clear();
+            snap.docking_version = crate::docking::LAYOUT_VERSION;
             let v = serde_json::to_value(&snap).unwrap_or_default();
             if id == "window.config_update" && !app.ui.configurations.is_empty() {
                 if let Some(last) = app.ui.configurations.last_mut() {

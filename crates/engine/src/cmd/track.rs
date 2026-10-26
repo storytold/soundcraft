@@ -671,6 +671,35 @@ fn change_width(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"format": f}))
 }
 
+/// The nearest ancestor folder of `folder` that is not itself being deleted (walks at most 64 levels).
+fn surviving_parent(s: &Session, deleted: &[TrackId], folder: TrackId) -> Option<TrackId> {
+    let mut parent = s.track(folder).and_then(|folder| folder.folder);
+    for _ in 0..64 {
+        match parent {
+            Some(candidate) if deleted.contains(&candidate) => parent = s.track(candidate).and_then(|folder| folder.folder),
+            _ => break,
+        }
+    }
+    parent
+}
+
+/// Clear inputs and sends that used the removed bus; outputs that used it move to `replacement`.
+fn reroute_deleted_bus(s: &mut Session, bus: soundcraft_model::BusId, replacement: &Route) {
+    for track in &mut s.tracks {
+        if track.mixer.input == Route::Bus(bus) {
+            track.mixer.input = Route::None;
+        }
+        if track.mixer.output == Route::Bus(bus) {
+            track.mixer.output = replacement.clone();
+        }
+        for send in &mut track.mixer.sends {
+            if send.as_ref().is_some_and(|send| send.target == Route::Bus(bus)) {
+                *send = None;
+            }
+        }
+    }
+}
+
 fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.delete", p)?;
     let s = e.session_mut();
@@ -678,13 +707,7 @@ fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
         .iter()
         .filter_map(|folder| {
             let bus = owned_folder_bus(s, *folder)?;
-            let mut parent = s.track(*folder).and_then(|folder| folder.folder);
-            for _ in 0..64 {
-                match parent {
-                    Some(candidate) if tracks.contains(&candidate) => parent = s.track(candidate).and_then(|folder| folder.folder),
-                    _ => break,
-                }
-            }
+            let parent = surviving_parent(s, &tracks, *folder);
             Some((bus, parent.and_then(|parent| folder_bus(s, parent)).unwrap_or(Route::Main)))
         })
         .collect();
@@ -696,13 +719,7 @@ fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
             continue;
         }
         let Some(folder) = child.folder.filter(|folder| tracks.contains(folder)) else { continue };
-        let mut parent = s.track(folder).and_then(|folder| folder.folder);
-        for _ in 0..64 {
-            match parent {
-                Some(candidate) if tracks.contains(&candidate) => parent = s.track(candidate).and_then(|folder| folder.folder),
-                _ => break,
-            }
-        }
+        let parent = surviving_parent(s, &tracks, folder);
         promoted.push((child.id, folder_bus(s, folder), parent, parent.and_then(|parent| folder_bus(s, parent))));
     }
     for (child, old_bus, parent, parent_bus) in promoted {
@@ -720,19 +737,7 @@ fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     for (bus, replacement) in removed_busses {
         s.busses.retain(|candidate| candidate.id != bus);
-        for track in &mut s.tracks {
-            if track.mixer.input == Route::Bus(bus) {
-                track.mixer.input = Route::None;
-            }
-            if track.mixer.output == Route::Bus(bus) {
-                track.mixer.output = replacement.clone();
-            }
-            for send in &mut track.mixer.sends {
-                if send.as_ref().is_some_and(|send| send.target == Route::Bus(bus)) {
-                    *send = None;
-                }
-            }
-        }
+        reroute_deleted_bus(s, bus, &replacement);
     }
     Ok(json!({"deleted": tracks.len()}))
 }

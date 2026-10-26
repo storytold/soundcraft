@@ -321,7 +321,14 @@ impl<W: Write + Seek> FileEncoder<W> {
     pub fn new(out: W, opts: &EncodeOptions, channels: usize, sample_rate: u32, mask: Option<u32>) -> Result<Self> {
         let (depth, dither) = (opts.bit_depth, opts.dither);
         Ok(FileEncoder(match opts.format {
-            FileFormat::Wav => Writer::Wav(wav::Writer::new(out, channels, sample_rate, depth, dither, opts.bwf.as_ref(), mask, false)?),
+            FileFormat::Wav => Writer::Wav(wav::Writer::new(
+                out,
+                channels,
+                sample_rate,
+                depth,
+                dither,
+                wav::HeaderExtras { bwf: opts.bwf.as_ref(), mask, force_rf64: false },
+            )?),
             FileFormat::Aiff => Writer::Aiff(aiff::Writer::new(out, channels, sample_rate, depth, dither)?),
             FileFormat::Flac => Writer::Flac(flac::Writer::new(out, channels, sample_rate, depth, dither)?),
             other => return Err(AudioError::Unsupported(format!("encoding {other:?} is not supported"))),

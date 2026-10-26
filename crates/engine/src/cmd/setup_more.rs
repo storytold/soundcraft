@@ -221,6 +221,23 @@ fn io_state(s: &Session) -> Value {
     json!({"busses": s.busses, "outputs": s.outputs})
 }
 
+/// Disconnect every track input, output and send that used bus `bid`.
+fn unroute_bus(s: &mut Session, bid: BusId) {
+    for t in &mut s.tracks {
+        if t.mixer.input == Route::Bus(bid) {
+            t.mixer.input = Route::None;
+        }
+        if t.mixer.output == Route::Bus(bid) {
+            t.mixer.output = Route::None;
+        }
+        for slot in &mut t.mixer.sends {
+            if slot.as_ref().is_some_and(|x| x.target == Route::Bus(bid)) {
+                *slot = None;
+            }
+        }
+    }
+}
+
 fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "setup.io";
     let action = str_param(p, "action").unwrap_or("list");
@@ -252,19 +269,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
         "delete_bus" => {
             let bid: BusId = s.bus_by_name(&name).map(|b| b.id).ok_or_else(|| bad(id, format!("no bus `{name}`")))?;
             s.busses.retain(|b| b.id != bid);
-            for t in &mut s.tracks {
-                if t.mixer.input == Route::Bus(bid) {
-                    t.mixer.input = Route::None;
-                }
-                if t.mixer.output == Route::Bus(bid) {
-                    t.mixer.output = Route::None;
-                }
-                for slot in &mut t.mixer.sends {
-                    if slot.as_ref().is_some_and(|x| x.target == Route::Bus(bid)) {
-                        *slot = None;
-                    }
-                }
-            }
+            unroute_bus(s, bid);
         }
         "create_output" => {
             if s.outputs.iter().any(|o| o.name.eq_ignore_ascii_case(&name)) {

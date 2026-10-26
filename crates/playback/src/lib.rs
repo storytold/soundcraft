@@ -439,34 +439,40 @@ impl AudioState {
                 let b = if i0 + 1 < self.pending_len { ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a) } else { a };
                 a * (1.0 - fr) + b * fr
             };
-            if channels < nch {
-                // Fold surround to stereo first; a mono device averages the two sides.
-                let (mut l, mut r) = (0.0f32, 0.0f32);
-                if sounding {
-                    if nch == 2 {
-                        (l, r) = (sample(0), sample(1));
-                    } else {
-                        for (c, (gl, gr)) in self.fold.iter().enumerate().take(nch) {
-                            let v = sample(c);
-                            l += v * gl;
-                            r += v * gr;
-                        }
-                    }
-                }
-                for (c, o) in frame.iter_mut().enumerate() {
-                    *o = match c {
-                        0 if channels == 1 => out_sample(0.5 * l + 0.5 * r),
-                        0 => out_sample(l),
-                        1 => out_sample(r),
-                        _ => 0.0,
-                    };
-                }
+            write_frame(frame, channels, nch, sounding, &self.fold, sample);
+            self.read += step;
+        }
+    }
+}
+
+/// Write one device frame from `nch` rendered channels: fold surround to stereo (a mono device
+/// averages the two sides), or copy the channels straight through. `sample(c)` is channel `c`.
+fn write_frame(frame: &mut [f32], channels: usize, nch: usize, sounding: bool, fold: &[(f32, f32)], sample: impl Fn(usize) -> f32) {
+    if channels < nch {
+        // Fold surround to stereo first; a mono device averages the two sides.
+        let (mut l, mut r) = (0.0f32, 0.0f32);
+        if sounding {
+            if nch == 2 {
+                (l, r) = (sample(0), sample(1));
             } else {
-                for (c, o) in frame.iter_mut().enumerate() {
-                    *o = if c < nch.max(1) && sounding { out_sample(sample(c)) } else { 0.0 };
+                for (c, (gl, gr)) in fold.iter().enumerate().take(nch) {
+                    let v = sample(c);
+                    l += v * gl;
+                    r += v * gr;
                 }
             }
-            self.read += step;
+        }
+        for (c, o) in frame.iter_mut().enumerate() {
+            *o = match c {
+                0 if channels == 1 => out_sample(0.5 * l + 0.5 * r),
+                0 => out_sample(l),
+                1 => out_sample(r),
+                _ => 0.0,
+            };
+        }
+    } else {
+        for (c, o) in frame.iter_mut().enumerate() {
+            *o = if c < nch.max(1) && sounding { out_sample(sample(c)) } else { 0.0 };
         }
     }
 }

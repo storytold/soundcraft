@@ -3,7 +3,7 @@
 use crate::SoundApp;
 use crate::theme::{Tokens, mono, rgb};
 use egui::{Color32, Sense, vec2};
-use serde_json::json;
+use serde_json::{Value, json};
 use soundcraft_model::{AutomationMode, ClipContent};
 use soundcraft_playback::AudioConfig;
 use soundcraft_playback::devices::{AudioSystem, DeviceInfo};
@@ -384,6 +384,7 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
             let n = app.ui.configurations.len() + 1;
             let mut snap = app.ui.clone();
             snap.configurations.clear();
+            snap.docking_version = crate::docking::LAYOUT_VERSION;
             if let Ok(v) = serde_json::to_value(&snap) {
                 app.ui.configurations.push((format!("Configuration {n}"), v));
             }
@@ -393,17 +394,9 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
         for (i, (name, v)) in list.iter().enumerate() {
             ui.horizontal(|ui| {
                 if ui.button(format!("{}  {name}", i + 1)).clicked()
-                    && let Ok(mut st) = serde_json::from_value::<crate::UiState>(v.clone())
+                    && let Err(error) = recall_configuration(app, v)
                 {
-                    if let Err(error) = crate::docking::validate(&st.docking).and_then(|()| crate::docking::validate_mix(&st.mix_docking)) {
-                        app.ui.status = format!("Window configuration could not be restored: {error}");
-                    } else {
-                        st.configurations = app.ui.configurations.clone();
-                        st.theme = app.ui.theme;
-                        st.show_configurations = true;
-                        crate::docking::cancel_replaced_state(app, &st);
-                        app.ui = st;
-                    }
+                    app.ui.status = format!("Window configuration could not be restored: {error}");
                 }
                 if crate::widgets::close_button(ui, "Remove configuration").clicked() {
                     app.ui.configurations.remove(i);
@@ -412,6 +405,21 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
         }
     });
     app.ui.show_configurations = open;
+}
+
+/// Restore a saved window configuration, keeping the configuration list and the appearance.
+/// A configuration saved before the current panel layouts gets the default layouts.
+pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), String> {
+    let mut saved = saved.clone();
+    crate::docking::reset_old_layouts(&mut saved);
+    let mut st = serde_json::from_value::<crate::UiState>(saved).map_err(|error| error.to_string())?;
+    crate::docking::validate(&st.docking).and_then(|()| crate::docking::validate_mix(&st.mix_docking))?;
+    st.configurations = app.ui.configurations.clone();
+    st.theme = app.ui.theme;
+    st.show_configurations = true;
+    crate::docking::cancel_replaced_state(app, &st);
+    app.ui = st;
+    Ok(())
 }
 
 /// The audio systems as last enumerated (enumerating probes devices: done when the window opens

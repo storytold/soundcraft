@@ -456,6 +456,39 @@ fn info_of(reader: &dyn FormatReader, detected: FileFormat) -> Result<(u32, Audi
     ))
 }
 
+/// A demux error ends the decode; it is only an error when nothing was decoded yet.
+fn demux_failure(frames: u64, e: SymError) -> Result<()> {
+    if frames == 0 {
+        return Err(map_err(e));
+    }
+    log::warn!("stopping decode after demux error: {e}");
+    Ok(())
+}
+
+/// Note a corrupt packet (the `errors`-th); a stream that never decodes is malformed.
+fn corrupt_packet(errors: usize, frames: u64, msg: &str) -> Result<()> {
+    log::debug!("skipping corrupt packet: {msg}");
+    if errors > 1000 && frames == 0 {
+        return Err(AudioError::Malformed(format!("no decodable packets: {msg}")));
+    }
+    Ok(())
+}
+
+/// The decoded stream is authoritative for the channel count: record it and allocate the planes.
+fn init_planar(info: &mut AudioInfo, ch: usize) -> Result<Vec<Vec<f32>>> {
+    info.channels = u16::try_from(ch).map_err(|_| AudioError::Unsupported("too many channels".into()))?;
+    Ok((0..ch).map(|_| Vec::new()).collect())
+}
+
+/// Append one interleaved block to the planes, replacing non-finite samples with silence.
+fn append_interleaved(planar: &mut [Vec<f32>], interleaved: &[f32], ch: usize) {
+    for frame in interleaved.chunks_exact(ch) {
+        for (dst, &s) in planar.iter_mut().zip(frame) {
+            dst.push(if s.is_finite() { s } else { 0.0 });
+        }
+    }
+}
+
 /// Decode the whole first audio track. When `count_only`, samples are counted but not stored.
 fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInfo, AudioBuffer)> {
     let mut reader = match open(bytes, detected)? {
@@ -491,10 +524,7 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
             Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(SymError::ResetRequired) => break,
             Err(e) => {
-                if frames == 0 {
-                    return Err(map_err(e));
-                }
-                log::warn!("stopping decode after demux error: {e}");
+                demux_failure(frames, e)?;
                 break;
             }
         };
@@ -505,10 +535,7 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
             Ok(d) => d,
             Err(SymError::DecodeError(m)) => {
                 errors += 1;
-                log::debug!("skipping corrupt packet: {m}");
-                if errors > 1000 && frames == 0 {
-                    return Err(AudioError::Malformed(format!("no decodable packets: {m}")));
-                }
+                corrupt_packet(errors, frames, m)?;
                 continue;
             }
             Err(SymError::IoError(_)) => break,
@@ -521,9 +548,7 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
             continue;
         }
         if planar.is_empty() {
-            // The decoded stream is authoritative for the channel count.
-            info.channels = u16::try_from(ch).map_err(|_| AudioError::Unsupported("too many channels".into()))?;
-            planar = (0..ch).map(|_| Vec::new()).collect();
+            planar = init_planar(&mut info, ch)?;
         }
         let n = decoded.frames() as u64;
         frames = frames.saturating_add(n);
@@ -542,11 +567,7 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
             interleaved.resize(needed, 0.0);
         }
         decoded.copy_to_slice_interleaved(&mut interleaved[..needed]);
-        for frame in interleaved[..needed].chunks_exact(ch) {
-            for (dst, &s) in planar.iter_mut().zip(frame) {
-                dst.push(if s.is_finite() { s } else { 0.0 });
-            }
-        }
+        append_interleaved(&mut planar, &interleaved[..needed], ch);
     }
     if info.channels == 0 {
         return Err(AudioError::Malformed("stream contains no audio".into()));

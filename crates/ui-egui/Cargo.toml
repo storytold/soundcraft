@@ -33,6 +33,9 @@ image.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5"
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+craft-update = { workspace = true }
+
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 

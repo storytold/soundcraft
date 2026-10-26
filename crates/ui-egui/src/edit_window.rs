@@ -1712,7 +1712,14 @@ fn draw_live_take(app: &SoundApp, painter: &egui::Painter, s: &Session, track: &
     let (body, _, wave) = clip_colors([t.rec.r(), t.rec.g(), t.rec.b()], false);
     painter.rect(r, CornerRadius::same(2), body, Stroke::new(1.0, Color32::from_rgb(10, 10, 10)), StrokeKind::Inside);
     if track.view != "blocks" {
-        crate::waveform::draw_live(&painter.with_clip_rect(r.intersect(lane)), s, tl, origin as f64, block_len, &take, r, wave);
+        crate::waveform::draw_live(
+            crate::waveform::Canvas { painter: &painter.with_clip_rect(r.intersect(lane)), s, tl },
+            origin as f64,
+            block_len,
+            &take,
+            r,
+            wave,
+        );
     }
 }
 
@@ -1778,7 +1785,14 @@ fn draw_clip(app: &SoundApp, painter: &egui::Painter, s: &Session, track: &Track
                         preview = Clip { fade_in, fade_out, ..clip.clone() };
                         &preview
                     };
-                    crate::waveform::draw(&painter.with_clip_rect(vis), s, tl, shown, audio, track.channels(), body_r, wave);
+                    crate::waveform::draw(
+                        crate::waveform::Canvas { painter: &painter.with_clip_rect(vis), s, tl },
+                        shown,
+                        audio,
+                        track.channels(),
+                        body_r,
+                        wave,
+                    );
                     let n = track.channels().min(audio.peaks.len()).max(1);
                     for k in 1..n {
                         let y = body_r.min.y + body_r.height() / n as f32 * k as f32;
@@ -1832,7 +1846,7 @@ fn draw_clip(app: &SoundApp, painter: &egui::Painter, s: &Session, track: &Track
         } else {
             clip_colors(prev.color.unwrap_or(track.color), false).2.gamma_multiply(0.6)
         };
-        crate::waveform::draw(&painter.with_clip_rect(xf), s, tl, prev, audio, track.channels(), body_r, tail);
+        crate::waveform::draw(crate::waveform::Canvas { painter: &painter.with_clip_rect(xf), s, tl }, prev, audio, track.channels(), body_r, tail);
     }
     // Clip gain line.
     let show_gain = s.edit.flag("view.clip.gain_line") && (!clip.gain_env.is_empty() || clip.gain_db.abs() > 0.01 || track.view == "clip_gain");
@@ -2796,6 +2810,18 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
     }
 }
 
+/// One frame's inputs to [`follow_update`].
+struct FollowFrame {
+    playing: bool,
+    mode_follow: bool,
+    playhead_visible: bool,
+    cur: Samples,
+    last_scroll: Samples,
+    last_follow_to: Option<Samples>,
+    hold: bool,
+    pos: Samples,
+}
+
 /// Next follow state after observing one frame: `(hold, follow_to)`.
 ///
 /// The view is ours to move only while nothing else moved it: when the
@@ -2805,16 +2831,8 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
 /// jump is issued. Stopping, or scrolling back to the playhead, clears the
 /// hold. Only `page`/`continuous`/`center` ever issue follow jumps while
 /// playing; `none`/`after_playback` leave the view alone.
-fn follow_update(
-    playing: bool,
-    mode_follow: bool,
-    playhead_visible: bool,
-    cur: Samples,
-    last_scroll: Samples,
-    last_follow_to: Option<Samples>,
-    hold: bool,
-    pos: Samples,
-) -> (bool, Option<Samples>) {
+fn follow_update(frame: FollowFrame) -> (bool, Option<Samples>) {
+    let FollowFrame { playing, mode_follow, playhead_visible, cur, last_scroll, last_follow_to, hold, pos } = frame;
     if !playing || playhead_visible {
         return (false, None);
     }
@@ -2892,7 +2910,16 @@ fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
         let mode_follow = matches!(s.edit.scrolling.as_str(), "page" | "continuous" | "center");
         let visible = x >= tl.min.x && x <= tl.max.x;
         let layout = &mut app.edit_layout;
-        let (hold, follow_to) = follow_update(true, mode_follow, visible, cur, layout.last_scroll, layout.last_follow_to, layout.follow_hold, pos);
+        let (hold, follow_to) = follow_update(FollowFrame {
+            playing: true,
+            mode_follow,
+            playhead_visible: visible,
+            cur,
+            last_scroll: layout.last_scroll,
+            last_follow_to: layout.last_follow_to,
+            hold: layout.follow_hold,
+            pos,
+        });
         layout.follow_hold = hold;
         layout.last_scroll = cur;
         layout.last_follow_to = follow_to;
@@ -3096,40 +3123,160 @@ mod tests {
     #[test]
     fn follow_jumps_to_offscreen_playhead_while_playing() {
         // Steady view, follow mode, playhead left the screen: jump to it.
-        assert_eq!(follow_update(true, true, false, 1_000, 1_000, None, false, 96_000), (false, Some(96_000)));
+        assert_eq!(
+            follow_update(FollowFrame {
+                playing: true,
+                mode_follow: true,
+                playhead_visible: false,
+                cur: 1_000,
+                last_scroll: 1_000,
+                last_follow_to: None,
+                hold: false,
+                pos: 96_000
+            }),
+            (false, Some(96_000))
+        );
     }
 
     #[test]
     fn follow_leaves_onscreen_playhead_alone() {
-        assert_eq!(follow_update(true, true, true, 1_000, 1_000, None, false, 96_000), (false, None));
+        assert_eq!(
+            follow_update(FollowFrame {
+                playing: true,
+                mode_follow: true,
+                playhead_visible: true,
+                cur: 1_000,
+                last_scroll: 1_000,
+                last_follow_to: None,
+                hold: false,
+                pos: 96_000
+            }),
+            (false, None)
+        );
     }
 
     #[test]
     fn follow_never_scrolls_when_stopped_nor_in_free_modes() {
-        assert_eq!(follow_update(false, true, false, 1_000, 1_000, None, false, 96_000), (false, None));
+        assert_eq!(
+            follow_update(FollowFrame {
+                playing: false,
+                mode_follow: true,
+                playhead_visible: false,
+                cur: 1_000,
+                last_scroll: 1_000,
+                last_follow_to: None,
+                hold: false,
+                pos: 96_000
+            }),
+            (false, None)
+        );
         // `none`/`after_playback` never follow, even with a steady view.
-        assert_eq!(follow_update(true, false, false, 1_000, 1_000, None, false, 96_000), (false, None));
-        assert_eq!(follow_update(true, false, false, 9_000, 1_000, None, false, 96_000), (false, None));
+        assert_eq!(
+            follow_update(FollowFrame {
+                playing: true,
+                mode_follow: false,
+                playhead_visible: false,
+                cur: 1_000,
+                last_scroll: 1_000,
+                last_follow_to: None,
+                hold: false,
+                pos: 96_000
+            }),
+            (false, None)
+        );
+        assert_eq!(
+            follow_update(FollowFrame {
+                playing: true,
+                mode_follow: false,
+                playhead_visible: false,
+                cur: 9_000,
+                last_scroll: 1_000,
+                last_follow_to: None,
+                hold: false,
+                pos: 96_000
+            }),
+            (false, None)
+        );
     }
 
     #[test]
     fn outside_view_move_pauses_the_follow() {
         // The view moved and it was not our own jump: pause, no jump.
-        assert_eq!(follow_update(true, true, false, 9_000, 1_000, None, false, 96_000), (true, None));
+        assert_eq!(
+            follow_update(FollowFrame {
+                playing: true,
+                mode_follow: true,
+                playhead_visible: false,
+                cur: 9_000,
+                last_scroll: 1_000,
+                last_follow_to: None,
+                hold: false,
+                pos: 96_000
+            }),
+            (true, None)
+        );
         // A held view stays held while it sits still elsewhere.
-        assert_eq!(follow_update(true, true, false, 9_000, 9_000, None, true, 96_000), (true, None));
+        assert_eq!(
+            follow_update(FollowFrame {
+                playing: true,
+                mode_follow: true,
+                playhead_visible: false,
+                cur: 9_000,
+                last_scroll: 9_000,
+                last_follow_to: None,
+                hold: true,
+                pos: 96_000
+            }),
+            (true, None)
+        );
     }
 
     #[test]
     fn own_follow_jump_is_not_mistaken_for_a_takeover() {
         // The scroll equals the target we issued last frame: keep following.
-        assert_eq!(follow_update(true, true, false, 96_000, 1_000, Some(96_000), false, 97_000), (false, Some(97_000)));
+        assert_eq!(
+            follow_update(FollowFrame {
+                playing: true,
+                mode_follow: true,
+                playhead_visible: false,
+                cur: 96_000,
+                last_scroll: 1_000,
+                last_follow_to: Some(96_000),
+                hold: false,
+                pos: 97_000
+            }),
+            (false, Some(97_000))
+        );
     }
 
     #[test]
     fn hold_clears_when_playhead_returns_or_transport_stops() {
-        assert_eq!(follow_update(true, true, true, 9_000, 9_000, None, true, 96_000), (false, None));
-        assert_eq!(follow_update(false, true, false, 9_000, 9_000, None, true, 96_000), (false, None));
+        assert_eq!(
+            follow_update(FollowFrame {
+                playing: true,
+                mode_follow: true,
+                playhead_visible: true,
+                cur: 9_000,
+                last_scroll: 9_000,
+                last_follow_to: None,
+                hold: true,
+                pos: 96_000
+            }),
+            (false, None)
+        );
+        assert_eq!(
+            follow_update(FollowFrame {
+                playing: false,
+                mode_follow: true,
+                playhead_visible: false,
+                cur: 9_000,
+                last_scroll: 9_000,
+                last_follow_to: None,
+                hold: true,
+                pos: 96_000
+            }),
+            (false, None)
+        );
     }
 
     fn harness(n: usize) -> Harness<'static, SoundApp> {

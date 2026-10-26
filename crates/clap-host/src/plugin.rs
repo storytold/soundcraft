@@ -102,6 +102,35 @@ fn note_mode(p: Option<NotePort>) -> NoteMode {
     }
 }
 
+/// Copy `n` frames from `start` of the host buffers into the plugin's input `port` (mono sources
+/// fill every port channel).
+fn feed_input(inputs: &mut PortBuffers, port: usize, io: &[Vec<f32>], ch: usize, (start, n): (usize, usize)) {
+    for c in 0..inputs.channels(port) {
+        let src = io.get(c.min(ch - 1)).and_then(|s| s.get(start..start + n));
+        if let (Some(src), Some(dst)) = (src, inputs.channel_mut(port, c).and_then(|d| d.get_mut(..n))) {
+            dst.copy_from_slice(src);
+        }
+    }
+}
+
+/// Copy `n` frames of the plugin's output `port` into the host buffers from `start`; a mono host
+/// buffer takes the average of a stereo port.
+fn read_output(outputs: &PortBuffers, port: usize, io: &mut [Vec<f32>], ch: usize, (start, n): (usize, usize)) {
+    let oc = outputs.channels(port);
+    for (c, dst) in io.iter_mut().take(ch).enumerate() {
+        let Some(dst) = dst.get_mut(start..start + n) else { continue };
+        if ch == 1 && oc >= 2 {
+            if let (Some(l), Some(r)) = (outputs.channel(port, 0), outputs.channel(port, 1)) {
+                for ((d, a), b) in dst.iter_mut().zip(l).zip(r) {
+                    *d = 0.5 * (a + b);
+                }
+            }
+        } else if let Some(src) = outputs.channel(port, c.min(oc.saturating_sub(1))).and_then(|s| s.get(..n)) {
+            dst.copy_from_slice(src);
+        }
+    }
+}
+
 impl Plugin for ClapPlugin {
     fn info(&self) -> &'static PluginInfo {
         self.info
@@ -197,12 +226,7 @@ impl Plugin for ClapPlugin {
             let end = u32::try_from(start + n).unwrap_or(u32::MAX);
             // Feed the main input port (mono sources fill every port channel).
             if let Some(p) = self.in_main {
-                for c in 0..self.inputs.channels(p) {
-                    let src = io.get(c.min(ch - 1)).and_then(|s| s.get(start..start + n));
-                    if let (Some(src), Some(dst)) = (src, self.inputs.channel_mut(p, c).and_then(|d| d.get_mut(..n))) {
-                        dst.copy_from_slice(src);
-                    }
-                }
+                feed_input(&mut self.inputs, p, io, ch, (start, n));
             }
             let k = self.queue.iter().position(|e| e.time() >= end).unwrap_or(self.queue.len());
             let offset = u32::try_from(start).unwrap_or(u32::MAX);
@@ -212,19 +236,7 @@ impl Plugin for ClapPlugin {
             self.steady = self.steady.saturating_add(i64::try_from(n).unwrap_or(0));
             match (r, self.out_main) {
                 (Ok(_), Some(p)) => {
-                    let oc = self.outputs.channels(p);
-                    for (c, dst) in io.iter_mut().take(ch).enumerate() {
-                        let Some(dst) = dst.get_mut(start..start + n) else { continue };
-                        if ch == 1 && oc >= 2 {
-                            if let (Some(l), Some(r)) = (self.outputs.channel(p, 0), self.outputs.channel(p, 1)) {
-                                for ((d, a), b) in dst.iter_mut().zip(l).zip(r) {
-                                    *d = 0.5 * (a + b);
-                                }
-                            }
-                        } else if let Some(src) = self.outputs.channel(p, c.min(oc.saturating_sub(1))).and_then(|s| s.get(..n)) {
-                            dst.copy_from_slice(src);
-                        }
-                    }
+                    read_output(&self.outputs, p, io, ch, (start, n));
                 }
                 (Err(e), _) => log::debug!("{}: {e}", self.info.id),
                 _ => {}

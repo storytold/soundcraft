@@ -194,6 +194,35 @@ fn keep_releases(notes: &mut Vec<NoteEvent>) {
     }
 }
 
+/// Copy `n` frames from `start` of the host buffers into the plugin's input `port` (mono sources
+/// fill every port channel).
+fn feed_input(inputs: &mut BusBuffers, port: usize, io: &[Vec<f32>], ch: usize, (start, n): (usize, usize)) {
+    for c in 0..inputs.channels(port) {
+        let src = io.get(c.min(ch - 1)).and_then(|s| s.get(start..start + n));
+        if let (Some(src), Some(dst)) = (src, inputs.channel_mut(port, c).and_then(|d| d.get_mut(..n))) {
+            dst.copy_from_slice(src);
+        }
+    }
+}
+
+/// Copy `n` frames of the plugin's output `port` into the host buffers from `start`; a mono host
+/// buffer takes the average of a stereo port.
+fn read_output(outputs: &BusBuffers, port: usize, io: &mut [Vec<f32>], ch: usize, (start, n): (usize, usize)) {
+    let oc = outputs.channels(port);
+    for (c, dst) in io.iter_mut().take(ch).enumerate() {
+        let Some(dst) = dst.get_mut(start..start + n) else { continue };
+        if ch == 1 && oc >= 2 {
+            if let (Some(l), Some(r)) = (outputs.channel(port, 0), outputs.channel(port, 1)) {
+                for ((d, a), b) in dst.iter_mut().zip(l).zip(r) {
+                    *d = 0.5 * (a + b);
+                }
+            }
+        } else if let Some(src) = outputs.channel(port, c.min(oc.saturating_sub(1))).and_then(|s| s.get(..n)) {
+            dst.copy_from_slice(src);
+        }
+    }
+}
+
 impl Plugin for Vst3Plugin {
     fn info(&self) -> &'static PluginInfo {
         self.info
@@ -290,12 +319,7 @@ impl Plugin for Vst3Plugin {
             let end = u32::try_from(start + n).unwrap_or(u32::MAX);
             // Feed the main input bus (mono sources fill every bus channel).
             if self.has_input {
-                for c in 0..self.inputs.channels(0) {
-                    let src = io.get(c.min(ch - 1)).and_then(|s| s.get(start..start + n));
-                    if let (Some(src), Some(dst)) = (src, self.inputs.channel_mut(0, c).and_then(|d| d.get_mut(..n))) {
-                        dst.copy_from_slice(src);
-                    }
-                }
+                feed_input(&mut self.inputs, 0, io, ch, (start, n));
             }
             let k = self.notes.iter().position(|e| e.time() >= end).unwrap_or(self.notes.len());
             let offset = u32::try_from(start).unwrap_or(u32::MAX);
@@ -316,19 +340,7 @@ impl Plugin for Vst3Plugin {
             self.position = self.position.saturating_add(i64::try_from(n).unwrap_or(0));
             match r {
                 Ok(()) if self.has_output => {
-                    let oc = self.outputs.channels(0);
-                    for (c, dst) in io.iter_mut().take(ch).enumerate() {
-                        let Some(dst) = dst.get_mut(start..start + n) else { continue };
-                        if ch == 1 && oc >= 2 {
-                            if let (Some(l), Some(r)) = (self.outputs.channel(0, 0), self.outputs.channel(0, 1)) {
-                                for ((d, a), b) in dst.iter_mut().zip(l).zip(r) {
-                                    *d = 0.5 * (a + b);
-                                }
-                            }
-                        } else if let Some(src) = self.outputs.channel(0, c.min(oc.saturating_sub(1))).and_then(|s| s.get(..n)) {
-                            dst.copy_from_slice(src);
-                        }
-                    }
+                    read_output(&self.outputs, 0, io, ch, (start, n));
                 }
                 Err(e) => log::debug!("{}: {e}", self.info.id),
                 _ => {}

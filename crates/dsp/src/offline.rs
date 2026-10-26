@@ -322,6 +322,77 @@ pub fn resample(ch: &[Vec<f32>], from: u32, to: u32) -> Vec<Vec<f32>> {
 // ---------------------------------------------------------------------------------------------
 // Time stretch (WSOLA) and pitch shift
 
+/// Start position in the guide signal whose `hop` samples best match the natural continuation at
+/// `natural`, searched within `tol` of `nominal` (coarse stride 4, then refined +-3).
+fn best_start(g: &impl Fn(i64) -> f32, nominal: i64, natural: i64, tol: i64, hop: usize) -> i64 {
+    // Similarity of candidate start `p` with the natural continuation (stride 2).
+    let score = |p: i64| -> f32 {
+        let (mut xy, mut yy) = (0.0f32, 1e-9f32);
+        let mut i = 0i64;
+        while i < hop as i64 {
+            let a = g(natural + i);
+            let b = g(p + i);
+            xy += a * b;
+            yy += b * b;
+            i += 2;
+        }
+        xy / yy.sqrt()
+    };
+    let lo = (nominal - tol).max(0);
+    let hi = nominal + tol;
+    let mut best = nominal.max(0);
+    let mut best_s = f32::NEG_INFINITY;
+    let mut p = lo;
+    while p <= hi {
+        let s = score(p);
+        if s > best_s {
+            best_s = s;
+            best = p;
+        }
+        p += 4;
+    }
+    let (rlo, rhi) = ((best - 3).max(lo), (best + 3).min(hi));
+    for p in rlo..=rhi {
+        let s = score(p);
+        if s > best_s {
+            best_s = s;
+            best = p;
+        }
+    }
+    best
+}
+
+/// Add one windowed frame of every channel, read from `at.0`, into `out` at `at.1`, and the window
+/// into `wsum`.
+fn overlap_add(ch: &[Vec<f32>], out: &mut [Vec<f32>], wsum: &mut [f32], window: &[f32], at: (usize, usize)) {
+    let (in_pos, out_pos) = at;
+    for (c, o) in ch.iter().zip(out.iter_mut()) {
+        for (i, w) in window.iter().enumerate() {
+            let v = c.get(in_pos + i).copied().unwrap_or(0.0);
+            if let Some(d) = o.get_mut(out_pos + i) {
+                *d += v * w;
+            }
+        }
+    }
+    for (i, w) in window.iter().enumerate() {
+        if let Some(d) = wsum.get_mut(out_pos + i) {
+            *d += w;
+        }
+    }
+}
+
+/// Divide out the accumulated window weights and cut each channel to `out_len`.
+fn normalise(out: &mut [Vec<f32>], wsum: &[f32], out_len: usize) {
+    for o in out.iter_mut() {
+        for (s, w) in o.iter_mut().zip(wsum) {
+            if *w > 1e-3 {
+                *s /= w;
+            }
+        }
+        o.truncate(out_len);
+    }
+}
+
 /// Pitch-preserving time stretch by WSOLA (waveform-similarity overlap-add).
 /// `ratio` = output length / input length, clamped to 0.1 ..= 10. All channels share the same
 /// segment choices so the stereo image stays coherent.
@@ -354,72 +425,12 @@ pub fn time_stretch(ch: &[Vec<f32>], ratio: f64, sample_rate: f32) -> Vec<Vec<f3
         if out_pos >= out_len {
             break;
         }
-        let in_pos = if k == 0 {
-            0
-        } else {
-            let nominal = (out_pos as f64 / ratio).round() as i64;
-            let natural = prev_in + hop as i64;
-            // Similarity of candidate start `p` with the natural continuation (stride 2).
-            let score = |p: i64| -> f32 {
-                let (mut xy, mut yy) = (0.0f32, 1e-9f32);
-                let mut i = 0i64;
-                while i < hop as i64 {
-                    let a = g(natural + i);
-                    let b = g(p + i);
-                    xy += a * b;
-                    yy += b * b;
-                    i += 2;
-                }
-                xy / yy.sqrt()
-            };
-            let lo = (nominal - tol).max(0);
-            let hi = nominal + tol;
-            let mut best = nominal.max(0);
-            let mut best_s = f32::NEG_INFINITY;
-            let mut p = lo;
-            while p <= hi {
-                let s = score(p);
-                if s > best_s {
-                    best_s = s;
-                    best = p;
-                }
-                p += 4;
-            }
-            let (rlo, rhi) = ((best - 3).max(lo), (best + 3).min(hi));
-            for p in rlo..=rhi {
-                let s = score(p);
-                if s > best_s {
-                    best_s = s;
-                    best = p;
-                }
-            }
-            best
-        };
-        for (c, o) in ch.iter().zip(out.iter_mut()) {
-            for (i, w) in window.iter().enumerate() {
-                let src = in_pos as usize + i;
-                let v = c.get(src).copied().unwrap_or(0.0);
-                if let Some(d) = o.get_mut(out_pos + i) {
-                    *d += v * w;
-                }
-            }
-        }
-        for (i, w) in window.iter().enumerate() {
-            if let Some(d) = wsum.get_mut(out_pos + i) {
-                *d += w;
-            }
-        }
+        let in_pos = if k == 0 { 0 } else { best_start(&g, (out_pos as f64 / ratio).round() as i64, prev_in + hop as i64, tol, hop) };
+        overlap_add(ch, &mut out, &mut wsum, &window, (in_pos as usize, out_pos));
         prev_in = in_pos;
         k += 1;
     }
-    for o in out.iter_mut() {
-        for (s, w) in o.iter_mut().zip(&wsum) {
-            if *w > 1e-3 {
-                *s /= w;
-            }
-        }
-        o.truncate(out_len);
-    }
+    normalise(&mut out, &wsum, out_len);
     out
 }
 

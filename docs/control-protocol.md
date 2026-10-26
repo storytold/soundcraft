@@ -97,11 +97,13 @@ Scroll Into View in the track name menu. A window not on screen catches up when 
 
 ## Panel docking
 
-Tracks and Groups, Clips, MIDI Editor, Memory Locations, and Undo History use movable panels. Commands target the active Edit or Mix view; floating panels stay inside the current viewport. Edit and Mix retain separate arrangements; Clips and MIDI Editor belong to Edit. Transport, plug-in, and specialist utility windows retain their existing hosts. The document/session view is protected. Layouts, active tabs, panel visibility, and floating rectangles are saved with the app's existing UI preferences. These operations do not edit document contents.
+Tracks and Groups, Clips, MIDI Editor, Memory Locations, and Undo History use movable panels. Commands target the active Edit or Mix view; floating panels stay inside the current viewport. Edit and Mix retain separate arrangements; Clips and MIDI Editor belong to Edit. Transport, plug-in, and specialist utility windows retain their existing hosts. The document/session view is protected.
+
+The Edit window starts with Tracks and Groups in a 168-point column in a dock at the left edge, Clips in a 230-point column in a dock at the right edge, and the MIDI Editor under the session view between them. Both docks run the window's full height. Mix starts with Tracks and Groups docked at its left edge. Memory Locations and Undo History float. A dock column stacks tab groups top to bottom: a panel dropped on a group's middle joins it as a tab, on its upper or lower third stacks a new group above or below it, and at a column's edge makes a new column. A panel dropped at an empty window edge makes a dock there. Layouts, active tabs, panel visibility, and floating rectangles are saved with the app's existing UI preferences. These operations do not edit document contents.
 
 Panel IDs: `tracks`, `clips`, `midi`, `memory`, `history`. The protected center is `canvas`.
 
-`ui.dock` accepts `operation` and `panel`. Operations are `open`, `close`, `activate`, `float` (with finite positive `rect: [x, y, width, height]`), or `move` (with `target` and `zone: tab|center|left|right|top|bottom|above|below`; PascalCase names such as `Left` also parse). `open` and `activate` show a hidden panel at its saved location, or beside the session view when it has no saved location or its saved anchor cannot be restored, and bring a visible panel to the front. Center and `tab` group with the target; side zones split beside it; `above` and `below` stack the panel in a new group above or below a floating target's group. `ui.dock.reset` restores the default arrangement. Invalid moves return an error without changing the layout.
+`ui.dock` accepts `operation` and `panel`. Operations are `open`, `close`, `activate`, `float` (with finite positive `rect: [x, y, width, height]`), or `move` (with `target` and `zone: tab|center|left|right|top|bottom|above|below`; PascalCase names such as `Left` also parse). `open` and `activate` show a hidden panel at its saved location and bring a visible panel to the front. A panel with no saved location, or whose saved anchor cannot be restored, opens at its default place: Tracks and Groups and Clips join their dock's first group, or make that dock again at its default width when it is gone; the MIDI Editor opens under the session view; Memory Locations and Undo History float at their default rectangles. Center and `tab` group with the target; side zones split beside it; `above` and `below` stack the panel in a new group above or below a floating target's group. `ui.dock.reset` restores the default arrangement. Invalid moves return an error without changing the layout.
 
 Invoke these UI commands through `engine.execute`, for example `{"command":"ui.dock","params":{"operation":"float","panel":"tracks","rect":[100,100,320,440]}}`.
 
@@ -113,3 +115,7 @@ A center `move` can include `before` (panel ID or null to append) for tab order.
 The equivalent `{"action": ...}` form accepts a serialized shared docking action;
 this is also the form emitted by the renderer. Protected-canvas and app-specific panel
 rules apply equally to both forms.
+
+The saved UI preferences and window configurations carry `docking_version`. Settings with no
+version, or an older one, hold the split-frame layouts of earlier releases: they load with the
+default Edit and Mix layouts and keep every other setting.

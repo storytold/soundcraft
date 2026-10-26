@@ -94,6 +94,29 @@ fn duration_bars(duration: usize) -> Option<i64> {
     }
 }
 
+/// Writes one frame: a constant-power pan for stereo and wider, plain gain for mono. Channels past
+/// the second only get the output gain.
+fn write_frame(io: &mut [Vec<f32>], n: usize, ch: usize, left: f32, right: f32, position: f32, out: f32) {
+    if ch >= 2 {
+        // Constant power: sin² + cos² = 1 across the field, and both gains are 1 at the center.
+        let theta = (position.clamp(-1.0, 1.0) + 1.0) * FRAC_PI_4;
+        let (l, r) = (theta.cos().max(0.0), theta.sin().max(0.0));
+        if let Some(x) = io.get_mut(0).and_then(|b| b.get_mut(n)) {
+            *x = left * l * SQRT_2 * out;
+        }
+        if let Some(x) = io.get_mut(1).and_then(|b| b.get_mut(n)) {
+            *x = right * r * SQRT_2 * out;
+        }
+        for c in 2..ch {
+            if let Some(x) = io.get_mut(c).and_then(|b| b.get_mut(n)) {
+                *x = if x.is_finite() { *x * out } else { 0.0 };
+            }
+        }
+    } else if let Some(x) = io.get_mut(0).and_then(|b| b.get_mut(n)) {
+        *x = left * out;
+    }
+}
+
 /// Moves the balance of the first two channels with a constant-power law: as the pan position
 /// moves right the left channel's gain falls and the right's rises, and each channel stays on its
 /// own side. The pan position is `manual · (1 - width) + modulator · width`, where the modulator is
@@ -230,6 +253,63 @@ impl AutoPan {
         let ratio = hz * dur * 60.0 / t.tempo;
         Some((into * ratio).rem_euclid(1.0))
     }
+
+    /// Advances the envelope follower by one sample. `level` is the louder channel's magnitude.
+    fn follow_envelope(&mut self, level: f32, attack: f32, release: f32) {
+        let k = if level > self.env { attack } else { release };
+        self.env = level + (self.env - level) * k;
+        if self.env < 1.0e-12 {
+            self.env = 0.0;
+        }
+    }
+
+    /// Arms the Envelope trigger on a rising threshold crossing and re-arms it after a Release of silence.
+    fn envelope_trigger(&mut self, threshold: f32, release_samples: u64) {
+        if self.armed && self.env >= threshold {
+            self.armed = false;
+            self.phase = 0.0;
+            self.holding = false;
+            self.below = 0;
+        } else if !self.armed {
+            if self.env < threshold {
+                self.below = self.below.saturating_add(1);
+                self.armed = self.below >= release_samples;
+            } else {
+                self.below = 0;
+            }
+        }
+    }
+
+    /// The LFO phase for sample `n` of the block. Advances the phase unless a held or Beat Clock position sets it.
+    fn lfo_phase(&mut self, n: usize, trigger: usize, hz: f64, inc: f64) -> f64 {
+        match (trigger == TRIGGER_BEAT_CLOCK).then(|| self.beat_clock_phase(n, hz)).flatten() {
+            Some(phase) => phase,
+            None if self.holding => self.phase,
+            None => {
+                let current = self.phase;
+                self.phase += inc;
+                if self.phase >= 1.0 {
+                    if matches!(trigger, TRIGGER_FREE | TRIGGER_BEAT_CLOCK) {
+                        self.phase -= 1.0;
+                    } else {
+                        self.phase = 1.0;
+                        self.holding = true;
+                    }
+                }
+                current
+            }
+        }
+    }
+
+    /// The modulator in -1..=1: the envelope level above the threshold, or the LFO shape.
+    fn modulator(&self, envelope_source: bool, threshold_db: f32, waveform: usize, lfo_phase: f64) -> f32 {
+        if envelope_source {
+            let above = (gain_to_db(self.env) - threshold_db) / -threshold_db;
+            2.0 * above.clamp(0.0, 1.0) - 1.0
+        } else {
+            wave_at(waveform, lfo_phase as f32)
+        }
+    }
 }
 
 impl Plugin for AutoPan {
@@ -283,50 +363,12 @@ impl Plugin for AutoPan {
             let left = sample(io, 0);
             let right = if ch >= 2 { sample(io, 1) } else { left };
             // The louder channel drives the follower, so anti-phase material still has a level.
-            let level = left.abs().max(right.abs());
-            let k = if level > self.env { attack } else { release };
-            self.env = level + (self.env - level) * k;
-            if self.env < 1.0e-12 {
-                self.env = 0.0;
-            }
+            self.follow_envelope(left.abs().max(right.abs()), attack, release);
             if trigger == TRIGGER_ENVELOPE {
-                if self.armed && self.env >= threshold {
-                    self.armed = false;
-                    self.phase = 0.0;
-                    self.holding = false;
-                    self.below = 0;
-                } else if !self.armed {
-                    if self.env < threshold {
-                        self.below = self.below.saturating_add(1);
-                        self.armed = self.below >= release_samples;
-                    } else {
-                        self.below = 0;
-                    }
-                }
+                self.envelope_trigger(threshold, release_samples);
             }
-            let lfo_phase = match (trigger == TRIGGER_BEAT_CLOCK).then(|| self.beat_clock_phase(n, hz)).flatten() {
-                Some(phase) => phase,
-                None if self.holding => self.phase,
-                None => {
-                    let current = self.phase;
-                    self.phase += inc;
-                    if self.phase >= 1.0 {
-                        if matches!(trigger, TRIGGER_FREE | TRIGGER_BEAT_CLOCK) {
-                            self.phase -= 1.0;
-                        } else {
-                            self.phase = 1.0;
-                            self.holding = true;
-                        }
-                    }
-                    current
-                }
-            };
-            let modulator = if envelope_source {
-                let above = (gain_to_db(self.env) - threshold_db) / -threshold_db;
-                2.0 * above.clamp(0.0, 1.0) - 1.0
-            } else {
-                wave_at(waveform, lfo_phase as f32)
-            };
+            let lfo_phase = self.lfo_phase(n, trigger, hz, inc);
+            let modulator = self.modulator(envelope_source, threshold_db, waveform, lfo_phase);
             let width = self.width.next();
             let manual = self.manual.next();
             self.position.set(manual * (1.0 - width) + sign * modulator * width);
@@ -336,24 +378,7 @@ impl Plugin for AutoPan {
             }
             let position = self.position.next();
             let out = self.output.next();
-            if ch >= 2 {
-                // Constant power: sin² + cos² = 1 across the field, and both gains are 1 at the center.
-                let theta = (position.clamp(-1.0, 1.0) + 1.0) * FRAC_PI_4;
-                let (l, r) = (theta.cos().max(0.0), theta.sin().max(0.0));
-                if let Some(x) = io.get_mut(0).and_then(|b| b.get_mut(n)) {
-                    *x = left * l * SQRT_2 * out;
-                }
-                if let Some(x) = io.get_mut(1).and_then(|b| b.get_mut(n)) {
-                    *x = right * r * SQRT_2 * out;
-                }
-                for c in 2..ch {
-                    if let Some(x) = io.get_mut(c).and_then(|b| b.get_mut(n)) {
-                        *x = if x.is_finite() { *x * out } else { 0.0 };
-                    }
-                }
-            } else if let Some(x) = io.get_mut(0).and_then(|b| b.get_mut(n)) {
-                *x = left * out;
-            }
+            write_frame(io, n, ch, left, right, position, out);
         }
         self.since_transport = self.since_transport.saturating_add(frames as u64);
     }

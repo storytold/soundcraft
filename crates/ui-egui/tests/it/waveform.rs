@@ -22,13 +22,13 @@ fn paint(samples_per_px: f64, f: impl Fn(&egui::Painter, &Session, Rect)) -> Vec
 fn draw(samples: Vec<f32>, samples_per_px: f64) -> Vec<Shape> {
     let clip = Clip::audio(ClipId(1), "c", SourceId(1), 0, 0, samples.len() as i64);
     let audio = SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![samples] });
-    paint(samples_per_px, |p, s, band| waveform::draw(p, s, band, &clip, &audio, 1, band, WAVE))
+    paint(samples_per_px, |p, s, band| waveform::draw(waveform::Canvas { painter: p, s, tl: band }, &clip, &audio, 1, band, WAVE))
 }
 
 #[test]
 fn a_take_draws_its_overview_while_it_records() {
     let blocks = vec![vec![(-0.5, 0.5); 100]];
-    let shapes = paint(128.0, |p, s, band| waveform::draw_live(p, s, band, 1280.0, 128.0, &blocks, band, WAVE));
+    let shapes = paint(128.0, |p, s, band| waveform::draw_live(waveform::Canvas { painter: p, s, tl: band }, 1280.0, 128.0, &blocks, band, WAVE));
     let [Shape::Mesh(mesh)] = shapes.as_slice() else { panic!("{shapes:?}") };
     let span = |f: fn(&Pos2) -> f32| mesh.vertices.iter().map(|v| f(&v.pos)).fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v), b.max(v)));
     let ((left, right), (top, bottom)) = (span(|p| p.x), span(|p| p.y));

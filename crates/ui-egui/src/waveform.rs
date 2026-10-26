@@ -4,10 +4,18 @@ use egui::{Color32, Mesh, Painter, Rect, Shape, Stroke, pos2, vec2};
 use soundcraft_model::{Clip, Session, SourceAudio};
 use soundcraft_time::Samples;
 
+/// Where to draw: the painter, the session and the timeline rect that maps samples to x.
+#[derive(Clone, Copy)]
+pub struct Canvas<'a> {
+    pub painter: &'a Painter,
+    pub s: &'a Session,
+    pub tl: Rect,
+}
+
 /// Draw a clip's audio across `body`, one band per channel, `channels` of them at most.
-pub fn draw(painter: &Painter, s: &Session, tl: Rect, clip: &Clip, audio: &SourceAudio, channels: usize, body: Rect, wave: Color32) {
+pub fn draw(canvas: Canvas<'_>, clip: &Clip, audio: &SourceAudio, channels: usize, body: Rect, wave: Color32) {
     for (ch, band) in bands(body, channels.min(audio.peaks.len()).max(1)).enumerate() {
-        channel(painter, s, tl, clip, audio, ch, band, wave);
+        channel(canvas, clip, audio, ch, band, wave);
     }
 }
 
@@ -16,7 +24,8 @@ fn bands(body: Rect, n: usize) -> impl Iterator<Item = Rect> {
     (0..n).map(move |k| Rect::from_min_size(pos2(body.min.x, body.min.y + h * k as f32), vec2(body.width(), h)))
 }
 
-fn channel(painter: &Painter, s: &Session, tl: Rect, clip: &Clip, audio: &SourceAudio, ch: usize, band: Rect, wave: Color32) {
+fn channel(canvas: Canvas<'_>, clip: &Clip, audio: &SourceAudio, ch: usize, band: Rect, wave: Color32) {
+    let Canvas { painter, s, tl } = canvas;
     let (Some(samples), Some(peaks)) = (audio.channel(ch), audio.peaks.get(ch)) else { return };
     let Some(g) = Grid::new(painter, s, tl, band) else { return };
     let (rectified, power, outlines) = (s.edit.flag("waveform.rectified"), s.edit.flag("waveform.power"), s.edit.flag("waveform.outlines"));
@@ -59,7 +68,8 @@ fn channel(painter: &Painter, s: &Session, tl: Rect, clip: &Clip, audio: &Source
 /// Draw a take while it records across `body`, one band per channel: `blocks` holds each channel's
 /// (min, max) per block of input frames, the blocks `block_len` timeline samples long from
 /// timeline position `origin`.
-pub fn draw_live(painter: &Painter, s: &Session, tl: Rect, origin: f64, block_len: f64, blocks: &[Vec<(f32, f32)>], body: Rect, wave: Color32) {
+pub fn draw_live(canvas: Canvas<'_>, origin: f64, block_len: f64, blocks: &[Vec<(f32, f32)>], body: Rect, wave: Color32) {
+    let Canvas { painter, s, tl } = canvas;
     let zoom = s.edit.zoom.waveform_zoom;
     for (blocks, band) in blocks.iter().zip(bands(body, blocks.len())) {
         let Some(g) = Grid::new(painter, s, tl, band) else { continue };

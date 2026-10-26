@@ -45,17 +45,14 @@ zip = { version = "9", default-features = false }
 cpal = "0.18"
 
 # Which file paths stored in a session may be opened.
-craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "16fb3d46e1eaa0d455465e4e66a3ac7b17b55bd3" }
+craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "db19c373c8d59a545972ca340987aecfb3611a4b" }
 
 # Video containers and bitstreams, shared with the other craft apps.
-craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "16fb3d46e1eaa0d455465e4e66a3ac7b17b55bd3" }
+craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "db19c373c8d59a545972ca340987aecfb3611a4b" }
+craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "db19c373c8d59a545972ca340987aecfb3611a4b", features = ["egui"] }
 
 # ui
-# 650b1c0b058017c4eb3af06d5b39586d6732e07b is the revision produced by the separate craft-libs current-main-0135
-# integration: 25da's egui-0.37 port + 6e7f's docking Workspace/DockCommand + final egui/winit
-# pins. Raw 6e7f/16fb3d46 contain the older egui 0.36 UI; keep this reviewed
-# immutable revision to retain the required docking APIs on egui 0.37.
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "650b1c0b058017c4eb3af06d5b39586d6732e07b", features = ["serde"] }
+craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "db19c373c8d59a545972ca340987aecfb3611a4b", features = ["serde"] }
 egui = { version = "0.37" }
 eframe = { version = "0.37", default-features = false }
 # Monotonic clock on native and the browser (the `web_time::Instant` panics-free equivalent).
