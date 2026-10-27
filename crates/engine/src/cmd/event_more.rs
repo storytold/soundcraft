@@ -134,7 +134,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{tracks?, start?, end?, sensitivity?: 0.5, separate?: false, set_tempo?: false}",
             has_range,
-            beat_detective
+            |e, p| following_tempo(e, |e| beat_detective(e, p))
         ),
         cmd!(
             "event.identify_beat",
@@ -143,7 +143,7 @@ pub fn specs() -> Vec<CommandSpec> {
             Some("Cmd+I"),
             "{start?, end?, bars?: 1, beats?: 0} — sets the tempo so the selection lasts that many bars",
             has_range,
-            identify_beat
+            |e, p| following_tempo(e, |e| identify_beat(e, p))
         ),
         cmd!(
             "event.retrospective_record",

@@ -9,7 +9,7 @@ use soundcraft_time::TempoMap;
 pub(super) fn following_tempo(e: &mut Engine, edit: impl FnOnce(&mut Engine) -> Result<Value>) -> Result<Value> {
     let old = e.session().tempo.clone();
     let out = edit(e)?;
-    follow_tempo(e.session_mut(), &old);
+    follow_tempo(e.session_mut(), &old)?;
     Ok(out)
 }
 
@@ -17,9 +17,9 @@ pub(super) fn following_tempo(e: &mut Engine, edit: impl FnOnce(&mut Engine) -> 
 /// tempo map puts the same musical positions. MIDI clips and audio on Elastic Audio tracks also
 /// keep their length in ticks: audio is re-stretched to fit, and Varispeed tracks change speed.
 /// Audio on other tracks keeps its length in samples.
-pub(super) fn follow_tempo(s: &mut Session, old: &TempoMap) {
+pub(super) fn follow_tempo(s: &mut Session, old: &TempoMap) -> Result<()> {
     if *old == s.tempo {
-        return;
+        return Ok(());
     }
     let sr = s.sample_rate;
     let new = s.tempo.clone();
@@ -52,10 +52,12 @@ pub(super) fn follow_tempo(s: &mut Session, old: &TempoMap) {
                 c.fade_out.len = c.fade_out.len.min(length);
             }
         } else {
-            // A stretch that cannot render (outside the supported ratio) leaves the clip as is.
-            let _ = super::clip::warp_clip(s, id, |base| length as f64 / base.length as f64, true);
+            // A stretch that cannot render fails the command, which restores the document, rather
+            // than leaving moved clips overlapping.
+            super::clip::warp_clip(s, id, |base| length as f64 / base.length as f64, true)?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -130,6 +132,39 @@ mod tests {
         // Every step stretched the original, not the previous render.
         e.execute("clip.remove_warp", &json!({"clip": ids[0].0})).unwrap();
         assert_eq!(span(&e, ids[0]).1, SOURCE_LEN as Samples / 2);
+    }
+
+    #[test]
+    fn removing_a_tempo_change_brings_the_clips_back() {
+        let (mut e, _, ids) = engine_with_clips(Some("rhythmic"));
+        let before: Vec<(Samples, Samples)> = ids.iter().map(|id| span(&e, *id)).collect();
+        e.execute("event.tempo", &json!({"bpm": 60.0, "at": 12_000})).unwrap();
+        assert_ne!(span(&e, ids[1]), before[1]);
+        e.execute("event.tempo_remove", &json!({"at": 12_000})).unwrap();
+        for (id, (start, length)) in ids.iter().zip(before) {
+            let (new_start, new_length) = span(&e, *id);
+            assert!((new_start - start).abs() <= 2, "start {start} became {new_start}");
+            assert!((new_length - length).abs() <= 2, "length {length} became {new_length}");
+        }
+    }
+
+    #[test]
+    fn identifying_the_beat_moves_the_clips_with_the_new_tempo() {
+        let (mut e, _, ids) = engine_with_clips(None);
+        let (start, _) = span(&e, ids[1]);
+        e.execute("event.identify_beat", &json!({"start": 0, "end": 192_000, "bars": 1})).unwrap();
+        // One bar over four seconds is 60 bpm, half the demo's 120.
+        assert!((span(&e, ids[1]).0 - start * 2).abs() <= 2);
+    }
+
+    #[test]
+    fn a_stretch_that_cannot_render_refuses_the_tempo_change() {
+        let (mut e, _, ids) = engine_with_clips(Some("rhythmic"));
+        let (tempo, before) = (e.session().tempo.clone(), ids.iter().map(|id| span(&e, *id)).collect::<Vec<_>>());
+        // 120 → 5 bpm would stretch the audio 24 times, past what the renderer supports.
+        assert!(e.execute("event.tempo", &json!({"bpm": 5.0})).is_err());
+        assert!(e.session().tempo == tempo);
+        assert_eq!(ids.iter().map(|id| span(&e, *id)).collect::<Vec<_>>(), before);
     }
 
     fn span(e: &Engine, id: ClipId) -> (Samples, Samples) {

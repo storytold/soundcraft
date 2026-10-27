@@ -13,12 +13,12 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("event.tempo", "Tempo Change", [], None, "{bpm, at?: position (default session start)}", always, |e, p| following_tempo(e, |e| tempo(
             e, p
         ))),
-        cmd!("event.tempo_remove", "Remove Tempo Change", [], None, "{at}", always, |e, p| {
+        cmd!("event.tempo_remove", "Remove Tempo Change", [], None, "{at}", always, |e, p| following_tempo(e, |e| {
             let at = position_param(e, "event.tempo_remove", p, "at")?.unwrap_or(0);
             let s = e.session_mut();
             let tick = s.tempo.samples_to_ticks(at, s.sample_rate);
             Ok(json!({"removed": s.tempo.remove_tempo(tick)}))
-        }),
+        })),
         cmd!("event.meter", "Change Meter...", ["Event", "Time Operations"], None, "{numerator, denominator, at?: position}", always, meter),
         cmd!("event.tempo_scale", "Scale...", ["Event", "Tempo Operations"], None, "{factor}", always, |e, p| following_tempo(e, |e| {
             let f = f64_or(p, "factor", 1.0);
