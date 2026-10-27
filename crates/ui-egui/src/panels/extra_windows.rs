@@ -165,7 +165,7 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
             );
             crate::widgets::checkbox(ui, &mut app.extra.reduce_motion, "Reduce motion");
             let mut chosen = None;
-            egui::ComboBox::from_label("Theme").selected_text(app.ui.theme.label()).show_ui(ui, |ui| {
+            craft_ui::ComboBox::from_label("Theme").selected_text(app.ui.theme.label()).show_ui(ui, |ui| {
                 for mode in crate::theme::ThemeMode::ALL {
                     if ui.selectable_label(app.ui.theme == mode, mode.label()).clicked() {
                         chosen = Some(mode);

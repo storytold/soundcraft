@@ -197,7 +197,24 @@ impl MenuSearch {
 
     /// `n` matches in a scrolling list, each drawn by `row` (told whether it is highlighted);
     /// returns the one clicked, or the highlighted one on Enter.
-    pub(super) fn rows(&self, ui: &mut Ui, n: usize, max_height: f32, mut row: impl FnMut(&mut Ui, usize, bool) -> bool) -> Option<usize> {
+    pub(super) fn rows(&self, ui: &mut Ui, n: usize, max_height: f32, row: impl FnMut(&mut Ui, usize, bool) -> bool) -> Option<usize> {
+        let row_h = ui.spacing().interact_size.y;
+        egui::ScrollArea::vertical()
+            .id_salt(self.id.with("rows"))
+            .max_height(max_height)
+            .show_rows(ui, row_h, n, |ui, range| self.list_rows(ui, range, n, row))
+            .inner
+    }
+
+    /// The rows of `range` out of `n` matches, drawn into a list that scrolls and virtualises
+    /// itself (a shared dropdown menu's list); `rows` is the same list in a scroll area of its own.
+    pub(super) fn list_rows(
+        &self,
+        ui: &mut Ui,
+        range: std::ops::Range<usize>,
+        n: usize,
+        mut row: impl FnMut(&mut Ui, usize, bool) -> bool,
+    ) -> Option<usize> {
         let [up, down, enter] = self.keys;
         let typing = self.typing();
         let highlight = match (up, down) {
@@ -210,17 +227,15 @@ impl MenuSearch {
         let mut picked = (typing && enter && n > 0).then_some(highlight);
         let row_h = ui.spacing().interact_size.y;
         let step = row_h + ui.spacing().item_spacing.y;
-        egui::ScrollArea::vertical().id_salt(self.id.with("rows")).max_height(max_height).show_rows(ui, row_h, n, |ui, range| {
-            if typing && (up || down) {
-                let top = ui.max_rect().top() + (highlight as f32 - range.start as f32) * step;
-                ui.scroll_to_rect(Rect::from_min_size(pos2(ui.max_rect().left(), top), vec2(1.0, row_h)), None);
+        if typing && (up || down) {
+            let top = ui.max_rect().top() + (highlight as f32 - range.start as f32) * step;
+            ui.scroll_to_rect(Rect::from_min_size(pos2(ui.max_rect().left(), top), vec2(1.0, row_h)), None);
+        }
+        for i in range {
+            if row(ui, i, typing && i == highlight) {
+                picked = Some(i);
             }
-            for i in range {
-                if row(ui, i, typing && i == highlight) {
-                    picked = Some(i);
-                }
-            }
-        });
+        }
         picked
     }
 }

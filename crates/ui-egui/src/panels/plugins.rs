@@ -70,7 +70,7 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                             let mut x = v;
                             let resp = if !p.choices.is_empty() {
                                 let mut idx = x.round().max(0.0) as usize;
-                                let r = egui::ComboBox::from_id_salt(("pc", tid.0, slot, p.id))
+                                let r = craft_ui::ComboBox::from_id_salt(("pc", tid.0, slot, p.id))
                                     .selected_text(p.choices.get(idx).copied().unwrap_or("?"))
                                     .show_ui(ui, |ui| {
                                         for (i, c) in p.choices.iter().enumerate() {

@@ -2,6 +2,7 @@ use super::plugin_menu::{MenuSearch, menu_row};
 use super::routing::route_name;
 use super::slots::{COMPACT_SLOT, Mark, empty_slot, level_icon, used_slot};
 use super::*;
+use craft_ui::combo::Menu;
 
 /// Draw one send slot: the route area picks a destination, while the level area opens or edits the send level.
 pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
@@ -53,30 +54,8 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
         }
         None => empty_slot(ui.painter(), r, ui.rect_contains_pointer(r), mark),
     }
-    if let Some(send) = &snd {
-        egui::Popup::menu(&route_resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-            ui.set_min_width(250.0);
-            ui.horizontal(|ui| {
-                ui.strong(format!("Send {}", (b'A' + slot as u8) as char));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(route_name(app, &send.target)).color(Tokens::current().counter_text));
-                });
-            });
-            ui.label(egui::RichText::new("DESTINATION").size(8.0).color(Tokens::current().text_dim));
-            send_route_menu(app, ui, id, slot, Some(&send.target));
-            ui.separator();
-            if ui.button("Remove send").clicked() {
-                let _ = app.run("mix.send_remove", json!({"track": id.0, "slot": slot}));
-                ui.close();
-            }
-        });
-    } else {
-        egui::Popup::menu(&route_resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-            ui.set_min_width(250.0);
-            ui.strong(format!("Send {} · Choose destination", (b'A' + slot as u8) as char));
-            send_route_menu(app, ui, id, slot, None);
-        });
-    }
+    let current = snd.as_ref().map(|send| (send.target.clone(), route_name(app, &send.target)));
+    send_route_menu(app, ui, &route_resp, id, slot, current);
 }
 
 /// The Send window, as in Pro Tools: one send's fader, level, pan, Mute and Pre-fader. Clicking a
@@ -341,30 +320,143 @@ fn send_level_scale(ui: &mut Ui, db: f32) {
     ui.painter().line_segment([pos2(x, r.min.y), pos2(x, line_y + 3.0)], Stroke::new(2.0, t.counter_text));
 }
 
-/// Searchable bus destination list with a New Bus action for a send.
-fn send_route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, current: Option<&Route>) {
+/// What the send menu's footer was used for.
+enum SendFooter {
+    NewBus,
+    RemoveSend,
+}
+
+/// The send's destination menu: a title and the bus search on top, the matching buses in a list
+/// that scrolls, "new bus..." (and "Remove send" for an existing send) fixed under it.
+/// `current` is the send's destination and its name, if the slot has a send.
+fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: TrackId, slot: usize, current: Option<(Route, String)>) {
     let busses = app.engine.session().busses.clone();
-    let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), "Search buses…");
-    let visible: Vec<_> = busses.iter().filter(|bus| search.matches(&bus.name)).collect();
-    let picked = search.rows(ui, visible.len(), 260.0, |ui, i, highlighted| {
-        let current = matches!(current, Some(Route::Bus(bus_id)) if *bus_id == visible[i].id);
-        menu_row(ui, highlighted || (current && !search.typing()), &visible[i].name)
-    });
-    if let Some(i) = picked {
-        let _ = app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": visible[i].name}));
-        ui.close();
+    let which = (b'A' + slot as u8) as char;
+    let has_send = current.is_some();
+    let header = |ui: &mut Ui| {
+        ui.set_min_width(250.0);
+        match &current {
+            Some((_, name)) => {
+                ui.horizontal(|ui| {
+                    ui.strong(format!("Send {which}"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(name).color(Tokens::current().counter_text));
+                    });
+                });
+                ui.label(egui::RichText::new("DESTINATION").size(8.0).color(Tokens::current().text_dim));
+            }
+            None => {
+                ui.strong(format!("Send {which} · Choose destination"));
+            }
+        }
+        let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), "Search buses…");
+        let visible: Vec<_> = busses.iter().filter(|bus| search.matches(&bus.name)).collect();
+        (search, visible)
+    };
+    let target = current.as_ref().map(|(route, _)| route);
+    let row_h = ui.spacing().interact_size.y;
+    let shown = Menu::new(ui, field).height(260.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show_rows_with_header_footer(
+        header,
+        row_h,
+        |(_, visible)| visible.len(),
+        |ui, range, (search, visible)| {
+            let n = visible.len();
+            let picked = search.list_rows(ui, range, n, |ui, i, highlighted| {
+                let is_current = matches!(target, Some(Route::Bus(bus_id)) if *bus_id == visible[i].id);
+                menu_row(ui, highlighted || (is_current && !search.typing()), &visible[i].name)
+            });
+            picked.map(|i| {
+                ui.close();
+                visible[i].name.clone()
+            })
+        },
+        |ui| {
+            if ui.button("new bus...").clicked() {
+                ui.close();
+                return Some(SendFooter::NewBus);
+            }
+            if has_send && ui.button("Remove send").clicked() {
+                ui.close();
+                return Some(SendFooter::RemoveSend);
+            }
+            None
+        },
+    );
+    let Some((picked, footer)) = shown else { return };
+    if let Some(bus) = picked {
+        let _ = app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": bus}));
     }
-    ui.separator();
-    if ui.button("new bus...").clicked() {
-        let mut n = busses.len() + 1;
-        while busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(&format!("Bus {n}")))
-            || app.engine.session().track_by_name(&format!("Bus {n}")).is_some()
-        {
-            n += 1;
+    match footer {
+        Some(SendFooter::NewBus) => {
+            let mut n = busses.len() + 1;
+            while busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(&format!("Bus {n}")))
+                || app.engine.session().track_by_name(&format!("Bus {n}")).is_some()
+            {
+                n += 1;
+            }
+            if app.run("mix.new_bus", json!({"name": format!("Bus {n}")})).is_ok() {
+                let _ = app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": format!("Bus {n}")}));
+            }
         }
-        if app.run("mix.new_bus", json!({"name": format!("Bus {n}")})).is_ok() {
-            let _ = app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": format!("Bus {n}")}));
+        Some(SendFooter::RemoveSend) => {
+            let _ = app.run("mix.send_remove", json!({"track": id.0, "slot": slot}));
         }
-        ui.close();
+        None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Services;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    /// Filtering the destination list to nothing shrinks the menu; clearing the filter grows it
+    /// back, with the search field in the same place and the footer under the list.
+    #[test]
+    fn the_send_destination_menu_grows_back_when_the_search_is_cleared() {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        for n in 0..30 {
+            app.run("mix.new_bus", json!({"name": format!("Aux {n}")})).unwrap();
+        }
+        let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+        app.run("mix.send", json!({"track": kick.0, "slot": 0, "bus": "Aux 0"})).unwrap();
+        let _palette = crate::theme::lock_test_palette();
+        let mut ready = false;
+        let mut h = Harness::builder().with_size(vec2(600.0, 800.0)).build_ui_state(
+            move |ui, (app, kick): &mut (SoundApp, TrackId)| {
+                if !ready {
+                    crate::fonts::install(ui.ctx());
+                    crate::theme::apply(ui.ctx(), false);
+                    ready = true;
+                    return;
+                }
+                let track = app.engine.session().track(*kick).cloned().unwrap();
+                let r = Rect::from_min_size(ui.max_rect().min + vec2(20.0, 20.0), vec2(120.0, 24.0));
+                send_slot(app, ui, &track, 0, r);
+            },
+            (app, kick),
+        );
+        h.run();
+        h.get_by_label("Send A for Kick").click();
+        h.run();
+        let field = |h: &Harness<'_, (SoundApp, TrackId)>| h.get_by_role(egui::accesskit::Role::TextInput).rect();
+        let footer = |h: &Harness<'_, (SoundApp, TrackId)>| h.get_by_label("Remove send").rect();
+        let (search, full) = (field(&h), footer(&h));
+        assert!(h.query_by_label("new bus...").is_some(), "the footer lists new bus...");
+        assert!(full.top() > search.bottom() + 150.0, "the list sits between the search and the footer: {search:?} {full:?}");
+
+        h.get_by_role(egui::accesskit::Role::TextInput).type_text("zzzz");
+        h.run();
+        let none = footer(&h);
+        assert!(none.top() < full.top() - 100.0, "no matches shrink the menu: {none:?} vs {full:?}");
+        assert_eq!(field(&h), search, "the search field stays put");
+
+        for _ in 0..4 {
+            h.key_press(egui::Key::Backspace);
+            h.run();
+        }
+        assert_eq!(field(&h), search, "the search field stays put");
+        assert!((footer(&h).top() - full.top()).abs() < 1.0, "cleared, the footer is back under the full list: {:?} vs {full:?}", footer(&h));
     }
 }
