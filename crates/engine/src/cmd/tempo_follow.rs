@@ -44,20 +44,24 @@ pub(super) fn follow_tempo(s: &mut Session, old: &TempoMap) -> Result<()> {
         }
     }
     for (id, length, varispeed) in stretch {
-        if varispeed {
-            if let Some(c) = s.find_clip_mut(id) {
-                c.stretch = if c.stretch.is_finite() && c.stretch > 0.0 { c.stretch } else { 1.0 } * length as f64 / c.length.max(1) as f64;
-                c.length = length;
-                c.fade_in.len = c.fade_in.len.min(length);
-                c.fade_out.len = c.fade_out.len.min(length);
-            }
-        } else {
-            // A stretch that cannot render fails the command, which restores the document, rather
-            // than leaving moved clips overlapping.
-            super::clip::warp_clip(s, id, |base| length as f64 / base.length as f64, true)?;
+        // Audio that cannot be rendered (its source is offline) changes speed instead, so the clip
+        // still ends where the next musical position begins. A stretch the renderer refuses fails
+        // the command, which restores the document.
+        if varispeed || !super::clip::warp_clip(s, id, |base| length as f64 / base.length as f64, true)? {
+            change_speed(s, id, length);
         }
     }
     Ok(())
+}
+
+/// Give a clip a new length by changing its speed, without rendering.
+fn change_speed(s: &mut Session, id: ClipId, length: Samples) {
+    if let Some(c) = s.find_clip_mut(id) {
+        c.stretch = if c.stretch.is_finite() && c.stretch > 0.0 { c.stretch } else { 1.0 } * length as f64 / c.length.max(1) as f64;
+        c.length = length;
+        c.fade_in.len = c.fade_in.len.min(length);
+        c.fade_out.len = c.fade_out.len.min(length);
+    }
 }
 
 #[cfg(test)]
@@ -165,6 +169,17 @@ mod tests {
         assert!(e.execute("event.tempo", &json!({"bpm": 5.0})).is_err());
         assert!(e.session().tempo == tempo);
         assert_eq!(ids.iter().map(|id| span(&e, *id)).collect::<Vec<_>>(), before);
+    }
+
+    #[test]
+    fn offline_audio_follows_the_tempo_without_overlapping() {
+        let (mut e, _, ids) = engine_with_clips(Some("rhythmic"));
+        let source = e.session().pool.ids().next().unwrap();
+        e.session_mut().pool.remove(source);
+        e.execute("event.tempo", &json!({"bpm": 240.0})).unwrap();
+        let (a_start, a_len) = span(&e, ids[0]);
+        let (b_start, _) = span(&e, ids[1]);
+        assert!(a_start + a_len <= b_start + 2, "first clip ends at {} after the second starts at {b_start}", a_start + a_len);
     }
 
     fn span(e: &Engine, id: ClipId) -> (Samples, Samples) {
