@@ -232,7 +232,8 @@ mod tests {
         let buf = AudioBuffer { sample_rate: 96_000, channels: vec![tone.clone(), tone] };
         let mut e = Engine::default();
         let t = instrument_track(&mut e);
-        for (ext, format) in [("flac", FileFormat::Flac), ("aif", FileFormat::Aiff)] {
+        for format in [FileFormat::Flac, FileFormat::Aiff] {
+            let ext = format.default_extension();
             let path = d.join(format!("tone.{ext}"));
             let opts = EncodeOptions { format, bit_depth: BitDepth::Int24, dither: false, bwf: None };
             std::fs::write(&path, soundcraft_audio_io::encode(&buf, &opts).unwrap()).unwrap();

@@ -150,8 +150,9 @@ pub struct LoudnessMeter {
     sub_filled: usize,
     hist_count: Vec<u64>,
     hist_energy: Vec<f64>,
-    tp_coefs: [[f32; TP_TAPS]; TP_PHASES],
-    tp_hist: Vec<[f32; TP_TAPS]>,
+    tp_coefs: [[f32; TP_PHASES]; TP_TAPS],
+    tp_hist: Vec<[f32; 2 * TP_TAPS]>,
+    tp_pos: Vec<usize>,
     true_peak: f32,
     max_momentary: f32,
 }
@@ -197,7 +198,7 @@ impl LoudnessMeter {
         let weights = if channels == 6 { vec![1.0, 1.0, 1.0, 0.0, 1.41, 1.41] } else { vec![1.0; channels] };
         let [c1, c2] = k_weighting(sr);
         // Interpolation filter: windowed sinc at the original Nyquist, split into 4 phases.
-        let mut tp_coefs = [[0.0f32; TP_TAPS]; TP_PHASES];
+        let mut tp_coefs = [[0.0f32; TP_PHASES]; TP_TAPS];
         let total = TP_TAPS * TP_PHASES;
         let center = (total as f64 - 1.0) / 2.0;
         for i in 0..total {
@@ -205,14 +206,14 @@ impl LoudnessMeter {
             let sinc = if t.abs() < 1e-12 { 1.0 } else { (std::f64::consts::PI * t).sin() / (std::f64::consts::PI * t) };
             let x = i as f64 / (total as f64 - 1.0);
             let w = 0.42 - 0.5 * (2.0 * std::f64::consts::PI * x).cos() + 0.08 * (4.0 * std::f64::consts::PI * x).cos();
-            if let Some(slot) = tp_coefs.get_mut(i % TP_PHASES).and_then(|ph| ph.get_mut(i / TP_PHASES)) {
+            if let Some(slot) = tp_coefs.get_mut(i / TP_PHASES).and_then(|tap| tap.get_mut(i % TP_PHASES)) {
                 *slot = (sinc * w) as f32;
             }
         }
-        for ph in &mut tp_coefs {
-            let s: f32 = ph.iter().sum();
+        for p in 0..TP_PHASES {
+            let s: f32 = tp_coefs.iter().filter_map(|tap| tap.get(p)).sum();
             if s.abs() > 1e-6 {
-                ph.iter_mut().for_each(|c| *c /= s);
+                tp_coefs.iter_mut().filter_map(|tap| tap.get_mut(p)).for_each(|c| *c /= s);
             }
         }
         Self {
@@ -228,7 +229,8 @@ impl LoudnessMeter {
             hist_count: vec![0; HIST_BINS],
             hist_energy: vec![0.0; HIST_BINS],
             tp_coefs,
-            tp_hist: vec![[0.0; TP_TAPS]; channels],
+            tp_hist: vec![[0.0; 2 * TP_TAPS]; channels],
+            tp_pos: vec![0; channels],
             true_peak: 0.0,
             max_momentary: MIN_DB,
         }
@@ -257,7 +259,8 @@ impl LoudnessMeter {
         self.sub_filled = 0;
         self.hist_count.iter_mut().for_each(|v| *v = 0);
         self.hist_energy.iter_mut().for_each(|v| *v = 0.0);
-        self.tp_hist.iter_mut().for_each(|h| *h = [0.0; TP_TAPS]);
+        self.tp_hist.iter_mut().for_each(|h| *h = [0.0; 2 * TP_TAPS]);
+        self.tp_pos.iter_mut().for_each(|p| *p = 0);
         self.true_peak = 0.0;
         self.max_momentary = MIN_DB;
     }
@@ -285,13 +288,24 @@ impl LoudnessMeter {
     }
 
     fn true_peak_sample(&mut self, c: usize, x: f32) {
-        let Some(h) = self.tp_hist.get_mut(c) else { return };
-        h.copy_within(0..TP_TAPS - 1, 1);
-        h[0] = x;
+        let (Some(h), Some(pos)) = (self.tp_hist.get_mut(c), self.tp_pos.get_mut(c)) else { return };
+        *pos = (*pos + TP_TAPS - 1) % TP_TAPS;
+        let p = *pos;
+        for slot in [p, p + TP_TAPS] {
+            if let Some(v) = h.get_mut(slot) {
+                *v = x;
+            }
+        }
+        let Some(w) = h.get(p..p + TP_TAPS).and_then(|w| <&[f32; TP_TAPS]>::try_from(w).ok()) else { return };
+        let mut y = [-0.0f32; TP_PHASES];
+        for (cs, s) in self.tp_coefs.iter().zip(w) {
+            for (acc, k) in y.iter_mut().zip(cs) {
+                *acc += k * s;
+            }
+        }
         let mut peak = x.abs();
-        for ph in &self.tp_coefs {
-            let y: f32 = ph.iter().zip(h.iter()).map(|(a, b)| a * b).sum();
-            peak = peak.max(y.abs());
+        for v in y {
+            peak = peak.max(v.abs());
         }
         if peak > self.true_peak {
             self.true_peak = peak;

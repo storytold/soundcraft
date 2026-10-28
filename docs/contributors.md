@@ -23,7 +23,7 @@ this page is the local copy of the decision.
 
 ## In SoundCraft
 
-- The About window is `about()` in `crates/ui-egui/src/panels.rs` (menu "About SoundCraft", command `window.about`).
+- The About window is `about()` in `crates/ui-egui/src/panels/about.rs` (menu "About SoundCraft", command `window.about`).
 
 ## Credit yourself
 

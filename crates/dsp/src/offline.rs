@@ -54,7 +54,24 @@ fn max_len(ch: &[Vec<f32>]) -> usize {
 
 /// The largest finite sample magnitude in any channel.
 pub fn peak(ch: &[Vec<f32>]) -> f32 {
-    ch.iter().flatten().filter(|v| v.is_finite()).fold(0.0f32, |m, v| m.max(v.abs()))
+    ch.iter().map(|c| channel_peak(c)).fold(0.0f32, f32::max)
+}
+
+/// Largest finite absolute sample of one channel (0 for none).
+pub fn channel_peak(x: &[f32]) -> f32 {
+    let mut lanes = [0.0f32; 8];
+    let (chunks, rest) = x.as_chunks::<8>();
+    for c in chunks {
+        for (m, v) in lanes.iter_mut().zip(c) {
+            let a = v.abs();
+            *m = if a < f32::INFINITY && a > *m { a } else { *m };
+        }
+    }
+    for (m, v) in lanes.iter_mut().zip(rest) {
+        let a = v.abs();
+        *m = if a < f32::INFINITY && a > *m { a } else { *m };
+    }
+    lanes.into_iter().fold(0.0f32, f32::max)
 }
 
 /// Peak-normalizes to `target_db` dBFS, either all channels together or each on its own.

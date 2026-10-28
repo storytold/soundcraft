@@ -120,7 +120,9 @@ nor the portable zip needs the Visual C++ redistributable.
   `SOUNDCRAFT_REQUIRE_WINRES=1` so a missing resource compiler fails the build.
 - The script checks both PE headers: the machine type matches `-Arch`, `soundcraft.exe` is a GUI
   app (no console window) and `soundcraft-cli.exe` a console app.
-- `soundcraft.wxs` (WiX v5) is a per-machine install into Program Files with an advertised Start
+- `soundcraft.wxs` (WiX v5) is a dual-scope package (per-user by default into
+  `%LOCALAPPDATA%\Programs\ArtCraft\SoundCraft`, per-machine into `Program Files\ArtCraft\SoundCraft` (`Program Files (x86)` for the 32-bit build),
+  see `packaging/windows/INSTALLATION.md`) with an advertised Start
   Menu shortcut. SoundCraft becomes the default app for `.scraft` and is listed under *Open with*
   for `.wav`, `.aif`, `.aiff`, `.flac`, `.mp3`, `.mid` and `.midi`. It also registers App Paths
   (Win+R `soundcraft`). The MSI version is the numeric `X.Y.Z`; same-version upgrades let release
@@ -138,7 +140,12 @@ Locally on Windows: `dotnet tool install -g wix --version 5.0.2`, then
 `packaging/linux/package.sh` stages one FHS tree and makes every format from it: both binaries,
 `ai.storyteller.soundcraft.desktop` (with `MimeType=` for sessions, WAV, AIFF, FLAC, MP3 and
 MIDI), hicolor icons from 16 px to 512 px plus a scalable SVG, AppStream metainfo, and a
-shared-mime-info file declaring `application/x-soundcraft-session` (`*.scraft`).
+shared-mime-info file declaring `application/x-soundcraft-session` (`*.scraft`), and
+`soundcraft-cli`'s man pages and bash, zsh and fish completions. The `man-and-completions` example,
+built with the binaries, writes those; a cross build runs it through `EMULATOR` and leaves them out
+without one. The zsh completion is in `/usr/share/zsh/site-functions`, which Fedora's and
+openSUSE's zsh read; the `.deb` also links it from `/usr/share/zsh/vendor-completions`, which
+Debian's zsh reads instead.
 
 - **AppImage** (maintained `AppImage/appimagetool`, static runtime: no libfuse2 needed). Each
   embeds the update information
@@ -168,7 +175,8 @@ Locally (on Linux): install nfpm, then `packaging/linux/package.sh` (or `--forma
 
 GitHub has no FreeBSD runners, so the `freebsd` job builds inside a FreeBSD 14.3 VM
 (`vmactions/freebsd-vm`, pinned by commit) and runs `packaging/freebsd/package.sh`, which stages
-a `/usr/local`-style tree (binaries, desktop entry, MIME type, metainfo, icons, docs) as a
+a `/usr/local`-style tree (binaries, desktop entry, MIME type, metainfo, icons, docs, and
+`soundcraft-cli`'s man pages and shell completions) as a
 `.tar.gz`. Install with `tar -xzf soundcraft-*-freebsd-x86_64.tar.gz --strip-components 1 -C /usr/local`.
 `.github/workflows/freebsd.yml` builds and tests the workspace there on every push to `main`.
 

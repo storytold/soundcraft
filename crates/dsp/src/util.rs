@@ -34,7 +34,8 @@ pub(crate) fn time_coef(ms: f32, sr: f32) -> f32 {
 /// Flushes denormals and non-finite values in feedback paths to zero.
 #[inline]
 pub(crate) fn flush(x: f32) -> f32 {
-    if x.is_finite() && x.abs() > 1.0e-25 { x } else { 0.0 }
+    let a = x.abs();
+    if (a > 1.0e-25) & (a < f32::INFINITY) { x } else { 0.0 }
 }
 
 /// Number of frames a plugin may safely touch.

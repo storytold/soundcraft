@@ -1004,7 +1004,7 @@ Regression assertions:
   If unavailable, this is an explicit rollout blocker, not a pass.
 - FreeBSD: existing nightly workflow; compile/packaging can be checked, but native UI/IME/audio
   acceptance needs an actual FreeBSD environment (not provided here).
-- Native control channel: use `--control 0` and `SOUNDCRAFT_NO_PREFS`/a scratch
+- Native control channel: use `--control 0` and `SOUNDCRAFT_NO_PREFS=1`/a scratch
   `SOUNDCRAFT_CONFIG_DIR` for isolation; never arm/monitor/record in an automated UI run
   (`docs/control-protocol.md:22-25`).
 

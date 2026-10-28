@@ -310,7 +310,7 @@ pub fn recover(e: &mut Engine, left: &Leftover) -> Result<Vec<String>> {
     let mut r = Engine::default();
     let session = left.dir.join(SESSION);
     let links = left.origin.as_deref().map_or(session.as_path(), Path::new);
-    let mut missing = open_session_linked(&mut r, &session.to_string_lossy(), links)?;
+    let mut missing = open_session_linked(&mut r, &session, links)?;
     let mut s = r.session().clone();
     let unfinished = unfinished_takes(left, &s, &mut missing);
     if let Some(home) = left.origin.as_deref().and_then(|o| Path::new(o).parent()) {
@@ -535,7 +535,7 @@ mod tests {
         w.flush().unwrap();
         let file = std::fs::read_dir(&root).unwrap().flatten().map(|d| d.path().join(SESSION)).collect::<Vec<_>>();
         let mut r = Engine::default();
-        open_session(&mut r, &file[0].to_string_lossy()).unwrap();
+        open_session(&mut r, &file[0]).unwrap();
         assert_eq!((file.len(), r.session().sources.len()), (1, 5));
         w.close(false);
         w.flush().unwrap();

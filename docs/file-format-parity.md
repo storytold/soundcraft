@@ -4,9 +4,9 @@
 
 Every format Pro Tools reads or writes, and ours. The Pro Tools list comes from the document types
 its bundle declares (`CFBundleDocumentTypes` in Info.plist: names only, nothing else read) and its
-documented import/bounce options. Ours comes from `crates/audio-io` (`detect_format`, `decode`,
-`ENCODE_EXTENSIONS`), `crates/engine/src/cmd/file.rs`, `crates/engine/src/score.rs`,
-`crates/engine/src/clip_group_file.rs` and `crates/video`.
+documented import/bounce options. Ours comes from `crates/audio-io` (`FileFormat::READ` and
+`FileFormat::WRITE`, `detect_format`, `decode`), `crates/engine/src/cmd/file.rs`,
+`crates/engine/src/score.rs`, `crates/engine/src/clip_group_file.rs` and `crates/video`.
 
 **File formats: ~40 % ready** (estimated: weighted by how often a Pro Tools user hits each row;
 session interchange carries a third of the weight and is at 0 %). Remaining ≈ 70–120 h.
