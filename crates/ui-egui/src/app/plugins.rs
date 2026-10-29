@@ -125,12 +125,25 @@ impl SoundApp {
         self.session_instrument_param(entry.track, &entry.param) == entry.session_at_queue
     }
 
-    /// Puts held editor values back after a store command failed. Drops any entry whose session
-    /// value moved since it was queued: a later command owns that parameter, or its track,
-    /// instrument or parameter is gone (stale entries would keep the session unsaved and be
-    /// retried on every poll).
-    fn requeue_held_instrument_params(&mut self, entries: Vec<QueuedInstrumentParam>) {
-        let still: Vec<_> = entries.into_iter().filter(|e| self.queued_param_matches_session(e)).collect();
+    /// Puts held editor values back after a store command failed. Drops an entry whose instrument
+    /// is gone or does not list the parameter (asking the plugin's parameter list, as
+    /// `mix.insert_params` does: a hosted instrument stores only the values set so far), and one
+    /// whose stored value moved since it was queued (a later command owns that parameter). Stale
+    /// entries would keep the session unsaved and be retried on every poll.
+    pub(crate) fn requeue_held_instrument_params(&mut self, entries: Vec<QueuedInstrumentParam>) {
+        let still: Vec<_> = entries
+            .into_iter()
+            .filter(|e| {
+                let listed = self
+                    .engine
+                    .session()
+                    .track(e.track)
+                    .and_then(|tr| tr.instrument.as_ref())
+                    .and_then(|i| mix_window::plugin_info(&i.plugin))
+                    .is_some_and(|info| info.params.iter().any(|p| p.id == e.param.as_str()));
+                listed && self.queued_param_matches_session(e)
+            })
+            .collect();
         self.editor_instrument_params.extend(still);
     }
 
