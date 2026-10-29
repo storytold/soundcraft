@@ -116,6 +116,9 @@ impl SoundApp {
             if edited.is_empty() {
                 continue;
             }
+            if !self.engine.session().track(t).is_some_and(|tr| tr.instrument.is_some()) {
+                continue;
+            }
             let values: serde_json::Map<String, Value> = edited.iter().map(|(_, k, v)| (k.clone(), json!(*v))).collect();
             let params = json!({"track": t.0, "slot": "instrument", "params": values});
             if !self.execute_in_gesture("mix.insert_params", &params) {
