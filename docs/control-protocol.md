@@ -97,13 +97,13 @@ Scroll Into View in the track name menu. A window not on screen catches up when 
 
 ## Panel docking
 
-Tracks and Groups, Clips, MIDI Editor, Memory Locations, and Undo History use movable panels. Commands target the active Edit or Mix view; floating panels stay inside the current viewport. Edit and Mix retain separate arrangements; Clips and MIDI Editor belong to Edit. Transport, plug-in, and specialist utility windows retain their existing hosts. The document/session view is protected.
+Tracks and Groups, Clips, MIDI Editor, Tab, Memory Locations, and Undo History use movable panels. Commands target the active Edit or Mix view; floating panels stay inside the current viewport. Edit and Mix retain separate arrangements; Clips and MIDI Editor belong to Edit. Transport, plug-in, and specialist utility windows retain their existing hosts. The document/session view is protected.
 
-The Edit window starts with Tracks and Groups in a 168-point column in a dock at the left edge, Clips in a 230-point column in a dock at the right edge, and the MIDI Editor under the session view between them. Both docks run the window's full height. Mix starts with Tracks and Groups docked at its left edge. Memory Locations and Undo History float. A dock column stacks tab groups top to bottom: a panel dropped on a group's middle joins it as a tab, on its upper or lower third stacks a new group above or below it, and at a column's edge makes a new column. A panel dropped at an empty window edge makes a dock there. Layouts, active tabs, panel visibility, and floating rectangles are saved with the app's existing UI preferences. These operations do not edit document contents.
+The Edit window starts with Tracks and Groups in a 168-point column in a dock at the left edge, Clips in a 230-point column in a dock at the right edge, and the MIDI Editor under the session view between them. Both docks run the window's full height. Mix starts with Tracks and Groups docked at its left edge. Memory Locations and Undo History float. Tab starts hidden in both windows. A dock column stacks tab groups top to bottom: a panel dropped on a group's middle joins it as a tab, on its upper or lower third stacks a new group above or below it, and at a column's edge makes a new column. A panel dropped at an empty window edge makes a dock there. Layouts, active tabs, panel visibility, and floating rectangles are saved with the app's existing UI preferences. These operations do not edit document contents.
 
-Panel IDs: `tracks`, `clips`, `midi`, `memory`, `history`. The protected center is `canvas`.
+Panel IDs: `tracks`, `clips`, `midi`, `guitar_tab`, `memory`, `history`. The protected center is `canvas`.
 
-`ui.dock` accepts `operation` and `panel`. Operations are `open`, `close`, `activate`, `float` (with finite positive `rect: [x, y, width, height]`), or `move` (with `target` and `zone: tab|center|left|right|top|bottom|above|below`; PascalCase names such as `Left` also parse). `open` and `activate` show a hidden panel at its saved location and bring a visible panel to the front. A panel with no saved location, or whose saved anchor cannot be restored, opens at its default place: Tracks and Groups and Clips join their dock's first group, or make that dock again at its default width when it is gone; the MIDI Editor opens under the session view; Memory Locations and Undo History float at their default rectangles. Center and `tab` group with the target; side zones split beside it; `above` and `below` stack the panel in a new group above or below a floating target's group. `ui.dock.reset` restores the default arrangement. Invalid moves return an error without changing the layout.
+`ui.dock` accepts `operation` and `panel`. Operations are `open`, `close`, `activate`, `float` (with finite positive `rect: [x, y, width, height]`), or `move` (with `target` and `zone: tab|center|left|right|top|bottom|above|below`; PascalCase names such as `Left` also parse). `open` and `activate` show a hidden panel at its saved location and bring a visible panel to the front. A panel with no saved location, or whose saved anchor cannot be restored, opens at its default place: Tracks and Groups and Clips join their dock's first group, or make that dock again at its default width when it is gone; the MIDI Editor and Tab open under the session view; Memory Locations and Undo History float at their default rectangles. Center and `tab` group with the target; side zones split beside it; `above` and `below` stack the panel in a new group above or below a floating target's group. `ui.dock.reset` restores the default arrangement. Invalid moves return an error without changing the layout.
 
 Invoke these UI commands through `engine.execute`, for example `{"command":"ui.dock","params":{"operation":"float","panel":"tracks","rect":[100,100,320,440]}}`.
 
@@ -119,3 +119,46 @@ rules apply equally to both forms.
 The saved UI preferences and window configurations carry `docking_version`. Settings with no
 version, or an older one, hold the split-frame layouts of earlier releases: they load with the
 default Edit and Mix layouts and keep every other setting.
+
+## Guitar tab
+
+The Tab panel (Window › Tab View, the TAB toggle in the Edit window's lower dock bar, or
+`{"command":"ui.dock","params":{"operation":"open","panel":"guitar_tab"}}`; `window.guitar_tab` toggles it)
+shows a MIDI or instrument track as guitar tablature: one line per string, fret numbers at note
+onsets on a sixteenth grid, laid out in bars that wrap to the panel's width. It shows the first
+selected MIDI or instrument track, else the track of the first selected MIDI clip, else the first
+MIDI or instrument track. A cursor marks the insertion point, follows the playhead during playback
+and scrolls the panel to keep up. Clicking a sixteenth moves the insertion point there. The
+header's picker sets the track's tuning.
+
+Notes are quantized to sixteenths with the same measure logic as File › Print Score; a sustained
+note shows as its fret number at the onset. MIDI channel N plays string N, string 1 being the
+highest-pitched string, and the fret is the note minus the string's open pitch. A note whose
+channel names no string, whose fret would be negative or above 24, or whose string another note of
+the same onset already uses, takes the lowest playable fret on a free string. Notes no string can
+reach stay off the tab and are counted (`?n` under the staff).
+
+| Command | Params | Result |
+|---|---|---|
+| `track.tuning` | `{track?, tuning}` | Sets the track's tuning (undoable, saved with the session). `tuning` is a preset id or name, an array of MIDI numbers or pitch names, a string such as `"E2 A2 D3 G3 B3 E4"`, or `null` for the default. Pitch names use scientific octaves (middle C is C4, a guitar's low E is E2). Strings may come in any order; the highest is string 1. 4 to 8 strings. |
+| `track.guitar_tab` | `{track?, at?, text?, bars_per_line?}` | The computed tab: `tuning`, `measures` (`number`, `start_unit`, `units`, `meter`, `events` of `{unit, notes: [{pitch, channel, string, fret}]}`) and `unplayable`. `at` (a position) adds `cursor: {measure, unit}`; `text: true` adds an ASCII rendering. |
+| `track.tunings` | `{}` | The presets: `e_standard` (default), `drop_d`, `d_standard`, `c_standard`, `b_standard`, `drop_a` (B standard with the low string at A1), `seven_b_standard`, `seven_drop_a`, `bass_e_standard`. |
+
+A MIDI or instrument track can also show its tab in the Edit window, in its own lane: choose
+**tab** in the track header's view selector, or run
+`{"command":"track.view","params":{"tracks":["Walk"],"view":"guitar_tab"}}` (`track.view` refuses `guitar_tab`
+for other kinds of track). The view is saved with the session and undoes like other view changes.
+The lane draws one line per string of the track's tuning and each note's fret number at the note's
+own onset on the timeline, so it scrolls and zooms with the other tracks and follows tempo
+changes. Fingering is the same as the panel's: notes are grouped by sixteenth before strings are
+assigned. Fret numbers scale with the lane height. Where numbers would crowd each other, at low
+zoom or on a short lane, a note becomes a dot on its string, and a repeat of the same fret shortly
+after a number is drawn as a dot (tremolo), so text never overlaps. Lanes shorter than about 7
+points per string show dots only; Medium height suits six strings and Large suits seven or eight.
+A note no string can play is a small red ring under the lowest string. Numbers start at their
+note's onset, so a note at the start of a clip is not cut by the clip edge.
+
+Without `track`, `track.guitar_tab` uses the panel's track, and `track.tuning` the selected MIDI or
+instrument track (or the track of the selected MIDI clip); with neither, `track.tuning` fails. From
+the CLI, for a file whose guitar track is named Guitar:
+`soundcraft-cli run --cmd 'file.import_midi={"path":"riff.mid"}' --cmd 'track.tuning={"track":"Guitar","tuning":"b_standard"}' --cmd 'track.guitar_tab={"text":true}'`.

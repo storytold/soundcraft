@@ -16,6 +16,7 @@ use std::sync::Arc;
 mod automation;
 mod clips;
 mod drag;
+mod guitar_tab_lane;
 mod header;
 mod input;
 mod layout;
@@ -65,13 +66,14 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     crate::docking::show(app, ui, crate::MainWindow::Edit);
 }
 
-/// Three dock toggle tabs for MIDI Editor, Memory Locations and Undo History.
+/// Dock toggle tabs for MIDI Editor, Tab, Memory Locations and Undo History.
 fn dock_tabs(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let r = ui.max_rect();
     let mut x = r.min.x + 10.0;
     for (label, on, id) in [
         ("MIDI EDITOR", app.ui.show_midi_editor, "window.midi_editor"),
+        ("TAB", app.ui.show_guitar_tab, "window.guitar_tab"),
         ("MEMORY LOCATIONS", app.ui.show_memory_locations, "window.memory_locations"),
         ("UNDO HISTORY", app.ui.show_undo_history, "window.undo_history"),
     ] {

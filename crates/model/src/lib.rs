@@ -27,6 +27,6 @@ pub use session::{
     Tool, TrackView, ZoomState, ZoomToggle, truncate_chars,
 };
 pub use source::{Source, SourceAudio, SourcePool, VideoSource};
-pub use track::{Playlist, TRACK_COLORS, Track, TrackHeight, TrackKind};
+pub use track::{GUITAR_STRINGS, Playlist, TRACK_COLORS, Track, TrackHeight, TrackKind, valid_guitar_tuning};
 
 pub use soundcraft_time as time;

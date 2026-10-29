@@ -168,6 +168,7 @@ fn playlist_lanes(app: &mut SoundApp, ui: &mut Ui, track: &Track, row: Rect, mai
 pub(super) fn view_label(v: &str) -> String {
     match AutoParam::parse(v) {
         Some(p) => p.label(),
+        None if v == "guitar_tab" => "tab".to_string(),
         None => v.to_string(),
     }
 }
@@ -176,7 +177,7 @@ pub(super) fn view_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
     let id = track.id.0;
     let mut opts: Vec<&str> = Vec::new();
     if track.kind.is_midi() {
-        opts.extend(["notes", "regions", "blocks"]);
+        opts.extend(["notes", "guitar_tab", "regions", "blocks"]);
     } else if track.kind.has_playlist() {
         opts.extend(["waveform", "blocks", "clip_gain", "playlists"]);
     }

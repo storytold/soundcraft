@@ -18,10 +18,12 @@ pub enum Panel {
     Midi,
     Memory,
     History,
+    #[serde(rename = "guitar_tab")]
+    GuitarTab,
 }
 
 impl Panel {
-    pub const ALL: &[Self] = &[Self::Canvas, Self::Tracks, Self::Clips, Self::Midi, Self::Memory, Self::History];
+    pub const ALL: &[Self] = &[Self::Canvas, Self::Tracks, Self::Clips, Self::Midi, Self::Memory, Self::History, Self::GuitarTab];
     fn label(self) -> &'static str {
         match self {
             Self::Canvas => "Session",
@@ -30,6 +32,7 @@ impl Panel {
             Self::Midi => "MIDI Editor",
             Self::Memory => "Memory Locations",
             Self::History => "Undo History",
+            Self::GuitarTab => "Tab",
         }
     }
 }
@@ -262,7 +265,7 @@ fn dock_panel(node: &Node<Panel>, side: Side) -> Option<Panel> {
 
 /// Show a panel at its recorded place, else at its default place: Tracks and Groups and Clips
 /// in their docks (joining the dock's first group when the dock is shown, else making the dock
-/// again), the MIDI editor under the session view and the others floating.
+/// again), the MIDI editor and Tab under the session view and the others floating.
 fn set_visible(workspace: &mut Workspace, panel: Panel, visible: bool) -> Result<(), String> {
     if workspace.layout.contains(&panel) == visible {
         return Ok(());
@@ -311,6 +314,7 @@ fn sync(workspace: &mut Workspace, app: &crate::SoundApp, edit: bool) -> Result<
     set_visible(workspace, Panel::Tracks, app.ui.show_tracks_list)?;
     set_visible(workspace, Panel::Memory, app.ui.show_memory_locations)?;
     set_visible(workspace, Panel::History, app.ui.show_undo_history)?;
+    set_visible(workspace, Panel::GuitarTab, app.ui.show_guitar_tab)?;
     if edit {
         set_visible(workspace, Panel::Clips, app.ui.show_clip_list)?;
         set_visible(workspace, Panel::Midi, app.ui.show_midi_editor)?;
@@ -322,6 +326,7 @@ fn publish_visibility(app: &mut crate::SoundApp, workspace: &Workspace, edit: bo
     app.ui.show_tracks_list = workspace.layout.contains(&Panel::Tracks);
     app.ui.show_memory_locations = workspace.layout.contains(&Panel::Memory);
     app.ui.show_undo_history = workspace.layout.contains(&Panel::History);
+    app.ui.show_guitar_tab = workspace.layout.contains(&Panel::GuitarTab);
     if edit {
         app.ui.show_clip_list = workspace.layout.contains(&Panel::Clips);
         app.ui.show_midi_editor = workspace.layout.contains(&Panel::Midi);
@@ -496,6 +501,7 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
             }
             Panel::Memory => crate::panels::memory_locations(app, ui),
             Panel::History => crate::panels::undo_history(app, ui),
+            Panel::GuitarTab => crate::panels::guitar_tab_panel(app, ui),
         },
     );
     let _ = sync(&mut workspace, app, edit);
@@ -532,6 +538,7 @@ fn panel_limits(panel: &Panel) -> PanelLimits {
         Panel::Midi => (egui::vec2(420.0, 260.0), 1_000_000.0),
         Panel::Memory => (egui::vec2(260.0, 160.0), 1_000_000.0),
         Panel::History => (egui::vec2(200.0, 160.0), 720.0),
+        Panel::GuitarTab => (egui::vec2(280.0, 120.0), 1_000_000.0),
     };
     PanelLimits { min, max: egui::vec2(max_width, 1_000_000.0) }
 }

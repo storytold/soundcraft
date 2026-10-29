@@ -78,7 +78,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("track.height_down", "Decrease Track Height", [], Some("Ctrl+Down"), "{tracks?} — one preset shorter", has_selection, |e, p| {
             height_step(e, p, false)
         }),
-        cmd!("track.view", "Track View", [], None, "{tracks?, view: waveform|blocks|notes|volume|pan|mute|<automation id>}", has_selection, view),
+        cmd!(
+            "track.view",
+            "Track View",
+            [],
+            None,
+            "{tracks?, view: waveform|blocks|notes|guitar_tab|volume|pan|mute|<automation id>} — guitar_tab: guitar tab lane (MIDI tracks)",
+            has_selection,
+            view
+        ),
         cmd!("track.hide", "Hide Track", [], None, "{tracks?, hidden?: bool}", has_selection, |e, p| flag(
             e,
             p,
@@ -861,10 +869,13 @@ fn height_step(e: &mut Engine, p: &Value, taller: bool) -> Result<Value> {
 fn view(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.view", p)?;
     let v = str_param(p, "view").ok_or_else(|| bad("track.view", "`view` required"))?.to_string();
-    let ok = matches!(v.as_str(), "waveform" | "blocks" | "notes" | "regions" | "clip_gain" | "playlists")
+    let ok = matches!(v.as_str(), "waveform" | "blocks" | "notes" | "regions" | "clip_gain" | "playlists" | "guitar_tab")
         || soundcraft_model::AutoParam::parse(&v).is_some();
     if !ok {
         return Err(bad("track.view", format!("unknown view `{v}`")));
+    }
+    if v == "guitar_tab" && tracks.iter().any(|t| !e.session().track(*t).is_some_and(|t| t.kind.is_midi())) {
+        return Err(bad("track.view", "the tab view is for MIDI and instrument tracks"));
     }
     let s = e.session_mut();
     for t in &tracks {
