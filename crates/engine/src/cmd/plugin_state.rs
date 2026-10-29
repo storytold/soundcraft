@@ -285,6 +285,38 @@ mod tests {
     }
 
     #[test]
+    fn insert_state_after_another_gesture_gets_its_own_undo_step() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+        let inst = e.session().tracks[0].id;
+        e.execute("mix.instrument_param", &json!({"track": inst.0, "param": "cutoff", "value": 1000.0})).unwrap();
+        e.execute("track.new", &json!({})).unwrap();
+        let audio = e.session().tracks.last().unwrap().id;
+        e.execute("mix.insert", &json!({"track": audio.0, "plugin": "gain", "slot": 0})).unwrap();
+        let gain = |e: &Engine| e.session().track(audio).unwrap().mixer.inserts[0].as_ref().unwrap().params.get("gain").copied();
+        let cutoff = |e: &Engine| e.session().track(inst).unwrap().instrument.as_ref().unwrap().params.get("cutoff").copied();
+        e.execute_merged("mix.insert_param", &json!({"track": audio.0, "slot": 0, "param": "gain", "value": -6.0}), "fader").unwrap();
+        let undo = e.undo_history().len();
+
+        // The fader gesture's key is still set; a plain command and a new gesture do not join it.
+        let state = b64::encode(b"plain");
+        e.execute("mix.insert_state", &json!({"track": inst.0, "slot": "instrument", "state": state, "params": {"cutoff": 44.0}})).unwrap();
+        assert_eq!(e.undo_history().len(), undo + 1, "a plain store is its own undo step");
+        let state = b64::encode(b"knob");
+        let p = json!({"track": inst.0, "slot": "instrument", "state": state, "params": {"cutoff": 55.0}});
+        e.execute_merged("mix.insert_state", &p, "knob").unwrap();
+        assert_eq!(e.undo_history().len(), undo + 2, "a new gesture is its own undo step");
+
+        assert!(e.undo());
+        assert_eq!(cutoff(&e), Some(44.0), "undo of the knob restores the plain store's value");
+        let ins = e.session().track(inst).unwrap().instrument.clone().unwrap();
+        assert_eq!(ins.state_bytes().as_deref(), Some(&b"knob"[..]), "undo keeps the captured state");
+        assert!(e.undo());
+        assert_eq!(cutoff(&e), Some(1000.0));
+        assert_eq!(gain(&e), Some(-6.0), "the fader move is not undone with the instrument");
+    }
+
+    #[test]
     fn storing_the_same_state_again_changes_nothing() {
         let mut e = Engine::default();
         e.execute("track.new", &json!({})).unwrap();
