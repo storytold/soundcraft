@@ -559,6 +559,13 @@ impl Engine {
         self.merge_key.as_deref()
     }
 
+    /// The pre-gesture document of the current merge, if a snapshot was already pushed.
+    pub(crate) fn merge_snapshot_mut(&mut self) -> Option<&mut Session> {
+        self.merge_key.as_ref()?;
+        let entry = self.undo.last_mut()?;
+        Some(Arc::make_mut(&mut entry.doc))
+    }
+
     /// End a gesture started with `execute_merged`.
     pub fn end_merge(&mut self) {
         self.merge_key = None;
