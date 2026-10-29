@@ -618,6 +618,9 @@ impl Session {
             if t.active_playlist >= t.playlists.len() {
                 t.active_playlist = 0;
             }
+            if t.guitar_tuning.as_deref().is_some_and(|g| !crate::valid_guitar_tuning(g)) {
+                t.guitar_tuning = None;
+            }
             for p in &mut t.playlists {
                 truncate_chars(&mut p.name, MAX_NAME_CHARS);
                 p.clips.retain(|c| c.length > 0);
@@ -905,6 +908,33 @@ mod tests {
         assert_eq!(tr.active_playlist, 0);
         assert_eq!(tr.mixer.volume_db, 0.0);
         assert!(s.next_id > t.0);
+    }
+
+    #[test]
+    fn corrupt_guitar_tunings_are_dropped_on_load() {
+        let mut s = Session::default();
+        let ids: Vec<TrackId> = (0..4).map(|_| s.add_track(TrackKind::Midi, ChannelFormat::Mono, None)).collect();
+        let mut v = serde_json::to_value(&s).unwrap();
+        v["tracks"][0]["guitar_tuning"] = serde_json::json!([200]);
+        v["tracks"][1]["guitar_tuning"] = serde_json::json!([64, 59, 55]);
+        v["tracks"][2]["guitar_tuning"] = serde_json::json!([40, 45, 50, 55, 59, 64]);
+        v["tracks"][3]["guitar_tuning"] = serde_json::json!([64, 59, 55, 50, 45, 40]);
+        let s = Session::from_json(&v.to_string()).unwrap();
+        let tuning = |i: usize| s.track(ids[i]).unwrap().guitar_tuning.clone();
+        assert_eq!(tuning(0), None, "out-of-range pitch");
+        assert_eq!(tuning(1), None, "too few strings");
+        assert_eq!(tuning(2), None, "lowest string first");
+        assert_eq!(tuning(3), Some(vec![64, 59, 55, 50, 45, 40]));
+        let saved = serde_json::to_value(&s).unwrap();
+        assert!(saved["tracks"][0].get("guitar_tuning").is_none(), "a dropped tuning is not saved");
+    }
+
+    #[test]
+    fn tracks_without_a_tuning_save_no_tuning_key() {
+        let mut s = Session::default();
+        s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+        let v = serde_json::to_value(&s).unwrap();
+        assert!(v["tracks"][0].as_object().is_some_and(|t| !t.contains_key("guitar_tuning")));
     }
 
     #[test]

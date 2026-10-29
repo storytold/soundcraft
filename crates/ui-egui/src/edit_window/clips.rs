@@ -255,6 +255,11 @@ fn draw_clip_content(cl: &ClipLane<'_>, clip: &Clip, g: &ClipGeom<'_>) {
             }
         }
         ClipContent::Video { .. } => {} // thumbnails: video_track::draw_lane
+        ClipContent::Midi { .. } if track.view == "guitar_tab" => {
+            let ink = if selected { Color32::from_rgb(16, 16, 16) } else { wave };
+            let area = super::guitar_tab_lane::TabArea { tl, body: body_r, vis, ink, bg: body };
+            super::guitar_tab_lane::draw(painter, &cl.app.engine.session_arc(), track, clip, &area);
+        }
         ClipContent::Midi { sequence } => {
             let (lo, hi) = sequence.notes.iter().fold((127u8, 0u8), |(lo, hi), n| (lo.min(n.pitch), hi.max(n.pitch)));
             let (lo, hi) = if lo > hi { (48, 72) } else { (lo.saturating_sub(2), hi.saturating_add(2)) };

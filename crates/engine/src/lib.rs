@@ -14,6 +14,7 @@ pub mod demo;
 mod dirty;
 pub mod edit;
 pub mod file_access;
+pub mod guitar_tab;
 pub mod inspect;
 pub mod io;
 pub mod score;

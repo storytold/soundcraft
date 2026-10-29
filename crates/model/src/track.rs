@@ -290,6 +290,18 @@ pub struct Track {
     /// Pinned to top in the Edit window.
     #[serde(default)]
     pub pinned: bool,
+    /// Open-string pitches for the guitar tab view, string 1 (highest) first. `None` is
+    /// E standard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guitar_tuning: Option<Vec<u8>>,
+}
+
+/// Guitar tunings have 4 to 8 strings (basses, guitars, extended-range guitars).
+pub const GUITAR_STRINGS: std::ops::RangeInclusive<usize> = 4..=8;
+
+/// Whether `strings` is a usable guitar tuning: 4 to 8 MIDI pitches, highest first.
+pub fn valid_guitar_tuning(strings: &[u8]) -> bool {
+    GUITAR_STRINGS.contains(&strings.len()) && strings.iter().all(|p| *p <= 127) && strings.windows(2).all(|w| w[0] >= w[1])
 }
 
 fn yes() -> bool {
@@ -329,6 +341,7 @@ impl Track {
             ticks_timebase: kind.is_midi(),
             elastic: None,
             pinned: false,
+            guitar_tuning: None,
         }
     }
 

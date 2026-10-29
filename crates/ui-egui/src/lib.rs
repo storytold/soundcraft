@@ -88,6 +88,8 @@ pub struct UiState {
     pub show_audio_health: bool,
     pub show_about: bool,
     pub show_midi_editor: bool,
+    /// The Tab panel (Window › Tab View): the target MIDI track as guitar tab.
+    pub show_guitar_tab: bool,
     pub show_universe: bool,
     pub narrow_mix: bool,
     /// Mix window sections: inserts_ae, inserts_fj, sends_ae, sends_fj, io, comments, eq_curve, color.
@@ -162,6 +164,7 @@ impl Default for UiState {
             show_audio_health: false,
             show_about: false,
             show_midi_editor: false,
+            show_guitar_tab: false,
             show_universe: false,
             narrow_mix: false,
             mix_views: vec!["inserts_ae".into(), "sends_ae".into(), "io".into(), "color".into()],
