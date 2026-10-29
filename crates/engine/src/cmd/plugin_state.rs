@@ -130,15 +130,24 @@ fn insert_state(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     if let Some(mut before) = undo {
-        // State is not undoable. The snapshot was taken before this command, so it still has the
-        // previous bytes; put the bytes just stored back, and let undo restore only the parameters.
-        if let Some(ins) = insert_mut(std::sync::Arc::make_mut(&mut before), t, slot) {
-            match &state {
-                Some(bytes) => ins.set_state_bytes(bytes),
-                None => ins.state = None,
+        // State is not undoable. Put the bytes just stored on the snapshot undo will restore, so
+        // undo keeps the captured state and only restores the parameters. A merge already holds
+        // an earlier snapshot; patch that one, because execute_merged would drop a newly pushed
+        // entry and leave the pre-capture bytes on the retained snapshot.
+        let apply_state = |s: &mut soundcraft_model::Session| {
+            if let Some(ins) = insert_mut(s, t, slot) {
+                match &state {
+                    Some(bytes) => ins.set_state_bytes(bytes),
+                    None => ins.state = None,
+                }
             }
+        };
+        if let Some(retained) = e.merge_snapshot_mut() {
+            apply_state(retained);
+        } else {
+            apply_state(std::sync::Arc::make_mut(&mut before));
+            e.push_undo("Set Plugin Parameters", before);
         }
-        e.push_undo("Set Plugin Parameters", before);
     }
     Ok(json!({"bytes": n}))
 }
@@ -238,6 +247,41 @@ mod tests {
         let ins = e.session().track(audio).unwrap().mixer.inserts[0].as_ref().unwrap();
         assert_eq!(ins.params.get("gain").copied(), before);
         assert_eq!(ins.state, None, "undo does not bring the cleared state back");
+    }
+
+    #[test]
+    fn merged_insert_state_keeps_captured_bytes_on_the_retained_snapshot() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+        let inst = e.session().tracks[0].id;
+        e.execute("mix.instrument_param", &json!({"track": inst.0, "param": "cutoff", "value": 1000.0})).unwrap();
+        let old_state = b64::encode(b"old-state");
+        e.execute("mix.insert_state", &json!({"track": inst.0, "slot": "instrument", "state": old_state})).unwrap();
+        e.execute("track.new", &json!({})).unwrap();
+        let audio = e.session().tracks.last().unwrap().id;
+        e.execute("mix.insert", &json!({"track": audio.0, "plugin": "gain", "slot": 0})).unwrap();
+        let gain_before = e.session().track(audio).unwrap().mixer.inserts[0].as_ref().unwrap().params.get("gain").copied();
+        let undo = e.undo_history().len();
+
+        e.execute_merged("mix.insert_param", &json!({"track": audio.0, "slot": 0, "param": "gain", "value": -6.0}), "param").unwrap();
+        let new_state = b64::encode(b"new-state");
+        e.execute_merged(
+            "mix.insert_state",
+            &json!({"track": inst.0, "slot": "instrument", "state": new_state, "params": {"cutoff": 44.0}}),
+            "param",
+        )
+        .unwrap();
+
+        assert_eq!(e.undo_history().len(), undo + 1, "the insert and the captured state stay one undo step");
+        let ins = e.session().track(inst).unwrap().instrument.clone().unwrap();
+        assert_eq!(ins.params.get("cutoff").copied(), Some(44.0));
+        assert_eq!(ins.state_bytes().as_deref(), Some(&b"new-state"[..]));
+
+        assert!(e.undo());
+        let ins = e.session().track(inst).unwrap().instrument.clone().unwrap();
+        assert_eq!(ins.params.get("cutoff").copied(), Some(1000.0), "undo restores the pre-gesture parameter");
+        assert_eq!(ins.state_bytes().as_deref(), Some(&b"new-state"[..]), "undo keeps the captured state");
+        assert_eq!(e.session().track(audio).unwrap().mixer.inserts[0].as_ref().unwrap().params.get("gain").copied(), gain_before);
     }
 
     #[test]
