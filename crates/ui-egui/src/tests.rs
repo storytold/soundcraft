@@ -554,6 +554,25 @@ fn queued_instrument_params_are_discarded_when_the_instrument_or_document_is_gon
 }
 
 #[test]
+fn failed_store_drops_queued_instrument_params_the_session_no_longer_holds() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    let lead = app.engine.session().track_by_name("Lead").unwrap().id;
+    app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 1000})).unwrap();
+    app.engine.execute("mix.instrument_param", &json!({"track": lead.0, "param": "cutoff", "value": 800})).unwrap();
+
+    push_queued_param(&mut app, keys, "cutoff", 44.0);
+    app.engine.execute("track.delete", &json!({"tracks": [keys.0]})).unwrap();
+    app.store_plugin_states(vec![(keys, soundcraft_mix::INSTRUMENT_SLOT, vec![9, 1])]);
+    assert!(app.editor_instrument_params.iter().all(|e| e.track != keys), "an empty slot is not retried");
+
+    push_queued_param(&mut app, lead, "cutoff", 70.0);
+    app.engine.execute("mix.instrument", &json!({"track": lead.0, "plugin": "drum_synth"})).unwrap();
+    app.capture_plugin_states();
+    assert!(app.editor_instrument_params.is_empty(), "a parameter the new instrument does not hold is not retried");
+}
+
+#[test]
 fn a_player_installs_live_plugins_and_reconnect_keeps_them() {
     let engine = soundcraft_engine::Engine::default();
     assert!(!engine.has_live_plugins());
