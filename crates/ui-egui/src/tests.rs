@@ -500,6 +500,22 @@ fn a_save_with_no_state_capture_keeps_queued_instrument_params() {
 }
 
 #[test]
+fn queued_instrument_params_are_discarded_when_the_instrument_or_document_is_gone() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 1000})).unwrap();
+    app.editor_instrument_params.push((keys, "cutoff".to_string(), 44.0));
+    app.engine.execute("track.delete", &json!({"tracks": [keys.0]})).unwrap();
+    app.capture_plugin_states();
+    assert!(app.editor_instrument_params.is_empty(), "a missing instrument is not retried");
+
+    let keys = app.engine.session().track_by_name("Lead").unwrap().id;
+    app.editor_instrument_params.push((keys, "cutoff".to_string(), 70.0));
+    app.document_replaced();
+    assert!(app.editor_instrument_params.is_empty(), "a new document does not keep the old queue");
+}
+
+#[test]
 fn two_instrument_editor_drags_store_its_state_twice() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let keys = app.engine.session().track_by_name("Keys").unwrap().id;
