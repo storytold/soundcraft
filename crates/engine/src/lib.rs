@@ -206,6 +206,9 @@ pub struct Engine {
     merge_key: Option<String>,
     /// The key every merged gesture takes while held (see `hold_merge`).
     merge_hold: Option<String>,
+    /// True while `execute_merged` runs a command that continues the current gesture, whose
+    /// step it will drop (see `merge_snapshot_mut`).
+    merge_continuing: bool,
     /// Messages for the UI status line / agents.
     pub messages: Vec<String>,
     /// The edit selection (range, tracks) before the last change, for Restore Last Selection.
@@ -243,6 +246,7 @@ impl Engine {
             dirty_at: Cell::new((0, false)),
             merge_key: None,
             merge_hold: None,
+            merge_continuing: false,
             messages: Vec::new(),
             last_selection: None,
             imports: Vec::new(),
@@ -535,7 +539,9 @@ impl Engine {
         if continuing && before_len > 0 {
             self.history_limit = limit.max(before_len.saturating_add(1));
         }
+        self.merge_continuing = continuing && before_len > 0;
         let r = self.execute(id, params);
+        self.merge_continuing = false;
         self.history_limit = limit;
         let r = r?;
         if continuing && self.undo.len() == before_len + 1 && before_len > 0 {
@@ -559,9 +565,13 @@ impl Engine {
         self.merge_key.as_deref()
     }
 
-    /// The pre-gesture document of the current merge, if a snapshot was already pushed.
+    /// The pre-gesture document of the merge the running command continues, if any: only inside
+    /// an `execute_merged` call whose own undo step will be dropped. A plain `execute`, or a merged
+    /// call that starts a new gesture, gets `None` even while an earlier gesture's key is set.
     pub(crate) fn merge_snapshot_mut(&mut self) -> Option<&mut Session> {
-        self.merge_key.as_ref()?;
+        if !self.merge_continuing {
+            return None;
+        }
         let entry = self.undo.last_mut()?;
         Some(Arc::make_mut(&mut entry.doc))
     }
