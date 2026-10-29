@@ -5,14 +5,19 @@
 //!   running app's `--control` port.
 //! - [`mcp::Server`]: a Model Context Protocol server over stdio (newline-delimited JSON-RPC 2.0)
 //!   exposing SoundCraft as tools and resources.
+//! - [`args`]: the control and automation launch flags and their environment variables, as clap
+//!   types.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod args;
 pub mod mcp;
 
 use serde_json::{Value, json};
 use soundcraft_engine::Engine;
 use soundcraft_engine::file_access::{self, AutomationRoots};
-use std::io::{BufRead, BufReader, Write};
+use std::fmt;
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
@@ -79,64 +84,151 @@ impl Backend for Headless {
     }
 }
 
+/// Where a running app's control channel listens: what `soundcraft-cli app --port`,
+/// `soundcraft-cli mcp --connect`, `soundcraft --control` and SOUNDCRAFT_CONTROL_PORT give, parsed
+/// once (`args::control_target`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlTarget {
+    /// As given: a name, an IPv4 address, or an IPv6 address in brackets (`[::1]`). `None`:
+    /// 127.0.0.1.
+    pub host: Option<String>,
+    pub port: u16,
+}
+
+impl ControlTarget {
+    /// Can the desktop app's control server, which listens on 127.0.0.1 only, serve this target?
+    /// True for no host, `127.0.0.1` and `localhost`; `[::1]` is another address.
+    pub fn is_loopback(&self) -> bool {
+        self.host.as_deref().is_none_or(|host| ["127.0.0.1", "localhost"].contains(&host))
+    }
+}
+
+/// `host:port`, as a socket address is written.
+impl fmt::Display for ControlTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.host.as_deref().unwrap_or("127.0.0.1"), self.port)
+    }
+}
+
+/// Why a [`Remote`] request failed.
+#[derive(Debug, thiserror::Error)]
+pub enum RemoteError {
+    /// The host name didn't resolve.
+    #[error("{addr}: {source}")]
+    Resolve { addr: String, source: io::Error },
+    #[error("cannot reach SoundCraft at {addr}: no addresses found")]
+    NoAddress { addr: String },
+    #[error("cannot reach SoundCraft at {addr}: {source}")]
+    Unreachable { addr: String, source: io::Error },
+    /// Reading or writing the connection failed.
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    /// The app closed the connection before it replied.
+    #[error("connection closed")]
+    Closed,
+    /// The reply isn't JSON.
+    #[error(transparent)]
+    Reply(#[from] serde_json::Error),
+    /// The app's reply to a request it refused.
+    #[error("{0}")]
+    App(String),
+    /// The connection was lost after a request that changes state went out: it isn't repeated,
+    /// since the app may already have executed it.
+    #[error("{source}; `{method}` may or may not have been executed, check the session before repeating it")]
+    Unconfirmed { method: String, source: Box<RemoteError> },
+}
+
+impl RemoteError {
+    /// The connection went away, so a fresh one may succeed.
+    fn is_lost_connection(&self) -> bool {
+        match self {
+            RemoteError::Closed => true,
+            RemoteError::Io(e) => matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted),
+            _ => false,
+        }
+    }
+}
+
+type Connection = (TcpStream, BufReader<TcpStream>);
+
 /// A TCP client for a running app's control channel.
 pub struct Remote {
+    /// The target as `host:port`, for connecting and for messages.
     addr: String,
-    conn: Option<(TcpStream, BufReader<TcpStream>)>,
+    conn: Option<Connection>,
     next_id: u64,
 }
 
 impl Remote {
-    /// `target` is a port (`7979`) or `host:port`.
-    pub fn new(target: &str) -> Self {
-        let addr = if target.contains(':') { target.to_string() } else { format!("127.0.0.1:{target}") };
-        Remote { addr, conn: None, next_id: 1 }
+    /// A client for the app at `target`; it connects on the first request.
+    pub fn new(target: &ControlTarget) -> Self {
+        Remote { addr: target.to_string(), conn: None, next_id: 1 }
     }
 
-    fn connect(&mut self) -> Result<(), String> {
-        if self.conn.is_some() {
-            return Ok(());
+    /// The open connection, connecting first when there is none.
+    fn connection(&mut self) -> Result<&mut Connection, RemoteError> {
+        match self.conn {
+            Some(ref mut conn) => Ok(conn),
+            None => Ok(self.conn.insert(connect(&self.addr)?)),
         }
-        let socks: Vec<_> = self.addr.to_socket_addrs().map_err(|e| format!("{}: {e}", self.addr))?.collect();
-        let mut last = "no addresses found".to_string();
-        let mut stream = None;
-        for sock in &socks {
-            match TcpStream::connect_timeout(sock, Duration::from_millis(800)) {
-                Ok(s) => {
-                    stream = Some(s);
-                    break;
-                }
-                Err(e) => last = e.to_string(),
-            }
-        }
-        let s = stream.ok_or_else(|| format!("cannot reach SoundCraft at {}: {last}", self.addr))?;
-        s.set_read_timeout(Some(Duration::from_secs(120))).map_err(|e| e.to_string())?;
-        let r = s.try_clone().map_err(|e| e.to_string())?;
-        self.conn = Some((s, BufReader::new(r)));
-        Ok(())
     }
 
     /// One request/reply exchange. On failure the flag says whether the request line was already
     /// written to the socket (so the app may have executed it).
-    fn roundtrip(&mut self, method: &str, params: &Value) -> Result<Value, (String, bool)> {
-        self.connect().map_err(|e| (e, false))?;
+    fn roundtrip(&mut self, method: &str, params: &Value) -> Result<Value, (RemoteError, bool)> {
         let id = self.next_id;
         self.next_id += 1;
         let line = json!({"id": id, "method": method, "params": params}).to_string();
-        let (w, r) = self.conn.as_mut().ok_or_else(|| ("not connected".to_string(), false))?;
-        writeln!(w, "{line}").map_err(|e| (e.to_string(), false))?;
+        let (w, r) = self.connection().map_err(|e| (e, false))?;
+        writeln!(w, "{line}").map_err(|e| (e.into(), false))?;
         let mut buf = String::new();
-        r.read_line(&mut buf).map_err(|e| (e.to_string(), true))?;
+        r.read_line(&mut buf).map_err(|e| (e.into(), true))?;
         if buf.is_empty() {
-            return Err(("connection closed".into(), true));
+            return Err((RemoteError::Closed, true));
         }
-        let v: Value = serde_json::from_str(&buf).map_err(|e| (e.to_string(), true))?;
+        let v: Value = serde_json::from_str(&buf).map_err(|e| (e.into(), true))?;
         if v.get("ok").and_then(Value::as_bool).unwrap_or(false) {
             Ok(v.get("result").cloned().unwrap_or(Value::Null))
         } else {
-            Err((v.get("error").and_then(Value::as_str).unwrap_or("error").to_string(), true))
+            Err((RemoteError::App(v.get("error").and_then(Value::as_str).unwrap_or("error").to_string()), true))
         }
     }
+
+    /// Calls `method`. A request lost with its connection is sent once more on a fresh one when
+    /// it only reads state.
+    pub fn request(&mut self, method: &str, params: Value) -> Result<Value, RemoteError> {
+        match self.roundtrip(method, &params) {
+            Ok(v) => Ok(v),
+            Err((e, sent)) if e.is_lost_connection() => {
+                self.conn = None;
+                if sent && !is_read_only(method) {
+                    return Err(RemoteError::Unconfirmed { method: method.to_owned(), source: Box::new(e) });
+                }
+                self.roundtrip(method, &params).map_err(|(e, _)| e)
+            }
+            Err((e, _)) => Err(e),
+        }
+    }
+}
+
+/// Connects to `addr` (`host:port`), trying each address it resolves to.
+fn connect(addr: &str) -> Result<Connection, RemoteError> {
+    let socks = addr.to_socket_addrs().map_err(|source| RemoteError::Resolve { addr: addr.to_owned(), source })?;
+    let mut last = None;
+    for sock in socks {
+        match TcpStream::connect_timeout(&sock, Duration::from_millis(800)) {
+            Ok(s) => {
+                s.set_read_timeout(Some(Duration::from_secs(120)))?;
+                let r = s.try_clone()?;
+                return Ok((s, BufReader::new(r)));
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(match last {
+        Some(source) => RemoteError::Unreachable { addr: addr.to_owned(), source },
+        None => RemoteError::NoAddress { addr: addr.to_owned() },
+    })
 }
 
 /// Methods that only read state, so repeating them after a lost reply is harmless.
@@ -146,19 +238,7 @@ fn is_read_only(method: &str) -> bool {
 
 impl Backend for Remote {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
-        match self.roundtrip(method, &params) {
-            Ok(v) => Ok(v),
-            Err((e, sent)) if e.contains("closed") || e.contains("Broken pipe") || e.contains("reset") => {
-                self.conn = None;
-                if sent && !is_read_only(method) {
-                    // The app may already have executed the request; repeating it could apply it twice.
-                    return Err(format!("{e}; `{method}` may or may not have been executed, check the session before repeating it"));
-                }
-                // Retry once on a fresh connection.
-                self.roundtrip(method, &params).map_err(|(e, _)| e)
-            }
-            Err((e, _)) => Err(e),
-        }
+        self.request(method, params).map_err(|e| e.to_string())
     }
     fn has_ui(&self) -> bool {
         true
@@ -185,23 +265,25 @@ mod tests {
 
     #[test]
     fn remote_reports_unreachable() {
-        let mut r = Remote::new("127.0.0.1:1");
-        assert!(r.call("session.inspect", json!({})).is_err());
+        let mut r = Remote::new(&ControlTarget { host: Some("127.0.0.1".into()), port: 1 });
+        let e = r.request("session.inspect", json!({})).unwrap_err();
+        assert!(matches!(e, RemoteError::Unreachable { .. }), "{e:?}");
+        assert!(e.to_string().starts_with("cannot reach SoundCraft at 127.0.0.1:1: "), "{e}");
     }
 
     #[test]
     fn remote_resolves_hostnames() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let mut r = Remote::new(&format!("localhost:{port}"));
-        assert_eq!(r.connect(), Ok(()));
+        let mut r = Remote::new(&ControlTarget { host: Some("localhost".into()), port });
+        assert!(r.connection().is_ok());
     }
 
     /// Fake app: accepts one connection per entry in `replies`, counts the request line it reads,
     /// then either drops the connection (`false`) or answers ok (`true`).
-    fn fake_app(replies: Vec<bool>) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    fn fake_app(replies: Vec<bool>) -> (ControlTarget, Arc<std::sync::atomic::AtomicUsize>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
+        let addr = ControlTarget { host: None, port: listener.local_addr().unwrap().port() };
         let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = seen.clone();
         std::thread::spawn(move || {

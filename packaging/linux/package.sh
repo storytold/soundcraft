@@ -16,7 +16,8 @@
 #
 # Cross-compiling (CI's linux-riscv64 job, tar.gz only): set CROSS_ARCH (riscv64), CROSS_TARGET
 # (the Rust target), CROSS_COMPILE (the binutils prefix, for strip) and optionally EMULATOR
-# (e.g. qemu-riscv64) to smoke-test the CLI.
+# (e.g. qemu-riscv64) to smoke-test the CLI and run the example that writes its man pages and
+# completions.
 set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
@@ -29,7 +30,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --formats) FORMATS="$2"; shift 2 ;;
-    -h | --help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -46,11 +47,15 @@ BASENAME="soundcraft-$VERSION-linux-$ARCH"
 
 echo "==> SoundCraft $VERSION for Linux $ARCH ($FORMATS)"
 
+# The man-and-completions example is built with the binaries: it writes soundcraft-cli's man pages
+# and shell completions below.
 if [[ "$SKIP_BUILD" = 0 ]]; then
   if [[ -n "${CROSS_TARGET:-}" ]]; then
-    (cd "$ROOT" && cargo build --release --locked -p soundcraft -p soundcraft-cli --target "$CROSS_TARGET")
+    (cd "$ROOT" && cargo build --release --locked -p soundcraft -p soundcraft-cli \
+      --bins --example man-and-completions --target "$CROSS_TARGET")
   else
-    (cd "$ROOT" && cargo build --release --locked -p soundcraft -p soundcraft-cli)
+    (cd "$ROOT" && cargo build --release --locked -p soundcraft -p soundcraft-cli \
+      --bins --example man-and-completions)
   fi
 fi
 BIN="$CARGO_TARGET_DIR/${CROSS_TARGET:+$CROSS_TARGET/}release"
@@ -71,6 +76,28 @@ mkdir -p "$STAGE/usr/share/icons"
 cp -R "$ROOT/assets/app-icon/hicolor" "$STAGE/usr/share/icons/"
 mkdir -p "$STAGE/usr/share/doc/soundcraft"
 copy_docs "$STAGE/usr/share/doc/soundcraft"
+# soundcraft-cli's man pages and shell completions, from its clap definition, written by the
+# example built above. A cross build runs it through $EMULATOR, like the --version check at the
+# end, and leaves them out without one. zsh reads site-functions on Fedora and openSUSE; the deb
+# also links the completion into Debian's vendor-completions (nfpm.yaml).
+CLI_DOCS="$BIN/examples/man-and-completions"
+if [[ -n "${CROSS_TARGET:-}" ]] && [[ -z "${EMULATOR:-}" ]]; then
+  warn "no EMULATOR to run the $CROSS_TARGET build, so soundcraft-cli's man pages and completions are left out"
+else
+  if [[ ! -x "$CLI_DOCS" ]]; then
+    echo "error: $CLI_DOCS is missing: build it with the binaries (without --skip-build)" >&2
+    exit 1
+  fi
+  if [[ -n "${CROSS_TARGET:-}" ]]; then
+    "$EMULATOR" "$CLI_DOCS" "$WORK/cli-docs"
+  else
+    "$CLI_DOCS" "$WORK/cli-docs"
+  fi
+  install -Dm644 -t "$STAGE/usr/share/man/man1" "$WORK"/cli-docs/*.1
+  install -Dm644 "$WORK/cli-docs/soundcraft-cli.bash" "$STAGE/usr/share/bash-completion/completions/soundcraft-cli"
+  install -Dm644 "$WORK/cli-docs/_soundcraft-cli" "$STAGE/usr/share/zsh/site-functions/_soundcraft-cli"
+  install -Dm644 "$WORK/cli-docs/soundcraft-cli.fish" "$STAGE/usr/share/fish/vendor_completions.d/soundcraft-cli.fish"
+fi
 
 if command -v desktop-file-validate >/dev/null; then
   desktop-file-validate "$STAGE/usr/share/applications/$APP_ID.desktop"
@@ -98,7 +125,11 @@ if has deb || has rpm; then
   export VERSION
   export NFPM_ARCH="$DEB_ARCH"
   # nfpm expands env vars in fields like `version` and `arch`, but not in `contents[].src`.
-  sed "s|\${STAGE}|$STAGE|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
+  # Without the completions (a cross build with no EMULATOR) the deb's zsh symlink would dangle,
+  # so its entry is dropped too.
+  DROP_ZSH_LINK=
+  [[ -f "$STAGE/usr/share/zsh/site-functions/_soundcraft-cli" ]] || DROP_ZSH_LINK='\|^  - src: /usr/share/zsh/site-functions/|,/packager: deb/d;'
+  sed "${DROP_ZSH_LINK}s|\${STAGE}|$STAGE|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
   for fmt in deb rpm; do
     if has "$fmt"; then (cd "$ROOT" && nfpm package -f "$WORK/nfpm.yaml" -p "$fmt" -t "$DIST/$BASENAME.$fmt"); fi
   done

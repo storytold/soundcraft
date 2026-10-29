@@ -236,7 +236,7 @@ fn predict_block(f: &Frame, mv: [i16; 2], px: usize, py: usize, bw: usize, bh: u
     let (fx, fy) = ((mv[0] & 7) as u32, (mv[1] & 7) as u32);
     for (comp, out) in c.into_iter().enumerate() {
         let mut w = [0u8; 16 * 9];
-        f.chroma_window(comp, cx, cy, cw + 1, ch + 1, &mut w, 16);
+        f.chroma_window(comp, (cx, cy), cw + 1, ch + 1, &mut w, 16);
         inter::mc_chroma_win(&w, 16, fx, fy, cw, ch, out, cs);
     }
 }

@@ -1,5 +1,6 @@
 //! The browser shell: the eframe web runner around [`SoundApp`].
 
+use soundcraft_audio_io::FileFormat;
 use soundcraft_engine::{Engine, io};
 use soundcraft_ui_egui::dialogs::Dialog;
 use soundcraft_ui_egui::sampler_window::SampleRead;
@@ -67,8 +68,6 @@ enum Purpose {
 }
 
 const SESSION_EXTS: &[&str] = &[io::BUNDLE_EXTENSION, soundcraft_model::SESSION_EXTENSION];
-const AUDIO_EXTS: &[&str] =
-    &["wav", "wave", "bwf", "aif", "aiff", "aifc", "flac", "mp3", "ogg", "oga", "m4a", "m4b", "aac", "mp4", "caf", "mkv", "webm"];
 const MIDI_EXTS: &[&str] = &["mid", "midi", "smf"];
 
 impl Purpose {
@@ -94,11 +93,11 @@ impl Purpose {
         }
     }
 
-    fn filter(self) -> (&'static str, &'static [&'static str]) {
+    fn filter(self) -> (&'static str, Vec<&'static str>) {
         match self {
-            Self::Session => ("SoundCraft Session", SESSION_EXTS),
-            Self::Audio => ("Audio", AUDIO_EXTS),
-            Self::Midi => ("MIDI", MIDI_EXTS),
+            Self::Session => ("SoundCraft Session", SESSION_EXTS.to_vec()),
+            Self::Audio => ("Audio", FileFormat::readable_extensions()),
+            Self::Midi => ("MIDI", MIDI_EXTS.to_vec()),
         }
     }
 }
@@ -130,7 +129,7 @@ impl WebShell {
         let (inbox, ctx) = (self.inbox.clone(), ctx.clone());
         wasm_bindgen_futures::spawn_local(async move {
             let (label, exts) = purpose.filter();
-            let Some(file) = rfd::AsyncFileDialog::new().add_filter(label, exts).pick_file().await else { return };
+            let Some(file) = rfd::AsyncFileDialog::new().add_filter(label, &exts).pick_file().await else { return };
             let bytes = file.read().await;
             inbox.borrow_mut().push((purpose, file.file_name(), bytes));
             ctx.request_repaint();
@@ -228,17 +227,15 @@ fn download(name: &str, bytes: &[u8]) -> Result<(), String> {
     let document = window.document().ok_or("no document")?;
     let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
     let opts = web_sys::BlobPropertyBag::new();
-    opts.set_type(match name.rsplit_once('.').map(|(_, x)| x.to_ascii_lowercase()).as_deref() {
+    let ext = name.rsplit_once('.').map(|(_, x)| x.to_ascii_lowercase());
+    opts.set_type(match ext.as_deref() {
         Some("scraftz") => "application/zip",
-        Some("wav") => "audio/wav",
-        Some("aif" | "aiff") => "audio/aiff",
-        Some("flac") => "audio/flac",
         Some("mid" | "midi") => "audio/midi",
         Some("svg") => "image/svg+xml",
         Some("txt") => "text/plain",
         Some("json" | "scraft") => "application/json",
         Some("musicxml") => "application/vnd.recordare.musicxml+xml",
-        _ => "application/octet-stream",
+        ext => ext.and_then(FileFormat::from_extension).map_or("application/octet-stream", FileFormat::mime_type),
     });
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).map_err(js)?;
     let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js)?;

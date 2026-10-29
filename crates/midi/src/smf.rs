@@ -439,6 +439,70 @@ fn write_track(out: &mut Vec<u8>, mut events: Vec<WEvent>) -> Result<(), MidiErr
     Ok(())
 }
 
+/// The conductor track: tempos, meters, key signatures and markers.
+fn conductor_events(smf: &Smf) -> Result<Vec<WEvent>, MidiError> {
+    let mut ev = Vec::new();
+    for &(t, bpm) in &smf.tempos {
+        if !bpm.is_finite() || bpm <= 0.0 {
+            return Err(MidiError::Write(format!("invalid tempo {bpm} bpm")));
+        }
+        let us = (60_000_000.0 / bpm).round().clamp(1.0, f64::from(0x00FF_FFFFu32)) as u32;
+        let [_, a, b, c] = us.to_be_bytes();
+        ev.push(WEvent { tick: clamp_tick(t), order: 0, bytes: meta(0x51, &[a, b, c])? });
+    }
+    for &(t, num, den) in &smf.meters {
+        if den == 0 || !den.is_power_of_two() {
+            return Err(MidiError::Write(format!("meter denominator {den} is not a power of two")));
+        }
+        let dd = den.trailing_zeros() as u8;
+        ev.push(WEvent { tick: clamp_tick(t), order: 1, bytes: meta(0x58, &[num, dd, 24, 8])? });
+    }
+    for &(t, sf, minor) in &smf.key_sigs {
+        let sf = sf.clamp(-7, 7);
+        ev.push(WEvent { tick: clamp_tick(t), order: 2, bytes: meta(0x59, &[sf as u8, u8::from(minor)])? });
+    }
+    for (t, text) in &smf.markers {
+        ev.push(WEvent { tick: clamp_tick(*t), order: 3, bytes: meta(0x06, text.as_bytes())? });
+    }
+    Ok(ev)
+}
+
+/// Trim notes still sounding when the next same-pitch note starts, and drop duplicates.
+fn trim_overlaps(notes: &[Note], ends: &mut [u64], dropped: &mut [bool]) {
+    // The reader pairs offs with ons first-in first-out, so a note still sounding when the next
+    // same-pitch note starts would swap ends with it: trim it to that start. When two same-pitch
+    // notes start on the same tick they cannot be told apart, so only the longer one is written.
+    let mut order: Vec<usize> = (0..notes.len()).collect();
+    order.sort_by_key(|&i| {
+        notes.get(i).map_or((0, 0, 0, std::cmp::Reverse(0)), |n| {
+            (n.channel & 0x0F, n.pitch.min(127), clamp_tick(n.start), std::cmp::Reverse(ends.get(i).copied().unwrap_or(0)))
+        })
+    });
+    let mut prev: Option<usize> = None;
+    for &b in &order {
+        let Some(nb) = notes.get(b) else { continue };
+        if let Some(a) = prev
+            && let Some(na) = notes.get(a)
+            && na.channel & 0x0F == nb.channel & 0x0F
+            && na.pitch.min(127) == nb.pitch.min(127)
+        {
+            let (sa, sb) = (clamp_tick(na.start), clamp_tick(nb.start));
+            if sa == sb {
+                if let Some(d) = dropped.get_mut(b) {
+                    *d = true;
+                }
+                continue;
+            }
+            if let Some(ea) = ends.get_mut(a)
+                && sb < *ea
+            {
+                *ea = sb;
+            }
+        }
+        prev = Some(b);
+    }
+}
+
 /// Writes a format-1 Standard MIDI File at [`PPQ`] (960) ticks per quarter note.
 ///
 /// Track 1 is a conductor track holding tempos, meters, key signatures and markers; every
@@ -463,29 +527,7 @@ pub fn write_smf(smf: &Smf) -> Result<Vec<u8>, MidiError> {
     out.extend_from_slice(&u16::try_from(PPQ).unwrap_or(960).to_be_bytes());
 
     // Conductor track.
-    let mut ev = Vec::new();
-    for &(t, bpm) in &smf.tempos {
-        if !bpm.is_finite() || bpm <= 0.0 {
-            return Err(MidiError::Write(format!("invalid tempo {bpm} bpm")));
-        }
-        let us = (60_000_000.0 / bpm).round().clamp(1.0, f64::from(0x00FF_FFFFu32)) as u32;
-        let [_, a, b, c] = us.to_be_bytes();
-        ev.push(WEvent { tick: clamp_tick(t), order: 0, bytes: meta(0x51, &[a, b, c])? });
-    }
-    for &(t, num, den) in &smf.meters {
-        if den == 0 || !den.is_power_of_two() {
-            return Err(MidiError::Write(format!("meter denominator {den} is not a power of two")));
-        }
-        let dd = den.trailing_zeros() as u8;
-        ev.push(WEvent { tick: clamp_tick(t), order: 1, bytes: meta(0x58, &[num, dd, 24, 8])? });
-    }
-    for &(t, sf, minor) in &smf.key_sigs {
-        let sf = sf.clamp(-7, 7);
-        ev.push(WEvent { tick: clamp_tick(t), order: 2, bytes: meta(0x59, &[sf as u8, u8::from(minor)])? });
-    }
-    for (t, text) in &smf.markers {
-        ev.push(WEvent { tick: clamp_tick(*t), order: 3, bytes: meta(0x06, text.as_bytes())? });
-    }
+    let ev = conductor_events(smf)?;
     if has_conductor {
         write_track(&mut out, ev)?;
     }
@@ -498,38 +540,7 @@ pub fn write_smf(smf: &Smf) -> Result<Vec<u8>, MidiError> {
         let notes = &track.sequence.notes;
         let mut ends: Vec<u64> = notes.iter().map(|n| clamp_tick(n.end()).max(clamp_tick(n.start).saturating_add(1))).collect();
         let mut dropped = vec![false; notes.len()];
-        // The reader pairs offs with ons first-in first-out, so a note still sounding when the next
-        // same-pitch note starts would swap ends with it: trim it to that start. When two same-pitch
-        // notes start on the same tick they cannot be told apart, so only the longer one is written.
-        let mut order: Vec<usize> = (0..notes.len()).collect();
-        order.sort_by_key(|&i| {
-            notes.get(i).map_or((0, 0, 0, std::cmp::Reverse(0)), |n| {
-                (n.channel & 0x0F, n.pitch.min(127), clamp_tick(n.start), std::cmp::Reverse(ends.get(i).copied().unwrap_or(0)))
-            })
-        });
-        let mut prev: Option<usize> = None;
-        for &b in &order {
-            let Some(nb) = notes.get(b) else { continue };
-            if let Some(a) = prev
-                && let Some(na) = notes.get(a)
-                && na.channel & 0x0F == nb.channel & 0x0F
-                && na.pitch.min(127) == nb.pitch.min(127)
-            {
-                let (sa, sb) = (clamp_tick(na.start), clamp_tick(nb.start));
-                if sa == sb {
-                    if let Some(d) = dropped.get_mut(b) {
-                        *d = true;
-                    }
-                    continue;
-                }
-                if let Some(ea) = ends.get_mut(a)
-                    && sb < *ea
-                {
-                    *ea = sb;
-                }
-            }
-            prev = Some(b);
-        }
+        trim_overlaps(notes, &mut ends, &mut dropped);
         for (i, n) in notes.iter().enumerate() {
             if dropped.get(i).copied().unwrap_or(false) {
                 continue;

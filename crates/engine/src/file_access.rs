@@ -48,16 +48,28 @@ struct Root {
     shown: PathBuf,
 }
 
+/// A root [`AutomationRoots::new`] can't open: missing, unreadable, or not a folder.
+#[derive(Debug, thiserror::Error)]
+#[error("cannot open the automation {} root `{}`: {source}", kind(.access), .path.display())]
+pub struct RootError {
+    access: Access,
+    path: PathBuf,
+    source: std::io::Error,
+}
+
+fn kind(access: &Access) -> &'static str {
+    match access {
+        Access::Read => "read",
+        Access::Write => "write",
+    }
+}
+
 impl Root {
     /// The folder at `path`, which must exist.
-    fn open(path: &Path, access: Access) -> Result<Self, String> {
-        let kind = match access {
-            Access::Read => "read",
-            Access::Write => "write",
-        };
+    fn open(path: &Path, access: Access) -> Result<Self, RootError> {
         let resolved = std::fs::canonicalize(path)
             .and_then(|p| if p.is_dir() { Ok(p) } else { Err(std::io::ErrorKind::NotADirectory.into()) })
-            .map_err(|e| format!("cannot open the automation {kind} root `{}`: {e}", path.display()))?;
+            .map_err(|source| RootError { access, path: path.to_owned(), source })?;
         Ok(Self { shown: plain(resolved.clone()), resolved })
     }
 }
@@ -65,11 +77,11 @@ impl Root {
 impl AutomationRoots {
     /// The roots `read` and `write`, which must be existing folders (one given twice counts once);
     /// `None` when neither kind has any (nothing is confined then).
-    pub fn new(read: &[&Path], write: &[&Path]) -> Result<Option<Arc<Self>>, String> {
+    pub fn new(read: &[&Path], write: &[&Path]) -> Result<Option<Arc<Self>>, RootError> {
         if read.is_empty() && write.is_empty() {
             return Ok(None);
         }
-        let open = |paths: &[&Path], access: Access| -> Result<Vec<Root>, String> {
+        let open = |paths: &[&Path], access: Access| -> Result<Vec<Root>, RootError> {
             let mut roots: Vec<Root> = Vec::with_capacity(paths.len());
             for path in paths {
                 let root = Root::open(path, access)?;
@@ -354,15 +366,15 @@ mod tests {
     #[test]
     fn a_missing_root_is_an_error_and_none_is_no_confinement() {
         let (base, _) = folders("missing");
-        let e = AutomationRoots::new(&[&base.join("nope")], &[]).unwrap_err();
+        let e = AutomationRoots::new(&[&base.join("nope")], &[]).unwrap_err().to_string();
         assert!(e.starts_with("cannot open the automation read root"), "{e}");
-        let e = AutomationRoots::new(&[], &[&base.join("in/a.scraft")]).unwrap_err();
+        let e = AutomationRoots::new(&[], &[&base.join("in/a.scraft")]).unwrap_err().to_string();
         assert!(
             e.starts_with("cannot open the automation write root")
                 && e.ends_with(&std::io::Error::from(std::io::ErrorKind::NotADirectory).to_string()),
             "{e}"
         );
-        assert!(AutomationRoots::new(&[Path::new("")], &[]).unwrap_err().starts_with("cannot open the automation read root ``"));
+        assert!(AutomationRoots::new(&[Path::new("")], &[]).unwrap_err().to_string().starts_with("cannot open the automation read root ``"));
         assert!(AutomationRoots::new(&[], &[]).unwrap().is_none());
         // One root alone grants only its own access.
         let read_only = AutomationRoots::new(&[&base.join("in")], &[]).unwrap().unwrap();
@@ -440,7 +452,7 @@ mod tests {
         let twice = AutomationRoots::new(&[&base.join("in"), &base.join("in/sub/..")], &[]).unwrap().unwrap();
         assert!(!twice.describe().contains(", ") && twice.describe().ends_with("; write none"), "{}", twice.describe());
         // A missing folder among several is an error.
-        let e = AutomationRoots::new(&[&base.join("in"), &base.join("nope")], &[]).unwrap_err();
+        let e = AutomationRoots::new(&[&base.join("in"), &base.join("nope")], &[]).unwrap_err().to_string();
         assert!(e.starts_with("cannot open the automation read root"), "{e}");
         let _ = std::fs::remove_dir_all(base);
     }
@@ -540,8 +552,17 @@ mod tests {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
-            // Test modules (which build their own fixtures) come last in each file.
-            let code = text.split("#[cfg(test)]").next().unwrap_or("");
+            // Inline test modules (which build their own fixtures) come last in each file. Cut only
+            // there: `#[cfg(test)]` also marks `use` lines and `mod tests;` declarations above code.
+            let lines: Vec<&str> = text.lines().collect();
+            let test_module =
+                (0..lines.len()).find(|&i| {
+                    lines[i].trim() == "#[cfg(test)]"
+                        && lines[i + 1..].iter().map(|l| l.trim()).find(|l| !l.starts_with("#[")).is_some_and(|l| {
+                            (l.starts_with("mod ") || l.starts_with("pub mod ") || l.starts_with("pub(crate) mod ")) && l.ends_with('{')
+                        })
+                });
+            let code = lines[..test_module.unwrap_or(lines.len())].join("\n");
             for (n, line) in code.lines().enumerate() {
                 let line = line.trim_start();
                 let touches =

@@ -502,7 +502,10 @@ pub struct Maximizer {
     sr: f32,
     la: usize,
     delay: Vec<DelayLine>,
-    req: Vec<f32>,
+    win: Vec<(u64, f32)>,
+    win_head: usize,
+    win_len: usize,
+    clock: u64,
     smooth: Vec<f32>,
     idx: usize,
     sum: f64,
@@ -526,7 +529,10 @@ impl Maximizer {
             sr: 48_000.0,
             la: 1,
             delay: Vec::new(),
-            req: vec![1.0],
+            win: vec![(0, 1.0)],
+            win_head: 0,
+            win_len: 0,
+            clock: 0,
             smooth: vec![1.0],
             idx: 0,
             sum: 1.0,
@@ -547,6 +553,40 @@ impl Maximizer {
         self.ceiling.snap();
         self.rel = time_coef(self.p.v(2), self.sr);
     }
+
+    fn window_min(&mut self, req: f32, la: usize) -> f32 {
+        let cap = self.win.len();
+        let t = self.clock;
+        self.clock = t.saturating_add(1);
+        if cap == 0 {
+            return req.min(1.0);
+        }
+        while self.win_len > 0 && self.win.get(self.win_head).is_some_and(|&(at, _)| at.saturating_add(la as u64) <= t) {
+            self.win_head = wrap(self.win_head + 1, cap);
+            self.win_len -= 1;
+        }
+        if !req.is_nan() {
+            while self.win_len > 0 && self.win.get(wrap(self.win_head + self.win_len - 1, cap)).is_some_and(|&(_, v)| v >= req) {
+                self.win_len -= 1;
+            }
+            if self.win_len == cap {
+                self.win_head = wrap(self.win_head + 1, cap);
+                self.win_len -= 1;
+            }
+            if let Some(slot) = self.win.get_mut(wrap(self.win_head + self.win_len, cap)) {
+                *slot = (t, req);
+                self.win_len += 1;
+            }
+        }
+        match self.win.get(self.win_head) {
+            Some(&(_, v)) if self.win_len > 0 => v.min(1.0),
+            _ => 1.0,
+        }
+    }
+}
+
+fn wrap(i: usize, n: usize) -> usize {
+    if i < n { i } else { i % n }
 }
 
 impl Plugin for Maximizer {
@@ -562,7 +602,7 @@ impl Plugin for Maximizer {
                 d
             })
             .collect();
-        self.req = vec![1.0; self.la];
+        self.win = vec![(0, 1.0); self.la];
         self.smooth = vec![1.0; self.la];
         self.drive.set_time(20.0, self.sr);
         self.ceiling.set_time(20.0, self.sr);
@@ -572,7 +612,9 @@ impl Plugin for Maximizer {
 
     fn reset(&mut self) {
         self.delay.iter_mut().for_each(DelayLine::clear);
-        self.req.iter_mut().for_each(|v| *v = 1.0);
+        self.win_head = 0;
+        self.win_len = 0;
+        self.clock = 0;
         self.smooth.iter_mut().for_each(|v| *v = 1.0);
         self.sum = self.la as f64;
         self.held = 1.0;
@@ -598,16 +640,13 @@ impl Plugin for Maximizer {
                 peak = peak.max(x.abs());
             }
             let req = if peak > ceil { ceil / peak } else { 1.0 };
-            if let Some(r) = self.req.get_mut(self.idx) {
-                *r = req;
-            }
-            let hold = self.req.iter().copied().fold(1.0f32, f32::min);
+            let hold = self.window_min(req, la);
             self.held = if hold < self.held { hold } else { hold + (self.held - hold) * self.rel };
             if let Some(s) = self.smooth.get_mut(self.idx) {
                 self.sum += f64::from(self.held) - f64::from(*s);
                 *s = self.held;
             }
-            self.idx = (self.idx + 1) % la;
+            self.idx = wrap(self.idx + 1, la);
             if self.idx == 0 {
                 // Re-sum once per window to cancel floating-point drift.
                 self.sum = self.smooth.iter().map(|&v| f64::from(v)).sum();

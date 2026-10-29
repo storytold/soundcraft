@@ -619,6 +619,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             }
             let mut snap = app.ui.clone();
             snap.configurations.clear();
+            snap.docking_version = crate::docking::LAYOUT_VERSION;
             let v = serde_json::to_value(&snap).unwrap_or_default();
             if id == "window.config_update" && !app.ui.configurations.is_empty() {
                 if let Some(last) = app.ui.configurations.last_mut() {

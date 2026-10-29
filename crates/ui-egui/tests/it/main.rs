@@ -13,6 +13,7 @@ mod clip_looping;
 mod clip_menu;
 mod command_reachability;
 mod commands_filter;
+mod docking_columns;
 mod docking_workflows;
 mod edit_menu;
 mod edit_modes;

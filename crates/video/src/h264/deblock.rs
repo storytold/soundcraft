@@ -279,7 +279,6 @@ fn filter_horizontal<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y:
 }
 
 /// Deblock one macroblock (macroblocks must be processed in raster order).
-#[allow(clippy::needless_range_loop)]
 pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
     let q = &pic.mbs[addr];
     if q.slice_num == u32::MAX {
@@ -303,6 +302,23 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
     let alpha_off = sq.alpha_offset;
     let beta_off = sq.beta_offset;
     let t8 = q.transform_8x8;
+    let bs = boundary_strengths(pic, q, sq, left, top, t8);
+    let qp_of = |st: &MbState| if st.kind == MbKind::IPcm { 0 } else { st.qp as i32 };
+    let q_qp = qp_of(q);
+    let q_qpc = q.qpc;
+    let p_qp = [left.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc)), top.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc))];
+    let params = |qpp: i32, qpq: i32, b: [u8; 4]| {
+        let qpav = (qpp + qpq + 1) >> 1;
+        let index_a = (qpav + alpha_off).clamp(0, 51) as usize;
+        let index_b = (qpav + beta_off).clamp(0, 51) as usize;
+        let tc = |b: u8| if (1..4).contains(&b) { TC0[index_a][b as usize - 1] as i32 } else { 0 };
+        EdgeParams { bs: b, tc0: [tc(b[0]), tc(b[1]), tc(b[2]), tc(b[3])], alpha: ALPHA[index_a] as i32, beta: BETA[index_b] as i32 }
+    };
+    filter_luma(pic, (mx, my), &bs, q_qp, p_qp, &params);
+    filter_chroma(pic, (mx, my), &bs, q_qpc, p_qp, &params);
+}
+
+fn boundary_strengths(pic: &PicState, q: &MbState, sq: &SliceInfo, left: Option<usize>, top: Option<usize>, t8: bool) -> [[[u8; 4]; 4]; 2] {
     // bS[dir][edge][segment]; dir 0 = vertical edges (x), 1 = horizontal edges (y)
     let mut bs = [[[0u8; 4]; 4]; 2];
     if q.kind.is_intra() {
@@ -356,20 +372,18 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
             }
         }
     }
-    let qp_of = |st: &MbState| if st.kind == MbKind::IPcm { 0 } else { st.qp as i32 };
-    let q_qp = qp_of(q);
-    let q_qpc = q.qpc;
-    let p_qp = [left.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc)), top.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc))];
-    let params = |qpp: i32, qpq: i32, b: [u8; 4]| {
-        let qpav = (qpp + qpq + 1) >> 1;
-        let index_a = (qpav + alpha_off).clamp(0, 51) as usize;
-        let index_b = (qpav + beta_off).clamp(0, 51) as usize;
-        let tc = |b: u8| if (1..4).contains(&b) { TC0[index_a][b as usize - 1] as i32 } else { 0 };
-        EdgeParams { bs: b, tc0: [tc(b[0]), tc(b[1]), tc(b[2]), tc(b[3])], alpha: ALPHA[index_a] as i32, beta: BETA[index_b] as i32 }
-    };
+    bs
+}
+
+fn filter_luma(
+    pic: &mut PicState,
+    (mx, my): (usize, usize),
+    bs: &[[[u8; 4]; 4]; 2],
+    q_qp: i32,
+    p_qp: [Option<(i32, [u8; 2])>; 2],
+    params: &impl Fn(i32, i32, [u8; 4]) -> EdgeParams,
+) {
     let width = pic.planes.width;
-    let cwidth = pic.planes.cwidth;
-    // luma
     for dir in 0..2 {
         for e in 0..4 {
             if bs[dir][e] == [0; 4] {
@@ -389,6 +403,17 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
             }
         }
     }
+}
+
+fn filter_chroma(
+    pic: &mut PicState,
+    (mx, my): (usize, usize),
+    bs: &[[[u8; 4]; 4]; 2],
+    q_qpc: [u8; 2],
+    p_qp: [Option<(i32, [u8; 2])>; 2],
+    params: &impl Fn(i32, i32, [u8; 4]) -> EdgeParams,
+) {
+    let cwidth = pic.planes.cwidth;
     // chroma (4:2:0): edges at chroma samples 0 and 4 use the bS of luma edges 0 and 2
     for c in 0..2 {
         for dir in 0..2 {

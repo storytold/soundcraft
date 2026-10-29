@@ -61,125 +61,146 @@ fn load_edge(plane: &[u8], stride: usize, x: usize, y: usize, n: usize, a: Avail
 
 /// Directional / DC prediction shared by Intra_4x4 and Intra_8x8 (8.3.1.2.x, 8.3.2.2.x).
 fn pred_nxn(mode: u8, e: &Edge, n: i32, a: Avail, out: &mut [u8], stride: usize) {
-    let mut put = |x: i32, y: i32, v: i32| out[y as usize * stride + x as usize] = v as u8;
     match mode {
-        0 => {
-            for y in 0..n {
-                for x in 0..n {
-                    put(x, y, e.t(x));
-                }
-            }
+        0 => pred_vertical(e, n, out, stride),
+        1 => pred_horizontal(e, n, out, stride),
+        2 => pred_dc(e, n, a, out, stride),
+        3 => pred_down_left(e, n, out, stride),
+        4 => pred_down_right(e, n, out, stride),
+        5 => pred_vertical_right(e, n, out, stride),
+        6 => pred_horizontal_down(e, n, out, stride),
+        7 => pred_vertical_left(e, n, out, stride),
+        _ => pred_horizontal_up(e, n, out, stride),
+    }
+}
+
+fn put(out: &mut [u8], stride: usize, x: i32, y: i32, value: i32) {
+    out[y as usize * stride + x as usize] = value as u8;
+}
+
+fn pred_vertical(e: &Edge, n: i32, out: &mut [u8], stride: usize) {
+    for y in 0..n {
+        for x in 0..n {
+            put(out, stride, x, y, e.t(x));
         }
-        1 => {
-            for y in 0..n {
-                for x in 0..n {
-                    put(x, y, e.l(y));
-                }
-            }
+    }
+}
+
+fn pred_horizontal(e: &Edge, n: i32, out: &mut [u8], stride: usize) {
+    for y in 0..n {
+        for x in 0..n {
+            put(out, stride, x, y, e.l(y));
         }
-        2 => {
-            let shift = if n == 4 { 2 } else { 3 };
-            let st: i32 = (0..n).map(|x| e.t(x)).sum();
-            let sl: i32 = (0..n).map(|y| e.l(y)).sum();
-            let dc = match (a.top, a.left) {
-                (true, true) => (st + sl + n) >> (shift + 1),
-                (false, true) => (sl + (n >> 1)) >> shift,
-                (true, false) => (st + (n >> 1)) >> shift,
-                _ => 128,
+    }
+}
+
+fn pred_dc(e: &Edge, n: i32, a: Avail, out: &mut [u8], stride: usize) {
+    let shift = if n == 4 { 2 } else { 3 };
+    let st: i32 = (0..n).map(|x| e.t(x)).sum();
+    let sl: i32 = (0..n).map(|y| e.l(y)).sum();
+    let dc = match (a.top, a.left) {
+        (true, true) => (st + sl + n) >> (shift + 1),
+        (false, true) => (sl + (n >> 1)) >> shift,
+        (true, false) => (st + (n >> 1)) >> shift,
+        _ => 128,
+    };
+    for y in 0..n {
+        for x in 0..n {
+            put(out, stride, x, y, dc);
+        }
+    }
+}
+
+fn pred_down_left(e: &Edge, n: i32, out: &mut [u8], stride: usize) {
+    for y in 0..n {
+        for x in 0..n {
+            let value = if x == n - 1 && y == n - 1 {
+                (e.t(2 * n - 2) + 3 * e.t(2 * n - 1) + 2) >> 2
+            } else {
+                (e.t(x + y) + 2 * e.t(x + y + 1) + e.t(x + y + 2) + 2) >> 2
             };
-            for y in 0..n {
-                for x in 0..n {
-                    put(x, y, dc);
-                }
-            }
+            put(out, stride, x, y, value);
         }
-        3 => {
-            for y in 0..n {
-                for x in 0..n {
-                    let v = if x == n - 1 && y == n - 1 {
-                        (e.t(2 * n - 2) + 3 * e.t(2 * n - 1) + 2) >> 2
-                    } else {
-                        (e.t(x + y) + 2 * e.t(x + y + 1) + e.t(x + y + 2) + 2) >> 2
-                    };
-                    put(x, y, v);
-                }
-            }
+    }
+}
+
+fn pred_down_right(e: &Edge, n: i32, out: &mut [u8], stride: usize) {
+    for y in 0..n {
+        for x in 0..n {
+            let value = if x > y {
+                (e.t(x - y - 2) + 2 * e.t(x - y - 1) + e.t(x - y) + 2) >> 2
+            } else if x < y {
+                (e.l(y - x - 2) + 2 * e.l(y - x - 1) + e.l(y - x) + 2) >> 2
+            } else {
+                (e.t(0) + 2 * e.tl + e.l(0) + 2) >> 2
+            };
+            put(out, stride, x, y, value);
         }
-        4 => {
-            for y in 0..n {
-                for x in 0..n {
-                    let v = if x > y {
-                        (e.t(x - y - 2) + 2 * e.t(x - y - 1) + e.t(x - y) + 2) >> 2
-                    } else if x < y {
-                        (e.l(y - x - 2) + 2 * e.l(y - x - 1) + e.l(y - x) + 2) >> 2
-                    } else {
-                        (e.t(0) + 2 * e.tl + e.l(0) + 2) >> 2
-                    };
-                    put(x, y, v);
-                }
-            }
+    }
+}
+
+fn pred_vertical_right(e: &Edge, n: i32, out: &mut [u8], stride: usize) {
+    for y in 0..n {
+        for x in 0..n {
+            let z = 2 * x - y;
+            let value = if z >= 0 && z % 2 == 0 {
+                (e.t(x - (y >> 1) - 1) + e.t(x - (y >> 1)) + 1) >> 1
+            } else if z > 0 {
+                (e.t(x - (y >> 1) - 2) + 2 * e.t(x - (y >> 1) - 1) + e.t(x - (y >> 1)) + 2) >> 2
+            } else if z == -1 {
+                (e.l(0) + 2 * e.tl + e.t(0) + 2) >> 2
+            } else {
+                (e.l(y - 2 * x - 1) + 2 * e.l(y - 2 * x - 2) + e.l(y - 2 * x - 3) + 2) >> 2
+            };
+            put(out, stride, x, y, value);
         }
-        5 => {
-            for y in 0..n {
-                for x in 0..n {
-                    let z = 2 * x - y;
-                    let v = if z >= 0 && z % 2 == 0 {
-                        (e.t(x - (y >> 1) - 1) + e.t(x - (y >> 1)) + 1) >> 1
-                    } else if z > 0 {
-                        (e.t(x - (y >> 1) - 2) + 2 * e.t(x - (y >> 1) - 1) + e.t(x - (y >> 1)) + 2) >> 2
-                    } else if z == -1 {
-                        (e.l(0) + 2 * e.tl + e.t(0) + 2) >> 2
-                    } else {
-                        (e.l(y - 2 * x - 1) + 2 * e.l(y - 2 * x - 2) + e.l(y - 2 * x - 3) + 2) >> 2
-                    };
-                    put(x, y, v);
-                }
-            }
+    }
+}
+
+fn pred_horizontal_down(e: &Edge, n: i32, out: &mut [u8], stride: usize) {
+    for y in 0..n {
+        for x in 0..n {
+            let z = 2 * y - x;
+            let value = if z >= 0 && z % 2 == 0 {
+                (e.l(y - (x >> 1) - 1) + e.l(y - (x >> 1)) + 1) >> 1
+            } else if z > 0 {
+                (e.l(y - (x >> 1) - 2) + 2 * e.l(y - (x >> 1) - 1) + e.l(y - (x >> 1)) + 2) >> 2
+            } else if z == -1 {
+                (e.l(0) + 2 * e.tl + e.t(0) + 2) >> 2
+            } else {
+                (e.t(x - 2 * y - 1) + 2 * e.t(x - 2 * y - 2) + e.t(x - 2 * y - 3) + 2) >> 2
+            };
+            put(out, stride, x, y, value);
         }
-        6 => {
-            for y in 0..n {
-                for x in 0..n {
-                    let z = 2 * y - x;
-                    let v = if z >= 0 && z % 2 == 0 {
-                        (e.l(y - (x >> 1) - 1) + e.l(y - (x >> 1)) + 1) >> 1
-                    } else if z > 0 {
-                        (e.l(y - (x >> 1) - 2) + 2 * e.l(y - (x >> 1) - 1) + e.l(y - (x >> 1)) + 2) >> 2
-                    } else if z == -1 {
-                        (e.l(0) + 2 * e.tl + e.t(0) + 2) >> 2
-                    } else {
-                        (e.t(x - 2 * y - 1) + 2 * e.t(x - 2 * y - 2) + e.t(x - 2 * y - 3) + 2) >> 2
-                    };
-                    put(x, y, v);
-                }
-            }
+    }
+}
+
+fn pred_vertical_left(e: &Edge, n: i32, out: &mut [u8], stride: usize) {
+    for y in 0..n {
+        for x in 0..n {
+            let i = x + (y >> 1);
+            let value = if y % 2 == 0 { (e.t(i) + e.t(i + 1) + 1) >> 1 } else { (e.t(i) + 2 * e.t(i + 1) + e.t(i + 2) + 2) >> 2 };
+            put(out, stride, x, y, value);
         }
-        7 => {
-            for y in 0..n {
-                for x in 0..n {
-                    let i = x + (y >> 1);
-                    let v = if y % 2 == 0 { (e.t(i) + e.t(i + 1) + 1) >> 1 } else { (e.t(i) + 2 * e.t(i + 1) + e.t(i + 2) + 2) >> 2 };
-                    put(x, y, v);
-                }
-            }
-        }
-        _ => {
-            let zmax = 2 * n - 3;
-            for y in 0..n {
-                for x in 0..n {
-                    let z = x + 2 * y;
-                    let i = y + (x >> 1);
-                    let v = if z < zmax && z % 2 == 0 {
-                        (e.l(i) + e.l(i + 1) + 1) >> 1
-                    } else if z < zmax {
-                        (e.l(i) + 2 * e.l(i + 1) + e.l(i + 2) + 2) >> 2
-                    } else if z == zmax {
-                        (e.l(n - 2) + 3 * e.l(n - 1) + 2) >> 2
-                    } else {
-                        e.l(n - 1)
-                    };
-                    put(x, y, v);
-                }
-            }
+    }
+}
+
+fn pred_horizontal_up(e: &Edge, n: i32, out: &mut [u8], stride: usize) {
+    let zmax = 2 * n - 3;
+    for y in 0..n {
+        for x in 0..n {
+            let z = x + 2 * y;
+            let i = y + (x >> 1);
+            let value = if z < zmax && z % 2 == 0 {
+                (e.l(i) + e.l(i + 1) + 1) >> 1
+            } else if z < zmax {
+                (e.l(i) + 2 * e.l(i + 1) + e.l(i + 2) + 2) >> 2
+            } else if z == zmax {
+                (e.l(n - 2) + 3 * e.l(n - 1) + 2) >> 2
+            } else {
+                e.l(n - 1)
+            };
+            put(out, stride, x, y, value);
         }
     }
 }

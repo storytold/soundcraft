@@ -6,6 +6,11 @@
 mod common;
 
 fn main() {
+    // nextest lists custom-harness tests with `--list`; each binary here is one test.
+    if std::env::args().any(|a| a == "--list") {
+        println!("editor_main_thread: test");
+        return;
+    }
     let dir = common::fixture_dir();
     let gain = soundcraft_vst3_host::scan_paths(&[dir.to_path_buf()]).into_iter().find(|d| d.name == "Fixture Gain").expect("fixture").id;
     let mut p = soundcraft_vst3_host::instantiate_plugin(&gain).expect("instantiate");

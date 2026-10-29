@@ -1,7 +1,8 @@
 # MCP server
 
 SoundCraft speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio, so
-Claude and other agents can make music with it.
+Claude and other agents can make music with it. The server is the `mcp` subcommand of
+`soundcraft-cli`, which [docs/cli.md](cli.md) describes.
 
 ```sh
 soundcraft-cli mcp                    # headless engine (no window, no audio device)

@@ -164,7 +164,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 let edited=ui.add_enabled(state.busy.is_none(),egui::TextEdit::singleline(&mut state.path).desired_width((ui.available_width()-200.0).max(200.0))).changed();
                 if edited { state.path_edited(&before); }
                 if ui.add_enabled(state.busy.is_none(),egui::Button::new("Browse…")).clicked()
-                    && let Some(path)=app.services.pick_open.as_ref().and_then(|pick|pick("file.import_aaf",&["aaf"])) { state.set_path(path); }
+                    && let Some(path)=app.services.pick_open.as_ref().and_then(|pick|pick("file.import_aaf",&["aaf"])) {
+                    match crate::dialogs::unicode(&path) { Ok(p)=>state.set_path(p.to_string()), Err(e)=>state.error=Some(e.to_string()) }
+                }
                 if ui.add_enabled(state.busy.is_none()&&!state.path.is_empty()&&!state.media_dir.is_empty(),egui::Button::new("Analyze AAF")).clicked() { state.analyze(ctx); }
             });
             if state.busy.is_some() { ui.horizontal(|ui|{ui.spinner();ui.label("Reading source properties and locating media…");}); }
@@ -174,7 +176,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     let current=state.compositions.iter().find(|(_,id)|*id==state.composition).map_or("Choose one…".to_string(),|(n,_)|n.clone());
                     // Locked while analyzing, so a finished analysis always matches the selection.
                     ui.add_enabled_ui(state.busy.is_none(),|ui|{
-                        egui::ComboBox::from_id_salt("aaf_composition").selected_text(current).show_ui(ui,|ui|{
+                        craft_ui::ComboBox::from_id_salt("aaf_composition").selected_text(current).show_ui(ui,|ui|{
                             for (name,id) in &state.compositions {
                                 if ui.selectable_label(state.composition==*id,format!("{name}  ({id})")).clicked() { state.composition=id.clone(); state.preview=None; }
                             }
@@ -205,7 +207,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         ui.label("Locate source WAV files in:");
                         if ui.add_enabled(state.busy.is_none(),egui::TextEdit::singleline(&mut state.media_dir).desired_width(275.0)).changed(){state.preview=None;}
                         if ui.add_enabled(state.busy.is_none(),egui::Button::new("Choose media folder…")).clicked()
-                            && let Some(dir)=app.services.pick_folder.as_ref().and_then(|pick|pick(&state.media_dir)){state.media_dir=dir;state.preview=None;}
+                            && let Some(dir)=app.services.pick_folder.as_ref().and_then(|pick|pick(std::path::Path::new(&state.media_dir))){
+                            match crate::dialogs::unicode(&dir) { Ok(d)=>{state.media_dir=d.to_string();state.invalidate();} Err(e)=>state.error=Some(e.to_string()) }
+                        }
                         ui.label("Copy full sources when saving");
                         ui.small("Save the session before moving or removing original files.");
                         ui.small("All available handles are retained. Sources are not consolidated or trimmed.");
