@@ -126,7 +126,9 @@ impl SoundApp {
     }
 
     /// Puts held editor values back after a store command failed. Drops any entry whose session
-    /// value moved since it was queued: a later command owns that parameter.
+    /// value moved since it was queued: a later command owns that parameter, or its track,
+    /// instrument or parameter is gone (stale entries would keep the session unsaved and be
+    /// retried on every poll).
     fn requeue_held_instrument_params(&mut self, entries: Vec<QueuedInstrumentParam>) {
         let still: Vec<_> = entries.into_iter().filter(|e| self.queued_param_matches_session(e)).collect();
         self.editor_instrument_params.extend(still);
