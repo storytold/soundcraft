@@ -206,7 +206,12 @@ fn stems_of_tracks_whose_names_differ_only_in_case_do_not_overwrite_each_other()
     stems_collide(["Kick", "kick"], "bounce-stem-case");
 }
 
-fn stems_collide(new_names: [&str; 2], scratch_name: &str) {
+#[test]
+fn stems_whose_suffixed_name_is_another_tracks_name_do_not_overwrite_each_other() {
+    stems_collide(["Kick?", "Kick*", "Kick_-2"], "bounce-stem-suffix");
+}
+
+fn stems_collide<const N: usize>(new_names: [&str; N], scratch_name: &str) {
     let mut e = soundcraft_engine::demo::demo_engine();
     let ids: Vec<_> = e
         .session()
@@ -214,9 +219,9 @@ fn stems_collide(new_names: [&str; 2], scratch_name: &str) {
         .iter()
         .filter(|t| matches!(t.kind, soundcraft_model::TrackKind::Audio) && !t.inactive && !t.mixer.mute)
         .map(|t| t.id)
-        .take(2)
+        .take(N)
         .collect();
-    assert_eq!(ids.len(), 2);
+    assert_eq!(ids.len(), N);
     for (id, name) in ids.iter().zip(new_names) {
         e.execute("track.rename", &serde_json::json!({"track": id.0, "name": name})).unwrap();
     }
@@ -233,7 +238,7 @@ fn stems_collide(new_names: [&str; 2], scratch_name: &str) {
     assert_eq!(folded.len(), paths.len(), "{paths:?}");
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), paths.len());
     let names: Vec<String> = paths.iter().filter_map(|p| PathBuf::from(p).file_name().map(|n| n.to_string_lossy().into_owned())).collect();
-    if new_names[0] == "Kick?" {
+    if scratch_name == "bounce-stem-collision" {
         assert!(names.iter().any(|n| n.ends_with(" - Kick_.wav")), "{names:?}");
         assert!(names.iter().any(|n| n.ends_with(" - Kick_-2.wav")), "{names:?}");
     }
