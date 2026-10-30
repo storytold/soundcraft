@@ -115,7 +115,13 @@ pub fn parse_position(
             let v = sr.samples(m * 60.0 + s);
             Ok(if neg { -v } else { v })
         }
-        TimeFormat::Timecode => Ok(Timecode::parse(t)?.to_samples(rate, sr).saturating_sub(tc_start)),
+        TimeFormat::Timecode => {
+            let tc = Timecode::parse(t)?;
+            if tc.minutes >= 60 || tc.seconds >= 60 || tc.frames >= rate.nominal().max(1) {
+                return Err(err());
+            }
+            Ok(tc.to_samples(rate, sr).saturating_sub(tc_start))
+        }
         TimeFormat::FeetFrames => {
             let (ft, fr) = t.split_once('+').ok_or_else(err)?;
             let ft: i64 = ft.trim().parse().map_err(|_| err())?;

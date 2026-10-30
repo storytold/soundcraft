@@ -29,6 +29,7 @@ mod plugin_state;
 mod query;
 pub(crate) mod sampler;
 mod setup_more;
+mod strip_silence;
 mod surround;
 mod tab;
 mod track;
@@ -64,7 +65,7 @@ mod panic_probe {
 pub use file::bounce_job;
 
 pub(crate) use edit::remember_selection;
-pub use edit::strip_silence_scan;
+pub use strip_silence::strip_silence_scan;
 
 pub type Run = fn(&mut Engine, &Value) -> Result<Value>;
 /// `Err(reason)` = disabled.
@@ -162,6 +163,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(sampler::specs());
         v.extend(video::specs());
         v.extend(zoom_toggle::specs());
+        v.extend(strip_silence::specs());
         #[cfg(test)]
         v.extend(panic_probe::specs());
         v

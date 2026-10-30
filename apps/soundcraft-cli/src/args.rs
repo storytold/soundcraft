@@ -154,7 +154,8 @@ pub(crate) struct RunArgs {
 pub(crate) struct ScriptArgs {
     /// The script to run
     pub(crate) file: PathBuf,
-    /// Report a failing line and go on with the next
+    /// Continue after command errors and finish requested output, then exit nonzero if any command failed.
+    /// Malformed JSON stops immediately
     #[arg(long)]
     pub(crate) keep_going: bool,
     #[command(flatten)]

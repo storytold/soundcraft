@@ -62,6 +62,13 @@ display_name = "Matt Smith-Burlage"
 [people.ProdByBuddha]
 sync_github_name = true
 
+[people.luigiPinna]
+real_name = "Luigi Pinna"
+sync_github_name = true
+
+[people.dylanmtaylor]
+sync_github_name = true
+
 # Display name explicitly chosen by the contributor on 2026-10-19.
 [people.vhhr7]
 display_name = "Vic Herrera (@vhhr)"

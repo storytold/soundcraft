@@ -208,6 +208,70 @@ fn caf_sizes_beyond_the_file_are_errors_not_aborts() {
     assert!(matches!(decode(&constant, None), Err(AudioError::Malformed(m)) if m.contains("lists packets")));
 }
 
+/// An EBML element: `id`, then `size` as an 8-byte vint (so any size up to 2^56 − 2 fits, and
+/// `u64::MAX` writes the reserved "unknown size"), then `body`.
+fn ebml(id: &[u8], size: u64, body: &[u8]) -> Vec<u8> {
+    let size = if size == u64::MAX { 0x01FF_FFFF_FFFF_FFFF } else { 0x0100_0000_0000_0000 | size };
+    [id, &size.to_be_bytes(), body].concat()
+}
+
+/// The EBML header of a Matroska file.
+fn ebml_header() -> Vec<u8> {
+    let doc_type = ebml(&[0x42, 0x82], 8, b"matroska");
+    ebml(&[0x1A, 0x45, 0xDF, 0xA3], doc_type.len() as u64, &doc_type)
+}
+
+/// #878: symphonia's Matroska reader takes element sizes from the file. With symphonia 0.5 a size
+/// far beyond the file was allocated up front and aborted the process (no `catch_unwind` can catch
+/// an allocation failure); since 0.6 such reads grow with the data actually read. Keep it that way
+/// for the header, for codec data and for block frames.
+#[test]
+fn matroska_sizes_beyond_the_file_are_errors_not_aborts() {
+    let huge = 1u64 << 47;
+    // The 30-byte file from the report: EBML header and DocType sizes of 2^48 − 1 and 2^47.
+    let reported = [
+        0x1A, 0x45, 0xDF, 0xA3, 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x42, 0x82, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6D,
+        0x61, 0x74, 0x72, 0x6F, 0x73, 0x6B, 0x61,
+    ];
+    let segment = |body: Vec<u8>| [ebml_header(), ebml(&[0x18, 0x53, 0x80, 0x67], u64::MAX, &body)].concat();
+    let info = [ebml(&[0x2A, 0xD7, 0xB1], 3, &[0x0F, 0x42, 0x40]), ebml(&[0x4D, 0x80], 4, b"test"), ebml(&[0x57, 0x41], 4, b"test")].concat();
+    let info = ebml(&[0x15, 0x49, 0xA9, 0x66], info.len() as u64, &info);
+    // A valid 16-bit PCM track entry's children, followed by `extra`.
+    let pcm = |extra: &[u8]| {
+        let audio = [ebml(&[0xB5], 8, &48_000f64.to_be_bytes()), ebml(&[0x9F], 1, &[1]), ebml(&[0x62, 0x64], 1, &[16])].concat();
+        [
+            ebml(&[0xD7], 1, &[1]),
+            ebml(&[0x73, 0xC5], 1, &[1]),
+            ebml(&[0x83], 1, &[2]),
+            ebml(&[0x86], 13, b"A_PCM/INT/LIT"),
+            ebml(&[0xE1], audio.len() as u64, &audio),
+            extra.to_vec(),
+        ]
+        .concat()
+    };
+    // That track with a CodecPrivate claiming 2^46 bytes, inside parents that claim even more: the
+    // segment is valid up to that read, which runs out of file.
+    let track = ebml(&[0xAE], huge, &pcm(&ebml(&[0x63, 0xA2], huge >> 1, &[0; 16])));
+    let codec_data = segment([info.clone(), ebml(&[0x16, 0x54, 0xAE, 0x6B], huge, &track)].concat());
+    // The plain track, then a cluster whose SimpleBlock claims 2^47 bytes of frame data.
+    let track = pcm(&[]);
+    let track = ebml(&[0xAE], track.len() as u64, &track);
+    let block = ebml(&[0x1F, 0x43, 0xB6, 0x75], u64::MAX, &[ebml(&[0xE7], 1, &[0]), ebml(&[0xA3], huge, &[0x81, 0, 0, 0x80])].concat());
+    let cluster = segment([info, ebml(&[0x16, 0x54, 0xAE, 0x6B], track.len() as u64, &track), block].concat());
+    let out_of_file = |r: Result<_, AudioError>| matches!(r, Err(AudioError::Malformed(m)) if m.contains("end of file"));
+    for hint in [None, Some("mkv"), Some("wav")] {
+        assert!(probe(&reported, hint).is_err(), "{hint:?}");
+        assert!(decode(&reported, hint).is_err(), "{hint:?}");
+        // Refused at the oversized read itself, not by anything before it.
+        assert!(out_of_file(probe(&codec_data, hint).map(|_| ())), "{hint:?}: {:?}", probe(&codec_data, hint).err());
+        assert!(out_of_file(decode(&codec_data, hint).map(|_| ())), "{hint:?}");
+        // The file and its track open, so decoding reaches the block; the block reader stops at the
+        // end of the file, a best-effort read of what is there.
+        assert!(probe(&cluster, hint).is_ok(), "{hint:?}: {:?}", probe(&cluster, hint).err());
+        assert!(decode(&cluster, hint).map_or(0, |(_, b)| b.frames()) < 1_000, "{hint:?}");
+    }
+}
+
 #[test]
 fn well_formed_caf_still_reads() {
     let pcm: Vec<u8> = (0..480i16).flat_map(|i| (i * 50).to_be_bytes()).collect();

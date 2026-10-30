@@ -4,6 +4,15 @@
 //! executing commands. It can be replaced without touching anything below it.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+/// SoundCraft as craft-update knows it, with its 128 px icon and accent colour: the update
+/// prompt shows both, and an AppImage's menu entry gets the icon.
+#[cfg(not(target_arch = "wasm32"))]
+pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
+    icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.soundcraft.png")),
+    accent: Some([0x1f, 0xa5, 0xc9]),
+    ..craft_update::suite::SOUNDCRAFT
+};
+
 pub mod aaf_import;
 pub mod appearance;
 pub mod bounce;
@@ -236,6 +245,7 @@ pub enum Gesture {
     FadeCurve { clip: soundcraft_model::ClipId, fade_in: bool, curvature: f32, anchor: (f32, f32), height: f32 },
     Scrub { last: Samples },
     Fader { track: TrackId, start_db: f32 },
+    SendFader { track: TrackId, slot: usize },
     ClipGain { clip: soundcraft_model::ClipId, track: TrackId, pos: f32, anchor: (f32, f32), fine: bool, fader_bottom: egui::Pos2 },
     Pencil { track: TrackId, points: Vec<(Samples, f32)> },
     Breakpoint { track: TrackId, param: soundcraft_model::AutoParam, at: Samples },
@@ -386,6 +396,8 @@ pub struct SoundApp {
     pub arrange_request: bool,
     /// Tracks whose automation was touched during this pass (Touch/Latch writing).
     touched: std::collections::HashSet<TrackId>,
+    /// Sends whose level was touched during this pass (Touch/Latch writing), as (track, slot).
+    touched_sends: std::collections::HashSet<(TrackId, usize)>,
     /// The pass's last point; `i64::MIN` after a stop or a jump, so the next point erases nothing it skipped.
     last_write_at: Samples,
     /// Plugins changed in their editors whose state the session hasn't taken yet (see `editor_states_due`).

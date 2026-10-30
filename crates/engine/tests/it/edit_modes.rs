@@ -413,3 +413,30 @@ fn shuffle_lock_and_snap_rules_hold_when_a_call_names_tracks() {
     run(&mut e, "edit.mode", json!({"mode": "grid"}));
     assert!(e.execute("edit.snap_to_grid", &json!({"tracks": [t.0]})).is_err());
 }
+
+fn selection_marker(e: &mut Engine, start: i64, end: i64) -> usize {
+    run(e, "markers.add", json!({"kind": "selection", "start": start, "end": end}));
+    e.session().markers.len() - 1
+}
+
+#[test]
+fn cut_and_insert_time_move_the_end_of_a_spanning_selection_memory_location() {
+    let (mut e, _, _) = engine("slip");
+    let a = selection_marker(&mut e, 1000, 5000);
+    let b = selection_marker(&mut e, 1000, 2500);
+    run(&mut e, "event.cut_time", json!({"start": 2000, "end": 3000}));
+    let m = &e.session().markers;
+    assert_eq!((m[a].start, m[a].end), (1000, 4000));
+    assert_eq!((m[b].start, m[b].end), (1000, 2000));
+    run(&mut e, "event.insert_time", json!({"start": 2000, "length": 1000}));
+    let m = &e.session().markers;
+    assert_eq!((m[a].start, m[a].end), (1000, 5000));
+    assert_eq!((m[b].start, m[b].end), (1000, 2000));
+}
+
+#[test]
+fn moving_a_group_left_past_zero_keeps_its_spacing() {
+    let (mut e, t, ids) = long("slip", &[(500, 100, 0), (2000, 100, 0)]);
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "by": -1000}));
+    assert_eq!(clips(&e, t), [(0, 100), (1500, 100)]);
+}

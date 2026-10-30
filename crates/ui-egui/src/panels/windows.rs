@@ -517,6 +517,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             number_combo(ui, "pe-rate", "Sample rate", &mut draft.sample_rate, out.map_or(&[][..], |d| &d.sample_rates), "Hz");
             ui.end_row();
             ui.label("Buffer size");
+            // The combo lists standard power-of-two sizes. `setup.playback_engine` does not round
+            // onto this list: it keeps any integer 16..=8192, the same as `ui.audio_device`.
             let buffers = out.map(DeviceInfo::buffer_sizes).unwrap_or_else(|| soundcraft_playback::devices::STANDARD_BUFFERS.to_vec());
             number_combo(ui, "pe-buffer", "Buffer size", &mut draft.buffer_size, &buffers, "samples");
             ui.end_row();
@@ -621,6 +623,53 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
         out["systems"] = json!(soundcraft_playback::devices::audio_systems());
     }
     Ok(out)
+}
+
+/// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output name and
+/// `buffer_size` is any integer 16..=8192 or null (not rounded to the window's power-of-two list);
+/// both go through [`audio_device_command`]. Delay compensation still goes through the engine
+/// command, and only after the device change has been accepted. The result is the open device:
+/// its name, the buffer actually in use (`device_buffer`, null for the device default), its sample
+/// rate, and delay compensation. `applied` is true only when an audio device is open.
+pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) -> Result<serde_json::Value, String> {
+    use serde_json::Value;
+    let mut audio = serde_json::Map::new();
+    if let Some(device) = p.get("device") {
+        if !device.is_null() && !device.is_string() {
+            return Err("`device` must be a string or null".into());
+        }
+        audio.insert("output".to_string(), device.clone());
+    }
+    if let Some(buffer) = p.get("buffer_size") {
+        audio.insert("buffer_size".to_string(), buffer.clone());
+    }
+    if !audio.is_empty() {
+        audio_device_command(app, &Value::Object(audio))?;
+    }
+    if id == "setup.playback_engine"
+        && let Some(on) = p.get("delay_compensation").and_then(Value::as_bool)
+    {
+        app.engine.execute("setup.playback_engine", &json!({"delay_compensation": on})).map_err(|e| e.to_string())?;
+    }
+    let applied = app.player.as_ref().is_some_and(|player| !player.silent);
+    let (device, buffer_size, sample_rate) = match app.player.as_ref() {
+        Some(player) => {
+            let buffer = match player.device_buffer {
+                Some(n) => json!(n),
+                None => Value::Null,
+            };
+            (json!(player.device_name), buffer, json!(player.device_rate))
+        }
+        None => (Value::Null, Value::Null, json!(app.engine.session().sample_rate.hz())),
+    };
+    Ok(json!({
+        "applied": applied,
+        "device": device,
+        "buffer_size": buffer_size,
+        "sample_rate": sample_rate,
+        "bit_depth": app.engine.session().bit_depth,
+        "delay_compensation": app.engine.session().edit.delay_compensation,
+    }))
 }
 
 /// Setup › I/O: busses and output paths.

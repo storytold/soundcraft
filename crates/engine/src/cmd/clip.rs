@@ -228,6 +228,7 @@ fn elastic(e: &mut Engine, p: &Value) -> Result<Value> {
         nc.content = soundcraft_model::ClipContent::Audio { source: src, offset: 0 };
         nc.length = out_len;
         nc.stretch = 1.0;
+        nc.clamp_fades();
         super::more_util::replace_clip(s, t, *id, nc);
         rendered += 1;
     }
@@ -246,7 +247,7 @@ fn remove_warp(e: &mut Engine, p: &Value) -> Result<Value> {
             if let Some((src, off, len)) = orig {
                 c.content = soundcraft_model::ClipContent::Audio { source: src, offset: off };
                 c.length = len.max(1);
-                c.fade_out.len = c.fade_out.len.min(c.length);
+                c.clamp_fades();
                 n += 1;
             }
         }
@@ -494,6 +495,27 @@ mod tests {
             e.execute("clip.elastic_properties", &json!({"clips": [cid.0], "ratio": ratio})).unwrap();
             assert_eq!(e.session().find_clip(cid).unwrap().1.length, len, "ratio {ratio}");
         }
+    }
+
+    #[test]
+    fn warping_and_unwarping_keep_fades_within_the_clip() {
+        let (mut e, _, cid) = elastic_clip(20_000, 10_000, 20_000);
+        if let Some(c) = e.session_mut().find_clip_mut(cid) {
+            c.fade_in.len = 20_000;
+            c.fade_out.len = 20_000;
+        }
+        e.execute("clip.elastic_properties", &json!({"clips": [cid.0], "ratio": 0.5})).unwrap();
+        let c = e.session().find_clip(cid).unwrap().1.clone();
+        assert!(c.fade_in.len <= c.length && c.fade_out.len <= c.length, "{} {} {}", c.length, c.fade_in.len, c.fade_out.len);
+
+        let (mut e, _, cid) = elastic_clip(20_000, 10_000, 20_000);
+        e.execute("clip.elastic_properties", &json!({"clips": [cid.0], "ratio": 2.0})).unwrap();
+        if let Some(c) = e.session_mut().find_clip_mut(cid) {
+            c.fade_in.len = 40_000;
+        }
+        e.execute("clip.remove_warp", &json!({"clips": [cid.0]})).unwrap();
+        let c = e.session().find_clip(cid).unwrap().1.clone();
+        assert!(c.fade_in.len <= c.length, "{} {}", c.length, c.fade_in.len);
     }
 
     #[test]

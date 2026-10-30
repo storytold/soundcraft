@@ -1187,3 +1187,15 @@ fn apply_matrix_span_matches_the_plain_per_sample_sum() {
         }
     }
 }
+
+#[test]
+fn gain_ramp_matches_converting_both_ends_every_sample() {
+    for (db0, db1, n) in [(-6.0f32, 3.0f32, 512usize), (0.0, 0.0, 1), (-144.0, 0.0, 300), (2.5, -60.0, 0), (f32::NAN, -3.0, 64), (-200.0, 12.0, 7)] {
+        let ramp = crate::automation::GainRamp::new(db0, db1, n);
+        let (g0, g1) = (db_to_gain(db0), db_to_gain(db1));
+        for i in 0..=n {
+            let want = if n == 0 { g0 } else { g0 + (g1 - g0) * (i as f32 / n as f32) };
+            assert_eq!(ramp.at(i).to_bits(), want.to_bits(), "{db0} -> {db1} dB, sample {i} of {n}");
+        }
+    }
+}

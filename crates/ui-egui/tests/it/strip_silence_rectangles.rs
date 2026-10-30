@@ -109,3 +109,18 @@ fn the_rectangles_stay_while_rename_is_open_and_go_when_the_window_closes() {
     assert_eq!(rectangles(&h), 0);
     assert_eq!(clips(&h, track), before);
 }
+
+#[test]
+fn closing_the_window_while_the_mix_window_shows_stops_the_scan() {
+    let (mut h, _) = strip_silence_dialog();
+    if let Some(Dialog::StripSilence { threshold, .. }) = &mut h.state_mut().dialogs.open {
+        *threshold = -30.0;
+    }
+    h.run_steps(1);
+    assert!(h.state().dialogs.strip_scan_running(), "a scan for the new threshold started");
+    h.state_mut().run("window.mix", json!({})).unwrap();
+    h.run_steps(2);
+    h.state_mut().dialogs.open = None;
+    h.run_steps(2);
+    assert!(!h.state().dialogs.strip_scan_running(), "the scan still runs after the window closed");
+}

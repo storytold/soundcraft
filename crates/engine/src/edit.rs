@@ -238,13 +238,16 @@ pub fn paste(s: &mut Session, track: TrackId, at: Samples, clips: &[Clip], lengt
         make_room(s, track, at, length)?;
     }
     let mut ids = Vec::new();
+    let mut placed = Vec::new();
     for c in clips {
         let mut nc = c.clone();
         nc.id = s.new_clip_id();
         nc.start += at;
         ids.push(nc.id);
-        place_clip(s, track, nc);
+        placed.push((track, nc));
     }
+    // Clear every destination first, so pasted clips that overlap (crossfades) keep each other.
+    put_clips(s, placed);
     Ok(ids)
 }
 
@@ -523,8 +526,10 @@ pub fn move_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(Trac
         }
     }
     let n = moving.len();
+    // Limit the shift once, so the group stops at zero together and keeps its spacing.
+    let delta = delta.max(moving.iter().map(|(_, c)| c.start.saturating_neg()).max().unwrap_or(0));
     let placed = moving.into_iter().map(|(tid, mut c)| {
-        c.start = c.start.saturating_add(delta).max(0);
+        c.start = c.start.saturating_add(delta);
         (lands(dest, tid), c)
     });
     put_clips(s, placed.collect());
@@ -794,8 +799,11 @@ pub fn trim_clip(s: &mut Session, id: ClipId, start: Option<Samples>, end: Optio
         lo = lo.max(0);
     }
     let file = |c: &Clip| {
-        let start = c.start.saturating_sub(c.source_offset());
-        material_len(s, c).map(|n| (start.min(c.start), start.saturating_add(n).max(c.end())))
+        // The mixer plays from `offset + rel / stretch`, so file samples span `stretch` times as many timeline samples.
+        let stretch = if c.stretch.is_finite() && c.stretch > 0.0 { c.stretch } else { 1.0 };
+        let scale = |n: Samples| if (stretch - 1.0).abs() >= 1e-9 { (n as f64 * stretch).round() as Samples } else { n };
+        let start = c.start.saturating_sub(scale(c.source_offset()));
+        material_len(s, c).map(|n| (start.min(c.start), start.saturating_add(scale(n)).max(c.end())))
     };
     let t = TimeCtx::of(s);
     let mut c = old.clone();
