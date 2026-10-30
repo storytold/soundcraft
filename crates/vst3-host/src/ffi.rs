@@ -125,6 +125,10 @@ mod window;
 #[path = "ffi/window/other.rs"]
 mod window;
 
+/// Records the process main/UI thread for X11 editor windows.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) use window::set_main_thread;
+
 #[cfg(test)]
 mod tests {
     use super::*;
