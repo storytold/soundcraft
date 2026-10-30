@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- shared-mime-info definition for SoundCraft's session format. Audio and MIDI types come from
+     the system database. Installed to /usr/share/mime/packages/ (update-mime-database runs on
+     install). -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-soundcraft-session">
+    <comment>SoundCraft session</comment>
+    <sub-class-of type="application/json"/>
+    <icon name="ai.storyteller.soundcraft"/>
+    <glob pattern="*.scraft"/>
+  </mime-type>
+</mime-info>
