@@ -1,9 +1,10 @@
 //! Tick-timebase tracks follow the tempo map: when the tempo changes, their clips keep their
 //! musical positions instead of their sample positions.
 
-use super::*;
+use super::{ClipId, Engine, Result, Samples, Value};
 use soundcraft_model::{ClipContent, Session};
 use soundcraft_time::TempoMap;
+use std::collections::HashSet;
 
 /// Run a tempo edit, then re-anchor the clips on tick-timebase tracks to the new tempo map.
 pub(super) fn following_tempo(e: &mut Engine, edit: impl FnOnce(&mut Engine) -> Result<Value>) -> Result<Value> {
@@ -16,13 +17,16 @@ pub(super) fn following_tempo(e: &mut Engine, edit: impl FnOnce(&mut Engine) -> 
 /// Move the clips of every tick-timebase track from where `old` put them to where the session's
 /// tempo map puts the same musical positions. MIDI clips and audio on Elastic Audio tracks also
 /// keep their length in ticks: audio is re-stretched to fit, and Varispeed tracks change speed.
-/// Audio on other tracks keeps its length in samples.
+/// Audio on other tracks keeps its length in samples, so where the move leaves it running into the
+/// next clip, it is trimmed to where that clip starts. Overlaps that were already there (crossfades)
+/// are left alone.
 pub(super) fn follow_tempo(s: &mut Session, old: &TempoMap) -> Result<()> {
     if *old == s.tempo {
         return Ok(());
     }
     let sr = s.sample_rate;
     let new = s.tempo.clone();
+    let overlapping = overlapping_pairs(s);
     // (clip, new length) for audio that must be stretched once every clip has moved.
     let mut stretch: Vec<(ClipId, Samples, bool)> = Vec::new();
     for tr in s.tracks.iter_mut().filter(|t| t.ticks_timebase && t.kind.has_playlist()) {
@@ -47,11 +51,44 @@ pub(super) fn follow_tempo(s: &mut Session, old: &TempoMap) -> Result<()> {
         // Audio that cannot be rendered (its source is offline) changes speed instead, so the clip
         // still ends where the next musical position begins. A stretch the renderer refuses fails
         // the command, which restores the document.
-        if varispeed || !super::clip::warp_clip(s, id, |base| length as f64 / base.length as f64, true)? {
+        let warped = !varispeed && super::clip::warp_clip(s, id, |base| length as f64 / base.length as f64, true)?;
+        // A clamped warp ends short of the target.
+        let off_target = s.find_clip(id).is_some_and(|(_, c)| (c.length - length).abs() > 2);
+        if !warped || off_target {
             change_speed(s, id, length);
         }
     }
+    trim_new_overlaps(s, &overlapping);
     Ok(())
+}
+
+/// Neighbouring clips of the tick-timebase tracks that overlap (crossfaded edits).
+fn overlapping_pairs(s: &Session) -> HashSet<(ClipId, ClipId)> {
+    let mut pairs = HashSet::new();
+    for tr in s.tracks.iter().filter(|t| t.ticks_timebase && t.kind.has_playlist()) {
+        for pl in &tr.playlists {
+            pairs.extend(pl.clips.windows(2).filter(|w| w[0].end() > w[1].start).map(|w| (w[0].id, w[1].id)));
+        }
+    }
+    pairs
+}
+
+/// Trim a clip that now runs into the next one, unless the two overlapped before the tempo change.
+fn trim_new_overlaps(s: &mut Session, overlapping: &HashSet<(ClipId, ClipId)>) {
+    for tr in s.tracks.iter_mut().filter(|t| t.ticks_timebase && t.kind.has_playlist()) {
+        for pl in &mut tr.playlists {
+            pl.sort();
+            for i in 0..pl.clips.len().saturating_sub(1) {
+                let (Some(a), Some(b)) = (pl.clips.get(i), pl.clips.get(i + 1)) else { continue };
+                if a.end() > b.start && b.start > a.start && !a.time_locked && !overlapping.contains(&(a.id, b.id)) {
+                    let next_start = b.start;
+                    if let Some(a) = pl.clips.get_mut(i) {
+                        a.trim_end_to(next_start);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Give a clip a new length by changing its speed, without rendering.
@@ -59,8 +96,7 @@ fn change_speed(s: &mut Session, id: ClipId, length: Samples) {
     if let Some(c) = s.find_clip_mut(id) {
         c.stretch = if c.stretch.is_finite() && c.stretch > 0.0 { c.stretch } else { 1.0 } * length as f64 / c.length.max(1) as f64;
         c.length = length;
-        c.fade_in.len = c.fade_in.len.min(length);
-        c.fade_out.len = c.fade_out.len.min(length);
+        c.clamp_fades();
     }
 }
 
@@ -68,7 +104,7 @@ fn change_speed(s: &mut Session, id: ClipId, length: Samples) {
 mod tests {
     use super::*;
     use serde_json::json;
-    use soundcraft_model::{ChannelFormat, SourceId, TrackKind};
+    use soundcraft_model::{ChannelFormat, SourceId, TrackId, TrackKind};
 
     const SOURCE_LEN: usize = 96_000;
 
@@ -180,6 +216,43 @@ mod tests {
         let (a_start, a_len) = span(&e, ids[0]);
         let (b_start, _) = span(&e, ids[1]);
         assert!(a_start + a_len <= b_start + 2, "first clip ends at {} after the second starts at {b_start}", a_start + a_len);
+    }
+
+    #[test]
+    fn a_faster_tempo_trims_audio_that_would_run_into_the_next_clip() {
+        let (mut e, _, ids) = engine_with_clips(None);
+        let (start, length) = span(&e, ids[0]);
+        e.execute("event.tempo", &json!({"bpm": 240.0})).unwrap();
+        let (a_start, a_len) = span(&e, ids[0]);
+        let (b_start, b_len) = span(&e, ids[1]);
+        // Twice as fast: the second clip moves to half its position, the first keeps its start.
+        assert_eq!(a_start, start);
+        assert!((b_start - SOURCE_LEN as Samples / 4).abs() <= 2, "second clip at {b_start}");
+        assert_eq!(a_start + a_len, b_start, "first clip is trimmed to where the second starts (was {length} long)");
+        assert_eq!(b_len, SOURCE_LEN as Samples / 2, "the later clip keeps its length");
+    }
+
+    #[test]
+    fn a_crossfade_that_was_already_there_is_not_trimmed() {
+        let (mut e, _, ids) = engine_with_clips(None);
+        let c = e.session_mut().find_clip_mut(ids[1]).unwrap();
+        c.start -= 8_000;
+        let before = span(&e, ids[0]);
+        e.execute("event.tempo", &json!({"bpm": 240.0})).unwrap();
+        assert_eq!(span(&e, ids[0]), before);
+    }
+
+    #[test]
+    fn a_clamped_warp_still_reaches_the_tempo_length() {
+        let (mut e, _, ids) = engine_with_clips(Some("rhythmic"));
+        // A clip already at half speed without elastic metadata (as clip.conform_to_tempo leaves it).
+        for id in &ids {
+            e.session_mut().find_clip_mut(*id).unwrap().stretch = 0.5;
+        }
+        let (_, length) = span(&e, ids[0]);
+        e.execute("event.tempo", &json!({"bpm": 5.0})).unwrap();
+        let expected = length * 24;
+        assert!((span(&e, ids[0]).1 - expected).abs() <= 2, "length {}, expected {expected}", span(&e, ids[0]).1);
     }
 
     fn span(e: &Engine, id: ClipId) -> (Samples, Samples) {
