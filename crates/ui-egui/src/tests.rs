@@ -244,6 +244,67 @@ fn a_pass_and_the_fader_ride_driving_it_are_one_undo_step() {
     assert_eq!(app.engine.undo_history().len(), steps + 1);
 }
 
+/// #1146: a send's level writes its own automation lane, by the track's mode like its fader: Touch
+/// while the send is dragged, Latch from the first drag until stop, Write throughout. The track's
+/// volume lane is left alone.
+#[test]
+fn a_dragged_send_level_writes_send_automation() {
+    use soundcraft_model::AutoParam;
+    let points = |app: &SoundApp, param: &AutoParam| app.engine.session().track_by_name("Lead").unwrap().lane(param).map_or(0, |l| l.points.len());
+    let level = |app: &SoundApp| app.engine.session().track_by_name("Lead").unwrap().lane(&AutoParam::SendLevel(0)).map(|l| l.points.clone());
+    let pass = |app: &mut SoundApp| {
+        app.handle_transport(0.1);
+        app.write_automation();
+    };
+    for mode in ["touch", "latch", "write"] {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        let lead = app.engine.session().track_by_name("Lead").unwrap().id;
+        assert!(app.engine.session().track(lead).unwrap().mixer.sends[0].is_some(), "the demo's Lead sends to the reverb");
+        let volume = points(&app, &AutoParam::Volume);
+        app.run("mix.automation_mode", json!({"tracks": ["Lead"], "mode": mode})).unwrap();
+        app.run("transport.play", json!({})).unwrap();
+        for _ in 0..3 {
+            pass(&mut app);
+        }
+        let before_drag = points(&app, &AutoParam::SendLevel(0));
+        if mode == "write" {
+            assert!(before_drag > 0, "Write writes the send without a drag");
+        } else {
+            assert_eq!(before_drag, 0, "{mode}: nothing written before the send is touched");
+        }
+        // What the send's slot and its floating window do while the level is dragged.
+        app.pointer_down = true;
+        app.gesture = Some(super::Gesture::SendFader { track: lead, slot: 0 });
+        for frame in 0..4 {
+            pass(&mut app);
+            let db = -12.0 + frame as f32;
+            app.engine.execute_merged("mix.send_level", &json!({"track": lead.0, "slot": 0, "db": db}), &format!("send:{}:0", lead.0)).unwrap();
+        }
+        let dragged = points(&app, &AutoParam::SendLevel(0));
+        assert!(dragged >= before_drag + 3, "{mode}: the drag is written ({before_drag} -> {dragged})");
+        assert!(level(&app).unwrap().iter().any(|p| (p.value - (-10.0)).abs() < 1e-6), "{mode}: the points follow the send level");
+        // Released.
+        app.pointer_down = false;
+        app.gesture = None;
+        for _ in 0..3 {
+            pass(&mut app);
+        }
+        let released = points(&app, &AutoParam::SendLevel(0));
+        if mode == "touch" {
+            assert_eq!(released, dragged, "Touch stops writing when the send is let go");
+        } else {
+            assert!(released > dragged, "{mode}: keeps writing after the release");
+        }
+        app.run("transport.stop", json!({})).unwrap();
+        app.handle_transport(0.0);
+        app.write_automation();
+        if mode != "write" {
+            assert_eq!(points(&app, &AutoParam::Volume), volume, "{mode}: the track's volume lane is left alone");
+        }
+        assert!(app.touched_sends.is_empty(), "{mode}: stop ends the pass");
+    }
+}
+
 #[test]
 fn plugin_states_read_during_a_drag_keep_it_one_undo_step() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
@@ -1515,9 +1576,15 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
 }
 
 /// The engine's revision, undo history and journal are as they were.
-fn assert_history_unchanged(app: &SoundApp, revision: u64, undo: usize, history: &[String], journal: &[(String, serde_json::Value)]) {
+fn assert_history_unchanged(
+    app: &SoundApp,
+    revision: u64,
+    undo: usize,
+    history: &[String],
+    journal: &std::collections::VecDeque<(String, serde_json::Value)>,
+) {
     assert_eq!(app.engine.revision, revision);
     assert_eq!(app.engine.undo_history().len(), undo);
     assert_eq!(app.engine.undo_history(), history);
-    assert_eq!(app.engine.journal, journal);
+    assert_eq!(&app.engine.journal, journal);
 }

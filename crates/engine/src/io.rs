@@ -598,6 +598,7 @@ fn copy_new(from: &Path, to: &Path) -> std::io::Result<()> {
     let mut src = std::fs::File::open(from)?;
     let mut dst = std::fs::OpenOptions::new().write(true).create_new(true).open(to)?;
     if let Err(err) = std::io::copy(&mut src, &mut dst) {
+        #[cfg(not(target_arch = "wasm32"))]
         drop(dst);
         let _ = std::fs::remove_file(to);
         return Err(err);

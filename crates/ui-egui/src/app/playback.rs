@@ -204,7 +204,8 @@ impl SoundApp {
     }
 
     /// While playing, record volume automation from fader positions for tracks in Write mode, and
-    /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved. Each point replaces the
+    /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved. Send levels follow the
+    /// same rules, per send, from its slot or its floating send window. Each point replaces the
     /// automation since the previous one, and Stop writes a last point. A pass and whatever is
     /// dragged during it, its fader included, are one undo step.
     pub(crate) fn write_automation(&mut self) {
@@ -214,7 +215,7 @@ impl SoundApp {
         let may_write =
             playing && self.engine.session().tracks.iter().any(|t| matches!(t.mixer.automation_mode, M::Write | M::Touch | M::Latch | M::TouchLatch));
         self.engine.hold_merge(may_write.then_some(PASS));
-        if !playing && self.touched.is_empty() {
+        if !playing && self.touched.is_empty() && self.touched_sends.is_empty() {
             self.last_write_at = i64::MIN;
             return;
         }
@@ -228,6 +229,10 @@ impl SoundApp {
         let dragging = self.pointer_down;
         let fader_track = match &self.gesture {
             Some(Gesture::Fader { track, .. }) => Some(*track),
+            _ => None,
+        };
+        let send_fader = match &self.gesture {
+            Some(Gesture::SendFader { track, slot }) => Some((*track, *slot)),
             _ => None,
         };
         let writes: Vec<(TrackId, f32)> = self
@@ -247,9 +252,39 @@ impl SoundApp {
                 write.then_some((t.id, t.mixer.volume_db))
             })
             .collect();
-        for (t, v) in writes {
+        let send_writes: Vec<(TrackId, usize, f32)> = self
+            .engine
+            .session()
+            .tracks
+            .iter()
+            .flat_map(|t| {
+                let m = t.mixer.automation_mode;
+                t.mixer.sends.iter().enumerate().filter_map(move |(slot, s)| s.as_ref().map(|s| (t.id, m, slot, s.level_db)))
+            })
+            .filter(|&(t, m, slot, _)| {
+                let touched_now = dragging && send_fader == Some((t, slot));
+                match m {
+                    M::Write => true,
+                    M::Touch => touched_now,
+                    M::Latch | M::TouchLatch => touched_now || self.touched_sends.contains(&(t, slot)),
+                    _ => false,
+                }
+            })
+            .map(|(t, _, slot, db)| (t, slot, db))
+            .collect();
+        let points: Vec<(TrackId, String, f32)> = writes
+            .iter()
+            .map(|&(t, v)| (t, "volume".to_string(), v))
+            .chain(send_writes.iter().map(|&(t, slot, v)| (t, format!("send_{}_level", (b'a' + slot as u8) as char), v)))
+            .collect();
+        for &(t, _) in &writes {
             self.touched.insert(t);
-            let mut point = serde_json::json!({"track": t.0, "param": "volume", "at": pos, "value": v});
+        }
+        for &(t, slot, _) in &send_writes {
+            self.touched_sends.insert((t, slot));
+        }
+        for (t, param, v) in points {
+            let mut point = serde_json::json!({"track": t.0, "param": param, "at": pos, "value": v});
             if from != i64::MIN {
                 point["from"] = from.into();
             }
@@ -257,6 +292,7 @@ impl SoundApp {
         }
         if !playing {
             self.touched.clear();
+            self.touched_sends.clear();
             self.engine.end_merge();
         }
     }
@@ -296,6 +332,7 @@ impl SoundApp {
                     self.punch = None;
                     self.gesture = None;
                     self.touched.clear();
+                    self.touched_sends.clear();
                     self.last_write_at = i64::MIN;
                     self.edit_layout.follow_hold = false;
                     self.meters.clear();

@@ -342,7 +342,10 @@ pub(crate) fn read_channel_mask(b: &[u8]) -> Option<u32> {
 
 fn put_fixed_str(out: &mut Vec<u8>, s: &str, len: usize) {
     let bytes = s.as_bytes();
-    let n = bytes.len().min(len);
+    let mut n = bytes.len().min(len);
+    while !s.is_char_boundary(n) {
+        n -= 1;
+    }
     out.extend_from_slice(bytes.get(..n).unwrap_or_default());
     out.resize(out.len() + (len - n), 0);
 }

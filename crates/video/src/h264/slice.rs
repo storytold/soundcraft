@@ -1,7 +1,7 @@
 //! NAL unit header and slice header parsing (7.3.1, 7.3.3).
 
 use crate::bitstream::BitReader;
-use crate::h264::error::{Result, ensure};
+use crate::h264::error::{Error, Result, ensure};
 use crate::h264::params::{Pps, Sps};
 
 /// NAL unit types used by the decoder.
@@ -199,9 +199,9 @@ impl SliceHeader {
         let mut num_ref_idx_active = [pps.num_ref_idx_l0_default_active, pps.num_ref_idx_l1_default_active];
         if !slice_type.is_intra() {
             if r.read_flag()? {
-                num_ref_idx_active[0] = r.read_ue()? + 1;
+                num_ref_idx_active[0] = plus_one(r.read_ue()?)?;
                 if slice_type.is_b() {
-                    num_ref_idx_active[1] = r.read_ue()? + 1;
+                    num_ref_idx_active[1] = plus_one(r.read_ue()?)?;
                 }
             }
             let max = if field_pic { 32 } else { 16 };
@@ -223,7 +223,7 @@ impl SliceHeader {
             ensure!(cabac_init_idc <= 2, "cabac_init_idc out of range");
         }
         let slice_qp_delta = r.read_se()?;
-        let qp = pps.pic_init_qp + slice_qp_delta;
+        let qp = pps.pic_init_qp.checked_add(slice_qp_delta).ok_or_else(|| Error::Invalid("slice QP out of range".to_string()))?;
         ensure!((0..=51).contains(&qp), "slice QP {qp} out of range");
         let mut sp_for_switch = false;
         let mut slice_qs_delta = 0;
@@ -306,6 +306,11 @@ struct RefFields {
     long_term_reference: bool,
     adaptive_ref_pic_marking: bool,
     mmcos: Vec<Mmco>,
+}
+
+/// `num_ref_idx_active_minus1 + 1`, or the error its range check gives.
+fn plus_one(v: u32) -> Result<u32> {
+    v.checked_add(1).ok_or_else(|| Error::Invalid("num_ref_idx_active out of range".to_string()))
 }
 
 fn parse_reference_fields(
@@ -475,7 +480,7 @@ impl PocState {
             1 => {
                 let frame_num_offset = self.frame_num_offset(sh.idr, sh.frame_num, sps);
                 let n = sps.offset_for_ref_frame.len() as i32;
-                let mut abs_frame_num = if n != 0 { frame_num_offset + sh.frame_num as i32 } else { 0 };
+                let mut abs_frame_num = if n != 0 { frame_num_offset.saturating_add(sh.frame_num as i32) } else { 0 };
                 if sh.nal_ref_idc == 0 && abs_frame_num > 0 {
                     abs_frame_num -= 1;
                 }
@@ -483,17 +488,17 @@ impl PocState {
                 if abs_frame_num > 0 {
                     let cycle_cnt = (abs_frame_num - 1) / n;
                     let in_cycle = (abs_frame_num - 1) % n;
-                    let delta_cycle: i32 = sps.offset_for_ref_frame.iter().sum();
-                    expected = cycle_cnt.wrapping_mul(delta_cycle);
+                    let delta_cycle: i32 = sps.offset_for_ref_frame.iter().fold(0i32, |a, &o| a.saturating_add(o));
+                    expected = cycle_cnt.saturating_mul(delta_cycle);
                     for &o in &sps.offset_for_ref_frame[..=in_cycle as usize] {
-                        expected += o;
+                        expected = expected.saturating_add(o);
                     }
                 }
                 if sh.nal_ref_idc == 0 {
-                    expected += sps.offset_for_non_ref_pic;
+                    expected = expected.saturating_add(sps.offset_for_non_ref_pic);
                 }
-                let top = expected + sh.delta_pic_order_cnt[0];
-                let bottom = top + sps.offset_for_top_to_bottom_field + sh.delta_pic_order_cnt[1];
+                let top = expected.saturating_add(sh.delta_pic_order_cnt[0]);
+                let bottom = top.saturating_add(sps.offset_for_top_to_bottom_field).saturating_add(sh.delta_pic_order_cnt[1]);
                 Poc { top, bottom, msb: 0, frame_num_offset }
             }
             _ => {
@@ -501,9 +506,9 @@ impl PocState {
                 let temp = if sh.idr {
                     0
                 } else if sh.nal_ref_idc == 0 {
-                    2 * (frame_num_offset + sh.frame_num as i32) - 1
+                    2i32.saturating_mul(frame_num_offset.saturating_add(sh.frame_num as i32)).saturating_sub(1)
                 } else {
-                    2 * (frame_num_offset + sh.frame_num as i32)
+                    2i32.saturating_mul(frame_num_offset.saturating_add(sh.frame_num as i32))
                 };
                 Poc { top: temp, bottom: temp, msb: 0, frame_num_offset }
             }
@@ -514,7 +519,7 @@ impl PocState {
         if idr {
             0
         } else if self.prev_frame_num > frame_num {
-            self.prev_frame_num_offset + sps.max_frame_num() as i32
+            self.prev_frame_num_offset.saturating_add(sps.max_frame_num() as i32)
         } else {
             self.prev_frame_num_offset
         }
@@ -527,7 +532,7 @@ impl PocState {
         if sh.nal_ref_idc != 0 {
             if mmco5 {
                 self.prev_ref_msb = 0;
-                self.prev_ref_lsb = poc.top - poc.frame();
+                self.prev_ref_lsb = poc.top.saturating_sub(poc.frame());
             } else {
                 self.prev_ref_msb = poc.msb;
                 self.prev_ref_lsb = sh.pic_order_cnt_lsb as i32;
@@ -547,5 +552,90 @@ impl PocState {
         let off = self.frame_num_offset(false, frame_num, sps);
         self.prev_frame_num_offset = off;
         self.prev_frame_num = frame_num;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bitstream::BitWriter;
+
+    fn sps_pps() -> (Sps, Pps) {
+        let mut w = BitWriter::new();
+        w.write_bits(66, 8);
+        w.write_bits(0xC0, 8);
+        w.write_bits(30, 8);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_ue(2);
+        w.write_ue(1);
+        w.write_bit(false);
+        w.write_ue(10);
+        w.write_ue(8);
+        w.write_bit(true);
+        w.write_bit(true);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.rbsp_trailing();
+        let sps = Sps::parse(&w.finish()).unwrap();
+        let mut w = BitWriter::new();
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_bit(false);
+        w.write_bits(0, 2);
+        w.write_se(0);
+        w.write_se(0);
+        w.write_se(0);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.rbsp_trailing();
+        let pps = Pps::parse(&w.finish(), &[Some(sps.clone())]).unwrap();
+        (sps, pps)
+    }
+
+    /// Parse a non-IDR slice header of `slice_type` whose override flag is set with the given counts.
+    fn parse_override(slice_type: u32, l0_minus1: u32, l1_minus1: u32, qp_delta: i32) -> Result<SliceHeader> {
+        let (sps, pps) = sps_pps();
+        let mut w = BitWriter::new();
+        w.write_ue(0);
+        w.write_ue(slice_type);
+        w.write_ue(0);
+        w.write_bits(0, 4);
+        if slice_type == 1 {
+            w.write_bit(true); // direct_spatial_mv_pred
+        }
+        w.write_bit(true); // num_ref_idx_active_override_flag
+        w.write_ue(l0_minus1);
+        if slice_type == 1 {
+            w.write_ue(l1_minus1);
+        }
+        w.write_bit(false); // ref_pic_list_modification_flag_l0
+        if slice_type == 1 {
+            w.write_bit(false);
+        }
+        w.write_bit(false); // adaptive_ref_pic_marking_mode_flag
+        w.write_se(qp_delta);
+        w.rbsp_trailing();
+        let nal = NalHeader { nal_ref_idc: 1, nal_unit_type: 1 };
+        SliceHeader::parse(&w.finish(), nal, |_| Ok((&pps, &sps))).map(|(h, _, _)| h)
+    }
+
+    #[test]
+    fn huge_num_ref_idx_override_is_invalid() {
+        assert!(matches!(parse_override(0, u32::MAX, 0, 0), Err(crate::h264::Error::Invalid(_))));
+        assert!(matches!(parse_override(1, 0, u32::MAX, 0), Err(crate::h264::Error::Invalid(_))));
+        assert!(matches!(parse_override(0, 16, 0, 0), Err(crate::h264::Error::Invalid(_))));
+        assert_eq!(parse_override(0, 15, 0, 0).unwrap().num_ref_idx_active, [16, 0]);
+    }
+
+    #[test]
+    fn huge_slice_qp_delta_is_invalid() {
+        assert!(matches!(parse_override(0, 0, 0, i32::MAX), Err(crate::h264::Error::Invalid(_))));
     }
 }
