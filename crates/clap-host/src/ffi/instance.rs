@@ -337,6 +337,8 @@ impl Instance {
             self.processing = true;
         }
         let process = self.vt().process.ok_or_else(|| ClapError::Process("plugin has no process".into()))?;
+        // For `clap.thread-check`: the plugin may ask which thread it is being called on.
+        self.state.mark_audio_thread();
         self.raw.clear();
         for e in events.iter().take(self.raw.capacity()) {
             self.raw.push(RawEvent::from_event(e, offset));

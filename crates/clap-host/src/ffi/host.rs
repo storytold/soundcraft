@@ -1,8 +1,38 @@
 use super::{
     AtomicBool, AtomicU64, CLAP_EXT_GUI, CLAP_EXT_LATENCY, CLAP_EXT_LOG, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_LOG_ERROR, CLAP_LOG_FATAL,
-    CLAP_LOG_WARNING, CStr, EDIT_CAP, Mutex, Ordering, c_char, c_void, clap_host, clap_host_gui, clap_host_latency, clap_host_log, clap_host_params,
-    clap_host_state, clap_id, clap_log_severity, clap_param_clear_flags, clap_param_rescan_flags, read_cstr,
+    CLAP_LOG_WARNING, CStr, EDIT_CAP, Mutex, Ordering, PoisonError, c_char, c_void, clap_host, clap_host_gui, clap_host_latency, clap_host_log,
+    clap_host_params, clap_host_state, clap_id, clap_log_severity, clap_param_clear_flags, clap_param_rescan_flags, read_cstr,
 };
+use clap_sys::ext::thread_check::{CLAP_EXT_THREAD_CHECK, clap_host_thread_check};
+use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support};
+use std::time::{Duration, Instant};
+
+/// Most timers one plugin may register (hostile-input cap).
+const MAX_TIMERS: usize = 64;
+/// Shortest timer period we honour (CLAP lets the host clamp it).
+const MIN_TIMER_MS: u32 = 10;
+
+/// A stable, process-unique number for the calling thread (never 0).
+pub(crate) fn thread_token() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    thread_local! {
+        static TOKEN: u64 = NEXT.fetch_add(1, Ordering::Relaxed);
+    }
+    TOKEN.try_with(|t| *t).unwrap_or(0)
+}
+
+/// A `clap.timer-support` timer a plugin registered.
+struct Timer {
+    id: clap_id,
+    period: Duration,
+    next: Instant,
+}
+
+#[derive(Default)]
+struct Timers {
+    next_id: clap_id,
+    items: Vec<Timer>,
+}
 
 // ---- host side -----------------------------------------------------------------------------
 
@@ -25,6 +55,56 @@ pub(crate) struct HostState {
     /// Parameter changes the plugin reported (output events: typically edits in its GUI),
     /// waiting for the UI. Bounded by `EDIT_CAP`; the audio thread only `try_lock`s it.
     pub edits: Mutex<Vec<(u32, f64)>>,
+    /// `thread_token` of the thread that drives the editor (0 = not seen yet).
+    pub main_thread: AtomicU64,
+    /// `thread_token` of the thread that last ran `process` (0 = not seen yet).
+    pub audio_thread: AtomicU64,
+    /// Timers registered through `clap.timer-support`; fired by the editor's `idle`.
+    timers: Mutex<Timers>,
+}
+
+impl HostState {
+    /// Notes the calling thread as the main (UI) thread.
+    pub fn mark_main_thread(&self) {
+        self.main_thread.store(thread_token(), Ordering::Relaxed);
+    }
+
+    /// Notes the calling thread as the audio thread.
+    pub fn mark_audio_thread(&self) {
+        self.audio_thread.store(thread_token(), Ordering::Relaxed);
+    }
+
+    /// Ids of the timers that are due at `now`, each rescheduled one period later.
+    pub fn due_timers(&self, now: Instant) -> Vec<clap_id> {
+        let mut t = self.timers.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut due = Vec::new();
+        for timer in &mut t.items {
+            if now >= timer.next {
+                due.push(timer.id);
+                timer.next = now + timer.period;
+            }
+        }
+        due
+    }
+
+    fn register_timer(&self, period_ms: u32) -> Option<clap_id> {
+        let mut t = self.timers.lock().unwrap_or_else(PoisonError::into_inner);
+        if t.items.len() >= MAX_TIMERS {
+            return None;
+        }
+        t.next_id = t.next_id.wrapping_add(1);
+        let id = t.next_id;
+        let period = Duration::from_millis(u64::from(period_ms.max(MIN_TIMER_MS)));
+        t.items.push(Timer { id, period, next: Instant::now() + period });
+        Some(id)
+    }
+
+    fn unregister_timer(&self, id: clap_id) -> bool {
+        let mut t = self.timers.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = t.items.len();
+        t.items.retain(|x| x.id != id);
+        t.items.len() != before
+    }
 }
 
 impl Default for HostState {
@@ -42,6 +122,9 @@ impl Default for HostState {
             gui_hide: AtomicBool::new(false),
             gui_resize: AtomicU64::new(0),
             edits: Mutex::new(Vec::with_capacity(EDIT_CAP)),
+            main_thread: AtomicU64::new(0),
+            audio_thread: AtomicU64::new(0),
+            timers: Mutex::new(Timers::default()),
         }
     }
 }
@@ -176,6 +259,52 @@ static HOST_GUI: clap_host_gui = clap_host_gui {
     closed: Some(host_gui_closed),
 };
 
+unsafe extern "C" fn host_is_main_thread(host: *const clap_host) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    match unsafe { state(host) } {
+        // Until the editor has been driven once, assume the plugin runs on the main thread (it is
+        // created there).
+        Some(s) => match s.main_thread.load(Ordering::Relaxed) {
+            0 => true,
+            m => m == thread_token(),
+        },
+        None => false,
+    }
+}
+
+unsafe extern "C" fn host_is_audio_thread(host: *const clap_host) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    match unsafe { state(host) } {
+        Some(s) => match s.audio_thread.load(Ordering::Relaxed) {
+            0 => false,
+            a => a == thread_token(),
+        },
+        None => false,
+    }
+}
+
+unsafe extern "C" fn host_register_timer(host: *const clap_host, period_ms: u32, timer_id: *mut clap_id) -> bool {
+    if timer_id.is_null() {
+        return false;
+    }
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    let Some(id) = (unsafe { state(host) }).and_then(|s| s.register_timer(period_ms)) else { return false };
+    // SAFETY: non-null (checked), and CLAP says it points to a writable `clap_id`.
+    unsafe { *timer_id = id };
+    true
+}
+
+unsafe extern "C" fn host_unregister_timer(host: *const clap_host, timer_id: clap_id) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    (unsafe { state(host) }).is_some_and(|s| s.unregister_timer(timer_id))
+}
+
+static HOST_THREAD_CHECK: clap_host_thread_check =
+    clap_host_thread_check { is_main_thread: Some(host_is_main_thread), is_audio_thread: Some(host_is_audio_thread) };
+
+static HOST_TIMER: clap_host_timer_support =
+    clap_host_timer_support { register_timer: Some(host_register_timer), unregister_timer: Some(host_unregister_timer) };
+
 static HOST_LOG: clap_host_log = clap_host_log { log: Some(host_log) };
 
 static HOST_PARAMS: clap_host_params =
@@ -199,8 +328,76 @@ pub(super) unsafe extern "C" fn host_get_extension(_host: *const clap_host, id: 
         (&HOST_STATE as *const clap_host_state).cast()
     } else if id == CLAP_EXT_GUI {
         (&HOST_GUI as *const clap_host_gui).cast()
+    } else if id == CLAP_EXT_THREAD_CHECK {
+        (&HOST_THREAD_CHECK as *const clap_host_thread_check).cast()
+    } else if id == CLAP_EXT_TIMER_SUPPORT {
+        (&HOST_TIMER as *const clap_host_timer_support).cast()
     } else {
-        // Everything else (thread-check, timers, fd support, …) is unsupported: CLAP allows null.
+        // Everything else (fd support, …) is unsupported: CLAP allows null.
         std::ptr::null()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timers_fire_when_due_and_stop_when_unregistered() {
+        let s = HostState::default();
+        let id = s.register_timer(20);
+        assert!(id.is_some());
+        let id = id.unwrap_or(0);
+        let t0 = Instant::now();
+        assert!(s.due_timers(t0).is_empty(), "not due yet");
+        assert_eq!(s.due_timers(t0 + Duration::from_millis(30)), vec![id]);
+        assert!(s.due_timers(t0 + Duration::from_millis(31)).is_empty(), "rescheduled one period later");
+        assert!(s.unregister_timer(id));
+        assert!(!s.unregister_timer(id), "already gone");
+        assert!(s.due_timers(t0 + Duration::from_secs(5)).is_empty());
+    }
+
+    #[test]
+    fn plugins_cannot_register_unbounded_timers() {
+        let s = HostState::default();
+        for _ in 0..MAX_TIMERS {
+            assert!(s.register_timer(100).is_some());
+        }
+        assert!(s.register_timer(100).is_none());
+    }
+
+    #[test]
+    fn thread_tokens_tell_threads_apart() {
+        let here = thread_token();
+        assert_ne!(here, 0);
+        assert_eq!(here, thread_token());
+        let there = std::thread::spawn(thread_token).join().unwrap_or(0);
+        assert_ne!(there, 0);
+        assert_ne!(here, there);
+    }
+
+    #[test]
+    fn the_host_answers_thread_checks_per_thread() {
+        let s = HostState::default();
+        s.mark_main_thread();
+        s.audio_thread.store(thread_token() + 1_000, Ordering::Relaxed);
+        assert_eq!(s.main_thread.load(Ordering::Relaxed), thread_token());
+        let host = clap_host {
+            clap_version: clap_sys::version::CLAP_VERSION,
+            host_data: (&s as *const HostState).cast_mut().cast(),
+            name: c"test".as_ptr(),
+            vendor: c"test".as_ptr(),
+            url: c"".as_ptr(),
+            version: c"0".as_ptr(),
+            get_extension: Some(host_get_extension),
+            request_restart: Some(host_request_restart),
+            request_process: Some(host_request_process),
+            request_callback: Some(host_request_callback),
+        };
+        // SAFETY: `host` is a valid `clap_host` whose `host_data` points to `s`, alive for the test.
+        unsafe {
+            assert!(host_is_main_thread(&host));
+            assert!(!host_is_audio_thread(&host));
+        }
     }
 }
