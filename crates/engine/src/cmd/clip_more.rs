@@ -522,6 +522,26 @@ mod tests {
     }
 
     #[test]
+    fn loop_crossfade_never_reaches_the_clip_after_the_loop() {
+        // Fill stops at a clip 50 samples into the last loop, shorter than half the crossfade:
+        // that clip must not be pulled back or faded in.
+        let (mut e, t, id) = engine_with_handles(1000, 10_000);
+        let next_id = e.session_mut().new_clip_id();
+        crate::edit::place_clip(e.session_mut(), t, Clip::audio(next_id, "next", SourceId(9), 5000, 2050, 500));
+        e.execute("clip.loop", &json!({"clip": id.0, "fill": true, "crossfade": 200})).unwrap();
+        let clips = e.session().track(t).unwrap().clips().to_vec();
+        let next = clips.iter().find(|c| c.id == next_id).unwrap();
+        assert_eq!((next.start, next.length, next.source_offset(), next.fade_in.len), (2050, 500, 5000, 0));
+        // The last copy still crossfades with the one before it and ends where the next clip starts.
+        assert_eq!(spans(&e, t), vec![(0, 1100), (900, 1150), (1900, 150), (2050, 500)]);
+        assert_eq!(fades(&e, t), vec![(0, 200), (200, 150), (150, 0), (0, 0)]);
+        // Unloop leaves the next clip as it was.
+        e.execute("clip.unloop", &json!({"clip": id.0})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 1000), (2050, 500)]);
+        assert_eq!(fades(&e, t), vec![(0, 0), (0, 0)]);
+    }
+
+    #[test]
     fn loop_crossfade_reaches_a_short_last_loop_and_flatten_keeps_it() {
         let (mut e, t, id) = engine_with_handles(1000, 10_000);
         e.execute("clip.loop", &json!({"clip": id.0, "length": 2500, "crossfade": 200})).unwrap();

@@ -371,7 +371,8 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
                 nc.trim_end_to(last);
             }
             let at = c.start.saturating_add(c.length.saturating_mul(k));
-            seams.push(at);
+            // A seam and the end of the copy it starts, which a short last copy brings close.
+            seams.push((at, at.saturating_add(nc.length)));
             copies.push((at, nc));
         }
         for (at, nc) in copies {
@@ -379,12 +380,14 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
             let _ = crate::edit::paste(s, tid, at, &[nc], length, false);
             made += 1;
         }
-        // Each seam's crossfade stays inside its own two iterations: at most half a whole one.
+        // Each seam's crossfade stays inside its own two iterations: at most half a whole one, and
+        // never past the end of the copy after the seam, so a short last copy is not crossfaded
+        // into the clip that follows the loop.
         let xf = crossfade.min(len / 2);
         if xf > 0 {
-            for seam in seams {
+            for (seam, copy_end) in seams {
                 let half = xf / 2;
-                let range = Range::new(seam.saturating_sub(half), seam.saturating_add(xf - half));
+                let range = Range::new(seam.saturating_sub(half), seam.saturating_add(xf - half).min(copy_end));
                 crate::edit::create_fades(s, tid, range, shape);
             }
         }
