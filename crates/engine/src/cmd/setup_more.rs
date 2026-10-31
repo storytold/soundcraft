@@ -42,13 +42,24 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             prepare_dpe
         ),
-        cmd!(noundo "setup.hardware", "Hardware...", ["Setup"], None, "{device?, buffer_size?: 16..8192} — audio interface settings (sample rate is the session's)", always, |e, p| engine_settings(e, p)),
-        cmd!(noundo "setup.playback_engine", "Playback Engine...", ["Setup"], None, "{device?, buffer_size?: 16..8192, delay_compensation?: bool}", always, |e, p| {
-            if let Some(v) = p.get("delay_compensation").and_then(Value::as_bool) {
-                e.session_mut().edit.delay_compensation = v;
-            }
-            engine_settings(e, p)
-        }),
+        cmd!(
+            noundo "setup.hardware",
+            "Hardware...",
+            ["Setup"],
+            None,
+            "{device?: output name, buffer_size?: 16..=8192 or null} — output device and buffer. Applied only in the desktop app (Playback Engine window / ui.audio_device), which returns the open device. Headless stores the request and returns applied: false; buffer_size is null when unset. Any integer in range, not rounded to the window's power-of-two sizes. Sample rate is the session's",
+            always,
+            |e, p| engine_settings(e, p, "setup.hardware")
+        ),
+        cmd!(
+            noundo "setup.playback_engine",
+            "Playback Engine...",
+            ["Setup"],
+            None,
+            "{device?: output name, buffer_size?: 16..=8192 or null, delay_compensation?: bool} — device and buffer as setup.hardware (applied only in the desktop app, or via ui.audio_device); delay_compensation is applied here too. Headless returns applied: false and does not invent a buffer",
+            always,
+            |e, p| engine_settings(e, p, "setup.playback_engine")
+        ),
         cmd!(noundo "setup.disk_allocation", "Disk Allocation...", ["Setup"], None, "{path?, track?} — the record folder for the session, or for one track", always, disk_allocation),
         cmd!(noundo "setup.peripherals", "Peripherals...", ["Setup"], None, "{settings?: {name: number|bool|string}} — control surface / sync device settings", always, peripherals),
         cmd!(
@@ -156,18 +167,69 @@ fn prepare_dpe(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"prepared": n}))
 }
 
-fn engine_settings(e: &mut Engine, p: &Value) -> Result<Value> {
+/// A `buffer_size` argument: absent, cleared (`null`), or an integer in 16..=8192.
+enum BufferParam {
+    Skip,
+    Clear,
+    Set(u64),
+}
+
+/// Same range as `ui.audio_device`. Out of range and non-numbers error; there is no clamp and no
+/// power-of-two rounding (the Playback Engine window lists those sizes, the command keeps the number).
+fn buffer_param(id: &str, p: &Value) -> Result<BufferParam> {
+    match p.get("buffer_size") {
+        None => Ok(BufferParam::Skip),
+        Some(Value::Null) => Ok(BufferParam::Clear),
+        Some(v) => {
+            let n = v.as_u64().filter(|n| (16..=8192).contains(n)).ok_or_else(|| bad(id, "`buffer_size` must be a number in 16..=8192 or null"))?;
+            Ok(BufferParam::Set(n))
+        }
+    }
+}
+
+/// `device` as `ui.audio_device`'s `output`: a name, or `null`/empty to clear. Absent leaves it.
+fn device_param<'a>(id: &str, p: &'a Value) -> Result<Option<Option<&'a str>>> {
+    match p.get("device") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(name)) => Ok(Some((!name.is_empty()).then_some(name.as_str()))),
+        Some(_) => Err(bad(id, "`device` must be a string or null")),
+    }
+}
+
+/// Headless `setup.hardware` / `setup.playback_engine`. Playback never reads `engine.device` or
+/// `engine.buffer_size` (only this command does); they are kept so a later call can report the
+/// request. The result says `applied: false` and leaves `buffer_size` null until one was stored.
+fn engine_settings(e: &mut Engine, p: &Value, id: &str) -> Result<Value> {
+    let buffer = buffer_param(id, p)?;
+    let device = device_param(id, p)?;
+    if id == "setup.playback_engine"
+        && let Some(on) = p.get("delay_compensation").and_then(Value::as_bool)
+    {
+        e.session_mut().edit.delay_compensation = on;
+    }
     let s = e.session_mut();
-    if let Some(b) = p.get("buffer_size").and_then(Value::as_u64) {
-        let b = b.clamp(16, 8192).next_power_of_two().min(8192);
-        s.edit.values.insert("engine.buffer_size".into(), b as f64);
+    match buffer {
+        BufferParam::Skip => {}
+        BufferParam::Clear => {
+            s.edit.values.remove("engine.buffer_size");
+        }
+        BufferParam::Set(n) => {
+            s.edit.values.insert("engine.buffer_size".into(), n as f64);
+        }
     }
-    if let Some(d) = str_param(p, "device") {
-        set_text(&mut s.edit, "engine.device", Some(d));
+    if let Some(name) = device {
+        set_text(&mut s.edit, "engine.device", name);
     }
+    // Exact integers only: a hand-edited fraction is not reported as a buffer size.
+    let buffer_size = s.edit.values.get("engine.buffer_size").copied().and_then(|v| {
+        let n = v as u64;
+        (v.is_finite() && (n as f64) == v).then_some(n)
+    });
     Ok(json!({
+        "applied": false,
         "device": text(&s.edit, "engine.device"),
-        "buffer_size": s.edit.value("engine.buffer_size", 1024.0),
+        "buffer_size": buffer_size,
         "sample_rate": s.sample_rate.hz(),
         "bit_depth": s.bit_depth,
         "delay_compensation": s.edit.delay_compensation,
@@ -307,7 +369,7 @@ fn current_timecode(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     let at = s.edit.selection.start.max(0);
     let abs = tc.to_samples(s.frame_rate, s.sample_rate);
-    s.timecode_start = abs - at;
+    s.timecode_start = abs.saturating_sub(at).clamp(-soundcraft_time::MAX_POSITION, soundcraft_time::MAX_POSITION);
     Ok(json!({"timecode_start": s.timecode_start, "at": at}))
 }
 
@@ -568,6 +630,20 @@ mod tests {
     }
 
     #[test]
+    fn current_timecode_out_of_range_is_clamped() {
+        use soundcraft_time::MAX_POSITION;
+        for tc in ["-9223372036854775807:00:00:00", "9999999:00:00:00"] {
+            let mut e = Engine::default();
+            e.execute("edit.select", &json!({"start": 48_000})).unwrap();
+            e.execute("setup.current_timecode", &json!({"timecode": tc})).unwrap();
+            let start = e.session().timecode_start;
+            assert!((-MAX_POSITION..=MAX_POSITION).contains(&start), "{tc}: start {start}");
+            let reloaded = Session::from_json(&e.session().to_json().unwrap()).unwrap();
+            assert_eq!(reloaded.timecode_start, start, "{tc}");
+        }
+    }
+
+    #[test]
     fn click_countoff_settings() {
         let mut e = Engine::default();
         let r = e.execute("setup.click_countoff", &json!({"volume_db": -12.0, "countoff_bars": 4, "countoff": true})).unwrap();
@@ -587,7 +663,8 @@ mod tests {
     fn engine_and_midi_settings() {
         let mut e = Engine::default();
         let r = e.execute("setup.playback_engine", &json!({"buffer_size": 300, "device": "Interface"})).unwrap();
-        assert_eq!(r["buffer_size"], 512.0);
+        assert_eq!(r["applied"], false);
+        assert_eq!(r["buffer_size"], 300);
         assert_eq!(r["device"], "Interface");
         let r = e.execute("setup.midi_input_filter", &json!({"filter": ["sysex", "bogus"]})).unwrap();
         assert_eq!(r["filtered"], json!(["sysex"]));
@@ -595,6 +672,45 @@ mod tests {
         assert_eq!(r["enabled"], json!(["Keys"]));
         let r = e.execute("setup.video_sync_offset", &json!({"frames": 2})).unwrap();
         assert_eq!(r["samples"], 3200.0);
+    }
+
+    #[test]
+    fn playback_engine_does_not_pretend_the_device_changed() {
+        let mut e = Engine::default();
+        let r = e.execute("setup.playback_engine", &json!({})).unwrap();
+        assert_eq!(r["applied"], false);
+        assert!(r["buffer_size"].is_null(), "no invented default buffer: {r}");
+        assert!(r["device"].is_null());
+        assert_eq!(r["delay_compensation"], true, "the session default, not a device claim");
+
+        let r = e.execute("setup.hardware", &json!({"buffer_size": 300, "device": "Interface"})).unwrap();
+        assert_eq!(r["applied"], false);
+        assert_eq!(r["buffer_size"], 300, "kept, not rounded to a power of two");
+        assert_eq!(r["device"], "Interface");
+        assert_eq!(e.session().edit.value("engine.buffer_size", -1.0), 300.0);
+
+        let r = e.execute("setup.playback_engine", &json!({"delay_compensation": false})).unwrap();
+        assert_eq!(r["applied"], false);
+        assert_eq!(r["delay_compensation"], false);
+        assert_eq!(r["buffer_size"], 300, "delay compensation does not clear a stored buffer");
+        assert!(!e.session().edit.delay_compensation);
+
+        let err = e.execute("setup.playback_engine", &json!({"buffer_size": 8, "delay_compensation": true, "device": "Other"})).unwrap_err();
+        assert!(err.to_string().contains("16..=8192"), "{err}");
+        assert!(!e.session().edit.delay_compensation, "an invalid buffer changes nothing");
+        assert_eq!(e.session().edit.value("engine.buffer_size", -1.0), 300.0);
+        assert_eq!(text(&e.session().edit, "engine.device").as_deref(), Some("Interface"));
+        assert!(e.execute("setup.hardware", &json!({"buffer_size": "big"})).is_err());
+
+        let err = e.execute("setup.playback_engine", &json!({"device": 42, "delay_compensation": true})).unwrap_err();
+        assert!(err.to_string().contains("`device` must be a string or null"), "{err}");
+        assert!(!e.session().edit.delay_compensation, "an invalid device changes nothing");
+        assert_eq!(text(&e.session().edit, "engine.device").as_deref(), Some("Interface"));
+
+        let r = e.execute("setup.hardware", &json!({"buffer_size": null, "device": ""})).unwrap();
+        assert_eq!(r["applied"], false);
+        assert!(r["buffer_size"].is_null());
+        assert!(r["device"].is_null());
     }
 
     #[test]

@@ -2,17 +2,33 @@ use super::{ChannelFormat, Clip, ClipContent, Engine, EngineError, Result, Sampl
 
 /// Most meter changes a MIDI file may bring into the tempo map; scores have a handful.
 pub(super) const MAX_MIDI_METERS: usize = 10_000;
+/// Most tempo changes a MIDI file may bring into the tempo map: conversions walk the tempo events.
+pub(super) const MAX_MIDI_TEMPOS: usize = 10_000;
+/// Most synth tracks a MIDI file may create in the session.
+pub(super) const MAX_MIDI_TRACKS: usize = 512;
 
 /// Import a Standard MIDI File as MIDI tracks (one per SMF track).
 pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: bool) -> Result<Vec<TrackId>> {
     let smf = soundcraft_midi::read_smf(bytes).map_err(|err| EngineError::Io(err.to_string()))?;
-    let s = e.session_mut();
     if tempo_map {
         // Each meter is placed by walking the ones before it.
         if smf.meters.len() > MAX_MIDI_METERS {
             return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_METERS} meter changes")));
         }
+        if smf.tempos.len() > MAX_MIDI_TEMPOS {
+            return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_TEMPOS} tempo changes")));
+        }
+    }
+    let tracks_to_import = smf.tracks.iter().filter(|tr| !tr.sequence.notes.is_empty() || !tr.sequence.ctrls.is_empty()).count();
+    if tracks_to_import > MAX_MIDI_TRACKS {
+        return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_TRACKS} tracks")));
+    }
+    let s = e.session_mut();
+    if tempo_map {
         for (tick, bpm) in &smf.tempos {
+            if s.tempo.tempo_at_tick(*tick) == *bpm {
+                continue;
+            }
             let _ = s.tempo.set_tempo(*tick, *bpm);
         }
         for (tick, n, d) in &smf.meters {

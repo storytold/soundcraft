@@ -335,7 +335,11 @@ fn write_score(e: &mut Engine, p: &Value, id: &str, svg: bool) -> Result<Value> 
         return Err(bad(id, "no MIDI or instrument tracks to notate"));
     }
     let setup = crate::score::ScoreSetup::from_session(e.session());
-    let (text, ext) = if svg { (crate::score::svg(&parts, &setup), "svg") } else { (crate::score::musicxml(&parts, &setup), "musicxml") };
+    let (text, ext) = if svg {
+        (crate::score::svg(&parts, &setup).map_err(|m| bad(id, m))?, "svg")
+    } else {
+        (crate::score::musicxml(&parts, &setup).map_err(|m| bad(id, m))?, "musicxml")
+    };
     let path = match str_param(p, "path") {
         Some(p) => p.to_string(),
         None => std::env::temp_dir().join(format!("{}.{ext}", crate::io::sanitize_name(&setup.title))).to_string_lossy().to_string(),

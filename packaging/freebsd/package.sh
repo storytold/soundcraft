@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build and package SoundCraft for FreeBSD:
 #
-#   $DIST/soundcraft-<version>-freebsd-x86_64.tar.gz   a /usr/local-style tree:
-#       soundcraft-<version>-freebsd-x86_64/{bin, man/man1, share/applications, share/icons,
+#   $DIST/soundcraft-<version>-freebsd-<arch>.tar.gz   a /usr/local-style tree (<arch> is x86_64, or
+#       aarch64 when CARGO_BUILD_TARGET=aarch64-unknown-freebsd):
+#       soundcraft-<version>-freebsd-<arch>/{bin, man/man1, share/applications, share/icons,
 #       share/mime, share/metainfo, share/doc/soundcraft, share/{bash-completion,zsh,fish}}
 #
 # Install by copying the tree's contents into /usr/local, e.g.
@@ -23,7 +24,7 @@ SKIP_BUILD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
-    -h | --help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done

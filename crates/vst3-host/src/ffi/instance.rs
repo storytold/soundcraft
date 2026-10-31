@@ -35,6 +35,11 @@ pub(crate) struct Layout {
     pub event_input: bool,
 }
 
+/// `"input"` or `"output"`, for error messages.
+fn dir_name(dir: sv::BusDirections) -> &'static str {
+    if dir == sv::BusDirections_::kInput { "input" } else { "output" }
+}
+
 pub(super) fn apply_transport(c: &mut sv::ProcessContext, t: &Transport) {
     use sv::ProcessContext_::StatesAndFlags_::{
         kBarPositionValid, kContTimeValid, kPlaying, kProjectTimeMusicValid, kRecording, kTempoValid, kTimeSigValid,
@@ -248,7 +253,17 @@ impl Instance {
 
     fn bus_count(&self, media: sv::MediaTypes, dir: sv::BusDirections) -> i32 {
         // SAFETY: valid component.
-        unsafe { self.component.getBusCount(media as sv::MediaType, dir as sv::BusDirection) }.clamp(0, MAX_BUSES)
+        unsafe { self.component.getBusCount(media as sv::MediaType, dir as sv::BusDirection) }.max(0)
+    }
+
+    /// The plugin's audio buses in one direction. More than `MAX_BUSES` is an error: we never
+    /// hand a plugin fewer buses than it advertised.
+    fn audio_bus_count(&self, dir: sv::BusDirections) -> Result<i32, Vst3Error> {
+        let n = self.bus_count(sv::MediaTypes_::kAudio, dir);
+        if n > MAX_BUSES {
+            return Err(Vst3Error::Process(format!("{n} audio {} buses (at most {MAX_BUSES} supported)", dir_name(dir))));
+        }
+        Ok(n)
     }
 
     fn arrangement(&self, dir: sv::BusDirections, index: i32) -> Option<sv::SpeakerArrangement> {
@@ -258,30 +273,41 @@ impl Instance {
         ok(unsafe { p.getBusArrangement(dir as sv::BusDirection, index, &mut arr) }).then_some(arr)
     }
 
-    fn bus_channels(&self, dir: sv::BusDirections, index: i32) -> u32 {
-        if let Some(arr) = self.arrangement(dir, index) {
-            return arr.count_ones().min(MAX_BUS_CHANNELS);
-        }
-        // SAFETY: plain data; all-zero is valid.
-        let mut info: sv::BusInfo = unsafe { std::mem::zeroed() };
-        // SAFETY: valid component; index below the bus count; `info` is writable.
-        if ok(unsafe { self.component.getBusInfo(sv::MediaTypes_::kAudio as sv::MediaType, dir as sv::BusDirection, index, &mut info) }) {
-            u32::try_from(info.channelCount).unwrap_or(0).min(MAX_BUS_CHANNELS)
+    /// Channels of one audio bus. More than `MAX_BUS_CHANNELS` is an error, as for the bus count.
+    fn bus_channels(&self, dir: sv::BusDirections, index: i32) -> Result<u32, Vst3Error> {
+        let channels = if let Some(arr) = self.arrangement(dir, index) {
+            arr.count_ones()
         } else {
-            0
+            // SAFETY: plain data; all-zero is valid.
+            let mut info: sv::BusInfo = unsafe { std::mem::zeroed() };
+            // SAFETY: valid component; index below the bus count; `info` is writable.
+            if ok(unsafe { self.component.getBusInfo(sv::MediaTypes_::kAudio as sv::MediaType, dir as sv::BusDirection, index, &mut info) }) {
+                u32::try_from(info.channelCount).unwrap_or(0)
+            } else {
+                0
+            }
+        };
+        if channels > MAX_BUS_CHANNELS {
+            return Err(Vst3Error::Process(format!(
+                "audio {} bus {index} has {channels} channels (at most {MAX_BUS_CHANNELS} supported)",
+                dir_name(dir)
+            )));
         }
+        Ok(channels)
     }
 
     /// Stops processing, deactivates, negotiates the bus layout (main buses mono or stereo as
     /// asked, falling back to stereo and then to the plugin's own choice), activates the main
-    /// buses, sets up 32-bit processing and activates the component.
+    /// buses, sets up 32-bit processing and activates the component. A layout beyond
+    /// `MAX_BUSES` buses or `MAX_BUS_CHANNELS` channels per bus is an error, and the component
+    /// stays inactive.
     pub fn configure(&mut self, sample_rate: f64, max_frames: usize, mono: bool) -> Result<Layout, Vst3Error> {
         self.shutdown();
         let audio = sv::MediaTypes_::kAudio;
         let event = sv::MediaTypes_::kEvent;
         let (din, dout) = (sv::BusDirections_::kInput, sv::BusDirections_::kOutput);
-        let nin = self.bus_count(audio, din);
-        let nout = self.bus_count(audio, dout);
+        let nin = self.audio_bus_count(din)?;
+        let nout = self.audio_bus_count(dout)?;
         let current = |s: &Self, dir: sv::BusDirections, n: i32| -> Vec<sv::SpeakerArrangement> {
             (0..n).map(|i| s.arrangement(dir, i).unwrap_or(sv::SpeakerArr::kStereo)).collect()
         };
@@ -311,8 +337,8 @@ impl Instance {
             log::debug!("vst3: plugin refused mono/stereo bus arrangements; using its own");
         }
         let layout = Layout {
-            inputs: (0..nin).map(|i| self.bus_channels(din, i)).collect(),
-            outputs: (0..nout).map(|i| self.bus_channels(dout, i)).collect(),
+            inputs: (0..nin).map(|i| self.bus_channels(din, i)).collect::<Result<_, _>>()?,
+            outputs: (0..nout).map(|i| self.bus_channels(dout, i)).collect::<Result<_, _>>()?,
             event_input: self.bus_count(event, din) > 0,
         };
         // Main buses on, aux buses off (VST3 still gets buffers for every bus).

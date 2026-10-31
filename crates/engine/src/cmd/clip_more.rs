@@ -196,8 +196,14 @@ fn unloop(e: &mut Engine, p: &Value) -> Result<Value> {
 fn effects_set(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     let params = p.get("params").and_then(Value::as_object).ok_or_else(|| bad("clip.effects_set", "`params` must be an object of numbers"))?;
-    let vals: Vec<(String, f64)> =
-        params.iter().filter_map(|(k, v)| v.as_f64().filter(|x| x.is_finite()).map(|x| (k.chars().take(64).collect(), x))).collect();
+    let vals: Vec<(String, f64)> = params
+        .iter()
+        .filter_map(|(k, v)| v.as_f64().filter(|x| x.is_finite()).map(|x| (k.chars().take(64).collect(), x)))
+        .map(|(k, v)| {
+            let v = if k == "gain" { v.clamp(f64::from(soundcraft_dsp::MIN_DB), f64::from(soundcraft_mix::CLIP_FX_MAX_GAIN_DB)) } else { v };
+            (k, v)
+        })
+        .collect();
     let s = e.session_mut();
     for c in &ids {
         for (k, v) in &vals {
@@ -314,6 +320,13 @@ mod tests {
         }
         s.edit.selected_tracks = vec![t];
         (Engine::new(s), t, ids)
+    }
+
+    #[test]
+    fn effects_set_caps_gain() {
+        let (mut e, _t, ids) = engine_with(&[(0, 100, 0)]);
+        e.execute("clip.effects_set", &json!({"clip": ids[0].0, "params": {"gain": 500.0}})).unwrap();
+        assert_eq!(e.session().edit.values.get(&format!("clip_fx.{}.gain", ids[0].0)).copied(), Some(24.0));
     }
 
     #[test]
