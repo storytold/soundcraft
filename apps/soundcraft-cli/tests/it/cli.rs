@@ -209,13 +209,13 @@ fn mcp_automation_root_flags_are_checked_up_front() {
     fails(&["--automation-write-root", dir, "--connect", "7979"], "--connect");
     // #874: a flag may be given again, but every folder it names must exist.
     fails(&["--automation-read-root", dir, "--automation-read-root", missing.to_str().unwrap()], "cannot open the automation read root");
-    fails(&["--automation-write-root", dir, "--automation-write-root"], "needs a folder");
-    fails(&["--automation-read-root"], "needs a folder");
-    fails(&["--automation-write-root", "--demo"], "needs a folder");
+    fails(&["--automation-write-root", dir, "--automation-write-root"], "a value is required");
+    fails(&["--automation-read-root"], "a value is required");
+    fails(&["--automation-write-root", "--demo"], "a value is required");
     fails(&["--automation-read-root", missing.to_str().unwrap()], "cannot open the automation read root");
-    fails(&["--automation-write-root="], "needs a non-empty folder");
+    fails(&["--automation-write-root="], "a value is required");
     // A misspelled root flag must not start an unconfined server.
-    fails(&["--automation-read-roots", dir], "unknown mcp option");
+    fails(&["--automation-read-roots", dir], "unexpected argument '--automation-read-roots'");
     // A file is not a folder.
     std::fs::write(base.join("f.txt"), "x").unwrap();
     fails(&["--automation-write-root", base.join("f.txt").to_str().unwrap()], "cannot open the automation write root");
@@ -224,9 +224,9 @@ fn mcp_automation_root_flags_are_checked_up_front() {
 
 #[test]
 fn usage_lists_the_root_flags() {
-    let o = run(&["--help"]);
+    let o = run(&["mcp", "--help"]);
     let help = String::from_utf8_lossy(&o.stdout).into_owned();
-    assert!(help.contains("--automation-read-root DIR") && help.contains("--automation-write-root DIR"), "{help}");
+    assert!(help.contains("--automation-read-root <DIR>") && help.contains("--automation-write-root <DIR>"), "{help}");
 }
 
 /// Without `--start`/`--end`, `--bounce` covers the whole session, not a stray edit selection

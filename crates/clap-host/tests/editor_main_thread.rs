@@ -15,6 +15,11 @@ fn block(p: &mut Box<dyn Plugin>) -> Vec<Vec<f32>> {
 }
 
 fn main() {
+    // nextest lists custom-harness tests with `--list`; each binary here is one test.
+    if std::env::args().any(|a| a == "--list") {
+        println!("editor_main_thread: test");
+        return;
+    }
     common::fixture_dir();
     let mut p = soundcraft_clap_host::create(GAIN).expect("fixture");
     p.prepare(48_000.0, 64, 2);

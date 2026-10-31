@@ -301,7 +301,7 @@ impl TempoMap {
     pub fn tick_at_bar_beat(&self, bb: BarBeat) -> i64 {
         let start = self.bar_start_tick(bb.bar);
         let m = self.meter_at_tick(start);
-        start.saturating_add((bb.beat - 1).max(0).saturating_mul(m.ticks_per_beat())).saturating_add(bb.tick)
+        start.saturating_add(bb.beat.saturating_sub(1).max(0).saturating_mul(m.ticks_per_beat())).saturating_add(bb.tick)
     }
 
     pub fn bar_beat_at(&self, s: Samples, sr: SampleRate) -> BarBeat {
@@ -342,6 +342,12 @@ mod tests {
         let m = TempoMap::default();
         assert_eq!(m.bar_start_tick(i64::MIN), i64::MIN);
         assert_eq!(m.bar_start_tick(0), -TICKS_PER_QUARTER * 4);
+    }
+
+    #[test]
+    fn minimum_beat_is_clamped_without_overflow() {
+        let m = TempoMap::default();
+        assert_eq!(m.tick_at_bar_beat(BarBeat { bar: 1, beat: i64::MIN, tick: 0 }), 0);
     }
 
     #[test]

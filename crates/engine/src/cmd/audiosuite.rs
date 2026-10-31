@@ -20,6 +20,18 @@ pub fn specs() -> Vec<CommandSpec> {
     )]
 }
 
+/// The most frames a process can take in: these processes cut their output at MAX_OFFLINE_SAMPLES frames.
+fn frame_limit(name: &str, ratio: f64, semitones: f32, sr: f64, to: u32, selection: SpeedRampSelection) -> usize {
+    let longest = |grows: f64| (soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES as f64 / grows) as usize;
+    match name {
+        "time_stretch" => longest(ratio),
+        "pitch_shift" => longest(2f64.powf(f64::from(semitones) / 12.0)),
+        "varispeed" => longest(f64::from(to) / sr),
+        "speed_ramp" => longest(if selection == SpeedRampSelection::Extend { 1.5 } else { 1.0 }),
+        _ => usize::MAX,
+    }
+}
+
 /// Process each target clip's audio and replace the clip with one backed by a new source.
 fn process(e: &mut Engine, p: &Value) -> Result<Value> {
     let name = str_param(p, "process").or_else(|| str_param(p, "plugin")).ok_or_else(|| bad("audiosuite.process", "`process` required"))?.to_string();
@@ -63,15 +75,7 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
     let change = if get("change", 0.0) >= 0.5 { SpeedRampChange::SpeedUp } else { SpeedRampChange::SlowDown };
     let selection = if get("selection", 0.0) >= 0.5 { SpeedRampSelection::Extend } else { SpeedRampSelection::FitTo };
     let fades = get("fades", 1.0) >= 0.5;
-    // These processes cut their output at MAX_OFFLINE_SAMPLES frames.
-    let longest = |grows: f64| (soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES as f64 / grows) as usize;
-    let most = match name.as_str() {
-        "time_stretch" => longest(ratio),
-        "pitch_shift" => longest(2f64.powf(f64::from(semitones) / 12.0)),
-        "varispeed" => longest(f64::from(to) / sr.as_f64()),
-        "speed_ramp" => longest(if selection == SpeedRampSelection::Extend { 1.5 } else { 1.0 }),
-        _ => usize::MAX,
-    };
+    let most = frame_limit(&name, ratio, semitones, sr.as_f64(), to, selection);
     let mut done = 0;
     for id in ids {
         let Some((track, clip)) = e.session().find_clip(id).map(|(t, c)| (t, c.clone())) else { continue };
@@ -133,6 +137,7 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
         nc.name = new_name;
         nc.content = ClipContent::Audio { source: src, offset: 0 };
         nc.length = i64::try_from(frames).unwrap_or(nc.length);
+        nc.clamp_fades();
         // The render already has the clip's stretch applied; keeping it would stretch the new file again.
         nc.stretch = 1.0;
         // Invert and Duplicate are phase/copy operations. The clip's gain stays a clip gain,
@@ -240,6 +245,21 @@ mod tests {
         assert_eq!(c.gain_env, vec![(0, 0.0), (32, -12.0)]);
         let sample = e.session().pool.get(c.source().unwrap()).unwrap().buffer.channels[0][0];
         assert!((sample - 0.5).abs() < 1e-3, "duplicate keeps the file level and the clip gain, got {sample}");
+    }
+
+    #[test]
+    fn shortening_process_clamps_fades_to_the_new_length() {
+        let (mut e, id) = gained_clip();
+        {
+            let c = e.session_mut().find_clip_mut(id).unwrap();
+            c.fade_in.len = 60;
+            c.fade_out.len = 40;
+        }
+        e.execute("audiosuite.process", &json!({"process": "time_stretch", "params": {"ratio": 0.25}, "clips": [id.0]})).unwrap();
+        let c = e.session().tracks[0].clips()[0].clone();
+        assert!(c.length < 64, "{}", c.length);
+        assert!(c.fade_in.len <= c.length, "fade in {} > length {}", c.fade_in.len, c.length);
+        assert_eq!(c.fade_out.len, 40.min(c.length));
     }
 
     #[test]

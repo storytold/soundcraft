@@ -564,18 +564,11 @@ pub fn chord_name(weights: &[f64; 12], bass: usize) -> Option<String> {
 const MAX_CHORD_BARS: usize = 100_000;
 const MAX_CHORD_NOTES: usize = 10_000_000;
 
-fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
-    let id = "event.extract_chords";
-    let (_, t0, t1) = selection_ticks(e, p, id)?;
-    let s = e.session();
-    let picked = tracks_param(e, id, p)?;
-    let mut tracks: Vec<TrackId> = picked.into_iter().filter(|t| s.track(*t).is_some_and(|x| x.kind.is_midi())).collect();
-    if tracks.is_empty() {
-        tracks = s.tracks.iter().filter(|t| t.kind.is_midi()).map(|t| t.id).collect();
-    }
-    // Absolute (tick) notes from every MIDI clip on those tracks, cut to their clip.
+/// Absolute `(start, end, pitch)` tick notes from every MIDI clip on `tracks`, cut to their clip
+/// and sorted by start.
+fn midi_tick_notes(s: &Session, tracks: &[TrackId]) -> Vec<(i64, i64, u8)> {
     let mut notes: Vec<(i64, i64, u8)> = Vec::new();
-    for t in &tracks {
+    for t in tracks {
         for c in s.track(*t).map(|tr| tr.clips()).unwrap_or(&[]) {
             let ClipContent::Midi { sequence } = &c.content else { continue };
             let base = s.tempo.samples_to_ticks(c.start, s.sample_rate);
@@ -590,6 +583,36 @@ fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     notes.sort_unstable_by_key(|n| n.0);
+    notes
+}
+
+/// Duration-weighted pitch classes of the notes sounding in `a..b`, and the lowest pitch among them.
+fn pitch_class_weights(sounding: &[(i64, i64, u8)], a: i64, b: i64) -> ([f64; 12], Option<u8>) {
+    let mut w = [0.0f64; 12];
+    let mut bass: Option<u8> = None;
+    for (na, nb, pitch) in sounding {
+        let ov = (*nb).min(b) - (*na).max(a);
+        if ov > 0 {
+            if let Some(x) = w.get_mut(usize::from(*pitch) % 12) {
+                *x += ov as f64;
+            }
+            bass = Some(bass.map_or(*pitch, |bp| bp.min(*pitch)));
+        }
+    }
+    (w, bass)
+}
+
+fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
+    let id = "event.extract_chords";
+    let (_, t0, t1) = selection_ticks(e, p, id)?;
+    let s = e.session();
+    let picked = tracks_param(e, id, p)?;
+    let mut tracks: Vec<TrackId> = picked.into_iter().filter(|t| s.track(*t).is_some_and(|x| x.kind.is_midi())).collect();
+    if tracks.is_empty() {
+        tracks = s.tracks.iter().filter(|t| t.kind.is_midi()).map(|t| t.id).collect();
+    }
+    // Absolute (tick) notes from every MIDI clip on those tracks, cut to their clip.
+    let notes = midi_tick_notes(s, &tracks);
     let mut bar = s.tempo.bar_beat_at_tick(t0).bar;
     let mut sounding: Vec<(i64, i64, u8)> = Vec::new();
     let (mut next, mut bars, mut heard) = (0, 0, 0);
@@ -616,17 +639,7 @@ fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
         }
         bars += 1;
         heard += sounding.len();
-        let mut w = [0.0f64; 12];
-        let mut bass: Option<u8> = None;
-        for (na, nb, pitch) in &sounding {
-            let ov = (*nb).min(b) - (*na).max(a);
-            if ov > 0 {
-                if let Some(x) = w.get_mut(usize::from(*pitch) % 12) {
-                    *x += ov as f64;
-                }
-                bass = Some(bass.map_or(*pitch, |bp| bp.min(*pitch)));
-            }
-        }
+        let (w, bass) = pitch_class_weights(&sounding, a, b);
         if let Some(name) = bass.and_then(|bp| chord_name(&w, usize::from(bp) % 12)) {
             let at = s.tempo.tick_to_samples(a, s.sample_rate);
             chords.push(json!({"bar": bar, "chord": name, "at": at}));

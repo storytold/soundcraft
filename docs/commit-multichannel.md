@@ -29,8 +29,8 @@ Session track metadata retains the exact layout. Generic source WAV saving still
 channel mask from channel count. This change preserves the shared renderer, the fixed tail
 and the existing commit options.
 
-Implementation: `crates/engine/src/io.rs::commit_track` and
-`crates/mix/src/lib.rs::render_track_pre_fader`. Regression fixtures:
+Implementation: `crates/engine/src/io/render.rs::commit_track` and
+`crates/mix/src/offline.rs::render_track_pre_fader`. Regression fixtures:
 `crates/engine/tests/commit_multichannel.rs`.
 
 ## Revision history

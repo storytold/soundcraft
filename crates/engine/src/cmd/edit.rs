@@ -1,7 +1,7 @@
 //! Edit menu commands.
 use super::{
-    CommandSpec, always, bad, bool_or, can_redo, can_undo, clip_id, clip_ids_param, f32_or, f64_or, has_clipboard, has_range, has_selection,
-    has_tracks, i64_or, position_param, range_param, str_param, track_param, tracks_param, tracks_required,
+    CommandSpec, always, bad, bool_or, can_redo, can_undo, clip_id, clip_ids_param, f32_or, has_clipboard, has_range, has_selection, has_tracks,
+    i64_or, position_param, range_param, str_param, track_param, tracks_param, tracks_required,
 };
 use soundcraft_time::Samples;
 
@@ -124,15 +124,6 @@ pub fn specs() -> Vec<CommandSpec> {
             "{threshold_db?: -48, min_length_ms?: 50, pad_before_ms?: 5, pad_after_ms?: 20, mode?: strip|extract|separate, name?, number?: 1, zeros?: 0, suffix?} (strip removes the silence; extract removes the audio and keeps the silence; separate separates the clips at the edges of the silence and does not remove any; with a name, the clips left in the selection are named name, zeros, a number counting up from number, suffix)",
             has_range,
             strip_silence
-        ),
-        cmd!(
-            query "edit.strip_silence_preview",
-            "Strip Silence Rectangles",
-            [],
-            None,
-            "{threshold_db?: -48, min_length_ms?: 50, pad_before_ms?: 5, pad_after_ms?: 20, tracks?, start?, end?} (the ranges edit.strip_silence finds with the same settings, padded, on each track: what Strip keeps and the Strip Silence window draws as rectangles; changes nothing)",
-            has_range,
-            strip_silence_preview
         ),
         cmd!(
             "edit.fades_create",
@@ -475,6 +466,38 @@ fn select_all(e: &mut Engine, _: &Value) -> Result<Value> {
     Ok(json!({"tracks": s.edit.selected_tracks.len(), "end": end}))
 }
 
+/// Adds the members of every active edit group that touches `t`, then puts `t` in track order.
+fn add_group_members(s: &Session, t: &mut Vec<TrackId>) {
+    let extra: Vec<TrackId> =
+        s.groups.iter().filter(|g| g.active && g.edit && g.members.iter().any(|m| t.contains(m))).flat_map(|g| g.members.clone()).collect();
+    for m in extra {
+        if !t.contains(&m) {
+            t.push(m);
+        }
+    }
+    let order: Vec<TrackId> = s.tracks.iter().map(|x| x.id).collect();
+    t.sort_by_key(|x| order.iter().position(|o| o == x).unwrap_or(usize::MAX));
+}
+
+/// Selecting clips also selects their range and tracks (Grabber click).
+fn select_clip_ids(s: &Session, ed: &mut soundcraft_model::EditState, c: Vec<ClipId>) {
+    let mut range: Option<soundcraft_time::Range> = None;
+    let mut trs = Vec::new();
+    for id in &c {
+        if let Some((tid, clip)) = s.find_clip(*id) {
+            range = Some(range.map_or(clip.range(), |r| soundcraft_time::Range::new(r.start.min(clip.start), r.end.max(clip.end()))));
+            if !trs.contains(&tid) {
+                trs.push(tid);
+            }
+        }
+    }
+    if let Some(r) = range {
+        ed.selection = r;
+        ed.selected_tracks = trs;
+    }
+    ed.selected_clips = c;
+}
+
 fn select(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = if p.get("tracks").is_some() || p.get("track").is_some() { Some(tracks_param(e, "edit.select", p)?) } else { None };
     let st = position_param(e, "edit.select", p, "start")?;
@@ -490,15 +513,7 @@ fn select(e: &mut Engine, p: &Value) -> Result<Value> {
     if let Some(mut t) = tracks {
         // Active edit groups select all their members together.
         if !exact {
-            let extra: Vec<soundcraft_model::TrackId> =
-                s.groups.iter().filter(|g| g.active && g.edit && g.members.iter().any(|m| t.contains(m))).flat_map(|g| g.members.clone()).collect();
-            for m in extra {
-                if !t.contains(&m) {
-                    t.push(m);
-                }
-            }
-            let order: Vec<soundcraft_model::TrackId> = s.tracks.iter().map(|x| x.id).collect();
-            t.sort_by_key(|x| order.iter().position(|o| o == x).unwrap_or(usize::MAX));
+            add_group_members(s, &mut t);
         }
         ed.selected_tracks = t;
     }
@@ -508,22 +523,7 @@ fn select(e: &mut Engine, p: &Value) -> Result<Value> {
         _ => {}
     }
     if let Some(c) = clips {
-        // Selecting clips also selects their range and tracks (Grabber click).
-        let mut range: Option<soundcraft_time::Range> = None;
-        let mut trs = Vec::new();
-        for id in &c {
-            if let Some((tid, clip)) = s.find_clip(*id) {
-                range = Some(range.map_or(clip.range(), |r| soundcraft_time::Range::new(r.start.min(clip.start), r.end.max(clip.end()))));
-                if !trs.contains(&tid) {
-                    trs.push(tid);
-                }
-            }
-        }
-        if let Some(r) = range {
-            ed.selection = r;
-            ed.selected_tracks = trs;
-        }
-        ed.selected_clips = c;
+        select_clip_ids(s, &mut ed, c);
     } else if list_changes {
         ed.selected_clips.clear();
     }
@@ -812,38 +812,8 @@ fn copy_to_new_playlist(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"tracks": tracks.len()}))
 }
 
-/// Strip Silence's tracks, range, threshold, minimum strip duration and clip start and end pads.
-type StripSettings = (Vec<TrackId>, soundcraft_time::Range, f32, Samples, (Samples, Samples));
-
-/// The [`StripSettings`] in Strip Silence's params, with their defaults and limits. `cmd` names the
-/// command in errors.
-fn strip_settings(e: &Engine, cmd: &str, p: &Value) -> Result<StripSettings> {
-    let tracks = tracks_required(e, cmd, p)?;
-    let r = range_param(e, cmd, p)?;
-    let thr = f32_or(p, "threshold_db", -48.0).clamp(-96.0, 0.0);
-    let sr = e.session().sample_rate;
-    let ms = |k: &str, d: f64| sr.samples(f64_or(p, k, d).clamp(0.0, 10_000.0) / 1000.0);
-    Ok((tracks, r, thr, ms("min_length_ms", 50.0), (ms("pad_before_ms", 5.0), ms("pad_after_ms", 20.0))))
-}
-
-/// The scan `edit.strip_silence_preview` runs with params `p`, on the session as it is now. The Edit
-/// window runs it while the Strip Silence window or its Rename Selected Clips dialog is open: on a
-/// worker thread outside the web build, and on the frame thread in the web build or when no thread
-/// can be started.
-pub fn strip_silence_scan(e: &Engine, p: &Value) -> Result<crate::io::StripScan> {
-    let (tracks, range, threshold_db, min_len, pad) = strip_settings(e, "edit.strip_silence_preview", p)?;
-    Ok(crate::io::StripScan { session: e.session_arc(), tracks, range, threshold_db, min_len, pad, stop: Default::default() })
-}
-
-fn strip_silence_preview(e: &mut Engine, p: &Value) -> Result<Value> {
-    let found = strip_silence_scan(e, p)?.run()?;
-    let tracks: Vec<Value> =
-        found.iter().map(|(t, ranges)| json!({"track": t.0, "ranges": ranges.iter().map(|x| [x.start, x.end]).collect::<Vec<_>>()})).collect();
-    Ok(json!({"tracks": tracks}))
-}
-
 fn strip_silence(e: &mut Engine, p: &Value) -> Result<Value> {
-    let (tracks, r, thr, min_len, (pre, post)) = strip_settings(e, "edit.strip_silence", p)?;
+    let (tracks, r, thr, min_len, (pre, post)) = super::strip_silence::strip_settings(e, "edit.strip_silence", p)?;
     let mode = match p.get("mode") {
         None => crate::io::StripMode::Strip,
         Some(Value::String(m)) => crate::io::StripMode::from_id(m).ok_or_else(|| bad("edit.strip_silence", format!("unknown mode `{m}`")))?,

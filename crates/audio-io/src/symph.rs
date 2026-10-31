@@ -456,6 +456,39 @@ fn info_of(reader: &dyn FormatReader, detected: FileFormat) -> Result<(u32, Audi
     ))
 }
 
+/// A demux error ends the decode; it is only an error when nothing was decoded yet.
+fn demux_failure(frames: u64, e: SymError) -> Result<()> {
+    if frames == 0 {
+        return Err(map_err(e));
+    }
+    log::warn!("stopping decode after demux error: {e}");
+    Ok(())
+}
+
+/// Note a corrupt packet (the `errors`-th); a stream that never decodes is malformed.
+fn corrupt_packet(errors: usize, frames: u64, msg: &str) -> Result<()> {
+    log::debug!("skipping corrupt packet: {msg}");
+    if errors > 1000 && frames == 0 {
+        return Err(AudioError::Malformed(format!("no decodable packets: {msg}")));
+    }
+    Ok(())
+}
+
+/// The decoded stream is authoritative for the channel count: record it and allocate the planes.
+fn init_planar(info: &mut AudioInfo, ch: usize) -> Result<Vec<Vec<f32>>> {
+    info.channels = u16::try_from(ch).map_err(|_| AudioError::Unsupported("too many channels".into()))?;
+    Ok((0..ch).map(|_| Vec::new()).collect())
+}
+
+/// Append one interleaved block to the planes, replacing non-finite samples with silence.
+fn append_interleaved(planar: &mut [Vec<f32>], interleaved: &[f32], ch: usize) {
+    for frame in interleaved.chunks_exact(ch) {
+        for (dst, &s) in planar.iter_mut().zip(frame) {
+            dst.push(if s.is_finite() { s } else { 0.0 });
+        }
+    }
+}
+
 /// Decode the whole first audio track. When `count_only`, samples are counted but not stored.
 fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInfo, AudioBuffer)> {
     let mut reader = match open(bytes, detected)? {
@@ -491,10 +524,7 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
             Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(SymError::ResetRequired) => break,
             Err(e) => {
-                if frames == 0 {
-                    return Err(map_err(e));
-                }
-                log::warn!("stopping decode after demux error: {e}");
+                demux_failure(frames, e)?;
                 break;
             }
         };
@@ -505,10 +535,7 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
             Ok(d) => d,
             Err(SymError::DecodeError(m)) => {
                 errors += 1;
-                log::debug!("skipping corrupt packet: {m}");
-                if errors > 1000 && frames == 0 {
-                    return Err(AudioError::Malformed(format!("no decodable packets: {m}")));
-                }
+                corrupt_packet(errors, frames, m)?;
                 continue;
             }
             Err(SymError::IoError(_)) => break,
@@ -521,9 +548,7 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
             continue;
         }
         if planar.is_empty() {
-            // The decoded stream is authoritative for the channel count.
-            info.channels = u16::try_from(ch).map_err(|_| AudioError::Unsupported("too many channels".into()))?;
-            planar = (0..ch).map(|_| Vec::new()).collect();
+            planar = init_planar(&mut info, ch)?;
         }
         let n = decoded.frames() as u64;
         frames = frames.saturating_add(n);
@@ -542,11 +567,7 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
             interleaved.resize(needed, 0.0);
         }
         decoded.copy_to_slice_interleaved(&mut interleaved[..needed]);
-        for frame in interleaved[..needed].chunks_exact(ch) {
-            for (dst, &s) in planar.iter_mut().zip(frame) {
-                dst.push(if s.is_finite() { s } else { 0.0 });
-            }
-        }
+        append_interleaved(&mut planar, &interleaved[..needed], ch);
     }
     if info.channels == 0 {
         return Err(AudioError::Malformed("stream contains no audio".into()));
@@ -559,13 +580,46 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
     Ok((info, AudioBuffer { sample_rate, channels: planar }))
 }
 
+/// Frames symphonia's AAC decoder yields for every packet; it supports no other frame length.
+const AAC_FRAMES_PER_PACKET: u64 = 1024;
+
+/// Whether `track` of `reader` is AAC in MP4. The MP4 reader reports the stts total as the length,
+/// but the decoder yields a whole frame per packet (sample durations are not applied), so a last
+/// sample whose duration differs from a frame makes the two disagree.
+fn is_mp4_aac(reader: &dyn FormatReader, track_id: u32) -> bool {
+    reader.format_info().short_name == "isomp4"
+        && reader.tracks().iter().find(|t| t.id == track_id).and_then(audio_params).is_some_and(|p| p.codec == CODEC_ID_AAC)
+}
+
+/// The decoded length of AAC in MP4: count the track's packets without decoding them.
+fn mp4_aac_frames(reader: &mut dyn FormatReader, track_id: u32) -> Result<u64> {
+    let mut frames: u64 = 0;
+    loop {
+        match reader.next_packet() {
+            Ok(Some(packet)) if packet.track_id == track_id => frames = frames.saturating_add(AAC_FRAMES_PER_PACKET),
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(SymError::ResetRequired) => break,
+            Err(e) => {
+                demux_failure(frames, e)?;
+                break;
+            }
+        }
+    }
+    Ok(frames)
+}
+
 pub(crate) fn probe(bytes: &[u8], detected: FileFormat) -> Result<AudioInfo> {
     guarded(|| {
-        let reader = match open(bytes, detected)? {
+        let mut reader = match open(bytes, detected)? {
             Opened::Reader(reader) => reader,
             Opened::Empty(info) => return Ok(info),
         };
-        let (_, info) = info_of(reader.as_ref(), detected)?;
+        let (track_id, mut info) = info_of(reader.as_ref(), detected)?;
+        if info.frames > 0 && info.channels > 0 && is_mp4_aac(reader.as_ref(), track_id) {
+            info.frames = mp4_aac_frames(reader.as_mut(), track_id)?;
+        }
         if info.frames > 0 && info.channels > 0 {
             return Ok(info);
         }
