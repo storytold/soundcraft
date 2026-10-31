@@ -112,6 +112,30 @@ fn same_material(a: &Clip, b: &Clip) -> bool {
     a.length == b.length && (a.loop_id.is_some() && a.loop_id == b.loop_id || same_content(a, b))
 }
 
+fn same_source(a: &Clip, b: &Clip) -> bool {
+    match (&a.content, &b.content) {
+        (ClipContent::Audio { source: s1, .. }, ClipContent::Audio { source: s2, .. }) => s1 == s2,
+        (ClipContent::Midi { sequence: q1 }, ClipContent::Midi { sequence: q2 }) => q1 == q2,
+        (ClipContent::Video { source: s1, .. }, ClipContent::Video { source: s2, .. }) => s1 == s2,
+        _ => false,
+    }
+}
+
+/// Whether `next` is the iteration after `prev`, crossfaded into it by Clip Looping: the two share
+/// the loop and overlap, and `next` starts its material at most the overlap before `prev`'s (it was
+/// pulled back over its handle), where the second half of a crossfaded split clip starts later.
+fn crossfaded(prev: &Clip, next: &Clip) -> bool {
+    let overlap = prev.end().saturating_sub(next.start);
+    let pulled_back = prev.source_offset().saturating_sub(next.source_offset());
+    prev.loop_id.is_some()
+        && prev.loop_id == next.loop_id
+        && same_source(prev, next)
+        && prev.start < next.start
+        && overlap > 0
+        && prev.end() <= next.end()
+        && (0..=overlap).contains(&pulled_back)
+}
+
 /// Whether `short` is the last iteration of `full`'s loop, cut short at its end. It shares the loop,
 /// it is shorter, and no clip of the loop starts where it ends, as the other half of a split clip
 /// does. When `full` is a whole copy (an iteration of the same length ends where it starts), that is
@@ -132,7 +156,9 @@ fn loop_chain(s: &Session, t: TrackId, id: ClipId) -> Vec<ClipId> {
     let clips = tr.clips();
     let Some(mut cur) = clips.iter().find(|c| c.id == id) else { return Vec::new() };
     let mut guard = 0;
-    while let Some(prev) = clips.iter().find(|x| x.id != cur.id && x.end() == cur.start && (same_material(x, cur) || cut_short(clips, x, cur))) {
+    while let Some(prev) =
+        clips.iter().find(|x| x.id != cur.id && (x.end() == cur.start && (same_material(x, cur) || cut_short(clips, x, cur)) || crossfaded(x, cur)))
+    {
         cur = prev;
         guard += 1;
         if guard > clips.len() {
@@ -140,7 +166,7 @@ fn loop_chain(s: &Session, t: TrackId, id: ClipId) -> Vec<ClipId> {
         }
     }
     let mut chain = vec![cur.id];
-    while let Some(next) = clips.iter().find(|x| !chain.contains(&x.id) && x.start == cur.end() && same_material(x, cur)) {
+    while let Some(next) = clips.iter().find(|x| !chain.contains(&x.id) && (x.start == cur.end() && same_material(x, cur) || crossfaded(cur, x))) {
         chain.push(next.id);
         cur = next;
     }
@@ -175,6 +201,15 @@ fn unloop(e: &mut Engine, p: &Value) -> Result<Value> {
         let copies: Vec<ClipId> = chain.iter().skip(1).copied().collect();
         if let Some(pl) = s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
             if remove {
+                // A crossfade into the first copy goes with it: the origin ends at the seam again.
+                let first = copies.first().and_then(|id| pl.clips.iter().find(|c| c.id == *id)).cloned();
+                if let (Some(next), Some(origin)) = (first, chain.first().and_then(|id| pl.clips.iter_mut().find(|c| c.id == *id)))
+                    && crossfaded(origin, &next)
+                {
+                    let seam = next.start.saturating_add(origin.source_offset().saturating_sub(next.source_offset()));
+                    origin.trim_end_to(seam);
+                    origin.fade_out = soundcraft_model::Fade::default();
+                }
                 pl.clips.retain(|c| !copies.contains(&c.id));
                 gone.extend(copies.iter().copied());
             } else {
@@ -437,6 +472,106 @@ mod tests {
         crate::edit::separate_at(e.session_mut(), t, 30);
         assert!(e.execute("clip.unloop", &json!({"clip": ids[0].0})).is_err());
         assert_eq!(spans(&e, t), vec![(0, 30), (30, 70), (100, 100)]);
+    }
+
+    /// One 1000-sample clip at 0 playing from `offset` in a file of `frames` frames; (1000, 10_000)
+    /// leaves handles on both sides.
+    fn engine_with_handles(offset: Samples, frames: u64) -> (Engine, TrackId, ClipId) {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        s.sources.push(soundcraft_model::Source {
+            id: SourceId(9),
+            name: "src".into(),
+            path: "src.wav".into(),
+            channels: 1,
+            frames,
+            sample_rate: 48_000,
+            format: soundcraft_audio_io::FileFormat::Wav,
+            time_reference: 0,
+            unsaved: false,
+        });
+        let id = s.new_clip_id();
+        crate::edit::place_clip(&mut s, t, Clip::audio(id, "c", SourceId(9), offset, 0, 1000));
+        s.edit.selected_tracks = vec![t];
+        (Engine::new(s), t, id)
+    }
+
+    fn fades(e: &Engine, t: TrackId) -> Vec<(Samples, Samples)> {
+        e.session().track(t).unwrap().clips().iter().map(|c| (c.fade_in.len, c.fade_out.len)).collect()
+    }
+
+    #[test]
+    fn loop_crossfade_overlaps_each_seam_over_the_handles() {
+        let (mut e, t, id) = engine_with_handles(1000, 10_000);
+        let r = e.execute("clip.loop", &json!({"clip": id.0, "count": 3, "crossfade": 200, "crossfade_shape": "linear"})).unwrap();
+        assert_eq!(r["loops"], 2);
+        // Each seam (1000, 2000) is crossfaded 100 samples either side.
+        assert_eq!(spans(&e, t), vec![(0, 1100), (900, 1200), (1900, 1100)]);
+        assert_eq!(fades(&e, t), vec![(0, 200), (200, 200), (200, 0)]);
+        let clips = e.session().track(t).unwrap().clips().to_vec();
+        assert!(clips.iter().all(|c| c.fade_out.len == 0 || c.fade_out.shape == soundcraft_model::FadeShape::Linear));
+        // Every iteration still plays from the same point in its period.
+        assert_eq!(clips.iter().map(Clip::source_offset).collect::<Vec<_>>(), vec![1000, 900, 900]);
+        // Unloop still finds the loop and puts the origin back to its own end without the crossfade.
+        e.execute("clip.unloop", &json!({"clip": clips[1].id.0})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 1000)]);
+        assert_eq!(fades(&e, t), vec![(0, 0)]);
+        // Undo brings the crossfaded loop back.
+        e.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 1100), (900, 1200), (1900, 1100)]);
+    }
+
+    #[test]
+    fn loop_crossfade_reaches_a_short_last_loop_and_flatten_keeps_it() {
+        let (mut e, t, id) = engine_with_handles(1000, 10_000);
+        e.execute("clip.loop", &json!({"clip": id.0, "length": 2500, "crossfade": 200})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 1100), (900, 1200), (1900, 600)]);
+        assert_eq!(fades(&e, t), vec![(0, 200), (200, 200), (200, 0)]);
+        e.execute("clip.unloop", &json!({"clip": id.0, "mode": "flatten"})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 1100), (900, 1200), (1900, 600)]);
+        assert!(e.session().track(t).unwrap().clips().iter().all(|c| c.loop_id.is_none()));
+    }
+
+    #[test]
+    fn loop_crossfade_without_handles_fades_at_the_seam() {
+        // The clip plays the whole file: nothing to overlap, so each side fades over its half.
+        let (mut e, t, id) = engine_with_handles(0, 1000);
+        e.execute("clip.loop", &json!({"clip": id.0, "count": 2, "crossfade": 200})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 1000), (1000, 1000)]);
+        assert_eq!(fades(&e, t), vec![(0, 100), (100, 0)]);
+        e.execute("clip.unloop", &json!({"clip": id.0})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 1000)]);
+    }
+
+    #[test]
+    fn loop_crossfade_is_capped_and_checked() {
+        // At most half the clip: 250 either side of each seam, so neighbouring crossfades never meet.
+        let (mut e, t, id) = engine_with_handles(1000, 10_000);
+        e.execute("clip.loop", &json!({"clip": id.0, "count": 3, "crossfade": 5000})).unwrap();
+        assert_eq!(fades(&e, t), vec![(0, 500), (500, 500), (500, 0)]);
+        let (mut e, t, id) = engine_with_handles(1000, 10_000);
+        for bad in [json!({"crossfade": -1}), json!({"crossfade_shape": "wobbly"}), json!({"crossfade_shape": 3})] {
+            let mut p = json!({"clip": id.0, "count": 3});
+            p.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+            assert!(e.execute("clip.loop", &p).is_err(), "{p}");
+            assert_eq!(spans(&e, t), vec![(0, 1000)]);
+        }
+        // No crossfade is the old butt-spliced loop.
+        e.execute("clip.loop", &json!({"clip": id.0, "count": 3, "crossfade": 0})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 1000), (1000, 1000), (2000, 1000)]);
+    }
+
+    #[test]
+    fn a_crossfaded_split_inside_a_loop_is_not_a_loop_crossfade() {
+        // Splitting the loop origin and crossfading the halves keeps both halves through Unloop.
+        let (mut e, t, id) = engine_with_handles(1000, 10_000);
+        e.execute("clip.loop", &json!({"clip": id.0, "count": 2})).unwrap();
+        crate::edit::separate_at(e.session_mut(), t, 500);
+        crate::edit::create_fades(e.session_mut(), t, soundcraft_time::Range::new(450, 550), soundcraft_model::FadeShape::Linear);
+        assert_eq!(spans(&e, t), vec![(0, 550), (450, 550), (1000, 1000)]);
+        let second_half = e.session().track(t).unwrap().clips()[1].id;
+        let _ = e.execute("clip.unloop", &json!({"clip": id.0}));
+        assert!(e.session().track(t).unwrap().clips().iter().any(|c| c.id == second_half));
     }
 
     #[test]
