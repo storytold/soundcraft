@@ -17,7 +17,10 @@ pub(super) struct BundleLimits {
     pub(super) bytes: u64,
 }
 
-const BUNDLE_LIMITS: BundleLimits = BundleLimits { entries: 10_000, bytes: 1 << 30 };
+/// Most bytes a bundle may unpack to; hosts check an upload against it before copying it.
+pub const MAX_BUNDLE_BYTES: u64 = 1 << 30;
+
+const BUNDLE_LIMITS: BundleLimits = BundleLimits { entries: 10_000, bytes: MAX_BUNDLE_BYTES };
 
 /// The session as a bundle: `<name>.scraft` plus every source's audio as 32-bit float WAV under
 /// `Audio Files/` (stored, not compressed: audio barely compresses). Returns the bytes and the

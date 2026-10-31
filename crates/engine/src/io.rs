@@ -19,7 +19,7 @@ mod session;
 mod strip;
 
 use bundle::BundleLimits;
-pub use bundle::{BUNDLE_EXTENSION, open_session_bytes, session_bundle};
+pub use bundle::{BUNDLE_EXTENSION, MAX_BUNDLE_BYTES, open_session_bytes, session_bundle};
 pub use import::{DecodedImport, add_source, decode_import, import_audio_bytes, load_sampler_bytes, relink_videos};
 pub(crate) use import::{MAX_IMPORT_SAMPLES, at_rate, place_decoded};
 pub use midi::{export_midi, import_midi_bytes};
