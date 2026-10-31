@@ -1106,6 +1106,7 @@ mod tests {
         );
     }
 
+    /// Clip › Loop… opens Clip Looping for the selected clip, with Enable Crossfade off.
     #[test]
     fn clip_loop_opens_clip_looping_for_the_selected_clip() {
         let mut e = soundcraft_engine::demo::demo_engine();
@@ -1124,6 +1125,7 @@ mod tests {
         assert_eq!(sent, Some(json!({"length": clip.length * 4})));
     }
 
+    /// Enable Crossfade sends its length in samples, and nothing when off, zero or not a number.
     #[test]
     fn enable_crossfade_adds_its_length_in_samples() {
         let e = soundcraft_engine::demo::demo_engine();

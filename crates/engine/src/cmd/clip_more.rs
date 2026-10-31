@@ -508,6 +508,7 @@ mod tests {
         e.session().track(t).unwrap().clips().iter().map(|c| (c.fade_in.len, c.fade_out.len)).collect()
     }
 
+    /// A crossfaded loop overlaps each seam over the handles, and Unloop and Undo undo it.
     #[test]
     fn loop_crossfade_overlaps_each_seam_over_the_handles() {
         let (mut e, t, id) = engine_with_handles(1000, 10_000);
@@ -529,6 +530,7 @@ mod tests {
         assert_eq!(spans(&e, t), vec![(0, 1100), (900, 1200), (1900, 1100)]);
     }
 
+    /// A short last loop is never crossfaded into the clip after the loop.
     #[test]
     fn loop_crossfade_never_reaches_the_clip_after_the_loop() {
         // Fill stops at a clip 50 samples into the last loop, shorter than half the crossfade:
@@ -549,6 +551,7 @@ mod tests {
         assert_eq!(fades(&e, t), vec![(0, 0), (0, 0)]);
     }
 
+    /// A loop cut short at its end is crossfaded too, and Flatten keeps the crossfades.
     #[test]
     fn loop_crossfade_reaches_a_short_last_loop_and_flatten_keeps_it() {
         let (mut e, t, id) = engine_with_handles(1000, 10_000);
@@ -560,6 +563,7 @@ mod tests {
         assert!(e.session().track(t).unwrap().clips().iter().all(|c| c.loop_id.is_none()));
     }
 
+    /// Without handles, each side of a seam fades over its half.
     #[test]
     fn loop_crossfade_without_handles_fades_at_the_seam() {
         // The clip plays the whole file: nothing to overlap, so each side fades over its half.
@@ -571,6 +575,7 @@ mod tests {
         assert_eq!(spans(&e, t), vec![(0, 1000)]);
     }
 
+    /// The crossfade is capped at half the clip, and bad lengths and shapes are refused.
     #[test]
     fn loop_crossfade_is_capped_and_checked() {
         // At most half the clip: 250 either side of each seam, so neighbouring crossfades never meet.
@@ -589,6 +594,7 @@ mod tests {
         assert_eq!(spans(&e, t), vec![(0, 1000), (1000, 1000), (2000, 1000)]);
     }
 
+    /// A user crossfade between two halves of a split loop clip is not mistaken for a loop seam.
     #[test]
     fn a_crossfaded_split_inside_a_loop_is_not_a_loop_crossfade() {
         // Splitting the loop origin and crossfading the halves keeps both halves through Unloop.
@@ -632,6 +638,7 @@ mod tests {
         assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "length": 100_100})).unwrap()["loops"], 1000);
     }
 
+    /// Number of Loops makes up to 1000 loops, like length and fill, and refuses more without an edit.
     #[test]
     fn a_count_reaches_the_same_loop_limit_as_length_and_fill() {
         // Number of Loops used to stop at 512 (511 loops) while length and fill made 1000.
