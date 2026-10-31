@@ -161,3 +161,52 @@ fn demo_bounce_levels_are_pinned() {
         assert!(g.iter().zip(pin).all(|(v, p)| (v - f32::from_bits(p)).abs() < 1e-3), "{got:?}");
     }
 }
+
+#[test]
+fn stems_of_tracks_with_colliding_file_names_do_not_overwrite_each_other() {
+    stems_collide(["Kick?", "Kick*"], "bounce-stem-collision");
+}
+
+#[test]
+fn stems_of_tracks_whose_names_differ_only_in_case_do_not_overwrite_each_other() {
+    stems_collide(["Kick", "kick"], "bounce-stem-case");
+}
+
+#[test]
+fn stems_whose_suffixed_name_is_another_tracks_name_do_not_overwrite_each_other() {
+    stems_collide(["Kick?", "Kick*", "Kick_-2"], "bounce-stem-suffix");
+}
+
+fn stems_collide<const N: usize>(new_names: [&str; N], scratch_name: &str) {
+    let mut e = soundcraft_engine::demo::demo_engine();
+    let ids: Vec<_> = e
+        .session()
+        .tracks
+        .iter()
+        .filter(|t| matches!(t.kind, soundcraft_model::TrackKind::Audio) && !t.inactive && !t.mixer.mute)
+        .map(|t| t.id)
+        .take(N)
+        .collect();
+    assert_eq!(ids.len(), N);
+    for (id, name) in ids.iter().zip(new_names) {
+        e.execute("track.rename", &serde_json::json!({"track": id.0, "name": name})).unwrap();
+    }
+    let dir = scratch(scratch_name);
+    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+    let paths = bounce_stems(&e, &dir.to_string_lossy(), Range::new(0, e.session().sample_rate.samples(1.0)), &opts).unwrap();
+    let mut unique = paths.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), paths.len(), "{paths:?}");
+    let mut folded: Vec<String> = paths.iter().map(|p| p.to_lowercase()).collect();
+    folded.sort();
+    folded.dedup();
+    assert_eq!(folded.len(), paths.len(), "{paths:?}");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), paths.len());
+    let names: Vec<String> = paths.iter().filter_map(|p| PathBuf::from(p).file_name().map(|n| n.to_string_lossy().into_owned())).collect();
+    if scratch_name == "bounce-stem-collision" {
+        assert!(names.iter().any(|n| n.ends_with(" - Kick_.wav")), "{names:?}");
+        assert!(names.iter().any(|n| n.ends_with(" - Kick_-2.wav")), "{names:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
