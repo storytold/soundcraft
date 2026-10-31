@@ -135,6 +135,38 @@ fn closing_during_a_plugin_editor_gesture_keeps_the_autosave() {
 }
 
 #[test]
+fn pause_keeps_the_playhead_and_the_selection_and_resumes_there() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("transport.play", json!({"from": 48_000})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    let pos = app.engine.transport.position;
+    assert!(pos > 48_000);
+    // A range that does not contain the playhead. Pause must leave it alone
+    // when insertion does not follow playback.
+    let selection = soundcraft_time::Range::new(1_000, 8_000);
+    app.engine.session_mut().edit.selection = selection;
+    app.engine.session_mut().edit.insertion_follows_playback = false;
+    app.engine.transport.recording = true;
+    app.run("transport.pause", json!({})).unwrap();
+    app.handle_transport(0.0);
+    assert!(!app.is_playing());
+    assert!(!app.engine.transport.recording, "pause finishes a take the way stop does");
+    assert_eq!(app.engine.transport.position, pos);
+    assert_eq!(app.engine.session().edit.selection, selection, "pause must not replace a selection");
+    assert_eq!(app.engine.session().edit.playhead, pos);
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.0);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, pos, "play after pause resumes at the playhead, not the selection");
+    app.run("transport.stop", json!({})).unwrap();
+    app.handle_transport(0.0);
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.0);
+    assert_eq!(app.engine.transport.position, selection.start, "stop clears the pause so the next play uses the selection");
+}
+
+#[test]
 fn session_reset_does_not_apply_old_stop_edits_to_the_new_session() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     app.run("transport.play", json!({"from": 48_000})).unwrap();

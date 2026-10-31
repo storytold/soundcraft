@@ -48,8 +48,22 @@ impl SoundApp {
     }
 
     pub(crate) fn stop_play(&mut self) {
+        self.finish_transport(false);
+    }
+
+    fn pause_play(&mut self) {
+        if !self.engine.transport.playing && !self.engine.transport.recording {
+            return;
+        }
+        self.finish_transport(true);
+    }
+
+    /// Shared teardown for Stop and Pause. Pause keeps the playhead and remembers
+    /// it for the next Play. Both reset half-speed, finish an open take, and
+    /// move the selection only when insertion follows playback.
+    fn finish_transport(&mut self, pause: bool) {
         if let Some(p) = &self.player {
-            // Half-speed is a separate command. Stop must not leave that rate for the next Play.
+            // Half-speed is a separate command. Stop and Pause must not leave that rate for the next Play.
             p.set_speed(1.0);
             p.stop();
         }
@@ -66,6 +80,12 @@ impl SoundApp {
             let s = self.engine.session();
             (s.edit.insertion_follows_playback, s.edit.scrolling == "after_playback")
         };
+        if pause {
+            self.resume_at = Some(stop_at);
+            self.engine.session_mut().edit.playhead = stop_at;
+        } else {
+            self.resume_at = None;
+        }
         if follow_insertion {
             let pos = self.engine.transport.position;
             self.engine.session_mut().edit.selection = Range::point(pos);
@@ -326,6 +346,7 @@ impl SoundApp {
                         p.locate(self.engine.transport.position);
                     }
                     self.sim = None;
+                    self.resume_at = None;
                     // The old capture belongs to the replaced document, never to the new one.
                     self.recorder = None;
                     self.recorder_failed = false;
@@ -340,10 +361,15 @@ impl SoundApp {
                 }
                 TransportRequest::Play => {
                     if !self.is_playing() {
-                        self.play_from_selection();
+                        if let Some(at) = self.resume_at.take() {
+                            self.start_play(at, None, None);
+                        } else {
+                            self.play_from_selection();
+                        }
                     }
                 }
-                TransportRequest::Stop | TransportRequest::Pause => self.stop_play(),
+                TransportRequest::Stop => self.stop_play(),
+                TransportRequest::Pause => self.pause_play(),
                 TransportRequest::TogglePlay => {
                     if self.is_playing() {
                         self.stop_play();

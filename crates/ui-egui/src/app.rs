@@ -101,6 +101,7 @@ impl SoundApp {
             theme_applied: None,
             docking_context: None,
             sim: None,
+            resume_at: None,
             record_hint: None,
             quit_requested: false,
             arrange_request: false,
