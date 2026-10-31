@@ -13,3 +13,4 @@ plan/
 /craft-fonts/
 plans/
 .DS_Store
+/build-flatpak/

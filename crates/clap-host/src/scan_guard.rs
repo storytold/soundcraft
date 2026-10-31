@@ -13,9 +13,8 @@ use std::path::{Path, PathBuf};
 
 fn state_dir() -> Option<PathBuf> {
     let non_empty = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-    let base = non_empty("XDG_STATE_HOME")
-        .or_else(|| non_empty("LOCALAPPDATA"))
-        .or_else(|| non_empty("HOME").map(|h| h.join(".local").join("state")))?;
+    let base =
+        non_empty("XDG_STATE_HOME").or_else(|| non_empty("LOCALAPPDATA")).or_else(|| non_empty("HOME").map(|h| h.join(".local").join("state")))?;
     Some(base.join("soundcraft"))
 }
 

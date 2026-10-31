@@ -56,13 +56,6 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                 } else if instrument && ins.plugin == crate::sampler_window::SAMPLER {
                     crate::sampler_window::sample_strip(app, ui, tid, &ins);
                     ui.add_space(4.0);
-                } else if instrument && soundcraft_mix::is_third_party(&ins.plugin) {
-                    // A hosted instrument keeps its sounds and settings in its own editor.
-                    ui.label(egui::RichText::new("Load and edit sounds in the plugin's own editor.").color(Tokens::current().text_dim));
-                    return;
-                } else if instrument && ins.plugin == crate::sampler_window::SAMPLER {
-                    crate::sampler_window::sample_strip(app, ui, tid, &ins);
-                    ui.add_space(4.0);
                 }
                 if info.id == "eq_7band" || info.id == "eq_1band" {
                     eq_curve(ui, info.id, &ins);
