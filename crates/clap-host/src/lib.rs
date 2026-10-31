@@ -5,7 +5,7 @@
 //! plugins exactly like the built-in ones. Plugin ids are `clap:<CLAP plugin id>`; parameter ids
 //! are the CLAP param ids as decimal strings, with their human names in [`PluginInfo::params`].
 //!
-//! This is SoundCraft's single isolated `unsafe` crate (craftrules never-crash): `unsafe` is
+//! This is SoundCraft's single isolated `unsafe` crate: `unsafe` is
 //! denied crate-wide and allowed only in the private `ffi` module. The public API is safe, returns
 //! `Result`/`Option` and never panics. Limits of in-process hosting: a plugin that itself crashes
 //! (segfault) takes the process down with it; we cannot sandbox native code.

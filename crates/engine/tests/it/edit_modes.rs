@@ -299,6 +299,22 @@ fn shuffle_clear_moves_automation_with_the_clips() {
     assert_eq!(points(&e, t), [0, 7_000, 18_000, 27_000]);
 }
 
+/// Clearing selected clips by id closes their gaps in Shuffle, as clearing their ranges does, and moves the
+/// automation with the clips.
+#[test]
+fn shuffle_clear_by_clip_id_closes_each_gap() {
+    for (mode, want, want_points) in [
+        ("shuffle", [(0, 10_000), (20_000, 10_000)], [0, 9_000, 20_000, 29_000]),
+        ("slip", [(0, 10_000), (40_000, 10_000)], [0, 9_000, 40_000, 49_000]),
+    ] {
+        let (mut e, t, ids) = long(mode, &[(0, 10_000, 0), (20_000, 10_000, 0), (30_000, 10_000, 0), (40_000, 10_000, 0)]);
+        set_points(&mut e, t, &[0, 9_000, 40_000, 49_000]);
+        run(&mut e, "edit.clear", json!({"clips": [ids[1].0, ids[2].0], "tracks": [t.0], "start": 0}));
+        assert_eq!(clips(&e, t), want, "{mode}");
+        assert_eq!(points(&e, t), want_points, "{mode}");
+    }
+}
+
 #[test]
 fn relative_grid_pastes_land_on_grid_lines_at_any_tempo() {
     let (mut e, t, [a, _]) = engine("relative_grid");

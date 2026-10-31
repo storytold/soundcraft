@@ -1,5 +1,5 @@
 use egui::os::OperatingSystem;
-use egui::{Key, vec2};
+use egui::{Key, Modifiers, vec2};
 use egui_kittest::{Harness, kittest::Queryable};
 use serde_json::json;
 use soundcraft_ui_egui::{Services, SoundApp};
@@ -39,5 +39,48 @@ fn e_fits_the_selection_to_the_edit_window_and_the_button_goes_back() {
         h.get_by_label("Zoom Toggle (E)").click();
         h.run_steps(1);
         assert_eq!(view(h.state()), before, "{os:?}");
+    }
+}
+
+#[test]
+fn alt_shift_e_and_an_alt_click_cancel_zoom_toggle_and_keep_the_zoomed_view() {
+    for os in [OperatingSystem::Mac, OperatingSystem::Windows, OperatingSystem::Nix] {
+        for alt_click in [false, true] {
+            let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+            let bass = app.engine.session().track_by_name("Bass").unwrap().id.0;
+            app.engine.execute("edit.select", &json!({"tracks": [bass], "start": 96_000, "end": 192_000})).unwrap();
+            let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).with_os(os).build_ui_state(
+                |ui, app: &mut SoundApp| {
+                    app.logic(&ui.ctx().clone());
+                    app.ui(ui);
+                },
+                app,
+            );
+            h.run_steps(5);
+            let view = |a: &SoundApp| (a.engine.session().edit.zoom, a.edit_layout.rows.clone(), a.edit_layout.scroll_y);
+            let before = view(h.state());
+            h.get_by_label("Zoom Toggle (E)").click();
+            h.run_steps(1);
+            let zoomed = view(h.state());
+            assert_ne!(zoomed, before, "{os:?}");
+
+            if alt_click {
+                h.get_by_label("Zoom Toggle (E)").click_modifiers(Modifiers::ALT);
+            } else {
+                h.key_press_modifiers(Modifiers::ALT | Modifiers::SHIFT, Key::E);
+            }
+            h.run_steps(2);
+            let how = if alt_click { "Alt-click" } else { "Alt+Shift+E" };
+            assert_eq!(h.state().engine.session().edit.zoom_toggle, None, "{os:?} {how}");
+            assert_eq!(view(h.state()), zoomed, "{os:?} {how} keeps the zoomed view");
+
+            // The next toggle zooms in from here and goes back here, not to the view before the cancel.
+            h.get_by_label("Zoom Toggle (E)").click();
+            h.run_steps(1);
+            assert!(h.state().engine.session().edit.zoom_toggle.is_some(), "{os:?} {how}");
+            h.get_by_label("Zoom Toggle (E)").click();
+            h.run_steps(1);
+            assert_eq!(view(h.state()), zoomed, "{os:?} {how}");
+        }
     }
 }

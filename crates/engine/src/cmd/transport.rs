@@ -9,9 +9,10 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "transport.play", "Play", [], Some("Space"), "{from?: position}", always, |e, p| {
             if let Some(at) = position_param(e, "transport.play", p, "from")? {
-                e.transport_requests.push(TransportRequest::Locate(at.max(0)));
+                e.transport_requests.push(TransportRequest::PlayFrom(at.max(0)));
+            } else {
+                e.transport_requests.push(TransportRequest::Play);
             }
-            e.transport_requests.push(TransportRequest::Play);
             Ok(json!({}))
         }),
         cmd!(noundo "transport.stop", "Stop", [], Some("Space"), "{}", always, |e, _| { e.transport_requests.push(TransportRequest::Stop); Ok(json!({})) }),

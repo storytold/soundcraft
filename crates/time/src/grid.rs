@@ -122,7 +122,7 @@ impl GridValue {
             GridValue::Note { value, dotted, triplet } => {
                 let t0 = map.samples_to_ticks(at, sr);
                 let dt = Self::note_ticks(value, dotted, triplet, map, t0);
-                (map.tick_to_samples(t0 + dt, sr) - map.tick_to_samples(t0, sr)).max(1)
+                (map.tick_to_samples(t0.saturating_add(dt), sr).saturating_sub(map.tick_to_samples(t0, sr))).max(1)
             }
             GridValue::Seconds(s) => sr.samples(s.clamp(0.000_01, 3600.0)).max(1),
             GridValue::Frames(f) => to_samples(rate.samples_per_frame(sr) * f.clamp(1, 1_000_000) as f64).max(1),
@@ -319,5 +319,12 @@ mod tests {
         assert_eq!(GridValue::Frames(1).stepped(true), GridValue::Frames(10));
         assert_eq!(GridValue::Samples(100).stepped(false), GridValue::Samples(10));
         assert_eq!(GridValue::Samples(1).stepped(false), GridValue::Samples(1));
+    }
+
+    #[test]
+    fn snap_at_extreme_position_does_not_overflow() {
+        let sr = SampleRate::new(8000).unwrap();
+        let map = TempoMap::new(1000.0, 4, 4).unwrap();
+        let _ = GridValue::default().snap(i64::MAX, sr, &map, FrameRate::Fps30);
     }
 }

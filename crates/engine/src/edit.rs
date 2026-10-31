@@ -177,6 +177,26 @@ pub fn clear_range(s: &mut Session, track: TrackId, range: Range, shuffle: bool)
     removed
 }
 
+/// Remove the clips `ids` from every track. In Shuffle the later clips on each track close the holes the movable
+/// ones leave, as a Shuffle move lifts them (see [`lift_plan`]), so a crossfade partner keeps its material. Returns
+/// how many clips went.
+pub fn remove_clips(s: &mut Session, ids: &[ClipId], shuffle: bool) -> usize {
+    let ids: HashSet<ClipId> = ids.iter().copied().collect();
+    let mut n = 0;
+    for track in s.tracks.iter().map(|t| t.id).collect::<Vec<_>>() {
+        if shuffle {
+            n += lift_all(s, track, &ids).len();
+        }
+        // Locked clips don't lift; they go without closing up, as everything does outside Shuffle.
+        if let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) {
+            let before = pl.clips.len();
+            pl.clips.retain(|c| !ids.contains(&c.id));
+            n += before - pl.clips.len();
+        }
+    }
+    n
+}
+
 /// Copy the material inside `range` (clips trimmed to the range), relative to `range.start`.
 pub fn copy_range(s: &Session, track: TrackId, range: Range) -> Vec<Clip> {
     let t = TimeCtx::of(s);

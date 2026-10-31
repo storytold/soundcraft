@@ -25,7 +25,7 @@ harness = false
 clap-sys = "0.5"
 libloading = "0.9"
 
-# The isolated unsafe helper crate (craftrules never-crash): this crate opts out of the workspace
+# The isolated unsafe helper crate: this crate opts out of the workspace
 # `unsafe_code = "forbid"` for itself only. It denies unsafe everywhere and allows it solely on the
 # FFI module (`src/ffi.rs`). The rest mirrors `[workspace.lints]`.
 [lints.rust]

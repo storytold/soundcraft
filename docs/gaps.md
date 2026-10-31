@@ -77,7 +77,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 - **Missing:** opening or saving `.ptx`/`.ptf`, AAF and OMF import and export (#40), Media
   Composer–compatible sessions. Our session format is `.scraft` JSON.
-- **Impact:** the standard's main-format bar for beta. A Pro Tools user cannot bring a project in
+- **Impact:** a main-format requirement for beta. A Pro Tools user cannot bring a project in
   or hand one back; post-production (picture editors deliver AAF) is blocked.
 - **Estimate:** AAF/OMF import + export ≈ 50–90 h (FilmCraft already writes AAF/OMF; we can learn
   from it but not share code). `.ptx` is proprietary and undocumented: owner decision on whether

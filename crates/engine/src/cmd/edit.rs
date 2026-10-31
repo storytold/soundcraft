@@ -376,13 +376,7 @@ fn clear(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     let mut n = 0;
     if range.is_empty() && !ids.is_empty() {
-        for t in &mut s.tracks {
-            if let Some(pl) = t.playlist_mut() {
-                let before = pl.clips.len();
-                pl.clips.retain(|c| !ids.contains(&c.id));
-                n += before - pl.clips.len();
-            }
-        }
+        n = ops::remove_clips(s, &ids, sh);
         s.edit.selected_clips.clear();
     } else {
         for t in &tracks {

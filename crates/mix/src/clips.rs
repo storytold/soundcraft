@@ -101,7 +101,7 @@ impl ClipFx {
                     c.set_param(p, v);
                 }
             } else if k == "gain" {
-                self.gain_db = v;
+                self.gain_db = if v.is_nan() { 0.0 } else { v.clamp(soundcraft_dsp::MIN_DB, crate::CLIP_FX_MAX_GAIN_DB) };
             }
         }
     }

@@ -5,7 +5,7 @@ signed installers for macOS, Windows, Linux, FreeBSD and the web, then creates o
 **draft** GitHub Release named `SoundCraft v<version>`. Nobody sees a draft until a maintainer
 publishes it.
 
-This is SoundCraft's implementation of the shared [release playbook](release-playbook.md).
+This file describes how SoundCraft is released.
 User-facing names say **SoundCraft**. Files, binaries and ids stay lowercase
 (`soundcraft-<version>-<platform>-<arch>.<ext>`, `ai.storyteller.soundcraft`).
 
@@ -208,8 +208,7 @@ are written with `umask 077` and deleted in `always()`/`finally` steps.
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | service principal for Azure Trusted Signing |
 | `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE` | Trusted Signing endpoint, account and profile |
 
-`GITHUB_TOKEN` creates the release. Only the final job gets `contents: write`. Provisioning the
-environment, ruleset and secrets for a new repo: craftrules `release/signing-setup.md`.
+`GITHUB_TOKEN` creates the release. Only the final job gets `contents: write`.
 
 ## Icons
 

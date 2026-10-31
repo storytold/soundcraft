@@ -3,6 +3,8 @@
 use crate::SoundApp;
 
 #[cfg(not(target_arch = "wasm32"))]
+use craft_update::dialog::{CheckResultDialog, CheckResultResponse};
+#[cfg(not(target_arch = "wasm32"))]
 use craft_update::updater::{Action, Status, Updater};
 
 pub(crate) struct Runtime {
@@ -13,8 +15,10 @@ pub(crate) struct Runtime {
     startup_check: bool,
     #[cfg(not(target_arch = "wasm32"))]
     check_requested: bool,
-    pub(crate) manual_window_open: bool,
-    pub(crate) status_message: Option<String>,
+    /// The check-result dialog (native) or the web build's notice is showing.
+    manual_window_open: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    result_dialog: CheckResultDialog,
 }
 
 impl Default for Runtime {
@@ -27,7 +31,8 @@ impl Default for Runtime {
             #[cfg(not(target_arch = "wasm32"))]
             check_requested: false,
             manual_window_open: false,
-            status_message: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            result_dialog: CheckResultDialog::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")),
         }
     }
 }
@@ -48,7 +53,6 @@ pub(crate) fn check(app: &mut SoundApp) {
     #[cfg(target_arch = "wasm32")]
     {
         app.updates_rt.manual_window_open = true;
-        app.updates_rt.status_message = Some("Update check is not supported in the web browser.".into());
     }
 }
 
@@ -58,6 +62,7 @@ pub(crate) fn tick(app: &mut SoundApp, ctx: &egui::Context) {
         let rt = &mut app.updates_rt;
         if std::mem::take(&mut rt.check_requested) {
             rt.updater.check_now(ctx);
+            rt.manual_window_open = true;
         } else if rt.startup_check {
             rt.updater.check_at_start(ctx);
         }
@@ -77,46 +82,36 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
             Action::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::None => {}
         }
-        // The window answers Help ▸ Check for Updates, so it follows the updater's status.
+        // Help ▸ Check for Updates shows its outcome in the shared result dialog until the user closes it.
         let rt = &mut app.updates_rt;
-        (rt.manual_window_open, rt.status_message) = match rt.updater.status() {
-            Status::Idle => (false, None),
-            Status::Checking => (true, None),
-            Status::UpToDate => (true, Some(format!("SoundCraft {} is currently the newest version available.", env!("CARGO_PKG_VERSION")))),
-            Status::Failed(e) => (true, Some(format!("Could not check for updates:\n{e}"))),
-        };
+        if rt.manual_window_open {
+            match rt.result_dialog.show(ctx, rt.updater.status()) {
+                CheckResultResponse::Close => rt.manual_window_open = false,
+                CheckResultResponse::CheckAgain => rt.updater.check_now(ctx),
+                CheckResultResponse::None => {}
+            }
+            // A found update goes to the startup prompt, which takes over from the dialog.
+            if matches!(rt.updater.status(), Status::Idle) {
+                rt.manual_window_open = false;
+            }
+        }
+        // Closing the dialog dismisses the outcome it showed.
+        if !rt.manual_window_open {
+            rt.updater.dismiss_status();
+        }
     }
 
+    #[cfg(target_arch = "wasm32")]
     if app.updates_rt.manual_window_open {
         let mut open = true;
-        let mut close = false;
         egui::Window::new("Check for Updates")
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                if let Some(msg) = &app.updates_rt.status_message {
-                    ui.label(msg);
-                } else {
-                    ui.label("Checking for updates…");
-                }
-                ui.add_space(8.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
-                });
+                ui.label("Update check is not supported in the web browser.");
             });
-        if !open || close {
-            app.updates_rt.manual_window_open = false;
-            app.updates_rt.status_message = None;
-        }
-    }
-
-    // Closing the window dismisses the outcome it showed.
-    #[cfg(not(target_arch = "wasm32"))]
-    if !app.updates_rt.manual_window_open {
-        app.updates_rt.updater.dismiss_status();
+        app.updates_rt.manual_window_open = open;
     }
 }
