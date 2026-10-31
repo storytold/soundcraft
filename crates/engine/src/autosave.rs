@@ -6,7 +6,7 @@ use crate::{Engine, EngineError, Result};
 use soundcraft_audio_io::{BitDepth, EncodeOptions, FileFormat};
 use soundcraft_model::{Session, SourceAudio, SourceId};
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -274,7 +274,7 @@ pub struct Leftover {
 }
 
 /// Leftover autosaves under `root`, newest first: folders no open session holds, written after the
-/// session file they came from or holding a recording. Empty and outdated ones are deleted.
+/// session file they came from or holding a recording. Empty and unchanged ones are deleted.
 pub fn leftovers(root: &Path) -> Vec<Leftover> {
     let mut out = Vec::new();
     for dir in std::fs::read_dir(root).into_iter().flatten().flatten().map(|d| d.path()) {
@@ -289,7 +289,11 @@ pub fn leftovers(root: &Path) -> Vec<Leftover> {
         #[cfg(not(target_arch = "wasm32"))]
         drop(lock);
         match saved {
-            Ok(saved) if recording || origin_saved.is_none_or(|o| saved > o) => {
+            Ok(saved)
+                if recording
+                    || origin_saved.is_none_or(|o| saved > o)
+                    || !origin.as_ref().is_some_and(|o| same_file_contents(o, &dir.join(SESSION))) =>
+            {
                 let text = std::fs::read_to_string(dir.join(SESSION)).unwrap_or_default();
                 let named = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v.get("name")?.as_str().map(str::to_string));
                 let name = named.unwrap_or_else(|| dir.file_name().unwrap_or_default().to_string_lossy().into_owned());
@@ -302,6 +306,23 @@ pub fn leftovers(root: &Path) -> Vec<Leftover> {
     }
     out.sort_by_key(|l| std::cmp::Reverse(l.saved));
     out
+}
+
+fn same_file_contents(left: &Path, right: &Path) -> bool {
+    let (Ok(mut left), Ok(mut right)) = (std::fs::File::open(left), std::fs::File::open(right)) else { return false };
+    if !matches!((left.metadata(), right.metadata()), (Ok(a), Ok(b)) if a.len() == b.len()) {
+        return false;
+    }
+    loop {
+        let (mut a, mut b) = ([0; 8_192], [0; 8_192]);
+        let (Ok(a_len), Ok(b_len)) = (left.read(&mut a), right.read(&mut b)) else { return false };
+        if a_len != b_len || a[..a_len] != b[..b_len] {
+            return false;
+        }
+        if a_len == 0 {
+            return true;
+        }
+    }
 }
 
 /// Open `left` as an unsaved version of the session it came from, so Save writes it back there,
@@ -715,6 +736,30 @@ mod tests {
         assert_eq!(levels(&reopened), [0.5]);
         Autosave::create(&root, "Song").unwrap().discard();
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_newer_origin_only_discards_an_identical_autosave() {
+        let dir = folder("autosave-newer-origin");
+        let path = dir.join("Song.scraft");
+        let root = dir.join("Autosave");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = Engine::default();
+        crate::io::save_session(&mut e, &path.to_string_lossy()).unwrap();
+        let mut a = Autosave::create(&root, "Song").unwrap();
+        record(&mut e, 0.5);
+        a.write(e.session(), e.path.as_deref(), None).unwrap();
+        let autosave = a.dir.join(SESSION);
+        drop(a);
+
+        let saved = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &saved).unwrap();
+        assert_eq!(leftovers(&root).len(), 1, "newer origin must not discard different recovery data");
+
+        std::fs::write(&autosave, &saved).unwrap();
+        std::fs::write(&path, &saved).unwrap();
+        assert!(leftovers(&root).is_empty(), "identical autosave can be discarded");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
