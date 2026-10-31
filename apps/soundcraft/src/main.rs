@@ -150,6 +150,7 @@ fn services() -> Services {
             let d = rfd::FileDialog::new();
             let d = match purpose {
                 "session.open" => d.add_filter("SoundCraft Session", &["scraft"]),
+                "file.import_aaf" => d.add_filter("AAF session data", &["aaf"]),
                 "file.import_midi" => d.add_filter("MIDI", &["mid", "midi", "smf"]),
                 _ => d.add_filter("Audio", &FileFormat::readable_extensions()),
             };

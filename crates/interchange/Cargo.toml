@@ -1,0 +1,20 @@
+[package]
+name = "soundcraft-interchange"
+description = "Rational-time interchange plans and editable session construction"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+soundcraft-model.workspace = true
+soundcraft-time.workspace = true
+soundcraft-audio-io.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+cfb.workspace = true
+
+[lints]
+workspace = true

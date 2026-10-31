@@ -2,8 +2,8 @@ use super::services::Services;
 use super::state::MainWindow;
 use super::{
     ControlRequest, Engine, Gesture, HashMap, MeterDisplay, OutputTrouble, Player, Range, Receiver, Samples, SoundApp, TrackId, TransportRequest,
-    Trouble, UiState, Value, VecDeque, bounce, dialogs, edit_window, extra_windows, fonts, import, json, menus, midi_editor, mix_window, ops_windows,
-    palette, panels, recovery, sampler_window, score_editor, shortcuts, theme, updates_ui, video_track, video_window, windows,
+    Trouble, UiState, Value, VecDeque, aaf_import, bounce, dialogs, edit_window, extra_windows, fonts, import, json, menus, midi_editor, mix_window,
+    ops_windows, palette, panels, recovery, sampler_window, score_editor, shortcuts, theme, updates_ui, video_track, video_window, windows,
 };
 
 mod audio;
@@ -53,6 +53,7 @@ impl SoundApp {
             preset_dir: None,
             last_autosave: None,
             dialogs: dialogs::Dialogs::default(),
+            aaf_import: aaf_import::ImportState::default(),
             updates_rt: updates_ui::Runtime::default(),
             meters: HashMap::new(),
             main_meter: MeterDisplay::default(),
@@ -340,6 +341,7 @@ impl SoundApp {
         score_editor::show(self, &ctx);
         palette::show(self, &ctx);
         dialogs::show(self, &ctx);
+        aaf_import::show(self, &ctx);
         updates_ui::show(self, &ctx);
         // The sampler's drop rects are current now, so route any captured drop in this pass.
         self.route_dropped_files();

@@ -32,6 +32,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("au-host", 1),
     ("model", 2),
     ("mix", 3),
+    ("interchange", 3),
     ("engine", 4),
     ("playback", 4),
     ("automation", 5),

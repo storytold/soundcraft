@@ -737,6 +737,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfb"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f13298d9178622b7916ec5d01d470425c04273c8ed07e87b1c38b34c4f4612b"
+dependencies = [
+ "fnv",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4391,6 +4402,7 @@ dependencies = [
  "soundcraft-audio-io",
  "soundcraft-clap-host",
  "soundcraft-dsp",
+ "soundcraft-interchange",
  "soundcraft-midi",
  "soundcraft-mix",
  "soundcraft-model",
@@ -4399,6 +4411,19 @@ dependencies = [
  "soundcraft-vst3-host",
  "thiserror 2.0.21",
  "zip",
+]
+
+[[package]]
+name = "soundcraft-interchange"
+version = "0.14.0"
+dependencies = [
+ "cfb",
+ "serde",
+ "serde_json",
+ "soundcraft-audio-io",
+ "soundcraft-model",
+ "soundcraft-time",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

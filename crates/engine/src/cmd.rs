@@ -6,6 +6,7 @@ use soundcraft_model::{ClipId, TrackId};
 use soundcraft_time::{Range, Samples};
 use std::sync::OnceLock;
 
+mod aaf;
 mod audio_midi;
 mod audiosuite;
 mod auto_rename;
@@ -131,6 +132,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
     SPECS.get_or_init(|| {
         let mut v = Vec::new();
         v.extend(file::specs());
+        v.extend(aaf::specs());
         v.extend(edit::specs());
         v.extend(edit_more::specs());
         v.extend(view::specs());

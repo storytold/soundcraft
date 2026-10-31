@@ -13,6 +13,7 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
     ..craft_update::suite::SOUNDCRAFT
 };
 
+pub mod aaf_import;
 pub mod appearance;
 pub mod bounce;
 pub mod control;
@@ -290,6 +291,7 @@ pub struct SoundApp {
     pub preset_dir: Option<std::path::PathBuf>,
     last_autosave: Option<std::time::Instant>,
     pub dialogs: dialogs::Dialogs,
+    pub aaf_import: aaf_import::ImportState,
     pub(crate) updates_rt: updates_ui::Runtime,
     pub meters: HashMap<TrackId, MeterDisplay>,
     pub main_meter: MeterDisplay,
