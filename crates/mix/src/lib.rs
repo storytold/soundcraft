@@ -82,7 +82,8 @@ pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
 use routing::{processing_order, structure_fingerprint};
 use strip::{
-    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
+    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_input_trim, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels,
+    strip_format,
 };
 #[cfg(test)]
 use strip::{DelayLine, MAX_LATENCY};
@@ -516,6 +517,7 @@ impl MixEngine {
                         d.copy_from_slice(sr);
                     }
                 }
+                apply_input_trim(t, &mut strip.buf, frames);
                 for (i, ins) in t.mixer.inserts.iter().enumerate() {
                     if let (Some(ins), Some(Some(slot))) = (ins, strip.plugins.get_mut(i))
                         && ins.active
