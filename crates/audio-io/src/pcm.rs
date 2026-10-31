@@ -96,7 +96,7 @@ fn decode_sample(s: &[u8], kind: PcmKind) -> f32 {
                 }
                 _ => 0.0,
             };
-            if v.is_finite() { v } else { 0.0 }
+            finite_float(v)
         }
     }
 }
@@ -200,8 +200,8 @@ pub(crate) fn write_interleaved(
             for (c, q) in quantizers.iter_mut().enumerate() {
                 let s = block.get(c).and_then(|ch| ch.get(f)).copied().unwrap_or(0.0);
                 match (is_float, big_endian) {
-                    (true, false) => scratch.extend_from_slice(&sanitize_float(s).to_le_bytes()),
-                    (true, true) => scratch.extend_from_slice(&sanitize_float(s).to_be_bytes()),
+                    (true, false) => scratch.extend_from_slice(&finite_float(s).to_le_bytes()),
+                    (true, true) => scratch.extend_from_slice(&finite_float(s).to_be_bytes()),
                     (false, false) => scratch.extend_from_slice(q.quantize(s).to_le_bytes().get(..size).unwrap_or_default()),
                     (false, true) => scratch.extend_from_slice(q.quantize(s).to_be_bytes().get(4 - size..).unwrap_or_default()),
                 }
@@ -213,15 +213,9 @@ pub(crate) fn write_interleaved(
     Ok(())
 }
 
-/// Preserve finite float samples, mapping NaN to 0 and infinities to their sign (±1).
-fn sanitize_float(x: f32) -> f32 {
-    if x.is_finite() {
-        x
-    } else if x.is_nan() {
-        0.0
-    } else {
-        x.signum()
-    }
+/// Preserve finite float samples, including headroom and signed zero; silence NaN and infinity.
+pub(crate) fn finite_float(x: f32) -> f32 {
+    if x.is_finite() { x } else { 0.0 }
 }
 
 /// Check that a buffer is encodable: at least one channel and a non-zero sample rate.

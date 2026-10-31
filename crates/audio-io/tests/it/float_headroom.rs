@@ -70,9 +70,9 @@ fn streaming_float32_preserves_finite_headroom() {
 }
 
 #[test]
-fn float32_keeps_non_finite_sample_handling() {
+fn float32_silences_non_finite_samples() {
     let audio = AudioBuffer { sample_rate: 48_000, channels: vec![vec![f32::NAN, f32::NEG_INFINITY, f32::INFINITY]] };
-    let expected = [0.0_f32, -1.0, 1.0];
+    let expected = [0.0_f32; 3];
     for format in [FileFormat::Wav, FileFormat::Aiff] {
         for streaming in [false, true] {
             let options = EncodeOptions { format, bit_depth: BitDepth::Float32, dither: false, bwf: None };

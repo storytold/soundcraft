@@ -216,7 +216,7 @@ pub enum BitDepth {
     Int16,
     Int24,
     Int32,
-    /// Preserve finite samples, including values above full scale; map NaN to 0 and infinities to ±1.
+    /// IEEE Float32: preserve finite samples without clipping; write NaN and infinities as zero.
     Float32,
 }
 
@@ -348,7 +348,8 @@ pub fn decode(bytes: &[u8], ext_hint: Option<&str>) -> Result<(AudioInfo, AudioB
     }
 }
 
-/// Encode `buf` as WAV/BWF, AIFF/AIFF-C or FLAC. Samples are clamped to [-1, 1].
+/// Encode `buf` as WAV/BWF, AIFF/AIFF-C or FLAC. Integer samples are clipped to full scale;
+/// Float32 retains finite headroom and maps NaN/infinity to zero.
 pub fn encode(buf: &AudioBuffer, opts: &EncodeOptions) -> Result<Vec<u8>> {
     match opts.format {
         FileFormat::Wav => wav::encode(buf, opts.bit_depth, opts.dither, opts.bwf.as_ref(), false, None),
