@@ -4346,6 +4346,7 @@ dependencies = [
  "log",
  "serde",
  "soundcraft-dsp",
+ "soundcraft-plugin-scan",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
 ]
@@ -4456,6 +4457,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-plugin-scan"
+version = "0.13.1"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "soundcraft-time"
 version = "0.15.0"
 dependencies = [
@@ -4517,6 +4527,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "serde",
  "soundcraft-dsp",
+ "soundcraft-plugin-scan",
  "thiserror 2.0.21",
  "vst3",
  "windows-sys 0.61.2",

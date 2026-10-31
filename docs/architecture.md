@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (delay compensation includes the master faders' inserts (#351); previously minor: bounces stream to disk) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** trivial (plugin-scan crate in the layer diagram; previously trivial: delay compensation includes the master faders' inserts (#351)) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a Cargo workspace of small crates with enforced layering (`cargo xtask layers`).
 Nothing below the UI knows about egui, so the interface can be replaced.
@@ -13,7 +13,7 @@ nonlinear meters, faders, pan gestures, fonts and the live theme resolver remain
 requires Rust 1.95 or later without raising the core workspace's Rust 1.90 declaration.
 
 ```
-L0  time        audio-io        midi        video   (standalone: no workspace deps)
+L0  time        audio-io        midi        video   plugin-scan   (standalone: no workspace deps)
 L1  dsp         clap-host   vst3-host   au-host     (plugins; the three hosts are the only crates
                                                      allowed `unsafe`, confined to their FFI modules)
 L2  model                                       (the session document)
@@ -78,6 +78,7 @@ app as an MCP server. See `control-protocol.md` and `mcp.md`.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-18 | trivial | Added plugin-scan (the scan cache and child-process loading shared by clap-host and vst3-host) to the layer diagram |
 | 2026-10-13 | trivial | delay compensation includes the master faders' inserts (#351) |
 | 2026-10-10 | minor | Added video, vst3-host and au-host to the layer diagram; documented device I/O limits and in-memory media |
 | 2026-10-05 | major | First architecture overview |

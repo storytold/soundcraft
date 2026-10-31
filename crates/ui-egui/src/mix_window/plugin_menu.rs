@@ -145,14 +145,18 @@ fn plugin_search(ui: &mut Ui, search: &MenuSearch, instruments: bool) -> Option<
     }
     if clap.is_none() || vst3.is_none() {
         ui.separator();
-        ui.horizontal(|ui| {
-            if clap.is_none() && ui.small_button("Scan CLAP").clicked() {
-                soundcraft_clap_host::scan();
+        // Each missing format has its own button, so a scan of one leaves the other startable.
+        let formats: [(&str, bool, bool, fn()); 2] = [
+            ("CLAP", clap.is_none(), soundcraft_clap_host::scanning(), soundcraft_clap_host::scan_in_background),
+            ("VST3", vst3.is_none(), soundcraft_vst3_host::scanning(), soundcraft_vst3_host::scan_in_background),
+        ];
+        for (format, missing, scanning, scan) in formats {
+            if scanning {
+                crate::plugin_folders::scanning_label(ui, &format!("{format} plugins"));
+            } else if missing && ui.small_button(format!("Scan {format}")).clicked() {
+                scan();
             }
-            if vst3.is_none() && ui.small_button("Scan VST3").clicked() {
-                soundcraft_vst3_host::scan();
-            }
-        });
+        }
     }
     picked.map(|i| built_in.get(i).map_or_else(|| hosted[i - built_in.len()].0.id.clone(), |p| p.id.to_string()))
 }
@@ -253,17 +257,26 @@ struct MenuPlugin {
 }
 
 /// The CLAP, VST3 and (on macOS) Audio Units submenus, of effects or of instruments; returns the
-/// id picked. Each format is scanned the first time its submenu opens, then cached by its host.
+/// id picked. CLAP and VST3 are scanned on a background thread (from launch, or else when their
+/// submenu first opens); the submenu shows "Scanning…" until the list is in.
 fn hosted_menus(ui: &mut Ui, instruments: bool) -> Option<String> {
     let mut picked = None;
     ui.menu_button("CLAP", |ui| {
-        let list = soundcraft_clap_host::scan().into_iter().filter(|d| d.is_instrument == instruments);
+        let Some(list) = soundcraft_clap_host::cached() else {
+            soundcraft_clap_host::scan_in_background();
+            return crate::plugin_folders::scanning_label(ui, "CLAP plugins");
+        };
+        let list = list.into_iter().filter(|d| d.is_instrument == instruments);
         if let Some(p) = vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), "No CLAP plugins found") {
             picked = Some(p);
         }
     });
     ui.menu_button("VST3", |ui| {
-        let list = soundcraft_vst3_host::scan().into_iter().filter(|d| d.is_instrument == instruments);
+        let Some(list) = soundcraft_vst3_host::cached() else {
+            soundcraft_vst3_host::scan_in_background();
+            return crate::plugin_folders::scanning_label(ui, "VST3 plugins");
+        };
+        let list = list.into_iter().filter(|d| d.is_instrument == instruments);
         if let Some(p) = vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), "No VST3 plugins found") {
             picked = Some(p);
         }

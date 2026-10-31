@@ -183,6 +183,19 @@ fn app_icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result {
+    // A plugin scan's child process (see `plugin_folders::start`): load one file, answer, exit.
+    // `args_os`: an argument that is not valid Unicode must not panic before the scan can answer.
+    let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
+    if let Some(reply) = soundcraft_ui_egui::plugin_folders::scan_child(&args) {
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), "{reply}");
+        let _ = std::io::stdout().flush();
+        // Run the module exits now, from `main`, not from the exit handler: a plugin whose
+        // `ExitDll` waits for its own threads deadlocks inside `exit()` (Native Instruments' Bite
+        // never ends the process and the scan waits for its timeout), but ends in a second here.
+        soundcraft_engine::shutdown_plugin_hosts();
+        return Ok(());
+    }
     // Windows: the update helper is a copy of this program started with `--finish-update`.
     #[cfg(windows)]
     if let Some(result) = craft_update::self_update::finish(&soundcraft_ui_egui::UPDATE_APP, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
@@ -259,6 +272,9 @@ fn main() -> eframe::Result {
             app.preset_dir = env.config_dir.as_ref().map(|d| d.join("Presets"));
             app.extra.ui_scale = prefs.ui_scale;
             app.ui = prefs;
+            // Runs without preferences (agents' tests) keep no scan cache and scan when a menu asks.
+            let settings = env.config_dir.as_ref().filter(|_| env.prefs_enabled()).cloned();
+            soundcraft_ui_egui::plugin_folders::start(&app.ui.plugin_dirs, settings.as_deref(), std::env::current_exe().ok());
             if let Some(port) = control_port {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);
