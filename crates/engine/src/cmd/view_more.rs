@@ -1,11 +1,11 @@
 //! More View menu commands: Edit-window column views, extra rulers, marker displays, clip
 //! display options, waveform styles, expanded sends, transport views and other view toggles.
 //! Every setting is saved with the session in `edit.flags` (or `edit.rulers` for rulers).
+use super::{CommandSpec, always, str_param};
 
 use super::more_util::{exclusive_flag, set_flags, toggle_flag};
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
 
 /// A view toggle: `{value?: bool}` sets it, otherwise it flips.
 macro_rules! flag {
@@ -219,7 +219,6 @@ fn toggle_ruler(e: &mut Engine, p: &Value, id: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn flags_toggle_and_persist() {
         let mut e = Engine::default();

@@ -1,6 +1,6 @@
 # Plugin parity: built-in processors and plugin hosting
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** trivial (Auto Pan stereo balance; previously minor: AudioSuite speed ramps (speed_ramp); Auto Pan; Subharmonic; previously minor: Ring Modulator; VST3 host messages: IMessage and IAttributeList; previously trivial: Sampler ping-pong loop phase (#463); previously trivial: mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Pro Tools users live in plugins: the bundled set covers everyday mixing, and third-party plugins
 cover the rest. This doc tracks both. Our plugins have our own names and are written from
@@ -17,12 +17,12 @@ scratch (clean-room rule): Avid plugin names are not used here, only categories.
 | Dynamics | compressor/limiter, expander/gate, de-esser, maximizer, vintage compressors, multiband | `compressor`, `expander_gate`, `de_esser`, `maximizer` | Vintage/opto models, multiband, sidechain input (no key input anywhere) |
 | Reverb | algorithmic room/plate/hall; convolution (paid tier) | `room_reverb`, `plate_reverb` | Hall/chamber, convolution, early-reflection editor |
 | Delay | modulated delay, tape/analog delays | `mod_delay` | Tape, ping-pong, multi-tap, tempo-sync depth |
-| Modulation | chorus, flanger, phaser, tremolo, ring/frequency shift | `chorus`, `flanger`, `phaser` | Tremolo, auto-pan, ring modulation |
-| Harmonic | lo-fi, rectifier, amp simulation, saturation, tape | `lofi`, `rectifier`, `saturator` | Amp and cabinet models, tape |
-| Pitch and time | pitch shift, varispeed effects, time shift | `pitch_shifter`, `time_shift` | Formant control, varispeed effect, pitch correction |
+| Modulation | chorus, flanger, phaser, tremolo, ring/frequency shift | `auto_pan`, `chorus`, `flanger`, `phaser`, `ring_mod` (ring, frequency modulation, positive and negative resonators; LFO, envelope or sample-and-hold modulation). Auto Pan moves the balance of a stereo track at constant power, keeping each channel on its own side and the track unchanged at the center, with an LFO (free, single, beat clock, envelope or manual trigger; rate in BPM or linked to the session tempo) or an envelope follower. | Tremolo, frequency shift; Auto Pan on a mono track (inserts on a mono track have one channel), LCR, quad and 5.0 outputs with Angle, Place and Spread, circular surround paths, output meters, side-chain input |
+| Harmonic | lo-fi, rectifier, amp simulation, saturation, tape, subharmonic synthesis | `lofi`, `rectifier`, `saturator`, `subharmonic` (octave-down bass from a lower and an upper band, direct bass, drive characters, HP and LP filters) | Amp and cabinet models, tape; subharmonic MIDI tuning and surround (LFE) version |
+| Pitch and time | pitch shift, varispeed effects, time shift | `pitch_shifter`, `time_shift`; the AudioSuite speed ramp (`speed_ramp`) slows a clip down to a stop or speeds it up from one, fitted to the clip's length or extended to 150 %, with or without a fade. | Formant control, pitch correction |
 | Utility | trim, gain, invert, DC offset, signal generator, dither, time adjuster | `trim`, `gain`, `invert`, `dc_offset_removal`, `signal_generator`, `dither` | Time adjuster, meter/analyzer plugins, noise shaping options |
-| Instruments | several virtual instruments (multi-sampler, piano, drum machine, organ, synths, sample player; Massive X Player added in 2026.4) | `subtractive_synth`, `drum_synth`; `mix.instrument` takes the instrument's parameters in `params` and refuses unknown fields (#265) | Sampler (PR #108 open), piano, organ, wavetable, content library |
-| **Total** | **≈ 80 processors and instruments** (estimate from Avid's bundle documentation) | **26 processors + 2 instruments** | |
+| Instruments | several virtual instruments (multi-sampler, piano, drum machine, organ, synths, sample player; Massive X Player added in 2026.4) | `subtractive_synth`, `drum_synth`, `sampler`; `mix.instrument` takes the instrument's parameters in `params` and refuses unknown fields (#265). The sampler's ping-pong loop keeps its phase when a step is wider than the loop (#463). | Piano, organ, wavetable, content library |
+| **Total** | **≈ 80 processors and instruments** (estimate from Avid's bundle documentation) | **27 processors + 3 instruments** | |
 
 AudioSuite: every catalog AudioSuite leaf maps to one of our processes (`AUDIOSUITE` in
 `crates/ui-egui/src/menus.rs`), so the AudioSuite menu is 100 % present. Depth: no preview,
@@ -58,6 +58,13 @@ User report #152: a saved instrument level does not reach the bounce.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | trivial | Auto Pan: constant-power balance of the left and right channels; stereo passes unchanged at the center |
+| 2026-10-24 | minor | AudioSuite speed ramps (`speed_ramp`): down to a stop and up from one, Fit To or Extend, fades on or off |
+| 2026-10-24 | minor | Auto Pan: LFO and envelope panning of stereo tracks; built-in count 27 processors + 3 instruments |
+| 2026-10-24 | trivial | Harmonic: Subharmonic (`subharmonic`); built-in count 26 processors + 3 instruments |
+| 2026-10-23 | trivial | Modulation: Ring Modulator (`ring_mod`), also used by the AudioSuite Modulation menu |
+| 2026-10-13 | minor | VST3 host: IMessage and IAttributeList for plugins whose halves talk through messages (Line 6 Helix Stadium Native verified) |
+| 2026-10-13 | trivial | Sampler ping-pong loop phase (#463) |
 | 2026-10-13 | trivial | mix.instrument sets built-in instrument parameters in params (#265) |
 | 2026-10-12 | minor | Editors: VST3 and embedded CLAP editors on Windows |
 | 2026-10-10 | major | Created: built-in processor inventory by category and third-party hosting checklist |

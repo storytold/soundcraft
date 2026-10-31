@@ -1,18 +1,22 @@
-//! `cargo xtask <ci|layers|assets|parity|wasm>` — repository gates.
+//! `cargo xtask <ci|test|layers|assets|parity|wasm>` — repository gates.
 
 mod ico;
 mod version;
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
 }
 
+fn cargo_bin() -> String {
+    std::env::var("CARGO").unwrap_or_else(|_| "cargo".into())
+}
+
 fn cargo(args: &[&str]) -> Result<(), String> {
-    let st =
-        Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into())).args(args).current_dir(root()).status().map_err(|e| e.to_string())?;
+    let st = Command::new(cargo_bin()).args(args).current_dir(root()).status().map_err(|e| e.to_string())?;
     if st.success() { Ok(()) } else { Err(format!("cargo {} failed", args.join(" "))) }
 }
 
@@ -93,7 +97,7 @@ fn assets() -> Result<(), String> {
     let attribution = std::fs::read_to_string(root().join("ATTRIBUTION.md")).map_err(|e| format!("ATTRIBUTION.md: {e}"))?;
     let mut missing = Vec::new();
     for f in files.lines() {
-        let ext = Path::new(f).extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
+        let ext = Path::new(f).extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase();
         if !ASSET_EXT.contains(&ext.as_str()) {
             continue;
         }
@@ -132,7 +136,7 @@ const WASM: &[&str] = &[
 ];
 
 fn wasm() -> Result<(), String> {
-    let mut args = vec!["check", "--target", "wasm32-unknown-unknown"];
+    let mut args = vec!["check", "--target", "wasm32-unknown-unknown", "--keep-going"];
     for c in WASM {
         args.push("-p");
         args.push(c);
@@ -144,11 +148,83 @@ fn wasm() -> Result<(), String> {
     cargo(&args)
 }
 
+/// Test targets for the test build. Examples are left out so they aren't linked; clippy
+/// `--all-targets` still compiles them.
+const TEST_TARGETS: [&str; 4] = ["--workspace", "--lib", "--bins", "--tests"];
+
+fn nextest_available() -> bool {
+    Command::new(cargo_bin()).args(["nextest", "--version"]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
+/// `[[test]]` targets with `harness = false`, as (package, target). Their own `main` cannot answer
+/// nextest's `--list`, so they run under `cargo test`.
+fn own_main_tests() -> Result<Vec<(String, String)>, String> {
+    let out =
+        Command::new(cargo_bin()).args(["metadata", "--format-version", "1", "--no-deps"]).current_dir(root()).output().map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
+    let mut found = Vec::new();
+    for p in v["packages"].as_array().cloned().unwrap_or_default() {
+        let (Some(name), Some(manifest)) = (p["name"].as_str(), p["manifest_path"].as_str()) else { continue };
+        let text = std::fs::read_to_string(manifest).map_err(|e| format!("{manifest}: {e}"))?;
+        found.extend(harness_false_tests(&text).into_iter().map(|t| (name.to_string(), t)));
+    }
+    Ok(found)
+}
+
+/// Names of the `[[test]]` tables with `harness = false` in a Cargo.toml.
+fn harness_false_tests(manifest: &str) -> Vec<String> {
+    // Each `[[test]]` table runs up to the next table header.
+    let tables = manifest.split("\n[").filter(|t| t.starts_with("[test]]"));
+    tables
+        .filter_map(|table| {
+            let value =
+                |key: &str| table.lines().find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == key).map(|(_, v)| v.trim().trim_matches('"')));
+            (value("harness") == Some("false")).then(|| value("name").map(str::to_string)).flatten()
+        })
+        .collect()
+}
+
+/// Workspace tests: cargo nextest when installed, else cargo test. Doctests run apart.
+fn test() -> Result<(), String> {
+    if !nextest_available() {
+        eprintln!("note: cargo-nextest is not installed, running cargo test (cargo install cargo-nextest --locked)");
+        return cargo(&[&["test"][..], &TEST_TARGETS[..]].concat());
+    }
+    let own = own_main_tests()?;
+    let mut args = vec!["nextest", "run"];
+    args.extend(TEST_TARGETS);
+    let skip = format!("not ({})", own.iter().map(|(p, t)| format!("binary_id(={p}::{t})")).collect::<Vec<_>>().join(" | "));
+    if !own.is_empty() {
+        // A binary-level filter keeps nextest from running these binaries to list their tests.
+        args.extend(["-E", &skip]);
+    }
+    cargo(&args)?;
+    if own.is_empty() {
+        return Ok(());
+    }
+    let packages: BTreeSet<&str> = own.iter().map(|(p, _)| p.as_str()).collect();
+    let targets: BTreeSet<&str> = own.iter().map(|(_, t)| t.as_str()).collect();
+    let mut args = vec!["test"];
+    for p in packages {
+        args.extend(["-p", p]);
+    }
+    for t in targets {
+        args.extend(["--test", t]);
+    }
+    cargo(&args)
+}
+
+/// nextest does not run doctests.
+fn doctest() -> Result<(), String> {
+    cargo(&["test", "--workspace", "--doc"])
+}
+
 fn ci() -> Result<(), String> {
     let steps: Vec<(&str, Box<dyn Fn() -> Result<(), String>>)> = vec![
         ("fmt", Box::new(|| cargo(&["fmt", "--all", "--", "--check"]))),
-        ("clippy", Box::new(|| cargo(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))),
-        ("test", Box::new(|| cargo(&["test", "--workspace"]))),
+        ("clippy", Box::new(|| cargo(&["clippy", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]))),
+        ("test", Box::new(test)),
+        ("doctest", Box::new(doctest)),
         ("assets", Box::new(assets)),
         ("layers", Box::new(layers)),
         ("wasm", Box::new(wasm)),
@@ -172,13 +248,14 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
         Some("ci") => ci(),
+        Some("test") => test(),
         Some("layers") => layers(),
         Some("assets") => assets(),
         Some("parity") => parity(),
         Some("wasm") => wasm(),
         Some("version") => version::run(args.get(1..).unwrap_or(&[])),
         Some("ico") => ico::run(args.get(1..).unwrap_or(&[])),
-        _ => Err("usage: cargo xtask <ci|layers|assets|parity|wasm|version>".into()),
+        _ => Err("usage: cargo xtask <ci|test|layers|assets|parity|wasm|version>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,
@@ -186,5 +263,14 @@ fn main() -> ExitCode {
             eprintln!("xtask: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn harness_false_tests_are_found_by_table() {
+        let manifest = "[package]\nname = \"x\"\n\n[[test]]\nname = \"own_main\"\nharness = false\n\n[[test]]\nname = \"plain\"\n\n[[test]]\nharness = false\nname = \"second\"\n\n[dependencies]\nharness = false\n";
+        assert_eq!(super::harness_false_tests(manifest), ["own_main", "second"]);
     }
 }

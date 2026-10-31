@@ -1,8 +1,10 @@
 //! Clip menu commands.
+use super::{CommandSpec, always, bad, clip_ids_param, f64_or, has_range, has_selection, i64_or, position_param, str_param, track_param};
+use soundcraft_model::ClipId;
+use soundcraft_time::Samples;
 
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -65,7 +67,15 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({}))
         }),
-        cmd!("clip.loop", "Loop...", ["Clip"], Some("Cmd+Alt+L"), "{clips?, count?: n, length?: samples}", has_selection, loop_clips),
+        cmd!(
+            "clip.loop",
+            "Loop...",
+            ["Clip"],
+            Some("Cmd+Alt+L"),
+            "{clips?, count?: n, length?: samples, fill?: bool}: count is the clip plus its loops; length is the whole looped clip, with the last loop cut short to fit; fill loops up to the next clip on the track, or else to the session end",
+            has_selection,
+            loop_clips
+        ),
         cmd!("clip.rename", "Rename...", ["Clip"], Some("Cmd+Alt+Shift+R"), "{clip?, name}", has_selection, rename),
         cmd!("clip.gain", "Clip Gain", [], None, "{clips?, db | delta_db}", has_selection, gain),
         cmd!("clip.gain_nudge_up", "Nudge Clip Gain Up", [], Some("Ctrl+Shift+Up"), "{clips?}", has_selection, |e, p| nudge_gain(e, p, 1.0)),
@@ -102,6 +112,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({}))
         }),
+        cmd!("clip.remove_sync_point", "Remove Sync Point", ["Clip"], None, "{clips?}", has_sync_point, remove_sync_point),
         cmd!("clip.quantize_to_grid", "Quantize to Grid", ["Clip"], Some("Cmd+0"), "{clips?}", has_selection, quantize_to_grid),
         cmd!("clip.color", "Clip Color", [], None, "{clips?, color: [r,g,b] | null}", has_selection, |e, p| {
             let ids = clip_ids_param(e, p);
@@ -217,6 +228,7 @@ fn elastic(e: &mut Engine, p: &Value) -> Result<Value> {
         nc.content = soundcraft_model::ClipContent::Audio { source: src, offset: 0 };
         nc.length = out_len;
         nc.stretch = 1.0;
+        nc.clamp_fades();
         super::more_util::replace_clip(s, t, *id, nc);
         rendered += 1;
     }
@@ -235,7 +247,7 @@ fn remove_warp(e: &mut Engine, p: &Value) -> Result<Value> {
             if let Some((src, off, len)) = orig {
                 c.content = soundcraft_model::ClipContent::Audio { source: src, offset: off };
                 c.length = len.max(1);
-                c.fade_out.len = c.fade_out.len.min(c.length);
+                c.clamp_fades();
                 n += 1;
             }
         }
@@ -284,15 +296,46 @@ fn layer(e: &mut Engine, p: &Value, front: bool) -> Result<Value> {
     Ok(json!({}))
 }
 
+/// The most loops `clip.loop` makes of one clip.
+const MAX_LOOPS: i64 = 1000;
+
 fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     let count = i64_or(p, "count", 4).clamp(1, 512);
     let total = position_param(e, "clip.loop", p, "length")?;
+    let fill = p.get("fill").and_then(Value::as_bool).unwrap_or(false);
     let s = e.session_mut();
+    let session_end = s.content_end();
     let mut made = 0;
     for id in ids {
         let Some((tid, mut c)) = s.find_clip(id).map(|(t, c)| (t, c.clone())) else { continue };
-        let reps = total.map_or(count - 1, |l| (l / c.length.max(1)).max(1) - 1).clamp(0, 1000);
+        if c.length <= 0 {
+            continue;
+        }
+        let len = c.length;
+        // Where the looped clip ends: the next clip or the session end, or `length` after the start.
+        let end = if fill {
+            let next = s.track(tid).and_then(|t| t.clips().iter().filter(|x| x.id != c.id && x.start >= c.end()).map(|x| x.start).min());
+            Some(next.unwrap_or(session_end))
+        } else {
+            total.map(|l| c.start.saturating_add(l))
+        };
+        // Whole iterations, then one cut short to reach `end` exactly.
+        let (reps, last) = match end {
+            Some(end) => {
+                let span = end.saturating_sub(c.end()).max(0);
+                let (whole, rest) = (span / len, span % len);
+                let reps = whole.saturating_add(i64::from(rest > 0));
+                if reps > MAX_LOOPS {
+                    return Err(bad(
+                        "clip.loop",
+                        format!("“{}” would need {reps} loops to fill that; a clip loops at most {MAX_LOOPS} times", c.name),
+                    ));
+                }
+                (reps, if rest > 0 { rest } else { len })
+            }
+            None => ((count - 1).clamp(0, MAX_LOOPS), len),
+        };
         if reps > 0 && c.loop_id.is_none() {
             let lid = s.alloc();
             if let Some(src) = s.find_clip_mut(id) {
@@ -304,10 +347,15 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
         for k in 1..=reps {
             let mut nc = c.clone();
             nc.start = 0;
+            if k == reps && last < c.length {
+                // `start` is 0 here, so the end is the length; the trim also shortens the fades to fit and removes a sync point past the cut.
+                nc.trim_end_to(last);
+            }
             copies.push((c.start + c.length * k, nc));
         }
         for (at, nc) in copies {
-            let _ = crate::edit::paste(s, tid, at, &[nc], c.length, false);
+            let length = nc.length;
+            let _ = crate::edit::paste(s, tid, at, &[nc], length, false);
             made += 1;
         }
     }
@@ -346,6 +394,31 @@ fn gain(e: &mut Engine, p: &Value) -> Result<Value> {
 fn nudge_gain(e: &mut Engine, p: &Value, db: f64) -> Result<Value> {
     let clips = clip_ids_param(e, p);
     gain(e, &json!({"clips": clips, "delta_db": db}))
+}
+
+/// Sync point 0 is "none" (edit_window only draws one when > 0).
+fn has_sync_point(e: &Engine) -> std::result::Result<(), String> {
+    let s = e.session();
+    if clip_ids_param(e, &json!({})).iter().any(|id| s.find_clip(*id).is_some_and(|(_, c)| c.sync_point != 0)) {
+        Ok(())
+    } else {
+        Err("no selected clip has a sync point".into())
+    }
+}
+
+fn remove_sync_point(e: &mut Engine, p: &Value) -> Result<Value> {
+    let s = e.session();
+    // Only clips that have a point are touched, so a call that changes nothing leaves no undo step.
+    let ids: Vec<ClipId> = clip_ids_param(e, p).into_iter().filter(|id| s.find_clip(*id).is_some_and(|(_, c)| c.sync_point != 0)).collect();
+    if !ids.is_empty() {
+        let s = e.session_mut();
+        for id in &ids {
+            if let Some(c) = s.find_clip_mut(*id) {
+                c.sync_point = 0
+            }
+        }
+    }
+    Ok(json!({"clips": ids.len()}))
 }
 
 fn quantize_to_grid(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -425,6 +498,27 @@ mod tests {
     }
 
     #[test]
+    fn warping_and_unwarping_keep_fades_within_the_clip() {
+        let (mut e, _, cid) = elastic_clip(20_000, 10_000, 20_000);
+        if let Some(c) = e.session_mut().find_clip_mut(cid) {
+            c.fade_in.len = 20_000;
+            c.fade_out.len = 20_000;
+        }
+        e.execute("clip.elastic_properties", &json!({"clips": [cid.0], "ratio": 0.5})).unwrap();
+        let c = e.session().find_clip(cid).unwrap().1.clone();
+        assert!(c.fade_in.len <= c.length && c.fade_out.len <= c.length, "{} {} {}", c.length, c.fade_in.len, c.fade_out.len);
+
+        let (mut e, _, cid) = elastic_clip(20_000, 10_000, 20_000);
+        e.execute("clip.elastic_properties", &json!({"clips": [cid.0], "ratio": 2.0})).unwrap();
+        if let Some(c) = e.session_mut().find_clip_mut(cid) {
+            c.fade_in.len = 40_000;
+        }
+        e.execute("clip.remove_warp", &json!({"clips": [cid.0]})).unwrap();
+        let c = e.session().find_clip(cid).unwrap().1.clone();
+        assert!(c.fade_in.len <= c.length, "{} {}", c.length, c.fade_in.len);
+    }
+
+    #[test]
     fn remove_warp_keeps_the_audio_when_the_original_file_is_gone() {
         let mut e = crate::demo::demo_engine();
         let pad = e.session().track_by_name("Pad").map(|t| t.id).unwrap();
@@ -451,5 +545,73 @@ mod tests {
         e.execute("clip.gain", &json!({"db": 35.5})).unwrap();
         e.execute("clip.gain_nudge_up", &json!({})).unwrap();
         assert_eq!(gain(&e), 36.0);
+    }
+
+    /// Three 10 000-sample clips side by side on one track; sync points are set by each test.
+    fn three_clips() -> (crate::Engine, [ClipId; 3]) {
+        use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Dialog"));
+        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 10_000]] };
+        let src = crate::io::add_source(&mut s, "Line", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let ids = [0, 1, 2].map(|k| {
+            let cid = s.new_clip_id();
+            crate::edit::place_clip(&mut s, t, Clip::audio(cid, "Line", src, 0, k * 12_000, 10_000));
+            cid
+        });
+        (crate::Engine::new(s), ids)
+    }
+
+    fn sync_of(e: &crate::Engine, id: ClipId) -> i64 {
+        e.session().find_clip(id).unwrap().1.sync_point
+    }
+
+    #[test]
+    fn remove_sync_point_clears_the_point_identify_set() {
+        let (mut e, [a, ..]) = three_clips();
+        e.execute("edit.select", &json!({"clips": [a.0]})).unwrap();
+        e.execute("clip.identify_sync_point", &json!({"at": 4_000})).unwrap();
+        assert_eq!(sync_of(&e, a), 4_000);
+        e.execute("clip.remove_sync_point", &json!({})).unwrap();
+        assert_eq!(sync_of(&e, a), 0);
+    }
+
+    #[test]
+    fn remove_sync_point_clears_every_selected_clip_and_only_those() {
+        let (mut e, [a, b, c]) = three_clips();
+        for (id, at) in [(a, 1_000), (b, 2_000), (c, 3_000)] {
+            e.session_mut().find_clip_mut(id).unwrap().sync_point = at;
+        }
+        e.execute("edit.select", &json!({"clips": [a.0, b.0]})).unwrap();
+        let r = e.execute("clip.remove_sync_point", &json!({})).unwrap();
+        assert_eq!(r["clips"], 2);
+        assert_eq!([sync_of(&e, a), sync_of(&e, b), sync_of(&e, c)], [0, 0, 3_000]);
+    }
+
+    #[test]
+    fn remove_sync_point_is_disabled_unless_a_selected_clip_has_one() {
+        let (mut e, [a, b, c]) = three_clips();
+        e.session_mut().find_clip_mut(c).unwrap().sync_point = 3_000;
+        let enabled = |e: &crate::Engine| crate::find_command("clip.remove_sync_point").unwrap().info(e).enabled;
+        e.execute("edit.select", &json!({"clips": [a.0, b.0]})).unwrap();
+        assert!(!enabled(&e), "neither selected clip has a sync point (the unselected one does)");
+        e.execute("edit.select", &json!({"clips": [b.0, c.0]})).unwrap();
+        assert!(enabled(&e));
+    }
+
+    #[test]
+    fn remove_sync_point_is_one_undo_step_that_puts_the_points_back() {
+        let (mut e, [a, b, _]) = three_clips();
+        for (id, at) in [(a, 1_000), (b, 2_000)] {
+            e.session_mut().find_clip_mut(id).unwrap().sync_point = at;
+        }
+        e.execute("edit.select", &json!({"clips": [a.0, b.0]})).unwrap();
+        let steps = e.undo_history().len();
+        e.execute("clip.remove_sync_point", &json!({})).unwrap();
+        assert_eq!(e.undo_history().len(), steps + 1);
+        assert_eq!(e.undo_label(), Some("Remove Sync Point"));
+        assert_eq!([sync_of(&e, a), sync_of(&e, b)], [0, 0]);
+        assert!(e.undo());
+        assert_eq!([sync_of(&e, a), sync_of(&e, b)], [1_000, 2_000]);
     }
 }

@@ -3,7 +3,9 @@
 use crate::prores::bits::Reader;
 use crate::prores::dct::idct8x8;
 use crate::prores::header::{FrameHeader, PictureHeader, row_slice_widths};
-use crate::prores::tables::*;
+use crate::prores::tables::{
+    DC_CB, DC_CTX_INIT, FIRST_DC_CB, LEVEL_CB, LEVEL_CTX_INIT, RUN_CB, RUN_CTX_INIT, SCAN_INTERLACED, SCAN_PROGRESSIVE, qscale,
+};
 use crate::prores::{AlphaType, ChromaFormat, Error, Frame, Interlace, Result};
 
 /// Decoder options.
@@ -109,6 +111,10 @@ pub fn decode_frame_with(data: &[u8], opts: &DecodeOptions) -> Result<Frame> {
 /// a sequence). On error the contents of `out` are unspecified.
 pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> Result<()> {
     let (hdr, mut off, frame_size) = FrameHeader::parse(data)?;
+    // The planes are sized from the header: refuse a size no movie may have before allocating.
+    if u64::from(hdr.width) * u64::from(hdr.height) > crate::movie::MAX_PIXELS {
+        return Err(Error::Unsupported("frame size"));
+    }
     let data = &data[..frame_size];
     let depth = opts.bit_depth.unwrap_or(match hdr.chroma {
         ChromaFormat::Yuv422 => 10,
@@ -194,7 +200,7 @@ pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> 
         let mut ac = alpha.as_mut().map(|a| a.chunks_mut(band_h * width));
         while let (Some(y), Some(cb), Some(cr)) = (yc.next(), cbc.next(), crc.next()) {
             let rows = y.len() / width;
-            let a = ac.as_mut().and_then(|it| it.next());
+            let a = ac.as_mut().and_then(Iterator::next);
             bands.push(Band { y, cb, cr, a, rows });
         }
     }
@@ -486,7 +492,7 @@ fn put_block(f: &[f32; 64], plane: &mut [u16], stride: usize, x0: usize, y0: usi
     if xn == 8 && (y0 + 7) * step + parity < rows {
         for yy in 0..8 {
             let o = ((y0 + yy) * step + parity) * stride + x0;
-            let (Some(row), Some(src)) = (plane.get_mut(o..).and_then(|p| p.first_chunk_mut::<8>()), f.as_chunks::<8>().0.get(yy)) else {
+            let (Some(row), Some(src)) = (plane.get_mut(o..).and_then(<[_]>::first_chunk_mut::<8>), f.as_chunks::<8>().0.get(yy)) else {
                 return;
             };
             for x in 0..8 {

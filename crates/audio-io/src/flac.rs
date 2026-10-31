@@ -3,7 +3,7 @@
 //! partitioned Rice-coded residuals. Decoding is symphonia's, after [`check_metadata`].
 
 use crate::pcm::{Quantizer, be_u32, le_u32, validate_buffer};
-use crate::{AudioBuffer, AudioError, BitDepth, Result};
+use crate::{AudioBuffer, AudioError, AudioInfo, BitDepth, FileFormat, Result, SampleFormat};
 use std::io::{Cursor, Seek, SeekFrom, Write};
 
 const BLOCK_SIZE: usize = 4096;
@@ -318,6 +318,10 @@ pub(crate) struct Writer<W> {
     pending: Vec<Vec<i64>>,
     frames: u64,
     frame_no: u64,
+    /// Set when a frame write has failed: `write_frame` clears the pending samples before
+    /// writing, so a failed frame is lost while `frames` still counts it; the writer refuses
+    /// every later call.
+    failed: bool,
 }
 
 impl<W: Write + Seek> Writer<W> {
@@ -336,6 +340,7 @@ impl<W: Write + Seek> Writer<W> {
             pending: (0..channels).map(|_| Vec::with_capacity(BLOCK_SIZE)).collect(),
             frames: 0,
             frame_no: 0,
+            failed: false,
         })
     }
 
@@ -351,6 +356,9 @@ impl<W: Write + Seek> Writer<W> {
     /// Appends `frames` frames of planar audio (missing samples are silence), unless they don't
     /// fit (see [`Writer::check_room`]).
     pub(crate) fn write(&mut self, block: &[Vec<f32>], frames: usize) -> Result<()> {
+        if self.failed {
+            return Err(crate::failed_write_error());
+        }
         let total = self.check_room(frames as u64)?;
         let mut done = 0;
         while done < frames {
@@ -361,8 +369,11 @@ impl<W: Write + Seek> Writer<W> {
                 p.extend((0..n).map(|i| i64::from(q.quantize(src.get(i).copied().unwrap_or(0.0)))));
             }
             done += n;
-            if held + n == BLOCK_SIZE {
-                self.write_frame()?;
+            if held + n == BLOCK_SIZE
+                && let Err(e) = self.write_frame()
+            {
+                self.failed = true;
+                return Err(e);
             }
         }
         self.frames = total;
@@ -408,6 +419,9 @@ impl<W: Write + Seek> Writer<W> {
     }
 
     pub(crate) fn finish(mut self) -> Result<W> {
+        if self.failed {
+            return Err(crate::failed_write_error());
+        }
         self.write_frame()?;
         let info = stream_info(self.channels, self.sample_rate, self.bps, self.frames);
         self.out.seek(SeekFrom::Start(self.start.saturating_add(4)))?;
@@ -452,6 +466,49 @@ pub(crate) fn check_metadata(b: &[u8], at: usize) -> Result<()> {
         pos = body + len;
     }
     Ok(())
+}
+
+/// The info of a FLAC stream with no audio frames at all: STREAMINFO declares 0 samples and
+/// nothing follows the metadata blocks. Symphonia's reader fails on these, as it looks for a first
+/// frame, so the caller answers them itself.
+pub(crate) fn empty_stream_info(b: &[u8], at: usize) -> Option<AudioInfo> {
+    let mut pos = at.checked_add(4)?;
+    let mut first = true;
+    loop {
+        let head = be_u32(b, pos)?;
+        let (body, len) = (pos.checked_add(4)?, (head & 0x00ff_ffff) as usize);
+        let end = body.checked_add(len)?;
+        if end > b.len() {
+            return None;
+        }
+        if first && ((head >> 24) & 0x7f != 0 || len != 34) {
+            return None;
+        }
+        first = false;
+        if head >> 31 == 1 {
+            if end != b.len() {
+                return None;
+            }
+            break;
+        }
+        pos = end;
+    }
+    // STREAMINFO, from the sample rate on: 20 bits rate, 3 channels - 1, 5 bits per sample - 1, 36 bits total.
+    let si = at.checked_add(4 + 4 + 10)?;
+    let packed = u64::from_be_bytes(b.get(si..si.checked_add(8)?)?.try_into().ok()?);
+    let sample_rate = (packed >> 44) as u32;
+    let channels = ((packed >> 41) & 0x7) as u16 + 1;
+    let bps = ((packed >> 36) & 0x1f) as u32 + 1;
+    if packed & 0xf_ffff_ffff != 0 || sample_rate == 0 {
+        return None;
+    }
+    let sample_format = match bps {
+        1..=8 => SampleFormat::Int8,
+        9..=16 => SampleFormat::Int16,
+        17..=24 => SampleFormat::Int24,
+        _ => SampleFormat::Int32,
+    };
+    Some(AudioInfo { format: FileFormat::Flac, sample_format, sample_rate, channels, frames: 0, bwf: None })
 }
 
 /// Whether a comment in a (little-endian) Vorbis comment block claims more than the block holds.

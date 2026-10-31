@@ -2,15 +2,18 @@
 //! operations (split notes, input quantize, step input, restore/flatten performance), MIDI track
 //! offsets and real-time properties, chord extraction, Beat Detective, Identify Beat and
 //! Retrospective Record.
+use super::{
+    CommandSpec, always, bad, bool_or, clip_ids_param, f32_or, f64_or, has_range, has_selection, has_tracks, i64_or, position_param, range_param,
+    str_param, track_param, tracks_param, tracks_required,
+};
 
 use super::more_util::{store_value, track_key, values_with_prefix};
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
 use soundcraft_midi::Note;
 use soundcraft_midi::ops::QuantizeOptions;
 use soundcraft_model::{ChannelFormat, Clip, ClipContent, ClipId, MarkerKind, Session, TrackId, TrackKind};
-use soundcraft_time::{Range, Samples, TICKS_PER_QUARTER, TempoMap};
+use soundcraft_time::{MAX_POSITION, Range, Samples, TICKS_PER_QUARTER, TempoMap};
 
 /// Most tempo events one curve may write.
 const MAX_TEMPO_EVENTS: i64 = 10_000;
@@ -414,7 +417,9 @@ fn step_input(e: &mut Engine, p: &Value) -> Result<Value> {
     let end = s.tempo.tick_to_samples(end_tick, sr);
     // Continue the clip under (or ending at) the insertion point, else start a new one.
     let host = s.track(t).and_then(|tr| {
-        tr.clips().iter().filter(|c| matches!(c.content, ClipContent::Midi { .. })).find(|c| c.range().contains(at) || c.end() == at).map(|c| c.id)
+        let mut midi = tr.clips().iter().filter(|c| matches!(c.content, ClipContent::Midi { .. }));
+        // A clip starting at `at` wins over one that merely ends there.
+        midi.clone().find(|c| c.range().contains(at)).or_else(|| midi.find(|c| c.end() == at)).map(|c| c.id)
     });
     let host = match host {
         Some(h) => h,
@@ -559,6 +564,44 @@ pub fn chord_name(weights: &[f64; 12], bass: usize) -> Option<String> {
 const MAX_CHORD_BARS: usize = 100_000;
 const MAX_CHORD_NOTES: usize = 10_000_000;
 
+/// Absolute `(start, end, pitch)` tick notes from every MIDI clip on `tracks`, cut to their clip
+/// and sorted by start.
+fn midi_tick_notes(s: &Session, tracks: &[TrackId]) -> Vec<(i64, i64, u8)> {
+    let mut notes: Vec<(i64, i64, u8)> = Vec::new();
+    for t in tracks {
+        for c in s.track(*t).map(|tr| tr.clips()).unwrap_or(&[]) {
+            let ClipContent::Midi { sequence } = &c.content else { continue };
+            let base = s.tempo.samples_to_ticks(c.start, s.sample_rate);
+            let end = s.tempo.samples_to_ticks(c.end(), s.sample_rate);
+            for n in &sequence.notes {
+                let a = base.saturating_add(n.start);
+                let b = base.saturating_add(n.end()).min(end);
+                if b > a {
+                    notes.push((a, b, n.pitch));
+                }
+            }
+        }
+    }
+    notes.sort_unstable_by_key(|n| n.0);
+    notes
+}
+
+/// Duration-weighted pitch classes of the notes sounding in `a..b`, and the lowest pitch among them.
+fn pitch_class_weights(sounding: &[(i64, i64, u8)], a: i64, b: i64) -> ([f64; 12], Option<u8>) {
+    let mut w = [0.0f64; 12];
+    let mut bass: Option<u8> = None;
+    for (na, nb, pitch) in sounding {
+        let ov = (*nb).min(b) - (*na).max(a);
+        if ov > 0 {
+            if let Some(x) = w.get_mut(usize::from(*pitch) % 12) {
+                *x += ov as f64;
+            }
+            bass = Some(bass.map_or(*pitch, |bp| bp.min(*pitch)));
+        }
+    }
+    (w, bass)
+}
+
 fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "event.extract_chords";
     let (_, t0, t1) = selection_ticks(e, p, id)?;
@@ -569,22 +612,7 @@ fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
         tracks = s.tracks.iter().filter(|t| t.kind.is_midi()).map(|t| t.id).collect();
     }
     // Absolute (tick) notes from every MIDI clip on those tracks, cut to their clip.
-    let mut notes: Vec<(i64, i64, u8)> = Vec::new();
-    for t in &tracks {
-        for c in s.track(*t).map(|tr| tr.clips()).unwrap_or(&[]) {
-            let ClipContent::Midi { sequence } = &c.content else { continue };
-            let base = s.tempo.samples_to_ticks(c.start, s.sample_rate);
-            let end = s.tempo.samples_to_ticks(c.end(), s.sample_rate);
-            for n in &sequence.notes {
-                let a = base + n.start;
-                let b = (base + n.end()).min(end);
-                if b > a {
-                    notes.push((a, b, n.pitch));
-                }
-            }
-        }
-    }
-    notes.sort_unstable_by_key(|n| n.0);
+    let notes = midi_tick_notes(s, &tracks);
     let mut bar = s.tempo.bar_beat_at_tick(t0).bar;
     let mut sounding: Vec<(i64, i64, u8)> = Vec::new();
     let (mut next, mut bars, mut heard) = (0, 0, 0);
@@ -611,17 +639,7 @@ fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
         }
         bars += 1;
         heard += sounding.len();
-        let mut w = [0.0f64; 12];
-        let mut bass: Option<u8> = None;
-        for (na, nb, pitch) in &sounding {
-            let ov = (*nb).min(b) - (*na).max(a);
-            if ov > 0 {
-                if let Some(x) = w.get_mut(usize::from(*pitch) % 12) {
-                    *x += ov as f64;
-                }
-                bass = Some(bass.map_or(*pitch, |bp| bp.min(*pitch)));
-            }
-        }
+        let (w, bass) = pitch_class_weights(&sounding, a, b);
         if let Some(name) = bass.and_then(|bp| chord_name(&w, usize::from(bp) % 12)) {
             let at = s.tempo.tick_to_samples(a, s.sample_rate);
             chords.push(json!({"bar": bar, "chord": name, "at": at}));
@@ -730,13 +748,16 @@ fn retro_record(e: &mut Engine, p: &Value) -> Result<Value> {
     let t = midi_target(e, p, id)?;
     let s = e.session();
     let sr = s.sample_rate;
+    // Latest start tick whose longest note still ends within MAX_POSITION.
+    let max_tick = s.tempo.samples_to_ticks(MAX_POSITION, sr).saturating_sub(TICKS_PER_QUARTER * 1024).max(0);
     let mut raw: Vec<(i64, Note)> = Vec::new();
     for v in list.iter().take(100_000) {
         let tick = match (v.get("start_ticks").and_then(Value::as_i64), v.get("start")) {
             (Some(tk), _) => tk.max(0),
             (None, Some(_)) => s.tempo.samples_to_ticks(position_param(e, id, v, "start")?.unwrap_or(0).max(0), sr),
             _ => return Err(bad(id, "each note needs `start` or `start_ticks`")),
-        };
+        }
+        .min(max_tick);
         let note = Note {
             pitch: i64_or(v, "pitch", 60).clamp(0, 127) as u8,
             velocity: i64_or(v, "velocity", 100).clamp(1, 127) as u8,
@@ -750,7 +771,7 @@ fn retro_record(e: &mut Engine, p: &Value) -> Result<Value> {
     let first = raw.iter().map(|x| x.0).min().unwrap_or(0);
     // Start the clip on the bar line so the quantize grid lines up with the music.
     let clip_tick = s.tempo.bar_start_tick(s.tempo.bar_beat_at_tick(first).bar).min(first).max(0);
-    let end_tick = raw.iter().map(|(tk, n)| tk.saturating_add(n.length)).max().unwrap_or(first + 1);
+    let end_tick = raw.iter().map(|(tk, n)| tk.saturating_add(n.length)).max().unwrap_or_else(|| first.saturating_add(1));
     let mut seq = soundcraft_midi::Sequence::default();
     for (tk, mut n) in raw {
         n.start = tk - clip_tick;
@@ -764,7 +785,7 @@ fn retro_record(e: &mut Engine, p: &Value) -> Result<Value> {
         seq.sort();
     }
     let start = s.tempo.tick_to_samples(clip_tick, sr);
-    let end = s.tempo.tick_to_samples(end_tick, sr);
+    let end = s.tempo.tick_to_samples(end_tick, sr).min(MAX_POSITION);
     let n = seq.notes.len();
     let s = e.session_mut();
     let cid = s.new_clip_id();
@@ -777,7 +798,6 @@ fn retro_record(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn midi_engine() -> (Engine, TrackId) {
         let mut e = Engine::default();
         e.execute("track.new", &json!({"kind": "midi"})).unwrap();
@@ -863,6 +883,25 @@ mod tests {
     }
 
     #[test]
+    fn step_input_at_clip_boundary_uses_next_clip() {
+        let (mut e, t) = midi_engine();
+        let sr = 48_000;
+        e.execute("midi.new_clip", &json!({"track": t.0, "start": 0, "end": sr})).unwrap();
+        let second = e.execute("midi.new_clip", &json!({"track": t.0, "start": sr, "end": 2 * sr})).unwrap()["clip"].as_u64().unwrap();
+        e.execute("edit.select", &json!({"tracks": [t.0], "start": sr})).unwrap();
+        let r = e.execute("event.step_input", &json!({"track": t.0, "pitch": 60, "duration": "1/4"})).unwrap();
+        assert_eq!(r["clip"].as_u64(), Some(second));
+        let mut ranges: Vec<(i64, i64)> = e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.end())).collect();
+        ranges.sort();
+        assert_eq!(ranges, vec![(0, sr), (sr, 2 * sr)]);
+        let c = e.session().find_clip(soundcraft_model::ClipId(second)).map(|(_, c)| c.clone()).unwrap();
+        match &c.content {
+            ClipContent::Midi { sequence } => assert_eq!(sequence.notes.iter().map(|n| n.start).collect::<Vec<_>>(), vec![0]),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
     fn tempo_curves() {
         let mut e = Engine::default();
         e.execute("track.new", &json!({})).unwrap();
@@ -941,6 +980,29 @@ mod tests {
         let r = e.execute("event.beat_detective", &json!({"tracks": [kick.id.0], "start": c.start, "end": c.start + 48_000 * 8})).unwrap();
         assert!(r["count"].as_u64().unwrap() > 4, "{r}");
         assert!(r["bpm"].as_f64().is_some());
+    }
+
+    #[test]
+    fn extract_chords_survives_huge_note_start() {
+        let (mut e, t) = midi_engine();
+        let r = e.execute("midi.new_clip", &json!({"track": t.0, "start": 48_000, "end": 96_000})).unwrap();
+        let clip = r["clip"].as_u64().unwrap();
+        e.execute("midi.note_add", &json!({"clip": clip, "pitch": 60, "start_ticks": i64::MAX, "length_ticks": 480})).unwrap();
+        e.execute("edit.select", &json!({"tracks": [t.0], "start": 0, "end": 96_000})).unwrap();
+        let r = e.execute("event.extract_chords", &json!({}));
+        assert!(r.is_ok(), "{r:?}");
+    }
+
+    #[test]
+    fn retro_record_huge_start_ticks_stay_in_range() {
+        for tk in [i64::MAX, 1_000_000_000_000_000] {
+            let (mut e, t) = midi_engine();
+            let notes = json!([{"pitch": 60, "start_ticks": tk, "length_ticks": TICKS_PER_QUARTER * 1024}]);
+            e.execute("event.retrospective_record", &json!({"track": t.0, "notes": notes})).unwrap();
+            let c = e.session().track(t).unwrap().clips()[0].clone();
+            assert!(c.start >= 0 && c.length >= 1, "{tk}: {} {}", c.start, c.length);
+            assert!(c.start.saturating_add(c.length) <= MAX_POSITION, "{tk}: start {} len {}", c.start, c.length);
+        }
     }
 
     #[test]

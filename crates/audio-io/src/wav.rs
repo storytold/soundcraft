@@ -10,6 +10,8 @@ const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
 const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 /// Tail of the KSDATAFORMAT_SUBTYPE_* GUIDs (bytes 2..16); bytes 0..2 hold the format tag.
 const GUID_TAIL: [u8; 14] = [0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71];
+/// Tail of the Ambisonic subtype GUIDs {0000000x-0721-11D3-8644-C8C1CA000000}: PCM (x = 1) and float (x = 3) as well.
+const AMBISONIC_TAIL: [u8; 14] = [0x00, 0x00, 0x21, 0x07, 0xD3, 0x11, 0x86, 0x44, 0xC8, 0xC1, 0xCA, 0x00, 0x00, 0x00];
 const BEXT_MIN_LEN: usize = 602;
 
 /// Parsed WAV layout (no sample data decoded yet).
@@ -50,13 +52,25 @@ fn parse_fmt(c: &[u8]) -> Result<Fmt> {
     fmt.valid_bits = fmt.bits;
     if fmt.tag == WAVE_FORMAT_EXTENSIBLE {
         // cbSize(2) validBits(2) channelMask(4) subFormat GUID(16)
-        if let (Some(valid), Some(sub)) = (le_u16(c, 18), le_u16(c, 24)) {
-            if valid != 0 {
-                fmt.valid_bits = valid;
-            }
-            fmt.tag = sub;
-        } else {
+        let (Some(cb_size), Some(valid), Some(sub)) = (le_u16(c, 16), le_u16(c, 18), le_u16(c, 24)) else {
             return Err(AudioError::Malformed("WAVE_FORMAT_EXTENSIBLE fmt chunk too short".into()));
+        };
+        let Some(tail) = c.get(26..40) else {
+            return Err(AudioError::Malformed("WAVE_FORMAT_EXTENSIBLE fmt chunk too short".into()));
+        };
+        if cb_size < 22 {
+            return Err(AudioError::Malformed("WAVE_FORMAT_EXTENSIBLE cbSize is below 22".into()));
+        }
+        if valid > fmt.bits {
+            return Err(AudioError::Malformed("WAVE_FORMAT_EXTENSIBLE valid bits exceed the container size".into()));
+        }
+        if valid != 0 {
+            fmt.valid_bits = valid;
+        }
+        // A subtype outside the KSDATAFORMAT_SUBTYPE_* family is not PCM/float, whatever its first two bytes say:
+        // keep the extensible tag so the file goes to the foreign decoder.
+        if tail == GUID_TAIL || tail == AMBISONIC_TAIL {
+            fmt.tag = sub;
         }
     }
     Ok(fmt)
@@ -140,6 +154,69 @@ pub(crate) fn is_wav(b: &[u8]) -> bool {
     matches!(tag(b, 0), Some(t) if &t == b"RIFF" || &t == b"RF64" || &t == b"BW64") && tag(b, 8).is_some_and(|t| &t == b"WAVE")
 }
 
+/// True when everything from `from` to the end of the file is whole RIFF chunks (four printable
+/// ASCII id bytes, a size that fits, the pad byte after an odd size; the last chunk's pad may be
+/// missing): the metadata of a finished file, not samples.
+fn only_chunks_follow(b: &[u8], from: usize) -> bool {
+    let mut pos = from;
+    while pos < b.len() {
+        let (Some(id), Some(size)) = (tag(b, pos), le_u32(b, pos + 4)) else { return false };
+        if !id.iter().all(|c| (0x20..0x7f).contains(c)) {
+            return false;
+        }
+        let size = size as usize;
+        let Some(end) = pos.checked_add(8).and_then(|body| body.checked_add(size)) else { return false };
+        if end > b.len() {
+            return false;
+        }
+        let next = end + (size & 1);
+        if end == b.len() || next == b.len() {
+            return true;
+        }
+        pos = next;
+    }
+    false
+}
+
+/// A `data` chunk header as found in the file, for [`data_chunk_len`].
+struct DataChunk {
+    body: usize,
+    size32: u32,
+    is_rf64: bool,
+    remaining: usize,
+    declared: usize,
+}
+
+/// Bytes of audio a `data` chunk holds: leniently, whatever is present when the size is wrong or
+/// the recording was never finalised.
+fn data_chunk_len(b: &[u8], c: DataChunk) -> usize {
+    let finished = u64::from(le_u32(b, 4).unwrap_or(0)) + 8 == b.len() as u64;
+    let empty = c.size32 == 0 && !c.is_rf64 && finished && only_chunks_follow(b, c.body);
+    if c.size32 == 0 && !c.is_rf64 && !empty { c.remaining } else { c.declared.min(c.remaining) }
+}
+
+/// The sample layout of a `fmt` chunk, `None` for a format we do not read natively.
+fn pcm_layout(fmt: &Fmt) -> Result<Option<(PcmKind, SampleFormat)>> {
+    Ok(Some(match (fmt.tag, fmt.bits) {
+        (WAVE_FORMAT_PCM, bits @ 1..=32) => {
+            let bytes = usize::from(bits.div_ceil(8));
+            let sf = match fmt.valid_bits.min(bits) {
+                0..=8 => SampleFormat::Int8,
+                9..=16 => SampleFormat::Int16,
+                17..=24 => SampleFormat::Int24,
+                _ => SampleFormat::Int32,
+            };
+            (PcmKind::Int { bytes, big_endian: false, unsigned: bytes == 1 }, sf)
+        }
+        (WAVE_FORMAT_IEEE_FLOAT, 32) => (PcmKind::Float { bytes: 4, big_endian: false }, SampleFormat::Float32),
+        (WAVE_FORMAT_IEEE_FLOAT, 64) => (PcmKind::Float { bytes: 8, big_endian: false }, SampleFormat::Float64),
+        (WAVE_FORMAT_PCM | WAVE_FORMAT_IEEE_FLOAT, bits) => {
+            return Err(AudioError::Unsupported(format!("WAV format {} with {bits} bits per sample", fmt.tag)));
+        }
+        _ => return Ok(None),
+    }))
+}
+
 pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
     if !is_wav(b) {
         return Err(AudioError::Malformed("not a RIFF/RF64 WAVE file".into()));
@@ -168,7 +245,10 @@ pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
         if &id == b"data" {
             // Lenient: a truncated recording (or a streaming writer's 0 / 0xFFFFFFFF size) still
             // yields whatever audio is actually present.
-            let len = if size32 == 0 && !is_rf64 { remaining } else { declared.min(remaining) };
+            // A size of 0 in a file whose RIFF size is right and that has only chunks after it is an
+            // empty data chunk followed by metadata (LIST, bext, …); otherwise it is a recording
+            // that was never finalised, and what follows is audio.
+            let len = data_chunk_len(b, DataChunk { body, size32, is_rf64, remaining, declared });
             if data.is_none() {
                 data = Some((body, len));
             }
@@ -203,24 +283,7 @@ pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
         return Err(AudioError::Malformed("WAV declares a zero sample rate".into()));
     }
     let channels = usize::from(fmt.channels);
-    let (kind, sample_format) = match (fmt.tag, fmt.bits) {
-        (WAVE_FORMAT_PCM, bits @ 1..=32) => {
-            let bytes = usize::from(bits.div_ceil(8));
-            let sf = match fmt.valid_bits.min(bits) {
-                0..=8 => SampleFormat::Int8,
-                9..=16 => SampleFormat::Int16,
-                17..=24 => SampleFormat::Int24,
-                _ => SampleFormat::Int32,
-            };
-            (PcmKind::Int { bytes, big_endian: false, unsigned: bytes == 1 }, sf)
-        }
-        (WAVE_FORMAT_IEEE_FLOAT, 32) => (PcmKind::Float { bytes: 4, big_endian: false }, SampleFormat::Float32),
-        (WAVE_FORMAT_IEEE_FLOAT, 64) => (PcmKind::Float { bytes: 8, big_endian: false }, SampleFormat::Float64),
-        (WAVE_FORMAT_PCM | WAVE_FORMAT_IEEE_FLOAT, bits) => {
-            return Err(AudioError::Unsupported(format!("WAV format {} with {bits} bits per sample", fmt.tag)));
-        }
-        _ => return Ok(WavParse::Foreign { bwf }),
-    };
+    let Some((kind, sample_format)) = pcm_layout(&fmt)? else { return Ok(WavParse::Foreign { bwf }) };
     let block = kind.bytes().checked_mul(channels).ok_or_else(|| AudioError::Malformed("block size overflow".into()))?;
     if usize::from(fmt.block_align) != block {
         log::debug!("WAV block_align {} disagrees with computed {block}; using computed", fmt.block_align);
@@ -279,7 +342,10 @@ pub(crate) fn read_channel_mask(b: &[u8]) -> Option<u32> {
 
 fn put_fixed_str(out: &mut Vec<u8>, s: &str, len: usize) {
     let bytes = s.as_bytes();
-    let n = bytes.len().min(len);
+    let mut n = bytes.len().min(len);
+    while !s.is_char_boundary(n) {
+        n -= 1;
+    }
     out.extend_from_slice(bytes.get(..n).unwrap_or_default());
     out.resize(out.len() + (len - n), 0);
 }
@@ -321,25 +387,41 @@ pub(crate) struct Writer<W> {
     quantizers: Vec<Quantizer>,
     frames: u64,
     bytes: Vec<u8>,
+    /// Set when a block write has failed: the sink may hold a prefix of that block while
+    /// `frames` does not count it, so the writer refuses every later call.
+    failed: bool,
+}
+
+/// The optional header parts of a WAV file: BWF metadata, speaker mask, and whether to force RF64.
+#[derive(Clone, Copy)]
+pub(crate) struct HeaderExtras<'a> {
+    pub(crate) bwf: Option<&'a BwfInfo>,
+    pub(crate) mask: Option<u32>,
+    pub(crate) force_rf64: bool,
 }
 
 impl<W: Write + Seek> Writer<W> {
-    pub(crate) fn new(
-        mut out: W,
-        channels: usize,
-        sample_rate: u32,
-        depth: BitDepth,
-        dither: bool,
-        bwf: Option<&BwfInfo>,
-        mask: Option<u32>,
-        force_rf64: bool,
-    ) -> Result<Self> {
+    pub(crate) fn new(mut out: W, channels: usize, sample_rate: u32, depth: BitDepth, dither: bool, extras: HeaderExtras<'_>) -> Result<Self> {
+        let HeaderExtras { bwf, mask, force_rf64 } = extras;
         validate_layout(channels, sample_rate)?;
         let format = sample_format(depth);
         let start = out.stream_position()?;
         out.write_all(&header(channels, sample_rate, format, bwf, mask, 0, force_rf64)?)?;
         let quantizers = Quantizer::per_channel(u32::from(format.0), dither, channels);
-        Ok(Writer { out, start, channels, sample_rate, format, bwf: bwf.cloned(), mask, force_rf64, quantizers, frames: 0, bytes: Vec::new() })
+        Ok(Writer {
+            out,
+            start,
+            channels,
+            sample_rate,
+            format,
+            bwf: bwf.cloned(),
+            mask,
+            force_rf64,
+            quantizers,
+            frames: 0,
+            bytes: Vec::new(),
+            failed: false,
+        })
     }
 
     fn header(&self, frames: u64) -> Result<Vec<u8>> {
@@ -355,13 +437,22 @@ impl<W: Write + Seek> Writer<W> {
 
     /// Appends `frames` frames of planar audio (missing samples are silence).
     pub(crate) fn write(&mut self, block: &[Vec<f32>], frames: usize) -> Result<()> {
+        if self.failed {
+            return Err(crate::failed_write_error());
+        }
         let total = self.check_room(frames as u64)?;
-        write_interleaved(&mut self.out, &mut self.bytes, block, frames, &mut self.quantizers, self.format, false)?;
+        if let Err(e) = write_interleaved(&mut self.out, &mut self.bytes, block, frames, &mut self.quantizers, self.format, false) {
+            self.failed = true;
+            return Err(AudioError::from(e));
+        }
         self.frames = total;
         Ok(())
     }
 
     pub(crate) fn finish(mut self) -> Result<W> {
+        if self.failed {
+            return Err(crate::failed_write_error());
+        }
         let data_len = u64::from(self.format.0 / 8).saturating_mul(self.channels as u64).saturating_mul(self.frames);
         if data_len % 2 == 1 {
             self.out.write_all(&[0])?;
@@ -395,7 +486,7 @@ pub(crate) fn encode(
     let mut out = Vec::new();
     out.try_reserve_exact(head.len().saturating_add(data_len).saturating_add(1))
         .map_err(|_| AudioError::TooLarge(format!("cannot allocate {data_len} bytes for WAV output")))?;
-    let mut w = Writer::new(Cursor::new(out), channels, buf.sample_rate, depth, dither, bwf, mask, force_rf64)?;
+    let mut w = Writer::new(Cursor::new(out), channels, buf.sample_rate, depth, dither, HeaderExtras { bwf, mask, force_rf64 })?;
     w.write(&buf.channels, frames)?;
     Ok(w.finish()?.into_inner())
 }
@@ -442,7 +533,10 @@ pub(crate) fn header(
     if is_float {
         push_chunk(&mut meta, b"fact", &u32::try_from(frames).unwrap_or(u32::MAX).to_le_bytes());
     }
-    let total = (4 + (8 + rf64_body_len) + meta.len() + 8) as u64 + data_len + (data_len & 1);
+    let total = ((4 + (8 + rf64_body_len) + meta.len() + 8) as u64)
+        .checked_add(data_len)
+        .and_then(|t| t.checked_add(data_len & 1))
+        .ok_or_else(|| AudioError::TooLarge("WAV size overflow".into()))?;
     let rf64 = force_rf64 || u32::try_from(total).is_err();
 
     if rf64 {

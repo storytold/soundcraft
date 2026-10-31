@@ -1,0 +1,64 @@
+//! Integration tests, built as one test binary: each file is a module.
+//!
+//! Tests that switch the process-wide Light/Dark palette, and `recovery.rs` (whose autosave locks
+//! leak into child processes other tests start), are separate binaries in `tests/`.
+
+mod appearance;
+mod audio_device;
+mod auto_rename;
+mod bounce;
+mod bounce_dialog;
+mod clip_gain_fader;
+mod clip_looping;
+mod clip_menu;
+mod command_reachability;
+mod commands_filter;
+mod docking_columns;
+mod docking_workflows;
+mod edit_menu;
+mod edit_modes;
+mod edit_window_headers;
+mod group_dialog;
+mod hide_floating;
+mod idle;
+mod key_families;
+mod marker_rename;
+mod menu_search;
+mod midi_double_click;
+mod midi_editor_keys;
+mod midi_front_visibility;
+mod midi_panel;
+mod midi_quantize;
+mod mix_narrow_headers;
+mod mix_separate;
+mod new_midi_clip;
+mod new_tracks;
+mod open_on_insert;
+mod plugin_window;
+mod pro_tools_keys;
+mod record_hint;
+mod rename_dialog;
+mod rtp_window;
+mod sampler_window;
+mod save_as_replace;
+mod save_changes;
+mod scroll_into_view;
+mod send_window;
+mod shared_controls;
+mod shortcuts;
+mod side_lists_access;
+mod side_lists_text;
+mod strip_silence_dialog;
+mod strip_silence_rectangles;
+mod strip_silence_rename;
+mod toolbar_scroll;
+mod toolbar_tempo;
+mod track_height;
+mod track_list;
+mod track_name_menu;
+mod track_preset_state;
+mod trackpad;
+mod tracks_scroll_bar;
+mod waveform;
+mod window_shortcuts;
+mod zoom_toggle;

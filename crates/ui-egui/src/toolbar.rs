@@ -43,10 +43,41 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
         });
 }
 
+struct ModeCellState {
+    cur: EditMode,
+    snap: bool,
+    locked: bool,
+}
+
+fn edit_mode_tooltip(m: EditMode, locked: bool, cmd: &str, fkey: &str) -> String {
+    match m {
+        EditMode::Shuffle if locked => format!("Shuffle is locked ({cmd}-click to unlock)"),
+        EditMode::Shuffle => format!("Shuffle mode ({fkey}); {cmd}-click locks it out"),
+        EditMode::Grid => format!("Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes"),
+        _ => format!("{} mode ({fkey}); Shift-click adds Snap to Grid", if m == EditMode::Slip { "Slip" } else { "Spot" }),
+    }
+}
+
+fn draw_mode_cell(p: &egui::Painter, cell: Rect, resp: &egui::Response, t: &Tokens, m: EditMode, state: &ModeCellState, label: &str) {
+    let on = state.cur == m || (m == EditMode::Grid && state.cur == EditMode::GridRelative);
+    key(p, cell, resp, if on { t.mode_on } else { t.mode_off });
+    let fg = if on { t.mode_on_text } else { t.mode_off_text };
+    if m == EditMode::Grid && state.snap {
+        p.rect_stroke(cell, 1.0, Stroke::new(1.5, t.mode_on), StrokeKind::Inside);
+    }
+    if m == EditMode::Shuffle && state.locked {
+        icons::draw(p, Rect::from_center_size(cell.center(), vec2(15.0, 15.0)), "lock", fg);
+    } else {
+        let txt = if m == EditMode::Grid && state.cur == EditMode::GridRelative { "REL GRID" } else { label };
+        p.text(cell.center(), Align2::CENTER_CENTER, txt, bold(10.5), fg);
+    }
+}
+
+/// The Shuffle, Spot, Slip and Grid mode selector with its keyboard hints and relative-grid state.
 fn edit_modes(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let ed = &app.engine.session().edit;
-    let (cur, snap, locked) = (ed.edit_mode, ed.flag(SNAP_TO_GRID), ed.flag(SHUFFLE_LOCK));
+    let state = ModeCellState { cur: ed.edit_mode, snap: ed.flag(SNAP_TO_GRID), locked: ed.flag(SHUFFLE_LOCK) };
     let cmd = crate::shortcuts::shortcut_label("Cmd", ui.ctx().os() == egui::os::OperatingSystem::Mac);
     let modes = [
         (EditMode::Shuffle, 0, 0, "SHUFFLE", "F1"),
@@ -62,29 +93,14 @@ fn edit_modes(app: &mut SoundApp, ui: &mut Ui) {
         let ch = inner.height() / 2.0;
         for (m, cx, cy, label, fkey) in modes {
             let cell = Rect::from_min_size(pos2(inner.min.x + cw * cx as f32, inner.min.y + ch * cy as f32), vec2(cw, ch)).shrink(1.0);
-            let resp = ui.interact(cell, ui.id().with(("mode", label)), Sense::click());
-            let on = cur == m || (m == EditMode::Grid && cur == EditMode::GridRelative);
-            key(ui.painter(), cell, &resp, if on { t.mode_on } else { t.mode_off });
-            let fg = if on { t.mode_on_text } else { t.mode_off_text };
-            if m == EditMode::Grid && snap {
-                ui.painter().rect_stroke(cell, 1.0, Stroke::new(1.5, t.mode_on), StrokeKind::Inside);
-            }
-            if m == EditMode::Shuffle && locked {
-                icons::draw(ui.painter(), Rect::from_center_size(cell.center(), vec2(15.0, 15.0)), "lock", fg);
-            } else {
-                let txt = if m == EditMode::Grid && cur == EditMode::GridRelative { "REL GRID" } else { label };
-                ui.painter().text(cell.center(), Align2::CENTER_CENTER, txt, bold(10.5), fg);
-            }
-            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, label));
+            let resp = ui.interact(cell, ui.scope_id().with(("mode", label)), Sense::click());
+            draw_mode_cell(ui.painter(), cell, &resp, &t, m, &state, label);
+            let on = state.cur == m || (m == EditMode::Grid && state.cur == EditMode::GridRelative);
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, on, label));
             if resp.clicked() {
                 mode_click(app, m, ui.input(|i| i.modifiers));
             }
-            resp.on_hover_text(match m {
-                EditMode::Shuffle if locked => format!("Shuffle is locked ({cmd}-click to unlock)"),
-                EditMode::Shuffle => format!("Shuffle mode ({fkey}); {cmd}-click locks it out"),
-                EditMode::Grid => format!("Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes"),
-                _ => format!("{} mode ({fkey}); Shift-click adds Snap to Grid", if m == EditMode::Slip { "Slip" } else { "Spot" }),
-            });
+            resp.on_hover_text(edit_mode_tooltip(m, state.locked, &cmd, fkey));
         }
     });
 }
@@ -149,6 +165,7 @@ fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
     });
 }
 
+/// The tool selector, including Smart-tool membership and Zoom Toggle.
 fn tools(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let cur = app.engine.session().edit.tool;
@@ -180,7 +197,7 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             let bx0 = rr.min.x + 76.0;
             let bx1 = bx0 + 38.0 * 3.0 - 2.0;
             let bracket = Rect::from_min_max(pos2(bx0 - 2.0, r.min.y + 1.0), pos2(bx1 + 2.0, r.min.y + 5.0));
-            let resp = ui.interact(bracket.expand2(vec2(0.0, 2.0)), ui.id().with("smart"), Sense::click());
+            let resp = ui.interact(bracket.expand2(vec2(0.0, 2.0)), ui.scope_id().with("smart"), Sense::click());
             ui.painter().rect_filled(bracket, 1.0, if cur == Tool::Smart { t.accent } else { t.tool_bracket_off });
             if resp.on_hover_text("Smart Tool (F6+F7 / F7+F8)").clicked() {
                 let _ = app.run("edit.tool", json!({"tool": "smart"}));
@@ -215,6 +232,7 @@ fn fmt_pos(app: &SoundApp, at: i64, f: TimeFormat) -> String {
     s.format_position(at, f)
 }
 
+/// Main and sub position counters, a main-counter format menu, selection readouts and dirty/device status.
 fn counters(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let (main_fmt, sub_fmt, sel) = {
@@ -227,7 +245,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     let main_r = Rect::from_min_max(r.min, pos2(r.min.x + 180.0, r.min.y + 44.0));
     let txt = fmt_pos(app, pos, main_fmt);
     ui.painter().text(pos2(main_r.max.x - 18.0, main_r.center().y), Align2::RIGHT_CENTER, txt, mono(26.0), t.counter_text);
-    let resp = ui.interact(main_r, ui.id().with("main_counter"), Sense::click());
+    let resp = ui.interact(main_r, ui.scope_id().with("main_counter"), Sense::click());
     icons::draw(ui.painter(), Rect::from_center_size(pos2(main_r.max.x - 9.0, main_r.center().y), vec2(10.0, 10.0)), "triangle_down", t.text_dim);
     egui::Popup::menu(&resp).show(|ui| {
         for f in TimeFormat::ALL {
@@ -258,6 +276,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, format!("{st} · {dev}"), regular(10.0), t.text_dim);
 }
 
+/// Grid-line toggle, grid value menu and nudge value menu.
 fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let (grid, nudge, lines) = {
@@ -267,7 +286,7 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
     let (r, _) = ui.allocate_exact_size(vec2(170.0, 64.0), Sense::hover());
     ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
     let gl = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 8.0), vec2(48.0, 16.0));
-    let resp = ui.interact(gl, ui.id().with("grid_lines"), Sense::click());
+    let resp = ui.interact(gl, ui.scope_id().with("grid_lines"), Sense::click());
     key(ui.painter(), gl, &resp, if lines { t.mode_on } else { t.counter_off });
     ui.painter().text(gl.center(), Align2::CENTER_CENTER, "Grid", bold(11.0), if lines { t.mode_on_text } else { t.mode_off_text });
     if resp.on_hover_text("Show grid lines").clicked() {
@@ -275,12 +294,12 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
     }
     let gr = Rect::from_min_max(pos2(r.min.x + 60.0, r.min.y + 6.0), pos2(r.max.x - 4.0, r.min.y + 26.0));
     ui.painter().text(pos2(gr.max.x - 14.0, gr.center().y), Align2::RIGHT_CENTER, grid.label(), mono(11.0), t.counter_text);
-    let gresp = ui.interact(gr, ui.id().with("grid_value"), Sense::click());
+    let gresp = ui.interact(gr, ui.scope_id().with("grid_value"), Sense::click());
     value_menu(app, &gresp, "view.grid");
     ui.painter().text(pos2(r.min.x + 10.0, r.min.y + 44.0), Align2::LEFT_CENTER, "Nudge", regular(11.0), t.counter_label);
     let nr = Rect::from_min_max(pos2(r.min.x + 60.0, r.min.y + 34.0), pos2(r.max.x - 4.0, r.min.y + 54.0));
     ui.painter().text(pos2(nr.max.x - 14.0, nr.center().y), Align2::RIGHT_CENTER, nudge.label(), mono(11.0), t.counter_text);
-    let nresp = ui.interact(nr, ui.id().with("nudge_value"), Sense::click());
+    let nresp = ui.interact(nr, ui.scope_id().with("nudge_value"), Sense::click());
     value_menu(app, &nresp, "view.nudge");
     for rr in [gr, nr] {
         icons::draw(ui.painter(), Rect::from_center_size(pos2(rr.max.x - 6.0, rr.center().y), vec2(10.0, 10.0)), "triangle_down", t.text_dim);
@@ -338,7 +357,8 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, if recording { Color32::from_rgb(110, 30, 30) } else { key_fill(&resp) });
                 icons::draw(ui.painter(), r.shrink(5.0), "record", t.rec);
-                let resp = resp.on_hover_text("Record (Cmd+Space)");
+                // macOS gives Cmd+Space to Spotlight unless the user frees it, so name F12 first.
+                let resp = resp.on_hover_text("Record (F12 or Cmd+Space)");
                 if let Some(why) = app.record_hint() {
                     // Below the whole group, so the hint covers none of its buttons.
                     let below = Rect::from_min_max(r.min, pos2(r.max.x, g.max.y));
@@ -365,6 +385,8 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
     });
 }
 
+/// Count-off, meter and tempo readouts; the tempo value is editable in place for the tempo event at or before the
+/// playhead.
 fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let (bpm, meter, countoff, click, bars) = {
@@ -376,7 +398,7 @@ fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
     let (r, _) = ui.allocate_exact_size(vec2(150.0, 64.0), Sense::hover());
     ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
     let co = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 6.0), vec2(64.0, 15.0));
-    let resp = ui.interact(co, ui.id().with("countoff"), Sense::click());
+    let resp = ui.interact(co, ui.scope_id().with("countoff"), Sense::click());
     key(ui.painter(), co, &resp, if countoff { t.mode_on } else { t.counter_off });
     ui.painter().text(co.center(), Align2::CENTER_CENTER, "Count Off", bold(10.0), if countoff { t.mode_on_text } else { t.mode_off_text });
     if resp.clicked() {
@@ -390,7 +412,7 @@ fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
     tempo_value(app, ui, r.max.x - 8.0, r.min.y + 48.0, bpm);
     let clk = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 40.0), vec2(18.0, 18.0));
     icons::draw(ui.painter(), clk, "click", if click { t.counter_text } else { t.text_dim });
-    if ui.interact(clk, ui.id().with("click"), Sense::click()).on_hover_text("Click").clicked() {
+    if ui.interact(clk, ui.scope_id().with("click"), Sense::click()).on_hover_text("Click").clicked() {
         let _ = app.run("options.click", json!({}));
     }
 }
@@ -411,7 +433,8 @@ fn tempo_value(app: &mut SoundApp, ui: &mut Ui, right: f32, y: f32, bpm: f64) {
     }
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.counter_border);
     let mut value = bpm;
-    let resp = c.add_sized(rect.size(), egui::DragValue::new(&mut value).speed(0.1).range(5.0..=1000.0).fixed_decimals(4));
+    let resp =
+        c.add_sized(rect.size(), egui::DragValue::new(&mut value).speed(0.1).range(5.0..=1000.0).fixed_decimals(4)).accessible_name("Tempo (BPM)");
     if resp.changed() {
         let s = app.engine.session();
         let tick = s.tempo.samples_to_ticks(app.position(), s.sample_rate);

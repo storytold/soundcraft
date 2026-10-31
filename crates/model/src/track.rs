@@ -84,6 +84,7 @@ impl TrackKind {
 
 /// Track heights (View › Track Height presets).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[serde(from = "TrackHeightRepr")]
 pub enum TrackHeight {
     /// Any height from Micro to Extreme, in points.
     Custom(u16),
@@ -97,6 +98,51 @@ pub enum TrackHeight {
     Extreme,
     /// Fit To Window: this many points.
     Fit(u16),
+}
+
+/// What a saved track height may look like: the current form, or the bare `"Fit"` string older sessions used.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum TrackHeightRepr {
+    Current(TrackHeightCurrent),
+    LegacyFit(LegacyFit),
+}
+
+#[derive(serde::Deserialize)]
+enum LegacyFit {
+    Fit,
+}
+
+/// Mirror of `TrackHeight` that derives the current serialized form.
+#[derive(serde::Deserialize)]
+enum TrackHeightCurrent {
+    Custom(u16),
+    Micro,
+    Mini,
+    Small,
+    Medium,
+    Large,
+    Jumbo,
+    Extreme,
+    Fit(u16),
+}
+
+impl From<TrackHeightRepr> for TrackHeight {
+    fn from(repr: TrackHeightRepr) -> Self {
+        match repr {
+            TrackHeightRepr::Current(TrackHeightCurrent::Custom(p)) => TrackHeight::Custom(p),
+            TrackHeightRepr::Current(TrackHeightCurrent::Micro) => TrackHeight::Micro,
+            TrackHeightRepr::Current(TrackHeightCurrent::Mini) => TrackHeight::Mini,
+            TrackHeightRepr::Current(TrackHeightCurrent::Small) => TrackHeight::Small,
+            TrackHeightRepr::Current(TrackHeightCurrent::Medium) => TrackHeight::Medium,
+            TrackHeightRepr::Current(TrackHeightCurrent::Large) => TrackHeight::Large,
+            TrackHeightRepr::Current(TrackHeightCurrent::Jumbo) => TrackHeight::Jumbo,
+            TrackHeightRepr::Current(TrackHeightCurrent::Extreme) => TrackHeight::Extreme,
+            TrackHeightRepr::Current(TrackHeightCurrent::Fit(p)) => TrackHeight::Fit(p),
+            // Older sessions stored Fit with no size, drawn 88 points tall: the default Medium height.
+            TrackHeightRepr::LegacyFit(LegacyFit::Fit) => TrackHeight::Medium,
+        }
+    }
 }
 
 impl TrackHeight {
@@ -327,6 +373,15 @@ impl Track {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_fit_string_loads_as_default_height() {
+        assert_eq!(serde_json::from_str::<TrackHeight>("\"Fit\"").unwrap(), TrackHeight::Medium);
+        assert_eq!(serde_json::from_str::<TrackHeight>("{\"Fit\":120}").unwrap(), TrackHeight::Fit(120));
+        assert_eq!(serde_json::to_string(&TrackHeight::Fit(120)).unwrap(), "{\"Fit\":120}");
+        assert_eq!(serde_json::from_str::<TrackHeight>("\"Large\"").unwrap(), TrackHeight::Large);
+        assert_eq!(serde_json::from_str::<TrackHeight>("{\"Custom\":50}").unwrap(), TrackHeight::Custom(50));
+    }
 
     #[test]
     fn new_track_defaults() {

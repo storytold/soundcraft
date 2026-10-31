@@ -1,7 +1,7 @@
 //! CAVLC residual block parsing (9.2).
 
 use crate::bitstream::BitReader;
-use crate::h264::cavlc_tables::*;
+use crate::h264::cavlc_tables::{COEFF_TOKEN, RUN_BEFORE, TOTAL_ZEROS_2X2, TOTAL_ZEROS_2X4, TOTAL_ZEROS_4X4};
 use crate::h264::error::{Result, ensure};
 use std::sync::OnceLock;
 
