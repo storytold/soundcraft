@@ -19,7 +19,7 @@ mod session;
 mod strip;
 
 use bundle::BundleLimits;
-pub use bundle::{BUNDLE_EXTENSION, open_session_bytes, session_bundle};
+pub use bundle::{BUNDLE_EXTENSION, open_provider_session_bytes, open_session_bytes, session_bundle, session_provider_bundle};
 pub use import::{DecodedImport, add_source, decode_import, import_audio_bytes, load_sampler_bytes, relink_videos};
 pub(crate) use import::{MAX_IMPORT_SAMPLES, at_rate, place_decoded};
 pub use midi::{export_midi, import_midi_bytes};
@@ -108,7 +108,9 @@ pub fn import_video_bytes(e: &mut Engine, path: &str, bytes: Vec<u8>, at: Sample
             e.message(format!("{stem}: imported the audio; no picture ({verr})"));
             return Ok(json!({"audio": a, "video": Value::Null, "video_error": verr.to_string()}));
         }
-        (Err(verr), Err(aerr)) => return Err(EngineError::Io(format!("{path}: {verr}; no usable audio stream ({aerr})"))),
+        (Err(verr), Err(aerr)) => {
+            return Err(EngineError::Io(format!("{path}: {verr}; no usable audio stream ({aerr})")));
+        }
     };
     let abs = std::fs::canonicalize(path).map_or_else(|_| path.to_string(), |p| p.to_string_lossy().into_owned());
     let s = e.session_mut();
@@ -455,7 +457,9 @@ pub fn export_clips(e: &Engine, ids: &[soundcraft_model::ClipId], dir: &str) -> 
     make_dir(dir)?;
     let mut n = 0;
     for id in ids {
-        let Some((t, c)) = s.find_clip(*id) else { continue };
+        let Some((t, c)) = s.find_clip(*id) else {
+            continue;
+        };
         let audio = soundcraft_mix::render_clips(s, t, c.range());
         let buf = AudioBuffer { sample_rate: s.sample_rate.hz(), channels: audio };
         let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).map_err(|err| EngineError::Io(err.to_string()))?;
@@ -516,7 +520,9 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
             src.path = format!("Audio Files/{f}");
             continue;
         }
-        let Some(audio) = s.pool.get(src.id) else { continue };
+        let Some(audio) = s.pool.get(src.id) else {
+            continue;
+        };
         if let Some(path) = files.get(&Arc::as_ptr(audio)) {
             src.path.clone_from(path);
             src.unsaved = false;
@@ -666,7 +672,9 @@ pub fn replaces(e: &Engine, command: &str, file: &Path) -> bool {
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
-    let full = |p: &Path| if p.as_os_str().is_empty() { Path::new(".").canonicalize() } else { p.canonicalize() };
+    let full = |p: &Path| {
+        if p.as_os_str().is_empty() { Path::new(".").canonicalize() } else { p.canonicalize() }
+    };
     a == b || matches!((full(a), full(b)), (Ok(x), Ok(y)) if x == y)
 }
 

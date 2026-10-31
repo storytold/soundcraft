@@ -146,6 +146,7 @@ fn save_prefs(env: &Env, ui: &UiState) {
 
 fn services() -> Services {
     Services {
+        file_providers: Default::default(),
         pick_open: Some(Box::new(|purpose: &str, _exts: &[&str]| {
             let d = rfd::FileDialog::new();
             let d = match purpose {

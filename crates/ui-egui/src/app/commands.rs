@@ -3,6 +3,9 @@ use super::{SoundApp, Value, bounce, menus};
 impl SoundApp {
     /// Run a command; errors go to the status line. Returns the result.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if let Some(result) = crate::provider_ui::choose(self, id) {
+            return result;
+        }
         if matches!(id, "session.new" | "session.open" | "session.close" | "session.revert") && bounce::refuses_session_switch(self) {
             return Err(self.ui.status.clone());
         }
