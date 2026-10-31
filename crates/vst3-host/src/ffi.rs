@@ -115,10 +115,19 @@ mod window;
 #[path = "ffi/window/windows.rs"]
 mod window;
 
+/// Linux/X11 editor host window.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[path = "ffi/window/x11.rs"]
+mod window;
+
 /// Other platforms: no editor windows yet (opening reports "unsupported").
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", windows, all(unix, not(target_os = "macos")))))]
 #[path = "ffi/window/other.rs"]
 mod window;
+
+/// Records the process main/UI thread for X11 editor windows.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) use window::set_main_thread;
 
 #[cfg(test)]
 mod tests {

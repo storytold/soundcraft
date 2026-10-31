@@ -50,6 +50,8 @@ mod ffi;
 mod plugin;
 #[cfg(not(target_arch = "wasm32"))]
 mod registry;
+#[cfg(not(target_arch = "wasm32"))]
+mod scan_guard;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use plugin::Vst3Plugin;
@@ -143,6 +145,10 @@ mod api {
     pub fn shutdown() {
         ffi::exit_modules();
     }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub fn set_main_thread() {
+        ffi::set_main_thread();
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -211,6 +217,14 @@ pub fn cached() -> Option<Vec<Vst3Descriptor>> {
 /// (HALion Sonic crashes in its module exit after it has been used).
 pub fn shutdown() {
     api::shutdown()
+}
+
+/// Records the process main/UI thread so VST3 editor windows and controller calls are only
+/// made there. Call it once from `main` on the main thread (X11; macOS and Windows detect the
+/// main thread themselves).
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn set_main_thread() {
+    api::set_main_thread()
 }
 
 /// The audio module classes in one `.vst3` bundle or file.

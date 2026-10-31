@@ -1,5 +1,8 @@
 *~
 plan/
+/.idea/
+/.kilo/
+**/target/
 /target
 /dist
 /corpus
@@ -10,3 +13,4 @@ plan/
 /craft-fonts/
 plans/
 .DS_Store
+/build-flatpak/

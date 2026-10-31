@@ -4,6 +4,8 @@ use super::{
     Arc, CStr, CString, Mutex, Ordering, PoisonError, c_void, clap_ostream, clap_plugin, clap_plugin_gui, clap_plugin_state, clap_window,
     clap_window_handle, hostwin,
 };
+use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_plugin_timer_support};
+use std::time::Instant;
 
 // ---- editor (clap.gui) ---------------------------------------------------------------------
 
@@ -103,6 +105,7 @@ impl GuiLink {
         if !on_main_thread() {
             return Err("plugin editors must be opened on the main thread".into());
         }
+        self.host.mark_main_thread();
         let mut g = self.lock();
         let vt = GuiLink::vt(&g).ok_or_else(|| "this plugin has no editor".to_string())?;
         if g.created {
@@ -242,6 +245,24 @@ impl GuiLink {
         unsafe { save(g.plugin, &stream) }.then_some(out)
     }
 
+    /// Delivers `clap.timer-support` ticks for the timers that are due (main thread, plugin alive).
+    fn fire_timers(&self, g: &GuiInner) {
+        let due = self.host.due_timers(Instant::now());
+        if due.is_empty() {
+            return;
+        }
+        // SAFETY: `plugin` is valid while `alive` (checked by the caller, under the lock).
+        let Some(get_extension) = (unsafe { g.plugin.as_ref() }).and_then(|p| p.get_extension) else { return };
+        // SAFETY: live plugin; the id is a static NUL-terminated string.
+        let ext = unsafe { get_extension(g.plugin, CLAP_EXT_TIMER_SUPPORT.as_ptr()) }.cast::<clap_plugin_timer_support>();
+        // SAFETY: null or the plugin's static extension vtable, valid while `alive`.
+        let Some(on_timer) = (unsafe { ext.as_ref() }).and_then(|e| e.on_timer) else { return };
+        for id in due {
+            // SAFETY: live plugin, main thread, a timer id the plugin registered with us.
+            unsafe { on_timer(g.plugin, id) };
+        }
+    }
+
     /// Closes (destroys) the editor.
     pub fn close(&self) {
         if !on_main_thread() {
@@ -261,10 +282,12 @@ impl GuiLink {
         if !on_main_thread() {
             return Vec::new();
         }
+        self.host.mark_main_thread();
         let mut g = self.lock();
         if !g.alive {
             return Vec::new();
         }
+        self.fire_timers(&g);
         if self.host.callback.swap(false, Ordering::Relaxed) {
             // SAFETY: `plugin` is valid while `alive`; we copy its vtable struct.
             if let Some(f) = unsafe { (*g.plugin).on_main_thread } {
