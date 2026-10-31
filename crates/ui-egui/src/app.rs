@@ -61,6 +61,7 @@ impl SoundApp {
             edit_layout: edit_window::EditLayout::default(),
             midi: midi_editor::MidiEditorState::default(),
             ops: ops_windows::OpsState::default(),
+            jsfx_browser: jsfx_browser::JsfxBrowser::default(),
             extra: extra_windows::ExtraState::default(),
             palette: palette::PaletteState::default(),
             focus_mix: false,
@@ -336,6 +337,7 @@ impl SoundApp {
         video_window::show(self, &ctx);
         ops_windows::show(self, &ctx);
         extra_windows::show(self, &ctx);
+        jsfx_browser::show(self, &ctx);
         recovery::show(self, &ctx);
         score_editor::show(self, &ctx);
         palette::show(self, &ctx);

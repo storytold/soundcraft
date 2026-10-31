@@ -4391,14 +4391,26 @@ dependencies = [
  "soundcraft-audio-io",
  "soundcraft-clap-host",
  "soundcraft-dsp",
+ "soundcraft-jsfx-host",
  "soundcraft-midi",
  "soundcraft-mix",
  "soundcraft-model",
+ "soundcraft-reapack",
  "soundcraft-time",
  "soundcraft-video",
  "soundcraft-vst3-host",
  "thiserror 2.0.21",
  "zip",
+]
+
+[[package]]
+name = "soundcraft-jsfx-host"
+version = "0.13.1"
+dependencies = [
+ "log",
+ "serde",
+ "soundcraft-dsp",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4421,6 +4433,7 @@ dependencies = [
  "soundcraft-audio-io",
  "soundcraft-clap-host",
  "soundcraft-dsp",
+ "soundcraft-jsfx-host",
  "soundcraft-midi",
  "soundcraft-model",
  "soundcraft-time",
@@ -4456,6 +4469,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-reapack"
+version = "0.13.1"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "soundcraft-dsp",
+ "soundcraft-jsfx-host",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "soundcraft-time"
 version = "0.15.0"
 dependencies = [
@@ -4482,10 +4507,12 @@ dependencies = [
  "soundcraft-clap-host",
  "soundcraft-dsp",
  "soundcraft-engine",
+ "soundcraft-jsfx-host",
  "soundcraft-midi",
  "soundcraft-mix",
  "soundcraft-model",
  "soundcraft-playback",
+ "soundcraft-reapack",
  "soundcraft-time",
  "soundcraft-video",
  "soundcraft-vst3-host",

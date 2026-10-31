@@ -23,6 +23,7 @@ pub mod edit_window;
 pub mod fonts;
 pub mod icons;
 pub mod import;
+pub mod jsfx_browser;
 pub mod menus;
 pub mod mix_window;
 pub mod palette;
@@ -301,6 +302,8 @@ pub struct SoundApp {
     pub midi: midi_editor::MidiEditorState,
     pub ops: ops_windows::OpsState,
     pub extra: extra_windows::ExtraState,
+    /// The JSFX Browser window (ReaPack repositories, install and update).
+    pub jsfx_browser: jsfx_browser::JsfxBrowser,
     pub palette: palette::PaletteState,
     /// Bring the separate Mix window to the front on the next frame.
     pub(crate) focus_mix: bool,
