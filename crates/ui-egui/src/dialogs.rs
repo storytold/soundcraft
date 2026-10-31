@@ -8,7 +8,7 @@ use soundcraft_audio_io::FileFormat;
 use soundcraft_engine::Engine;
 use soundcraft_engine::io::StripNames;
 use soundcraft_model::{ClipId, GroupId, Session, SourceId, TrackId};
-use soundcraft_time::Samples;
+use soundcraft_time::{Samples, TimeFormat};
 use std::sync::Arc;
 
 mod audiosuite;
@@ -52,7 +52,8 @@ pub enum Dialog {
     Session { frame_rate: String, bit_depth: String },
     // Clip › Loop…: `length` is typed in `format`, measured from `start` (the first selected clip's).
     // `filled` is the text the field opened with and the exact length it stands for.
-    Loop { by: LoopBy, count: u32, length: String, format: soundcraft_time::TimeFormat, start: Samples, filled: (String, Samples) },
+    // `crossfade` is Enable Crossfade and its length in ms.
+    Loop { by: LoopBy, count: u32, length: String, format: TimeFormat, start: Samples, filled: (String, Samples), crossfade: (bool, f64) },
     ScoreSetup { title: String, composer: String, bars_per_system: u32, show_track_names: bool },
     SaveChanges { then: (String, Value) },
 }
@@ -235,7 +236,8 @@ impl Dialogs {
                 let format = s.edit.main_counter;
                 let exact = clip.length.saturating_mul(4);
                 let length = soundcraft_time::format_length(clip.start, exact, format, s.sample_rate, &s.tempo, s.frame_rate);
-                Dialog::Loop { by: LoopBy::Count, count: 4, length: length.clone(), format, start: clip.start, filled: (length, exact) }
+                let crossfade = (false, DEFAULT_LOOP_CROSSFADE_MS);
+                Dialog::Loop { by: LoopBy::Count, count: 4, length: length.clone(), format, start: clip.start, filled: (length, exact), crossfade }
             }
             _ => match path_dialog(id, &home, &name) {
                 Some(d) => d,
@@ -691,11 +693,11 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         action = Some(("setup.session".into(), json!({"frame_rate": frame_rate, "bit_depth": bit_depth})));
                     }
                 }
-                Dialog::Loop { by, count, length, format, start, filled } => {
+                Dialog::Loop { by, count, length, format, start, filled, crossfade: (crossfade, crossfade_ms) } => {
                     let s = app.engine.session();
                     ui.horizontal(|ui| {
                         let count_label = ui.radio_value(by, LoopBy::Count, "Number of Loops");
-                        ui.add_enabled(*by == LoopBy::Count, egui::DragValue::new(count).range(1..=512)).labelled_by(count_label.id);
+                        ui.add_enabled(*by == LoopBy::Count, egui::DragValue::new(count).range(1..=MAX_LOOP_COUNT)).labelled_by(count_label.id);
                     });
                     ui.horizontal(|ui| {
                         let length_label = ui.radio_value(by, LoopBy::Length, "Loop Length");
@@ -703,7 +705,13 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         ui.label(format.label());
                     });
                     ui.radio_value(by, LoopBy::Fill, "Loop Until End of Session or Next Clip");
-                    let params = loop_params(s, *by, *count, length, *format, *start, filled);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.checkbox(crossfade, "Enable Crossfade");
+                        let field = ui.add_enabled(*crossfade, egui::DragValue::new(crossfade_ms).range(0.0..=MAX_LOOP_CROSSFADE_MS).speed(0.5).suffix(" ms"));
+                        crate::widgets::named_text_field(field, "Crossfade length");
+                    });
+                    let params = loop_params(s, *by, *count, length, *format, *start, filled).map(|p| with_loop_crossfade(s, p, *crossfade, *crossfade_ms));
                     if buttons_enabled(ui, "OK", enter, params.is_some()) {
                         action = params.map(|p| ("clip.loop".into(), p));
                     }
@@ -874,6 +882,25 @@ fn name_field(ui: &mut egui::Ui, name: &mut String) {
 /// The command the tempo-change dialog runs on OK.
 fn tempo_change_action(at: Samples, bpm: f64) -> (String, Value) {
     ("event.tempo".into(), json!({"bpm": bpm, "at": at}))
+}
+
+/// Number of Loops counts the clip itself, so it runs to one more than the most loops `clip.loop` makes.
+const MAX_LOOP_COUNT: u32 = soundcraft_engine::cmd::MAX_CLIP_LOOPS as u32 + 1;
+
+/// Enable Crossfade's length when the dialog opens, and the most it takes (the engine also caps it
+/// at half the clip).
+const DEFAULT_LOOP_CROSSFADE_MS: f64 = 10.0;
+const MAX_LOOP_CROSSFADE_MS: f64 = 10_000.0;
+
+/// Adds Enable Crossfade's length to the `clip.loop` params, in samples at the session rate.
+fn with_loop_crossfade(s: &Session, mut params: Value, on: bool, ms: f64) -> Value {
+    if on && ms.is_finite() && ms > 0.0 {
+        let samples = s.sample_rate.samples(ms.min(MAX_LOOP_CROSSFADE_MS) / 1000.0);
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert("crossfade".into(), json!(samples));
+        }
+    }
+    params
 }
 
 /// The `clip.loop` params the Clip Looping dialog's OK sends; None while the typed length does not
@@ -1089,12 +1116,29 @@ mod tests {
         e.execute("edit.select", &json!({"clips": [clip.id.0]})).unwrap();
         assert!(d.open_for_command(&e, "clip.loop"));
         assert_eq!(d.open_name(), Some("clip_looping"));
-        let Some(Dialog::Loop { by, count, length, format, start, filled }) = &d.open else { panic!("{:?}", d.open) };
-        assert_eq!((*by, *count, *start), (LoopBy::Count, 4, clip.start));
+        let Some(Dialog::Loop { by, count, length, format, start, filled, crossfade }) = &d.open else { panic!("{:?}", d.open) };
+        assert_eq!((*by, *count, *start, crossfade.0), (LoopBy::Count, 4, clip.start, false));
         assert_eq!(*format, e.session().edit.main_counter);
         // OK on the untouched field loops exactly four times, whatever its text rounds to.
         let sent = loop_params(e.session(), LoopBy::Length, *count, length, *format, *start, filled);
         assert_eq!(sent, Some(json!({"length": clip.length * 4})));
+    }
+
+    #[test]
+    fn enable_crossfade_adds_its_length_in_samples() {
+        let e = soundcraft_engine::demo::demo_engine();
+        let s = e.session();
+        let base = json!({"count": 3});
+        // Off, zero or not a number: the loop is butt-spliced as before.
+        for (on, ms) in [(false, 10.0), (true, 0.0), (true, f64::NAN), (true, -5.0)] {
+            assert_eq!(with_loop_crossfade(s, base.clone(), on, ms), base, "{on} {ms}");
+        }
+        let ten = with_loop_crossfade(s, base.clone(), true, 10.0);
+        assert_eq!(ten["crossfade"], json!(s.sample_rate.samples(0.01)));
+        assert_eq!(ten["count"], 3);
+        // The field's ceiling holds for a value typed past it.
+        let huge = with_loop_crossfade(s, base, true, 1e12);
+        assert_eq!(huge["crossfade"], json!(s.sample_rate.samples(MAX_LOOP_CROSSFADE_MS / 1000.0)));
     }
 
     #[test]

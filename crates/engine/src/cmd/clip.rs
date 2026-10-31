@@ -1,7 +1,7 @@
 //! Clip menu commands.
 use super::{CommandSpec, always, bad, clip_ids_param, f64_or, has_range, has_selection, i64_or, position_param, str_param, track_param};
-use soundcraft_model::ClipId;
-use soundcraft_time::Samples;
+use soundcraft_model::{ClipId, FadeShape};
+use soundcraft_time::{Range, Samples};
 
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
@@ -72,7 +72,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Loop...",
             ["Clip"],
             Some("Cmd+Alt+L"),
-            "{clips?, count?: n, length?: samples, fill?: bool}: count is the clip plus its loops; length is the whole looped clip, with the last loop cut short to fit; fill loops up to the next clip on the track, or else to the session end",
+            "{clips?, count?: n, length?: samples, fill?: bool, crossfade?: samples, crossfade_shape?: linear|equal power|s-curve|exponential|logarithmic}: count is the clip plus its loops (at most 1001, 1000 loops); length is the whole looped clip, with the last loop cut short to fit; fill loops up to the next clip on the track, or else to the session end; crossfade (at most half the clip) crossfades each loop into the next, centred on the seam, using the clip's handles (default shape equal power)",
             has_selection,
             loop_clips
         ),
@@ -296,14 +296,32 @@ fn layer(e: &mut Engine, p: &Value, front: bool) -> Result<Value> {
     Ok(json!({}))
 }
 
-/// The most loops `clip.loop` makes of one clip.
-const MAX_LOOPS: i64 = 1000;
+/// The most loops `clip.loop` makes of one clip, whether by count, length or fill.
+pub const MAX_LOOPS: i64 = 1000;
 
 fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
-    let count = i64_or(p, "count", 4).clamp(1, 512);
+    // `count` is the clip plus its loops, so up to MAX_LOOPS loops is MAX_LOOPS + 1.
+    let count = i64_or(p, "count", 4).max(1);
+    if count > MAX_LOOPS.saturating_add(1) {
+        return Err(bad(
+            "clip.loop",
+            format!("count {count} is the clip and {} loops; a clip loops at most {MAX_LOOPS} times", count.saturating_sub(1)),
+        ));
+    }
     let total = position_param(e, "clip.loop", p, "length")?;
     let fill = p.get("fill").and_then(Value::as_bool).unwrap_or(false);
+    let crossfade = position_param(e, "clip.loop", p, "crossfade")?.unwrap_or(0);
+    if crossfade < 0 {
+        return Err(bad("clip.loop", "crossfade must be a length of zero or more samples"));
+    }
+    let shape = match p.get("crossfade_shape") {
+        None => FadeShape::EqualPower,
+        Some(v) => v
+            .as_str()
+            .and_then(FadeShape::from_id)
+            .ok_or_else(|| bad("clip.loop", "crossfade_shape must be linear|equal power|s-curve|exponential|logarithmic"))?,
+    };
     let s = e.session_mut();
     let session_end = s.content_end();
     let mut made = 0;
@@ -334,7 +352,7 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
                 }
                 (reps, if rest > 0 { rest } else { len })
             }
-            None => ((count - 1).clamp(0, MAX_LOOPS), len),
+            None => (count.saturating_sub(1).clamp(0, MAX_LOOPS), len),
         };
         if reps > 0 && c.loop_id.is_none() {
             let lid = s.alloc();
@@ -344,6 +362,7 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
             c.loop_id = Some(lid);
         }
         let mut copies = Vec::new();
+        let mut seams = Vec::new();
         for k in 1..=reps {
             let mut nc = c.clone();
             nc.start = 0;
@@ -351,12 +370,23 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
                 // `start` is 0 here, so the end is the length; the trim also shortens the fades to fit and removes a sync point past the cut.
                 nc.trim_end_to(last);
             }
-            copies.push((c.start + c.length * k, nc));
+            let at = c.start.saturating_add(c.length.saturating_mul(k));
+            seams.push(at);
+            copies.push((at, nc));
         }
         for (at, nc) in copies {
             let length = nc.length;
             let _ = crate::edit::paste(s, tid, at, &[nc], length, false);
             made += 1;
+        }
+        // Each seam's crossfade stays inside its own two iterations: at most half a whole one.
+        let xf = crossfade.min(len / 2);
+        if xf > 0 {
+            for seam in seams {
+                let half = xf / 2;
+                let range = Range::new(seam.saturating_sub(half), seam.saturating_add(xf - half));
+                crate::edit::create_fades(s, tid, range, shape);
+            }
         }
     }
     Ok(json!({"loops": made}))

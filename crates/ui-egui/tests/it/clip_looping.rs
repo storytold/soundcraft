@@ -48,3 +48,46 @@ fn clip_looping_fills_up_to_the_next_clip() {
     assert_eq!(last.end(), next);
     assert_eq!(last.length, (next - clip.end()) % clip.length);
 }
+
+/// Enable Crossfade in Clip Looping crossfades every seam of the loop, and Unloop still removes it.
+#[test]
+fn clip_looping_crossfades_the_loops() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let kick = app.engine.session().track_by_name("Kick").unwrap();
+    let (track, clip) = (kick.id, kick.clips()[0].clone());
+    // Room for four loops: clear whatever follows the clip on the track.
+    let after: Vec<u64> = kick.clips().iter().filter(|c| c.id != clip.id).map(|c| c.id.0).collect();
+    if !after.is_empty() {
+        app.run("edit.select", json!({"clips": after})).unwrap();
+        app.run("edit.clear", json!({})).unwrap();
+    }
+    app.run("edit.select", json!({"clips": [clip.id.0]})).unwrap();
+    menus::invoke_menu(&mut app, "clip.loop", "Clip > Loop...");
+    assert_eq!(app.dialogs.open_name(), Some("clip_looping"));
+
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::CheckBox, "Enable Crossfade").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Button, "OK").click();
+    h.run_steps(2);
+
+    assert!(h.state().dialogs.open_name().is_none());
+    let clips = h.state().engine.session().track(track).unwrap().clips().to_vec();
+    assert_eq!(clips.len(), 4, "{clips:?}");
+    assert!(clips.iter().all(|c| c.loop_id.is_some() && c.loop_id == clips[0].loop_id));
+    // Each seam fades out of one loop and into the next.
+    assert!(clips.windows(2).all(|w| w[0].fade_out.len > 0 && w[1].fade_in.len > 0 && w[0].end() >= w[1].start));
+
+    h.state_mut().run("clip.unloop", json!({"clip": clips[1].id.0})).unwrap();
+    let left = h.state().engine.session().track(track).unwrap().clips().to_vec();
+    assert_eq!(left.len(), 1);
+    assert_eq!((left[0].start, left[0].length), (clip.start, clip.length));
+}
