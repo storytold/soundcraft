@@ -1,6 +1,9 @@
 use super::input::snap;
 use super::layout::{COLUMN_TITLES_H, COLUMNS, Column, HEADER_W, RULER_H, edit_columns, header_width, sample_at, x_of};
-use super::*;
+use super::{
+    Align2, Color32, GridValue, NoteValue, Range, Rect, Samples, Sense, Session, Shape, SoundApp, Stroke, TimeFormat, Tokens, Ui, bold,
+    format_position, json, pos2, regular, rgb, vec2,
+};
 
 // ---- rulers ----------------------------------------------------------------------------------
 
@@ -176,7 +179,7 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
                 } else {
                     soundcraft_time::FrameRate::Fps25
                 };
-                timebase_ruler(ui, &painter, &s, tl, row, view, TimeFormat::Timecode, alt, i + 1 == rulers.len());
+                timebase_ruler(&painter, &s, &RulerRow { tl, row, view, bottom: i + 1 == rulers.len() }, TimeFormat::Timecode, alt);
             }
             "markers" | "markers2" | "markers3" | "markers4" | "markers5" | "chords" => {
                 let lane: u8 = match id.as_str() {
@@ -231,7 +234,7 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
             }
             _ => {
                 if let Some(f) = fmt {
-                    timebase_ruler(ui, &painter, &s, tl, row, view, f, s.frame_rate, i + 1 == rulers.len());
+                    timebase_ruler(&painter, &s, &RulerRow { tl, row, view, bottom: i + 1 == rulers.len() }, f, s.frame_rate);
                     // Clicking a timebase ruler locates.
                     let resp = ui.interact(row, ui.scope_id().with(("ruler", id.as_str())), Sense::click_and_drag());
                     if (resp.clicked() || resp.dragged())
@@ -260,17 +263,17 @@ fn ruler_label_left(mark_x: f32, row: Rect, label_width: f32) -> f32 {
     (mark_x + 3.0).clamp(left, right)
 }
 
-fn timebase_ruler(
-    _ui: &Ui,
-    painter: &egui::Painter,
-    s: &Session,
+/// Where a timebase ruler sits: the timeline, its row and the visible range, and whether it is the bottom ruler.
+#[derive(Clone, Copy)]
+struct RulerRow {
     tl: Rect,
     row: Rect,
     view: Range,
-    f: TimeFormat,
-    rate: soundcraft_time::FrameRate,
     bottom: bool,
-) {
+}
+
+fn timebase_ruler(painter: &egui::Painter, s: &Session, place: &RulerRow, f: TimeFormat, rate: soundcraft_time::FrameRate) {
+    let RulerRow { tl, row, view, bottom } = *place;
     let t = Tokens::current();
     let sr = s.sample_rate;
     let spp = s.edit.zoom.samples_per_px;

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Color32, Rect, Samples, Sense, Session, SoundApp, Stroke, StrokeKind, Tokens, Track, Ui, json, pos2, rgb, vec2};
 
 /// The Universe's clip blocks for one document revision and area: each track's clips merged into
 /// runs of one colour. A drum edit holds tens of thousands of clips a pixel or less wide here;

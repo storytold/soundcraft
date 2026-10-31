@@ -17,21 +17,13 @@ enum Platform {
     Other,
 }
 
-/// SoundCraft's settings folder. A nonempty `$SOUNDCRAFT_CONFIG_DIR` overrides the platform default.
-/// The override is the complete directory; no application-name suffix is appended. An explicitly
-/// empty value disables the settings directory instead of falling back to a personal profile.
-/// Otherwise `portable.txt` beside the executable selects `<exe dir>/SoundCraftData`, when that
-/// folder can be written (a read-only medium falls back to the platform default).
-pub fn config_dir() -> Option<PathBuf> {
-    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let exe = std::env::current_exe().ok();
-        resolve(exe.as_deref().and_then(Path::parent))
-    })
-    .clone()
-}
-
-fn resolve(exe_dir: Option<&Path>) -> Option<PathBuf> {
+/// SoundCraft's settings folder, resolved from the variable lookup `get` (see `Env::from_lookup`).
+/// A nonempty `$SOUNDCRAFT_CONFIG_DIR` overrides the platform default and is the complete
+/// directory; no application-name suffix is appended. An explicitly empty value means no settings
+/// folder instead of a fallback to a personal profile (the documented exception to RFC-0012 rule
+/// 1.7). Otherwise `portable.txt` beside the executable selects `<exe dir>/SoundCraftData`, when
+/// that folder can be written (a read-only medium falls back to the platform default).
+pub fn resolve_config_dir(get: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     let platform = if cfg!(target_os = "macos") {
         Platform::Mac
     } else if cfg!(windows) {
@@ -39,11 +31,12 @@ fn resolve(exe_dir: Option<&Path>) -> Option<PathBuf> {
     } else {
         Platform::Other
     };
-    config_dir_with(platform, |name| std::env::var_os(name), exe_dir)
+    let exe = std::env::current_exe().ok();
+    config_dir_with(platform, get, exe.as_deref().and_then(Path::parent))
 }
 
 fn config_dir_with(platform: Platform, env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>) -> Option<PathBuf> {
-    if let Some(dir) = env("SOUNDCRAFT_CONFIG_DIR") {
+    if let Some(dir) = env(crate::env::CONFIG_DIR) {
         return (!dir.is_empty()).then(|| PathBuf::from(dir));
     }
     if let Some(exe_dir) = exe_dir.filter(|d| d.join(PORTABLE_MARKER).is_file()) {

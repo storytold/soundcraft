@@ -246,7 +246,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     let main_y = r.min.y + 14.0;
     ui.painter().text(pos2(r.min.x + 10.0, main_y), Align2::LEFT_CENTER, "Main", regular(10.0), t.counter_label);
     let main_value = Rect::from_min_max(pos2(r.min.x + 40.0, r.min.y + 4.0), pos2(r.min.x + 158.0, r.min.y + 24.0));
-    counter_field(app, ui, main_value, CounterTarget::Main, pos, main_fmt, 21.0, "Main Counter");
+    counter_field(app, ui, main_value, CounterTarget::Main, pos, main_fmt);
     let main_menu = Rect::from_min_max(pos2(r.min.x + 160.0, r.min.y + 4.0), pos2(r.min.x + 176.0, r.min.y + 24.0));
     let main_resp = ui.interact(main_menu, ui.scope_id().with("main_counter_format"), Sense::click());
     icons::draw(ui.painter(), Rect::from_center_size(main_menu.center(), vec2(10.0, 10.0)), "triangle_down", t.text_dim);
@@ -284,7 +284,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
         let y = r.min.y + 9.0 + i as f32 * 13.0;
         ui.painter().text(pos2(r.min.x + 226.0, y), Align2::RIGHT_CENTER, label, regular(10.0), t.counter_label);
         let field = Rect::from_min_max(pos2(r.min.x + 230.0, y - 6.0), pos2(r.min.x + 344.0, y + 6.0));
-        counter_field(app, ui, field, target, value, main_fmt, 10.0, label);
+        counter_field(app, ui, field, target, value, main_fmt);
     }
 
     let y = r.max.y - 10.0;
@@ -330,8 +330,14 @@ fn clear_counter_edit(app: &mut SoundApp, ui: &mut Ui) {
 }
 
 /// Paints and handles pointer interaction for an editable counter field.
-fn counter_field(app: &mut SoundApp, ui: &mut Ui, rect: Rect, target: CounterTarget, value: Samples, format: TimeFormat, size: f32, label: &str) {
+fn counter_field(app: &mut SoundApp, ui: &mut Ui, rect: Rect, target: CounterTarget, value: Samples, format: TimeFormat) {
     let t = Tokens::current();
+    let (size, label) = match target {
+        CounterTarget::Main => (21.0, "Main Counter"),
+        CounterTarget::Start => (10.0, "Start"),
+        CounterTarget::End => (10.0, "End"),
+        CounterTarget::Length => (10.0, "Length"),
+    };
     let shown = app
         .counter_edit
         .as_ref()
@@ -862,7 +868,7 @@ mod counter_input_tests {
         let mut harness = Harness::builder().with_size(vec2(500.0, 100.0)).build_ui_state(
             move |ui, app| {
                 if !fonts_ready {
-                    crate::fonts::install(ui.ctx());
+                    crate::fonts::install(ui.ctx(), true);
                     fonts_ready = true;
                     return;
                 }

@@ -1,5 +1,8 @@
 use super::module::tuid_bytes;
-use super::*;
+use super::{
+    AtomicBool, Class, ComWrapper, EDIT_CAP, FUnknown, IComponentHandlerTrait, IHostApplicationTrait, Interface, Mutex, Ordering, PoisonError,
+    c_void, sb, sv, write_c16,
+};
 
 // ---- host-side COM objects -----------------------------------------------------------------
 

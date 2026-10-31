@@ -1,4 +1,4 @@
-use super::*;
+use super::{Dialog, SoundApp, Value, json};
 
 /// When `id` would close a session with unsaved changes, ask first; true when the question is
 /// open instead. A take in progress is stopped first, so it counts as a change.
@@ -24,6 +24,51 @@ pub fn run_or_ask(app: &mut SoundApp, id: &str, params: Value) -> Result<Value, 
         return Ok(Value::Null);
     }
     app.run(id, params)
+}
+
+/// A path the engine needs as text (its commands take `"path": string`) that is not valid Unicode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotUnicode(pub std::path::PathBuf);
+
+impl std::fmt::Display for NotUnicode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} is not valid Unicode", self.0)
+    }
+}
+
+impl std::error::Error for NotUnicode {}
+
+/// `path` as the text the engine's commands take. Convert only where a command gets the path:
+/// a lossy rendering would name another file.
+pub fn unicode(path: &std::path::Path) -> Result<&str, NotUnicode> {
+    path.to_str().ok_or_else(|| NotUnicode(path.to_path_buf()))
+}
+
+/// Opens a dropped, picked or command-line file by its extension: a session opens (asking to save
+/// first), MIDI imports, and anything else imports as audio, decoded in the background so a long
+/// file doesn't freeze the window (#597). A name that is not valid Unicode goes on the status line.
+pub fn open_path(app: &mut SoundApp, path: &std::path::Path) {
+    let p = match unicode(path) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("{e}");
+            app.ui.status = e.to_string();
+            return;
+        }
+    };
+    let lower = p.to_ascii_lowercase();
+    let r = if lower.ends_with(".scraft") {
+        run_or_ask(app, "session.open", json!({"path": p}))
+    } else if lower.ends_with(".mid") || lower.ends_with(".midi") || lower.ends_with(".smf") {
+        app.run("file.import_midi", json!({"path": p}))
+    } else {
+        let at = app.engine.session().edit.selection.start;
+        crate::import::start(app, json!({"path": p, "at": at}));
+        Ok(Value::Null)
+    };
+    if let Err(e) = r {
+        log::warn!("{p}: {e}");
+    }
 }
 
 /// What `SaveChanges` carries on with to open the session the browser read.

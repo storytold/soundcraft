@@ -16,8 +16,11 @@ asio = ["soundcraft-playback/asio"]
 
 [dependencies]
 soundcraft-engine.workspace = true
+soundcraft-audio-io.workspace = true
 soundcraft-ui-egui.workspace = true
 soundcraft-playback.workspace = true
+soundcraft-automation.workspace = true
+clap.workspace = true
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links", "clipboard"] }
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 serde_json.workspace = true

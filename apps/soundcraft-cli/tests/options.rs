@@ -58,7 +58,11 @@ fn convert_rejects_an_unknown_option_instead_of_writing_the_file() {
     for bad in ["--bitdepth", "--normalise", "--bogus"] {
         let o = run(&["convert", input.to_str().unwrap(), out.to_str().unwrap(), bad]);
         assert!(!o.status.success(), "{bad} should fail");
-        assert!(String::from_utf8_lossy(&o.stderr).contains(&format!("unknown option {bad}")), "{bad}: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains(&format!("unexpected argument '{bad}' found")),
+            "{bad}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
         assert!(!out.exists(), "{bad} should not write the output");
     }
 }
@@ -71,7 +75,11 @@ fn convert_rejects_an_option_whose_value_is_missing() {
     for bad in ["--rate", "--bit-depth"] {
         let o = run(&["convert", input.to_str().unwrap(), out.to_str().unwrap(), bad]);
         assert!(!o.status.success(), "{bad} should fail");
-        assert!(String::from_utf8_lossy(&o.stderr).contains(&format!("{bad} needs a value")), "{bad}: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains(&format!("a value is required for '{bad} ")),
+            "{bad}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
         assert!(!out.exists(), "{bad} should not write the output");
     }
 }
@@ -104,11 +112,11 @@ fn run_rejects_a_misspelled_or_value_less_bounce() {
     let out = dir.join("x.wav");
     let o = run(&["run", "--cmd", "session.new", "--bounce"]);
     assert!(!o.status.success());
-    assert!(String::from_utf8_lossy(&o.stderr).contains("--bounce needs a value"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("a value is required for '--bounce <OUT>'"), "{}", String::from_utf8_lossy(&o.stderr));
 
     let o = run(&["run", "--cmd", "session.new", "--bounces", out.to_str().unwrap()]);
     assert!(!o.status.success());
-    assert!(String::from_utf8_lossy(&o.stderr).contains("unknown option --bounces"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("unexpected argument '--bounces' found"), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(!out.exists(), "nothing should be bounced");
 }
 

@@ -2,7 +2,11 @@ use super::editor::{EditorInner, EditorLink};
 use super::host::HostContext;
 use super::instance::Instance;
 use super::process::{EventList, ParamChanges};
-use super::*;
+use super::{
+    Arc, AtomicBool, AtomicUsize, ComPtr, ComWrapper, Duration, EVENT_CAP, FUnknown, IComponentTrait, IConnectionPointTrait, IEditControllerTrait,
+    IPluginBaseTrait, IPluginFactory2Trait, IPluginFactoryTrait, Interface, MAX_CLASSES, ManuallyDrop, Mutex, OnceLock, Ordering, PARAM_QUEUE_CAP,
+    Path, PathBuf, PoisonError, TryLockError, Vst3Error, c_char, c_int, c_void, mpsc, ok, read_c8, sb, scan, sv,
+};
 
 // ---- loaded binaries -----------------------------------------------------------------------
 
