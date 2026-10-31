@@ -978,7 +978,7 @@ fn fade_midpoint_handles_remain_visible_and_can_be_grabbed_again() {
                         h.step();
                         assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::ResizeVertical);
                         start_drag(&mut h, control);
-                        let to = control - vec2(0.0, (lane.height() - 2.0 - clip_name_height(&before, lane)) * 0.1);
+                        let to = control - vec2(0.0, (lane.height() - 2.0) * 0.1);
                         h.hover_at(to);
                         h.step();
                         assert!(
@@ -1507,4 +1507,267 @@ fn alt_click_on_a_breakpoint_deletes_it() {
         assert_eq!(volume_points(&h, track), before[..1], "{tool}");
         assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}");
     }
+}
+
+const ALONE: ClipCut = ClipCut { left: false, right: false };
+
+#[test]
+fn butted_pair_shares_one_seam() {
+    // 0..100 then 100..200: the first drops its right edge, the second draws the seam on its left.
+    assert_eq!(clip_cut(0, 100, [(100, 200)]), ClipCut { left: false, right: true });
+    assert_eq!(clip_cut(100, 200, [(0, 100)]), ClipCut { left: true, right: false });
+}
+
+#[test]
+fn middle_clip_of_a_run_is_butted_on_both_sides() {
+    let cut = clip_cut(100, 200, [(0, 100), (200, 300)]);
+    assert_eq!(cut, ClipCut { left: true, right: true });
+    let c = cut.corners();
+    assert_eq!((c.nw, c.sw, c.ne, c.se), (0, 0, 0, 0));
+}
+
+#[test]
+fn gap_overlap_and_lone_clips_keep_their_own_outline() {
+    // First and last clips: nothing on the open side.
+    assert_eq!(clip_cut(0, 100, []), ALONE);
+    // A gap of one sample is not a cut.
+    assert_eq!(clip_cut(101, 200, [(0, 100), (201, 300)]), ALONE);
+    // Overlaps (crossfades, layers) keep both outlines.
+    assert_eq!(clip_cut(90, 200, [(0, 100), (150, 300)]), ALONE);
+    assert_eq!(clip_cut(0, 100, [(60, 160)]), ALONE);
+    // A third clip lying across the cut hides it: no shared seam.
+    assert_eq!(clip_cut(100, 200, [(0, 100), (50, 150)]), ALONE);
+    // Empty clips share nothing, and are not neighbours either.
+    assert_eq!(clip_cut(100, 100, [(0, 100), (100, 200)]), ALONE);
+    assert_eq!(clip_cut(100, 200, [(100, 100)]), ALONE);
+}
+
+#[test]
+fn sorted_playlists_find_the_same_cuts_without_a_scan() {
+    let layouts: [&[(Samples, Samples)]; 8] = [
+        &[(0, 100), (100, 100)],
+        &[(0, 100), (100, 100), (200, 100)],
+        &[(0, 100), (101, 99), (201, 99)],
+        &[(0, 100), (90, 110), (150, 150)],
+        &[(0, 100), (50, 100), (100, 100)],
+        &[(0, 100), (100, 0), (100, 100)],
+        &[(0, 1000), (100, 100), (200, 100)],
+        &[(0, 100), (100, 50), (100, 100), (200, 100)],
+    ];
+    for spans in layouts {
+        let clips: Vec<Clip> = spans.iter().zip(1..).map(|(&(start, len), id)| test_clip(id, start, len)).collect();
+        let cut_of = clip_cuts(&clips);
+        for c in &clips {
+            assert_eq!(cut_of(c), clip_cut_in(&clips, c), "{spans:?}, clip at {}", c.start);
+        }
+    }
+    // Not vacuous: the middle clip of a run is butted on both sides.
+    let run: Vec<Clip> = (0..3).map(|i| test_clip(i + 1, i as Samples * 100, 100)).collect();
+    assert_eq!(clip_cuts(&run)(&run[1]), ClipCut { left: true, right: true });
+}
+
+#[test]
+fn only_butted_sides_lose_their_round_corners() {
+    let round = ALONE.corners();
+    assert_eq!((round.nw, round.sw, round.ne, round.se), (2, 2, 2, 2));
+    let first = ClipCut { left: false, right: true }.corners();
+    assert_eq!((first.nw, first.sw, first.ne, first.se), (2, 2, 0, 0));
+    let second = ClipCut { left: true, right: false }.corners();
+    assert_eq!((second.nw, second.sw, second.ne, second.se), (0, 0, 2, 2));
+}
+
+#[test]
+fn name_pill_is_as_wide_as_its_text_and_cut_cleanly_on_short_clips() {
+    // Room to spare: the text plus its padding on both sides.
+    assert_eq!(name_pill_width(200.0, 50.0), Some(50.0 + 2.0 * PILL_PAD));
+    // A short clip caps the pill at the room it leaves; the text is then cut at the pill's edge.
+    assert_eq!(name_pill_width(30.0, 80.0), Some(30.0));
+    assert_eq!(name_pill_width(PILL_MIN_WIDTH, 80.0), Some(PILL_MIN_WIDTH));
+    // Too narrow to show anything useful, or nonsense numbers: no pill.
+    assert_eq!(name_pill_width(PILL_MIN_WIDTH - 0.1, 80.0), None);
+    assert_eq!(name_pill_width(-5.0, 80.0), None);
+    assert_eq!(name_pill_width(f32::NAN, 80.0), None);
+    // A bogus text width never makes a negative or NaN pill.
+    assert_eq!(name_pill_width(100.0, f32::NAN), Some(2.0 * PILL_PAD));
+    assert_eq!(name_pill_width(100.0, -40.0), Some(2.0 * PILL_PAD));
+}
+
+#[test]
+fn marks_list_the_rating_and_the_lock() {
+    let mut clip = test_clip(1, 0, 100);
+    assert_eq!(clip_marks(&clip, true), "");
+    clip.rating = 3;
+    assert_eq!(clip_marks(&clip, true), "★★★");
+    assert_eq!(clip_marks(&clip, false), "");
+    clip.edit_locked = true;
+    assert_eq!(clip_marks(&clip, true), "★★★ 🔒");
+    assert_eq!(clip_marks(&clip, false), "🔒");
+    clip.rating = 200;
+    assert_eq!(clip_marks(&clip, true), "★★★★★ 🔒");
+}
+
+#[test]
+fn the_clip_name_is_a_pill_over_the_waveform_not_a_bar() {
+    for show_name in [true, false] {
+        let mut h = smart_demo();
+        h.state_mut().engine.execute("view.clip_name", &json!({"value": show_name})).unwrap();
+        h.step();
+        let tl = timeline(&h);
+        let (clip, lane) = clip_on_screen(&h, |xs, xe| xs > tl.min.x + 30.0 && xe < tl.max.x - 100.0 && xe - xs > 100.0);
+        let s = h.state().engine.session();
+        let (xs, xe) = (x_of(s, tl, clip.start), x_of(s, tl, clip.end()));
+        let clip_rect = Rect::from_min_max(pos2(xs, lane.min.y), pos2(xe, lane.max.y));
+        let shapes = &h.output().shapes;
+        let pills: Vec<Rect> = shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                Shape::Rect(r) if r.fill == PILL_BG && clip_rect.contains_rect(r.rect) => Some(r.rect),
+                _ => None,
+            })
+            .collect();
+        if !show_name {
+            assert!(pills.is_empty(), "names are off");
+            continue;
+        }
+        assert_eq!(pills.len(), 1, "one pill per clip");
+        let pill = pills[0];
+        // At the top-left, 1 pt inside the outline, as wide as its text plus padding: far from a full-width bar.
+        assert_eq!(pill.min, pos2(xs + PILL_INSET, lane.min.y + 1.0 + PILL_INSET));
+        assert_eq!(pill.height(), PILL_HEIGHT);
+        let text_w = shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                Shape::Text(t) if t.galley.text() == clip.name && pill.contains(t.pos) => Some(t.galley.size().x),
+                _ => None,
+            })
+            .expect("the name is drawn on the pill");
+        assert_eq!(pill.width(), text_w + 2.0 * PILL_PAD);
+        assert!(pill.width() < clip_rect.width() * 0.5);
+    }
+}
+
+#[test]
+fn the_rating_stars_follow_the_rating_switch_whatever_the_name_switch_says() {
+    for (show_name, show_rating) in [(false, true), (true, true), (true, false), (false, false)] {
+        let mut h = smart_demo();
+        for (cmd, on) in [("view.clip_name", show_name), ("view.clip_rating", show_rating)] {
+            h.state_mut().engine.execute(cmd, &json!({"value": on})).unwrap();
+        }
+        h.state_mut().engine.session_mut().tracks.iter_mut().flat_map(|t| &mut t.playlists).flat_map(|p| &mut p.clips).for_each(|c| c.rating = 3);
+        h.step();
+        let stars = h.output().shapes.iter().filter(|c| matches!(&c.shape, Shape::Text(t) if t.galley.text() == "★★★")).count();
+        assert_eq!(stars > 0, show_rating, "names {show_name}, rating {show_rating}: {stars} rated clips drew their stars");
+    }
+}
+
+#[test]
+fn alternate_playlist_lanes_draw_only_the_clips_on_screen() {
+    let mut h = harness(1);
+    let tl = timeline(&h);
+    let s = h.state().engine.session();
+    let (view, color) = (Range::new(sample_at(s, tl, tl.min.x), sample_at(s, tl, tl.max.x)), s.tracks[0].color);
+    let len = (view.end - view.start) / 20;
+    // One clip well inside the view, one running past its right edge, two far beyond it.
+    let starts = [view.start + 4 * len, view.end - len / 2, view.end + 20 * len, view.end + 2_000 * len];
+    let s = h.state_mut().engine.session_mut();
+    let mut alt = soundcraft_model::Playlist::new("alt");
+    alt.clips = starts.iter().map(|&at| test_clip(s.new_clip_id().0, at, len)).collect();
+    let track = s.tracks.first_mut().unwrap();
+    (track.view, track.active_playlist) = ("playlists".into(), 0);
+    track.playlists.push(alt);
+    h.run_steps(3);
+    // The main playlist is empty: every clip body in the track's rows belongs to the alternate lane.
+    let bodies: Vec<Rect> = h
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            Shape::Rect(r) if r.fill == clip_colors(color, false).0 => Some(r.rect),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bodies.len(), 2, "only the two clips that show are drawn: {bodies:?}");
+    assert!(bodies.iter().all(|r| r.max.x > tl.min.x && r.min.x < tl.max.x), "{bodies:?} are not all on screen");
+}
+
+fn test_clip(id: u64, start: Samples, len: Samples) -> Clip {
+    Clip::audio(ClipId(id), "c", soundcraft_model::SourceId(0), 0, start, len)
+}
+
+#[test]
+fn cut_is_found_among_the_playlist_neighbours() {
+    // Selection never enters: it recolours the body, so a selected clip gets the same edges as any other.
+    let clips = [test_clip(1, 0, 100), test_clip(2, 100, 100), test_clip(3, 200, 100), test_clip(4, 400, 50)];
+    let cuts: Vec<ClipCut> = clips.iter().map(|c| clip_cut_in(&clips, c)).collect();
+    assert_eq!(cuts, [ClipCut { left: false, right: true }, ClipCut { left: true, right: true }, ClipCut { left: true, right: false }, ALONE]);
+}
+
+#[test]
+fn cut_does_not_depend_on_the_playlist_order() {
+    // Bring to Front / Send to Back reorder a playlist (its order is the stacking order): the seam stays.
+    let (a, b) = (test_clip(1, 0, 100), test_clip(2, 100, 100));
+    let reordered = [b.clone(), a.clone()];
+    assert_eq!(clip_cut_in(&reordered, &a), ClipCut { left: false, right: true });
+    assert_eq!(clip_cut_in(&reordered, &b), ClipCut { left: true, right: false });
+    let run = [test_clip(3, 200, 100), test_clip(1, 0, 100), test_clip(2, 100, 100)];
+    let cuts: Vec<ClipCut> = run.iter().map(|c| clip_cut_in(&run, c)).collect();
+    assert_eq!(cuts, [ClipCut { left: true, right: false }, ClipCut { left: false, right: true }, ClipCut { left: true, right: true }]);
+}
+
+#[test]
+fn layered_clips_share_a_seam_only_where_they_really_meet() {
+    // A short clip inside a long one does not hide the seam between the long clip and the next.
+    let clips = [test_clip(1, 0, 100), test_clip(2, 10, 10), test_clip(3, 100, 100)];
+    assert_eq!(clip_cut_in(&clips, &clips[2]), ClipCut { left: true, right: false });
+    assert_eq!(clip_cut_in(&clips, &clips[0]), ClipCut { left: false, right: true });
+    assert_eq!(clip_cut_in(&clips, &clips[1]), ALONE);
+    // Two clips on one start, and a lone clip.
+    let same = [test_clip(1, 0, 100), test_clip(2, 0, 100), test_clip(3, 300, 100)];
+    assert_eq!(clip_cut_in(&same, &same[1]), ALONE);
+    assert_eq!(clip_cut_in(&same, &same[2]), ALONE);
+    assert_eq!(clip_cut_in(&[], &test_clip(9, 0, 100)), ALONE);
+}
+
+#[test]
+fn marks_pill_is_hidden_when_the_clip_is_too_narrow_for_it() {
+    // A 60 pt clip from x=100 (pills start at 102) holds a 30 pt pill at its right end.
+    assert_eq!(marks_pill_left(102.0, 160.0, 30.0), Some(128.0));
+    // Exactly full: the pill's left edge meets the leftmost x.
+    assert_eq!(marks_pill_left(102.0, 134.0, 30.0), Some(102.0));
+    // Any narrower and it would veil the clip: hidden.
+    assert_eq!(marks_pill_left(102.0, 133.0, 30.0), None);
+    assert_eq!(marks_pill_left(102.0, f32::NAN, 30.0), None);
+}
+
+#[test]
+fn an_overlapping_clip_covers_the_pill_of_the_clip_below() {
+    let mut h = smart_demo();
+    h.step();
+    let tl = timeline(&h);
+    let (below, lane) = clip_on_screen(&h, |xs, xe| xs > tl.min.x + 30.0 && xe < tl.max.x - 100.0 && xe - xs > 100.0);
+    // A copy on top (last in the playlist), starting at the same place.
+    let s = h.state_mut().engine.session_mut();
+    let (track, _) = s.find_clip(below.id).unwrap();
+    let id = s.new_clip_id();
+    let top = Clip { id, name: "Top".into(), ..below.clone() };
+    s.track_mut(track).unwrap().playlist_mut().unwrap().clips.push(top);
+    h.step();
+    h.step();
+    let s = h.state().engine.session();
+    let at = pos2(x_of(s, tl, below.start) + PILL_INSET, lane.min.y + 1.0 + PILL_INSET);
+    let shapes = &h.output().shapes;
+    let pills: Vec<(usize, Rect)> = shapes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, shape)| match &shape.shape {
+            Shape::Rect(r) if r.fill == PILL_BG && r.rect.min == at => Some((i, r.rect)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pills.len(), 2, "both clips draw a pill at the same spot");
+    let ((lower, pill), (upper, _)) = (pills[0], pills[1]);
+    assert!(
+        shapes[lower + 1..upper].iter().any(|shape| matches!(&shape.shape, Shape::Rect(r) if r.fill != PILL_BG && r.rect.contains_rect(pill))),
+        "the top clip's body is painted between the two pills, so it hides the lower pill"
+    );
 }
