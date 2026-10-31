@@ -825,21 +825,24 @@ fn coalesce_clip_gain_to_volume(e: &mut Engine, p: &Value) -> Result<Value> {
     let mut n = 0;
     for t in &tracks {
         let Some(tr) = s.track_mut(*t) else { continue };
-        let clips: Vec<Clip> = tr.clips().iter().filter(|c| c.is_audio() && (c.gain_db != 0.0 || !c.gain_env.is_empty())).cloned().collect();
+        // Every audio clip anchors the lane at its own level, so unity clips outside the
+        // boosted ones don't inherit the value the lane holds before/after its end points.
+        let audio: Vec<Clip> = tr.clips().iter().filter(|c| c.is_audio()).cloned().collect();
+        let clips: Vec<Clip> = audio.iter().filter(|c| c.gain_db != 0.0 || !c.gain_env.is_empty()).cloned().collect();
         if clips.is_empty() {
             continue;
         }
         let lane = tr.lane(&AutoParam::Volume).cloned();
         let fader = tr.mixer.volume_db;
         let mut times: Vec<Samples> = lane.as_ref().map(|l| l.points.iter().map(|pt| pt.at).collect()).unwrap_or_default();
-        for c in &clips {
+        for c in &audio {
             times.push(c.start);
             times.push(c.end() - 1);
             times.extend(c.gain_env.iter().map(|x| c.start + x.0));
         }
         times.sort_unstable();
         times.dedup();
-        let gain_at = |at: Samples| clips.iter().find(|c| c.range().contains(at)).map_or(0.0, |c| clip_db(c, at - c.start));
+        let gain_at = |at: Samples| audio.iter().find(|c| c.range().contains(at)).map_or(0.0, |c| clip_db(c, at - c.start));
         let pts: Vec<(Samples, f32)> = times.iter().map(|&at| (at, volume_at(lane.as_ref(), fader, at) + gain_at(at))).collect();
         let l = tr.lane_mut(&AutoParam::Volume);
         l.points.clear();
@@ -1112,6 +1115,25 @@ mod tests {
         let tr = e.session().track(t).unwrap();
         assert!((tr.lane(&AutoParam::Volume).unwrap().value_at(500, 0.0) + 5.0).abs() < 0.1);
         assert_eq!(tr.clips()[0].gain_db, 0.0);
+    }
+
+    #[test]
+    fn coalesce_clip_gain_keeps_unity_clips_unchanged() {
+        let (mut e, t, ids) = session_with_clips(&[(0, 4096), (8192, 4096), (16384, 4096)]);
+        let boosted = ids[1];
+        let pl = e.session_mut().track_mut(t).and_then(|tr| tr.playlist_mut()).expect("playlist");
+        for c in pl.clips.iter_mut().filter(|c| c.id == boosted) {
+            c.gain_db = 6.0;
+        }
+        e.execute("edit.automation_coalesce_clip_gain_to_volume", &json!({})).unwrap();
+        let tr = e.session().track(t).unwrap();
+        let lane = tr.lane(&AutoParam::Volume);
+        let fader = tr.mixer.volume_db;
+        for at in [0, 1000, 4095, 16384, 18000, 20479] {
+            let v = volume_at(lane, fader, at);
+            assert!((v - fader).abs() < 1e-3, "unity clip at {at} changed level: {v} (fader {fader})");
+        }
+        assert!((volume_at(lane, fader, 10_000) - fader - 6.0).abs() < 1e-3);
     }
 
     #[test]
