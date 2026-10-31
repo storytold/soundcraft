@@ -146,12 +146,20 @@ fn measure_grid(s: &Session, end_unit: i64) -> Vec<(i64, i64, u32, u32)> {
         let a = s.tempo.bar_start_tick(bar);
         let b = s.tempo.bar_start_tick(bar + 1);
         let m = s.tempo.meter_at_tick(a);
-        let (ua, ub) = (a / UNIT, b / UNIT);
-        if ub <= ua {
+        if b <= a {
             break;
         }
-        v.push((ua, ub - ua, m.numerator, m.denominator));
+        let (ua, ub) = (a / UNIT, b / UNIT);
         bar += 1;
+        if ub <= ua {
+            // A bar shorter than a sixteenth that does not reach the next unit: the following
+            // bar carries this span, so the grid stays contiguous.
+            continue;
+        }
+        // Bars shorter than a sixteenth are written as one measure of the units they cover, so
+        // the time signature matches the measure's content.
+        let (num, den) = if m.ticks_per_bar() < UNIT { (u32::try_from(ub - ua).unwrap_or(1), 16) } else { (m.numerator, m.denominator) };
+        v.push((ua, ub - ua, num, den));
         if ub >= end_unit.max(1) || v.len() >= MAX_MEASURES {
             break;
         }
@@ -642,6 +650,40 @@ mod tests {
         assert_eq!(x.matches("<measure ").count(), x.matches("</measure>").count());
         let s = svg(&parts, &setup).expect("demo svg fits");
         assert!(s.starts_with("<svg") && s.contains("<ellipse"));
+    }
+
+    /// Note onsets (pitch count of every chord that is not a tie continuation).
+    fn note_starts(parts: &[Part]) -> usize {
+        parts.iter().flat_map(|p| &p.measures).flat_map(|m| &m.items).filter(|i| !i.tie_stop).map(|i| i.pitches.len()).sum()
+    }
+
+    #[test]
+    fn bars_shorter_than_a_sixteenth_keep_every_note() {
+        let base = crate::demo::demo_engine();
+        let baseline = note_starts(&layout(base.session(), &[]));
+        assert!(baseline > 0, "demo has notes");
+        for (n, d) in [(1, 32), (1, 64), (2, 64), (3, 64)] {
+            for mid in [false, true] {
+                let mut e = crate::demo::demo_engine();
+                let tick = if mid { e.session().tempo.bar_start_tick(5) } else { 0 };
+                e.session_mut().tempo.set_meter(tick, n, d).expect("valid meter");
+                let parts = layout(e.session(), &[]);
+                assert!(parts.iter().all(|p| !p.measures.is_empty()), "{n}/{d} mid={mid}: empty part");
+                assert_eq!(note_starts(&parts), baseline, "{n}/{d} mid={mid}: notes lost");
+                for p in &parts {
+                    for m in &p.measures {
+                        let units: u32 = m.items.iter().map(|i| i.units).sum();
+                        // The written meter matches the measure's content (divisions are sixteenths).
+                        assert_eq!(units * m.denominator, 16 * m.numerator, "{n}/{d} mid={mid}: meter/content mismatch");
+                    }
+                }
+                let setup = ScoreSetup::from_session(e.session());
+                let x = musicxml(&parts, &setup).expect("musicxml fits");
+                assert!(x.contains("<pitch>"), "{n}/{d} mid={mid}: musicxml has no notes");
+                let s = svg(&parts, &setup).expect("svg fits");
+                assert!(s.contains("<ellipse"), "{n}/{d} mid={mid}: svg has no notes");
+            }
+        }
     }
 
     #[test]
