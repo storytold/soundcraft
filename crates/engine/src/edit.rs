@@ -856,6 +856,12 @@ fn material_len(s: &Session, c: &Clip) -> Option<Samples> {
     }
 }
 
+/// Timeline samples played from `src` source samples of an audio clip with the given `stretch`
+/// (the mixer reads `offset + rel / stretch`), rounded down so they never need more than `src`.
+fn source_to_timeline(src: Samples, stretch: f64) -> Samples {
+    if stretch.is_finite() && stretch > 0.0 && (stretch - 1.0).abs() >= 1e-9 { (src as f64 * stretch).floor() as Samples } else { src }
+}
+
 /// Create fades from a selection (the incumbent's Edit › Fades › Create semantics):
 /// a range across a clip boundary makes a crossfade; at a clip start a fade-in; at its end a fade-out.
 pub fn create_fades(s: &mut Session, track: TrackId, range: Range, shape: FadeShape) -> usize {
@@ -864,7 +870,13 @@ pub fn create_fades(s: &mut Session, track: TrackId, range: Range, shape: FadeSh
     }
     let handles: Vec<(ClipId, Samples)> = {
         let Some(tr) = s.track(track) else { return 0 };
-        tr.clips().iter().map(|c| (c.id, material_len(s, c).map_or(0, |n| n.saturating_sub(c.source_offset()).saturating_sub(c.length)))).collect()
+        // Timeline samples the clip can grow at its end: the file after the offset, in timeline time, less the length.
+        tr.clips()
+            .iter()
+            .map(|c| {
+                (c.id, material_len(s, c).map_or(0, |n| source_to_timeline(n.saturating_sub(c.source_offset()), c.stretch).saturating_sub(c.length)))
+            })
+            .collect()
     };
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return 0 };
     pl.sort();
@@ -879,7 +891,7 @@ pub fn create_fades(s: &mut Session, track: TrackId, range: Range, shape: FadeSh
             let before = boundary - range.start.max(a.start);
             let after = range.end.min(b.end()) - boundary;
             let a_handle = handles.iter().find(|h| h.0 == a.id).map_or(0, |h| h.1);
-            let b_handle = b.source_offset();
+            let b_handle = source_to_timeline(b.source_offset(), b.stretch);
             // Extend each clip into the other's territory using its handles.
             let ext_a = after.min(a_handle).max(0);
             let ext_b = before.min(b_handle).max(0);
