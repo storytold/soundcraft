@@ -6,6 +6,7 @@ use soundcraft_time::{Range, Samples};
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
 
+/// The Clip menu commands this module registers.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("clip.edit_lock", "Edit Lock/Unlock", ["Clip"], Some("Cmd+L"), "{clips?}", has_selection, |e, p| flag(
@@ -299,6 +300,11 @@ fn layer(e: &mut Engine, p: &Value, front: bool) -> Result<Value> {
 /// The most loops `clip.loop` makes of one clip, whether by count, length or fill.
 pub const MAX_LOOPS: i64 = 1000;
 
+/// `clip.loop`: repeats each selected clip back to back after itself, by `count`, by a total
+/// `length` (the last loop cut short to fit) or by `fill` (up to the next clip or the session end).
+/// The copies share a loop id with the original so Unloop finds them. With `crossfade`, each seam
+/// between two loops is crossfaded over the clip's handles, never past the copy after the seam.
+/// Returns how many copies it made; a request for more than `MAX_LOOPS` loops is refused whole.
 fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     // `count` is the clip plus its loops, so up to MAX_LOOPS loops is MAX_LOOPS + 1.

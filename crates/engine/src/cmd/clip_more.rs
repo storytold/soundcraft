@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use soundcraft_model::{Clip, ClipContent, ClipId, Session, TrackId};
 use soundcraft_time::Samples;
 
+/// The Clip menu commands this module registers.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -108,10 +109,13 @@ fn same_content(a: &Clip, b: &Clip) -> bool {
     }
 }
 
+/// Whether two clips are whole iterations of one loop: the same length, and either the same loop
+/// id or the same material from the same point.
 fn same_material(a: &Clip, b: &Clip) -> bool {
     a.length == b.length && (a.loop_id.is_some() && a.loop_id == b.loop_id || same_content(a, b))
 }
 
+/// Whether two clips play the same file, sequence or movie, from any point in it.
 fn same_source(a: &Clip, b: &Clip) -> bool {
     match (&a.content, &b.content) {
         (ClipContent::Audio { source: s1, .. }, ClipContent::Audio { source: s2, .. }) => s1 == s2,
@@ -176,6 +180,9 @@ fn loop_chain(s: &Session, t: TrackId, id: ClipId) -> Vec<ClipId> {
     chain
 }
 
+/// `clip.unloop`: for each selected looped clip, finds its loop (back to back or crossfaded
+/// copies) and either removes the copies, putting the original back to its own end (`remove`, the
+/// default), or keeps them as independent clips (`flatten`). Errors when nothing selected is a loop.
 fn unloop(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "clip.unloop";
     let remove = match str_param(p, "mode") {
@@ -496,6 +503,7 @@ mod tests {
         (Engine::new(s), t, id)
     }
 
+    /// Each clip's fade-in and fade-out length on track `t`, in timeline order.
     fn fades(e: &Engine, t: TrackId) -> Vec<(Samples, Samples)> {
         e.session().track(t).unwrap().clips().iter().map(|c| (c.fade_in.len, c.fade_out.len)).collect()
     }
