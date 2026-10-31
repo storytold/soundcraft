@@ -695,7 +695,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     let s = app.engine.session();
                     ui.horizontal(|ui| {
                         let count_label = ui.radio_value(by, LoopBy::Count, "Number of Loops");
-                        ui.add_enabled(*by == LoopBy::Count, egui::DragValue::new(count).range(1..=512)).labelled_by(count_label.id);
+                        ui.add_enabled(*by == LoopBy::Count, egui::DragValue::new(count).range(1..=MAX_LOOP_COUNT)).labelled_by(count_label.id);
                     });
                     ui.horizontal(|ui| {
                         let length_label = ui.radio_value(by, LoopBy::Length, "Loop Length");
@@ -875,6 +875,9 @@ fn name_field(ui: &mut egui::Ui, name: &mut String) {
 fn tempo_change_action(at: Samples, bpm: f64) -> (String, Value) {
     ("event.tempo".into(), json!({"bpm": bpm, "at": at}))
 }
+
+/// Number of Loops counts the clip itself, so it runs to one more than the most loops `clip.loop` makes.
+const MAX_LOOP_COUNT: u32 = soundcraft_engine::cmd::MAX_CLIP_LOOPS as u32 + 1;
 
 /// The `clip.loop` params the Clip Looping dialog's OK sends; None while the typed length does not
 /// read as a duration longer than zero. An untouched length field sends the exact length it was

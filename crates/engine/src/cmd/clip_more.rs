@@ -470,6 +470,24 @@ mod tests {
     }
 
     #[test]
+    fn a_count_reaches_the_same_loop_limit_as_length_and_fill() {
+        // Number of Loops used to stop at 512 (511 loops) while length and fill made 1000.
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        let err = e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 1002})).unwrap_err().to_string();
+        assert!(err.contains("at most 1000"), "{err}");
+        assert_eq!(spans(&e, t), vec![(0, 100)]);
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 1001})).unwrap()["loops"], 1000);
+        assert_eq!(spans(&e, t).len(), 1001);
+        assert_eq!(spans(&e, t).last(), Some(&(100_000, 100)));
+        // Hostile counts: zero, negative and huge do not edit past the limit or panic.
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "count": -5})).unwrap()["loops"], 0);
+        assert!(e.execute("clip.loop", &json!({"clip": ids[0].0, "count": i64::MAX})).is_err());
+        assert!(e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 1e300})).is_err());
+        assert_eq!(spans(&e, t), vec![(0, 100)]);
+    }
+
+    #[test]
     fn regroup_reuses_group() {
         let (mut e, _, ids) = engine_with(&[(0, 100, 0), (500, 100, 0), (900, 100, 0)]);
         let all: Vec<u64> = ids.iter().map(|c| c.0).collect();
