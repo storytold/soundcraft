@@ -206,7 +206,7 @@ fn finish_drag(app: &mut SoundApp, s: &Session, tl: Rect, p: Option<Pos2>) {
 
 /// Grid snapping while dragging; holding Cmd/Ctrl swaps Grid and Slip.
 pub(super) fn drag_snap(s: &Session, at: Samples, flip: bool) -> Samples {
-    if s.edit.edit_mode.is_grid() != flip { s.edit.grid.snap(at, s.sample_rate, &s.tempo, s.frame_rate) } else { at }
+    if s.edit.edit_mode.is_grid() != flip { s.snap_to_grid(at) } else { at }
 }
 
 /// What a clip drag works out once per target track rather than every frame: where the tracks go

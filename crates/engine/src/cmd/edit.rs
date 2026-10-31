@@ -328,6 +328,7 @@ pub(super) fn clipboard_for_paste(e: &mut Engine) -> Clipboard {
     cb
 }
 
+/// Pastes the clipboard at an explicit position or at the current edit insertion point.
 fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.paste", p)?;
     let given = position_param(e, "edit.paste", p, "at")?;
@@ -335,9 +336,7 @@ fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session();
     let at = match given {
         Some(at) => at,
-        None if s.edit.edit_mode == EditMode::GridRelative => {
-            s.edit.grid.line_at_or_before(s.edit.selection.start, s.sample_rate, &s.tempo, s.frame_rate).saturating_add(cb.grid_offset)
-        }
+        None if s.edit.edit_mode == EditMode::GridRelative => s.grid_line_at_or_before(s.edit.selection.start).saturating_add(cb.grid_offset),
         None => s.edit.selection.start,
     };
     let sh = shuffle(s) && !cb.automation_only;
@@ -668,11 +667,12 @@ fn separate(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"separated": n}))
 }
 
+/// Separates selected clips at every active Grid boundary in the requested range.
 fn separate_on_grid(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.separate_on_grid", p)?;
     let r = range_param(e, "edit.separate_on_grid", p)?;
     let s = e.session_mut();
-    let lines = s.edit.grid.lines(r.start, r.end, s.sample_rate, &s.tempo, s.frame_rate, 10_000);
+    let lines = s.grid_lines(r.start, r.end, 10_000);
     let mut n = 0;
     for t in &tracks {
         for at in &lines {
