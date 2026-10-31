@@ -135,6 +135,47 @@ fn closing_during_a_plugin_editor_gesture_keeps_the_autosave() {
 }
 
 #[test]
+fn pause_keeps_the_playhead_and_play_resumes_from_there() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("transport.play", json!({"from": 48_000})).unwrap();
+    app.handle_transport(0.5);
+    assert!(app.is_playing());
+    let paused_at = app.position();
+    assert!(paused_at > 48_000);
+    app.run("transport.pause", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(!app.is_playing());
+    assert!(app.engine.transport.paused);
+    assert_eq!(app.position(), paused_at);
+    app.handle_transport(0.25);
+    assert_eq!(app.position(), paused_at, "pause must not keep the clock running");
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert!(!app.engine.transport.paused);
+    assert_eq!(app.position(), paused_at + i64::from(app.engine.session().sample_rate.hz()) / 4);
+}
+
+#[test]
+fn space_toggle_pauses_instead_of_stopping_to_the_selection() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("edit.select", json!({"start": 0, "end": 192_000})).unwrap();
+    app.run("transport.toggle", json!({})).unwrap();
+    app.handle_transport(0.5);
+    let paused_at = app.position();
+    assert!(paused_at > 0);
+    app.run("transport.toggle", json!({})).unwrap();
+    app.handle_transport(0.0);
+    assert!(!app.is_playing());
+    assert_eq!(app.position(), paused_at);
+    assert_eq!(app.engine.session().edit.selection.start, 0, "pause leaves the edit selection");
+    app.run("transport.toggle", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert!(app.position() > paused_at, "resume must continue from the pause, not the selection start");
+}
+
+#[test]
 fn session_reset_does_not_apply_old_stop_edits_to_the_new_session() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     app.run("transport.play", json!({"from": 48_000})).unwrap();

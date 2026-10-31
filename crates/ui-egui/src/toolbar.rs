@@ -350,9 +350,14 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, if playing { Color32::from_rgb(40, 90, 50) } else { key_fill(&resp) });
-                icons::draw(ui.painter(), r.shrink(5.0), "play", if playing { Color32::from_rgb(120, 255, 140) } else { t.counter_text });
-                if resp.on_hover_text("Play (Space)").clicked() {
-                    let _ = app.run("transport.play", json!({}));
+                icons::draw(
+                    ui.painter(),
+                    r.shrink(5.0),
+                    if playing { "pause" } else { "play" },
+                    if playing { Color32::from_rgb(120, 255, 140) } else { t.counter_text },
+                );
+                if resp.on_hover_text(if playing { "Pause (Space)" } else { "Play (Space)" }).clicked() {
+                    let _ = app.run(if playing { "transport.pause" } else { "transport.play" }, json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, if recording { Color32::from_rgb(110, 30, 30) } else { key_fill(&resp) });
