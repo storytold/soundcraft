@@ -91,7 +91,9 @@ fi
 # --- A. native release build ---------------------------------------------------------
 echo "==> SoundCraft $VERSION: release build"
 PATH="$HOME/.cargo/bin:$PATH" cargo build --release --locked -p soundcraft -p soundcraft-cli
-[ -x target/release/soundcraft ] && [ -x target/release/soundcraft-cli ] || die "build produced no binaries"
+if [ ! -x target/release/soundcraft ] || [ ! -x target/release/soundcraft-cli ]; then
+  die "build produced no binaries"
+fi
 
 # --- B. /app layout ------------------------------------------------------------------
 echo "==> staging /app tree in $STAGE"
