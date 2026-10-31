@@ -75,6 +75,7 @@ pub(crate) fn script(args: &ScriptArgs, out: &mut dyn Write, err: &mut dyn Write
     let text = std::fs::read_to_string(path).map_err(|source| CliError::File { path: path.clone(), source })?;
     let mut e = load_engine(&args.engine, err)?;
     let keep = args.keep_going;
+    let mut failed = false;
     for (n, line) in text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -90,10 +91,12 @@ pub(crate) fn script(args: &ScriptArgs, out: &mut dyn Write, err: &mut dyn Write
                     return Err(failure);
                 }
                 outln!(err, "{failure}");
+                failed = true;
             }
         }
     }
-    finish(&mut e, &args.engine, out)
+    finish(&mut e, &args.engine, out)?;
+    if failed { Err(CliError::ScriptFailed) } else { Ok(()) }
 }
 
 #[cfg(test)]

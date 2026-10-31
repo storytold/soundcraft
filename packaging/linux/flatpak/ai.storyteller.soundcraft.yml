@@ -23,11 +23,14 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
 command: soundcraft
 finish-args:
+  - --filesystem=xdg-data/ArtCraft/versions:ro
   # Display: Wayland first; X11 only when no Wayland compositor is running.
   - --socket=wayland
   - --socket=fallback-x11
   # X11 shared memory (MIT-SHM). Without it the X11 fallback is slow or fails.
   - --share=ipc
+  # Update checks reach GitHub (Help > Check for Updates and the startup check).
+  - --share=network
   # GPU access for the wgpu UI (Vulkan, or GL as a fallback).
   - --device=dri
   # Playback and recording. cpal talks to ALSA; the runtime's alsa-lib routes ALSA through its

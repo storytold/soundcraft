@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** minor (Tracks and Groups and Clips in dock columns; previously minor: Fade In, Fade Out and Crossfade dialogs) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** minor (Cancel Zoom Toggle; previously minor: Fade In, Fade Out and Crossfade dialogs) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 How SoundCraft feels in the hands of a Pro Tools user: tools, modes, modifiers, shortcuts,
 windows, meters. Measured from `crates/model/src/session.rs` (tools, modes), the command
@@ -22,6 +22,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | Fade In / Fade Out / Crossfade dialogs | 🟡 | Double-click a fade or crossfade, or Edit › Fades › Create (Cmd+F) over one clip start, clip end or clip boundary. Shape (Standard, S-Curve, preset curve) and slope, or Link Out / In for a crossfade; the curves are drawn live over the clips' waveforms in four display modes; five presets per dialog (Cmd-click stores, kept with the interface preferences), COMPARE, one undo step. Missing: Audition, dragging the curves in the graph, Batch Fades |
 | Edit modes: Shuffle, Slip, Spot, Grid (absolute/relative) | ✅ | Spot dialog present |
 | Grid and nudge values, all timebases | ✅ | Bars/Beats, Min:Secs, Timecode, Feet+Frames, Samples |
+| Zoom Toggle | 🟡 | E (Commands focus) and the button zoom to the edit selection with Fit To Window heights and back; Alt+Shift+E and Alt-click cancel it and keep the view. The Zoom Toggle preferences (Vertical Zoom, Horizontal Zoom, Track Height, Track View, Separate Grid Settings When Zoomed In, Zoom Toggle Follows Edit Selection, Remove Range Selection After Zooming In) are not present |
 | Keyboard focus modes (Commands, Clip List, Groups) | 🟡 | Commands focus single-key editing ✅; list focus partial |
 | Link timeline/edit, link track/edit, Tab to transient, insertion follows playback | ✅ | |
 | Mirrored MIDI, MIDI merge, layered editing | 🟡 | Stored and partly honoured |
@@ -70,6 +71,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | minor | Zoom Toggle row: Alt+Shift+E and Alt-click cancel Zoom Toggle and keep the view. Readiness estimate unchanged |
 | 2026-10-25 | minor | Edit and Mix windows: Tracks and Groups and Clips in full-height dock columns. Readiness estimate unchanged |
 | 2026-10-22 | minor | Fade In, Fade Out and Crossfade dialogs with live curves over the waveforms, presets and COMPARE. Readiness estimate unchanged |
 | 2026-10-16 | minor | Track name menu: Scroll Into View brings the track to the top of the Edit window and the left of the Mix. Readiness estimate unchanged |
