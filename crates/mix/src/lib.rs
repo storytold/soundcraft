@@ -244,6 +244,7 @@ impl MixEngine {
             }
             s.held.clear();
             s.chase = true;
+            s.chase_notes = true;
             s.align.clear();
             s.align_pre.clear();
             s.out_extra.clear();
@@ -311,6 +312,8 @@ impl MixEngine {
                 cx.retire(old);
                 strip.instrument = want.and_then(|i| cx.make(t.id, INSTRUMENT_SLOT, i, ich));
                 strip.sample = None;
+                strip.held.clear();
+                strip.chase_notes = true;
             }
             sync_sample(strip, want, s);
         }
@@ -396,6 +399,7 @@ impl MixEngine {
                 }
                 st.held.clear();
                 st.chase = true;
+                st.chase_notes = true;
             }
         }
         self.last_end = pos.saturating_add(frames as i64);

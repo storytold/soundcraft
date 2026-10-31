@@ -40,6 +40,8 @@ pub(crate) struct Strip {
     pub(crate) held: Vec<u8>,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
+    /// The next block should sound notes that are already held at the playhead (seek or a new instrument).
+    pub(crate) chase_notes: bool,
     pub(crate) muted: bool,
     pub(crate) gr: f32,
     /// Per-clip effect chains (Clip Effects) and a scratch buffer to render clips into.
@@ -138,6 +140,7 @@ impl Strip {
             sample: None,
             held: Vec::new(),
             chase: true,
+            chase_notes: true,
             muted: false,
             gr: 0.0,
             clip_fx: HashMap::new(),
@@ -226,9 +229,8 @@ fn monitor_input(t: &Track, strip: &mut Strip, live: &LiveInput<'_>, frames: usi
         }
         _ => 0,
     };
-    let n_in = live.input.len().max(1);
     for (k, dst) in strip.buf.iter_mut().enumerate() {
-        if let Some(src) = live.input.get((first + k) % n_in) {
+        if let Some(src) = first.checked_add(k).and_then(|i| live.input.get(i)) {
             for (d, x) in dst.iter_mut().zip(src.iter()).take(frames) {
                 *d = *x;
             }
@@ -305,7 +307,10 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
         if std::mem::take(&mut strip.chase) {
             chase_controllers(s, t, pos, inst);
         }
-        schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+        schedule_notes(s, t, pos, frames, inst, &mut strip.held, strip.chase_notes);
+        if frames > 0 {
+            strip.chase_notes = false;
+        }
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
         } else if let Some(c0) = strip.buf.first_mut() {

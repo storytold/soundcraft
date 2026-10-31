@@ -377,6 +377,8 @@ pub struct SoundApp {
     /// An insert just picked from its menu, opened once the audio engine has its instance.
     pub(crate) pending_open: Option<(TrackId, usize)>,
     last_rev: u64,
+    /// `Engine::session_generation` last sent to the player. A change replaces plugin instances.
+    last_session_generation: u64,
     fonts_ready: bool,
     fonts_installed: bool,
     /// Whether the system fonts are loaded next to the bundled ones; set before the first frame.
