@@ -398,6 +398,12 @@ impl Sps {
         ensure!(pic_width_in_mbs <= 1024 && pic_height_in_map_units <= 1024, "picture too large");
         let frame_mbs_only = r.read_flag()?;
         let mb_adaptive_frame_field = if !frame_mbs_only { r.read_flag()? } else { false };
+        // Coded (uncropped) geometry: picture and reference buffers are sized from it. A container
+        // whose own dimensions pass `Movie`'s opening check can carry a header that codes more
+        // pixels than the budget, and the check on the decoded picture runs only after decoding,
+        // so refuse the geometry here -- before any decoder state is allocated.
+        let frame_mbs = u64::from(pic_width_in_mbs) * u64::from((2 - frame_mbs_only as u32) * pic_height_in_map_units);
+        ensure!(frame_mbs * 256 <= crate::MAX_PIXELS, "picture too large");
         let direct_8x8_inference = r.read_flag()?;
         let frame_crop = if r.read_flag()? { Some((r.read_ue()?, r.read_ue()?, r.read_ue()?, r.read_ue()?)) } else { None };
         let vui = if r.read_flag()? { Some(parse_vui(&mut r)?) } else { None };
@@ -840,6 +846,21 @@ mod tests {
     fn huge_picture_size_is_an_error() {
         assert_eq!(invalid_sps(SpsFields { width_minus1: u32::MAX, ..Default::default() }), "picture too large");
         assert_eq!(invalid_sps(SpsFields { height_minus1: u32::MAX, ..Default::default() }), "picture too large");
+    }
+
+    #[test]
+    fn picture_beyond_the_pixel_budget_is_an_error() {
+        // 1024x1024 macroblocks passes the per-dimension cap but is 16384x16384 pixels -- four
+        // times the budget -- so it must be refused before any decoder state is sized from it.
+        let f = SpsFields { width_minus1: 1023, height_minus1: 1023, ..Default::default() };
+        assert_eq!(invalid_sps(f), "picture too large");
+    }
+
+    #[test]
+    fn picture_at_the_pixel_budget_parses() {
+        // 512x512 macroblocks is exactly 8192x8192 pixels, the budget itself, and stays valid.
+        let s = sps(SpsFields { width_minus1: 511, height_minus1: 511, ..Default::default() }).unwrap();
+        assert_eq!((s.width(), s.height()), (8192, 8192));
     }
 
     #[test]

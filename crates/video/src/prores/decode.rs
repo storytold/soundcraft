@@ -112,7 +112,7 @@ pub fn decode_frame_with(data: &[u8], opts: &DecodeOptions) -> Result<Frame> {
 pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> Result<()> {
     let (hdr, mut off, frame_size) = FrameHeader::parse(data)?;
     // The planes are sized from the header: refuse a size no movie may have before allocating.
-    if u64::from(hdr.width) * u64::from(hdr.height) > crate::movie::MAX_PIXELS {
+    if u64::from(hdr.width) * u64::from(hdr.height) > crate::MAX_PIXELS {
         return Err(Error::Unsupported("frame size"));
     }
     let data = &data[..frame_size];
@@ -511,5 +511,55 @@ fn put_block(f: &[f32; 64], plane: &mut [u16], stride: usize, x0: usize, y0: usi
         for (o, &v) in row.iter_mut().zip(src) {
             *o = conv.conv(v);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prores::ColorInfo;
+    use crate::prores::header::FRAME_ID;
+
+    /// A frame carrying only its 8-byte prefix and a frame header (no picture header): enough to
+    /// reach the decoder's geometry checks.
+    fn frame_with_dims(width: u16, height: u16) -> Vec<u8> {
+        let hdr = FrameHeader {
+            header_size: 20,
+            bitstream_version: 0,
+            encoder_id: *b"test",
+            width,
+            height,
+            chroma: ChromaFormat::Yuv422,
+            interlace: Interlace::Progressive,
+            aspect_ratio: 0,
+            frame_rate_code: 0,
+            color: ColorInfo { primaries: 1, transfer: 1, matrix: 1 },
+            alpha: AlphaType::None,
+            qmat_luma: [4; 64],
+            qmat_chroma: [4; 64],
+            luma_matrix_present: false,
+            chroma_matrix_present: false,
+        };
+        let h = hdr.write();
+        let mut v = Vec::with_capacity(8 + h.len());
+        v.extend_from_slice(&((8 + h.len()) as u32).to_be_bytes());
+        v.extend_from_slice(&FRAME_ID);
+        v.extend_from_slice(&h);
+        v
+    }
+
+    #[test]
+    fn frame_geometry_beyond_the_pixel_budget_is_refused_on_the_header() {
+        // Width and height are 16-bit fields, so a crafted header can declare up to 65535x65535
+        // pixels while the container that carries it passed `Movie`'s dimension check. The
+        // decoder must refuse the declared geometry before the plane allocations, not after:
+        // `Movie`'s budget check runs on an already-decoded frame.
+        match decode_frame(&frame_with_dims(65535, 65535)) {
+            Err(Error::Unsupported(m)) => assert_eq!(m, "frame size"),
+            other => panic!("expected the pixel-budget rejection, got {other:?}"),
+        }
+        // A frame at the budget (8192x8192) is not refused by the guard: the missing picture
+        // header is the first complaint, showing the guard is exactly a budget check.
+        assert_eq!(decode_frame(&frame_with_dims(8192, 8192)).err(), Some(Error::Truncated));
     }
 }
