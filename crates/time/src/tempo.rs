@@ -251,10 +251,10 @@ impl TempoMap {
         for (i, m) in self.meters.iter().enumerate() {
             let next_tick = self.meters.get(i + 1).map(|n| n.tick);
             let tpb = m.ticks_per_bar();
-            let bars_in_seg = next_tick.map(|nt| ((nt - cur_tick) + tpb - 1) / tpb);
+            let bars_in_seg = next_tick.map(|nt| ceil_div(nt.saturating_sub(cur_tick), tpb));
             match bars_in_seg {
-                Some(n) if bar >= cur_bar + n => {
-                    cur_bar += n;
+                Some(n) if bar >= cur_bar.saturating_add(n) => {
+                    cur_bar = cur_bar.saturating_add(n);
                     cur_tick = next_tick.unwrap_or(cur_tick);
                 }
                 _ => return cur_tick.saturating_add((bar - cur_bar).saturating_mul(tpb)),
@@ -284,7 +284,7 @@ impl TempoMap {
             if let Some(n) = self.meters.get(i + 1)
                 && tick >= n.tick
             {
-                bar += ((n.tick - seg_tick) + tpb - 1) / tpb;
+                bar = bar.saturating_add(ceil_div(n.tick.saturating_sub(seg_tick), tpb));
                 seg_tick = n.tick;
                 continue;
             }
@@ -323,6 +323,11 @@ impl TempoMap {
     }
 }
 
+/// Ceiling division for a non-negative `num` and positive `den`, without overflow.
+fn ceil_div(num: i64, den: i64) -> i64 {
+    num / den + i64::from(num % den != 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +340,16 @@ mod tests {
         assert_eq!(m.samples_at_bar_beat(BarBeat { bar: 2, beat: 1, tick: 0 }, sr), 96_000);
         assert_eq!(m.bar_beat_at(96_000, sr), BarBeat { bar: 2, beat: 1, tick: 0 });
         assert_eq!(m.bar_beat_at(24_000, sr), BarBeat { bar: 1, beat: 2, tick: 0 });
+    }
+
+    #[test]
+    fn meter_near_max_tick_does_not_overflow() {
+        let mut m = TempoMap::default();
+        m.set_meter(i64::MAX, 7, 8).unwrap();
+        let bb = m.bar_beat_at_tick(i64::MAX);
+        assert!(bb.bar > 1);
+        assert!(m.bar_start_tick(bb.bar) > 0);
+        assert!(m.bar_start_tick(i64::MAX) > 0);
     }
 
     #[test]

@@ -63,6 +63,36 @@ fn new_session_cancels_play_queued_before_the_next_frame() {
 }
 
 #[test]
+fn play_from_starts_at_from_regardless_of_the_selection() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("edit.select", json!({"tracks": ["Kick"], "start": 7_632_000, "end": 7_680_000})).unwrap();
+    app.run("transport.play", json!({"from": 4_560_000})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, 4_560_000 + 12_000);
+
+    app.run("transport.play", json!({"from": 96_000})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, 96_000 + 12_000);
+}
+
+#[test]
+fn play_from_while_looping_drops_the_selection_loop() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("options.loop_playback", json!({"value": true})).unwrap();
+    app.run("edit.select", json!({"tracks": ["Kick"], "start": 96_000, "end": 144_000})).unwrap();
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    app.run("transport.play", json!({"from": 480_000})).unwrap();
+    app.handle_transport(0.25);
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, 480_000 + 24_000);
+}
+
+#[test]
 fn record_with_nothing_armed_says_what_to_do() {
     let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
     app.run("transport.record", json!({})).unwrap();

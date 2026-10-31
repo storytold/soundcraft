@@ -225,6 +225,15 @@ fn sends_feed_aux_via_bus() {
 }
 
 #[test]
+fn send_level_automation_is_capped_at_the_fader_top() {
+    // #884: a send lane point past +12 dB (pushed without `set_point`'s clamp) reads as +12.
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    let tr = s.track_mut(t).unwrap();
+    tr.lane_mut(&AutoParam::SendLevel(0)).points.push(soundcraft_model::AutomationPoint { at: 0, value: 500.0 });
+    assert_eq!(send_level(s.track(t).unwrap(), 0, 0.0, 100), SEND_LEVEL_MAX_DB);
+}
+
+#[test]
 fn render_bus_is_the_bus_not_the_main_mix() {
     let (mut s, t) = session_with_dc(0.5, 4800);
     let stem = s.add_bus("Stem", ChannelFormat::Stereo);

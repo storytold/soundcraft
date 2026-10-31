@@ -84,6 +84,8 @@ pub enum TransportRequest {
     /// Stop the old session's transport without applying stop-time edits to the new document.
     ResetSession,
     Play,
+    /// Start playing at this position (or move there if already playing), ignoring the selection.
+    PlayFrom(Samples),
     Stop,
     TogglePlay,
     Record,

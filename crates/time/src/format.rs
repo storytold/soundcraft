@@ -120,6 +120,12 @@ pub fn parse_position(
             if tc.minutes >= 60 || tc.seconds >= 60 || tc.frames >= rate.nominal().max(1) {
                 return Err(err());
             }
+            if rate.is_drop() && tc.seconds == 0 && tc.minutes % 10 != 0 {
+                let dropped = if rate.nominal() >= 60 { 4 } else { 2 };
+                if tc.frames < dropped {
+                    return Err(err());
+                }
+            }
             Ok(tc.to_samples(rate, sr).saturating_sub(tc_start))
         }
         TimeFormat::FeetFrames => {
@@ -211,6 +217,20 @@ mod tests {
         assert!(parse_position("abc", TimeFormat::Samples, sr, &map, rate, 0, 0).is_err());
         assert!(parse_position("1:x", TimeFormat::MinSecs, sr, &map, rate, 0, 0).is_err());
         assert!(parse_position("", TimeFormat::BarsBeats, sr, &map, rate, 0, 0).is_err());
+    }
+
+    #[test]
+    fn drop_frame_skipped_labels_are_rejected() {
+        let (sr, map, _) = ctx();
+        for (rate, skipped) in [
+            (FrameRate::Fps29_97Drop, &["00:01:00;00", "00:01:00;01"][..]),
+            (FrameRate::Fps59_94Drop, &["00:01:00;00", "00:01:00;01", "00:01:00;02", "00:01:00;03"][..]),
+        ] {
+            for text in skipped {
+                assert!(parse_position(text, TimeFormat::Timecode, sr, &map, rate, 0, 0).is_err(), "accepted skipped label {text} at {rate:?}");
+            }
+            assert!(parse_position("00:10:00;00", TimeFormat::Timecode, sr, &map, rate, 0, 0).is_ok());
+        }
     }
 
     #[test]
