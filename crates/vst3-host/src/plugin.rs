@@ -1,7 +1,8 @@
 //! `Vst3Plugin`: a loaded VST3 instance behind the safe `soundcraft_dsp::Plugin` trait.
 
-use crate::ffi::{AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND};
+use crate::ffi::{AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND, ProcessInput};
 use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport, Unit};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use vst3::ComWrapper;
@@ -168,11 +169,57 @@ impl Vst3Plugin {
     /// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
     /// allocates on the audio thread).
     fn push_note(&mut self, e: NoteEvent) {
-        if self.notes.len() >= self.notes.capacity() {
-            return;
+        push_sorted(&mut self.notes, e);
+    }
+}
+
+fn push_sorted(notes: &mut Vec<NoteEvent>, e: NoteEvent) {
+    if notes.len() >= notes.capacity() {
+        return;
+    }
+    let pos = notes.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
+    notes.insert(pos, e);
+}
+
+/// Keeps only the pending releases, one per key and moved to the start of the next block, so at
+/// most 128 remain and `all_notes_off` always has room in the queue.
+fn keep_releases(notes: &mut Vec<NoteEvent>) {
+    let mut seen = [false; 128];
+    notes.retain(|e| match *e {
+        NoteEvent::Off { key, .. } => seen.get_mut(usize::from(key)).is_some_and(|s| !std::mem::replace(s, true)),
+        _ => false,
+    });
+    for e in notes.iter_mut() {
+        e.set_time(0);
+    }
+}
+
+/// Copy `n` frames from `start` of the host buffers into the plugin's input `port` (mono sources
+/// fill every port channel).
+fn feed_input(inputs: &mut BusBuffers, port: usize, io: &[Vec<f32>], ch: usize, (start, n): (usize, usize)) {
+    for c in 0..inputs.channels(port) {
+        let src = io.get(c.min(ch - 1)).and_then(|s| s.get(start..start + n));
+        if let (Some(src), Some(dst)) = (src, inputs.channel_mut(port, c).and_then(|d| d.get_mut(..n))) {
+            dst.copy_from_slice(src);
         }
-        let pos = self.notes.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
-        self.notes.insert(pos, e);
+    }
+}
+
+/// Copy `n` frames of the plugin's output `port` into the host buffers from `start`; a mono host
+/// buffer takes the average of a stereo port.
+fn read_output(outputs: &BusBuffers, port: usize, io: &mut [Vec<f32>], ch: usize, (start, n): (usize, usize)) {
+    let oc = outputs.channels(port);
+    for (c, dst) in io.iter_mut().take(ch).enumerate() {
+        let Some(dst) = dst.get_mut(start..start + n) else { continue };
+        if ch == 1 && oc >= 2 {
+            if let (Some(l), Some(r)) = (outputs.channel(port, 0), outputs.channel(port, 1)) {
+                for ((d, a), b) in dst.iter_mut().zip(l).zip(r) {
+                    *d = 0.5 * (a + b);
+                }
+            }
+        } else if let Some(src) = outputs.channel(port, c.min(oc.saturating_sub(1))).and_then(|s| s.get(..n)) {
+            dst.copy_from_slice(src);
+        }
     }
 }
 
@@ -213,8 +260,11 @@ impl Plugin for Vst3Plugin {
     }
 
     fn reset(&mut self) {
-        self.notes.clear();
+        // Keep pending releases and release whatever is still held, so the processor's voices stop
+        // on the next block instead of sounding on while the host forgets them.
+        keep_releases(&mut self.notes);
         self.controls.clear();
+        self.all_notes_off();
         self.held = [false; 128];
     }
 
@@ -269,45 +319,28 @@ impl Plugin for Vst3Plugin {
             let end = u32::try_from(start + n).unwrap_or(u32::MAX);
             // Feed the main input bus (mono sources fill every bus channel).
             if self.has_input {
-                for c in 0..self.inputs.channels(0) {
-                    let src = io.get(c.min(ch - 1)).and_then(|s| s.get(start..start + n));
-                    if let (Some(src), Some(dst)) = (src, self.inputs.channel_mut(0, c).and_then(|d| d.get_mut(..n))) {
-                        dst.copy_from_slice(src);
-                    }
-                }
+                feed_input(&mut self.inputs, 0, io, ch, (start, n));
             }
             let k = self.notes.iter().position(|e| e.time() >= end).unwrap_or(self.notes.len());
             let offset = u32::try_from(start).unwrap_or(u32::MAX);
             let notes = self.notes.get(..k).unwrap_or(&[]);
-            let r = self.inst.process(
-                n,
-                &mut self.inputs,
-                &mut self.outputs,
-                &self.pending,
-                &self.controls,
+            let r = self.inst.process(ProcessInput {
+                frames: n,
+                inputs: &mut self.inputs,
+                outputs: &mut self.outputs,
+                params: &self.pending,
+                controls: &self.controls,
                 notes,
                 offset,
-                self.position,
-                self.transport.as_ref(),
-            );
+                project_time: self.position,
+                transport: self.transport.as_ref(),
+            });
             self.pending.clear();
             self.notes.drain(..k);
             self.position = self.position.saturating_add(i64::try_from(n).unwrap_or(0));
             match r {
                 Ok(()) if self.has_output => {
-                    let oc = self.outputs.channels(0);
-                    for (c, dst) in io.iter_mut().take(ch).enumerate() {
-                        let Some(dst) = dst.get_mut(start..start + n) else { continue };
-                        if ch == 1 && oc >= 2 {
-                            if let (Some(l), Some(r)) = (self.outputs.channel(0, 0), self.outputs.channel(0, 1)) {
-                                for ((d, a), b) in dst.iter_mut().zip(l).zip(r) {
-                                    *d = 0.5 * (a + b);
-                                }
-                            }
-                        } else if let Some(src) = self.outputs.channel(0, c.min(oc.saturating_sub(1))).and_then(|s| s.get(..n)) {
-                            dst.copy_from_slice(src);
-                        }
-                    }
+                    read_output(&self.outputs, 0, io, ch, (start, n));
                 }
                 Err(e) => log::debug!("{}: {e}", self.info.id),
                 _ => {}
@@ -399,7 +432,16 @@ impl Plugin for Vst3Plugin {
 
     fn editor(&mut self) -> Option<Box<dyn PluginEditor>> {
         let link = self.inst.editor()?;
-        Some(Box::new(Vst3Editor { link, host: self.inst.host_ref(), info: self.info, ids: self.ids.clone(), maps: self.maps.clone() }))
+        let mut units: HashMap<u32, String> = self.inst.params().into_iter().map(|p| (p.id, p.units)).collect();
+        Some(Box::new(Vst3Editor {
+            link,
+            host: self.inst.host_ref(),
+            info: self.info,
+            index: self.info.params.iter().enumerate().map(|(i, p)| (p.id, i)).collect(),
+            units: self.ids.iter().map(|id| units.remove(id).unwrap_or_default()).collect(),
+            ids: self.ids.clone(),
+            maps: self.maps.clone(),
+        }))
     }
 
     fn state_reader(&mut self) -> Option<Box<dyn soundcraft_dsp::PluginStateReader>> {
@@ -423,6 +465,10 @@ struct Vst3Editor {
     link: Arc<EditorLink>,
     host: ComWrapper<HostContext>,
     info: &'static PluginInfo,
+    /// Position of each SoundCraft param id in `info.params` (looked up once per row and frame).
+    index: HashMap<&'static str, usize>,
+    /// The plugin's own unit label of each param (same order as `ids`).
+    units: Vec<String>,
     ids: Vec<u32>,
     maps: Vec<Mapping>,
 }
@@ -485,6 +531,42 @@ impl PluginEditor for Vst3Editor {
         let Some(i) = self.info.params.iter().position(|p| p.id == id) else { return };
         if let (Some(&vid), Some(n)) = (self.ids.get(i), self.normalized(i, value)) {
             self.link.set_normalized(vid, n);
+        }
+    }
+
+    fn value_text(&mut self, id: &str, value: f32) -> Option<String> {
+        let &i = self.index.get(id)?;
+        let pi = self.info.params.get(i)?;
+        // A plugin whose plain mapping is the identity (JUCE, the SDK's default `Parameter`) leaves
+        // a 0..1 range with the units of its real one: only its own text says what the value is.
+        if !matches!(self.maps.get(i)?, Mapping::Plain) || pi.min != 0.0 || pi.max != 1.0 {
+            return None;
+        }
+        let text = self.link.value_text(*self.ids.get(i)?, self.normalized(i, value)?)?;
+        // VST3 keeps the units apart from the text (JUCE's label, the SDK's `RangeParameter`),
+        // but some plugins put them in both.
+        let units = self.units.get(i).map_or("", |u| u.trim());
+        if units.is_empty() || text.trim_end().to_lowercase().ends_with(&units.to_lowercase()) { Some(text) } else { Some(format!("{text} {units}")) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A queue full of releases still has room to release every held key after a reset.
+    #[test]
+    fn reset_keeps_room_to_release_every_held_key() {
+        let mut notes = Vec::with_capacity(EVENT_CAP);
+        for i in 0..EVENT_CAP {
+            push_sorted(&mut notes, NoteEvent::Off { time: i as u32, key: (i % 4) as u8 });
+        }
+        keep_releases(&mut notes);
+        for key in 0..128u8 {
+            push_sorted(&mut notes, NoteEvent::Off { time: 0, key });
+        }
+        for key in 0..128u8 {
+            assert!(notes.iter().any(|e| matches!(*e, NoteEvent::Off { key: k, .. } if k == key)), "key {key} was never released");
         }
     }
 }

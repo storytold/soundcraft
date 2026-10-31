@@ -143,6 +143,11 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
                 painter.line_segment([c0, c1], Stroke::new(s.width * 1.4, c));
             }
         }
+        "close" => {
+            // A code-drawn close cross: no bundled UI font has U+2715 in every family.
+            painter.line_segment([p(r, 0.3, 0.3), p(r, 0.7, 0.7)], s);
+            painter.line_segment([p(r, 0.7, 0.3), p(r, 0.3, 0.7)], s);
+        }
         "lock" => {
             painter.rect_filled(Rect::from_min_max(p(r, 0.22, 0.46), p(r, 0.78, 0.88)), r.width() * 0.08, c);
             let (x, y, w) = (r.center().x, r.min.y + r.height() * 0.46, r.width() * 0.19);

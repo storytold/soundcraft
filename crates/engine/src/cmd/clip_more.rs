@@ -1,10 +1,10 @@
 //! More Clip menu commands: Regroup, Unloop, Clip Effects bypass/render, Conform to Tempo and
 //! Remove Pitch Shift.
+use super::{CommandSpec, bad, clip_ids_param, has_selection, str_param};
 
 use super::more_util::{render_stretched, replace_clip};
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
 use soundcraft_model::{Clip, ClipContent, ClipId, Session, TrackId};
 use soundcraft_time::Samples;
 
@@ -99,24 +99,40 @@ fn regroup(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"group": g, "clips": n}))
 }
 
-fn same_material(a: &Clip, b: &Clip) -> bool {
-    a.length == b.length
-        && (a.loop_id.is_some() && a.loop_id == b.loop_id
-            || match (&a.content, &b.content) {
-                (ClipContent::Audio { source: s1, offset: o1 }, ClipContent::Audio { source: s2, offset: o2 }) => s1 == s2 && o1 == o2,
-                (ClipContent::Midi { sequence: q1 }, ClipContent::Midi { sequence: q2 }) => q1 == q2,
-                (ClipContent::Video { source: s1, offset: o1 }, ClipContent::Video { source: s2, offset: o2 }) => s1 == s2 && o1 == o2,
-                _ => false,
-            })
+fn same_content(a: &Clip, b: &Clip) -> bool {
+    match (&a.content, &b.content) {
+        (ClipContent::Audio { source: s1, offset: o1 }, ClipContent::Audio { source: s2, offset: o2 }) => s1 == s2 && o1 == o2,
+        (ClipContent::Midi { sequence: q1 }, ClipContent::Midi { sequence: q2 }) => q1 == q2,
+        (ClipContent::Video { source: s1, offset: o1 }, ClipContent::Video { source: s2, offset: o2 }) => s1 == s2 && o1 == o2,
+        _ => false,
+    }
 }
 
-/// The loop a clip belongs to: back-to-back copies of the same material. Origin first.
+fn same_material(a: &Clip, b: &Clip) -> bool {
+    a.length == b.length && (a.loop_id.is_some() && a.loop_id == b.loop_id || same_content(a, b))
+}
+
+/// Whether `short` is the last iteration of `full`'s loop, cut short at its end. It shares the loop,
+/// it is shorter, and no clip of the loop starts where it ends, as the other half of a split clip
+/// does. When `full` is a whole copy (an iteration of the same length ends where it starts), that is
+/// enough. When `full` is the loop's origin alone, `short` also has to hold `full`'s material.
+fn cut_short(clips: &[Clip], full: &Clip, short: &Clip) -> bool {
+    let whole_copy = || clips.iter().any(|x| x.id != full.id && x.end() == full.start && same_material(x, full));
+    full.loop_id.is_some()
+        && full.loop_id == short.loop_id
+        && short.length < full.length
+        && !clips.iter().any(|x| x.loop_id == short.loop_id && x.start == short.end())
+        && (whole_copy() || same_content(full, short))
+}
+
+/// The loop a clip belongs to: back-to-back copies of the same material, the last of which can be
+/// cut short. Origin first.
 fn loop_chain(s: &Session, t: TrackId, id: ClipId) -> Vec<ClipId> {
     let Some(tr) = s.track(t) else { return Vec::new() };
     let clips = tr.clips();
     let Some(mut cur) = clips.iter().find(|c| c.id == id) else { return Vec::new() };
     let mut guard = 0;
-    while let Some(prev) = clips.iter().find(|x| x.id != cur.id && x.end() == cur.start && same_material(x, cur)) {
+    while let Some(prev) = clips.iter().find(|x| x.id != cur.id && x.end() == cur.start && (same_material(x, cur) || cut_short(clips, x, cur))) {
         cur = prev;
         guard += 1;
         if guard > clips.len() {
@@ -127,6 +143,9 @@ fn loop_chain(s: &Session, t: TrackId, id: ClipId) -> Vec<ClipId> {
     while let Some(next) = clips.iter().find(|x| !chain.contains(&x.id) && x.start == cur.end() && same_material(x, cur)) {
         chain.push(next.id);
         cur = next;
+    }
+    if let Some(last) = clips.iter().find(|x| !chain.contains(&x.id) && x.start == cur.end() && cut_short(clips, cur, x)) {
+        chain.push(last.id);
     }
     chain
 }
@@ -340,6 +359,101 @@ mod tests {
         e.execute("clip.unloop", &json!({"clip": id.0, "mode": "flatten"})).unwrap();
         assert_eq!(e.session().track(t).unwrap().clips().len(), 3);
         assert!(e.session().track(t).unwrap().clips().iter().all(|c| c.loop_id.is_none() && c.group.is_none()));
+    }
+
+    fn spans(e: &Engine, t: TrackId) -> Vec<(Samples, Samples)> {
+        e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.length)).collect()
+    }
+
+    #[test]
+    fn loop_length_cuts_the_last_iteration_short() {
+        let (mut e, t, id) = midi_engine();
+        assert_eq!(e.execute("clip.loop", &json!({"clip": id.0, "length": 250})).unwrap()["loops"], 2);
+        assert_eq!(spans(&e, t), vec![(0, 100), (100, 100), (200, 50)]);
+        // A length that is a whole number of loops leaves no short one.
+        let (mut e, t, id) = midi_engine();
+        assert_eq!(e.execute("clip.loop", &json!({"clip": id.0, "length": 300})).unwrap()["loops"], 2);
+        assert_eq!(spans(&e, t), vec![(0, 100), (100, 100), (200, 100)]);
+    }
+
+    #[test]
+    fn a_short_last_iteration_fits_its_fades_and_drops_a_sync_point_past_the_cut() {
+        let (mut e, t, id) = midi_engine();
+        if let Some(c) = e.session_mut().find_clip_mut(id) {
+            c.sync_point = 80;
+            c.fade_out.len = 70;
+        }
+        e.execute("clip.loop", &json!({"clip": id.0, "length": 150})).unwrap();
+        let clips = e.session().track(t).unwrap().clips();
+        let last = clips.last().unwrap();
+        assert_eq!((last.start, last.length, last.sync_point, last.fade_out.len), (100, 50, 0, 50));
+        assert_eq!((clips[0].sync_point, clips[0].fade_out.len), (80, 70));
+    }
+
+    #[test]
+    fn unloop_removes_a_short_last_iteration_too() {
+        let (mut e, t, id) = midi_engine();
+        e.execute("clip.loop", &json!({"clip": id.0, "length": 250})).unwrap();
+        e.execute("clip.unloop", &json!({"clip": id.0})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 100)]);
+        // An edit to the source note or to the short loop's note.
+        for edited in [0, 2] {
+            let (mut e, t, id) = midi_engine();
+            e.execute("clip.loop", &json!({"clip": id.0, "length": 250})).unwrap();
+            let target = e.session().track(t).unwrap().clips()[edited].id;
+            if let Some(c) = e.session_mut().find_clip_mut(target)
+                && let ClipContent::Midi { sequence } = &mut c.content
+            {
+                sequence.notes[0].length = 1100;
+            }
+            e.execute("clip.unloop", &json!({"clip": id.0})).unwrap();
+            assert_eq!(spans(&e, t), vec![(0, 100)], "edited loop {edited}");
+        }
+    }
+
+    #[test]
+    fn unloop_keeps_both_halves_of_a_split_clip() {
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 3})).unwrap();
+        crate::edit::separate_at(e.session_mut(), t, 230);
+        e.execute("clip.unloop", &json!({"clip": ids[0].0})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 100), (200, 30), (230, 70)]);
+        // A split loop origin is not a loop.
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 2})).unwrap();
+        crate::edit::separate_at(e.session_mut(), t, 30);
+        assert!(e.execute("clip.unloop", &json!({"clip": ids[0].0})).is_err());
+        assert_eq!(spans(&e, t), vec![(0, 30), (30, 70), (100, 100)]);
+    }
+
+    #[test]
+    fn loop_fill_stops_at_the_next_clip() {
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0), (430, 100, 0)]);
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "fill": true})).unwrap()["loops"], 4);
+        assert_eq!(spans(&e, t), vec![(0, 100), (100, 100), (200, 100), (300, 100), (400, 30), (430, 100)]);
+    }
+
+    #[test]
+    fn loop_fill_without_a_next_clip_runs_to_the_session_end() {
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        let other = e.session_mut().add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let far = e.session_mut().new_clip_id();
+        crate::edit::place_clip(e.session_mut(), other, Clip::audio(far, "far", SourceId(9), 0, 200, 150));
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "fill": true})).unwrap()["loops"], 3);
+        assert_eq!(spans(&e, t), vec![(0, 100), (100, 100), (200, 100), (300, 50)]);
+        // The last clip in the session has nothing to fill up to.
+        assert_eq!(e.execute("clip.loop", &json!({"clip": far.0, "fill": true})).unwrap()["loops"], 0);
+    }
+
+    #[test]
+    fn a_fill_or_length_past_the_loop_limit_is_refused_without_an_edit() {
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0), (100_150, 100, 0)]);
+        let err = e.execute("clip.loop", &json!({"clip": ids[0].0, "fill": true})).unwrap_err().to_string();
+        assert!(err.contains("1001 loops"), "{err}");
+        assert!(e.execute("clip.loop", &json!({"clip": ids[0].0, "length": 100_200})).is_err());
+        assert_eq!(spans(&e, t), vec![(0, 100), (100_150, 100)]);
+        // 1000 loops still fit.
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "length": 100_100})).unwrap()["loops"], 1000);
     }
 
     #[test]

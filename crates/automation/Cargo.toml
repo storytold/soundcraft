@@ -9,9 +9,15 @@ repository.workspace = true
 
 [dependencies]
 soundcraft-engine.workspace = true
+soundcraft-audio-io.workspace = true
 soundcraft-time.workspace = true
 serde_json.workspace = true
 log.workspace = true
+thiserror.workspace = true
+
+# The launch flags (`args`): the web build has none.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+clap.workspace = true
 
 [lints]
 workspace = true

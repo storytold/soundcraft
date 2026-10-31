@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-13 · **Change:** minor (drag across checkboxes, #399; waveforms preview fades during drag) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** minor (Tracks and Groups and Clips in dock columns) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 How SoundCraft feels in the hands of a Pro Tools user: tools, modes, modifiers, shortcuts,
 windows, meters. Measured from `crates/model/src/session.rs` (tools, modes), the command
@@ -35,14 +35,14 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | Modifier gestures (Alt for all tracks, Shift-Alt for selected, Cmd-click fine faders, Ctrl-click defaults) | 🟡 | Main ones on faders and pan; not across every control |
 | Scroll/zoom: wheel, trackpad pinch | 🟡 | Anchored trackpad zoom in open PRs #112, #137 |
 | Drag and drop: Clip List → tracks, files → tracks | ✅ macOS/Windows; 🟡 Wayland (PR #150) | |
-| Context menus (clip, track name, ruler, Clip List) | 🟡 | Clip and track menus exist; depth lower than Pro Tools'; Clip List delete (#4) |
+| Context menus (clip, track name, ruler, Clip List) | 🟡 | Clip and track menus exist; depth lower than Pro Tools'; Clip List delete (#4); track name ▸ Scroll Into View (Edit top, Mix left) |
 | Drag across checkboxes to check or uncheck several | ✅ | #399; every checkbox, as in the other Craft apps |
 
 ## Windows and panels
 
 | Window | Status | Notes |
 |---|---|---|
-| Edit window: rulers, track headers, view columns, Clip List, Groups, Tracks list | ✅ | Track Pin (new in 2026.4) ✅ (`track.pin`) |
+| Edit window: rulers, track headers, view columns, Clip List, Groups, Tracks list | ✅ | Track Pin (new in 2026.4) ✅ (`track.pin`); Tracks and Groups and the Clip List sit in full-height dock columns at the window's sides |
 | Mix window: strips, views (inserts, sends, I/O, comments, EQ curve, preamps, instruments, object) | ✅ | Narrow Mix ✅; Mix and Edit on screen at once (Window › Mix in Separate Window, its own native window) ✅; Delay Compensation view and HEAT missing |
 | MIDI Editor, Score Editor, Event List | 🟡 | Dock height bug fixed (#113); notation editing shallow |
 | Transport, Big Counter, Memory Locations, Automation, Video, Universe, Renderer, UI Customization | ✅ present | |
@@ -51,6 +51,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | Preferences | 🟡 | Many settings stored, fewer honoured |
 | Window configurations, Tile/Cascade | 🟡 | Configurations ✅; Tile/Cascade in PR #151 |
 | Plugin windows | 🟡 | Generic parameter sliders; Pro Tools plugins have bespoke GUIs (#138 asks for skeuomorphic design); multi-page plugin views (#6) |
+| A plugin opens when it's inserted | ✅ | #486; a hosted plugin's own editor, else its plugin window |
 | Command palette (Search) | ✅ | Over every command |
 
 ## Look and meters
@@ -68,6 +69,9 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | minor | Edit and Mix windows: Tracks and Groups and Clips in full-height dock columns. Readiness estimate unchanged |
+| 2026-10-16 | minor | Track name menu: Scroll Into View brings the track to the top of the Edit window and the left of the Mix. Readiness estimate unchanged |
+| 2026-10-13 | minor | A plugin opens when it's inserted (#486) |
 | 2026-10-13 | minor | Drag across checkboxes (#399) |
 | 2026-10-13 | minor | Waveforms and fade curves share temporary envelopes during drag, without rebuilding media or editing the document before release. Readiness estimate unchanged |
 | 2026-10-13 | minor | Fade curves use bounded physical-pixel sampling; midpoint handles stay visible and inside the clip, with repeat-drag coverage after extreme bends. Readiness estimate unchanged |

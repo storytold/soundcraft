@@ -1,6 +1,6 @@
 //! [`Movie`]: open an MP4/MOV, report its picture format, and decode frames at times to RGBA.
 
-use crate::convert::{Matrix, planar_to_rgba, scale_rgba};
+use crate::convert::{Matrix, Planes, planar_to_rgba, scale_rgba};
 use crate::isobmff::{self, ByteSource, CodecConfig, Mp4File, TrackKind};
 use crate::{Result, VideoError};
 use std::collections::VecDeque;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 pub type SharedSource = Arc<dyn ByteSource + Send + Sync>;
 
 /// Largest picture we decode (bounds every allocation derived from the file).
-const MAX_PIXELS: u64 = 8192 * 8192;
+pub(crate) const MAX_PIXELS: u64 = 8192 * 8192;
 
 /// A decoded picture, packed RGBA (8 bits per channel, `width * height * 4` bytes).
 #[derive(Debug, Clone, PartialEq)]
@@ -395,6 +395,11 @@ impl Movie {
         self.decoded += 1;
         match self.codec {
             Codec::ProRes => {
+                let (hdr, ..) = crate::prores::FrameHeader::parse(&data).map_err(|e| VideoError::Decode(e.to_string()))?;
+                let (w, h) = (u32::from(hdr.width), u32::from(hdr.height));
+                if (w, h) != (self.info.width, self.info.height) {
+                    return Err(VideoError::Decode(format!("{w}x{h} frame in a {}x{} track", self.info.width, self.info.height)));
+                }
                 let opts = crate::prores::DecodeOptions { bit_depth: Some(8), threads: false };
                 let f = crate::prores::decode_frame_with(&data, &opts).map_err(|e| VideoError::Decode(e.to_string()))?;
                 if u64::from(f.width) * u64::from(f.height) > MAX_PIXELS {
@@ -406,7 +411,7 @@ impl Movie {
                 let (y, u, v) = (narrow(&f.y), narrow(&f.cb), narrow(&f.cr));
                 let cx = if cw < w { 2 } else { 1 };
                 let m = Matrix::for_code(f.color.matrix, f.height, false);
-                let rgba = planar_to_rgba(w, h, &y, w, &u, &v, cw, cx, 1, &m);
+                let rgba = planar_to_rgba(&Planes { width: w, height: h, y: &y, y_stride: w, u: &u, v: &v, uv_stride: cw, cx, cy: 1 }, &m);
                 Ok(Frame { width: f.width, height: f.height, rgba, index, time })
             }
             Codec::Jpeg => {
@@ -424,7 +429,20 @@ impl Movie {
 
     fn h264_to_frame(&self, p: &crate::h264::Picture, index: usize) -> Frame {
         let m = Matrix::for_code(p.color.matrix, p.height, p.color.full_range);
-        let rgba = planar_to_rgba(p.width as usize, p.height as usize, &p.y, p.y_stride, &p.u, &p.v, p.uv_stride, 2, 2, &m);
+        let rgba = planar_to_rgba(
+            &Planes {
+                width: p.width as usize,
+                height: p.height as usize,
+                y: &p.y,
+                y_stride: p.y_stride,
+                u: &p.u,
+                v: &p.v,
+                uv_stride: p.uv_stride,
+                cx: 2,
+                cy: 2,
+            },
+            &m,
+        );
         Frame { width: p.width, height: p.height, rgba, index, time: self.times.get(index).copied().unwrap_or(0.0) }
     }
 
@@ -467,7 +485,7 @@ impl Movie {
                 let s = st.next;
                 st.next += 1;
                 let pts = self.rank.get(s).copied().unwrap_or(0) as i64;
-                let data = match self.mp4.read_sample(&*self.src, self.track, s) {
+                let data = match self.read(s) {
                     Ok(d) => d,
                     Err(e) => {
                         last_err = Some(e.to_string());

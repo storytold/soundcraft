@@ -51,7 +51,7 @@ pub fn os_search_paths(home: Option<PathBuf>, common_program_files: Option<PathB
 
 /// True when the path names a CLAP plugin (`*.clap`, case-insensitive).
 pub fn is_clap_path(p: &Path) -> bool {
-    p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("clap"))
+    p.extension().and_then(std::ffi::OsStr::to_str).is_some_and(|e| e.eq_ignore_ascii_case("clap"))
 }
 
 /// Recursively collects `.clap` files and bundles under `dirs` (missing directories are skipped).

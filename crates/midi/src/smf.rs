@@ -122,7 +122,7 @@ impl TickConv {
             let [hi, lo] = division.to_be_bytes();
             let fps = -i128::from(hi as i8);
             let tpf = i128::from(lo);
-            if fps <= 0 || tpf == 0 {
+            if !matches!(fps, 24 | 25 | 29 | 30) || tpf == 0 {
                 return Err(MidiError::Invalid { offset, reason: "invalid SMPTE division" });
             }
             let two_ppq = 2 * i128::from(PPQ);
@@ -204,7 +204,12 @@ pub fn read_smf(bytes: &[u8]) -> Result<Smf, MidiError> {
         tracks.push(track);
     }
 
-    if format == 1 && tracks.len() > 1 && tracks.first().is_some_and(|t| t.sequence.notes.is_empty() && t.sequence.ctrls.is_empty()) {
+    // A lone track is only a conductor track if it carried global data and has no name; otherwise it is kept.
+    let globals_present = !(globals.tempos.is_empty() && globals.meters.is_empty() && globals.markers.is_empty() && globals.key_sigs.is_empty());
+    if format == 1
+        && (tracks.len() > 1 || globals_present)
+        && tracks.first().is_some_and(|t| t.sequence.notes.is_empty() && t.sequence.ctrls.is_empty() && (tracks.len() > 1 || t.name.is_empty()))
+    {
         tracks.remove(0);
     }
 
@@ -434,25 +439,8 @@ fn write_track(out: &mut Vec<u8>, mut events: Vec<WEvent>) -> Result<(), MidiErr
     Ok(())
 }
 
-/// Writes a format-1 Standard MIDI File at [`PPQ`] (960) ticks per quarter note.
-///
-/// Track 1 is a conductor track holding tempos, meters, key signatures and markers; every
-/// [`SmfTrack`] follows as its own track. Negative ticks are clamped to 0, data values are
-/// clamped to their MIDI ranges, and note-on velocity 0 is written as 1 (0 would mean
-/// note-off). At each tick note-offs are written before controllers, then note-ons.
-///
-/// Errors: invalid tempo (non-finite or <= 0 bpm), meter denominator that is not a power of two
-/// (1..=128), more than 65535 tracks, or a gap between events beyond the 28-bit delta limit.
-pub fn write_smf(smf: &Smf) -> Result<Vec<u8>, MidiError> {
-    let ntrks = u16::try_from(smf.tracks.len().saturating_add(1)).map_err(|_| MidiError::Write("more than 65535 tracks".into()))?;
-    let mut out = Vec::new();
-    out.extend_from_slice(b"MThd");
-    out.extend_from_slice(&6u32.to_be_bytes());
-    out.extend_from_slice(&1u16.to_be_bytes());
-    out.extend_from_slice(&ntrks.to_be_bytes());
-    out.extend_from_slice(&u16::try_from(PPQ).unwrap_or(960).to_be_bytes());
-
-    // Conductor track.
+/// The conductor track: tempos, meters, key signatures and markers.
+fn conductor_events(smf: &Smf) -> Result<Vec<WEvent>, MidiError> {
     let mut ev = Vec::new();
     for &(t, bpm) in &smf.tempos {
         if !bpm.is_finite() || bpm <= 0.0 {
@@ -476,29 +464,102 @@ pub fn write_smf(smf: &Smf) -> Result<Vec<u8>, MidiError> {
     for (t, text) in &smf.markers {
         ev.push(WEvent { tick: clamp_tick(*t), order: 3, bytes: meta(0x06, text.as_bytes())? });
     }
-    write_track(&mut out, ev)?;
+    Ok(ev)
+}
+
+/// Trim notes still sounding when the next same-pitch note starts, and drop duplicates.
+fn trim_overlaps(notes: &[Note], ends: &mut [u64], dropped: &mut [bool]) {
+    // The reader pairs offs with ons first-in first-out, so a note still sounding when the next
+    // same-pitch note starts would swap ends with it: trim it to that start. When two same-pitch
+    // notes start on the same tick they cannot be told apart, so only the longer one is written.
+    let mut order: Vec<usize> = (0..notes.len()).collect();
+    order.sort_by_key(|&i| {
+        notes.get(i).map_or((0, 0, 0, std::cmp::Reverse(0)), |n| {
+            (n.channel & 0x0F, n.pitch.min(127), clamp_tick(n.start), std::cmp::Reverse(ends.get(i).copied().unwrap_or(0)))
+        })
+    });
+    let mut prev: Option<usize> = None;
+    for &b in &order {
+        let Some(nb) = notes.get(b) else { continue };
+        if let Some(a) = prev
+            && let Some(na) = notes.get(a)
+            && na.channel & 0x0F == nb.channel & 0x0F
+            && na.pitch.min(127) == nb.pitch.min(127)
+        {
+            let (sa, sb) = (clamp_tick(na.start), clamp_tick(nb.start));
+            if sa == sb {
+                if let Some(d) = dropped.get_mut(b) {
+                    *d = true;
+                }
+                continue;
+            }
+            if let Some(ea) = ends.get_mut(a)
+                && sb < *ea
+            {
+                *ea = sb;
+            }
+        }
+        prev = Some(b);
+    }
+}
+
+/// Writes a format-1 Standard MIDI File at [`PPQ`] (960) ticks per quarter note.
+///
+/// Track 1 is a conductor track holding tempos, meters, key signatures and markers; every
+/// [`SmfTrack`] follows as its own track. Negative ticks are clamped to 0, data values are
+/// clamped to their MIDI ranges, and note-on velocity 0 is written as 1 (0 would mean
+/// note-off). At each tick note-offs are written before controllers, then note-ons.
+///
+/// Errors: invalid tempo (non-finite or <= 0 bpm), meter denominator that is not a power of two
+/// (1..=128), more than 65535 tracks, or a gap between events beyond the 28-bit delta limit.
+pub fn write_smf(smf: &Smf) -> Result<Vec<u8>, MidiError> {
+    // The conductor track is omitted when there is nothing to put in it and no content tracks, so an
+    // empty `Smf` is written as a file with zero tracks and reads back as zero tracks.
+    let has_conductor =
+        !(smf.tempos.is_empty() && smf.meters.is_empty() && smf.key_sigs.is_empty() && smf.markers.is_empty() && smf.tracks.is_empty());
+    let ntrks =
+        u16::try_from(smf.tracks.len().saturating_add(usize::from(has_conductor))).map_err(|_| MidiError::Write("more than 65535 tracks".into()))?;
+    let mut out = Vec::new();
+    out.extend_from_slice(b"MThd");
+    out.extend_from_slice(&6u32.to_be_bytes());
+    out.extend_from_slice(&1u16.to_be_bytes());
+    out.extend_from_slice(&ntrks.to_be_bytes());
+    out.extend_from_slice(&u16::try_from(PPQ).unwrap_or(960).to_be_bytes());
+
+    // Conductor track.
+    let ev = conductor_events(smf)?;
+    if has_conductor {
+        write_track(&mut out, ev)?;
+    }
 
     for track in &smf.tracks {
         let mut ev = Vec::new();
         if !track.name.is_empty() {
             ev.push(WEvent { tick: 0, order: 0, bytes: meta(0x03, track.name.as_bytes())? });
         }
-        for n in &track.sequence.notes {
+        let notes = &track.sequence.notes;
+        let mut ends: Vec<u64> = notes.iter().map(|n| clamp_tick(n.end()).max(clamp_tick(n.start).saturating_add(1))).collect();
+        let mut dropped = vec![false; notes.len()];
+        trim_overlaps(notes, &mut ends, &mut dropped);
+        for (i, n) in notes.iter().enumerate() {
+            if dropped.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             let ch = n.channel & 0x0F;
-            let pitch = n.pitch & 0x7F;
+            let pitch = n.pitch.min(127);
             let start = clamp_tick(n.start);
-            let end = clamp_tick(n.end()).max(start.saturating_add(1));
+            let end = ends.get(i).copied().unwrap_or(start.saturating_add(1));
             ev.push(WEvent { tick: start, order: 3, bytes: vec![0x90 | ch, pitch, n.velocity.clamp(1, 127)] });
-            ev.push(WEvent { tick: end, order: 1, bytes: vec![0x80 | ch, pitch, n.release_velocity & 0x7F] });
+            ev.push(WEvent { tick: end, order: 1, bytes: vec![0x80 | ch, pitch, n.release_velocity.min(127)] });
         }
         for c in &track.sequence.ctrls {
             let ch = c.channel & 0x0F;
             let v7 = c.value.clamp(0, 127) as u8;
             let bytes = match c.kind {
-                CtrlKind::Cc(num) => vec![0xB0 | ch, num & 0x7F, v7],
+                CtrlKind::Cc(num) => vec![0xB0 | ch, num.min(127), v7],
                 CtrlKind::Program => vec![0xC0 | ch, v7],
                 CtrlKind::ChannelPressure => vec![0xD0 | ch, v7],
-                CtrlKind::PolyPressure(p) => vec![0xA0 | ch, p & 0x7F, v7],
+                CtrlKind::PolyPressure(p) => vec![0xA0 | ch, p.min(127), v7],
                 CtrlKind::PitchBend => {
                     let v = (c.value.saturating_add(8192)).clamp(0, 16383);
                     vec![0xE0 | ch, (v & 0x7F) as u8, ((v >> 7) & 0x7F) as u8]
@@ -528,6 +589,19 @@ mod tests {
     }
 
     #[test]
+    fn empty_smf_round_trips_with_no_tracks() {
+        let r = read_smf(&write_smf(&Smf::default()).unwrap()).unwrap();
+        assert_eq!(r.tracks.len(), 0);
+        let one = Smf { tracks: vec![SmfTrack::default()], ..Smf::default() };
+        let r = read_smf(&write_smf(&one).unwrap()).unwrap();
+        assert_eq!(r.tracks.len(), 1);
+        let cond = Smf { tempos: vec![(0, 90.0)], ..Smf::default() };
+        let r = read_smf(&write_smf(&cond).unwrap()).unwrap();
+        assert_eq!(r.tracks.len(), 0);
+        assert_eq!(r.tempos.len(), 1);
+    }
+
+    #[test]
     fn spec_vlq_examples() {
         let mut b = Vec::new();
         push_vlq(&mut b, 0x0800_0000).unwrap();
@@ -535,5 +609,27 @@ mod tests {
         let mut b = Vec::new();
         push_vlq(&mut b, 0x2000).unwrap();
         assert_eq!(b, [0xC0, 0x00]);
+    }
+
+    #[test]
+    fn same_pitch_overlaps_do_not_swap_ends() {
+        let mk = |start, length| Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start, length };
+        let smf = Smf {
+            format: 1,
+            tracks: vec![SmfTrack {
+                name: String::new(),
+                sequence: Sequence { notes: vec![mk(0, 1000), mk(100, 200), mk(1000, 100), mk(2000, 500), mk(2000, 900)], ..Sequence::default() },
+            }],
+            tempos: vec![],
+            meters: vec![],
+            markers: vec![],
+            key_sigs: vec![],
+        };
+        let back = read_smf(&write_smf(&smf).unwrap()).unwrap();
+        let mut got: Vec<(i64, i64)> = back.tracks.iter().flat_map(|t| t.sequence.notes.iter().map(|n| (n.start, n.length))).collect();
+        got.sort_unstable();
+        // The earlier note is trimmed to the start of the next same-pitch note; later notes keep their length;
+        // of two notes starting together only the longer survives.
+        assert_eq!(got, vec![(0, 100), (100, 200), (1000, 100), (2000, 900)]);
     }
 }

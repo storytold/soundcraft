@@ -46,11 +46,20 @@ pub fn validate(v: &str) -> Result<(), String> {
         None => (v, None),
     };
     let nums: Vec<&str> = core.split('.').collect();
-    if nums.len() != 3 || nums.iter().any(|n| n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) || (n.len() > 1 && n.starts_with('0'))) {
+    // Numeric parts must fit in u64, like the semver crate Cargo uses.
+    if nums.len() != 3
+        || nums.iter().any(|n| !n.bytes().all(|b| b.is_ascii_digit()) || (n.len() > 1 && n.starts_with('0')) || n.parse::<u64>().is_err())
+    {
         return bad();
     }
+    // A numeric prerelease identifier has no leading zero (any length is fine); alphanumeric ones may start with `0`.
+    let bad_id = |id: &str| {
+        id.is_empty()
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || (id.len() > 1 && id.starts_with('0') && id.bytes().all(|b| b.is_ascii_digit()))
+    };
     if let Some(p) = pre
-        && (p.is_empty() || p.split('.').any(|id| id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')))
+        && (p.is_empty() || p.split('.').any(bad_id))
     {
         return bad();
     }
@@ -91,6 +100,31 @@ fn cargo_update(root: &Path, offline: bool) -> Result<(), String> {
     if st.success() { Ok(()) } else { Err(format!("cargo update --workspace{} failed", if offline { " --offline" } else { "" })) }
 }
 
+/// Write atomically: a half-written root manifest breaks every build in the workspace.
+fn write_manifest(root: &Path, path: &Path, content: &str) -> Result<(), String> {
+    let dir = root.join("target");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let tmp = dir.join("Cargo.toml.xtask-version");
+    std::fs::write(&tmp, content).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("replace {}: {e}", path.display()))
+}
+
+/// Writes version `new` into the manifest at `path` (current text `text`), then runs `update`.
+/// If `update` fails the old manifest is put back. Returns the old version.
+fn set(root: &Path, path: &Path, text: &str, new: &str, update: impl FnOnce() -> Result<(), String>) -> Result<String, String> {
+    let old = read(text)?;
+    let updated = replace(text, new)?;
+    write_manifest(root, path, &updated)?;
+    if let Err(e) = update() {
+        // Put the old manifest back so a failed update does not leave the workspace changed.
+        return Err(match write_manifest(root, path, text) {
+            Ok(()) => format!("{e}; Cargo.toml restored to {old}"),
+            Err(r) => format!("{e}; could not restore Cargo.toml: {r}"),
+        });
+    }
+    Ok(old)
+}
+
 /// `cargo xtask version [set X.Y.Z[-pre]]`; `args` are the words after `version`.
 pub fn run(args: &[String]) -> Result<(), String> {
     let root = root();
@@ -103,18 +137,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         ["set", new] => {
-            let old = read(&text)?;
-            let updated = replace(&text, new)?;
-            // Write atomically: a half-written root manifest breaks every build in the workspace.
-            let dir = root.join("target");
-            std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-            let tmp = dir.join("Cargo.toml.xtask-version");
-            std::fs::write(&tmp, updated).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-            std::fs::rename(&tmp, &path).map_err(|e| format!("replace {}: {e}", path.display()))?;
             // Refresh the workspace members' entries in Cargo.lock (no dependency upgrades).
-            if cargo_update(&root, true).is_err() {
-                cargo_update(&root, false)?;
-            }
+            let old = set(&root, &path, &text, new, || cargo_update(&root, true).or_else(|_| cargo_update(&root, false)))?;
             println!("version: {old} -> {new}");
             Ok(())
         }
@@ -158,6 +182,31 @@ mod tests {
             assert!(validate(bad).is_err(), "{bad}");
         }
         assert!(replace(MANIFEST, "nope").is_err());
+    }
+
+    #[test]
+    fn rejects_what_cargo_rejects() {
+        for bad in ["1.0.0-01", "1.0.0-rc.01", "1.0.0-0.00", "1.0.0-rc.1.007", "99999999999999999999.0.0", "1.18446744073709551616.0"] {
+            assert!(validate(bad).is_err(), "{bad}");
+            assert!(replace(MANIFEST, bad).is_err(), "{bad}");
+        }
+        for ok in ["1.0.0-0", "1.0.0-rc.0", "1.0.0-0a", "1.0.0-01a", "1.0.0-99999999999999999999", "18446744073709551615.0.0"] {
+            assert!(validate(ok).is_ok(), "{ok}");
+        }
+    }
+
+    #[test]
+    fn a_failed_update_restores_the_manifest() {
+        let root = std::env::temp_dir().join(format!("xtask-version-restore-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("Cargo.toml");
+        std::fs::write(&path, MANIFEST).unwrap();
+        let err = set(&root, &path, MANIFEST, "2.0.0", || Err("cargo update failed".into())).unwrap_err();
+        assert!(err.contains("restored to 0.1.0"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), MANIFEST);
+        assert_eq!(set(&root, &path, MANIFEST, "2.0.0", || Ok(())).unwrap(), "0.1.0");
+        assert_eq!(read(&std::fs::read_to_string(&path).unwrap()).unwrap(), "2.0.0");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

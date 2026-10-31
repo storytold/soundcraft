@@ -404,8 +404,9 @@ pub fn movie_secs(s: &Session, clip_start: Samples, offset: Samples, at: Samples
     (at.saturating_sub(clip_start).saturating_add(offset) as f64 - sync) / s.sample_rate.as_f64().max(1.0)
 }
 
-/// The picture at `at`: the topmost active Video track with an unmuted clip there.
-pub fn picture_at(s: &Session, at: Samples) -> Option<(MovieKey, String, f64, f64)> {
+/// The picture at `at`: the topmost active Video track with an unmuted clip there. The path is
+/// the movie's, or why it is offline.
+pub fn picture_at(s: &Session, at: Samples) -> Option<(MovieKey, Result<String, String>, f64, f64)> {
     for t in s.tracks.iter().filter(|t| t.kind == soundcraft_model::TrackKind::Video && !t.inactive) {
         for c in t.clips() {
             if c.muted || !c.range().contains(at) {
@@ -414,7 +415,8 @@ pub fn picture_at(s: &Session, at: Samples) -> Option<(MovieKey, String, f64, f6
             if let ClipContent::Video { source, offset } = c.content
                 && let Some(v) = s.video(source)
             {
-                return Some((MovieKey::new(source, &v.path), v.path.clone(), movie_secs(s, c.start, offset, at), v.frame_rate));
+                let path = v.offline.clone().map_or_else(|| Ok(v.path.clone()), Err);
+                return Some((MovieKey::new(source, &v.path), path, movie_secs(s, c.start, offset, at), v.frame_rate));
             }
         }
     }
@@ -448,6 +450,10 @@ pub fn draw_lane(app: &mut SoundApp, painter: &Painter, s: &Session, track: &Tra
         };
         if !on {
             p.text(vis.center(), egui::Align2::CENTER_CENTER, "Video Track Offline", regular(10.0), Color32::from_gray(170));
+            continue;
+        }
+        if let Some(why) = &v.offline {
+            p.text(vis.center(), egui::Align2::CENTER_CENTER, format!("media offline: {why}"), regular(10.0), Color32::from_rgb(220, 120, 120));
             continue;
         }
         let key = MovieKey::new(source, &v.path);

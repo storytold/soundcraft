@@ -14,7 +14,7 @@ fn malformed(what: &str) -> AudioError {
     AudioError::Malformed(format!("CAF {what} is larger than the file"))
 }
 
-/// Walk the chunks the way symphonia 0.5 reads them: it advances by the bytes it parses, not by
+/// Walk the chunks the way the CAF reader reads them: it advances by the bytes it parses, not by
 /// the declared size, and after a `data` chunk of unknown size it reads on into the audio.
 fn chunks(b: &[u8], mut pos: usize) -> Result<()> {
     // Whether the packet table lists each packet's size and frame count (variable per packet).

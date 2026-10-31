@@ -7,10 +7,14 @@
   </a>
 </p>
 
+<p align="center">
+  <img src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.soundcraft.png" width="128" height="128" alt="SoundCraft icon: a singing bird on a blue tile">
+</p>
+
 <h1 align="center">SoundCraft</h1>
 
 <p align="center">
-  <b>Recording, editing and mixing audio; an open-source, clean-room reimplementation of Avid Pro Tools, rebuilt in pure Rust.</b>
+  <b>Recording, editing and mixing audio; an open-source, modern digital audio workstation (DAW), built in pure Rust.</b>
 </p>
 
 <p align="center">
@@ -25,6 +29,9 @@
   <img alt="Platforms" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20FreeBSD%20%C2%B7%20Web-0b7385?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square">
   <img alt="Status: pre-alpha" src="https://img.shields.io/badge/status-pre--alpha-orange?style=flat-square">
+  <br>
+  <a href="https://sonarcloud.io/project/overview?id=storytold_soundcraft"><img alt="Scanned by SonarCloud" src="https://img.shields.io/badge/Scanned_by-SonarCloud-4b9fd5?style=flat-square&logo=sonarqubecloud&logoColor=white"></a>
+  <a href="https://coderabbit.ai"><img alt="Reviewed by CodeRabbit" src="https://img.shields.io/coderabbit/prs/github/storytold/soundcraft?style=flat-square&label=Reviewed%20by%20CodeRabbit&logo=coderabbit"></a>
 </p>
 
 <p align="center">
@@ -115,11 +122,11 @@ where things are.
 - **Automation:** volume, pan, mute, send and every plugin parameter; Write, Touch, Latch and
   Trim passes recorded live from the faders; thin, glide, coalesce and convert to clip gain.
 - **Plugins:** 7-band and 1-band EQ, compressor/limiter, expander/gate, de-esser, maximizer,
-  channel strip, room and plate reverbs, mod delay, chorus, flanger, phaser, saturator, lo-fi,
-  rectifier, pitch shifter, time shift, gain, trim, invert, DC removal, signal generator, dither,
-  a subtractive synth, a drum synth and a sampler (plays any WAV, AIFF, FLAC, MP3 or OGG across the
-  keyboard), all original. **CLAP plugins** load too. Any processor
-  runs offline as AudioSuite, and user presets save per plugin.
+  channel strip, room and plate reverbs, mod delay, auto pan, chorus, flanger, phaser, ring
+  modulator, saturator, lo-fi, rectifier, subharmonic, pitch shifter, time shift, gain, trim,
+  invert, DC removal, signal generator, dither, a subtractive synth, a drum synth and a sampler
+  (plays any WAV, AIFF, FLAC, MP3 or OGG across the keyboard), all original. **CLAP plugins**
+  load too. Any processor runs offline as AudioSuite, and user presets save per plugin.
 - **MIDI:** instrument and MIDI tracks, a piano-roll MIDI editor with a velocity lane, an event
   list, a score view, step input, quantize, transpose, real-time properties, Standard MIDI Files,
   and Audio-to-MIDI from a sung or played melody.
@@ -131,7 +138,7 @@ where things are.
   pitch-preserving Elastic warping.
 - **Audio files:** WAV/BWF/RF64, AIFF/AIFC and FLAC in and out; MP3, Ogg Vorbis, AAC, ALAC, CAF
   and the audio of MP4/MOV movies in. Any sample rate and bit depth.
-- **Bounce:** mix or stems to WAV, AIFF or FLAC at 16/24/32-bit float with dither and
+- **Bounce:** mix or stems to WAV, AIFF or FLAC at 16/24/32-bit float with optional dither and
   normalisation, reporting peak, true peak and integrated loudness (LUFS).
 - **Fast:** a parallel mix engine, copy-on-write undo, and a UI that holds 120 frames per second
   with seventy-odd tracks playing.
@@ -177,7 +184,7 @@ error only.
 | Variable | Effect |
 |---|---|
 | `RUST_LOG` | Log levels for standard error and the log file. Default: `info` for SoundCraft's own crates, `warn` for everything else. env_logger-style directives replace that, e.g. `RUST_LOG=debug`, `RUST_LOG=warn,soundcraft_mix=trace` or `RUST_LOG=info,wgpu_core=warn`; a directive ending in `*` covers every target starting with it (`soundcraft*=debug`). |
-| `SOUNDCRAFT_NO_PREFS` | No preferences read or written and no log file (agents' test runs). |
+| `SOUNDCRAFT_NO_PREFS` | `1`: no preferences read or written and no log file (agents' test runs). |
 
 The realtime audio thread never writes a record itself: the logger keeps the first one it logs
 (without waiting or allocating), counts the rest, and the UI thread writes them. The logger is
@@ -209,8 +216,9 @@ claude mcp add soundcraft -- soundcraft-cli mcp --demo
 soundcraft-cli mcp --automation-read-root DIR --automation-write-root DIR
 ```
 
-See [`docs/control-protocol.md`](docs/control-protocol.md) and [`docs/mcp.md`](docs/mcp.md).
-`soundcraft-cli commands` lists every command.
+See [`docs/cli.md`](docs/cli.md) for the command-line tool (subcommands, exit codes, environment
+variables, man pages and completions), [`docs/control-protocol.md`](docs/control-protocol.md) and
+[`docs/mcp.md`](docs/mcp.md). `soundcraft-cli commands` lists every command.
 
 Open **SoundCraft › Session Audio Health** to check loaded audio availability, sample-rate
 mismatches and clip source bounds across all playlists, including alternate takes. The report
@@ -375,13 +383,9 @@ ArtCraft Team and are not covered by this license. They may be used only unmodif
 part of this repository and SoundCraft, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
 Forks and modified versions must remove them.
 
-<sub>Avid and Pro Tools are trademarks or registered trademarks of Avid Technology, Inc. in the United States and/or other countries. SoundCraft is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Avid Technology, Inc.; these names are used only to describe the workflows it is compatible with.</sub>
-
-<sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. SoundCraft is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
-
 <p align="center">
   <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
   <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
 </p>
 
-Tracks and Groups, Clips, MIDI Editor, Memory Locations, and Undo History use movable panels. Edit and Mix retain separate arrangements; Clips and MIDI Editor belong to Edit. Transport, plug-in, and specialist utility windows retain their existing hosts. Drag a panel header to a target edge or another header. Its context menu offers Float panel, Move to group, and Close panel. Existing panel toggles reopen panels at their saved location; Reset Panel Layout restores the app layout. Floating panels remain inside the current app window.
+Tracks and Groups, Clips, MIDI Editor, Memory Locations, and Undo History use movable panels. Edit and Mix retain separate arrangements; Clips and MIDI Editor belong to Edit. Transport, plug-in, and specialist utility windows retain their existing hosts. Drag a panel header to a target edge or another header. Its context menu offers Float Panel, Move Panel to Group, and Close Panel; the tab group's menu adds Float Tab Group and Close Tab Group. Existing panel toggles reopen panels at their saved location; Reset Panel Layout restores the app layout. Floating panels remain inside the current app window.

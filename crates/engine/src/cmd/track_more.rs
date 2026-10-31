@@ -1,10 +1,10 @@
 //! More Track menu commands: Convert Aux to Routing Folder, Extract MIDI, track presets, insert /
 //! send bypass subsets, MIDI real-time properties, trim/VCA coalescing and target playlists.
+use super::{CommandSpec, bad, has_selection, has_tracks, range_param, str_param, tracks_param, tracks_required};
 
 use super::more_util::{activate_playlist, target_playlist, track_key};
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, EngineError, Result, cmd};
+use serde_json::{Value, json};
 use soundcraft_dsp::Category;
 use soundcraft_model::{AutoParam, AutomationLane, ChannelFormat, Clip, ClipContent, Insert, Route, Session, Track, TrackId, TrackKind};
 use soundcraft_time::Samples;
@@ -383,6 +383,10 @@ fn write_rtp(e: &mut Engine, p: &Value) -> Result<Value> {
                 n.start = n.start.saturating_add(r.delay_ticks).max(0);
                 notes += 1;
             }
+            // Playback delays controller events too, but ignores those before tick 0 (hidden by a start trim).
+            for c in sequence.ctrls.iter_mut().filter(|c| c.tick >= 0) {
+                c.tick = c.tick.saturating_add(r.delay_ticks).max(0);
+            }
             sequence.sort();
         }
         let pre = format!("rtp.{}.", t.0);
@@ -543,7 +547,6 @@ fn toggle_recent(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn bypass_by_category_and_range() {
         let mut e = crate::demo::demo_engine();
@@ -633,6 +636,31 @@ mod tests {
         assert_eq!(after.pitch, before.pitch + 12);
         assert_eq!(after.velocity, before.velocity - 10);
         assert!(!e.session().edit.values.keys().any(|k| k.starts_with(&format!("rtp.{}.", keys.0))));
+    }
+
+    #[test]
+    fn rtp_delay_shifts_controller_events() {
+        use soundcraft_midi::{CtrlEvent, CtrlKind};
+        let mut e = crate::demo::demo_engine();
+        let keys = e.session().track_by_name("Keys").unwrap().id;
+        let s = e.session_mut();
+        if let Some(pl) = s.track_mut(keys).and_then(Track::playlist_mut)
+            && let ClipContent::Midi { sequence } = &mut pl.clips[0].content
+        {
+            sequence.ctrls.clear();
+            sequence.ctrls.push(CtrlEvent { tick: 100, channel: 0, kind: CtrlKind::Cc(7), value: 90 });
+            sequence.ctrls.push(CtrlEvent { tick: 200, channel: 0, kind: CtrlKind::PitchBend, value: 10 });
+            sequence.ctrls.push(CtrlEvent { tick: -30, channel: 0, kind: CtrlKind::Cc(1), value: 5 });
+        }
+        s.edit.values.insert(track_key("rtp", keys, "delay"), 50.0);
+        e.execute("edit.select", &json!({"tracks": [keys.0]})).unwrap();
+        e.execute("track.write_midi_rtp", &json!({})).unwrap();
+        let ClipContent::Midi { sequence } = &e.session().track(keys).unwrap().clips()[0].content else { panic!() };
+        let tick_of = |k: CtrlKind| sequence.ctrls.iter().find(|c| c.kind == k).map(|c| c.tick);
+        assert_eq!(tick_of(CtrlKind::Cc(7)), Some(150), "playback delayed the CC by 50 ticks; baked result must match");
+        assert_eq!(tick_of(CtrlKind::PitchBend), Some(250));
+        // Hidden by a start trim: playback ignores it, so baking leaves it alone.
+        assert_eq!(tick_of(CtrlKind::Cc(1)), Some(-30));
     }
 
     #[test]
