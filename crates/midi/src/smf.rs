@@ -208,7 +208,7 @@ pub fn read_smf(bytes: &[u8]) -> Result<Smf, MidiError> {
     let globals_present = !(globals.tempos.is_empty() && globals.meters.is_empty() && globals.markers.is_empty() && globals.key_sigs.is_empty());
     if format == 1
         && (tracks.len() > 1 || globals_present)
-        && tracks.first().is_some_and(|t| t.sequence.notes.is_empty() && t.sequence.ctrls.is_empty() && (tracks.len() > 1 || t.name.is_empty()))
+        && tracks.first().is_some_and(|t| t.sequence.notes.is_empty() && t.sequence.ctrls.is_empty() && t.name.is_empty())
     {
         tracks.remove(0);
     }
@@ -599,6 +599,21 @@ mod tests {
         let r = read_smf(&write_smf(&cond).unwrap()).unwrap();
         assert_eq!(r.tracks.len(), 0);
         assert_eq!(r.tempos.len(), 1);
+    }
+
+    #[test]
+    fn named_empty_leading_track_is_preserved() {
+        let bytes = [
+            b'M', b'T', b'h', b'd', 0, 0, 0, 6, 0, 1, 0, 2, 0, 96, b'M', b'T', b'r', b'k', 0, 0, 0, 19, 0, 0xFF, 0x03, 11, b'N', b'a', b'm', b'e',
+            b'd', b' ', b'e', b'm', b'p', b't', b'y', 0, 0xFF, 0x2F, 0, b'M', b'T', b'r', b'k', 0, 0, 0, 12, 0, 0x90, 60, 100, 0x60, 0x80, 60, 64, 0,
+            0xFF, 0x2F, 0,
+        ];
+
+        let imported = read_smf(&bytes).unwrap();
+
+        assert_eq!(imported.tracks.len(), 2);
+        assert_eq!(imported.tracks[0].name, "Named empty");
+        assert_eq!(imported.tracks[1].sequence.notes.len(), 1);
     }
 
     #[test]
