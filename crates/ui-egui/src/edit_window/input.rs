@@ -511,7 +511,9 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
         }
         return;
     };
-    let ids = json!([c.0]);
+    // A clip of the edit selection acts on the whole selection (the commands default to it); any other clip acts alone.
+    let in_selection = clip_in_selection(app.engine.session(), c);
+    let target = if in_selection { json!({}) } else { json!({"clips": [c.0]}) };
     for (label, cmd) in [
         ("Mute/Unmute", "edit.mute_clips"),
         ("Edit Lock/Unlock", "clip.edit_lock"),
@@ -522,7 +524,7 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
         ("Send to Back", "clip.send_to_back"),
     ] {
         if ui.button(label).clicked() {
-            let _ = app.run(cmd, json!({"clips": ids}));
+            let _ = app.run(cmd, target.clone());
         }
     }
     ui.separator();
@@ -531,7 +533,28 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
         app.dialogs.open_rename_clip(c, &name);
     }
     if ui.button("Delete").clicked() {
-        let _ = app.run("edit.select", json!({"clips": ids}));
-        let _ = app.run("edit.clear", json!({}));
+        let s = app.engine.session();
+        let selected: Vec<u64> = s.edit.selected_clips.iter().map(|id| id.0).collect();
+        let track: Vec<u64> = s.find_clip(c).map(|(t, _)| t.0).into_iter().collect();
+        if !in_selection {
+            let _ = app.run("edit.select", json!({"clips": [c.0]}));
+            let _ = app.run("edit.clear", json!({}));
+        } else if selected.is_empty() {
+            let _ = app.run("edit.clear", json!({}));
+        } else {
+            // Selected clips go by id (an empty range), so clips between them that the span covers stay. The clicked
+            // clip's track satisfies Clear's track check even when the track selection was emptied meanwhile.
+            let _ = app.run("edit.clear", json!({"clips": selected, "tracks": track, "start": 0}));
+        }
     }
+}
+
+/// Whether `c` is part of the edit selection: one of the selected clips or, when no clip is selected, a clip on a
+/// selected track that the selected range overlaps. An insertion point selects nothing.
+fn clip_in_selection(s: &Session, c: ClipId) -> bool {
+    let ed = &s.edit;
+    if !ed.selected_clips.is_empty() {
+        return ed.selected_clips.contains(&c);
+    }
+    !ed.selection.is_empty() && s.find_clip(c).is_some_and(|(t, clip)| ed.selected_tracks.contains(&t) && clip.range().overlaps(&ed.selection))
 }
