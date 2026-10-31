@@ -143,70 +143,34 @@ fn auxes_feeding(s: &Session, inputs: &[&Route]) -> Vec<usize> {
         .collect()
 }
 
-/// A track's own solo, or the solo of the VCA master it belongs to.
+/// Implicit solo: an aux is not muted when a soloed track feeds its input bus.
+pub(crate) fn receives_solo(s: &Session, t: &Track) -> bool {
+    let Route::Bus(b) = &t.mixer.input else { return false };
+    s.tracks
+        .iter()
+        .any(|o| o.mixer.solo && (o.mixer.output == Route::Bus(*b) || o.mixer.sends.iter().flatten().any(|sn| sn.target == Route::Bus(*b))))
+}
+
+/// A track's own solo, or the solo of the active VCA master it belongs to: soloing a VCA solos its members.
 fn soloed(s: &Session, t: &Track) -> bool {
     t.mixer.solo || t.mixer.vca.is_some_and(|vid| s.tracks.iter().any(|v| v.id.0 == vid && v.kind == TrackKind::Vca && !v.inactive && v.mixer.solo))
 }
 
-/// True when `t` writes onto bus `b`, by its output or a send that is not muted (a muted send carries nothing).
-fn feeds(t: &Track, b: BusId) -> bool {
-    t.mixer.output == Route::Bus(b) || t.mixer.sends.iter().flatten().any(|sn| sn.target == Route::Bus(b) && !sn.mute)
+/// The solo is on: a track that plays is soloed, by itself or through its VCA. A VCA passes no audio, so a soloed
+/// VCA with no members solos nothing.
+pub(crate) fn any_solo(s: &Session) -> bool {
+    s.tracks.iter().any(|t| !t.inactive && t.kind != TrackKind::Vca && soloed(s, t))
 }
 
-/// Marks in `heard` (by track index) the tracks the solo lets through: the soloed ones and,
-/// implicitly, every active aux or folder track whose input bus they feed, hop after hop down a
-/// chain of auxes. Only those strips read their input bus; an audio track with a bus input plays
-/// its own clips, so the solo mutes it (unless it is solo-safe) and goes no further through it.
-/// A VCA's solo solos its members, so a VCA with none mutes nothing. Returns false when
-/// nothing is soloed. `order` lists the track indices producers first (see
-/// [`processing_order`]), so a chain is usually marked in one pass. Reuses `heard`'s
-/// allocation: the callback stays allocation-free.
-pub(crate) fn solo_reach(s: &Session, order: &[usize], heard: &mut Vec<bool>) -> bool {
-    heard.clear();
-    if !s.tracks.iter().any(|t| t.mixer.solo && !t.inactive) {
-        return false;
-    }
-    heard.extend(s.tracks.iter().map(|t| !t.inactive && t.kind != TrackKind::Vca && soloed(s, t)));
-    if !heard.contains(&true) {
-        return false;
-    }
-    // ponytail: each pass is O(tracks²); in processing order a chain takes one pass, a stale
-    // order or a feedback loop a few more, and a pass that marks nothing ends the walk.
-    // Upgrade path: a bus -> receivers map built in `sync`.
-    for _ in 0..s.tracks.len() {
-        let mut marked = false;
-        for &i in order {
-            let Some(t) = s.tracks.get(i) else { continue };
-            if !matches!(t.kind, TrackKind::Aux | TrackKind::Folder) {
-                continue;
-            }
-            let Route::Bus(b) = t.mixer.input else { continue };
-            if t.inactive || heard.get(i).copied().unwrap_or(true) {
-                continue;
-            }
-            if s.tracks.iter().zip(heard.iter()).any(|(o, &h)| h && feeds(o, b))
-                && let Some(x) = heard.get_mut(i)
-            {
-                *x = true;
-                marked = true;
-            }
-        }
-        if !marked {
-            break;
-        }
-    }
-    true
+/// The solo mutes `t`: it is on (`any_solo`, see [`any_solo`]) and `t` is neither soloed, Solo Safe nor fed by a
+/// soloed track. A VCA passes no audio, so the solo never mutes it: its fader still drives the members that sound.
+pub(crate) fn solo_muted(s: &Session, t: &Track, any_solo: bool) -> bool {
+    any_solo && t.kind != TrackKind::Vca && !t.mixer.solo_safe && !soloed(s, t) && !receives_solo(s, t)
 }
 
-/// Per track (by index): the solo mutes it, as the mix engine renders it. For displays such as
-/// the implied-mute shade of a track's Mute key; compute it once per frame, not per track. A VCA
-/// passes no audio, so the solo never mutes it: its fader still drives the members that sound.
-pub fn solo_muted_tracks(s: &Session) -> Vec<bool> {
-    let mut heard = Vec::new();
-    if !s.tracks.iter().any(|t| t.mixer.solo) || !solo_reach(s, &processing_order(s), &mut heard) {
-        return vec![false; s.tracks.len()];
-    }
-    s.tracks.iter().zip(heard).map(|(t, h)| !h && !t.mixer.solo && !t.mixer.solo_safe && t.kind != TrackKind::Vca).collect()
+/// [`solo_muted`] for displays, such as the implied-mute shade of a track's Mute key.
+pub fn solo_mutes(s: &Session, t: &Track) -> bool {
+    solo_muted(s, t, any_solo(s))
 }
 
 #[cfg(test)]

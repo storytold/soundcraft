@@ -6,8 +6,7 @@ use super::{
 
 /// Draw one track header: resize edge, selection and context menu, folder/options control, automation-lane toggle,
 /// name and the remaining track controls.
-/// `solo_muted`: the solo mutes this track (the implied-mute shade of its Mute key).
-pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, selected: bool, head_bg: Color32, solo_muted: bool) {
+pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, selected: bool, head_bg: Color32) {
     let id = track.id;
     // Click on header background selects the track.
     let bg = ui.interact(head, ui.scope_id().with(("hdr", id.0)), Sense::click());
@@ -19,7 +18,7 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
     strip_buttons(app, ui, track, head);
     name_plate(app, ui, track, head, selected);
     playlist_menu(app, ui, track, head, head_bg);
-    toggle_keys(app, ui, track, head, solo_muted);
+    toggle_keys(app, ui, track, head);
     view_selector(app, ui, track, head);
     voice_row(app, ui, track, head);
     field_row(app, ui, track, head, head_bg);
@@ -185,19 +184,20 @@ fn playlist_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, hea
     });
 }
 
-/// Record, input, solo and mute keys. `solo_muted`: the solo mutes this track (the implied-mute shade of its Mute key).
-fn toggle_keys(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, solo_muted: bool) {
+/// Record, input, solo and mute keys.
+fn toggle_keys(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
     let id = track.id;
     let h = head.height();
     let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
     let m = &track.mixer;
     if h >= 37.0 {
         let (records, mixes) = (track.kind.has_playlist(), track.kind != TrackKind::Master);
+        let implied = soundcraft_mix::solo_mutes(app.engine.session(), track);
         let keys = [
             (HeaderKey::Rec, m.record_arm, false, "mix.record_arm", records),
             (HeaderKey::Input, m.input_monitor, false, "mix.input_monitor", records),
             (HeaderKey::Solo, m.solo, false, "mix.solo", mixes),
-            (HeaderKey::Mute, m.mute, solo_muted, "mix.mute", mixes),
+            (HeaderKey::Mute, m.mute, implied, "mix.mute", mixes),
         ];
         for (i, (key, lit, implied, cmd, shown)) in keys.into_iter().enumerate() {
             if shown && header_toggle(ui, at(23.0 + i as f32 * 26.0, 20.0, 16.0, 16.0), id, &track.name, key, lit, implied).clicked() {
