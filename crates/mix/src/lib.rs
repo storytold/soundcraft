@@ -80,7 +80,8 @@ pub use offline::{
 };
 pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
-use routing::{processing_order, structure_fingerprint};
+pub use routing::solo_muted_tracks;
+use routing::{processing_order, solo_reach, structure_fingerprint};
 use strip::{
     Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
 };
@@ -150,6 +151,8 @@ pub struct MixEngine {
     retired: Vec<Box<dyn Plugin>>,
     /// Ownership workspace reused for parallel strip processing.
     work: Vec<(usize, Strip)>,
+    /// Per track (by index): the solo lets it through. Refilled each block, see [`solo_reach`].
+    heard: Vec<bool>,
 }
 
 impl MixEngine {
@@ -180,6 +183,7 @@ impl MixEngine {
             adopt: HashMap::new(),
             retired: Vec::new(),
             work: Vec::new(),
+            heard: Vec::new(),
         }
     }
 
@@ -356,7 +360,8 @@ impl MixEngine {
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
         let frames = frames.min(self.max_block);
         self.begin_block(s, pos, frames);
-        let blk = Block { pos, frames, any_solo: s.tracks.iter().any(|t| t.mixer.solo && !t.inactive) };
+        let any_solo = solo_reach(s, &self.order, &mut self.heard);
+        let blk = Block { pos, frames, solo_muted: false };
         let order = std::mem::take(&mut self.order);
         // Phase 1: independent strips (audio, instrument, MIDI) in parallel.
         let mut work = std::mem::take(&mut self.work);
@@ -374,9 +379,11 @@ impl MixEngine {
         }
         let busses = std::mem::take(&mut self.busses);
         let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+        let heard = &self.heard;
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
-                process_strip(s, t, st, &busses, &live_in, blk);
+                let solo_muted = any_solo && !heard.get(*i).copied().unwrap_or(false);
+                process_strip(s, t, st, &busses, &live_in, Block { solo_muted, ..blk });
             }
         });
         self.busses = busses;
@@ -385,7 +392,7 @@ impl MixEngine {
         // or the first block (and a one-block bounce probe) still sees zero.
         self.compensate_delay(s, &mut work, blk);
         self.work = work;
-        self.render_auxes(s, &order, blk);
+        self.render_auxes(s, &order, blk, any_solo);
         self.order = order;
         self.render_masters(s, blk);
         self.write_output(s, blk, out);
@@ -484,17 +491,19 @@ impl MixEngine {
     }
 
     /// Phase 2: auxes in dependency order (they read busses).
-    fn render_auxes(&mut self, s: &Session, order: &[usize], blk: Block) {
+    /// `any_solo`: something is soloed, so the auxes the solo does not reach are muted.
+    fn render_auxes(&mut self, s: &Session, order: &[usize], blk: Block, any_solo: bool) {
         let Block { pos, frames, .. } = blk;
         let pdc = s.edit.delay_compensation;
         let lmax_a = self.aux_latency;
-        for t in order.iter().filter_map(|&i| s.tracks.get(i)).filter(|t| is_live(t)).filter(|t| is_aux(t)) {
+        for (i, t) in order.iter().filter_map(|&i| s.tracks.get(i).map(|t| (i, t))).filter(|(_, t)| is_live(t) && is_aux(t)) {
             let Some(mut st) = self.strips.remove(&t.id) else { continue };
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
             let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
-            process_strip(s, t, &mut st, &self.busses, &live_in, blk);
+            let solo_muted = any_solo && !self.heard.get(i).copied().unwrap_or(false);
+            process_strip(s, t, &mut st, &self.busses, &live_in, Block { solo_muted, ..blk });
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
             st.align.process(&mut st.buf, frames);

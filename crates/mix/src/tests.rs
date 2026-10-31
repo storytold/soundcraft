@@ -4,7 +4,7 @@
 
 use super::*;
 use soundcraft_audio_io::AudioBuffer;
-use soundcraft_model::{Insert, SourceAudio, SourceId};
+use soundcraft_model::{Insert, SendSlot, SourceAudio, SourceId};
 use std::sync::Arc;
 
 fn synth_session(level_db: f32) -> Session {
@@ -114,6 +114,166 @@ fn fader_mute_and_solo() {
     s.track_mut(other).unwrap().mixer.solo = true;
     let out = render_range(&s, Range::new(0, 4800), 512);
     assert!(out[0][2000].abs() < 1e-6);
+}
+
+#[test]
+fn soloing_a_vca_solos_its_members() {
+    let (mut s, member) = session_with_dc(0.5, 4800);
+    // Quieter than the member, so the render tells which of the two sounds.
+    let other = add_dc_track(&mut s, 0.5, 4800);
+    s.track_mut(other).unwrap().mixer.volume_db = -6.0;
+    let vca = s.add_track(TrackKind::Vca, ChannelFormat::Mono, Some("VCA"));
+    s.track_mut(member).unwrap().mixer.vca = Some(vca.0);
+    s.track_mut(other).unwrap().mixer.mute = true;
+    let only_member = render_range(&s, Range::new(0, 4800), 512);
+    assert!(only_member[0][2000].abs() > 0.1, "the member should sound");
+    s.track_mut(other).unwrap().mixer.mute = false;
+    s.track_mut(vca).unwrap().mixer.solo = true;
+    assert_eq!(render_range(&s, Range::new(0, 4800), 512), only_member);
+    assert_eq!(solo_muted_tracks(&s), [false, true, false], "member, other, VCA");
+    // A soloed member leaves its VCA unshaded.
+    s.track_mut(vca).unwrap().mixer.solo = false;
+    s.track_mut(member).unwrap().mixer.solo = true;
+    assert_eq!(solo_muted_tracks(&s), [false, true, false], "member soloed: member, other, VCA");
+}
+
+#[test]
+fn soloing_an_empty_vca_mutes_nothing() {
+    let (mut s, _) = session_with_dc(0.5, 4800);
+    let vca = s.add_track(TrackKind::Vca, ChannelFormat::Mono, Some("VCA"));
+    let all = render_range(&s, Range::new(0, 4800), 512);
+    s.track_mut(vca).unwrap().mixer.solo = true;
+    assert_eq!(render_range(&s, Range::new(0, 4800), 512), all);
+    assert_eq!(solo_muted_tracks(&s), [false, false], "track, VCA");
+}
+
+/// `src` -> bus 1 -> aux 1 -> bus 2 -> aux 2 -> main mix, by output (`send` false) or by a
+/// 0 dB post-fader send (`send` true), plus `other`, 6 dB quieter, straight to the main mix.
+/// Track indices: src 0, other 1, aux 1 2, aux 2 3.
+fn aux_chain(send: bool) -> (Session, TrackId, TrackId, [TrackId; 2]) {
+    let (mut s, src) = session_with_dc(0.5, 4800);
+    let other = add_dc_track(&mut s, 0.5, 4800);
+    s.track_mut(other).unwrap().mixer.volume_db = -6.0;
+    let (b1, b2) = (s.add_bus("B1", ChannelFormat::Stereo), s.add_bus("B2", ChannelFormat::Stereo));
+    let x1 = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, Some("X1"));
+    let x2 = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, Some("X2"));
+    let t = s.track_mut(src).unwrap();
+    if send {
+        let mut sn = SendSlot::new(Route::Bus(b1));
+        sn.level_db = 0.0;
+        t.mixer.sends = vec![Some(sn)];
+        t.mixer.output = Route::None;
+    } else {
+        t.mixer.output = Route::Bus(b1);
+    }
+    s.track_mut(x1).unwrap().mixer.input = Route::Bus(b1);
+    s.track_mut(x1).unwrap().mixer.output = Route::Bus(b2);
+    s.track_mut(x2).unwrap().mixer.input = Route::Bus(b2);
+    s.track_mut(x2).unwrap().mixer.output = Route::Main;
+    (s, src, other, [x1, x2])
+}
+
+#[test]
+fn implicit_solo_follows_a_chain_of_auxes() {
+    for send in [false, true] {
+        let (mut s, src, other, _) = aux_chain(send);
+        s.track_mut(other).unwrap().mixer.mute = true;
+        let only_src = render_range(&s, Range::new(0, 4800), 512);
+        assert!(only_src[0][2000].abs() > 0.1, "send {send}: the source should reach the main mix");
+        s.track_mut(other).unwrap().mixer.mute = false;
+        s.track_mut(src).unwrap().mixer.solo = true;
+        assert_eq!(render_range(&s, Range::new(0, 4800), 512), only_src, "send {send}");
+    }
+}
+
+/// The tracks the solo lets through, walking in `order`.
+fn reach(s: &Session, order: &[usize]) -> Vec<bool> {
+    let mut heard = Vec::new();
+    assert!(solo_reach(s, order, &mut heard), "something is soloed");
+    heard
+}
+
+#[test]
+fn a_muted_send_does_not_carry_the_solo() {
+    let (mut s, src, _, _) = aux_chain(true);
+    s.track_mut(src).unwrap().mixer.solo = true;
+    // src 0, other 1, aux 1 2, aux 2 3.
+    assert_eq!(reach(&s, &processing_order(&s)), vec![true, false, true, true], "the send carries the solo down the chain");
+    if let Some(Some(sn)) = s.track_mut(src).unwrap().mixer.sends.first_mut() {
+        sn.mute = true;
+    }
+    assert_eq!(reach(&s, &processing_order(&s)), vec![true, false, false, false], "a muted send carries nothing");
+    assert_eq!(solo_muted_tracks(&s), vec![false, true, true, true], "so the solo mutes both auxes");
+}
+
+#[test]
+fn implicit_solo_walk_skips_inactive_auxes_and_ends_on_loops() {
+    let (mut s, src, _, [x1, x2]) = aux_chain(false);
+    s.track_mut(src).unwrap().mixer.solo = true;
+    let order = processing_order(&s);
+    assert_eq!(reach(&s, &order), [true, false, true, true]);
+    // Against the processing order the walk takes more passes but gets there.
+    let backwards: Vec<usize> = order.iter().rev().copied().collect();
+    assert_eq!(reach(&s, &backwards), [true, false, true, true]);
+    // An inactive aux carries no audio, so it lets no solo through to the auxes after it.
+    s.track_mut(x1).unwrap().inactive = true;
+    assert_eq!(reach(&s, &order), [true, false, false, false]);
+    // Aux 2 feeding aux 1's input closes a loop: the walk still ends, and the chain sounds.
+    s.track_mut(x1).unwrap().inactive = false;
+    let b1 = s.track(x1).unwrap().mixer.input.clone();
+    let mut sn = SendSlot::new(b1);
+    sn.level_db = -20.0;
+    s.track_mut(x2).unwrap().mixer.sends = vec![Some(sn)];
+    assert_eq!(reach(&s, &processing_order(&s)), [true, false, true, true]);
+    let out = render_range(&s, Range::new(0, 4800), 512);
+    assert!(out.iter().flatten().all(|x| x.is_finite()));
+    assert!(out[0][2000].abs() > 0.1, "{}", out[0][2000]);
+}
+
+#[test]
+fn an_audio_track_with_a_bus_input_is_solo_muted() {
+    // An audio track plays its own clips whatever its input route says: the solo mutes it,
+    // as it mutes any track that is not soloed, and solo safe lets it through.
+    let (mut s, src, _, [x1, _]) = aux_chain(false);
+    let b1 = s.track(x1).unwrap().mixer.input.clone();
+    let print = add_dc_track(&mut s, 0.5, 4800);
+    s.track_mut(print).unwrap().mixer.input = b1;
+    s.track_mut(src).unwrap().mixer.solo = true;
+    // Baseline: the soloed source alone, through the aux chain.
+    s.track_mut(print).unwrap().mixer.mute = true;
+    let only_src = render_range(&s, Range::new(0, 4800), 512);
+    assert!(only_src[0][2000].abs() > 0.1, "the soloed source should sound");
+    s.track_mut(print).unwrap().mixer.mute = false;
+    assert_eq!(render_range(&s, Range::new(0, 4800), 512), only_src);
+    assert_eq!(solo_muted_tracks(&s), [false, true, false, false, true], "src, other, X1, X2, print");
+    s.track_mut(print).unwrap().mixer.solo_safe = true;
+    assert_eq!(solo_muted_tracks(&s), [false, true, false, false, false], "print is solo safe");
+    let out = render_range(&s, Range::new(0, 4800), 512);
+    assert!(out[0][2000] > only_src[0][2000] + 0.1, "{} vs {}", out[0][2000], only_src[0][2000]);
+}
+
+#[test]
+fn an_audio_track_with_a_bus_input_does_not_relay_the_solo() {
+    let (mut s, src, _, [x1, _]) = aux_chain(false);
+    let b1 = s.track(x1).unwrap().mixer.input.clone();
+    let b3 = s.add_bus("B3", ChannelFormat::Stereo);
+    // Audio track 4 reads bus 1 and writes bus 3; aux 5 reads bus 3; folder 6 reads bus 1.
+    let print = add_dc_track(&mut s, 0.5, 4800);
+    let x3 = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, Some("X3"));
+    let folder = s.add_track(TrackKind::Folder, ChannelFormat::Stereo, Some("F"));
+    let m = &mut s.track_mut(print).unwrap().mixer;
+    m.input = b1.clone();
+    m.output = Route::Bus(b3);
+    s.track_mut(x3).unwrap().mixer.input = Route::Bus(b3);
+    s.track_mut(folder).unwrap().mixer.input = b1;
+    s.track_mut(src).unwrap().mixer.solo = true;
+    // Source, other, X1, X2, print, X3, folder: the aux chain and the folder hear the solo,
+    // the audio track does not, and neither does the aux after it.
+    let expected = [true, false, true, true, false, false, true];
+    let order = processing_order(&s);
+    assert_eq!(reach(&s, &order), expected);
+    let backwards: Vec<usize> = order.iter().rev().copied().collect();
+    assert_eq!(reach(&s, &backwards), expected);
 }
 
 #[test]

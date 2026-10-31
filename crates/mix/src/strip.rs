@@ -3,7 +3,6 @@ use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance, is_third_party};
 use super::midi::{chase_controllers, schedule_notes};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
-use super::routing::receives_solo;
 use super::{
     AutoParam, BusId, ChannelFormat, MAX_CHANNELS, PanLaw, Plugin, Range, Route, Samples, Session, SourceAudio, Track, TrackId, TrackKind, Transport,
     db_to_gain,
@@ -204,12 +203,13 @@ pub(crate) struct LiveInput<'a> {
     pub(crate) recording: bool,
 }
 
-/// The block being rendered: where it starts, its length, and whether any track is soloed.
+/// The block being rendered: where it starts, its length, and whether the solo mutes the strip it is rendered for
+/// (see `solo_reach`).
 #[derive(Clone, Copy)]
 pub(crate) struct Block {
     pub(crate) pos: Samples,
     pub(crate) frames: usize,
-    pub(crate) any_solo: bool,
+    pub(crate) solo_muted: bool,
 }
 
 fn zero_buf(buf: &mut [Vec<f32>], frames: usize) {
@@ -410,7 +410,7 @@ fn gate_mute_automation(t: &Track, strip: &mut Strip, blk: Block) {
 }
 
 pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, live: &LiveInput<'_>, blk: Block) {
-    let Block { pos, frames, any_solo } = blk;
+    let Block { pos, frames, solo_muted } = blk;
     zero_buf(&mut strip.buf, frames);
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
     match t.kind {
@@ -431,7 +431,7 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
         }
     }
     run_inserts(t, strip, blk, &transport);
-    let soloed_out = any_solo && !t.mixer.solo && !t.mixer.solo_safe && !receives_solo(s, t);
+    let soloed_out = solo_muted && !t.mixer.solo_safe;
     strip.muted = t.mixer.mute || soloed_out;
     if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
         strip.pre.resize_with(strip.buf.len(), Vec::new);
