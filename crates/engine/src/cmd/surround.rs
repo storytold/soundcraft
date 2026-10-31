@@ -205,9 +205,8 @@ mod tests {
             s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "dc", SourceId(77), 0, 0, 4800));
         }
         e.execute("mix.surround_pan", &json!({"track": t.0, "x": 0.0, "y": 1.0})).unwrap();
-        let dir = std::env::temp_dir().join(format!("sc-surround-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("mix.wav");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mix.wav");
         let ps = path.to_string_lossy().to_string();
         e.execute("file.bounce_mix", &json!({"path": ps, "start": 0, "end": 4800, "bit_depth": "32f"})).unwrap();
         let bytes = std::fs::read(&path).unwrap();
@@ -215,18 +214,21 @@ mod tests {
         let (_, buf) = soundcraft_audio_io::decode(&bytes, Some("wav")).unwrap();
         assert_eq!(buf.channels.len(), 8);
         assert!((buf.channels[2][1000] - 0.25).abs() < 1e-5, "front centre lands on C");
-        // ITU stereo fold-down.
-        e.execute("file.bounce_mix", &json!({"path": ps, "start": 0, "end": 4800, "bit_depth": "32f", "fold_down": "stereo"})).unwrap();
-        let (_, buf) = soundcraft_audio_io::decode(&std::fs::read(&path).unwrap(), Some("wav")).unwrap();
+        // ITU stereo fold-down has its own fresh destination.
+        let folded = dir.path().join("folded.wav");
+        e.execute("file.bounce_mix", &json!({"path": folded.to_string_lossy(), "start": 0, "end": 4800, "bit_depth": "32f", "fold_down": "stereo"}))
+            .unwrap();
+        let (_, buf) = soundcraft_audio_io::decode(&std::fs::read(&folded).unwrap(), Some("wav")).unwrap();
         assert_eq!(buf.channels.len(), 2);
         assert!((buf.channels[0][1000] - 0.25 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-4);
-        assert!(e.execute("file.bounce_mix", &json!({"path": ps, "fold_down": "quad"})).is_err());
+        let invalid = dir.path().join("invalid.wav");
+        assert!(e.execute("file.bounce_mix", &json!({"path": invalid.to_string_lossy(), "fold_down": "quad"})).is_err());
+        assert!(!invalid.exists());
         // Stems follow the main format too.
-        let sdir = dir.join("stems");
+        let sdir = dir.path().join("stems");
         let r = e.execute("file.bounce_stems", &json!({"dir": sdir.to_string_lossy(), "start": 0, "end": 4800})).unwrap();
         let f = r["files"][0].as_str().unwrap().to_string();
         let (_, buf) = soundcraft_audio_io::decode(&std::fs::read(&f).unwrap(), Some("wav")).unwrap();
         assert_eq!(buf.channels.len(), 8);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
