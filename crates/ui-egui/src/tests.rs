@@ -1618,3 +1618,39 @@ fn assert_history_unchanged(
     assert_eq!(app.engine.undo_history(), history);
     assert_eq!(&app.engine.journal, journal);
 }
+
+#[test]
+fn registered_provider_does_not_intercept_programmatic_save_paths() {
+    let dir = std::env::temp_dir().join(format!("soundcraft-provider-programmatic-save-{}", std::process::id()));
+    // Create rather than reuse the directory: this test only removes the directory it owns.
+    std::fs::create_dir(&dir).unwrap();
+    for command in ["session.save", "session.save_as"] {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let host = app.services.file_providers.clone();
+        host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+        host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+        let path = dir.join(format!("{command}.scraft"));
+        app.run(command, json!({"path": path.to_string_lossy()})).unwrap();
+        assert!(path.is_file(), "{command} must write the explicitly supplied device path");
+        assert!(host.take_events().is_empty(), "programmatic {command} must not ask for a provider destination");
+        assert!(!host.busy());
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn pending_provider_capture_still_blocks_programmatic_session_replacement() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    let host = app.services.file_providers.clone();
+    host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+    host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+    host.choose(app.doc_epoch, app.engine.revision, "Pending.scraftz".into(), false).unwrap();
+    // Disabling new provider choices cannot discard an operation that is already pending.
+    host.set_enabled(false).unwrap();
+    let epoch = app.doc_epoch;
+    for command in ["session.new", "session.open", "session.close", "session.revert", "app.quit"] {
+        assert!(app.run(command, json!({})).unwrap_err().contains("pending provider operation"));
+        assert_eq!(app.doc_epoch, epoch);
+    }
+    assert!(!app.quit_requested);
+}
