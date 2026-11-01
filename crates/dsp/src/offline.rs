@@ -127,8 +127,11 @@ pub fn remove_dc(ch: &mut [Vec<f32>]) {
         if c.is_empty() {
             continue;
         }
-        let mean = c.iter().filter(|v| v.is_finite()).map(|&v| f64::from(v)).sum::<f64>() / c.len() as f64;
-        let m = mean as f32;
+        let (sum, n) = c.iter().filter(|v| v.is_finite()).fold((0.0f64, 0usize), |(s, n), &v| (s + f64::from(v), n + 1));
+        if n == 0 {
+            continue;
+        }
+        let m = (sum / n as f64) as f32;
         c.iter_mut().for_each(|s| *s -= m);
     }
 }
@@ -888,5 +891,15 @@ mod tests {
         assert_eq!(ch[0][99], 0.0);
         assert_eq!(ch[0][50], 1.0);
         fade(&mut ch, 1000, 1000, FadeShape::SCurve);
+    }
+
+    #[test]
+    fn remove_dc_ignores_non_finite_samples_in_the_mean() {
+        let mut ch = vec![vec![f32::NAN, 1.0, 1.0, 1.0]];
+        remove_dc(&mut ch);
+        assert!(ch[0][1..].iter().all(|x| x.abs() < 1e-6), "left over dc {:?}", ch[0]);
+        let mut all_bad = vec![vec![f32::NAN, f32::INFINITY]];
+        remove_dc(&mut all_bad);
+        assert!(all_bad[0][0].is_nan() && all_bad[0][1].is_infinite());
     }
 }

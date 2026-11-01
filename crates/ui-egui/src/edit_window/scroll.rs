@@ -75,8 +75,13 @@ pub(super) fn hscrollbar(app: &mut SoundApp, ui: &mut Ui, sb: Rect, tl: Rect) {
     }
 }
 
-/// Zoom Toggle sized to the track area on screen.
+/// Zoom Toggle sized to the track area on screen. With Alt held (an Alt-click on the button) it cancels Zoom Toggle
+/// instead and keeps the current view.
 pub fn zoom_toggle(app: &mut SoundApp) {
+    if app.docking_context.as_ref().is_some_and(|c| c.input(|i| i.modifiers.alt)) {
+        let _ = app.run("view.zoom_toggle_cancel", json!({}));
+        return;
+    }
     let [x0, y0, x1, y1] = app.edit_layout.timeline;
     let _ = app.run("view.zoom_toggle", json!({"width_px": x1 - x0, "height_px": y1 - y0}));
 }
