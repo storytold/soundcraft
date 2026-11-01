@@ -485,7 +485,7 @@ impl Movie {
                 let s = st.next;
                 st.next += 1;
                 let pts = self.rank.get(s).copied().unwrap_or(0) as i64;
-                let data = match self.mp4.read_sample(&*self.src, self.track, s) {
+                let data = match self.read(s) {
                     Ok(d) => d,
                     Err(e) => {
                         last_err = Some(e.to_string());

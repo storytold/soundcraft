@@ -754,7 +754,7 @@ mod selector_visual_regressions {
             let mut harness = egui_kittest::Harness::builder().with_size(vec2(320.0, 120.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
                 move |ui, regions: &mut serde_json::Map<String, serde_json::Value>| {
                     if !ready {
-                        crate::fonts::install(ui.ctx());
+                        crate::fonts::install(ui.ctx(), true);
                         crate::theme::apply(ui.ctx(), false);
                         ready = true;
                         return;
@@ -807,7 +807,7 @@ mod selector_visual_regressions {
             for mode in soundcraft_model::AutomationMode::ALL {
                 for scale in [1.0, 1.5, 2.0] {
                     let ctx = egui::Context::default();
-                    crate::fonts::install(&ctx);
+                    crate::fonts::install(&ctx, true);
                     crate::theme::apply(&ctx, false);
                     let mut app = mixer_app(narrow, mode);
                     let mut output = ctx.run_ui(scaled_input(vec2(320.0, 640.0), scale), |ui| crate::mix_window::show(&mut app, ui));
@@ -856,7 +856,7 @@ mod selector_visual_regressions {
                         egui_kittest::Harness::builder().with_size(vec2(320.0, 640.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
                             move |ui, app: &mut crate::SoundApp| {
                                 if !ready {
-                                    crate::fonts::install(ui.ctx());
+                                    crate::fonts::install(ui.ctx(), true);
                                     crate::theme::apply(ui.ctx(), false);
                                     ready = true;
                                     return;
@@ -902,7 +902,7 @@ mod selector_visual_regressions {
             for label in ["auto read", "no group", "A very long mixer group name"] {
                 for scale in [1.0, 1.5, 2.0] {
                     let ctx = egui::Context::default();
-                    crate::fonts::install(&ctx);
+                    crate::fonts::install(&ctx, true);
                     crate::theme::apply(&ctx, false);
                     let mut rect = Rect::NOTHING;
                     let mut output = ctx.run_ui(scaled_input(vec2(320.0, 120.0), scale), |ui| {

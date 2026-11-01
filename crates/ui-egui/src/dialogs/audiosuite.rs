@@ -1,4 +1,4 @@
-use super::*;
+use super::{SoundApp, Value, json};
 
 /// The speed ramp's choices in the AudioSuite window: param id, label, default, and (value, name) pairs.
 pub(super) const SPEED_RAMP_CHOICES: [(&str, &str, f32, &[(f32, &str)]); 3] = [

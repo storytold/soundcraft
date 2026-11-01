@@ -155,7 +155,7 @@ fn original_time_stamp_row(ui: &mut Ui, s: &Session, d: &mut Spot, at: Samples) 
 pub fn fields(ui: &mut Ui, s: &Session, d: &mut Spot) {
     egui::Grid::new("spot").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
         let scale = ui.label("Time Scale");
-        let time_scale = egui::ComboBox::from_id_salt("spot_scale").selected_text(d.format.label()).show_ui(ui, |ui| {
+        let time_scale = craft_ui::ComboBox::from_id_salt("spot_scale").selected_text(d.format.label()).show_ui(ui, |ui| {
             for f in TimeFormat::ALL {
                 ui.selectable_value(&mut d.format, f, f.label());
             }

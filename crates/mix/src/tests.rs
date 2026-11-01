@@ -225,6 +225,15 @@ fn sends_feed_aux_via_bus() {
 }
 
 #[test]
+fn send_level_automation_is_capped_at_the_fader_top() {
+    // #884: a send lane point past +12 dB (pushed without `set_point`'s clamp) reads as +12.
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    let tr = s.track_mut(t).unwrap();
+    tr.lane_mut(&AutoParam::SendLevel(0)).points.push(soundcraft_model::AutomationPoint { at: 0, value: 500.0 });
+    assert_eq!(send_level(s.track(t).unwrap(), 0, 0.0, 100), SEND_LEVEL_MAX_DB);
+}
+
+#[test]
 fn render_bus_is_the_bus_not_the_main_mix() {
     let (mut s, t) = session_with_dc(0.5, 4800);
     let stem = s.add_bus("Stem", ChannelFormat::Stereo);
@@ -1149,4 +1158,53 @@ fn surround_upmix_and_downmix_between_layouts() {
     }
     let e_ls = out[4][100].powi(2) + out[6][100].powi(2);
     assert!((e_ls - x(4).powi(2)).abs() < 1e-5, "Ls energy is preserved");
+}
+
+#[test]
+fn apply_matrix_span_matches_the_plain_per_sample_sum() {
+    let src: Vec<Vec<f32>> = (0..3).map(|c| (0..300).map(|i| ((i * 7 + c * 13) % 23) as f32 * 0.037 - 0.4).collect()).collect();
+    let short = vec![src[0].clone(), src[1][..150].to_vec(), src[2].clone()];
+    let mut layouts: Vec<Vec<(usize, usize, f32)>> =
+        vec![vec![(0, 0, 0.7)], vec![(0, 0, 0.7), (1, 1, -0.3)], vec![(0, 0, 0.6), (1, 0, 0.45), (1, 1, 1.0)]];
+    layouts.push(vec![(0, 0, 0.5), (1, 0, 0.25), (2, 0, 0.125), (2, 1, 0.9)]);
+    for taps in &layouts {
+        let mut m = [[0.0f32; MAX_CHANNELS]; MAX_CHANNELS];
+        for &(s, d, g) in taps {
+            m[s][d] = g;
+        }
+        for input in [&src, &short] {
+            for span in [0..300, 17..211, 140..160, 250..400, 5..5] {
+                let mut got: Vec<Vec<f32>> = (0..2).map(|d| (0..300).map(|i| (i + d) as f32 * 1e-3).collect()).collect();
+                let mut want = got.clone();
+                pan::apply_matrix_span(input, span.clone(), &mut got, &m, 0.8);
+                for (d, out) in want.iter_mut().enumerate() {
+                    for (i, o) in out.iter_mut().enumerate().take(span.end).skip(span.start) {
+                        let mut acc = 0.0f32;
+                        for (s, row) in m.iter().enumerate().take(input.len()) {
+                            if row[d] != 0.0 {
+                                acc += input[s].get(i).copied().unwrap_or(0.0) * 0.8 * row[d];
+                            }
+                        }
+                        if m.iter().take(input.len()).any(|row| row[d] != 0.0) {
+                            *o += acc;
+                        }
+                    }
+                }
+                let bits = |v: &Vec<Vec<f32>>| v.iter().flatten().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&got), bits(&want), "taps {taps:?}, span {span:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn gain_ramp_matches_converting_both_ends_every_sample() {
+    for (db0, db1, n) in [(-6.0f32, 3.0f32, 512usize), (0.0, 0.0, 1), (-144.0, 0.0, 300), (2.5, -60.0, 0), (f32::NAN, -3.0, 64), (-200.0, 12.0, 7)] {
+        let ramp = crate::automation::GainRamp::new(db0, db1, n);
+        let (g0, g1) = (db_to_gain(db0), db_to_gain(db1));
+        for i in 0..=n {
+            let want = if n == 0 { g0 } else { g0 + (g1 - g0) * (i as f32 / n as f32) };
+            assert_eq!(ramp.at(i).to_bits(), want.to_bits(), "{db0} -> {db1} dB, sample {i} of {n}");
+        }
+    }
 }

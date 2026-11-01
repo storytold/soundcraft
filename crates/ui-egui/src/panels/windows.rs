@@ -4,7 +4,8 @@ use crate::SoundApp;
 use crate::theme::{Tokens, mono, rgb};
 use egui::{Color32, Sense, vec2};
 use serde_json::{Value, json};
-use soundcraft_model::{AutomationMode, ClipContent};
+use soundcraft_audio_io::FileFormat;
+use soundcraft_model::{AutomationMode, ClipContent, SESSION_EXTENSION};
 use soundcraft_playback::AudioConfig;
 use soundcraft_playback::devices::{AudioSystem, DeviceInfo};
 use std::sync::Arc;
@@ -334,38 +335,38 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(egui::RichText::new(&dir).small());
         });
         ui.separator();
-        let mut entries: Vec<(String, bool)> = std::fs::read_dir(&dir)
+        // Names stay paths: a name that is not valid Unicode is shown lossily, and opening it says so.
+        let mut entries: Vec<(std::path::PathBuf, String, bool)> = std::fs::read_dir(&dir)
             .map(|rd| {
                 rd.flatten()
                     .filter_map(|e| {
+                        let path = e.path();
                         let name = e.file_name().to_string_lossy().into_owned();
                         if name.starts_with('.') {
                             return None;
                         }
                         let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
-                        let ext = std::path::Path::new(&name).extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase();
-                        (is_dir || ["wav", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "m4b", "caf", "mid", "midi", "scraft"].contains(&ext.as_str()))
-                            .then_some((name, is_dir))
+                        let ext = path.extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase();
+                        (is_dir || FileFormat::from_extension(&ext).is_some() || ["mid", "midi", SESSION_EXTENSION].contains(&ext.as_str()))
+                            .then_some((path, name, is_dir))
                     })
                     .collect()
             })
             .unwrap_or_default();
-        entries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+        entries.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.to_lowercase().cmp(&b.1.to_lowercase())));
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (name, is_dir) in entries.into_iter().take(2000) {
-                let path = std::path::Path::new(&dir).join(&name).to_string_lossy().into_owned();
+            for (path, name, is_dir) in entries.into_iter().take(2000) {
                 let label = if is_dir { format!("📁 {name}") } else { format!("🔊 {name}") };
                 let r = ui.selectable_label(false, label);
                 if r.double_clicked() {
                     if is_dir {
-                        app.ui.workspace_dir = path;
-                    } else if name.ends_with(".scraft") {
-                        let _ = crate::dialogs::run_or_ask(app, "session.open", json!({"path": path}));
-                    } else if name.ends_with(".mid") || name.ends_with(".midi") {
-                        let _ = app.run("file.import_midi", json!({"path": path}));
+                        // The folder is kept as text in the preferences.
+                        match crate::dialogs::unicode(&path) {
+                            Ok(p) => app.ui.workspace_dir = p.to_owned(),
+                            Err(e) => app.ui.status = e.to_string(),
+                        }
                     } else {
-                        let at = app.engine.session().edit.selection.start;
-                        crate::import::start(app, json!({"path": path, "at": at}));
+                        crate::dialogs::open_path(app, &path);
                     }
                 }
             }
@@ -452,7 +453,7 @@ fn chosen_device<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'
 fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<String>, devices: &[DeviceInfo]) {
     let default = devices.iter().find(|d| d.is_default).map_or("none".to_string(), |d| d.name.clone());
     let shown = value.clone().unwrap_or_else(|| format!("Default ({default})"));
-    let combo = egui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
+    let combo = craft_ui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
         ui.selectable_value(value, None, format!("Default ({default})"));
         for d in devices {
             ui.selectable_value(value, Some(d.name.clone()), format!("{} ({} ch)", d.name, d.max_channels));
@@ -464,7 +465,7 @@ fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<Stri
 /// Optional-number picker with a Device default entry and a unit, labelled for accessibility.
 fn number_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<u32>, options: &[u32], unit: &str) {
     let shown = value.map_or("Device default".to_string(), |v| format!("{v} {unit}"));
-    let combo = egui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
+    let combo = craft_ui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
         ui.selectable_value(value, None, "Device default");
         for v in options {
             ui.selectable_value(value, Some(*v), format!("{v} {unit}"));
@@ -490,7 +491,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             let system_label = ui.label("Audio system");
             let def = systems.iter().find(|s| s.is_default).map_or("none".to_string(), |s| s.name.clone());
             let shown = draft.system.clone().unwrap_or_else(|| format!("Default ({def})"));
-            let system = egui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
+            let system = craft_ui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
                 let before = draft.system.clone();
                 ui.selectable_value(&mut draft.system, None, format!("Default ({def})"));
                 for s in systems.iter() {
@@ -516,6 +517,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             number_combo(ui, "pe-rate", "Sample rate", &mut draft.sample_rate, out.map_or(&[][..], |d| &d.sample_rates), "Hz");
             ui.end_row();
             ui.label("Buffer size");
+            // The combo lists standard power-of-two sizes. `setup.playback_engine` does not round
+            // onto this list: it keeps any integer 16..=8192, the same as `ui.audio_device`.
             let buffers = out.map(DeviceInfo::buffer_sizes).unwrap_or_else(|| soundcraft_playback::devices::STANDARD_BUFFERS.to_vec());
             number_combo(ui, "pe-buffer", "Buffer size", &mut draft.buffer_size, &buffers, "samples");
             ui.end_row();
@@ -622,6 +625,53 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     Ok(out)
 }
 
+/// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output name and
+/// `buffer_size` is any integer 16..=8192 or null (not rounded to the window's power-of-two list);
+/// both go through [`audio_device_command`]. Delay compensation still goes through the engine
+/// command, and only after the device change has been accepted. The result is the open device:
+/// its name, the buffer actually in use (`device_buffer`, null for the device default), its sample
+/// rate, and delay compensation. `applied` is true only when an audio device is open.
+pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) -> Result<serde_json::Value, String> {
+    use serde_json::Value;
+    let mut audio = serde_json::Map::new();
+    if let Some(device) = p.get("device") {
+        if !device.is_null() && !device.is_string() {
+            return Err("`device` must be a string or null".into());
+        }
+        audio.insert("output".to_string(), device.clone());
+    }
+    if let Some(buffer) = p.get("buffer_size") {
+        audio.insert("buffer_size".to_string(), buffer.clone());
+    }
+    if !audio.is_empty() {
+        audio_device_command(app, &Value::Object(audio))?;
+    }
+    if id == "setup.playback_engine"
+        && let Some(on) = p.get("delay_compensation").and_then(Value::as_bool)
+    {
+        app.engine.execute("setup.playback_engine", &json!({"delay_compensation": on})).map_err(|e| e.to_string())?;
+    }
+    let applied = app.player.as_ref().is_some_and(|player| !player.silent);
+    let (device, buffer_size, sample_rate) = match app.player.as_ref() {
+        Some(player) => {
+            let buffer = match player.device_buffer {
+                Some(n) => json!(n),
+                None => Value::Null,
+            };
+            (json!(player.device_name), buffer, json!(player.device_rate))
+        }
+        None => (Value::Null, Value::Null, json!(app.engine.session().sample_rate.hz())),
+    };
+    Ok(json!({
+        "applied": applied,
+        "device": device,
+        "buffer_size": buffer_size,
+        "sample_rate": sample_rate,
+        "bit_depth": app.engine.session().bit_depth,
+        "delay_compensation": app.engine.session().edit.delay_compensation,
+    }))
+}
+
 /// Setup › I/O: busses and output paths.
 pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_io_setup;
@@ -654,7 +704,7 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
         let main = app.engine.session().main_format();
         ui.horizontal(|ui| {
             let main_label = ui.label("Main output");
-            let format = egui::ComboBox::from_id_salt("main_output_format").selected_text(main.label()).show_ui(ui, |ui| {
+            let format = craft_ui::ComboBox::from_id_salt("main_output_format").selected_text(main.label()).show_ui(ui, |ui| {
                 for f in soundcraft_model::ChannelFormat::ALL.into_iter().filter(|f| (2..=16).contains(&f.channels())) {
                     if ui.selectable_label(f == main, f.label()).clicked() && f != main {
                         let _ = app.run("setup.main_format", json!({"format": f.label()}));
