@@ -1,12 +1,13 @@
-use egui::{Event, Modifiers, PointerButton, Pos2, pos2, vec2};
+use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use serde_json::json;
-use soundcraft_model::{Track, TrackId};
+use soundcraft_model::{AutoParam, Track, TrackId};
 use soundcraft_ui_egui::edit_window::HEADER_W;
-use soundcraft_ui_egui::{MainWindow, Services, SoundApp};
+use soundcraft_ui_egui::{Gesture, MainWindow, Services, SoundApp};
 
 const CMD: Modifiers = Modifiers { mac_cmd: true, command: true, ..Modifiers::NONE };
+const ALT: Modifiers = Modifiers { alt: true, ..Modifiers::NONE };
 
 /// Feed one harness frame through the raw-input hook before stepping, so scripted input reaches the app.
 fn step(h: &mut Harness<'_, SoundApp>) {
@@ -180,4 +181,215 @@ fn only_a_sends_fader_icon_opens_its_level() {
     click(&mut h, send_a(65.5));
     assert_eq!(h.state().ui.send_window, Some((snare, 0)));
     assert!(h.query_by_label("DESTINATION").is_none());
+}
+
+/// The I/O column's "vol" and "pan" rows, for a track whose row is `row`.
+fn vol_at(row: [f32; 4]) -> Pos2 {
+    pos2(row[0] + HEADER_W + 40.0, row[1] + 52.5)
+}
+
+fn pan_at(row: [f32; 4]) -> Pos2 {
+    pos2(row[0] + HEADER_W + 40.0, row[1] + 66.5)
+}
+
+fn undo_steps(h: &Harness<'_, SoundApp>) -> usize {
+    h.state().engine.undo_history().len()
+}
+
+fn track(h: &Harness<'_, SoundApp>, name: &str) -> Track {
+    h.state().engine.session().track_by_name(name).cloned().unwrap()
+}
+
+/// The open popup (the only foreground layer while one is open).
+fn popup_rect(h: &Harness<'_, SoundApp>) -> Rect {
+    let rects: Vec<Rect> = h.ctx.memory(|m| {
+        m.areas().visible_layer_ids().into_iter().filter(|l| l.order == egui::Order::Foreground).filter_map(|l| m.area_rect(l.id)).collect()
+    });
+    assert_eq!(rects.len(), 1, "expected exactly one popup, found {}", rects.len());
+    rects[0]
+}
+
+/// Press at `from`, drag to `to` in four moves and release. `during` runs after each move, button down.
+fn drag(h: &mut Harness<'_, SoundApp>, from: Pos2, to: Pos2, mut during: impl FnMut(&mut Harness<'_, SoundApp>)) {
+    let modifiers = Modifiers::NONE;
+    h.state_mut()
+        .synthetic
+        .extend([Event::PointerMoved(from), Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers }]);
+    for _ in 0..6 {
+        step(h);
+    }
+    for i in 1..=4 {
+        h.state_mut().synthetic.push(Event::PointerMoved(from + (to - from) * (i as f32 / 4.0)));
+        for _ in 0..3 {
+            step(h);
+        }
+        during(h);
+    }
+    h.state_mut().synthetic.push(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers });
+    for _ in 0..6 {
+        step(h);
+    }
+}
+
+#[test]
+fn alt_click_on_the_io_readouts_resets_volume_and_pan() {
+    let (mut h, id, row) = harness("Kick", "medium", "view.edit_io");
+    h.state_mut().run("mix.pan", json!({"track": id.0, "pan": 0.5})).unwrap();
+    assert!(kick(&h).mixer.volume_db != 0.0 && kick(&h).mixer.pan == [0.5]);
+    let before = undo_steps(&h);
+
+    press(&mut h, vol_at(row), PointerButton::Primary, ALT);
+    assert_eq!(kick(&h).mixer.volume_db, 0.0);
+    press(&mut h, pan_at(row), PointerButton::Primary, ALT);
+    assert_eq!(kick(&h).mixer.pan, [0.0]);
+
+    assert_eq!(undo_steps(&h), before + 2, "each reset is one undo step");
+    assert!(!egui::Popup::is_any_open(&h.ctx), "an Alt-click opened a popup instead of resetting");
+}
+
+#[test]
+fn alt_click_on_a_stereo_tracks_pan_resets_both_panners_in_one_step() {
+    let (mut h, id, row) = harness("Pad", "medium", "view.edit_io");
+    for (index, pan) in [(0, -0.25), (1, 0.75)] {
+        h.state_mut().run("mix.pan", json!({"track": id.0, "pan": pan, "index": index})).unwrap();
+    }
+    assert_eq!(track(&h, "Pad").mixer.pan, [-0.25, 0.75]);
+    let before = undo_steps(&h);
+
+    press(&mut h, pan_at(row), PointerButton::Primary, ALT);
+    assert_eq!(track(&h, "Pad").mixer.pan, [-1.0, 1.0], "a stereo track goes back to hard left and right, like a new one");
+    assert_eq!(undo_steps(&h), before + 1);
+    assert!(!egui::Popup::is_any_open(&h.ctx));
+}
+
+#[test]
+fn clicking_the_volume_readout_opens_a_fader_whose_drag_is_one_undo_step() {
+    let (mut h, id, _) = harness("Kick", "medium", "view.edit_io");
+    let db = kick(&h).mixer.volume_db;
+    let before = undo_steps(&h);
+    assert!(!egui::Popup::is_any_open(&h.ctx));
+
+    // The readout is a button named after its track and its value.
+    let readout = h.get_by_label("Kick volume -3.0").rect().center();
+    click(&mut h, readout);
+    assert!(egui::Popup::is_any_open(&h.ctx), "the click didn't open the fader");
+    assert_eq!(kick(&h).mixer.volume_db, db, "opening the fader changed the volume");
+
+    // The popup floats over the timeline: a drag in it must not also select or move anything there.
+    let edit = h.state().engine.session().edit.clone();
+    // The fader fills the bottom of the popup and moves by drag distance, so any point on it will do.
+    let popup = popup_rect(&h);
+    let from = pos2(popup.center().x, popup.max.y - 50.0);
+    let mut gestures = 0;
+    drag(&mut h, from, from - vec2(0.0, 60.0), |h| {
+        assert!(matches!(h.state().gesture, Some(Gesture::Fader { track, .. }) if track == id), "the drag isn't a Fader gesture");
+        gestures += 1;
+    });
+    assert_eq!(gestures, 4);
+    assert!(kick(&h).mixer.volume_db > db, "dragging up didn't raise the volume");
+    assert_eq!(undo_steps(&h), before + 1, "a whole drag is one undo step");
+    let after = h.state().engine.session().edit.clone();
+    assert!(after.selection == edit.selection && after.selected_tracks == edit.selected_tracks, "the drag leaked through to the timeline");
+    assert!(h.state().gesture.is_none(), "the gesture outlived the drag");
+    assert!(egui::Popup::is_any_open(&h.ctx), "releasing the fader closed it");
+
+    h.state_mut().engine.undo();
+    assert_eq!(kick(&h).mixer.volume_db, db, "one undo should restore the volume from before the drag");
+
+    click(&mut h, pos2(800.0, 990.0));
+    assert!(!egui::Popup::is_any_open(&h.ctx), "a click outside left the fader open");
+}
+
+#[test]
+fn the_popup_fader_writes_touch_automation() {
+    let (mut h, id, row) = harness("Kick", "medium", "view.edit_io");
+    h.state_mut().run("mix.automation_mode", json!({"track": id.0, "mode": "touch"})).unwrap();
+    click(&mut h, vol_at(row));
+    let popup = popup_rect(&h);
+    let from = pos2(popup.center().x, popup.max.y - 50.0);
+
+    h.state_mut().engine.transport.playing = true;
+    drag(&mut h, from, from - vec2(0.0, 60.0), |h| {
+        // Touch writes at the playhead, which has to keep moving for a new point to be due.
+        h.state_mut().engine.transport.position += 4800;
+    });
+    h.state_mut().engine.transport.playing = false;
+    step(&mut h);
+
+    let points = kick(&h).lane(&AutoParam::Volume).map_or(0, |lane| lane.points.len());
+    assert!(points > 0, "dragging the popup fader in Touch mode wrote no automation");
+}
+
+#[test]
+fn clicking_the_pan_readout_opens_one_slider_on_mono_and_two_on_stereo() {
+    for (name, panners) in [("Kick", 1), ("Pad", 2)] {
+        let (mut h, _, row) = harness(name, "medium", "view.edit_io");
+        let before = undo_steps(&h);
+        click(&mut h, pan_at(row));
+        assert!(egui::Popup::is_any_open(&h.ctx), "{name}: the click didn't open the sliders");
+        let sliders: Vec<_> = h.query_all_by_role(egui::accesskit::Role::Slider).collect();
+        assert_eq!(sliders.len(), panners, "{name}: wrong number of pan sliders");
+        assert_eq!(undo_steps(&h), before, "{name}: opening the sliders changed the session");
+
+        // Drag the last panner's slider (R on stereo) by 30 points: a slider follows the pointer.
+        let slider = sliders.last().unwrap().rect();
+        let (from, to) = (slider.center(), slider.center() + vec2(30.0, 0.0));
+        let index = panners - 1;
+        let pan = track(&h, name).mixer.pan.clone();
+        drag(&mut h, from, to, |_| {});
+        let moved = track(&h, name).mixer.pan;
+        assert_eq!(moved.len(), panners);
+        assert!(moved[index] != pan[index], "{name}: the slider didn't move the panner: {pan:?} -> {moved:?}");
+        assert_eq!(moved[..index], pan[..index], "{name}: moving R touched L");
+        assert_eq!(undo_steps(&h), before + 1, "{name}: a slider drag is one undo step");
+    }
+}
+
+#[test]
+fn a_value_typed_in_the_fader_popup_sets_the_volume() {
+    let (mut h, _, row) = harness("Kick", "medium", "view.edit_io");
+    click(&mut h, vol_at(row));
+    let popup = popup_rect(&h);
+    click(&mut h, pos2(popup.center().x, popup.min.y + 14.0));
+    let key = |key, modifiers| {
+        [
+            Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers },
+            Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers },
+        ]
+    };
+    h.state_mut().synthetic.extend(key(egui::Key::A, CMD));
+    h.state_mut().synthetic.push(Event::Text("-12".into()));
+    h.state_mut().synthetic.extend(key(egui::Key::Enter, Modifiers::NONE));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(kick(&h).mixer.volume_db, -12.0);
+}
+
+#[test]
+fn opening_the_pan_popup_leaves_a_pan_off_the_percent_grid_alone() {
+    let (mut h, id, row) = harness("Kick", "medium", "view.edit_io");
+    h.state_mut().run("mix.pan", json!({"track": id.0, "pan": 0.3337})).unwrap();
+    let before = undo_steps(&h);
+    click(&mut h, pan_at(row));
+    assert!(egui::Popup::is_any_open(&h.ctx));
+    assert_eq!(kick(&h).mixer.pan, [0.3337], "opening the sliders rewrote the pan");
+    assert_eq!(undo_steps(&h), before, "opening the sliders left an undo step");
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Slider, "Pan").is_some(), "the lone pan slider has no name");
+}
+
+#[test]
+fn a_track_on_a_surround_output_keeps_a_text_only_pan() {
+    let (mut h, id, row) = harness("Kick", "medium", "view.edit_io");
+    h.state_mut().run("setup.main_format", json!({"format": "5.1"})).unwrap();
+    h.state_mut().run("mix.pan", json!({"track": id.0, "pan": 0.5})).unwrap();
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    let before = undo_steps(&h);
+    click(&mut h, pan_at(row));
+    assert!(!egui::Popup::is_any_open(&h.ctx), "the Mix window pans this track with a surround panner, not these sliders");
+    press(&mut h, pan_at(row), PointerButton::Primary, ALT);
+    assert_eq!(kick(&h).mixer.pan, [0.5]);
+    assert_eq!(undo_steps(&h), before);
 }
