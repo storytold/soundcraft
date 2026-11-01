@@ -252,13 +252,12 @@ mod provider_routing_tests {
                     host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
                     host.choose(app.doc_epoch, app.engine.revision, "Pending.scraftz".into(), false).unwrap();
                 }
-                _ => unreachable!(),
+                _ => panic!("unexpected pending fixture case: {pending}"),
             }
             let original = app.engine.session_arc();
             let epoch = app.doc_epoch;
             assert!(!can_replace_session(&app, &ctx), "{pending} must block replacement");
-            let mut incoming = soundcraft_model::Session::default();
-            incoming.name = "Incoming provider session".into();
+            let incoming = soundcraft_model::Session { name: "Incoming provider session".into(), ..Default::default() };
             assert!(install_session(&mut app, incoming, &ctx).is_err(), "{pending}");
             assert!(std::sync::Arc::ptr_eq(&original, &app.engine.session_arc()), "{pending}: the current document was replaced or mutated");
             assert_eq!(app.doc_epoch, epoch, "{pending}");
@@ -285,8 +284,7 @@ mod provider_routing_tests {
         let ctx = egui::Context::default();
         assert!(can_replace_session(&app, &ctx));
         let epoch = app.doc_epoch;
-        let mut incoming = soundcraft_model::Session::default();
-        incoming.name = "Incoming provider session".into();
+        let incoming = soundcraft_model::Session { name: "Incoming provider session".into(), ..Default::default() };
         install_session(&mut app, incoming, &ctx).unwrap();
         assert_eq!(app.engine.session().name, "Incoming provider session");
         assert_ne!(app.doc_epoch, epoch);
