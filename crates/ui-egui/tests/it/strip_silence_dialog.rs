@@ -80,6 +80,17 @@ fn enter_on_a_focused_separate_separates_and_does_not_strip() {
 }
 
 #[test]
+fn enter_on_a_focused_cancel_closes_the_dialog_and_strips_nothing() {
+    let (mut h, track, before) = strip_silence_dialog();
+    h.get_by_role_and_label(Role::Button, "Cancel").focus();
+    h.run_steps(2);
+    h.event(Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(clips(&h, track), before, "Cancel leaves the clips as they were");
+}
+
+#[test]
 fn strip_silence_strip_removes_the_silence() {
     let (mut h, track, before) = strip_silence_dialog();
     h.get_by_role_and_label(Role::Button, "Strip").click();

@@ -14,7 +14,7 @@ pub fn ask_to_save(app: &mut SoundApp, id: &str, params: &Value) -> bool {
     if !app.engine.is_dirty() {
         return false;
     }
-    app.dialogs.open = Some(Dialog::SaveChanges { then: (id.into(), params.clone()) });
+    app.dialogs.set(Dialog::SaveChanges { then: (id.into(), params.clone()) });
     true
 }
 
