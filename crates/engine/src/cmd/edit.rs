@@ -301,6 +301,7 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
             cut_track(s, *t, range, sh, follow);
         }
         s.edit.selection = soundcraft_time::Range::point(range.start);
+        cb.cut_from = Some(range.start);
     }
     let n: usize = cb.tracks.iter().map(Vec::len).sum();
     e.clipboard = cb;
@@ -328,6 +329,7 @@ pub(super) fn clipboard_for_paste(e: &mut Engine) -> Clipboard {
     cb
 }
 
+/// Pastes the clipboard at an explicit position or at the current edit insertion point.
 fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.paste", p)?;
     let given = position_param(e, "edit.paste", p, "at")?;
@@ -335,9 +337,10 @@ fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session();
     let at = match given {
         Some(at) => at,
-        None if s.edit.edit_mode == EditMode::GridRelative => {
-            s.edit.grid.line_at_or_before(s.edit.selection.start, s.sample_rate, &s.tempo, s.frame_rate).saturating_add(cb.grid_offset)
+        None if s.edit.edit_mode == EditMode::GridRelative && s.edit.selection.is_empty() && cb.cut_from == Some(s.edit.selection.start) => {
+            s.edit.selection.start
         }
+        None if s.edit.edit_mode == EditMode::GridRelative => s.grid_line_at_or_before(s.edit.selection.start).saturating_add(cb.grid_offset),
         None => s.edit.selection.start,
     };
     let sh = shuffle(s) && !cb.automation_only;
@@ -668,11 +671,16 @@ fn separate(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"separated": n}))
 }
 
+/// Separates selected clips at every active Grid boundary in the requested range.
 fn separate_on_grid(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.separate_on_grid", p)?;
     let r = range_param(e, "edit.separate_on_grid", p)?;
     let s = e.session_mut();
-    let lines = s.edit.grid.lines(r.start, r.end, s.sample_rate, &s.tempo, s.frame_rate, 10_000);
+    let max = if s.edit.grid_clips_markers { usize::MAX } else { 10_001 };
+    let lines = s.grid_lines(r.start, r.end, max);
+    if lines.len() > 10_000 {
+        return Err(bad("edit.separate_on_grid", "the range contains more than 10,000 grid boundaries"));
+    }
     let mut n = 0;
     for t in &tracks {
         for at in &lines {
@@ -978,17 +986,21 @@ fn move_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     };
     let mode = s.edit.edit_mode;
     let delta = match first {
-        Some(c) if mode.is_grid() && p.get("to").is_some() => ops::grid_delta(s, c, delta, mode == EditMode::GridRelative),
+        Some(_) if mode.is_grid() && p.get("to").is_some() && delta == 0 && dest.iter().all(|(from, to)| from == to) => 0,
+        Some(c) if mode.is_grid() && p.get("to").is_some() => ops::grid_delta(s, c, delta, mode == EditMode::GridRelative, &ids),
         _ => delta,
     };
+    let effective_delta = first.map_or(delta, |clip| delta.max(clip.start.saturating_neg()));
     let s = e.session_mut();
     let n = if mode == EditMode::Shuffle {
         ops::shuffle_clips(s, &ids, delta, &dest).map_err(|why| bad("edit.move_clips", why))?
+    } else if effective_delta == 0 && dest.iter().all(|(from, to)| from == to) {
+        0
     } else {
-        ops::move_clips(s, &ids, delta, &dest)
+        ops::move_clips(s, &ids, effective_delta, &dest)
     };
     s.edit.selected_clips = ids;
-    Ok(json!({"moved": n, "by": delta}))
+    Ok(json!({"moved": n, "by": if mode == EditMode::Shuffle { delta } else { effective_delta }}))
 }
 
 fn trim_clip(e: &mut Engine, p: &Value) -> Result<Value> {

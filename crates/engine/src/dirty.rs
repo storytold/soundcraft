@@ -52,6 +52,9 @@ fn edit_values<'a>(edit: &'a EditState, navigation: &'a EditState) -> impl Parti
         grid,
         nudge,
         grid_lines,
+        grid_follow_main,
+        nudge_follow_main,
+        grid_clips_markers,
         main_counter,
         sub_counter,
         zoom: _,
@@ -130,7 +133,17 @@ fn edit_values<'a>(edit: &'a EditState, navigation: &'a EditState) -> impl Parti
             scrolling,
             solo_mode,
         ),
-        (pre_fader_metering, delay_compensation, keyboard_focus, &navigation.timeline_selection, flags, values),
+        (
+            grid_follow_main,
+            nudge_follow_main,
+            grid_clips_markers,
+            pre_fader_metering,
+            delay_compensation,
+            keyboard_focus,
+            &navigation.timeline_selection,
+            flags,
+            values,
+        ),
     )
 }
 
@@ -186,6 +199,9 @@ mod tests {
             ("grid", |e| e.grid = soundcraft_time::GridValue::Seconds(2.0)),
             ("nudge", |e| e.nudge = soundcraft_time::GridValue::Seconds(2.0)),
             ("grid_lines", |e| e.grid_lines = !e.grid_lines),
+            ("grid_follow_main", |e| e.grid_follow_main = !e.grid_follow_main),
+            ("nudge_follow_main", |e| e.nudge_follow_main = !e.nudge_follow_main),
+            ("grid_clips_markers", |e| e.grid_clips_markers = !e.grid_clips_markers),
             ("main_counter", |e| e.main_counter = TimeFormat::Samples),
             ("sub_counter", |e| e.sub_counter = None),
             ("zoom_toggle", |e| e.zoom_toggle = Some(ZoomToggle { samples_per_px: 64.0, scroll: 0, heights: Vec::new() })),

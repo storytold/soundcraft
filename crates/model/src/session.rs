@@ -5,7 +5,7 @@ use crate::{
     Bus, BusId, ChannelFormat, Clip, ClipId, Group, GroupId, MarkerId, MarkerKind, MemoryLocation, OutputPath, Source, SourceId, SourcePool,
     TRACK_COLORS, Track, TrackId, TrackKind, VideoSource,
 };
-use soundcraft_time::{FrameRate, GridValue, Range, SampleRate, Samples, TempoMap, TimeFormat};
+use soundcraft_time::{FrameRate, GridScale, GridValue, Range, SampleRate, Samples, TempoMap, TimeFormat};
 
 /// Native session file extension.
 pub const SESSION_EXTENSION: &str = "scraft";
@@ -147,6 +147,7 @@ pub struct ZoomState {
 }
 
 impl Default for ZoomState {
+    /// Starts with a practical overview zoom and five reusable preset levels.
     fn default() -> Self {
         ZoomState { samples_per_px: 1024.0, scroll: 0, waveform_zoom: 1.0, presets: [64.0, 256.0, 1024.0, 4096.0, 16384.0] }
     }
@@ -179,6 +180,15 @@ pub struct EditState {
     pub playhead: Samples,
     pub grid: GridValue,
     pub nudge: GridValue,
+    /// Grid/Nudge time scales follow the main counter when enabled.
+    #[serde(default)]
+    pub grid_follow_main: bool,
+    #[serde(default)]
+    pub nudge_follow_main: bool,
+    /// Grid lines and snapping use visible clip boundaries and memory locations while the numeric
+    /// Grid value is retained for when this mode is left.
+    #[serde(default)]
+    pub grid_clips_markers: bool,
     #[serde(default = "yes")]
     pub grid_lines: bool,
     pub main_counter: TimeFormat,
@@ -244,6 +254,7 @@ fn yes() -> bool {
 }
 
 impl Default for EditState {
+    /// Starts the Edit window in Slip mode with independent Grid and Nudge scales.
     fn default() -> Self {
         EditState {
             tool: Tool::Smart,
@@ -255,6 +266,9 @@ impl Default for EditState {
             playhead: 0,
             grid: GridValue::default(),
             nudge: GridValue::Seconds(1.0),
+            grid_follow_main: false,
+            nudge_follow_main: false,
+            grid_clips_markers: false,
             grid_lines: true,
             main_counter: TimeFormat::MinSecs,
             sub_counter: Some(TimeFormat::Samples),
@@ -488,6 +502,134 @@ impl Session {
     /// Parse a position typed in `fmt` against this session's references.
     pub fn parse_position(&self, text: &str, fmt: TimeFormat) -> Result<Samples, soundcraft_time::TimeError> {
         soundcraft_time::parse_position(text, fmt, self.sample_rate, &self.tempo, self.frame_rate, self.timecode_start, self.feet_frames_start())
+    }
+
+    /// Whether a track contributes visible boundaries to the Edit window grid.
+    fn grid_track_visible(&self, track: &Track) -> bool {
+        if track.hidden {
+            return false;
+        }
+        let mut folder = track.folder;
+        for _ in 0..64 {
+            let Some(parent) = folder.and_then(|id| self.track(id)) else { return true };
+            if parent.hidden || !parent.folder_open {
+                return false;
+            }
+            folder = parent.folder;
+        }
+        false
+    }
+
+    /// Collects unique visible active-playlist clip boundaries and memory-location boundaries.
+    fn clip_marker_grid_points(&self, keep: impl Fn(Samples) -> bool, excluded: &[ClipId], include_zero: bool) -> Vec<Samples> {
+        let mut points = Vec::new();
+        let excluded: std::collections::HashSet<ClipId> = excluded.iter().copied().collect();
+        if include_zero && keep(0) {
+            points.push(0);
+        }
+        for clip in self
+            .tracks
+            .iter()
+            .filter(|track| self.grid_track_visible(track))
+            .flat_map(|track| track.clips())
+            .filter(|clip| !excluded.contains(&clip.id))
+        {
+            points.extend([clip.start, clip.end()].into_iter().filter(|point| keep(*point)));
+        }
+        for marker in &self.markers {
+            if keep(marker.start) {
+                points.push(marker.start);
+            }
+            if marker.end != marker.start && keep(marker.end) {
+                points.push(marker.end);
+            }
+        }
+        points.sort_unstable();
+        points.dedup();
+        points
+    }
+
+    /// Counter reference expressed in samples for the current frame-based Grid scale.
+    fn grid_origin(&self) -> Samples {
+        match self.edit.grid.scale() {
+            GridScale::Timecode => self.timecode_start,
+            GridScale::FeetFrames => self.frame_rate.samples_at_frame(self.feet_frames_start(), self.sample_rate),
+            _ => 0,
+        }
+    }
+
+    /// Grid lines for the current Grid value, including clip and marker boundaries.
+    pub fn grid_lines(&self, start: Samples, end: Samples, max: usize) -> Vec<Samples> {
+        if !self.edit.grid_clips_markers {
+            let origin = self.grid_origin();
+            return self
+                .edit
+                .grid
+                .lines(start.saturating_add(origin), end.saturating_add(origin), self.sample_rate, &self.tempo, self.frame_rate, max)
+                .into_iter()
+                .map(|point| point.saturating_sub(origin))
+                .collect();
+        }
+        let points = self.clip_marker_grid_points(|point| point >= start && point < end, &[], true);
+        if points.len() <= max {
+            return points;
+        }
+        match max {
+            0 => Vec::new(),
+            1 => points.first().copied().into_iter().collect(),
+            _ => {
+                let span = i128::from(end).saturating_sub(i128::from(start)).max(1);
+                let mut bucket = None;
+                points
+                    .into_iter()
+                    .filter(|point| {
+                        let next = i128::from(*point).saturating_sub(i128::from(start)).saturating_mul(max as i128) / span;
+                        if bucket == Some(next) {
+                            false
+                        } else {
+                            bucket = Some(next);
+                            true
+                        }
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// The current Grid line at or before `position`.
+    pub fn grid_line_at_or_before(&self, position: Samples) -> Samples {
+        self.grid_line_at_or_before_excluding(position, &[])
+    }
+
+    /// Find the current Grid line at or before `position` without boundaries of `excluded` clips.
+    pub fn grid_line_at_or_before_excluding(&self, position: Samples, excluded: &[ClipId]) -> Samples {
+        if !self.edit.grid_clips_markers {
+            let origin = self.grid_origin();
+            return self
+                .edit
+                .grid
+                .line_at_or_before(position.saturating_add(origin), self.sample_rate, &self.tempo, self.frame_rate)
+                .saturating_sub(origin);
+        }
+        self.clip_marker_grid_points(|_| true, excluded, true).into_iter().take_while(|point| *point <= position).last().unwrap_or(position)
+    }
+
+    /// Snap to the nearest line in the current Grid.
+    pub fn snap_to_grid(&self, position: Samples) -> Samples {
+        self.snap_to_grid_excluding(position, &[])
+    }
+
+    /// Snap to the nearest current Grid line without using boundaries of `excluded` clips.
+    pub fn snap_to_grid_excluding(&self, position: Samples, excluded: &[ClipId]) -> Samples {
+        if !self.edit.grid_clips_markers {
+            let origin = self.grid_origin();
+            return self.edit.grid.snap(position.saturating_add(origin), self.sample_rate, &self.tempo, self.frame_rate).saturating_sub(origin);
+        }
+        let mut points = self.clip_marker_grid_points(|_| true, excluded, false);
+        if !points.is_empty() {
+            points.push(0);
+        }
+        points.into_iter().min_by_key(|point| i128::from(*point).saturating_sub(i128::from(position)).abs()).unwrap_or(position)
     }
 
     pub fn next_track_color(&self) -> [u8; 3] {
@@ -760,6 +902,62 @@ mod tests {
         let text = s.to_json().unwrap();
         let back = Session::from_json(&text).unwrap();
         assert_eq!(back, s);
+    }
+
+    /// Clips/Markers mode snaps and draws at clip and memory-location boundaries.
+    #[test]
+    fn clips_markers_grid_uses_visible_clip_edges_and_memory_locations() {
+        let mut s = Session::default();
+        let track = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+        let clip = Clip::midi(s.new_clip_id(), "Notes", 1_000, 2_000, soundcraft_midi::Sequence::default());
+        let clip_id = clip.id;
+        s.track_mut(track).and_then(Track::playlist_mut).unwrap().clips.push(clip);
+        let hidden = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+        let hidden_clip = Clip::midi(s.new_clip_id(), "Hidden", 3_200, 100, soundcraft_midi::Sequence::default());
+        if let Some(track) = s.track_mut(hidden) {
+            track.hidden = true;
+            track.playlist_mut().unwrap().clips.push(hidden_clip);
+        }
+        s.add_marker("Cue", MarkerKind::Marker, 2_500, 2_500);
+        s.add_marker("Selection", MarkerKind::Selection, 4_000, 4_500);
+        s.edit.grid_clips_markers = true;
+
+        assert_eq!(s.grid_lines(0, 5_000, 20), [0, 1_000, 2_500, 3_000, 4_000, 4_500]);
+        assert_eq!(s.grid_line_at_or_before(2_800), 2_500);
+        assert_eq!(s.snap_to_grid(2_800), 3_000);
+        assert_eq!(s.snap_to_grid(3_700), 4_000);
+        assert_eq!(s.grid_lines(2_400, 4_100, 2), [2_500, 4_000]);
+        assert_eq!(s.snap_to_grid(3_200), 3_000);
+        assert_eq!(s.snap_to_grid_excluding(2_800, &[clip_id]), 2_500);
+
+        let folder = s.add_track(TrackKind::Folder, ChannelFormat::Stereo, None);
+        s.track_mut(track).unwrap().folder = Some(folder);
+        s.track_mut(folder).unwrap().folder_open = false;
+        assert_eq!(s.grid_lines(0, 5_000, 20), [0, 2_500, 4_000, 4_500]);
+    }
+
+    /// With no real Clips/Markers boundaries, snapping leaves the position alone while drawing
+    /// retains the session-start line.
+    #[test]
+    fn empty_clips_markers_grid_does_not_snap_everything_to_zero() {
+        let mut s = Session::default();
+        s.edit.grid_clips_markers = true;
+        assert_eq!(s.grid_lines(0, 1_000, 10), [0]);
+        assert_eq!(s.snap_to_grid(678), 678);
+    }
+
+    /// Frame-based grids share the same references as their displayed counters.
+    #[test]
+    fn frame_grids_apply_session_counter_origins() {
+        let mut s = Session { sample_rate: SampleRate::HZ_48000, frame_rate: FrameRate::Fps30, timecode_start: 1_600, ..Session::default() };
+        s.edit.grid = GridValue::Timecode(soundcraft_time::TimecodeValue::Second);
+        assert_eq!(s.grid_line_at_or_before(47_000), 46_400);
+        assert_eq!(s.snap_to_grid(46_400), 46_400);
+
+        s.edit.grid = GridValue::FeetFrames(soundcraft_time::FeetFramesValue::Foot);
+        s.edit.values.insert(FEET_FRAMES_START.into(), 1.0);
+        assert_eq!(s.grid_line_at_or_before(25_000), 24_000);
+        assert_eq!(s.snap_to_grid(24_000), 24_000);
     }
 
     #[test]

@@ -64,7 +64,8 @@ pub(super) fn drive_drag(app: &mut SoundApp, ctx: &egui::Context) {
             let plan = drag_plan(ctx, &s, app.engine.revision, clips, (*from_track, *tt), *grab_at);
             *delta = move_delta(&plan, &s, *from_track, at - *grab_at, ctx.input(|i| i.modifiers.command));
         }
-        Some(Gesture::TrimStart { to, .. } | Gesture::TrimEnd { to, .. }) => *to = drag_snap(&s, at, ctx.input(|i| i.modifiers.command)),
+        Some(Gesture::TrimStart { clip, to, .. }) => *to = trim_drag_snap(&s, *clip, at, true, ctx.input(|i| i.modifiers.command)),
+        Some(Gesture::TrimEnd { clip, to, .. }) => *to = trim_drag_snap(&s, *clip, at, false, ctx.input(|i| i.modifiers.command)),
         Some(Gesture::MidiClip { to, .. }) => *to = at,
         Some(Gesture::Fade { clip, fade_in, to, .. }) => {
             if let Some(range) = s.find_clip(*clip).and_then(|(_, c)| fade_drag_range(c, *fade_in, at)) {
@@ -206,7 +207,18 @@ fn finish_drag(app: &mut SoundApp, s: &Session, tl: Rect, p: Option<Pos2>) {
 
 /// Grid snapping while dragging; holding Cmd/Ctrl swaps Grid and Slip.
 pub(super) fn drag_snap(s: &Session, at: Samples, flip: bool) -> Samples {
-    if s.edit.edit_mode.is_grid() != flip { s.edit.grid.snap(at, s.sample_rate, &s.tempo, s.frame_rate) } else { at }
+    drag_snap_excluding(s, at, flip, &[])
+}
+
+/// Grid snapping that ignores boundaries belonging to clips changed by the gesture.
+pub(super) fn drag_snap_excluding(s: &Session, at: Samples, flip: bool, excluded: &[ClipId]) -> Samples {
+    if s.edit.edit_mode.is_grid() != flip { s.snap_to_grid_excluding(at, excluded) } else { at }
+}
+
+/// Snap a trim while preserving the clip edge when the pointer returns to its origin.
+pub(super) fn trim_drag_snap(s: &Session, clip: ClipId, at: Samples, start: bool, flip: bool) -> Samples {
+    let origin = s.find_clip(clip).map(|(_, clip)| if start { clip.start } else { clip.end() });
+    if origin == Some(at) { at } else { drag_snap_excluding(s, at, flip, &[clip]) }
 }
 
 /// What a clip drag works out once per target track rather than every frame: where the tracks go
@@ -216,6 +228,7 @@ pub(super) struct DragPlan {
     pub(super) dest: Option<Vec<(TrackId, TrackId)>>,
     pub(super) groups: Vec<(TrackId, Samples, Vec<Samples>)>,
     pub(super) moving: Vec<(TrackId, Samples, Samples)>,
+    moving_ids: Vec<ClipId>,
     grabbed: Option<Clip>,
 }
 
@@ -246,10 +259,11 @@ pub(super) fn drag_plan(
     };
     let ids: HashSet<ClipId> = clips.iter().copied().collect();
     let movable = |c: &&Clip| ids.contains(&c.id) && !ops::locked(c);
-    let moving = s.tracks.iter().flat_map(|t| t.clips().iter().filter(movable).map(|c| (t.id, c.start, c.length))).collect();
+    let moving: Vec<_> = s.tracks.iter().flat_map(|t| t.clips().iter().filter(movable).map(|c| (t.id, c.start, c.length))).collect();
+    let moving_ids: Vec<_> = s.tracks.iter().flat_map(|t| t.clips().iter().filter(movable).map(|c| c.id)).collect();
     let mine: Vec<&Clip> = s.track(from).map(|t| t.clips().iter().filter(movable).collect()).unwrap_or_default();
     let grabbed = mine.iter().rev().find(|c| c.range().contains(grab_at)).or_else(|| mine.iter().min_by_key(|c| c.start)).map(|c| (*c).clone());
-    let plan = Arc::new(DragPlan { dest, groups, moving, grabbed });
+    let plan = Arc::new(DragPlan { dest, groups, moving, moving_ids, grabbed });
     ctx.data_mut(|d| d.insert_temp(id, (key, Arc::clone(&plan))));
     plan
 }
@@ -258,6 +272,10 @@ pub(super) fn drag_plan(
 /// Shuffle lands the earliest clip bound for the target track on a slot there, as
 /// `edit.move_clips` does; Grid snaps the grabbed clip.
 fn move_delta(plan: &DragPlan, s: &Session, from: TrackId, raw: Samples, flip: bool) -> Samples {
+    let track_changed = plan.dest.as_ref().is_some_and(|dest| ops::lands(dest, from) != from);
+    if raw == 0 && !track_changed {
+        return 0;
+    }
     let mode = s.edit.edit_mode;
     if mode == EditMode::Shuffle {
         let to = plan.dest.as_ref().map_or(from, |d| ops::lands(d, from));
@@ -268,7 +286,7 @@ fn move_delta(plan: &DragPlan, s: &Session, from: TrackId, raw: Samples, flip: b
     } else if mode.is_grid() != flip
         && let Some(c) = &plan.grabbed
     {
-        ops::grid_delta(s, c, raw, mode == EditMode::GridRelative)
+        ops::grid_delta(s, c, raw, mode == EditMode::GridRelative, &plan.moving_ids)
     } else {
         raw
     }
