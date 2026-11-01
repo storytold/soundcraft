@@ -798,9 +798,11 @@ fn buttons(ui: &mut egui::Ui, ok: &str, enter: bool) -> bool {
 /// `buttons`, but a greyed-out OK when the dialog's values can't be submitted yet. Cancel always works.
 pub(crate) fn buttons_enabled(ui: &mut egui::Ui, ok: &str, enter: bool, ready: bool) -> bool {
     let mut pressed = enter && ready;
+    let mut canceled = false;
     ui.separator();
     ui.horizontal(|ui| {
         if ui.button("Cancel").clicked() {
+            canceled = true;
             ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::unique("dlg_cancel"), true));
         }
         let b = egui::Button::new(egui::RichText::new(ok).strong()).fill(Tokens::current().accent);
@@ -808,7 +810,7 @@ pub(crate) fn buttons_enabled(ui: &mut egui::Ui, ok: &str, enter: bool, ready: b
             pressed = true;
         }
     });
-    pressed
+    pressed && !canceled
 }
 
 /// A name field that takes the focus with its text selected, so typing replaces the old name.

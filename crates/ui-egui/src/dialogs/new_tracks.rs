@@ -522,6 +522,16 @@ mod tests {
         assert!(h.state().engine.session().tracks.is_empty());
     }
 
+    /// Enter on the focused Cancel button closes the dialog without creating tracks.
+    #[test]
+    fn enter_on_cancel_does_not_submit_the_dialog() {
+        let mut h = harness();
+        h.get_by_role_and_label(Role::Button, "Cancel").focus();
+        chord(&mut h, Modifiers::NONE, Key::Enter);
+        assert!(h.state().dialogs.open.is_none());
+        assert!(h.state().engine.session().tracks.is_empty());
+    }
+
     /// Removing a preceding row does not transfer widget state to another row.
     #[test]
     fn removing_an_earlier_row_keeps_editing_state_with_the_surviving_row() {
