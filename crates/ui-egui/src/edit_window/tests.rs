@@ -2,6 +2,22 @@ use super::*;
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable};
 
+/// A trim cannot snap to the clip's own old boundary in Clips/Markers mode.
+#[test]
+fn clips_markers_trim_ignores_the_trimmed_clip() {
+    let mut s = Session::default();
+    let track = s.add_track(TrackKind::Midi, soundcraft_model::ChannelFormat::Mono, None);
+    let clip = Clip::midi(s.new_clip_id(), "Notes", 1_000, 1_000, soundcraft_midi::Sequence::default());
+    let clip_id = clip.id;
+    s.track_mut(track).and_then(Track::playlist_mut).unwrap().clips.push(clip);
+    s.add_marker("Target", soundcraft_model::MarkerKind::Marker, 2_500, 2_500);
+    s.edit.edit_mode = soundcraft_model::EditMode::Grid;
+    s.edit.grid_clips_markers = true;
+
+    assert_eq!(super::drag::drag_snap(&s, 2_100, false), 2_000);
+    assert_eq!(super::drag::drag_snap_excluding(&s, 2_100, false, &[clip_id]), 2_500);
+}
+
 /// The painted header selectors are interactive controls; their accessible name is the field
 /// they edit, not the short value text ("Read", "Waveform") painted inside them.
 #[test]

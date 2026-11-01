@@ -64,7 +64,9 @@ pub(super) fn drive_drag(app: &mut SoundApp, ctx: &egui::Context) {
             let plan = drag_plan(ctx, &s, app.engine.revision, clips, (*from_track, *tt), *grab_at);
             *delta = move_delta(&plan, &s, *from_track, at - *grab_at, ctx.input(|i| i.modifiers.command));
         }
-        Some(Gesture::TrimStart { to, .. } | Gesture::TrimEnd { to, .. }) => *to = drag_snap(&s, at, ctx.input(|i| i.modifiers.command)),
+        Some(Gesture::TrimStart { clip, to, .. } | Gesture::TrimEnd { clip, to, .. }) => {
+            *to = drag_snap_excluding(&s, at, ctx.input(|i| i.modifiers.command), &[*clip]);
+        }
         Some(Gesture::MidiClip { to, .. }) => *to = at,
         Some(Gesture::Fade { clip, fade_in, to, .. }) => {
             if let Some(range) = s.find_clip(*clip).and_then(|(_, c)| fade_drag_range(c, *fade_in, at)) {
@@ -206,7 +208,12 @@ fn finish_drag(app: &mut SoundApp, s: &Session, tl: Rect, p: Option<Pos2>) {
 
 /// Grid snapping while dragging; holding Cmd/Ctrl swaps Grid and Slip.
 pub(super) fn drag_snap(s: &Session, at: Samples, flip: bool) -> Samples {
-    if s.edit.edit_mode.is_grid() != flip { s.snap_to_grid(at) } else { at }
+    drag_snap_excluding(s, at, flip, &[])
+}
+
+/// Grid snapping that ignores boundaries belonging to clips changed by the gesture.
+pub(super) fn drag_snap_excluding(s: &Session, at: Samples, flip: bool, excluded: &[ClipId]) -> Samples {
+    if s.edit.edit_mode.is_grid() != flip { s.snap_to_grid_excluding(at, excluded) } else { at }
 }
 
 /// What a clip drag works out once per target track rather than every frame: where the tracks go
