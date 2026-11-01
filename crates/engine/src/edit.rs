@@ -471,41 +471,180 @@ pub fn trim_end_to(s: &mut Session, track: TrackId, at: Samples) -> usize {
 }
 
 /// Source samples covered by `length` timeline samples of a clip with the given `stretch`.
-fn source_len(length: Samples, stretch: f64) -> Samples {
-    if stretch.is_finite() && stretch > 0.0 && (stretch - 1.0).abs() >= 1e-9 { (length as f64 / stretch).round() as Samples } else { length }
+fn source_len(length: Samples, stretch: f64) -> Option<Samples> {
+    if (stretch - 1.0).abs() < 1e-9 {
+        return Some(length);
+    }
+    let samples = (length as f64 / stretch).round();
+    // i64::MAX rounds up to 2^63 as f64; reject that boundary rather than saturating it.
+    (samples.is_finite() && samples >= 0.0 && samples < i64::MAX as f64).then_some(samples as Samples)
 }
 
-/// Heal separations inside `range`: merge neighbouring audio clips that continue the same file,
-/// either touching (a split) or with an empty gap that matches the gap in the source (a cut).
-pub fn heal(s: &mut Session, track: TrackId, range: Range) -> usize {
-    let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return 0 };
-    pl.sort();
-    let mut out: Vec<Clip> = Vec::with_capacity(pl.clips.len());
-    let mut healed = 0;
-    for c in pl.clips.drain(..) {
-        if let Some(prev) = out.last_mut() {
-            let contiguous = c.start >= prev.end() && prev.end() >= range.start && c.start <= range.end;
-            let gap = if contiguous { c.start.saturating_sub(prev.end()) } else { 0 };
-            let same = match (&prev.content, &c.content) {
-                (ClipContent::Audio { source: a, offset: oa }, ClipContent::Audio { source: b, offset: ob }) => {
-                    a == b && oa.saturating_add(source_len(prev.length.saturating_add(gap), prev.stretch)) == *ob
-                }
-                _ => false,
-            };
-            let same_playback = prev.muted == c.muted && (prev.stretch - c.stretch).abs() < 1e-9 && (prev.gain_db - c.gain_db).abs() < 1e-6;
-            if contiguous && same && same_playback {
-                if !prev.gain_env.is_empty() || !c.gain_env.is_empty() {
-                    join_gain_env(prev, &c);
-                }
-                prev.length = c.end().saturating_sub(prev.start);
-                prev.fade_out = c.fade_out;
-                healed += 1;
-                continue;
+/// A selected neighbouring pair that cannot be healed without losing clip semantics.
+#[derive(Debug, serde::Serialize)]
+pub struct HealSkip {
+    pub track: TrackId,
+    pub left: ClipId,
+    pub right: ClipId,
+    pub reason: &'static str,
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+pub struct HealReport {
+    pub healed: usize,
+    pub skipped: Vec<HealSkip>,
+}
+
+/// Immutable preflight. The command obtains mutable document access only if this plan heals
+/// at least one seam, so refused/no-candidate operations preserve revision, history and Arc.
+pub struct HealPlan {
+    pub report: HealReport,
+    playlists: Vec<(TrackId, Vec<Clip>)>,
+    survivors: std::collections::BTreeMap<ClipId, ClipId>,
+}
+
+impl HealPlan {
+    pub fn apply(self, s: &mut Session) {
+        for (track, clips) in self.playlists {
+            if let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) {
+                pl.clips = clips;
             }
         }
-        out.push(c);
+        if !self.survivors.is_empty() {
+            let mut seen = std::collections::BTreeSet::new();
+            s.edit.selected_clips =
+                s.edit.selected_clips.iter().map(|id| self.survivors.get(id).copied().unwrap_or(*id)).filter(|id| seen.insert(*id)).collect();
+        }
     }
-    pl.clips = out;
+}
+
+/// Plan audio merges on the active playlists. Preserve upstream's source-contiguous cut-gap,
+/// matching-stretch and envelope joins, playlist order and the left identity/presentation.
+pub fn plan_heal(s: &Session, tracks: &[TrackId], range: Range) -> HealPlan {
+    let mut plan = HealPlan { report: HealReport::default(), playlists: Vec::new(), survivors: std::collections::BTreeMap::new() };
+    let mut ids = std::collections::BTreeSet::new();
+    let duplicates: std::collections::BTreeSet<_> = s.all_clips().filter_map(|c| (!ids.insert(c.id)).then_some(c.id)).collect();
+    let mut seen_tracks = std::collections::BTreeSet::new();
+    for &track in tracks {
+        if !seen_tracks.insert(track) {
+            continue;
+        }
+        let Some(pl) = s.track(track).and_then(|t| t.playlist()) else { continue };
+        let before = plan.report.healed;
+        let mut out: Vec<Clip> = Vec::with_capacity(pl.clips.len());
+        for c in &pl.clips {
+            if let Some(prev) = out.last_mut()
+                && prev.end() >= range.start
+                && c.start <= range.end
+            {
+                match heal_pair(s, prev, c, &duplicates) {
+                    Ok(length) => {
+                        if !prev.gain_env.is_empty() || !c.gain_env.is_empty() {
+                            join_gain_env(prev, c);
+                        }
+                        prev.length = length;
+                        prev.fade_out = c.fade_out;
+                        plan.survivors.insert(c.id, prev.id);
+                        plan.report.healed += 1;
+                        continue;
+                    }
+                    Err(reason) => plan.report.skipped.push(HealSkip { track, left: prev.id, right: c.id, reason }),
+                }
+            }
+            out.push(c.clone());
+        }
+        if plan.report.healed > before {
+            plan.playlists.push((track, out));
+        }
+    }
+    plan
+}
+
+fn heal_pair(s: &Session, a: &Clip, b: &Clip, duplicates: &std::collections::BTreeSet<ClipId>) -> Result<Samples, &'static str> {
+    let (sa, oa, sb, ob) = match (&a.content, &b.content) {
+        (ClipContent::Audio { source: sa, offset: oa }, ClipContent::Audio { source: sb, offset: ob }) => (sa, oa, sb, ob),
+        _ => return Err("unsupported_content"),
+    };
+    if a.length <= 0 || b.length <= 0 || a.start < 0 || b.start < 0 || *oa < 0 || *ob < 0 {
+        return Err("invalid_clip");
+    }
+    if duplicates.contains(&a.id) || duplicates.contains(&b.id) {
+        return Err("duplicate_id");
+    }
+    let a_end = a.start.checked_add(a.length).ok_or("arithmetic_overflow")?;
+    let b_end = b.start.checked_add(b.length).ok_or("arithmetic_overflow")?;
+    let seam = b.start.checked_sub(a.start).ok_or("arithmetic_overflow")?;
+    let length = b_end.checked_sub(a.start).ok_or("arithmetic_overflow")?;
+    if b.start < a_end {
+        return Err("not_contiguous");
+    }
+    if sa != sb {
+        return Err("different_source");
+    }
+    if !a.gain_db.is_finite() || !b.gain_db.is_finite() || a.gain_db != b.gain_db {
+        return Err("gain_mismatch");
+    }
+    if a.muted != b.muted {
+        return Err("mute_mismatch");
+    }
+    if !a.stretch.is_finite() || !b.stretch.is_finite() || a.stretch <= 0.0 || b.stretch <= 0.0 || (a.stretch - b.stretch).abs() >= 1e-9 {
+        return Err("unsupported_stretch");
+    }
+    let source_end = oa.checked_add(source_len(seam, a.stretch).ok_or("arithmetic_overflow")?).ok_or("arithmetic_overflow")?;
+    ob.checked_add(source_len(b.length, b.stretch).ok_or("arithmetic_overflow")?).ok_or("arithmetic_overflow")?;
+    oa.checked_add(source_len(length, a.stretch).ok_or("arithmetic_overflow")?).ok_or("arithmetic_overflow")?;
+    if source_end != *ob {
+        return Err("not_contiguous");
+    }
+    if a.fade_in.len != 0 || a.fade_out.len != 0 || b.fade_in.len != 0 || b.fade_out.len != 0 {
+        // The renderer approximates gain on clip-relative segments. Even outer fades can
+        // change their interpolation grid when an unaligned seam disappears.
+        return Err("unsupported_fade");
+    }
+    for clip in [a, b] {
+        if clip.gain_env.iter().any(|&(_, db)| !db.is_finite())
+            || clip.gain_env.windows(2).any(|pair| pair[0].0 >= pair[1].0 || !(pair[1].1 - pair[0].1).is_finite())
+        {
+            return Err("unsupported_envelope");
+        }
+    }
+    for &(at, _) in b.gain_env.iter().filter(|&&(at, _)| at >= 0) {
+        at.checked_add(seam).ok_or("arithmetic_overflow")?;
+    }
+    if !(a.env_db_at(a.length - 1) - b.env_db_at(0)).is_finite() {
+        return Err("unsupported_envelope");
+    }
+    if a.edit_locked || a.time_locked || b.edit_locked || b.time_locked {
+        return Err("locked");
+    }
+    if a.group.is_some() || b.group.is_some() {
+        return Err("grouped");
+    }
+    if a.loop_id.is_some() || b.loop_id.is_some() {
+        return Err("looped");
+    }
+    if has_heal_metadata(s, a.id) || has_heal_metadata(s, b.id) {
+        return Err("clip_metadata");
+    }
+    Ok(length)
+}
+
+fn has_heal_metadata(s: &Session, id: ClipId) -> bool {
+    let has_prefix = |prefix: String| s.edit.values.range(prefix.clone()..).next().is_some_and(|(key, _)| key.starts_with(&prefix));
+    has_prefix(format!("clip_fx.{}.", id.0))
+        || has_prefix(format!("elastic.{}.", id.0))
+        || s.edit.flag(&format!("clip_fx.bypass.{}", id.0))
+        || ["pitch", "bpm", "len0"].iter().any(|key| s.edit.values.contains_key(&format!("clip.{key}.{}", id.0)))
+        || s.midi_originals.contains_key(&id.0)
+}
+
+/// Heal source-contiguous audio splits and cut gaps; refused pairs remain unchanged.
+pub fn heal(s: &mut Session, track: TrackId, range: Range) -> usize {
+    let plan = plan_heal(s, &[track], range);
+    let healed = plan.report.healed;
+    if healed > 0 {
+        plan.apply(s);
+    }
     healed
 }
 
