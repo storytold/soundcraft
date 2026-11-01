@@ -29,6 +29,38 @@ const BOLD: &[(&str, u32)] = &[
     ("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 0),
     ("/usr/share/fonts/liberation-sans-fonts/LiberationSans-Bold.ttf", 0),
 ];
+/// Japanese fallback (kana and Japanese Han forms), appended after every family so Japanese
+/// session, track, clip and marker names draw whatever the interface language. CJK is
+/// Japanese-first: the Chinese face below covers what this one lacks.
+const JAPANESE: &[(&str, u32)] = &[
+    ("/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc", 0),
+    ("/System/Library/Fonts/AquaKana.ttc", 0),
+    ("C:\\Windows\\Fonts\\YuGothM.ttc", 0),
+    ("C:\\Windows\\Fonts\\meiryo.ttc", 0),
+    ("C:\\Windows\\Fonts\\msgothic.ttc", 0),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+    ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0),
+    ("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", 0),
+    ("/usr/share/fonts/opentype/noto/NotoSansJP-Regular.otf", 0),
+    ("/usr/share/fonts/truetype/noto/NotoSansJP-Regular.otf", 0),
+];
+/// Chinese fallback for the Han characters the Japanese face lacks (页, 选, 删…) and for Chinese
+/// names in general. It follows the Japanese face, so shared ideographs keep Japanese glyph
+/// forms; a Traditional-Chinese-specific face is not selected yet (GB18030 coverage handles most
+/// of its characters). Face 2 of the Noto Sans CJK collection and face 2 of PingFang are their
+/// Simplified Chinese faces; PingFang's face 0 is the Hong Kong one.
+const CHINESE: &[(&str, u32)] = &[
+    ("/System/Library/Fonts/PingFang.ttc", 2),
+    ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+    ("/System/Library/Fonts/STHeiti Light.ttc", 0),
+    ("C:\\Windows\\Fonts\\msyh.ttc", 0),
+    ("C:\\Windows\\Fonts\\simsun.ttc", 0),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf", 0),
+    ("/usr/share/fonts/truetype/noto/NotoSansSC-Regular.otf", 0),
+];
 /// Hangul fallback, appended after every family so Korean session, track and clip names draw
 /// whatever the interface language. The Noto Sans CJK collection's face 1 is its Korean face.
 const HANGUL: &[(&str, u32)] = &[
@@ -126,10 +158,19 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
         bold_family.insert(0, "system-regular".into());
     }
     fonts.families.insert(FontFamily::Name("bold".into()), bold_family);
-    if let Some(h) = load(HANGUL, "sans-serif:lang=ko", Some("ko"), system_fonts) {
-        fonts.font_data.insert("system-hangul".into(), Arc::new(h));
-        for family in fonts.families.values_mut() {
-            family.push("system-hangul".into());
+    // CJK first: Japanese, then Chinese for the characters the Japanese face lacks, then Korean.
+    // Every family gets them in that order, so a name draws in the script's own face and shared
+    // Han ideographs keep Japanese glyph forms.
+    for (name, candidates, pattern, lang) in [
+        ("system-japanese", JAPANESE, "sans-serif:lang=ja", Some("ja")),
+        ("system-chinese", CHINESE, "sans-serif:lang=zh-cn", Some("zh-cn")),
+        ("system-hangul", HANGUL, "sans-serif:lang=ko", Some("ko")),
+    ] {
+        if let Some(f) = load(candidates, pattern, lang, system_fonts) {
+            fonts.font_data.insert(name.into(), Arc::new(f));
+            for family in fonts.families.values_mut() {
+                family.push(name.into());
+            }
         }
     }
     fonts
@@ -150,6 +191,59 @@ mod tests {
         }
         // Face 0 of the Noto Sans CJK collection is Japanese; the Korean face is 1.
         assert!(HANGUL.iter().filter(|(p, _)| p.ends_with("NotoSansCJK-Regular.ttc")).all(|(_, i)| *i == 1));
+    }
+
+    #[test]
+    fn cjk_candidates_cover_every_desktop_platform() {
+        for prefix in ["/System/Library/Fonts/", "C:\\Windows\\Fonts\\", "/usr/share/fonts/"] {
+            assert!(JAPANESE.iter().any(|(p, _)| p.starts_with(prefix)), "no Japanese candidate under {prefix}");
+            assert!(CHINESE.iter().any(|(p, _)| p.starts_with(prefix)), "no Chinese candidate under {prefix}");
+        }
+        // Face 0 of the Noto Sans CJK collection is Japanese, face 2 Simplified Chinese. PingFang's
+        // collection is region-major: face 0 is Hong Kong Regular and face 2 Simplified Chinese.
+        assert!(JAPANESE.iter().filter(|(p, _)| p.ends_with("NotoSansCJK-Regular.ttc")).all(|(_, i)| *i == 0));
+        assert!(CHINESE.iter().filter(|(p, _)| p.ends_with("NotoSansCJK-Regular.ttc")).all(|(_, i)| *i == 2));
+        assert!(CHINESE.iter().filter(|(p, _)| p.ends_with("PingFang.ttc")).all(|(_, i)| *i == 2));
+    }
+
+    /// Japanese and Simplified Chinese names draw in every family, not as boxes: the fallbacks are
+    /// appended after every family, Japanese first so shared Han keeps Japanese glyph forms and the
+    /// Chinese face answers the characters the Japanese one lacks (页, 选). Skipped where the
+    /// system has no such font; the Hangul test below covers Korean unchanged.
+    #[test]
+    fn every_family_draws_japanese_and_chinese_with_system_fonts() {
+        let defs = definitions(true);
+        let (has_japanese, has_chinese) = (defs.font_data.contains_key("system-japanese"), defs.font_data.contains_key("system-chinese"));
+        if !has_japanese && !has_chinese {
+            eprintln!("skipping: no Japanese or Chinese system font");
+            return;
+        }
+        // Japanese before Chinese before Korean, and all after the base UI fonts.
+        let stack = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+        let at = |name: &str| stack.iter().position(|n| n == name);
+        if let (Some(base), Some(ja)) = (at("system-regular"), at("system-japanese")) {
+            assert!(base < ja, "the base UI font stays first: {stack:?}");
+        }
+        if has_japanese && has_chinese {
+            assert!(at("system-japanese") < at("system-chinese"), "Japanese first: {stack:?}");
+        }
+        if has_chinese && defs.font_data.contains_key("system-hangul") {
+            assert!(at("system-chinese") < at("system-hangul"), "Chinese before Korean: {stack:?}");
+        }
+        let families: Vec<FontFamily> = defs.families.keys().cloned().collect();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        for family in families {
+            let font = egui::FontId::new(13.0, family.clone());
+            if has_japanese {
+                assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "あア漢字日本語セッション")), "{family:?} has no Japanese");
+            }
+            if has_chinese {
+                assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "页选汉字测试")), "{family:?} has no Chinese");
+            }
+        }
     }
 
     /// Every literal glyph the UI fixtures paint is covered by the bundled faces in every family,
