@@ -65,9 +65,9 @@ impl Runtime {
                         Err("Save changes and finish pending work before opening a provider session".into())
                     } else {
                         let mut decoded = Engine::default();
-                        io::open_provider_session_bytes(&mut decoded, &name, &bytes).map_err(|e| e.to_string()).and_then(|_| {
-                            soundcraft_ui_egui::provider_ui::install_session(app, decoded.session().clone(), ctx)
-                        })
+                        io::open_provider_session_bytes(&mut decoded, &name, &bytes)
+                            .map_err(|e| e.to_string())
+                            .and_then(|_| soundcraft_ui_egui::provider_ui::install_session(app, decoded.session().clone(), ctx))
                     };
                     match result {
                         Ok(()) => host.opened(
