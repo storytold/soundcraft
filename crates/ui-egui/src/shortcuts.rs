@@ -166,14 +166,13 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             true
         }
         Key::F5 | Key::F6 | Key::F7 | Key::F8 | Key::F9 | Key::F10 if plain => {
-            let tool = match key {
-                Key::F5 => "zoom",
-                Key::F6 => "trim",
-                Key::F7 => "selector",
-                Key::F8 => "grabber",
-                Key::F9 => "scrubber",
-                _ => "pencil",
-            };
+            let _ = app.run("edit.tool", json!({"tool": tool_key(app, key)}));
+            true
+        }
+        // Cmd+6 / Cmd+7 (Ctrl off macOS) are Pencil and the Smart Tool. Cmd+1–5 keep their window and Session
+        // keys: egui reports the numeric keypad's digits as the main keyboard's, so the two can't be told apart.
+        Key::Num6 | Key::Num7 if mods_match(Modifiers::COMMAND, m, mac) => {
+            let tool = if key == Key::Num6 { "pencil" } else { "smart" };
             let _ = app.run("edit.tool", json!({"tool": tool}));
             true
         }
@@ -286,6 +285,22 @@ fn edit_mode_key(app: &mut SoundApp, pressed: Key) {
         let _ = app.run("edit.mode", json!({"mode": grid}));
     }
     let _ = app.run("edit.mode", json!({"mode": mode, "snap_to_grid": snap}));
+}
+
+/// F5–F10 choose the Edit tools; F7 with F6 or F8 held, in either order, chooses the Smart Tool.
+fn tool_key(app: &SoundApp, pressed: Key) -> &'static str {
+    let ctx = app.docking_context.as_ref();
+    let held = |k: Key| ctx.is_some_and(|c| c.input(|i| i.key_down(k)));
+    match pressed {
+        Key::F6 | Key::F8 if held(Key::F7) => "smart",
+        Key::F7 if held(Key::F6) || held(Key::F8) => "smart",
+        Key::F5 => "zoom",
+        Key::F6 => "trim",
+        Key::F7 => "selector",
+        Key::F8 => "grabber",
+        Key::F9 => "scrubber",
+        _ => "pencil",
+    }
 }
 
 /// What choosing Grid picks: in Grid the other Grid mode, from another mode the one used last.
