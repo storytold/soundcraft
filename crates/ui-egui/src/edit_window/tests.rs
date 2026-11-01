@@ -1508,3 +1508,259 @@ fn alt_click_on_a_breakpoint_deletes_it() {
         assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}");
     }
 }
+
+#[test]
+fn selection_markers_are_blue_or_red_when_a_track_is_armed() {
+    for t in [Tokens::DARK, Tokens::LIGHT] {
+        let (blue, red) = (selection_marker_colour(&t, false), selection_marker_colour(&t, true));
+        assert!(blue.b() > blue.r() && blue.b() > blue.g(), "{blue:?} is not blue");
+        assert!(red.r() > red.g() && red.r() > red.b(), "{red:?} is not red");
+    }
+}
+
+type Piece = (Color32, Vec<egui::Pos2>);
+
+/// The filled pieces of `shapes`, as (fill, points).
+fn fills(shapes: &[Shape]) -> Vec<Piece> {
+    let filled = |s: &Shape| match s {
+        Shape::Path(p) if p.fill != Color32::TRANSPARENT => Some((p.fill, p.points.clone())),
+        _ => None,
+    };
+    shapes.iter().filter_map(filled).collect()
+}
+
+/// The outlines of `shapes`: closed, unfilled paths, as (stroke colour, width, points).
+fn outlines(shapes: &[Shape]) -> Vec<(egui::epaint::ColorMode, f32, Vec<egui::Pos2>)> {
+    let outline = |s: &Shape| match s {
+        Shape::Path(p) if p.closed && p.fill == Color32::TRANSPARENT => Some((p.stroke.color.clone(), p.stroke.width, p.points.clone())),
+        _ => None,
+    };
+    shapes.iter().filter_map(outline).collect()
+}
+
+/// Leftmost and rightmost x, and topmost and bottommost y, of some pieces.
+fn extent(pieces: &[Piece]) -> (f32, f32, f32, f32) {
+    let pts = || pieces.iter().flat_map(|(_, p)| p.iter());
+    let fold = |f: fn(f32, f32) -> f32, init: f32, get: fn(&egui::Pos2) -> f32| pts().map(get).fold(init, f);
+    (fold(f32::min, f32::MAX, |p| p.x), fold(f32::max, f32::MIN, |p| p.x), fold(f32::min, f32::MAX, |p| p.y), fold(f32::max, f32::MIN, |p| p.y))
+}
+
+#[test]
+fn a_range_gets_the_left_half_of_the_arrow_at_its_start_and_the_right_half_at_its_end() {
+    let row = Rect::from_min_max(pos2(0.0, 0.0), pos2(400.0, 17.0));
+    let range = selection_markers(100.0, 200.0, row, Color32::BLUE, Color32::BLACK);
+    let pieces = fills(&range);
+    assert_eq!(pieces.len(), 4, "a bar and a wing for each end");
+    // Left half: cut edge on the start, ten pixels of bar and wing out to its left, row-high.
+    assert_eq!(extent(&pieces[..2]), (90.0, 100.0, 0.5, 16.5));
+    // Right half: cut edge on the end, wing out to its right.
+    assert_eq!(extent(&pieces[2..]), (200.0, 210.0, 0.5, 16.5));
+    // The wing starts at mid-height and its slope ends at the foot of the cut edge: nothing below it.
+    assert_eq!(pieces[1].1, vec![pos2(90.0, 8.5), pos2(100.0, 8.5), pos2(100.0, 16.5)]);
+    // Each half is outlined on its own, thin and dark, cut edge included.
+    let lines = outlines(&range);
+    assert_eq!(lines.len(), 2);
+    assert!(lines.iter().all(|(c, w, pts)| *c == egui::epaint::ColorMode::Solid(Color32::BLACK) && *w == 1.0 && pts.len() == 5));
+}
+
+#[test]
+fn an_empty_selection_joins_the_halves_into_the_whole_arrow() {
+    let row = Rect::from_min_max(pos2(0.0, 0.0), pos2(400.0, 17.0));
+    let point = selection_markers(150.0, 150.0, row, Color32::BLUE, Color32::BLACK);
+    let pieces = fills(&point);
+    assert_eq!(pieces.len(), 2, "a shaft and a head, with no seam");
+    assert_eq!(extent(&pieces), (140.0, 160.0, 0.5, 16.5), "centred on 150");
+    assert_eq!(pieces[0].1, vec![pos2(146.0, 0.5), pos2(154.0, 0.5), pos2(154.0, 8.5), pos2(146.0, 8.5)]);
+    assert_eq!(pieces[1].1, vec![pos2(140.0, 8.5), pos2(160.0, 8.5), pos2(150.0, 16.5)], "tip on the position");
+    // One outline, built only from the corners of the two halves, nothing along the cut axis.
+    let lines = outlines(&point);
+    assert_eq!(lines.len(), 1);
+    let (left, right) = (arrow_half(150.0, row, -1.0), arrow_half(150.0, row, 1.0));
+    assert_eq!(lines[0].2.len(), 7);
+    assert!(lines[0].2.iter().all(|p| left.contains(p) || right.contains(p)));
+    assert!(lines[0].2.windows(2).all(|w| !(w[0].x == 150.0 && w[1].x == 150.0)));
+    // The halves are mirror images across the cut axis, so they always fit together.
+    for (l, r) in left.iter().zip(&right) {
+        assert_eq!((300.0 - l.x, l.y), (r.x, r.y));
+    }
+}
+
+/// Everything `draw_rulers` paints for a selection, with the clip rectangle of each shape. The
+/// timeline starts at x 100 and the view at sample `scroll`. Rulers are Bars|Beats (row y 3..20)
+/// over Min:Secs (row y 20..37); `main` picks which carries the markers.
+fn ruler_shapes(selection: Range, scroll: Samples, armed: bool, main: TimeFormat) -> Vec<egui::epaint::ClippedShape> {
+    let _palette = crate::theme::lock_test_palette();
+    let mut engine = soundcraft_engine::Engine::default();
+    engine.execute("track.new", &json!({"count": 1})).unwrap();
+    let session = engine.session_mut();
+    session.edit.selection = selection;
+    session.edit.zoom.scroll = scroll;
+    session.edit.zoom.samples_per_px = 1_000.0;
+    session.edit.main_counter = main;
+    session.tracks[0].mixer.record_arm = armed;
+    let mut app = SoundApp::new(engine, None, crate::Services::default());
+    let tl = Rect::from_min_max(pos2(100.0, 100.0), pos2(900.0, 500.0));
+    let rulers_rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(900.0, 100.0));
+    let rulers = ["bars_beats".to_string(), "min_secs".to_string()];
+    let ctx = egui::Context::default();
+    crate::fonts::install(&ctx, true);
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| draw_rulers(&mut app, ui, rulers_rect, tl, &rulers));
+    output.textures_delta.clear();
+    output.shapes
+}
+
+/// The marker pieces (accent or record fill) and the number of dark outlines `draw_rulers`
+/// paints for a selection, with the view at the start of the session.
+fn ruler_markers(selection: Range, armed: bool, main: TimeFormat) -> (Vec<Piece>, usize) {
+    let t = Tokens::current();
+    let shapes: Vec<Shape> = ruler_shapes(selection, 0, armed, main).into_iter().map(|s| s.shape).collect();
+    let dark = outlines(&shapes).iter().filter(|(c, w, _)| *c == egui::epaint::ColorMode::Solid(t.text_dark) && *w == 1.0).count();
+    (fills(&shapes).into_iter().filter(|(c, _)| *c == t.accent || *c == t.rec).collect(), dark)
+}
+
+#[test]
+fn rulers_mark_a_range_and_a_point_in_the_main_ruler_and_red_when_armed() {
+    let _palette = crate::theme::lock_test_palette();
+    let t = Tokens::current();
+    for armed in [false, true] {
+        let colour = if armed { t.rec } else { t.accent };
+        // 30_000..60_000 samples at 1_000 samples/px: x 130 and 160, in the Min:Secs row (y 20..37).
+        let (range, dark) = ruler_markers(Range::new(30_000, 60_000), armed, TimeFormat::MinSecs);
+        assert_eq!(range.len(), 4, "a bar and a wing for each end");
+        assert!(range.iter().all(|(c, _)| *c == colour), "{range:?}");
+        assert_eq!(extent(&range[..2]), (120.0, 130.0, 20.5, 36.5), "the start, cut edge on 130");
+        assert_eq!(extent(&range[2..]), (160.0, 170.0, 20.5, 36.5), "the end, cut edge on 160");
+        assert_eq!(dark, 2);
+        // A point: the whole arrow centred on the insertion point, one outline.
+        let (point, dark) = ruler_markers(Range::point(30_000), armed, TimeFormat::MinSecs);
+        assert_eq!(extent(&point), (120.0, 140.0, 20.5, 36.5));
+        assert!(point.iter().all(|(c, _)| *c == colour) && dark == 1);
+    }
+    // The markers follow the main counter: with Bars|Beats main they move to the first row (y 3..20).
+    let (bars, _) = ruler_markers(Range::point(30_000), false, TimeFormat::BarsBeats);
+    assert_eq!(extent(&bars), (120.0, 140.0, 3.5, 19.5));
+}
+
+/// Clip rectangles of the marker pieces (accent fill) `draw_rulers` paints, with their extent.
+fn marker_clips(selection: Range, scroll: Samples) -> Vec<(Rect, Rect)> {
+    let accent = Tokens::current().accent;
+    ruler_shapes(selection, scroll, false, TimeFormat::MinSecs)
+        .into_iter()
+        .filter_map(|c| match c.shape {
+            Shape::Path(p) if p.fill == accent => Some((c.clip_rect, Rect::from_points(&p.points))),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_arrow_at_position_zero_is_not_cut_at_the_edge_of_the_timeline() {
+    let _palette = crate::theme::lock_test_palette();
+    // Insertion at 0 with scroll 0, as in a new session: x 100, the timeline's left edge, so the
+    // left wing sits in the 10 px next to it (x 90..100). The Min:Secs row is y 20..37.
+    for selection in [Range::point(0), Range::new(0, 30_000)] {
+        let clips = marker_clips(selection, 0);
+        assert!(clips.len() >= 2, "{clips:?}");
+        let (clip, drawn) = clips.iter().fold((Rect::NOTHING, Rect::NOTHING), |(c, d), (clip, piece)| (c.union(*clip), d.union(*piece)));
+        assert_eq!(drawn.min.x, 90.0, "the left wing starts 10 px before the edge");
+        assert!(clip.contains_rect(drawn), "the clip {clip:?} cuts the arrow {drawn:?}");
+        // ...and only the ruler row's strip is opened: the same band of rows, nothing wider.
+        assert_eq!((clip.min.x, clip.min.y, clip.max.y), (90.0, 20.0, 37.0), "{clip:?}");
+    }
+}
+
+#[test]
+fn a_start_scrolled_out_of_view_does_not_bleed_into_the_strip_beside_the_timeline() {
+    let _palette = crate::theme::lock_test_palette();
+    // Scrolled 5 px: the insertion at 0 is at x 95, off the timeline (which starts at x 100).
+    let clips = marker_clips(Range::point(0), 5_000);
+    assert!(!clips.is_empty());
+    assert!(clips.iter().all(|(clip, _)| clip.min.x == 100.0), "{clips:?}");
+}
+
+/// x of every insertion-point stroke painted in the last frame.
+fn insertion_xs(h: &Harness<SoundApp>) -> Vec<f32> {
+    lines(h, Tokens::current().insertion).iter().map(|l| l[0].x).collect()
+}
+
+/// Every line segment of `colour` painted in the last frame.
+fn lines(h: &Harness<SoundApp>, colour: Color32) -> Vec<[Pos2; 2]> {
+    let line = |shape: &Shape| match shape {
+        Shape::LineSegment { points, stroke } if stroke.color == colour => Some(*points),
+        _ => None,
+    };
+    h.output().shapes.iter().filter_map(|c| line(&c.shape)).collect()
+}
+
+/// Centre x of the ruler arrow's head (a 20 px wide filled triangle in the marker colour) in the last frame.
+fn arrow_xs(h: &Harness<SoundApp>) -> Vec<f32> {
+    let shapes: Vec<Shape> = h.output().shapes.iter().map(|c| c.shape.clone()).collect();
+    let heads = fills(&shapes).into_iter().filter(|(c, pts)| *c == Tokens::current().accent && pts.len() == 3);
+    heads.map(|piece| extent(&[piece])).filter(|(x0, x1, _, _)| (x1 - x0 - 20.0).abs() < 0.01).map(|(x0, x1, _, _)| (x0 + x1) / 2.0).collect()
+}
+
+/// Steps until the blinking insertion point is on (at most one second and a half).
+fn step_to_insertion_on(h: &mut Harness<SoundApp>) {
+    for _ in 0..90 {
+        if !insertion_rows(h).is_empty() {
+            return;
+        }
+        h.step();
+    }
+}
+
+/// An insertion point on row 2, then playback from it with the view held still.
+fn playing_from_an_insertion_point() -> (Harness<'static, SoundApp>, Samples) {
+    let mut h = harness(4);
+    h.state_mut().run("options.scrolling", json!({"mode": "none"})).unwrap();
+    let a = lane_point(&h, 2);
+    click(&mut h, a);
+    let at = h.state().engine.session().edit.selection.start;
+    h.state_mut().run("transport.play", json!({})).unwrap();
+    h.run_steps(5);
+    assert!(h.state().is_playing());
+    (h, at)
+}
+
+#[test]
+fn the_insertion_point_stays_drawn_while_playing_beside_the_playhead() {
+    let (mut h, at) = playing_from_an_insertion_point();
+    step_to_insertion_on(&mut h);
+    assert!(h.state().is_playing());
+    assert!(h.state().position() > at, "the playhead did not move on");
+    let (s, tl) = (h.state().engine.session(), timeline(&h));
+    assert_eq!(insertion_rows(&h), [2], "only on the selected track");
+    let x = x_of(s, tl, at);
+    assert!(matches!(insertion_xs(&h)[..], [i] if (i - x).abs() < 0.01), "{:?} is not on {x}", insertion_xs(&h));
+    // The playhead has its own colour and is already further along.
+    assert_ne!(Tokens::current().insertion, Tokens::current().playhead);
+    // (The overview paints a small playhead of its own: keep the line that crosses all four tracks.)
+    let span = row(&h, 3).max.y - row(&h, 0).min.y;
+    let playhead: Vec<f32> = lines(&h, Tokens::current().playhead).iter().filter(|l| l[1].y - l[0].y >= span).map(|l| l[0].x).collect();
+    assert!(matches!(playhead[..], [p] if p > x), "{playhead:?} is not past the insertion point {x}");
+}
+
+#[test]
+fn a_click_in_a_track_while_playing_moves_the_insertion_point_and_the_arrow_not_the_playback() {
+    let (mut h, at) = playing_from_an_insertion_point();
+    let (s, tl) = (h.state().engine.session(), timeline(&h));
+    assert!(matches!(arrow_xs(&h)[..], [a] if (a - x_of(s, tl, at)).abs() < 0.01), "{:?} is not on the insertion point", arrow_xs(&h));
+    let before = h.state().position();
+    let b = lane_point(&h, 0) + vec2(300.0, 0.0);
+    click(&mut h, b);
+    let s = h.state().engine.session();
+    let want = sample_at(s, timeline(&h), b.x);
+    assert_eq!(s.edit.selection, Range::point(want));
+    assert_eq!(s.edit.selected_tracks, row_ids(&h)[..1]);
+    let x = x_of(s, timeline(&h), want);
+    assert!(matches!(arrow_xs(&h)[..], [a] if (a - x).abs() < 0.01), "{:?} is not on {x}", arrow_xs(&h));
+    // Playback went on from where it was: it neither stopped nor jumped to the click. The harness steps
+    // 1/60 s per frame (800 samples at 48 kHz) and the click takes five of them (measured: 4 000 samples),
+    // so allow seven. The old bound, one second, let a seek up to 60 frames ahead pass.
+    let pos = h.state().position();
+    assert!(h.state().is_playing());
+    assert!(pos >= before && pos < before + 7 * 800 && pos < want, "playback went from {before} to {pos}, the click is at {want}");
+    step_to_insertion_on(&mut h);
+    assert!(matches!(insertion_xs(&h)[..], [i] if (i - x).abs() < 0.01), "{:?} is not on {x}", insertion_xs(&h));
+    assert_eq!(insertion_rows(&h), [0]);
+}

@@ -2,9 +2,10 @@ use super::drag::drag_plan;
 use super::input::midi_clip_span;
 use super::layout::x_of;
 use super::scroll::{FollowFrame, follow_update};
-use super::{Color32, Gesture, Rect, Samples, Shape, SoundApp, Stroke, StrokeKind, Tokens, TrackId, Ui, json, ops, pos2, rgb};
+use super::{Color32, Gesture, Rect, Samples, SoundApp, Stroke, StrokeKind, Tokens, TrackId, Ui, json, ops, pos2, rgb};
 
 /// Selection overlay, insertion point and playhead across rulers and tracks.
+/// The insertion point stays drawn while playing, beside the moving playhead.
 /// While playing, auto-scroll keeps the playhead in view for the follow
 /// modes (`page`/`continuous`/`center`) — but any outside view move (a manual
 /// pan, scrollbar, universe jump, or programmatic scroll) pauses it, so the
@@ -28,16 +29,9 @@ pub(super) fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
         }
     }
     let sel = s.edit.selection;
-    // Timeline selection markers on the main ruler.
-    if !sel.is_empty() {
-        for x in [x_of(s, tl, sel.start), x_of(s, tl, sel.end)] {
-            painter.add(Shape::convex_polygon(
-                vec![pos2(x - 5.0, area.min.y + 2.0), pos2(x + 5.0, area.min.y + 2.0), pos2(x, area.min.y + 9.0)],
-                t.accent,
-                Stroke::NONE,
-            ));
-        }
-    } else if !app.is_playing() {
+    // The insertion point blinks while playing too, standing still at its place
+    // while the playhead (its own colour) moves on, like the incumbent.
+    if sel.is_empty() {
         let x = x_of(s, tl, sel.start);
         let now = ui.input(|i| i.time);
         let (id, key) = (ui.scope_id().with("insertion_blink"), (sel.start, s.edit.selected_tracks.clone()));
