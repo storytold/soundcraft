@@ -232,6 +232,8 @@ fn fixed_more(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             let _ = app.run(id, json!({}));
             true
         }
+        // Delete and Backspace in the Edit window remove the selected crossfade; with none selected they do nothing here.
+        Key::Delete | Key::Backspace if plain && app.ui.window == MainWindow::Edit && delete_crossfade(app) => true,
         // Commands Keyboard Focus: single-key editing (Edit window only).
         k if !m.command
             && !m.alt
@@ -250,6 +252,27 @@ fn fixed_more(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
         }
         _ => false,
     }
+}
+
+/// Whether Delete and Backspace are the Edit window's: not when a list has the keyboard focus (Clip List, Groups), nor
+/// when the MIDI editor, which deletes its selected notes with the same keys, has a clip to edit and notes selected (a
+/// selection left over from another clip, or from none, counts for nothing).
+fn delete_is_ours(app: &SoundApp) -> bool {
+    let list_focus = matches!(app.engine.session().edit.keyboard_focus.as_str(), "clips" | "groups");
+    let notes = app.ui.show_midi_editor && !app.midi.selected.is_empty() && crate::midi_editor::target_clip(app).is_some();
+    !list_focus && !notes
+}
+
+/// Delete and Backspace remove the selected crossfade alone (Edit > Fades > Delete on it): the clips go back butted at
+/// the cut, with their other fades kept. True when one was selected. With none selected the keys do nothing.
+// ponytail: no Delete = Clear yet. `clear_range` on a crossfaded clip also trims its neighbour, so it wants its own change.
+fn delete_crossfade(app: &mut SoundApp) -> bool {
+    if !delete_is_ours(app) {
+        return false;
+    }
+    let Some((later, ..)) = soundcraft_engine::edit::selected_crossfade(app.engine.session()) else { return false };
+    let _ = app.run("edit.fades_delete", json!({"crossfade": later.0}));
+    true
 }
 
 /// F1–F4 (and Alt+1–4) choose Shuffle, Slip, Spot and Grid; F4 in Grid switches between Absolute and

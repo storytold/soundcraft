@@ -238,6 +238,9 @@ pub struct MeterDisplay {
 pub enum Gesture {
     Select { track: TrackId, anchor: Samples, tracks: Vec<TrackId> },
     MoveClips { clips: Vec<soundcraft_model::ClipId>, grab_at: Samples, delta: Samples, from_track: TrackId, to_track: TrackId },
+    MoveCrossfade { clip: soundcraft_model::ClipId, grab_at: Samples, by: Samples },
+    TrimCrossfadeStart { clip: soundcraft_model::ClipId, to: Samples }, // the zone's left edge (the later clip's start) pulled to `to`; the cut stays
+    TrimCrossfadeEnd { clip: soundcraft_model::ClipId, to: Samples }, // the zone's right edge (the earlier clip's end) pulled to `to`; the cut stays
     TrimStart { clip: soundcraft_model::ClipId, track: TrackId, to: Samples },
     TrimEnd { clip: soundcraft_model::ClipId, track: TrackId, to: Samples },
     Fade { clip: soundcraft_model::ClipId, track: TrackId, fade_in: bool, to: Samples },

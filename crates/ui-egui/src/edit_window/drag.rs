@@ -65,6 +65,33 @@ pub(super) fn drive_drag(app: &mut SoundApp, ctx: &egui::Context) {
             *delta = move_delta(&plan, &s, *from_track, at - *grab_at, ctx.input(|i| i.modifiers.command));
         }
         Some(Gesture::TrimStart { to, .. } | Gesture::TrimEnd { to, .. }) => *to = drag_snap(&s, at, ctx.input(|i| i.modifiers.command)),
+        Some(Gesture::MoveCrossfade { clip, grab_at, by }) => {
+            // The cut follows the pointer, snapped in the Grid modes (it is the cut that lies on the grid, not the
+            // zone's edge), within the clips' files.
+            let slide = ops::crossfade_zone(&s, *clip).and_then(|(_, cut)| {
+                let to = drag_snap(&s, cut.saturating_add(at.saturating_sub(*grab_at)), ctx.input(|i| i.modifiers.command));
+                ops::crossfade_slide(&s, *clip, to.saturating_sub(cut))
+            });
+            match slide {
+                Some(slide) => *by = slide,
+                None => invalid_fade = true, // the crossfade is gone or locked: drop the gesture
+            }
+        }
+        Some(Gesture::TrimCrossfadeStart { clip, to }) => {
+            // The edge follows the pointer, snapped in the Grid modes, held to the files and to the cut.
+            let edge = ops::crossfade_trim(&s, *clip, Some(drag_snap(&s, at, ctx.input(|i| i.modifiers.command))), None);
+            match edge {
+                Some((left, _)) => *to = left,
+                None => invalid_fade = true, // the crossfade is gone or locked: drop the gesture
+            }
+        }
+        Some(Gesture::TrimCrossfadeEnd { clip, to }) => {
+            let edge = ops::crossfade_trim(&s, *clip, None, Some(drag_snap(&s, at, ctx.input(|i| i.modifiers.command))));
+            match edge {
+                Some((_, right)) => *to = right,
+                None => invalid_fade = true,
+            }
+        }
         Some(Gesture::MidiClip { to, .. }) => *to = at,
         Some(Gesture::Fade { clip, fade_in, to, .. }) => {
             if let Some(range) = s.find_clip(*clip).and_then(|(_, c)| fade_drag_range(c, *fade_in, at)) {
@@ -158,6 +185,17 @@ pub(super) fn drive_drag(app: &mut SoundApp, ctx: &egui::Context) {
 fn finish_drag(app: &mut SoundApp, s: &Session, tl: Rect, p: Option<Pos2>) {
     match app.gesture.take() {
         Some(Gesture::MoveClips { clips, delta, from_track, to_track, .. }) => drop_clips(app, clips, delta, from_track, to_track),
+        // ponytail: a crossfade slide skips the Spot dialog and snaps its joint in absolute terms in both Grid modes; ask Spot for the joint, and snap relative in Relative Grid, if that matters.
+        Some(Gesture::MoveCrossfade { clip, by, .. }) if by != 0 => {
+            let _ = app.run("edit.move_crossfade", json!({"clip": clip.0, "by": by}));
+        }
+        // ponytail: a crossfade edge skips the Spot dialog, like the slide above; ask Spot for it if that matters.
+        Some(Gesture::TrimCrossfadeStart { clip, to }) => {
+            let _ = app.run("edit.trim_crossfade", json!({"clip": clip.0, "start": to}));
+        }
+        Some(Gesture::TrimCrossfadeEnd { clip, to }) => {
+            let _ = app.run("edit.trim_crossfade", json!({"clip": clip.0, "end": to}));
+        }
         Some(Gesture::Fade { clip, fade_in, to, .. }) => {
             let to = p.map_or(to, |p| sample_at(s, tl, p.x).max(0));
             if let Some(fade) = s.find_clip(clip).and_then(|(_, c)| fade_drag_preview(c, fade_in, to)) {

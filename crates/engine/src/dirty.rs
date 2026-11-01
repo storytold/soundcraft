@@ -47,6 +47,7 @@ fn edit_values<'a>(edit: &'a EditState, navigation: &'a EditState) -> impl Parti
         selection: _,
         selected_tracks: _,
         selected_clips: _,
+        selected_crossfade: _,
         selected_sources,
         playhead: _,
         grid,
@@ -130,7 +131,7 @@ fn edit_values<'a>(edit: &'a EditState, navigation: &'a EditState) -> impl Parti
             scrolling,
             solo_mode,
         ),
-        (pre_fader_metering, delay_compensation, keyboard_focus, &navigation.timeline_selection, flags, values),
+        (pre_fader_metering, delay_compensation, keyboard_focus, &navigation.timeline_selection, &navigation.selected_crossfade, flags, values),
     )
 }
 
@@ -149,6 +150,7 @@ mod tests {
         to.timeline_selection = from.timeline_selection;
         to.selected_tracks.clone_from(&from.selected_tracks);
         to.selected_clips.clone_from(&from.selected_clips);
+        to.selected_crossfade = from.selected_crossfade;
         to.playhead = from.playhead;
         to.zoom = from.zoom;
         *saved == doc
@@ -168,6 +170,7 @@ mod tests {
         doc.edit.timeline_selection = Range::new(300, 400);
         doc.edit.selected_tracks = vec![TrackId(50)];
         doc.edit.selected_clips = vec![ClipId(60)];
+        doc.edit.selected_crossfade = Some(ClipId(70));
         doc.edit.playhead = 500;
         doc.edit.zoom.samples_per_px = 64.0;
         doc.edit.zoom.scroll = 600;

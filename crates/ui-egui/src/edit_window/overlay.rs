@@ -1,6 +1,7 @@
+use super::clips::zone_box;
 use super::drag::drag_plan;
 use super::input::midi_clip_span;
-use super::layout::x_of;
+use super::layout::{lane_rect, rect, x_of};
 use super::scroll::{FollowFrame, follow_update};
 use super::{Color32, Gesture, Rect, Samples, Shape, SoundApp, Stroke, StrokeKind, Tokens, TrackId, Ui, json, ops, pos2, rgb};
 
@@ -107,6 +108,26 @@ pub(super) fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
                 );
             }
         }
+    }
+    // Ghost of a crossfade being slid or trimmed: where its zone will be.
+    let ghost = match &app.gesture {
+        Some(Gesture::MoveCrossfade { clip, by, .. }) => {
+            ops::crossfade_zone(s, *clip).map(|(z, _)| (*clip, z.start.saturating_add(*by), z.end.saturating_add(*by)))
+        }
+        Some(Gesture::TrimCrossfadeStart { clip, to }) => ops::crossfade_zone(s, *clip).map(|(z, _)| (*clip, *to, z.end)),
+        Some(Gesture::TrimCrossfadeEnd { clip, to }) => ops::crossfade_zone(s, *clip).map(|(z, _)| (*clip, z.start, *to)),
+        _ => None,
+    };
+    if let Some((clip, left, right)) = ghost
+        && let Some((tid, _)) = s.find_clip(clip)
+        && let Some(track) = s.track(tid)
+        && let Some((_, r)) = app.edit_layout.rows.iter().find(|(i, _)| *i == tid.0)
+    {
+        // The lane of the clip, not the whole row: a track in its playlists view has several.
+        let lane = lane_rect(track, rect(*r), tl);
+        zone_box(&painter, Rect::from_x_y_ranges(x_of(s, tl, left)..=x_of(s, tl, right), lane.y_range()), true);
+        let moving = matches!(app.gesture, Some(Gesture::MoveCrossfade { .. }));
+        ui.ctx().set_cursor_icon(if moving { egui::CursorIcon::Grabbing } else { egui::CursorIcon::ResizeHorizontal });
     }
     if let Some(Gesture::MidiClip { track, from, to }) = &app.gesture
         && let Some(r) = midi_clip_span(s, *track, *from, *to)

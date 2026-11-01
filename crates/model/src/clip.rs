@@ -140,10 +140,27 @@ pub struct Clip {
     /// `clip.unloop` still recognises the loop after the source's content is edited.
     #[serde(default)]
     pub loop_id: Option<u64>,
+    /// The cut of a crossfade, stored on the LATER clip of an overlapping audio pair: the offset from
+    /// this clip's start to the splice point between the two clips, from 0 to the overlap. The
+    /// crossfade is the overlap, a zone laid over the cut that each clip fills with audio from beyond
+    /// its edge (its handle); sound is the overlap plus the fades, the cut is edit and display
+    /// metadata only. `None` = the middle of the overlap (sessions saved before the cut was stored).
+    /// Read it through [`crossfade_cut`], which clamps it to the pair.
+    #[serde(default)]
+    pub cut: Option<Samples>,
 }
 
 fn one() -> f64 {
     1.0
+}
+
+/// Where `earlier` and `later` are cut, when `later` starts inside `earlier` (a crossfade): the
+/// absolute position `later.start + later.cut` (the middle of the overlap when no cut is stored),
+/// clamped to the overlap. Everything that needs the splice point of a crossfade goes through this.
+/// Two clips that do not overlap have no cut to speak of: `later.start`.
+pub fn crossfade_cut(earlier: &Clip, later: &Clip) -> Samples {
+    let overlap = earlier.end().saturating_sub(later.start).max(0);
+    later.start.saturating_add(later.cut.unwrap_or(overlap / 2).clamp(0, overlap))
 }
 
 impl Clip {
@@ -168,6 +185,7 @@ impl Clip {
             stretch: 1.0,
             group: None,
             loop_id: None,
+            cut: None,
         }
     }
 
@@ -278,8 +296,11 @@ impl Clip {
         if self.sync_point != 0 {
             self.sync_point = self.sync_point.saturating_sub(delta);
         }
+        // The cut stays where it is on the timeline (at this clip's start once it falls before it).
+        self.cut = self.cut.map(|c| c.saturating_sub(delta));
         self.drop_stray_sync();
         self.clamp_fades();
+        self.clamp_cut();
         // Keep the gain at the cut when earlier breakpoints are dropped.
         if self.gain_env.iter().any(|&(t, _)| t < delta) && self.gain_env.iter().all(|&(t, _)| t != delta) {
             self.gain_env.insert(0, (delta, env_value(&self.gain_env, delta)));
@@ -295,12 +316,19 @@ impl Clip {
         self.length = new_end.saturating_sub(self.start).clamp(1, MAX_POSITION);
         self.drop_stray_sync();
         self.clamp_fades();
+        self.clamp_cut();
     }
 
     /// Keep both fades within the clip.
     pub fn clamp_fades(&mut self) {
         self.fade_in.len = self.fade_in.len.clamp(0, self.length);
         self.fade_out.len = self.fade_out.len.clamp(0, self.length);
+    }
+
+    /// Keep the cut within the clip.
+    fn clamp_cut(&mut self) {
+        let length = self.length.max(0);
+        self.cut = self.cut.map(|c| c.clamp(0, length));
     }
 
     /// A sync point (0 means none) that a trim left outside the clip no longer marks anything.
@@ -322,6 +350,7 @@ impl Clip {
             ClipContent::Midi { sequence } => bound_sequence(sequence),
         }
         self.clamp_fades();
+        self.clamp_cut();
         self.fade_in.sanitize();
         self.fade_out.sanitize();
         truncate_chars(&mut self.name, MAX_NAME_CHARS);
@@ -502,6 +531,85 @@ mod tests {
         c.fade_out = Fade { len: 800, shape: FadeShape::Linear, curvature: 0.0 };
         c.trim_start_to(900);
         assert!(c.fade_out.len <= c.length);
+    }
+
+    /// A earlier at [0, 1100), B later at [900, 2000): an overlap of 200 around 1000.
+    fn pair(cut: Option<Samples>) -> (Clip, Clip) {
+        let a = Clip::audio(ClipId(1), "a", SourceId(1), 0, 0, 1100);
+        let mut b = Clip::audio(ClipId(2), "b", SourceId(1), 900, 900, 1100);
+        b.cut = cut;
+        (a, b)
+    }
+
+    #[test]
+    fn the_cut_of_a_crossfade_is_stored_or_the_middle_and_stays_within_the_overlap() {
+        for (cut, want) in
+            [(None, 1000), (Some(0), 900), (Some(50), 950), (Some(200), 1100), (Some(201), 1100), (Some(i64::MAX), 1100), (Some(-5), 900)]
+        {
+            let (a, b) = pair(cut);
+            assert_eq!(crossfade_cut(&a, &b), want, "{cut:?}");
+        }
+        // An odd overlap has its middle rounded down; clips that touch are cut where they touch.
+        let (a, mut b) = pair(None);
+        b.start = 901;
+        assert_eq!(crossfade_cut(&a, &b), 901 + 99);
+        b.start = 1100;
+        assert_eq!(crossfade_cut(&a, &b), 1100);
+        // Not overlapping, or hostile positions: never out of the pair, never a panic.
+        b.start = 5000;
+        b.cut = Some(10);
+        assert_eq!(crossfade_cut(&a, &b), 5000);
+        b.start = i64::MAX - 5;
+        assert_eq!(crossfade_cut(&a, &b), i64::MAX - 5);
+        let mut a = a;
+        a.start = i64::MIN;
+        a.length = i64::MAX;
+        assert!((i64::MIN..=i64::MAX).contains(&crossfade_cut(&a, &b)));
+    }
+
+    #[test]
+    fn trimming_the_start_keeps_the_cut_where_it_is_on_the_timeline() {
+        let (_, mut b) = pair(Some(100));
+        b.trim_start_to(950);
+        assert_eq!((b.start, b.cut), (950, Some(50)));
+        b.trim_start_to(850);
+        assert_eq!((b.start, b.cut), (850, Some(150)));
+        // Trimmed past the cut: the cut sits at the clip's start.
+        b.trim_start_to(1500);
+        assert_eq!((b.start, b.cut), (1500, Some(0)));
+        // No cut stored: none made up.
+        let (_, mut b) = pair(None);
+        b.trim_start_to(950);
+        assert_eq!(b.cut, None);
+    }
+
+    #[test]
+    fn the_cut_stays_within_the_clip_it_is_stored_on() {
+        let (_, mut b) = pair(Some(500));
+        b.trim_end_to(1100);
+        assert_eq!((b.length, b.cut), (200, Some(200)));
+        for cut in [i64::MAX, i64::MIN, -1, 5000] {
+            let (_, mut b) = pair(Some(cut));
+            b.sanitize();
+            assert!(b.cut.is_some_and(|c| (0..=b.length).contains(&c)), "{cut}");
+        }
+        let (_, mut b) = pair(Some(7));
+        b.length = 1;
+        b.sanitize();
+        assert_eq!(b.cut, Some(1));
+    }
+
+    #[test]
+    fn a_session_saved_without_a_cut_loads_and_a_stored_cut_round_trips() {
+        let (_, b) = pair(None);
+        let mut v = serde_json::to_value(&b).unwrap();
+        assert!(v.as_object_mut().unwrap().remove("cut").is_some());
+        let old: Clip = serde_json::from_value(v).unwrap();
+        assert_eq!(old, b);
+        let (_, b) = pair(Some(100));
+        let back: Clip = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert_eq!(back.cut, Some(100));
+        assert_eq!(back, b);
     }
 
     /// #907: `trim_start_to` / `trim_end_to` are public APIs, so they have to survive arguments a

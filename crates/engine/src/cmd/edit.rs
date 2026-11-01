@@ -53,7 +53,7 @@ pub fn specs() -> Vec<CommandSpec> {
             repeat_to_fill
         ),
         cmd!(noundo "edit.select_all", "Select All", ["Edit"], Some("Cmd+A"), "{}", always, select_all),
-        cmd!(noundo "edit.select", "Set Edit Selection", [], None, "{tracks?: [id|name], start?, end?, clips?: [id], sources?: [id] (Clip List files), exact?: bool (ignore edit groups)}", always, select),
+        cmd!(noundo "edit.select", "Set Edit Selection", [], None, "{tracks?: [id|name], start?, end?, clips?: [id], sources?: [id] (Clip List files), exact?: bool (ignore edit groups)} or {crossfade: id of the later clip of a crossfade} — selects that crossfade: its zone on its track, no clip; any other selection drops it", always, select),
         cmd!(noundo "edit.select_none", "Deselect All", [], None, "{}", always, |e, _| {
             let s = e.session_mut();
             s.edit.selected_tracks.clear();
@@ -134,7 +134,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_range,
             fades_create
         ),
-        cmd!("edit.fades_delete", "Delete", ["Edit", "Fades"], None, "{tracks?, start?, end?}", has_selection, fades_delete),
+        cmd!(
+            "edit.fades_delete",
+            "Delete",
+            ["Edit", "Fades"],
+            None,
+            "{tracks?, start?, end?} clears the fades of every clip the range touches, and cuts a crossfade back to its cut; or {crossfade: id of the later clip of a crossfade} removes only that crossfade (the clips butted at its cut, its two fades cleared, their other fades kept); with a crossfade selected and nothing named, that one",
+            has_selection,
+            fades_delete
+        ),
         cmd!("edit.fade_to_start", "Fade to Start", ["Edit", "Fades"], Some("Cmd+Ctrl+D"), "{}", has_selection, |e, p| fade_to(e, p, true)),
         cmd!("edit.fade_to_end", "Fade to End", ["Edit", "Fades"], Some("Cmd+Ctrl+G"), "{}", has_selection, |e, p| fade_to(e, p, false)),
         cmd!("edit.nudge", "Nudge", [], Some("Plus/Minus"), "{direction: 1|-1, count?: n, next?: bool (next larger value)}", has_selection, nudge),
@@ -231,6 +239,13 @@ fn has_last_selection(e: &Engine) -> std::result::Result<(), String> {
 
 /// Remember the selection `before` had when a command changed it, for Restore Last Selection.
 pub(crate) fn remember_selection(e: &mut Engine, before: &Session) {
+    // A selection that moved on is no longer a crossfade's (Select All, Tab, a nudge...), unless it still is
+    // one: a crossfade that slides takes its selection along.
+    let (old, new) = (&before.edit, &e.session().edit);
+    let moved = old.selection != new.selection || old.selected_tracks != new.selected_tracks || old.selected_clips != new.selected_clips;
+    if moved && new.selected_crossfade.is_some() && ops::selected_crossfade(e.session()).is_none() {
+        e.session_mut().edit.selected_crossfade = None;
+    }
     let (old, new) = (&before.edit, &e.session().edit);
     if old.selection == new.selection && old.selected_tracks == new.selected_tracks {
         return;
@@ -249,16 +264,33 @@ fn restore_selection(e: &mut Engine, _: &Value) -> Result<Value> {
     Ok(json!({"selection": range}))
 }
 
+/// The clips a Grabber selection of clips in crossfades stands for, when the command is given no range or clips of its own:
+/// Cut, Copy and Clear then act on those clips (see [`ops::crossfaded_selection`]), not on the range they show.
+fn crossfaded_selection(e: &Engine, p: &Value) -> Option<Vec<soundcraft_model::ClipId>> {
+    if ["start", "end", "length", "clip", "clips", "tracks", "track"].iter().any(|k| p.get(k).is_some()) {
+        return None;
+    }
+    ops::crossfaded_selection(e.session())
+}
+
 fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
     let tracks = tracks_required(e, id, p)?;
-    let range = range_param(e, id, p)?;
+    // Clips selected in crossfades are cut and copied whole, and what is left of their partners is rejoined at the cuts.
+    let by_clips = crossfaded_selection(e, p);
+    let range = match &by_clips {
+        Some(ids) => ops::clips_span(e.session(), ids, false).unwrap_or(e.session().edit.selection),
+        None => range_param(e, id, p)?,
+    };
     if range.is_empty() {
         return Err(bad(id, "selection is empty"));
     }
     let mut cb = Clipboard::of_range(e.session(), range);
     let follow = e.session().edit.automation_follows_edit;
     for t in &tracks {
-        cb.tracks.push(ops::copy_range(e.session(), *t, range));
+        cb.tracks.push(match &by_clips {
+            Some(ids) => ops::whole_clips(e.session(), *t, ids, range.start),
+            None => ops::copy_range(e.session(), *t, range),
+        });
         let lanes = e
             .session()
             .track(*t)
@@ -294,7 +326,26 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
             m
         })
         .collect();
-    if cut {
+    if cut && let Some(ids) = &by_clips {
+        let sh = shuffle(e.session());
+        // What showed of each removed clip, read before anything moves: only that automation goes with the cut, not the
+        // automation under a partner that stays between two removed clips (the selection is the union of them all).
+        let removed: Vec<(TrackId, soundcraft_time::Range)> =
+            ids.iter().filter_map(|id| Some((e.session().find_clip(*id)?.0, ops::clips_span(e.session(), &[*id], true)?))).collect();
+        let s = e.session_mut();
+        let shown = s.edit.selection;
+        if follow {
+            for (t, r) in &removed {
+                if let Some(tr) = s.track_mut(*t) {
+                    for l in &mut tr.automation {
+                        l.clear_range(r.start, r.end);
+                    }
+                }
+            }
+        }
+        ops::remove_clips_rejoining(s, ids, sh);
+        leave_selection_at(s, shown.start);
+    } else if cut {
         let sh = shuffle(e.session());
         let s = e.session_mut();
         for t in &tracks {
@@ -369,6 +420,15 @@ fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn clear(e: &mut Engine, p: &Value) -> Result<Value> {
+    // Clips selected in crossfades are removed whole, and what is left of their partners is rejoined at the cuts: clearing
+    // only the range they show would leave their hidden tails behind, and clearing their whole range would eat into the partners.
+    if let Some(ids) = crossfaded_selection(e, p) {
+        let (at, sh) = (e.session().edit.selection.start, shuffle(e.session()));
+        let s = e.session_mut();
+        let removed = ops::remove_clips_rejoining(s, &ids, sh).len();
+        leave_selection_at(s, at);
+        return Ok(json!({"removed": removed}));
+    }
     let tracks = tracks_required(e, "edit.clear", p)?;
     let range = range_param(e, "edit.clear", p)?;
     let ids = clip_ids_param(e, p);
@@ -473,19 +533,18 @@ fn add_group_members(s: &Session, t: &mut Vec<TrackId>) {
     t.sort_by_key(|x| order.iter().position(|o| o == x).unwrap_or(usize::MAX));
 }
 
-/// Selecting clips also selects their range and tracks (Grabber click).
+/// Selecting clips also selects their range and tracks (Grabber click). A clip in a crossfade is selected as far as it
+/// shows: up to or from its cut, not under the crossfade's zone.
 fn select_clip_ids(s: &Session, ed: &mut soundcraft_model::EditState, c: Vec<ClipId>) {
-    let mut range: Option<soundcraft_time::Range> = None;
     let mut trs = Vec::new();
     for id in &c {
-        if let Some((tid, clip)) = s.find_clip(*id) {
-            range = Some(range.map_or(clip.range(), |r| soundcraft_time::Range::new(r.start.min(clip.start), r.end.max(clip.end()))));
-            if !trs.contains(&tid) {
-                trs.push(tid);
-            }
+        if let Some((tid, _)) = s.find_clip(*id)
+            && !trs.contains(&tid)
+        {
+            trs.push(tid);
         }
     }
-    if let Some(r) = range {
+    if let Some(r) = ops::clips_span(s, &c, true) {
         ed.selection = r;
         ed.selected_tracks = trs;
     }
@@ -493,6 +552,15 @@ fn select_clip_ids(s: &Session, ed: &mut soundcraft_model::EditState, c: Vec<Cli
 }
 
 fn select(e: &mut Engine, p: &Value) -> Result<Value> {
+    let crossfade = match p.get("crossfade") {
+        None => None,
+        Some(v) => Some(
+            v.as_u64().map(soundcraft_model::ClipId).ok_or_else(|| bad("edit.select", "`crossfade` is the id of the later clip of a crossfade"))?,
+        ),
+    };
+    if crossfade.is_some() && ["tracks", "track", "start", "end", "clips", "sources"].iter().any(|k| p.get(k).is_some()) {
+        return Err(bad("edit.select", "`crossfade` stands alone: it selects the crossfade's zone on its track"));
+    }
     let tracks = if p.get("tracks").is_some() || p.get("track").is_some() { Some(tracks_param(e, "edit.select", p)?) } else { None };
     let st = position_param(e, "edit.select", p, "start")?;
     let en = position_param(e, "edit.select", p, "end")?;
@@ -504,6 +572,18 @@ fn select(e: &mut Engine, p: &Value) -> Result<Value> {
     let exact = bool_or(p, "exact", false);
     let s = e.session();
     let mut ed = s.edit.clone();
+    // Any selection but a crossfade's own drops the crossfade.
+    ed.selected_crossfade = None;
+    if let Some(later) = crossfade {
+        let refused = || bad("edit.select", "`crossfade` needs the later clip of a crossfade between two audio clips");
+        let (zone, _) = ops::crossfade_zone(s, later).ok_or_else(refused)?;
+        let (track, _) = s.find_clip(later).ok_or_else(refused)?;
+        ed.selection = zone;
+        ed.selected_tracks = vec![track];
+        ed.selected_clips.clear();
+        ed.selected_sources.clear();
+        ed.selected_crossfade = Some(later);
+    }
     if let Some(mut t) = tracks {
         // Active edit groups select all their members together.
         if !exact {
@@ -528,7 +608,7 @@ fn select(e: &mut Engine, p: &Value) -> Result<Value> {
     if ed.link_timeline_edit {
         ed.timeline_selection = ed.selection;
     }
-    let out = json!({"selection": ed.selection, "tracks": ed.selected_tracks, "clips": ed.selected_clips, "sources": ed.selected_sources});
+    let out = json!({"selection": ed.selection, "tracks": ed.selected_tracks, "clips": ed.selected_clips, "sources": ed.selected_sources, "crossfade": ed.selected_crossfade});
     if ed != s.edit {
         e.session_mut().edit = ed;
     }
@@ -908,16 +988,38 @@ fn fades_create(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     let n: usize = tracks.iter().map(|t| ops::create_fades(s, *t, r, shape)).sum();
     if n == 0 {
-        return Err(bad("edit.fades_create", "the selection must cover a clip start, end or the boundary between two clips"));
+        return Err(bad("edit.fades_create", "the selection must cover a clip start, a clip end or the cut between two clips"));
     }
     Ok(json!({"fades": n}))
 }
 
 fn fades_delete(e: &mut Engine, p: &Value) -> Result<Value> {
+    let named = ["tracks", "track", "start", "end"].iter().any(|k| p.get(k).is_some());
+    let crossfade = match p.get("crossfade") {
+        Some(_) if named => return Err(bad("edit.fades_delete", "`crossfade` stands alone: it removes that crossfade's own fades")),
+        Some(v) => Some(
+            v.as_u64()
+                .map(soundcraft_model::ClipId)
+                .ok_or_else(|| bad("edit.fades_delete", "`crossfade` is the id of the later clip of a crossfade"))?,
+        ),
+        // Nothing named: what is selected is what goes, and a selected crossfade goes alone.
+        None if !named => ops::selected_crossfade(e.session()).map(|(later, ..)| later),
+        None => None,
+    };
+    if let Some(later) = crossfade {
+        return delete_crossfade(e, later);
+    }
     let tracks = tracks_required(e, "edit.fades_delete", p)?;
     let r = range_param(e, "edit.fades_delete", p)?;
+    // The crossfade that is the edit selection, and where its cut is.
+    let selected = ops::selected_crossfade(e.session()).and_then(|(later, ..)| ops::crossfade_zone(e.session(), later).map(|(_, cut)| (later, cut)));
     let s = e.session_mut();
     let n: usize = tracks.iter().map(|t| ops::delete_fades(s, *t, r)).sum();
+    if let Some((later, cut)) = selected
+        && ops::crossfade_zone(s, later).is_none()
+    {
+        leave_selection_at(s, cut);
+    }
     Ok(json!({"deleted": n}))
 }
 
@@ -934,7 +1036,7 @@ fn fade_to(e: &mut Engine, p: &Value, to_start: bool) -> Result<Value> {
                 .map(|c| if to_start { soundcraft_time::Range::new(c.start, at) } else { soundcraft_time::Range::new(at, c.end()) })
         });
         if let Some(r) = range {
-            n += ops::create_fades(s, *t, r, FadeShape::EqualPower);
+            n += ops::create_fades_keeping_crossfades(s, *t, r, FadeShape::EqualPower);
         }
     }
     Ok(json!({"fades": n}))
@@ -1001,6 +1103,38 @@ fn trim_clip(e: &mut Engine, p: &Value) -> Result<Value> {
     let sh = shuffle(e.session());
     let c = ops::trim_clip(e.session_mut(), id, start, end, sh).ok_or_else(|| bad("edit.trim_clip", "no such clip, or it is edit-locked"))?;
     Ok(json!({"start": c.start, "end": c.end()}))
+}
+
+/// `edit.fades_delete {crossfade}`: remove that crossfade alone (see [`ops::delete_crossfade`]). When it was the edit
+/// selection, an insertion point is left at its cut.
+fn delete_crossfade(e: &mut Engine, later: soundcraft_model::ClipId) -> Result<Value> {
+    let selected = is_selected_crossfade(e, later);
+    let refused = || {
+        bad("edit.fades_delete", "`crossfade` needs the later clip of a crossfade between two audio clips that are neither edit-locked nor stretched")
+    };
+    // Refused before anything is touched: not a crossfade any more, or a clip edit-locked or stretched.
+    ops::crossfade_slide(e.session(), later, 0).ok_or_else(refused)?;
+    let cut = ops::delete_crossfade(e.session_mut(), later).ok_or_else(refused)?;
+    if selected {
+        leave_selection_at(e.session_mut(), cut);
+    }
+    Ok(json!({"deleted": 1, "cut": cut}))
+}
+
+/// Whether the crossfade leading into `later` is the edit selection.
+pub(crate) fn is_selected_crossfade(e: &Engine, later: soundcraft_model::ClipId) -> bool {
+    ops::selected_crossfade(e.session()).is_some_and(|(id, ..)| id == later)
+}
+
+/// The crossfade that was the edit selection is gone: leave an insertion point at its cut rather than its old
+/// zone as a range, which a second Delete would clear.
+pub(crate) fn leave_selection_at(s: &mut Session, cut: soundcraft_time::Samples) {
+    let ed = &mut s.edit;
+    ed.selection = soundcraft_time::Range::point(cut);
+    if ed.link_timeline_edit {
+        ed.timeline_selection = ed.selection;
+    }
+    ed.selected_crossfade = None;
 }
 
 fn consolidate(e: &mut Engine, p: &Value) -> Result<Value> {

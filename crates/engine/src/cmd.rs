@@ -13,6 +13,7 @@ mod clap;
 mod clip;
 mod clip_list;
 mod clip_more;
+mod crossfade;
 mod edit;
 mod edit_more;
 mod event;
@@ -133,6 +134,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(file::specs());
         v.extend(edit::specs());
         v.extend(edit_more::specs());
+        v.extend(crossfade::specs());
         v.extend(view::specs());
         v.extend(track::specs());
         v.extend(clip::specs());

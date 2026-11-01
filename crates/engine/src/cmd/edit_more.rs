@@ -777,6 +777,7 @@ fn tce(e: &mut Engine, p: &Value) -> Result<Value> {
     nc.fade_in.len = scale(c.fade_in.len).clamp(0, nc.length);
     nc.fade_out.len = scale(c.fade_out.len).clamp(0, nc.length);
     nc.sync_point = scale(c.sync_point).clamp(0, nc.length);
+    nc.cut = c.cut.map(|x| scale(x).clamp(0, nc.length));
     replace_clip(s, t, c.id, nc);
     s.edit.selected_clips = vec![c.id];
     Ok(json!({"clip": c.id, "source": src, "ratio": ratio}))

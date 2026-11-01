@@ -1,10 +1,10 @@
 use super::automation::{automation_id, breakpoint_at, plugin_range, shown_automation};
-use super::clips::{clip_name_height, fade_control_position};
+use super::clips::{EDGE_GRAB, ZoneEdge, clip_name_height, fade_control_position, shown_span, zone_at, zone_edge_at, zone_under};
 use super::drag::{drag_snap, fade_curve_drag_value, fade_drag_range, spot_or_run};
 use super::layout::{sample_at, x_of};
 use super::{
     Align2, AutoParam, Clip, ClipContent, ClipId, Color32, Dialog, EditMode, Gesture, GridValue, NoteValue, Pos2, Range, Rect, Samples, Sense,
-    Session, SoundApp, Spot, Stroke, StrokeKind, Tokens, Tool, Track, TrackId, Ui, json, ops, pos2, regular, vec2,
+    Session, SoundApp, Spot, Stroke, StrokeKind, Tokens, Tool, Track, TrackId, Ui, crossfade_cut, json, ops, pos2, regular, vec2,
 };
 
 // ---- interaction -----------------------------------------------------------------------------
@@ -14,19 +14,26 @@ pub(super) fn snap(s: &Session, at: Samples) -> Samples {
     if on { s.edit.grid.snap(at, s.sample_rate, &s.tempo, s.frame_rate) } else { at }
 }
 
+/// The clip at `at`. In a crossfade's zone the two clips are butted at the cut: the earlier one is left
+/// of it, the later one right of it.
 pub(super) fn clip_at(track: &Track, at: Samples) -> Option<&Clip> {
-    track.clips().iter().rev().find(|c| c.range().contains(at))
+    let clips = track.clips();
+    match zone_at(clips, at) {
+        Some((earlier, later)) => Some(if at < crossfade_cut(earlier, later) { earlier } else { later }),
+        None => clips.iter().rev().find(|c| c.range().contains(at)),
+    }
 }
 
 /// The unity-gain end of each existing fade, at the top of the clip body.
-fn fade_handle_at(s: &Session, tl: Rect, lane: Rect, clip: &Clip, p: Pos2) -> Option<bool> {
+/// `hidden` says which fades (in, out) belong to a crossfade's zone and are not offered.
+fn fade_handle_at(s: &Session, tl: Rect, lane: Rect, clip: &Clip, p: Pos2, hidden: (bool, bool)) -> Option<bool> {
     if clip.length <= 0 || clip.end() <= clip.start {
         return None;
     }
     let y = lane.min.y + 1.0 + clip_name_height(s, lane);
     [(true, clip.fade_in), (false, clip.fade_out)]
         .into_iter()
-        .filter(|(_, fade)| fade.len > 0)
+        .filter(|(fade_in, fade)| fade.len > 0 && !(if *fade_in { hidden.0 } else { hidden.1 }))
         .filter_map(|(fade_in, fade)| {
             let len = fade.len.min(clip.length);
             let at = if fade_in { clip.start.saturating_add(len).min(clip.end()) } else { clip.end().saturating_sub(len).max(clip.start) };
@@ -59,16 +66,31 @@ pub(super) fn fade_midpoint(s: &Session, tl: Rect, lane: Rect, clip: &Clip, fade
     lane.contains(p).then_some(p)
 }
 
-fn fade_curve_handle_at(s: &Session, tl: Rect, lane: Rect, clip: &Clip, p: Pos2) -> Option<bool> {
-    [true, false].into_iter().find(|side| fade_midpoint(s, tl, lane, clip, *side).is_some_and(|midpoint| near_fade_midpoint(p, midpoint)))
+fn fade_curve_handle_at(s: &Session, tl: Rect, lane: Rect, clip: &Clip, p: Pos2, hidden: (bool, bool)) -> Option<bool> {
+    [true, false]
+        .into_iter()
+        .filter(|side| !(if *side { hidden.0 } else { hidden.1 }))
+        .find(|side| fade_midpoint(s, tl, lane, clip, *side).is_some_and(|midpoint| near_fade_midpoint(p, midpoint)))
+}
+
+/// Which ends of `c` (start, end) lie in a crossfade's zone: they are the zone's edges, not the clip's, as the clip
+/// shows from the cut to the cut. Its fade there is the zone's too.
+fn hidden_edges(clips: &[Clip], c: &Clip) -> (bool, bool) {
+    (ops::crossfade_earlier(clips, c).is_some(), ops::crossfade_later(clips, c).is_some())
 }
 
 pub const CLIP_FADER_TRAVEL: f32 = 200.0;
 
 /// Bottom-left of an audio clip's visible part, when Clip Gain Info is on or the clip has gain and it fits.
 pub fn clip_gain_icon(s: &Session, tl: Rect, lane: Rect, clip: &Clip) -> Option<Rect> {
-    let x0 = x_of(s, tl, clip.start).max(lane.min.x);
-    let x1 = x_of(s, tl, clip.end()).min(lane.max.x);
+    gain_icon(s, tl, lane, clip, clip.start, clip.end())
+}
+
+/// [`clip_gain_icon`] for the part of the clip that shows, from `from` to `to`: a crossfade hides the
+/// ends of its clips under the zone.
+pub(super) fn gain_icon(s: &Session, tl: Rect, lane: Rect, clip: &Clip, from: Samples, to: Samples) -> Option<Rect> {
+    let x0 = x_of(s, tl, from).max(lane.min.x);
+    let x1 = x_of(s, tl, to).min(lane.max.x);
     let shown = matches!(clip.content, ClipContent::Audio { .. }) && (s.edit.flag("view.clip.gain_info") || clip.gain_db.abs() > 0.01);
     (shown && x1 - x0 >= 48.0 && lane.height() >= 30.0).then(|| Rect::from_min_size(pos2(x0 + 4.0, lane.max.y - 16.0), vec2(9.0, 13.0)))
 }
@@ -107,6 +129,8 @@ struct LaneHits<'a> {
     fade_handle: Option<(&'a Clip, bool)>,
     curve_handle: Option<(&'a Clip, bool)>,
     hit: Option<Clip>,
+    /// The crossfade zone edge the Trim tool, and the lower half of the Smart tool close to it, pull instead.
+    zone_trim: Option<ZoneEdge>,
 }
 
 /// Everything the lane's gesture, click and cursor handling reads.
@@ -168,34 +192,41 @@ fn hit_test<'a>(inp: &LaneInput<'a>) -> LaneHits<'a> {
         None
     };
     let body_hit = clip_at(track, at_origin);
+    let clips = track.clips();
     // Check fade endpoints before clip bodies: a full-length fade can end exactly
     // at the next clip's start, where `clip_at` would otherwise choose that neighbour.
     let fade_handle = if tool == Tool::Smart && auto_view.is_none() {
-        track
-            .clips()
+        clips
             .iter()
             .rev()
             .filter(|c| body_hit.is_none_or(|front| front.id == c.id || front.start == c.end()))
-            .find_map(|c| fade_handle_at(s, tl, lane, c, origin).map(|side| (c, side)))
+            .filter(|c| (x_of(s, tl, c.start) - 9.0..=x_of(s, tl, c.end()) + 9.0).contains(&origin.x))
+            .find_map(|c| fade_handle_at(s, tl, lane, c, origin, hidden_edges(clips, c)).map(|side| (c, side)))
     } else {
         None
     };
     let curve_handle = if tool == Tool::Smart && auto_view.is_none() && fade_handle.is_none() {
-        body_hit.and_then(|c| fade_curve_handle_at(s, tl, lane, c, origin).map(|side| (c, side)))
+        body_hit.and_then(|c| fade_curve_handle_at(s, tl, lane, c, origin, hidden_edges(clips, c)).map(|side| (c, side)))
     } else {
         None
     };
     let hit = fade_handle.or(curve_handle).map(|(c, _)| c).or(body_hit).cloned();
-    LaneHits { point_hit, fade_handle, curve_handle, hit }
+    let upper = origin.y < lane.center().y;
+    let zone_trim = zone_edge_at(s, tl, clips, origin.x)
+        .filter(|_| auto_view.is_none())
+        .filter(|z| tool == Tool::Trim || (tool == Tool::Smart && z.near && !upper));
+    LaneHits { point_hit, fade_handle, curve_handle, hit, zone_trim }
 }
 
-/// Which edge of `c` the press point is within a few points of: `Some(true)` the start, `Some(false)` the end.
+/// Which edge of `c` the press point is within a few points of: `Some(true)` the start, `Some(false)` the end. An
+/// edge a crossfade hides is the zone's, not the clip's.
 fn near_edge(inp: &LaneInput<'_>, c: &Clip) -> Option<bool> {
     let xs = x_of(inp.s, inp.tl, c.start);
     let xe = x_of(inp.s, inp.tl, c.end());
-    if (inp.origin.x - xs).abs() < 6.0 {
+    let (start_hidden, end_hidden) = hidden_edges(inp.track.clips(), c);
+    if !start_hidden && (inp.origin.x - xs).abs() < EDGE_GRAB {
         Some(true)
-    } else if (inp.origin.x - xe).abs() < 6.0 {
+    } else if !end_hidden && (inp.origin.x - xe).abs() < EDGE_GRAB {
         Some(false)
     } else {
         None
@@ -209,7 +240,7 @@ fn effective_tool(inp: &LaneInput<'_>, hits: &LaneHits<'_>) -> Tool {
         _ if hits.point_hit.is_some() => Tool::Grabber,
         Tool::Smart => {
             if let Some(c) = &hits.hit {
-                if near_edge(inp, c).is_some() {
+                if hits.zone_trim.is_some() || near_edge(inp, c).is_some() {
                     Tool::Trim
                 } else if upper {
                     Tool::Selector
@@ -234,7 +265,7 @@ fn fade_corner_at(inp: &LaneInput<'_>, hits: &LaneHits<'_>) -> Option<bool> {
                 let xs = x_of(s, tl, c.start);
                 let xe = x_of(s, tl, c.end());
                 let top = origin.y < lane.min.y + lane.height() * 0.28;
-                if !top {
+                let corner = if !top {
                     None
                 } else if (origin.x - xs) > 0.0 && (origin.x - xs) < 14.0 {
                     Some(true)
@@ -242,7 +273,9 @@ fn fade_corner_at(inp: &LaneInput<'_>, hits: &LaneHits<'_>) -> Option<bool> {
                     Some(false)
                 } else {
                     None
-                }
+                };
+                let (start_hidden, end_hidden) = hidden_edges(inp.track.clips(), c);
+                corner.filter(|fade_in| !(if *fade_in { start_hidden } else { end_hidden }))
             })
         })
     } else {
@@ -252,10 +285,10 @@ fn fade_corner_at(inp: &LaneInput<'_>, hits: &LaneHits<'_>) -> Option<bool> {
 
 /// Start the gesture a press begins: a breakpoint, clip gain, a fade or the tool's own.
 fn start_gesture(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Response, gain_drag: Option<Clip>) {
-    let LaneCtx { inp, hits, mods, p, at, eff, fade_corner, .. } = c;
-    let (track, lane, s, origin, at_origin, auto_view) = (inp.track, inp.lane, inp.s, inp.origin, inp.at_origin, &inp.auto_view);
+    let LaneCtx { inp, hits, mods, p, at, fade_corner, .. } = c;
+    let (track, lane, s, origin) = (inp.track, inp.lane, inp.s, inp.origin);
     let (point_hit, curve_handle, hit) = (&hits.point_hit, hits.curve_handle, &hits.hit);
-    let (mods, p, at, eff, fade_corner) = (*mods, *p, *at, *eff, *fade_corner);
+    let (mods, p, at, fade_corner) = (*mods, *p, *at, *fade_corner);
     if resp.drag_started()
         && let Some((param, at)) = &point_hit
     {
@@ -290,24 +323,58 @@ fn start_gesture(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::
         });
         ui.ctx().request_repaint();
     } else if resp.drag_started() {
-        app.gesture = match eff {
-            Tool::Selector | Tool::Smart => Some(Gesture::Select { track: track.id, anchor: snap(s, at_origin), tracks: vec![track.id] }),
-            Tool::Grabber => hit.as_ref().map(|c| {
-                let clips = if s.edit.selected_clips.contains(&c.id) { s.edit.selected_clips.clone() } else { vec![c.id] };
-                Gesture::MoveClips { clips, grab_at: at_origin, delta: 0, from_track: track.id, to_track: track.id }
-            }),
-            Tool::Trim => hit.as_ref().map(|c| match near_edge(inp, c) {
-                Some(false) => Gesture::TrimEnd { clip: c.id, track: track.id, to: c.end() },
-                _ if at_origin - c.start < c.end() - at_origin => Gesture::TrimStart { clip: c.id, track: track.id, to: c.start },
-                _ => Gesture::TrimEnd { clip: c.id, track: track.id, to: c.end() },
-            }),
-            Tool::Scrubber => Some(Gesture::Scrub { last: at }),
-            Tool::Pencil if auto_view.is_none() && track.kind.is_midi() => {
-                hit.is_none().then_some(Gesture::MidiClip { track: track.id, from: at_origin, to: at_origin })
+        app.gesture = tool_gesture(c);
+    }
+}
+
+/// The gesture a drag with the effective tool starts.
+fn tool_gesture(c: &LaneCtx<'_>) -> Option<Gesture> {
+    let LaneCtx { inp, hits, at, eff, .. } = c;
+    let (track, s, tl, origin, at_origin, auto_view) = (inp.track, inp.s, inp.tl, inp.origin, inp.at_origin, &inp.auto_view);
+    let hit = &hits.hit;
+    match eff {
+        Tool::Selector | Tool::Smart => Some(Gesture::Select { track: track.id, anchor: snap(s, at_origin), tracks: vec![track.id] }),
+        // Grabbing a crossfade moves the joint between its clips; the clips stay where they are.
+        Tool::Grabber => {
+            zone_under(s, tl, track.clips(), origin.x).map(|(_, b)| Gesture::MoveCrossfade { clip: b.id, grab_at: at_origin, by: 0 }).or_else(|| {
+                hit.as_ref().map(|c| {
+                    let clips = if s.edit.selected_clips.contains(&c.id) { s.edit.selected_clips.clone() } else { vec![c.id] };
+                    Gesture::MoveClips { clips, grab_at: at_origin, delta: 0, from_track: track.id, to_track: track.id }
+                })
+            })
+        }
+        Tool::Trim => trim_gesture(inp, hits),
+        Tool::Scrubber => Some(Gesture::Scrub { last: *at }),
+        Tool::Pencil if auto_view.is_none() && track.kind.is_midi() => {
+            hit.is_none().then_some(Gesture::MidiClip { track: track.id, from: at_origin, to: at_origin })
+        }
+        Tool::Pencil => Some(Gesture::Pencil { track: track.id, points: Vec::new() }),
+        Tool::Zoom => Some(Gesture::ZoomBox { start: origin.x }),
+    }
+}
+
+/// The Trim tool's gesture. A zone edge moves the crossfade's edge, never a clip's own: the cut stays and both fades
+/// follow.
+fn trim_gesture(inp: &LaneInput<'_>, hits: &LaneHits<'_>) -> Option<Gesture> {
+    let (track, at_origin) = (inp.track, inp.at_origin);
+    match &hits.zone_trim {
+        Some(z) if z.start => Some(Gesture::TrimCrossfadeStart { clip: z.later, to: z.at }),
+        Some(z) => Some(Gesture::TrimCrossfadeEnd { clip: z.later, to: z.at }),
+        // The edge of a clip that a crossfade hides is not trimmed from its body.
+        // ponytail: the press does nothing there (the zone's edges are the ones to pull); a nearest-visible-edge
+        // fallback would make the Trim tool always do something.
+        None => hits.hit.as_ref().and_then(|c| {
+            let (start_hidden, end_hidden) = hidden_edges(track.clips(), c);
+            let start = match near_edge(inp, c) {
+                Some(false) => false,
+                _ => at_origin - c.start < c.end() - at_origin,
+            };
+            if start {
+                (!start_hidden).then_some(Gesture::TrimStart { clip: c.id, track: track.id, to: c.start })
+            } else {
+                (!end_hidden).then_some(Gesture::TrimEnd { clip: c.id, track: track.id, to: c.end() })
             }
-            Tool::Pencil => Some(Gesture::Pencil { track: track.id, points: Vec::new() }),
-            Tool::Zoom => Some(Gesture::ZoomBox { start: origin.x }),
-        };
+        }),
     }
 }
 
@@ -349,17 +416,8 @@ fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Res
         }
     } else if resp.clicked() && curve_handle.is_none() {
         match eff {
-            Tool::Grabber => {
-                if let Some(c) = &hit {
-                    let mut ids = if mods.shift { s.edit.selected_clips.iter().map(|x| x.0).collect::<Vec<_>>() } else { Vec::new() };
-                    ids.push(c.id.0);
-                    let _ = app.run("edit.select", json!({"clips": ids}));
-                    if s.edit.edit_mode == EditMode::Spot {
-                        app.dialogs.open = Spot::clips(s, vec![c.id], None, 0).map(Dialog::Spot);
-                    }
-                }
-            }
-            Tool::Trim if s.edit.edit_mode == EditMode::Spot && hit.is_some() => {
+            Tool::Grabber => grabber_click(app, c),
+            Tool::Trim if s.edit.edit_mode == EditMode::Spot && hit.is_some() && c.hits.zone_trim.is_none() => {
                 if let Some(c) = &hit {
                     let start = at - c.start < c.end() - at;
                     app.dialogs.open = Spot::trim(s, c.id, start, if start { c.start } else { c.end() }).map(Dialog::Spot);
@@ -400,11 +458,34 @@ fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Res
         && curve_handle.is_none()
         && point_hit.is_none()
         && eff != Tool::Pencil
+        // Double-clicking a crossfade leaves it selected as it is (there is no Crossfade dialog to open yet).
+        && (eff != Tool::Grabber || zone_under(s, c.inp.tl, track.clips(), c.inp.origin.x).is_none())
         && let Some(c) = &hit
     {
         let _ = app.run("edit.select", json!({"clips": [c.id.0]}));
         if eff == Tool::Grabber && matches!(c.content, ClipContent::Midi { .. }) {
             app.ui.show_midi_editor = true;
+        }
+    }
+}
+
+/// A Grabber click: a crossfade is selected as itself (its zone on its track, no clip of the pair), else the clip,
+/// added to the selection with Shift.
+fn grabber_click(app: &mut SoundApp, c: &LaneCtx<'_>) {
+    let (track, s, mods) = (c.inp.track, c.inp.s, c.mods);
+    if !mods.shift
+        && let Some((_, later)) = zone_under(s, c.inp.tl, track.clips(), c.inp.origin.x)
+    {
+        // Shift is for extending the clip selection, as it is anywhere else.
+        // ponytail: a pair that can't slide (a clip edit-locked or stretched) is clicked as its clips, as it is grabbed;
+        // upgrade: select it as a crossfade too.
+        let _ = app.run("edit.select", json!({"crossfade": later.id.0}));
+    } else if let Some(hit) = &c.hits.hit {
+        let mut ids = if mods.shift { s.edit.selected_clips.iter().map(|x| x.0).collect::<Vec<_>>() } else { Vec::new() };
+        ids.push(hit.id.0);
+        let _ = app.run("edit.select", json!({"clips": ids}));
+        if s.edit.edit_mode == EditMode::Spot {
+            app.dialogs.open = Spot::clips(s, vec![hit.id], None, 0).map(Dialog::Spot);
         }
     }
 }
@@ -445,7 +526,8 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
     }
     let gain_icon_at = |q: Pos2| {
         let c = clip_at(track, sample_at(&s, tl, q.x).max(0)).filter(|_| inp.auto_view.is_none())?;
-        clip_gain_icon(&s, tl, lane, c).filter(|r| r.contains(q)).map(|_| c.clone())
+        let (from, to) = shown_span(c, ops::crossfade_earlier(track.clips(), c), ops::crossfade_later(track.clips(), c));
+        gain_icon(&s, tl, lane, c, from, to).filter(|r| r.contains(q)).map(|_| c.clone())
     };
     if resp.hovered() && gain_icon_at(p).is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);

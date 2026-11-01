@@ -89,11 +89,12 @@ pub(super) fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect,
     let view = Range::new(sample_at(&s, tl, tl.min.x), sample_at(&s, tl, tl.max.x));
     let auto_view = AutoParam::parse(&track.view);
     let sorted = track.clips().is_sorted_by_key(|c| c.start);
+    let partners = ops::crossfade_partners(track.clips());
     for clip in track.clips() {
         if !clip.range().overlaps(&view) {
             continue;
         }
-        draw_clip(&ClipLane { app, painter: &painter, s: &s, track, sorted, tl, lane }, clip, auto_view.is_some());
+        draw_clip(&ClipLane { app, painter: &painter, s: &s, track, sorted, tl, lane }, track.clips(), partners(clip), clip, auto_view.is_some());
     }
     draw_live_take(app, &painter, &s, track, tl, lane);
     crate::video_track::draw_lane(app, &painter, &s, track, tl, lane);
@@ -142,8 +143,9 @@ fn playlist_lanes(app: &mut SoundApp, ui: &mut Ui, track: &Track, row: Rect, mai
         let painter = ui.painter().with_clip_rect(lane.intersect(ui.clip_rect()));
         let sorted = track.clips().is_sorted_by_key(|c| c.start);
         let view = Range::new(sample_at(&s, tl, tl.min.x), sample_at(&s, tl, tl.max.x));
+        let partners = ops::crossfade_partners(&pl.clips);
         for c in pl.clips.iter().filter(|c| c.range().overlaps(&view)) {
-            draw_clip(&ClipLane { app, painter: &painter, s: &s, track, sorted, tl, lane }, c, false);
+            draw_clip(&ClipLane { app, painter: &painter, s: &s, track, sorted, tl, lane }, &pl.clips, partners(c), c, false);
         }
         let resp = ui.interact(lane, ui.scope_id().with(("pl_lane", track.id.0, i)), Sense::click());
         if resp.clicked()

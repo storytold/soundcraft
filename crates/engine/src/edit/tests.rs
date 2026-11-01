@@ -379,6 +379,53 @@ fn delete_fades_leaves_unrelated_overlaps_alone() {
 }
 
 #[test]
+fn crossfade_partners_match_the_lookups_one_clip_at_a_time() {
+    let audio = |id: u64, start: Samples, len: Samples| Clip::audio(ClipId(id), "a", SourceId(1), 0, start, len);
+    let layouts: Vec<Vec<Clip>> = vec![
+        // A crossfade, a butt joint, a gap.
+        vec![audio(1, 0, 1100), audio(2, 900, 1100), audio(3, 2000, 500), audio(4, 3000, 500)],
+        // A chain of crossfades, and two later clips starting at the same point in the same earlier one.
+        vec![audio(1, 0, 1100), audio(2, 900, 1100), audio(3, 1900, 600), audio(4, 2300, 400), audio(5, 2300, 500)],
+        // A long clip laid over clips that crossfade under it, and a clip laid inside another.
+        vec![audio(1, 0, 10_000), audio(2, 100, 1000), audio(3, 1000, 1000), audio(4, 1200, 200)],
+        // A video clip is no crossfade partner.
+        vec![audio(1, 0, 1100), Clip::video(ClipId(2), "v", SourceId(2), 0, 900, 1100), audio(3, 1800, 500)],
+        // Unsorted: each lookup scans.
+        vec![audio(2, 900, 1100), audio(1, 0, 1100)],
+    ];
+    let spans = |clips: &[Clip]| clips.iter().map(|c| (c.start, c.end())).collect::<Vec<_>>();
+    for clips in &layouts {
+        let partners = crossfade_partners(clips);
+        for c in clips {
+            let want = (crossfade_earlier(clips, c).map(|x| x.id), crossfade_later(clips, c).map(|x| x.id));
+            let (e, l) = partners(c);
+            assert_eq!((e.map(|x| x.id), l.map(|x| x.id)), want, "clip {} of {:?}", c.id.0, spans(clips));
+        }
+    }
+    // Not vacuous: the crossfades are found.
+    let partners = crossfade_partners(&layouts[0]);
+    assert_eq!(partners(&layouts[0][1]).0.map(|x| x.id), Some(ClipId(1)));
+    let partners = crossfade_partners(&layouts[2]);
+    assert_eq!(partners(&layouts[2][1]).1.map(|x| x.id), Some(ClipId(3)));
+}
+
+#[test]
+fn a_split_keeps_the_cut_on_the_left_part_and_clears_it_on_the_right() {
+    let (mut s, t) = session_with_clip();
+    let cuts = |s: &Session| s.track(t).unwrap().clips().iter().map(|c| c.cut).collect::<Vec<_>>();
+    s.track_mut(t).and_then(|t| t.playlist_mut()).unwrap().clips[0].cut = Some(300);
+    // Split by `separate_at` (every clip under the point), at a point past the cut...
+    assert_eq!(separate_at(&mut s, t, 3000), 1);
+    assert_eq!(cuts(&s), [Some(300), None]);
+    // ...and by `split_clip` at points before it, where the left part is too short to hold the cut.
+    let clip = s.track(t).unwrap().clips()[0].clone();
+    for (at, left, right) in [(1200, Some(200), None), (1300, Some(300), None), (2999, Some(300), None)] {
+        let (l, r) = split_clip(&clip, at, ClipId(900), TimeCtx::of(&s)).unwrap();
+        assert_eq!((l.cut, r.cut), (left, right), "split at {at}");
+    }
+}
+
+#[test]
 fn paste_keeps_crossfade_overlap() {
     let (mut s, t) = session_with_clip();
     let (a, b) = (s.new_clip_id(), s.new_clip_id());
