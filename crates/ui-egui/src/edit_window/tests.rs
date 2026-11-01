@@ -10,12 +10,15 @@ fn clips_markers_trim_ignores_the_trimmed_clip() {
     let clip = Clip::midi(s.new_clip_id(), "Notes", 1_000, 1_000, soundcraft_midi::Sequence::default());
     let clip_id = clip.id;
     s.track_mut(track).and_then(Track::playlist_mut).unwrap().clips.push(clip);
+    s.add_marker("Inside", soundcraft_model::MarkerKind::Marker, 1_500, 1_500);
     s.add_marker("Target", soundcraft_model::MarkerKind::Marker, 2_500, 2_500);
     s.edit.edit_mode = soundcraft_model::EditMode::Grid;
     s.edit.grid_clips_markers = true;
 
     assert_eq!(super::drag::drag_snap(&s, 2_100, false), 2_000);
     assert_eq!(super::drag::drag_snap_excluding(&s, 2_100, false, &[clip_id]), 2_500);
+    assert_eq!(super::drag::trim_drag_snap(&s, clip_id, 1_000, true, false), 1_000);
+    assert_eq!(super::drag::trim_drag_snap(&s, clip_id, 2_000, false, false), 2_000);
 }
 
 /// The painted header selectors are interactive controls; their accessible name is the field

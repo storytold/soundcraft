@@ -235,6 +235,8 @@ fn clips_markers_grid_ignores_every_clip_being_moved() {
     let (mut e, _, ids) = long("grid", &[(1_000, 1_000, 0), (4_000, 500, 2_000)]);
     e.session_mut().add_marker("Target", soundcraft_model::MarkerKind::Marker, 2_500, 2_500);
     run(&mut e, "view.grid", json!({"format": "clips_markers", "follow_main": false}));
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "to": 1_000}));
+    assert_eq!([start(&e, ids[0]), start(&e, ids[1])], [1_000, 4_000]);
     run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "to": 2_200}));
     assert_eq!(start(&e, ids[0]), 2_500);
     assert_eq!(start(&e, ids[1]), 5_500);

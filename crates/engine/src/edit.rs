@@ -791,6 +791,9 @@ pub fn shuffle_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(T
 /// start when it has none inside the clip) on the nearest grid line; Relative moves it by whole
 /// grid steps, keeping its offset from the grid.
 pub fn grid_delta(s: &Session, clip: &Clip, raw: Samples, relative: bool, moving: &[ClipId]) -> Samples {
+    if raw == 0 {
+        return 0;
+    }
     let sync = if (0..clip.length).contains(&clip.sync_point) { clip.sync_point } else { 0 };
     let anchor = clip.start.saturating_add(sync);
     let from = if relative { s.grid_line_at_or_before_excluding(anchor, moving) } else { anchor };
