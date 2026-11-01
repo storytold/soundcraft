@@ -182,6 +182,7 @@ fn writes(dir: &Path) -> Vec<(&'static str, Value)> {
         ("file.print_score", json!({"path": p("k.svg")})),
         ("file.export_clip_groups", json!({"path": p("l.scgrp"), "clips": [clip]})),
         ("track.save_preset", json!({"path": p("m.json"), "tracks": ["Kick"]})),
+        ("setup.disk_allocation", json!({"path": p("recordings")})),
     ]
 }
 
@@ -301,6 +302,7 @@ fn links_out_of_the_roots_are_refused() {
     refused(&mut srv, "file.bounce_mix", json!({"path": s(f.write.join("away/x.wav"))}), "outside the write root");
     refused(&mut srv, "file.bounce_stems", json!({"dir": s(f.write.join("away/stems"))}), "outside the write root");
     refused(&mut srv, "session.save_as", json!({"path": s(f.write.join("away/x.scraft"))}), "outside the write root");
+    refused(&mut srv, "setup.disk_allocation", json!({"path": s(f.write.join("away/rec"))}), "outside the write root");
     refused(&mut srv, "file.bounce_mix", json!({"path": s(f.write.join("dangling.wav"))}), "a link that leads nowhere");
     assert_eq!(listing(&f.outside), before, "nothing was written through a link");
     assert!(!f.outside.join("not-yet.wav").exists());
@@ -339,6 +341,22 @@ fn media_a_session_names_outside_the_read_root_is_not_loaded() {
     let mut free = server(None, None);
     ok(&mut free, "session.open", json!({"path": s(&session)}));
     assert!(inspect(&mut free)["sources"].as_array().unwrap().iter().all(|x| x["loaded"] == true));
+}
+
+/// `setup.disk_allocation` stores its path trimmed, so the trimmed path is what gets checked. With
+/// the working folder as the write root, `" /abs/outside"` read as given would be `<cwd>/ /abs/outside`
+/// and pass, yet `/abs/outside` would be kept. An empty path still clears the setting.
+#[test]
+fn the_record_folder_is_checked_as_it_is_stored() {
+    let f = fixture("trim");
+    let cwd = std::env::current_dir().unwrap();
+    let mut srv = demo_server(None, Some(&cwd));
+    let spaced = format!(" {}", s(f.outside.join("rec")));
+    refused(&mut srv, "setup.disk_allocation", json!({"path": spaced}), "outside the write root");
+    refused(&mut srv, "setup.disk_allocation", json!({"track": "Kick", "path": spaced}), "outside the write root");
+    ok(&mut srv, "setup.disk_allocation", json!({"path": "  rec  "}));
+    ok(&mut srv, "setup.disk_allocation", json!({"path": ""}));
+    ok(&mut srv, "setup.disk_allocation", json!({"path": "   "}));
 }
 
 #[test]

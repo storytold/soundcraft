@@ -2,7 +2,7 @@
 //! shortcuts, MIDI setup) and File › Import › Session Data.
 use super::{CommandSpec, always, bad, command_specs, i64_or, str_param, track_param, tracks_param};
 
-use super::more_util::{set_text, store_value, text, toggle_flag, values_with_prefix};
+use super::more_util::{set_text, store_value, text, text_value, toggle_flag, values_with_prefix};
 use crate::{Engine, EngineError, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_model::{BusId, ChannelFormat, ClipContent, OutputPath, Route, Session, SourceId, TrackId, TrackKind};
@@ -239,8 +239,15 @@ fn engine_settings(e: &mut Engine, p: &Value, id: &str) -> Result<Value> {
 fn disk_allocation(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "setup.disk_allocation";
     let t = track_param(e, id, p, "track")?;
+    // The path that is checked is the path that is stored: trimmed and cut as `set_text` keeps it.
+    // An empty one clears the setting and names no folder, so it isn't checked.
+    let path = str_param(p, "path").map(text_value);
+    // Checked before `session_mut` so a refused path leaves the session untouched.
+    if let Some(path) = path.as_deref().filter(|v| !v.is_empty()) {
+        crate::file_access::check_write(path).map_err(EngineError::Io)?;
+    }
     let s = e.session_mut();
-    if let Some(path) = str_param(p, "path") {
+    if let Some(path) = path.as_deref() {
         let key = t.map_or_else(|| "disk.root".to_string(), |t| format!("disk.track.{}", t.0));
         set_text(&mut s.edit, &key, Some(path));
     }
