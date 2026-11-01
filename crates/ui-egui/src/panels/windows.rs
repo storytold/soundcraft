@@ -784,7 +784,9 @@ pub fn clip_effects(app: &mut SoundApp, ctx: &egui::Context) {
                         let key = format!("{prefix}{}", p.id);
                         let mut v = get(app, &key, p.default);
                         let before = v;
-                        col.add(egui::Slider::new(&mut v, p.min..=p.max).text(p.name));
+                        let mut wide = f64::from(v);
+                        crate::widgets::fine_slider(col, &mut wide, f64::from(p.min)..=f64::from(p.max), p.name);
+                        v = wide as f32;
                         if (v - before).abs() > f32::EPSILON {
                             let mut m = serde_json::Map::new();
                             m.insert(key.clone(), json!(v));

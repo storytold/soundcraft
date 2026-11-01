@@ -410,10 +410,10 @@ fn strip_silence_form(
     let mut rename_from = None;
     let [threshold, min_ms, pre_ms, post_ms] = values;
     let before = [*threshold, *min_ms, *pre_ms, *post_ms];
-    ui.add(egui::Slider::new(threshold, -96.0..=0.0).text("Threshold dB"));
-    ui.add(egui::Slider::new(min_ms, 0.0..=4000.0).text("Min strip duration ms"));
-    ui.add(egui::Slider::new(pre_ms, 0.0..=500.0).text("Clip start pad ms"));
-    ui.add(egui::Slider::new(post_ms, 0.0..=2000.0).text("Clip end pad ms"));
+    crate::widgets::fine_slider(ui, threshold, -96.0..=0.0, "Threshold dB");
+    crate::widgets::fine_slider(ui, min_ms, 0.0..=4000.0, "Min strip duration ms");
+    crate::widgets::fine_slider(ui, pre_ms, 0.0..=500.0, "Clip start pad ms");
+    crate::widgets::fine_slider(ui, post_ms, 0.0..=2000.0, "Clip end pad ms");
     let values = [*threshold, *min_ms, *pre_ms, *post_ms];
     // The Edit window is drawn before this window, so it draws the rectangles for new values in the next frame.
     if values != before {
