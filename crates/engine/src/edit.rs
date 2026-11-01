@@ -790,11 +790,11 @@ pub fn shuffle_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(T
 /// How far a Grabber drag by `raw` moves `clip` in Grid mode: Absolute puts its sync point (its
 /// start when it has none inside the clip) on the nearest grid line; Relative moves it by whole
 /// grid steps, keeping its offset from the grid.
-pub fn grid_delta(s: &Session, clip: &Clip, raw: Samples, relative: bool) -> Samples {
+pub fn grid_delta(s: &Session, clip: &Clip, raw: Samples, relative: bool, moving: &[ClipId]) -> Samples {
     let sync = if (0..clip.length).contains(&clip.sync_point) { clip.sync_point } else { 0 };
     let anchor = clip.start.saturating_add(sync);
-    let from = if relative { s.grid_line_at_or_before(anchor) } else { anchor };
-    s.snap_to_grid(from.saturating_add(raw)).saturating_sub(from)
+    let from = if relative { s.grid_line_at_or_before_excluding(anchor, moving) } else { anchor };
+    s.snap_to_grid_excluding(from.saturating_add(raw), moving).saturating_sub(from)
 }
 
 /// Trim a clip's edges to `start` and/or `end` like the Trim tool, never past its file. In

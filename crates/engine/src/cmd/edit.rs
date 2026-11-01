@@ -301,6 +301,7 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
             cut_track(s, *t, range, sh, follow);
         }
         s.edit.selection = soundcraft_time::Range::point(range.start);
+        cb.cut_from = Some(range.start);
     }
     let n: usize = cb.tracks.iter().map(Vec::len).sum();
     e.clipboard = cb;
@@ -336,6 +337,9 @@ fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session();
     let at = match given {
         Some(at) => at,
+        None if s.edit.edit_mode == EditMode::GridRelative && s.edit.selection.is_empty() && cb.cut_from == Some(s.edit.selection.start) => {
+            s.edit.selection.start
+        }
         None if s.edit.edit_mode == EditMode::GridRelative => s.grid_line_at_or_before(s.edit.selection.start).saturating_add(cb.grid_offset),
         None => s.edit.selection.start,
     };
@@ -672,7 +676,11 @@ fn separate_on_grid(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.separate_on_grid", p)?;
     let r = range_param(e, "edit.separate_on_grid", p)?;
     let s = e.session_mut();
-    let lines = s.grid_lines(r.start, r.end, 10_000);
+    let max = if s.edit.grid_clips_markers { usize::MAX } else { 10_001 };
+    let lines = s.grid_lines(r.start, r.end, max);
+    if lines.len() > 10_000 {
+        return Err(bad("edit.separate_on_grid", "the range contains more than 10,000 grid boundaries"));
+    }
     let mut n = 0;
     for t in &tracks {
         for at in &lines {
@@ -978,7 +986,7 @@ fn move_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     };
     let mode = s.edit.edit_mode;
     let delta = match first {
-        Some(c) if mode.is_grid() && p.get("to").is_some() => ops::grid_delta(s, c, delta, mode == EditMode::GridRelative),
+        Some(c) if mode.is_grid() && p.get("to").is_some() => ops::grid_delta(s, c, delta, mode == EditMode::GridRelative, &ids),
         _ => delta,
     };
     let s = e.session_mut();

@@ -44,7 +44,8 @@ pub(super) fn grid_lines(painter: &egui::Painter, s: &Session, tl: Rect, lane: R
         let step_px = s.edit.grid.step_samples(view.start, sr, &s.tempo, s.frame_rate) as f64 / s.edit.zoom.samples_per_px;
         if s.edit.grid_clips_markers || step_px > 7.0 {
             let col = grid_veil(t.grid_line, t.playlist_bg);
-            for at in s.grid_lines(view.start, view.end, 2000) {
+            let visible_columns = lane.width().ceil().clamp(1.0, 16_384.0) as usize;
+            for at in s.grid_lines(view.start, view.end, visible_columns) {
                 let x = x_of(s, tl, at);
                 painter.line_segment([pos2(x, lane.min.y), pos2(x, lane.max.y)], Stroke::new(1.0, col));
             }

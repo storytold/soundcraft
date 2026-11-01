@@ -216,6 +216,7 @@ pub(super) struct DragPlan {
     pub(super) dest: Option<Vec<(TrackId, TrackId)>>,
     pub(super) groups: Vec<(TrackId, Samples, Vec<Samples>)>,
     pub(super) moving: Vec<(TrackId, Samples, Samples)>,
+    moving_ids: Vec<ClipId>,
     grabbed: Option<Clip>,
 }
 
@@ -246,10 +247,11 @@ pub(super) fn drag_plan(
     };
     let ids: HashSet<ClipId> = clips.iter().copied().collect();
     let movable = |c: &&Clip| ids.contains(&c.id) && !ops::locked(c);
-    let moving = s.tracks.iter().flat_map(|t| t.clips().iter().filter(movable).map(|c| (t.id, c.start, c.length))).collect();
+    let moving: Vec<_> = s.tracks.iter().flat_map(|t| t.clips().iter().filter(movable).map(|c| (t.id, c.start, c.length))).collect();
+    let moving_ids: Vec<_> = s.tracks.iter().flat_map(|t| t.clips().iter().filter(movable).map(|c| c.id)).collect();
     let mine: Vec<&Clip> = s.track(from).map(|t| t.clips().iter().filter(movable).collect()).unwrap_or_default();
     let grabbed = mine.iter().rev().find(|c| c.range().contains(grab_at)).or_else(|| mine.iter().min_by_key(|c| c.start)).map(|c| (*c).clone());
-    let plan = Arc::new(DragPlan { dest, groups, moving, grabbed });
+    let plan = Arc::new(DragPlan { dest, groups, moving, moving_ids, grabbed });
     ctx.data_mut(|d| d.insert_temp(id, (key, Arc::clone(&plan))));
     plan
 }
@@ -268,7 +270,7 @@ fn move_delta(plan: &DragPlan, s: &Session, from: TrackId, raw: Samples, flip: b
     } else if mode.is_grid() != flip
         && let Some(c) = &plan.grabbed
     {
-        ops::grid_delta(s, c, raw, mode == EditMode::GridRelative)
+        ops::grid_delta(s, c, raw, mode == EditMode::GridRelative, &plan.moving_ids)
     } else {
         raw
     }

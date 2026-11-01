@@ -356,12 +356,14 @@ impl GridValue {
                 } else if map.tick_to_samples(t.saturating_add(1), sr) <= pos {
                     t = t.saturating_add(1);
                 }
-                // Grid lines restart at each bar line so odd meters stay aligned.
+                // Sub-bar values restart at each bar so odd meters stay aligned. A whole note is
+                // always four quarter notes and therefore keeps a continuous tick origin.
                 let bb = map.bar_beat_at_tick(t);
                 let bar_tick = map.bar_start_tick(bb.bar);
-                let step = Self::note_ticks(value, dotted, triplet, map, bar_tick);
-                let k = (t - bar_tick).div_euclid(step);
-                map.tick_to_samples(bar_tick + k * step, sr)
+                let origin = if value == NoteValue::Whole { 0 } else { bar_tick };
+                let step = Self::note_ticks(value, dotted, triplet, map, origin);
+                let k = (t - origin).div_euclid(step);
+                map.tick_to_samples(origin + k * step, sr)
             }
             _ => self.abs_line(self.abs_index_at_or_before(pos, sr, rate), sr, rate),
         }
@@ -514,6 +516,29 @@ mod tests {
         }
     }
 
+    /// Musical boundaries stay exact across a tempo change while absolute scales remain
+    /// independent of the tempo map.
+    #[test]
+    fn grids_stay_aligned_across_a_tempo_change() {
+        let (sr, rate) = (SampleRate::HZ_48000, FrameRate::Fps29_97Drop);
+        let mut map = TempoMap::default();
+        map.set_tempo(TICKS_PER_QUARTER * 4, 90.0).unwrap();
+        let musical = GridValue::Note { value: NoteValue::Quarter, dotted: false, triplet: false };
+        for tick in [0, TICKS_PER_QUARTER * 3, TICKS_PER_QUARTER * 4, TICKS_PER_QUARTER * 5] {
+            let line = map.tick_to_samples(tick, sr);
+            assert_eq!(musical.line_at_or_before(line, sr, &map, rate), line);
+        }
+        for absolute in [
+            GridValue::Seconds(0.5),
+            GridValue::Timecode(TimecodeValue::Second),
+            GridValue::FeetFrames(FeetFramesValue::Foot),
+            GridValue::Samples(1_000),
+        ] {
+            let line = absolute.next_line(absolute.line_at_or_before(100_000, sr, &map, rate), sr, &map, rate);
+            assert_eq!(absolute.line_at_or_before(line, sr, &map, rate), line, "{absolute:?}");
+        }
+    }
+
     #[test]
     fn sixteenth_grid_at_120() {
         let g = GridValue::default();
@@ -546,6 +571,9 @@ mod tests {
         let note = |value| GridValue::Note { value, dotted: false, triplet: false };
         assert_eq!(note(NoteValue::Bar).step_samples(0, sr, &map, rate), 72_000);
         assert_eq!(note(NoteValue::Whole).step_samples(0, sr, &map, rate), 96_000);
+        assert_eq!(note(NoteValue::Bar).line_at_or_before(96_000, sr, &map, rate), 72_000);
+        assert_eq!(note(NoteValue::Whole).line_at_or_before(96_000, sr, &map, rate), 96_000);
+        assert_eq!(note(NoteValue::Half).lines(0, 150_000, sr, &map, rate, 10), [0, 48_000, 72_000, 120_000, 144_000]);
     }
 
     #[test]

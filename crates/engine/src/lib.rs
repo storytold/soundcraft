@@ -119,6 +119,8 @@ pub struct Clipboard {
     pub markers: Vec<soundcraft_model::MemoryLocation>,
     /// How far the copied range started after a grid line; Relative Grid pastes keep it.
     pub grid_offset: Samples,
+    /// Original insertion point when the clipboard was populated by Cut.
+    pub cut_from: Option<Samples>,
     /// Copy Special › Automation: pasting it leaves the clips alone, in Shuffle mode too.
     pub automation_only: bool,
     /// The Auto Rename schemes of the copied clips, keyed as in their `auto_name`.

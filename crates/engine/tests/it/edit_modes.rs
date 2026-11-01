@@ -221,6 +221,56 @@ fn relative_grid_pastes_keep_the_offset_from_the_grid() {
 }
 
 #[test]
+fn relative_grid_cut_pastes_back_at_its_insertion_boundary() {
+    let (mut e, t, _) = long("relative_grid", &[(1_000, 2_000, 0)]);
+    run(&mut e, "view.grid", json!({"format": "clips_markers", "follow_main": false}));
+    run(&mut e, "edit.cut", json!({"tracks": [t.0], "start": 1_500, "end": 2_000}));
+    run(&mut e, "edit.paste", json!({"tracks": [t.0]}));
+    assert_eq!(e.session().edit.selection.start, 1_500);
+    assert!(clips(&e, t).contains(&(1_500, 500)), "{:?}", clips(&e, t));
+}
+
+#[test]
+fn clips_markers_grid_ignores_every_clip_being_moved() {
+    let (mut e, _, ids) = long("grid", &[(1_000, 1_000, 0), (4_000, 500, 2_000)]);
+    e.session_mut().add_marker("Target", soundcraft_model::MarkerKind::Marker, 2_500, 2_500);
+    run(&mut e, "view.grid", json!({"format": "clips_markers", "follow_main": false}));
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "to": 2_200}));
+    assert_eq!(start(&e, ids[0]), 2_500);
+    assert_eq!(start(&e, ids[1]), 5_500);
+}
+
+#[test]
+fn every_nudge_scale_moves_by_its_selected_increment() {
+    let mut e = Engine::default();
+    let track = new_track(&mut e);
+    e.session_mut().frame_rate = soundcraft_time::FrameRate::Fps30;
+    let cases = [
+        (json!("1/4"), 24_000),
+        (json!({"seconds": 0.5}), 24_000),
+        (json!({"timecode": "5_frames"}), 8_000),
+        (json!({"feet_frames": "foot"}), 25_600),
+        (json!({"samples": 100}), 100),
+    ];
+    for (value, expected) in cases {
+        e.session_mut().edit.selection = soundcraft_time::Range::point(48_000);
+        e.session_mut().edit.selected_tracks = vec![track];
+        run(&mut e, "view.nudge", json!({"value": value, "follow_main": false}));
+        let result = e.execute("edit.nudge", &json!({"direction": 1})).unwrap();
+        assert_eq!(result["by"], expected);
+        assert_eq!(e.session().edit.selection.start, 48_000 + expected);
+    }
+}
+
+#[test]
+fn separate_on_grid_refuses_a_truncated_boundary_set() {
+    let (mut e, t, _) = long("grid", &[(0, 20_000, 0)]);
+    run(&mut e, "view.grid", json!({"value": {"samples": 1}, "follow_main": false}));
+    assert!(e.execute("edit.separate_on_grid", &json!({"tracks": [t.0], "start": 0, "end": 10_002})).is_err());
+    assert_eq!(clips(&e, t), [(0, 20_000)]);
+}
+
+#[test]
 fn shuffle_moves_keep_crossfade_partners_whole() {
     let (mut e, t, ids) = long("slip", &[(0, 1000, 10_000), (1000, 1000, 20_000), (2000, 1000, 30_000)]);
     run(&mut e, "edit.fades_create", json!({"tracks": [t.0], "start": 900, "end": 1100}));
