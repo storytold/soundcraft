@@ -36,6 +36,12 @@ mod host;
 mod instance;
 mod module;
 mod process;
+/// The `Linux::IRunLoop` a view gets through its frame. X11 plugin editors have no event loop of
+/// their own: they register their display connection's file descriptor and their repaint timers
+/// here, and the host calls them back on the main thread. SoundCraft drives this from the editor
+/// link's `idle`, once per UI frame (the UI repaints at least every 30 ms while an editor is open).
+#[cfg(all(unix, not(target_os = "macos")))]
+mod run_loop;
 
 pub(crate) use editor::EditorLink;
 pub(crate) use host::HostContext;
@@ -115,8 +121,17 @@ mod window;
 #[path = "ffi/window/windows.rs"]
 mod window;
 
+/// The X11 host window (Linux and the BSDs): a top-level window on our own connection to the X
+/// server (XWayland on Wayland desktops) whose id the plugin view embeds its window into. The
+/// close button only hides it (`WM_DELETE_WINDOW`); the editor link notices in `idle`, detaches
+/// the view, then destroys the window. Our connection's events are read whenever a window's
+/// visibility is asked, which the UI does every frame while an editor is open.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[path = "ffi/window/x11.rs"]
+mod window;
+
 /// Other platforms: no editor windows yet (opening reports "unsupported").
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", windows, unix)))]
 #[path = "ffi/window/other.rs"]
 mod window;
 

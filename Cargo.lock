@@ -4342,12 +4342,14 @@ name = "soundcraft-clap-host"
 version = "0.15.0"
 dependencies = [
  "clap-sys",
+ "libc",
  "libloading 0.9.0",
  "log",
  "serde",
  "soundcraft-dsp",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]
@@ -4510,6 +4512,7 @@ dependencies = [
 name = "soundcraft-vst3-host"
 version = "0.15.0"
 dependencies = [
+ "libc",
  "libloading 0.9.0",
  "log",
  "objc2 0.6.5",
@@ -4520,6 +4523,7 @@ dependencies = [
  "thiserror 2.0.21",
  "vst3",
  "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]

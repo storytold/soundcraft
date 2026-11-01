@@ -64,7 +64,7 @@ fn identity_mapped_param_text_is_read_on_the_main_thread_only() {
     assert_eq!((level.min, level.max, level.unit), (0.0, 1.0, Unit::Db));
     let mut p = soundcraft_vst3_host::instantiate_plugin(&id).unwrap();
     let mut ed = soundcraft_dsp::Plugin::editor(&mut p).expect("editor handle");
-    if cfg!(any(target_os = "macos", windows)) {
+    if cfg!(any(target_os = "macos", windows, unix)) {
         assert_eq!(ed.value_text("13", 0.375), None, "test threads are not the main thread");
     } else {
         assert_eq!(ed.value_text("13", 0.375).as_deref(), Some("\u{2212}6.0 dB"));
@@ -335,8 +335,8 @@ fn layouts_beyond_the_host_limits_are_rejected_not_truncated() {
 fn editor_view_is_probed_and_edits_come_back_as_plain_values() {
     let id = id_of("Fixture Gain");
     let mut p = soundcraft_vst3_host::instantiate_plugin(&id).unwrap();
-    // Editor windows are hosted on macOS and Windows; elsewhere the probe reports "unsupported".
-    if cfg!(any(target_os = "macos", windows)) {
+    // Editor windows are hosted on macOS, Windows and X11 (Linux, BSDs); elsewhere the probe reports "unsupported".
+    if cfg!(any(target_os = "macos", windows, unix)) {
         assert_eq!(p.editor_size(), Ok((320, 240)));
     } else {
         assert!(p.editor_size().is_err());
@@ -345,7 +345,7 @@ fn editor_view_is_probed_and_edits_come_back_as_plain_values() {
     // The fixture "edits" Gain to 0.9 (normalized) when it gets the component handler.
     assert_eq!(ed.idle(), vec![("7".to_string(), 1.8)]);
     assert!(ed.idle().is_empty());
-    if cfg!(any(target_os = "macos", windows)) {
+    if cfg!(any(target_os = "macos", windows, unix)) {
         assert!(ed.open().unwrap_err().contains("main thread"), "test threads are not the main thread");
     } else {
         assert!(ed.open().is_err(), "unsupported elsewhere");

@@ -7,6 +7,8 @@ use super::{
     clap_host, clap_plugin_audio_ports, clap_plugin_entry, clap_plugin_factory, clap_plugin_gui, clap_plugin_latency, clap_plugin_note_ports,
     clap_plugin_params, clap_plugin_state, clap_version_is_compatible, read_cstr, scan,
 };
+#[cfg(all(unix, not(target_os = "macos")))]
+use super::{CLAP_EXT_POSIX_FD_SUPPORT, CLAP_EXT_TIMER_SUPPORT, clap_plugin_posix_fd_support, clap_plugin_timer_support};
 
 // ---- loaded binaries -----------------------------------------------------------------------
 
@@ -207,7 +209,19 @@ impl Bundle {
         inst.state_ext = inst.extension::<clap_plugin_state>(CLAP_EXT_STATE);
         let gui = inst.extension::<clap_plugin_gui>(CLAP_EXT_GUI);
         inst.gui = Arc::new(GuiLink {
-            inner: Mutex::new(GuiInner { plugin, gui, state: inst.state_ext, alive: true, created: false, visible: false, window: None }),
+            inner: Mutex::new(GuiInner {
+                plugin,
+                gui,
+                state: inst.state_ext,
+                alive: true,
+                created: false,
+                visible: false,
+                window: None,
+                #[cfg(all(unix, not(target_os = "macos")))]
+                timer: inst.extension::<clap_plugin_timer_support>(CLAP_EXT_TIMER_SUPPORT),
+                #[cfg(all(unix, not(target_os = "macos")))]
+                fd: inst.extension::<clap_plugin_posix_fd_support>(CLAP_EXT_POSIX_FD_SUPPORT),
+            }),
             host: Arc::clone(&inst.state),
         });
         Ok(inst)

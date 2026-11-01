@@ -20,7 +20,7 @@ use clap_sys::events::{
     clap_event_transport, clap_input_events, clap_output_events,
 };
 use clap_sys::ext::audio_ports::{CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, clap_audio_port_info, clap_plugin_audio_ports};
-use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui, clap_plugin_gui, clap_window, clap_window_handle};
+use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui, clap_plugin_gui, clap_window};
 use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_host_latency, clap_plugin_latency};
 use clap_sys::ext::log::{CLAP_EXT_LOG, CLAP_LOG_ERROR, CLAP_LOG_FATAL, CLAP_LOG_WARNING, clap_host_log, clap_log_severity};
 use clap_sys::ext::note_ports::{CLAP_EXT_NOTE_PORTS, clap_note_port_info, clap_plugin_note_ports};
@@ -28,6 +28,11 @@ use clap_sys::ext::params::{
     CLAP_EXT_PARAMS, clap_host_params, clap_param_clear_flags, clap_param_info, clap_param_rescan_flags, clap_plugin_params,
 };
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_host_state, clap_plugin_state};
+#[cfg(all(unix, not(target_os = "macos")))]
+use clap_sys::ext::{
+    posix_fd_support::{CLAP_EXT_POSIX_FD_SUPPORT, clap_host_posix_fd_support, clap_plugin_posix_fd_support},
+    timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support, clap_plugin_timer_support},
+};
 use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::host::clap_host;
@@ -48,6 +53,13 @@ mod events;
 mod gui;
 mod host;
 mod instance;
+/// The timers and descriptors a plugin registered through `clap.timer-support` and
+/// `clap.posix-fd-support`. X11 editors have no event loop of their own: they register their
+/// display connection's descriptor and their repaint timers, and the host calls them back on the
+/// main thread. SoundCraft does that from the editor's `idle`, once per UI frame (the UI repaints
+/// at least every 30 ms while an editor is open).
+#[cfg(all(unix, not(target_os = "macos")))]
+mod run_loop;
 
 pub(crate) use bundle::Bundle;
 pub(crate) use events::Event;
@@ -104,8 +116,17 @@ fn read_name(buf: &[c_char]) -> String {
 #[path = "ffi/hostwin/windows.rs"]
 mod hostwin;
 
+/// The X11 host window for embedded editors (Linux and the BSDs): a top-level window on our own
+/// connection to the X server (XWayland on Wayland desktops) that the plugin parents its GUI in.
+/// The close button only hides it (`WM_DELETE_WINDOW`); the editor link notices in `idle`,
+/// destroys the plugin's GUI, then the window. Our connection's events are read whenever a
+/// window's visibility is asked, which the UI does every frame while an editor is open.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[path = "ffi/hostwin/x11.rs"]
+mod hostwin;
+
 /// Other platforms: embedded editors are not hosted (floating ones still are).
-#[cfg(not(windows))]
+#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
 #[path = "ffi/hostwin/other.rs"]
 mod hostwin;
 

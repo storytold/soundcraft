@@ -1,9 +1,10 @@
 use super::events::ostream_write;
 use super::host::HostState;
 use super::{
-    Arc, CStr, CString, Mutex, Ordering, PoisonError, c_void, clap_ostream, clap_plugin, clap_plugin_gui, clap_plugin_state, clap_window,
-    clap_window_handle, hostwin,
+    Arc, CStr, CString, Mutex, Ordering, PoisonError, c_void, clap_ostream, clap_plugin, clap_plugin_gui, clap_plugin_state, clap_window, hostwin,
 };
+#[cfg(all(unix, not(target_os = "macos")))]
+use super::{clap_plugin_posix_fd_support, clap_plugin_timer_support};
 
 // ---- editor (clap.gui) ---------------------------------------------------------------------
 
@@ -45,6 +46,11 @@ pub(super) struct GuiInner {
     pub(super) visible: bool,
     /// The host window of an embedded editor (`None` for floating editors).
     pub(super) window: Option<hostwin::HostWindow>,
+    /// The plugin's `clap.timer-support` and `clap.posix-fd-support` (null without them).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub(super) timer: *const clap_plugin_timer_support,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub(super) fd: *const clap_plugin_posix_fd_support,
 }
 
 /// The link between an instance and its editor and state handles. The instance may process on
@@ -69,6 +75,10 @@ impl Default for GuiLink {
                 created: false,
                 visible: false,
                 window: None,
+                #[cfg(all(unix, not(target_os = "macos")))]
+                timer: std::ptr::null(),
+                #[cfg(all(unix, not(target_os = "macos")))]
+                fd: std::ptr::null(),
             }),
             host: Arc::new(HostState::default()),
         }
@@ -124,7 +134,7 @@ impl GuiLink {
             if hostwin::SUPPORTED && unsafe { supported(g.plugin, api.as_ptr(), false) } {
                 return self.open_embedded(&mut g, vt, api, title);
             }
-            return Err("this plugin offers only an embedded editor, which SoundCraft hosts on Windows only".into());
+            return Err("this plugin offers only an embedded editor, which SoundCraft hosts on Windows and X11 (Linux, BSDs) only".into());
         }
         self.host.gui_closed.store(false, Ordering::Relaxed);
         self.host.gui_destroyed.store(false, Ordering::Relaxed);
@@ -186,7 +196,7 @@ impl GuiLink {
                 return Err(e);
             }
         };
-        let parent = clap_window { api: api.as_ptr(), specific: clap_window_handle { win32: win.parent() } };
+        let parent = clap_window { api: api.as_ptr(), specific: win.handle() };
         // SAFETY: live plugin with a created embedded GUI; `parent` names our live window and
         // outlives the call.
         if !unsafe { set_parent(g.plugin, &parent) } {
@@ -272,6 +282,8 @@ impl GuiLink {
                 unsafe { f(g.plugin) };
             }
         }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        self.dispatch(&g);
         if g.created {
             let resize = self.host.gui_resize.swap(0, Ordering::Relaxed);
             if resize != 0
@@ -328,5 +340,35 @@ impl GuiLink {
             }
         }
         g.alive = false;
+        #[cfg(all(unix, not(target_os = "macos")))]
+        self.host.run_loop.clear();
+    }
+
+    /// Calls the plugin back for its ready descriptors and due timers (main thread, under the
+    /// lock, plugin alive). One unregistered earlier in the same pass is skipped.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn dispatch(&self, g: &GuiInner) {
+        if !g.alive {
+            return;
+        }
+        let rl = &self.host.run_loop;
+        // SAFETY: null or the plugin's static extension vtables, valid while `alive`.
+        let (timer, fd) = unsafe { (g.timer.as_ref().and_then(|t| t.on_timer), g.fd.as_ref().and_then(|f| f.on_fd)) };
+        if let Some(on_fd) = fd {
+            for (d, flags) in rl.ready() {
+                if rl.has_fd(d) {
+                    // SAFETY: live plugin, main thread, a descriptor it registered.
+                    unsafe { on_fd(g.plugin, d, flags) };
+                }
+            }
+        }
+        if let Some(on_timer) = timer {
+            for id in rl.due(std::time::Instant::now()) {
+                if rl.has_timer(id) {
+                    // SAFETY: live plugin, main thread, a timer it registered.
+                    unsafe { on_timer(g.plugin, id) };
+                }
+            }
+        }
     }
 }

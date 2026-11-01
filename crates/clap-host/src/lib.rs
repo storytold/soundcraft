@@ -21,9 +21,11 @@
 //! [`Plugin::load_state`] as an opaque blob. Plugin editors (`clap.gui`) open as the plugin's own
 //! floating window ([`Plugin::open_editor`], or [`Plugin::editor`] for a handle usable on the main
 //! thread while the instance processes on the audio thread). Plugins that offer only an embedded
-//! editor get a host window of SoundCraft's on Windows (resized on `request_resize`, closed by
-//! its title bar); elsewhere they are not hosted yet, and SoundCraft's generic parameter editor
-//! still works for them.
+//! editor get a host window of SoundCraft's on Windows and on X11 (Linux, BSDs; resized on
+//! `request_resize`, closed by its title bar); on macOS they are not hosted yet, and SoundCraft's
+//! generic parameter editor still works for them. On X11 the host also offers
+//! `clap.timer-support` and `clap.posix-fd-support`, serviced by the editor's `idle`, since X11
+//! editors have no event loop of their own.
 //! Parameter changes made in the plugin's GUI arrive as output events while the plugin processes
 //! and are reported by the editor's `idle`.
 
