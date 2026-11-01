@@ -151,6 +151,28 @@ pub(crate) fn receives_solo(s: &Session, t: &Track) -> bool {
         .any(|o| o.mixer.solo && (o.mixer.output == Route::Bus(*b) || o.mixer.sends.iter().flatten().any(|sn| sn.target == Route::Bus(*b))))
 }
 
+/// A track's own solo, or the solo of the active VCA master it belongs to: soloing a VCA solos its members.
+fn soloed(s: &Session, t: &Track) -> bool {
+    t.mixer.solo || t.mixer.vca.is_some_and(|vid| s.tracks.iter().any(|v| v.id.0 == vid && v.kind == TrackKind::Vca && !v.inactive && v.mixer.solo))
+}
+
+/// The solo is on: a track that plays is soloed, by itself or through its VCA. A VCA passes no audio, so a soloed
+/// VCA with no members solos nothing.
+pub(crate) fn any_solo(s: &Session) -> bool {
+    s.tracks.iter().any(|t| !t.inactive && t.kind != TrackKind::Vca && soloed(s, t))
+}
+
+/// The solo mutes `t`: it is on (`any_solo`, see [`any_solo`]) and `t` is neither soloed, Solo Safe nor fed by a
+/// soloed track. A VCA passes no audio, so the solo never mutes it: its fader still drives the members that sound.
+pub(crate) fn solo_muted(s: &Session, t: &Track, any_solo: bool) -> bool {
+    any_solo && t.kind != TrackKind::Vca && !t.mixer.solo_safe && !soloed(s, t) && !receives_solo(s, t)
+}
+
+/// [`solo_muted`] for displays, such as the implied-mute shade of a track's Mute key.
+pub fn solo_mutes(s: &Session, t: &Track) -> bool {
+    solo_muted(s, t, any_solo(s))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod processing_order_tests {

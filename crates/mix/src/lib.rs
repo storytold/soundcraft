@@ -80,7 +80,8 @@ pub use offline::{
 };
 pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
-use routing::{processing_order, structure_fingerprint};
+pub use routing::solo_mutes;
+use routing::{any_solo, processing_order, structure_fingerprint};
 use strip::{
     Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
 };
@@ -356,7 +357,7 @@ impl MixEngine {
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
         let frames = frames.min(self.max_block);
         self.begin_block(s, pos, frames);
-        let blk = Block { pos, frames, any_solo: s.tracks.iter().any(|t| t.mixer.solo && !t.inactive) };
+        let blk = Block { pos, frames, any_solo: any_solo(s) };
         let order = std::mem::take(&mut self.order);
         // Phase 1: independent strips (audio, instrument, MIDI) in parallel.
         let mut work = std::mem::take(&mut self.work);
