@@ -23,7 +23,7 @@ fn float_bounce_preserves_headroom_and_reports_the_written_levels() {
     let dir = scratch("bounce-float-headroom");
     for extension in ["wav", "aiff"] {
         for normalize in [false, true] {
-            let path = dir.join(format!("Mix.{extension}"));
+            let path = dir.join(format!("Mix-normalize-{normalize}.{extension}"));
             let result = e
                 .execute(
                     "file.bounce_mix",
@@ -80,6 +80,7 @@ fn bounces_write_exactly_the_mix_and_report_its_levels() {
         };
         assert!(mix.iter().flatten().any(|v| v.abs() > 1e-3), "{bus:?}");
         for normalize in [false, true] {
+            let _ = std::fs::remove_file(&path);
             let mut bounce = Bounce::new(e.session_arc(), &path, r, &opts, bus, normalize, false).unwrap();
             let mut progress = vec![bounce.progress()];
             let done = loop {
@@ -107,33 +108,33 @@ fn bounces_write_exactly_the_mix_and_report_its_levels() {
 }
 
 #[test]
-fn a_bounce_too_big_for_its_format_fails_and_keeps_the_old_file() {
+fn a_bounce_too_big_for_its_format_fails_without_leaving_a_file() {
     let e = soundcraft_engine::demo::demo_engine();
     let s = e.session();
     let dir = scratch("bounce-too-big");
     let path = dir.join("Mix.aif");
-    std::fs::write(&path, b"old").unwrap();
     let opts = EncodeOptions { format: FileFormat::Aiff, bit_depth: BitDepth::Float32, dither: false, bwf: None };
     let err = Bounce::new(e.session_arc(), &path, Range::new(0, s.sample_rate.samples(3.9 * 3600.0)), &opts, None, false, false).err().unwrap();
     assert!(err.to_string().contains("4 GiB"), "{err}");
-    assert_eq!(std::fs::read(&path).unwrap(), b"old");
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    assert!(!path.exists());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
     let err = bounce_stems(&e, &dir.to_string_lossy(), Range::new(0, s.sample_rate.samples(4.1 * 3600.0)), &opts).unwrap_err();
     assert!(err.to_string().contains("4 hours"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn dropping_an_unfinished_bounce_cancels_it_and_keeps_the_old_file() {
+fn dropping_an_unfinished_bounce_cancels_only_its_stage() {
     let e = soundcraft_engine::demo::demo_engine();
     let dir = scratch("bounce-cancel");
     let path = dir.join("Mix.wav");
-    std::fs::write(&path, b"old").unwrap();
+    std::fs::write(dir.join("Mix.wav.part"), b"legacy").unwrap();
     let mut bounce = Bounce::new(e.session_arc(), &path, Range::new(0, 48_000), &EncodeOptions::default(), None, false, false).unwrap();
     assert_eq!(bounce.step(|| false).unwrap(), None);
-    assert!(dir.join("Mix.wav.part").exists());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
     drop(bounce);
-    assert_eq!(std::fs::read(&path).unwrap(), b"old");
+    assert!(!path.exists());
+    assert_eq!(std::fs::read(dir.join("Mix.wav.part")).unwrap(), b"legacy");
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
