@@ -7,10 +7,13 @@ pub fn document_id(app: &SoundApp) -> u64 {
 }
 pub fn choose(app: &mut SoundApp, id: &str) -> Option<Result<Value, String>> {
     let host = app.services.file_providers.clone();
+    let doc = document_id(app);
     if !host.enabled() {
+        if matches!(id, "session.save" | "session.save_as") && (host.bound(doc) || host.pending_for(doc)) {
+            return Some(Err("Re-enable the provider before saving this linked or pending project; use Save a Copy for a device download".into()));
+        }
         return None;
     }
-    let doc = document_id(app);
     if matches!(id, "session.new" | "session.open" | "session.close" | "session.revert" | "app.quit") && host.busy() {
         return Some(Err("Finish or cancel the pending provider operation before replacing the project".into()));
     }
@@ -158,6 +161,56 @@ mod tests {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod provider_routing_tests {
     use super::*;
+
+    #[test]
+    fn disabled_linked_or_pending_save_cannot_fall_through_to_device_saving() {
+        for linked in [false, true] {
+            let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+            app.engine.execute("track.new", &json!({})).unwrap();
+            let host = app.services.file_providers.clone();
+            host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+            host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+            let doc = document_id(&app);
+            if linked {
+                host.bind(&crate::file_providers::Capture { doc, revision: 1, name: "Linked.scraftz".into(), save_as: false }, "linked".into());
+            } else {
+                host.choose(doc, app.engine.revision, "Pending.scraftz".into(), false).unwrap();
+                host.take_events();
+            }
+            host.set_enabled(false).unwrap();
+            let session = app.engine.session_arc();
+            let revision = app.engine.revision;
+            for command in ["session.save", "session.save_as"] {
+                crate::menus::invoke_menu(&mut app, command, "File > Save Session");
+                assert!(app.ui.status.contains("Re-enable the provider"));
+                assert!(app.engine.is_dirty());
+                assert_eq!(app.engine.revision, revision);
+                assert!(std::sync::Arc::ptr_eq(&session, &app.engine.session_arc()));
+                assert!(app.engine.path.is_none());
+                assert!(app.dialogs.open.is_none(), "rejected Save must not open the native path prompt");
+                assert_eq!(host.bound(doc), linked);
+                assert_eq!(host.pending_for(doc), !linked);
+                assert!(host.take_events().is_empty(), "rejected Save must deliver neither a chooser nor bytes");
+            }
+            host.set_enabled(true).unwrap();
+            publish(&app);
+            assert_eq!(host.snapshot()["documents"][0]["dirty"], true);
+            assert_eq!(host.snapshot()["documents"][0]["provider"], linked);
+        }
+    }
+
+    #[test]
+    fn disabled_unbound_document_keeps_legacy_save_routing() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let host = app.services.file_providers.clone();
+        host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+        host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+        host.set_enabled(false).unwrap();
+        assert!(choose(&mut app, "session.save").is_none());
+        assert!(choose(&mut app, "session.save_copy").is_none());
+        assert!(host.take_events().is_empty());
+    }
+
     #[test]
     fn default_off_keeps_original_save_and_registration_only_emits_a_choice() {
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());

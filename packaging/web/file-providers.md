@@ -55,6 +55,12 @@ A currently modified project must be saved or explicitly closed before opening a
 Pending operations block replacement commands and request the browser's usual unload warning.
 The host must not claim a successful save for a native-project JSON with missing external media.
 
+Disabling stops new provider choices while retaining document bindings and pending work. Interactive
+Save and Save As on a linked document or pending save are explicitly refused while disabled. Re-enable
+the provider to save it, or use Save a Copy for a device download. This refusal does not deliver bytes,
+clear dirty state or acknowledge a provider checkpoint. Unlinked documents keep their original local
+save behavior.
+
 ## App payload
 
 SoundCraft uses the existing native .scraftz ZIP: .scraft plus every source as lossless float WAV
