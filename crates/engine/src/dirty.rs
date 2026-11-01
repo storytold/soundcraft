@@ -15,6 +15,8 @@ fn document_values<'a>(s: &'a Session, navigation: &'a EditState) -> impl Partia
         sample_rate,
         bit_depth,
         frame_rate,
+        secondary_frame_rate,
+        chords,
         timecode_start,
         tempo,
         key_signatures,
@@ -36,7 +38,20 @@ fn document_values<'a>(s: &'a Session, navigation: &'a EditState) -> impl Partia
     // Tuples implement PartialEq up to twelve elements. These contain only borrowed fields.
     (
         (format_version, name, sample_rate, bit_depth, frame_rate, timecode_start, tempo, key_signatures, tracks, sources, videos, busses),
-        (outputs, markers, groups, auto_names, edit_values(edit, navigation), next_id, comments, midi_originals, pool, folder),
+        (
+            secondary_frame_rate,
+            chords,
+            outputs,
+            markers,
+            groups,
+            auto_names,
+            edit_values(edit, navigation),
+            next_id,
+            comments,
+            midi_originals,
+            pool,
+            folder,
+        ),
     )
 }
 

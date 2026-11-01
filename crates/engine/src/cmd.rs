@@ -26,6 +26,7 @@ mod more_util;
 mod options;
 mod plugin_state;
 mod query;
+mod ruler_events;
 pub(crate) mod sampler;
 mod setup_more;
 mod strip_silence;
@@ -147,6 +148,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(audio_midi::specs());
         v.extend(midi::specs());
         v.extend(view_more::specs());
+        v.extend(ruler_events::specs());
         v.extend(track_more::specs());
         v.extend(clip_more::specs());
         v.extend(clip_list::specs());

@@ -119,3 +119,16 @@ rules apply equally to both forms.
 The saved UI preferences and window configurations carry `docking_version`. Settings with no
 version, or an older one, hold the split-frame layouts of earlier releases: they load with the
 default Edit and Mix layouts and keep every other setting.
+
+## Conductor ruler commands (2026-11-01)
+
+All edits use `engine.execute`; menu-style `event.add_key_change`, `event.meter` and `chord.add` open their forms.
+
+- `setup.session {"secondary_frame_rate":"119.88 Drop"}` sets Timecode 2 independently.
+- `chord.add {"at":96000,"root":"D","quality":"m7","bass":"A"}` creates a chord and returns its `id`. `chord.edit` accepts that id and the same spelling fields; `chord.delete {"id":…}` removes it. Markers 2 is independent.
+- `event.key_edit {"at":0,"to":96000,"key":"Db major"}` inserts/replaces or moves a key change. `event.key_remove {"at":…}` removes it. Major and natural-minor keys from seven flats through seven sharps are supported.
+- `event.tempo_edit {"at":…,"to":…,"bpm":…}` moves/edits one tempo. `event.meter` accepts `original` when moving an event; `event.meter_remove {"at":…}` removes it. Initial tempo/meter events are retained.
+- `event.tempo_points {"points":[{"tick":960,"bpm":130}],"start_tick":960,"end_tick":1920}` applies an atomic bounded graph edit, preserving the tempo after the range. At most 10,000 points are accepted.
+- `view.tempo_editor {"shape":"Line","density":120,"height":160,"min_bpm":80,"max_bpm":180}` sets the graph view. Shapes are Free Hand, Line, Parabolic and S-Curve. Shift-drag selects a range for the Scale controls.
+
+`session.inspect` reports `secondary_frame_rate`, `key_signatures` and `chords`. Old sessions retain all memory locations and open with an empty independent chord map.

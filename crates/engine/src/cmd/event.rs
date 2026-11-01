@@ -137,11 +137,18 @@ fn tempo_constant(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn meter(e: &mut Engine, p: &Value) -> Result<Value> {
+    let old = position_param(e, "event.meter", p, "original")?;
     let num = i64_or(p, "numerator", 4).clamp(1, 64) as u32;
     let den = i64_or(p, "denominator", 4).clamp(1, 64) as u32;
     let at = position_param(e, "event.meter", p, "at")?.unwrap_or(0);
     let s = e.session_mut();
     let tick = s.tempo.samples_to_ticks(at, s.sample_rate);
+    if let Some(old) = old {
+        let old_tick = s.tempo.samples_to_ticks(old, s.sample_rate);
+        if old_tick != tick {
+            s.tempo.remove_meter(old_tick);
+        }
+    }
     s.tempo.set_meter(tick, num, den).map_err(|err| bad("event.meter", err.to_string()))?;
     Ok(json!({"meter": format!("{num}/{den}")}))
 }
@@ -167,6 +174,11 @@ fn insert_time(e: &mut Engine, p: &Value) -> Result<Value> {
             m.end += r.len();
         } else if m.end > r.start {
             m.end += r.len();
+        }
+    }
+    for c in &mut s.chords {
+        if c.at >= r.start {
+            c.at = c.at.saturating_add(r.len());
         }
     }
     for (at, _) in &mut s.key_signatures {
@@ -206,6 +218,12 @@ fn cut_time(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     s.key_signatures.retain(|(at, _)| !r.contains(*at));
+    s.chords.retain(|c| !r.contains(c.at));
+    for c in &mut s.chords {
+        if c.at >= r.end {
+            c.at -= r.len();
+        }
+    }
     for (at, _) in &mut s.key_signatures {
         if *at >= r.end {
             *at -= r.len();

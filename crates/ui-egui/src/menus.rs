@@ -149,6 +149,9 @@ pub const AUDIOSUITE: &[(&str, &str)] = &[
 
 /// Commands that open a dialog when invoked from a menu (programmatic calls never do).
 const DIALOG_COMMANDS: &[&str] = &[
+    "event.add_key_change",
+    "event.meter",
+    "chord.add",
     "clip.clear",
     "track.new",
     "file.bounce_mix",
@@ -206,6 +209,8 @@ pub fn tree() -> Vec<MenuNode> {
         insert_path(&mut roots, line);
     }
     insert_path(&mut roots, "Window > Reset Panel Layout");
+    insert_path(&mut roots, "View > Rulers > Tempo > Tempo Ruler");
+    insert_path(&mut roots, "View > Rulers > Key Signature > Key Signature Ruler");
     // Not in the observed catalog either; Pro Tools lists it right under Identify Sync Point.
     if let Some(clip) = roots.iter_mut().find(|n| n.label == "Clip") {
         let at = clip.children.iter().position(|n| n.label == "Identify Sync Point").map_or(clip.children.len(), |i| i + 1);
@@ -333,6 +338,15 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
 
 /// Resolve the command behind a menu leaf, including UI dialog overrides.
 pub fn command_for_path(path: &str, extra: &[(&str, &str)]) -> Option<String> {
+    if matches!(
+        path,
+        "View > Rulers > Tempo"
+            | "View > Rulers > Tempo > Tempo Ruler"
+            | "View > Rulers > Key Signature"
+            | "View > Rulers > Key Signature > Key Signature Ruler"
+    ) {
+        return Some("view.ruler".into());
+    }
     catalog::implemented_by(path, extra).or_else(|| MENU_WINDOWS.iter().find(|(p, _)| *p == path).map(|(_, w)| w.to_string()))
 }
 
@@ -366,6 +380,12 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
         Some("options.click") => e.click,
         Some("options.delay_compensation") => e.delay_compensation,
         Some("options.pre_fader_metering") => e.pre_fader_metering,
+        Some("view.ruler_tempo_editor") => e.flag("view.ruler.tempo_editor"),
+        Some("view.ruler_key_staff") => e.flag("view.ruler.key_staff"),
+        Some("view.ruler_all_markers") => ["markers", "markers2", "markers3", "markers4", "markers5"].iter().all(|r| e.rulers.iter().any(|x| x == r)),
+        Some(id) if id.starts_with("view.ruler_") && !matches!(id, "view.ruler_all" | "view.ruler_minimal") => {
+            e.rulers.iter().any(|r| Some(r.as_str()) == id.strip_prefix("view.ruler_"))
+        }
         Some("view.ruler") => path.rsplit(" > ").next().map(ruler_id).is_some_and(|r| e.rulers.iter().any(|x| x == r)),
         Some("view.main_counter") => path.rsplit(" > ").next().map(ruler_id).is_some_and(|r| e.main_counter.id() == r),
         Some("window.mix") => app.ui.window == MainWindow::Mix,
@@ -388,10 +408,10 @@ fn ruler_id(label: &str) -> &'static str {
         "Timecode" => "timecode",
         "Feet+Frames" => "feet_frames",
         "Samples" => "samples",
-        "Tempo" => "tempo",
+        "Tempo" | "Tempo Ruler" => "tempo",
         "Meter" => "meter",
         "Markers" => "markers",
-        "Key Signature" => "key",
+        "Key Signature" | "Key Signature Ruler" => "key",
         "Chord Symbols" => "chords",
         _ => "",
     }

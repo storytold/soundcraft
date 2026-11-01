@@ -2,7 +2,7 @@
 
 **Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
 
-> **Last reviewed:** 2026-10-24 · **Last updated:** 2026-10-25 · **Change:** trivial (Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-01 · **Last updated:** 2026-11-01 · **Change:** minor (functional conductor rulers) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -122,6 +122,8 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
+- **2026-11-01:** Conductor rulers gain Tempo/Meter/Key/Chord forms, key-signature staff, independent chord symbols and extraction, graphical tempo gestures and a saved secondary timecode rate. Readiness estimates unchanged.
+
 - **2026-10-25:** Alt+Shift+E (`view.zoom_toggle_cancel`) and an Alt-click on the Zoom Toggle button cancel Zoom Toggle and keep the current view: the zoom, the scroll and the track heights stay as they are, and the button is no longer lit. The next Zoom Toggle zooms in from that view and goes back to it. No readiness percentage change.
 - **2026-10-25:** Tracks and Groups and the Clip List sit in dock columns that run the Edit window's full height at its left and right edges, with the MIDI Editor under the session view between them; Mix docks Tracks and Groups at its left edge. A panel dragged onto a dock group joins it as a tab, stacks above or below it, or makes a new column; one dragged to an empty window edge makes a dock there. A list with no saved place reopens in its dock, and makes the dock again when it is gone. Preferences and window configurations saved with the earlier split-frame layouts load with the new default layouts and keep their other settings. No readiness percentage change.
 - **2026-10-25:** Auto Pan moves the balance of a stereo track: the left channel's level falls as the position moves right and the right channel's as it moves left, at constant power, and each channel stays on its own side. At the center the track passes unchanged, so a wide or out-of-phase stereo image keeps its width, and the envelope follower follows the louder channel. No readiness percentage change.
@@ -177,6 +179,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-01 | minor | Conductor ruler editing, independent chords and secondary timecode rate; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Cancel Zoom Toggle; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: side panels in dock columns; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Auto Pan stereo balance; readiness estimates unchanged |

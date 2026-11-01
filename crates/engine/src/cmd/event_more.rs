@@ -12,7 +12,7 @@ use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_midi::Note;
 use soundcraft_midi::ops::QuantizeOptions;
-use soundcraft_model::{ChannelFormat, Clip, ClipContent, ClipId, MarkerKind, Session, TrackId, TrackKind};
+use soundcraft_model::{ChannelFormat, Clip, ClipContent, ClipId, Session, TrackId, TrackKind};
 use soundcraft_time::{MAX_POSITION, Range, Samples, TICKS_PER_QUARTER, TempoMap};
 
 /// Most tempo events one curve may write.
@@ -122,7 +122,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Extract Chords from Selection",
             ["Event"],
             None,
-            "{tracks?, start?, end?} — names the chord in each bar and adds it as a marker on Markers 2",
+            "{tracks?, start?, end?} — names the chord in each bar and adds it to the Chord Symbols ruler",
             has_range,
             extract_chords
         ),
@@ -657,12 +657,22 @@ fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     let s = e.session_mut();
     for (at, name) in &marks {
-        let mid = s.add_marker(name, MarkerKind::Marker, *at, *at);
-        if let Some(m) = s.markers.iter_mut().find(|m| m.id == mid) {
-            m.ruler = 2;
+        if s.chords.len() >= 10_000 {
+            return Err(bad(id, "too many chord events"));
         }
+        let (main, bass) = name.split_once('/').map_or((name.as_str(), None), |(a, b)| (a, Some(b.to_string())));
+        let root_len = if main.as_bytes().get(1).is_some_and(|c| *c == b'#' || *c == b'b') { 2 } else { 1 };
+        let (root, quality) = main.split_at(root_len.min(main.len()));
+        let cid = soundcraft_model::ChordId(s.alloc());
+        s.chords.retain(|c| c.at != *at);
+        s.chords.push(soundcraft_model::ChordEvent {
+            id: cid,
+            at: *at,
+            symbol: soundcraft_model::ChordSymbol { root: root.into(), quality: quality.into(), bass },
+        });
     }
-    Ok(json!({"chords": chords, "markers": marks.len()}))
+    s.chords.sort_by_key(|c| c.at);
+    Ok(json!({"chords": chords, "added_chords": marks.len(), "markers": 0}))
 }
 
 fn beat_detective(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -970,8 +980,9 @@ mod tests {
         e.execute("edit.select", &json!({"tracks": [keys.id.0], "start": c.start, "end": c.end()})).unwrap();
         let r = e.execute("event.extract_chords", &json!({})).unwrap();
         assert!(!r["chords"].as_array().unwrap().is_empty(), "{r}");
-        assert!(e.session().markers.len() > before);
-        assert!(e.session().markers.iter().any(|m| m.ruler == 2));
+        assert_eq!(e.session().markers.len(), before);
+        assert!(!e.session().chords.is_empty());
+        assert!(e.session().chords.iter().all(|c| c.symbol.valid()));
     }
 
     #[test]

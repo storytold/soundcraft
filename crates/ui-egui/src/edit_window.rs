@@ -22,6 +22,7 @@ mod layout;
 mod overlay;
 mod rulers;
 mod scroll;
+mod tempo_editor;
 mod tracks;
 mod universe;
 
@@ -44,7 +45,7 @@ use layout::lane_rect;
 pub use layout::{COLUMN_W, EditLayout, HEADER_W, LANE_H, RULER_H, edit_columns, header_width, rect, sample_at, track_height, x_of};
 use overlay::overlay;
 pub use rulers::ruler_height;
-use rulers::{column_titles, draw_rulers, views_button};
+use rulers::{column_titles, draw_rulers, ruler_height_for, views_button};
 pub use scroll::zoom_toggle;
 #[cfg(test)]
 use scroll::{FollowFrame, follow_update};
@@ -118,9 +119,12 @@ fn status_bar(app: &mut SoundApp, ui: &mut Ui) {
 
 pub(crate) fn main_area(app: &mut SoundApp, ui: &mut Ui) {
     let session = app.engine.session();
-    let mut ruler_height_total = session.edit.rulers.iter().map(|ruler| ruler_height(ruler)).sum::<f32>();
+    let mut ruler_height_total = session.edit.rulers.iter().map(|ruler| ruler_height_for(session, ruler)).sum::<f32>();
     if session.edit.flag("view.ruler.tempo_editor") && session.edit.rulers.iter().any(|ruler| ruler == "tempo") {
-        ruler_height_total += ruler_height("tempo_editor");
+        ruler_height_total += ruler_height_for(session, "tempo_editor");
+    }
+    if session.edit.flag("view.ruler.key_staff") && session.edit.rulers.iter().any(|r| r == "key") {
+        ruler_height_total += ruler_height("key_staff");
     }
     let minimum = vec2(header_width(&edit_columns(session)) + 64.0, ruler_height_total + 100.0);
     crate::docking::minimum_body(ui, minimum, |ui| main_area_content(app, ui));
@@ -137,11 +141,20 @@ fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
     {
         rulers.insert(i + 1, "tempo_editor".into());
     }
-    let cols = edit_columns(app.engine.session());
-    let titles_h = if cols.is_empty() { 0.0 } else { COLUMN_TITLES_H };
-    let rulers_h = rulers.iter().map(|r| ruler_height(r)).sum::<f32>() + 6.0 + titles_h;
+    if app.engine.session().edit.flag("view.ruler.key_staff")
+        && let Some(i) = rulers.iter().position(|r| r == "key")
+    {
+        rulers.insert(i + 1, "key_staff".into());
+    }
+    let mut cols = edit_columns(app.engine.session());
+    let header_limit = (full.width() - 76.0).max(0.0);
+    while !cols.is_empty() && header_width(&cols) > header_limit {
+        cols.pop();
+    }
+    let titles_h = COLUMN_TITLES_H;
+    let rulers_h = rulers.iter().map(|r| ruler_height_for(app.engine.session(), r)).sum::<f32>() + 6.0 + titles_h;
     let hscroll_h = 14.0;
-    let hw = header_width(&cols);
+    let hw = header_width(&cols).min(header_limit);
     let header = Rect::from_min_max(full.min, pos2(full.min.x + hw, full.max.y - hscroll_h));
     let tl = Rect::from_min_max(pos2(full.min.x + hw, full.min.y + rulers_h), pos2(full.max.x - 12.0, full.max.y - hscroll_h));
     let rulers_rect = Rect::from_min_max(pos2(full.min.x, full.min.y), pos2(full.max.x, full.min.y + rulers_h));
