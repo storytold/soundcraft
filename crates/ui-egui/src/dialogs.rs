@@ -459,7 +459,6 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let mut keep = true;
     let mut action: Option<(String, Value)> = None;
     let mut save_first: Option<(String, Value)> = None;
-    let mut bounce: Option<Value> = None;
     let confirmed = matches!(d, Dialog::SaveChanges { .. });
     // Strip Silence's Rename button, and the naming scheme its dialog's OK keeps.
     let mut rename_from: Option<[f64; 4]> = None;
@@ -547,8 +546,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     );
                     if buttons(ui, "Bounce", enter) {
                         let p = std::path::Path::new(path.as_str()).with_extension(format.default_extension());
-                        bounce = Some(
-                            json!({"path": p.to_string_lossy(), "format": format.default_extension(), "bit_depth": bit_depth, "normalize": normalize, "dither": *dither && bit_depth.as_str() != "32f"}),
+                        crate::bounce::start(
+                            app,
+                            &json!({"path": p.to_string_lossy(), "format": format.default_extension(), "bit_depth": bit_depth, "normalize": normalize, "dither": *dither && bit_depth.as_str() != "32f"}),
                         );
                         keep = false;
                     }
@@ -745,8 +745,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                             if ui.button("Don't Save").clicked() {
                                 action = Some(then.clone());
                             }
-                            // Enter on a focused Don't Save clicks it, so Enter presses Save only when it was not clicked.
-                            if buttons(ui, "Save", enter) && action.is_none() {
+                            if buttons(ui, "Save", enter) {
                                 save_first = Some(then.clone());
                             }
                         });
@@ -754,18 +753,15 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 }
             }
         });
-    // Enter on a focused Cancel also presses OK, so Cancel drops the command, the bounce and the save that OK asked for.
     if esc || ctx.memory(|m| m.data.get_temp::<bool>(egui::Id::unique("dlg_cancel")).unwrap_or(false)) {
         keep = false;
-        action = None;
-        save_first = None;
-        bounce = None;
         app.dialogs.after_save = None;
         app.dialogs.pending_session = None;
         ctx.memory_mut(|m| m.data.remove::<bool>(egui::Id::unique("dlg_cancel")));
     }
-    if let Some(params) = bounce {
-        crate::bounce::start(app, &params);
+    // Enter on a focused Cancel also presses OK. In Auto Rename, the dialog then closes without running the command.
+    if !keep && matches!(d, Dialog::AutoRename { .. }) {
+        action = None;
     }
     if let Some(strip) = rename_from
         && keep
