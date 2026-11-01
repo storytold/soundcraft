@@ -986,12 +986,15 @@ fn move_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     };
     let mode = s.edit.edit_mode;
     let delta = match first {
+        Some(_) if mode.is_grid() && p.get("to").is_some() && delta == 0 => 0,
         Some(c) if mode.is_grid() && p.get("to").is_some() => ops::grid_delta(s, c, delta, mode == EditMode::GridRelative, &ids),
         _ => delta,
     };
     let s = e.session_mut();
     let n = if mode == EditMode::Shuffle {
         ops::shuffle_clips(s, &ids, delta, &dest).map_err(|why| bad("edit.move_clips", why))?
+    } else if delta == 0 && dest.iter().all(|(from, to)| from == to) {
+        0
     } else {
         ops::move_clips(s, &ids, delta, &dest)
     };

@@ -272,6 +272,9 @@ pub(super) fn drag_plan(
 /// Shuffle lands the earliest clip bound for the target track on a slot there, as
 /// `edit.move_clips` does; Grid snaps the grabbed clip.
 fn move_delta(plan: &DragPlan, s: &Session, from: TrackId, raw: Samples, flip: bool) -> Samples {
+    if raw == 0 {
+        return 0;
+    }
     let mode = s.edit.edit_mode;
     if mode == EditMode::Shuffle {
         let to = plan.dest.as_ref().map_or(from, |d| ops::lands(d, from));

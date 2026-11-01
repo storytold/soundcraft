@@ -243,6 +243,18 @@ fn clips_markers_grid_ignores_every_clip_being_moved() {
 }
 
 #[test]
+fn zero_distance_move_keeps_overlapping_material_and_quantize_still_moves() {
+    let (mut e, t, ids) = long("slip", &[(1_000, 1_000, 0), (1_500, 1_000, 2_000)]);
+    let before = material(&e, t);
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0], "by": 0}));
+    assert_eq!(material(&e, t), before);
+
+    run(&mut e, "edit.select", json!({"clips": [ids[0].0]}));
+    run(&mut e, "clip.quantize_to_grid", json!({}));
+    assert_eq!(start(&e, ids[0]), 0);
+}
+
+#[test]
 fn every_nudge_scale_moves_by_its_selected_increment() {
     let mut e = Engine::default();
     let track = new_track(&mut e);
