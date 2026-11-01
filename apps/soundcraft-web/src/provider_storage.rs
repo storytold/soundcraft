@@ -26,6 +26,7 @@ impl Runtime {
                     app.capture_plugin_states();
                     let revision = app.engine.revision;
                     let snapshot = app.engine.session_arc();
+                    soundcraft_ui_egui::provider_ui::record_close_capture(app, &request, doc, revision);
                     let capture_bytes = if destination == "device" {
                         io::session_bundle(&snapshot).map(|(bytes, _)| bytes)
                     } else {
@@ -49,12 +50,15 @@ impl Runtime {
                 }
                 Command::Result { capture, resource, status } => {
                     let snapshot = self.checkpoints.remove(&(capture.doc, capture.revision));
+                    let mut durable = false;
                     if status == "saved" && capture.doc == soundcraft_ui_egui::provider_ui::document_id(app) {
                         host.bind(&capture, resource);
                         if let Some(snapshot) = snapshot {
                             app.engine.acknowledge_external_save(snapshot);
+                            durable = true;
                         }
                     }
+                    soundcraft_ui_egui::provider_ui::finish_close_capture(app, &capture, durable);
                 }
                 Command::Open { request, resource: _, name, bytes } => {
                     let result = if app.engine.is_dirty() || host.pending_for(soundcraft_ui_egui::provider_ui::document_id(app)) {
@@ -84,6 +88,7 @@ impl Runtime {
                 }
             }
         }
+        soundcraft_ui_egui::provider_ui::discard_finished_close_capture(app);
         soundcraft_ui_egui::provider_ui::publish(app);
         crate::file_providers::publish(&host);
     }

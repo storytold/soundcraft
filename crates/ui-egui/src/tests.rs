@@ -1654,3 +1654,124 @@ fn pending_provider_capture_still_blocks_programmatic_session_replacement() {
     }
     assert!(!app.quit_requested);
 }
+
+fn provider_close_prompt() -> (SoundApp, crate::file_providers::Host, String) {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+    let host = app.services.file_providers.clone();
+    host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+    host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+    assert!(crate::dialogs::save_before_close(&mut app, ("app.quit".into(), json!({}))).is_none());
+    assert!(app.dialogs.open.is_none(), "provider Save must not open the local path prompt");
+    let events = host.take_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].metadata["type"], "saveDialog");
+    let request = events[0].metadata["requestId"].as_str().unwrap().to_string();
+    (app, host, request)
+}
+
+fn capture_provider_close(
+    app: &mut SoundApp,
+    host: &crate::file_providers::Host,
+    request: &str,
+) -> (crate::file_providers::Capture, std::sync::Arc<soundcraft_model::Session>) {
+    host.resolve_dialog(request, "provider", "Saved.scraftz").unwrap();
+    let commands = host.take_commands();
+    assert!(matches!(commands.as_slice(), [crate::file_providers::Command::Save { .. }]));
+    app.capture_plugin_states();
+    let snapshot = app.engine.session_arc();
+    let capture = crate::file_providers::Capture { doc: app.doc_epoch, revision: app.engine.revision, name: "Saved.scraftz".into(), save_as: false };
+    crate::provider_ui::record_close_capture(app, request, capture.doc, capture.revision);
+    let bytes = soundcraft_engine::io::session_provider_bundle(&snapshot).unwrap();
+    host.capture(request, capture.clone(), bytes).unwrap();
+    host.take_events();
+    (capture, snapshot)
+}
+
+fn acknowledge_provider_close(
+    app: &mut SoundApp,
+    host: &crate::file_providers::Host,
+    request: &str,
+    snapshot: std::sync::Arc<soundcraft_model::Session>,
+    saved: bool,
+) {
+    host.result(request.into(), if saved { "saved" } else { "failed" }.into(), if saved { "saved-session" } else { "" }.into()).unwrap();
+    let mut commands = host.take_commands();
+    let crate::file_providers::Command::Result { capture, .. } = commands.remove(0) else {
+        panic!("expected a save result");
+    };
+    if saved {
+        app.engine.acknowledge_external_save(snapshot);
+    }
+    crate::provider_ui::finish_close_capture(app, &capture, saved);
+    crate::provider_ui::discard_finished_close_capture(app);
+}
+
+#[test]
+fn save_before_close_waits_for_its_exact_provider_ack() {
+    let (mut app, host, request) = provider_close_prompt();
+    let (_, snapshot) = capture_provider_close(&mut app, &host, &request);
+    assert!(!app.quit_requested, "capturing or emitting bytes must not close the session");
+    acknowledge_provider_close(&mut app, &host, &request, snapshot, true);
+    assert!(app.quit_requested);
+    assert!(!app.engine.is_dirty());
+    assert!(app.dialogs.provider_after_save.is_none());
+}
+
+#[test]
+fn newer_edits_or_failed_provider_save_keep_the_session_open() {
+    for later_edit in [false, true] {
+        let (mut app, host, request) = provider_close_prompt();
+        let (_, snapshot) = capture_provider_close(&mut app, &host, &request);
+        if later_edit {
+            app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+        }
+        acknowledge_provider_close(&mut app, &host, &request, snapshot, later_edit);
+        assert!(!app.quit_requested);
+        assert!(app.engine.is_dirty());
+        assert!(app.dialogs.provider_after_save.is_none());
+    }
+}
+
+#[test]
+fn cancelling_or_downloading_a_device_copy_does_not_continue_close() {
+    for destination in ["cancel", "device"] {
+        let (mut app, host, request) = provider_close_prompt();
+        host.resolve_dialog(&request, destination, "Saved.scraftz").unwrap();
+        if destination == "device" {
+            host.take_commands();
+            // The native writer owns the actual download; releasing that transfer is not a durable ACK.
+            host.finish_device(&request);
+        }
+        crate::provider_ui::discard_finished_close_capture(&mut app);
+        assert!(!app.quit_requested);
+        assert!(app.engine.is_dirty());
+        assert!(app.dialogs.provider_after_save.is_none());
+    }
+}
+
+#[test]
+fn an_uncommitted_dialog_prevents_close_after_provider_ack() {
+    let (mut app, host, request) = provider_close_prompt();
+    let (_, snapshot) = capture_provider_close(&mut app, &host, &request);
+    app.dialogs.open = Some(crate::dialogs::Dialog::NewTracks {
+        count: 1,
+        format: "mono".into(),
+        kind: "audio".into(),
+        timebase: "samples".into(),
+        name: "New take".into(),
+    });
+    acknowledge_provider_close(&mut app, &host, &request, snapshot, true);
+    assert!(!app.quit_requested);
+    assert!(app.dialogs.open.is_some());
+}
+
+#[test]
+fn provider_close_continuation_cannot_follow_a_replaced_document() {
+    let (mut app, host, request) = provider_close_prompt();
+    let (capture, _) = capture_provider_close(&mut app, &host, &request);
+    app.document_replaced();
+    crate::provider_ui::finish_close_capture(&mut app, &capture, true);
+    assert!(!app.quit_requested);
+    assert!(app.dialogs.provider_after_save.is_none());
+}

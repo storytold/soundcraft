@@ -72,3 +72,7 @@ and failure handling. This feature does not claim that an arbitrary host authent
 anything; those are responsibilities outside the editor.
 
 Contribution credit: @alejocapo04.
+
+## Saving before close or opening another session
+
+With a provider enabled, Save in the Save Changes prompt uses the same destination chooser as menu Save, including in the browser. The continuation belongs to that request and the actual captured document/revision. Close, Quit or opening the pending session runs only after a durable provider ACK, while that exact revision is still current and no editor gesture, dialog, import, recording or bounce remains pending. Cancellation, encoding/write failure, a device download, or later edits keep the session open. A browser download does not prove durable provider storage. Programmatic SoundApp::run saves still honor their explicit native parameters and never open the chooser.

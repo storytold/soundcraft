@@ -18,7 +18,72 @@ pub fn choose(app: &mut SoundApp, id: &str) -> Option<Result<Value, String>> {
         return None;
     }
     let name = host.filename(doc).unwrap_or_else(|| suggested_name(&app.engine.session().name, "scraftz"));
-    Some(host.choose(doc, app.engine.revision, name, id == "session.save_as").map(|_| json!({"pending":"fileProvider"})))
+    Some(host.choose(doc, app.engine.revision, name, id == "session.save_as").map(|request| json!({"pending":"fileProvider","requestId":request})))
+}
+
+/// A close/open/quit continuation belongs to one interactive save request and its actual capture.
+#[derive(Clone, Debug)]
+pub(crate) struct AfterSave {
+    doc: u64,
+    request: String,
+    captured_revision: Option<u64>,
+    next: (String, Value),
+}
+
+/// Save from the Save Changes prompt uses exactly the same provider chooser as menu Save.
+pub(crate) fn save_before_replacing(app: &mut SoundApp, next: &(String, Value)) -> Option<Result<Value, String>> {
+    let result = choose(app, "session.save")?;
+    Some(result.and_then(|value| {
+        let request = value["requestId"].as_str().ok_or("The provider save did not create a request")?.to_owned();
+        app.dialogs.provider_after_save = Some(AfterSave { doc: document_id(app), request, captured_revision: None, next: next.clone() });
+        Ok(value)
+    }))
+}
+
+/// Called only after committing plugin state and capturing the session that will be encoded.
+pub fn record_close_capture(app: &mut SoundApp, request: &str, doc: u64, revision: u64) {
+    if let Some(after) = app.dialogs.provider_after_save.as_mut().filter(|after| after.doc == doc && after.request == request) {
+        after.captured_revision = Some(revision);
+    }
+}
+
+/// Only an exact, durable checkpoint can continue the original close/open/quit action.
+pub fn finish_close_capture(app: &mut SoundApp, capture: &crate::file_providers::Capture, durable: bool) {
+    let matches =
+        app.dialogs.provider_after_save.as_ref().is_some_and(|after| after.doc == capture.doc && after.captured_revision == Some(capture.revision));
+    if !matches {
+        return;
+    }
+    let Some(after) = app.dialogs.provider_after_save.take() else { return };
+    let ready = durable
+        && document_id(app) == after.doc
+        && app.engine.revision == capture.revision
+        && !app.has_unsaved_changes()
+        && !app.engine.transport.recording
+        && !app.imports.busy()
+        && app.bounce.is_none()
+        && app.dialogs.open.is_none();
+    if !ready {
+        crate::dialogs::discard_provider_close(app);
+        return;
+    }
+    if let Err(error) = crate::dialogs::resume_provider_close(app, &after.next.0, after.next.1) {
+        crate::dialogs::discard_provider_close(app);
+        app.ui.status = error;
+    }
+}
+
+/// A cancelled chooser, failed encoding or device download cannot leave a stale close action.
+pub fn discard_finished_close_capture(app: &mut SoundApp) {
+    let finished = app
+        .dialogs
+        .provider_after_save
+        .as_ref()
+        .is_some_and(|after| after.doc != document_id(app) || !app.services.file_providers.pending_for(after.doc));
+    if finished {
+        app.dialogs.provider_after_save = None;
+        crate::dialogs::discard_provider_close(app);
+    }
 }
 
 pub fn publish(app: &SoundApp) {
