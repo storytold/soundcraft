@@ -3,7 +3,7 @@ use super::state::MainWindow;
 use super::{
     ControlRequest, Engine, Gesture, HashMap, MeterDisplay, OutputTrouble, Player, Range, Receiver, Samples, SoundApp, TrackId, TransportRequest,
     Trouble, UiState, Value, VecDeque, bounce, dialogs, edit_window, extra_windows, fonts, import, json, menus, midi_editor, mix_window, ops_windows,
-    palette, panels, recovery, sampler_window, score_editor, shortcuts, theme, updates_ui, video_track, video_window, windows,
+    palette, panels, recovery, sampler_window, score_editor, shortcuts, theme, toolbar, updates_ui, video_track, video_window, windows,
 };
 
 mod audio;
@@ -58,6 +58,10 @@ impl SoundApp {
             main_meter: MeterDisplay::default(),
             meter_snapshot: soundcraft_playback::MeterSnapshot::default(),
             gesture: None,
+            counter_edit: None,
+            cursor_readout: None,
+            task_error: None,
+            media_status: None,
             edit_layout: edit_window::EditLayout::default(),
             midi: midi_editor::MidiEditorState::default(),
             ops: ops_windows::OpsState::default(),
@@ -318,6 +322,7 @@ impl SoundApp {
         // `DragValue` and text completion), so checking afterwards would see them missing, leave
         // the batch pending, and inject the same edit/navigation/cut again next frame.
         let received_synthetic = self.pass_received_synthetic(&ctx);
+        toolbar::handle_counter_keyboard(self, ui);
         shortcuts::handle(self, &ctx);
         self.sample_drop_targets.clear();
         if !self.native_menu_bar {

@@ -4,11 +4,16 @@ use super::{CommandSpec, always};
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_model::ClipContent;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
+/// Registers read-only session media diagnostics.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "session.audio_health", "Session Audio Health", [], None, "{}; checks all audio clips, including inactive playlists; no filesystem or signal analysis", always, report),
+        cmd!(query "session.audio_health", "Session Media Health", [], None, "{}; checks all audio clips, including inactive playlists, and referenced movies; no signal analysis", always, report),
+        cmd!(query "session.media_status", "Session Media Status", [], None, "{}; reports whether active-playlist and complete-session media are online", always, |e, _| {
+            let (timeline, session) = crate::inspect::media_online(e.session());
+            Ok(json!({"timeline_online": timeline, "session_online": session}))
+        }),
     ]
 }
 
@@ -19,6 +24,7 @@ struct ClipContext<'a> {
     session_sample_rate: u32,
 }
 
+/// Adds every media or bounds problem found for one audio clip.
 fn check_audio_clip(
     ctx: &ClipContext<'_>,
     clip: &soundcraft_model::Clip,
@@ -61,6 +67,7 @@ fn check_audio_clip(
     }
 }
 
+/// Builds a read-only health report for audio clips and referenced movies.
 fn report(e: &mut Engine, _: &Value) -> Result<Value> {
     let s = e.session();
     let sources: BTreeMap<_, _> = s.sources.iter().map(|source| (source.id, source)).collect();
@@ -70,12 +77,14 @@ fn report(e: &mut Engine, _: &Value) -> Result<Value> {
     }
     let mut clips = 0usize;
     let mut active_end = 0i64;
+    let mut referenced_audio = HashSet::new();
     for track in &s.tracks {
         for (index, playlist) in track.playlists.iter().enumerate() {
             let active = index == track.active_playlist;
             let ctx = ClipContext { track, playlist, active, session_sample_rate: s.sample_rate.hz() };
             for clip in &playlist.clips {
                 let ClipContent::Audio { source, offset } = clip.content else { continue };
+                referenced_audio.insert(source);
                 clips += 1;
                 if active {
                     active_end = active_end.max(clip.end());
@@ -86,10 +95,39 @@ fn report(e: &mut Engine, _: &Value) -> Result<Value> {
             }
         }
     }
-    Ok(json!({"audio_clips": clips, "active_audio_end_samples": active_end,
+    for source in s.sources.iter().filter(|source| !referenced_audio.contains(&source.id)) {
+        if !crate::inspect::audio_source_online(s, source.id) {
+            issues.push(json!({
+                "code": "unavailable_audio_source",
+                "message": "An audio source kept by the session is not loaded or playable. Restore or remove the source.",
+                "track": "Session",
+                "playlist": "",
+                "active": false,
+                "clip": "",
+                "source_id": source.id.0,
+                "path": source.path,
+            }));
+        }
+    }
+    for source in &s.videos {
+        if !crate::inspect::video_source_online(source) {
+            let message = source.offline.as_deref().unwrap_or("Movie file is missing or unavailable. Relink the movie before playback.");
+            issues.push(json!({
+                "code": "unavailable_video",
+                "message": message,
+                "track": "Video",
+                "playlist": "",
+                "active": true,
+                "clip": source.name,
+                "source_id": source.id.0,
+                "path": source.path,
+            }));
+        }
+    }
+    Ok(json!({"audio_clips": clips, "video_sources": s.videos.len(), "active_audio_end_samples": active_end,
         "active_audio_end_seconds": (s.sample_rate.hz() != 0).then(|| active_end as f64 / f64::from(s.sample_rate.hz())),
         "issue_count": issues.len(), "healthy": issues.is_empty(), "issues": issues,
-        "scope": "All playlists; loaded audio availability and clip bounds only. Does not check files on disk, signal levels, plugins or routing."}))
+        "scope": "All playlists and referenced movies; loaded audio availability, clip bounds and movie file availability. Does not check signal levels, plugins or routing."}))
 }
 
 #[cfg(test)]
@@ -97,7 +135,7 @@ fn report(e: &mut Engine, _: &Value) -> Result<Value> {
 mod tests {
     use super::*;
     use soundcraft_audio_io::AudioBuffer;
-    use soundcraft_model::{Clip, ClipId, SourceAudio, SourceId};
+    use soundcraft_model::{ChannelFormat, Clip, ClipId, SourceAudio, SourceId, TrackKind, VideoSource};
     use std::sync::Arc;
 
     fn check(e: &mut Engine) -> Value {
@@ -117,6 +155,80 @@ mod tests {
             assert!(e.journal.is_empty());
             assert!(!e.can_undo());
         }
+    }
+
+    /// Active-playlist and complete-session availability are reported separately.
+    #[test]
+    fn media_status_distinguishes_active_and_alternate_playlists() {
+        let mut e = crate::demo::demo_engine();
+        let id = e.session().sources[0].id;
+        assert!(e.session_mut().pool.remove(id).is_some());
+        let status = e.execute("session.media_status", &json!({})).unwrap();
+        assert_eq!(status["session_online"], false);
+        let expected_timeline = e.session().tracks.iter().flat_map(|track| track.clips()).all(|clip| clip.source() != Some(id));
+        assert_eq!(status["timeline_online"], expected_timeline);
+    }
+
+    /// An orphaned source that status marks offline also appears in the diagnostic report.
+    #[test]
+    fn health_report_explains_unplayable_unreferenced_audio_sources() {
+        let mut e = crate::demo::demo_engine();
+        let mut source = e.session().sources[0].clone();
+        source.id = SourceId(9_999);
+        source.name = "Orphaned source".into();
+        e.session_mut().sources.push(source);
+        let status = e.execute("session.media_status", &json!({})).unwrap();
+        assert_eq!(status["timeline_online"], true);
+        assert_eq!(status["session_online"], false);
+        let report = check(&mut e);
+        assert_eq!(report["healthy"], false);
+        assert!(
+            report["issues"]
+                .as_array()
+                .is_some_and(|issues| { issues.iter().any(|issue| issue["code"] == "unavailable_audio_source" && issue["source_id"] == 9_999) })
+        );
+    }
+
+    /// Missing and explicitly offline movies appear in both status and health reports.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn media_status_checks_referenced_video_files() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("soundcraft-media-status-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("picture.mov");
+        std::fs::write(&path, b"movie").unwrap();
+        let mut e = Engine::default();
+        let source = SourceId(900);
+        let track = e.session_mut().add_track(TrackKind::Video, ChannelFormat::Mono, None);
+        let clip = e.session_mut().new_clip_id();
+        e.session_mut().videos.push(VideoSource {
+            id: source,
+            name: "Picture".into(),
+            path: path.to_string_lossy().into_owned(),
+            width: 1,
+            height: 1,
+            frame_rate: 24.0,
+            duration: 1.0,
+            codec: "test".into(),
+            offline: None,
+        });
+        e.session_mut().track_mut(track).unwrap().playlist_mut().unwrap().clips.push(Clip::video(clip, "Picture", source, 0, 0, 48_000));
+        assert_eq!(e.execute("session.media_status", &json!({})).unwrap()["timeline_online"], true);
+        e.session_mut().videos[0].offline = Some("Movie path was refused".into());
+        assert_eq!(e.execute("session.media_status", &json!({})).unwrap()["timeline_online"], false);
+        assert_eq!(check(&mut e)["issues"][0]["message"], "Movie path was refused");
+        e.session_mut().videos[0].offline = None;
+        std::fs::remove_file(&path).unwrap();
+        let status = e.execute("session.media_status", &json!({})).unwrap();
+        assert_eq!(status["timeline_online"], false);
+        assert_eq!(status["session_online"], false);
+        let report = check(&mut e);
+        assert_eq!(report["healthy"], false);
+        assert_eq!(report["video_sources"], 1);
+        assert_eq!(report["issues"][0]["code"], "unavailable_video");
+        assert_eq!(report["issues"][0]["path"], path.to_string_lossy().as_ref());
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]

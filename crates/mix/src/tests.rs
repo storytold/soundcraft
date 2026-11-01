@@ -937,8 +937,14 @@ fn a_plugins_bogus_latency_is_capped() {
         gain.prepare(48_000.0, 512, 1);
         eng.adopt(vec![PreparedInstance { track, slot: 0, id: "clap:test.latent".into(), ch: 1, plugin: Box::new(Latent(gain)) }]);
     }
+    eng.refresh_latency_status(&s, 0);
+    assert!(eng.latency_overloaded);
     render_block(&mut eng, &s, 0);
     assert_eq!((eng.track_latency, eng.latency), (MAX_LATENCY, 2 * MAX_LATENCY));
+    assert!(eng.latency_overloaded);
+    s.edit.delay_compensation = false;
+    render_block(&mut eng, &s, 512);
+    assert!(!eng.latency_overloaded);
 }
 
 #[test]

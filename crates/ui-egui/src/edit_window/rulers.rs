@@ -101,6 +101,12 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
         let painter = ui.painter().with_clip_rect(row);
         ui.painter().text(pos2(lab.max.x - 12.0, lab.center().y), Align2::RIGHT_CENTER, ruler_label(id), bold(11.0), t.ruler_text);
         let fmt = TimeFormat::from_id(id);
+        if let Some(format) = fmt {
+            let response = ui.interact(lab, ui.scope_id().with(("ruler_timebase", id.as_str())), Sense::click());
+            if response.on_hover_text("Use this ruler for the Main Counter").clicked() {
+                let _ = app.run("view.main_counter", json!({"format": format.id()}));
+            }
+        }
         match id.as_str() {
             "tempo" => {
                 painter.rect_filled(row.shrink2(vec2(0.0, 1.0)), 0.0, t.tempo_ruler);
@@ -250,6 +256,13 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
     ui.painter().line_segment([pos2(area.min.x, area.max.y - 1.0), pos2(area.max.x, area.max.y - 1.0)], Stroke::new(1.0, t.border));
 }
 
+/// Keeps a ruler label inside the visible row while leaving a small gap after its tick.
+fn ruler_label_left(mark_x: f32, row: Rect, label_width: f32) -> f32 {
+    let left = row.min.x + 3.0;
+    let right = (row.max.x - label_width - 3.0).max(left);
+    (mark_x + 3.0).clamp(left, right)
+}
+
 /// Where a timebase ruler sits: the timeline, its row and the visible range, and whether it is the bottom ruler.
 #[derive(Clone, Copy)]
 struct RulerRow {
@@ -347,7 +360,9 @@ fn timebase_ruler(painter: &egui::Painter, s: &Session, place: &RulerRow, f: Tim
                 }
                 _ => format_position(at, f, sr, &s.tempo, rate, s.timecode_start, s.feet_frames_start()),
             };
-            painter.text(pos2(x + 3.0, row.center().y), Align2::LEFT_CENTER, label, regular(11.0), t.ruler_text);
+            let galley = painter.layout_no_wrap(label, regular(11.0), t.ruler_text);
+            let left = ruler_label_left(x, row, galley.size().x);
+            painter.galley(pos2(left, row.center().y - galley.size().y * 0.5), galley, t.ruler_text);
         } else {
             painter.line_segment([pos2(x, row.max.y - 4.0), pos2(x, row.max.y)], Stroke::new(1.0, t.ruler_tick));
         }
@@ -400,4 +415,18 @@ pub(super) fn views_button(app: &mut SoundApp, ui: &mut Ui, rulers: Rect) {
             let _ = app.run("view.edit_minimal", json!({}));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Labels at either edge remain wholly inside the ruler row.
+    #[test]
+    fn first_ruler_label_stays_inside_the_visible_row() {
+        let row = Rect::from_min_max(pos2(100.0, 0.0), pos2(300.0, 20.0));
+        assert_eq!(ruler_label_left(80.0, row, 70.0), 103.0);
+        assert_eq!(ruler_label_left(290.0, row, 70.0), 227.0);
+        assert_eq!(ruler_label_left(150.0, row, 70.0), 153.0);
+    }
 }

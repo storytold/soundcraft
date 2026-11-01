@@ -23,7 +23,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.clip_list_view", "Clip List", "View > Other Displays > Clip List", None),
     ("window.narrow_mix", "Narrow Mix", "View > Narrow Mix", Some("Cmd+Alt+M")),
     ("window.session_info", "Session Info", "", None),
-    ("window.audio_health", "Session Audio Health", "", None),
+    ("window.audio_health", "Session Media Health", "", None),
     ("window.about", "About SoundCraft", "", None),
     ("window.close", "Close Window", "Window > Close Window", Some("Cmd+W")),
     ("window.hide_floating", "Hide All Floating Windows", "Window > Hide All Floating Windows", Some("Cmd+Ctrl+W")),
@@ -36,6 +36,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.disk_usage", "Disk Usage", "Window > Disk Usage", None),
     ("window.system_usage", "System Usage", "Window > System Usage", None),
     ("window.task_manager", "Task Manager", "Window > Task Manager", Some("Alt+'")),
+    ("window.task_error_clear", "Clear Task Error", "", None),
     ("window.metadata", "Metadata Inspector", "Window > Metadata Inspector", None),
     ("window.event_list", "MIDI Event List", "Window > MIDI Event List", Some("Alt+=")),
     ("window.midi_keyboard", "MIDI Keyboard", "Window > MIDI Keyboard", Some("Shift+K")),
@@ -223,6 +224,7 @@ pub fn tree() -> Vec<MenuNode> {
     roots
 }
 
+/// Renders the application menu bar and dispatches its selected command.
 pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::current();
     egui::Panel::top("menu_bar").exact_size(24.0).frame(egui::Frame::NONE.fill(t.menu_bar).inner_margin(egui::Margin::symmetric(8, 2))).show(
@@ -239,7 +241,7 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                     if ui.button("Session Info").clicked() {
                         app.ui.show_session_info = true;
                     }
-                    if ui.button("Session Audio Health").clicked() {
+                    if ui.button("Session Media Health").clicked() {
                         let _ = app.run("window.audio_health", json!({"value": true}));
                     }
                     ui.separator();
@@ -593,6 +595,10 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         "window.disk_usage" => toggle(&mut app.ui.show_disk_usage),
         "window.system_usage" => toggle(&mut app.ui.show_system_usage),
         "window.task_manager" => toggle(&mut app.ui.show_task_manager),
+        "window.task_error_clear" => {
+            app.task_error = None;
+            json!({"value": false})
+        }
         "window.metadata" => toggle(&mut app.ui.show_metadata),
         "window.event_list" => toggle(&mut app.ui.show_event_list),
         "window.midi_keyboard" => toggle(&mut app.ui.show_midi_keyboard),

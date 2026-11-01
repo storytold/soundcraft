@@ -14,8 +14,15 @@ pub fn start(app: &mut SoundApp, params: &Value) {
     // Third-party plugins keep state the session can't see: store it first.
     app.capture_plugin_states();
     match soundcraft_engine::cmd::bounce_job(&app.engine, params) {
-        Ok(job) => app.bounce = Some(job),
-        Err(e) => app.ui.status = e.to_string(),
+        Ok(job) => {
+            app.task_error = None;
+            app.bounce = Some(job);
+        }
+        Err(e) => {
+            let error = e.to_string();
+            app.task_error = Some(error.clone());
+            app.ui.status = error;
+        }
     }
 }
 
@@ -29,9 +36,14 @@ pub fn step(app: &mut SoundApp, ctx: &egui::Context) {
             return;
         }
         Ok(Some(done)) => {
+            app.task_error = None;
             format!("Bounced {} (peak {:.1} dBFS, {:.1} LUFS)", job.path().file_name().unwrap_or_default().to_string_lossy(), done.peak_db, done.lufs)
         }
-        Err(e) => e.to_string(),
+        Err(e) => {
+            let error = e.to_string();
+            app.task_error = Some(error.clone());
+            error
+        }
     };
     app.bounce = None;
 }

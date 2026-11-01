@@ -1,11 +1,11 @@
 use super::automation::draw_automation;
-use super::clips::{ClipLane, draw_clip, draw_live_take, draw_strip_silence, grid_lines};
+use super::clips::{ClipLane, clip_name_height, draw_clip, draw_live_take, draw_strip_silence, grid_lines};
 use super::header::{header_column, track_header};
 use super::input::lane_interaction;
 use super::layout::{Column, HEADER_W, LANE_H, STRIP_W, lane_rect, sample_at, x_of};
 use super::{
-    Align2, AutoParam, Range, Rect, Sense, Session, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, json, ops, pos2, regular,
-    rgb, vec2,
+    Align2, AutoParam, ClipContent, Pos2, Range, Rect, Samples, Sense, Session, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui,
+    json, ops, pos2, regular, rgb, vec2,
 };
 
 pub(super) fn in_edit_window(s: &Session, t: &Track) -> bool {
@@ -87,8 +87,13 @@ pub(super) fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect,
         grid_lines(&painter, &s, tl, lane);
     }
     let view = Range::new(sample_at(&s, tl, tl.min.x), sample_at(&s, tl, tl.max.x));
-    let auto_view = AutoParam::parse(&track.view);
+    let auto_view = AutoParam::parse(&track.view)
+        .or_else(|| matches!(track.kind, TrackKind::Master | TrackKind::Aux | TrackKind::Vca).then_some(AutoParam::Volume));
     let sorted = track.clips().is_sorted_by_key(|c| c.start);
+    if let Some(point) = ui.ctx().pointer_hover_pos().filter(|point| cursor_is_in_lane(*point, lane, tl)) {
+        let at = sample_at(&s, tl, point.x).max(0);
+        app.cursor_readout = Some((at, cursor_value(&s, track, auto_view.as_ref(), at, point.y, lane)));
+    }
     for clip in track.clips() {
         if !clip.range().overlaps(&view) {
             continue;
@@ -102,10 +107,6 @@ pub(super) fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect,
     }
     if let Some(p) = &auto_view {
         draw_automation(&painter, &s, track, p, tl, lane);
-    }
-    if track.kind == TrackKind::Master || track.kind == TrackKind::Aux || track.kind == TrackKind::Vca {
-        let p = auto_view.clone().unwrap_or(AutoParam::Volume);
-        draw_automation(&painter, &s, track, &p, tl, lane);
     }
     // Selection highlight on this track.
     let sel = s.edit.selection;
@@ -124,6 +125,116 @@ pub(super) fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect,
     if track.view == "playlists" {
         playlist_lanes(app, ui, track, row, main_h, tl);
     }
+}
+
+/// True when a pointer is both over the lane and inside the timeline viewport.
+fn cursor_is_in_lane(point: Pos2, lane: Rect, timeline: Rect) -> bool {
+    lane.contains(point) && timeline.contains(point)
+}
+
+/// Formats the value beneath the edit cursor for the current track lane.
+fn cursor_value(s: &Session, track: &Track, automation: Option<&AutoParam>, at: Samples, pointer_y: f32, lane_rect: Rect) -> String {
+    if let Some(param) = automation {
+        let default = automation_base(track, param);
+        let value = track.lane(param).map_or(default, |lane| lane.value_at(at, default));
+        return match param {
+            AutoParam::Volume | AutoParam::SendLevel(_) => format!("{value:.1} dB"),
+            AutoParam::Mute | AutoParam::SendMute(_) => {
+                if value >= 0.5 {
+                    "muted".into()
+                } else {
+                    "open".into()
+                }
+            }
+            _ => format!("{value:.3}"),
+        };
+    }
+    if track.kind == TrackKind::Audio {
+        if !track.clips().iter().any(|clip| clip.is_audio() && clip.range().contains(at)) {
+            return "—".into();
+        }
+        let body_top = lane_rect.min.y + 1.0 + clip_name_height(s, lane_rect);
+        let body_bottom = lane_rect.max.y - 1.0;
+        let amplitude = cursor_audio_amplitude(pointer_y, body_top, body_bottom, track.channels(), s.edit.zoom.waveform_zoom);
+        return match s.bit_depth {
+            soundcraft_model::BitDepthSetting::Int16 => format!("{:.0}", amplitude * f32::from(i16::MAX)),
+            soundcraft_model::BitDepthSetting::Int24 => format!("{:.0}", amplitude * 8_388_607.0),
+            soundcraft_model::BitDepthSetting::Float32 => format!("{amplitude:.6}"),
+        };
+    }
+    let Some(clip) = track.clips().iter().rev().find(|clip| clip.range().contains(at)) else { return "—".into() };
+    match &clip.content {
+        ClipContent::Audio { .. } => "—".into(),
+        ClipContent::Midi { sequence } => {
+            let base = s.tempo.samples_to_ticks(clip.start, s.sample_rate);
+            let tick = s.tempo.samples_to_ticks(at, s.sample_rate).saturating_sub(base);
+            let name_h = clip_name_height(s, lane_rect);
+            let body = Rect::from_min_max(pos2(lane_rect.min.x, lane_rect.min.y + 1.0 + name_h), pos2(lane_rect.max.x, lane_rect.max.y - 1.0));
+            let (lo, hi) = sequence.notes.iter().fold((127u8, 0u8), |(lo, hi), note| (lo.min(note.pitch), hi.max(note.pitch)));
+            let (lo, hi) = if lo > hi { (48, 72) } else { (lo.saturating_sub(2), hi.saturating_add(2)) };
+            let span = f32::from(hi.saturating_sub(lo).max(1));
+            sequence
+                .notes
+                .iter()
+                .rev()
+                .find(|note| {
+                    let y = body.max.y - 3.0 - (f32::from(note.pitch.saturating_sub(lo)) / span) * (body.height() - 6.0);
+                    let height = ((body.height() - 6.0) / span).clamp(1.5, 6.0);
+                    note.start <= tick && note.start.saturating_add(note.length) > tick && (pointer_y - y).abs() <= height * 0.5
+                })
+                .map_or_else(|| "—".into(), |note| midi_note_name(note.pitch))
+        }
+        ClipContent::Video { .. } => "picture".into(),
+    }
+}
+
+/// Maps a vertical pointer position to the audio amplitude shown by the waveform.
+fn cursor_audio_amplitude(pointer_y: f32, body_top: f32, body_bottom: f32, channels: usize, waveform_zoom: f32) -> f32 {
+    let channels = channels.max(1);
+    let channel_height = (body_bottom - body_top).max(1.0) / channels as f32;
+    let channel = ((pointer_y - body_top) / channel_height).floor().clamp(0.0, channels.saturating_sub(1) as f32);
+    let center = body_top + (channel + 0.5) * channel_height;
+    ((center - pointer_y) / (channel_height * 0.46) / waveform_zoom.max(f32::EPSILON)).clamp(-1.0, 1.0)
+}
+
+/// Returns the static mixer value used when an automation lane has no point.
+fn automation_base(track: &Track, param: &AutoParam) -> f32 {
+    match param {
+        AutoParam::Volume => track.mixer.volume_db,
+        AutoParam::Pan(index) => track.mixer.pan.get(usize::from(*index)).copied().unwrap_or(0.0),
+        AutoParam::Mute => {
+            if track.mixer.mute {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        AutoParam::SendLevel(index) => track.mixer.sends.get(usize::from(*index)).and_then(Option::as_ref).map_or(-144.0, |send| send.level_db),
+        AutoParam::SendPan(index) => track.mixer.sends.get(usize::from(*index)).and_then(Option::as_ref).map_or(0.0, |send| send.pan),
+        AutoParam::SendMute(index) => {
+            track.mixer.sends.get(usize::from(*index)).and_then(Option::as_ref).map_or(0.0, |send| if send.mute { 1.0 } else { 0.0 })
+        }
+        AutoParam::Plugin { slot, param } => track
+            .mixer
+            .inserts
+            .get(usize::from(*slot))
+            .and_then(Option::as_ref)
+            .and_then(|insert| {
+                insert
+                    .params
+                    .get(param)
+                    .copied()
+                    .or_else(|| soundcraft_dsp::plugin_info(&insert.plugin).and_then(|info| info.param(param)).map(|info| info.default))
+            })
+            .unwrap_or(0.0),
+    }
+}
+
+/// Formats a MIDI pitch as a note name and octave.
+fn midi_note_name(pitch: u8) -> String {
+    const NAMES: [&str; 12] = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+    let name = NAMES.get(usize::from(pitch % 12)).copied().unwrap_or("C");
+    format!("{name}{} ({pitch})", i16::from(pitch) / 12 - 1)
 }
 
 /// Alternate playlists as lanes under the main one; clicking a clip promotes it (comping).
@@ -271,4 +382,29 @@ pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A clipped row cannot claim the ruler or header area outside the timeline.
+    #[test]
+    fn cursor_readout_requires_the_timeline_and_lane_intersection() {
+        let lane = Rect::from_min_max(pos2(0.0, 20.0), pos2(300.0, 80.0));
+        let timeline = Rect::from_min_max(pos2(100.0, 0.0), pos2(300.0, 200.0));
+        assert!(!cursor_is_in_lane(pos2(50.0, 40.0), lane, timeline));
+        assert!(cursor_is_in_lane(pos2(150.0, 40.0), lane, timeline));
+        assert!(!cursor_is_in_lane(pos2(150.0, 10.0), lane, timeline));
+    }
+
+    /// Stereo waveform values use the center of the channel beneath the pointer.
+    #[test]
+    fn audio_cursor_value_follows_the_vertical_position_in_each_channel() {
+        assert_eq!(cursor_audio_amplitude(35.0, 10.0, 110.0, 2, 1.0), 0.0);
+        assert_eq!(cursor_audio_amplitude(85.0, 10.0, 110.0, 2, 1.0), 0.0);
+        assert_eq!(cursor_audio_amplitude(12.0, 10.0, 110.0, 2, 1.0), 1.0);
+        assert_eq!(cursor_audio_amplitude(58.0, 10.0, 110.0, 2, 1.0), -1.0);
+        assert!((cursor_audio_amplitude(23.5, 10.0, 110.0, 2, 2.0) - 0.25).abs() < f32::EPSILON);
+    }
 }

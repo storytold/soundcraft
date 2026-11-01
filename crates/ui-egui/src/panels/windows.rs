@@ -28,9 +28,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     clip_effects(app, ctx);
 }
 
+/// Shows the latest session media health report when requested.
 fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_audio_health;
-    win(ctx, &mut open, "Session Audio Health", vec2(620.0, 360.0), |ui| {
+    win(ctx, &mut open, "Session Media Health", vec2(620.0, 360.0), |ui| {
         let refresh = ui.button("Refresh Report").clicked();
         if app.audio_health_report.is_none() || refresh {
             app.audio_health_report = Some(app.engine.execute("session.audio_health", &json!({})).map_err(|error| error.to_string()));
@@ -38,7 +39,10 @@ fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
         let Some(result) = &app.audio_health_report else { return };
         match result {
             Ok(report) => {
-                ui.label(format!("{} audio clips checked · {} issues", report["audio_clips"], report["issue_count"]));
+                ui.label(format!(
+                    "{} audio clips and {} movie sources checked · {} issues",
+                    report["audio_clips"], report["video_sources"], report["issue_count"]
+                ));
                 ui.label(match report["active_audio_end_seconds"].as_f64() {
                     Some(seconds) => format!("Active audio ends at {seconds:.2} seconds"),
                     None => "Active audio end time is unknown (invalid session sample rate)".into(),
@@ -46,7 +50,7 @@ fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
                 ui.label("Includes alternate takes and muted clips. Refresh after editing.");
                 ui.separator();
                 if report["healthy"] == true {
-                    ui.label("All audio clips have loaded media within source bounds.");
+                    ui.label("All audio clips and referenced movies are available.");
                 }
                 egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                     if let Some(issues) = report["issues"].as_array() {
@@ -69,7 +73,7 @@ fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 });
                 ui.separator();
-                ui.label("Checks loaded media only, not files on disk, signal levels, plugins or routing.");
+                ui.label("Checks loaded audio and referenced movie files, not signal levels, plugins or routing.");
             }
             Err(error) => {
                 ui.label(error.to_string());
@@ -181,6 +185,7 @@ fn system_usage(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_system_usage = open;
 }
 
+/// Shows active background tasks and retains completed errors until dismissed.
 fn task_manager(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_task_manager;
     win(ctx, &mut open, "Task Manager", vec2(320.0, 120.0), |ui| {
@@ -190,7 +195,14 @@ fn task_manager(app: &mut SoundApp, ctx: &egui::Context) {
                 ui.add(egui::ProgressBar::new(b.progress()));
             }
             None => {
-                ui.label("No background tasks are running.");
+                if let Some(error) = app.task_error.clone() {
+                    ui.colored_label(Tokens::current().rec, format!("Last task failed: {error}"));
+                    if ui.button("Dismiss").clicked() {
+                        let _ = app.run("window.task_error_clear", json!({}));
+                    }
+                } else {
+                    ui.label("No background tasks are running.");
+                }
             }
         }
         ui.label(

@@ -16,6 +16,7 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
 pub mod appearance;
 pub mod bounce;
 pub mod control;
+mod counter;
 pub mod credits;
 pub mod dialogs;
 pub mod docking;
@@ -297,6 +298,14 @@ pub struct SoundApp {
     /// peaks since the previous take. The only reader of the player's meters; windows read this.
     pub(crate) meter_snapshot: soundcraft_playback::MeterSnapshot,
     pub gesture: Option<Gesture>,
+    /// Counter currently receiving calculator-style keyboard input.
+    counter_edit: Option<counter::CounterEdit>,
+    /// Cursor position and value under the pointer in the Edit timeline.
+    cursor_readout: Option<(Samples, String)>,
+    /// Error from the latest background task, kept until dismissed or another task starts.
+    task_error: Option<String>,
+    /// Cached online state: engine revision, check time, and (timeline, complete session).
+    media_status: Option<(u64, f64, (bool, bool))>,
     pub edit_layout: edit_window::EditLayout,
     pub midi: midi_editor::MidiEditorState,
     pub ops: ops_windows::OpsState,

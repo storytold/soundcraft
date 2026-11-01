@@ -59,7 +59,8 @@ fn search_chord(m: Modifiers, mac: bool) -> bool {
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
-    if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() {
+    let counter_editing = app.counter_edit.is_some();
+    if (!counter_editing && ctx.egui_wants_keyboard_input()) || app.dialogs.open.is_some() {
         return;
     }
     // A scripted press is identified by its exact position in this pass's events, not by matching
@@ -73,7 +74,7 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
             .iter()
             .enumerate()
             .filter_map(|(index, e)| match e {
-                egui::Event::Key { key, pressed: true, repeat, modifiers, .. } => {
+                egui::Event::Key { key, pressed: true, repeat, modifiers, .. } if !counter_editing || shortcut_allowed_during_counter(*modifiers) => {
                     if scripted.contains(&index) {
                         Some((*key, *modifiers))
                     } else {
@@ -103,6 +104,11 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     }
     // Tab moves the insertion point here, so egui must not also hand focus to the first widget: that would block every shortcut.
     ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+}
+
+/// Counter entry owns plain and Shift-only keys, while global modified chords remain available.
+fn shortcut_allowed_during_counter(modifiers: Modifiers) -> bool {
+    modifiers.command || modifiers.ctrl || modifiers.alt
 }
 
 fn command_for(key: Key, mods: Modifiers, mac: bool) -> Option<&'static str> {
@@ -442,7 +448,7 @@ mod label_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_for, mods_match, parse, search_chord};
+    use super::{command_for, mods_match, parse, search_chord, shortcut_allowed_during_counter};
     use egui::{Key, Modifiers};
 
     /// Ctrl held on Windows or Linux, as egui reports it.
@@ -479,5 +485,14 @@ mod tests {
         assert_eq!(command_for(Key::K, Modifiers { shift: true, ..MAC_CMD }, true), Some("file.export_clips"));
         assert_eq!(command_for(Key::K, Modifiers { shift: true, ..PC_CTRL }, false), Some("file.export_clips"));
         assert!(crate::dialogs::takes_path("file.export_clips"));
+    }
+
+    #[test]
+    fn counter_entry_only_blocks_unmodified_and_shift_only_shortcuts() {
+        assert!(!shortcut_allowed_during_counter(Modifiers::NONE));
+        assert!(!shortcut_allowed_during_counter(Modifiers::SHIFT));
+        assert!(shortcut_allowed_during_counter(PC_CTRL));
+        assert!(shortcut_allowed_during_counter(MAC_CMD));
+        assert!(shortcut_allowed_during_counter(Modifiers::ALT));
     }
 }

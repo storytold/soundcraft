@@ -47,6 +47,8 @@ pub(crate) struct Strip {
     clipbuf: Vec<Vec<f32>>,
     /// Total latency of the active inserts (samples).
     pub(crate) latency: usize,
+    /// At least one insert chain reported more latency than compensation can retain.
+    pub(crate) latency_overloaded: bool,
     /// Delay compensation: align this strip with the slowest one (post- and pre-fader paths),
     /// plus extra delay for direct-to-main outputs so they line up with aux returns.
     pub(crate) align: DelayLine,
@@ -143,6 +145,7 @@ impl Strip {
             clip_fx: HashMap::new(),
             clipbuf: Vec::new(),
             latency: 0,
+            latency_overloaded: false,
             align: DelayLine::default(),
             align_pre: DelayLine::default(),
             out_extra: DelayLine::default(),
@@ -348,6 +351,7 @@ fn run_inserts(t: &Track, strip: &mut Strip, blk: Block, transport: &Transport) 
         }
     }
     strip.gr = gr;
+    strip.latency_overloaded = latency > MAX_LATENCY;
     strip.latency = latency.min(MAX_LATENCY);
 }
 
@@ -482,6 +486,7 @@ pub(crate) fn note_insert_latency(t: &Track, strip: &mut Strip, pos: Samples) {
         apply_params(slot, ins, t, i, pos);
         latency = latency.saturating_add(slot.plugin.latency());
     }
+    strip.latency_overloaded = latency > MAX_LATENCY;
     strip.latency = latency.min(MAX_LATENCY);
 }
 

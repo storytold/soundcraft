@@ -182,6 +182,64 @@ fn a_spike_rendered_while_the_ui_holds_the_meters_arrives_later() {
     assert!(ui.tracks[&t].peak[0] > 0.85, "{:?}", ui.tracks[&t]);
 }
 
+/// A stopped-session status change survives a failed meter lock and reaches the next UI poll.
+#[test]
+fn delay_overload_status_retries_after_meter_lock_contention() {
+    use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+
+    struct Latent(Box<dyn Plugin>);
+    impl Plugin for Latent {
+        fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+            self.0.info()
+        }
+        fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+            self.0.prepare(sr, mb, ch);
+        }
+        fn reset(&mut self) {
+            self.0.reset();
+        }
+        fn set_param(&mut self, id: &str, value: f32) -> bool {
+            self.0.set_param(id, value)
+        }
+        fn param(&self, id: &str) -> Option<f32> {
+            self.0.param(id)
+        }
+        fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+            self.0.process(io, frames);
+        }
+        fn latency(&self) -> usize {
+            usize::MAX
+        }
+    }
+
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut state = AudioState::new(rx, Arc::clone(&shared), Arc::new(Session::default()), 48_000.0, channel().0);
+    let mut session = Session::default();
+    session.edit.delay_compensation = true;
+    let track = session.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    session.track_mut(track).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.latent"));
+    let mut gain = soundcraft_dsp::create("gain").unwrap();
+    gain.prepare(48_000.0, BLOCK, 1);
+    let instance = PreparedInstance { track, slot: 0, id: "clap:test.latent".into(), ch: 1, plugin: Box::new(Latent(gain)) };
+    tx.send(Cmd::Session(Arc::new(session), vec![instance])).unwrap();
+    let mut output = vec![0.0; BLOCK * 2];
+    {
+        let _held = shared.meters.lock().unwrap();
+        state.fill(&mut output, 2);
+        assert!(state.unsent.delay_compensation_overloaded);
+    }
+    state.fill(&mut output, 2);
+    let mut ui = MeterSnapshot::default();
+    take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui);
+    assert!(ui.delay_compensation_overloaded);
+}
+
 #[test]
 fn stopping_zeroes_meters_in_place_and_removed_tracks_are_pruned() {
     let (shared, mut st, tx, t) = spike_session(100);

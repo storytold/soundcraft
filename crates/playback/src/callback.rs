@@ -192,7 +192,8 @@ impl AudioState {
         if changed {
             // Place adopted instances now (not only once playback starts), so editors see them;
             // `sync` creates no third-party plugins here.
-            self.mix.ensure_synced(&self.session);
+            self.mix.refresh_latency_status(&self.session, self.pos);
+            self.unsent.set_delay_compensation_overloaded(self.mix.latency_overloaded);
         }
         self.send_garbage();
         self.shared.playing.store(self.playing, Ordering::Relaxed);
@@ -265,9 +266,11 @@ impl AudioState {
     /// UI has not taken yet. If the UI holds the snapshot right now, they wait in `unsent`.
     fn publish_meters(&mut self) {
         self.unsent.accumulate(&self.mix.main_meter, &self.mix.meters);
+        self.unsent.delay_compensation_overloaded = self.mix.latency_overloaded;
         self.forget_meters();
         if let Ok(mut m) = self.shared.meters.try_lock() {
             m.accumulate(&self.unsent.main, &self.unsent.tracks);
+            m.delay_compensation_overloaded = self.unsent.delay_compensation_overloaded;
             self.unsent.reset_levels();
         }
     }
@@ -283,6 +286,8 @@ impl AudioState {
             self.forget_meters();
             if let Ok(mut m) = self.shared.meters.try_lock() {
                 m.silence();
+                m.delay_compensation_overloaded = self.unsent.delay_compensation_overloaded;
+                self.unsent.reset_levels();
             }
             return;
         }
@@ -442,6 +447,7 @@ pub(crate) fn copy_meter_snapshot(source: &MeterSnapshot, out: &mut MeterSnapsho
         out.tracks.entry(*id).or_default().copy_from(meter);
     }
     out.main.copy_from(&source.main);
+    out.delay_compensation_overloaded = source.delay_compensation_overloaded;
 }
 
 impl Side {

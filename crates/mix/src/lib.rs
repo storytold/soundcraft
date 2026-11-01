@@ -124,6 +124,8 @@ pub struct MixEngine {
     /// Current total compensation delay (samples) of the main mix: the slowest track and aux
     /// returns, and the master faders' inserts.
     pub latency: usize,
+    /// True when an active insert chain exceeds the bounded compensation delay.
+    pub latency_overloaded: bool,
     /// Delay already applied to audio written onto busses: the slowest track insert.
     /// A bus render drops this so the bus lines up with the timeline. The extra delay
     /// that lines direct outputs up with aux returns stays in `latency` and is removed
@@ -169,6 +171,7 @@ impl MixEngine {
             synced: (0, 0, 0),
             order: Vec::new(),
             latency: 0,
+            latency_overloaded: false,
             track_latency: 0,
             aux_fed: Vec::new(),
             aux_latency: 0,
@@ -352,6 +355,25 @@ impl MixEngine {
         }
     }
 
+    /// Refresh the overload flag from the active insert chains without rendering audio.
+    /// Hosts call this after a document swap so the status remains meaningful while stopped.
+    pub fn refresh_latency_status(&mut self, s: &Session, pos: Samples) {
+        self.ensure_synced(s);
+        for strip in self.strips.values_mut() {
+            strip.latency_overloaded = false;
+        }
+        if !s.edit.delay_compensation {
+            self.latency_overloaded = false;
+            return;
+        }
+        for track in s.tracks.iter().filter(|track| !track.inactive) {
+            if let Some(strip) = self.strips.get_mut(&track.id) {
+                note_insert_latency(track, strip, pos);
+            }
+        }
+        self.latency_overloaded = self.strips.values().any(|strip| strip.latency_overloaded);
+    }
+
     /// Render `frames` (≤ max_block) samples starting at `pos` into `out` (≥ 2 channels).
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
         let frames = frames.min(self.max_block);
@@ -405,6 +427,9 @@ impl MixEngine {
         }
         self.last_end = pos.saturating_add(frames as i64);
         self.ensure_synced(s);
+        for strip in self.strips.values_mut() {
+            strip.latency_overloaded = false;
+        }
         for b in self.busses.values_mut() {
             for c in b.buf.iter_mut() {
                 c.iter_mut().take(frames).for_each(|x| *x = 0.0);
@@ -442,6 +467,8 @@ impl MixEngine {
             if pdc { self.strips.iter().filter(|(id, _)| s.track(**id).is_some_and(is_aux)).map(|(_, st)| st.latency).max().unwrap_or(0) } else { 0 };
         self.track_latency = lmax_t;
         self.latency = lmax_t + lmax_a + lmax_m;
+        self.latency_overloaded =
+            pdc && (work.iter().any(|(_, strip)| strip.latency_overloaded) || self.strips.values().any(|strip| strip.latency_overloaded));
         // An aux that returns onto a bus delays it by the slowest aux return, so the tracks routed
         // to that bus wait as well (as the ones routed to the main mix do) and the bus lines up.
         self.aux_latency = lmax_a;

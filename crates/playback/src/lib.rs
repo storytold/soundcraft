@@ -65,11 +65,18 @@ use stream::{Opened, build_output, first_started, open_device, start_stream};
 pub struct MeterSnapshot {
     pub tracks: HashMap<TrackId, StripMeter>,
     pub main: StripMeter,
+    /// Whether the current session exceeds the bounded delay-compensation capacity.
+    pub delay_compensation_overloaded: bool,
     /// Something was written since the UI last took the values.
     fresh: bool,
 }
 
 impl MeterSnapshot {
+    /// Publish a changed delay-compensation state even when no audio block was rendered.
+    fn set_delay_compensation_overloaded(&mut self, overloaded: bool) {
+        self.delay_compensation_overloaded = overloaded;
+        self.fresh = true;
+    }
     /// Fold one rendered block's meters in (max). Allocation-free once the tracks are known.
     fn accumulate(&mut self, main: &StripMeter, tracks: &HashMap<TrackId, StripMeter>) {
         self.main.accumulate(main);
