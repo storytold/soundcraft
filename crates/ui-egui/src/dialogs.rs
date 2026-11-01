@@ -414,6 +414,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let Some(mut d) = app.dialogs.open.take() else { return };
     let mut keep = true;
     let mut action: Option<(String, Value)> = None;
+    let mut bounce_params: Option<Value> = None;
     let mut save_first: Option<(String, Value)> = None;
     let confirmed = matches!(d, Dialog::SaveChanges { .. });
     // Strip Silence's Rename button, and the naming scheme its dialog's OK keeps.
@@ -450,6 +451,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, -80.0))
         .show(ctx, |ui| {
+            // Escape owns the whole frame: no focused button or other control may act first.
+            if esc {
+                return;
+            }
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             match &mut d {
                 Dialog::NewTracks(tracks) => {
@@ -502,11 +507,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     );
                     if buttons(ui, "Bounce", enter) {
                         let p = std::path::Path::new(path.as_str()).with_extension(format.default_extension());
-                        crate::bounce::start(
-                            app,
-                            &json!({"path": p.to_string_lossy(), "format": format.default_extension(), "bit_depth": bit_depth, "normalize": normalize, "dither": *dither && bit_depth.as_str() != "32f"}),
+                        bounce_params = Some(
+                            json!({"path": p.to_string_lossy(), "format": format.default_extension(), "bit_depth": bit_depth, "normalize": normalize, "dither": *dither && bit_depth.as_str() != "32f"}),
                         );
-                        keep = false;
                     }
                 }
                 Dialog::RenameTrack { id, name } => {
@@ -712,6 +715,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     if esc || ctx.memory(|m| m.data.get_temp::<bool>(egui::Id::unique("dlg_cancel")).unwrap_or(false)) {
         keep = false;
         action = None;
+        bounce_params = None;
+        save_first = None;
         app.dialogs.after_save = None;
         app.dialogs.pending_session = None;
         ctx.memory_mut(|m| m.data.remove::<bool>(egui::Id::unique("dlg_cancel")));
@@ -742,6 +747,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             action = Some(("session.save".into(), json!({})));
         }
         app.dialogs.after_save = Some(then);
+    }
+    if let Some(params) = bounce_params {
+        keep = false;
+        crate::bounce::start(app, &params);
     }
     if let Some((cmd, params)) = &action
         && !confirmed
@@ -1003,6 +1012,59 @@ mod tests {
             assert!(app.dialogs.open.is_none());
             assert_eq!(app.engine.session().tracks.len(), 3, "Escape must cancel a simultaneous Enter");
         }
+    }
+
+    /// Row shortcuts change the form without submitting when Enter arrives in the same frame.
+    #[test]
+    fn new_tracks_row_shortcuts_take_precedence_over_simultaneous_enter() {
+        let (ctx, mut app) = tracks_dialog(egui::os::OperatingSystem::Mac);
+        let rows = egui::Modifiers { command: true, mac_cmd: true, shift: true, ..Default::default() };
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowUp, rows), key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        let Some(Dialog::NewTracks(tracks)) = &app.dialogs.open else { panic!("missing New Tracks dialog") };
+        assert_eq!(tracks.rows.len(), 1, "the last row cannot be removed");
+        assert!(app.engine.session().tracks.is_empty());
+
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowDown, rows), key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        let Some(Dialog::NewTracks(tracks)) = &app.dialogs.open else { panic!("missing New Tracks dialog") };
+        assert_eq!(tracks.rows.len(), 2);
+        assert!(app.engine.session().tracks.is_empty());
+
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::ArrowUp, rows), key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        let Some(Dialog::NewTracks(tracks)) = &app.dialogs.open else { panic!("missing New Tracks dialog") };
+        assert_eq!(tracks.rows.len(), 1);
+        assert!(app.engine.session().tracks.is_empty());
+    }
+
+    /// Escape prevents a simultaneous Enter from starting a background bounce.
+    #[test]
+    fn simultaneous_enter_and_escape_does_not_start_a_bounce() {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, crate::Services::default());
+        assert!(app.dialogs.open_for_command(&app.engine, "file.bounce_mix"));
+        for _ in 0..3 {
+            dialog_frame(&ctx, &mut app, vec![]);
+        }
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::Enter, egui::Modifiers::NONE), key(egui::Key::Escape, egui::Modifiers::NONE)]);
+        assert!(app.dialogs.open.is_none());
+        assert!(app.bounce.is_none());
+    }
+
+    /// Escape prevents a simultaneous Save from scheduling the deferred session action.
+    #[test]
+    fn simultaneous_save_and_escape_does_not_continue_after_saving() {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, crate::Services::default());
+        let tracks = app.engine.session().tracks.len();
+        app.dialogs.open = Some(Dialog::SaveChanges { then: ("session.close".into(), json!({})) });
+        for _ in 0..3 {
+            dialog_frame(&ctx, &mut app, vec![]);
+        }
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::Enter, egui::Modifiers::NONE), key(egui::Key::Escape, egui::Modifiers::NONE)]);
+        assert!(app.dialogs.open.is_none());
+        assert!(app.dialogs.after_save.is_none());
+        assert_eq!(app.engine.session().tracks.len(), tracks);
     }
 
     /// Windows and Linux chords cover every editable field and row action.

@@ -88,9 +88,10 @@ impl NewTracks {
         }
     }
 
-    /// Handles the row, format, type and timebase shortcut families for the active row.
-    fn keys(&mut self, ctx: &egui::Context) {
+    /// Handles the row, format, type and timebase shortcuts and reports a row action.
+    fn keys(&mut self, ctx: &egui::Context) -> bool {
         let mac = ctx.os() == egui::os::OperatingSystem::Mac;
+        let mut row_action = false;
         ctx.input_mut(|i| {
             i.events.retain(|event| {
                 let Event::Key { key, pressed: true, modifiers: m, .. } = event else { return true };
@@ -103,6 +104,7 @@ impl NewTracks {
                         Key::ArrowUp => self.remove(self.active),
                         _ => return true,
                     }
+                    row_action = true;
                     return false;
                 }
                 if m.alt && m.ctrl && mac {
@@ -135,11 +137,12 @@ impl NewTracks {
                 false
             });
         });
+        row_action
     }
 
     /// Draws every creation row and returns one atomic `track.new` request when submitted.
     pub(crate) fn show(&mut self, ui: &mut Ui, enter: bool) -> Option<Value> {
-        self.keys(ui.ctx());
+        let shortcut_row_action = self.keys(ui.ctx());
         let widths = RowWidths::new(ui);
         ui.set_min_width(widths.total(ui));
         // The old row must not consume text on the first frame after adding a new one.
@@ -243,7 +246,7 @@ impl NewTracks {
                 });
             }
         });
-        let rows_changed = remove.is_some() || insert.is_some();
+        let row_action = shortcut_row_action || remove.is_some() || insert.is_some();
         if let Some(index) = remove {
             self.active = index;
             self.remove(index);
@@ -258,7 +261,7 @@ impl NewTracks {
             ui.colored_label(ui.visuals().error_fg_color, "Create up to 128 tracks at a time.");
         }
         // Enter on a focused row button changes that row only; it must not also submit the dialog.
-        if crate::dialogs::buttons_enabled(ui, "Create", enter && !rows_changed, can_create) && !rows_changed {
+        if crate::dialogs::buttons_enabled(ui, "Create", enter && !row_action, can_create) && !row_action {
             Some(json!({"rows": self.rows.iter().map(NewTrackRow::params).collect::<Vec<_>>()}))
         } else {
             None
