@@ -157,6 +157,22 @@ cargo run --release -p soundcraft -- --demo     # opens the demo song
 
 Linux needs the ALSA headers (`libasound2-dev` on Debian/Ubuntu, `alsa-lib-devel` on Fedora).
 
+On Void Linux (glibc or musl) install the toolchain and the development packages, then build with
+a current Rust from rustup if the `rust` package is older than 1.95:
+
+```sh
+sudo xbps-install -S base-devel pkg-config rustup alsa-lib-devel libxkbcommon-devel \
+  wayland-devel libX11-devel libxcb-devel libXcursor-devel libXrandr-devel libXi-devel \
+  fontconfig-devel freetype-devel vulkan-loader mesa-dri mesa-vulkan-overlay-layer
+rustup-init -y && . "$HOME/.cargo/env"
+cargo build --release -p soundcraft -p soundcraft-cli
+./target/release/soundcraft --demo
+```
+
+You also need a Vulkan or GL driver for your GPU (for example `mesa-vulkan-radeon`,
+`mesa-vulkan-intel` or the NVIDIA driver). VST3 and CLAP plugins built for glibc only load on the
+glibc flavour of Void.
+
 The web build:
 
 ```sh

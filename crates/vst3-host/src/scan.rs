@@ -33,14 +33,33 @@ impl Os {
     }
 }
 
+fn non_empty_env(k: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(k).filter(|v| !v.is_empty())
+}
+
+fn linux_multiarch_triple() -> Option<String> {
+    let arch = std::env::consts::ARCH;
+    match arch {
+        "x86_64" => Some("x86_64-linux-gnu".to_string()),
+        "x86" => Some("i386-linux-gnu".to_string()),
+        "aarch64" => Some("aarch64-linux-gnu".to_string()),
+        "arm" => Some("arm-linux-gnueabihf".to_string()),
+        "powerpc64" if cfg!(target_endian = "little") => Some("powerpc64le-linux-gnu".to_string()),
+        "powerpc64" => Some("powerpc64-linux-gnu".to_string()),
+        "riscv64" => Some("riscv64-linux-gnu".to_string()),
+        "s390x" => Some("s390x-linux-gnu".to_string()),
+        _ => None,
+    }
+}
+
 /// The standard VST3 search locations for this OS (existing or not), followed by every entry of
 /// the `VST3_PATH` environment variable.
 pub fn default_search_paths() -> Vec<PathBuf> {
     let mut v = os_search_paths(
         Os::current(),
-        std::env::var_os("HOME").map(PathBuf::from),
-        std::env::var_os("COMMONPROGRAMFILES").map(PathBuf::from),
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+        non_empty_env("HOME").map(PathBuf::from),
+        non_empty_env("COMMONPROGRAMFILES").map(PathBuf::from),
+        non_empty_env("LOCALAPPDATA").map(PathBuf::from),
     );
     if let Some(cp) = std::env::var_os("VST3_PATH") {
         v.extend(std::env::split_paths(&cp).filter(|p| !p.as_os_str().is_empty()));
@@ -69,9 +88,23 @@ pub fn os_search_paths(os: Os, home: Option<PathBuf>, common_program_files: Opti
         Os::Unix => {
             if let Some(h) = home {
                 v.push(h.join(".vst3"));
+                // Some managers use XDG data locations; keep it last among user paths.
+                v.push(h.join(".local").join("share").join("vst3"));
             }
+            if let Some(triple) = linux_multiarch_triple() {
+                v.push(PathBuf::from(format!("/usr/lib/{triple}/vst3")));
+                v.push(PathBuf::from(format!("/usr/local/lib/{triple}/vst3")));
+            }
+            v.push(PathBuf::from("/usr/lib64/vst3"));
+            v.push(PathBuf::from("/usr/local/lib64/vst3"));
             v.push(PathBuf::from("/usr/lib/vst3"));
             v.push(PathBuf::from("/usr/local/lib/vst3"));
+            if let Ok(exe) = std::env::current_exe()
+                && let Some(dir) = exe.parent()
+            {
+                v.push(dir.join("vst3"));
+                v.push(dir.join("..").join("lib").join("vst3"));
+            }
         }
     }
     v
@@ -138,7 +171,17 @@ fn arch_dirs(os: Os) -> &'static [&'static str] {
             if cfg!(target_arch = "aarch64") {
                 &["aarch64-linux"]
             } else if cfg!(target_arch = "x86") {
-                &["i386-linux"]
+                &["i686-linux", "i386-linux", "x86-linux"]
+            } else if cfg!(target_arch = "arm") {
+                &["armv7l-linux", "arm-linux"]
+            } else if cfg!(target_arch = "riscv64") {
+                &["riscv64-linux", "x86_64-linux"]
+            } else if cfg!(target_arch = "powerpc64") {
+                if cfg!(target_endian = "little") { &["powerpc64le-linux", "x86_64-linux"] } else { &["powerpc64-linux", "x86_64-linux"] }
+            } else if cfg!(target_arch = "s390x") {
+                &["s390x-linux", "x86_64-linux"]
+            } else if cfg!(target_arch = "loongarch64") {
+                &["loongarch64-linux", "x86_64-linux"]
             } else {
                 &["x86_64-linux"]
             }
@@ -299,7 +342,9 @@ mod tests {
         assert_eq!(win[0], PathBuf::from("C:/CPF").join("VST3"));
         assert_eq!(win.len(), 2);
         let unix = os_search_paths(Os::Unix, Some("/home/u".into()), None, None);
-        assert_eq!(unix, vec![PathBuf::from("/home/u/.vst3"), PathBuf::from("/usr/lib/vst3"), PathBuf::from("/usr/local/lib/vst3")]);
+        assert!(unix.first() == Some(&PathBuf::from("/home/u/.vst3")));
+        assert!(unix.contains(&PathBuf::from("/usr/lib/vst3")));
+        assert!(unix.contains(&PathBuf::from("/usr/local/lib/vst3")));
         assert!(!default_search_paths().is_empty());
     }
 
