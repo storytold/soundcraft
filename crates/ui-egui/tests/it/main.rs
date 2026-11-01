@@ -21,6 +21,7 @@ mod edit_window_headers;
 mod group_dialog;
 mod hide_floating;
 mod idle;
+mod import_browse;
 mod key_families;
 mod marker_rename;
 mod menu_search;

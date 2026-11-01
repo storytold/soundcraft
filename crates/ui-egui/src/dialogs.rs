@@ -355,7 +355,25 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
 fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut String, key: &str, enter: bool) -> Option<(String, Value)> {
     crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "Path");
     let mut picked = None;
+    // Import Audio picks several files at once; every other open dialog takes one.
+    let multi = cmd == "file.import_audio" && app.services.pick_open_many.is_some();
+    if multi
+        && let Some(pick) = &app.services.pick_open_many
+        && ui.button("Browse…").clicked()
+    {
+        let mut files = pick(cmd);
+        if files.len() > 1 {
+            let texts: Result<Vec<&str>, _> = files.iter().map(|f| unicode(f)).collect();
+            match texts {
+                Ok(texts) => return Some((cmd.to_string(), json!({"paths": texts}))),
+                Err(e) => app.ui.status = e.to_string(),
+            }
+        } else {
+            picked = files.pop();
+        }
+    }
     if let Some(pick) = &app.services.pick_open
+        && !multi
         && cmd != "session.save_as"
         && cmd != "session.save_copy"
         && key != "dir"
