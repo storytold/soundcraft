@@ -48,7 +48,7 @@ pub fn record_close_capture(app: &mut SoundApp, request: &str, doc: u64, revisio
 }
 
 /// Only an exact, durable checkpoint can continue the original close/open/quit action.
-pub fn finish_close_capture(app: &mut SoundApp, capture: &crate::file_providers::Capture, durable: bool) {
+pub fn finish_close_capture(app: &mut SoundApp, capture: &crate::file_providers::Capture, durable: bool, ctx: &egui::Context) {
     let matches =
         app.dialogs.provider_after_save.as_ref().is_some_and(|after| after.doc == capture.doc && after.captured_revision == Some(capture.revision));
     if !matches {
@@ -59,6 +59,11 @@ pub fn finish_close_capture(app: &mut SoundApp, capture: &crate::file_providers:
         && document_id(app) == after.doc
         && app.engine.revision == capture.revision
         && !app.has_unsaved_changes()
+        && app.gesture.is_none()
+        && !app.pointer_down
+        // Logic receives the ACK before widgets apply this pass's raw input. Keep the
+        // durable checkpoint, but never replace its document underneath admitted input.
+        && !ctx.input(|input| !input.events.is_empty() || !input.raw.dropped_files.is_empty() || input.pointer.any_down())
         && !app.engine.transport.recording
         && !app.imports.busy()
         && app.bounce.is_none()

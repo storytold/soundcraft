@@ -1695,6 +1695,17 @@ fn acknowledge_provider_close(
     snapshot: std::sync::Arc<soundcraft_model::Session>,
     saved: bool,
 ) {
+    acknowledge_provider_close_in_frame(app, host, request, snapshot, saved, &egui::Context::default());
+}
+
+fn acknowledge_provider_close_in_frame(
+    app: &mut SoundApp,
+    host: &crate::file_providers::Host,
+    request: &str,
+    snapshot: std::sync::Arc<soundcraft_model::Session>,
+    saved: bool,
+    ctx: &egui::Context,
+) {
     host.result(request.into(), if saved { "saved" } else { "failed" }.into(), if saved { "saved-session" } else { "" }.into()).unwrap();
     let mut commands = host.take_commands();
     let crate::file_providers::Command::Result { capture, .. } = commands.remove(0) else {
@@ -1703,7 +1714,7 @@ fn acknowledge_provider_close(
     if saved {
         app.engine.acknowledge_external_save(snapshot);
     }
-    crate::provider_ui::finish_close_capture(app, &capture, saved);
+    crate::provider_ui::finish_close_capture(app, &capture, saved, ctx);
     crate::provider_ui::discard_finished_close_capture(app);
 }
 
@@ -1771,7 +1782,82 @@ fn provider_close_continuation_cannot_follow_a_replaced_document() {
     let (mut app, host, request) = provider_close_prompt();
     let (capture, _) = capture_provider_close(&mut app, &host, &request);
     app.document_replaced();
-    crate::provider_ui::finish_close_capture(&mut app, &capture, true);
+    crate::provider_ui::finish_close_capture(&mut app, &capture, true, &egui::Context::default());
     assert!(!app.quit_requested);
     assert!(app.dialogs.provider_after_save.is_none());
+}
+
+#[test]
+fn provider_ack_with_unconsumed_frame_input_keeps_the_saved_session_open() {
+    #[derive(Debug)]
+    struct PendingDrop;
+    impl egui::DroppedFile for PendingDrop {
+        fn path(&self) -> &std::path::Path {
+            std::path::Path::new("pending.scraftz")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            Err("This fixture only admits a dropped handle, without reading it".into())
+        }
+        #[cfg(target_arch = "wasm32")]
+        fn bytes_async(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + '_>> {
+            Box::pin(async { Err("This fixture only admits a dropped handle, without reading it".into()) })
+        }
+    }
+    let at = egui::pos2(40.0, 40.0);
+    let inputs = [
+        egui::RawInput { events: vec![egui::Event::Text("late input".into())], ..Default::default() },
+        egui::RawInput {
+            events: vec![egui::Event::Key { key: egui::Key::N, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+            ..Default::default()
+        },
+        egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        },
+        egui::RawInput { dropped_files: vec![std::sync::Arc::new(PendingDrop)], ..Default::default() },
+    ];
+    for input in inputs {
+        let (mut app, host, request) = provider_close_prompt();
+        let (_, snapshot) = capture_provider_close(&mut app, &host, &request);
+        let mut snapshot = Some(snapshot);
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(input, |ui| {
+            let Some(snapshot) = snapshot.take() else { return };
+            // The browser calls Runtime::tick in logic, before the UI can consume this input.
+            acknowledge_provider_close_in_frame(&mut app, &host, &request, snapshot, true, ui.ctx());
+            assert!(!app.quit_requested);
+            assert!(app.dialogs.provider_after_save.is_none(), "input cancels only the continuation");
+            assert!(!app.engine.is_dirty(), "the durable checkpoint remains valid");
+            app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+            assert!(app.engine.is_dirty(), "the subsequently applied edit must remain unsaved");
+        });
+        output.textures_delta.clear();
+        assert!(snapshot.is_none(), "the frame must deliver its ACK before UI work");
+        assert!(!app.quit_requested);
+        assert!(app.engine.is_dirty());
+    }
+}
+
+#[test]
+fn provider_ack_does_not_close_a_preexisting_editor_gesture_or_held_pointer() {
+    for held_pointer in [false, true] {
+        let (mut app, host, request) = provider_close_prompt();
+        let (_, snapshot) = capture_provider_close(&mut app, &host, &request);
+        if held_pointer {
+            app.pointer_down = true;
+        } else {
+            app.gesture = Some(super::Gesture::Fader { track: app.engine.session().tracks[0].id, start_db: 0.0 });
+        }
+        acknowledge_provider_close(&mut app, &host, &request, snapshot, true);
+        assert!(!app.quit_requested);
+        assert!(!app.engine.is_dirty(), "an in-flight gesture does not invalidate a durable ACK");
+        assert!(app.pointer_down || app.gesture.is_some(), "the pending editor interaction is preserved");
+        assert!(app.dialogs.provider_after_save.is_none());
+    }
 }

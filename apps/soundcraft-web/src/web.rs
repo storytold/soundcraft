@@ -211,7 +211,7 @@ impl eframe::App for WebShell {
             self.app.load_sample_bytes(&read, bytes);
         }
         self.app.logic(ctx);
-        self.providers.tick(&mut self.app);
+        self.providers.tick(&mut self.app, ctx);
         // A prompt opened during this frame becomes a picker on the next one.
         self.take_path_prompt(ctx);
     }

@@ -14,7 +14,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn tick(&mut self, app: &mut SoundApp) {
+    pub fn tick(&mut self, app: &mut SoundApp, ctx: &egui::Context) {
         let host = app.services.file_providers.clone();
         for command in host.take_commands() {
             match command {
@@ -58,7 +58,7 @@ impl Runtime {
                             durable = true;
                         }
                     }
-                    soundcraft_ui_egui::provider_ui::finish_close_capture(app, &capture, durable);
+                    soundcraft_ui_egui::provider_ui::finish_close_capture(app, &capture, durable, ctx);
                 }
                 Command::Open { request, resource: _, name, bytes } => {
                     let result = if app.engine.is_dirty() || host.pending_for(soundcraft_ui_egui::provider_ui::document_id(app)) {
