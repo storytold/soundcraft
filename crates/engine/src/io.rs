@@ -426,6 +426,7 @@ pub fn bounce_stems_with(e: &Engine, dir: &str, r: Range, opts: &EncodeOptions, 
     make_dir(dir)?;
     let ext = opts.format.default_extension();
     let mut out = Vec::new();
+    let mut taken = std::collections::HashSet::new();
     let stems: Vec<(TrackId, String)> = s
         .tracks
         .iter()
@@ -437,7 +438,15 @@ pub fn bounce_stems_with(e: &Engine, dir: &str, r: Range, opts: &EncodeOptions, 
         for t in &mut solo.tracks {
             t.mixer.solo = t.id == id;
         }
-        let path = Path::new(dir).join(format!("{} - {}.{ext}", sanitize_name(&s.name), sanitize_name(&name)));
+        let stem = format!("{} - {}", sanitize_name(&s.name), sanitize_name(&name));
+        let mut path = Path::new(dir).join(format!("{stem}.{ext}"));
+        let mut k = 2u32;
+        // Compare case-folded: default macOS/Windows file systems are case-insensitive.
+        while taken.contains(&path.to_string_lossy().to_lowercase()) {
+            path = Path::new(dir).join(format!("{stem}-{k}.{ext}"));
+            k = k.saturating_add(1);
+        }
+        taken.insert(path.to_string_lossy().to_lowercase());
         Bounce::new(Arc::new(solo), &path, r, opts, None, false, fold_stereo)?.run()?;
         out.push(path.to_string_lossy().into_owned());
     }
