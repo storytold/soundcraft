@@ -1706,6 +1706,18 @@ fn acknowledge_provider_close_in_frame(
     saved: bool,
     ctx: &egui::Context,
 ) {
+    let capture = consume_provider_close_ack(app, host, request, snapshot, saved);
+    crate::provider_ui::finish_close_capture(app, &capture, saved, ctx);
+    crate::provider_ui::discard_finished_close_capture(app);
+}
+
+fn consume_provider_close_ack(
+    app: &mut SoundApp,
+    host: &crate::file_providers::Host,
+    request: &str,
+    snapshot: std::sync::Arc<soundcraft_model::Session>,
+    saved: bool,
+) -> crate::file_providers::Capture {
     host.result(request.into(), if saved { "saved" } else { "failed" }.into(), if saved { "saved-session" } else { "" }.into()).unwrap();
     let mut commands = host.take_commands();
     let crate::file_providers::Command::Result { capture, .. } = commands.remove(0) else {
@@ -1714,8 +1726,7 @@ fn acknowledge_provider_close_in_frame(
     if saved {
         app.engine.acknowledge_external_save(snapshot);
     }
-    crate::provider_ui::finish_close_capture(app, &capture, saved, ctx);
-    crate::provider_ui::discard_finished_close_capture(app);
+    capture
 }
 
 #[test]
@@ -1723,8 +1734,20 @@ fn save_before_close_waits_for_its_exact_provider_ack() {
     let (mut app, host, request) = provider_close_prompt();
     let (_, snapshot) = capture_provider_close(&mut app, &host, &request);
     assert!(!app.quit_requested, "capturing or emitting bytes must not close the session");
-    acknowledge_provider_close(&mut app, &host, &request, snapshot, true);
-    assert!(app.quit_requested);
+    let capture = consume_provider_close_ack(&mut app, &host, &request, snapshot, true);
+    let ctx = egui::Context::default();
+    assert_eq!(app.doc_epoch, capture.doc, "the ACK must still belong to the open document");
+    assert_eq!(app.engine.revision, capture.revision, "the positive case must have no later edit");
+    assert!(!host.busy(), "the consumed ACK must release provider work: {}", host.snapshot());
+    assert!(!app.has_unsaved_changes(), "a current saved snapshot must have no outstanding plugin draft");
+    assert!(app.gesture.is_none() && !app.pointer_down, "the positive case must have no editor gesture");
+    assert!(!app.engine.transport.recording && !app.imports.busy() && app.bounce.is_none(), "the positive case must have no media job");
+    assert!(app.dialogs.open.is_none(), "the positive case must have no uncommitted dialog");
+    assert!(!ctx.input(|input| !input.events.is_empty() || !input.raw.dropped_files.is_empty() || input.pointer.any_down()));
+    let continuation = format!("{:?}", app.dialogs.provider_after_save);
+    crate::provider_ui::finish_close_capture(&mut app, &capture, true, &ctx);
+    crate::provider_ui::discard_finished_close_capture(&mut app);
+    assert!(app.quit_requested, "saved continuation {continuation}; status: {}", app.ui.status);
     assert!(!app.engine.is_dirty());
     assert!(app.dialogs.provider_after_save.is_none());
 }
