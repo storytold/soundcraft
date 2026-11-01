@@ -17,6 +17,22 @@ fn capture(doc: u64, revision: u64) -> Capture {
 }
 
 #[test]
+fn disconnect_forgets_document_metadata_before_another_account_registers() {
+    let host = Host::default();
+    host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+    host.connect("test".into(), "Provider".into(), "account-a".into()).unwrap();
+    let documents = json!([{"id":"1","name":"Account A document","dirty":true}]);
+    host.publish_documents(documents.clone(), &[1]);
+    assert_eq!(host.snapshot()["documents"], documents);
+    host.disconnect().unwrap();
+    assert!(host.snapshot()["documents"].is_null());
+    host.connect("test".into(), "Provider".into(), "account-b".into()).unwrap();
+    let snapshot = host.snapshot();
+    assert_eq!(snapshot["namespace"], "account-b");
+    assert!(snapshot["documents"].is_null(), "the new account must not see metadata cached before its first UI tick");
+}
+
+#[test]
 fn disabled_until_explicit_registration() {
     let host = Host::default();
     assert!(!host.enabled());
@@ -173,4 +189,110 @@ fn taking_a_choice_retains_account_and_document_ownership_until_serialization_fi
     host.finish_device(&id);
     assert!(!host.busy());
     host.disconnect().unwrap();
+}
+
+fn fill_event_queue(host: &Host) {
+    let mut state = host.state();
+    for index in 0..super::MAX_EVENTS {
+        state.event(json!({"type":"queued", "index":index}), None).unwrap();
+    }
+}
+
+#[test]
+fn full_event_queue_retains_open_success_and_failure_until_ordered_drain() {
+    for success in [true, false] {
+        let (host, connection) = connected();
+        host.set_resources(&connection, vec![Resource { id: "one".into(), name: "One.zip".into(), updated_at: String::new() }]).unwrap();
+        let read = host.request_open("one").unwrap();
+        host.open(read.clone(), "One.zip".into(), vec![7]).unwrap();
+        host.take_commands();
+        host.take_events();
+        fill_event_queue(&host);
+        host.opened(&read, success.then(|| capture(1, 1)), "decoder failed\n");
+        host.opened(&read, None, "duplicate");
+        assert!(host.busy());
+        assert!(host.disconnect().is_err());
+        assert_eq!(host.state().finished.len(), 1);
+        let earlier = host.take_events();
+        assert_eq!(earlier.len(), super::MAX_EVENTS);
+        assert!(earlier.iter().all(|event| event.metadata["type"] == "queued"));
+        let terminal = host.take_events();
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].metadata["requestId"], read);
+        assert_eq!(terminal[0].metadata["resourceId"], "one");
+        assert_eq!(terminal[0].metadata["namespace"], "account-one");
+        assert_eq!(terminal[0].metadata["connectionId"], connection);
+        assert_eq!(terminal[0].metadata["type"], if success { "opened" } else { "openFailed" });
+        assert_eq!(host.bound(1), success);
+        assert!(!host.busy());
+        assert!(host.take_events().is_empty());
+        host.disconnect().unwrap();
+    }
+}
+
+#[test]
+fn full_event_queue_retains_save_failure_and_rejects_unowned_or_duplicate_terminals() {
+    let (host, _) = connected();
+    let save = request(&host, 1);
+    host.resolve_dialog(&save, "provider", "").unwrap();
+    host.take_commands();
+    fill_event_queue(&host);
+    host.failed(&save, "encoder failed");
+    host.failed(&save, "duplicate");
+    host.failed("unowned", "forged");
+    assert_eq!(host.state().finished.len(), 1);
+    assert!(host.pending_for(1));
+    assert!(host.disconnect().is_err());
+    for doc in 2..100 {
+        assert!(host.choose(doc, 1, "Other.zip".into(), false).is_err());
+    }
+    assert_eq!(host.take_events().len(), super::MAX_EVENTS);
+    let terminal = host.take_events();
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0].metadata["type"], "saveFailed");
+    assert_eq!(terminal[0].metadata["requestId"], save);
+    assert_eq!(terminal[0].metadata["error"], "encoder failed");
+    assert!(!host.pending_for(1));
+    assert!(!host.busy());
+    host.failed(&save, "late duplicate");
+    assert!(host.take_events().is_empty());
+}
+
+#[test]
+fn retained_terminals_are_bounded_by_already_admitted_reads_and_saves() {
+    let (host, connection) = connected();
+    host.set_resources(&connection, vec![Resource { id: "one".into(), name: "One.zip".into(), updated_at: String::new() }]).unwrap();
+    let mut saves = Vec::new();
+    let mut reads = Vec::new();
+    for doc in 1..=super::MAX_PENDING as u64 {
+        let save = request(&host, doc);
+        host.resolve_dialog(&save, "provider", "").unwrap();
+        host.take_commands();
+        saves.push(save);
+        let read = host.request_open("one").unwrap();
+        host.open(read.clone(), "One.zip".into(), vec![]).unwrap();
+        host.take_commands();
+        host.take_events();
+        reads.push(read);
+    }
+    fill_event_queue(&host);
+    for read in &reads {
+        host.opened(read, None, "decode failed");
+    }
+    for save in &saves {
+        host.failed(save, "encode failed");
+    }
+    assert_eq!(host.state().finished.len(), super::MAX_PENDING * 2);
+    assert!(host.request_open("one").is_err());
+    assert!(host.choose(999, 1, "New.zip".into(), false).is_err());
+    assert_eq!(host.take_events().len(), super::MAX_EVENTS);
+    let terminals = host.take_events();
+    assert_eq!(terminals.len(), super::MAX_PENDING * 2);
+    let expected: Vec<_> = reads.iter().chain(&saves).map(String::as_str).collect();
+    let delivered: Vec<_> = terminals.iter().map(|event| event.metadata["requestId"].as_str().unwrap()).collect();
+    assert_eq!(delivered, expected, "retained completions must preserve completion order");
+    assert!(terminals.iter().all(|event| event.metadata["connectionId"] == connection && event.metadata["namespace"] == "account-one"));
+    assert!(terminals.len() <= super::MAX_EVENTS);
+    assert!(!host.busy());
+    assert!(host.take_events().is_empty());
 }

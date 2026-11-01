@@ -61,12 +61,12 @@ impl Runtime {
                     soundcraft_ui_egui::provider_ui::finish_close_capture(app, &capture, durable, ctx);
                 }
                 Command::Open { request, resource: _, name, bytes } => {
-                    let result = if app.engine.is_dirty() || host.pending_for(soundcraft_ui_egui::provider_ui::document_id(app)) {
-                        Err("Save the current session, or close it explicitly, before opening a provider session".into())
+                    let result = if !soundcraft_ui_egui::provider_ui::can_replace_session(app, ctx) {
+                        Err("Save changes and finish pending work before opening a provider session".into())
                     } else {
                         let mut decoded = Engine::default();
-                        io::open_provider_session_bytes(&mut decoded, &name, &bytes).map_err(|e| e.to_string()).map(|_| {
-                            soundcraft_ui_egui::provider_ui::install_session(app, decoded.session().clone());
+                        io::open_provider_session_bytes(&mut decoded, &name, &bytes).map_err(|e| e.to_string()).and_then(|_| {
+                            soundcraft_ui_egui::provider_ui::install_session(app, decoded.session().clone(), ctx)
                         })
                     };
                     match result {

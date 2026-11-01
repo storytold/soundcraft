@@ -27,8 +27,13 @@ API: window.soundcraftFileProviders; CustomEvent: soundcraft-file-provider. The 
   Only a current requested resource can be delivered; opened is emitted after project decoding and
   complete media restoration. Failed or dirty-session opens emit openFailed and preserve the editor.
 - resolveSaveDialog(requestId, destination, filename), where destination is provider, device or cancel.
+  Pass an explicit string for filename: use "" to keep the suggested name, including for cancel.
+  Omitting it, null or undefined is rejected before resolving the choice, which remains retryable.
 - saveResult(requestId, status, resourceId), status saved, failed, cancel or download. **Only saved**
   means a durable provider checkpoint; download never acknowledges persistence or clears dirty state.
+  resourceId must also be an explicit string: use "" when no durable resource was created (failed,
+  cancel or download). A saved result requires the actual valid resource ID. Omitted/null/undefined
+  arguments reject the call without consuming the pending result.
 - snapshot() reports connected/enabled, provider identity, resources, active document and pending work.
 
 Every interactive Save and Save As emits saveDialog with requestId, documentId, revision, name,
@@ -36,6 +41,9 @@ saveAs and the existing resourceId where relevant. Repeated Save while pending i
 After the choice, the editor freezes native document state and all supported media. A provider
 save event owns bytes (Uint8Array), bytesLength, destination=provider and the exact captured
 revision. The host MUST acknowledge only after durable persistence. Later edits remain dirty.
+If capture or encoding fails (including the 80 MiB bound), saveFailed is emitted instead with
+requestId and error. The host should dismiss that request's progress indicator and show the error;
+it must not keep waiting for a save event or acknowledge bytes that were never emitted.
 A device choice uses the original native serializer and browser download writer; it keeps provider
 dirty state unchanged. Device formats and resource-linking behavior remain those of the official web app.
 Cancel/failure never marks the project clean. Request IDs include a random page nonce and a
@@ -81,3 +89,7 @@ The browser checks unconsumed frame input before a saved-project continuation: t
 pointer events, dropped files, held pointers and active editor gestures keep the project open.
 This cancels only the close/open/quit continuation; the acknowledged checkpoint stays valid,
 and edits applied by the following UI pass become dirty normally.
+Direct provider opens use the same replacement guard. An active recording, queued import,
+bounce, dialog, plugin state draft, editor gesture, held pointer or unconsumed frame input refuses
+the open before stopping playback or installing a decoded session. The current take and session
+remain available; retry opening after finishing and saving the pending work.

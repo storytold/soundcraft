@@ -63,19 +63,7 @@ pub fn finish_close_capture(app: &mut SoundApp, capture: &crate::file_providers:
         return;
     }
     let Some(after) = app.dialogs.provider_after_save.take() else { return };
-    let ready = durable
-        && document_id(app) == after.doc
-        && app.engine.revision == capture.revision
-        && !app.has_unsaved_changes()
-        && app.gesture.is_none()
-        && !app.pointer_down
-        // Logic receives the ACK before widgets apply this pass's raw input. Keep the
-        // durable checkpoint, but never replace its document underneath admitted input.
-        && !ctx.input(|input| !input.events.is_empty() || !input.raw.dropped_files.is_empty() || input.pointer.any_down())
-        && !app.engine.transport.recording
-        && !app.imports.busy()
-        && app.bounce.is_none()
-        && app.dialogs.open.is_none();
+    let ready = durable && document_id(app) == after.doc && app.engine.revision == capture.revision && can_replace_session(app, ctx);
     if !ready {
         crate::dialogs::discard_provider_close(app);
         return;
@@ -114,11 +102,29 @@ pub fn recent(app: &SoundApp, ui: &mut egui::Ui) {
 }
 
 /// Install a fully decoded provider session after every asset has been validated.
-pub fn install_session(app: &mut SoundApp, session: soundcraft_model::Session) {
+pub fn install_session(app: &mut SoundApp, session: soundcraft_model::Session, ctx: &egui::Context) -> Result<(), String> {
+    if !can_replace_session(app, ctx) {
+        return Err("Save changes and finish pending work before opening a provider session".into());
+    }
     app.stop_play();
     app.engine.replace_session(session);
     app.engine.path = None;
     app.document_replaced();
+    Ok(())
+}
+
+/// Provider opens and saved-project continuations share the same loss-prevention boundary.
+pub fn can_replace_session(app: &SoundApp, ctx: &egui::Context) -> bool {
+    !app.has_unsaved_changes()
+        && app.gesture.is_none()
+        && !app.pointer_down
+        // Logic receives provider replies before widgets apply this pass's raw input.
+        && !ctx.input(|input| !input.events.is_empty() || !input.raw.dropped_files.is_empty() || input.pointer.any_down())
+        && !app.engine.transport.recording
+        && !app.imports.busy()
+        && app.bounce.is_none()
+        && app.dialogs.open.is_none()
+        && !app.services.file_providers.pending_for(document_id(app))
 }
 
 /// Safe suggested filename; project names may contain path separators or be long UTF-8.
@@ -210,5 +216,95 @@ mod provider_routing_tests {
         assert!(app.dialogs.provider_after_save.is_none());
         assert!(host.take_events().is_empty(), "coalescing an in-flight snapshot must not emit a fresh chooser");
         assert!(!app.quit_requested);
+    }
+
+    #[test]
+    fn provider_open_preserves_pending_recording_jobs_and_editor_drafts() {
+        for pending in ["dirty", "plugin", "gesture", "pointer", "recording", "import", "bounce", "dialog", "save"] {
+            let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+            app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+            app.engine.acknowledge_external_save(app.engine.session_arc());
+            let ctx = egui::Context::default();
+            assert!(can_replace_session(&app, &ctx), "the fixture starts with a replaceable clean session");
+            let directory = tempfile::tempdir().unwrap();
+            let track = app.engine.session().tracks[0].id;
+            match pending {
+                "dirty" => {
+                    app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+                }
+                "plugin" => app.editor_states.push((track, 0)),
+                "gesture" => app.gesture = Some(crate::Gesture::Fader { track, start_db: 0.0 }),
+                "pointer" => app.pointer_down = true,
+                "recording" => app.engine.transport.recording = true,
+                "import" => crate::import::start(&mut app, json!({"path":"queued-audio.wav"})),
+                "bounce" => {
+                    let path = directory.path().join("pending.wav");
+                    app.bounce = Some(soundcraft_engine::cmd::bounce_job(&app.engine, &json!({"path":path})).unwrap());
+                }
+                "dialog" => {
+                    app.dialogs.open = Some(crate::dialogs::Dialog::NewSession { name: "Pending dialog".into(), sample_rate: 48000, demo: false });
+                }
+                "save" => {
+                    let host = &app.services.file_providers;
+                    host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+                    host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+                    host.choose(app.doc_epoch, app.engine.revision, "Pending.scraftz".into(), false).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let original = app.engine.session_arc();
+            let epoch = app.doc_epoch;
+            assert!(!can_replace_session(&app, &ctx), "{pending} must block replacement");
+            let mut incoming = soundcraft_model::Session::default();
+            incoming.name = "Incoming provider session".into();
+            assert!(install_session(&mut app, incoming, &ctx).is_err(), "{pending}");
+            assert!(std::sync::Arc::ptr_eq(&original, &app.engine.session_arc()), "{pending}: the current document was replaced or mutated");
+            assert_eq!(app.doc_epoch, epoch, "{pending}");
+            match pending {
+                "plugin" => assert_eq!(app.editor_states, vec![(track, 0)]),
+                "gesture" => assert!(app.gesture.is_some()),
+                "pointer" => assert!(app.pointer_down),
+                "recording" => assert!(app.engine.transport.recording, "Open must not stop/finalize the pending take"),
+                "import" => assert!(app.imports.busy()),
+                "bounce" => assert!(app.bounce.is_some()),
+                "dialog" => assert!(app.dialogs.open.is_some()),
+                "save" => assert!(app.services.file_providers.pending_for(epoch)),
+                _ => assert!(app.engine.is_dirty()),
+            }
+        }
+    }
+
+    #[test]
+    fn provider_open_admits_only_a_clean_idle_session_and_preserves_current_frame_input() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let ctx = egui::Context::default();
+        assert!(can_replace_session(&app, &ctx));
+        let epoch = app.doc_epoch;
+        let mut incoming = soundcraft_model::Session::default();
+        incoming.name = "Incoming provider session".into();
+        install_session(&mut app, incoming, &ctx).unwrap();
+        assert_eq!(app.engine.session().name, "Incoming provider session");
+        assert_ne!(app.doc_epoch, epoch);
+        assert!(!app.has_unsaved_changes());
+        let original = app.engine.session_arc();
+        let epoch = app.doc_epoch;
+        let input = egui::RawInput { events: vec![egui::Event::Text("Unconsumed edit".into())], ..Default::default() };
+        let mut checked = false;
+        let mut output = ctx.run_ui(input, |ui| {
+            if checked {
+                return;
+            }
+            checked = true;
+            assert!(!can_replace_session(&app, ui.ctx()));
+            assert!(install_session(&mut app, soundcraft_model::Session::default(), ui.ctx()).is_err());
+            assert!(std::sync::Arc::ptr_eq(&original, &app.engine.session_arc()));
+            assert_eq!(app.doc_epoch, epoch);
+            app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+            assert!(app.engine.is_dirty(), "the following UI pass must retain its admitted edit");
+        });
+        output.textures_delta.clear();
+        assert!(checked, "the fixture must exercise the pre-UI replacement boundary");
+        assert_eq!(app.engine.session().name, "Incoming provider session");
+        assert!(app.engine.is_dirty());
     }
 }
