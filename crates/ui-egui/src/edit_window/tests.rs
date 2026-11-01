@@ -1508,3 +1508,65 @@ fn alt_click_on_a_breakpoint_deletes_it() {
         assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}");
     }
 }
+
+#[test]
+fn playhead_is_red_only_while_recording() {
+    for t in [Tokens::DARK, Tokens::LIGHT] {
+        assert_eq!(playhead_colour(&t, true), t.playhead);
+        assert_eq!(playhead_colour(&t, false), t.playback);
+        assert_ne!(t.playback, t.playhead, "plain playback must not read as the record line");
+    }
+}
+
+/// WCAG contrast ratio between two colours (1 = identical, 21 = black on white).
+fn contrast(a: Color32, b: Color32) -> f32 {
+    let lum = |c: Color32| {
+        let lin = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    };
+    let (hi, lo) = (lum(a).max(lum(b)), lum(a).min(lum(b)));
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// The edit cursor stands still beside the moving playback line while playing: in both themes
+/// they must be two clearly different greys, and the line must still read on the lanes.
+#[test]
+fn the_playback_line_is_set_apart_from_the_insertion_point_in_both_themes() {
+    for (name, t) in [("dark", Tokens::DARK), ("light", Tokens::LIGHT)] {
+        let apart = contrast(t.playback, t.insertion);
+        assert!(apart >= 2.5, "{name}: playback {:?} and insertion {:?} are only {apart:.2}:1 apart", t.playback, t.insertion);
+        let reads = contrast(t.playback, t.playlist_bg);
+        assert!(reads >= 3.0, "{name}: the playback line is only {reads:.2}:1 on the lanes");
+    }
+}
+
+/// The colour `overlay` gives the full-height playback line (width 1.5) in this transport state.
+fn playback_line_colour(recording: bool) -> Option<Color32> {
+    use egui::{Rect, pos2};
+    let _palette = crate::theme::lock_test_palette();
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+    app.engine.session_mut().edit.zoom.samples_per_px = 1_000.0;
+    app.engine.transport.playing = true;
+    app.engine.transport.recording = recording;
+    app.engine.transport.position = 80_000;
+    let tl = Rect::from_min_max(pos2(100.0, 100.0), pos2(900.0, 500.0));
+    let area = Rect::from_min_max(pos2(100.0, 50.0), tl.max);
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| overlay(&mut app, ui, tl, area));
+    output.textures_delta.clear();
+    output.shapes.iter().find_map(|s| match &s.shape {
+        Shape::LineSegment { points, stroke } if points[0].x == 180.0 && stroke.width == 1.5 => Some(stroke.color),
+        _ => None,
+    })
+}
+
+#[test]
+fn overlay_draws_the_playback_line_neutral_and_the_record_line_red() {
+    let _palette = crate::theme::lock_test_palette();
+    let t = Tokens::current();
+    assert_eq!(playback_line_colour(false), Some(t.playback));
+    assert_eq!(playback_line_colour(true), Some(t.playhead));
+}
