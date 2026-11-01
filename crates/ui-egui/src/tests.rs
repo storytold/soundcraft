@@ -1618,3 +1618,272 @@ fn assert_history_unchanged(
     assert_eq!(app.engine.undo_history(), history);
     assert_eq!(&app.engine.journal, journal);
 }
+
+#[test]
+fn registered_provider_does_not_intercept_programmatic_save_paths() {
+    let dir = std::env::temp_dir().join(format!("soundcraft-provider-programmatic-save-{}", std::process::id()));
+    // Create rather than reuse the directory: this test only removes the directory it owns.
+    std::fs::create_dir(&dir).unwrap();
+    for command in ["session.save", "session.save_as"] {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let host = app.services.file_providers.clone();
+        host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+        host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+        let path = dir.join(format!("{command}.scraft"));
+        app.run(command, json!({"path": path.to_string_lossy()})).unwrap();
+        assert!(path.is_file(), "{command} must write the explicitly supplied device path");
+        assert!(host.take_events().is_empty(), "programmatic {command} must not ask for a provider destination");
+        assert!(!host.busy());
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn pending_provider_capture_still_blocks_programmatic_session_replacement() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    let host = app.services.file_providers.clone();
+    host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+    host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+    host.choose(app.doc_epoch, app.engine.revision, "Pending.scraftz".into(), false).unwrap();
+    // Disabling new provider choices cannot discard an operation that is already pending.
+    host.set_enabled(false).unwrap();
+    let epoch = app.doc_epoch;
+    for command in ["session.new", "session.open", "session.close", "session.revert", "app.quit"] {
+        assert!(app.run(command, json!({})).unwrap_err().contains("pending provider operation"));
+        assert_eq!(app.doc_epoch, epoch);
+    }
+    assert!(!app.quit_requested);
+}
+
+fn provider_close_prompt() -> (SoundApp, crate::file_providers::Host, String) {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+    let host = app.services.file_providers.clone();
+    host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+    host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+    assert!(crate::dialogs::save_before_close(&mut app, ("app.quit".into(), json!({}))).is_none());
+    assert!(app.dialogs.open.is_none(), "provider Save must not open the local path prompt");
+    let events = host.take_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].metadata["type"], "saveDialog");
+    let request = events[0].metadata["requestId"].as_str().unwrap().to_string();
+    assert!(app.dialogs.provider_after_save.is_some(), "the close fixture must start with a live continuation: {}", app.ui.status);
+    assert_eq!(crate::provider_ui::close_capture_identity(&app), Some((request.as_str(), app.doc_epoch, None)));
+    (app, host, request)
+}
+
+fn capture_provider_close(
+    app: &mut SoundApp,
+    host: &crate::file_providers::Host,
+    request: &str,
+) -> (crate::file_providers::Capture, std::sync::Arc<soundcraft_model::Session>) {
+    host.resolve_dialog(request, "provider", "Saved.scraftz").unwrap();
+    let commands = host.take_commands();
+    assert!(matches!(commands.as_slice(), [crate::file_providers::Command::Save { .. }]));
+    app.capture_plugin_states();
+    let snapshot = app.engine.session_arc();
+    let capture = crate::file_providers::Capture { doc: app.doc_epoch, revision: app.engine.revision, name: "Saved.scraftz".into(), save_as: false };
+    crate::provider_ui::record_close_capture(app, request, capture.doc, capture.revision);
+    assert_eq!(crate::provider_ui::close_capture_identity(app), Some((request, capture.doc, Some(capture.revision))));
+    let bytes = soundcraft_engine::io::session_provider_bundle(&snapshot).unwrap();
+    host.capture(request, capture.clone(), bytes).unwrap();
+    host.take_events();
+    (capture, snapshot)
+}
+
+fn acknowledge_provider_close(
+    app: &mut SoundApp,
+    host: &crate::file_providers::Host,
+    request: &str,
+    snapshot: std::sync::Arc<soundcraft_model::Session>,
+    saved: bool,
+) {
+    acknowledge_provider_close_in_frame(app, host, request, snapshot, saved, &egui::Context::default());
+}
+
+fn acknowledge_provider_close_in_frame(
+    app: &mut SoundApp,
+    host: &crate::file_providers::Host,
+    request: &str,
+    snapshot: std::sync::Arc<soundcraft_model::Session>,
+    saved: bool,
+    ctx: &egui::Context,
+) {
+    let capture = consume_provider_close_ack(app, host, request, snapshot, saved);
+    crate::provider_ui::finish_close_capture(app, &capture, saved, ctx);
+    crate::provider_ui::discard_finished_close_capture(app);
+}
+
+fn consume_provider_close_ack(
+    app: &mut SoundApp,
+    host: &crate::file_providers::Host,
+    request: &str,
+    snapshot: std::sync::Arc<soundcraft_model::Session>,
+    saved: bool,
+) -> crate::file_providers::Capture {
+    host.result(request.into(), if saved { "saved" } else { "failed" }.into(), if saved { "saved-session" } else { "" }.into()).unwrap();
+    let mut commands = host.take_commands();
+    let crate::file_providers::Command::Result { capture, .. } = commands.remove(0) else {
+        panic!("expected a save result");
+    };
+    if saved {
+        app.engine.acknowledge_external_save(snapshot);
+    }
+    capture
+}
+
+#[test]
+fn save_before_close_waits_for_its_exact_provider_ack() {
+    let (mut app, host, request) = provider_close_prompt();
+    let (_, snapshot) = capture_provider_close(&mut app, &host, &request);
+    assert!(!app.quit_requested, "capturing or emitting bytes must not close the session");
+    let capture = consume_provider_close_ack(&mut app, &host, &request, snapshot, true);
+    let ctx = egui::Context::default();
+    assert_eq!(app.doc_epoch, capture.doc, "the ACK must still belong to the open document");
+    assert_eq!(app.engine.revision, capture.revision, "the positive case must have no later edit");
+    assert!(!host.busy(), "the consumed ACK must release provider work: {}", host.snapshot());
+    assert!(!app.has_unsaved_changes(), "a current saved snapshot must have no outstanding plugin draft");
+    assert!(app.gesture.is_none() && !app.pointer_down, "the positive case must have no editor gesture");
+    assert!(!app.engine.transport.recording && !app.imports.busy() && app.bounce.is_none(), "the positive case must have no media job");
+    assert!(app.dialogs.open.is_none(), "the positive case must have no uncommitted dialog");
+    assert!(!ctx.input(|input| !input.events.is_empty() || !input.raw.dropped_files.is_empty() || input.pointer.any_down()));
+    let continuation = format!("{:?}", app.dialogs.provider_after_save);
+    crate::provider_ui::finish_close_capture(&mut app, &capture, true, &ctx);
+    crate::provider_ui::discard_finished_close_capture(&mut app);
+    assert!(app.quit_requested, "saved continuation {continuation}; status: {}", app.ui.status);
+    assert!(!app.engine.is_dirty());
+    assert!(app.dialogs.provider_after_save.is_none());
+}
+
+#[test]
+fn newer_edits_or_failed_provider_save_keep_the_session_open() {
+    for later_edit in [false, true] {
+        let (mut app, host, request) = provider_close_prompt();
+        let (_, snapshot) = capture_provider_close(&mut app, &host, &request);
+        if later_edit {
+            app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+        }
+        acknowledge_provider_close(&mut app, &host, &request, snapshot, later_edit);
+        assert!(!app.quit_requested);
+        assert!(app.engine.is_dirty());
+        assert!(app.dialogs.provider_after_save.is_none());
+    }
+}
+
+#[test]
+fn cancelling_or_downloading_a_device_copy_does_not_continue_close() {
+    for destination in ["cancel", "device"] {
+        let (mut app, host, request) = provider_close_prompt();
+        host.resolve_dialog(&request, destination, "Saved.scraftz").unwrap();
+        if destination == "device" {
+            host.take_commands();
+            // The native writer owns the actual download; releasing that transfer is not a durable ACK.
+            host.finish_device(&request);
+        }
+        crate::provider_ui::discard_finished_close_capture(&mut app);
+        assert!(!app.quit_requested);
+        assert!(app.engine.is_dirty());
+        assert!(app.dialogs.provider_after_save.is_none());
+    }
+}
+
+#[test]
+fn an_uncommitted_dialog_prevents_close_after_provider_ack() {
+    let (mut app, host, request) = provider_close_prompt();
+    let (_, snapshot) = capture_provider_close(&mut app, &host, &request);
+    app.dialogs.open = Some(crate::dialogs::Dialog::NewTracks {
+        count: 1,
+        format: "mono".into(),
+        kind: "audio".into(),
+        timebase: "samples".into(),
+        name: "New take".into(),
+    });
+    acknowledge_provider_close(&mut app, &host, &request, snapshot, true);
+    assert!(!app.quit_requested);
+    assert!(app.dialogs.open.is_some());
+}
+
+#[test]
+fn provider_close_continuation_cannot_follow_a_replaced_document() {
+    let (mut app, host, request) = provider_close_prompt();
+    let (capture, _) = capture_provider_close(&mut app, &host, &request);
+    app.document_replaced();
+    crate::provider_ui::finish_close_capture(&mut app, &capture, true, &egui::Context::default());
+    assert!(!app.quit_requested);
+    assert!(app.dialogs.provider_after_save.is_none());
+}
+
+#[test]
+fn provider_ack_with_unconsumed_frame_input_keeps_the_saved_session_open() {
+    #[derive(Debug)]
+    struct PendingDrop;
+    impl egui::DroppedFile for PendingDrop {
+        fn path(&self) -> &std::path::Path {
+            std::path::Path::new("pending.scraftz")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            Err("This fixture only admits a dropped handle, without reading it".into())
+        }
+        #[cfg(target_arch = "wasm32")]
+        fn bytes_async(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + '_>> {
+            Box::pin(async { Err("This fixture only admits a dropped handle, without reading it".into()) })
+        }
+    }
+    let at = egui::pos2(40.0, 40.0);
+    let inputs = [
+        egui::RawInput { events: vec![egui::Event::Text("late input".into())], ..Default::default() },
+        egui::RawInput {
+            events: vec![egui::Event::Key { key: egui::Key::N, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+            ..Default::default()
+        },
+        egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        },
+        egui::RawInput { dropped_files: vec![std::sync::Arc::new(PendingDrop)], ..Default::default() },
+    ];
+    for input in inputs {
+        let (mut app, host, request) = provider_close_prompt();
+        let (_, snapshot) = capture_provider_close(&mut app, &host, &request);
+        let mut snapshot = Some(snapshot);
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(input, |ui| {
+            let Some(snapshot) = snapshot.take() else { return };
+            // The browser calls Runtime::tick in logic, before the UI can consume this input.
+            acknowledge_provider_close_in_frame(&mut app, &host, &request, snapshot, true, ui.ctx());
+            assert!(!app.quit_requested);
+            assert!(app.dialogs.provider_after_save.is_none(), "input cancels only the continuation");
+            assert!(!app.engine.is_dirty(), "the durable checkpoint remains valid");
+            app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+            assert!(app.engine.is_dirty(), "the subsequently applied edit must remain unsaved");
+        });
+        output.textures_delta.clear();
+        assert!(snapshot.is_none(), "the frame must deliver its ACK before UI work");
+        assert!(!app.quit_requested);
+        assert!(app.engine.is_dirty());
+    }
+}
+
+#[test]
+fn provider_ack_does_not_close_a_preexisting_editor_gesture_or_held_pointer() {
+    for held_pointer in [false, true] {
+        let (mut app, host, request) = provider_close_prompt();
+        let (_, snapshot) = capture_provider_close(&mut app, &host, &request);
+        if held_pointer {
+            app.pointer_down = true;
+        } else {
+            app.gesture = Some(super::Gesture::Fader { track: app.engine.session().tracks[0].id, start_db: 0.0 });
+        }
+        acknowledge_provider_close(&mut app, &host, &request, snapshot, true);
+        assert!(!app.quit_requested);
+        assert!(!app.engine.is_dirty(), "an in-flight gesture does not invalidate a durable ACK");
+        assert!(app.pointer_down || app.gesture.is_some(), "the pending editor interaction is preserved");
+        assert!(app.dialogs.provider_after_save.is_none());
+    }
+}

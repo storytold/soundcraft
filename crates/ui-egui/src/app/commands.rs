@@ -3,6 +3,13 @@ use super::{SoundApp, Value, bounce, menus};
 impl SoundApp {
     /// Run a command; errors go to the status line. Returns the result.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        // Programmatic commands retain their explicit parameters and never open a chooser.
+        // Menus and keyboard shortcuts select the interactive provider destination separately.
+        if self.services.file_providers.busy() && matches!(id, "session.new" | "session.open" | "session.close" | "session.revert" | "app.quit") {
+            let error = "Finish or cancel the pending provider operation before replacing the session";
+            self.ui.status = error.into();
+            return Err(error.into());
+        }
         if matches!(id, "session.new" | "session.open" | "session.close" | "session.revert") && bounce::refuses_session_switch(self) {
             return Err(self.ui.status.clone());
         }

@@ -42,7 +42,9 @@ pub fn start() {
                     let engine = if query().contains("empty") { Engine::default() } else { soundcraft_engine::demo::demo_engine() };
                     let player = soundcraft_playback::Player::new(Arc::new(engine.session().clone()));
                     let app = SoundApp::new(engine, Some(player), Services::default());
-                    Ok(Box::new(WebShell { app, inbox: Rc::default(), samples: Rc::default() }))
+                    crate::file_providers::install(app.services.file_providers.clone(), cc.egui_ctx.clone())
+                        .map_err(|e| format!("file providers: {e:?}"))?;
+                    Ok(Box::new(WebShell { app, providers: Default::default(), inbox: Rc::default(), samples: Rc::default() }))
                 }),
             )
             .await;
@@ -111,6 +113,7 @@ type Inbox = Rc<RefCell<Vec<(Purpose, String, Vec<u8>)>>>;
 type SampleInbox = Rc<RefCell<Vec<(SampleRead, Result<Vec<u8>, String>)>>>;
 
 struct WebShell {
+    providers: crate::provider_storage::Runtime,
     app: SoundApp,
     inbox: Inbox,
     samples: SampleInbox,
@@ -129,7 +132,9 @@ impl WebShell {
         let (inbox, ctx) = (self.inbox.clone(), ctx.clone());
         wasm_bindgen_futures::spawn_local(async move {
             let (label, exts) = purpose.filter();
-            let Some(file) = rfd::AsyncFileDialog::new().add_filter(label, &exts).pick_file().await else { return };
+            let Some(file) = rfd::AsyncFileDialog::new().add_filter(label, &exts).pick_file().await else {
+                return;
+            };
             let bytes = file.read().await;
             inbox.borrow_mut().push((purpose, file.file_name(), bytes));
             ctx.request_repaint();
@@ -170,7 +175,9 @@ impl WebShell {
         let at = e.session().edit.selection.start.max(0);
         let result = match purpose {
             // Asks first when the open session has changes: the bytes wait for the answer.
-            Purpose::Session => return soundcraft_ui_egui::dialogs::open_session_bytes(&mut self.app, name, bytes),
+            Purpose::Session => {
+                return soundcraft_ui_egui::dialogs::open_session_bytes(&mut self.app, name, bytes);
+            }
             // Imports are edits: one undo step each, like the import commands.
             Purpose::Audio => {
                 let before = e.session_arc();
@@ -204,6 +211,7 @@ impl eframe::App for WebShell {
             self.app.load_sample_bytes(&read, bytes);
         }
         self.app.logic(ctx);
+        self.providers.tick(&mut self.app, ctx);
         // A prompt opened during this frame becomes a picker on the next one.
         self.take_path_prompt(ctx);
     }
@@ -221,7 +229,7 @@ impl eframe::App for WebShell {
 
 /// Hand a saved or exported file to the person as a download named `name` (the engine's delivery
 /// hook on the web).
-fn download(name: &str, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn download(name: &str, bytes: &[u8]) -> Result<(), String> {
     let js = |e: wasm_bindgen::JsValue| format!("download failed: {e:?}");
     let window = web_sys::window().ok_or("no window")?;
     let document = window.document().ok_or("no document")?;

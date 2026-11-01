@@ -86,6 +86,7 @@ impl SoundApp {
 /// The File › Open Recent submenu.
 pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
     ui.menu_button("Open Recent", |ui| {
+        crate::provider_ui::recent(app, ui);
         if app.ui.recent_sessions.is_empty() {
             ui.add_enabled(false, egui::Button::new("No Recent Sessions"));
             return;

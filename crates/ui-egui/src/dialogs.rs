@@ -73,6 +73,8 @@ pub struct Dialogs {
     pub open: Option<Dialog>,
     /// Runs once the session has been saved from `SaveChanges`.
     after_save: Option<(String, Value)>,
+    /// A provider continuation waits for its own captured revision, rather than a local path prompt.
+    pub(crate) provider_after_save: Option<crate::provider_ui::AfterSave>,
     /// A session the browser read while the open one had changes, waiting for `SaveChanges`.
     pending_session: Option<(String, Vec<u8>)>,
     /// The naming scheme Strip Silence gives the clips it leaves, kept from one use to the next.
@@ -732,7 +734,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 Dialog::SaveChanges { then } => {
                     let name = &app.engine.session().name;
                     let revert = then.0 == "session.revert";
-                    if revert || cfg!(target_arch = "wasm32") {
+                    if revert || (cfg!(target_arch = "wasm32") && !app.services.file_providers.enabled()) {
                         let (question, ok) = if revert {
                             (format!("Revert “{name}” to its last saved version?"), "Revert")
                         } else {
@@ -789,10 +791,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     }
     if let Some(then) = save_first {
         keep = false;
-        if !app.dialogs.open_for_command(&app.engine, "session.save") {
-            action = Some(("session.save".into(), json!({})));
-        }
-        app.dialogs.after_save = Some(then);
+        action = save_before_close(app, then);
     }
     if let Some((cmd, params)) = &action
         && !confirmed
@@ -827,6 +826,33 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     if keep {
         app.dialogs.open = Some(d);
     }
+}
+
+/// Interactive Save Changes routes to provider Save when enabled; default local dialogs stay intact.
+pub(crate) fn save_before_close(app: &mut SoundApp, then: (String, Value)) -> Option<(String, Value)> {
+    if let Some(result) = crate::provider_ui::save_before_replacing(app, &then) {
+        app.dialogs.after_save = None;
+        if let Err(error) = result {
+            if app.dialogs.provider_after_save.is_none() {
+                discard_provider_close(app);
+            }
+            app.ui.status = error;
+        }
+        return None;
+    }
+    let action = if app.dialogs.open_for_command(&app.engine, "session.save") { None } else { Some(("session.save".into(), json!({}))) };
+    app.dialogs.after_save = Some(then);
+    action
+}
+
+pub(crate) fn discard_provider_close(app: &mut SoundApp) {
+    app.dialogs.after_save = None;
+    app.dialogs.pending_session = None;
+}
+
+pub(crate) fn resume_provider_close(app: &mut SoundApp, command: &str, params: Value) -> Result<Value, String> {
+    app.dialogs.after_save = None;
+    run_then(app, command, params)
 }
 
 /// Runs a dialog's command, or what `SaveChanges` carries on with.
