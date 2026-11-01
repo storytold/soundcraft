@@ -785,6 +785,115 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
         .collect()
 }
 
+/// Bounded, root-checked media read for interchange imports.
+pub(crate) fn read_interchange_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    crate::file_access::check_read(path).map_err(EngineError::Io)?;
+    let meta = std::fs::metadata(path).map_err(|e| EngineError::Io(e.to_string()))?;
+    if !meta.is_file() || meta.len() > limit {
+        return Err(EngineError::Io(format!("{}: not a regular file or exceeds import byte limit", path.display())));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).and_then(|f| f.take(limit.saturating_add(1)).read_to_end(&mut bytes)).map_err(|e| EngineError::Io(e.to_string()))?;
+    if bytes.len() as u64 > limit {
+        return Err(EngineError::Io("media exceeds import byte limit".into()));
+    }
+    Ok(bytes)
+}
+
+/// Reads an AAF with the pure-Rust interchange reader. Only the user-chosen AAF and media folder
+/// are opened; every referenced WAV must be named in that folder (exact name, no search).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn read_aaf_plan(path: &str, media_dir: &str, composition: Option<&str>) -> Result<Value> {
+    use soundcraft_interchange::aaf::{AafOptions, read_aaf};
+    crate::file_access::check_read(path).map_err(EngineError::Io)?;
+    crate::file_access::check_read(media_dir).map_err(EngineError::Io)?;
+    let meta = std::fs::metadata(path).map_err(|e| EngineError::Io(e.to_string()))?;
+    if !meta.is_file() || meta.len() > 512 * 1024 * 1024 || !Path::new(media_dir).is_dir() {
+        return Err(EngineError::Io("choose an AAF file (at most 512 MiB) and its media folder".into()));
+    }
+    let aaf = std::fs::canonicalize(path).map_err(|e| EngineError::Io(e.to_string()))?;
+    let media_dir = std::fs::canonicalize(media_dir).map_err(|e| EngineError::Io(e.to_string()))?;
+    let base = aaf.parent().map(Path::to_path_buf).unwrap_or_default();
+    let stem = aaf.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let file = std::fs::File::open(&aaf).map_err(|e| EngineError::Io(e.to_string()))?;
+    let options = AafOptions { composition, base_dir: &base, default_name: &stem };
+    let plan = read_aaf(std::io::BufReader::new(file), &options, &mut LocalMedia { media_dir: Some(media_dir) })
+        .map_err(|e| EngineError::Io(e.to_string()))?;
+    serde_json::to_value(plan).map_err(|e| EngineError::Io(e.to_string()))
+}
+
+/// Resolves AAF locators to local WAV files, optionally relinking by exact file name.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct LocalMedia {
+    /// Canonical relink folder. `None` keeps the locator's own path.
+    pub media_dir: Option<PathBuf>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl soundcraft_interchange::aaf::MediaResolver for LocalMedia {
+    fn resolve(&mut self, locator: &Path) -> std::result::Result<soundcraft_interchange::aaf::MediaInfo, soundcraft_interchange::aaf::MediaError> {
+        use soundcraft_interchange::aaf::{MediaError, MediaInfo, wav_info};
+        let source = lenient_canonical(locator);
+        let (path, relinked_from) = match &self.media_dir {
+            None => (source, None),
+            Some(dir) => {
+                let name = source.file_name().ok_or_else(|| MediaError::Invalid(format!("Locator has no file name: {}", source.display())))?;
+                let chosen = dir.join(name);
+                let resolved = lenient_canonical(&chosen);
+                if resolved.parent() != Some(dir.as_path()) {
+                    return Err(MediaError::Invalid(format!("Relink escapes media directory: {}", chosen.display())));
+                }
+                let from = (chosen != source).then(|| source.display().to_string());
+                (resolved, from)
+            }
+        };
+        if !path.is_file() {
+            return Err(MediaError::Missing(path.display().to_string()));
+        }
+        crate::file_access::check_read(&path).map_err(MediaError::Invalid)?;
+        let file = std::fs::File::open(&path).map_err(|e| MediaError::Invalid(format!("{}: {e}", path.display())))?;
+        let info = wav_info(std::io::BufReader::new(file)).map_err(|e| MediaError::Invalid(format!("{}: {e}", path.display())))?;
+        Ok(MediaInfo { path: path.display().to_string(), relinked_from, channels: info.channels, frames: info.frames, sample_rate: info.sample_rate })
+    }
+}
+
+/// `realpath` without requiring the path to exist: the longest existing prefix is canonical
+/// (symlinks resolved) and the remaining components are appended after lexical `.`/`..` handling.
+#[cfg(not(target_arch = "wasm32"))]
+fn lenient_canonical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut lexical = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                lexical.pop();
+            }
+            other => lexical.push(other),
+        }
+    }
+    let mut tail = Vec::new();
+    let mut prefix = lexical.as_path();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(prefix) {
+            return tail.iter().rev().fold(real, |acc: PathBuf, part| acc.join(part));
+        }
+        match (prefix.parent(), prefix.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                prefix = parent;
+            }
+            _ => return lexical,
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn read_aaf_plan(_: &str, _: &str, _: Option<&str>) -> Result<Value> {
+    Err(EngineError::Io("AAF import needs the desktop app: its media files are read from a local folder".into()))
+}
+
 #[cfg(test)]
 mod stem_tests {
     #[test]
