@@ -37,6 +37,8 @@ pub enum Dialog {
     RenameClip { id: ClipId, name: String },
     RenameMarker { id: soundcraft_model::MarkerId, name: String },
     ClearClips { clips: Vec<ClipId>, sources: Vec<SourceId>, message: String },
+    // Clip › Unloop…: the clips `clip.unloop` would take when it opened.
+    Unloop { clips: Vec<ClipId> },
     PathPrompt { cmd: String, title: String, path: String, key: String },
     Number { cmd: String, title: String, key: String, value: f64, suffix: String },
     TempoChange { at: Samples, bpm: f64 }, // from double-clicking the tempo ruler
@@ -91,6 +93,7 @@ impl Dialogs {
             Dialog::RenameClip { .. } => "rename_clip",
             Dialog::RenameMarker { .. } => "rename_marker",
             Dialog::ClearClips { .. } => "clear_clips",
+            Dialog::Unloop { .. } => "unloop",
             Dialog::PathPrompt { .. } => "path",
             Dialog::Number { .. } => "number",
             Dialog::TempoChange { .. } => "tempo_change",
@@ -165,6 +168,13 @@ impl Dialogs {
             "clip.clear" => {
                 let ed = &e.session().edit;
                 return self.open_clear(e, ed.selected_clips.clone(), ed.selected_sources.clone());
+            }
+            "clip.unloop" => {
+                let clips = soundcraft_engine::cmd::clip_ids_param(e, &json!({}));
+                if !clips.iter().any(|&c| soundcraft_engine::cmd::is_looped(e.session(), c)) {
+                    return false;
+                }
+                Dialog::Unloop { clips }
             }
             "track.new" => {
                 Dialog::NewTracks { count: 1, format: "Mono".into(), kind: "audio".into(), timebase: "samples".into(), name: "Audio".into() }
@@ -476,6 +486,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::RenameClip { .. } => "Rename Clip",
         Dialog::RenameMarker { .. } => "Rename Marker",
         Dialog::ClearClips { .. } => "Clear",
+        Dialog::Unloop { .. } => "Unloop",
         Dialog::PathPrompt { title, .. } | Dialog::Number { title, .. } => title.as_str(),
         Dialog::TempoChange { .. } => "Tempo Change (BPM)",
         Dialog::Spot(_) => "Spot",
@@ -581,6 +592,20 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     if buttons(ui, "Remove", enter) {
                         action = Some(("clip.clear".into(), json!({"clips": clips, "sources": sources, "with_clips": true})));
                     }
+                }
+                Dialog::Unloop { clips } => {
+                    ui.set_max_width(340.0);
+                    ui.label("Remove deletes the loop iterations and keeps the source clip. Flatten keeps each loop iteration as its own clip.");
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Flatten").clicked() {
+                            action = Some(unloop_action(clips, false));
+                        }
+                        // A Flatten click in the same frame as Enter wins.
+                        if buttons(ui, "Remove", enter && action.is_none()) {
+                            action = Some(unloop_action(clips, true));
+                        }
+                    });
                 }
                 Dialog::PathPrompt { cmd, path, key, .. } => {
                     if let Some(c) = path_prompt_form(app, ui, cmd, path, key, enter) {
@@ -871,6 +896,11 @@ fn name_field(ui: &mut egui::Ui, name: &mut String) {
     }
 }
 
+/// The command the Unloop dialog runs: Remove (`remove`) or Flatten.
+fn unloop_action(clips: &[ClipId], remove: bool) -> (String, Value) {
+    ("clip.unloop".into(), json!({"clips": clips, "mode": if remove { "remove" } else { "flatten" }}))
+}
+
 /// The command the tempo-change dialog runs on OK.
 fn tempo_change_action(at: Samples, bpm: f64) -> (String, Value) {
     ("event.tempo".into(), json!({"bpm": bpm, "at": at}))
@@ -952,6 +982,37 @@ mod tests {
         assert!(!takes_path("edit.copy"));
         assert!(d.open_for_command(&e, "file.score_setup"));
         assert!(matches!(d.open, Some(Dialog::ScoreSetup { bars_per_system: 4, .. })));
+    }
+
+    #[test]
+    fn clip_unloop_opens_unloop_and_sends_the_chosen_mode() {
+        let mut e = soundcraft_engine::demo::demo_engine();
+        let mut d = Dialogs::default();
+        e.execute("edit.select_none", &json!({})).unwrap();
+        assert!(!d.open_for_command(&e, "clip.unloop"));
+        let track = e.session().track_by_name("Snare").unwrap().id;
+        let clip = e.session().track(track).unwrap().clips()[0].id;
+        e.execute("edit.select", &json!({"clips": [clip.0]})).unwrap();
+        assert!(!d.open_for_command(&e, "clip.unloop"), "a clip that is not looped opens no dialog");
+        assert!(d.open.is_none());
+        e.execute("clip.loop", &json!({"clip": clip.0, "count": 3})).unwrap();
+        e.execute("edit.select", &json!({"clips": [clip.0]})).unwrap();
+        assert!(d.open_for_command(&e, "clip.unloop"));
+        assert_eq!(d.open_name(), Some("unloop"));
+        let Some(Dialog::Unloop { clips }) = d.open.take() else { panic!("Unloop… did not open the Unloop dialog") };
+        assert_eq!(clips, vec![clip]);
+        let count = |e: &Engine| e.session().track(track).map_or(0, |t| t.clips().len());
+        let before = count(&e);
+        let (cmd, params) = unloop_action(&clips, false);
+        assert_eq!(params["mode"], "flatten");
+        e.execute(&cmd, &params).unwrap();
+        assert_eq!(count(&e), before, "Flatten keeps every iteration");
+        assert!(e.session().track(track).unwrap().clips().iter().all(|c| c.loop_id.is_none()));
+        e.execute("edit.undo", &json!({})).unwrap();
+        let (cmd, params) = unloop_action(&clips, true);
+        assert_eq!(params["mode"], "remove");
+        e.execute(&cmd, &params).unwrap();
+        assert_eq!(count(&e), before - 2, "Remove keeps only the source clip");
     }
 
     #[test]
