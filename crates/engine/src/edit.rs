@@ -856,9 +856,50 @@ fn material_len(s: &Session, c: &Clip) -> Option<Samples> {
     }
 }
 
+/// A fade that [`create_fades`] would make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FadeSpot {
+    /// A fade-in at this clip's start.
+    In(ClipId),
+    /// A fade-out at this clip's end.
+    Out(ClipId),
+    /// A crossfade from the first clip into the second, which starts where the first ends.
+    Cross(ClipId, ClipId),
+}
+
+/// The fades [`create_fades`] would make over `range` on `track`, without making them.
+// ponytail: the conditions repeat those in `create_fades` (a test keeps them in step); one pass that both
+// finds and makes the fades would remove the copy.
+pub fn fade_spots(s: &Session, track: TrackId, range: Range) -> Vec<FadeSpot> {
+    let Some(tr) = s.track(track).filter(|_| !range.is_empty()) else { return Vec::new() };
+    let mut clips: Vec<&Clip> = tr.clips().iter().collect();
+    clips.sort_by_key(|c| (c.start, c.id.0));
+    let mut spots = Vec::new();
+    let mut xfaded: Vec<ClipId> = Vec::new();
+    for pair in clips.windows(2) {
+        if let [a, b] = pair
+            && b.start == a.end()
+            && range.start < a.end()
+            && range.end > a.end()
+        {
+            spots.push(FadeSpot::Cross(a.id, b.id));
+            xfaded.extend([a.id, b.id]);
+        }
+    }
+    for c in clips.into_iter().filter(|c| !xfaded.contains(&c.id)) {
+        if range.start <= c.start && range.end > c.start && range.end < c.end() {
+            spots.push(FadeSpot::In(c.id));
+        } else if range.end >= c.end() && range.start > c.start && range.start < c.end() {
+            spots.push(FadeSpot::Out(c.id));
+        }
+    }
+    spots
+}
+
 /// Create fades from a selection (the incumbent's Edit › Fades › Create semantics):
 /// a range across a clip boundary makes a crossfade; at a clip start a fade-in; at its end a fade-out.
-pub fn create_fades(s: &mut Session, track: TrackId, range: Range, shape: FadeShape) -> usize {
+/// Fade-ins (and the later clip of a crossfade) take `in_shape`, fade-outs (and the earlier clip) `out_shape`.
+pub fn create_fades(s: &mut Session, track: TrackId, range: Range, in_shape: FadeShape, out_shape: FadeShape) -> usize {
     if range.is_empty() {
         return 0;
     }
@@ -885,12 +926,12 @@ pub fn create_fades(s: &mut Session, track: TrackId, range: Range, shape: FadeSh
             let ext_b = before.min(b_handle).max(0);
             if let Some(ca) = pl.clips.get_mut(i) {
                 ca.length += ext_a;
-                ca.fade_out = Fade { len: (ext_a + before).min(ca.length), shape, curvature: 0.0 };
+                ca.fade_out = Fade { len: (ext_a + before).min(ca.length), shape: out_shape, curvature: 0.0 };
             }
             if let Some(cb) = pl.clips.get_mut(i + 1) {
                 let old = cb.start;
                 cb.trim_start_to(old - ext_b);
-                cb.fade_in = Fade { len: (ext_b + after).min(cb.length), shape, curvature: 0.0 };
+                cb.fade_in = Fade { len: (ext_b + after).min(cb.length), shape: in_shape, curvature: 0.0 };
             }
             made += 1;
             xfaded.push(a.id);
@@ -899,10 +940,10 @@ pub fn create_fades(s: &mut Session, track: TrackId, range: Range, shape: FadeSh
     }
     for c in pl.clips.iter_mut().filter(|c| !xfaded.contains(&c.id)) {
         if range.start <= c.start && range.end > c.start && range.end < c.end() {
-            c.fade_in = Fade { len: range.end - c.start, shape, curvature: 0.0 };
+            c.fade_in = Fade { len: range.end - c.start, shape: in_shape, curvature: 0.0 };
             made += 1;
         } else if range.end >= c.end() && range.start > c.start && range.start < c.end() {
-            c.fade_out = Fade { len: c.end() - range.start, shape, curvature: 0.0 };
+            c.fade_out = Fade { len: c.end() - range.start, shape: out_shape, curvature: 0.0 };
             made += 1;
         }
     }

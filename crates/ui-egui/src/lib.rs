@@ -20,6 +20,8 @@ pub mod credits;
 pub mod dialogs;
 pub mod docking;
 pub mod edit_window;
+pub mod fade_dialog;
+mod fade_plot;
 pub mod fonts;
 pub mod icons;
 pub mod import;
@@ -142,6 +144,8 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// The five preset slots of the Fade In, Fade Out and Crossfade dialogs.
+    pub fade_presets: fade_dialog::FadePresets,
 }
 
 impl Default for UiState {
@@ -203,6 +207,7 @@ impl Default for UiState {
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
+            fade_presets: fade_dialog::FadePresets::default(),
         }
     }
 }

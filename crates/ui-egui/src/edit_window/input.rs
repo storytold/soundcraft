@@ -1,11 +1,14 @@
 use super::automation::{automation_id, breakpoint_at, plugin_range, shown_automation};
-use super::clips::{clip_name_height, fade_control_position};
+use super::clips::{clip_name_height, crossfade_partner, fade_control_position};
 use super::drag::{drag_snap, fade_curve_drag_value, fade_drag_range, spot_or_run};
 use super::layout::{sample_at, x_of};
 use super::{
     Align2, AutoParam, Clip, ClipContent, ClipId, Color32, Dialog, EditMode, Gesture, GridValue, NoteValue, Pos2, Range, Rect, Samples, Sense,
     Session, SoundApp, Spot, Stroke, StrokeKind, Tokens, Tool, Track, TrackId, Ui, json, ops, pos2, regular, vec2,
 };
+
+use crate::dialogs::FadeTarget;
+use crate::fade_dialog::FadeEditor;
 
 // ---- interaction -----------------------------------------------------------------------------
 
@@ -119,6 +122,8 @@ struct LaneCtx<'a> {
     eff: Tool,
     fade_corner: Option<bool>,
     selector_press: bool,
+    /// The press is on a clip's gain icon.
+    on_gain_icon: bool,
 }
 
 /// The lane's response, with its clip context menu and the drops it accepts.
@@ -397,6 +402,18 @@ fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Res
         }
     }
     if resp.double_clicked()
+        && auto_view.is_none()
+        && point_hit.is_none()
+        && !c.on_gain_icon
+        && !matches!(eff, Tool::Pencil | Tool::Zoom | Tool::Scrubber)
+        && let Some(target) = fades_target_at(track, at)
+        && let Some(editor) = FadeEditor::for_target(app.engine.session(), target)
+    {
+        if let Some(c) = &hit {
+            let _ = app.run("edit.select", json!({"clips": [c.id.0]}));
+        }
+        app.dialogs.open = Some(Dialog::FadeEditor(Box::new(editor)));
+    } else if resp.double_clicked()
         && curve_handle.is_none()
         && point_hit.is_none()
         && eff != Tool::Pencil
@@ -455,7 +472,8 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
         place_insertion(app, ui, &s, track.id, at, mods.shift);
     }
     let gain_drag = if resp.drag_started() { gain_icon_at(origin) } else { None };
-    let cx = LaneCtx { inp, hits, mods, p, at, eff, fade_corner, selector_press };
+    let on_gain_icon = gain_icon_at(origin).is_some();
+    let cx = LaneCtx { inp, hits, mods, p, at, eff, fade_corner, selector_press, on_gain_icon };
     start_gesture(app, ui, &cx, &resp, gain_drag);
     drag_clip_gain(app, ui, &cx, &resp);
     lane_click(app, ui, &cx, &resp);
@@ -478,6 +496,27 @@ fn place_insertion(app: &mut SoundApp, ui: &Ui, s: &Session, track: TrackId, at:
     if app.engine.revision != rev {
         ui.ctx().request_discard("insertion point moved");
     }
+}
+
+/// What a double-click at `at` opens the Fades dialog on: the crossfade there (both of its fades), else the
+/// fade-in or fade-out there.
+fn fades_target_at(track: &Track, at: Samples) -> Option<FadeTarget> {
+    let c = clip_at(track, at).filter(|c| c.is_audio())?;
+    // Only a pair the engine treats as a crossfade: the clip before ends inside this one.
+    if crossfade_partner(track, c).is_some_and(|a| a.is_audio() && a.end() <= c.end() && at < a.end()) {
+        return Some(FadeTarget::Crossfade { later: c.id });
+    }
+    let in_fade = c.fade_in.len > 0 && at < c.start.saturating_add(c.fade_in.len);
+    let out_fade = c.fade_out.len > 0 && at >= c.end().saturating_sub(c.fade_out.len);
+    let fade_in = match (in_fade, out_fade) {
+        (true, false) => true,
+        (false, true) => false,
+        // Fades that meet: the nearer end.
+        (true, true) if at - c.start <= c.end() - at => true,
+        (true, true) => false,
+        (false, false) => return None,
+    };
+    Some(FadeTarget::Single { clip: c.id, fade_in })
 }
 
 /// Whole bars from `from` to `to` (at least one), inside the gap between clips where `from` is.

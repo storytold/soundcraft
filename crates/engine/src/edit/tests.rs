@@ -224,11 +224,11 @@ fn insert_silence_and_trim() {
 #[test]
 fn fades_and_crossfades() {
     let (mut s, t) = session_with_clip();
-    assert_eq!(create_fades(&mut s, t, Range::new(500, 1500), FadeShape::Linear), 1);
+    assert_eq!(create_fades(&mut s, t, Range::new(500, 1500), FadeShape::Linear, FadeShape::Linear), 1);
     assert_eq!(s.track(t).unwrap().clips()[0].fade_in.len, 500);
     let (mut s, t) = session_with_clip();
     separate_at(&mut s, t, 3000);
-    assert_eq!(create_fades(&mut s, t, Range::new(2900, 3100), FadeShape::EqualPower), 1);
+    assert_eq!(create_fades(&mut s, t, Range::new(2900, 3100), FadeShape::EqualPower, FadeShape::EqualPower), 1);
     let c = s.track(t).unwrap().clips();
     assert_eq!(c[0].end(), 3100);
     assert_eq!(c[1].start, 2900);
@@ -237,6 +237,48 @@ fn fades_and_crossfades() {
     delete_fades(&mut s, t, Range::new(2900, 3100));
     let c = s.track(t).unwrap().clips();
     assert_eq!((c[0].end(), c[1].start), (3000, 3000));
+}
+
+#[test]
+fn fades_take_an_in_shape_and_an_out_shape() {
+    // A crossfade: the earlier clip fades out with the out shape, the later fades in with the in shape.
+    let (mut s, t) = session_with_clip();
+    separate_at(&mut s, t, 3000);
+    assert_eq!(create_fades(&mut s, t, Range::new(2900, 3100), FadeShape::SCurve, FadeShape::Linear), 1);
+    let c = s.track(t).unwrap().clips();
+    assert_eq!((c[0].fade_out.shape, c[1].fade_in.shape), (FadeShape::Linear, FadeShape::SCurve));
+    // A fade-in at a clip start takes the in shape, a fade-out at its end the out shape.
+    let (mut s, t) = session_with_clip();
+    assert_eq!(create_fades(&mut s, t, Range::new(500, 1500), FadeShape::SCurve, FadeShape::Linear), 1);
+    assert_eq!(s.track(t).unwrap().clips()[0].fade_in.shape, FadeShape::SCurve);
+    let end = s.track(t).unwrap().clips()[0].end();
+    assert_eq!(create_fades(&mut s, t, Range::new(end - 400, end), FadeShape::SCurve, FadeShape::Logarithmic), 1);
+    assert_eq!(s.track(t).unwrap().clips()[0].fade_out.shape, FadeShape::Logarithmic);
+}
+
+/// `fade_spots` finds exactly what `create_fades` makes, for every range over a few clips.
+#[test]
+fn fade_spots_match_what_create_fades_makes() {
+    let (mut s, t, [a, b, c]) = three_clips();
+    // a 0..1000 and b 1000..3000 meet; c 3500..4500 stands apart.
+    if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+        pl.clips[2].start = 3500;
+    }
+    let spots = |s: &Session, r: Range| fade_spots(s, t, r);
+    assert_eq!(spots(&s, Range::new(900, 1100)), vec![FadeSpot::Cross(a, b)]);
+    assert_eq!(spots(&s, Range::new(0, 400)), vec![FadeSpot::In(a)]);
+    assert_eq!(spots(&s, Range::new(2500, 3000)), vec![FadeSpot::Out(b)]);
+    assert_eq!(spots(&s, Range::new(3600, 4600)), vec![FadeSpot::Out(c)]);
+    assert_eq!(spots(&s, Range::new(500, 500)), vec![]);
+    assert_eq!(spots(&s, Range::new(500, 800)), vec![]);
+    assert_eq!(fade_spots(&s, TrackId(u64::MAX), Range::new(900, 1100)), vec![]);
+    for start in (0..5000).step_by(100) {
+        for end in (start..5000).step_by(100) {
+            let range = Range::new(start, end);
+            let (mut made, expected) = (s.clone(), spots(&s, range).len());
+            assert_eq!(create_fades(&mut made, t, range, FadeShape::Linear, FadeShape::Linear), expected, "{start}..{end}");
+        }
+    }
 }
 
 fn three_clips() -> (Session, TrackId, [ClipId; 3]) {

@@ -129,6 +129,12 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
         "triangle_down" => {
             painter.add(Shape::convex_polygon(vec![p(r, 0.25, 0.35), p(r, 0.75, 0.35), p(r, 0.5, 0.68)], c, Stroke::NONE));
         }
+        "chevron_up" => {
+            painter.add(Shape::line(vec![p(r, 0.25, 0.6), p(r, 0.5, 0.35), p(r, 0.75, 0.6)], s));
+        }
+        "chevron_down" => {
+            painter.add(Shape::line(vec![p(r, 0.25, 0.4), p(r, 0.5, 0.65), p(r, 0.75, 0.4)], s));
+        }
         "note" => {
             painter.circle_filled(p(r, 0.38, 0.72), r.width() * 0.13, c);
             painter.line_segment([p(r, 0.5, 0.72), p(r, 0.5, 0.2)], s);
@@ -178,6 +184,75 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
         }
         _ => {
             painter.rect_stroke(r.shrink(r.width() * 0.25), 1.0, s, egui::StrokeKind::Middle);
+        }
+    }
+}
+
+/// The four display modes of the fade dialogs, drawn in `r` (a 20 x 20 grid): 0 two curves crossing,
+/// 1 two triangles one lane each, 2 the same two overlaid with a gradient, 3 one combined bar.
+/// `colors` are the outgoing, incoming and combined colours; fills and waveform texture derive from them.
+pub fn fade_view(painter: &Painter, r: Rect, view: usize, colors: [Color32; 3]) {
+    let k = r.width() / 20.0;
+    let at = |x: f32, y: f32| pos2(r.min.x + x * k, r.min.y + y * k);
+    let [a, b, sum] = colors;
+    let fill = |c: Color32| crate::widgets::shade(c, -0.14);
+    let light = |c: Color32| c.lerp_to_gamma(Color32::WHITE, 0.4);
+    // Fine vertical bars of uneven height, one per unit of width from `x0` to `x1`: the waveform texture.
+    // Each is at most `limit(x)` high; `mirror` draws the whole run flipped left to right.
+    let bars = |x0: f32, x1: f32, cy: f32, half: f32, c: Color32, limit: &dyn Fn(f32) -> f32, mirror: bool| {
+        let (mut i, mut x) = (0.0_f32, x0 + 0.5);
+        while x < x1 {
+            let noise = (i * 12.9898 + 78.233).sin() * 43_758.545;
+            let h = (half * (0.35 + 0.65 * (noise - noise.floor()))).min(limit(x)).max(0.0);
+            let sx = if mirror { 20.0 - x } else { x };
+            painter.line_segment([at(sx, cy - h), at(sx, cy + h)], Stroke::new(0.45 * k, c));
+            (i, x) = (i + 1.0, x + 1.0);
+        }
+    };
+    let (x0, x1, half) = (2.0, 16.0, 3.5);
+    let edge = |x: f32| half * (1.0 - (x - x0) / (x1 - x0));
+    match view {
+        0 => {
+            painter.line_segment([at(3.5, 3.5), at(16.5, 16.5)], Stroke::new(3.4 * k, a));
+            painter.line_segment([at(3.5, 16.5), at(16.5, 3.5)], Stroke::new(3.4 * k, b));
+        }
+        1 | 2 => {
+            // Two identical triangles, the second the first's mirror: base on the vertical x0 and tip at x1.
+            let (over, mut outlines) = (view == 2, Vec::new());
+            for (mirror, c) in [(false, a), (true, b)] {
+                let cy = if over {
+                    10.0
+                } else if mirror {
+                    14.0
+                } else {
+                    6.0
+                };
+                let sx = |x: f32| if mirror { 20.0 - x } else { x };
+                let pts = vec![at(sx(x0), cy - half), at(sx(x0), cy + half), at(sx(x1), cy)];
+                if over {
+                    // Full at the base, fading to the tip: the pair blends where they meet.
+                    let mut mesh = egui::Mesh::default();
+                    for (i, p) in pts.iter().enumerate() {
+                        mesh.colored_vertex(*p, if i < 2 { fill(c) } else { fill(c).gamma_multiply(0.08) });
+                    }
+                    mesh.add_triangle(0, 1, 2);
+                    painter.add(mesh);
+                } else {
+                    painter.add(Shape::convex_polygon(pts.clone(), fill(c), Stroke::NONE));
+                }
+                bars(x0, x1, cy, half * 1.1, light(c), &edge, mirror);
+                outlines.push((pts, c));
+            }
+            // Both outlines over both fills, so which one is on top does not break the symmetry.
+            for (pts, c) in outlines {
+                painter.add(Shape::closed_line(pts, Stroke::new(0.7 * k, c)));
+            }
+        }
+        _ => {
+            let bar = Rect::from_min_max(at(2.0, 6.5), at(18.0, 13.5));
+            painter.rect_filled(bar, k, fill(sum));
+            bars(2.0, 18.0, 10.0, 4.2, light(sum), &|_| 3.5, false);
+            painter.rect_stroke(bar, k, Stroke::new(0.7 * k, sum), egui::StrokeKind::Middle);
         }
     }
 }
