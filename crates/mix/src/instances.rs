@@ -10,6 +10,7 @@ pub fn is_third_party(id: &str) -> bool {
     id.starts_with(soundcraft_clap_host::ID_PREFIX)
         || id.starts_with(soundcraft_vst3_host::ID_PREFIX)
         || id.starts_with(soundcraft_au_host::ID_PREFIX)
+        || id.starts_with(soundcraft_jsfx_host::ID_PREFIX)
 }
 
 /// A third-party plugin instance a session needs: which slot, which plugin, how many channels,
@@ -105,6 +106,7 @@ fn create_plugin(id: &str) -> Option<Box<dyn Plugin>> {
     }
     soundcraft_dsp::create(id)
         .or_else(|| soundcraft_clap_host::create(id))
+        .or_else(|| soundcraft_jsfx_host::create(id))
         .or_else(|| soundcraft_vst3_host::create(id))
         .or_else(|| soundcraft_au_host::create(id))
 }

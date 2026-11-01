@@ -47,6 +47,7 @@ pub fn run(app: &mut SoundApp, id: &str, p: &Value) -> Option<Value> {
         "window.renderer" => flag(&mut app.extra.show_renderer),
         "window.ui_customization" => flag(&mut app.extra.show_ui_customization),
         "window.config_auto_update" => flag(&mut app.extra.auto_update_config),
+        "window.jsfx_browser" => flag(&mut app.jsfx_browser.open),
         _ => return None,
     })
 }
