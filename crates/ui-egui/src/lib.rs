@@ -249,7 +249,8 @@ pub enum Gesture {
     Pencil { track: TrackId, points: Vec<(Samples, f32)> },
     Breakpoint { track: TrackId, param: soundcraft_model::AutoParam, at: Samples },
     MidiClip { track: TrackId, from: Samples, to: Samples },
-    ZoomBox { start: f32 },
+    ZoomBox { start: f32, current: f32, lane_y: [f32; 2] },
+    ZoomOut,
 }
 
 pub struct SoundApp {

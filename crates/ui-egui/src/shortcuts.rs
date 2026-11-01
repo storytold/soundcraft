@@ -165,9 +165,12 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             cycle_edit_mode(app);
             true
         }
-        Key::F5 | Key::F6 | Key::F7 | Key::F8 | Key::F9 | Key::F10 if plain => {
+        Key::F5 if plain => {
+            zoom_tool_key(app);
+            true
+        }
+        Key::F6 | Key::F7 | Key::F8 | Key::F9 | Key::F10 if plain => {
             let tool = match key {
-                Key::F5 => "zoom",
                 Key::F6 => "trim",
                 Key::F7 => "selector",
                 Key::F8 => "grabber",
@@ -249,6 +252,21 @@ fn fixed_more(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+/// Select Zoom, or cycle its mode when the shortcut is pressed again. The keyboard lock keeps the
+/// current mode but does not prevent selecting Zoom from another tool.
+fn zoom_tool_key(app: &mut SoundApp) {
+    let edit = &app.engine.session().edit;
+    if edit.tool != soundcraft_model::Tool::Zoom {
+        let _ = app.run("edit.tool", json!({"tool": "zoom"}));
+    } else if !edit.flag("options.edit_tool_mode_keyboard_lock") {
+        let mode = match edit.zoom_mode {
+            soundcraft_model::ZoomMode::Normal => "single",
+            soundcraft_model::ZoomMode::Single => "normal",
+        };
+        let _ = app.run("edit.zoom_mode", json!({"mode": mode}));
     }
 }
 
