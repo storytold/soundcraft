@@ -295,6 +295,40 @@ impl Default for EditState {
     }
 }
 
+/// Clip List › Auto Rename: the names that editing gives the clips it separates from a clip.
+/// Each new clip is named `name`, then `zeros` zeros, then `number`, then `suffix`, and `number`
+/// counts up by one for the next clip.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct AutoName {
+    pub name: String,
+    /// The number the next new clip gets.
+    pub number: u64,
+    pub zeros: usize,
+    pub suffix: String,
+    /// Tells this scheme from another one under the same key after an undo or in another session,
+    /// for pastes from the clipboard. 0 matches no scheme.
+    #[serde(default)]
+    pub id: u64,
+}
+
+impl AutoName {
+    /// The largest starting number.
+    pub const MAX_NUMBER: u64 = 999_999_999;
+    /// The most zeros before the number.
+    pub const MAX_ZEROS: usize = 9;
+
+    /// Room for `name` and `suffix` together: 29 characters stay free for 9 zeros and the 20
+    /// digits of a u64, so a clip name never loses its number to [`MAX_NAME_CHARS`].
+    pub const MAX_TEXT_CHARS: usize = MAX_NAME_CHARS - 29;
+
+    /// Repair a scheme read from a file: names that can be drawn and at most [`Self::MAX_ZEROS`] zeros.
+    pub fn sanitize(&mut self) {
+        truncate_chars(&mut self.name, Self::MAX_TEXT_CHARS);
+        truncate_chars(&mut self.suffix, Self::MAX_TEXT_CHARS - self.name.chars().count());
+        self.zeros = self.zeros.min(Self::MAX_ZEROS);
+    }
+}
+
 /// The document.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Session {
@@ -317,6 +351,10 @@ pub struct Session {
     pub outputs: Vec<OutputPath>,
     pub markers: Vec<MemoryLocation>,
     pub groups: Vec<Group>,
+    /// Clip List › Auto Rename schemes, keyed by the ids in [`Clip::auto_name`]. The clips separated
+    /// from one clip share its scheme, so they count up one number sequence.
+    #[serde(default)]
+    pub auto_names: std::collections::BTreeMap<u64, crate::AutoName>,
     pub edit: EditState,
     pub next_id: u64,
     #[serde(default)]
@@ -358,6 +396,7 @@ impl Session {
             outputs: vec![OutputPath { name: "Out 1-2".into(), first_channel: 0, format: ChannelFormat::Stereo }],
             markers: Vec::new(),
             groups: Vec::new(),
+            auto_names: std::collections::BTreeMap::new(),
             edit: EditState::default(),
             next_id: 1,
             comments: String::new(),
@@ -526,6 +565,12 @@ impl Session {
         ClipId(self.alloc())
     }
 
+    /// Drop the Auto Rename schemes that no clip on any playlist uses.
+    pub fn prune_auto_names(&mut self) {
+        let used: std::collections::BTreeSet<u64> = self.all_clips().filter_map(|c| c.auto_name).collect();
+        self.auto_names.retain(|k, _| used.contains(k));
+    }
+
     // ---- persistence ---------------------------------------------------------------------
 
     pub fn to_json(&self) -> Result<String, SessionError> {
@@ -553,6 +598,7 @@ impl Session {
             .map(|t| t.id.0)
             .chain(self.tracks.iter().flat_map(|t| t.playlists.iter().flat_map(|p| p.clips.iter().map(|c| c.id.0))))
             .chain(self.sources.iter().map(|s| s.id.0))
+            .chain(self.auto_names.keys().copied())
             .chain(self.videos.iter().map(|v| v.id.0))
             .chain(self.busses.iter().map(|b| b.id.0))
             .chain(self.markers.iter().map(|m| m.id.0))
@@ -580,6 +626,8 @@ impl Session {
             }
             for l in &mut t.automation {
                 l.points.retain(|p| p.value.is_finite());
+                let (lo, hi, _) = l.param.range();
+                l.points.iter_mut().for_each(|p| p.value = p.value.clamp(lo, hi));
                 l.points.iter_mut().for_each(|p| bound(&mut p.at));
                 l.points.sort_by_key(|p| p.at);
             }
@@ -626,6 +674,8 @@ impl Session {
         let clip_ids: std::collections::BTreeSet<u64> =
             self.tracks.iter().flat_map(|t| t.playlists.iter().flat_map(|p| p.clips.iter().map(|c| c.id.0))).collect();
         self.midi_originals.retain(|id, _| clip_ids.contains(id));
+        self.prune_auto_names();
+        self.auto_names.values_mut().for_each(crate::AutoName::sanitize);
         if !self.edit.zoom.samples_per_px.is_finite() || self.edit.zoom.samples_per_px <= 0.0 {
             self.edit.zoom.samples_per_px = 1024.0;
         }
@@ -855,5 +905,28 @@ mod tests {
         assert_eq!(tr.active_playlist, 0);
         assert_eq!(tr.mixer.volume_db, 0.0);
         assert!(s.next_id > t.0);
+    }
+
+    #[test]
+    fn loaded_automation_is_clamped_to_its_range() {
+        // #884: a session file can carry points outside a lane's range; load clamps them.
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let tr = s.track_mut(t).unwrap();
+        for p in [crate::AutoParam::Volume, crate::AutoParam::SendLevel(0)] {
+            tr.lane_mut(&p).points.push(crate::AutomationPoint { at: 0, value: 500.0 });
+        }
+        let s = Session::from_json(&serde_json::to_string(&s).unwrap()).unwrap();
+        let tr = s.track(t).unwrap();
+        for p in [crate::AutoParam::Volume, crate::AutoParam::SendLevel(0)] {
+            assert_eq!(tr.lane(&p).unwrap().points[0].value, 12.0, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn a_loaded_auto_name_scheme_leaves_room_for_its_number() {
+        let mut scheme = crate::AutoName { name: "n".repeat(300), suffix: "s".repeat(300), ..Default::default() };
+        scheme.sanitize();
+        assert_eq!(scheme.name.chars().count() + scheme.suffix.chars().count(), crate::AutoName::MAX_TEXT_CHARS);
     }
 }

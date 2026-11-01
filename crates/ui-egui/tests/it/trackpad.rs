@@ -12,18 +12,28 @@ struct Rig {
 }
 
 impl Rig {
+    /// A demo app with a control channel, a chosen window width and deterministic non-kinetic scrolling for exact
+    /// offset assertions.
     fn new(width: f32) -> Rig {
         let (tx, rx) = channel();
         let app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default()).with_control(rx);
         let mut r = Rig { ctx: egui::Context::default(), app, tx, width };
+        // egui 0.37 scroll areas treat point wheel events as a trackpad: they rubber-band at an
+        // edge and can coast after the gesture. These tests assert exact offsets, so the rig uses
+        // deterministic scrolling (production keeps the kinetic feel).
+        r.ctx.all_styles_mut(|s| {
+            s.spacing.scroll.kinetic.decay_time = 0.0;
+            s.spacing.scroll.kinetic.rubber_band = false;
+        });
         r.frames(6);
         r
     }
 
+    /// Run `n` frames through the raw-input hook and the app's logic and UI.
     fn frames(&mut self, n: usize) {
         for _ in 0..n {
             let mut raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(self.width, 900.0))), ..Default::default() };
-            self.app.raw_input_hook(&mut raw);
+            self.app.raw_input_hook(&self.ctx, &mut raw);
             self.ctx
                 .run_ui(raw, |ui| {
                     self.app.logic(ui.ctx());

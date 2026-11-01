@@ -2,8 +2,8 @@
 //! Document contents remain owned by their existing view implementations.
 
 use craft_ui::docking::{
-    Action, DockArea, DockCommand, DockError, DockOperation, DockStyle, FloatSpace, Floating, Layout, Node, PanelLimits, Permissions, Placement,
-    UiDock, Zone, ZoneName,
+    Action, Column, DockArea, DockCommand, DockError, DockOperation, DockStyle, FloatSpace, Floating, Group, Layout, Location, Node, PanelLimits,
+    Permissions, Placement, Side, Target, UiDock, Zone, ZoneName,
 };
 use craft_ui::layout::{SplitAxis, SplitSize};
 use serde::{Deserialize, Serialize};
@@ -32,17 +32,14 @@ impl Panel {
             Self::History => "Undo History",
         }
     }
-    fn default_side(self) -> Zone {
-        match self {
-            Self::Canvas => Zone::Right,
-            Self::Tracks => Zone::Left,
-            Self::Clips => Zone::Right,
-            Self::Midi => Zone::Bottom,
-            Self::Memory => Zone::Bottom,
-            Self::History => Zone::Right,
-        }
-    }
 }
+
+/// Width of the Tracks and Groups column in the start dock.
+pub const TRACKS_WIDTH: f32 = 168.0;
+/// Width of the Clips column in the end dock.
+pub const CLIPS_WIDTH: f32 = 230.0;
+/// Height of the MIDI editor's body under the session view.
+pub const MIDI_HEIGHT: f32 = 320.0;
 
 /// An Edit or Mix panel arrangement, saved with the UI preferences.
 pub type Workspace = craft_ui::docking::Workspace<Panel>;
@@ -64,44 +61,92 @@ fn split(axis: SplitAxis, size: SplitSize, first: Node<Panel>, second: Node<Pane
 
 /// The dock area that draws the Edit or Mix workspace.
 pub fn area_id(window: crate::MainWindow) -> egui::Id {
-    egui::Id::new(("soundcraft-docking", window == crate::MainWindow::Edit))
+    egui::Id::unique(("soundcraft-docking", window == crate::MainWindow::Edit))
 }
 
 fn area(edit: bool) -> egui::Id {
     area_id(if edit { crate::MainWindow::Edit } else { crate::MainWindow::Mix })
 }
 
-/// The Edit window's built-in arrangement.
+/// A dock on `side` with one column holding `panel`.
+fn dock(side: Side, panel: Panel, width: f32) -> Node<Panel> {
+    Node::Dock { side, columns: vec![Column::new(vec![Group::new(vec![panel], 0)], width)] }
+}
+
+const MEMORY_RECT: [f32; 4] = [160.0, 120.0, 480.0, 280.0];
+const HISTORY_RECT: [f32; 4] = [680.0, 120.0, 260.0, 300.0];
+
+/// The floating windows both windows start with. Fixed ids: the default is rebuilt every frame
+/// and must stay the same windows.
+fn default_floating() -> Vec<Floating<Panel>> {
+    vec![Floating::single(vec![Panel::Memory], 0, MEMORY_RECT).with_id(1), Floating::single(vec![Panel::History], 0, HISTORY_RECT).with_id(2)]
+}
+
+/// Where a panel that floats in the default layouts floats.
+fn default_float(panel: Panel) -> Option<[f32; 4]> {
+    match panel {
+        Panel::Memory => Some(MEMORY_RECT),
+        Panel::History => Some(HISTORY_RECT),
+        _ => None,
+    }
+}
+
+/// The dock side and column width a panel opens in when it has no recorded place.
+fn default_dock(panel: Panel) -> Option<(Side, f32)> {
+    match panel {
+        Panel::Tracks => Some((Side::Start, TRACKS_WIDTH)),
+        Panel::Clips => Some((Side::End, CLIPS_WIDTH)),
+        _ => None,
+    }
+}
+
+/// The Edit window's built-in arrangement: Tracks and Groups in a full-height start dock,
+/// Clips in a full-height end dock, and the MIDI editor under the session view between them.
 pub fn edit_default() -> Workspace {
+    let session = split(SplitAxis::Vertical, SplitSize::FixedSecond(MIDI_HEIGHT + MIDI_TAB_HEIGHT), tabs(Panel::Canvas), tabs(Panel::Midi));
     Workspace::new(Layout {
         root: Some(split(
-            SplitAxis::Vertical,
-            SplitSize::FixedSecond(320.0 + MIDI_TAB_HEIGHT),
-            split(
-                SplitAxis::Horizontal,
-                SplitSize::FixedFirst(168.0),
-                tabs(Panel::Tracks),
-                split(SplitAxis::Horizontal, SplitSize::FixedSecond(230.0), tabs(Panel::Canvas), tabs(Panel::Clips)),
-            ),
-            tabs(Panel::Midi),
+            SplitAxis::Horizontal,
+            SplitSize::FixedFirst(TRACKS_WIDTH),
+            dock(Side::Start, Panel::Tracks, TRACKS_WIDTH),
+            split(SplitAxis::Horizontal, SplitSize::FixedSecond(CLIPS_WIDTH), session, dock(Side::End, Panel::Clips, CLIPS_WIDTH)),
         )),
-        // Fixed ids: the default is rebuilt every frame and must stay the same windows.
-        floating: vec![
-            Floating::single(vec![Panel::Memory], 0, [160.0, 120.0, 480.0, 280.0]).with_id(1),
-            Floating::single(vec![Panel::History], 0, [680.0, 120.0, 260.0, 300.0]).with_id(2),
-        ],
+        floating: default_floating(),
     })
 }
 
-/// Mix retains its own arrangement; the timeline-only Clips and MIDI panels stay in Edit.
+/// The Mix window's built-in arrangement: Tracks and Groups in a start dock beside the mixer.
+/// The timeline-only Clips and MIDI panels stay in Edit.
 pub fn mix_default() -> Workspace {
-    let mut workspace = edit_default();
-    let _ = set_visible(&mut workspace, Panel::Clips, false);
-    let _ = set_visible(&mut workspace, Panel::Midi, false);
-    workspace
+    Workspace::new(Layout {
+        root: Some(split(
+            SplitAxis::Horizontal,
+            SplitSize::FixedFirst(TRACKS_WIDTH),
+            dock(Side::Start, Panel::Tracks, TRACKS_WIDTH),
+            tabs(Panel::Canvas),
+        )),
+        floating: default_floating(),
+    })
 }
 
-/// The document view where the Edit window's rules keep it: in the docked frames, alone in
+/// The version of the saved panel layouts, kept in [`crate::UiState::docking_version`]. Version 1
+/// has Tracks and Groups and Clips in dock columns; settings without a version have split frames.
+pub const LAYOUT_VERSION: u32 = 1;
+
+/// Drop the panel layouts (with their hidden panels) from saved [`crate::UiState`] settings older
+/// than [`LAYOUT_VERSION`], before they are read, so they load as the default layouts. Every other
+/// setting stays. Preferences and window configurations go through this.
+pub fn reset_old_layouts(saved: &mut Value) {
+    let Some(fields) = saved.as_object_mut() else { return };
+    if fields.get("docking_version").and_then(Value::as_u64).is_some_and(|version| version >= u64::from(LAYOUT_VERSION)) {
+        return;
+    }
+    fields.remove("docking");
+    fields.remove("mix_docking");
+    fields.insert("docking_version".into(), json!(LAYOUT_VERSION));
+}
+
+/// The document view where the Edit window's rules keep it: docked outside the dock columns, alone in
 /// its tab group. `None` when `node` does not hold it.
 fn canvas_placement(node: &Node<Panel>) -> Option<Result<(), &'static str>> {
     match node {
@@ -169,7 +214,55 @@ fn apply(workspace: &mut Workspace, action: Action<Panel>) -> Result<(), String>
     checked(workspace, |next| next.apply(action, permissions).map(drop))
 }
 
-/// Show a panel at its recorded place, else beside the document view on its default side.
+/// Whether [`Workspace::set_visible`] can actually put `panel` back at its recorded place.
+/// It follows the recorded location and the chain of hidden anchors; when none of that
+/// restores, craft-ui falls back to an unanchored open, which since craft-ui 650b1c0b chooses
+/// a dock group or right edge instead of reporting the missing anchor. Probe each chain
+/// location with the public [`Layout::restore`] on a clone, so a deleted anchor is recognized
+/// before calling in; craft-ui still performs the restore and rewrites the chain itself.
+fn restores(workspace: &Workspace, panel: Panel) -> bool {
+    let recorded = |p: &Panel| workspace.hidden.iter().find(|(q, _)| q == p).map(|(_, location)| location.clone());
+    let mut chain: Vec<Location<Panel>> = Vec::new();
+    let mut seen = vec![panel];
+    let mut current = panel;
+    while let Some(location) = recorded(&current) {
+        let anchor = location.anchor;
+        chain.push(location);
+        let Some(anchor) = anchor.filter(|anchor| !seen.contains(anchor)) else { break };
+        seen.push(anchor);
+        current = anchor;
+    }
+    // Like the chain itself, the panel's own group/column state applies to every attempt.
+    let group = chain.first().and_then(|location| location.group.clone());
+    // Revisit this eligibility probe when updating the pinned craft-ui restore algorithm.
+    chain
+        .iter()
+        .rev()
+        .find_map(|location| {
+            let location = Location { group: group.clone().or_else(|| location.group.clone()), ..location.clone() };
+            let mut probe = workspace.layout.clone();
+            match probe.restore(panel, &location) {
+                Err(DockError::MissingTarget) => None,
+                result => Some(result.is_ok()),
+            }
+        })
+        .unwrap_or(false)
+}
+
+/// The first panel of the dock on `side`, when that dock is shown.
+fn dock_panel(node: &Node<Panel>, side: Side) -> Option<Panel> {
+    match node {
+        Node::Split { first, second, .. } => dock_panel(first, side).or_else(|| dock_panel(second, side)),
+        Node::Dock { side: found, columns } if *found == side => {
+            columns.iter().flat_map(|column| &column.groups).find_map(|group| group.panels.first().copied())
+        }
+        _ => None,
+    }
+}
+
+/// Show a panel at its recorded place, else at its default place: Tracks and Groups and Clips
+/// in their docks (joining the dock's first group when the dock is shown, else making the dock
+/// again), the MIDI editor under the session view and the others floating.
 fn set_visible(workspace: &mut Workspace, panel: Panel, visible: bool) -> Result<(), String> {
     if workspace.layout.contains(&panel) == visible {
         return Ok(());
@@ -178,10 +271,26 @@ fn set_visible(workspace: &mut Workspace, panel: Panel, visible: bool) -> Result
         if !visible {
             return next.apply(Action::Close { panel }, permissions).map(drop);
         }
-        if next.set_visible(panel, true, None, permissions).is_ok() {
+        let dock = default_dock(panel);
+        if let Some((side, _)) = dock
+            && let Some(anchor) = next.layout.root.as_ref().and_then(|root| dock_panel(root, side))
+        {
+            return next.set_visible(panel, true, Some(anchor), permissions);
+        }
+        // Without an anchor, craft-ui would open a panel it has no record of, or whose record no
+        // longer restores, in some other panel's group, so the default place is applied here.
+        if next.hidden.iter().any(|(hidden, _)| *hidden == panel) && restores(next, panel) && next.set_visible(panel, true, None, permissions).is_ok()
+        {
             return Ok(());
         }
-        next.apply(Action::OpenAt { panel, anchor: Panel::Canvas, placement: Placement::Split(panel.default_side()) }, permissions).map(drop)
+        let open = Action::Open { panel, anchor: None };
+        let actions = match (dock, default_float(panel)) {
+            (Some((side, width)), _) => vec![open, Action::MovePanel { panel, to: Target::NewDock { side } }, Action::ResizeColumn { panel, width }],
+            (None, Some(rect)) => vec![open, Action::Float { panel, rect }],
+            (None, None) => vec![Action::OpenAt { panel, anchor: Panel::Canvas, placement: Placement::Split(Zone::Bottom) }],
+        };
+        next.apply_all(actions, permissions)?;
+        next.apply(Action::Activate { panel }, permissions).map(drop)
     })
 }
 
@@ -333,6 +442,8 @@ pub(crate) fn arrange(app: &mut crate::SoundApp) -> Result<(), String> {
     Ok(())
 }
 
+/// Draw and edit the dock layout for the requested window, falling back to the default layout if validation or panel
+/// sync fails, then publish panel visibility, store the workspace and apply the frame's layout actions.
 pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWindow) {
     app.docking_context = Some(ui.ctx().clone());
     let t = crate::theme::Tokens::current();
@@ -357,6 +468,10 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
     style.border = egui::Stroke::new(1.0, t.border);
     style.accent = t.accent;
     style.font = crate::theme::regular(11.5);
+    // Free docking: a panel dropped at an empty window edge makes a dock there, and the top
+    // and bottom edges take frames (`drop_edges` keeps its default).
+    style.new_dock_zones = true;
+    style.side_edge_zones = false;
     let output = DockArea::new(area(edit)).show_with_limits(
         ui,
         &workspace.layout,
@@ -376,7 +491,7 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
             Panel::Tracks => crate::panels::tracks_and_groups(app, ui),
             Panel::Clips => crate::panels::clip_list(app, ui),
             Panel::Midi => {
-                ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("soundcraft-midi-body"), ui.max_rect()));
+                ui.ctx().data_mut(|data| data.insert_temp(egui::Id::unique("soundcraft-midi-body"), ui.max_rect()));
                 minimum_body(ui, egui::vec2(420.0, 260.0), |ui| crate::midi_editor::show(app, ui));
             }
             Panel::Memory => crate::panels::memory_locations(app, ui),

@@ -24,6 +24,20 @@ fn tmpdir(tag: &str) -> PathBuf {
     dir
 }
 
+/// `path` made absolute with links followed (`/var` becomes `/private/var` on macOS), as the server
+/// prints a root: without the `\\?\` prefix that `canonicalize` adds on Windows.
+fn resolved(path: &Path) -> PathBuf {
+    let path = std::fs::canonicalize(path).unwrap();
+    if !cfg!(windows) {
+        return path;
+    }
+    let text = path.to_str().unwrap();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    text.strip_prefix(r"\\?\").map_or(path.clone(), PathBuf::from)
+}
+
 /// Send `calls` (tool name, arguments) to `soundcraft-cli mcp <args>`; returns whether it exited
 /// cleanly, its stderr, and the stdout lines after `initialize`, one per call.
 fn mcp_session(args: &[&str], calls: &[(&str, Value)]) -> (bool, String, Vec<Value>) {
@@ -114,8 +128,7 @@ fn mcp_automation_roots_confine_the_server() {
 /// the two roots' common parent, `..` out of a root and a link out of one stay refused.
 #[test]
 fn mcp_automation_roots_take_several_folders() {
-    // Resolved, as the server shows the roots (`/var` is `/private/var` on macOS).
-    let base = std::fs::canonicalize(tmpdir("several")).unwrap();
+    let base = resolved(&tmpdir("several"));
     for d in ["in", "in2", "out", "out2", "outside"] {
         std::fs::create_dir_all(base.join(d)).unwrap();
     }
@@ -196,13 +209,13 @@ fn mcp_automation_root_flags_are_checked_up_front() {
     fails(&["--automation-write-root", dir, "--connect", "7979"], "--connect");
     // #874: a flag may be given again, but every folder it names must exist.
     fails(&["--automation-read-root", dir, "--automation-read-root", missing.to_str().unwrap()], "cannot open the automation read root");
-    fails(&["--automation-write-root", dir, "--automation-write-root"], "needs a folder");
-    fails(&["--automation-read-root"], "needs a folder");
-    fails(&["--automation-write-root", "--demo"], "needs a folder");
+    fails(&["--automation-write-root", dir, "--automation-write-root"], "a value is required");
+    fails(&["--automation-read-root"], "a value is required");
+    fails(&["--automation-write-root", "--demo"], "a value is required");
     fails(&["--automation-read-root", missing.to_str().unwrap()], "cannot open the automation read root");
-    fails(&["--automation-write-root="], "needs a non-empty folder");
+    fails(&["--automation-write-root="], "a value is required");
     // A misspelled root flag must not start an unconfined server.
-    fails(&["--automation-read-roots", dir], "unknown mcp option");
+    fails(&["--automation-read-roots", dir], "unexpected argument '--automation-read-roots'");
     // A file is not a folder.
     std::fs::write(base.join("f.txt"), "x").unwrap();
     fails(&["--automation-write-root", base.join("f.txt").to_str().unwrap()], "cannot open the automation write root");
@@ -211,9 +224,9 @@ fn mcp_automation_root_flags_are_checked_up_front() {
 
 #[test]
 fn usage_lists_the_root_flags() {
-    let o = run(&["--help"]);
+    let o = run(&["mcp", "--help"]);
     let help = String::from_utf8_lossy(&o.stdout).into_owned();
-    assert!(help.contains("--automation-read-root DIR") && help.contains("--automation-write-root DIR"), "{help}");
+    assert!(help.contains("--automation-read-root <DIR>") && help.contains("--automation-write-root <DIR>"), "{help}");
 }
 
 /// Without `--start`/`--end`, `--bounce` covers the whole session, not a stray edit selection

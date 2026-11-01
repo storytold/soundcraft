@@ -17,21 +17,13 @@ enum Platform {
     Other,
 }
 
-/// SoundCraft's settings folder. A nonempty `$SOUNDCRAFT_CONFIG_DIR` overrides the platform default.
-/// The override is the complete directory; no application-name suffix is appended. An explicitly
-/// empty value disables the settings directory instead of falling back to a personal profile.
-/// Otherwise `portable.txt` beside the executable selects `<exe dir>/SoundCraftData`, when that
-/// folder can be written (a read-only medium falls back to the platform default).
-pub fn config_dir() -> Option<PathBuf> {
-    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let exe = std::env::current_exe().ok();
-        resolve(exe.as_deref().and_then(Path::parent))
-    })
-    .clone()
-}
-
-fn resolve(exe_dir: Option<&Path>) -> Option<PathBuf> {
+/// SoundCraft's settings folder, resolved from the variable lookup `get` (see `Env::from_lookup`).
+/// A nonempty `$SOUNDCRAFT_CONFIG_DIR` overrides the platform default and is the complete
+/// directory; no application-name suffix is appended. An explicitly empty value means no settings
+/// folder instead of a fallback to a personal profile (the documented exception to RFC-0012 rule
+/// 1.7). Otherwise `portable.txt` beside the executable selects `<exe dir>/SoundCraftData`, when
+/// that folder can be written (a read-only medium falls back to the platform default).
+pub fn resolve_config_dir(get: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     let platform = if cfg!(target_os = "macos") {
         Platform::Mac
     } else if cfg!(windows) {
@@ -39,11 +31,12 @@ fn resolve(exe_dir: Option<&Path>) -> Option<PathBuf> {
     } else {
         Platform::Other
     };
-    config_dir_with(platform, |name| std::env::var_os(name), exe_dir)
+    let exe = std::env::current_exe().ok();
+    config_dir_with(platform, get, exe.as_deref().and_then(Path::parent))
 }
 
 fn config_dir_with(platform: Platform, env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>) -> Option<PathBuf> {
-    if let Some(dir) = env("SOUNDCRAFT_CONFIG_DIR") {
+    if let Some(dir) = env(crate::env::CONFIG_DIR) {
         return (!dir.is_empty()).then(|| PathBuf::from(dir));
     }
     if let Some(exe_dir) = exe_dir.filter(|d| d.join(PORTABLE_MARKER).is_file()) {
@@ -88,6 +81,7 @@ fn read_ui(path: &std::path::Path, recover_docking: bool) -> Result<Option<sound
         return Err("Settings file exceeds the 4 MiB limit".into());
     }
     let mut saved: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| format!("Settings could not be restored: {error}"))?;
+    docking::reset_old_layouts(&mut saved);
     if recover_docking && let Some(fields) = saved.as_object_mut() {
         for (field, mix) in [("docking", false), ("mix_docking", true)] {
             let unreadable = fields.get(field).is_some_and(|value| match serde_json::from_value::<docking::Workspace>(value.clone()) {
@@ -117,6 +111,7 @@ pub fn save_ui(path: &std::path::Path, ui: &soundcraft_ui_egui::UiState) -> Resu
     let mut saved = ui.clone();
     saved.plugin_windows.clear();
     saved.status.clear();
+    saved.docking_version = docking::LAYOUT_VERSION;
     let bytes = serde_json::to_vec_pretty(&saved).map_err(|error| error.to_string())?;
     if bytes.len() as u64 > MAX_UI_BYTES {
         return Err("Settings exceed the 4 MiB limit".into());
@@ -210,6 +205,35 @@ mod config_tests {
                 assert_eq!(std::fs::read(&path).unwrap(), bytes);
             }
         }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn settings_from_before_dock_columns_load_with_the_default_layouts() {
+        let directory = std::env::temp_dir().join(format!("soundcraft-split-frame-prefs-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("ui.json");
+        let split_frames = serde_json::json!({"layout": {"root": {"Split": {
+            "axis": "Horizontal",
+            "size": {"FixedFirst": 200.0},
+            "first": {"Tabs": {"panels": ["tracks"], "active": 0}},
+            "second": {"Tabs": {"panels": ["canvas"], "active": 0}}
+        }}, "floating": []}});
+        let ui = soundcraft_ui_egui::UiState { theme: soundcraft_ui_egui::theme::ThemeMode::Light, narrow_mix: true, ..Default::default() };
+        let mut saved = serde_json::to_value(&ui).unwrap();
+        let fields = saved.as_object_mut().unwrap();
+        fields.remove("docking_version");
+        fields.insert("docking".into(), split_frames.clone());
+        fields.insert("mix_docking".into(), split_frames);
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let loaded = load_ui(&path).unwrap().unwrap();
+        assert_eq!(loaded.docking, docking::edit_default());
+        assert_eq!(loaded.mix_docking, docking::mix_default());
+        assert_eq!(loaded.theme, soundcraft_ui_egui::theme::ThemeMode::Light);
+        assert!(loaded.narrow_mix);
+        save_ui(&path, &loaded).unwrap();
+        let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written["docking_version"], serde_json::json!(docking::LAYOUT_VERSION));
         std::fs::remove_dir_all(directory).unwrap();
     }
 

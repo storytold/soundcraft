@@ -122,11 +122,11 @@ where things are.
 - **Automation:** volume, pan, mute, send and every plugin parameter; Write, Touch, Latch and
   Trim passes recorded live from the faders; thin, glide, coalesce and convert to clip gain.
 - **Plugins:** 7-band and 1-band EQ, compressor/limiter, expander/gate, de-esser, maximizer,
-  channel strip, room and plate reverbs, mod delay, chorus, flanger, phaser, ring modulator,
-  saturator, lo-fi, rectifier, pitch shifter, time shift, gain, trim, invert, DC removal,
-  signal generator, dither, a subtractive synth, a drum synth and a sampler (plays any WAV,
-  AIFF, FLAC, MP3 or OGG across the keyboard), all original. **CLAP plugins** load too. Any
-  processor runs offline as AudioSuite, and user presets save per plugin.
+  channel strip, room and plate reverbs, mod delay, auto pan, chorus, flanger, phaser, ring
+  modulator, saturator, lo-fi, rectifier, subharmonic, pitch shifter, time shift, gain, trim,
+  invert, DC removal, signal generator, dither, a subtractive synth, a drum synth and a sampler
+  (plays any WAV, AIFF, FLAC, MP3 or OGG across the keyboard), all original. **CLAP plugins**
+  load too. Any processor runs offline as AudioSuite, and user presets save per plugin.
 - **MIDI:** instrument and MIDI tracks, a piano-roll MIDI editor with a velocity lane, an event
   list, a score view, step input, quantize, transpose, real-time properties, Standard MIDI Files,
   and Audio-to-MIDI from a sung or played melody.
@@ -194,7 +194,7 @@ error only.
 | Variable | Effect |
 |---|---|
 | `RUST_LOG` | Log levels for standard error and the log file. Default: `info` for SoundCraft's own crates, `warn` for everything else. env_logger-style directives replace that, e.g. `RUST_LOG=debug`, `RUST_LOG=warn,soundcraft_mix=trace` or `RUST_LOG=info,wgpu_core=warn`; a directive ending in `*` covers every target starting with it (`soundcraft*=debug`). |
-| `SOUNDCRAFT_NO_PREFS` | No preferences read or written and no log file (agents' test runs). |
+| `SOUNDCRAFT_NO_PREFS` | `1`: no preferences read or written and no log file (agents' test runs). |
 
 The realtime audio thread never writes a record itself: the logger keeps the first one it logs
 (without waiting or allocating), counts the rest, and the UI thread writes them. The logger is
@@ -226,8 +226,9 @@ claude mcp add soundcraft -- soundcraft-cli mcp --demo
 soundcraft-cli mcp --automation-read-root DIR --automation-write-root DIR
 ```
 
-See [`docs/control-protocol.md`](docs/control-protocol.md) and [`docs/mcp.md`](docs/mcp.md).
-`soundcraft-cli commands` lists every command.
+See [`docs/cli.md`](docs/cli.md) for the command-line tool (subcommands, exit codes, environment
+variables, man pages and completions), [`docs/control-protocol.md`](docs/control-protocol.md) and
+[`docs/mcp.md`](docs/mcp.md). `soundcraft-cli commands` lists every command.
 
 Open **SoundCraft › Session Audio Health** to check loaded audio availability, sample-rate
 mismatches and clip source bounds across all playlists, including alternate takes. The report

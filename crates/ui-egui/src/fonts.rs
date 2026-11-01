@@ -80,8 +80,8 @@ fn load_from_fontconfig(pattern: &str, lang: Option<&str>) -> Option<FontData> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load(cands: &[(&str, u32)], pattern: &str, lang: Option<&str>) -> Option<FontData> {
-    if std::env::var_os("SOUNDCRAFT_NO_SYSTEM_FONTS").is_some() {
+fn load(cands: &[(&str, u32)], pattern: &str, lang: Option<&str>, system_fonts: bool) -> Option<FontData> {
+    if !system_fonts {
         return None;
     }
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -104,28 +104,29 @@ fn load(cands: &[(&str, u32)], pattern: &str, lang: Option<&str>) -> Option<Font
 }
 
 #[cfg(target_arch = "wasm32")]
-fn load(_: &[(&str, u32)], _: &str, _: Option<&str>) -> Option<FontData> {
+fn load(_: &[(&str, u32)], _: &str, _: Option<&str>, _: bool) -> Option<FontData> {
     None
 }
 
-pub fn definitions() -> FontDefinitions {
+/// The font set: the bundled faces, plus the system ones when `system_fonts` is true.
+pub fn definitions(system_fonts: bool) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let base: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let mut bold_family = base.clone();
-    if let Some(reg) = load(REGULAR, "sans-serif", None) {
+    if let Some(reg) = load(REGULAR, "sans-serif", None, system_fonts) {
         fonts.font_data.insert("system-regular".into(), Arc::new(reg));
         if let Some(f) = fonts.families.get_mut(&FontFamily::Proportional) {
             f.insert(0, "system-regular".into());
         }
     }
-    if let Some(b) = load(BOLD, "sans-serif:style=Bold", None) {
+    if let Some(b) = load(BOLD, "sans-serif:style=Bold", None, system_fonts) {
         fonts.font_data.insert("system-bold".into(), Arc::new(b));
         bold_family.insert(0, "system-bold".into());
     } else if fonts.font_data.contains_key("system-regular") {
         bold_family.insert(0, "system-regular".into());
     }
     fonts.families.insert(FontFamily::Name("bold".into()), bold_family);
-    if let Some(h) = load(HANGUL, "sans-serif:lang=ko", Some("ko")) {
+    if let Some(h) = load(HANGUL, "sans-serif:lang=ko", Some("ko"), system_fonts) {
         fonts.font_data.insert("system-hangul".into(), Arc::new(h));
         for family in fonts.families.values_mut() {
             family.push("system-hangul".into());
@@ -134,8 +135,8 @@ pub fn definitions() -> FontDefinitions {
     fonts
 }
 
-pub fn install(ctx: &egui::Context) {
-    ctx.set_fonts(definitions());
+pub fn install(ctx: &egui::Context, system_fonts: bool) {
+    ctx.set_fonts(definitions(system_fonts));
 }
 
 #[cfg(test)]
@@ -151,10 +152,33 @@ mod tests {
         assert!(HANGUL.iter().filter(|(p, _)| p.ends_with("NotoSansCJK-Regular.ttc")).all(|(_, i)| *i == 1));
     }
 
+    /// Every literal glyph the UI fixtures paint is covered by the bundled faces in every family,
+    /// without relying on an installed system font. This is the 0.37 font-feature regression test.
+    #[test]
+    fn bundled_faces_cover_the_ui_glyphs_in_every_family() {
+        let mut defs = FontDefinitions::default();
+        let proportional = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+        defs.families.insert(FontFamily::Name("bold".into()), proportional);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        // Status/menu text, transport/meter symbols, file/audio/search icons, music symbols and
+        // platform key hints used by the UI. Close/delete controls paint a cross in `icons.rs`
+        // instead of typesetting U+2715, which no bundled face covers in every family.
+        let glyphs = ["›", "v", "♩", "𝄞", "⌘", "📁", "🔊", "🔍", "⬆", "−", "∞"];
+        for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("bold".into())] {
+            let font = egui::FontId::new(13.0, family.clone());
+            for glyph in glyphs {
+                assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, glyph)), "{family:?} has no glyph for {glyph:?}");
+            }
+        }
+    }
+
     /// Korean names draw in every family, not as boxes; skipped when the system has no Korean font.
     #[test]
     fn every_family_draws_hangul_with_a_system_korean_font() {
-        let defs = definitions();
+        let defs = definitions(true);
         if !defs.font_data.contains_key("system-hangul") {
             eprintln!("skipping: no Korean system font");
             return;

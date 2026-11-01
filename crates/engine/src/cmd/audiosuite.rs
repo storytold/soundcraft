@@ -5,6 +5,7 @@ use soundcraft_time::Range;
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_audio_io::{AudioBuffer, FileFormat};
+use soundcraft_dsp::offline::{SpeedRampChange, SpeedRampSelection};
 use soundcraft_model::{Clip, ClipContent, TrackKind};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -13,10 +14,22 @@ pub fn specs() -> Vec<CommandSpec> {
         "AudioSuite Process",
         [],
         None,
-        "{process: <plugin id> | normalize | reverse | invert | gain | duplicate | time_stretch | pitch_shift | varispeed | signal_generator, params?: {..}, clips?, tracks?, start?, end?} — signal_generator fills start..end (default: the selection) with a new clip on each audio track in `tracks` (default: the selected tracks)",
+        "{process: <plugin id> | normalize | reverse | invert | gain | duplicate | time_stretch | pitch_shift | varispeed | speed_ramp | signal_generator, params?: {..}, clips?, tracks?, start?, end?} — signal_generator fills start..end (default: the selection) with a new clip on each audio track in `tracks` (default: the selected tracks); speed_ramp takes change (0 slow down, 1 speed up), selection (0 fit to, 1 extend) and fades (1 on, 0 off)",
         has_selection,
         process
     )]
+}
+
+/// The most frames a process can take in: these processes cut their output at MAX_OFFLINE_SAMPLES frames.
+fn frame_limit(name: &str, ratio: f64, semitones: f32, sr: f64, to: u32, selection: SpeedRampSelection) -> usize {
+    let longest = |grows: f64| (soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES as f64 / grows) as usize;
+    match name {
+        "time_stretch" => longest(ratio),
+        "pitch_shift" => longest(2f64.powf(f64::from(semitones) / 12.0)),
+        "varispeed" => longest(f64::from(to) / sr),
+        "speed_ramp" => longest(if selection == SpeedRampSelection::Extend { 1.5 } else { 1.0 }),
+        _ => usize::MAX,
+    }
 }
 
 /// Process each target clip's audio and replace the clip with one backed by a new source.
@@ -31,7 +44,16 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
     let known = soundcraft_dsp::plugin_info(&name).is_some()
         || matches!(
             name.as_str(),
-            "normalize" | "reverse" | "invert" | "gain" | "duplicate" | "time_stretch" | "pitch_shift" | "varispeed" | "dc_offset_removal"
+            "normalize"
+                | "reverse"
+                | "invert"
+                | "gain"
+                | "duplicate"
+                | "time_stretch"
+                | "pitch_shift"
+                | "varispeed"
+                | "speed_ramp"
+                | "dc_offset_removal"
         );
     if !known {
         return Err(bad("audiosuite.process", format!("unknown process `{name}`")));
@@ -50,14 +72,10 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
     let ratio = f64::from(get("ratio", 1.0).clamp(0.25, 4.0));
     let semitones = get("semitones", 0.0).clamp(-24.0, 24.0);
     let to = (sr.as_f64() / f64::from(get("speed", 1.0).clamp(0.25, 4.0))).round().max(1.0) as u32;
-    // These processes cut their output at MAX_OFFLINE_SAMPLES frames.
-    let longest = |grows: f64| (soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES as f64 / grows) as usize;
-    let most = match name.as_str() {
-        "time_stretch" => longest(ratio),
-        "pitch_shift" => longest(2f64.powf(f64::from(semitones) / 12.0)),
-        "varispeed" => longest(f64::from(to) / sr.as_f64()),
-        _ => usize::MAX,
-    };
+    let change = if get("change", 0.0) >= 0.5 { SpeedRampChange::SpeedUp } else { SpeedRampChange::SlowDown };
+    let selection = if get("selection", 0.0) >= 0.5 { SpeedRampSelection::Extend } else { SpeedRampSelection::FitTo };
+    let fades = get("fades", 1.0) >= 0.5;
+    let most = frame_limit(&name, ratio, semitones, sr.as_f64(), to, selection);
     let mut done = 0;
     for id in ids {
         let Some((track, clip)) = e.session().find_clip(id).map(|(t, c)| (t, c.clone())) else { continue };
@@ -101,6 +119,7 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
             "time_stretch" => soundcraft_dsp::offline::time_stretch(&audio, ratio, srf),
             "pitch_shift" => soundcraft_dsp::offline::pitch_shift(&audio, semitones, srf),
             "varispeed" => soundcraft_dsp::offline::resample(&audio, sr.hz(), to),
+            "speed_ramp" => soundcraft_dsp::offline::speed_ramp(&audio, change, selection, fades),
             plugin => {
                 apply(plugin, &params, &mut audio, srf)?;
                 audio
@@ -118,6 +137,7 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
         nc.name = new_name;
         nc.content = ClipContent::Audio { source: src, offset: 0 };
         nc.length = i64::try_from(frames).unwrap_or(nc.length);
+        nc.clamp_fades();
         // The render already has the clip's stretch applied; keeping it would stretch the new file again.
         nc.stretch = 1.0;
         // Invert and Duplicate are phase/copy operations. The clip's gain stays a clip gain,
@@ -228,6 +248,21 @@ mod tests {
     }
 
     #[test]
+    fn shortening_process_clamps_fades_to_the_new_length() {
+        let (mut e, id) = gained_clip();
+        {
+            let c = e.session_mut().find_clip_mut(id).unwrap();
+            c.fade_in.len = 60;
+            c.fade_out.len = 40;
+        }
+        e.execute("audiosuite.process", &json!({"process": "time_stretch", "params": {"ratio": 0.25}, "clips": [id.0]})).unwrap();
+        let c = e.session().tracks[0].clips()[0].clone();
+        assert!(c.length < 64, "{}", c.length);
+        assert!(c.fade_in.len <= c.length, "fade in {} > length {}", c.fade_in.len, c.length);
+        assert_eq!(c.fade_out.len, 40.min(c.length));
+    }
+
+    #[test]
     fn processed_clip_does_not_keep_the_stretch_it_baked() {
         for stretch in [0.5, 2.0] {
             for process in ["invert", "duplicate"] {
@@ -240,6 +275,39 @@ mod tests {
                 assert_eq!(c.length, i64::try_from(frames).unwrap(), "{process} at {stretch}");
             }
         }
+    }
+
+    #[test]
+    fn speed_ramp_ramps_the_speed_and_extend_lengthens_the_clip() {
+        // A mono clip at 480 whose samples rise from 0 to 1, so each output sample shows where it was read.
+        let run = |params: Value| {
+            let mut s = Session::default();
+            let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Ramp"));
+            let buf = AudioBuffer { sample_rate: 48_000, channels: vec![(0..4800).map(|i| i as f32 / 4800.0).collect()] };
+            let src = crate::io::add_source(&mut s, "ramp", buf, None, FileFormat::Wav);
+            let id = s.new_clip_id();
+            crate::edit::place_clip(&mut s, t, Clip::audio(id, "ramp", src, 0, 480, 4800));
+            let mut e = crate::Engine::new(s);
+            e.execute("audiosuite.process", &json!({"process": "speed_ramp", "params": params, "clips": [id.0]})).unwrap();
+            let c = e.session().tracks[0].clips()[0].clone();
+            let audio = e.session().pool.get(c.source().unwrap()).unwrap().buffer.channels[0].clone();
+            (c.start, c.length, c.name, audio)
+        };
+        // The defaults: Slow Down, Fit To, Fades On. Halfway through, the read position is 11/16 of the
+        // way through the first two thirds, and the gain is the speed there, 3/4.
+        let (start, length, name, audio) = run(json!({}));
+        assert_eq!((start, length, name.as_str()), (480, 4800, "ramp-speeramp"));
+        let want = (2.0 / 3.0 * 11.0 / 16.0) * 0.75;
+        assert!((audio[2400] - want).abs() < 2e-3, "slow down halfway: got {}, want {want}", audio[2400]);
+        assert!(audio[4790].abs() < 0.01, "the fade-out ends near silence, got {}", audio[4790]);
+        // Speed Up with Extend and no fades: all of the clip is played over 150 % of its length, and the
+        // clip still starts at 480.
+        let (start, length, _, audio) = run(json!({"change": 1, "selection": 1, "fades": 0}));
+        assert_eq!((start, length), (480, 7200));
+        assert!((audio[3600] - 5.0 / 16.0).abs() < 2e-3, "speed up halfway: got {}", audio[3600]);
+        let r = 1.0 - 7100.0 / 7200.0;
+        let want = 1.0 - (3.0 * r - r * r * r) / 2.0;
+        assert!((audio[7100] - want).abs() < 2e-3, "speed up near the end: got {}, want {want}", audio[7100]);
     }
 
     #[test]

@@ -3,10 +3,12 @@
 //! `image` encoder, muxed with the bundled MP4/MOV writer. When `ffmpeg` with libx264 is on PATH,
 //! real High-profile streams with B-frames are checked too (skipped otherwise).
 
-use crate::isobmff::{Brand, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+use crate::isobmff::{Brand, ByteSource, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
 use crate::synth::{frame_color, h264_mp4, mjpeg_mov, prores_mov};
 use crate::{Movie, VideoError};
 use std::io::Cursor;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn expected_rgb(i: usize) -> [u8; 3] {
     let [y, cb, cr] = frame_color(i);
@@ -116,6 +118,47 @@ fn prores_frame_size_is_checked_before_decoding() {
     mw.write_sample(t, WriteSample { data: &prores_frame_claiming(56, 48), duration: 1, composition_offset: 0, is_sync: true }).unwrap();
     let mut m = Movie::open(mw.finish().unwrap().into_inner()).unwrap();
     assert!(matches!(m.frame(0), Err(VideoError::Decode(e)) if e.contains("56x48 frame in a 64x48 track")));
+}
+
+/// In-memory movie bytes, zero-padded up to `len` without storing the padding. Records the
+/// largest read asked of it and refuses reads over 1 MiB (the test movies are much smaller).
+struct PaddedSource {
+    bytes: Vec<u8>,
+    len: u64,
+    largest: AtomicUsize,
+}
+
+impl ByteSource for PaddedSource {
+    fn len(&self) -> u64 {
+        self.len
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        self.largest.fetch_max(buf.len(), Ordering::Relaxed);
+        if buf.len() > 1 << 20 {
+            return Err(std::io::Error::other("read too large for the test source"));
+        }
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = self.bytes.get(start.saturating_add(i)).copied().unwrap_or(0);
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn h264_sample_reads_are_capped() {
+    // One frame whose `stsz` entry claims 300 MiB, in a source long enough to hold it.
+    let mut bytes = h264_mp4(1, 1).unwrap();
+    let at = bytes.windows(4).position(|w| w == b"stsz").unwrap();
+    // After the type: version and flags, the constant size (0: one size per sample), the count.
+    let field = if bytes[at + 8..at + 12] == [0; 4] { at + 16 } else { at + 8 };
+    bytes[field..field + 4].copy_from_slice(&(300u32 << 20).to_be_bytes());
+    let src = Arc::new(PaddedSource { bytes, len: 1 << 30, largest: AtomicUsize::new(0) });
+    let mut m = Movie::open_source(src.clone()).unwrap();
+    let r = m.frame(0);
+    assert!(matches!(&r, Err(VideoError::Decode(e)) if e.contains("sample larger than 256 MiB")), "{r:?}");
+    let largest = src.largest.load(Ordering::Relaxed);
+    assert!(largest <= 256 << 20, "a {largest}-byte read reached the source");
 }
 
 #[test]

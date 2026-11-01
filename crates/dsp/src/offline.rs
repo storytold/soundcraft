@@ -54,7 +54,24 @@ fn max_len(ch: &[Vec<f32>]) -> usize {
 
 /// The largest finite sample magnitude in any channel.
 pub fn peak(ch: &[Vec<f32>]) -> f32 {
-    ch.iter().flatten().filter(|v| v.is_finite()).fold(0.0f32, |m, v| m.max(v.abs()))
+    ch.iter().map(|c| channel_peak(c)).fold(0.0f32, f32::max)
+}
+
+/// Largest finite absolute sample of one channel (0 for none).
+pub fn channel_peak(x: &[f32]) -> f32 {
+    let mut lanes = [0.0f32; 8];
+    let (chunks, rest) = x.as_chunks::<8>();
+    for c in chunks {
+        for (m, v) in lanes.iter_mut().zip(c) {
+            let a = v.abs();
+            *m = if a < f32::INFINITY && a > *m { a } else { *m };
+        }
+    }
+    for (m, v) in lanes.iter_mut().zip(rest) {
+        let a = v.abs();
+        *m = if a < f32::INFINITY && a > *m { a } else { *m };
+    }
+    lanes.into_iter().fold(0.0f32, f32::max)
 }
 
 /// Peak-normalizes to `target_db` dBFS, either all channels together or each on its own.
@@ -110,8 +127,11 @@ pub fn remove_dc(ch: &mut [Vec<f32>]) {
         if c.is_empty() {
             continue;
         }
-        let mean = c.iter().filter(|v| v.is_finite()).map(|&v| f64::from(v)).sum::<f64>() / c.len() as f64;
-        let m = mean as f32;
+        let (sum, n) = c.iter().filter(|v| v.is_finite()).fold((0.0f64, 0usize), |(s, n), &v| (s + f64::from(v), n + 1));
+        if n == 0 {
+            continue;
+        }
+        let m = (sum / n as f64) as f32;
         c.iter_mut().for_each(|s| *s -= m);
     }
 }
@@ -322,6 +342,77 @@ pub fn resample(ch: &[Vec<f32>], from: u32, to: u32) -> Vec<Vec<f32>> {
 // ---------------------------------------------------------------------------------------------
 // Time stretch (WSOLA) and pitch shift
 
+/// Start position in the guide signal whose `hop` samples best match the natural continuation at
+/// `natural`, searched within `tol` of `nominal` (coarse stride 4, then refined +-3).
+fn best_start(g: &impl Fn(i64) -> f32, nominal: i64, natural: i64, tol: i64, hop: usize) -> i64 {
+    // Similarity of candidate start `p` with the natural continuation (stride 2).
+    let score = |p: i64| -> f32 {
+        let (mut xy, mut yy) = (0.0f32, 1e-9f32);
+        let mut i = 0i64;
+        while i < hop as i64 {
+            let a = g(natural + i);
+            let b = g(p + i);
+            xy += a * b;
+            yy += b * b;
+            i += 2;
+        }
+        xy / yy.sqrt()
+    };
+    let lo = (nominal - tol).max(0);
+    let hi = nominal + tol;
+    let mut best = nominal.max(0);
+    let mut best_s = f32::NEG_INFINITY;
+    let mut p = lo;
+    while p <= hi {
+        let s = score(p);
+        if s > best_s {
+            best_s = s;
+            best = p;
+        }
+        p += 4;
+    }
+    let (rlo, rhi) = ((best - 3).max(lo), (best + 3).min(hi));
+    for p in rlo..=rhi {
+        let s = score(p);
+        if s > best_s {
+            best_s = s;
+            best = p;
+        }
+    }
+    best
+}
+
+/// Add one windowed frame of every channel, read from `at.0`, into `out` at `at.1`, and the window
+/// into `wsum`.
+fn overlap_add(ch: &[Vec<f32>], out: &mut [Vec<f32>], wsum: &mut [f32], window: &[f32], at: (usize, usize)) {
+    let (in_pos, out_pos) = at;
+    for (c, o) in ch.iter().zip(out.iter_mut()) {
+        for (i, w) in window.iter().enumerate() {
+            let v = c.get(in_pos + i).copied().unwrap_or(0.0);
+            if let Some(d) = o.get_mut(out_pos + i) {
+                *d += v * w;
+            }
+        }
+    }
+    for (i, w) in window.iter().enumerate() {
+        if let Some(d) = wsum.get_mut(out_pos + i) {
+            *d += w;
+        }
+    }
+}
+
+/// Divide out the accumulated window weights and cut each channel to `out_len`.
+fn normalise(out: &mut [Vec<f32>], wsum: &[f32], out_len: usize) {
+    for o in out.iter_mut() {
+        for (s, w) in o.iter_mut().zip(wsum) {
+            if *w > 1e-3 {
+                *s /= w;
+            }
+        }
+        o.truncate(out_len);
+    }
+}
+
 /// Pitch-preserving time stretch by WSOLA (waveform-similarity overlap-add).
 /// `ratio` = output length / input length, clamped to 0.1 ..= 10. All channels share the same
 /// segment choices so the stereo image stays coherent.
@@ -354,72 +445,12 @@ pub fn time_stretch(ch: &[Vec<f32>], ratio: f64, sample_rate: f32) -> Vec<Vec<f3
         if out_pos >= out_len {
             break;
         }
-        let in_pos = if k == 0 {
-            0
-        } else {
-            let nominal = (out_pos as f64 / ratio).round() as i64;
-            let natural = prev_in + hop as i64;
-            // Similarity of candidate start `p` with the natural continuation (stride 2).
-            let score = |p: i64| -> f32 {
-                let (mut xy, mut yy) = (0.0f32, 1e-9f32);
-                let mut i = 0i64;
-                while i < hop as i64 {
-                    let a = g(natural + i);
-                    let b = g(p + i);
-                    xy += a * b;
-                    yy += b * b;
-                    i += 2;
-                }
-                xy / yy.sqrt()
-            };
-            let lo = (nominal - tol).max(0);
-            let hi = nominal + tol;
-            let mut best = nominal.max(0);
-            let mut best_s = f32::NEG_INFINITY;
-            let mut p = lo;
-            while p <= hi {
-                let s = score(p);
-                if s > best_s {
-                    best_s = s;
-                    best = p;
-                }
-                p += 4;
-            }
-            let (rlo, rhi) = ((best - 3).max(lo), (best + 3).min(hi));
-            for p in rlo..=rhi {
-                let s = score(p);
-                if s > best_s {
-                    best_s = s;
-                    best = p;
-                }
-            }
-            best
-        };
-        for (c, o) in ch.iter().zip(out.iter_mut()) {
-            for (i, w) in window.iter().enumerate() {
-                let src = in_pos as usize + i;
-                let v = c.get(src).copied().unwrap_or(0.0);
-                if let Some(d) = o.get_mut(out_pos + i) {
-                    *d += v * w;
-                }
-            }
-        }
-        for (i, w) in window.iter().enumerate() {
-            if let Some(d) = wsum.get_mut(out_pos + i) {
-                *d += w;
-            }
-        }
+        let in_pos = if k == 0 { 0 } else { best_start(&g, (out_pos as f64 / ratio).round() as i64, prev_in + hop as i64, tol, hop) };
+        overlap_add(ch, &mut out, &mut wsum, &window, (in_pos as usize, out_pos));
         prev_in = in_pos;
         k += 1;
     }
-    for o in out.iter_mut() {
-        for (s, w) in o.iter_mut().zip(&wsum) {
-            if *w > 1e-3 {
-                *s /= w;
-            }
-        }
-        o.truncate(out_len);
-    }
+    normalise(&mut out, &wsum, out_len);
     out
 }
 
@@ -450,6 +481,78 @@ pub fn pitch_shift(ch: &[Vec<f32>], semitones: f32, sample_rate: f32) -> Vec<Vec
         o.truncate(c.len());
     }
     out
+}
+
+/// Which way [`speed_ramp`] ramps the playback speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeedRampChange {
+    /// From normal speed down to a complete stop.
+    SlowDown,
+    /// From a complete stop up to normal speed.
+    SpeedUp,
+}
+
+/// How much of the input [`speed_ramp`] plays, and how long the result is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeedRampSelection {
+    /// The result is as long as the input. Two thirds of the input are played: the first two
+    /// thirds for Slow Down, the last two thirds for Speed Up, so each joins its neighbour
+    /// without a jump.
+    FitTo,
+    /// All of the input is played, and the result is 150 % of its length.
+    Extend,
+}
+
+/// Plays `ch` with the speed ramping between normal speed and a complete stop, so the pitch follows
+/// the speed. The speed is `1 - u²` for Slow Down and `1 - (1 - u)²` for Speed Up, where `u`
+/// runs from 0 to 1 over the result; both curves average 2/3 of normal speed. With `fades`, the
+/// gain follows the same curve: a fade-out for Slow Down and a fade-in for Speed Up. Every channel
+/// is read at the same positions, and a channel shorter than the others is silent past its end.
+pub fn speed_ramp(ch: &[Vec<f32>], change: SpeedRampChange, selection: SpeedRampSelection, fades: bool) -> Vec<Vec<f32>> {
+    let len = max_len(ch) as f64;
+    let (total, first, played) = match selection {
+        SpeedRampSelection::Extend => ((len * 1.5).round(), 0.0, len),
+        SpeedRampSelection::FitTo => {
+            let played = len * 2.0 / 3.0;
+            (len, if change == SpeedRampChange::SlowDown { 0.0 } else { len - played }, played)
+        }
+    };
+    let out_len = (total as usize).min(MAX_OFFLINE_SAMPLES);
+    let table = SincTable::new(0.97);
+    let hw = table.half_width;
+    // The fraction of the played input reached at `u`, and the speed there (0 to 1).
+    let at = |u: f64| -> (f64, f64) {
+        match change {
+            SpeedRampChange::SlowDown => ((3.0 * u - u * u * u) / 2.0, 1.0 - u * u),
+            SpeedRampChange::SpeedUp => {
+                let r = 1.0 - u;
+                (1.0 - (3.0 * r - r * r * r) / 2.0, 1.0 - r * r)
+            }
+        }
+    };
+    // The interpolation reads the first or last sample of the input for taps before or after it.
+    let last = (len as i64 - 1).max(0);
+    ch.iter()
+        .map(|x| {
+            (0..out_len)
+                .map(|n| {
+                    let (pos, speed) = at(n as f64 / total);
+                    let t = first + played * pos;
+                    let lo = (t - hw).ceil() as i64;
+                    let hi = (t + hw).floor() as i64;
+                    let mut acc = 0.0f32;
+                    let mut j = lo;
+                    while j <= hi {
+                        if let Some(&v) = x.get(j.clamp(0, last) as usize) {
+                            acc += v * table.at(t - j as f64);
+                        }
+                        j += 1;
+                    }
+                    if fades { acc * speed as f32 } else { acc }
+                })
+                .collect()
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -788,5 +891,15 @@ mod tests {
         assert_eq!(ch[0][99], 0.0);
         assert_eq!(ch[0][50], 1.0);
         fade(&mut ch, 1000, 1000, FadeShape::SCurve);
+    }
+
+    #[test]
+    fn remove_dc_ignores_non_finite_samples_in_the_mean() {
+        let mut ch = vec![vec![f32::NAN, 1.0, 1.0, 1.0]];
+        remove_dc(&mut ch);
+        assert!(ch[0][1..].iter().all(|x| x.abs() < 1e-6), "left over dc {:?}", ch[0]);
+        let mut all_bad = vec![vec![f32::NAN, f32::INFINITY]];
+        remove_dc(&mut all_bad);
+        assert!(all_bad[0][0].is_nan() && all_bad[0][1].is_infinite());
     }
 }

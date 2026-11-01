@@ -274,7 +274,12 @@ fn tempo_curve(e: &mut Engine, p: &Value, curve: Curve, id: &str) -> Result<Valu
 
 fn tempo_stretch(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "event.tempo_stretch";
-    let (r, t0, t1) = selection_ticks(e, p, id)?;
+    // Here `length` is the new length of the selection, not part of the range.
+    let mut range_params = p.clone();
+    if let Some(m) = range_params.as_object_mut() {
+        m.remove("length");
+    }
+    let (r, t0, t1) = selection_ticks(e, &range_params, id)?;
     let factor = match position_param(e, id, p, "length")? {
         Some(l) if l > 0 => l as f64 / r.len() as f64,
         _ => f64_or(p, "factor", f64::NAN),
@@ -564,18 +569,11 @@ pub fn chord_name(weights: &[f64; 12], bass: usize) -> Option<String> {
 const MAX_CHORD_BARS: usize = 100_000;
 const MAX_CHORD_NOTES: usize = 10_000_000;
 
-fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
-    let id = "event.extract_chords";
-    let (_, t0, t1) = selection_ticks(e, p, id)?;
-    let s = e.session();
-    let picked = tracks_param(e, id, p)?;
-    let mut tracks: Vec<TrackId> = picked.into_iter().filter(|t| s.track(*t).is_some_and(|x| x.kind.is_midi())).collect();
-    if tracks.is_empty() {
-        tracks = s.tracks.iter().filter(|t| t.kind.is_midi()).map(|t| t.id).collect();
-    }
-    // Absolute (tick) notes from every MIDI clip on those tracks, cut to their clip.
+/// Absolute `(start, end, pitch)` tick notes from every MIDI clip on `tracks`, cut to their clip
+/// and sorted by start.
+fn midi_tick_notes(s: &Session, tracks: &[TrackId]) -> Vec<(i64, i64, u8)> {
     let mut notes: Vec<(i64, i64, u8)> = Vec::new();
-    for t in &tracks {
+    for t in tracks {
         for c in s.track(*t).map(|tr| tr.clips()).unwrap_or(&[]) {
             let ClipContent::Midi { sequence } = &c.content else { continue };
             let base = s.tempo.samples_to_ticks(c.start, s.sample_rate);
@@ -590,6 +588,36 @@ fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     notes.sort_unstable_by_key(|n| n.0);
+    notes
+}
+
+/// Duration-weighted pitch classes of the notes sounding in `a..b`, and the lowest pitch among them.
+fn pitch_class_weights(sounding: &[(i64, i64, u8)], a: i64, b: i64) -> ([f64; 12], Option<u8>) {
+    let mut w = [0.0f64; 12];
+    let mut bass: Option<u8> = None;
+    for (na, nb, pitch) in sounding {
+        let ov = (*nb).min(b) - (*na).max(a);
+        if ov > 0 {
+            if let Some(x) = w.get_mut(usize::from(*pitch) % 12) {
+                *x += ov as f64;
+            }
+            bass = Some(bass.map_or(*pitch, |bp| bp.min(*pitch)));
+        }
+    }
+    (w, bass)
+}
+
+fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
+    let id = "event.extract_chords";
+    let (_, t0, t1) = selection_ticks(e, p, id)?;
+    let s = e.session();
+    let picked = tracks_param(e, id, p)?;
+    let mut tracks: Vec<TrackId> = picked.into_iter().filter(|t| s.track(*t).is_some_and(|x| x.kind.is_midi())).collect();
+    if tracks.is_empty() {
+        tracks = s.tracks.iter().filter(|t| t.kind.is_midi()).map(|t| t.id).collect();
+    }
+    // Absolute (tick) notes from every MIDI clip on those tracks, cut to their clip.
+    let notes = midi_tick_notes(s, &tracks);
     let mut bar = s.tempo.bar_beat_at_tick(t0).bar;
     let mut sounding: Vec<(i64, i64, u8)> = Vec::new();
     let (mut next, mut bars, mut heard) = (0, 0, 0);
@@ -616,17 +644,7 @@ fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
         }
         bars += 1;
         heard += sounding.len();
-        let mut w = [0.0f64; 12];
-        let mut bass: Option<u8> = None;
-        for (na, nb, pitch) in &sounding {
-            let ov = (*nb).min(b) - (*na).max(a);
-            if ov > 0 {
-                if let Some(x) = w.get_mut(usize::from(*pitch) % 12) {
-                    *x += ov as f64;
-                }
-                bass = Some(bass.map_or(*pitch, |bp| bp.min(*pitch)));
-            }
-        }
+        let (w, bass) = pitch_class_weights(&sounding, a, b);
         if let Some(name) = bass.and_then(|bp| chord_name(&w, usize::from(bp) % 12)) {
             let at = s.tempo.tick_to_samples(a, s.sample_rate);
             chords.push(json!({"bar": bar, "chord": name, "at": at}));
@@ -886,6 +904,15 @@ mod tests {
             ClipContent::Midi { sequence } => assert_eq!(sequence.notes.iter().map(|n| n.start).collect::<Vec<_>>(), vec![0]),
             _ => panic!(),
         }
+    }
+
+    /// For `event.tempo_stretch`, `length` is the new length of the selection, so the selection stays the range.
+    #[test]
+    fn tempo_stretch_length_keeps_selection_range() {
+        let mut e = Engine::default();
+        e.session_mut().edit.selection = Range::new(0, 96_000);
+        e.execute("event.tempo_stretch", &json!({"length": 192_000})).unwrap();
+        assert_eq!(e.session().tempo.tempo_at_tick(0), 60.0);
     }
 
     #[test]

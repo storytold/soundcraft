@@ -201,6 +201,31 @@ impl Reverb {
     }
 }
 
+/// Input sample `n` of the left and right channels (a mono input feeds both); non-finite reads as 0.
+fn input_pair(io: &[Vec<f32>], ch: usize, n: usize) -> (f32, f32) {
+    let xl = io.first().and_then(|b| b.get(n)).copied().filter(|v| v.is_finite()).unwrap_or(0.0);
+    let xr = if ch > 1 { io.get(1).and_then(|b| b.get(n)).copied().filter(|v| v.is_finite()).unwrap_or(0.0) } else { xl };
+    (xl, xr)
+}
+
+/// Blend the wet signal `[mid, left, right]` into sample `n` of the first `ch` channels at mix `m`.
+fn mix_out(io: &mut [Vec<f32>], ch: usize, n: usize, wet: [f32; 3], m: f32) {
+    let [mid, wl, wr] = wet;
+    for (c, b) in io.iter_mut().take(ch).enumerate() {
+        let wet = if ch == 1 {
+            mid
+        } else if c % 2 == 0 {
+            wl
+        } else {
+            wr
+        };
+        if let Some(x) = b.get_mut(n) {
+            let dry = if x.is_finite() { *x } else { 0.0 };
+            *x = dry * (1.0 - m) + wet * m;
+        }
+    }
+}
+
 impl Plugin for Reverb {
     fn info(&self) -> &'static PluginInfo {
         self.info
@@ -279,8 +304,7 @@ impl Plugin for Reverb {
         let size = self.size.value();
         let base: [f32; LINES] = self.cfg.delays_ms.map(|ms| ms_to_samples(ms * size, sr));
         for n in 0..frames {
-            let xl = io.first().and_then(|b| b.get(n)).copied().filter(|v| v.is_finite()).unwrap_or(0.0);
-            let xr = if ch > 1 { io.get(1).and_then(|b| b.get(n)).copied().filter(|v| v.is_finite()).unwrap_or(0.0) } else { xl };
+            let (xl, xr) = input_pair(io, ch, n);
             let pre = ms_to_samples(self.pre_ms.next(), sr);
             let mut ins = [xl, xr];
             for (side, x) in ins.iter_mut().enumerate() {
@@ -319,19 +343,7 @@ impl Plugin for Reverb {
             let side = 0.5 * (wl - wr) * w;
             let (wl, wr) = (mid + side, mid - side);
             let m = self.mix.next();
-            for (c, b) in io.iter_mut().take(ch).enumerate() {
-                let wet = if ch == 1 {
-                    mid
-                } else if c % 2 == 0 {
-                    wl
-                } else {
-                    wr
-                };
-                if let Some(x) = b.get_mut(n) {
-                    let dry = if x.is_finite() { *x } else { 0.0 };
-                    *x = dry * (1.0 - m) + wet * m;
-                }
-            }
+            mix_out(io, ch, n, [mid, wl, wr], m);
         }
     }
 

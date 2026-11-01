@@ -49,6 +49,21 @@ fn audiosuite_refuses_results_longer_than_one_render() {
 }
 
 #[test]
+fn speed_ramp_refuses_mono_clips_longer_than_one_render() {
+    // A mono clip may be longer than one offline buffer, so the speed ramp must refuse it rather than cut it short.
+    for (frames, selection) in [(MAX_OFFLINE_SAMPLES + 1, 0), (MAX_OFFLINE_SAMPLES * 2 / 3 + 1, 1)] {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Talk"));
+        let buf = AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 48_000]] };
+        let src = soundcraft_engine::io::add_source(&mut s, "talk", buf, None, FileFormat::Wav);
+        let id = s.new_clip_id();
+        soundcraft_engine::edit::place_clip(&mut s, t, Clip::audio(id, "Talk", src, 0, 0, frames as i64));
+        let mut e = Engine::new(s);
+        refused(&mut e, "audiosuite.process", &json!({"process": "speed_ramp", "params": {"selection": selection}, "clips": [id.0]}));
+    }
+}
+
+#[test]
 fn signal_generator_refuses_a_selection_longer_than_one_render() {
     let (mut e, _) = long_clip(48_000);
     let end = (MAX_RENDER_SAMPLES / 2 + 1) as i64;

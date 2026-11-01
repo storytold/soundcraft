@@ -29,6 +29,11 @@ fn run(case: &str) -> Output {
 }
 
 fn main() {
+    // nextest lists custom-harness tests with `--list`; each binary here is one test.
+    if std::env::args().any(|a| a == "--list") {
+        println!("module_exit_shutdown: test");
+        return;
+    }
     match std::env::args().nth(1).as_deref() {
         Some("shutdown") => return child(false),
         Some("exit-handler") => return child(true),

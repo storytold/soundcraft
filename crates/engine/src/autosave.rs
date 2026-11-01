@@ -186,6 +186,7 @@ impl Autosave {
         let mut n = 1;
         loop {
             // Not recursive, so a folder that already exists is reported and the next name tried.
+            #[cfg_attr(not(unix), allow(unused_mut))]
             let mut builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
             std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
@@ -254,7 +255,7 @@ impl Autosave {
 
     /// Delete the folder: the session closed with nothing left to recover.
     fn discard(mut self) {
-        drop(self.lock.take());
+        self.lock = None;
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -285,6 +286,7 @@ pub fn leftovers(root: &Path) -> Vec<Leftover> {
         let origin_saved = origin.as_ref().and_then(|o| std::fs::metadata(o).and_then(|m| m.modified()).ok());
         let saved = std::fs::metadata(dir.join(SESSION)).and_then(|m| m.modified());
         let recording = dir.join(RECORDING).is_file();
+        #[cfg(not(target_arch = "wasm32"))]
         drop(lock);
         match saved {
             Ok(saved) if recording || origin_saved.is_none_or(|o| saved > o) => {
@@ -309,7 +311,7 @@ pub fn recover(e: &mut Engine, left: &Leftover) -> Result<Vec<String>> {
     let mut r = Engine::default();
     let session = left.dir.join(SESSION);
     let links = left.origin.as_deref().map_or(session.as_path(), Path::new);
-    let mut missing = open_session_linked(&mut r, &session.to_string_lossy(), links)?;
+    let mut missing = open_session_linked(&mut r, &session, links)?;
     let mut s = r.session().clone();
     let unfinished = unfinished_takes(left, &s, &mut missing);
     if let Some(home) = left.origin.as_deref().and_then(|o| Path::new(o).parent()) {
@@ -534,7 +536,7 @@ mod tests {
         w.flush().unwrap();
         let file = std::fs::read_dir(&root).unwrap().flatten().map(|d| d.path().join(SESSION)).collect::<Vec<_>>();
         let mut r = Engine::default();
-        open_session(&mut r, &file[0].to_string_lossy()).unwrap();
+        open_session(&mut r, &file[0]).unwrap();
         assert_eq!((file.len(), r.session().sources.len()), (1, 5));
         w.close(false);
         w.flush().unwrap();

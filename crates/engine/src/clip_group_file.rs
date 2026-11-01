@@ -89,7 +89,11 @@ fn decode_group_audio(
     let (mut decoded, mut index, mut file_of) = (Vec::new(), BTreeMap::new(), BTreeMap::new());
     for (old, rel) in audio_entries {
         let full = dir.join(rel);
-        if !full.starts_with(dir) || rel.contains("..") {
+        if !full.starts_with(dir)
+            || Path::new(rel)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_)))
+        {
             return Err(EngineError::BadParams(cmd_id.into(), format!("audio path escapes the group folder: {rel}")));
         }
         let key = crate::io::file_key(&full);
@@ -176,6 +180,8 @@ pub fn import(e: &mut Engine, path: &str, first: Option<TrackId>, at: Samples) -
             c.sync_point = scale(c.sync_point);
             c.gain_env.iter_mut().for_each(|(at, _)| *at = scale(*at));
             c.group = Some(group_id);
+            // The file does not hold the Auto Rename schemes of the session it came from.
+            c.auto_name = None;
             c.sanitize();
             placed.push(c.id);
             prepared.push(c);
@@ -228,6 +234,55 @@ mod tests {
         e.undo();
         assert_eq!(e.session().tracks.len(), before);
         assert!(e.session().find_clip(soundcraft_model::ClipId(placed[0])).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_accepts_audio_names_with_consecutive_dots_but_not_parent_dirs() {
+        let dir = std::env::temp_dir().join(format!("sc-grp-dots-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("drums.scgrp").to_string_lossy().to_string();
+        let mut e = crate::demo::demo_engine();
+        let kick = e.session().tracks.iter().find(|t| t.name == "Kick").map(|t| t.id).unwrap();
+        let ids: Vec<_> = e.session().track(kick).unwrap().clips().iter().take(1).map(|c| c.id.0).collect();
+        e.execute("file.export_clip_groups", &json!({"path": path, "clips": ids})).unwrap();
+        let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for (i, rel) in file["audio"].as_object_mut().unwrap().values_mut().enumerate() {
+            let old = dir.join(rel.as_str().unwrap());
+            let new = format!("Wait... what_{i}.wav");
+            std::fs::rename(&old, dir.join(&new)).unwrap();
+            *rel = json!(new);
+        }
+        std::fs::write(&path, file.to_string()).unwrap();
+        let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}));
+        assert!(r.is_ok(), "{r:?}");
+        for rel in file["audio"].as_object_mut().unwrap().values_mut() {
+            *rel = json!("../escape.wav");
+        }
+        std::fs::write(&path, file.to_string()).unwrap();
+        let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}));
+        assert!(matches!(r, Err(crate::EngineError::BadParams(..))), "{r:?}");
+        for rel in file["audio"].as_object_mut().unwrap().values_mut() {
+            *rel = json!(dir.join("Wait... what_0.wav").to_string_lossy());
+        }
+        std::fs::write(&path, file.to_string()).unwrap();
+        let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}));
+        assert!(matches!(r, Err(crate::EngineError::BadParams(..))), "absolute paths are refused: {r:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn imported_clips_carry_no_auto_rename_scheme() {
+        let dir = std::env::temp_dir().join(format!("sc-grp-names-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("named.scgrp").to_string_lossy().to_string();
+        let mut e = crate::demo::demo_engine();
+        let kick = e.session().track_by_name("Kick").unwrap().clips()[0].id.0;
+        e.execute("clip.auto_rename", &json!({"clips": [kick], "name": "Hit"})).unwrap();
+        e.execute("file.export_clip_groups", &json!({"path": path, "clips": [kick]})).unwrap();
+        let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 30_000_000, "track": "Bass"})).unwrap();
+        let placed = soundcraft_model::ClipId(r["clips"][0].as_u64().unwrap());
+        assert_eq!(e.session().find_clip(placed).unwrap().1.auto_name, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

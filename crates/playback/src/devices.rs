@@ -64,11 +64,15 @@ pub struct AudioSystem {
     pub inputs: Vec<DeviceInfo>,
 }
 
-/// The name the host gives `d`, if it can produce a description for it.
+/// The device's user-facing name. cpal 0.18 removed `DeviceTrait::name()` in favour of the
+/// structured `description()`; `Display` for a device also formats that name but reports a
+/// formatting error (which `to_string` would turn into a panic), so keep the fallible call here.
 pub(crate) fn device_name(d: &cpal::Device) -> Option<String> {
     d.description().ok().map(|description| description.name().to_owned())
 }
 
+/// Describe one cpal device as [`DeviceInfo`], or return `None` when its name or supported configurations cannot be
+/// read. Only formats the playback path can convert are considered.
 fn describe(d: &cpal::Device, default_name: Option<&str>, output: bool) -> Option<DeviceInfo> {
     let name = device_name(d)?;
     let ranges: Vec<cpal::SupportedStreamConfigRange> = if output {
@@ -77,8 +81,7 @@ fn describe(d: &cpal::Device, default_name: Option<&str>, output: bool) -> Optio
         d.supported_input_configs().ok()?.filter(|c| format_rank(c.sample_format()).is_some()).collect()
     };
     let max_channels = ranges.iter().map(cpal::SupportedStreamConfigRange::channels).max().unwrap_or(0);
-    let sample_rates =
-        STANDARD_RATES.iter().copied().filter(|r| ranges.iter().any(|c| c.min_sample_rate() <= *r && c.max_sample_rate() >= *r)).collect();
+    let sample_rates = STANDARD_RATES.iter().copied().filter(|r| ranges.iter().any(|c| c.contains_rate(*r))).collect();
     let (mut buffer_min, mut buffer_max) = (None::<u32>, None::<u32>);
     for c in &ranges {
         if let cpal::SupportedBufferSize::Range { min, max } = c.buffer_size() {
@@ -104,6 +107,45 @@ pub fn audio_systems() -> Vec<AudioSystem> {
             Some(AudioSystem { name: id.name().to_string(), is_default: id == default_id, outputs, inputs })
         })
         .collect()
+}
+
+/// True when a cpal error means the stream is dead and only a rebuild can restore audio. cpal 0.18
+/// reports every operation through one [`cpal::Error`]: `DeviceNotAvailable` means the device went
+/// away, and `StreamInvalidated` explicitly requires the stream to be rebuilt. SoundCraft has no
+/// in-place rebuild, so both map to the existing actionable "reconnect audio device" trouble
+/// instead of leaving a dead stream silently logging. A rerouted default device
+/// (`DeviceChanged`) keeps playing, and an xrun is transient, so neither is a lost stream.
+/// `HostUnavailable`, `DeviceBusy` and `BackendError` stay log-only until their retry/rebuild
+/// policies exist.
+pub(crate) fn stream_lost(e: &cpal::Error) -> bool {
+    // ErrorKind is non-exhaustive; an equality test avoids a wildcard match arm.
+    let kind = e.kind();
+    kind == cpal::ErrorKind::DeviceNotAvailable || kind == cpal::ErrorKind::StreamInvalidated
+}
+
+/// The device's configuration at `sample_rate` in the best sample format these streams convert.
+/// cpal 0.18 ranks `I24` (and `F64`) above `I16` when it picks a default configuration, so a
+/// default alone can name a format the callbacks do not decode; this looks for the same rate in a
+/// format [`FORMATS`] holds. The exact channel count is preferred; when the device offers none in
+/// a usable format at that rate (for example only an 8-channel F32 stream), the closest available
+/// channel count is used instead. Both callbacks fold or copy channels, so a wider or narrower
+/// device stream is better than falling back to the silent clock. Callers pass a requested count
+/// of at least 2 for output; input may ask for mono.
+pub(crate) fn supported_format_config(
+    configs: &[cpal::SupportedStreamConfigRange],
+    sample_rate: u32,
+    channels: u16,
+) -> Option<cpal::SupportedStreamConfig> {
+    let usable = || configs.iter().filter(|c| c.contains_rate(sample_rate)).filter_map(|c| format_rank(c.sample_format()).map(|rank| (rank, c)));
+    // Exact count first, then the nearest count (more channels breaks the tie).
+    let exact = usable().filter(|(_, c)| c.channels() == channels).min_by_key(|(rank, _)| *rank);
+    let best = exact.or_else(|| {
+        usable().min_by_key(|(rank, c)| {
+            let distance = c.channels().abs_diff(channels);
+            (*rank, distance, std::cmp::Reverse(c.channels()))
+        })
+    });
+    best.and_then(|(_, c)| c.try_with_sample_rate(sample_rate))
 }
 
 /// The chosen audio system, else the default one.
@@ -161,6 +203,63 @@ mod tests {
         assert_eq!(serde_json::from_str::<AudioConfig>(&s).unwrap(), c);
         assert_eq!(serde_json::from_str::<AudioConfig>("{}").unwrap(), AudioConfig::default());
         assert_eq!(serde_json::from_str::<AudioConfig>(r#"{"output":"X","unknown":1}"#).unwrap().output.as_deref(), Some("X"));
+    }
+
+    /// Build a cpal configuration range for tests with a 64..1024-frame buffer.
+    fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
+        cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)
+    }
+
+    /// When the default sample format has no usable conversion, the same rate opens with a supported format; the
+    /// nearest channel count keeps the device open, and unsupported rates fail.
+    #[test]
+    fn a_default_format_the_streams_cannot_convert_uses_a_supported_one_at_the_same_rate() {
+        let configs = [
+            range(2, 44_100, 48_000, cpal::SampleFormat::I24),
+            range(2, 44_100, 48_000, cpal::SampleFormat::I16),
+            range(2, 44_100, 48_000, cpal::SampleFormat::F32),
+            range(2, 96_000, 96_000, cpal::SampleFormat::F32),
+        ];
+        let c = supported_format_config(&configs, 48_000, 2).unwrap();
+        assert_eq!((c.sample_rate(), c.channels(), c.sample_format()), (48_000, 2, cpal::SampleFormat::F32));
+        assert_eq!(supported_format_config(&configs, 96_000, 2).map(|c| c.sample_format()), Some(cpal::SampleFormat::F32));
+        assert_eq!(
+            supported_format_config(&configs, 48_000, 1).map(|c| (c.channels(), c.sample_format())),
+            Some((2, cpal::SampleFormat::F32)),
+            "with no mono stream, the nearest usable channel count keeps the device open"
+        );
+        let i24_only = [range(2, 44_100, 48_000, cpal::SampleFormat::I24)];
+        assert!(supported_format_config(&i24_only, 48_000, 2).is_none(), "no supported format at this rate");
+    }
+
+    /// cpal 0.18 may name an I24 stereo default while the only format the callbacks decode is a
+    /// wider F32 stream at another supported rate. The default-rate search finds nothing usable,
+    /// so the output fallback retries at the session rate over any usable channel count; the mix
+    /// already folds or copies channels and resamples.
+    #[test]
+    fn a_default_format_with_no_usable_same_rate_stream_falls_back_to_the_session_rate() {
+        let configs = [range(2, 44_100, 44_100, cpal::SampleFormat::I24), range(8, 48_000, 48_000, cpal::SampleFormat::F32)];
+        assert!(supported_format_config(&configs, 44_100, 2).is_none(), "the default rate has no usable format");
+        let c = supported_format_config(&configs, 48_000, 2).expect("the wider F32 stream at the session rate");
+        assert_eq!((c.sample_rate(), c.channels(), c.sample_format()), (48_000, 8, cpal::SampleFormat::F32));
+    }
+
+    /// Only device-not-available and invalidated-stream errors stop playback; other cpal errors are treated as
+    /// recoverable.
+    #[test]
+    fn only_a_dead_stream_is_reported() {
+        let error = |kind| cpal::Error::with_message(kind, "test");
+        assert!(stream_lost(&error(cpal::ErrorKind::DeviceNotAvailable)));
+        assert!(stream_lost(&error(cpal::ErrorKind::StreamInvalidated)), "the stream must be rebuilt");
+        for kind in [
+            cpal::ErrorKind::DeviceChanged,
+            cpal::ErrorKind::DeviceBusy,
+            cpal::ErrorKind::HostUnavailable,
+            cpal::ErrorKind::Xrun,
+            cpal::ErrorKind::BackendError,
+        ] {
+            assert!(!stream_lost(&error(kind)), "{kind:?} must not stop the stream");
+        }
     }
 
     #[test]
