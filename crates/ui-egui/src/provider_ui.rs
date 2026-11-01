@@ -18,7 +18,10 @@ pub fn choose(app: &mut SoundApp, id: &str) -> Option<Result<Value, String>> {
         return None;
     }
     let name = host.filename(doc).unwrap_or_else(|| suggested_name(&app.engine.session().name, "scraftz"));
-    Some(host.choose(doc, app.engine.revision, name, id == "session.save_as").map(|request| json!({"pending":"fileProvider","requestId":request})))
+    Some(
+        host.choose_request(doc, app.engine.revision, name, id == "session.save_as")
+            .map(|request| json!({"pending":"fileProvider","requestId":request})),
+    )
 }
 
 /// A close/open/quit continuation belongs to one interactive save request and its actual capture.
@@ -30,11 +33,16 @@ pub(crate) struct AfterSave {
     next: (String, Value),
 }
 
+#[cfg(test)]
+pub(crate) fn close_capture_identity(app: &SoundApp) -> Option<(&str, u64, Option<u64>)> {
+    app.dialogs.provider_after_save.as_ref().map(|after| (after.request.as_str(), after.doc, after.captured_revision))
+}
+
 /// Save from the Save Changes prompt uses exactly the same provider chooser as menu Save.
 pub(crate) fn save_before_replacing(app: &mut SoundApp, next: &(String, Value)) -> Option<Result<Value, String>> {
     let result = choose(app, "session.save")?;
     Some(result.and_then(|value| {
-        let request = value["requestId"].as_str().ok_or("The provider save did not create a request")?.to_owned();
+        let request = value["requestId"].as_str().ok_or("Finish the pending provider save before starting another close operation")?.to_owned();
         app.dialogs.provider_after_save = Some(AfterSave { doc: document_id(app), request, captured_revision: None, next: next.clone() });
         Ok(value)
     }))
@@ -152,10 +160,59 @@ mod provider_routing_tests {
         host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
         host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
         let before = app.engine.revision;
-        assert!(choose(&mut app, "session.save").unwrap().is_ok());
+        let chosen = choose(&mut app, "session.save").unwrap().unwrap();
         let events = host.take_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].metadata["type"], "saveDialog");
+        assert_eq!(chosen["requestId"], events[0].metadata["requestId"]);
+        assert!(chosen["requestId"].as_str().is_some());
+        let repeated = choose(&mut app, "session.save").unwrap().unwrap();
+        assert_eq!(repeated["requestId"], chosen["requestId"]);
+        assert!(host.take_events().is_empty(), "an existing chooser must not emit a second dialog");
         assert_eq!(app.engine.revision, before, "a choice must not mutate document state");
+    }
+
+    #[test]
+    fn close_continuation_uses_the_actual_live_chooser_request() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let host = app.services.file_providers.clone();
+        host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+        host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+        let chosen = choose(&mut app, "session.save").unwrap().unwrap();
+        let response = save_before_replacing(&mut app, &("app.quit".into(), json!({}))).unwrap().unwrap();
+        let after = app.dialogs.provider_after_save.as_ref().unwrap();
+        assert_eq!(after.request, chosen["requestId"].as_str().unwrap());
+        assert_eq!(response["requestId"], chosen["requestId"]);
+        assert_eq!(after.doc, app.doc_epoch);
+        assert_eq!(after.captured_revision, None);
+        let events = host.take_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].metadata["requestId"], chosen["requestId"]);
+    }
+
+    #[test]
+    fn an_existing_snapshot_cannot_acquire_a_new_close_continuation() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let host = app.services.file_providers.clone();
+        host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+        host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+        let chosen = choose(&mut app, "session.save").unwrap().unwrap();
+        let request = chosen["requestId"].as_str().unwrap();
+        host.take_events();
+        host.resolve_dialog(request, "provider", "Saved.scraftz").unwrap();
+        host.take_commands();
+        let capture = crate::file_providers::Capture {
+            doc: app.doc_epoch,
+            revision: app.engine.revision,
+            name: "Saved.scraftz".into(),
+            save_as: false,
+        };
+        host.capture(request, capture, vec![1]).unwrap();
+        host.take_events();
+        app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+        assert!(save_before_replacing(&mut app, &("app.quit".into(), json!({}))).unwrap().is_err());
+        assert!(app.dialogs.provider_after_save.is_none());
+        assert!(host.take_events().is_empty(), "coalescing an in-flight snapshot must not emit a fresh chooser");
+        assert!(!app.quit_requested);
     }
 }

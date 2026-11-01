@@ -1667,6 +1667,8 @@ fn provider_close_prompt() -> (SoundApp, crate::file_providers::Host, String) {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].metadata["type"], "saveDialog");
     let request = events[0].metadata["requestId"].as_str().unwrap().to_string();
+    assert!(app.dialogs.provider_after_save.is_some(), "the close fixture must start with a live continuation: {}", app.ui.status);
+    assert_eq!(crate::provider_ui::close_capture_identity(&app), Some((request.as_str(), app.doc_epoch, None)));
     (app, host, request)
 }
 
@@ -1682,6 +1684,7 @@ fn capture_provider_close(
     let snapshot = app.engine.session_arc();
     let capture = crate::file_providers::Capture { doc: app.doc_epoch, revision: app.engine.revision, name: "Saved.scraftz".into(), save_as: false };
     crate::provider_ui::record_close_capture(app, request, capture.doc, capture.revision);
+    assert_eq!(crate::provider_ui::close_capture_identity(app), Some((request, capture.doc, Some(capture.revision))));
     let bytes = soundcraft_engine::io::session_provider_bundle(&snapshot).unwrap();
     host.capture(request, capture.clone(), bytes).unwrap();
     host.take_events();

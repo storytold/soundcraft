@@ -209,6 +209,11 @@ impl Host {
 
     /// Start a destination choice. Repeated Save while one is unresolved does not recapture.
     pub fn choose(&self, doc: u64, revision: u64, name: String, save_as: bool) -> Result<(), String> {
+        self.choose_request(doc, revision, name, save_as).map(|_| ())
+    }
+
+    /// The live chooser's ID, never the ID of an already captured or acknowledged snapshot.
+    pub(crate) fn choose_request(&self, doc: u64, revision: u64, name: String, save_as: bool) -> Result<Option<String>, String> {
         if !valid_name(&name) {
             return Err("invalid provider filename".into());
         }
@@ -216,8 +221,11 @@ impl Host {
         if s.identity.is_none() || !s.enabled {
             return Err("file provider is disabled".into());
         }
+        if let Some((request, _)) = s.dialogs.iter().find(|(_, dialog)| dialog.doc == doc) {
+            return Ok(Some(request.clone()));
+        }
         if s.pending(doc) {
-            return Ok(());
+            return Ok(None);
         }
         if s.dialogs.len() + s.captures.len() + s.commands.len() + s.working.len() >= MAX_PENDING {
             return Err("too many pending file provider operations".into());
@@ -229,8 +237,8 @@ impl Host {
             "name":name, "saveAs":save_as, "resourceId":resource}),
             None,
         )?;
-        s.dialogs.insert(request, Dialog { doc, name, save_as });
-        Ok(())
+        s.dialogs.insert(request.clone(), Dialog { doc, name, save_as });
+        Ok(Some(request))
     }
 
     pub fn resolve_dialog(&self, request: &str, destination: &str, name: &str) -> Result<(), String> {
