@@ -137,3 +137,27 @@ fn dropping_an_unfinished_bounce_cancels_it_and_keeps_the_old_file() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+const PINNED: [[u32; 3]; 2] = [[0xc195_6706, 0xc093_0031, 0xc093_0031], [0xc162_e790, 0xbdcc_ccbf, 0xbdcc_ccbf]];
+
+#[test]
+fn demo_bounce_levels_are_pinned() {
+    let mut e = soundcraft_engine::demo::demo_engine();
+    let dir = scratch("bounce-demo-pinned");
+    let mut got = Vec::new();
+    for (name, extra) in [("Mix.wav", serde_json::json!({})), ("Norm.wav", serde_json::json!({"normalize": true, "bit_depth": 16}))] {
+        let path = dir.join(name);
+        let mut p = serde_json::json!({"path": path, "start": 1_296_000, "end": 1_440_000});
+        if let (Some(m), Some(x)) = (p.as_object_mut(), extra.as_object()) {
+            m.extend(x.clone());
+        }
+        let r = e.execute("file.bounce_mix", &p).unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() > 44, "{name} has audio");
+        let level = |k: &str| r[k].as_f64().unwrap() as f32;
+        got.push([level("lufs"), level("true_peak_db"), level("peak_db")]);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    for (g, pin) in got.iter().zip(PINNED) {
+        assert!(g.iter().zip(pin).all(|(v, p)| (v - f32::from_bits(p)).abs() < 1e-3), "{got:?}");
+    }
+}

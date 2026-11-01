@@ -63,6 +63,36 @@ fn new_session_cancels_play_queued_before_the_next_frame() {
 }
 
 #[test]
+fn play_from_starts_at_from_regardless_of_the_selection() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("edit.select", json!({"tracks": ["Kick"], "start": 7_632_000, "end": 7_680_000})).unwrap();
+    app.run("transport.play", json!({"from": 4_560_000})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, 4_560_000 + 12_000);
+
+    app.run("transport.play", json!({"from": 96_000})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, 96_000 + 12_000);
+}
+
+#[test]
+fn play_from_while_looping_drops_the_selection_loop() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("options.loop_playback", json!({"value": true})).unwrap();
+    app.run("edit.select", json!({"tracks": ["Kick"], "start": 96_000, "end": 144_000})).unwrap();
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    app.run("transport.play", json!({"from": 480_000})).unwrap();
+    app.handle_transport(0.25);
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, 480_000 + 24_000);
+}
+
+#[test]
 fn record_with_nothing_armed_says_what_to_do() {
     let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
     app.run("transport.record", json!({})).unwrap();
@@ -242,6 +272,67 @@ fn a_pass_and_the_fader_ride_driving_it_are_one_undo_step() {
     app.handle_transport(0.0);
     app.write_automation();
     assert_eq!(app.engine.undo_history().len(), steps + 1);
+}
+
+/// #1146: a send's level writes its own automation lane, by the track's mode like its fader: Touch
+/// while the send is dragged, Latch from the first drag until stop, Write throughout. The track's
+/// volume lane is left alone.
+#[test]
+fn a_dragged_send_level_writes_send_automation() {
+    use soundcraft_model::AutoParam;
+    let points = |app: &SoundApp, param: &AutoParam| app.engine.session().track_by_name("Lead").unwrap().lane(param).map_or(0, |l| l.points.len());
+    let level = |app: &SoundApp| app.engine.session().track_by_name("Lead").unwrap().lane(&AutoParam::SendLevel(0)).map(|l| l.points.clone());
+    let pass = |app: &mut SoundApp| {
+        app.handle_transport(0.1);
+        app.write_automation();
+    };
+    for mode in ["touch", "latch", "write"] {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        let lead = app.engine.session().track_by_name("Lead").unwrap().id;
+        assert!(app.engine.session().track(lead).unwrap().mixer.sends[0].is_some(), "the demo's Lead sends to the reverb");
+        let volume = points(&app, &AutoParam::Volume);
+        app.run("mix.automation_mode", json!({"tracks": ["Lead"], "mode": mode})).unwrap();
+        app.run("transport.play", json!({})).unwrap();
+        for _ in 0..3 {
+            pass(&mut app);
+        }
+        let before_drag = points(&app, &AutoParam::SendLevel(0));
+        if mode == "write" {
+            assert!(before_drag > 0, "Write writes the send without a drag");
+        } else {
+            assert_eq!(before_drag, 0, "{mode}: nothing written before the send is touched");
+        }
+        // What the send's slot and its floating window do while the level is dragged.
+        app.pointer_down = true;
+        app.gesture = Some(super::Gesture::SendFader { track: lead, slot: 0 });
+        for frame in 0..4 {
+            pass(&mut app);
+            let db = -12.0 + frame as f32;
+            app.engine.execute_merged("mix.send_level", &json!({"track": lead.0, "slot": 0, "db": db}), &format!("send:{}:0", lead.0)).unwrap();
+        }
+        let dragged = points(&app, &AutoParam::SendLevel(0));
+        assert!(dragged >= before_drag + 3, "{mode}: the drag is written ({before_drag} -> {dragged})");
+        assert!(level(&app).unwrap().iter().any(|p| (p.value - (-10.0)).abs() < 1e-6), "{mode}: the points follow the send level");
+        // Released.
+        app.pointer_down = false;
+        app.gesture = None;
+        for _ in 0..3 {
+            pass(&mut app);
+        }
+        let released = points(&app, &AutoParam::SendLevel(0));
+        if mode == "touch" {
+            assert_eq!(released, dragged, "Touch stops writing when the send is let go");
+        } else {
+            assert!(released > dragged, "{mode}: keeps writing after the release");
+        }
+        app.run("transport.stop", json!({})).unwrap();
+        app.handle_transport(0.0);
+        app.write_automation();
+        if mode != "write" {
+            assert_eq!(points(&app, &AutoParam::Volume), volume, "{mode}: the track's volume lane is left alone");
+        }
+        assert!(app.touched_sends.is_empty(), "{mode}: stop ends the pass");
+    }
 }
 
 #[test]
@@ -1389,6 +1480,56 @@ fn transport_simulation_advances_by_monotonic_elapsed_time_only() {
     app.engine.transport.playing = false;
     app.sim = None;
 }
+/// One host iteration: the raw-input hook, then logic and UI in a single pass.
+fn run_host_frame(app: &mut SoundApp, ctx: &egui::Context, mut input: egui::RawInput) {
+    app.raw_input_hook(ctx, &mut input);
+    let mut output = ctx.run_ui(input, |ui| {
+        app.logic(ui.ctx());
+        app.ui(ui);
+    });
+    output.textures_delta.clear();
+}
+
+/// Run one frame that discards its first layout pass; returns how many passes ran.
+fn run_host_frame_discarding_first_pass(app: &mut SoundApp, ctx: &egui::Context, input: egui::RawInput) -> usize {
+    let mut passes = 0;
+    let mut output = ctx.run_ui(input, |ui| {
+        app.logic(ui.ctx());
+        passes += 1;
+        if passes == 1 {
+            ui.ctx().request_discard("plugin gesture must survive a second layout pass");
+        }
+        app.ui(ui);
+    });
+    output.textures_delta.clear();
+    passes
+}
+
+/// The editor-poll fixture: each poll counts itself, takes the queued edits and, for the gestures that
+/// ended, captures the instrument state `latest` holds.
+fn poll_fixture(
+    reports: &std::rc::Rc<std::cell::RefCell<Vec<soundcraft_playback::EditorEdit>>>,
+    latest: &std::rc::Rc<std::cell::Cell<u8>>,
+    polls: &std::rc::Rc<std::cell::Cell<i32>>,
+    captures: &std::rc::Rc<std::cell::RefCell<Vec<(soundcraft_model::TrackId, usize)>>>,
+) -> super::EditorPollFixture {
+    let (poll_reports, poll_latest, poll_count, poll_captures) = (reports.clone(), latest.clone(), polls.clone(), captures.clone());
+    Box::new(move |pending| {
+        poll_count.set(poll_count.get() + 1);
+        let edits = std::mem::take(&mut *poll_reports.borrow_mut());
+        super::editor_changes(
+            pending,
+            edits,
+            Vec::new(),
+            |_| false,
+            |due| {
+                poll_captures.borrow_mut().extend_from_slice(due);
+                due.iter().map(|&(track, slot)| (track, slot, vec![poll_latest.get(), 1])).collect()
+            },
+        )
+    })
+}
+
 /// Plugin queues are drained once per host iteration, rather than once per discarded pass.
 /// The fixture replaces only native polling; the real raw hook, logic/UI, scheduler and
 /// engine state/undo commands run normally.
@@ -1402,13 +1543,7 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
     for _ in 0..4 {
-        let mut input = raw();
-        app.raw_input_hook(&ctx, &mut input);
-        let mut output = ctx.run_ui(input, |ui| {
-            app.logic(ui.ctx());
-            app.ui(ui);
-        });
-        output.textures_delta.clear();
+        run_host_frame(&mut app, &ctx, raw());
     }
     let keys = app.engine.session().track_by_name("Keys").unwrap().id;
     let original = instrument_state(&app, keys);
@@ -1423,34 +1558,11 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     let latest = Rc::new(Cell::new(1u8));
     let polls = Rc::new(Cell::new(0));
     let captures = Rc::new(RefCell::new(Vec::new()));
-    let (poll_reports, poll_latest, poll_count, poll_captures) = (reports.clone(), latest.clone(), polls.clone(), captures.clone());
-    app.editor_poll_fixture = Some(Box::new(move |pending| {
-        poll_count.set(poll_count.get() + 1);
-        let edits = std::mem::take(&mut *poll_reports.borrow_mut());
-        super::editor_changes(
-            pending,
-            edits,
-            Vec::new(),
-            |_| false,
-            |due| {
-                poll_captures.borrow_mut().extend_from_slice(due);
-                due.iter().map(|&(track, slot)| (track, slot, vec![poll_latest.get(), 1])).collect()
-            },
-        )
-    }));
+    app.editor_poll_fixture = Some(poll_fixture(&reports, &latest, &polls, &captures));
     reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 1.0));
     let mut input = raw();
     app.raw_input_hook(&ctx, &mut input);
-    let mut passes = 0;
-    let mut output = ctx.run_ui(input, |ui| {
-        app.logic(ui.ctx());
-        passes += 1;
-        if passes == 1 {
-            ui.ctx().request_discard("plugin gesture must survive a second layout pass");
-        }
-        app.ui(ui);
-    });
-    output.textures_delta.clear();
+    let passes = run_host_frame_discarding_first_pass(&mut app, &ctx, input);
     assert!(passes >= 2, "the regression must actually force a discarded pass");
     assert_eq!(polls.get(), 1, "the rerun cannot drain an empty editor queue");
     assert!(captures.borrow().is_empty(), "the ongoing gesture has not ended");
@@ -1492,8 +1604,19 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     let _ = ctx.run_logic(&hidden, |ctx| app.logic(ctx));
     assert_eq!(polls.get(), 4, "a fresh empty host iteration is still live");
     assert_eq!(captures.borrow().len(), 1, "the completed gesture is captured once");
-    assert_eq!(app.engine.revision, settled_revision);
+    assert_history_unchanged(&app, settled_revision, undo, &history, &journal);
+}
+
+/// The engine's revision, undo history and journal are as they were.
+fn assert_history_unchanged(
+    app: &SoundApp,
+    revision: u64,
+    undo: usize,
+    history: &[String],
+    journal: &std::collections::VecDeque<(String, serde_json::Value)>,
+) {
+    assert_eq!(app.engine.revision, revision);
     assert_eq!(app.engine.undo_history().len(), undo);
     assert_eq!(app.engine.undo_history(), history);
-    assert_eq!(app.engine.journal, journal);
+    assert_eq!(&app.engine.journal, journal);
 }

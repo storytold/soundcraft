@@ -1,4 +1,4 @@
-use super::*;
+use super::{SoundApp, midi_editor};
 
 impl SoundApp {
     /// The open document was replaced outside [`Self::run`] (Recover, a session the browser read

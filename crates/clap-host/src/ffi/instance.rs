@@ -2,7 +2,12 @@ use super::bundle::Bundle;
 use super::events::{Event, RawEvent, ReadCursor, in_events_get, in_events_size, istream_read, out_events_try_push, transport_event};
 use super::gui::GuiLink;
 use super::host::HostState;
-use super::*;
+use super::{
+    Arc, CLAP_AUDIO_PORT_IS_MAIN, CLAP_PROCESS_ERROR, CStr, ClapError, MAX_PARAMS, MAX_PORT_CHANNELS, MAX_PORTS, Ordering, Transport, c_char, c_void,
+    clap_audio_buffer, clap_audio_port_info, clap_host, clap_input_events, clap_istream, clap_note_port_info, clap_output_events, clap_param_info,
+    clap_plugin, clap_plugin_audio_ports, clap_plugin_latency, clap_plugin_note_ports, clap_plugin_params, clap_plugin_state, clap_process,
+    read_name,
+};
 
 // ---- audio buffers -------------------------------------------------------------------------
 
@@ -312,16 +317,8 @@ impl Instance {
 
     /// Runs one `clap_process` call over `frames` frames. Events must be sorted by time; their
     /// times are made relative to `offset`. Returns the CLAP process status.
-    pub fn process(
-        &mut self,
-        frames: usize,
-        steady_time: i64,
-        inputs: &mut PortBuffers,
-        outputs: &mut PortBuffers,
-        events: &[Event],
-        offset: u32,
-        transport: Option<&Transport>,
-    ) -> Result<i32, ClapError> {
+    pub fn process(&mut self, input: ProcessInput<'_>) -> Result<i32, ClapError> {
+        let ProcessInput { frames, steady_time, inputs, outputs, events, offset, transport } = input;
         if !self.active {
             return Err(ClapError::Process("not active".into()));
         }
@@ -384,6 +381,16 @@ impl Instance {
         self.out_params.clear();
         if status == CLAP_PROCESS_ERROR { Err(ClapError::Process("plugin reported a processing error".into())) } else { Ok(status) }
     }
+}
+
+pub(crate) struct ProcessInput<'a> {
+    pub frames: usize,
+    pub steady_time: i64,
+    pub inputs: &'a mut PortBuffers,
+    pub outputs: &'a mut PortBuffers,
+    pub events: &'a [Event],
+    pub offset: u32,
+    pub transport: Option<&'a Transport>,
 }
 
 impl Drop for Instance {

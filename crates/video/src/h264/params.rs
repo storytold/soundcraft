@@ -909,4 +909,63 @@ mod tests {
     fn huge_pic_init_qp_is_an_error() {
         assert_eq!(invalid_pps(pps(None, 0, i32::MAX)), "pic_init_qp_minus26 out of range");
     }
+
+    #[test]
+    fn poc_extreme_offsets_do_not_overflow() {
+        use crate::h264::slice::{PocState, SliceHeader, SliceType};
+        let mut s = sps(SpsFields::default()).unwrap();
+        s.log2_max_frame_num = 16;
+        s.offset_for_ref_frame = vec![i32::MAX, i32::MAX];
+        s.offset_for_non_ref_pic = i32::MAX;
+        s.offset_for_top_to_bottom_field = i32::MAX;
+        // Drive FrameNumOffset up to the i32 limit by wrapping frame_num repeatedly.
+        let mut state = PocState::default();
+        for _ in 0..32_767 {
+            state.update_gap_frame(5, &s);
+            state.update_gap_frame(1, &s);
+        }
+        // prev_frame_num > frame_num below, so the next picture adds max_frame_num once more.
+        state.update_gap_frame(5, &s);
+        for (poc_type, nal_ref_idc, st) in [1u32, 2].into_iter().flat_map(|t| [1u8, 0].into_iter().flat_map(move |r| [(t, r, false), (t, r, true)])) {
+            s.pic_order_cnt_type = poc_type;
+            let state = if st { state.clone() } else { PocState::default() };
+            let sh = SliceHeader {
+                nal_ref_idc,
+                nal_unit_type: 1,
+                idr: false,
+                first_mb_in_slice: 0,
+                slice_type_raw: 0,
+                slice_type: SliceType::P,
+                pps_id: 0,
+                colour_plane_id: 0,
+                frame_num: 2,
+                field_pic: false,
+                bottom_field: false,
+                idr_pic_id: 0,
+                pic_order_cnt_lsb: 0,
+                delta_pic_order_cnt_bottom: 0,
+                delta_pic_order_cnt: [i32::MAX, i32::MAX],
+                redundant_pic_cnt: 0,
+                direct_spatial_mv_pred: false,
+                num_ref_idx_active: [1, 0],
+                ref_pic_list_mod: [Vec::new(), Vec::new()],
+                pred_weight_table: None,
+                no_output_of_prior_pics: false,
+                long_term_reference: false,
+                adaptive_ref_pic_marking: false,
+                mmcos: Vec::new(),
+                cabac_init_idc: 0,
+                slice_qp_delta: 0,
+                sp_for_switch: false,
+                slice_qs_delta: 0,
+                disable_deblocking_filter_idc: 0,
+                slice_alpha_c0_offset_div2: 0,
+                slice_beta_offset_div2: 0,
+                slice_group_change_cycle: 0,
+                header_bits: 0,
+            };
+            // Must not panic; the value itself is meaningless for such a stream.
+            let _ = state.compute(&sh, &s);
+        }
+    }
 }

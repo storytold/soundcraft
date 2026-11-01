@@ -2,7 +2,9 @@ use super::bundle::save_session_bundle;
 #[cfg(test)]
 use super::import::add_source;
 use super::import::{MAX_IMPORT_SAMPLES, at_rate, relink_videos};
-use super::*;
+use super::{
+    Arc, Engine, EngineError, OsStr, Path, PathBuf, Result, Session, SourceAudio, file_key, read_file, read_text, stored_path, write_session,
+};
 
 /// Save the session to `path` (a `.scraft` file). Audio that only exists in memory is written
 /// as 32-bit float WAV into `Audio Files/` next to it. Returns how many audio files were written.
@@ -34,16 +36,17 @@ pub fn save_session_copy(e: &Engine, path: &str) -> Result<usize> {
 }
 
 /// Open a `.scraft` session and decode its audio files (missing files are reported, not fatal).
-pub fn open_session(e: &mut Engine, path: &str) -> Result<Vec<String>> {
-    open_session_linked(e, path, Path::new(path))
+pub fn open_session(e: &mut Engine, path: impl AsRef<Path>) -> Result<Vec<String>> {
+    let path = path.as_ref();
+    open_session_linked(e, path, path)
 }
 
 /// [`open_session`], following the media paths in it as if they were stored in the session file
 /// `links` (crash recovery: the session written beside the autosave, its paths from the original).
-pub(crate) fn open_session_linked(e: &mut Engine, path: &str, links: &Path) -> Result<Vec<String>> {
+pub(crate) fn open_session_linked(e: &mut Engine, path: &Path, links: &Path) -> Result<Vec<String>> {
     let text = read_text(path)?;
     let mut s = Session::from_json(&text).map_err(|err| EngineError::Io(err.to_string()))?;
-    let dir = Path::new(path).parent().map(Path::to_path_buf).unwrap_or_default();
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
     let mut missing = Vec::new();
     let mut files = DecodedFiles::new();
     for src in &s.sources {
@@ -57,7 +60,9 @@ pub(crate) fn open_session_linked(e: &mut Engine, path: &str, links: &Path) -> R
     missing.extend(relink_videos(&mut s, links));
     s.folder = Some(dir);
     e.replace_session(s);
-    e.path = Some(path.to_string());
+    // Save writes back to `e.path`, which is text: a session at a name that isn't valid Unicode
+    // opens as if never saved, rather than saving to a name with replacement characters.
+    e.path = path.to_str().map(str::to_owned);
     for m in &missing {
         e.message(format!("missing media: {m}"));
     }
@@ -89,7 +94,9 @@ pub(crate) fn decode_file(files: &mut DecodedFiles, p: &Path, rate: u32) -> std:
 
 #[cfg(test)]
 mod save_tests {
+    use super::super::{AudioBuffer, ChannelFormat, Clip, Engine, FileFormat, Range, TrackKind, back_up, copy_new};
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn autosave_copy_leaves_document_untouched_and_reuses_audio() {
@@ -192,11 +199,11 @@ mod save_tests {
         assert_eq!(level(&reopen(&path("B/B.scraft"))), 0.5);
         std::fs::remove_file(dir.join("A/Audio Files/Audio 1_02.wav")).unwrap();
         let mut missing = Engine::default();
-        open_session(&mut missing, &path("A/A.scraft")).unwrap();
+        open_session(&mut missing, path("A/A.scraft")).unwrap();
         save_session(&mut missing, &path("B/Moved.scraft")).unwrap();
         let mut r = Engine::default();
         assert_eq!(
-            open_session(&mut r, &path("B/Moved.scraft")).unwrap(),
+            open_session(&mut r, path("B/Moved.scraft")).unwrap(),
             vec![dir.join("A").join("Audio Files").join("Audio 1_02.wav").display().to_string()]
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -222,7 +229,7 @@ mod save_tests {
         Engine::default().execute("session.save_as", &json!({"path": dir.join("New/New.scraft")})).unwrap();
         std::fs::copy(&path, dir.join("Song")).unwrap();
         let mut bare = Engine::default();
-        open_session(&mut bare, &dir.join("Song").to_string_lossy()).unwrap();
+        open_session(&mut bare, dir.join("Song")).unwrap();
         bare.execute("session.save", &json!({})).unwrap();
         second.execute("session.save_as", &json!({"path": path, "replace": true})).unwrap();
         let r = reopen(&path);
@@ -312,7 +319,9 @@ mod save_tests {
 
 #[cfg(test)]
 mod open_tests {
+    use super::super::{AudioBuffer, ChannelFormat, Clip, EncodeOptions, Engine, FileFormat, SourceId, TrackKind};
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn a_file_named_by_many_sources_is_decoded_once() {
@@ -425,7 +434,9 @@ mod open_tests {
 
 #[cfg(all(test, unix))]
 mod pipe_tests {
+    use super::super::{AudioBuffer, FileFormat};
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn a_pipe_named_as_media_is_refused_not_waited_on() {

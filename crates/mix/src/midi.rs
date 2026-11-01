@@ -1,6 +1,7 @@
 use super::clips::Key;
 use super::strip::{PluginSlot, Strip};
-use super::*;
+use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track};
+use std::sync::Arc;
 
 /// The track's MIDI Track Offset (`midi.offset.<id>` in the edit values), in samples. Looked up
 /// without formatting the key, since this runs on the audio thread every block.

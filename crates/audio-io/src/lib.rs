@@ -61,7 +61,108 @@ pub enum FileFormat {
     Aac,
     Alac,
     Caf,
+    /// Any other container `symphonia` reads: Matroska and WebM by name.
     Other,
+}
+
+impl FileFormat {
+    /// The formats [`decode`] reads, found by extension. Contents decide when they disagree.
+    pub const READ: &'static [FileFormat] =
+        &[FileFormat::Wav, FileFormat::Aiff, FileFormat::Flac, FileFormat::Mp3, FileFormat::Ogg, FileFormat::Aac, FileFormat::Caf, FileFormat::Other];
+    /// The formats [`encode`] writes.
+    pub const WRITE: &'static [FileFormat] = &[FileFormat::Wav, FileFormat::Aiff, FileFormat::Flac];
+
+    /// The extensions that name this format, lower case and without the dot; the first is the one
+    /// a new file gets. ALAC shares AAC's MP4 container, so a `.m4a` name reads as AAC until the
+    /// contents say otherwise.
+    pub fn extensions(self) -> &'static [&'static str] {
+        match self {
+            FileFormat::Wav => &["wav", "wave", "bwf", "rf64"],
+            FileFormat::Aiff => &["aif", "aiff", "aifc"],
+            FileFormat::Flac => &["flac"],
+            FileFormat::Mp3 => &["mp3", "mp2", "mp1"],
+            FileFormat::Ogg => &["ogg", "oga"],
+            FileFormat::Aac => &["m4a", "m4b", "aac", "mp4", "adts"],
+            FileFormat::Alac => &["m4a"],
+            FileFormat::Caf => &["caf"],
+            FileFormat::Other => &["mkv", "webm"],
+        }
+    }
+
+    /// The name people know the format by, as menus show it.
+    pub fn name(self) -> &'static str {
+        match self {
+            FileFormat::Wav => "WAV",
+            FileFormat::Aiff => "AIFF",
+            FileFormat::Flac => "FLAC",
+            FileFormat::Mp3 => "MP3",
+            FileFormat::Ogg => "Ogg Vorbis",
+            FileFormat::Aac => "AAC",
+            FileFormat::Alac => "ALAC",
+            FileFormat::Caf => "CAF",
+            FileFormat::Other => "Other",
+        }
+    }
+
+    /// The media type a file of this format is served or downloaded as.
+    pub fn mime_type(self) -> &'static str {
+        match self {
+            FileFormat::Wav => "audio/wav",
+            FileFormat::Aiff => "audio/aiff",
+            FileFormat::Flac => "audio/flac",
+            FileFormat::Mp3 => "audio/mpeg",
+            FileFormat::Ogg => "audio/ogg",
+            FileFormat::Aac | FileFormat::Alac => "audio/mp4",
+            FileFormat::Caf => "audio/x-caf",
+            FileFormat::Other => "application/octet-stream",
+        }
+    }
+
+    /// The extension a new file of this format gets.
+    pub fn default_extension(self) -> &'static str {
+        self.extensions().first().copied().unwrap_or("bin")
+    }
+
+    /// The readable format an extension or format name names (`wav`, `.AIFF`; ASCII
+    /// case-insensitive), or `None` when nothing reads it.
+    pub fn from_extension(ext: &str) -> Option<FileFormat> {
+        let ext = ext.trim_start_matches('.');
+        Self::READ.iter().copied().find(|f| f.extensions().iter().any(|x| x.eq_ignore_ascii_case(ext)))
+    }
+
+    /// The readable format `path`'s extension names, or `None` without a known extension.
+    pub fn from_path(path: impl AsRef<std::path::Path>) -> Option<FileFormat> {
+        path.as_ref().extension().and_then(std::ffi::OsStr::to_str).and_then(Self::from_extension)
+    }
+
+    /// The extensions [`encode`] writes this format under: the names whose readers expect what it
+    /// writes. RF64 and AIFF-C names are left out because `encode` writes plain RIFF and AIFF
+    /// headers for them.
+    pub fn write_extensions(self) -> &'static [&'static str] {
+        match self {
+            FileFormat::Wav => &["wav", "wave", "bwf"],
+            FileFormat::Aiff => &["aif", "aiff"],
+            FileFormat::Flac => &["flac"],
+            _ => &[],
+        }
+    }
+
+    /// The format [`encode`] writes for an extension or format name (ASCII case-insensitive), or
+    /// `None` when it writes none.
+    pub fn from_write_extension(ext: &str) -> Option<FileFormat> {
+        let ext = ext.trim_start_matches('.');
+        Self::WRITE.iter().copied().find(|f| f.write_extensions().iter().any(|x| x.eq_ignore_ascii_case(ext)))
+    }
+
+    /// Every extension of [`FileFormat::READ`], in order: what file pickers and browsers filter by.
+    pub fn readable_extensions() -> Vec<&'static str> {
+        Self::READ.iter().flat_map(|f| f.extensions().iter().copied()).collect()
+    }
+
+    /// Every extension of [`FileFormat::WRITE`], in order: what save dialogs, help and errors list.
+    pub fn writable_extensions() -> Vec<&'static str> {
+        Self::WRITE.iter().flat_map(|f| f.write_extensions().iter().copied()).collect()
+    }
 }
 
 /// Stored sample representation.
@@ -192,22 +293,9 @@ fn detect_by_magic(b: &[u8], depth: u32) -> Option<FileFormat> {
     None
 }
 
-fn detect_by_ext(ext: &str) -> FileFormat {
-    match ext.trim_start_matches('.').to_ascii_lowercase().as_str() {
-        "wav" | "wave" | "bwf" | "rf64" => FileFormat::Wav,
-        "aif" | "aiff" | "aifc" => FileFormat::Aiff,
-        "flac" => FileFormat::Flac,
-        "mp3" | "mp2" | "mp1" => FileFormat::Mp3,
-        "ogg" | "oga" => FileFormat::Ogg,
-        "aac" | "m4a" | "m4b" | "mp4" | "adts" => FileFormat::Aac,
-        "caf" => FileFormat::Caf,
-        _ => FileFormat::Other,
-    }
-}
-
 /// Identify a file by its magic bytes, falling back to the extension hint (`"wav"`, `".flac"`).
 pub fn detect_format(bytes: &[u8], ext_hint: Option<&str>) -> FileFormat {
-    detect_by_magic(bytes, 0).unwrap_or_else(|| ext_hint.map(detect_by_ext).unwrap_or(FileFormat::Other))
+    detect_by_magic(bytes, 0).unwrap_or_else(|| ext_hint.and_then(FileFormat::from_extension).unwrap_or(FileFormat::Other))
 }
 
 /// Read a file's format, sample rate, channel count, length and BWF metadata.
@@ -267,19 +355,6 @@ pub fn encode(buf: &AudioBuffer, opts: &EncodeOptions) -> Result<Vec<u8>> {
         FileFormat::Aiff => aiff::encode(buf, opts.bit_depth, opts.dither),
         FileFormat::Flac => flac::encode(buf, opts.bit_depth, opts.dither),
         other => Err(AudioError::Unsupported(format!("encoding {other:?} is not supported"))),
-    }
-}
-
-/// Formats [`encode`] can write, as the extensions that name them.
-pub const ENCODE_EXTENSIONS: &str = "wav, aif, aiff, flac";
-
-/// The format [`encode`] writes for a file extension or format name (`wav`, `aiff`, `flac`, case-insensitive), or `None` when it cannot write it.
-pub fn encode_format_for(name: &str) -> Option<FileFormat> {
-    match name.trim_start_matches('.').to_ascii_lowercase().as_str() {
-        "wav" | "wave" | "bwf" => Some(FileFormat::Wav),
-        "aif" | "aiff" => Some(FileFormat::Aiff),
-        "flac" => Some(FileFormat::Flac),
-        _ => None,
     }
 }
 

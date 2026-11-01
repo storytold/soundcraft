@@ -1,6 +1,6 @@
 #[cfg(test)]
 use super::import::add_source;
-use super::*;
+use super::{Arc, AtomicBool, Clip, EngineError, Ordering, Range, Result, Samples, Session, TrackId};
 
 /// Limit a range used for rendering to the track's material (plus a second), so a huge
 /// selection never renders hours of silence.
@@ -244,7 +244,9 @@ fn non_silent(
 
 #[cfg(test)]
 mod strip_tests {
+    use super::super::{AudioBuffer, Engine, FileFormat, Value};
     use super::*;
+    use serde_json::json;
 
     /// A stereo track with `length`-long clips at `starts`, each playing a second of steady tone.
     fn tones(starts: &[Samples], length: Samples) -> (Engine, TrackId) {

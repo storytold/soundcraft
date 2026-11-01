@@ -1,4 +1,4 @@
-use super::*;
+use super::{Color32, Sense, SoundApp, Stroke, Tokens, Ui, json, mono, pos2, vec2};
 
 /// Draw plugin windows for instrument and insert slots that still exist, removing closed ones from the list.
 pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {

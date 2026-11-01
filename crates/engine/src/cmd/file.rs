@@ -92,11 +92,9 @@ pub fn specs() -> Vec<CommandSpec> {
             let dir = str_param(p, "dir").ok_or_else(|| bad("file.bounce_stems", "`dir` required"))?.to_string();
             let r = range_param(e, "file.bounce_stems", p)?;
             let r = if r.is_empty() { soundcraft_time::Range::new(0, e.session().content_end().max(1)) } else { r };
-            let format = match str_param(p, "format") {
-                Some("aiff") | Some("aif") => soundcraft_audio_io::FileFormat::Aiff,
-                Some("flac") => soundcraft_audio_io::FileFormat::Flac,
-                _ => soundcraft_audio_io::FileFormat::Wav,
-            };
+            let format = str_param(p, "format")
+                .and_then(soundcraft_audio_io::FileFormat::from_write_extension)
+                .unwrap_or(soundcraft_audio_io::FileFormat::Wav);
             let bit_depth = match p.get("bit_depth").map(|b| b.to_string().trim_matches('"').to_string()).as_deref() {
                 Some("16") => soundcraft_audio_io::BitDepth::Int16,
                 Some("32") | Some("32f") => soundcraft_audio_io::BitDepth::Float32,
@@ -313,8 +311,9 @@ pub fn bounce_job(e: &Engine, p: &Value) -> Result<crate::io::Bounce> {
     let r = if r.is_empty() { soundcraft_time::Range::new(0, e.session().content_end().max(1)) } else { r };
     let ext = std::path::Path::new(&path).extension().and_then(std::ffi::OsStr::to_str).unwrap_or("wav").to_ascii_lowercase();
     let format_name = str_param(p, "format").unwrap_or(ext.as_str());
-    let format = soundcraft_audio_io::encode_format_for(format_name).ok_or_else(|| {
-        bad("file.bounce_mix", format!("cannot write `{format_name}` files (supported: {})", soundcraft_audio_io::ENCODE_EXTENSIONS))
+    let format = soundcraft_audio_io::FileFormat::from_write_extension(format_name).ok_or_else(|| {
+        let supported = soundcraft_audio_io::FileFormat::writable_extensions().join(", ");
+        bad("file.bounce_mix", format!("cannot write `{format_name}` files (supported: {supported})"))
     })?;
     let bit_depth = match p.get("bit_depth").map(|b| b.to_string().trim_matches('"').to_string()).as_deref() {
         Some("16") => soundcraft_audio_io::BitDepth::Int16,
@@ -336,7 +335,11 @@ fn write_score(e: &mut Engine, p: &Value, id: &str, svg: bool) -> Result<Value> 
         return Err(bad(id, "no MIDI or instrument tracks to notate"));
     }
     let setup = crate::score::ScoreSetup::from_session(e.session());
-    let (text, ext) = if svg { (crate::score::svg(&parts, &setup), "svg") } else { (crate::score::musicxml(&parts, &setup), "musicxml") };
+    let (text, ext) = if svg {
+        (crate::score::svg(&parts, &setup).map_err(|m| bad(id, m))?, "svg")
+    } else {
+        (crate::score::musicxml(&parts, &setup).map_err(|m| bad(id, m))?, "musicxml")
+    };
     let path = match str_param(p, "path") {
         Some(p) => p.to_string(),
         None => std::env::temp_dir().join(format!("{}.{ext}", crate::io::sanitize_name(&setup.title))).to_string_lossy().to_string(),

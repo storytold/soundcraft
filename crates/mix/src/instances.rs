@@ -1,5 +1,5 @@
 use super::strip::strip_channels;
-use super::*;
+use super::{Plugin, Session, TrackId, main_channels};
 
 /// Slot index used for a track's instrument plugin in [`InstanceSpec`] and [`PreparedInstance`]
 /// (insert slots use their index).

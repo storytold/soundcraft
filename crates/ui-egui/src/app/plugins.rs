@@ -1,4 +1,4 @@
-use super::*;
+use super::{SoundApp, TrackId, json, mix_window};
 
 /// The plugins whose state the session takes this frame, out of those changed in their editors
 /// (`pending`, kept across frames). A plugin editor doesn't say when a gesture ends: a plugin's

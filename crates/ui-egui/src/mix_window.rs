@@ -151,6 +151,30 @@ fn section_label(ui: &Ui, r: Rect, text: &str, narrow: bool) {
 
 /// Draw one mixer channel strip: preamp, instrument, object, insert and send sections, EQ curve, routing, fader and
 /// meters, with its interactions.
+/// The height of the strip's footer: volume readout and name plate.
+const STRIP_FOOT_H: f32 = 64.0;
+
+/// One mixer strip's geometry and settings, shared by its sections.
+struct StripCtx<'a> {
+    track: &'a Track,
+    id: TrackId,
+    r: Rect,
+    w: f32,
+    x0: f32,
+    inner_w: f32,
+    narrow: bool,
+    selected: bool,
+    views: Vec<String>,
+    all: bool,
+}
+
+impl StripCtx<'_> {
+    /// Whether the mixer shows the section named `view`.
+    fn shows(&self, view: &str) -> bool {
+        self.all || self.views.iter().any(|x| x == view)
+    }
+}
+
 fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapshot>, scroll_here: bool) {
     let t = Tokens::current();
     let session = app.engine.session_arc();
@@ -173,12 +197,30 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     let inner_w = w - 8.0;
     let x0 = r.min.x + 4.0;
     let views = app.ui.mix_views.clone();
-    let has = |v: &str| views.iter().any(|x| x == v);
-    let all = has("all");
+    let all = views.iter().any(|x| x == "all");
+    let cx = StripCtx { track, id, r, w, x0, inner_w, narrow, selected, views, all };
     // Preamp, instrument and object rows keep their height on every strip so sections line up;
     // their controls only appear on tracks with an input.
+    y = preamp_section(app, ui, &cx, y);
+    y = instrument_section(app, ui, &cx, y);
+    y = object_section(app, ui, &cx, y);
+    y = slot_sections(app, ui, &cx, y);
+    y = eq_section(ui, &cx, y);
+    y = comments_section(app, ui, &cx, y);
+    y = io_section(app, ui, &cx, y);
+    y = group_selector(app, ui, &cx, y);
+    y = pan_section(app, ui, &cx, y);
+    y = toggle_rows(app, ui, &cx, y);
+    fader_and_meter(app, ui, &cx, y, snap);
+    name_and_readout(app, ui, &cx);
+}
+
+/// Input gain stage ahead of the inserts (the track's trim).
+fn preamp_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
+    let StripCtx { track, id, narrow, x0, inner_w, .. } = *cx;
+    let t = Tokens::current();
     let has_input = matches!(track.kind, TrackKind::Audio | TrackKind::Instrument | TrackKind::Midi);
-    if all || has("mic_preamps") {
+    if cx.shows("mic_preamps") {
         // Input gain stage ahead of the inserts (the track's trim).
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 34.0));
         inset(ui.painter(), sec, t.strip_section);
@@ -199,7 +241,14 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         }
         y = sec.max.y + 4.0;
     }
-    if all || has("instruments") {
+    y
+}
+
+/// The instrument slot.
+fn instrument_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
+    let StripCtx { track, narrow, x0, inner_w, .. } = *cx;
+    let t = Tokens::current();
+    if cx.shows("instruments") {
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 34.0));
         inset(ui.painter(), sec, t.strip_section);
         section_label(ui, sec, "INSTRUMENT", narrow);
@@ -215,7 +264,14 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         }
         y = sec.max.y + 4.0;
     }
-    if all || has("object") {
+    y
+}
+
+/// The object/bed switch.
+fn object_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
+    let StripCtx { track, id, x0, inner_w, .. } = *cx;
+    let has_input = matches!(track.kind, TrackKind::Audio | TrackKind::Instrument | TrackKind::Midi);
+    if cx.shows("object") {
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 20.0));
         if has_input {
             let on = app.engine.session().edit.flag(&format!("object.{}", id.0));
@@ -227,13 +283,20 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         }
         y = sec.max.y + 4.0;
     }
+    y
+}
+
+/// The insert and send sections.
+fn slot_sections(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
+    let StripCtx { track, narrow, x0, inner_w, .. } = *cx;
+    let t = Tokens::current();
     for (key, title, off, is_send) in [
         ("inserts_ae", "INSERTS A-E", 0usize, false),
         ("inserts_fj", "INSERTS F-J", 5, false),
         ("sends_ae", "SENDS A-E", 0, true),
         ("sends_fj", "SENDS F-J", 5, true),
     ] {
-        if !(all || has(key)) {
+        if !cx.shows(key) {
             continue;
         }
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 16.0 + 5.0 * 17.0));
@@ -249,7 +312,14 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         }
         y = sec.max.y + 4.0;
     }
-    if all || has("eq_curve") {
+    y
+}
+
+/// The EQ curve.
+fn eq_section(ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
+    let StripCtx { track, x0, inner_w, .. } = *cx;
+    let t = Tokens::current();
+    if cx.shows("eq_curve") {
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 40.0));
         ui.painter().rect_filled(sec, 2.0, Color32::from_rgb(14, 18, 22));
         let eq = track.mixer.inserts.iter().flatten().find(|i| i.plugin == "eq_7band" || i.plugin == "eq_1band");
@@ -278,7 +348,13 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         }
         y = sec.max.y + 4.0;
     }
-    if all || has("comments") {
+    y
+}
+
+/// The comments field.
+fn comments_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
+    let StripCtx { track, id, narrow, x0, inner_w, .. } = *cx;
+    if cx.shows("comments") {
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 44.0));
         let mut c = track.comments.clone();
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(sec));
@@ -292,7 +368,14 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         }
         y = sec.max.y + 4.0;
     }
-    if all || has("io") {
+    y
+}
+
+/// Input, output and automation mode selectors.
+fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
+    let StripCtx { track, id, narrow, x0, inner_w, .. } = *cx;
+    let t = Tokens::current();
+    if cx.shows("io") {
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 16.0 + 2.0 * 18.0 + 30.0));
         inset(ui.painter(), sec, t.strip_section);
         section_label(ui, sec, "I / O", narrow);
@@ -357,6 +440,13 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         });
         y = sec.max.y + 4.0;
     }
+    y
+}
+
+/// The group selector.
+fn group_selector(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
+    let StripCtx { track, id, narrow, x0, inner_w, .. } = *cx;
+    let t = Tokens::current();
     // Group selector.
     let no_group = if narrow { "nogrp" } else { "no group" };
     let gname = app.engine.session().groups.iter().find(|g| g.members.contains(&id)).map_or(no_group.to_string(), |g| g.name.clone());
@@ -371,6 +461,13 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         SelectorLabels { name: &format!("Group for {}", track.name), value: &gname, tooltip: "Group" },
     );
     y += 22.0;
+    y
+}
+
+/// Pan: a surround panner when the output is multichannel, else the stereo knobs.
+fn pan_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
+    let StripCtx { track, id, x0, inner_w, .. } = *cx;
+    let t = Tokens::current();
     // Pan: a surround panner when the output is multichannel, else the stereo knobs.
     let out_fmt = output_format(app, track);
     let surround_out =
@@ -429,6 +526,13 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         }
         y += 54.0;
     }
+    y
+}
+
+/// Rec / Input / Solo / Mute.
+fn toggle_rows(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
+    let StripCtx { track, id, x0, inner_w, .. } = *cx;
+    let t = Tokens::current();
     // Rec / Input / Solo / Mute.
     let bw = (inner_w - 6.0) / 2.0;
     let mut row = ui.new_child(
@@ -461,9 +565,15 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         }
     }
     y += 26.0;
+    y
+}
+
+/// The fader and its meter.
+fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, snap: Option<&MeterSnapshot>) {
+    let StripCtx { track, id, narrow, x0, inner_w, r, .. } = *cx;
+    let t = Tokens::current();
     // Fader + meter.
-    let bottom_h = 64.0;
-    let fh = (r.max.y - bottom_h - y).max(120.0);
+    let fh = (r.max.y - STRIP_FOOT_H - y).max(120.0);
     let wide_meter = (if track.kind == TrackKind::Master { app.engine.session().main_format() } else { track.format }).channels() > 2;
     let fr = Rect::from_min_size(pos2(x0, y), vec2(inner_w * if wide_meter { 0.45 } else { 0.6 }, fh));
     if let Some(db) = fader(ui, fr, track.mixer.volume_db, ui.scope_id().with(("fader", id.0)), &format!("{} level", track.name)) {
@@ -495,8 +605,14 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     if md.gr > 0.1 {
         ui.painter().text(pos2(mr.center().x, mr.min.y - 3.0), Align2::CENTER_BOTTOM, format!("-{:.0}", md.gr), regular(8.0), t.meter_yellow);
     }
+}
+
+/// Volume readout, kind label and name plate.
+fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
+    let StripCtx { track, id, x0, inner_w, r, w, selected, .. } = *cx;
+    let t = Tokens::current();
     // Volume readout and name.
-    let vr = Rect::from_min_size(pos2(x0 + 4.0, r.max.y - bottom_h + 4.0), vec2(inner_w - 8.0, 15.0));
+    let vr = Rect::from_min_size(pos2(x0 + 4.0, r.max.y - STRIP_FOOT_H + 4.0), vec2(inner_w - 8.0, 15.0));
     inset(ui.painter(), vr, t.counter_bg);
     let (_, entered) = editable_readout(
         ui,

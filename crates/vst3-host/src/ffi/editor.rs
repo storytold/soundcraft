@@ -1,5 +1,8 @@
 use super::instance::Instance;
-use super::*;
+use super::{
+    Class, ComPtr, ComWrapper, IComponentTrait, IEditControllerTrait, IPlugFrameTrait, IPlugViewTrait, Mutex, Ordering, PoisonError, STATE_MAGIC,
+    c_void, ok, read_c16, sb, sv, window,
+};
 
 // ---- editor (IPlugView) --------------------------------------------------------------------
 

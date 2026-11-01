@@ -2,6 +2,7 @@
 
 use crate::Backend;
 use serde_json::{Value, json};
+use soundcraft_audio_io::FileFormat;
 use std::io::{BufRead, Write};
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
@@ -70,7 +71,7 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "bounce_mix",
             "Render the mix to an audio file. Returns peak dBFS and integrated LUFS.",
-            json!({"path": {"type": "string"}, "format": {"type": "string", "enum": ["wav", "aiff", "flac"]}, "bit_depth": {"type": "string"}, "start": {}, "end": {}, "normalize": {"type": "boolean"}}),
+            json!({"path": {"type": "string"}, "format": {"type": "string", "enum": FileFormat::writable_extensions()}, "bit_depth": {"type": "string"}, "start": {}, "end": {}, "normalize": {"type": "boolean"}}),
             &["path"],
         ),
         tool("parity", "Feature-parity report against the incumbent's menu catalog.", json!({}), &[]),
@@ -198,6 +199,9 @@ impl<B: Backend> Server<B> {
 
     /// Handle one JSON-RPC message; returns the reply line (None for notifications).
     pub fn handle(&mut self, msg: &Value) -> Option<Value> {
+        if !msg.is_object() {
+            return Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "invalid request"}}));
+        }
         let id = msg.get("id").cloned();
         let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
         let params = msg.get("params").cloned().unwrap_or(json!({}));
@@ -254,6 +258,9 @@ impl<B: Backend> Server<B> {
                 continue;
             }
             let reply = match serde_json::from_str::<Value>(&line) {
+                Ok(Value::Array(batch)) if batch.is_empty() => {
+                    Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "invalid request: empty batch"}}))
+                }
                 Ok(Value::Array(batch)) => {
                     let replies: Vec<Value> = batch.iter().filter_map(|m| self.handle(m)).collect();
                     if replies.is_empty() { None } else { Some(Value::Array(replies)) }
@@ -267,5 +274,41 @@ impl<B: Backend> Server<B> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Headless;
+    use soundcraft_engine::Engine;
+
+    fn reply(line: &str) -> String {
+        let mut server = Server::new(Headless::new(Engine::default()));
+        let mut out = Vec::new();
+        server.serve(line.as_bytes(), &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn invalid_requests_get_an_invalid_request_error() {
+        for input in ["[]", "42", "[1]", "\"x\""] {
+            let text = reply(input);
+            assert_eq!(text.lines().count(), 1, "input {input}: reply was {text:?}");
+            let v: Value = serde_json::from_str(text.trim()).unwrap();
+            let e = match &v {
+                Value::Array(a) => a[0].clone(),
+                other => other.clone(),
+            };
+            assert_eq!(e["error"]["code"], -32600, "input {input}");
+            assert_eq!(e["id"], Value::Null, "input {input}");
+        }
+    }
+
+    #[test]
+    fn notifications_still_get_no_reply() {
+        assert_eq!(reply(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#), "");
+        let v: Value = serde_json::from_str(reply(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#).trim()).unwrap();
+        assert_eq!(v["id"], 1);
     }
 }
