@@ -1,6 +1,7 @@
 //! Application panel identities and persistence around the shared docking renderer.
 //! Document contents remain owned by their existing view implementations.
 
+use crate::i18n::{tr, trf};
 use craft_ui::docking::{
     Action, Column, DockArea, DockCommand, DockError, DockOperation, DockStyle, FloatSpace, Floating, Group, Layout, Location, Node, PanelLimits,
     Permissions, Placement, Side, Target, UiDock, Zone, ZoneName,
@@ -452,7 +453,7 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
         if edit { std::mem::replace(&mut app.ui.docking, edit_default()) } else { std::mem::replace(&mut app.ui.mix_docking, mix_default()) };
     let before_sync = workspace.clone();
     if let Err(error) = (if edit { validate(&workspace) } else { validate_mix(&workspace) }).and_then(|()| sync(&mut workspace, app, edit)) {
-        app.ui.status = format!("Panel layout could not be restored: {error}");
+        app.ui.status = trf("Panel layout could not be restored: {}", &[&error]);
         workspace = if edit { edit_default() } else { mix_default() };
         let _ = sync(&mut workspace, app, edit);
     }
@@ -476,7 +477,7 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
         ui,
         &workspace.layout,
         &style,
-        |panel| panel.label().into(),
+        |panel| tr(panel.label()).into(),
         permissions,
         panel_limits,
         |ui, panel| match panel {
@@ -503,7 +504,7 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
     store(app, workspace, edit);
     for action in output.actions {
         if let Err(error) = command_for(app, &DockCommand::Layout { action }, edit) {
-            app.ui.status = format!("Panel move was not applied: {error}");
+            app.ui.status = trf("Panel move was not applied: {}", &[&error]);
         }
     }
 }

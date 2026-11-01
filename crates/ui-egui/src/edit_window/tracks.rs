@@ -7,6 +7,7 @@ use super::{
     Align2, AutoParam, Range, Rect, Sense, Session, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, json, ops, pos2, regular,
     rgb, vec2,
 };
+use crate::i18n::tr;
 
 pub(super) fn in_edit_window(s: &Session, t: &Track) -> bool {
     ops::shown(s, t)
@@ -160,15 +161,31 @@ fn playlist_lanes(app: &mut SoundApp, ui: &mut Ui, track: &Track, row: Rect, mai
                 let _ = app.run("track.playlist_promote", json!({"track": track.id.0, "playlist": i, "start": a, "end": b}));
             }
         }
-        resp.on_hover_text("Click a take (or the selection) to promote it to the main playlist");
+        resp.on_hover_text(tr("Click a take (or the selection) to promote it to the main playlist"));
         y += LANE_H;
     }
 }
 
 pub(super) fn view_label(v: &str) -> String {
     match AutoParam::parse(v) {
-        Some(p) => p.label(),
-        None => v.to_string(),
+        Some(p) => auto_param_label(&p),
+        None => tr(v).to_string(),
+    }
+}
+
+/// [`AutoParam::label`] in the interface language.
+pub fn auto_param_label(p: &AutoParam) -> String {
+    use crate::i18n::trf;
+    let slot_letter = |i: u8| char::from(b'A'.saturating_add(i.min(25)));
+    match p {
+        AutoParam::Volume => tr("volume").into(),
+        AutoParam::Pan(0) => tr("pan").into(),
+        AutoParam::Pan(i) => trf("pan {}", &[&(u16::from(*i) + 1)]),
+        AutoParam::Mute => tr("mute").into(),
+        AutoParam::SendLevel(i) => trf("send {} level", &[&slot_letter(*i)]),
+        AutoParam::SendPan(i) => trf("send {} pan", &[&slot_letter(*i)]),
+        AutoParam::SendMute(i) => trf("send {} mute", &[&slot_letter(*i)]),
+        AutoParam::Plugin { slot, param } => trf("insert {} {}", &[&slot_letter(*slot), param]),
     }
 }
 
@@ -203,16 +220,16 @@ pub(super) fn view_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
 pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     let tid = id.0;
     let items: [(&str, &str); 10] = [
-        ("Rename...", "ui.rename_track"),
-        ("Duplicate...", "track.duplicate"),
-        ("Make Inactive", "track.make_inactive"),
-        ("Hide", "track.hide"),
-        ("Delete", "track.delete"),
-        ("Split into Mono", "track.split_into_mono"),
-        ("Commit...", "track.commit"),
-        ("Freeze", "track.freeze"),
-        ("Move to New Folder...", "track.move_to_new_folder"),
-        ("Group...", "track.group"),
+        (tr("Rename..."), "ui.rename_track"),
+        (tr("Duplicate..."), "track.duplicate"),
+        (tr("Make Inactive"), "track.make_inactive"),
+        (tr("Hide"), "track.hide"),
+        (tr("Delete"), "track.delete"),
+        (tr("Split into Mono"), "track.split_into_mono"),
+        (tr("Commit..."), "track.commit"),
+        (tr("Freeze"), "track.freeze"),
+        (tr("Move to New Folder..."), "track.move_to_new_folder"),
+        (tr("Group..."), "track.group"),
     ];
     let selection: Vec<u64> = {
         let selected = &app.engine.session().edit.selected_tracks;
@@ -237,7 +254,7 @@ pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
         .map(|track| (track.id.0, track.name.clone()))
         .collect();
     if !folders.is_empty() {
-        ui.menu_button("Move to Folder", |ui| {
+        ui.menu_button(tr("Move to Folder"), |ui| {
             for (folder, name) in &folders {
                 if ui.button(name).clicked() {
                     let _ = app.run("track.move_to_folder", json!({"tracks": selection, "folder": folder}));
@@ -245,24 +262,24 @@ pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
             }
         });
     }
-    if app.engine.session().track(id).is_some_and(|track| track.folder.is_some()) && ui.button("Remove from Folder").clicked() {
+    if app.engine.session().track(id).is_some_and(|track| track.folder.is_some()) && ui.button(tr("Remove from Folder")).clicked() {
         let _ = app.run("track.remove_from_folder", json!({"tracks": selection}));
     }
     // Only the track clicked: the command has one target, and the selection stays as it is.
-    if ui.button("Scroll Into View").clicked() {
+    if ui.button(tr("Scroll Into View")).clicked() {
         let _ = app.run("view.scroll_into_view", json!({"track": id.0}));
     }
     ui.separator();
-    ui.menu_button("Track Height", |ui| {
+    ui.menu_button(tr("Track Height"), |ui| {
         for h in TrackHeight::ALL {
-            if ui.button(h.label()).clicked() {
+            if ui.button(tr(h.label())).clicked() {
                 let own: Vec<TrackId> = selection.iter().map(|&t| TrackId(t)).collect();
                 let tracks = height_targets(app.engine.session(), ui.input(|i| i.modifiers), &own);
                 let _ = app.run("track.height", json!({"tracks": tracks, "height": h.label()}));
             }
         }
     });
-    ui.menu_button("Track Color", |ui| {
+    ui.menu_button(tr("Track Color"), |ui| {
         for (i, c) in soundcraft_model::TRACK_COLORS.iter().enumerate() {
             let (r, resp) = ui.allocate_exact_size(vec2(120.0, 14.0), Sense::click());
             ui.painter().rect_filled(r, 2.0, rgb(*c));

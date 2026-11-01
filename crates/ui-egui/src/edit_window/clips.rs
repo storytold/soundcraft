@@ -5,6 +5,7 @@ use super::{
     Align2, AutoParam, Clip, ClipContent, Color32, CornerRadius, Gesture, GridValue, NoteValue, Pos2, Range, Rect, Session, Shape, SoundApp, Stroke,
     StrokeKind, TimeFormat, Tokens, Tool, Track, bold, clip_colors, format_position, pos2, regular, vec2,
 };
+use crate::i18n::tr;
 
 /// The outline of the Strip Silence rectangles.
 pub fn strip_silence_stroke() -> Stroke {
@@ -251,7 +252,7 @@ fn draw_clip_content(cl: &ClipLane<'_>, clip: &Clip, g: &ClipGeom<'_>) {
                     }
                 }
             } else {
-                painter.text(body_r.center(), Align2::CENTER_CENTER, "media offline", regular(10.0), Color32::from_rgb(220, 120, 120));
+                painter.text(body_r.center(), Align2::CENTER_CENTER, tr("media offline"), regular(10.0), Color32::from_rgb(220, 120, 120));
             }
         }
         ClipContent::Video { .. } => {} // thumbnails: video_track::draw_lane

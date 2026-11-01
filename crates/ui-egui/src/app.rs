@@ -5,6 +5,7 @@ use super::{
     Trouble, UiState, Value, VecDeque, bounce, dialogs, edit_window, extra_windows, fonts, import, json, menus, midi_editor, mix_window, ops_windows,
     palette, panels, recovery, sampler_window, score_editor, shortcuts, theme, updates_ui, video_track, video_window, windows,
 };
+use crate::i18n;
 
 mod audio;
 mod commands;
@@ -147,6 +148,7 @@ impl SoundApp {
                 ctx.request_repaint();
             }
         }
+        i18n::set(self.ui.language);
         let light = theme::wants_light(ctx, self.ui.theme);
         if self.theme_applied != Some(light) || theme::is_light() != light {
             theme::apply(ctx, light);
