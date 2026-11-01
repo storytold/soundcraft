@@ -297,7 +297,7 @@ fn trim_clip(app: &mut SoundApp, clip: ClipId, to: Samples, start: bool) {
 pub(super) fn spot_or_run(app: &mut SoundApp, spot: Option<Spot>) {
     let Some(spot) = spot else { return };
     if app.engine.session().edit.edit_mode == EditMode::Spot {
-        app.dialogs.open = Some(Dialog::Spot(spot));
+        app.dialogs.set(Dialog::Spot(spot));
     } else if let Some((id, params)) = spot.command(app.engine.session()) {
         let _ = app.run(&id, params);
     }
