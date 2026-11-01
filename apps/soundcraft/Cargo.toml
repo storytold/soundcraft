@@ -23,6 +23,7 @@ soundcraft-automation.workspace = true
 clap.workspace = true
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links", "clipboard"] }
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
+craft-quit = { workspace = true, features = ["egui"] }
 serde_json.workspace = true
 log.workspace = true
 chrono.workspace = true

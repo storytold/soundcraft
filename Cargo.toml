@@ -59,6 +59,8 @@ craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-l
 
 # ui
 craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c5a1cbfb5f9049f9270955caffb5bee5997aebf7", features = ["serde"] }
+# On macOS, closing the window quits through `-[NSApplication terminate:]`. On other platforms craft-quit does nothing and the window closes as usual.
+craft-quit = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c5a1cbfb5f9049f9270955caffb5bee5997aebf7" }
 egui = { version = "0.37" }
 eframe = { version = "0.37", default-features = false }
 # Monotonic clock on native and the browser (the `web_time::Instant` panics-free equivalent).
