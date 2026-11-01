@@ -711,13 +711,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         });
     if esc || ctx.memory(|m| m.data.get_temp::<bool>(egui::Id::unique("dlg_cancel")).unwrap_or(false)) {
         keep = false;
+        action = None;
         app.dialogs.after_save = None;
         app.dialogs.pending_session = None;
         ctx.memory_mut(|m| m.data.remove::<bool>(egui::Id::unique("dlg_cancel")));
-    }
-    // Enter on a focused Cancel also presses OK. In Auto Rename, the dialog then closes without running the command.
-    if !keep && matches!(d, Dialog::AutoRename { .. }) {
-        action = None;
     }
     if let Some(strip) = rename_from
         && keep
@@ -985,7 +982,7 @@ mod tests {
         assert_eq!(name, "Foley");
     }
 
-    /// Enter creates and Escape cancels without leaking events to the background UI.
+    /// Enter creates, while Escape cancels even when both keys arrive in one frame.
     #[test]
     fn new_tracks_enter_creates_and_escape_cancels_on_each_platform() {
         for os in [egui::os::OperatingSystem::Mac, egui::os::OperatingSystem::Windows, egui::os::OperatingSystem::Nix] {
@@ -1000,6 +997,11 @@ mod tests {
             dialog_frame(&ctx, &mut app, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
             assert!(app.dialogs.open.is_none());
             assert_eq!(app.engine.session().tracks.len(), 3);
+            assert!(app.dialogs.open_for_command(&app.engine, "track.new"));
+            dialog_frame(&ctx, &mut app, vec![]);
+            dialog_frame(&ctx, &mut app, vec![key(egui::Key::Enter, egui::Modifiers::NONE), key(egui::Key::Escape, egui::Modifiers::NONE)]);
+            assert!(app.dialogs.open.is_none());
+            assert_eq!(app.engine.session().tracks.len(), 3, "Escape must cancel a simultaneous Enter");
         }
     }
 
