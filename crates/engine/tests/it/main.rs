@@ -13,6 +13,7 @@ mod long_renders;
 mod midi_offset;
 mod min_secs_with_timecode_counter;
 mod mix_required_params;
+mod new_track_rows;
 mod random_edits;
 mod recording;
 mod session_transport;
