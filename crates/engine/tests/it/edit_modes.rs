@@ -252,6 +252,21 @@ fn zero_distance_move_keeps_overlapping_material_and_quantize_still_moves() {
     run(&mut e, "edit.select", json!({"clips": [ids[0].0]}));
     run(&mut e, "clip.quantize_to_grid", json!({}));
     assert_eq!(start(&e, ids[0]), 0);
+
+    let (mut e, t, ids) = long("slip", &[(0, 1_000, 0), (500, 1_000, 2_000)]);
+    let before = material(&e, t);
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0], "by": -1_000}));
+    assert_eq!(material(&e, t), before);
+}
+
+#[test]
+fn zero_horizontal_grid_move_to_another_track_still_snaps() {
+    let (mut e, _, [_, clip]) = engine("grid");
+    let destination = new_track(&mut e);
+    run(&mut e, "edit.move_clips", json!({"clips": [clip.0], "to": 2_000, "track": destination.0}));
+    let (track, moved) = e.session().find_clip(clip).unwrap();
+    assert_eq!(track, destination);
+    assert_eq!(moved.start, 0);
 }
 
 #[test]
