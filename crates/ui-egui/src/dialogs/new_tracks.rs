@@ -243,6 +243,7 @@ impl NewTracks {
                 });
             }
         });
+        let rows_changed = remove.is_some() || insert.is_some();
         if let Some(index) = remove {
             self.active = index;
             self.remove(index);
@@ -256,7 +257,8 @@ impl NewTracks {
         if !can_create {
             ui.colored_label(ui.visuals().error_fg_color, "Create up to 128 tracks at a time.");
         }
-        if crate::dialogs::buttons_enabled(ui, "Create", enter, can_create) {
+        // Enter on a focused row button changes that row only; it must not also submit the dialog.
+        if crate::dialogs::buttons_enabled(ui, "Create", enter && !rows_changed, can_create) && !rows_changed {
             Some(json!({"rows": self.rows.iter().map(NewTrackRow::params).collect::<Vec<_>>()}))
         } else {
             None
@@ -503,6 +505,21 @@ mod tests {
         h.get_all_by_role_and_label(Role::Button, "−").nth(1).unwrap().click();
         h.run_steps(4);
         assert_eq!(tracks(&h).rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Dialogue", "Effects"]);
+    }
+
+    /// Enter on a focused row button changes the rows without also creating tracks.
+    #[test]
+    fn enter_on_row_buttons_does_not_submit_the_dialog() {
+        let mut h = harness();
+        h.get_by_role_and_label(Role::Button, "+").focus();
+        chord(&mut h, Modifiers::NONE, Key::Enter);
+        assert_eq!(tracks(&h).rows.len(), 2);
+        assert!(h.state().engine.session().tracks.is_empty());
+
+        h.get_all_by_role_and_label(Role::Button, "−").next().unwrap().focus();
+        chord(&mut h, Modifiers::NONE, Key::Enter);
+        assert_eq!(tracks(&h).rows.len(), 1);
+        assert!(h.state().engine.session().tracks.is_empty());
     }
 
     /// Removing a preceding row does not transfer widget state to another row.
