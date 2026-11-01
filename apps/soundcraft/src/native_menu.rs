@@ -33,6 +33,7 @@ impl NativeMenu {
         let mut native = Self { menu, entries: Vec::new(), events, last_sync: None };
         let app_menu = Submenu::new("SoundCraft", true);
         native.add_item(app, &app_menu, "About SoundCraft", "", Some("window.about".into()))?;
+        native.add_item(app, &app_menu, "Preferences...", "", Some("setup.preferences".into()))?;
         native.add_item(app, &app_menu, "Session Info", "", Some("window.session_info".into()))?;
         native.add_item(app, &app_menu, "Session Audio Health", "", Some("window.audio_health".into()))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
@@ -94,8 +95,8 @@ impl NativeMenu {
                 && let Some(command) = &entry.command
                 && menus::item_state(app, &entry.path, Some(command)).0
             {
-                if entry.path.is_empty() && command.starts_with("window.") {
-                    // The application menu's About / Session Info open their window (never close it).
+                if entry.path.is_empty() && (command.starts_with("window.") || command == "setup.preferences") {
+                    // Application-menu window entries open their window rather than toggling it.
                     let _ = app.run(command, serde_json::json!({"value": true}));
                 } else {
                     menus::invoke_menu(app, command, &entry.path);
