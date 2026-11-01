@@ -115,11 +115,13 @@ fn tempo_constant(e: &mut Engine, p: &Value) -> Result<Value> {
     let r = range_param(e, id, p)?;
     let s = e.session();
     let (t0, t1) = (s.tempo.samples_to_ticks(r.start, s.sample_rate), s.tempo.samples_to_ticks(r.end, s.sample_rate));
-    if t1 <= t0 {
-        return tempo(e, p);
-    }
     let bpm = f64_or(p, "bpm", f64::NAN);
     let s = e.session_mut();
+    if t1 <= t0 {
+        // An empty range sets the tempo at its start, which may come from the selection.
+        s.tempo.set_tempo(t0, bpm).map_err(|err| bad(id, err.to_string()))?;
+        return Ok(json!({"tick": t0, "bpm": bpm}));
+    }
     // Read before the edit: the end is a musical position, and the new tempo moves it in samples.
     let after = s.tempo.tempo_at_tick(t1);
     let had_end = s.tempo.tempos().iter().any(|x| x.tick == t1);
@@ -163,6 +165,13 @@ fn insert_time(e: &mut Engine, p: &Value) -> Result<Value> {
         if m.start >= r.start {
             m.start += r.len();
             m.end += r.len();
+        } else if m.end > r.start {
+            m.end += r.len();
+        }
+    }
+    for (at, _) in &mut s.key_signatures {
+        if *at >= r.start {
+            *at = at.saturating_add(r.len());
         }
     }
     Ok(json!({"inserted": r.len()}))
@@ -190,6 +199,16 @@ fn cut_time(e: &mut Engine, p: &Value) -> Result<Value> {
         if m.start >= r.end {
             m.start -= r.len();
             m.end -= r.len();
+        } else if m.end >= r.end {
+            m.end -= r.len();
+        } else if m.end > r.start {
+            m.end = r.start;
+        }
+    }
+    s.key_signatures.retain(|(at, _)| !r.contains(*at));
+    for (at, _) in &mut s.key_signatures {
+        if *at >= r.end {
+            *at -= r.len();
         }
     }
     Ok(json!({"removed": r.len()}))
@@ -302,7 +321,10 @@ fn add_marker(e: &mut Engine, p: &Value) -> Result<Value> {
         (None, Some(a), Some(b)) => (a, b),
         (None, Some(p), None) | (None, None, Some(p)) => (p, p),
         _ if kind == MarkerKind::Selection => (sel.start, sel.end),
-        _ => (if e.transport.playing { e.transport.position } else { sel.start }, sel.start),
+        _ => {
+            let point = if e.transport.playing { e.transport.position } else { sel.start };
+            (point, point)
+        }
     };
     let s = e.session_mut();
     let n = s.markers.len() + 1;
@@ -407,6 +429,46 @@ mod tests {
     use crate::demo::demo_engine;
     use serde_json::json;
 
+    #[test]
+    fn tempo_constant_with_an_empty_range_sets_the_tempo_at_its_start() {
+        use soundcraft_time::Range;
+        let mut e = demo_engine();
+        e.session_mut().edit.selection = Range::point(96_000);
+        let r = e.execute("event.tempo_constant", &json!({"bpm": 90.0, "end": 96_000})).unwrap();
+        let s = e.session();
+        let tick = s.tempo.samples_to_ticks(96_000, s.sample_rate);
+        assert_eq!(r["tick"], tick);
+        assert_eq!(s.tempo.tempo_at_tick(tick), 90.0);
+    }
+
+    /// `start` is optional for insert/cut time: it defaults to the selection start, then `end`/`length` apply.
+    #[test]
+    fn insert_and_cut_time_without_start_use_selection_start() {
+        use soundcraft_time::Range;
+        let mut e = demo_engine();
+        let a = e.session().edit.selection.start;
+        let run = |e: &mut crate::Engine, sel: Range, id: &str, params: serde_json::Value| {
+            e.session_mut().edit.selection = sel;
+            e.execute(id, &params).unwrap()
+        };
+        // Point selection.
+        assert_eq!(run(&mut e, Range::point(a), "event.insert_time", json!({"length": 48000}))["inserted"], 48000);
+        assert_eq!(run(&mut e, Range::point(a), "event.cut_time", json!({"end": a + 5000}))["removed"], 5000);
+        assert_eq!(run(&mut e, Range::point(a), "event.cut_time", json!({"length": 700}))["removed"], 700);
+        // A non-empty selection must not override the given `end`/`length`.
+        let sel = Range::new(a, a + 100);
+        assert_eq!(run(&mut e, sel, "event.insert_time", json!({"length": 48000}))["inserted"], 48000);
+        assert_eq!(run(&mut e, sel, "event.insert_time", json!({"end": a + 2000}))["inserted"], 2000);
+        assert_eq!(run(&mut e, sel, "event.cut_time", json!({"end": a + 5000}))["removed"], 5000);
+        // A null `start` takes the same path.
+        assert_eq!(run(&mut e, sel, "event.cut_time", json!({"start": null, "end": a + 3000}))["removed"], 3000);
+        assert_eq!(run(&mut e, sel, "event.insert_time", json!({"start": null, "length": 900}))["inserted"], 900);
+        // An explicit `start` still wins over the selection.
+        let r = run(&mut e, sel, "event.cut_time", json!({"start": a + 1000, "end": a + 3000}));
+        assert_eq!(r["removed"], 2000);
+        assert_eq!(run(&mut e, sel, "event.insert_time", json!({"start": a + 1000, "length": 500}))["inserted"], 500);
+    }
+
     /// The tempo-ruler dialog runs `event.tempo` with `bpm` and `at`; the change must land at that position.
     #[test]
     fn tempo_change_at_position_is_applied() {
@@ -471,6 +533,19 @@ mod tests {
         assert_eq!(find(&a), Some((96_000, 96_000)));
         assert_eq!(find(&b), Some((96_000, 96_000)));
         assert_eq!(find(&c), Some((1000, 2000)));
+    }
+
+    /// A plain marker added during playback is a point at the playhead, whatever the edit selection is.
+    #[test]
+    fn markers_add_while_playing_is_a_point_at_the_playhead() {
+        let mut e = demo_engine();
+        e.session_mut().edit.selection.start = 48_000;
+        e.session_mut().edit.selection.end = 48_000;
+        e.transport.playing = true;
+        e.transport.position = 4800;
+        let r = e.execute("markers.add", &json!({"name": "M"})).unwrap();
+        let m = e.session().markers.iter().find(|m| Some(m.id.0) == r["id"].as_u64()).map(|m| (m.start, m.end));
+        assert_eq!(m, Some((4800, 4800)));
     }
 
     /// `markers.edit` documents `color`: it sets the memory location's RGB colour, undoably; `null` clears it.

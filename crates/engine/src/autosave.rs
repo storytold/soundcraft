@@ -255,7 +255,7 @@ impl Autosave {
 
     /// Delete the folder: the session closed with nothing left to recover.
     fn discard(mut self) {
-        drop(self.lock.take());
+        self.lock = None;
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -286,6 +286,7 @@ pub fn leftovers(root: &Path) -> Vec<Leftover> {
         let origin_saved = origin.as_ref().and_then(|o| std::fs::metadata(o).and_then(|m| m.modified()).ok());
         let saved = std::fs::metadata(dir.join(SESSION)).and_then(|m| m.modified());
         let recording = dir.join(RECORDING).is_file();
+        #[cfg(not(target_arch = "wasm32"))]
         drop(lock);
         match saved {
             Ok(saved) if recording || origin_saved.is_none_or(|o| saved > o) => {

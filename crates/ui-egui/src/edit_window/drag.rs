@@ -34,7 +34,7 @@ pub(super) fn fade_curve_drag_value(fade: soundcraft_model::Fade, anchor: (f32, 
 
 /// Runs before anything is painted, against the last frame's layout.
 pub(super) fn drive_drag(app: &mut SoundApp, ctx: &egui::Context) {
-    if app.gesture.is_none() || matches!(app.gesture, Some(Gesture::Fader { .. })) {
+    if app.gesture.is_none() || matches!(app.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. })) {
         return;
     }
     let (s, tl) = (app.engine.session_arc(), rect(app.edit_layout.timeline));
