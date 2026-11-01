@@ -34,6 +34,10 @@ pub struct Vst3Plugin {
     ids: Vec<u32>,
     maps: Vec<Mapping>,
     values: Vec<f32>,
+    /// Which values the host set since creation or the last state load (same order as `ids`):
+    /// only these are re-sent on activation; values read from the plugin never are. `unsynced`
+    /// cannot tell, since the state reader clears it once the controller has a value.
+    host_set: Vec<bool>,
     /// Normalized values waiting for the next block (coalesced per id; bounded).
     pending: Vec<(u32, f64)>,
     /// Host-set normalized values the controller has not seen yet (same order as `ids`; the bits
@@ -87,6 +91,7 @@ impl Vst3Plugin {
         let mut p = Vst3Plugin {
             info,
             values: Vec::with_capacity(ids.len()),
+            host_set: vec![false; ids.len()],
             pending: Vec::with_capacity(ids.len().min(PARAM_QUEUE_CAP)),
             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
             notes: Vec::with_capacity(EVENT_CAP),
@@ -164,6 +169,7 @@ impl Vst3Plugin {
         for u in self.unsynced.iter() {
             u.store(SYNCED, Ordering::Relaxed);
         }
+        self.host_set.fill(false);
     }
 
     /// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
@@ -250,9 +256,12 @@ impl Plugin for Vst3Plugin {
                 self.latency = 0;
             }
         }
-        // Re-send every value so a re-activated plugin matches the session.
+        // Re-send the values the host set, so a re-activated plugin matches the session. Values only
+        // read from the plugin are left alone: some plugins report 0 for everything until they load
+        // their own preset (Rhapsody), and sending those readings back set its volume and pan to
+        // the minimum, silencing it.
         self.pending.clear();
-        for i in 0..self.ids.len().min(PARAM_QUEUE_CAP) {
+        for i in resend_indices(&self.host_set, PARAM_QUEUE_CAP) {
             if let (Some(&id), Some(n)) = (self.ids.get(i), self.values.get(i).and_then(|&v| self.normalized_from_plain(i, v))) {
                 self.pending.push((id, n));
             }
@@ -274,6 +283,9 @@ impl Plugin for Vst3Plugin {
         let v = pi.clamp(value);
         if let Some(slot) = self.values.get_mut(i) {
             *slot = v;
+        }
+        if let Some(h) = self.host_set.get_mut(i) {
+            *h = true;
         }
         let Some(n) = self.normalized_from_plain(i, v) else { return true };
         if let Some(u) = self.unsynced.get(i) {
@@ -550,9 +562,22 @@ impl PluginEditor for Vst3Editor {
     }
 }
 
+/// Indices of the values to re-send when the plugin is (re)activated: those the host set, at most
+/// `cap` of them.
+fn resend_indices(host_set: &[bool], cap: usize) -> impl Iterator<Item = usize> + '_ {
+    host_set.iter().enumerate().filter(|(_, set)| **set).map(|(i, _)| i).take(cap)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_values_the_host_set_are_re_sent() {
+        assert_eq!(resend_indices(&[false, false, false], 8).count(), 0, "readings from the plugin stay put");
+        assert_eq!(resend_indices(&[false, true, false, true], 8).collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(resend_indices(&[true, true, true], 2).collect::<Vec<_>>(), vec![0, 1], "bounded by the queue");
+    }
 
     /// A queue full of releases still has room to release every held key after a reset.
     #[test]

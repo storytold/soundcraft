@@ -24,7 +24,15 @@ pub(crate) struct PluginSlot {
     pub(crate) plugin: Box<dyn Plugin>,
     /// Last values pushed to the plugin, in the insert's parameter-map order.
     applied: Vec<f32>,
+    /// Which of those the first parameter pass held back as a stored default (see `apply_values`).
+    skipped: Vec<bool>,
+    /// The parameter names `applied` and `skipped` line up with. The insert's map can grow while
+    /// this slot lives (a `mix.insert_param`), and the state has to follow the parameter, not the
+    /// position.
+    keys: Vec<String>,
     pub(crate) failed: bool,
+    /// A hosted plugin that has not had its first parameter pass yet (see `apply_values`).
+    fresh: bool,
 }
 
 pub(crate) struct Strip {
@@ -191,7 +199,16 @@ impl SlotCtx<'_> {
             let state = if third { ins.state_bytes() } else { None };
             create_instance(&ins.plugin, state.as_deref(), self.sr, self.mb, ch).map(|n| n.plugin)
         }?;
-        Some(PluginSlot { id: ins.plugin.clone(), ch, plugin, applied: Vec::new(), failed: false })
+        Some(PluginSlot {
+            id: ins.plugin.clone(),
+            ch,
+            plugin,
+            applied: Vec::new(),
+            skipped: Vec::new(),
+            keys: Vec::new(),
+            failed: false,
+            fresh: third,
+        })
     }
 }
 
@@ -489,31 +506,79 @@ pub(crate) fn apply_params(slot: &mut PluginSlot, ins: &soundcraft_model::Insert
     // Automation lanes address insert slots; the instrument (`INSTRUMENT_SLOT`) has none, so it
     // must not pick up slot A's lanes.
     let Ok(slot_u8) = u8::try_from(i) else {
-        return apply_values(slot, ins, |_, v| v);
+        return apply_values(slot, ins, |_, v| v, |_| false);
     };
-    let automated = t.mixer.automation_mode.reads()
-        && t.automation.iter().any(|l| matches!(&l.param, AutoParam::Plugin { slot, .. } if *slot == slot_u8) && !l.points.is_empty());
-    apply_values(slot, ins, |k, val| {
-        if automated
-            && let Some(l) = t.automation.iter().find(|l| matches!(&l.param, AutoParam::Plugin { slot, param } if *slot == slot_u8 && param == k))
-            && !l.points.is_empty()
-        {
-            return l.value_at(pos, val);
-        }
-        val
-    });
+    let lane = |k: &str| {
+        t.automation
+            .iter()
+            .find(|l| matches!(&l.param, AutoParam::Plugin { slot, param } if *slot == slot_u8 && param == k))
+            .filter(|l| !l.points.is_empty())
+    };
+    let read = t.mixer.automation_mode.reads();
+    apply_values(slot, ins, |k, val| if read { lane(k).map_or(val, |l| l.value_at(pos, val)) } else { val }, |k| read && lane(k).is_some());
 }
 
 /// Sends each stored param (as mapped by `value`) to the plugin when it changed since last time.
-fn apply_values(slot: &mut PluginSlot, ins: &soundcraft_model::Insert, value: impl Fn(&str, f32) -> f32) {
-    if slot.applied.len() != ins.params.len() {
-        slot.applied = vec![f32::NAN; ins.params.len()];
-    }
-    for ((k, v), last) in ins.params.iter().zip(slot.applied.iter_mut()) {
-        let val = value(k, *v);
-        if val.to_bits() != last.to_bits() {
-            slot.plugin.set_param(k, val);
-            *last = val;
+/// `intentional` marks the parameters the session definitely chose (an automation lane), which are
+/// always sent even when the value happens to equal the plugin's default.
+fn apply_values(slot: &mut PluginSlot, ins: &soundcraft_model::Insert, value: impl Fn(&str, f32) -> f32, intentional: impl Fn(&str) -> bool) {
+    // The bookkeeping is per parameter, not per position: `mix.insert_param` can grow the map while
+    // this slot lives (`sync` keeps it when the plugin and channel count are unchanged), and
+    // clearing the vectors would forget which values the first pass held back. The next block would
+    // then push those defaults over the values the plugin restored, which is what silences a plugin
+    // whose session holds its defaults.
+    let stale = slot.keys.len() != ins.params.len() || !slot.keys.iter().zip(ins.params.keys()).all(|(a, b)| a == b);
+    if stale {
+        let old_keys = std::mem::take(&mut slot.keys);
+        let old_applied = std::mem::take(&mut slot.applied);
+        let old_skipped = std::mem::take(&mut slot.skipped);
+        let mut applied = Vec::with_capacity(ins.params.len());
+        let mut skipped = Vec::with_capacity(ins.params.len());
+        for k in ins.params.keys() {
+            match old_keys.iter().position(|o| o == k) {
+                Some(j) => {
+                    applied.push(old_applied.get(j).copied().unwrap_or(f32::NAN));
+                    skipped.push(old_skipped.get(j).copied().unwrap_or(false));
+                }
+                None => {
+                    applied.push(f32::NAN);
+                    skipped.push(false);
+                }
+            }
         }
+        slot.applied = applied;
+        slot.skipped = skipped;
+        slot.keys = ins.params.keys().cloned().collect();
     }
+    // First pass over a hosted plugin: it has just loaded its own settings, so a stored value equal to
+    // the default it reports is not a choice and is left alone. Older sessions store every parameter
+    // at that default, often 0, and pushing them over a restored plugin silenced Rhapsody (volume and
+    // pan at minimum). Values that differ from the default, every later change, and the automated
+    // ones are pushed: an automation lane is a choice even when its value is the default.
+    let first = std::mem::take(&mut slot.fresh);
+    let mut applied = std::mem::take(&mut slot.applied);
+    let mut skipped = std::mem::take(&mut slot.skipped);
+    for (i, ((k, v), last)) in ins.params.iter().zip(applied.iter_mut()).enumerate() {
+        let val = value(k, *v);
+        // A value held back on the first pass is sent as soon as the session makes it a choice —
+        // read automation switched on afterwards — even though it still equals the default.
+        let held_back = skipped.get(i).copied().unwrap_or(false);
+        if val.to_bits() == last.to_bits() && !(held_back && intentional(k)) {
+            continue;
+        }
+        let untouched = first && !intentional(k) && slot.plugin.info().param(k).is_some_and(|pi| pi.default.to_bits() == val.to_bits());
+        if untouched {
+            if let Some(s) = skipped.get_mut(i) {
+                *s = true;
+            }
+        } else {
+            slot.plugin.set_param(k, val);
+            if let Some(s) = skipped.get_mut(i) {
+                *s = false;
+            }
+        }
+        *last = val;
+    }
+    slot.applied = applied;
+    slot.skipped = skipped;
 }
