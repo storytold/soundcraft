@@ -649,6 +649,11 @@ mod tests {
         assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 1001})).unwrap()["loops"], 1000);
         assert_eq!(spans(&e, t).len(), 1001);
         assert_eq!(spans(&e, t).last(), Some(&(100_000, 100)));
+        // A count of 1 is the clip alone: no loops, no edit.
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 1})).unwrap()["loops"], 0);
+        assert_eq!(spans(&e, t), vec![(0, 100)]);
+        assert!(e.session().track(t).unwrap().clips().iter().all(|c| c.loop_id.is_none()));
         // Hostile counts: zero, negative and huge do not edit past the limit or panic.
         let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
         assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "count": -5})).unwrap()["loops"], 0);
