@@ -95,6 +95,7 @@ impl SoundApp {
             last_rendered_tick: None,
             pending_open: None,
             last_rev: 0,
+            last_session_generation: 0,
             fonts_ready: false,
             fonts_installed: false,
             system_fonts: true,
@@ -194,9 +195,7 @@ impl SoundApp {
         self.handle_transport(dt);
         if self.engine.revision != self.last_rev {
             self.last_rev = self.engine.revision;
-            if let Some(p) = &self.player {
-                p.update_session(self.engine.session_arc());
-            }
+            self.sync_player_session();
         }
         self.open_inserted();
         self.autosave_changes();

@@ -234,6 +234,22 @@ mod tests {
     }
 
     #[test]
+    fn extreme_note_moves_saturate_and_are_undoable() {
+        let mut e = Engine::default();
+        let t = e.session_mut().add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        let clip = e.execute("midi.new_clip", &json!({"track": t.0})).unwrap()["clip"].as_u64().unwrap();
+        e.execute("midi.note_add", &json!({"clip": clip, "start_ticks": 1})).unwrap();
+        for (delta, start, pitch) in [(i64::MAX, i64::MAX, 127), (i64::MIN, 0, 0)] {
+            e.execute("midi.notes_move", &json!({"clip": clip, "indices": [0], "ticks": delta, "semitones": delta})).unwrap();
+            let notes = e.execute("midi.notes", &json!({"clip": clip})).unwrap();
+            assert_eq!(notes["notes"][0]["start"], start);
+            assert_eq!(notes["notes"][0]["pitch"], pitch);
+            assert!(e.undo());
+            assert_eq!(e.execute("midi.notes", &json!({"clip": clip})).unwrap()["notes"][0]["start"], 1);
+        }
+    }
+
+    #[test]
     fn rejects_audio_tracks() {
         let mut e = Engine::default();
         let t = e.session_mut().add_track(TrackKind::Audio, ChannelFormat::Mono, None);
