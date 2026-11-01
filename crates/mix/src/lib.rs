@@ -89,6 +89,11 @@ use strip::{DelayLine, MAX_LATENCY};
 use threads::run_strips;
 pub use threads::{mark_audio_thread, on_audio_thread};
 
+/// Top of the clip effects gain slider; a stored or wired gain is clamped to it (#884).
+pub const CLIP_FX_MAX_GAIN_DB: f32 = 24.0;
+/// Top of a send fader, the same +12 dB `AutoParam::SendLevel` ranges up to (#884).
+pub const SEND_LEVEL_MAX_DB: f32 = 12.0;
+
 /// Default (stereo) main mix width. The actual width is [`main_channels`].
 pub const MAIN_CHANNELS: usize = 2;
 

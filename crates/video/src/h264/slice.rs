@@ -467,20 +467,20 @@ impl PocState {
                 let max_lsb = 1i32 << sps.log2_max_poc_lsb;
                 let lsb = sh.pic_order_cnt_lsb as i32;
                 let msb = if lsb < prev_lsb && prev_lsb - lsb >= max_lsb / 2 {
-                    prev_msb + max_lsb
+                    prev_msb.saturating_add(max_lsb)
                 } else if lsb > prev_lsb && lsb - prev_lsb > max_lsb / 2 {
-                    prev_msb - max_lsb
+                    prev_msb.saturating_sub(max_lsb)
                 } else {
                     prev_msb
                 };
-                let top = msb + lsb;
-                let bottom = top + sh.delta_pic_order_cnt_bottom;
+                let top = msb.saturating_add(lsb);
+                let bottom = top.saturating_add(sh.delta_pic_order_cnt_bottom);
                 Poc { top, bottom, msb, frame_num_offset: 0 }
             }
             1 => {
                 let frame_num_offset = self.frame_num_offset(sh.idr, sh.frame_num, sps);
                 let n = sps.offset_for_ref_frame.len() as i32;
-                let mut abs_frame_num = if n != 0 { frame_num_offset + sh.frame_num as i32 } else { 0 };
+                let mut abs_frame_num = if n != 0 { frame_num_offset.saturating_add(sh.frame_num as i32) } else { 0 };
                 if sh.nal_ref_idc == 0 && abs_frame_num > 0 {
                     abs_frame_num -= 1;
                 }
@@ -488,17 +488,17 @@ impl PocState {
                 if abs_frame_num > 0 {
                     let cycle_cnt = (abs_frame_num - 1) / n;
                     let in_cycle = (abs_frame_num - 1) % n;
-                    let delta_cycle: i32 = sps.offset_for_ref_frame.iter().sum();
-                    expected = cycle_cnt.wrapping_mul(delta_cycle);
+                    let delta_cycle: i32 = sps.offset_for_ref_frame.iter().fold(0i32, |a, &o| a.saturating_add(o));
+                    expected = cycle_cnt.saturating_mul(delta_cycle);
                     for &o in &sps.offset_for_ref_frame[..=in_cycle as usize] {
-                        expected += o;
+                        expected = expected.saturating_add(o);
                     }
                 }
                 if sh.nal_ref_idc == 0 {
-                    expected += sps.offset_for_non_ref_pic;
+                    expected = expected.saturating_add(sps.offset_for_non_ref_pic);
                 }
-                let top = expected + sh.delta_pic_order_cnt[0];
-                let bottom = top + sps.offset_for_top_to_bottom_field + sh.delta_pic_order_cnt[1];
+                let top = expected.saturating_add(sh.delta_pic_order_cnt[0]);
+                let bottom = top.saturating_add(sps.offset_for_top_to_bottom_field).saturating_add(sh.delta_pic_order_cnt[1]);
                 Poc { top, bottom, msb: 0, frame_num_offset }
             }
             _ => {
@@ -506,9 +506,9 @@ impl PocState {
                 let temp = if sh.idr {
                     0
                 } else if sh.nal_ref_idc == 0 {
-                    2 * (frame_num_offset + sh.frame_num as i32) - 1
+                    2i32.saturating_mul(frame_num_offset.saturating_add(sh.frame_num as i32)).saturating_sub(1)
                 } else {
-                    2 * (frame_num_offset + sh.frame_num as i32)
+                    2i32.saturating_mul(frame_num_offset.saturating_add(sh.frame_num as i32))
                 };
                 Poc { top: temp, bottom: temp, msb: 0, frame_num_offset }
             }
@@ -519,7 +519,7 @@ impl PocState {
         if idr {
             0
         } else if self.prev_frame_num > frame_num {
-            self.prev_frame_num_offset + sps.max_frame_num() as i32
+            self.prev_frame_num_offset.saturating_add(sps.max_frame_num() as i32)
         } else {
             self.prev_frame_num_offset
         }
@@ -532,7 +532,7 @@ impl PocState {
         if sh.nal_ref_idc != 0 {
             if mmco5 {
                 self.prev_ref_msb = 0;
-                self.prev_ref_lsb = poc.top - poc.frame();
+                self.prev_ref_lsb = poc.top.saturating_sub(poc.frame());
             } else {
                 self.prev_ref_msb = poc.msb;
                 self.prev_ref_lsb = sh.pic_order_cnt_lsb as i32;
@@ -637,5 +637,18 @@ mod tests {
     #[test]
     fn huge_slice_qp_delta_is_invalid() {
         assert!(matches!(parse_override(0, 0, 0, i32::MAX), Err(crate::h264::Error::Invalid(_))));
+    }
+
+    #[test]
+    fn poc0_huge_bottom_delta_does_not_overflow() {
+        let (mut sps, _) = sps_pps();
+        sps.pic_order_cnt_type = 0;
+        sps.log2_max_poc_lsb = 4;
+        let mut sh = parse_override(0, 0, 0, 0).unwrap();
+        sh.pic_order_cnt_lsb = 1;
+        sh.delta_pic_order_cnt_bottom = i32::MAX;
+        let poc = PocState::default().compute(&sh, &sps);
+        assert_eq!(poc.top, 1);
+        assert_eq!(poc.bottom, i32::MAX);
     }
 }

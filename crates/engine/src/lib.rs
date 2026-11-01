@@ -29,6 +29,12 @@ use dirty::same_document;
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
 pub use soundcraft_model as model;
 
+/// Upper bound on journaled commands, so a long session cannot grow memory without limit.
+const MAX_JOURNAL_ENTRIES: usize = 10_000;
+/// Upper bound on a single journaled entry's params (serialized), so junk fields from MCP or the
+/// control channel cannot keep a huge blob alive for the life of the process.
+const MAX_JOURNAL_ENTRY_BYTES: usize = 64 * 1024; // 64 KiB
+
 /// Shuts the third-party plugin hosts down, running the module exit of every plugin binary they
 /// loaded. Call it at the end of `main`, once every plugin instance (mixer, player) is gone: a
 /// plugin that has been used can crash when its module exit only runs from an exit handler.
@@ -78,6 +84,8 @@ pub enum TransportRequest {
     /// Stop the old session's transport without applying stop-time edits to the new document.
     ResetSession,
     Play,
+    /// Start playing at this position (or move there if already playing), ignoring the selection.
+    PlayFrom(Samples),
     Stop,
     TogglePlay,
     Record,
@@ -176,8 +184,9 @@ pub struct Engine {
     pub clipboard: Clipboard,
     pub transport_requests: Vec<TransportRequest>,
     pub transport: TransportStatus,
-    /// Command journal (id, params) for macro recording / agents.
-    pub journal: Vec<(String, Value)>,
+    /// Command journal (id, params) for macro recording / agents. Ring buffer: capped at
+    /// [`MAX_JOURNAL_ENTRIES`] entries of up to [`MAX_JOURNAL_ENTRY_BYTES`] params each.
+    pub journal: std::collections::VecDeque<(String, Value)>,
     /// Path of the session file, if saved.
     pub path: Option<String>,
     /// Revision counter; bumps on every document change but zoom/scroll (UI caches key on it).
@@ -219,7 +228,7 @@ impl Engine {
             clipboard: Clipboard::default(),
             transport_requests: Vec::new(),
             transport: TransportStatus::default(),
-            journal: Vec::new(),
+            journal: std::collections::VecDeque::new(),
             path: None,
             revision: 1,
             dirty: false,
@@ -422,7 +431,7 @@ impl Engine {
                     self.push_undo(spec.label, before);
                 }
                 if spec.journal {
-                    self.journal.push((id.to_string(), params.clone()));
+                    self.journal_append(id, params);
                 }
                 Ok(v)
             }
@@ -489,6 +498,16 @@ impl Engine {
         self.merge_key = None;
     }
 
+    /// Append a journaled command, clamping its params to [`MAX_JOURNAL_ENTRY_BYTES`] and the
+    /// buffer to [`MAX_JOURNAL_ENTRIES`] entries (oldest are dropped).
+    fn journal_append(&mut self, id: &str, params: &Value) {
+        let clamped = (id.to_string(), journal_params(params));
+        self.journal.push_back(clamped);
+        if self.journal.len() > MAX_JOURNAL_ENTRIES {
+            self.journal.pop_front();
+        }
+    }
+
     /// Convenience: execute with `{}` params.
     pub fn run(&mut self, id: &str) -> Result<Value> {
         self.execute(id, &json!({}))
@@ -527,6 +546,92 @@ fn install_panic_hook() {
 
 fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
     p.downcast_ref::<&str>().map(ToString::to_string).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
+}
+
+/// The params to keep in the journal for a command: the value itself when it serializes within
+/// [`MAX_JOURNAL_ENTRY_BYTES`], or a truncation marker when it is too large or unparseable.
+///
+/// Serializes into a [`std::io::Write`] sink that fails as soon as the cap is exceeded, so an
+/// oversized `params` (a multi-MiB line from MCP or the control channel) is never fully
+/// serialized, cloned, or allocated just to be discarded.
+fn journal_params(params: &Value) -> Value {
+    // Write through a bounded sink: serialization stops (WriteZero) the moment the cap is passed,
+    // so an oversized value costs at most ~1× the cap, not its full serialized size.
+    struct Bounded(Vec<u8>);
+    impl std::io::Write for Bounded {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let room = MAX_JOURNAL_ENTRY_BYTES.saturating_sub(self.0.len());
+            if room == 0 {
+                return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "journal entry cap"));
+            }
+            let take = buf.len().min(room);
+            self.0.extend_from_slice(&buf[..take]);
+            if take < buf.len() {
+                return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "journal entry cap"));
+            }
+            Ok(take)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut sink = Bounded(Vec::new());
+    // Fails with WriteZero as soon as the cap is exceeded, so the allocation stays bounded even
+    // for a multi-MiB params.
+    let ok = serde_json::to_writer(&mut sink, params).is_ok();
+    if !ok {
+        return json!({"__truncated__": true});
+    }
+    params.clone()
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use super::*;
+
+    #[test]
+    fn journal_is_bounded_to_max_entries() {
+        let mut e = Engine::default();
+        // Calling the private append helper directly exercises the ring buffer without the cost
+        // of cloning the whole document on 10,000+ `track.new` calls.
+        for i in 0..MAX_JOURNAL_ENTRIES + 500 {
+            let n = format!("t{i}");
+            e.journal_append("track.new", &json!({"name": n}));
+        }
+        assert_eq!(e.journal.len(), MAX_JOURNAL_ENTRIES);
+        // The oldest entries were dropped, the newest kept: the first remaining is the 501st pushed,
+        // and the newest still there.
+        let first = e.journal.front().map(|(_, p)| p["name"].as_str().unwrap_or_default());
+        assert_eq!(first, Some("t500"));
+        let last = e.journal.back().map(|(_, p)| p["name"].as_str().unwrap_or_default());
+        let last_name = format!("t{}", MAX_JOURNAL_ENTRIES + 499);
+        assert_eq!(last, Some(last_name.as_str()));
+        assert_eq!(e.journal.back().map(|(id, _)| id.as_str()), Some("track.new"));
+    }
+
+    #[test]
+    fn oversized_params_are_truncated_in_the_journal() {
+        let big = "x".repeat(MAX_JOURNAL_ENTRY_BYTES * 4);
+        assert_eq!(journal_params(&json!({"name": big})), json!({"__truncated__": true}));
+    }
+
+    #[test]
+    fn small_params_are_kept_whole() {
+        let p = json!({"track": "Kick", "db": -6.0});
+        assert_eq!(journal_params(&p), p);
+    }
+
+    #[test]
+    fn cap_boundary_is_exact() {
+        // A value just under the cap is kept whole; one just over is truncated. "Just" means the
+        // bounded writer made at most ~two allocations of cap size, not a full multi-MiB buffer.
+        // `{"n":"…"}` adds 9 bytes around the string.
+        let small_str = MAX_JOURNAL_ENTRY_BYTES - 64;
+        let small = json!({"n": "x".repeat(small_str)});
+        assert_eq!(journal_params(&small), small);
+        let big = json!({"n": "x".repeat(MAX_JOURNAL_ENTRY_BYTES)});
+        assert_eq!(journal_params(&big), json!({"__truncated__": true}));
+    }
 }
 
 #[cfg(test)]

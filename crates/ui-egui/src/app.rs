@@ -105,6 +105,7 @@ impl SoundApp {
             quit_requested: false,
             arrange_request: false,
             touched: std::collections::HashSet::new(),
+            touched_sends: std::collections::HashSet::new(),
             last_write_at: i64::MIN,
             editor_states: Vec::new(),
             editor_poll_due: true,
@@ -159,7 +160,7 @@ impl SoundApp {
         if hidden {
             self.pointer_down = false;
             self.wants_keyboard = false;
-            if matches!(self.gesture, Some(Gesture::Fader { .. })) {
+            if matches!(self.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. })) {
                 self.gesture = None;
             }
         }
@@ -179,11 +180,11 @@ impl SoundApp {
             updates_ui::tick(self, ctx);
         }
         if !self.pointer_down {
-            if matches!(self.gesture, Some(Gesture::Fader { .. })) {
+            if matches!(self.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. })) {
                 self.gesture = None;
             }
             // Keep a running automation pass merged until playback stops.
-            if !self.wants_keyboard && self.touched.is_empty() {
+            if !self.wants_keyboard && self.touched.is_empty() && self.touched_sends.is_empty() {
                 self.engine.end_merge();
             }
         }
