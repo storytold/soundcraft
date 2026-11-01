@@ -467,14 +467,14 @@ impl PocState {
                 let max_lsb = 1i32 << sps.log2_max_poc_lsb;
                 let lsb = sh.pic_order_cnt_lsb as i32;
                 let msb = if lsb < prev_lsb && prev_lsb - lsb >= max_lsb / 2 {
-                    prev_msb + max_lsb
+                    prev_msb.saturating_add(max_lsb)
                 } else if lsb > prev_lsb && lsb - prev_lsb > max_lsb / 2 {
-                    prev_msb - max_lsb
+                    prev_msb.saturating_sub(max_lsb)
                 } else {
                     prev_msb
                 };
-                let top = msb + lsb;
-                let bottom = top + sh.delta_pic_order_cnt_bottom;
+                let top = msb.saturating_add(lsb);
+                let bottom = top.saturating_add(sh.delta_pic_order_cnt_bottom);
                 Poc { top, bottom, msb, frame_num_offset: 0 }
             }
             1 => {
@@ -637,5 +637,18 @@ mod tests {
     #[test]
     fn huge_slice_qp_delta_is_invalid() {
         assert!(matches!(parse_override(0, 0, 0, i32::MAX), Err(crate::h264::Error::Invalid(_))));
+    }
+
+    #[test]
+    fn poc0_huge_bottom_delta_does_not_overflow() {
+        let (mut sps, _) = sps_pps();
+        sps.pic_order_cnt_type = 0;
+        sps.log2_max_poc_lsb = 4;
+        let mut sh = parse_override(0, 0, 0, 0).unwrap();
+        sh.pic_order_cnt_lsb = 1;
+        sh.delta_pic_order_cnt_bottom = i32::MAX;
+        let poc = PocState::default().compute(&sh, &sps);
+        assert_eq!(poc.top, 1);
+        assert_eq!(poc.bottom, i32::MAX);
     }
 }
