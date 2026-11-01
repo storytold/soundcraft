@@ -335,7 +335,6 @@ enum SendFooter {
 /// that scrolls, "new bus..." (and "Remove send" for an existing send) fixed under it.
 /// `current` is the send's destination and its name, if the slot has a send.
 fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: TrackId, slot: usize, current: Option<(Route, String)>) {
-    let busses = app.engine.session().busses.clone();
     let which = (b'A' + slot as u8) as char;
     let has_send = current.is_some();
     let header = |ui: &mut Ui| {
@@ -355,6 +354,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
             }
         }
         let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), "Search buses…");
+        let busses = &app.engine.session().busses;
         let visible: Vec<_> = busses.iter().filter(|bus| search.matches(&bus.name)).collect();
         (search, visible)
     };
@@ -393,6 +393,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
     }
     match footer {
         Some(SendFooter::NewBus) => {
+            let busses = &app.engine.session().busses;
             let mut n = busses.len() + 1;
             while busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(&format!("Bus {n}")))
                 || app.engine.session().track_by_name(&format!("Bus {n}")).is_some()
