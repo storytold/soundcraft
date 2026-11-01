@@ -409,6 +409,17 @@ fn gate_mute_automation(t: &Track, strip: &mut Strip, blk: Block) {
     }
 }
 
+/// Input gain stage ahead of the inserts: the strip's trim and phase invert. Shared by track and
+/// master strips so a master's trim reaches the main mix too.
+pub(crate) fn apply_input_trim(t: &Track, buf: &mut [Vec<f32>], frames: usize) {
+    let trim = db_to_gain(t.mixer.trim_db) * if t.mixer.phase_invert { -1.0 } else { 1.0 };
+    if (trim - 1.0).abs() > f32::EPSILON {
+        for c in buf.iter_mut() {
+            c.iter_mut().take(frames).for_each(|x| *x *= trim);
+        }
+    }
+}
+
 pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, live: &LiveInput<'_>, blk: Block) {
     let Block { pos, frames, any_solo } = blk;
     zero_buf(&mut strip.buf, frames);
@@ -424,12 +435,7 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
         TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, blk, &transport),
         _ => {}
     }
-    let trim = db_to_gain(t.mixer.trim_db) * if t.mixer.phase_invert { -1.0 } else { 1.0 };
-    if (trim - 1.0).abs() > f32::EPSILON {
-        for c in strip.buf.iter_mut() {
-            c.iter_mut().take(frames).for_each(|x| *x *= trim);
-        }
-    }
+    apply_input_trim(t, &mut strip.buf, frames);
     run_inserts(t, strip, blk, &transport);
     let soloed_out = any_solo && !t.mixer.solo && !t.mixer.solo_safe && !receives_solo(s, t);
     strip.muted = t.mixer.mute || soloed_out;
