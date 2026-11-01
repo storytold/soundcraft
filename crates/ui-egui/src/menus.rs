@@ -4,6 +4,7 @@
 use crate::{MainWindow, SoundApp};
 use serde_json::{Value, json};
 use soundcraft_engine::catalog;
+use soundcraft_l10n::{Language, t as tr, td, tf};
 
 /// UI-layer commands: (id, label, catalog path or "", shortcut).
 pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
@@ -223,6 +224,8 @@ pub fn tree() -> Vec<MenuNode> {
     roots
 }
 
+/// The in-window menu bar: the SoundCraft app menu (About, Language, Quit) followed by the
+/// incumbent's catalog tree, translated at display time.
 pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::current();
     egui::Panel::top("menu_bar").exact_size(24.0).frame(egui::Frame::NONE.fill(t.menu_bar).inner_margin(egui::Margin::symmetric(8, 2))).show(
@@ -230,26 +233,37 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
         |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("SoundCraft", |ui| {
-                    if ui.button("About SoundCraft").clicked() {
+                    if ui.button(tr("About SoundCraft")).clicked() {
                         app.ui.show_about = true;
                     }
-                    if ui.button("Check for Updates…").clicked() {
+                    if ui.button(tr("Check for Updates…")).clicked() {
                         let _ = app.run("app.checkForUpdates", json!({}));
                     }
-                    if ui.button("Session Info").clicked() {
+                    if ui.button(tr("Session Info")).clicked() {
                         app.ui.show_session_info = true;
                     }
-                    if ui.button("Session Audio Health").clicked() {
+                    if ui.button(tr("Session Audio Health")).clicked() {
                         let _ = app.run("window.audio_health", json!({"value": true}));
                     }
                     ui.separator();
-                    if ui.button("Quit").clicked() {
+                    ui.menu_button(tr("Language"), |ui| {
+                        let current = soundcraft_l10n::current();
+                        for lang in Language::ALL {
+                            let label = if current == lang { format!("✔ {}", lang.native_name()) } else { lang.native_name().to_string() };
+                            if ui.button(label).clicked() {
+                                let _ = run_ui_command(app, "ui.language", &json!({"language": lang.id()}));
+                                ui.close();
+                            }
+                        }
+                    });
+                    ui.separator();
+                    if ui.button(tr("Quit")).clicked() {
                         let _ = crate::dialogs::run_or_ask(app, "app.quit", json!({}));
                     }
                 });
                 let extra = ui_aliases();
                 for root in tree() {
-                    ui.menu_button(&root.label, |ui| {
+                    ui.menu_button(td(&root.label), |ui| {
                         for c in &root.children {
                             menu_node(app, ui, c, &extra);
                             if c.path == "File > Open" {
@@ -261,14 +275,14 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                         }
                         if root.label == "AudioSuite" {
                             ui.separator();
-                            ui.label(egui::RichText::new("Processes selected clips offline").small().color(t.text_dim));
+                            ui.label(egui::RichText::new(tr("Processes selected clips offline")).small().color(t.text_dim));
                         }
                         if root.label == "Window" {
                             ui.separator();
                             let mut separate = app.ui.mix_separate;
                             if ui
-                                .checkbox(&mut separate, "Mix in Separate Window")
-                                .on_hover_text("Show Edit and Mix at once, e.g. one per monitor")
+                                .checkbox(&mut separate, tr("Mix in Separate Window"))
+                                .on_hover_text(tr("Show Edit and Mix at once, e.g. one per monitor"))
                                 .changed()
                             {
                                 let _ = run_ui_command(app, "window.mix_separate", &json!({"value": separate}));
@@ -281,7 +295,7 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                     "{}{}  —  {}",
                     app.engine.session().name,
                     if app.engine.is_dirty() { " *" } else { "" },
-                    if app.ui.window == MainWindow::Edit || app.ui.mix_separate { "Edit" } else { "Mix" }
+                    if app.ui.window == MainWindow::Edit || app.ui.mix_separate { tr("Edit") } else { tr("Mix") }
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(title).color(t.text_dim));
@@ -295,10 +309,10 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
 fn instrument_menu(app: &mut SoundApp, ui: &mut egui::Ui) {
     match instrument_track(app.engine.session()) {
         Some(id) => {
-            ui.menu_button("Instrument", |ui| crate::mix_window::instrument_menu(app, ui, id));
+            ui.menu_button(tr("Instrument"), |ui| crate::mix_window::instrument_menu(app, ui, id));
         }
         None => {
-            ui.add_enabled(false, egui::Button::new("Instrument")).on_disabled_hover_text("Select an instrument track");
+            ui.add_enabled(false, egui::Button::new(tr("Instrument"))).on_disabled_hover_text(tr("Select an instrument track"));
         }
     }
 }
@@ -308,9 +322,11 @@ fn instrument_track(s: &soundcraft_model::Session) -> Option<soundcraft_model::T
     s.tracks.iter().find(|t| t.kind == soundcraft_model::TrackKind::Instrument && s.edit.selected_tracks.contains(&t.id)).map(|t| t.id)
 }
 
+/// One menu entry: submenus recurse, leaves resolve their command through the English catalog
+/// path and show the translated label.
 fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str, &str)]) {
     if !n.children.is_empty() {
-        ui.menu_button(&n.label, |ui| {
+        ui.menu_button(td(&n.label), |ui| {
             for c in &n.children {
                 menu_node(app, ui, c, extra);
             }
@@ -319,7 +335,7 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
     }
     let id = command_for_path(&n.path, extra);
     let (enabled, checked) = item_state(app, &n.path, id.as_deref());
-    let label = live_label(app, id.as_deref()).unwrap_or_else(|| n.label.clone());
+    let label = live_label(app, id.as_deref()).unwrap_or_else(|| td(&n.label).into_owned());
     let label = if checked { format!("✔ {label}") } else { label };
     let shortcut = id.as_deref().and_then(shortcut_for).unwrap_or("");
     let btn = egui::Button::new(label).shortcut_text(crate::shortcuts::shortcut_label(shortcut, ui.ctx().os().is_mac()));
@@ -340,7 +356,9 @@ pub fn command_for_path(path: &str, extra: &[(&str, &str)]) -> Option<String> {
 pub fn item_state(app: &SoundApp, path: &str, id: Option<&str>) -> (bool, bool) {
     let enabled = match id {
         Some(i)
-            if i.starts_with("window.") || i.starts_with("view.mix_section") || matches!(i, "audiosuite.process" | "ui.dock" | "ui.dock.reset") =>
+            if i.starts_with("window.")
+                || i.starts_with("view.mix_section")
+                || matches!(i, "audiosuite.process" | "ui.dock" | "ui.dock.reset" | "ui.language") =>
         {
             true
         }
@@ -350,6 +368,8 @@ pub fn item_state(app: &SoundApp, path: &str, id: Option<&str>) -> (bool, bool) 
     (enabled, checked_state(app, path, id))
 }
 
+/// Whether the item shows a check mark. Match keys are English paths and command ids; the
+/// native Language items carry the language id in `path`.
 fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
     let e = &app.engine.session().edit;
     match id {
@@ -377,6 +397,9 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
         Some("window.ui_customization") => app.extra.show_ui_customization,
         Some("window.config_auto_update") => app.extra.auto_update_config,
         Some("view.mix_section") => path.rsplit(" > ").next().map(mix_section_id).is_some_and(|s| app.ui.mix_views.iter().any(|v| v == s)),
+        // Native Language items carry the language id in `path`; both sides parse, so a stored
+        // alias (`zh-CN`) still marks the zh-Hans item.
+        Some("ui.language") => Language::parse(path) == Language::parse(&app.ui.language),
         _ => false,
     }
 }
@@ -461,8 +484,8 @@ pub fn shortcut_for(id: &str) -> Option<&'static str> {
 pub fn live_label(app: &SoundApp, id: Option<&str>) -> Option<String> {
     let e = &app.engine;
     match id? {
-        "edit.undo" => Some(e.undo_label().map_or_else(|| "Can't Undo".into(), |l| format!("Undo {l}"))),
-        "edit.redo" => Some(e.redo_label().map_or_else(|| "Can't Redo".into(), |l| format!("Redo {l}"))),
+        "edit.undo" => Some(e.undo_label().map_or_else(|| tr("Can't Undo").to_string(), |l| tf("Undo {step}", &[("step", l)]).into_owned())),
+        "edit.redo" => Some(e.redo_label().map_or_else(|| tr("Can't Redo").to_string(), |l| tf("Redo {step}", &[("step", l)]).into_owned())),
         _ => None,
     }
 }
@@ -619,13 +642,13 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                 }
             } else {
                 let n = app.ui.configurations.len() + 1;
-                app.ui.configurations.push((format!("Configuration {n}"), v));
+                app.ui.configurations.push((tf("Configuration {n}", &[("n", &n.to_string())]).into_owned(), v));
             }
             json!({"configurations": app.ui.configurations.len()})
         }
         "window.arrange_tile" | "window.arrange_tile_h" | "window.arrange_tile_v" | "window.arrange_cascade" => {
             if let Err(error) = crate::docking::arrange(app) {
-                app.ui.status = format!("Panel windows could not be arranged: {error}");
+                app.ui.status = tf("Panel windows could not be arranged: {error}", &[("error", &error)]).into_owned();
             }
             app.arrange_request = true;
             json!({})
@@ -694,6 +717,20 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.ui.theme = mode;
             json!({"mode": mode.id()})
         }
+        "ui.language" => {
+            if let Some(id) = p.get("language").and_then(Value::as_str) {
+                let Some(lang) = soundcraft_l10n::Language::parse(id) else {
+                    let ids = Language::ALL.iter().map(|l| l.id()).collect::<Vec<_>>().join(" or ");
+                    return Some(Err(format!("unknown language `{id}` ({ids})")));
+                };
+                app.ui.language = lang.id().into();
+                soundcraft_l10n::set_current(lang);
+            }
+            json!({
+                "language": app.ui.language,
+                "languages": Language::ALL.iter().map(|l| json!({"id": l.id(), "name": l.native_name()})).collect::<Vec<_>>(),
+            })
+        }
         "ui.set" => match serde_json::to_value(&app.ui) {
             Ok(mut cur) => {
                 if let (Some(obj), Some(patch)) = (cur.as_object_mut(), p.as_object()) {
@@ -730,6 +767,25 @@ pub fn parity() -> Value {
 mod tests {
     use super::*;
     use crate::{Services, SoundApp};
+
+    /// Every node of the menu tree, and every UI command label, has a zh-Hans translation.
+    /// A new menu entry without one fails here — add it to `soundcraft-l10n`'s zh_hans table.
+    #[test]
+    fn menu_tree_and_ui_commands_are_translated_for_zh_hans() {
+        let zh = soundcraft_l10n::Language::SimplifiedChinese;
+        let roots = tree();
+        let mut stack: Vec<&MenuNode> = roots.iter().collect();
+        let mut seen: Vec<&str> = Vec::new();
+        while let Some(n) = stack.pop() {
+            assert!(zh.covers(&n.label), "menu node {:?} has no zh-Hans translation", n.label);
+            seen.push(&n.label);
+            stack.extend(n.children.iter());
+        }
+        assert!(seen.len() > 400, "the menu tree shrunk? only {} nodes", seen.len());
+        for (_, label, _, _) in UI_COMMANDS {
+            assert!(zh.covers(label), "UI command label {label:?} has no zh-Hans translation");
+        }
+    }
 
     #[test]
     fn mix_view_aliases_are_allocated_once() {
