@@ -201,12 +201,8 @@ mod provider_routing_tests {
         host.take_events();
         host.resolve_dialog(request, "provider", "Saved.scraftz").unwrap();
         host.take_commands();
-        let capture = crate::file_providers::Capture {
-            doc: app.doc_epoch,
-            revision: app.engine.revision,
-            name: "Saved.scraftz".into(),
-            save_as: false,
-        };
+        let capture =
+            crate::file_providers::Capture { doc: app.doc_epoch, revision: app.engine.revision, name: "Saved.scraftz".into(), save_as: false };
         host.capture(request, capture, vec![1]).unwrap();
         host.take_events();
         app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
