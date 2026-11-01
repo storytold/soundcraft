@@ -24,6 +24,9 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     let full = ui.max_rect();
     ui.painter().rect_filled(full, 0.0, t.toolbar_bg);
     ui.add_space(4.0);
+    // Solid bar: it takes its own strip under the groups instead of floating over their bottom row.
+    // ponytail: HEIGHT (4 + 64 + the 10 pt bar) is sized for it by hand; taller groups would clip it.
+    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
     egui::ScrollArea::horizontal()
         .id_salt("edit_toolbar_scroll")
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
@@ -169,7 +172,9 @@ fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
 fn tools(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let cur = app.engine.session().edit.tool;
-    group(ui, 268.0 + 38.0, 52.0, |ui, r| {
+    // 7 buttons of 36 + 6 gaps of 2 + the group's 2 x 5 padding: no dead strip on the right (#704).
+    // ponytail: still a hand-counted width, stale if a button is added; upgrade: size the group from its content.
+    group(ui, 7.0 * 36.0 + 6.0 * 2.0 + 10.0, 52.0, |ui, r| {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = vec2(2.0, 3.0);
             let row = ui.horizontal(|ui| {
@@ -334,7 +339,8 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
     let playing = app.is_playing();
     let recording = app.engine.transport.recording;
     let looped = app.engine.session().edit.loop_playback;
-    group(ui, 176.0, 64.0, |ui, g| {
+    // 4 buttons of 38 + 3 gaps of 3 + the group's 2 x 5 padding (ponytail: hand-counted, as in `tools`).
+    group(ui, 4.0 * 38.0 + 3.0 * 3.0 + 10.0, 64.0, |ui, g| {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = vec2(3.0, 4.0);
             ui.horizontal(|ui| {
