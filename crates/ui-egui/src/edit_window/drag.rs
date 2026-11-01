@@ -1,7 +1,9 @@
 use super::automation::{auto_value, automation_id, lane_range, plugin_range};
 use super::input::{new_midi_clip, snap};
 use super::layout::{lane_rect, rect, sample_at};
-use super::*;
+use super::{
+    Arc, AutoParam, Clip, ClipId, Dialog, EditMode, Gesture, HashSet, Pos2, Range, Rect, Samples, Session, SoundApp, Spot, TrackId, json, ops, pos2,
+};
 
 /// The same bounded range drives the preview and the committed fade.
 pub(super) fn fade_drag_range(clip: &Clip, fade_in: bool, to: Samples) -> Option<Range> {
@@ -32,7 +34,7 @@ pub(super) fn fade_curve_drag_value(fade: soundcraft_model::Fade, anchor: (f32, 
 
 /// Runs before anything is painted, against the last frame's layout.
 pub(super) fn drive_drag(app: &mut SoundApp, ctx: &egui::Context) {
-    if app.gesture.is_none() || matches!(app.gesture, Some(Gesture::Fader { .. })) {
+    if app.gesture.is_none() || matches!(app.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. })) {
         return;
     }
     let (s, tl) = (app.engine.session_arc(), rect(app.edit_layout.timeline));

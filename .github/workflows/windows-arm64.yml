@@ -31,3 +31,5 @@ jobs:
     with:
       app-name: soundcraft
       app-dir: SoundCraft
+      install-relative-path: Programs/ArtCraft/SoundCraft
+      install-scope: perUser

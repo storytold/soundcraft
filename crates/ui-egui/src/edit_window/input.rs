@@ -2,7 +2,10 @@ use super::automation::{automation_id, breakpoint_at, plugin_range, shown_automa
 use super::clips::{clip_name_height, fade_control_position};
 use super::drag::{drag_snap, fade_curve_drag_value, fade_drag_range, spot_or_run};
 use super::layout::{sample_at, x_of};
-use super::*;
+use super::{
+    Align2, AutoParam, Clip, ClipContent, ClipId, Color32, Dialog, EditMode, Gesture, GridValue, NoteValue, Pos2, Range, Rect, Samples, Sense,
+    Session, SoundApp, Spot, Stroke, StrokeKind, Tokens, Tool, Track, TrackId, Ui, json, ops, pos2, regular, vec2,
+};
 
 // ---- interaction -----------------------------------------------------------------------------
 
@@ -87,9 +90,40 @@ fn clip_gain_popup(ctx: &egui::Context, fader_bottom: Pos2, pos: f32) {
     p.text(pos2(panel.center().x, panel.min.y + 12.0), Align2::CENTER_CENTER, format!("{db:+.1}"), regular(10.5), t.counter_text);
 }
 
-/// Handle one track lane: clip context menus, drag-and-drop sources, sampler drops, and the active tool's selection,
-/// trim, fade, automation and clip editing.
-pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, tl: Rect) {
+/// What a lane interaction knows before it hit-tests: the lane, the session and the press point.
+struct LaneInput<'a> {
+    track: &'a Track,
+    lane: Rect,
+    tl: Rect,
+    s: &'a Session,
+    tool: Tool,
+    origin: Pos2,
+    at_origin: Samples,
+    auto_view: Option<AutoParam>,
+}
+
+/// What is under the pointer: a breakpoint, fade handles and the clip body.
+struct LaneHits<'a> {
+    point_hit: Option<(AutoParam, Samples)>,
+    fade_handle: Option<(&'a Clip, bool)>,
+    curve_handle: Option<(&'a Clip, bool)>,
+    hit: Option<Clip>,
+}
+
+/// Everything the lane's gesture, click and cursor handling reads.
+struct LaneCtx<'a> {
+    inp: LaneInput<'a>,
+    hits: LaneHits<'a>,
+    mods: egui::Modifiers,
+    p: Pos2,
+    at: Samples,
+    eff: Tool,
+    fade_corner: Option<bool>,
+    selector_press: bool,
+}
+
+/// The lane's response, with its clip context menu and the drops it accepts.
+fn lane_menu_and_drops(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, tl: Rect) -> egui::Response {
     let id = ui.scope_id().with(("lane", track.id.0));
     let resp = ui.interact(lane, id, Sense::click_and_drag());
     // The clip menu is attached before the early return below: once the menu is open the pointer
@@ -122,16 +156,15 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
     if track.kind == soundcraft_model::TrackKind::Instrument {
         crate::sampler_window::drop_target(app, ui.ctx(), lane, track.id);
     }
-    let s = app.engine.session_arc();
-    let tool = s.edit.tool;
-    let mods = ui.input(|i| i.modifiers);
-    let Some(p) = resp.interact_pointer_pos().or_else(|| resp.hover_pos()) else { return };
-    let at = sample_at(&s, tl, p.x).max(0);
-    let origin = if resp.drag_started() { ui.input(|i| i.pointer.press_origin()).unwrap_or(p) } else { p };
-    let at_origin = sample_at(&s, tl, origin.x).max(0);
-    let auto_view = AutoParam::parse(&track.view);
+    resp
+}
+
+/// Hit-test the press point against breakpoints, fade handles and clip bodies.
+fn hit_test<'a>(inp: &LaneInput<'a>) -> LaneHits<'a> {
+    let (track, lane, tl, s, tool, origin, at_origin) = (inp.track, inp.lane, inp.tl, inp.s, inp.tool, inp.origin, inp.at_origin);
+    let auto_view = &inp.auto_view;
     let point_hit = if matches!(tool, Tool::Smart | Tool::Grabber | Tool::Pencil) {
-        shown_automation(track).and_then(|param| breakpoint_at(&s, tl, lane, track, &param, origin).map(|at| (param, at)))
+        shown_automation(track).and_then(|param| breakpoint_at(s, tl, lane, track, &param, origin).map(|at| (param, at)))
     } else {
         None
     };
@@ -144,34 +177,40 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
             .iter()
             .rev()
             .filter(|c| body_hit.is_none_or(|front| front.id == c.id || front.start == c.end()))
-            .find_map(|c| fade_handle_at(&s, tl, lane, c, origin).map(|side| (c, side)))
+            .find_map(|c| fade_handle_at(s, tl, lane, c, origin).map(|side| (c, side)))
     } else {
         None
     };
     let curve_handle = if tool == Tool::Smart && auto_view.is_none() && fade_handle.is_none() {
-        body_hit.and_then(|c| fade_curve_handle_at(&s, tl, lane, c, origin).map(|side| (c, side)))
+        body_hit.and_then(|c| fade_curve_handle_at(s, tl, lane, c, origin).map(|side| (c, side)))
     } else {
         None
     };
     let hit = fade_handle.or(curve_handle).map(|(c, _)| c).or(body_hit).cloned();
-    let upper = origin.y < lane.center().y;
-    let near_edge = |c: &Clip| -> Option<bool> {
-        let xs = x_of(&s, tl, c.start);
-        let xe = x_of(&s, tl, c.end());
-        if (origin.x - xs).abs() < 6.0 {
-            Some(true)
-        } else if (origin.x - xe).abs() < 6.0 {
-            Some(false)
-        } else {
-            None
-        }
-    };
-    // Effective tool under the Smart tool; on a breakpoint every tool that edits one grabs it.
-    let eff = match tool {
-        _ if point_hit.is_some() => Tool::Grabber,
+    LaneHits { point_hit, fade_handle, curve_handle, hit }
+}
+
+/// Which edge of `c` the press point is within a few points of: `Some(true)` the start, `Some(false)` the end.
+fn near_edge(inp: &LaneInput<'_>, c: &Clip) -> Option<bool> {
+    let xs = x_of(inp.s, inp.tl, c.start);
+    let xe = x_of(inp.s, inp.tl, c.end());
+    if (inp.origin.x - xs).abs() < 6.0 {
+        Some(true)
+    } else if (inp.origin.x - xe).abs() < 6.0 {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Effective tool under the Smart tool; on a breakpoint every tool that edits one grabs it.
+fn effective_tool(inp: &LaneInput<'_>, hits: &LaneHits<'_>) -> Tool {
+    let upper = inp.origin.y < inp.lane.center().y;
+    match inp.tool {
+        _ if hits.point_hit.is_some() => Tool::Grabber,
         Tool::Smart => {
-            if let Some(c) = &hit {
-                if near_edge(c).is_some() {
+            if let Some(c) = &hits.hit {
+                if near_edge(inp, c).is_some() {
                     Tool::Trim
                 } else if upper {
                     Tool::Selector
@@ -183,23 +222,18 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
             }
         }
         other => other,
-    };
-    if resp.hovered() {
-        let icon = match eff {
-            Tool::Trim => egui::CursorIcon::ResizeHorizontal,
-            Tool::Grabber => egui::CursorIcon::Grab,
-            Tool::Selector => egui::CursorIcon::Text,
-            Tool::Zoom => egui::CursorIcon::ZoomIn,
-            Tool::Pencil => egui::CursorIcon::Crosshair,
-            _ => egui::CursorIcon::Default,
-        };
-        ui.ctx().set_cursor_icon(icon);
     }
-    let fade_corner = if tool == Tool::Smart && point_hit.is_none() {
+}
+
+/// The fade corner (`true` for the fade-in) the Smart tool is pressing, if any.
+fn fade_corner_at(inp: &LaneInput<'_>, hits: &LaneHits<'_>) -> Option<bool> {
+    let (s, tl, lane, origin) = (inp.s, inp.tl, inp.lane, inp.origin);
+    let (tool, point_hit, fade_handle, hit) = (inp.tool, &hits.point_hit, hits.fade_handle, &hits.hit);
+    if tool == Tool::Smart && point_hit.is_none() {
         fade_handle.map(|(_, side)| side).or_else(|| {
             hit.as_ref().and_then(|c| {
-                let xs = x_of(&s, tl, c.start);
-                let xe = x_of(&s, tl, c.end());
+                let xs = x_of(s, tl, c.start);
+                let xe = x_of(s, tl, c.end());
                 let top = origin.y < lane.min.y + lane.height() * 0.28;
                 if !top {
                     None
@@ -214,25 +248,15 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
         })
     } else {
         None
-    };
-    if fade_corner.is_some() && resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
     }
-    if curve_handle.is_some() && resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-    }
-    let gain_icon_at = |q: Pos2| {
-        let c = clip_at(track, sample_at(&s, tl, q.x).max(0)).filter(|_| auto_view.is_none())?;
-        clip_gain_icon(&s, tl, lane, c).filter(|r| r.contains(q)).map(|_| c.clone())
-    };
-    if resp.hovered() && gain_icon_at(p).is_some() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-    }
-    let selector_press = eff == Tool::Selector && fade_corner.is_none() && curve_handle.is_none() && gain_icon_at(origin).is_none();
-    if selector_press && resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
-        place_insertion(app, ui, &s, track.id, at, mods.shift);
-    }
-    let gain_drag = if resp.drag_started() { gain_icon_at(origin) } else { None };
+}
+
+/// Start the gesture a press begins: a breakpoint, clip gain, a fade or the tool's own.
+fn start_gesture(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Response, gain_drag: Option<Clip>) {
+    let LaneCtx { inp, hits, mods, p, at, eff, fade_corner, .. } = c;
+    let (track, lane, s, origin, at_origin, auto_view) = (inp.track, inp.lane, inp.s, inp.origin, inp.at_origin, &inp.auto_view);
+    let (point_hit, curve_handle, hit) = (&hits.point_hit, hits.curve_handle, &hits.hit);
+    let (mods, p, at, eff, fade_corner) = (*mods, *p, *at, *eff, *fade_corner);
     if resp.drag_started()
         && let Some((param, at)) = &point_hit
     {
@@ -253,7 +277,7 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
     {
         let fade = if fade_in { c.fade_in } else { c.fade_out };
         let anchor = (origin.y, fade.gain(0.5));
-        let height = (lane.height() - 2.0 - clip_name_height(&s, lane)).max(1.0);
+        let height = (lane.height() - 2.0 - clip_name_height(s, lane)).max(1.0);
         app.gesture = Some(Gesture::FadeCurve { clip: c.id, fade_in, curvature: fade_curve_drag_value(fade, anchor, height, p.y), anchor, height });
         ui.ctx().request_repaint();
     } else if resp.drag_started()
@@ -268,12 +292,12 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
         ui.ctx().request_repaint();
     } else if resp.drag_started() {
         app.gesture = match eff {
-            Tool::Selector | Tool::Smart => Some(Gesture::Select { track: track.id, anchor: snap(&s, at_origin), tracks: vec![track.id] }),
+            Tool::Selector | Tool::Smart => Some(Gesture::Select { track: track.id, anchor: snap(s, at_origin), tracks: vec![track.id] }),
             Tool::Grabber => hit.as_ref().map(|c| {
                 let clips = if s.edit.selected_clips.contains(&c.id) { s.edit.selected_clips.clone() } else { vec![c.id] };
                 Gesture::MoveClips { clips, grab_at: at_origin, delta: 0, from_track: track.id, to_track: track.id }
             }),
-            Tool::Trim => hit.as_ref().map(|c| match near_edge(c) {
+            Tool::Trim => hit.as_ref().map(|c| match near_edge(inp, c) {
                 Some(false) => Gesture::TrimEnd { clip: c.id, track: track.id, to: c.end() },
                 _ if at_origin - c.start < c.end() - at_origin => Gesture::TrimStart { clip: c.id, track: track.id, to: c.start },
                 _ => Gesture::TrimEnd { clip: c.id, track: track.id, to: c.end() },
@@ -286,6 +310,11 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
             Tool::Zoom => Some(Gesture::ZoomBox { start: origin.x }),
         };
     }
+}
+
+/// While a clip-gain gesture is dragged, the fader follows the pointer.
+fn drag_clip_gain(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Response) {
+    let (track, s, mods, p) = (c.inp.track, c.inp.s, c.mods, c.p);
     if let Some(Gesture::ClipGain { clip, track: t, pos, anchor, fine, fader_bottom }) = &mut app.gesture
         && *t == track.id
         && resp.dragged()
@@ -304,6 +333,13 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
         clip_gain_popup(ui.ctx(), *fader_bottom, *pos);
     }
+}
+
+/// Click handling for the lane: breakpoints, clip selection, spot dialogs, zoom and pencil points.
+fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Response) {
+    let (track, lane, s, auto_view) = (c.inp.track, c.inp.lane, c.inp.s, &c.inp.auto_view);
+    let (point_hit, curve_handle, hit) = (&c.hits.point_hit, c.hits.curve_handle, &c.hits.hit);
+    let (mods, p, at, eff, selector_press) = (c.mods, c.p, c.at, c.eff, c.selector_press);
     if resp.clicked()
         && let Some((param, at)) = &point_hit
     {
@@ -320,14 +356,14 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
                     ids.push(c.id.0);
                     let _ = app.run("edit.select", json!({"clips": ids}));
                     if s.edit.edit_mode == EditMode::Spot {
-                        app.dialogs.open = Spot::clips(&s, vec![c.id], None, 0).map(Dialog::Spot);
+                        app.dialogs.open = Spot::clips(s, vec![c.id], None, 0).map(Dialog::Spot);
                     }
                 }
             }
             Tool::Trim if s.edit.edit_mode == EditMode::Spot && hit.is_some() => {
                 if let Some(c) = &hit {
                     let start = at - c.start < c.end() - at;
-                    app.dialogs.open = Spot::trim(&s, c.id, start, if start { c.start } else { c.end() }).map(Dialog::Spot);
+                    app.dialogs.open = Spot::trim(s, c.id, start, if start { c.start } else { c.end() }).map(Dialog::Spot);
                 }
             }
             Tool::Zoom => {
@@ -353,11 +389,11 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
                         Some(c) => {
                             let _ = app.run("edit.select", json!({"clips": [c.id.0]}));
                         }
-                        None => new_midi_clip(app, &s, track.id, at, at),
+                        None => new_midi_clip(app, s, track.id, at, at),
                     }
                 }
             }
-            _ if !selector_press => place_insertion(app, ui, &s, track.id, at, mods.shift),
+            _ if !selector_press => place_insertion(app, ui, s, track.id, at, mods.shift),
             _ => {}
         }
     }
@@ -372,6 +408,58 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
             app.ui.show_midi_editor = true;
         }
     }
+}
+
+/// Handle one track lane: clip context menus, drag-and-drop sources, sampler drops, and the active tool's selection,
+/// trim, fade, automation and clip editing.
+pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rect, tl: Rect) {
+    let resp = lane_menu_and_drops(app, ui, track, lane, tl);
+    let s = app.engine.session_arc();
+    let tool = s.edit.tool;
+    let mods = ui.input(|i| i.modifiers);
+    let Some(p) = resp.interact_pointer_pos().or_else(|| resp.hover_pos()) else { return };
+    let at = sample_at(&s, tl, p.x).max(0);
+    let origin = if resp.drag_started() { ui.input(|i| i.pointer.press_origin()).unwrap_or(p) } else { p };
+    let at_origin = sample_at(&s, tl, origin.x).max(0);
+    let auto_view = AutoParam::parse(&track.view);
+    let inp = LaneInput { track, lane, tl, s: &s, tool, origin, at_origin, auto_view };
+    let hits = hit_test(&inp);
+    let eff = effective_tool(&inp, &hits);
+    if resp.hovered() {
+        let icon = match eff {
+            Tool::Trim => egui::CursorIcon::ResizeHorizontal,
+            Tool::Grabber => egui::CursorIcon::Grab,
+            Tool::Selector => egui::CursorIcon::Text,
+            Tool::Zoom => egui::CursorIcon::ZoomIn,
+            Tool::Pencil => egui::CursorIcon::Crosshair,
+            _ => egui::CursorIcon::Default,
+        };
+        ui.ctx().set_cursor_icon(icon);
+    }
+    let fade_corner = fade_corner_at(&inp, &hits);
+    let curve_handle = hits.curve_handle;
+    if fade_corner.is_some() && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    }
+    if curve_handle.is_some() && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    let gain_icon_at = |q: Pos2| {
+        let c = clip_at(track, sample_at(&s, tl, q.x).max(0)).filter(|_| inp.auto_view.is_none())?;
+        clip_gain_icon(&s, tl, lane, c).filter(|r| r.contains(q)).map(|_| c.clone())
+    };
+    if resp.hovered() && gain_icon_at(p).is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    let selector_press = eff == Tool::Selector && fade_corner.is_none() && curve_handle.is_none() && gain_icon_at(origin).is_none();
+    if selector_press && resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
+        place_insertion(app, ui, &s, track.id, at, mods.shift);
+    }
+    let gain_drag = if resp.drag_started() { gain_icon_at(origin) } else { None };
+    let cx = LaneCtx { inp, hits, mods, p, at, eff, fade_corner, selector_press };
+    start_gesture(app, ui, &cx, &resp, gain_drag);
+    drag_clip_gain(app, ui, &cx, &resp);
+    lane_click(app, ui, &cx, &resp);
 }
 
 fn place_insertion(app: &mut SoundApp, ui: &Ui, s: &Session, track: TrackId, at: Samples, extend: bool) {
@@ -424,7 +512,9 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
         }
         return;
     };
-    let ids = json!([c.0]);
+    // A clip of the edit selection acts on the whole selection (the commands default to it); any other clip acts alone.
+    let in_selection = clip_in_selection(app.engine.session(), c);
+    let target = if in_selection { json!({}) } else { json!({"clips": [c.0]}) };
     for (label, cmd) in [
         ("Mute/Unmute", "edit.mute_clips"),
         ("Edit Lock/Unlock", "clip.edit_lock"),
@@ -435,7 +525,7 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
         ("Send to Back", "clip.send_to_back"),
     ] {
         if ui.button(label).clicked() {
-            let _ = app.run(cmd, json!({"clips": ids}));
+            let _ = app.run(cmd, target.clone());
         }
     }
     ui.separator();
@@ -444,7 +534,28 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
         app.dialogs.open_rename_clip(c, &name);
     }
     if ui.button("Delete").clicked() {
-        let _ = app.run("edit.select", json!({"clips": ids}));
-        let _ = app.run("edit.clear", json!({}));
+        let s = app.engine.session();
+        let selected: Vec<u64> = s.edit.selected_clips.iter().map(|id| id.0).collect();
+        let track: Vec<u64> = s.find_clip(c).map(|(t, _)| t.0).into_iter().collect();
+        if !in_selection {
+            let _ = app.run("edit.select", json!({"clips": [c.0]}));
+            let _ = app.run("edit.clear", json!({}));
+        } else if selected.is_empty() {
+            let _ = app.run("edit.clear", json!({}));
+        } else {
+            // Selected clips go by id (an empty range), so clips between them that the span covers stay. The clicked
+            // clip's track satisfies Clear's track check even when the track selection was emptied meanwhile.
+            let _ = app.run("edit.clear", json!({"clips": selected, "tracks": track, "start": 0}));
+        }
     }
+}
+
+/// Whether `c` is part of the edit selection: one of the selected clips or, when no clip is selected, a clip on a
+/// selected track that the selected range overlaps. An insertion point selects nothing.
+fn clip_in_selection(s: &Session, c: ClipId) -> bool {
+    let ed = &s.edit;
+    if !ed.selected_clips.is_empty() {
+        return ed.selected_clips.contains(&c);
+    }
+    !ed.selection.is_empty() && s.find_clip(c).is_some_and(|(t, clip)| ed.selected_tracks.contains(&t) && clip.range().overlaps(&ed.selection))
 }

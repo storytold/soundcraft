@@ -1,5 +1,5 @@
 use super::callback::{AudioState, Fault, guarded_block};
-use super::*;
+use super::{Arc, AudioConfig, Cmd, Ordering, Plugin, Receiver, Sender, Shared, devices, mark_audio_thread};
 
 /// Start a freshly built output stream. `false` when the device refuses to start it, so the caller
 /// treats it like a stream that failed to build and tries the next configuration.

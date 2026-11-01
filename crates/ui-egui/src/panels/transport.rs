@@ -1,4 +1,4 @@
-use super::*;
+use super::{Align2, Rect, Sense, SoundApp, Tokens, json, mono, pos2, vec2};
 
 pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_transport;

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Color32, Rect, SoundApp, TrackId, Ui, json, pos2, vec2};
 
 /// An insert's menu: a search field that takes typing at once, then (until something is typed)
 /// Bypass and removal and the plugins by category and format.

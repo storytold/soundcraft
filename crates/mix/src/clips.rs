@@ -1,4 +1,4 @@
-use super::*;
+use super::{Bound, Clip, ClipContent, Plugin, Range, Samples, Session, db_to_gain};
 
 /// Clip Effects: an EQ and a compressor per clip, configured from `edit.values`
 /// (`clip_fx.<clip>.eq.<param>`, `clip_fx.<clip>.comp.<param>`, `clip_fx.<clip>.gain`).
@@ -101,7 +101,7 @@ impl ClipFx {
                     c.set_param(p, v);
                 }
             } else if k == "gain" {
-                self.gain_db = v;
+                self.gain_db = if v.is_nan() { 0.0 } else { v.clamp(soundcraft_dsp::MIN_DB, crate::CLIP_FX_MAX_GAIN_DB) };
             }
         }
     }

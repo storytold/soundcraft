@@ -1,4 +1,4 @@
-use super::*;
+use super::{SoundApp, bold, mono, vec2};
 
 /// About window tabs for version information, contributors and models.
 pub(super) fn about(app: &mut SoundApp, ctx: &egui::Context) {

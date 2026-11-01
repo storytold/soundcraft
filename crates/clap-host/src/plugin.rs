@@ -1,6 +1,6 @@
 //! `ClapPlugin`: a loaded CLAP instance behind the safe `soundcraft_dsp::Plugin` trait.
 
-use crate::ffi::{EVENT_CAP, Event, GuiLink, Instance, NotePort, PortBuffers};
+use crate::ffi::{EVENT_CAP, Event, GuiLink, Instance, NotePort, PortBuffers, ProcessInput};
 use clap_sys::ext::note_ports::{CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI};
 use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport};
 use std::sync::Arc;
@@ -231,7 +231,15 @@ impl Plugin for ClapPlugin {
             let k = self.queue.iter().position(|e| e.time() >= end).unwrap_or(self.queue.len());
             let offset = u32::try_from(start).unwrap_or(u32::MAX);
             let events = self.queue.get(..k).unwrap_or(&[]);
-            let r = self.inst.process(n, self.steady, &mut self.inputs, &mut self.outputs, events, offset, self.transport.as_ref());
+            let r = self.inst.process(ProcessInput {
+                frames: n,
+                steady_time: self.steady,
+                inputs: &mut self.inputs,
+                outputs: &mut self.outputs,
+                events,
+                offset,
+                transport: self.transport.as_ref(),
+            });
             self.queue.drain(..k);
             self.steady = self.steady.saturating_add(i64::try_from(n).unwrap_or(0));
             match (r, self.out_main) {

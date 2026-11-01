@@ -1,4 +1,4 @@
-use super::*;
+use super::{SoundApp, json, sampler_window};
 
 impl SoundApp {
     /// Feed queued synthetic input (from the control channel) into egui: one pointer event per
@@ -139,18 +139,22 @@ impl SoundApp {
         }
         let mut claimed = false;
         for (file, pos) in std::mem::take(&mut self.pending_drops) {
-            let path = file.path().to_string_lossy().into_owned();
             // As before, one dropped audio file goes to the sampler under the pointer; the rest
             // are left to the shell.
-            let claim = !claimed && sampler_window::is_audio_name(&path);
+            let claim = !claimed && sampler_window::is_audio_name(file.path());
             let Some(track) = self.drop_track(pos).filter(|_| claim) else {
                 self.host_drops.push(file);
                 continue;
             };
             claimed = true;
             if file.path().is_absolute() {
-                let r = self.run("mix.sampler_load", json!({"track": track.0, "path": path}));
-                self.sample_loaded(track, &path, r);
+                match crate::dialogs::unicode(file.path()) {
+                    Ok(path) => {
+                        let r = self.run("mix.sampler_load", json!({"track": track.0, "path": path}));
+                        self.sample_loaded(track, path, r);
+                    }
+                    Err(e) => self.ui.status = e.to_string(),
+                }
             } else {
                 self.sample_reads.push(sampler_window::SampleRead { track, file });
             }
