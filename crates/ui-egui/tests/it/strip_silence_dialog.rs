@@ -91,6 +91,34 @@ fn enter_on_a_focused_cancel_closes_the_dialog_and_strips_nothing() {
 }
 
 #[test]
+fn enter_right_after_switching_between_strip_silence_and_rename_presses_the_new_default_button() {
+    let (mut h, _, _) = strip_silence_dialog();
+    let enter = |h: &mut Harness<'static, SoundApp>| {
+        for pressed in [true, false] {
+            h.event(Event::Key { key: Key::Enter, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+        }
+    };
+    h.get_by_role_and_label(Role::Button, "Rename…").focus();
+    h.run_steps(2);
+    enter(&mut h);
+    h.run_steps(1);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence_rename"));
+    enter(&mut h);
+    h.run_steps(2);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "the next Enter presses OK in Rename Selected Clips");
+    h.get_by_role_and_label(Role::Button, "Rename…").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Button, "OK").focus();
+    h.run_steps(2);
+    enter(&mut h);
+    h.run_steps(1);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"));
+    enter(&mut h);
+    h.run_steps(2);
+    assert_eq!(h.state().dialogs.open_name(), None, "the next Enter presses Strip in Strip Silence");
+}
+
+#[test]
 fn strip_silence_strip_removes_the_silence() {
     let (mut h, track, before) = strip_silence_dialog();
     h.get_by_role_and_label(Role::Button, "Strip").click();
