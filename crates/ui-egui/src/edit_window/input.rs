@@ -1,5 +1,5 @@
 use super::automation::{automation_id, breakpoint_at, plugin_range, shown_automation};
-use super::clips::{clip_name_height, fade_control_position};
+use super::clips::fade_control_position;
 use super::drag::{drag_snap, fade_curve_drag_value, fade_drag_range, spot_or_run};
 use super::layout::{sample_at, x_of};
 use super::{
@@ -23,7 +23,7 @@ fn fade_handle_at(s: &Session, tl: Rect, lane: Rect, clip: &Clip, p: Pos2) -> Op
     if clip.length <= 0 || clip.end() <= clip.start {
         return None;
     }
-    let y = lane.min.y + 1.0 + clip_name_height(s, lane);
+    let y = lane.min.y + 1.0;
     [(true, clip.fade_in), (false, clip.fade_out)]
         .into_iter()
         .filter(|(_, fade)| fade.len > 0)
@@ -54,7 +54,7 @@ pub(super) fn fade_midpoint(s: &Session, tl: Rect, lane: Rect, clip: &Clip, fade
     if b - a < 32.0 {
         return None;
     }
-    let body = Rect::from_min_max(pos2(a, lane.min.y + 1.0 + clip_name_height(s, lane)), pos2(b, lane.max.y - 1.0));
+    let body = Rect::from_min_max(pos2(a, lane.min.y + 1.0), pos2(b, lane.max.y - 1.0));
     let p = fade_control_position(fade, a, b, body);
     lane.contains(p).then_some(p)
 }
@@ -276,7 +276,7 @@ fn start_gesture(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::
     {
         let fade = if fade_in { c.fade_in } else { c.fade_out };
         let anchor = (origin.y, fade.gain(0.5));
-        let height = (lane.height() - 2.0 - clip_name_height(s, lane)).max(1.0);
+        let height = (lane.height() - 2.0).max(1.0);
         app.gesture = Some(Gesture::FadeCurve { clip: c.id, fade_in, curvature: fade_curve_drag_value(fade, anchor, height, p.y), anchor, height });
         ui.ctx().request_repaint();
     } else if resp.drag_started()

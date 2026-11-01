@@ -2,9 +2,10 @@ use super::drag::fade_drag_preview;
 use super::input::{clip_gain_icon, near_fade_midpoint};
 use super::layout::{sample_at, x_of};
 use super::{
-    Align2, AutoParam, Clip, ClipContent, Color32, CornerRadius, Gesture, GridValue, NoteValue, Pos2, Range, Rect, Session, Shape, SoundApp, Stroke,
-    StrokeKind, TimeFormat, Tokens, Tool, Track, bold, clip_colors, format_position, pos2, regular, vec2,
+    Align2, AutoParam, Clip, ClipContent, Color32, CornerRadius, Gesture, GridValue, NoteValue, Pos2, Range, Rect, Samples, Session, Shape, SoundApp,
+    Stroke, StrokeKind, TimeFormat, Tokens, Tool, Track, bold, clip_colors, format_position, pos2, regular, vec2,
 };
+use std::sync::Arc;
 
 /// The outline of the Strip Silence rectangles.
 pub fn strip_silence_stroke() -> Stroke {
@@ -51,8 +52,9 @@ pub(super) fn grid_lines(painter: &egui::Painter, s: &Session, tl: Rect, lane: R
     }
 }
 
-pub(super) fn clip_name_height(s: &Session, lane: Rect) -> f32 {
-    if lane.height() >= 40.0 && s.edit.flag("view.clip.name") { 13.0 } else { 0.0 }
+/// Whether clips show their name (View › Clip › Name) in a lane tall enough to carry it.
+pub(super) fn clip_name_shown(s: &Session, lane: Rect) -> bool {
+    lane.height() >= 40.0 && s.edit.flag("view.clip.name")
 }
 
 pub(super) fn fade_curve_points(fade: soundcraft_model::Fade, fade_in: bool, a: f32, b: f32, body: Rect, pixels_per_point: f32) -> Vec<Pos2> {
@@ -162,7 +164,6 @@ struct ClipGeom<'a> {
     vis: Rect,
     x0: f32,
     x1: f32,
-    name_h: f32,
     body: Color32,
     wave: Color32,
     selected: bool,
@@ -170,48 +171,44 @@ struct ClipGeom<'a> {
     fade_in: soundcraft_model::Fade,
     fade_out: soundcraft_model::Fade,
     prev: Option<&'a Clip>,
+    /// How the clip meets its neighbours in its playlist (see [`clip_cuts`]).
+    cut: ClipCut,
 }
 
-pub(super) fn draw_clip(cl: &ClipLane<'_>, clip: &Clip, dim: bool) {
+/// `cut`: how the clip meets its neighbours in its playlist (see [`clip_cuts`]).
+pub(super) fn draw_clip(cl: &ClipLane<'_>, clip: &Clip, cut: ClipCut, dim: bool) {
     let ClipLane { app, painter, s, track, tl, lane, .. } = *cl;
-    let x0 = x_of(s, tl, clip.start);
-    let x1 = x_of(s, tl, clip.end()).max(x0 + 1.0);
-    let r = Rect::from_min_max(pos2(x0, lane.min.y + 1.0), pos2(x1, lane.max.y - 1.0));
+    let r = clip_rect(s, tl, lane, clip);
+    let (x0, x1) = (r.min.x, r.max.x);
     let selected = s.edit.selected_clips.contains(&clip.id)
         || (s.edit.selected_tracks.contains(&track.id)
             && !s.edit.selection.is_empty()
             && s.edit.selection.start <= clip.start
             && s.edit.selection.end >= clip.end());
     let color = clip.color.unwrap_or(track.color);
-    let (mut body, bar, mut wave) = clip_colors(color, selected);
+    let (mut body, _, mut wave) = clip_colors(color, selected);
     if clip.muted || dim {
         body = body.gamma_multiply(0.45);
         wave = Color32::from_rgb(70, 70, 70);
     }
     let body = if s.edit.flag("view.clip.transparency") { body.gamma_multiply(0.55) } else { body };
-    painter.rect(r, CornerRadius::same(2), body, Stroke::new(1.0, Color32::from_rgb(10, 10, 10)), StrokeKind::Inside);
-    let name_h = clip_name_height(s, lane);
-    if name_h > 0.0 {
-        let nb = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + name_h));
-        painter.rect_filled(nb, CornerRadius { nw: 2, ne: 2, sw: 0, se: 0 }, if clip.muted { Color32::from_rgb(70, 70, 70) } else { bar });
-        let name_clip = nb.intersect(lane);
-        // Narrower than this, no glyph would show: the name starts 4 points in.
-        if name_clip.width() > 6.0 {
-            painter.with_clip_rect(name_clip).text(
-                pos2(nb.min.x.max(lane.min.x) + 4.0, nb.center().y),
-                Align2::LEFT_CENTER,
-                &clip.name,
-                bold(10.5),
-                Color32::from_rgb(12, 12, 12),
-            );
-        }
+    let corners = cut.corners();
+    let outline = Stroke::new(1.0, CLIP_OUTLINE);
+    if cut.right {
+        // The cut's single line is drawn by the next clip: stroke past our right edge and clip it away.
+        painter.rect_filled(r, corners, body);
+        let past = Rect::from_min_max(r.min, pos2(r.max.x + 2.0, r.max.y));
+        painter.with_clip_rect(painter.clip_rect().intersect(r)).rect_stroke(past, corners, outline, StrokeKind::Inside);
+    } else {
+        painter.rect(r, corners, body, outline, StrokeKind::Inside);
     }
-    let body_r = Rect::from_min_max(pos2(r.min.x, r.min.y + name_h), r.max);
+    // The body is the whole clip: the name is a small pill drawn over it (see `draw_clip_pills`).
+    let body_r = r;
     let vis = body_r.intersect(lane);
     // The waveform and fade curve share the same temporary envelope every frame.
     let (fade_in, fade_out) = clip_preview_fades(clip, app.gesture.as_ref().filter(|_| !dim));
     let prev = crossfade_partner(track, clip);
-    let g = ClipGeom { r, body_r, vis, x0, x1, name_h, body, wave, selected, dim, fade_in, fade_out, prev };
+    let g = ClipGeom { r, body_r, vis, x0, x1, body, wave, selected, dim, fade_in, fade_out, prev, cut };
     draw_clip_content(cl, clip, &g);
     draw_crossfade_tail(cl, &g);
     draw_gain_line(cl, clip, &g);
@@ -368,12 +365,9 @@ fn draw_fades(cl: &ClipLane<'_>, clip: &Clip, g: &ClipGeom<'_>) {
 /// Optional clip overlays (View › Clip).
 fn draw_clip_overlays(cl: &ClipLane<'_>, clip: &Clip, g: &ClipGeom<'_>) {
     let ClipLane { painter, s, track, sorted, tl, lane, .. } = *cl;
-    let ClipGeom { r, name_h, .. } = *g;
+    let ClipGeom { r, cut, .. } = *g;
     // Optional clip overlays (View › Clip).
     let ov = Color32::from_rgb(16, 16, 16);
-    if s.edit.flag("view.clip.rating") && clip.rating > 0 && name_h > 0.0 {
-        painter.text(pos2(r.max.x - 18.0, r.min.y + 7.0), Align2::RIGHT_CENTER, "★".repeat(usize::from(clip.rating.min(5))), regular(9.0), ov);
-    }
     if s.edit.flag("view.clip.sync_point") && clip.sync_point > 0 {
         let x = x_of(s, tl, clip.start + clip.sync_point);
         painter.add(Shape::convex_polygon(
@@ -381,7 +375,7 @@ fn draw_clip_overlays(cl: &ClipLane<'_>, clip: &Clip, g: &ClipGeom<'_>) {
             Color32::WHITE,
             Stroke::NONE,
         ));
-        painter.line_segment([pos2(x, r.min.y + name_h), pos2(x, r.max.y)], Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 90)));
+        painter.line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 90)));
     }
     let time_text = clip_time_text(s, clip);
     if let Some(tt) = time_text
@@ -410,8 +404,13 @@ fn draw_clip_overlays(cl: &ClipLane<'_>, clip: &Clip, g: &ClipGeom<'_>) {
             }
         }
     }
-    if clip.edit_locked || clip.time_locked {
-        painter.text(pos2(r.max.x - 10.0, r.min.y + 7.0), Align2::CENTER_CENTER, "🔒", regular(9.0), Color32::WHITE);
+    // Video clips get their pills from `video_track::draw_lane`, after their thumbnails.
+    if !clip.is_video() {
+        draw_clip_labels(painter, s, tl, lane, clip);
+    }
+    if cut.left {
+        // The cut's one line, on top of the waveform so it runs the full height.
+        painter.rect_filled(Rect::from_min_size(r.min, vec2(1.0, r.height())), 0.0, CLIP_OUTLINE);
     }
 }
 
@@ -433,6 +432,168 @@ fn clip_time_text(s: &Session, clip: &Clip) -> Option<String> {
         })
     } else {
         None
+    }
+}
+
+/// Where a clip sits in its lane: one point in from the lane's top and bottom, at least one point wide.
+pub(super) fn clip_rect(s: &Session, tl: Rect, lane: Rect, clip: &Clip) -> Rect {
+    let x0 = x_of(s, tl, clip.start);
+    let x1 = x_of(s, tl, clip.end()).max(x0 + 1.0);
+    Rect::from_min_max(pos2(x0, lane.min.y + 1.0), pos2(x1, lane.max.y - 1.0))
+}
+
+/// The pills of `clip` (name, marks). Drawn right after the clip itself, so clips and overlays drawn later cover them.
+pub(crate) fn draw_clip_labels(painter: &egui::Painter, s: &Session, tl: Rect, lane: Rect, clip: &Clip) {
+    let r = clip_rect(s, tl, lane, clip);
+    if r.max.x < lane.min.x || r.min.x > lane.max.x {
+        return;
+    }
+    let show_name = clip_name_shown(s, lane);
+    let marks = clip_marks(clip, s.edit.flag("view.clip.rating"));
+    draw_clip_pills(painter, lane, r, show_name.then_some(clip.name.as_str()), &marks);
+}
+
+/// The marks a clip carries at its top-right: its star rating and a lock when edit- or time-locked.
+pub(super) fn clip_marks(clip: &Clip, show_rating: bool) -> String {
+    let mut marks = if show_rating && clip.rating > 0 { "★".repeat(usize::from(clip.rating.min(5))) } else { String::new() };
+    if clip.edit_locked || clip.time_locked {
+        if !marks.is_empty() {
+            marks.push(' ');
+        }
+        marks.push('🔒');
+    }
+    marks
+}
+
+/// Gap between a pill and the clip outline's inner edge (so the pill sits 1 pt inside the outline).
+pub(super) const PILL_INSET: f32 = 2.0;
+pub(super) const PILL_HEIGHT: f32 = 13.0;
+/// Horizontal padding between a pill's edge and its text.
+pub(super) const PILL_PAD: f32 = 3.0;
+/// The narrowest name pill worth drawing: its padding plus about one letter.
+pub(super) const PILL_MIN_WIDTH: f32 = 12.0;
+/// Half-transparent black behind white text, readable on the light and the dark clip bodies alike.
+pub(super) const PILL_BG: Color32 = Color32::from_black_alpha(125);
+
+/// Width of the name pill: the text plus its padding, capped to the `room` the clip leaves it (the text is then
+/// cut cleanly at the pill's edge, with no ellipsis). `None` when there is no room for anything useful.
+pub(super) fn name_pill_width(room: f32, text_w: f32) -> Option<f32> {
+    if room.is_nan() || room < PILL_MIN_WIDTH {
+        return None;
+    }
+    Some((text_w.max(0.0) + 2.0 * PILL_PAD).min(room))
+}
+
+/// Left edge of the marks pill, which sits at the clip's top-right: `None` when the clip is too narrow to hold it
+/// (it would veil the clip), where `left` is the leftmost x a pill may use.
+pub(super) fn marks_pill_left(left: f32, clip_right: f32, w: f32) -> Option<f32> {
+    let x = clip_right - PILL_INSET - w;
+    (x >= left).then_some(x)
+}
+
+/// The clip's name as a small rounded pill at its top-left, and its marks (rating, lock) as a matching pill at the
+/// top-right. The name keeps clear of the marks and floats to the left edge of the lane when the clip starts
+/// off-screen, so it stays readable while scrolling.
+fn draw_clip_pills(painter: &egui::Painter, lane: Rect, r: Rect, name: Option<&str>, marks: &str) {
+    let p = painter.with_clip_rect(painter.clip_rect().intersect(r));
+    let pill = |rect: Rect, galley: Arc<egui::Galley>| {
+        p.rect_filled(rect, CornerRadius::same(3), PILL_BG);
+        let at = pos2(rect.min.x + PILL_PAD, rect.center().y - galley.size().y * 0.5);
+        p.with_clip_rect(p.clip_rect().intersect(rect)).galley(at, galley, Color32::WHITE);
+    };
+    let top = r.min.y + PILL_INSET;
+    let left = r.min.x.max(lane.min.x) + PILL_INSET;
+    let mut right = r.max.x.min(lane.max.x) - PILL_INSET;
+    if !marks.is_empty() {
+        let galley = p.layout_no_wrap(marks.to_owned(), regular(9.0), Color32::WHITE);
+        let w = galley.size().x + 2.0 * PILL_PAD;
+        if let Some(x) = marks_pill_left(left, r.max.x, w) {
+            right = right.min(x - PILL_INSET);
+            pill(Rect::from_min_size(pos2(x, top), vec2(w, PILL_HEIGHT)), galley);
+        }
+    }
+    // No layout where no pill fits: zoomed out on a large session, most clips are too narrow.
+    if let Some(name) = name.filter(|n| !n.is_empty() && right - left >= PILL_MIN_WIDTH) {
+        let galley = p.layout_no_wrap(name.to_owned(), bold(10.0), Color32::WHITE);
+        if let Some(w) = name_pill_width(right - left, galley.size().x) {
+            pill(Rect::from_min_size(pos2(left, top), vec2(w, PILL_HEIGHT)), galley);
+        }
+    }
+}
+
+/// The 1 pt outline around a clip.
+const CLIP_OUTLINE: Color32 = Color32::from_rgb(10, 10, 10);
+
+/// How a clip meets its neighbours in the playlist. Two clips butted at a cut share ONE 1 pt line, as in
+/// the incumbent: the later clip draws it (its left edge), the earlier one drops its right edge, and both
+/// sides of the cut have square corners. A gap or an overlap leaves the clip drawn on its own.
+/// Selection only recolours the body, so it never changes which edges are drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct ClipCut {
+    /// Starts exactly where the clip before it ends.
+    pub(super) left: bool,
+    /// Ends exactly where the clip after it starts.
+    pub(super) right: bool,
+}
+
+impl ClipCut {
+    /// The body's corners: square on a side that meets another clip, rounded otherwise.
+    pub(super) fn corners(self) -> CornerRadius {
+        let (nw, ne) = (if self.left { 0 } else { 2 }, if self.right { 0 } else { 2 });
+        CornerRadius { nw, ne, sw: nw, se: ne }
+    }
+}
+
+/// The cut of the clip spanning `start..end`, given the `(start, end)` of every other clip of its playlist, in any
+/// order (a playlist's order is its stacking order, not its time order). A side is butted when another clip ends
+/// (or starts) exactly there and no third clip covers that point.
+pub(super) fn clip_cut(start: Samples, end: Samples, others: impl IntoIterator<Item = (Samples, Samples)>) -> ClipCut {
+    // An empty clip has no span to share a line with.
+    if end <= start {
+        return ClipCut::default();
+    }
+    let (mut left, mut right, mut left_covered, mut right_covered) = (false, false, false, false);
+    for (s, e) in others.into_iter().filter(|(s, e)| e > s) {
+        left |= e == start;
+        right |= s == end;
+        left_covered |= s < start && start < e;
+        right_covered |= s < end && end < e;
+    }
+    ClipCut { left: left && !left_covered, right: right && !right_covered }
+}
+
+/// [`clip_cut`] for `clip` among its playlist's `clips`, scanning them all.
+pub(super) fn clip_cut_in(clips: &[Clip], clip: &Clip) -> ClipCut {
+    clip_cut(clip.start, clip.end(), clips.iter().filter(|c| c.id != clip.id).map(|c| (c.start, c.end())))
+}
+
+/// [`clip_cut`] for each clip of a playlist. Sorted by start (the usual case), one pass over the playlist and two
+/// binary searches per clip, so large sessions do no per-clip scan every frame; unsorted, a scan per clip.
+pub(super) fn clip_cuts(clips: &[Clip]) -> impl Fn(&Clip) -> ClipCut + '_ {
+    // reach[k]: the furthest end of the first k clips (empty clips reach nothing).
+    let reach: Option<Vec<Samples>> = clips.is_sorted_by_key(|c| c.start).then(|| {
+        std::iter::once(Samples::MIN)
+            .chain(clips.iter().scan(Samples::MIN, |far, c| {
+                if c.end() > c.start {
+                    *far = (*far).max(c.end());
+                }
+                Some(*far)
+            }))
+            .collect()
+    });
+    move |clip| {
+        let Some(reach) = &reach else { return clip_cut_in(clips, clip) };
+        let (start, end) = (clip.start, clip.end());
+        if end <= start {
+            return ClipCut::default();
+        }
+        let reached = |k: usize| reach.get(k).copied().unwrap_or(Samples::MIN);
+        // Butted and uncovered on the left: the clips starting before it reach exactly its start. On the right: the
+        // clips starting before its end (itself included) reach exactly its end, and a clip starts there.
+        let before = clips.partition_point(|c| c.start < start);
+        let upto = clips.partition_point(|c| c.start < end);
+        let next = clips.get(upto..).unwrap_or_default().iter().take_while(|c| c.start == end).any(|c| c.end() > c.start);
+        ClipCut { left: reached(before) == start, right: next && reached(upto) == end }
     }
 }
 
