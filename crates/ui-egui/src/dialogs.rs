@@ -81,8 +81,6 @@ pub struct Dialogs {
     pub strip_names: StripNames,
     /// The Strip Silence rectangles the Edit window draws while Strip Silence is open.
     strip_rectangles: StripRectangles,
-    /// True while a dialog was drawn on the previous frame.
-    shown: bool,
 }
 
 impl Dialogs {
@@ -123,15 +121,15 @@ impl Dialogs {
     }
 
     pub fn open_rename_track(&mut self, id: TrackId, name: &str) {
-        self.set(Dialog::RenameTrack { id, name: name.to_string() });
+        self.open = Some(Dialog::RenameTrack { id, name: name.to_string() });
     }
 
     pub fn open_rename_clip(&mut self, id: ClipId, name: &str) {
-        self.set(Dialog::RenameClip { id, name: name.to_string() });
+        self.open = Some(Dialog::RenameClip { id, name: name.to_string() });
     }
 
     pub fn open_rename_marker(&mut self, id: soundcraft_model::MarkerId, name: &str) {
-        self.set(Dialog::RenameMarker { id, name: name.to_string() });
+        self.open = Some(Dialog::RenameMarker { id, name: name.to_string() });
     }
 
     /// Groups list › Modify Group…: the creation dialog, pre-filled from an existing group. False
@@ -140,22 +138,15 @@ impl Dialogs {
         let s = e.session();
         let Some(g) = s.group(id) else { return false };
         let members = s.tracks.iter().map(|t| (t.id.0, t.name.clone(), g.members.contains(&t.id))).collect();
-        self.set(Dialog::Group { id: Some(id), name: g.name.clone(), edit: g.edit, mix: g.mix, members });
+        self.open = Some(Dialog::Group { id: Some(id), name: g.name.clone(), edit: g.edit, mix: g.mix, members });
         true
     }
 
     /// Clip List › Clear: confirm before clips and files leave the session. False when there is nothing to clear.
     pub fn open_clear(&mut self, e: &Engine, clips: Vec<ClipId>, sources: Vec<SourceId>) -> bool {
         let Some(message) = clear_message(e.session(), &clips, &sources) else { return false };
-        self.set(Dialog::ClearClips { clips, sources, message });
+        self.open = Some(Dialog::ClearClips { clips, sources, message });
         true
-    }
-
-    /// Opens `d` in place of any open dialog. Its first frame clears the keyboard focus and ignores Enter, as for a
-    /// dialog opened when none was open.
-    fn set(&mut self, d: Dialog) {
-        self.open = Some(d);
-        self.shown = false;
     }
 
     /// Clip List › Auto Rename: the clips' naming scheme, filled in from the first clip's. False
@@ -164,7 +155,7 @@ impl Dialogs {
         let s = e.session();
         let Some((_, first)) = clips.iter().find_map(|id| s.find_clip(*id)) else { return false };
         let names = first.auto_name.and_then(|k| s.auto_names.get(&k)).map_or_else(StripNames::default, StripNames::from);
-        self.set(Dialog::AutoRename { clips, names });
+        self.open = Some(Dialog::AutoRename { clips, names });
         true
     }
 
@@ -173,7 +164,7 @@ impl Dialogs {
         self.after_save = None;
         let home = default_dir();
         let name = e.session().name.clone();
-        let d = match id {
+        self.open = Some(match id {
             "clip.clear" => {
                 let ed = &e.session().edit;
                 return self.open_clear(e, ed.selected_clips.clone(), ed.selected_sources.clone());
@@ -260,8 +251,7 @@ impl Dialogs {
                 Some(d) => d,
                 None => return false,
             },
-        };
-        self.set(d);
+        });
         true
     }
 }
@@ -479,16 +469,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     if !matches!(app.dialogs.open, Some(Dialog::StripSilence { .. } | Dialog::StripSilenceRename { .. })) {
         app.dialogs.strip_rectangles = StripRectangles::default();
     }
-    let Some(mut d) = app.dialogs.open.take() else {
-        app.dialogs.shown = false;
-        return;
-    };
-    // On the first frame a dialog is drawn, clear the keyboard focus a widget outside it may still hold, and ignore Enter:
-    // an Enter in that frame is the one that opened the dialog from a menu item or the command palette.
-    let first_frame = !std::mem::replace(&mut app.dialogs.shown, true);
-    if first_frame {
-        ctx.memory_mut(|m| m.stop_text_input());
-    }
+    let Some(mut d) = app.dialogs.open.take() else { return };
     let mut keep = true;
     let mut action: Option<(String, Value)> = None;
     let mut save_first: Option<(String, Value)> = None;
@@ -521,11 +502,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::SaveChanges { .. } => "Unsaved Changes",
     }
     .to_string();
-    // egui treats Enter on a focused button, checkbox, radio button or combo box as a click, so Enter presses the default
-    // button only when no widget has the keyboard focus or a text field has it. A held Enter's repeats do not press it.
-    let fresh_enter =
-        |i: &egui::InputState| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, .. }));
-    let enter = !first_frame && ctx.input(fresh_enter) && (ctx.memory(|m| m.focused().is_none()) || ctx.text_edit_focused());
+    let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
     let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     egui::Window::new(egui::RichText::new(&title).font(bold(13.0)))
         .collapsible(false)
