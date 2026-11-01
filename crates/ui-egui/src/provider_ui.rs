@@ -226,7 +226,9 @@ mod provider_routing_tests {
             app.engine.acknowledge_external_save(app.engine.session_arc());
             let ctx = egui::Context::default();
             assert!(can_replace_session(&app, &ctx), "the fixture starts with a replaceable clean session");
-            let directory = tempfile::tempdir().unwrap();
+            let directory = std::env::temp_dir().join(format!("soundcraft-provider-open-{}-{pending}", std::process::id()));
+            // create_dir refuses an existing path: cleanup below only owns this fixture's directory.
+            std::fs::create_dir(&directory).unwrap();
             let track = app.engine.session().tracks[0].id;
             match pending {
                 "dirty" => {
@@ -238,7 +240,7 @@ mod provider_routing_tests {
                 "recording" => app.engine.transport.recording = true,
                 "import" => crate::import::start(&mut app, json!({"path":"queued-audio.wav"})),
                 "bounce" => {
-                    let path = directory.path().join("pending.wav");
+                    let path = directory.join("pending.wav");
                     app.bounce = Some(soundcraft_engine::cmd::bounce_job(&app.engine, &json!({"path":path})).unwrap());
                 }
                 "dialog" => {
@@ -271,6 +273,9 @@ mod provider_routing_tests {
                 "save" => assert!(app.services.file_providers.pending_for(epoch)),
                 _ => assert!(app.engine.is_dirty()),
             }
+            // Bounce's Drop removes its unfinished part file before removing the empty directory.
+            drop(app);
+            std::fs::remove_dir(directory).unwrap();
         }
     }
 
