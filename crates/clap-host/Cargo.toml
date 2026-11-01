@@ -22,6 +22,7 @@ name = "editor_main_thread"
 harness = false
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+soundcraft-plugin-scan.workspace = true
 clap-sys = "0.5"
 libloading = "0.9"
 

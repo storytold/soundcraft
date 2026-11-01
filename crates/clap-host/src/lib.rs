@@ -54,7 +54,7 @@ pub fn parse_id(id: &str) -> Option<&str> {
 }
 
 /// One plugin found by a scan.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ClapDescriptor {
     /// SoundCraft id: `clap:<plugin_id>`.
     pub id: String,
@@ -99,6 +99,39 @@ mod api {
     pub fn rescan() -> Vec<ClapDescriptor> {
         registry::rescan()
     }
+    pub fn set_cache_file(file: Option<PathBuf>) {
+        registry::set_cache_file(file)
+    }
+    pub fn scan_in_background() {
+        registry::scan_in_background()
+    }
+    pub fn rescan_in_background(clear_cache: bool) {
+        registry::rescan_in_background(clear_cache)
+    }
+    pub fn scanning() -> bool {
+        registry::scanning()
+    }
+    pub fn search_dirs() -> (Vec<PathBuf>, Vec<PathBuf>) {
+        registry::search_dirs()
+    }
+    pub fn set_extra_dirs(dirs: Vec<PathBuf>) {
+        registry::set_extra_dirs(dirs)
+    }
+    pub fn problems() -> Vec<(PathBuf, String)> {
+        registry::problems()
+    }
+    pub fn progress() -> Option<(usize, usize, PathBuf)> {
+        registry::progress()
+    }
+    pub fn set_scanner(program: Option<PathBuf>) {
+        registry::set_scanner(program)
+    }
+    pub fn scan_reply(file: &Path) -> String {
+        registry::scan_reply(file)
+    }
+    pub fn skip_scan() {
+        registry::skip_scan()
+    }
     pub fn add_search_dir(dir: &Path) -> usize {
         registry::add_search_dir(dir)
     }
@@ -129,6 +162,27 @@ mod api {
     pub fn rescan() -> Vec<ClapDescriptor> {
         Vec::new()
     }
+    pub fn set_cache_file(_file: Option<PathBuf>) {}
+    pub fn scan_in_background() {}
+    pub fn rescan_in_background(_clear_cache: bool) {}
+    pub fn scanning() -> bool {
+        false
+    }
+    pub fn search_dirs() -> (Vec<PathBuf>, Vec<PathBuf>) {
+        (Vec::new(), Vec::new())
+    }
+    pub fn set_extra_dirs(_dirs: Vec<PathBuf>) {}
+    pub fn problems() -> Vec<(PathBuf, String)> {
+        Vec::new()
+    }
+    pub fn progress() -> Option<(usize, usize, PathBuf)> {
+        None
+    }
+    pub fn set_scanner(_program: Option<PathBuf>) {}
+    pub fn scan_reply(_file: &Path) -> String {
+        String::new()
+    }
+    pub fn skip_scan() {}
     pub fn add_search_dir(_dir: &Path) -> usize {
         0
     }
@@ -148,14 +202,91 @@ mod api {
 
 /// Every plugin in the standard CLAP folders, `CLAP_PATH` and folders added with
 /// [`add_search_dir`]. Scanned on first call (loads each binary's entry, but creates no plugin
-/// instances), then cached in memory.
+/// instances), then cached in memory; with a [`set_cache_file`], only files that are new or
+/// changed since an earlier run are loaded. Waits for a scan that is running.
 pub fn scan() -> Vec<ClapDescriptor> {
     api::scan()
 }
 
-/// Forgets the cached scan (and remembered failures) and scans again.
+/// Forgets the cached scan (and remembered failures) and scans again, loading every file (the
+/// cache file is rewritten, not read).
 pub fn rescan() -> Vec<ClapDescriptor> {
     api::rescan()
+}
+
+/// Remembers scans in `file` across runs (a JSON file of what each plugin file held, keyed by
+/// its size and modification time), so that later scans load only new and changed files. `None`
+/// (the default) keeps scans in memory only. Set it before the first scan.
+pub fn set_cache_file(file: Option<PathBuf>) {
+    api::set_cache_file(file)
+}
+
+/// Starts [`scan`] on a background thread, unless the plugins are scanned or a scan thread runs
+/// already; [`cached`] has the result when it ends. Loading plugin files can take seconds (some
+/// load models or check licences), which a UI thread must not wait for.
+pub fn scan_in_background() {
+    api::scan_in_background()
+}
+
+/// Starts a fresh scan on a background thread (unless one runs): with `clear_cache`, every file
+/// is loaded again, as [`rescan`] does; without, only new and changed ones. [`cached`] is `None`
+/// until it ends.
+pub fn rescan_in_background(clear_cache: bool) {
+    api::rescan_in_background(clear_cache)
+}
+
+/// Whether a scan thread started by [`scan_in_background`] or [`rescan_in_background`] runs.
+pub fn scanning() -> bool {
+    api::scanning()
+}
+
+/// The folders scans look in: the standard ones for this system (with `CLAP_PATH`), then the
+/// ones added with [`set_extra_dirs`] or [`add_search_dir`].
+pub fn search_dirs() -> (Vec<PathBuf>, Vec<PathBuf>) {
+    api::search_dirs()
+}
+
+/// Replaces the folders scanned besides the standard ones. Takes effect at the next scan.
+pub fn set_extra_dirs(dirs: Vec<PathBuf>) {
+    api::set_extra_dirs(dirs)
+}
+
+/// The plugin files the last scan could not load, with the reason. They are not loaded again
+/// until they change or the cache is cleared ([`rescan`]).
+pub fn problems() -> Vec<(PathBuf, String)> {
+    api::problems()
+}
+
+/// The argument that makes the scan program set with [`set_scanner`] load one file:
+/// `<program> --scan-clap <file>`; the program then prints [`scan_reply`] and exits.
+pub const SCAN_FLAG: &str = "--scan-clap";
+
+/// Makes scans load each plugin file in a child process, `program` --scan-clap `<file>`, rather than in
+/// this one. A plugin's start-up then never runs here: on Windows a library initialising holds the
+/// loader lock, which stalls every thread here that loads a library or starts one (a window stays
+/// black while it lasts), and a plugin that crashes while loading takes only the child down. The
+/// scan's plugins are then loaded here only when first used. `None` (the default) loads in-process.
+pub fn set_scanner(program: Option<PathBuf>) {
+    api::set_scanner(program)
+}
+
+/// The answer of a scan child process (see [`set_scanner`]) for one CLAP file: a line with its
+/// plugins or the reason it failed, to print to standard output.
+pub fn scan_reply(file: &Path) -> String {
+    api::scan_reply(file)
+}
+
+/// The plugin file a scan is loading now: its index among the files found, their number and its
+/// path. `None` when no scan runs or it only reuses the cache file.
+pub fn progress() -> Option<(usize, usize, PathBuf)> {
+    api::progress()
+}
+
+/// Makes the running scan load no more files. It ends after the file it is loading (a plugin's
+/// own start-up cannot be interrupted); the plugins found so far are listed, and the files
+/// skipped are left out of the cache file, so the next scan loads them.
+pub fn skip_scan() {
+    api::skip_scan()
 }
 
 /// Adds a folder to the search path and merges its plugins into the cache. Returns how many

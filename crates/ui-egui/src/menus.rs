@@ -66,6 +66,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.midi_ops", "MIDI Operations", "", None),
     ("window.rtp", "MIDI Real-Time Properties", "", None),
     ("window.playback_engine", "Playback Engine", "", None),
+    ("window.plugin_folders", "Plug-in Folders", "", None),
     ("ui.audio_device", "Audio Device", "", None),
     ("window.io_setup", "I/O Setup", "", None),
     ("window.shortcuts", "Keyboard Shortcuts", "", None),
@@ -444,6 +445,7 @@ const MENU_WINDOWS: &[(&str, &str)] = &[
     ("Setup > Playback Engine...", "window.playback_engine"),
     ("Setup > I/O...", "window.io_setup"),
     ("Setup > Keyboard Shortcuts...", "window.shortcuts"),
+    ("Setup > Plug-in Folders...", "window.plugin_folders"),
     ("Setup > Session", "setup.session"),
     ("Event > Beat Detective", "window.beat_detective"),
     ("Event > Tempo Operations > Tempo Operations Window", "window.tempo_ops"),
@@ -587,6 +589,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         "window.midi_ops" => toggle(&mut app.ui.show_midi_ops),
         "window.rtp" => toggle(&mut app.ui.show_rtp),
         "window.playback_engine" => toggle(&mut app.ui.show_playback_engine),
+        "window.plugin_folders" => toggle(&mut app.ui.show_plugin_folders),
         "window.io_setup" => toggle(&mut app.ui.show_io_setup),
         "window.shortcuts" => toggle(&mut app.ui.show_shortcuts),
         "window.color_palette" => toggle(&mut app.ui.show_color_palette),
@@ -706,6 +709,11 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                         if let Err(error) = crate::docking::validate(&ns.docking).and_then(|()| crate::docking::validate_mix(&ns.mix_docking)) {
                             return Some(Err(error));
                         }
+                        // Plugin folders are loaded from at the next launch: only the user, in the
+                        // Plug-in Folders window, may change them, never the control channel or MCP.
+                        if ns.plugin_dirs != app.ui.plugin_dirs {
+                            return Some(Err("plugin folders can be changed only in Setup › Plug-in Folders".into()));
+                        }
                         crate::docking::cancel_replaced_state(app, &ns);
                         app.ui = ns;
                         json!({"ui": app.ui})
@@ -775,6 +783,22 @@ mod tests {
         assert!(app.dialogs.open.is_none());
         assert!(!app.engine.is_dirty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ui_set_cannot_change_the_plugin_folders() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        app.ui.plugin_dirs.vst3.push("C:/Mine".into());
+        let err = app.run("ui.set", json!({"plugin_dirs": {"vst3": ["C:/Elsewhere"]}})).unwrap_err();
+        assert!(err.contains("Plug-in Folders"), "{err}");
+        assert!(app.run("ui.set", json!({"plugin_dirs": {"clap": ["C:/Elsewhere"]}})).is_err());
+        assert_eq!(app.ui.plugin_dirs.vst3, ["C:/Mine"]);
+        assert!(app.ui.plugin_dirs.clap.is_empty());
+        // Setting the whole state back, as read, still works.
+        let state = serde_json::to_value(&app.ui).unwrap();
+        app.run("ui.set", state).unwrap();
+        app.run("ui.set", json!({"show_transport": true})).unwrap();
+        assert!(app.ui.show_transport);
     }
 
     #[test]
