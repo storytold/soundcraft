@@ -159,7 +159,12 @@ pub(crate) fn is_wav(b: &[u8]) -> bool {
 /// missing): the metadata of a finished file, not samples.
 fn only_chunks_follow(b: &[u8], from: usize) -> bool {
     let mut pos = from;
+    let mut chunks = 0usize;
     while pos < b.len() {
+        chunks += 1;
+        if chunks > 100_000 {
+            return false;
+        }
         let (Some(id), Some(size)) = (tag(b, pos), le_u32(b, pos + 4)) else { return false };
         if !id.iter().all(|c| (0x20..0x7f).contains(c)) {
             return false;
@@ -248,8 +253,10 @@ pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
             // A size of 0 in a file whose RIFF size is right and that has only chunks after it is an
             // empty data chunk followed by metadata (LIST, bext, …); otherwise it is a recording
             // that was never finalised, and what follows is audio.
-            let len = data_chunk_len(b, DataChunk { body, size32, is_rf64, remaining, declared });
+            // Only the first data chunk is used, so its length (and the linear walk that decides
+            // whether it is empty) is computed once.
             if data.is_none() {
+                let len = data_chunk_len(b, DataChunk { body, size32, is_rf64, remaining, declared });
                 data = Some((body, len));
             }
             if declared > remaining {
@@ -564,11 +571,28 @@ pub(crate) fn header(
 
 #[cfg(test)]
 mod tests {
-    use super::header;
+    use super::{header, parse};
 
     #[test]
     fn rejects_byte_rate_overflow() {
         let result = header(2, 1_100_000_000, (16, false), None, None, 0, false);
         assert!(result.is_err(), "overflowing byte rate was accepted");
+    }
+
+    #[test]
+    fn many_empty_data_chunks_parse_in_linear_time() {
+        let mut b = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0".to_vec();
+        b.extend_from_slice(&[1, 0, 1, 0, 0x80, 0xBB, 0, 0, 0, 0x77, 1, 0, 2, 0, 16, 0]);
+        for _ in 0..100_000 {
+            b.extend_from_slice(b"data\0\0\0\0");
+        }
+        for _ in 0..400_000 {
+            b.extend_from_slice(b"junk\0\0\0\0");
+        }
+        let n = u32::try_from(b.len() - 8).unwrap();
+        b[4..8].copy_from_slice(&n.to_le_bytes());
+        let t = std::time::Instant::now();
+        let _ = parse(&b);
+        assert!(t.elapsed() < std::time::Duration::from_secs(1), "{:?}", t.elapsed());
     }
 }
