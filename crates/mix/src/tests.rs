@@ -1315,3 +1315,82 @@ fn offline_renders_follow_a_latency_reported_after_the_first_block() {
         assert!(out.iter().flatten().all(|x| x.abs() < 1e-6), "{kind:?}: the tracks line up");
     }
 }
+
+/// An echo 1000 samples later whose memory survives `reset` and is cleared only by `prepare`,
+/// like a VST3 processor: its reset only flushes notes, and activating it again clears its audio.
+struct KeepsTail {
+    inner: Box<dyn Plugin>,
+    ring: Vec<Vec<f32>>,
+    pos: usize,
+}
+
+impl KeepsTail {
+    /// Prepared, as the host hands it over.
+    fn new() -> Self {
+        let mut p = KeepsTail { inner: soundcraft_dsp::create("gain").unwrap(), ring: Vec::new(), pos: 0 };
+        p.prepare(48_000.0, 512, 2);
+        p
+    }
+}
+
+impl Plugin for KeepsTail {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+        self.ring = vec![vec![0.0; 1000]; ch];
+        self.pos = 0;
+    }
+    fn reset(&mut self) {}
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        for i in 0..frames {
+            for (c, ring) in io.iter_mut().zip(&mut self.ring) {
+                let old = std::mem::replace(&mut ring[self.pos], c[i]);
+                c[i] += 0.5 * old;
+            }
+            self.pos = (self.pos + 1) % 1000;
+        }
+    }
+}
+
+/// Starting the first block over must not keep what the discarded pass left in an insert whose
+/// own reset keeps its audio (a VST3 tail), on any track.
+#[test]
+fn a_first_block_rendered_again_carries_nothing_from_the_discarded_pass() {
+    let mut s = Session::default();
+    s.edit.delay_compensation = true;
+    let n = 4096;
+    let mut clicks = vec![0.0f32; n];
+    for at in [100, 3000] {
+        clicks[at] = 0.25;
+    }
+    s.pool.insert(SourceId(903), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![clicks.clone(), clicks] })));
+    let mut tracks = Vec::new();
+    for slot in ["clap:test.late", "clap:test.tail"] {
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "clicks", SourceId(903), 0, 0, n as i64));
+        s.track_mut(t).unwrap().mixer.inserts[0] = Some(Insert::new(slot));
+        tracks.push(t);
+    }
+    let mut r = RangeRender::new(&s, None, Range::new(0, n as i64), 512);
+    r.engine().set_external_instances(true);
+    r.engine().adopt(vec![
+        PreparedInstance { track: tracks[0], slot: 0, id: "clap:test.late".into(), ch: 2, plugin: Box::new(LateLatency::new(240)) },
+        PreparedInstance { track: tracks[1], slot: 0, id: "clap:test.tail".into(), ch: 2, plugin: Box::new(KeepsTail::new()) },
+    ]);
+    let mut out = vec![Vec::new(); 2];
+    while let Some((chunk, k)) = r.next_block(&s) {
+        for (o, c) in out.iter_mut().zip(chunk) {
+            o.extend_from_slice(&c[..k]);
+        }
+    }
+    assert_eq!(impulse_at(&out[0]), vec![100, 1100, 3000, 4000], "the clicks and their echoes, and no echo of the first pass");
+}

@@ -89,10 +89,12 @@ impl RangeRender {
         let n = (self.total - self.done).min(self.eng.max_block());
         self.render(s, self.start + self.done as i64, n);
         // Hosted plugins may only find their latency once they process, and apply it when they
-        // are restarted. If one did on the first block, start over as a locate would, so that
-        // block and the latency trimmed off it line up too.
+        // are restarted. If one did on the first block, start over from a clean state, so that
+        // block and the latency trimmed off it line up too. The head trim is the first block's:
+        // a later change (an automated lookahead) moves the alignment from that block on, as in
+        // playback, since the audio before it has already gone out.
         if self.eng.idle_plugins() && self.done == 0 {
-            self.eng.reset();
+            self.eng.reset_and_reprepare();
             self.render(s, self.start, n);
             self.eng.idle_plugins();
         }
