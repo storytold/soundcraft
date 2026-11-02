@@ -6,7 +6,7 @@ use crate::{SoundApp, icons};
 use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
 use soundcraft_engine::edit::{SHUFFLE_LOCK, SNAP_TO_GRID};
-use soundcraft_model::{EditMode, Tool};
+use soundcraft_model::{EditState, EditMode, Tool};
 use soundcraft_time::{TimeFormat, format_length};
 
 pub const HEIGHT: f32 = 78.0;
@@ -205,14 +205,7 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let e = app.engine.session().edit.clone();
-                let toggles: [(&str, &str, bool, &str); 5] = [
-                    ("options.tab_to_transient", "tab_transient", e.tab_to_transient, "Tab to Transient"),
-                    ("options.link_timeline_edit", "link", e.link_timeline_edit, "Link Timeline and Edit Selection"),
-                    ("options.link_track_edit", "link", e.link_track_edit, "Link Track and Edit Selection"),
-                    ("options.mirrored_midi", "note", e.mirrored_midi, "Mirrored MIDI Editing"),
-                    ("options.automation_follows_edit", "wave", e.automation_follows_edit, "Automation Follows Edit"),
-                ];
-                for (id, icon, on, tip) in toggles {
+                for (id, icon, on, tip) in option_toggles(&e) {
                     if icon_button(ui, vec2(36.0, 18.0), icon, on, tip).clicked() {
                         let _ = app.run(id, json!({}));
                     }
@@ -225,6 +218,18 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             });
         });
     });
+}
+
+/// The Edit-window toolbar's option toggles: (command id, icon, on, tooltip).
+fn option_toggles(e: &EditState) -> [(&'static str, &'static str, bool, &'static str); 6] {
+    [
+        ("options.tab_to_transient", "tab_transient", e.tab_to_transient, "Tab to Transient"),
+        ("options.link_timeline_edit", "link", e.link_timeline_edit, "Link Timeline and Edit Selection"),
+        ("options.link_track_edit", "link_track", e.link_track_edit, "Link Track and Edit Selection"),
+        ("options.insertion_follows_playback", "insertion_follows", e.insertion_follows_playback, "Insertion Follows Playback"),
+        ("options.mirrored_midi", "note", e.mirrored_midi, "Mirrored MIDI Editing"),
+        ("options.automation_follows_edit", "wave", e.automation_follows_edit, "Automation Follows Edit"),
+    ]
 }
 
 fn fmt_pos(app: &SoundApp, at: i64, f: TimeFormat) -> String {
@@ -455,5 +460,23 @@ fn output_meter(app: &mut SoundApp, ui: &mut Ui) {
     for c in 0..2 {
         let rr = Rect::from_min_size(pos2(r.min.x + 2.0 + c as f32 * (w + 2.0), r.min.y), vec2(w, r.height()));
         crate::widgets::meter(ui, rr, m.level[c], m.hold[c], m.clip);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1262: the two link toggles differ only by their icon, so each option toggle needs its own.
+    #[test]
+    fn option_toggles_have_distinct_icons() {
+        let toggles = option_toggles(&EditState::default());
+        let timeline = toggles.iter().find(|t| t.0 == "options.link_timeline_edit").unwrap();
+        let track = toggles.iter().find(|t| t.0 == "options.link_track_edit").unwrap();
+        assert_ne!(timeline.1, track.1, "the timeline and track links need different icons");
+        let mut icons: Vec<&str> = toggles.iter().map(|t| t.1).collect();
+        icons.sort_unstable();
+        icons.dedup();
+        assert_eq!(icons.len(), toggles.len(), "every option toggle needs its own icon");
     }
 }
