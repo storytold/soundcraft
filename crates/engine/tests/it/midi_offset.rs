@@ -74,3 +74,25 @@ fn export_midi_releases_a_sustain_held_past_the_trim() {
     assert!(sus.iter().any(|c| c.channel == 0 && c.tick == 960 && c.value == 0), "{sus:?}");
     assert!(!sus.iter().any(|c| c.channel == 1 && c.tick == 960), "released channel gets no extra event: {sus:?}");
 }
+
+#[test]
+fn export_midi_keeps_the_notes_of_a_clip_trimmed_at_both_ends_in_place() {
+    let mut e = Engine::default();
+    let r = e.execute("track.new", &json!({"kind": "instrument", "name": "Both", "instrument": "subtractive_synth"})).unwrap();
+    let track = r["tracks"][0].as_u64().unwrap();
+    let r = e.execute("midi.new_clip", &json!({"track": track, "start": 0, "length": 96_000})).unwrap();
+    let clip = r["clip"].as_u64().unwrap();
+    for (pitch, start) in [(60, 0), (62, 1000), (64, 2000)] {
+        e.execute("midi.note_add", &json!({"clip": clip, "pitch": pitch, "start_ticks": start, "length_ticks": 960, "velocity": 100})).unwrap();
+    }
+    // 24000 samples is 960 ticks and 72000 samples is 2880 ticks at 120 bpm.
+    e.execute("edit.trim_start_to_insertion", &json!({"tracks": [track], "at": 24_000})).unwrap();
+    e.execute("edit.trim_end_to_insertion", &json!({"tracks": [track], "at": 72_000})).unwrap();
+
+    let bytes = soundcraft_engine::io::export_midi(&e, None).unwrap();
+    let smf = soundcraft_midi::read_smf(&bytes).unwrap();
+    let mut notes: Vec<_> = smf.tracks[0].sequence.notes.iter().map(|n| (n.pitch, n.start, n.length)).collect();
+    notes.sort_unstable();
+    // The note cut by the start trim is gone; the others keep their place and the last stops at the end.
+    assert_eq!(notes, vec![(62, 1000, 960), (64, 2000, 880)]);
+}
