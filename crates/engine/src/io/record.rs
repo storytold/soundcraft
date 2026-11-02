@@ -1,7 +1,7 @@
 use super::import::add_source;
 #[cfg(test)]
 use super::session::{save_copy, save_session};
-use super::*;
+use super::{Clip, Engine, EngineError, FileFormat, OsStr, PathBuf, Range, Samples, TrackId, read_file};
 
 /// A recording's plan, made when it starts: each record-enabled track's take file, where the
 /// takes start on the timeline, the loop length they split into when loop recording, and the
@@ -117,6 +117,7 @@ pub fn live_span(start: Samples, pass: Option<Samples>, punch: Option<Range>, le
 
 #[cfg(test)]
 mod record_tests {
+    use super::super::{AudioBuffer, Path, plan_takes};
     use super::*;
     use serde_json::json;
 

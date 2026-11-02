@@ -2,7 +2,9 @@ use super::bundle::save_session_bundle;
 #[cfg(test)]
 use super::import::add_source;
 use super::import::{MAX_IMPORT_SAMPLES, at_rate, relink_videos};
-use super::*;
+use super::{
+    Arc, Engine, EngineError, OsStr, Path, PathBuf, Result, Session, SourceAudio, file_key, read_file, read_text, stored_path, write_session,
+};
 
 /// Save the session to `path` (a `.scraft` file). Audio that only exists in memory is written
 /// as 32-bit float WAV into `Audio Files/` next to it. Returns how many audio files were written.
@@ -92,7 +94,9 @@ pub(crate) fn decode_file(files: &mut DecodedFiles, p: &Path, rate: u32) -> std:
 
 #[cfg(test)]
 mod save_tests {
+    use super::super::{AudioBuffer, ChannelFormat, Clip, Engine, FileFormat, Range, TrackKind, back_up, copy_new};
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn autosave_copy_leaves_document_untouched_and_reuses_audio() {
@@ -315,7 +319,9 @@ mod save_tests {
 
 #[cfg(test)]
 mod open_tests {
+    use super::super::{AudioBuffer, ChannelFormat, Clip, EncodeOptions, Engine, FileFormat, SourceId, TrackKind};
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn a_file_named_by_many_sources_is_decoded_once() {
@@ -428,7 +434,9 @@ mod open_tests {
 
 #[cfg(all(test, unix))]
 mod pipe_tests {
+    use super::super::{AudioBuffer, FileFormat};
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn a_pipe_named_as_media_is_refused_not_waited_on() {

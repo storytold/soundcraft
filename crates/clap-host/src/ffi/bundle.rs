@@ -1,7 +1,12 @@
 use super::gui::{GuiInner, GuiLink};
 use super::host::{HostState, host_get_extension, host_request_callback, host_request_process, host_request_restart};
 use super::instance::Instance;
-use super::*;
+use super::{
+    Arc, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_LATENCY, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_PLUGIN_FACTORY_ID,
+    CLAP_VERSION, CString, ClapError, EVENT_CAP, HashMap, MAX_FEATURES, MAX_PLUGINS_PER_FACTORY, Mutex, OnceLock, Path, PathBuf, PoisonError, c_void,
+    clap_host, clap_plugin_audio_ports, clap_plugin_entry, clap_plugin_factory, clap_plugin_gui, clap_plugin_latency, clap_plugin_note_ports,
+    clap_plugin_params, clap_plugin_state, clap_version_is_compatible, read_cstr, scan,
+};
 
 // ---- loaded binaries -----------------------------------------------------------------------
 

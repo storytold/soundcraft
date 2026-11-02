@@ -316,3 +316,13 @@ fn float_wav_header_rejects_a_frame_count_whose_total_size_overflows() {
     let frames = u64::MAX / 4;
     assert!(matches!(wav_float_header(1, 48_000, frames), Err(soundcraft_audio_io::AudioError::TooLarge(_))));
 }
+
+#[test]
+fn bwf_truncation_keeps_utf8_boundaries() {
+    let src = sine(48_000, 1, 10);
+    let bwf = BwfInfo { originator: format!("{}é", "a".repeat(31)), description: format!("{}é", "d".repeat(255)), ..BwfInfo::default() };
+    let bytes = encode(&src, &EncodeOptions { format: FileFormat::Wav, bwf: Some(bwf), ..EncodeOptions::default() }).unwrap();
+    let out = probe(&bytes, None).unwrap().bwf.unwrap();
+    assert_eq!(out.originator, "a".repeat(31));
+    assert_eq!(out.description, "d".repeat(255));
+}
