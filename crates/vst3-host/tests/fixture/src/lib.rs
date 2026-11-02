@@ -1,4 +1,4 @@
-//! Test-only VST3 plugin for soundcraft-vst3-host (five audio module classes):
+//! Test-only VST3 plugin for soundcraft-vst3-host (six audio module classes):
 //!
 //! - "Fixture Gain" (`Fx`): stereo or mono in → out × gain, with a separate edit controller
 //!   (connected through IConnectionPoint, synced through the component state). Params: 7 "Gain"
@@ -11,9 +11,9 @@
 //!   its edit controller). No audio input, one stereo output, one event input; every output
 //!   sample is the velocity of the held note (sample-accurate), 0 when none. Poly pressure, and
 //!   MIDI CC 7 through `IMidiMapping` (hidden parameter 1), set it to their value too.
-//! - "Fixture Wide 16x64", "Fixture Wide 17 buses", "Fixture Wide 65 channels" (`Fx`): effects
-//!   advertising wide layouts (16 buses of 64 channels, 17 buses of 2 channels, one bus of 65
-//!   channels per direction), through `getBusInfo` only. `process` writes 1.0 into every channel
+//! - "Fixture Wide 16x64", "Fixture Wide 32 buses", "Fixture Wide 65 buses", "Fixture Wide 65
+//!   channels" (`Fx`): effects advertising wide layouts (16 buses of 64 channels, 32 and 65 buses
+//!   of 2 channels, one bus of 65 channels per direction), through `getBusInfo` only. `process` writes 1.0 into every channel
 //!   of output bus 0 when the host's buffers match the advertised layout, -1.0 when they do not.
 //!   Report 3 samples of latency.
 //!
@@ -34,8 +34,9 @@ const GAIN_CID: TUID = uid(0x5C0A1D00, 0x11112222, 0x33334444, 0x55556666);
 const GAIN_CTRL_CID: TUID = uid(0x5C0A1D01, 0x11112222, 0x33334444, 0x55556666);
 const SYNTH_CID: TUID = uid(0x5C0A1D02, 0x11112222, 0x33334444, 0x55556666);
 const WIDE16_CID: TUID = uid(0x5C0A1D03, 0x11112222, 0x33334444, 0x55556666);
-const WIDE17_CID: TUID = uid(0x5C0A1D04, 0x11112222, 0x33334444, 0x55556666);
+const WIDE65B_CID: TUID = uid(0x5C0A1D04, 0x11112222, 0x33334444, 0x55556666);
 const WIDE65_CID: TUID = uid(0x5C0A1D05, 0x11112222, 0x33334444, 0x55556666);
+const WIDE32_CID: TUID = uid(0x5C0A1D06, 0x11112222, 0x33334444, 0x55556666);
 
 fn copy_c8(src: &str, dst: &mut [c_char]) {
     for (d, s) in dst.iter_mut().zip(src.bytes().chain(std::iter::once(0))) {
@@ -736,12 +737,13 @@ impl Class for Factory {
     type Interfaces = (IPluginFactory2,);
 }
 
-const CLASSES: [(TUID, &str, &str, &str); 6] = [
+const CLASSES: [(TUID, &str, &str, &str); 7] = [
     (GAIN_CID, "Audio Module Class", "Fixture Gain", "Fx"),
     (GAIN_CTRL_CID, "Component Controller Class", "Fixture Gain", ""),
     (SYNTH_CID, "Audio Module Class", "Fixture Synth", "Instrument|Synth"),
     (WIDE16_CID, "Audio Module Class", "Fixture Wide 16x64", "Fx"),
-    (WIDE17_CID, "Audio Module Class", "Fixture Wide 17 buses", "Fx"),
+    (WIDE32_CID, "Audio Module Class", "Fixture Wide 32 buses", "Fx"),
+    (WIDE65B_CID, "Audio Module Class", "Fixture Wide 65 buses", "Fx"),
     (WIDE65_CID, "Audio Module Class", "Fixture Wide 65 channels", "Fx"),
 ];
 
@@ -785,8 +787,9 @@ impl IPluginFactoryTrait for Factory {
             .to_com_ptr::<FUnknown>()
         } else if cid == SYNTH_CID {
             ComWrapper::new(Synth { level: AtomicU32::new(0), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
-        } else if let Some((buses, channels)) =
-            [(WIDE16_CID, (16, 64)), (WIDE17_CID, (17, 2)), (WIDE65_CID, (1, 65))].into_iter().find_map(|(c, layout)| (c == cid).then_some(layout))
+        } else if let Some((buses, channels)) = [(WIDE16_CID, (16, 64)), (WIDE32_CID, (32, 2)), (WIDE65B_CID, (65, 2)), (WIDE65_CID, (1, 65))]
+            .into_iter()
+            .find_map(|(c, layout)| (c == cid).then_some(layout))
         {
             ComWrapper::new(Wide { buses, channels, _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
         } else {
