@@ -2,6 +2,7 @@
 //! burn-in) and Window › Video Universe (the whole Video track as a strip; click to locate).
 
 use crate::SoundApp;
+use crate::i18n::tr;
 use crate::theme::{mono, regular};
 use crate::video_track::{MovieKey, movie_secs, online, picture_at};
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
@@ -23,8 +24,8 @@ fn video_status_text(app: &SoundApp, pic: Option<&(MovieKey, Result<String, Stri
         Some((_, Err(why), ..)) => why.clone(),
         Some((k, ..)) => match app.video.info(*k) {
             Some(Ok(i)) => format!("{}x{}  {:.3} fps  {}", i.width, i.height, i.frame_rate, i.codec_detail),
-            Some(Err(e)) => e.clone(),
-            None => "opening…".into(),
+            Some(Err(e)) => tr(e).to_string(),
+            None => tr("opening…").into(),
         },
         None => String::new(),
     }
@@ -32,7 +33,7 @@ fn video_status_text(app: &SoundApp, pic: Option<&(MovieKey, Result<String, Stri
 
 fn draw_video_surface(app: &SoundApp, painter: &egui::Painter, img: Rect, pic: Option<&(MovieKey, Result<String, String>, f64, f64)>, on: bool) {
     let msg = if !on {
-        Some("Video Track Offline".to_string())
+        Some(tr("Video Track Offline").to_string())
     } else {
         match pic {
             None => None,
@@ -72,9 +73,9 @@ fn video(app: &mut SoundApp, ctx: &egui::Context) {
         .clamp(0.2, 5.0);
     let mut open = true;
     let mut burn = app.ui.video_burn_in;
-    egui::Window::new("Video").open(&mut open).default_size(vec2(480.0, 480.0 / aspect + 28.0)).resizable(true).show(ctx, |ui| {
+    egui::Window::new(tr("Video")).open(&mut open).default_size(vec2(480.0, 480.0 / aspect + 28.0)).resizable(true).show(ctx, |ui| {
         ui.horizontal(|ui| {
-            crate::widgets::checkbox(ui, &mut burn, "Timecode burn-in");
+            crate::widgets::checkbox(ui, &mut burn, tr("Timecode burn-in"));
             let text = video_status_text(app, pic.as_ref());
             ui.label(egui::RichText::new(text).font(regular(10.5)).color(Color32::from_gray(150)));
         });
@@ -121,7 +122,7 @@ fn universe(app: &mut SoundApp, ctx: &egui::Context) {
     let pos = app.position();
     let mut open = true;
     let mut locate = None;
-    egui::Window::new("Video Universe").open(&mut open).default_size(vec2(640.0, 90.0)).resizable(true).show(ctx, |ui| {
+    egui::Window::new(tr("Video Universe")).open(&mut open).default_size(vec2(640.0, 90.0)).resizable(true).show(ctx, |ui| {
         let avail = ui.available_rect_before_wrap();
         let (r, resp) = ui.allocate_exact_size(vec2(avail.width().max(120.0), 64.0), Sense::click_and_drag());
         let painter = ui.painter_at(r);
@@ -130,7 +131,7 @@ fn universe(app: &mut SoundApp, ctx: &egui::Context) {
         let x_at = |at: i64| r.min.x + r.width() * (at as f32 / end as f32);
         let on = online(&s);
         let Some(track) = s.tracks.iter().find(|t| t.kind == TrackKind::Video) else {
-            painter.text(r.center(), Align2::CENTER_CENTER, "No Video track — File › Import › Video…", regular(11.0), Color32::from_gray(150));
+            painter.text(r.center(), Align2::CENTER_CENTER, tr("No Video track — File › Import › Video…"), regular(11.0), Color32::from_gray(150));
             return;
         };
         let ppp = ctx.pixels_per_point();

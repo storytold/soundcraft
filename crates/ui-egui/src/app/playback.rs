@@ -1,6 +1,7 @@
 use super::audio::feed_meter;
 use super::plugins::failed_plugin_status;
 use super::{Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, json};
+use crate::i18n;
 
 /// Whether another automation-write pass is due: the transport moved at least
 /// `step` since `last` in either direction. `last == i64::MIN` marks "never
@@ -17,11 +18,11 @@ impl SoundApp {
         self.engine.transport.playing
     }
 
-    /// Why the last Record press did nothing, for a few seconds and while it still holds.
+    /// Why the last Record press did nothing (in the interface language), for a few seconds and while it still holds.
     pub(crate) fn record_hint(&self) -> Option<&'static str> {
         let (at, why) = self.record_hint?;
         let fresh = self.last_frame.unwrap_or_default() - at < 4.0;
-        (fresh && !self.engine.session().tracks.iter().any(|t| t.mixer.record_arm)).then_some(why)
+        (fresh && !self.engine.session().tracks.iter().any(|t| t.mixer.record_arm)).then(|| i18n::tr(why))
     }
 
     /// Current transport position (playhead while playing, else the edit insertion).
@@ -96,7 +97,7 @@ impl SoundApp {
             } else {
                 "No track is record-enabled: click the R button on the track to record."
             };
-            self.ui.status = why.into();
+            self.ui.status = i18n::tr(why).into();
             self.record_hint = Some((self.last_frame.unwrap_or_default(), why));
             return;
         }
@@ -104,7 +105,7 @@ impl SoundApp {
         let takes = match self.arm_recorder() {
             Ok(takes) => takes,
             Err(err) => {
-                self.ui.status = format!("Cannot record: {err}");
+                self.ui.status = i18n::trf("Cannot record: {}", &[&i18n::tr(&err)]);
                 return;
             }
         };
@@ -195,8 +196,11 @@ impl SoundApp {
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
-        self.ui.status =
-            if plan.pass.is_some() { format!("Loop-recorded {} take(s)", ids.len() / tracks) } else { format!("Recorded {} clip(s)", ids.len()) };
+        self.ui.status = if plan.pass.is_some() {
+            i18n::trf("Loop-recorded {} take(s)", &[&(ids.len() / tracks)])
+        } else {
+            i18n::trf("Recorded {} clip(s)", &[&ids.len()])
+        };
         if let Some(p) = problem {
             log::warn!("recording: {p}");
             self.ui.status = format!("{} ({p})", self.ui.status);

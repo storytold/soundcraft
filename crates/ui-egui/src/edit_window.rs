@@ -25,6 +25,7 @@ mod scroll;
 mod tracks;
 mod universe;
 
+use crate::i18n::{tr, trf};
 #[cfg(test)]
 use automation::automation_id;
 pub use clips::strip_silence_stroke;
@@ -71,9 +72,9 @@ fn dock_tabs(app: &mut SoundApp, ui: &mut Ui) {
     let r = ui.max_rect();
     let mut x = r.min.x + 10.0;
     for (label, on, id) in [
-        ("MIDI EDITOR", app.ui.show_midi_editor, "window.midi_editor"),
-        ("MEMORY LOCATIONS", app.ui.show_memory_locations, "window.memory_locations"),
-        ("UNDO HISTORY", app.ui.show_undo_history, "window.undo_history"),
+        (crate::i18n::tr("MIDI EDITOR"), app.ui.show_midi_editor, "window.midi_editor"),
+        (crate::i18n::tr("MEMORY LOCATIONS"), app.ui.show_memory_locations, "window.memory_locations"),
+        (crate::i18n::tr("UNDO HISTORY"), app.ui.show_undo_history, "window.undo_history"),
     ] {
         let g = ui.painter().layout_no_wrap(label.to_string(), bold(10.5), if on { Color32::WHITE } else { t.text_dim });
         let tr = Rect::from_min_size(pos2(x, r.min.y + 2.0), vec2(g.size().x + 16.0, r.height() - 4.0));
@@ -92,25 +93,27 @@ fn status_bar(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let r = ui.max_rect();
     let s = app.engine.session();
-    let mut left = format!(
+    let mut left = trf(
         "{} · {} Hz · {} · {} tracks · {}",
-        s.name,
-        s.sample_rate.hz(),
-        match s.bit_depth {
-            soundcraft_model::BitDepthSetting::Int16 => "16-bit",
-            soundcraft_model::BitDepthSetting::Int24 => "24-bit",
-            soundcraft_model::BitDepthSetting::Float32 => "32-bit float",
-        },
-        s.tracks.len(),
-        app.ui.status
+        &[
+            &s.name,
+            &s.sample_rate.hz(),
+            &tr(match s.bit_depth {
+                soundcraft_model::BitDepthSetting::Int16 => "16-bit",
+                soundcraft_model::BitDepthSetting::Int24 => "24-bit",
+                soundcraft_model::BitDepthSetting::Float32 => "32-bit float",
+            }),
+            &s.tracks.len(),
+            &app.ui.status,
+        ],
     );
     soundcraft_model::truncate_chars(&mut left, 4 * soundcraft_model::MAX_NAME_CHARS);
     ui.painter().text(pos2(r.min.x + 10.0, r.center().y), Align2::LEFT_CENTER, left, regular(11.0), t.text_dim);
-    let undo = app.engine.undo_label().map_or(String::new(), |l| format!("Undo {l}"));
+    let undo = app.engine.undo_label().map_or(String::new(), |l| crate::i18n::trf("Undo {}", &[&tr(l)]));
     ui.painter().text(
         pos2(r.max.x - 10.0, r.center().y),
         Align2::RIGHT_CENTER,
-        if app.frame_ms < 50.0 { format!("{undo}   {:.1} ms/frame", app.frame_ms) } else { undo },
+        if app.frame_ms < 50.0 { crate::i18n::trf("{}   {} ms/frame", &[&undo, &format!("{:.1}", app.frame_ms)]) } else { undo },
         regular(11.0),
         t.text_dim,
     );

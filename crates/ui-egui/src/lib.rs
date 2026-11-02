@@ -21,6 +21,7 @@ pub mod dialogs;
 pub mod docking;
 pub mod edit_window;
 pub mod fonts;
+pub mod i18n;
 pub mod icons;
 pub mod import;
 pub mod menus;
@@ -142,6 +143,8 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// Interface language (`ui.language`): English by default.
+    pub language: i18n::Language,
 }
 
 impl Default for UiState {
@@ -203,6 +206,7 @@ impl Default for UiState {
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
+            language: i18n::Language::En,
         }
     }
 }

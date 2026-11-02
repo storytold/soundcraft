@@ -6,6 +6,7 @@ use super::{
     Align2, AutoParam, Clip, ClipContent, ClipId, Color32, Dialog, EditMode, Gesture, GridValue, NoteValue, Pos2, Range, Rect, Samples, Sense,
     Session, SoundApp, Spot, Stroke, StrokeKind, Tokens, Tool, Track, TrackId, Ui, json, ops, pos2, regular, vec2,
 };
+use crate::i18n::tr;
 
 // ---- interaction -----------------------------------------------------------------------------
 
@@ -506,7 +507,7 @@ pub(super) fn new_midi_clip(app: &mut SoundApp, s: &Session, track: TrackId, fro
 
 fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
     let Some(c) = clip else {
-        if ui.button("Paste").clicked() {
+        if ui.button(tr("Paste")).clicked() {
             let _ = app.run("edit.paste", json!({}));
         }
         return;
@@ -515,24 +516,24 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
     let in_selection = clip_in_selection(app.engine.session(), c);
     let target = if in_selection { json!({}) } else { json!({"clips": [c.0]}) };
     for (label, cmd) in [
-        ("Mute/Unmute", "edit.mute_clips"),
-        ("Edit Lock/Unlock", "clip.edit_lock"),
-        ("Time Lock/Unlock", "clip.time_lock"),
-        ("Quantize to Grid", "clip.quantize_to_grid"),
-        ("Render Clip Gain", "clip.gain_render"),
-        ("Bring to Front", "clip.bring_to_front"),
-        ("Send to Back", "clip.send_to_back"),
+        (tr("Mute/Unmute"), "edit.mute_clips"),
+        (tr("Edit Lock/Unlock"), "clip.edit_lock"),
+        (tr("Time Lock/Unlock"), "clip.time_lock"),
+        (tr("Quantize to Grid"), "clip.quantize_to_grid"),
+        (tr("Render Clip Gain"), "clip.gain_render"),
+        (tr("Bring to Front"), "clip.bring_to_front"),
+        (tr("Send to Back"), "clip.send_to_back"),
     ] {
         if ui.button(label).clicked() {
             let _ = app.run(cmd, target.clone());
         }
     }
     ui.separator();
-    if ui.button("Rename...").clicked() {
+    if ui.button(tr("Rename...")).clicked() {
         let name = app.engine.session().find_clip(c).map(|(_, x)| x.name.clone()).unwrap_or_default();
         app.dialogs.open_rename_clip(c, &name);
     }
-    if ui.button("Delete").clicked() {
+    if ui.button(tr("Delete")).clicked() {
         let s = app.engine.session();
         let selected: Vec<u64> = s.edit.selected_clips.iter().map(|id| id.0).collect();
         let track: Vec<u64> = s.find_clip(c).map(|(t, _)| t.0).into_iter().collect();

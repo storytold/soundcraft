@@ -25,6 +25,7 @@ mod switch;
 use env::Env;
 use soundcraft_audio_io::FileFormat;
 use soundcraft_engine::Engine;
+use soundcraft_ui_egui::i18n::tr;
 use soundcraft_ui_egui::{Services, SoundApp, UiState, dialogs};
 use std::sync::Arc;
 
@@ -86,7 +87,7 @@ impl eframe::App for App {
                 "{}{} — SoundCraft — {}",
                 self.0.engine.session().name,
                 if self.0.engine.is_dirty() { " *" } else { "" },
-                if self.0.ui.window == soundcraft_ui_egui::MainWindow::Edit { "Edit" } else { "Mix" }
+                tr(if self.0.ui.window == soundcraft_ui_egui::MainWindow::Edit { "Edit" } else { "Mix" })
             )
         } else {
             format!("{} — SoundCraft", self.0.engine.session().name)
@@ -149,16 +150,16 @@ fn services() -> Services {
         pick_open: Some(Box::new(|purpose: &str, _exts: &[&str]| {
             let d = rfd::FileDialog::new();
             let d = match purpose {
-                "session.open" => d.add_filter("SoundCraft Session", &["scraft"]),
+                "session.open" => d.add_filter(tr("SoundCraft Session"), &["scraft"]),
                 "file.import_midi" => d.add_filter("MIDI", &["mid", "midi", "smf"]),
-                _ => d.add_filter("Audio", &FileFormat::readable_extensions()),
+                _ => d.add_filter(tr("Audio"), &FileFormat::readable_extensions()),
             };
             d.pick_file()
         })),
         pick_save: Some(Box::new(|purpose: &str, path: &std::path::Path| {
             let mut d = match purpose {
-                "file.bounce_mix" => rfd::FileDialog::new().add_filter("Audio", &FileFormat::writable_extensions()),
-                _ => rfd::FileDialog::new().add_filter("SoundCraft Session", &["scraft"]),
+                "file.bounce_mix" => rfd::FileDialog::new().add_filter(tr("Audio"), &FileFormat::writable_extensions()),
+                _ => rfd::FileDialog::new().add_filter(tr("SoundCraft Session"), &["scraft"]),
             };
             if let Some(dir) = path.parent().filter(|dir| dir.is_dir()) {
                 d = d.set_directory(dir);

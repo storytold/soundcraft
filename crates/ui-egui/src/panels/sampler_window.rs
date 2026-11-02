@@ -4,6 +4,7 @@
 //! they undo and script like any edit.
 
 use crate::SoundApp;
+use crate::i18n::{tr, trf};
 use crate::theme::{Tokens, mono, regular};
 use egui::{Align2, Color32, CursorIcon, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
@@ -122,7 +123,7 @@ impl SoundApp {
                     self.ui.plugin_windows.push((track, soundcraft_mix::INSTRUMENT_SLOT));
                 }
                 let name = v.get("name").and_then(|n| n.as_str()).unwrap_or(what);
-                self.ui.status = format!("{name} loaded into the sampler");
+                self.ui.status = trf("{} loaded into the sampler", &[&name]);
             }
             Err(e) => self.ui.status = format!("{what}: {e}"),
         }
@@ -137,8 +138,8 @@ pub fn sample_strip(app: &mut SoundApp, ui: &mut Ui, tid: TrackId, ins: &Insert)
     let audio = ins.sample.and_then(|id| s.pool.get(id)).cloned();
     ui.horizontal(|ui| {
         let can_pick = app.services.pick_open.is_some();
-        let load = ui.add_enabled(can_pick, egui::Button::new("Load Sample…"));
-        let load = if can_pick { load } else { load.on_disabled_hover_text("Drop an audio file on this window") };
+        let load = ui.add_enabled(can_pick, egui::Button::new(tr("Load Sample…")));
+        let load = if can_pick { load } else { load.on_disabled_hover_text(tr("Drop an audio file on this window")) };
         if load.clicked()
             && let Some(pick) = &app.services.pick_open
             && let Some(path) = pick("mix.sampler_load", &FileFormat::readable_extensions())
@@ -150,7 +151,7 @@ pub fn sample_strip(app: &mut SoundApp, ui: &mut Ui, tid: TrackId, ins: &Insert)
                 Err(e) => app.ui.status = e.to_string(),
             }
         }
-        if ins.sample.is_some() && ui.button("Clear").clicked() {
+        if ins.sample.is_some() && ui.button(tr("Clear")).clicked() {
             let _ = app.run("mix.sampler_clear", json!({"track": tid.0}));
         }
     });
@@ -166,7 +167,7 @@ pub fn sample_strip(app: &mut SoundApp, ui: &mut Ui, tid: TrackId, ins: &Insert)
             format!("{} · {secs:.2} s · {width} · {:.1} kHz", src.name, f64::from(rate) / 1000.0)
         }
         (Some(src), None) => format!("{}: missing", src.name),
-        _ => "No sample".to_string(),
+        _ => tr("No sample").to_string(),
     };
     ui.label(egui::RichText::new(info).font(mono(11.0)).color(t.text_dim));
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(300.0), 96.0), Sense::click_and_drag());
@@ -174,7 +175,7 @@ pub fn sample_strip(app: &mut SoundApp, ui: &mut Ui, tid: TrackId, ins: &Insert)
     p.rect_filled(r, 4.0, t.playlist_bg);
     p.rect_stroke(r, 4.0, Stroke::new(1.0, t.border), StrokeKind::Inside);
     let Some(audio) = audio else {
-        p.text(r.center(), Align2::CENTER_CENTER, "Drop an audio file here", regular(12.0), t.text_dim);
+        p.text(r.center(), Align2::CENTER_CENTER, tr("Drop an audio file here"), regular(12.0), t.text_dim);
         return;
     };
     let frames = audio.frames().max(1);
