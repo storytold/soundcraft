@@ -395,3 +395,63 @@ impl LoudnessMeter {
         gain_to_db(self.true_peak)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn noise(len: usize, seed: u64, amp: f32) -> Vec<f32> {
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                ((x >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * amp
+            })
+            .collect()
+    }
+
+    /// True peak as first written: the history shifted every sample, each phase summed on its own.
+    fn true_peak_reference(coefs: &[[f32; TP_PHASES]; TP_TAPS], x: &[f32]) -> f32 {
+        let mut h = [0.0f32; TP_TAPS];
+        let mut tp = 0.0f32;
+        for v in x.iter().map(|v| if v.is_finite() { *v } else { 0.0 }) {
+            h.copy_within(0..TP_TAPS - 1, 1);
+            h[0] = v;
+            let mut peak = v.abs();
+            for p in 0..TP_PHASES {
+                let y: f32 = coefs.iter().zip(h.iter()).map(|(c, b)| c[p] * b).sum();
+                peak = peak.max(y.abs());
+            }
+            if peak > tp {
+                tp = peak;
+            }
+        }
+        tp
+    }
+
+    #[test]
+    fn true_peak_matches_the_shifted_history() {
+        let sr = 48_000.0;
+        let len = 20_000;
+        let mut l: Vec<f32> =
+            (0..len).map(|i| 0.6 * (std::f32::consts::TAU * 0.25 * i as f32 + 0.7).sin()).zip(noise(len, 1, 0.3)).map(|(a, b)| a + b).collect();
+        let r = noise(len, 2, 0.9);
+        l[123] = f32::NAN;
+        l[4_567] = f32::INFINITY;
+        for block in [1, 7, 480, len] {
+            let mut m = LoudnessMeter::new(sr, 2);
+            let want = true_peak_reference(&m.tp_coefs, &l).max(true_peak_reference(&m.tp_coefs, &r));
+            for at in (0..len).step_by(block) {
+                let n = block.min(len - at);
+                m.process(&[l[at..at + n].to_vec(), r[at..at + n].to_vec()], n);
+            }
+            assert_eq!(m.true_peak.to_bits(), want.to_bits(), "block {block}");
+            m.reset();
+            let quiet = noise(500, 3, 0.1);
+            m.process(&[quiet.clone(), quiet.clone()], 500);
+            assert_eq!(m.true_peak.to_bits(), true_peak_reference(&m.tp_coefs, &quiet).to_bits(), "after reset, block {block}");
+        }
+    }
+}

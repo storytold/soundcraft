@@ -671,3 +671,44 @@ impl Plugin for Maximizer {
         self.gr_meter
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The window minimum as first written: the last `la` requests in a ring, scanned whole.
+    #[test]
+    fn window_min_matches_a_scan_of_the_last_requests() {
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for la in [1usize, 2, 3, 7, 64, 480] {
+            let mut m = Maximizer::new();
+            m.win = vec![(0, 1.0); la];
+            let mut ring = vec![1.0f32; la];
+            let mut at = 0;
+            for i in 0..6_000 {
+                if i == 3_000 {
+                    m.reset();
+                    ring.iter_mut().for_each(|v| *v = 1.0);
+                    at = 0;
+                }
+                let r = next();
+                let req = match r % 16 {
+                    0 => f32::NAN,
+                    1 => 1.0,
+                    2 => 0.25,
+                    _ => (r >> 40) as f32 / (1u64 << 24) as f32 * 1.5,
+                };
+                ring[at] = req;
+                at = (at + 1) % la;
+                let want = ring.iter().copied().fold(1.0f32, f32::min);
+                assert_eq!(m.window_min(req, la).to_bits(), want.to_bits(), "la {la}, sample {i}");
+            }
+        }
+    }
+}

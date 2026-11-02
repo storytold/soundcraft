@@ -225,6 +225,15 @@ fn sends_feed_aux_via_bus() {
 }
 
 #[test]
+fn send_level_automation_is_capped_at_the_fader_top() {
+    // #884: a send lane point past +12 dB (pushed without `set_point`'s clamp) reads as +12.
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    let tr = s.track_mut(t).unwrap();
+    tr.lane_mut(&AutoParam::SendLevel(0)).points.push(soundcraft_model::AutomationPoint { at: 0, value: 500.0 });
+    assert_eq!(send_level(s.track(t).unwrap(), 0, 0.0, 100), SEND_LEVEL_MAX_DB);
+}
+
+#[test]
 fn render_bus_is_the_bus_not_the_main_mix() {
     let (mut s, t) = session_with_dc(0.5, 4800);
     let stem = s.add_bus("Stem", ChannelFormat::Stereo);
@@ -1184,6 +1193,18 @@ fn apply_matrix_span_matches_the_plain_per_sample_sum() {
                 let bits = |v: &Vec<Vec<f32>>| v.iter().flatten().map(|x| x.to_bits()).collect::<Vec<_>>();
                 assert_eq!(bits(&got), bits(&want), "taps {taps:?}, span {span:?}");
             }
+        }
+    }
+}
+
+#[test]
+fn gain_ramp_matches_converting_both_ends_every_sample() {
+    for (db0, db1, n) in [(-6.0f32, 3.0f32, 512usize), (0.0, 0.0, 1), (-144.0, 0.0, 300), (2.5, -60.0, 0), (f32::NAN, -3.0, 64), (-200.0, 12.0, 7)] {
+        let ramp = crate::automation::GainRamp::new(db0, db1, n);
+        let (g0, g1) = (db_to_gain(db0), db_to_gain(db1));
+        for i in 0..=n {
+            let want = if n == 0 { g0 } else { g0 + (g1 - g0) * (i as f32 / n as f32) };
+            assert_eq!(ramp.at(i).to_bits(), want.to_bits(), "{db0} -> {db1} dB, sample {i} of {n}");
         }
     }
 }
