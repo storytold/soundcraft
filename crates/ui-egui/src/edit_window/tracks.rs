@@ -73,7 +73,17 @@ pub(super) fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect,
     let main_h = track.height.points();
     let lane = lane_rect(track, row, tl);
     ui.painter().rect_filled(head, 0.0, head_bg);
-    ui.painter().rect_filled(Rect::from_min_size(head.min, vec2(STRIP_W, head.height())), 0.0, rgb(track.color));
+    let strip_rect = Rect::from_min_size(head.min, vec2(STRIP_W, head.height()));
+    ui.painter().rect_filled(strip_rect, 0.0, rgb(track.color));
+    // The strip takes the header's clicks: a single click still selects the track, a double
+    // click opens the color selection (#1254) — the palette applies to the selected track
+    // (Shift: its clips), like Pro Tools' color strip.
+    let sresp = ui.interact(strip_rect, ui.scope_id().with(("color_strip", id.0)), Sense::click());
+    if sresp.double_clicked() {
+        app.ui.show_color_palette = true;
+    } else if sresp.clicked() {
+        click_track(app, id, ui.input(|i| i.modifiers), in_edit_window);
+    }
     ui.painter().line_segment([pos2(head.min.x, row.max.y + 0.5), pos2(tl.max.x, row.max.y + 0.5)], Stroke::new(1.0, t.border));
     ui.painter().hline(head.min.x + STRIP_W..=head.max.x, head.min.y + 0.5, Stroke::new(1.0, t.edge_light));
     track_header(app, ui, track, head, selected, head_bg);

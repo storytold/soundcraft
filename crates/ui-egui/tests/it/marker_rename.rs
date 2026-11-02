@@ -82,3 +82,30 @@ fn double_clicking_the_empty_ruler_still_adds_a_marker() {
     assert_eq!(r.app.dialogs.open_name(), None);
     assert_eq!(r.names().len(), 2);
 }
+
+#[test]
+fn double_clicking_the_color_strip_opens_the_color_palette() {
+    let mut r = Rig::new();
+    let strip = r
+        .shapes
+        .iter()
+        .find_map(|c| match &c.shape {
+            Shape::Rect(rc) => (rc.rect.width() >= 13.5 && rc.rect.width() <= 14.5 && rc.rect.height() >= 20.0).then_some(rc.rect.center()),
+            _ => None,
+        })
+        .expect("the track's color strip is drawn");
+    assert!(!r.app.ui.show_color_palette);
+    r.double_click(strip);
+    assert!(r.app.ui.show_color_palette, "double-clicking the strip opens the color selection (#1254)");
+    // A single click still selects the track, without opening the palette.
+    r.app.ui.show_color_palette = false;
+    for pressed in [true, false] {
+        r.frame(vec![
+            Event::PointerMoved(strip),
+            Event::PointerButton { pos: strip, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE },
+        ]);
+    }
+    r.frames(2);
+    assert!(!r.app.ui.show_color_palette);
+    assert_eq!(r.app.engine.session().edit.selected_tracks.len(), 1, "a single strip click selects the track");
+}
