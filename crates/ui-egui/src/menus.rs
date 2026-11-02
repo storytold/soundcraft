@@ -28,6 +28,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.close", "Close Window", "Window > Close Window", Some("Cmd+W")),
     ("window.hide_floating", "Hide All Floating Windows", "Window > Hide All Floating Windows", Some("Cmd+Ctrl+W")),
     ("window.midi_editor", "MIDI Editor", "Window > MIDI Editor", None),
+    ("window.guitar_tab", "Tab View", "", None),
     ("window.universe", "Universe", "View > Other Displays > Universe", Some("Alt+7")),
     ("window.video", "Video", "Window > Video", Some("Cmd+9")),
     ("window.video_universe", "Video Universe", "Window > Video Universe", None),
@@ -372,6 +373,7 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
         Some("window.edit") => app.ui.window == MainWindow::Edit,
         Some("window.track_list") => app.ui.show_tracks_list,
         Some("window.clip_list_view") | Some("window.clip_list") => app.ui.show_clip_list,
+        Some("window.guitar_tab") => app.ui.show_guitar_tab,
         Some("window.narrow_mix") => app.ui.narrow_mix,
         Some("window.renderer") => app.extra.show_renderer,
         Some("window.ui_customization") => app.extra.show_ui_customization,
@@ -450,6 +452,8 @@ const MENU_WINDOWS: &[(&str, &str)] = &[
     ("Event > Time Operations > Time Operations Window", "window.time_ops"),
     ("Event > MIDI Operations > MIDI Operations Window", "window.midi_ops"),
     ("Event > MIDI Real-Time Properties", "window.rtp"),
+    // Not in the incumbent catalog: SoundCraft's own guitar tab panel.
+    ("Window > Tab View", "window.guitar_tab"),
 ];
 
 /// The shortcut of an engine or window command.
@@ -569,6 +573,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         }
         "window.about" => toggle(&mut app.ui.show_about),
         "window.midi_editor" => toggle(&mut app.ui.show_midi_editor),
+        "window.guitar_tab" => toggle(&mut app.ui.show_guitar_tab),
         "window.midi_front" => {
             app.ui.show_midi_editor = true;
             json!({"value": true})

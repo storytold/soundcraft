@@ -18,6 +18,7 @@ mod edit_more;
 mod event;
 mod event_more;
 mod file;
+mod guitar_tab;
 mod health;
 mod instrument;
 mod midi;
@@ -162,6 +163,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(video::specs());
         v.extend(zoom_toggle::specs());
         v.extend(strip_silence::specs());
+        v.extend(guitar_tab::specs());
         #[cfg(test)]
         v.extend(panic_probe::specs());
         v
