@@ -119,6 +119,115 @@ fn import_audio_honours_new_tracks() {
 }
 
 #[test]
+fn folded_bounces_sound_the_same_in_tiny_blocks() {
+    let dir = std::env::temp_dir().join(format!("sc-bounce-folded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut e = Engine::default();
+    e.execute("file.import_audio", &json!({"path": tone_wav(&dir, "tone.wav")})).unwrap();
+    // The maximizer's latency makes the first tiny blocks hold nothing, or part of a block.
+    e.execute("mix.insert", &json!({"track": "tone", "plugin": "maximizer"})).unwrap();
+    e.session_mut().outputs[0].format = ChannelFormat::Surround51;
+    let mut bounce = |name: &str, block: Value| {
+        let path = dir.join(name);
+        let p = json!({"path": path.to_string_lossy(), "start": 0, "end": 4800, "bit_depth": "32f", "dither": false, "fold_down": "stereo", "block": block});
+        e.execute("file.bounce_mix", &p).unwrap();
+        soundcraft_audio_io::decode(&std::fs::read(&path).unwrap(), Some("wav")).unwrap().1.channels
+    };
+    let reference = bounce("ref.wav", Value::Null);
+    assert_eq!(reference.len(), 2);
+    assert_eq!(reference[0].len(), 4800);
+    assert!(reference[0].iter().any(|x| x.abs() > 0.01), "the tone reaches the fold-down");
+    for block in [json!(1), json!([1, 7, 1024])] {
+        assert_eq!(bounce("b.wav", block.clone()), reference, "block {block}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn bounces_take_block_sizes_and_sound_the_same() {
+    let dir = std::env::temp_dir().join(format!("sc-bounce-blocks-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut e = Engine::default();
+    e.execute("file.import_audio", &json!({"path": tone_wav(&dir, "tone.wav")})).unwrap();
+    e.execute("mix.insert", &json!({"track": "tone", "plugin": "maximizer"})).unwrap();
+    let bounce = |e: &mut Engine, name: &str, block: Value| {
+        let path = dir.join(name);
+        e.execute(
+            "file.bounce_mix",
+            &json!({"path": path.to_string_lossy(), "start": 0, "end": 4800, "bit_depth": "32f", "dither": false, "block": block}),
+        )
+        .map(|_| soundcraft_audio_io::decode(&std::fs::read(&path).unwrap(), Some("wav")).unwrap().1.channels)
+    };
+    let reference = bounce(&mut e, "ref.wav", Value::Null).unwrap();
+
+    // The sizes asked for reach the renderer, in both passes of a normalized bounce and for stems.
+    let job = |block: Value, normalize: bool| {
+        let p = json!({"path": dir.join("j.wav").to_string_lossy(), "start": 0, "end": 4800, "block": block, "normalize": normalize});
+        bounce_job(&e, &p).unwrap()
+    };
+    use soundcraft_mix::BlockSizes;
+    assert_eq!(job(Value::Null, false).block_sizes(), &BlockSizes::default());
+    assert_eq!(job(json!(37), false).block_sizes(), &BlockSizes::Fixed(37));
+    let mut normalized = job(json!([5, 9]), true);
+    assert_eq!(normalized.block_sizes(), &BlockSizes::Cycle(vec![5, 9]));
+    // Step into the second pass (its first blocks may hold no samples while the maximizer's
+    // latency is skipped, so progress can stay at one half for a few steps).
+    for _ in 0..100_000 {
+        if normalized.progress() > 0.5 {
+            break;
+        }
+        normalized.step(|| false).unwrap();
+    }
+    assert!(normalized.progress() > 0.5, "in the second pass");
+    assert_eq!(normalized.block_sizes(), &BlockSizes::Cycle(vec![5, 9]), "the second pass keeps them");
+    let stem = crate::io::stem_bounce(
+        e.session().clone(),
+        &dir.join("st.wav"),
+        soundcraft_time::Range::new(0, 4800),
+        &soundcraft_audio_io::EncodeOptions::default(),
+        false,
+        &BlockSizes::Fixed(77),
+    )
+    .unwrap();
+    assert_eq!(stem.block_sizes(), &BlockSizes::Fixed(77));
+    for block in [json!(1), json!(37), json!([1, 512, 3, 2048]), json!({"random": {"min": 1, "max": 900, "seed": 42}})] {
+        assert_eq!(bounce(&mut e, "b.wav", block.clone()).unwrap(), reference, "block {block}");
+    }
+    for block in [json!(0), json!(16_385), json!([]), json!([1, -2]), json!("512"), json!({"random": {"min": 9, "max": 3}}), json!({"other": 1})] {
+        assert!(bounce(&mut e, "bad.wav", block.clone()).is_err(), "block {block}");
+    }
+    let stems = dir.join("stems");
+    let r = e.execute("file.bounce_stems", &json!({"dir": stems.to_string_lossy(), "start": 0, "end": 4800, "block": [7, 300]}));
+    assert_eq!(r.map(|v| v["files"].as_array().map_or(0, Vec::len)), Ok(1));
+    assert!(e.execute("file.bounce_stems", &json!({"dir": stems.to_string_lossy(), "block": 0})).is_err());
+    assert!(bounce(&mut e, "s.wav", json!({"random": {"min": 2, "max": 9, "seed": null}})).is_ok(), "a null seed is the default seed");
+
+    // Tiny blocks over a long range are refused up front instead of rendering for hours.
+    let hours = |e: &mut Engine, cmd: &str, extra: Value| {
+        let mut p =
+            json!({"path": dir.join("long.wav").to_string_lossy(), "dir": stems.to_string_lossy(), "start": 0, "end": {"seconds": 4.0 * 3600.0}});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        e.execute(cmd, &p).map(|_| ())
+    };
+    for cmd in ["file.bounce_mix", "file.bounce_stems"] {
+        let err = hours(&mut e, cmd, json!({"block": 1})).unwrap_err().to_string();
+        assert!(err.contains("at most"), "{cmd}: {err}");
+    }
+    // Default-size bounces are never refused, however many stems and hours.
+    assert!(crate::io::check_block_work("file.bounce_stems", &BlockSizes::default(), 4 * 3600 * 192_000, 500).is_ok());
+    assert!(
+        crate::io::check_block_work("file.bounce_stems", &BlockSizes::fixed(2048), 4 * 3600 * 192_000, 500).is_ok(),
+        "fewer blocks than the default"
+    );
+    // 4 h in 128-sample blocks is 5.4 million blocks; normalizing renders twice, over the limit.
+    let err = hours(&mut e, "file.bounce_mix", json!({"block": 128, "normalize": true})).unwrap_err().to_string();
+    assert!(err.contains("at most"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bounce_refuses_formats_it_cannot_write() {
     let mut e = Engine::default();
     let dir = std::env::temp_dir().join(format!("sc-bounce-ext-{}", std::process::id()));

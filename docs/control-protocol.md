@@ -95,6 +95,30 @@ System to Dark, or on Linux to the desktop's portal setting when one is availabl
 track) brings the track to the top of the Edit window and the left of the Mix window, the same as
 Scroll Into View in the track name menu. A window not on screen catches up when it is next shown.
 
+## Block sizes for plugin tests
+
+Offline renders (`file.bounce_mix`, `file.bounce_stems`) run in 1024-sample blocks unless
+`block` says otherwise: a number (every block that size), a list (cycled) or
+`{"random": {"min": …, "max": …, "seed": …}}` (sizes drawn from the range by a seeded generator,
+seed 0 when left out, so a failing run can be repeated). Sizes are 1 to 16384; plugins are
+prepared for the largest (at least 16). Audio Units still receive at most 8192 samples per call:
+the AU host slices larger blocks. A job may take at most ten million blocks (normalizing counts
+twice, stems once per track), so 1-sample blocks suit short ranges.
+
+On a session without automation, a plugin that handles any block size renders the same samples
+whatever the sizes, so bouncing once with the default and once with odd sizes, then comparing the
+files, catches block-size bugs. Automation is read once per block (plugin parameters) or
+interpolated across each block (faders), so with automation, or for a plugin whose processing
+legitimately depends on block size, compare with a tolerance instead of expecting identical files:
+
+```sh
+soundcraft-cli run --cmd 'file.import_audio={"path":"in.wav"}' --cmd 'mix.insert={"track":"in","plugin":"vst3:<class id>"}' \
+  --cmd 'file.bounce_mix={"path":"ref.wav","bit_depth":"32f","dither":false}' \
+  --cmd 'file.bounce_mix={"path":"odd.wav","bit_depth":"32f","dither":false,"block":{"random":{"min":1,"max":4096,"seed":7}}}'
+```
+
+Realtime playback still mixes in blocks of at most 512 samples, whatever the device buffer.
+
 ## Panel docking
 
 Tracks and Groups, Clips, MIDI Editor, Memory Locations, and Undo History use movable panels. Commands target the active Edit or Mix view; floating panels stay inside the current viewport. Edit and Mix retain separate arrangements; Clips and MIDI Editor belong to Edit. Transport, plug-in, and specialist utility windows retain their existing hosts. The document/session view is protected.

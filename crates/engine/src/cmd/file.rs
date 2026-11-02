@@ -87,8 +87,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 crate::io::import_video_bytes(e, &path, bytes, at)
             }
         ),
-        cmd!(noundo "file.bounce_mix", "Bounce Mix...", ["File"], Some("Cmd+Alt+B"), "{path, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, source?: main|bus name, normalize?: false, dither?: true, fold_down?: stereo}", always, bounce),
-        cmd!(noundo "file.bounce_stems", "Bounce Stems...", [], None, "{dir, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, dither?: true, fold_down?: stereo}", has_tracks, |e, p| {
+        cmd!(noundo "file.bounce_mix", "Bounce Mix...", ["File"], Some("Cmd+Alt+B"), "{path, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, source?: main|bus name, normalize?: false, dither?: true, fold_down?: stereo, block?: n | [n, …] (cycled) | {random: {min, max, seed?}}: render block sizes 1..16384, default 1024}", always, bounce),
+        cmd!(noundo "file.bounce_stems", "Bounce Stems...", [], None, "{dir, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, dither?: true, fold_down?: stereo, block?: n | [n, …] (cycled) | {random: {min, max, seed?}}: render block sizes 1..16384, default 1024}", has_tracks, |e, p| {
             let dir = str_param(p, "dir").ok_or_else(|| bad("file.bounce_stems", "`dir` required"))?.to_string();
             let r = range_param(e, "file.bounce_stems", p)?;
             let r = if r.is_empty() { soundcraft_time::Range::new(0, e.session().content_end().max(1)) } else { r };
@@ -101,7 +101,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 _ => soundcraft_audio_io::BitDepth::Int24,
             };
             let fold = fold_down_param(p, "file.bounce_stems")?;
-            let files = crate::io::bounce_stems_with(e, &dir, r, &soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: bool_or(p, "dither", true), bwf: None }, fold)?;
+            let sizes = block_sizes_param(p, "file.bounce_stems")?;
+            let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: bool_or(p, "dither", true), bwf: None };
+            let files = crate::io::bounce_stems_in_blocks(e, &dir, r, &opts, fold, &sizes)?;
             Ok(json!({"files": files}))
         }),
         cmd!(noundo "file.export_midi", "MIDI...", ["File", "Export"], None, "{path, tracks?}", always, |e, p| {
@@ -324,7 +326,39 @@ pub fn bounce_job(e: &Engine, p: &Value) -> Result<crate::io::Bounce> {
     let normalize = bool_or(p, "normalize", false);
     let fold = fold_down_param(p, "file.bounce_mix")?;
     let bus = bounce_bus(e, p)?;
-    crate::io::Bounce::new(e.session_arc(), std::path::Path::new(&path), r, &opts, bus, normalize, fold)
+    let sizes = block_sizes_param(p, "file.bounce_mix")?;
+    crate::io::check_block_work("file.bounce_mix", &sizes, r.len(), if normalize { 2 } else { 1 })?;
+    Ok(crate::io::Bounce::new(e.session_arc(), std::path::Path::new(&path), r, &opts, bus, normalize, fold)?.with_block_sizes(sizes))
+}
+
+/// `block`: the render's block sizes. A number (every block that size), a list of numbers (cycled)
+/// or `{"random": {min, max, seed?}}` (seeded, so a failing run can be repeated); 1024 when absent.
+pub fn block_sizes_param(p: &Value, cmd: &str) -> Result<soundcraft_mix::BlockSizes> {
+    use soundcraft_mix::BlockSizes;
+    let size = |v: &Value| v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad(cmd, "block sizes must be whole numbers"));
+    let sizes = match p.get("block") {
+        None | Some(Value::Null) => return Ok(BlockSizes::default()),
+        Some(Value::Array(v)) => {
+            if v.len() > soundcraft_mix::blocks::MAX_CYCLE {
+                return Err(bad(cmd, format!("a block size list holds 1 to {} sizes", soundcraft_mix::blocks::MAX_CYCLE)));
+            }
+            BlockSizes::Cycle(v.iter().map(size).collect::<Result<_>>()?)
+        }
+        Some(Value::Object(o)) => {
+            let r = o.get("random").filter(|r| r.is_object()).ok_or_else(|| bad(cmd, "`block` object must be {\"random\": {min, max, seed?}}"))?;
+            let field = |k: &str| r.get(k).ok_or_else(|| bad(cmd, format!("`block.random.{k}` required"))).and_then(size);
+            let seed = match r.get("seed") {
+                None | Some(Value::Null) => 0,
+                Some(s) => s.as_u64().ok_or_else(|| bad(cmd, "`block.random.seed` must be a whole number"))?,
+            };
+            BlockSizes::Random { min: field("min")?, max: field("max")?, seed }
+        }
+        Some(v) => BlockSizes::Fixed(size(v)?),
+    };
+    match sizes.problem() {
+        Some(why) => Err(bad(cmd, why)),
+        None => Ok(sizes),
+    }
 }
 
 /// Write the score of the chosen MIDI tracks as MusicXML (or SVG when `svg`).

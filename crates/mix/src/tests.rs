@@ -1092,6 +1092,20 @@ fn surround_to_stereo_folds_down_itu() {
 }
 
 #[test]
+fn fold_down_takes_only_the_frames_asked_for() {
+    let ch: Vec<Vec<f32>> = (0..6).map(|c| (0..64).map(|i| (c + 1) as f32 * (i + 1) as f32 * 1e-3).collect()).collect();
+    let whole = fold_down_stereo(ChannelFormat::Surround51, &ch, 64);
+    let head = fold_down_stereo(ChannelFormat::Surround51, &ch, 5);
+    assert_eq!(head.len(), 2);
+    for (h, w) in head.iter().zip(&whole) {
+        assert_eq!(h.as_slice(), &w[..5], "the same samples, and no more of them");
+    }
+    let stereo = fold_down_stereo(ChannelFormat::Stereo, &ch[..2], 5);
+    assert_eq!(stereo, [ch[0][..5].to_vec(), ch[1][..5].to_vec()]);
+    assert_eq!(fold_down_stereo(ChannelFormat::Surround51, &ch, 1000), whole, "never more than there is");
+}
+
+#[test]
 fn mono_track_on_surround_main_pans() {
     let (mut s, t) = session_with_dc(0.5, 4800);
     s.outputs[0].format = ChannelFormat::Surround51;
@@ -1206,5 +1220,92 @@ fn gain_ramp_matches_converting_both_ends_every_sample() {
             let want = if n == 0 { g0 } else { g0 + (g1 - g0) * (i as f32 / n as f32) };
             assert_eq!(ramp.at(i).to_bits(), want.to_bits(), "{db0} -> {db1} dB, sample {i} of {n}");
         }
+    }
+}
+
+#[test]
+fn offline_renders_in_changing_block_sizes_match_fixed_ones() {
+    let mut s = Session::default();
+    let mut imp = vec![0.0f32; 48_000];
+    imp[1000] = 1.0;
+    imp[1777] = -0.5;
+    s.pool.insert(SourceId(901), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![imp] })));
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let cid = s.new_clip_id();
+    let tr = s.track_mut(t).unwrap();
+    tr.playlist_mut().unwrap().clips.push(Clip::audio(cid, "i", SourceId(901), 0, 0, 48_000));
+    tr.mixer.inserts[0] = Some(Insert::new("maximizer"));
+    let collect = |sizes: &BlockSizes| {
+        let mut got = Vec::new();
+        let mut blocks = Vec::new();
+        let mut render = RangeRender::with_block_sizes(&s, None, Range::new(900, 2900), sizes);
+        while let Some((chunk, n)) = render.next_block(&s) {
+            got.extend_from_slice(&chunk[0][..n]);
+            blocks.push(n);
+        }
+        (got, blocks)
+    };
+    let (reference, _) = collect(&BlockSizes::fixed(512));
+    assert_eq!(reference.len(), 2000);
+    for sizes in [BlockSizes::Cycle(vec![1, 37, 1000, 3]), BlockSizes::Random { min: 1, max: 700, seed: 3 }, BlockSizes::fixed(1)] {
+        let (got, blocks) = collect(&sizes);
+        assert_eq!(got, reference, "{sizes:?}: same samples whatever the block sizes");
+        assert!(blocks.iter().all(|n| *n <= sizes.max()), "{sizes:?}");
+    }
+    let (_, blocks) = collect(&BlockSizes::Cycle(vec![1, 37, 1000, 3]));
+    assert!(blocks.contains(&1) && blocks.contains(&37) && blocks.contains(&3), "the cycle reaches the plugin: {blocks:?}");
+}
+
+#[test]
+fn plugins_receive_the_block_sizes_asked_for() {
+    struct Probe(Box<dyn Plugin>, Arc<std::sync::Mutex<Vec<usize>>>);
+    impl Plugin for Probe {
+        fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+            self.0.info()
+        }
+        fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+            self.0.prepare(sr, mb, ch);
+        }
+        fn reset(&mut self) {
+            self.0.reset();
+        }
+        fn set_param(&mut self, id: &str, v: f32) -> bool {
+            self.0.set_param(id, v)
+        }
+        fn param(&self, id: &str) -> Option<f32> {
+            self.0.param(id)
+        }
+        fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+            self.1.lock().unwrap().push(frames);
+            self.0.process(io, frames);
+        }
+    }
+    let (mut s, t) = session_with_dc(0.5, 48_000);
+    s.track_mut(t).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.probe"));
+    for (sizes, prepared) in [(BlockSizes::Cycle(vec![1, 37, 1000, 3]), 1000), (BlockSizes::fixed(5), 16), (BlockSizes::fixed(16_384), 16_384)] {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut render = RangeRender::with_block_sizes(&s, None, Range::new(0, 3000), &sizes);
+        assert_eq!(render.eng.max_block(), prepared, "{sizes:?}: what plugins are prepared for");
+        render.eng.set_external_instances(true);
+        let mut gain = soundcraft_dsp::create("gain").unwrap();
+        gain.prepare(48_000.0, render.eng.max_block(), 1);
+        render.eng.adopt(vec![PreparedInstance {
+            track: t,
+            slot: 0,
+            id: "clap:test.probe".into(),
+            ch: 1,
+            plugin: Box::new(Probe(gain, seen.clone())),
+        }]);
+        while render.next_block(&s).is_some() {}
+        let seen = seen.lock().unwrap().clone();
+        assert!(seen.iter().all(|n| *n <= prepared), "{sizes:?}: never more than prepared");
+        let mut want = sizes.iter();
+        let mut left = 3000;
+        for (i, n) in seen.iter().enumerate() {
+            let next = want.next_size().min(left);
+            assert_eq!(*n, next, "{sizes:?}: block {i} reaches the plugin unsplit");
+            left -= next;
+        }
+        assert_eq!(left, 0, "{sizes:?}: the whole range went through the plugin");
     }
 }
