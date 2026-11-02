@@ -18,7 +18,12 @@ pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
         if let Some(info) = soundcraft_dsp::plugin_info(&process) {
             for p in info.params {
                 let v = params.entry(p.id.to_string()).or_insert(p.default);
-                ui.add(egui::Slider::new(v, p.min..=p.max).text(p.name));
+                let mut wide = f64::from(*v);
+                crate::widgets::FineSlider::new(&mut wide, f64::from(p.min)..=f64::from(p.max))
+                    .text(p.name)
+                    .default_value(f64::from(p.default))
+                    .show(ui);
+                *v = wide as f32;
             }
         } else {
             match process.as_str() {
