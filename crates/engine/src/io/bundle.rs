@@ -95,7 +95,7 @@ pub(super) fn save_session_bundle(e: &mut Engine, path: &str) -> Result<usize> {
 
 /// Open a session from bytes (the browser has no paths): a bundle ([`session_bundle`]) or a bare
 /// `.scraft`, whose audio is then reported missing. Returns the missing media, like
-/// [`open_session`].
+/// [`crate::io::open_session`].
 pub fn open_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Vec<String>> {
     let (text, mut files) = if bytes.starts_with(b"PK\x03\x04") {
         read_bundle(bytes, BUNDLE_LIMITS)?

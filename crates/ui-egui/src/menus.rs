@@ -203,6 +203,10 @@ fn insert_path(roots: &mut Vec<MenuNode>, line: &str) {
     }
 }
 
+/// Build the menu hierarchy from catalog paths and UI-specific supplemental entries.
+///
+/// Explicit parent leaves keep expanded Tempo and Key menus actionable. Additional
+/// clip and window entries are inserted where their UI workflows need them.
 pub fn tree() -> Vec<MenuNode> {
     let mut roots: Vec<MenuNode> = Vec::new();
     for line in catalog::catalog() {
@@ -364,6 +368,10 @@ pub fn item_state(app: &SoundApp, path: &str, id: Option<&str>) -> (bool, bool) 
     (enabled, checked_state(app, path, id))
 }
 
+/// Derive a menu item's check mark from the current document and window state.
+///
+/// Ruler expansion flags, individual visibility and main-counter choices use their
+/// shared engine state, so menu checks stay consistent with ruler-header controls.
 fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
     let e = &app.engine.session().edit;
     match id {
@@ -401,6 +409,9 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
     }
 }
 
+/// Translate supported menu labels and explicit parent leaves to their saved ruler IDs.
+///
+/// Unknown labels yield an empty ID so they cannot match a visible ruler or counter.
 fn ruler_id(label: &str) -> &'static str {
     match label {
         "Bars|Beats" => "bars_beats",

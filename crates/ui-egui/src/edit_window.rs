@@ -117,6 +117,10 @@ fn status_bar(app: &mut SoundApp, ui: &mut Ui) {
     );
 }
 
+/// Reserve Edit-window space for visible rulers and their expanded conductor panels.
+///
+/// The minimum body size includes the tempo graph and key staff only when their
+/// parent rulers are visible, then delegates the actual layout to the content view.
 pub(crate) fn main_area(app: &mut SoundApp, ui: &mut Ui) {
     let session = app.engine.session();
     let mut ruler_height_total = session.edit.rulers.iter().map(|ruler| ruler_height_for(session, ruler)).sum::<f32>();

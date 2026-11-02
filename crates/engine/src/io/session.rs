@@ -10,7 +10,7 @@ use super::{
 /// as 32-bit float WAV into `Audio Files/` next to it. Returns how many audio files were written.
 ///
 /// In the browser there are no folders: the session and all its audio go out as one bundle file
-/// (`<name>.scraftz`, see [`session_bundle`]) through the host's delivery hook ([`set_deliver`]).
+/// (`<name>.scraftz`, see [`crate::io::session_bundle`]) through the host's delivery hook ([`crate::io::set_deliver`]).
 pub fn save_session(e: &mut Engine, path: &str) -> Result<usize> {
     if cfg!(target_arch = "wasm32") {
         return save_session_bundle(e, path);

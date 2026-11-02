@@ -244,6 +244,10 @@ fn yes() -> bool {
 }
 
 impl Default for EditState {
+    /// Create an empty edit selection with Smart/Slip tools and the default visible rulers.
+    ///
+    /// Navigation starts at zero, the main counter uses minutes/seconds, and marker
+    /// lane colors and ruler lines are enabled in the initial display flags.
     fn default() -> Self {
         EditState {
             tool: Tool::Smart,
@@ -390,6 +394,11 @@ impl Default for Session {
 impl Session {
     pub const FORMAT_VERSION: u32 = 1;
 
+    /// Create an empty session with a stereo output and sample-rate-adjusted roll durations.
+    ///
+    /// The tempo map starts at its defaults, primary timecode uses 30 fps and secondary
+    /// timecode uses 25 fps. Chords, key changes and memory locations start empty.
+    /// No files or audio-device resources are opened.
     pub fn new(name: impl Into<String>, sample_rate: SampleRate) -> Self {
         let mut s = Session {
             format_version: Self::FORMAT_VERSION,
@@ -709,6 +718,10 @@ impl Session {
     /// associations act on an arbitrary one of the objects; a maximal `next_id` -- or a maximal
     /// existing id, which `sanitize` folds into `next_id` -- makes every later allocation return
     /// `u64::MAX` and repeat itself.
+    ///
+    /// # Errors
+    /// Returns an invalid-session error when an ID namespace contains duplicates
+    /// or the next identifier has reached the exhausted `u64::MAX` sentinel.
     fn validate(&self) -> Result<(), SessionError> {
         if self.next_id == u64::MAX {
             return Err(SessionError::Invalid("the session id space is exhausted".into()));

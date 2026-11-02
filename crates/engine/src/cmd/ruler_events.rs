@@ -4,6 +4,10 @@ use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_model::{ChordEvent, ChordId, ChordSymbol};
 
+/// Register conductor editing commands for tempo, meter, key and independent chord events.
+///
+/// The registry also exposes tempo-editor view settings and atomic tempo-point
+/// batches. Chord edits use stable IDs; key and meter edits use timeline positions.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("event.tempo_edit", "Edit Tempo Change", [], None, "{at, to, bpm}", always, |e, p| {
@@ -55,9 +59,22 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
     ]
 }
+/// Read a chord's stable identifier from the command parameters.
+///
+/// # Errors
+/// Returns a command-parameter error if `id` is absent or is not an unsigned integer.
 fn chord_id(p: &Value) -> Result<ChordId> {
     p.get("id").and_then(Value::as_u64).map(ChordId).ok_or_else(|| bad("chord.edit", "id required"))
 }
+/// Add a chord symbol or update an existing ID after validating its position and spelling.
+///
+/// Edits retain their ID and default to their previous position; additions default
+/// to the edit selection. A symbol at the destination is replaced and the timeline
+/// is sorted without modifying memory locations.
+///
+/// # Errors
+/// Returns an error for a missing edit target, invalid parameters or spelling, an
+/// out-of-range position, or an addition beyond the 10,000-event limit.
 fn chord(e: &mut Engine, p: &Value, editing: bool) -> Result<Value> {
     let id = if editing { Some(chord_id(p)?) } else { None };
     let previous = id.and_then(|id| e.session().chords.iter().find(|c| c.id == id));
@@ -86,6 +103,14 @@ fn chord(e: &mut Engine, p: &Value, editing: bool) -> Result<Value> {
     s.chords.sort_by_key(|c| c.at);
     Ok(json!({"id":id}))
 }
+/// Validate a major or natural-minor key and insert or move its timeline change.
+///
+/// The destination defaults to the supplied source position. Existing entries at
+/// both positions are replaced only after the new key and position are validated.
+///
+/// # Errors
+/// Returns an error for missing or malformed positions, an out-of-range destination,
+/// or an unrecognized key name.
 fn key_edit(e: &mut Engine, p: &Value) -> Result<Value> {
     let at = position_param(e, "event.key_edit", p, "at")?.ok_or_else(|| bad("event.key_edit", "at required"))?;
     let to = position_param(e, "event.key_edit", p, "to")?.unwrap_or(at);
@@ -103,6 +128,15 @@ fn key_edit(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({}))
 }
 
+/// Apply a bounded batch of tempo points to a copy of the current tempo map.
+///
+/// Optional tick removals and replacement ranges are applied to the copy. Range
+/// replacement restores the previous tempo at the end tick before inserting the
+/// new points. The completed map is published as one undoable command.
+///
+/// # Errors
+/// Returns an error unless there are 1..=10,000 valid points with in-range integer
+/// ticks and finite BPM values in 5..=1000, or if a tempo-map update fails.
 fn tempo_points(e: &mut Engine, p: &Value) -> Result<Value> {
     let values = p
         .get("points")

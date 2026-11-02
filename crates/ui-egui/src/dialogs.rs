@@ -84,6 +84,10 @@ pub struct Dialogs {
 }
 
 impl Dialogs {
+    /// Return the stable control-protocol name of the active modal dialog, if any.
+    ///
+    /// Names identify dialog kinds rather than their changing titles or field values;
+    /// conductor forms share one name while tempo forms have their own.
     pub fn open_name(&self) -> Option<&'static str> {
         self.open.as_ref().map(|d| match d {
             Dialog::NewTracks { .. } => "new_tracks",

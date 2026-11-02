@@ -74,6 +74,10 @@ pub const RULERS: [&str; 15] = [
 ];
 const MARKER_RULERS: [&str; 5] = ["markers", "markers2", "markers3", "markers4", "markers5"];
 
+/// Register extended view commands for channel sections, displays and ruler layouts.
+///
+/// Ruler expansion commands reveal their parent ruler, and the all/minimal presets
+/// update the ordered ruler list through the same registry as menu invocations.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         // Edit Window Views.

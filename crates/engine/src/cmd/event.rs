@@ -136,6 +136,15 @@ fn tempo_constant(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"tick": t0, "end_tick": t1, "bpm": bpm}))
 }
 
+/// Insert or replace a bar-aligned meter, optionally moving an existing change.
+///
+/// Numerator and denominator inputs are clamped to 1..=64 before meter validation.
+/// The session receives the completed tempo map only after every operation succeeds.
+/// The initial meter can be edited in place but cannot be moved to another tick.
+///
+/// # Errors
+/// Returns an error for malformed positions, an unsupported meter denominator, or a
+/// move whose original position does not contain a removable meter change.
 fn meter(e: &mut Engine, p: &Value) -> Result<Value> {
     let old = position_param(e, "event.meter", p, "original")?;
     let num = i64_or(p, "numerator", 4).clamp(1, 64) as u32;
@@ -161,6 +170,13 @@ fn meter(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"meter": format!("{num}/{den}")}))
 }
 
+/// Insert a silent range and ripple clips, automation and sample-based conductor events.
+///
+/// Memory-location ranges crossing the insertion grow; later markers, key changes
+/// and chord symbols shift with the inserted time across all tracks.
+///
+/// # Errors
+/// Returns an error when the range parameters cannot be parsed or describe an empty range.
 fn insert_time(e: &mut Engine, p: &Value) -> Result<Value> {
     let r = range_param(e, "event.insert_time", p)?;
     if r.is_empty() {
@@ -197,6 +213,13 @@ fn insert_time(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"inserted": r.len()}))
 }
 
+/// Remove a time range and ripple later clips, automation, markers, keys and chords left.
+///
+/// Point events inside the removed range are discarded. Overlapping memory-location
+/// ranges are shortened, and events after the range move by its duration.
+///
+/// # Errors
+/// Returns an error for malformed range parameters or an empty selection.
 fn cut_time(e: &mut Engine, p: &Value) -> Result<Value> {
     let r = range_param(e, "event.cut_time", p)?;
     if r.is_empty() {

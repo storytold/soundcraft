@@ -16,6 +16,11 @@ pub struct Conductor {
     pub denominator: u32,
 }
 impl Conductor {
+    /// Initialize conductor fields from values active at the requested sample position.
+    ///
+    /// The meter and key provide defaults without creating an event or recording a
+    /// source position. An optional chord ID supplies existing chord field values;
+    /// the edit constructor additionally records the original event position.
     pub fn new(s: &soundcraft_model::Session, kind: &str, at: Samples, id: Option<u64>) -> Self {
         let meter = s.tempo.meter_at_tick(s.tempo.samples_to_ticks(at, s.sample_rate));
         let key = s.key_signatures.iter().rev().find(|(t, _)| *t <= at).map_or("C major", |(_, k)| k.as_str()).to_string();
@@ -39,6 +44,10 @@ impl Conductor {
         form.original = Some(at);
         form
     }
+    /// Render editable sample position and the fields appropriate to this conductor event.
+    ///
+    /// Key and meter choices are constrained by their selectors; chord quality remains
+    /// editable text. Changes stay in the form until its command is submitted.
     pub fn fields(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Position (samples)");
@@ -94,6 +103,11 @@ impl Conductor {
             }
         }
     }
+    /// Build the engine command for the current form without changing the session.
+    ///
+    /// Key and meter edits include their original position; Add forms use only their
+    /// destination. Chords choose add or edit from their stable ID. The engine remains
+    /// responsible for validating submitted values.
     pub fn command(&self) -> (String, Value) {
         match self.kind.as_str() {
             "key" => ("event.key_edit".into(), json!({"at":self.original.unwrap_or(self.at),"to":self.at,"key":self.key})),

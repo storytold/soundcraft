@@ -18,7 +18,7 @@ pub enum FadeShape {
 impl FadeShape {
     pub const ALL: [FadeShape; 5] = [FadeShape::Linear, FadeShape::EqualPower, FadeShape::SCurve, FadeShape::Exponential, FadeShape::Logarithmic];
 
-    /// Fade-in gain at `t` ∈ [0,1] (fade-outs use `gain(1 - t)`).
+    /// Fade-in gain at `t` ∈ `[0, 1]` (fade-outs use `gain(1 - t)`).
     pub fn gain(self, t: f32) -> f32 {
         let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
         match self {

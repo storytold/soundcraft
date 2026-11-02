@@ -86,7 +86,14 @@ pub fn format_length(start: Samples, len: Samples, fmt: TimeFormat, sr: SampleRa
     }
 }
 
-/// Parse a position typed into a counter or dialog.
+/// Parse a position typed into a counter or dialog using the selected timebase.
+///
+/// Musical positions follow the tempo map. Timecode and feet/frames positions
+/// subtract their respective session origins after converting to samples.
+///
+/// # Errors
+/// Returns a parse error for malformed numbers, non-finite minute/second values,
+/// out-of-range timecode fields, or frame labels skipped by drop-frame timecode.
 pub fn parse_position(
     text: &str,
     fmt: TimeFormat,

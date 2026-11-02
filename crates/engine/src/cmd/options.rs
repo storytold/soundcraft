@@ -97,6 +97,14 @@ fn record_mode(e: &mut Engine, p: &Value, mode: &str) -> Result<Value> {
     Ok(json!({"record_mode": s.edit.record_mode}))
 }
 
+/// Apply supplied session settings while preserving any omitted fields.
+///
+/// Frame rates, bit depth and the timecode origin are validated before mutation.
+/// The secondary timecode rate is saved independently of the primary rate.
+///
+/// # Errors
+/// Returns an error for an unknown frame-rate label, an unsupported bit depth or an
+/// invalid timecode-start position.
 fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
     let fr = match str_param(p, "frame_rate") {
         Some(f) => {

@@ -9,12 +9,19 @@ pub struct ChordSymbol {
     pub bass: Option<String>,
 }
 impl ChordSymbol {
+    /// Check supported note spellings and bound the free-form chord quality text.
+    ///
+    /// Roots and optional bass notes must use recognized sharp or flat spellings. The
+    /// quality accepts at most 64 Unicode characters and excludes control characters.
     pub fn valid(&self) -> bool {
         let note = |n: &str| {
             ["C", "C#", "Db", "D", "D#", "Eb", "E", "Fb", "E#", "F", "F#", "Gb", "G", "G#", "Ab", "A", "A#", "Bb", "B", "Cb", "B#"].contains(&n)
         };
         note(&self.root) && self.quality.chars().count() <= 64 && !self.quality.chars().any(char::is_control) && self.bass.as_deref().is_none_or(note)
     }
+    /// Format the root and quality, appending a slash bass when one is present.
+    ///
+    /// Spelling is preserved as stored; call `valid` separately when accepting untrusted input.
     pub fn label(&self) -> String {
         let mut label = format!("{}{}", self.root, self.quality);
         if let Some(bass) = &self.bass {

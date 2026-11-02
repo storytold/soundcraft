@@ -1,7 +1,7 @@
 use super::AUDIO_THREAD;
 
 /// Mark the calling thread as the realtime audio thread (`soundcraft_playback`'s cpal callbacks
-/// do, every call: one thread-local store). Strips [`MixEngine::render`] hands to worker threads
+/// do, every call: one thread-local store). Strips [`crate::MixEngine::render`] hands to worker threads
 /// count as the audio thread while they render for it. Code that might run there asks
 /// [`on_audio_thread`] before doing anything that blocks; the desktop app's logger does, so a
 /// `log::` record from the audio thread never takes a lock or touches a file.

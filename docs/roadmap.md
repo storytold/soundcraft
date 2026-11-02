@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-11-02 · **Last updated:** 2026-11-02 · **Change:** minor (conductor ruler editing and review fixes) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-02 · **Last updated:** 2026-11-02 · **Change:** trivial (conductor ruler API documentation) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -95,6 +95,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-02 | trivial | Complete rustdoc for production functions in the conductor ruler diff, retaining the documentation coverage threshold |
 | 2026-11-02 | minor | Record conductor ruler editing, invalid meter-source rejection and review regressions; alpha gate and readiness estimates unchanged |
 | 2026-10-25 | trivial | Record-workflow evidence: `setup.playback_engine` applies the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | 27 built-in processors, as the plugin registry holds; the sampler (#108) is no longer listed under plugin essentials |

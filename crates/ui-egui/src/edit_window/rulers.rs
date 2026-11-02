@@ -7,6 +7,9 @@ use super::{
 
 // ---- rulers ----------------------------------------------------------------------------------
 
+/// Map a stored ruler ID to its compact header label, leaving unknown IDs blank.
+///
+/// Expanded tempo-editor rows have their own controls and intentionally omit a label.
 pub(crate) fn ruler_label(id: &str) -> &'static str {
     match id {
         "bars_beats" => "Bars|Beats",
@@ -29,6 +32,9 @@ pub(crate) fn ruler_label(id: &str) -> &'static str {
     }
 }
 
+/// Return the default row height before applying session-specific tempo-graph sizing.
+///
+/// Expanded tempo and key-staff rows reserve more space than standard timeline rulers.
 pub fn ruler_height(id: &str) -> f32 {
     if matches!(id, "tempo_editor" | "key_staff") { 56.0 } else { RULER_H }
 }
@@ -57,6 +63,10 @@ pub(super) fn main_ruler_row(s: &Session, top: f32, tl: Rect) -> Option<Rect> {
     None
 }
 
+/// Draw a code-rendered ruler icon and return its accessible click response.
+///
+/// Hover and keyboard focus share the highlight treatment. The supplied label is
+/// exposed to accessibility and as hover text; this helper dispatches no commands.
 fn icon_button(ui: &mut Ui, rect: Rect, id: &str, icon: &str, label: &str) -> egui::Response {
     let t = Tokens::current();
     let response = ui.interact(rect, ui.scope_id().with(id), Sense::click());
@@ -75,6 +85,10 @@ enum RulerMenu {
     SecondaryTimecode,
     Conductor { kind: String, at: i64, id: Option<u64>, existing: bool, session: std::sync::Arc<Session> },
 }
+/// Render a ruler popup and route selected settings or event actions through the app.
+///
+/// Conductor actions use the captured right-click target, close if its session
+/// snapshot is no longer current, and offer deletion only for existing events.
 fn menu_contents(app: &mut SoundApp, ui: &mut Ui, target: &RulerMenu) {
     match target {
         RulerMenu::Rulers => {
@@ -161,10 +175,17 @@ fn menu_contents(app: &mut SoundApp, ui: &mut Ui, target: &RulerMenu) {
         }
     }
 }
+/// Anchor a ruler settings popup to its header-button response.
+///
+/// The supplied target selects the menu contents and checked states on each frame.
 fn dropdown(app: &mut SoundApp, response: &egui::Response, target: RulerMenu) {
     egui::Popup::menu(response).show(|ui| menu_contents(app, ui, &target));
 }
 
+/// Draw a ruler's label, active-counter treatment and event or display controls.
+///
+/// Conductor Add buttons open forms at the edit selection without seeking. Marker
+/// buttons open memory locations, expose display settings or add a lane-specific marker.
 fn ruler_header(app: &mut SoundApp, ui: &mut Ui, lab: Rect, id: &str, active: bool) {
     let t = Tokens::current();
     ui.painter().rect_filled(lab, 0.0, if active { t.ruler_active_bg } else { t.ruler_label_bg });
@@ -238,7 +259,6 @@ fn ruler_header(app: &mut SoundApp, ui: &mut Ui, lab: Rect, id: &str, active: bo
     }
 }
 
-/// The tempo editor: a graph of tempo over time. Click adds a change, Alt-click removes the nearest.
 /// A "nice" step in samples for ruler labels at the current zoom.
 fn nice_step(spp: f64, sr: f64, min_px: f64) -> i64 {
     let min = spp * min_px;
@@ -427,6 +447,10 @@ struct RulerRow {
     bottom: bool,
 }
 
+/// Draw bounded major and minor time ticks with labels appropriate to the selected timebase.
+///
+/// Tick spacing adapts to zoom; bar spacing follows the meter map, and timecode
+/// labels use the supplied primary or secondary frame rate and session offsets.
 fn timebase_ruler(painter: &egui::Painter, s: &Session, place: &RulerRow, f: TimeFormat, rate: soundcraft_time::FrameRate) {
     let RulerRow { tl, row, view, bottom } = *place;
     let t = Tokens::current();
@@ -595,6 +619,11 @@ struct MusicalDrag {
     id: Option<u64>,
 }
 
+/// Draw key, meter or chord events and handle their timeline editing gestures.
+///
+/// Dragging previews a snapped position and submits one command on release.
+/// Double-clicking opens Add or Edit according to the event hit; context menus
+/// retain their right-click target while the pointer moves onto the popup.
 fn musical_ruler(app: &mut SoundApp, ui: &mut Ui, s: &std::sync::Arc<Session>, tl: Rect, row: Rect, kind: &str) {
     let t = Tokens::current();
     let ink = Color32::from_rgb(236, 236, 242);
@@ -719,6 +748,11 @@ fn musical_ruler(app: &mut SoundApp, ui: &mut Ui, s: &std::sync::Arc<Session>, t
     }
 }
 
+/// Draw a key-signature staff with original sharp and flat strokes at visible changes.
+///
+/// The key active at the left edge is carried into view, defaulting to C major.
+/// Recognized major and natural-minor keys produce accidentals; legacy custom names
+/// remain in the document but have no staff glyphs.
 fn key_staff(painter: &egui::Painter, s: &Session, tl: Rect, row: Rect) {
     let ink = Tokens::current().ruler_text;
     painter.rect_filled(row, 0.0, Tokens::current().ruler_bg);
@@ -754,6 +788,9 @@ fn key_staff(painter: &egui::Painter, s: &Session, tl: Rect, row: Rect) {
     }
 }
 
+/// Resolve a ruler's height using the session's saved tempo-editor size when applicable.
+///
+/// Tempo graph height is clamped to 56..=400 points; other rows use their default height.
 pub fn ruler_height_for(s: &Session, id: &str) -> f32 {
     if id == "tempo_editor" { s.edit.value("tempo_editor.height", 112.0).clamp(56.0, 400.0) as f32 } else { ruler_height(id) }
 }

@@ -127,6 +127,10 @@ macro_rules! cmd {
     ($id:literal, $($t:tt)*) => { $crate::cmd!(@spec true, true, false; $id, $($t)*) };
 }
 
+/// Return the lazily initialized command registry shared by the UI, CLI and automation.
+///
+/// Each command module contributes its specifications once; callers borrow the same
+/// immutable slice for lookup, menu construction and command dispatch.
 pub fn command_specs() -> &'static [CommandSpec] {
     static SPECS: OnceLock<Vec<CommandSpec>> = OnceLock::new();
     SPECS.get_or_init(|| {

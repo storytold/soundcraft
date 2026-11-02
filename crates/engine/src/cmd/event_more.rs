@@ -25,6 +25,10 @@ enum Curve {
     Sigmoid,
 }
 
+/// Register time, tempo and MIDI processing commands with their shared parameter schemas.
+///
+/// Handlers include conductor-map operations, MIDI transforms and chord extraction;
+/// GUI and programmatic callers dispatch the same command identifiers.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "event.time_ops_window", "Time Operations Window", ["Event", "Time Operations"], None, "{} — tempo/meter map, song start and selection for the Time Operations window", always, |e, _| Ok(time_state(e.session()))),
@@ -607,6 +611,15 @@ fn pitch_class_weights(sounding: &[(i64, i64, u8)], a: i64, b: i64) -> ([f64; 12
     (w, bass)
 }
 
+/// Recognize bar-wise MIDI harmony and add changes to the independent chord timeline.
+///
+/// Selected MIDI tracks are analyzed, falling back to all MIDI tracks when none are
+/// selected. Work is bounded by note, bar and result limits. Consecutive equal chord
+/// names produce one event, and existing memory locations are preserved.
+///
+/// # Errors
+/// Returns an error for invalid track or selection parameters, or when adding chord
+/// events would exceed the session's 10,000-event limit.
 fn extract_chords(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "event.extract_chords";
     let (_, t0, t1) = selection_ticks(e, p, id)?;

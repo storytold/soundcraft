@@ -7,6 +7,10 @@ pub(super) fn same_document(saved: &Session, doc: &Session) -> bool {
     document_values(saved, &saved.edit) == document_values(doc, &saved.edit)
 }
 
+/// Borrow saved document fields while normalizing navigation-only edit state.
+///
+/// The nested tuples avoid cloning session data and require every document field
+/// to participate explicitly in the saved-state comparison.
 fn document_values<'a>(s: &'a Session, navigation: &'a EditState) -> impl PartialEq + 'a {
     // No `..`: adding a document field must also decide how it affects saved-state equality.
     let Session {

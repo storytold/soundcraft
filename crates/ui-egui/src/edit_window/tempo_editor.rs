@@ -19,6 +19,11 @@ struct StrokeEdit {
     selecting: bool,
 }
 
+/// Draw the tempo graph and collect previews before submitting one command per completed gesture.
+///
+/// Shift-drag selects a tick range; ordinary gestures move a point or draw a curve.
+/// Escape, focus loss or a changed session snapshot cancels a pending gesture
+/// without publishing its preview to the tempo map.
 pub(super) fn draw(app: &mut SoundApp, ui: &mut Ui, s: &Arc<Session>, tl: Rect, row: Rect) {
     let lo = s.edit.value("tempo_editor.min_bpm", 80.0);
     let hi = s.edit.value("tempo_editor.max_bpm", 160.0).max(lo + 1.0);
@@ -125,6 +130,11 @@ pub(super) fn draw(app: &mut SoundApp, ui: &mut Ui, s: &Arc<Session>, tl: Rect, 
         }
     });
 }
+/// Convert a captured graph stroke into a bounded list of tick/BPM points.
+///
+/// Existing-point drags produce one point, keeping the initial tempo anchored at
+/// zero. Free-hand strokes deduplicate ticks; other shapes interpolate at most
+/// 10,000 points. The caller supplies a positive, clamped tick density.
 fn points(e: &StrokeEdit, shape: &str, density: i64) -> Vec<(i64, f64)> {
     if e.original.is_some() {
         return vec![(if e.original == Some(0) { 0 } else { e.end.0 }, e.end.1)];
@@ -146,6 +156,11 @@ fn points(e: &StrokeEdit, shape: &str, density: i64) -> Vec<(i64, f64)> {
         })
         .collect()
 }
+/// Draw tempo-graph shape, density, BPM range, scaling and height controls.
+///
+/// View adjustments dispatch saved editor settings, while scaling a nonempty tick
+/// selection submits a bounded tempo-point command with BPM values clamped to the
+/// engine's supported range.
 fn controls(app: &mut SoundApp, ui: &mut Ui, s: &Session, row: Rect, tl: Rect, range: (f64, f64)) {
     let rect = Rect::from_min_max(pos2(tl.min.x - 130.0, row.min.y), pos2(tl.min.x - 4.0, row.max.y));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));

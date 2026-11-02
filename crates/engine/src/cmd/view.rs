@@ -109,6 +109,13 @@ fn zoom(e: &mut Engine, f: f64, x: Option<f64>) -> Result<Value> {
     Ok(json!({"samples_per_px": new, "scroll": z.scroll}))
 }
 
+/// Set or toggle a supported ruler's visibility and retain canonical ruler ordering.
+///
+/// The optional `visible` parameter sets an explicit state; omitting it toggles the
+/// current state. Only the named ruler is changed.
+///
+/// # Errors
+/// Returns an error when `ruler` is missing or is not a supported primary ruler ID.
 fn ruler(e: &mut Engine, p: &Value) -> Result<Value> {
     const ALL: [&str; 10] = ["bars_beats", "min_secs", "timecode", "feet_frames", "samples", "tempo", "meter", "markers", "key", "chords"];
     let r = str_param(p, "ruler").filter(|r| ALL.contains(r)).ok_or_else(|| bad("view.ruler", "unknown ruler"))?.to_string();

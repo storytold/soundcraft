@@ -75,6 +75,10 @@ impl FrameRate {
         (n + d / 2) / d
     }
 
+    /// Report whether timecode labels skip frame numbers at eligible minute boundaries.
+    ///
+    /// This identifies the drop-frame labeling mode; the physical frame rate remains
+    /// the rational rate returned by `rational`.
     pub fn is_drop(self) -> bool {
         matches!(
             self,
@@ -87,6 +91,10 @@ impl FrameRate {
         )
     }
 
+    /// Return the canonical frame-rate label used in session settings and rate selectors.
+    ///
+    /// Drop-frame variants include the `Drop` suffix so callers can distinguish them
+    /// from non-drop labeling at the same nominal frame count.
     pub fn label(self) -> &'static str {
         match self {
             FrameRate::Fps23_976 => "23.976",

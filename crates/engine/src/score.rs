@@ -79,7 +79,7 @@ pub struct Measure {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub pitches: Vec<u8>,
-    /// Duration in sixteenths; always one of [`VALUES`].
+    /// Duration in sixteenths; always one of `VALUES`.
     pub units: u32,
     pub tie_start: bool,
     pub tie_stop: bool,
