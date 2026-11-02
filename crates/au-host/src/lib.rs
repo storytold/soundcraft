@@ -9,7 +9,7 @@
 //! values are the Audio Unit's own (plain) values, ranges and units, so no mapping is needed.
 //! Boolean parameters become toggles, indexed ones starting at 0 become choices.
 //!
-//! Like `soundcraft-vst3-host`, this is an isolated `unsafe` crate (craftrules never-crash):
+//! Like `soundcraft-vst3-host`, this is an isolated `unsafe` crate:
 //! `unsafe` is denied crate-wide and allowed only in the private `ffi` module (hand-written
 //! AudioToolbox / CoreFoundation declarations). The public API is safe, returns
 //! `Result`/`Option` and never panics. Limits of in-process hosting: an Audio Unit that itself
