@@ -1,5 +1,6 @@
 //! `Vst3Plugin`: a loaded VST3 instance behind the safe `soundcraft_dsp::Plugin` trait.
 
+use crate::Vst3Error;
 use crate::ffi::{AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND, ProcessInput};
 use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport, Unit};
 use std::collections::HashMap;
@@ -116,6 +117,25 @@ impl Vst3Plugin {
             .collect();
         p.values = values;
         p
+    }
+
+    /// Flushes the plugin's internal state (delay lines, filter memory, reverb tails) so the next
+    /// block starts as if no audio had passed through it. Runs `setProcessing(false)`,
+    /// `setActive(false)`, `setActive(true)` and `setProcessing(true)` in that order. Parameter
+    /// values, the bus layout and the setup from `prepare` are kept.
+    ///
+    /// Not realtime-safe: plugins free and allocate memory in `setActive`, and some take locks.
+    /// Call it from the control thread while the plugin is not being processed, never from the
+    /// audio callback.
+    ///
+    /// # Errors
+    /// [`Vst3Error::Process`] when the plugin was never prepared successfully, has no audio
+    /// processor, or refuses to become active again. It never panics.
+    pub fn reactivate(&mut self) -> Result<(), Vst3Error> {
+        if self.max_block == 0 {
+            return Err(Vst3Error::Process("not prepared".into()));
+        }
+        self.inst.reactivate()
     }
 
     fn plain_from_normalized(&self, i: usize, n: f64) -> Option<f32> {

@@ -403,6 +403,30 @@ impl Instance {
         }
     }
 
+    /// Flushes the plugin's internal state (delay lines, filter memory, reverb tails) without
+    /// touching its parameters: `setProcessing(false)`, `setActive(false)`, `setActive(true)`,
+    /// `setProcessing(true)`, in that order. Errors when there is no audio processor, or when the
+    /// plugin refuses `setActive(true)` (it is then left inactive; the next [`Instance::configure`]
+    /// starts it again). A plugin may answer `setProcessing` with "not implemented"; that is fine.
+    pub fn reactivate(&mut self) -> Result<(), Vst3Error> {
+        let p = self.processor().ok_or_else(|| Vst3Error::Process("no audio processor".into()))?.clone();
+        // SAFETY: valid processor; `setProcessing(false)` outside the processing state is harmless.
+        unsafe { p.setProcessing(0) };
+        self.processing = false;
+        // SAFETY: valid component.
+        unsafe { self.component.setActive(0) };
+        self.active = false;
+        // SAFETY: valid component, deactivated just above; the plugin keeps its setup.
+        if !ok(unsafe { self.component.setActive(1) }) {
+            return Err(Vst3Error::Process("setActive failed".into()));
+        }
+        self.active = true;
+        // SAFETY: valid, active processor. Many plugins return kNotImplemented here; that is not an error.
+        unsafe { p.setProcessing(1) };
+        self.processing = true;
+        Ok(())
+    }
+
     /// Runs one `process` call over `frames` frames: `params` become one point each at offset 0,
     /// `controls` (time, id, value) one point at their time when it falls in this call (the last
     /// one wins per parameter), and `notes` (sorted by time) have their times made relative to
