@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** minor (Cancel Zoom Toggle) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-27 · **Change:** minor (Cancel Zoom Toggle; Tracks and Groups and Clips in dock columns; Alt-click returns a plugin parameter to its default) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 How SoundCraft feels in the hands of a Pro Tools user: tools, modes, modifiers, shortcuts,
 windows, meters. Measured from `crates/model/src/session.rs` (tools, modes), the command
@@ -51,7 +51,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | I/O Setup | 🟡 | Busses and paths; no hardware channel matrix (G-01) |
 | Preferences | 🟡 | Many settings stored, fewer honoured |
 | Window configurations, Tile/Cascade | 🟡 | Configurations ✅; Tile/Cascade in PR #151 |
-| Plugin windows | 🟡 | Generic parameter sliders; Pro Tools plugins have bespoke GUIs (#138 asks for skeuomorphic design); multi-page plugin views (#6) |
+| Plugin windows | 🟡 | Generic parameter sliders; Pro Tools plugins have bespoke GUIs (#138 asks for skeuomorphic design); multi-page plugin views (#6); Alt/Option-click returns a parameter to its default |
 | A plugin opens when it's inserted | ✅ | #486; a hosted plugin's own editor, else its plugin window |
 | Command palette (Search) | ✅ | Over every command |
 
@@ -63,15 +63,19 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | Interface scaling | 🟡 | Slider in PR #147 |
 | Meter types and ballistics (peak, RMS, VU, K-scales, gain reduction) | 🟡 | Peak/RMS; meter type choice and GR meters partial |
 | Clip indicators, track colours, waveform views (peak/power/rectified/outlines) | ✅ | |
-| Fader resolution, fine adjust, numeric entry | 🟡 | |
+| Fader resolution, fine adjust, numeric entry | 🟡 | Ctrl/Cmd-drag moves the faders, the Strip Silence sliders and plugin parameter sliders a tenth as far |
 | macOS system menu bar | ✅ | #10 |
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-27 | minor | Clip Effects gain supports Alt/Option-click reset to 0 dB and Ctrl/Cmd fine adjustment. Readiness estimate unchanged |
 | 2026-10-25 | minor | Zoom Toggle row: Alt+Shift+E and Alt-click cancel Zoom Toggle and keep the view. Readiness estimate unchanged |
 | 2026-10-25 | minor | Edit and Mix windows: Tracks and Groups and Clips in full-height dock columns. Readiness estimate unchanged |
+| 2026-10-24 | minor | Plugin parameters: Alt/Option-click returns one to its default. Readiness estimate unchanged |
+| 2026-10-24 | minor | Plugin parameter sliders: Ctrl/Cmd-drag moves them a tenth as far. Readiness estimate unchanged |
+| 2026-10-24 | minor | Strip Silence sliders: Ctrl/Cmd-drag moves them a tenth as far. Readiness estimate unchanged |
 | 2026-10-16 | minor | Track name menu: Scroll Into View brings the track to the top of the Edit window and the left of the Mix. Readiness estimate unchanged |
 | 2026-10-13 | minor | A plugin opens when it's inserted (#486) |
 | 2026-10-13 | minor | Drag across checkboxes (#399) |
