@@ -74,6 +74,10 @@ pub const RULERS: [&str; 15] = [
 ];
 const MARKER_RULERS: [&str; 5] = ["markers", "markers2", "markers3", "markers4", "markers5"];
 
+/// Register extended view commands for channel sections, displays and ruler layouts.
+///
+/// Ruler expansion commands reveal their parent ruler, and the all/minimal presets
+/// update the ordered ruler list through the same registry as menu invocations.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         // Edit Window Views.
@@ -118,8 +122,14 @@ pub fn specs() -> Vec<CommandSpec> {
             sort_rulers(&mut s.edit.rulers);
             Ok(json!({"rulers": s.edit.rulers}))
         }),
-        flag!("view.ruler_tempo_editor", "Tempo Editor", ["View", "Rulers", "Tempo"], "view.ruler.tempo_editor"),
-        flag!("view.ruler_key_staff", "Key Signature Staff", ["View", "Rulers", "Key Signature"], "view.ruler.key_staff"),
+        cmd!(noundo "view.ruler_tempo_editor", "Tempo Editor", ["View", "Rulers", "Tempo"], None, "{value?: bool}", always, |e,p| {
+            let result=toggle_flag(e,p,"view.ruler.tempo_editor")?;
+            if e.session().edit.flag("view.ruler.tempo_editor") { set_ruler(&mut e.session_mut().edit.rulers,"tempo",true); } Ok(result)
+        }),
+        cmd!(noundo "view.ruler_key_staff", "Key Signature Staff", ["View", "Rulers", "Key Signature"], None, "{value?: bool}", always, |e,p| {
+            let result=toggle_flag(e,p,"view.ruler.key_staff")?;
+            if e.session().edit.flag("view.ruler.key_staff") { set_ruler(&mut e.session_mut().edit.rulers,"key",true); } Ok(result)
+        }),
         // Marker displays.
         flag!("view.marker_track_lane", "Track Lane", ["View", "Marker Displays"], "view.marker.track_lane"),
         flag!("view.marker_ruler_lines", "Ruler Lines", ["View", "Marker Displays"], "view.marker.ruler_lines"),

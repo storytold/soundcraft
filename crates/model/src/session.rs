@@ -244,6 +244,10 @@ fn yes() -> bool {
 }
 
 impl Default for EditState {
+    /// Create an empty edit selection with Smart/Slip tools and the default visible rulers.
+    ///
+    /// Navigation starts at zero, the main counter uses minutes/seconds, and marker
+    /// lane colors and ruler lines are enabled in the initial display flags.
     fn default() -> Self {
         EditState {
             tool: Tool::Smart,
@@ -286,10 +290,17 @@ impl Default for EditState {
             delay_compensation: true,
             keyboard_focus: "commands".into(),
             timeline_selection: Range::default(),
-            flags: ["view.clip.name", "view.clip.gain_line", "waveform.peak", "view.clip.overlap_shadows", "view.marker.ruler_lines"]
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
+            flags: [
+                "view.clip.name",
+                "view.clip.gain_line",
+                "waveform.peak",
+                "view.clip.overlap_shadows",
+                "view.marker.ruler_lines",
+                "view.marker.ruler_lane_color",
+            ]
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
             values: std::collections::BTreeMap::new(),
         }
     }
@@ -337,6 +348,10 @@ pub struct Session {
     pub sample_rate: SampleRate,
     pub bit_depth: BitDepthSetting,
     pub frame_rate: FrameRate,
+    #[serde(default)]
+    pub secondary_frame_rate: Option<FrameRate>,
+    #[serde(default)]
+    pub chords: Vec<crate::ChordEvent>,
     /// Timecode of sample 0 (session start), as a sample count.
     pub timecode_start: Samples,
     pub tempo: TempoMap,
@@ -379,6 +394,11 @@ impl Default for Session {
 impl Session {
     pub const FORMAT_VERSION: u32 = 1;
 
+    /// Create an empty session with a stereo output and sample-rate-adjusted roll durations.
+    ///
+    /// The tempo map starts at its defaults, primary timecode uses 30 fps and secondary
+    /// timecode uses 25 fps. Chords, key changes and memory locations start empty.
+    /// No files or audio-device resources are opened.
     pub fn new(name: impl Into<String>, sample_rate: SampleRate) -> Self {
         let mut s = Session {
             format_version: Self::FORMAT_VERSION,
@@ -386,6 +406,8 @@ impl Session {
             sample_rate,
             bit_depth: BitDepthSetting::Int24,
             frame_rate: FrameRate::Fps30,
+            secondary_frame_rate: Some(FrameRate::Fps25),
+            chords: Vec::new(),
             timecode_start: 0,
             tempo: TempoMap::default(),
             key_signatures: Vec::new(),
@@ -592,6 +614,11 @@ impl Session {
 
     /// Repair invariants after loading untrusted data.
     pub fn sanitize(&mut self) {
+        self.secondary_frame_rate.get_or_insert(if self.frame_rate == FrameRate::Fps25 { FrameRate::Fps30 } else { FrameRate::Fps25 });
+        self.chords.retain(|c| c.symbol.valid());
+        self.chords.truncate(10_000);
+        self.chords.iter_mut().for_each(|c| bound(&mut c.at));
+        self.chords.sort_by_key(|c| c.at);
         let max_id = self
             .tracks
             .iter()
@@ -602,6 +629,7 @@ impl Session {
             .chain(self.videos.iter().map(|v| v.id.0))
             .chain(self.busses.iter().map(|b| b.id.0))
             .chain(self.markers.iter().map(|m| m.id.0))
+            .chain(self.chords.iter().map(|c| c.id.0))
             .chain(self.groups.iter().map(|g| g.id.0))
             .max()
             .unwrap_or(0);
@@ -690,6 +718,10 @@ impl Session {
     /// associations act on an arbitrary one of the objects; a maximal `next_id` -- or a maximal
     /// existing id, which `sanitize` folds into `next_id` -- makes every later allocation return
     /// `u64::MAX` and repeat itself.
+    ///
+    /// # Errors
+    /// Returns an invalid-session error when an ID namespace contains duplicates
+    /// or the next identifier has reached the exhausted `u64::MAX` sentinel.
     fn validate(&self) -> Result<(), SessionError> {
         if self.next_id == u64::MAX {
             return Err(SessionError::Invalid("the session id space is exhausted".into()));
@@ -700,6 +732,7 @@ impl Session {
         distinct("video", self.videos.iter().map(|v| v.id.0))?;
         distinct("bus", self.busses.iter().map(|b| b.id.0))?;
         distinct("marker", self.markers.iter().map(|m| m.id.0))?;
+        distinct("chord", self.chords.iter().map(|c| c.id.0))?;
         distinct("group", self.groups.iter().map(|g| g.id.0))?;
         Ok(())
     }

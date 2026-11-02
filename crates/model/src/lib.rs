@@ -10,6 +10,8 @@ pub mod b64;
 mod clip;
 mod ids;
 mod markers;
+mod music;
+pub use music::{ChordEvent, ChordSymbol, key_fifths, key_names};
 mod mixer;
 mod session;
 mod source;
@@ -17,7 +19,7 @@ mod track;
 
 pub use automation::{AutoParam, AutomationLane, AutomationMode, AutomationPoint};
 pub use clip::{Clip, ClipContent, Fade, FadeShape};
-pub use ids::{BusId, ClipId, GroupId, MarkerId, SourceId, TrackId};
+pub use ids::{BusId, ChordId, ClipId, GroupId, MarkerId, SourceId, TrackId};
 pub use markers::{Group, MarkerKind, MemoryLocation};
 pub use mixer::{
     Bus, ChannelFormat, INSERT_SLOTS, Insert, Mixer, OutputPath, Route, SEND_SLOTS, SendSlot, Speaker, SurroundPan, fader_db_to_pos, fader_pos_to_db,

@@ -150,7 +150,7 @@ pub fn auto_name_new_clips(s: &mut Session, track: TrackId, old: &HashSet<ClipId
 }
 
 /// Remove material inside `range` on a track. In Shuffle mode later clips move left, up to the
-/// first locked clip (see [`ripple`]). Returns the removed material as clips positioned relative
+/// first locked clip (see `ripple`). Returns the removed material as clips positioned relative
 /// to `range.start`.
 pub fn clear_range(s: &mut Session, track: TrackId, range: Range, shuffle: bool) -> Vec<Clip> {
     if range.is_empty() {
@@ -178,7 +178,7 @@ pub fn clear_range(s: &mut Session, track: TrackId, range: Range, shuffle: bool)
 }
 
 /// Remove the clips `ids` from every track. In Shuffle the later clips on each track close the holes the movable
-/// ones leave, as a Shuffle move lifts them (see [`lift_plan`]), so a crossfade partner keeps its material. Returns
+/// ones leave, as a Shuffle move lifts them (see `lift_plan`), so a crossfade partner keeps its material. Returns
 /// how many clips went.
 pub fn remove_clips(s: &mut Session, ids: &[ClipId], shuffle: bool) -> usize {
     let ids: HashSet<ClipId> = ids.iter().copied().collect();
@@ -344,7 +344,7 @@ fn ripple(s: &mut Session, track: TrackId, from: Samples, by: Samples) -> (Sampl
     moved
 }
 
-/// Automation Follows Edit for a Shuffle ripple (`moved` from [`ripple`]): the points from `from`
+/// Automation Follows Edit for a Shuffle ripple (`moved` from `ripple`): the points from `from`
 /// up to the lock move with the clips, and when material closes up the points in the span that
 /// goes away go too.
 fn follow_automation(s: &mut Session, track: TrackId, from: Samples, (by, lock): (Samples, Samples)) {
@@ -708,7 +708,7 @@ pub fn shuffle_slot(s: &Session, track: TrackId, at: Samples, moving: &[ClipId])
     nearest_slot(&shuffle_slots(s, track, moving), at)
 }
 
-/// Lift the movable `moving` clips off a track the Shuffle way (see [`lift_plan`]); with
+/// Lift the movable `moving` clips off a track the Shuffle way (see `lift_plan`); with
 /// Automation Follows Edit their automation leaves with them. Returns the clips, each with that
 /// automation timed from its start.
 fn lift_all(s: &mut Session, track: TrackId, moving: &HashSet<ClipId>) -> Vec<(Clip, Vec<(AutoParam, AutomationPoint)>)> {
@@ -755,7 +755,7 @@ pub fn shuffle_groups(s: &Session, ids: &[ClipId], dest: &[(TrackId, TrackId)]) 
 }
 
 /// Move clips in Shuffle mode: each leaves its track (later clips close the gap, see
-/// [`lift_plan`]), and the clips bound for each track land together, the earliest on the
+/// `lift_plan`), and the clips bound for each track land together, the earliest on the
 /// [`shuffle_slot`] nearest `delta` away, pushing later clips right. With Automation Follows Edit
 /// their automation travels with them. Refused, with the reason, when a locked clip or a
 /// crossfade leaves no room.

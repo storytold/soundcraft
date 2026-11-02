@@ -28,16 +28,22 @@ pub(super) fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
         }
     }
     let sel = s.edit.selection;
-    // Timeline selection markers on the main ruler.
-    if !sel.is_empty() {
-        for x in [x_of(s, tl, sel.start), x_of(s, tl, sel.end)] {
-            painter.add(Shape::convex_polygon(
-                vec![pos2(x - 5.0, area.min.y + 2.0), pos2(x + 5.0, area.min.y + 2.0), pos2(x, area.min.y + 9.0)],
+    let ruler_selection = if s.edit.link_timeline_edit { sel } else { s.edit.timeline_selection };
+    if let Some(row) = super::rulers::main_ruler_row(s, area.min.y, tl) {
+        let handles = if ruler_selection.is_empty() { vec![ruler_selection.start] } else { vec![ruler_selection.start, ruler_selection.end] };
+        let ruler_painter = painter.with_clip_rect(row);
+        for at in handles {
+            let x = x_of(s, tl, at);
+            ruler_painter.rect_filled(Rect::from_min_max(pos2(x - 2.5, row.min.y + 2.0), pos2(x + 2.5, row.max.y - 7.0)), 0.0, t.accent);
+            ruler_painter.add(Shape::convex_polygon(
+                vec![pos2(x - 6.0, row.max.y - 8.0), pos2(x + 6.0, row.max.y - 8.0), pos2(x, row.max.y - 2.0)],
                 t.accent,
-                Stroke::NONE,
+                Stroke::new(1.0, t.accent_dark),
             ));
         }
-    } else if !app.is_playing() {
+    }
+    // Timeline selection markers on the main ruler.
+    if sel.is_empty() && !app.is_playing() {
         let x = x_of(s, tl, sel.start);
         let now = ui.input(|i| i.time);
         let (id, key) = (ui.scope_id().with("insertion_blink"), (sel.start, s.edit.selected_tracks.clone()));

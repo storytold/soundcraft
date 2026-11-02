@@ -1,6 +1,6 @@
 use super::instances::PluginFailures;
 
-/// Peak meter values for one strip (linear, per channel). [`MixEngine`] measures one block; a
+/// Peak meter values for one strip (linear, per channel). [`crate::MixEngine`] measures one block; a
 /// realtime host folds blocks together with [`StripMeter::accumulate`] so a reader polling less
 /// often than blocks arrive sees the highest peak since it last looked, not just the latest block.
 #[derive(Debug, Clone, Default, PartialEq)]

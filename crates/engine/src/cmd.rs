@@ -26,6 +26,7 @@ mod more_util;
 mod options;
 mod plugin_state;
 mod query;
+mod ruler_events;
 pub(crate) mod sampler;
 mod setup_more;
 mod strip_silence;
@@ -126,6 +127,10 @@ macro_rules! cmd {
     ($id:literal, $($t:tt)*) => { $crate::cmd!(@spec true, true, false; $id, $($t)*) };
 }
 
+/// Return the lazily initialized command registry shared by the UI, CLI and automation.
+///
+/// Each command module contributes its specifications once; callers borrow the same
+/// immutable slice for lookup, menu construction and command dispatch.
 pub fn command_specs() -> &'static [CommandSpec] {
     static SPECS: OnceLock<Vec<CommandSpec>> = OnceLock::new();
     SPECS.get_or_init(|| {
@@ -147,6 +152,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(audio_midi::specs());
         v.extend(midi::specs());
         v.extend(view_more::specs());
+        v.extend(ruler_events::specs());
         v.extend(track_more::specs());
         v.extend(clip_more::specs());
         v.extend(clip_list::specs());

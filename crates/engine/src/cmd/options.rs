@@ -97,6 +97,14 @@ fn record_mode(e: &mut Engine, p: &Value, mode: &str) -> Result<Value> {
     Ok(json!({"record_mode": s.edit.record_mode}))
 }
 
+/// Apply supplied session settings while preserving any omitted fields.
+///
+/// Frame rates, bit depth and the timecode origin are validated before mutation.
+/// The secondary timecode rate is saved independently of the primary rate.
+///
+/// # Errors
+/// Returns an error for an unknown frame-rate label, an unsupported bit depth or an
+/// invalid timecode-start position.
 fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
     let fr = match str_param(p, "frame_rate") {
         Some(f) => {
@@ -111,8 +119,20 @@ fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
         Some(_) => return Err(bad("setup.session", "bit_depth must be 16, 24 or 32f")),
         None => None,
     };
+    let secondary = match str_param(p, "secondary_frame_rate") {
+        Some(label) => Some(
+            soundcraft_time::FrameRate::ALL
+                .into_iter()
+                .find(|r| r.label() == label)
+                .ok_or_else(|| bad("setup.session", "unknown secondary frame rate"))?,
+        ),
+        None => None,
+    };
     let tc = position_param(e, "setup.session", p, "timecode_start")?;
     let s = e.session_mut();
+    if let Some(f) = secondary {
+        s.secondary_frame_rate = Some(f);
+    }
     if let Some(f) = fr {
         s.frame_rate = f;
     }

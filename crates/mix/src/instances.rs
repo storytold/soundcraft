@@ -26,7 +26,7 @@ pub struct InstanceSpec {
     pub state: Option<Vec<u8>>,
 }
 
-/// A plugin instance created and prepared off the audio thread, handed to [`MixEngine::adopt`].
+/// A plugin instance created and prepared off the audio thread, handed to [`crate::MixEngine::adopt`].
 pub struct PreparedInstance {
     pub track: TrackId,
     pub slot: usize,
@@ -36,7 +36,7 @@ pub struct PreparedInstance {
 }
 
 /// Every third-party plugin slot (inserts and instruments) of a session, with the channel count
-/// [`MixEngine::sync`] prepares it for. Inactive and master tracks are included (they have strips).
+/// [`crate::MixEngine::sync`] prepares it for. Inactive and master tracks are included (they have strips).
 pub fn instance_specs(s: &Session) -> Vec<InstanceSpec> {
     let main_ch = main_channels(s);
     let mut out = Vec::new();

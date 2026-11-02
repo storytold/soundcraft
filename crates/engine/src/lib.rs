@@ -185,7 +185,7 @@ pub struct Engine {
     pub transport_requests: Vec<TransportRequest>,
     pub transport: TransportStatus,
     /// Command journal (id, params) for macro recording / agents. Ring buffer: capped at
-    /// [`MAX_JOURNAL_ENTRIES`] entries of up to [`MAX_JOURNAL_ENTRY_BYTES`] params each.
+    /// `MAX_JOURNAL_ENTRIES` entries of up to `MAX_JOURNAL_ENTRY_BYTES` params each.
     pub journal: std::collections::VecDeque<(String, Value)>,
     /// Path of the session file, if saved.
     pub path: Option<String>,
@@ -498,8 +498,8 @@ impl Engine {
         self.merge_key = None;
     }
 
-    /// Append a journaled command, clamping its params to [`MAX_JOURNAL_ENTRY_BYTES`] and the
-    /// buffer to [`MAX_JOURNAL_ENTRIES`] entries (oldest are dropped).
+    /// Append a journaled command, clamping its params to `MAX_JOURNAL_ENTRY_BYTES` and the
+    /// buffer to `MAX_JOURNAL_ENTRIES` entries (oldest are dropped).
     fn journal_append(&mut self, id: &str, params: &Value) {
         let clamped = (id.to_string(), journal_params(params));
         self.journal.push_back(clamped);
@@ -549,7 +549,7 @@ fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
 }
 
 /// The params to keep in the journal for a command: the value itself when it serializes within
-/// [`MAX_JOURNAL_ENTRY_BYTES`], or a truncation marker when it is too large or unparseable.
+/// `MAX_JOURNAL_ENTRY_BYTES`, or a truncation marker when it is too large or unparseable.
 ///
 /// Serializes into a [`std::io::Write`] sink that fails as soon as the cap is exceeded, so an
 /// oversized `params` (a multi-MiB line from MCP or the control channel) is never fully

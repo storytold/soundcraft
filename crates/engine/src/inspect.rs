@@ -70,10 +70,16 @@ fn track_json(e: &Engine, t: &Track, full: bool) -> Value {
     v
 }
 
+/// Describe the current document, transport and undo state as an automation-facing JSON value.
+///
+/// Independent chord events and both frame rates are included. With `full` enabled,
+/// track inserts expose parameter values and automation lanes expose their points;
+/// the compact form retains clip summaries and automation point counts.
 pub fn session(e: &Engine, full: bool) -> Value {
     let s = e.session();
     json!({
         "name": s.name, "path": e.path, "dirty": e.is_dirty(), "sample_rate": s.sample_rate.hz(), "bit_depth": s.bit_depth,
+        "secondary_frame_rate": s.secondary_frame_rate.map(|r| r.label()), "chords": s.chords, "key_signatures": s.key_signatures,
         "frame_rate": s.frame_rate.label(), "tempo": s.tempo.tempos(), "meter": s.tempo.meters(), "main_format": s.main_format().label(),
         "length_samples": s.content_end(),
         "tracks": s.tracks.iter().map(|t| track_json(e, t, full)).collect::<Vec<_>>(),

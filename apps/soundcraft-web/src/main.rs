@@ -1,6 +1,6 @@
 //! SoundCraft in the browser.
 //!
-//! Runs the same [`soundcraft_ui_egui::SoundApp`] as the desktop app through eframe's web runner
+//! Runs the same `soundcraft_ui_egui::SoundApp` as the desktop app through eframe's web runner
 //! (wgpu: WebGPU where available, WebGL2 otherwise), on the synthesised demo session, with
 //! playback through WebAudio (cpal's `wasm-bindgen` backend). Build with `trunk build --release`
 //! from this directory (output in `dist/web`).

@@ -19,3 +19,4 @@ id_type!(SourceId);
 id_type!(BusId);
 id_type!(GroupId);
 id_type!(MarkerId);
+id_type!(ChordId);

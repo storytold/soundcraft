@@ -7,6 +7,10 @@ pub(super) fn same_document(saved: &Session, doc: &Session) -> bool {
     document_values(saved, &saved.edit) == document_values(doc, &saved.edit)
 }
 
+/// Borrow saved document fields while normalizing navigation-only edit state.
+///
+/// The nested tuples avoid cloning session data and require every document field
+/// to participate explicitly in the saved-state comparison.
 fn document_values<'a>(s: &'a Session, navigation: &'a EditState) -> impl PartialEq + 'a {
     // No `..`: adding a document field must also decide how it affects saved-state equality.
     let Session {
@@ -15,6 +19,8 @@ fn document_values<'a>(s: &'a Session, navigation: &'a EditState) -> impl Partia
         sample_rate,
         bit_depth,
         frame_rate,
+        secondary_frame_rate,
+        chords,
         timecode_start,
         tempo,
         key_signatures,
@@ -36,7 +42,20 @@ fn document_values<'a>(s: &'a Session, navigation: &'a EditState) -> impl Partia
     // Tuples implement PartialEq up to twelve elements. These contain only borrowed fields.
     (
         (format_version, name, sample_rate, bit_depth, frame_rate, timecode_start, tempo, key_signatures, tracks, sources, videos, busses),
-        (outputs, markers, groups, auto_names, edit_values(edit, navigation), next_id, comments, midi_originals, pool, folder),
+        (
+            secondary_frame_rate,
+            chords,
+            outputs,
+            markers,
+            groups,
+            auto_names,
+            edit_values(edit, navigation),
+            next_id,
+            comments,
+            midi_originals,
+            pool,
+            folder,
+        ),
     )
 }
 
