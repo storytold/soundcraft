@@ -687,6 +687,24 @@ mod tests {
     }
 
     #[test]
+    fn bars_of_a_sixteenth_a_32nd_and_a_64th_in_a_row_keep_a_contiguous_grid() {
+        let base = crate::demo::demo_engine();
+        let baseline = note_starts(&layout(base.session(), &[]));
+        let mut e = crate::demo::demo_engine();
+        // Bars 5 to 8 are 1/16, 1/32, 1/64 and 3/64 long, then 4/4 resumes.
+        for (bar, (n, d)) in (5..).zip([(1, 16), (1, 32), (1, 64), (3, 64), (4, 4)]) {
+            let tick = e.session().tempo.bar_start_tick(bar);
+            e.session_mut().tempo.set_meter(tick, n, d).expect("valid meter");
+        }
+        let grid = measure_grid(e.session(), i64::MAX);
+        assert_eq!(grid.first().map(|m| m.0), Some(0));
+        for w in grid.windows(2) {
+            assert_eq!(w[0].0 + w[0].1, w[1].0, "measures leave no gap or overlap: {w:?}");
+        }
+        assert_eq!(note_starts(&layout(e.session(), &[])), baseline, "notes lost");
+    }
+
+    #[test]
     fn output_is_bounded_by_byte_budget() {
         // A part with many notes must not produce an unbounded document.
         let bars: Vec<_> = (0..100).map(|i| (i * 16, 16, 4, 4)).collect();
