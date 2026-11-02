@@ -7,6 +7,7 @@ use super::{
     clap_host, clap_plugin_audio_ports, clap_plugin_entry, clap_plugin_factory, clap_plugin_gui, clap_plugin_latency, clap_plugin_note_ports,
     clap_plugin_params, clap_plugin_state, clap_version_is_compatible, read_cstr, scan,
 };
+use super::{CLAP_EXT_RENDER, clap_plugin_render};
 
 // ---- loaded binaries -----------------------------------------------------------------------
 
@@ -178,6 +179,7 @@ impl Bundle {
             latency: std::ptr::null(),
             notes: std::ptr::null(),
             state_ext: std::ptr::null(),
+            render: std::ptr::null(),
             gui: Arc::new(GuiLink::default()),
             raw: Vec::with_capacity(EVENT_CAP),
             out_params: Vec::with_capacity(EVENT_CAP),
@@ -205,6 +207,7 @@ impl Bundle {
         inst.latency = inst.extension::<clap_plugin_latency>(CLAP_EXT_LATENCY);
         inst.notes = inst.extension::<clap_plugin_note_ports>(CLAP_EXT_NOTE_PORTS);
         inst.state_ext = inst.extension::<clap_plugin_state>(CLAP_EXT_STATE);
+        inst.render = inst.extension::<clap_plugin_render>(CLAP_EXT_RENDER);
         let gui = inst.extension::<clap_plugin_gui>(CLAP_EXT_GUI);
         inst.gui = Arc::new(GuiLink {
             inner: Mutex::new(GuiInner { plugin, gui, state: inst.state_ext, alive: true, created: false, visible: false, window: None }),
