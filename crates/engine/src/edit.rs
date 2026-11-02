@@ -528,9 +528,15 @@ fn join_gain_env(l: &mut Clip, r: &Clip) {
 }
 
 /// Move clips by `delta`, overwriting what they land on; `dest` sends whole tracks of them
-/// elsewhere (see [`destinations`]).
+/// elsewhere (see [`destinations`]). Same-track moves clamped to zero leave all material intact.
 pub fn move_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(TrackId, TrackId)]) -> usize {
     let ids: HashSet<ClipId> = ids.iter().copied().collect();
+    // Limit the shift before removing any clips, so a stationary edit cannot overwrite overlaps.
+    let limit = s.tracks.iter().flat_map(|t| t.clips()).filter(|c| ids.contains(&c.id) && !locked(c)).map(|c| c.start.saturating_neg()).max();
+    let delta = delta.max(limit.unwrap_or(0));
+    if delta == 0 && dest.iter().all(|(from, to)| from == to) {
+        return 0;
+    }
     let mut moving: Vec<(TrackId, Clip)> = Vec::new();
     for t in &mut s.tracks {
         let tid = t.id;
@@ -546,8 +552,6 @@ pub fn move_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(Trac
         }
     }
     let n = moving.len();
-    // Limit the shift once, so the group stops at zero together and keeps its spacing.
-    let delta = delta.max(moving.iter().map(|(_, c)| c.start.saturating_neg()).max().unwrap_or(0));
     let placed = moving.into_iter().map(|(tid, mut c)| {
         c.start = c.start.saturating_add(delta);
         (lands(dest, tid), c)

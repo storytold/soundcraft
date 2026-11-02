@@ -960,6 +960,25 @@ mod tests {
         assert_eq!(s.snap_to_grid(24_000), 24_000);
     }
 
+    /// Drop-frame minute boundaries keep their counter alignment with signed session origins.
+    #[test]
+    fn drop_frame_grids_apply_session_origins_at_minute_boundaries() {
+        for (rate, minute_frame) in [(FrameRate::Fps29_97Drop, 1_800), (FrameRate::Fps59_94Drop, 3_600)] {
+            for origin_frame in [-1, 1] {
+                let sr = SampleRate::HZ_48000;
+                let origin = rate.samples_at_frame(origin_frame, sr);
+                let mut s = Session { sample_rate: sr, frame_rate: rate, timecode_start: origin, ..Session::default() };
+                s.edit.grid = GridValue::Timecode(soundcraft_time::TimecodeValue::Second);
+                for boundary in [-minute_frame, minute_frame] {
+                    let at = rate.samples_at_frame(boundary, sr) - origin;
+                    assert_eq!(s.grid_line_at_or_before(at), at, "{rate:?}, origin {origin_frame}");
+                    assert_eq!(s.snap_to_grid(at + 1), at, "{rate:?}, origin {origin_frame}");
+                    assert_eq!(s.grid_lines(at - 1, at + 2, 10), [at]);
+                }
+            }
+        }
+    }
+
     #[test]
     fn session_with_legacy_fit_height_loads() {
         let mut s = Session::default();
