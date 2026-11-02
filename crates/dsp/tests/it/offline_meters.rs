@@ -298,3 +298,94 @@ fn spectrum_edge_cases() {
     let m = magnitude_db(&[f32::NAN; 64], 64);
     assert!(m.iter().all(|v| v.is_finite()));
 }
+
+const PIN_LUFS: u32 = 3_215_227_935;
+const PIN_TRUE_PEAK: u32 = 3_162_870_746;
+fn noise(len: usize, seed: u64, amp: f32) -> Vec<f32> {
+    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            ((x >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * amp
+        })
+        .collect()
+}
+fn bits_hash(chans: &[Vec<f32>]) -> u64 {
+    chans.iter().flatten().fold(0xcbf2_9ce4_8422_2325u64, |h, v| (h ^ u64::from(v.to_bits())).wrapping_mul(0x0100_0000_01b3))
+}
+fn run_blocks(p: &mut dyn soundcraft_dsp::Plugin, input: &[Vec<f32>], block: usize) -> Vec<Vec<f32>> {
+    let len = input[0].len();
+    let mut out = vec![Vec::with_capacity(len); input.len()];
+    let mut i = 0;
+    while i < len {
+        let n = block.min(len - i);
+        let mut io: Vec<Vec<f32>> = input.iter().map(|c| c[i..i + n].to_vec()).collect();
+        p.process(&mut io, n);
+        for (o, c) in out.iter_mut().zip(io) {
+            o.extend(c);
+        }
+        i += n;
+    }
+    out
+}
+#[test]
+fn loudness_and_true_peak_do_not_depend_on_block_size() {
+    let sr = 48_000.0;
+    let len = 96_000;
+    let l: Vec<f32> = sine(997.0, 0.5, sr, len).iter().zip(noise(len, 1, 0.3)).map(|(a, b)| a + b).collect();
+    let r: Vec<f32> = sine(11_025.0, 0.7, sr, len).iter().zip(noise(len, 2, 0.2)).map(|(a, b)| a + b).collect();
+    let io = [l, r];
+    let run = |block: usize| {
+        let mut m = LoudnessMeter::new(sr, 2);
+        let mut i = 0;
+        while i < len {
+            let n = block.min(len - i);
+            let chunk: Vec<Vec<f32>> = io.iter().map(|c| c[i..i + n].to_vec()).collect();
+            m.process(&chunk, n);
+            i += n;
+        }
+        (m.integrated_lufs().to_bits(), m.true_peak_db().to_bits(), m.momentary_lufs().to_bits())
+    };
+    let whole = run(len);
+    for block in [1, 7, 1024, 4801] {
+        assert_eq!(run(block), whole, "block {block}");
+    }
+    let near = |got: u32, pin: u32| (f32::from_bits(got) - f32::from_bits(pin)).abs() < 1e-3;
+    assert!(near(whole.0, PIN_LUFS) && near(whole.1, PIN_TRUE_PEAK), "lufs {} dB, true peak {} dB", f32::from_bits(whole.0), f32::from_bits(whole.1));
+}
+#[test]
+fn peak_skips_non_finite_samples_at_any_length() {
+    for len in 0..40 {
+        let mut x = noise(len, len as u64 + 3, 0.9);
+        for (at, v) in [(1, f32::NAN), (len.saturating_sub(1), f32::INFINITY), (len / 2, f32::NEG_INFINITY)] {
+            if len > 3 {
+                x[at] = v;
+            }
+        }
+        let naive = x.iter().filter(|v| v.is_finite()).fold(0.0f32, |m, v| m.max(v.abs()));
+        assert_eq!(offline::channel_peak(&x).to_bits(), naive.to_bits(), "len {len}");
+        let y = noise(len, 99, 0.5);
+        let both = y.iter().fold(naive, |m, v| m.max(v.abs()));
+        assert_eq!(offline::peak(&[x, y]).to_bits(), both.to_bits(), "len {len}");
+    }
+}
+#[test]
+fn maximizer_and_plate_reverb_output_does_not_depend_on_block_size() {
+    let len = 48_000;
+    let loud = [noise(len, 5, 1.6), noise(len, 6, 1.2)];
+    let mut burst = [noise(len, 7, 0.5), noise(len, 8, 0.5)];
+    for c in &mut burst {
+        c[4_800..].iter_mut().for_each(|v| *v = 0.0);
+    }
+    for (id, input) in [("maximizer", &loud), ("plate_reverb", &burst)] {
+        let mut hashes = Vec::new();
+        for block in [64, 1000, 4096] {
+            let mut p = create(id).unwrap();
+            p.prepare(48_000.0, 4096, 2);
+            hashes.push(bits_hash(&run_blocks(p.as_mut(), input, block)));
+        }
+        assert!(hashes.iter().all(|h| *h == hashes[0]), "{id}: {hashes:x?}");
+    }
+}

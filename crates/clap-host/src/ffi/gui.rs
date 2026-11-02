@@ -1,6 +1,9 @@
 use super::events::ostream_write;
 use super::host::HostState;
-use super::*;
+use super::{
+    Arc, CStr, CString, Mutex, Ordering, PoisonError, c_void, clap_ostream, clap_plugin, clap_plugin_gui, clap_plugin_state, clap_window,
+    clap_window_handle, hostwin,
+};
 
 // ---- editor (clap.gui) ---------------------------------------------------------------------
 

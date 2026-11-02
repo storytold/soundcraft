@@ -1,6 +1,10 @@
 use super::services::Services;
 use super::state::MainWindow;
-use super::*;
+use super::{
+    ControlRequest, Engine, Gesture, HashMap, MeterDisplay, OutputTrouble, Player, Range, Receiver, Samples, SoundApp, TrackId, TransportRequest,
+    Trouble, UiState, Value, VecDeque, bounce, dialogs, edit_window, extra_windows, fonts, import, json, menus, midi_editor, mix_window, ops_windows,
+    palette, panels, recovery, sampler_window, score_editor, shortcuts, theme, updates_ui, video_track, video_window, windows,
+};
 
 mod audio;
 mod commands;
@@ -16,6 +20,12 @@ pub(crate) use playback::automation_step_due;
 pub(crate) use plugins::{editor_changes, editor_states_due, failed_plugin_status};
 
 impl SoundApp {
+    /// Whether fonts installed from the system are used besides the bundled ones (on by default).
+    /// Takes effect only before the first frame installs the fonts.
+    pub fn set_system_fonts(&mut self, on: bool) {
+        self.system_fonts = on;
+    }
+
     /// Build an app around an engine and optional player, initialising UI, recording, autosave, control and
     /// synthetic-input state.
     pub fn new(engine: Engine, player: Option<Player>, services: Services) -> Self {
@@ -87,6 +97,7 @@ impl SoundApp {
             last_rev: 0,
             fonts_ready: false,
             fonts_installed: false,
+            system_fonts: true,
             theme_applied: None,
             docking_context: None,
             sim: None,
@@ -94,6 +105,7 @@ impl SoundApp {
             quit_requested: false,
             arrange_request: false,
             touched: std::collections::HashSet::new(),
+            touched_sends: std::collections::HashSet::new(),
             last_write_at: i64::MIN,
             editor_states: Vec::new(),
             editor_poll_due: true,
@@ -130,7 +142,7 @@ impl SoundApp {
             if self.fonts_installed {
                 self.fonts_ready = true;
             } else {
-                fonts::install(ctx);
+                fonts::install(ctx, self.system_fonts);
                 self.fonts_installed = true;
                 ctx.request_repaint();
             }
@@ -148,7 +160,7 @@ impl SoundApp {
         if hidden {
             self.pointer_down = false;
             self.wants_keyboard = false;
-            if matches!(self.gesture, Some(Gesture::Fader { .. })) {
+            if matches!(self.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. })) {
                 self.gesture = None;
             }
         }
@@ -165,15 +177,14 @@ impl SoundApp {
         if ctx.current_pass_index() == 0 {
             bounce::step(self, ctx);
             import::step(self, ctx);
-            #[cfg(not(target_arch = "wasm32"))]
             updates_ui::tick(self, ctx);
         }
         if !self.pointer_down {
-            if matches!(self.gesture, Some(Gesture::Fader { .. })) {
+            if matches!(self.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. })) {
                 self.gesture = None;
             }
             // Keep a running automation pass merged until playback stops.
-            if !self.wants_keyboard && self.touched.is_empty() {
+            if !self.wants_keyboard && self.touched.is_empty() && self.touched_sends.is_empty() {
                 self.engine.end_merge();
             }
         }
@@ -329,7 +340,6 @@ impl SoundApp {
         score_editor::show(self, &ctx);
         palette::show(self, &ctx);
         dialogs::show(self, &ctx);
-        #[cfg(not(target_arch = "wasm32"))]
         updates_ui::show(self, &ctx);
         // The sampler's drop rects are current now, so route any captured drop in this pass.
         self.route_dropped_files();

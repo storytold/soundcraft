@@ -178,9 +178,10 @@ pub fn change_velocity_with_seed(notes: &mut [Note], op: VelocityOp, seed: u64) 
         VelocityOp::Ramp { from, to } => {
             let first = notes.iter().map(|n| n.start).min().unwrap_or(0);
             let last = notes.iter().map(|n| n.start).max().unwrap_or(0);
-            let span = last.saturating_sub(first) as f64;
+            let span = (i128::from(last) - i128::from(first)) as f64;
             for n in notes.iter_mut() {
-                let t = if span > 0.0 { n.start.saturating_sub(first) as f64 / span } else { 0.0 };
+                let offset = (i128::from(n.start) - i128::from(first)) as f64;
+                let t = if span > 0.0 { offset / span } else { 0.0 };
                 let v = f64::from(from) + (f64::from(to) - f64::from(from)) * t;
                 n.velocity = clamp_vel(round_i64(v));
             }

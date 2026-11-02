@@ -7,22 +7,18 @@ use crate::SoundApp;
 use crate::theme::{Tokens, mono, regular};
 use egui::{Align2, Color32, CursorIcon, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
+use soundcraft_audio_io::FileFormat;
 use soundcraft_model::{Insert, TrackId};
-use std::ffi::OsStr;
-use std::path::Path;
 
 /// The built-in Sampler's plugin id.
 pub const SAMPLER: &str = "sampler";
-
-/// File extensions a sample can come from (what the audio decoder reads).
-const AUDIO_EXTS: &[&str] = &["wav", "wave", "bwf", "aif", "aiff", "aifc", "flac", "mp3", "ogg", "oga", "m4a", "aac", "mp4", "caf"];
 
 /// Markers on the sample strip: the parameter each one sets, and whether it needs a loop.
 const MARKERS: [(&str, bool); 3] = [("start", false), ("loop_start", true), ("loop_end", true)];
 
 /// Whether a file name looks like audio the sampler can load.
-pub fn is_audio_name(name: &str) -> bool {
-    Path::new(name).extension().and_then(OsStr::to_str).is_some_and(|x| AUDIO_EXTS.contains(&x.to_ascii_lowercase().as_str()))
+pub fn is_audio_name(name: impl AsRef<std::path::Path>) -> bool {
+    FileFormat::from_path(name).is_some()
 }
 
 /// Sampler parameters that are MIDI notes.
@@ -145,9 +141,14 @@ pub fn sample_strip(app: &mut SoundApp, ui: &mut Ui, tid: TrackId, ins: &Insert)
         let load = if can_pick { load } else { load.on_disabled_hover_text("Drop an audio file on this window") };
         if load.clicked()
             && let Some(pick) = &app.services.pick_open
-            && let Some(path) = pick("mix.sampler_load", AUDIO_EXTS)
+            && let Some(path) = pick("mix.sampler_load", &FileFormat::readable_extensions())
         {
-            let _ = app.run("mix.sampler_load", json!({"track": tid.0, "path": path}));
+            match crate::dialogs::unicode(&path) {
+                Ok(path) => {
+                    let _ = app.run("mix.sampler_load", json!({"track": tid.0, "path": path}));
+                }
+                Err(e) => app.ui.status = e.to_string(),
+            }
         }
         if ins.sample.is_some() && ui.button("Clear").clicked() {
             let _ = app.run("mix.sampler_clear", json!({"track": tid.0}));

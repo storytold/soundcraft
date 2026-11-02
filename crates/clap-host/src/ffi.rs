@@ -54,7 +54,7 @@ pub(crate) use events::Event;
 #[cfg(test)]
 use events::transport_event;
 pub(crate) use gui::GuiLink;
-pub(crate) use instance::{Instance, NotePort, PortBuffers, PortInfo, RawParam};
+pub(crate) use instance::{Instance, NotePort, PortBuffers, PortInfo, ProcessInput, RawParam};
 
 /// Most plugins one factory may report (hostile-input cap).
 const MAX_PLUGINS_PER_FACTORY: u32 = 1024;

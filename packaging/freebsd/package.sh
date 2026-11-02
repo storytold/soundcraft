@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Build and package SoundCraft for FreeBSD:
 #
-#   $DIST/soundcraft-<version>-freebsd-x86_64.tar.gz   a /usr/local-style tree:
-#       soundcraft-<version>-freebsd-x86_64/{bin, share/applications, share/icons, share/mime,
-#       share/metainfo, share/doc/soundcraft}
+#   $DIST/soundcraft-<version>-freebsd-<arch>.tar.gz   a /usr/local-style tree (<arch> is x86_64, or
+#       aarch64 when CARGO_BUILD_TARGET=aarch64-unknown-freebsd):
+#       soundcraft-<version>-freebsd-<arch>/{bin, man/man1, share/applications, share/icons,
+#       share/mime, share/metainfo, share/doc/soundcraft, share/{bash-completion,zsh,fish}}
 #
 # Install by copying the tree's contents into /usr/local, e.g.
 #   tar -xzf soundcraft-*-freebsd-x86_64.tar.gz --strip-components 1 -C /usr/local
@@ -23,7 +24,7 @@ SKIP_BUILD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
-    -h | --help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -55,8 +56,16 @@ BASENAME="soundcraft-$VERSION-freebsd-$ARCH"
 
 echo "==> SoundCraft $VERSION for FreeBSD $ARCH"
 
+# The man-and-completions example is built with the binaries: it writes soundcraft-cli's man pages
+# and shell completions below. A cross build's example cannot run here, so it is built again for
+# this machine (the pages and completions do not depend on the target).
 if [[ "$SKIP_BUILD" = 0 ]]; then
-  (cd "$ROOT" && cargo build --release --locked -p soundcraft -p soundcraft-cli)
+  (cd "$ROOT" && cargo build --release --locked -p soundcraft -p soundcraft-cli \
+    --bins --example man-and-completions)
+  if [[ -n "${CARGO_BUILD_TARGET:-}" ]]; then
+    (cd "$ROOT" && env -u CARGO_BUILD_TARGET cargo build --release --locked -p soundcraft-cli \
+      --example man-and-completions)
+  fi
 fi
 # Cargo puts a cross build under target/<triple>/release.
 BIN="$CARGO_TARGET_DIR/${CARGO_BUILD_TARGET:+$CARGO_BUILD_TARGET/}release"
@@ -76,6 +85,20 @@ sed -e "s/@VERSION@/$VERSION/g" -e "s/@DATE@/$SOUNDCRAFT_BUILD_DATE/g" \
   "$LINUX/$APP_ID.metainfo.xml.in" >"$STAGE/share/metainfo/$APP_ID.metainfo.xml"
 cp -R "$ROOT/assets/app-icon/hicolor" "$STAGE/share/icons/"
 copy_docs "$STAGE/share/doc/soundcraft"
+# soundcraft-cli's man pages and shell completions, from its clap definition, written by the
+# example built above.
+CLI_DOCS="$CARGO_TARGET_DIR/release/examples/man-and-completions"
+if [[ ! -x "$CLI_DOCS" ]]; then
+  echo "error: $CLI_DOCS is missing: build it with the binaries (without --skip-build)" >&2
+  exit 1
+fi
+"$CLI_DOCS" "$WORK/cli-docs"
+mkdir -p "$STAGE/man/man1" "$STAGE/share/bash-completion/completions" \
+  "$STAGE/share/zsh/site-functions" "$STAGE/share/fish/vendor_completions.d"
+install -m 644 "$WORK"/cli-docs/*.1 "$STAGE/man/man1/"
+install -m 644 "$WORK/cli-docs/soundcraft-cli.bash" "$STAGE/share/bash-completion/completions/soundcraft-cli"
+install -m 644 "$WORK/cli-docs/_soundcraft-cli" "$STAGE/share/zsh/site-functions/_soundcraft-cli"
+install -m 644 "$WORK/cli-docs/soundcraft-cli.fish" "$STAGE/share/fish/vendor_completions.d/soundcraft-cli.fish"
 
 # ---- .tar.gz -------------------------------------------------------------------------------------
 tar -C "$WORK" -czf "$DIST/$BASENAME.tar.gz" "$BASENAME"

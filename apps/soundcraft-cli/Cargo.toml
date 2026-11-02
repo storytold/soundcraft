@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+name = "soundcraft_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "soundcraft-cli"
 path = "src/main.rs"
@@ -18,4 +22,12 @@ soundcraft-engine.workspace = true
 soundcraft-automation.workspace = true
 soundcraft-audio-io.workspace = true
 soundcraft-dsp.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+same-file.workspace = true
+
+[dev-dependencies]
+clap_complete.workspace = true
+clap_mangen.workspace = true

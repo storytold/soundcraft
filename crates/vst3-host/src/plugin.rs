@@ -1,6 +1,6 @@
 //! `Vst3Plugin`: a loaded VST3 instance behind the safe `soundcraft_dsp::Plugin` trait.
 
-use crate::ffi::{AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND};
+use crate::ffi::{AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND, ProcessInput};
 use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport, Unit};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -324,17 +324,17 @@ impl Plugin for Vst3Plugin {
             let k = self.notes.iter().position(|e| e.time() >= end).unwrap_or(self.notes.len());
             let offset = u32::try_from(start).unwrap_or(u32::MAX);
             let notes = self.notes.get(..k).unwrap_or(&[]);
-            let r = self.inst.process(
-                n,
-                &mut self.inputs,
-                &mut self.outputs,
-                &self.pending,
-                &self.controls,
+            let r = self.inst.process(ProcessInput {
+                frames: n,
+                inputs: &mut self.inputs,
+                outputs: &mut self.outputs,
+                params: &self.pending,
+                controls: &self.controls,
                 notes,
                 offset,
-                self.position,
-                self.transport.as_ref(),
-            );
+                project_time: self.position,
+                transport: self.transport.as_ref(),
+            });
             self.pending.clear();
             self.notes.drain(..k);
             self.position = self.position.saturating_add(i64::try_from(n).unwrap_or(0));

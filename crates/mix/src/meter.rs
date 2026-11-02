@@ -75,5 +75,5 @@ fn max_level(a: f32, b: f32) -> f32 {
 }
 
 fn peak(x: &[f32]) -> f32 {
-    x.iter().fold(0.0f32, |m, v| if v.is_finite() { m.max(v.abs()) } else { m })
+    soundcraft_dsp::offline::channel_peak(x)
 }

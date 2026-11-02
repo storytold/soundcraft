@@ -8,7 +8,7 @@
 //! [`PluginInfo::params`]. Values are plain (display) values; the host converts to and from the
 //! VST3 normalized 0..1 values. Stepped parameters become toggles or choices.
 //!
-//! Like `soundcraft-clap-host`, this is an isolated `unsafe` crate (craftrules never-crash):
+//! Like `soundcraft-clap-host`, this is an isolated `unsafe` crate:
 //! `unsafe` is denied crate-wide and allowed only in the private `ffi` module. The public API is
 //! safe, returns `Result`/`Option` and never panics. Limits of in-process hosting: a plugin that
 //! itself crashes (segfault) takes the process down with it; we cannot sandbox native code.

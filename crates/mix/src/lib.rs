@@ -59,7 +59,6 @@ use soundcraft_model::{
 use soundcraft_time::{Range, Samples, TICKS_PER_QUARTER};
 use std::collections::HashMap;
 use std::ops::Bound;
-use std::sync::Arc;
 
 mod automation;
 mod clips;
@@ -72,7 +71,7 @@ mod routing;
 mod strip;
 mod threads;
 
-use automation::{lerp_gain, pan_at, pan_segment, send_level, transport_at, volume_db_at};
+use automation::{GainRamp, pan_at, pan_segment, send_level, transport_at, volume_db_at};
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
 pub use meter::StripMeter;
 use midi::sync_sample;
@@ -82,11 +81,18 @@ pub use offline::{
 pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
 use routing::{processing_order, structure_fingerprint};
-use strip::{BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format};
+use strip::{
+    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
+};
 #[cfg(test)]
 use strip::{DelayLine, MAX_LATENCY};
 use threads::run_strips;
 pub use threads::{mark_audio_thread, on_audio_thread};
+
+/// Top of the clip effects gain slider; a stored or wired gain is clamped to it (#884).
+pub const CLIP_FX_MAX_GAIN_DB: f32 = 24.0;
+/// Top of a send fader, the same +12 dB `AutoParam::SendLevel` ranges up to (#884).
+pub const SEND_LEVEL_MAX_DB: f32 = 12.0;
 
 /// Default (stereo) main mix width. The actual width is [`main_channels`].
 pub const MAIN_CHANNELS: usize = 2;
@@ -349,6 +355,44 @@ impl MixEngine {
     /// Render `frames` (≤ max_block) samples starting at `pos` into `out` (≥ 2 channels).
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
         let frames = frames.min(self.max_block);
+        self.begin_block(s, pos, frames);
+        let blk = Block { pos, frames, any_solo: s.tracks.iter().any(|t| t.mixer.solo && !t.inactive) };
+        let order = std::mem::take(&mut self.order);
+        // Phase 1: independent strips (audio, instrument, MIDI) in parallel.
+        let mut work = std::mem::take(&mut self.work);
+        work.clear();
+        for &i in &order {
+            let Some(t) = s.tracks.get(i).filter(|t| is_live(t) && !is_aux(t)) else { continue };
+            if let Some(st) = self.strips.remove(&t.id) {
+                work.push((i, st));
+            }
+        }
+        for (_, st) in work.iter_mut() {
+            if st.scratch.len() < self.max_block {
+                st.scratch.resize(self.max_block, 0.0);
+            }
+        }
+        let busses = std::mem::take(&mut self.busses);
+        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+        run_strips(&mut work, |(i, st)| {
+            if let Some(t) = s.tracks.get(*i) {
+                process_strip(s, t, st, &busses, &live_in, blk);
+            }
+        });
+        self.busses = busses;
+        // Delay compensation: align every strip to the slowest. Direct-to-main outputs also wait
+        // for the slowest aux return. Aux latency has to be read before those outputs are routed,
+        // or the first block (and a one-block bounce probe) still sees zero.
+        self.compensate_delay(s, &mut work, blk);
+        self.work = work;
+        self.render_auxes(s, &order, blk);
+        self.order = order;
+        self.render_masters(s, blk);
+        self.write_output(s, blk, out);
+    }
+
+    /// Silence what a seek leaves ringing, sync to the session and clear the block's accumulators.
+    fn begin_block(&mut self, s: &Session, pos: Samples, frames: usize) {
         if pos != self.last_end {
             // Seek: silence held notes and ringing plugins.
             for st in self.strips.values_mut() {
@@ -369,35 +413,11 @@ impl MixEngine {
         for c in &mut self.main {
             c.iter_mut().take(frames).for_each(|x| *x = 0.0);
         }
-        let any_solo = s.tracks.iter().any(|t| t.mixer.solo && !t.inactive);
-        let order = std::mem::take(&mut self.order);
-        let live = |t: &Track| !(t.kind == TrackKind::Master || t.inactive || t.kind == TrackKind::Vca);
-        let is_aux = |t: &Track| matches!(t.kind, TrackKind::Aux | TrackKind::Folder);
-        // Phase 1: independent strips (audio, instrument, MIDI) in parallel.
-        let mut work = std::mem::take(&mut self.work);
-        work.clear();
-        for &i in &order {
-            let Some(t) = s.tracks.get(i).filter(|t| live(t) && !is_aux(t)) else { continue };
-            if let Some(st) = self.strips.remove(&t.id) {
-                work.push((i, st));
-            }
-        }
-        for (_, st) in work.iter_mut() {
-            if st.scratch.len() < self.max_block {
-                st.scratch.resize(self.max_block, 0.0);
-            }
-        }
-        let busses = std::mem::take(&mut self.busses);
-        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
-        run_strips(&mut work, |(i, st)| {
-            if let Some(t) = s.tracks.get(*i) {
-                process_strip(s, t, st, &busses, &live_in, pos, frames, any_solo);
-            }
-        });
-        self.busses = busses;
-        // Delay compensation: align every strip to the slowest. Direct-to-main outputs also wait
-        // for the slowest aux return. Aux latency has to be read before those outputs are routed,
-        // or the first block (and a one-block bounce probe) still sees zero.
+    }
+
+    /// Delay compensation for the independent strips (`work`), then route them back into the engine.
+    fn compensate_delay(&mut self, s: &Session, work: &mut Vec<(usize, Strip)>, blk: Block) {
+        let Block { pos, frames, .. } = blk;
         let pdc = s.edit.delay_compensation;
         if pdc {
             for t in s.tracks.iter().filter(|t| is_aux(t) && !t.inactive) {
@@ -427,7 +447,7 @@ impl MixEngine {
         self.aux_latency = lmax_a;
         self.aux_fed.clear();
         if pdc {
-            for t in s.tracks.iter().filter(|t| is_aux(t) && live(t)) {
+            for t in s.tracks.iter().filter(|t| is_aux(t) && is_live(t)) {
                 if let Route::Bus(b) = &t.mixer.output
                     && !self.aux_fed.contains(b)
                 {
@@ -461,16 +481,20 @@ impl MixEngine {
                 self.strips.insert(t.id, st);
             }
         }
-        self.work = work;
-        let is_aux = |t: &Track| matches!(t.kind, TrackKind::Aux | TrackKind::Folder);
-        // Phase 2: auxes in dependency order (they read busses).
-        for t in order.iter().filter_map(|&i| s.tracks.get(i)).filter(|t| live(t)).filter(|t| is_aux(t)) {
+    }
+
+    /// Phase 2: auxes in dependency order (they read busses).
+    fn render_auxes(&mut self, s: &Session, order: &[usize], blk: Block) {
+        let Block { pos, frames, .. } = blk;
+        let pdc = s.edit.delay_compensation;
+        let lmax_a = self.aux_latency;
+        for t in order.iter().filter_map(|&i| s.tracks.get(i)).filter(|t| is_live(t)).filter(|t| is_aux(t)) {
             let Some(mut st) = self.strips.remove(&t.id) else { continue };
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
             let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
-            process_strip(s, t, &mut st, &self.busses, &live_in, pos, frames, any_solo);
+            process_strip(s, t, &mut st, &self.busses, &live_in, blk);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
             st.align.process(&mut st.buf, frames);
@@ -478,7 +502,11 @@ impl MixEngine {
             self.route_strip(t, &mut st, pos, frames);
             self.strips.insert(t.id, st);
         }
-        self.order = order;
+    }
+
+    /// Master faders process the main mix.
+    fn render_masters(&mut self, s: &Session, blk: Block) {
+        let Block { pos, frames, .. } = blk;
         // Master faders process the main mix.
         let transport = transport_at(s, pos, !self.monitor_only, self.recording);
         for t in s.tracks.iter().filter(|t| t.kind == TrackKind::Master && !t.inactive) {
@@ -506,10 +534,11 @@ impl MixEngine {
                 let last = pos.saturating_add(frames.saturating_sub(1) as i64);
                 let v0 = volume_db_at(t, pos);
                 let v1 = volume_db_at(t, last);
+                let ramp = GainRamp::new(v0, v1, frames.saturating_sub(1));
                 for (ch, src) in strip.buf.iter().enumerate().take(self.main.len()) {
                     if let Some(m) = self.main.get_mut(ch) {
                         for i in 0..frames {
-                            let g = lerp_gain(v0, v1, i, frames.saturating_sub(1));
+                            let g = ramp.at(i);
                             if let (Some(d), Some(x)) = (m.get_mut(i), src.get(i)) {
                                 *d = x * g;
                             }
@@ -521,6 +550,11 @@ impl MixEngine {
                 m.plugin_failures = strip.failures;
             }
         }
+    }
+
+    /// Add the metronome and copy the main mix to `out`.
+    fn write_output(&mut self, s: &Session, blk: Block, out: &mut [Vec<f32>]) {
+        let Block { pos, frames, .. } = blk;
         // Metronome: summed after the master fader, so it reaches the speakers without passing
         // through any track, send or insert. Only the playback engine sets `metronome`.
         // Not while monitoring only (transport stopped): the position does not advance there, so the
@@ -626,6 +660,14 @@ impl MixEngine {
 
 std::thread_local! {
     static AUDIO_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn is_live(t: &Track) -> bool {
+    !(t.kind == TrackKind::Master || t.inactive || t.kind == TrackKind::Vca)
+}
+
+fn is_aux(t: &Track) -> bool {
+    matches!(t.kind, TrackKind::Aux | TrackKind::Folder)
 }
 
 /// Metronome: a short synthesized blip on every beat of the tempo map, accented on beat 1 of

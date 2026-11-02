@@ -1,4 +1,4 @@
-use super::*;
+use super::{AutoParam, Samples, Session, TICKS_PER_QUARTER, Track, Transport, db_to_gain};
 
 pub(crate) fn transport_at(s: &Session, pos: Samples, playing: bool, recording: bool) -> Transport {
     let sr = s.sample_rate;
@@ -65,13 +65,25 @@ pub(crate) fn send_level(t: &Track, i: usize, base: f32, pos: Samples) -> f32 {
         && let Some(l) = t.lane(&AutoParam::SendLevel(u8::try_from(i).unwrap_or(0)))
         && !l.points.is_empty()
     {
-        return l.value_at(pos, base);
+        return l.value_at(pos, base).clamp(soundcraft_dsp::MIN_DB, crate::SEND_LEVEL_MAX_DB);
     }
     base
 }
 
-pub(crate) fn lerp_gain(db0: f32, db1: f32, i: usize, n: usize) -> f32 {
-    let g0 = db_to_gain(db0);
-    let g1 = db_to_gain(db1);
-    if n == 0 { g0 } else { g0 + (g1 - g0) * (i as f32 / n as f32) }
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GainRamp {
+    g0: f32,
+    g1: f32,
+    n: usize,
+}
+
+impl GainRamp {
+    pub(crate) fn new(db0: f32, db1: f32, n: usize) -> Self {
+        GainRamp { g0: db_to_gain(db0), g1: db_to_gain(db1), n }
+    }
+
+    #[inline]
+    pub(crate) fn at(&self, i: usize) -> f32 {
+        if self.n == 0 { self.g0 } else { self.g0 + (self.g1 - self.g0) * (i as f32 / self.n as f32) }
+    }
 }

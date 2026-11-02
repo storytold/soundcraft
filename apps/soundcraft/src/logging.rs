@@ -413,13 +413,12 @@ impl log::Log for AppLogger {
     fn flush(&self) {}
 }
 
-/// Install the logger (filter from `RUST_LOG`, else [`DEFAULT_FILTER`]); `None` when another
+/// Install the logger (filter from `rust_log`, the `RUST_LOG` value, else [`DEFAULT_FILTER`]); `None` when another
 /// logger was installed first. Call [`AppLogger::attach_dir`] or [`AppLogger::no_file`] once the
 /// settings directory is known.
-pub fn install() -> Option<&'static AppLogger> {
+pub fn install(rust_log: Option<&str>) -> Option<&'static AppLogger> {
     static LOGGER: OnceLock<AppLogger> = OnceLock::new();
-    let spec = std::env::var("RUST_LOG").ok().filter(|s| !s.trim().is_empty());
-    let filter = Filter::parse(spec.as_deref().unwrap_or(DEFAULT_FILTER));
+    let filter = Filter::parse(rust_log.unwrap_or(DEFAULT_FILTER));
     let max = filter.max();
     let logger = LOGGER.get_or_init(|| AppLogger::new(filter, true));
     log::set_logger(logger).ok()?;
