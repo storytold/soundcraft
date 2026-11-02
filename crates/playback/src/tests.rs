@@ -226,9 +226,10 @@ fn a_take_without_new_blocks_still_drops_deleted_tracks() {
 
 #[test]
 fn a_channel_count_change_takes_the_new_stereo_peaks() {
-    let mut acc = StripMeter { peak: [0.9, 0.9], peaks: vec![0.9], ..StripMeter::default() };
-    acc.accumulate(&StripMeter { peak: [0.9, 0.0], peaks: vec![0.9, 0.0], ..StripMeter::default() });
-    assert_eq!(acc.peak, [0.9, 0.0]);
+    let mut acc = StripMeter { peak: [0.9, 0.9], peaks: vec![0.9], peak_all: 0.9, ..StripMeter::default() };
+    acc.accumulate(&StripMeter { peak: [0.2, 0.0], peaks: vec![0.2, 0.0], peak_all: 0.2, ..StripMeter::default() });
+    assert_eq!(acc.peak, [0.2, 0.0]);
+    assert_eq!(acc.peak_all, 0.2, "a peak from the old layout doesn't stay in the clip light's reading");
 }
 
 #[test]

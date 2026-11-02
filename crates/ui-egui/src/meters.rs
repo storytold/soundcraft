@@ -243,6 +243,13 @@ pub fn reset(d: &mut MeterDisplay) {
     d.max_peak = 0.0;
 }
 
+/// Zero the levels of the snapshot's meters, keeping their plugin failure records. Playback feeds
+/// the latest snapshot every frame, so a cleared hold or clip light would otherwise come straight
+/// back from a reading taken before the reset.
+pub(crate) fn forget_readings(snap: &mut soundcraft_playback::MeterSnapshot) {
+    snap.tracks.values_mut().chain([&mut snap.main]).for_each(soundcraft_mix::StripMeter::reset_levels);
+}
+
 /// A linear peak as the readout shows it: dBFS with one decimal, or "-inf".
 pub fn peak_text(v: f32) -> String {
     if !v.is_finite() || v <= SILENCE {
@@ -300,9 +307,20 @@ pub fn reset_command(app: &mut SoundApp, p: &Value) -> Result<Value, String> {
         }
     };
     match target {
-        None => app.meters.values_mut().chain([&mut app.main_meter]).for_each(reset),
-        Some(MeterTarget::Main) => reset(&mut app.main_meter),
-        Some(MeterTarget::Track(id)) => reset(app.meters.entry(id).or_default()),
+        None => {
+            app.meters.values_mut().chain([&mut app.main_meter]).for_each(reset);
+            forget_readings(&mut app.meter_snapshot);
+        }
+        Some(MeterTarget::Main) => {
+            reset(&mut app.main_meter);
+            app.meter_snapshot.main.reset_levels();
+        }
+        Some(MeterTarget::Track(id)) => {
+            reset(app.meters.entry(id).or_default());
+            if let Some(m) = app.meter_snapshot.tracks.get_mut(&id) {
+                m.reset_levels();
+            }
+        }
     }
     Ok(json!({"reset": target.map_or_else(|| "all".to_string(), |t| match t {
         MeterTarget::Main => "main".into(),
@@ -512,6 +530,33 @@ mod tests {
         feed(&mut d, &pk([0.01; 2]), FRAME, &prefs);
         assert_eq!(peak_text(d.max_peak), "-40.0", "and counting again");
         assert_eq!(peak_text(0.0), "-inf");
+    }
+
+    #[test]
+    fn a_reset_is_not_undone_by_the_reading_before_it() {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+        let snare = app.engine.session().track_by_name("Snare").unwrap().id;
+        let prefs = MeterPrefs { clip_hold: Hold::Infinite, ..MeterPrefs::default() };
+        let clipped = soundcraft_mix::StripMeter { peak: [1.2; 2], peak_all: 1.2, ..Default::default() };
+        let replay = |app: &mut SoundApp, id| {
+            let r = Reading::of(&app.meter_snapshot.tracks[&id]);
+            feed(app.meters.entry(id).or_default(), &r, FRAME, &prefs);
+        };
+        for id in [kick, snare] {
+            app.meter_snapshot.tracks.insert(id, clipped.clone());
+            replay(&mut app, id);
+        }
+        app.meter_snapshot.main = clipped;
+        app.run("ui.meters.reset", json!({"track": kick.0})).unwrap();
+        replay(&mut app, kick);
+        assert!(!app.meters[&kick].clip && app.meters[&kick].max_peak == 0.0, "stays cleared");
+        replay(&mut app, snare);
+        assert!(app.meters[&snare].clip, "the other meter keeps its reading");
+        app.run("track.clear_clip_indicators", json!({})).unwrap();
+        replay(&mut app, snare);
+        assert!(!app.meters[&snare].clip, "and the clear-all command does the same");
+        assert!(app.meter_snapshot.main.peak_all == 0.0);
     }
 
     #[test]

@@ -1228,6 +1228,6 @@ fn a_surround_strip_reports_its_loudest_channel_for_the_clip_light() {
     assert!((eng.main_meter.peak_all - 1.2).abs() < 1e-3, "the main meter too: {:?}", eng.main_meter);
     let mut acc = StripMeter::default();
     acc.accumulate(m);
-    acc.accumulate(&StripMeter::default());
+    acc.accumulate(&StripMeter { peaks: vec![0.0; m.peaks.len()], ..StripMeter::default() });
     assert_eq!(acc.peak_all, m.peak_all, "kept until taken");
 }

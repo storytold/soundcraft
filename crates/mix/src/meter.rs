@@ -35,6 +35,7 @@ impl StripMeter {
             // The strip's format changed (a document edit): earlier channels no longer line up.
             self.peaks.clone_from(&o.peaks);
             self.peak = o.peak;
+            self.peak_all = o.peak_all;
         } else {
             for (p, q) in self.peaks.iter_mut().zip(&o.peaks) {
                 *p = max_level(*p, *q);
@@ -42,8 +43,8 @@ impl StripMeter {
             for (p, q) in self.peak.iter_mut().zip(o.peak) {
                 *p = max_level(*p, q);
             }
+            self.peak_all = max_level(self.peak_all, o.peak_all);
         }
-        self.peak_all = max_level(self.peak_all, o.peak_all);
         self.gain_reduction_db = max_level(self.gain_reduction_db, o.gain_reduction_db);
         self.plugin_failures = o.plugin_failures;
     }
