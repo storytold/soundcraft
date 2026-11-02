@@ -262,6 +262,23 @@ impl MixEngine {
         self.main_meter.reset_levels();
     }
 
+    /// Main-thread time for every plugin ([`Plugin::idle`]): offline renders give it between
+    /// blocks, the audio thread never does. True when an insert's latency changed.
+    pub(crate) fn idle_plugins(&mut self) -> bool {
+        let mut changed = false;
+        for s in self.strips.values_mut() {
+            for p in s.plugins.iter_mut().flatten() {
+                let before = p.plugin.latency();
+                p.plugin.idle();
+                changed |= p.plugin.latency() != before;
+            }
+            if let Some(i) = &mut s.instrument {
+                i.plugin.idle();
+            }
+        }
+        changed
+    }
+
     /// Bring plugin instances in line with the session (creates/destroys as needed). Allocates;
     /// call outside the realtime thread when the document changes, or let `render` do it.
     pub fn sync(&mut self, s: &Session) {

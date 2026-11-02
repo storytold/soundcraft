@@ -1208,3 +1208,110 @@ fn gain_ramp_matches_converting_both_ends_every_sample() {
         }
     }
 }
+
+/// Delays its input by `n` samples from its first block, like a lookahead limiter, but reports
+/// that latency only after its first block and an `idle`, the way a CLAP plugin applies a new
+/// latency through a restart (LSP Limiter: 0 at `activate`, a restart request once it processed).
+struct LateLatency {
+    inner: Box<dyn Plugin>,
+    n: usize,
+    lines: Vec<std::collections::VecDeque<f32>>,
+    processed: bool,
+    reported: usize,
+}
+
+impl LateLatency {
+    /// Prepared, as the host hands it over.
+    fn new(n: usize) -> Self {
+        let mut p = LateLatency { inner: soundcraft_dsp::create("gain").unwrap(), n, lines: Vec::new(), processed: false, reported: 0 };
+        p.prepare(48_000.0, 512, 2);
+        p
+    }
+}
+
+impl Plugin for LateLatency {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+        self.lines = vec![std::iter::repeat_n(0.0, self.n).collect(); ch];
+    }
+    fn reset(&mut self) {
+        self.lines.iter_mut().for_each(|l| l.iter_mut().for_each(|x| *x = 0.0));
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        for (c, line) in io.iter_mut().zip(&mut self.lines) {
+            for x in c.iter_mut().take(frames) {
+                line.push_back(*x);
+                *x = line.pop_front().unwrap();
+            }
+        }
+        self.processed = true;
+    }
+    fn latency(&self) -> usize {
+        self.reported
+    }
+    fn idle(&mut self) {
+        if self.processed {
+            self.reported = self.n;
+        }
+    }
+}
+
+/// A hosted insert that reports its latency only after the first block (on a track, or on the
+/// master, whose latency is read before it processes) still lines up from the first sample.
+#[test]
+fn offline_renders_follow_a_latency_reported_after_the_first_block() {
+    for kind in [TrackKind::Audio, TrackKind::Master] {
+        let mut s = Session::default();
+        s.edit.delay_compensation = true;
+        let n = 4096;
+        let mut clicks = vec![0.0f32; n];
+        for at in [100, 3000] {
+            clicks[at] = 0.25;
+        }
+        s.pool.insert(SourceId(902), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![clicks.clone(), clicks] })));
+        let mut tracks = Vec::new();
+        for _ in 0..2 {
+            let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+            let cid = s.new_clip_id();
+            s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "clicks", SourceId(902), 0, 0, n as i64));
+            tracks.push(t);
+        }
+        let target = if kind == TrackKind::Audio { tracks[0] } else { s.add_track(TrackKind::Master, ChannelFormat::Stereo, None) };
+        s.track_mut(target).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.late"));
+        let render = |s: &Session| {
+            let mut r = RangeRender::new(s, None, Range::new(0, n as i64), 512);
+            r.engine().set_external_instances(true);
+            r.engine().adopt(vec![PreparedInstance {
+                track: target,
+                slot: 0,
+                id: "clap:test.late".into(),
+                ch: 2,
+                plugin: Box::new(LateLatency::new(240)),
+            }]);
+            let mut out = vec![Vec::new(); 2];
+            while let Some((chunk, k)) = r.next_block(s) {
+                for (o, c) in out.iter_mut().zip(chunk) {
+                    o.extend_from_slice(&c[..k]);
+                }
+            }
+            out
+        };
+        // Both tracks play the clicks: they land where they are on the timeline.
+        let out = render(&s);
+        assert_eq!(out[0].len(), n);
+        assert_eq!(impulse_at(&out[0]), vec![100, 3000], "{kind:?}: the plugin's 240 samples are compensated from the start");
+        // The second track flipped: with the two lined up, nothing is left.
+        s.track_mut(tracks[1]).unwrap().mixer.phase_invert = true;
+        let out = render(&s);
+        assert!(out.iter().flatten().all(|x| x.abs() < 1e-6), "{kind:?}: the tracks line up");
+    }
+}

@@ -4,7 +4,8 @@
 //!   (connected through IConnectionPoint, synced through the component state). Params: 7 "Gain"
 //!   (plain 0..2, linear, units dB), 3 "Mode" (3 steps: A/B/C), 12 "Freq" (20..20000 Hz, log),
 //!   9 hidden, 11 bypass. Starts at gain 0.5 (its state) although the declared default is 1.0.
-//!   Reports 3 samples of latency. State: the component stores the gain (one LE f64), the
+//!   Reports 3 samples of latency, 16 in mode C (at once, but never announced with
+//!   `restartComponent`, like a plugin that announces it later from a timer). State: the component stores the gain (one LE f64), the
 //!   controller the Freq value (one LE f64). Its controller has an editor view (`IPlugView`,
 //!   320×240, no real drawing) supporting NSView/HWND/X11.
 //! - "Fixture Synth" (`Instrument|Synth`): a single-component instrument (the component is also
@@ -76,6 +77,8 @@ unsafe fn channels<'a>(bus: &AudioBusBuffers, frames: usize) -> Vec<&'a mut [f32
 struct GainProcessor {
     /// Normalized gain (plain = 2 × normalized).
     gain: AtomicU64,
+    /// Normalized mode (C = 1.0).
+    mode: AtomicU64,
     arrangement: AtomicU64,
     _live: Live,
 }
@@ -178,7 +181,7 @@ impl IAudioProcessorTrait for GainProcessor {
         if size == SymbolicSampleSizes_::kSample32 as i32 { kResultOk } else { kNotImplemented }
     }
     unsafe fn getLatencySamples(&self) -> u32 {
-        3
+        if f64::from_bits(self.mode.load(Ordering::Relaxed)) > 0.75 { 16 } else { 3 }
     }
     unsafe fn setupProcessing(&self, setup: *mut ProcessSetup) -> tresult {
         let s = unsafe { &*setup };
@@ -197,8 +200,13 @@ impl IAudioProcessorTrait for GainProcessor {
                 let Some(q) = (unsafe { ComRef::from_raw(changes.getParameterData(i)) }) else { continue };
                 let (mut off, mut v) = (0, 0.0);
                 let n = unsafe { q.getPointCount() };
-                if unsafe { q.getParameterId() } == 7 && n > 0 && unsafe { q.getPoint(n - 1, &mut off, &mut v) } == kResultOk {
-                    self.gain.store(v.to_bits(), Ordering::Relaxed);
+                if n == 0 || unsafe { q.getPoint(n - 1, &mut off, &mut v) } != kResultOk {
+                    continue;
+                }
+                match unsafe { q.getParameterId() } {
+                    7 => self.gain.store(v.to_bits(), Ordering::Relaxed),
+                    3 => self.mode.store(v.to_bits(), Ordering::Relaxed),
+                    _ => {}
                 }
             }
         }
@@ -774,6 +782,7 @@ impl IPluginFactoryTrait for Factory {
         let unknown = if cid == GAIN_CID {
             ComWrapper::new(GainProcessor {
                 gain: AtomicU64::new(0.25f64.to_bits()),
+                mode: AtomicU64::new(0f64.to_bits()),
                 arrangement: AtomicU64::new(SpeakerArr::kStereo),
                 _live: Live::new(&OBJECTS),
             })

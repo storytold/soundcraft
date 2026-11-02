@@ -1,7 +1,9 @@
 //! Test-only CLAP plugins for soundcraft-clap-host: a gain effect and a "DC synth".
 //!
 //! - `org.soundcraft.test.gain`: stereo in/out, param 7 "Gain" (0..2, default 1), param 3 "Mode"
-//!   (stepped enum A/B/C), hidden param 9, latency 3 samples.
+//!   (stepped enum A/B/C), hidden param 9, latency 3 samples. Mode C needs 16: like LSP, the
+//!   plugin finds that out in `process`, asks for `on_main_thread` and from there for a restart,
+//!   and reports 16 once activated again.
 //! - `org.soundcraft.test.synth`: instrument, stereo out, CLAP note port; outputs a constant equal
 //!   to the velocity of the held note (0 when none), switching at the event's sample offset. A
 //!   MIDI CC 7 (volume) sets the constant to its value / 127.
@@ -97,6 +99,9 @@ struct Fx {
     gain: f64,
     mode: f64,
     level: f64,
+    /// The latency the plugin was activated with, and whether it asked for a restart to change it.
+    latency: u32,
+    restart_wanted: bool,
     active: bool,
     processing: bool,
     gui_created: bool,
@@ -137,7 +142,12 @@ unsafe extern "C" fn activate(p: *const clap_plugin, sr: f64, min: u32, max: u32
         return false;
     }
     f.active = true;
+    f.latency = latency_for(f.mode);
     true
+}
+
+fn latency_for(mode: f64) -> u32 {
+    if mode >= 2.0 { 16 } else { 3 }
 }
 
 unsafe extern "C" fn deactivate(p: *const clap_plugin) {
@@ -301,6 +311,11 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
             unsafe { *o.add(i) = v };
         }
     }
+    if latency_for(f.mode) != f.latency && !f.restart_wanted {
+        f.restart_wanted = true;
+        let host = unsafe { &*f.host };
+        unsafe { (host.request_callback.unwrap())(f.host) };
+    }
     CLAP_PROCESS_CONTINUE
 }
 
@@ -413,8 +428,8 @@ unsafe extern "C" fn ports_get(p: *const clap_plugin, index: u32, is_input: bool
 
 static PORTS: clap_plugin_audio_ports = clap_plugin_audio_ports { count: Some(ports_count), get: Some(ports_get) };
 
-unsafe extern "C" fn latency_get(_p: *const clap_plugin) -> u32 {
-    3
+unsafe extern "C" fn latency_get(p: *const clap_plugin) -> u32 {
+    unsafe { fx(p) }.latency
 }
 
 static LATENCY: clap_plugin_latency = clap_plugin_latency { get: Some(latency_get) };
@@ -563,7 +578,13 @@ unsafe extern "C" fn get_extension(p: *const clap_plugin, id: *const c_char) -> 
     }
 }
 
-unsafe extern "C" fn on_main_thread(_p: *const clap_plugin) {}
+unsafe extern "C" fn on_main_thread(p: *const clap_plugin) {
+    let f = unsafe { fx(p) };
+    if std::mem::take(&mut f.restart_wanted) {
+        let host = unsafe { &*f.host };
+        unsafe { (host.request_restart.unwrap())(f.host) };
+    }
+}
 
 // ---- factory + entry ----
 
@@ -618,6 +639,8 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         gain: 1.0,
         mode: 0.0,
         level: 0.0,
+        latency: 3,
+        restart_wanted: false,
         active: false,
         processing: false,
         gui_created: false,
