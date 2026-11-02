@@ -368,7 +368,12 @@ impl SoundApp {
                 }
                 TransportRequest::Record => {
                     if self.engine.transport.recording {
-                        self.stop_play();
+                        if self.is_playing() {
+                            // Quick Punch: punching out ends the take; the transport keeps rolling (#1265).
+                            self.finish_recording();
+                        } else {
+                            self.stop_play();
+                        }
                     } else {
                         self.start_recording();
                     }

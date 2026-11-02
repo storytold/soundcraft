@@ -1618,3 +1618,30 @@ fn assert_history_unchanged(
     assert_eq!(app.engine.undo_history(), history);
     assert_eq!(&app.engine.journal, journal);
 }
+
+#[test]
+fn punching_out_keeps_the_transport_rolling() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+
+    // A take under way (this machine has no input device to arm one for real).
+    app.engine.transport.recording = true;
+    app.run("transport.record", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(!app.engine.transport.recording, "the punch-out ends the take");
+    assert!(app.is_playing(), "playback continues after the punch-out (#1265)");
+    let at = app.position();
+    app.handle_transport(0.25);
+    assert!(app.position() > at, "the clock keeps running");
+
+    // Recording outside playback still stops the transport.
+    app.run("transport.stop", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(!app.is_playing());
+    app.engine.transport.recording = true;
+    app.run("transport.record", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(!app.engine.transport.recording && !app.is_playing());
+}
