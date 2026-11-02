@@ -160,6 +160,40 @@ fn clear_slip_and_shuffle() {
 }
 
 #[test]
+fn remove_clips_closes_each_gap_in_shuffle_only() {
+    let split = |shuffle| {
+        let (mut s, t) = session_with_clip();
+        separate_at(&mut s, t, 2000);
+        separate_at(&mut s, t, 3000);
+        separate_at(&mut s, t, 4000);
+        let ids: Vec<ClipId> = s.track(t).unwrap().clips().iter().map(|c| c.id).collect();
+        // The first and third pieces: [1000, 2000) and [3000, 4000).
+        assert_eq!(remove_clips(&mut s, &[ids[0], ids[2]], shuffle), 2);
+        clips(&s, t)
+    };
+    assert_eq!(split(false), vec![(2000, 1000, 2000), (4000, 1000, 4000)]);
+    assert_eq!(split(true), vec![(1000, 1000, 2000), (2000, 1000, 4000)]);
+}
+
+#[test]
+fn remove_clips_in_shuffle_keeps_crossfade_partners_apart() {
+    // `(start, end)` of each clip; the second one goes.
+    let remove_second = |spans: &[(Samples, Samples)]| {
+        let (mut s, t) = session_with_clip();
+        let ids: Vec<ClipId> = spans.iter().map(|_| s.new_clip_id()).collect();
+        if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+            pl.clips = ids.iter().zip(spans).map(|(id, (a, b))| Clip::audio(*id, "c", SourceId(500), *a, *a, b - a)).collect();
+        }
+        assert_eq!(remove_clips(&mut s, &[ids[1]], true), 1);
+        clips(&s, t).into_iter().map(|(start, len, _)| (start, start + len)).collect::<Vec<_>>()
+    };
+    // Crossfaded with the clip before: the hole starts where that one ends.
+    assert_eq!(remove_second(&[(0, 1050), (950, 2000), (2000, 3000)]), vec![(0, 1050), (1050, 2050)]);
+    // Crossfaded with the clip after: the hole ends where that one starts.
+    assert_eq!(remove_second(&[(0, 1000), (1000, 2050), (1950, 3000), (4000, 5000)]), vec![(0, 1000), (1000, 2050), (3050, 4050)]);
+}
+
+#[test]
 fn copy_paste_overwrites() {
     let (mut s, t) = session_with_clip();
     let copied = copy_range(&s, t, Range::new(1500, 2500));
