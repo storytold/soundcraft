@@ -448,6 +448,9 @@ pub fn bounce_stems_with(e: &Engine, dir: &str, r: Range, opts: &EncodeOptions, 
 /// the engine (and an app waiting on it) busy for hours.
 /// Only sizes asked for are limited: a job in the default 1024-sample blocks renders as it always
 /// has, however long, and other sizes may always take as many blocks as the default would.
+/// The mix's latency isn't counted, so this is an estimate: it is only known once the first block
+/// has rendered, and adds up along the path (track, aux return and master fader inserts), each
+/// limited to `MAX_LATENCY` samples per strip.
 pub fn check_block_work(cmd: &str, sizes: &soundcraft_mix::BlockSizes, samples: i64, renders: usize) -> Result<()> {
     let samples = u64::try_from(samples.max(0)).unwrap_or(0);
     let blocks = sizes.blocks_for(samples).saturating_mul(renders as u64);
