@@ -73,7 +73,7 @@ enum RulerMenu {
     Rulers,
     MarkerDisplays,
     SecondaryTimecode,
-    Conductor { kind: String, at: i64, id: Option<u64> },
+    Conductor { kind: String, at: i64, id: Option<u64>, existing: bool, session: std::sync::Arc<Session> },
 }
 fn menu_contents(app: &mut SoundApp, ui: &mut Ui, target: &RulerMenu) {
     match target {
@@ -135,13 +135,21 @@ fn menu_contents(app: &mut SoundApp, ui: &mut Ui, target: &RulerMenu) {
                 }
             }
         }
-        RulerMenu::Conductor { kind, at, id } => {
-            if ui.button("Edit…").clicked() {
-                app.dialogs.open =
-                    Some(crate::dialogs::Dialog::Conductor(crate::dialogs::conductor::Conductor::new(app.engine.session(), kind, *at, *id)));
+        RulerMenu::Conductor { kind, at, id, existing, session } => {
+            if !std::sync::Arc::ptr_eq(session, &app.engine.session_arc()) {
+                ui.close();
+                return;
+            }
+            if ui.button(if *existing { "Edit…" } else { "Add…" }).clicked() {
+                let form = if *existing {
+                    crate::dialogs::conductor::Conductor::edit(session, kind, *at, *id)
+                } else {
+                    crate::dialogs::conductor::Conductor::new(session, kind, *at, *id)
+                };
+                app.dialogs.open = Some(crate::dialogs::Dialog::Conductor(form));
                 ui.close();
             }
-            if ui.button("Delete").clicked() {
+            if *existing && ui.button("Delete").clicked() {
                 let command = match kind.as_str() {
                     "key" => "event.key_remove",
                     "meter" => "event.meter_remove",
@@ -194,7 +202,7 @@ fn ruler_header(app: &mut SoundApp, ui: &mut Ui, lab: Rect, id: &str, active: bo
             if id == "tempo" {
                 app.dialogs.open = Some(crate::dialogs::Dialog::TempoChange {
                     at,
-                    original: at,
+                    original: None,
                     bpm: app.engine.session().tempo.tempo_at_tick(app.engine.session().tempo.samples_to_ticks(at, app.engine.session().sample_rate)),
                 });
             } else {
@@ -270,7 +278,7 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
                 if tresp.double_clicked()
                     && let Some(p) = tresp.interact_pointer_pos()
                 {
-                    let at = s
+                    let original = s
                         .tempo
                         .tempos()
                         .iter()
@@ -278,9 +286,10 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
                             let x = x_of(&s, tl, s.tempo.tick_to_samples(event.tick, sr));
                             p.x >= x - 5.0 && p.x < x + 50.0
                         })
-                        .map_or_else(|| snap(&s, sample_at(&s, tl, p.x).max(0)), |event| s.tempo.tick_to_samples(event.tick, sr));
+                        .map(|event| s.tempo.tick_to_samples(event.tick, sr));
+                    let at = original.unwrap_or_else(|| snap(&s, sample_at(&s, tl, p.x).max(0)));
                     let bpm = s.tempo.tempo_at_tick(s.tempo.samples_to_ticks(at, sr));
-                    app.dialogs.open = Some(crate::dialogs::Dialog::TempoChange { at, original: at, bpm });
+                    app.dialogs.open = Some(crate::dialogs::Dialog::TempoChange { at, original, bpm });
                 }
                 if tresp.clicked()
                     && ui.input(|i| i.modifiers.alt)
@@ -640,19 +649,38 @@ fn musical_ruler(app: &mut SoundApp, ui: &mut Ui, s: &std::sync::Arc<Session>, t
         && let Some(d) = drag.take()
         && d.original != d.to
     {
-        let mut form = crate::dialogs::conductor::Conductor::new(s, kind, d.original, d.id);
+        let mut form = crate::dialogs::conductor::Conductor::edit(s, kind, d.original, d.id);
         form.at = d.to;
         let (command, params) = form.command();
         let _ = app.run(&command, params);
     }
-    if let Some(p) = resp.hover_pos().or_else(|| resp.interact_pointer_pos()) {
-        let (at, id) = hit(p).map_or((sample_at(s, tl, p.x).max(0), None), |(at, _, id)| (*at, *id));
-        resp.context_menu(|ui| menu_contents(app, ui, &RulerMenu::Conductor { kind: kind.into(), at, id }));
+    let menu_id = ui.scope_id().with(("musical_menu", kind));
+    if resp.secondary_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let event = hit(p);
+        let (at, id) = event.map_or((snap(s, sample_at(s, tl, p.x).max(0)), None), |(at, _, id)| (*at, *id));
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(menu_id, RulerMenu::Conductor { kind: kind.into(), at, id, existing: event.is_some(), session: s.clone() }));
     }
+    // Draw every frame, including when the pointer leaves the ruler for the popup.
+    // Keep the right-click target fixed until another right-click or document change.
+    let menu = ui.ctx().data_mut(|d| d.get_temp::<RulerMenu>(menu_id));
+    resp.context_menu(|ui| {
+        if let Some(target) = &menu {
+            menu_contents(app, ui, target);
+        } else {
+            ui.close();
+        }
+    });
     if let Some(p) = resp.interact_pointer_pos() {
         if resp.double_clicked() {
-            let (at, id) = hit(p).map_or((snap(s, sample_at(s, tl, p.x).max(0)), None), |(at, _, id)| (*at, *id));
-            app.dialogs.open = Some(crate::dialogs::Dialog::Conductor(crate::dialogs::conductor::Conductor::new(s, kind, at, id)));
+            let form = if let Some((at, _, id)) = hit(p) {
+                crate::dialogs::conductor::Conductor::edit(s, kind, *at, *id)
+            } else {
+                crate::dialogs::conductor::Conductor::new(s, kind, snap(s, sample_at(s, tl, p.x).max(0)), None)
+            };
+            app.dialogs.open = Some(crate::dialogs::Dialog::Conductor(form));
         } else if resp.clicked()
             && ui.input(|i| i.modifiers.alt)
             && let Some((at, _, id)) = hit(p)

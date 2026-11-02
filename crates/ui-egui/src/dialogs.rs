@@ -41,7 +41,7 @@ pub enum Dialog {
     ClearClips { clips: Vec<ClipId>, sources: Vec<SourceId>, message: String },
     PathPrompt { cmd: String, title: String, path: String, key: String },
     Number { cmd: String, title: String, key: String, value: f64, suffix: String },
-    TempoChange { at: Samples, original: Samples, bpm: f64 }, // from double-clicking the tempo ruler
+    TempoChange { at: Samples, original: Option<Samples>, bpm: f64 }, // from double-clicking the tempo ruler
     Spot(crate::spot::Spot),
     Fades { shape: String },
     StripSilence { threshold: f64, min_ms: f64, pre_ms: f64, post_ms: f64 },
@@ -624,7 +624,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         ui.label("bpm");
                     });
                     if buttons(ui, "OK", enter) {
-                        action = Some(if at==original {tempo_change_action(*at,*bpm)} else {("event.tempo_edit".into(),json!({"at":original,"to":at,"bpm":bpm}))});
+                        action = Some(if let Some(from)=original.filter(|from| *from != *at) {("event.tempo_edit".into(),json!({"at":from,"to":at,"bpm":bpm}))} else {tempo_change_action(*at,*bpm)});
                     }
                 }
                 Dialog::Spot(d) => {

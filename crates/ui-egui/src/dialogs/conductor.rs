@@ -6,7 +6,7 @@ use soundcraft_time::Samples;
 pub struct Conductor {
     pub kind: String,
     pub id: Option<u64>,
-    pub original: Samples,
+    pub original: Option<Samples>,
     pub at: Samples,
     pub key: String,
     pub root: String,
@@ -23,7 +23,7 @@ impl Conductor {
         Self {
             kind: kind.into(),
             id,
-            original: at,
+            original: None,
             at,
             key,
             root: chord.map_or("C", |c| c.symbol.root.as_str()).into(),
@@ -32,6 +32,12 @@ impl Conductor {
             numerator: meter.numerator,
             denominator: meter.denominator,
         }
+    }
+    /// Edit an existing event; new forms deliberately have no source position.
+    pub fn edit(s: &soundcraft_model::Session, kind: &str, at: Samples, id: Option<u64>) -> Self {
+        let mut form = Self::new(s, kind, at, id);
+        form.original = Some(at);
+        form
     }
     pub fn fields(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
@@ -90,9 +96,13 @@ impl Conductor {
     }
     pub fn command(&self) -> (String, Value) {
         match self.kind.as_str() {
-            "key" => ("event.key_edit".into(), json!({"at":self.original,"to":self.at,"key":self.key})),
+            "key" => ("event.key_edit".into(), json!({"at":self.original.unwrap_or(self.at),"to":self.at,"key":self.key})),
             "meter" => {
-                ("event.meter".into(), json!({"at":self.at,"original":self.original,"numerator":self.numerator,"denominator":self.denominator}))
+                let mut params = json!({"at":self.at,"numerator":self.numerator,"denominator":self.denominator});
+                if let Some(original) = self.original {
+                    params["original"] = json!(original);
+                }
+                ("event.meter".into(), params)
             }
             _ => (
                 if self.id.is_some() { "chord.edit" } else { "chord.add" }.into(),
