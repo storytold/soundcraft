@@ -423,7 +423,7 @@ fn bounce_layout(s: &Session, bus: Option<BusId>, fold_stereo: bool) -> (Channel
 
 /// The first `n` frames of `chunk`, folded down from `fold` when set and scaled by `gain`.
 fn fill(block: &mut Vec<Vec<f32>>, chunk: &[Vec<f32>], n: usize, fold: Option<ChannelFormat>, gain: f32) {
-    let folded = fold.map(|from| soundcraft_mix::fold_down_stereo(from, chunk));
+    let folded = fold.map(|from| soundcraft_mix::fold_down_stereo(from, chunk, n));
     let src = folded.as_deref().unwrap_or(chunk);
     block.resize_with(src.len(), Vec::new);
     for (d, c) in block.iter_mut().zip(src) {

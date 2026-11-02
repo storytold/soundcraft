@@ -119,6 +119,32 @@ fn import_audio_honours_new_tracks() {
 }
 
 #[test]
+fn folded_bounces_sound_the_same_in_tiny_blocks() {
+    let dir = std::env::temp_dir().join(format!("sc-bounce-folded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut e = Engine::default();
+    e.execute("file.import_audio", &json!({"path": tone_wav(&dir, "tone.wav")})).unwrap();
+    // The maximizer's latency makes the first tiny blocks hold nothing, or part of a block.
+    e.execute("mix.insert", &json!({"track": "tone", "plugin": "maximizer"})).unwrap();
+    e.session_mut().outputs[0].format = ChannelFormat::Surround51;
+    let mut bounce = |name: &str, block: Value| {
+        let path = dir.join(name);
+        let p = json!({"path": path.to_string_lossy(), "start": 0, "end": 4800, "bit_depth": "32f", "dither": false, "fold_down": "stereo", "block": block});
+        e.execute("file.bounce_mix", &p).unwrap();
+        soundcraft_audio_io::decode(&std::fs::read(&path).unwrap(), Some("wav")).unwrap().1.channels
+    };
+    let reference = bounce("ref.wav", Value::Null);
+    assert_eq!(reference.len(), 2);
+    assert_eq!(reference[0].len(), 4800);
+    assert!(reference[0].iter().any(|x| x.abs() > 0.01), "the tone reaches the fold-down");
+    for block in [json!(1), json!([1, 7, 1024])] {
+        assert_eq!(bounce("b.wav", block.clone()), reference, "block {block}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn bounces_take_block_sizes_and_sound_the_same() {
     let dir = std::env::temp_dir().join(format!("sc-bounce-blocks-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

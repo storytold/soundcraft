@@ -112,13 +112,14 @@ impl RangeRender {
     }
 }
 
-/// ITU-R BS.775 stereo fold-down of planar audio in `fmt` (C and surrounds at -3 dB, LFE dropped;
-/// Ambisonics play their W channel). Mono/stereo input is returned unchanged.
-pub fn fold_down_stereo(fmt: ChannelFormat, ch: &[Vec<f32>]) -> Vec<Vec<f32>> {
+/// ITU-R BS.775 stereo fold-down of the first `frames` frames of planar audio in `fmt` (C and
+/// surrounds at -3 dB, LFE dropped; Ambisonics play their W channel). Mono/stereo input is returned
+/// unchanged. Render buffers hold a whole `max_block`, so a tiny block costs only its own frames.
+pub fn fold_down_stereo(fmt: ChannelFormat, ch: &[Vec<f32>], frames: usize) -> Vec<Vec<f32>> {
     if ch.len() <= 2 {
-        return ch.to_vec();
+        return ch.iter().map(|c| c.iter().take(frames).copied().collect()).collect();
     }
-    let len = ch.iter().map(Vec::len).max().unwrap_or(0);
+    let len = ch.iter().map(Vec::len).max().unwrap_or(0).min(frames);
     let mut out = vec![vec![0.0f32; len]; 2];
     let sp = fmt.speakers();
     let h = std::f32::consts::FRAC_1_SQRT_2;

@@ -1083,6 +1083,20 @@ fn surround_to_stereo_folds_down_itu() {
 }
 
 #[test]
+fn fold_down_takes_only_the_frames_asked_for() {
+    let ch: Vec<Vec<f32>> = (0..6).map(|c| (0..64).map(|i| (c + 1) as f32 * (i + 1) as f32 * 1e-3).collect()).collect();
+    let whole = fold_down_stereo(ChannelFormat::Surround51, &ch, 64);
+    let head = fold_down_stereo(ChannelFormat::Surround51, &ch, 5);
+    assert_eq!(head.len(), 2);
+    for (h, w) in head.iter().zip(&whole) {
+        assert_eq!(h.as_slice(), &w[..5], "the same samples, and no more of them");
+    }
+    let stereo = fold_down_stereo(ChannelFormat::Stereo, &ch[..2], 5);
+    assert_eq!(stereo, [ch[0][..5].to_vec(), ch[1][..5].to_vec()]);
+    assert_eq!(fold_down_stereo(ChannelFormat::Surround51, &ch, 1000), whole, "never more than there is");
+}
+
+#[test]
 fn mono_track_on_surround_main_pans() {
     let (mut s, t) = session_with_dc(0.5, 4800);
     s.outputs[0].format = ChannelFormat::Surround51;
