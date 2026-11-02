@@ -47,6 +47,7 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
                 // Ctrl (Command on a Mac) gives fine control, as on a fader, and so does Shift.
                 let (dy, fine) = ui.input(|i| (i.pointer.delta().y, i.modifiers.shift || i.modifiers.command || i.modifiers.ctrl));
                 let db = dragged_send_db(s.level_db, dy, fine);
+                app.gesture = Some(crate::Gesture::SendFader { track: id, slot });
                 let _ =
                     app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
             }
@@ -122,6 +123,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                 // Distinct from the strip's "Send A level for <track>" icon and from the slot's "Send level", so a
                 // label query while the window is open still picks one node.
                 if let Some(db) = fader(ui, fr, send.level_db, ui.scope_id().with("send_fader"), "Send level fader") {
+                    app.gesture = Some(crate::Gesture::SendFader { track: id, slot });
                     let _ = app.engine.execute_merged(
                         "mix.send_level",
                         &json!({"track": id.0, "slot": slot, "db": db}),

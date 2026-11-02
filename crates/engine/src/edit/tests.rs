@@ -160,6 +160,40 @@ fn clear_slip_and_shuffle() {
 }
 
 #[test]
+fn remove_clips_closes_each_gap_in_shuffle_only() {
+    let split = |shuffle| {
+        let (mut s, t) = session_with_clip();
+        separate_at(&mut s, t, 2000);
+        separate_at(&mut s, t, 3000);
+        separate_at(&mut s, t, 4000);
+        let ids: Vec<ClipId> = s.track(t).unwrap().clips().iter().map(|c| c.id).collect();
+        // The first and third pieces: [1000, 2000) and [3000, 4000).
+        assert_eq!(remove_clips(&mut s, &[ids[0], ids[2]], shuffle), 2);
+        clips(&s, t)
+    };
+    assert_eq!(split(false), vec![(2000, 1000, 2000), (4000, 1000, 4000)]);
+    assert_eq!(split(true), vec![(1000, 1000, 2000), (2000, 1000, 4000)]);
+}
+
+#[test]
+fn remove_clips_in_shuffle_keeps_crossfade_partners_apart() {
+    // `(start, end)` of each clip; the second one goes.
+    let remove_second = |spans: &[(Samples, Samples)]| {
+        let (mut s, t) = session_with_clip();
+        let ids: Vec<ClipId> = spans.iter().map(|_| s.new_clip_id()).collect();
+        if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+            pl.clips = ids.iter().zip(spans).map(|(id, (a, b))| Clip::audio(*id, "c", SourceId(500), *a, *a, b - a)).collect();
+        }
+        assert_eq!(remove_clips(&mut s, &[ids[1]], true), 1);
+        clips(&s, t).into_iter().map(|(start, len, _)| (start, start + len)).collect::<Vec<_>>()
+    };
+    // Crossfaded with the clip before: the hole starts where that one ends.
+    assert_eq!(remove_second(&[(0, 1050), (950, 2000), (2000, 3000)]), vec![(0, 1050), (1050, 2050)]);
+    // Crossfaded with the clip after: the hole ends where that one starts.
+    assert_eq!(remove_second(&[(0, 1000), (1000, 2050), (1950, 3000), (4000, 5000)]), vec![(0, 1000), (1000, 2050), (3050, 4050)]);
+}
+
+#[test]
 fn copy_paste_overwrites() {
     let (mut s, t) = session_with_clip();
     let copied = copy_range(&s, t, Range::new(1500, 2500));
@@ -342,4 +376,61 @@ fn delete_fades_leaves_unrelated_overlaps_alone() {
     assert_eq!(clips(&s, t), vec![(0, 1050, 0), (1050, 950, 1050), (5000, 1100, 5000), (6000, 1000, 6000)]);
     let c = s.track(t).unwrap().clips();
     assert_eq!((c[1].fade_in.len, c[2].fade_out.len, c[3].fade_in.len), (0, 100, 100));
+}
+
+#[test]
+fn paste_keeps_crossfade_overlap() {
+    let (mut s, t) = session_with_clip();
+    let (a, b) = (s.new_clip_id(), s.new_clip_id());
+    if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+        pl.clips.clear();
+        let mut ca = Clip::audio(a, "a", SourceId(500), 0, 1000, 2000);
+        ca.fade_out = Fade { len: 500, shape: FadeShape::Linear, curvature: 0.0 };
+        let mut cb = Clip::audio(b, "b", SourceId(500), 0, 2500, 2500);
+        cb.fade_in = Fade { len: 500, shape: FadeShape::Linear, curvature: 0.0 };
+        pl.clips.push(ca);
+        pl.clips.push(cb);
+        pl.sort();
+    }
+    let copied = copy_range(&s, t, Range::new(0, 6000));
+    paste(&mut s, t, 20_000, &copied, 6000, false).unwrap();
+    let pasted: Vec<_> =
+        s.track(t).unwrap().clips().iter().filter(|c| c.start >= 20_000).map(|c| (c.start, c.length, c.fade_out.len, c.fade_in.len)).collect();
+    assert_eq!(pasted, vec![(21_000, 2000, 500, 0), (22_500, 2500, 0, 500)]);
+}
+
+#[test]
+fn trim_clip_bounds_stretched_clip_to_its_file() {
+    for (stretch, length, want) in [(0.5, 5000, 5000), (2.0, 1000, 20_000)] {
+        let (mut s, t) = session_with_clip();
+        let id = {
+            let c = s.track_mut(t).and_then(|t| t.playlist_mut()).and_then(|p| p.clips.first_mut()).unwrap();
+            c.stretch = stretch;
+            c.start = 0;
+            c.length = length;
+            if let ClipContent::Audio { offset, .. } = &mut c.content {
+                *offset = 0;
+            }
+            c.id
+        };
+        let c = trim_clip(&mut s, id, None, Some(99_999), false).unwrap();
+        assert_eq!(c.end(), want, "stretch {stretch}");
+    }
+}
+
+#[test]
+fn trim_clip_start_bound_scales_the_offset_by_stretch() {
+    let (mut s, t) = session_with_clip();
+    let id = {
+        let c = s.track_mut(t).and_then(|t| t.playlist_mut()).and_then(|p| p.clips.first_mut()).unwrap();
+        c.stretch = 2.0;
+        c.start = 10_000;
+        c.length = 1000;
+        if let ClipContent::Audio { offset, .. } = &mut c.content {
+            *offset = 1000;
+        }
+        c.id
+    };
+    let c = trim_clip(&mut s, id, Some(0), None, false).unwrap();
+    assert_eq!(c.start, 8000);
 }

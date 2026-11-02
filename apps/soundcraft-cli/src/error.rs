@@ -20,6 +20,8 @@ pub(crate) enum CliError {
     ScriptJson { path: PathBuf, line: usize, source: serde_json::Error },
     #[error("{}:{line}: {id}: {source}", path.display())]
     ScriptLine { path: PathBuf, line: usize, id: String, source: EngineError },
+    #[error("script finished with command errors")]
+    ScriptFailed,
     #[error("{}: {source}", path.display())]
     File { path: PathBuf, source: std::io::Error },
     #[error("{}: {source}", path.display())]
