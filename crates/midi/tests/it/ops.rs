@@ -107,6 +107,13 @@ fn transpose_clamps() {
 }
 
 #[test]
+fn ramp_full_tick_range() {
+    let mut notes = vec![n(60, i64::MIN, 1), n(60, 0, 1), n(60, i64::MAX, 1)];
+    change_velocity(&mut notes, VelocityOp::Ramp { from: 1, to: 127 });
+    assert_eq!(notes.iter().map(|n| n.velocity).collect::<Vec<_>>(), vec![1, 64, 127]);
+}
+
+#[test]
 fn velocity_ops() {
     let base = vec![n(60, 0, 1), n(60, 100, 1), n(60, 200, 1)];
     let vels = |v: &[Note]| v.iter().map(|n| n.velocity).collect::<Vec<_>>();

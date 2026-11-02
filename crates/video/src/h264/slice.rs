@@ -1,7 +1,7 @@
 //! NAL unit header and slice header parsing (7.3.1, 7.3.3).
 
 use crate::bitstream::BitReader;
-use crate::h264::error::{Result, ensure};
+use crate::h264::error::{Error, Result, ensure};
 use crate::h264::params::{Pps, Sps};
 
 /// NAL unit types used by the decoder.
@@ -199,9 +199,9 @@ impl SliceHeader {
         let mut num_ref_idx_active = [pps.num_ref_idx_l0_default_active, pps.num_ref_idx_l1_default_active];
         if !slice_type.is_intra() {
             if r.read_flag()? {
-                num_ref_idx_active[0] = r.read_ue()? + 1;
+                num_ref_idx_active[0] = plus_one(r.read_ue()?)?;
                 if slice_type.is_b() {
-                    num_ref_idx_active[1] = r.read_ue()? + 1;
+                    num_ref_idx_active[1] = plus_one(r.read_ue()?)?;
                 }
             }
             let max = if field_pic { 32 } else { 16 };
@@ -214,108 +214,16 @@ impl SliceHeader {
             num_ref_idx_active[0] = 0;
         }
         ensure!(nal.nal_unit_type != 20 && nal.nal_unit_type != 21, "MVC slices are not supported");
-        let mut ref_pic_list_mod = [Vec::new(), Vec::new()];
-        for (list, mods) in ref_pic_list_mod.iter_mut().enumerate() {
-            let present = if list == 0 { !slice_type.is_intra() } else { slice_type.is_b() };
-            if present && r.read_flag()? {
-                loop {
-                    let idc = r.read_ue()?;
-                    ensure!(idc <= 5, "modification_of_pic_nums_idc out of range");
-                    if idc == 3 {
-                        break;
-                    }
-                    let value = r.read_ue()?;
-                    mods.push(RefPicListMod { idc, value });
-                    ensure!(mods.len() <= 66, "too many ref_pic_list_modification entries");
-                }
-            }
-        }
-        let mut pred_weight_table = None;
-        if (pps.weighted_pred && slice_type.is_p()) || (pps.weighted_bipred_idc == 1 && slice_type.is_b()) {
-            let luma_log2_denom = r.read_ue()?;
-            ensure!(luma_log2_denom <= 7, "luma_log2_weight_denom out of range");
-            let mut chroma_log2_denom = 0;
-            if sps.chroma_array_type() != 0 {
-                chroma_log2_denom = r.read_ue()?;
-                ensure!(chroma_log2_denom <= 7, "chroma_log2_weight_denom out of range");
-            }
-            let mut lists = [Vec::new(), Vec::new()];
-            let nlists = if slice_type.is_b() { 2 } else { 1 };
-            for (l, entries) in lists.iter_mut().enumerate().take(nlists) {
-                for _ in 0..num_ref_idx_active[l] {
-                    let mut e = WeightEntry { luma_weight: 1 << luma_log2_denom, chroma_weight: [1 << chroma_log2_denom; 2], ..Default::default() };
-                    if r.read_flag()? {
-                        e.luma_flag = true;
-                        e.luma_weight = r.read_se()?;
-                        e.luma_offset = r.read_se()?;
-                        ensure!((-128..=127).contains(&e.luma_weight) && (-128..=127).contains(&e.luma_offset), "luma weight out of range");
-                    }
-                    if sps.chroma_array_type() != 0 && r.read_flag()? {
-                        e.chroma_flag = true;
-                        for j in 0..2 {
-                            e.chroma_weight[j] = r.read_se()?;
-                            e.chroma_offset[j] = r.read_se()?;
-                            ensure!(
-                                (-128..=127).contains(&e.chroma_weight[j]) && (-128..=127).contains(&e.chroma_offset[j]),
-                                "chroma weight out of range"
-                            );
-                        }
-                    }
-                    entries.push(e);
-                }
-            }
-            let [l0, l1] = lists;
-            pred_weight_table = Some(PredWeightTable { luma_log2_denom, chroma_log2_denom, l0, l1 });
-        }
-        let mut no_output_of_prior_pics = false;
-        let mut long_term_reference = false;
-        let mut adaptive_ref_pic_marking = false;
-        let mut mmcos = Vec::new();
-        if nal.nal_ref_idc != 0 {
-            if idr {
-                no_output_of_prior_pics = r.read_flag()?;
-                long_term_reference = r.read_flag()?;
-            } else {
-                adaptive_ref_pic_marking = r.read_flag()?;
-                if adaptive_ref_pic_marking {
-                    loop {
-                        let op = r.read_ue()?;
-                        ensure!(op <= 6, "memory_management_control_operation out of range");
-                        if op == 0 {
-                            break;
-                        }
-                        let mut m = Mmco {
-                            op,
-                            difference_of_pic_nums_minus1: 0,
-                            long_term_pic_num: 0,
-                            long_term_frame_idx: 0,
-                            max_long_term_frame_idx_plus1: 0,
-                        };
-                        if op == 1 || op == 3 {
-                            m.difference_of_pic_nums_minus1 = r.read_ue()?;
-                        }
-                        if op == 2 {
-                            m.long_term_pic_num = r.read_ue()?;
-                        }
-                        if op == 3 || op == 6 {
-                            m.long_term_frame_idx = r.read_ue()?;
-                        }
-                        if op == 4 {
-                            m.max_long_term_frame_idx_plus1 = r.read_ue()?;
-                        }
-                        mmcos.push(m);
-                        ensure!(mmcos.len() <= 66, "too many MMCOs");
-                    }
-                }
-            }
-        }
+        let ref_fields = parse_reference_fields(&mut r, nal, idr, slice_type, pps, sps, num_ref_idx_active)?;
+        let RefFields { ref_pic_list_mod, pred_weight_table, no_output_of_prior_pics, long_term_reference, adaptive_ref_pic_marking, mmcos } =
+            ref_fields;
         let mut cabac_init_idc = 0;
         if pps.entropy_coding_mode && !slice_type.is_intra() {
             cabac_init_idc = r.read_ue()?;
             ensure!(cabac_init_idc <= 2, "cabac_init_idc out of range");
         }
         let slice_qp_delta = r.read_se()?;
-        let qp = pps.pic_init_qp + slice_qp_delta;
+        let qp = pps.pic_init_qp.checked_add(slice_qp_delta).ok_or_else(|| Error::Invalid("slice QP out of range".to_string()))?;
         ensure!((0..=51).contains(&qp), "slice QP {qp} out of range");
         let mut sp_for_switch = false;
         let mut slice_qs_delta = 0;
@@ -391,6 +299,139 @@ impl SliceHeader {
     }
 }
 
+struct RefFields {
+    ref_pic_list_mod: [Vec<RefPicListMod>; 2],
+    pred_weight_table: Option<PredWeightTable>,
+    no_output_of_prior_pics: bool,
+    long_term_reference: bool,
+    adaptive_ref_pic_marking: bool,
+    mmcos: Vec<Mmco>,
+}
+
+/// `num_ref_idx_active_minus1 + 1`, or the error its range check gives.
+fn plus_one(v: u32) -> Result<u32> {
+    v.checked_add(1).ok_or_else(|| Error::Invalid("num_ref_idx_active out of range".to_string()))
+}
+
+fn parse_reference_fields(
+    r: &mut BitReader<'_>,
+    nal: NalHeader,
+    idr: bool,
+    slice_type: SliceType,
+    pps: &Pps,
+    sps: &Sps,
+    num_ref_idx_active: [u32; 2],
+) -> Result<RefFields> {
+    let ref_pic_list_mod = parse_ref_pic_list_mod(r, slice_type)?;
+    let pred_weight_table = parse_pred_weight_table(r, slice_type, pps, sps, num_ref_idx_active)?;
+    let (no_output_of_prior_pics, long_term_reference, adaptive_ref_pic_marking, mmcos) = parse_ref_pic_marking(r, nal, idr)?;
+    Ok(RefFields { ref_pic_list_mod, pred_weight_table, no_output_of_prior_pics, long_term_reference, adaptive_ref_pic_marking, mmcos })
+}
+
+fn parse_ref_pic_list_mod(r: &mut BitReader<'_>, slice_type: SliceType) -> Result<[Vec<RefPicListMod>; 2]> {
+    let mut lists = [Vec::new(), Vec::new()];
+    for (list, mods) in lists.iter_mut().enumerate() {
+        let present = if list == 0 { !slice_type.is_intra() } else { slice_type.is_b() };
+        if present && r.read_flag()? {
+            loop {
+                let idc = r.read_ue()?;
+                ensure!(idc <= 5, "modification_of_pic_nums_idc out of range");
+                if idc == 3 {
+                    break;
+                }
+                mods.push(RefPicListMod { idc, value: r.read_ue()? });
+                ensure!(mods.len() <= 66, "too many ref_pic_list_modification entries");
+            }
+        }
+    }
+    Ok(lists)
+}
+
+fn parse_pred_weight_table(r: &mut BitReader<'_>, slice_type: SliceType, pps: &Pps, sps: &Sps, active: [u32; 2]) -> Result<Option<PredWeightTable>> {
+    let weighted = (pps.weighted_pred && slice_type.is_p()) || (pps.weighted_bipred_idc == 1 && slice_type.is_b());
+    if !weighted {
+        return Ok(None);
+    }
+    let luma_log2_denom = r.read_ue()?;
+    ensure!(luma_log2_denom <= 7, "luma_log2_weight_denom out of range");
+    let chroma_log2_denom = if sps.chroma_array_type() == 0 { 0 } else { r.read_ue()? };
+    ensure!(chroma_log2_denom <= 7, "chroma_log2_weight_denom out of range");
+    let mut lists = [Vec::new(), Vec::new()];
+    let list_count = if slice_type.is_b() { 2 } else { 1 };
+    for (list, entries) in lists.iter_mut().enumerate().take(list_count) {
+        for _ in 0..active[list] {
+            entries.push(parse_weight_entry(r, luma_log2_denom, chroma_log2_denom, sps.chroma_array_type() != 0)?);
+        }
+    }
+    let [l0, l1] = lists;
+    Ok(Some(PredWeightTable { luma_log2_denom, chroma_log2_denom, l0, l1 }))
+}
+
+fn parse_weight_entry(r: &mut BitReader<'_>, luma_denom: u32, chroma_denom: u32, has_chroma: bool) -> Result<WeightEntry> {
+    let mut entry = WeightEntry { luma_weight: 1 << luma_denom, chroma_weight: [1 << chroma_denom; 2], ..Default::default() };
+    if r.read_flag()? {
+        entry.luma_flag = true;
+        entry.luma_weight = r.read_se()?;
+        entry.luma_offset = r.read_se()?;
+        ensure!((-128..=127).contains(&entry.luma_weight) && (-128..=127).contains(&entry.luma_offset), "luma weight out of range");
+    }
+    if has_chroma && r.read_flag()? {
+        entry.chroma_flag = true;
+        for index in 0..2 {
+            entry.chroma_weight[index] = r.read_se()?;
+            entry.chroma_offset[index] = r.read_se()?;
+            ensure!(
+                (-128..=127).contains(&entry.chroma_weight[index]) && (-128..=127).contains(&entry.chroma_offset[index]),
+                "chroma weight out of range"
+            );
+        }
+    }
+    Ok(entry)
+}
+
+fn parse_ref_pic_marking(r: &mut BitReader<'_>, nal: NalHeader, idr: bool) -> Result<(bool, bool, bool, Vec<Mmco>)> {
+    let (mut no_output, mut long_term, mut adaptive) = (false, false, false);
+    let mut mmcos = Vec::new();
+    if nal.nal_ref_idc == 0 {
+        return Ok((no_output, long_term, adaptive, mmcos));
+    }
+    if idr {
+        no_output = r.read_flag()?;
+        long_term = r.read_flag()?;
+    } else {
+        adaptive = r.read_flag()?;
+        if adaptive {
+            parse_mmcos(r, &mut mmcos)?;
+        }
+    }
+    Ok((no_output, long_term, adaptive, mmcos))
+}
+
+fn parse_mmcos(r: &mut BitReader<'_>, mmcos: &mut Vec<Mmco>) -> Result<()> {
+    loop {
+        let op = r.read_ue()?;
+        ensure!(op <= 6, "memory_management_control_operation out of range");
+        if op == 0 {
+            return Ok(());
+        }
+        let mut m = Mmco { op, difference_of_pic_nums_minus1: 0, long_term_pic_num: 0, long_term_frame_idx: 0, max_long_term_frame_idx_plus1: 0 };
+        if op == 1 || op == 3 {
+            m.difference_of_pic_nums_minus1 = r.read_ue()?;
+        }
+        if op == 2 {
+            m.long_term_pic_num = r.read_ue()?;
+        }
+        if op == 3 || op == 6 {
+            m.long_term_frame_idx = r.read_ue()?;
+        }
+        if op == 4 {
+            m.max_long_term_frame_idx_plus1 = r.read_ue()?;
+        }
+        mmcos.push(m);
+        ensure!(mmcos.len() <= 66, "too many MMCOs");
+    }
+}
+
 /// POC decoding state carried between pictures (8.2.1).
 #[derive(Clone, Debug, Default)]
 pub struct PocState {
@@ -426,20 +467,20 @@ impl PocState {
                 let max_lsb = 1i32 << sps.log2_max_poc_lsb;
                 let lsb = sh.pic_order_cnt_lsb as i32;
                 let msb = if lsb < prev_lsb && prev_lsb - lsb >= max_lsb / 2 {
-                    prev_msb + max_lsb
+                    prev_msb.saturating_add(max_lsb)
                 } else if lsb > prev_lsb && lsb - prev_lsb > max_lsb / 2 {
-                    prev_msb - max_lsb
+                    prev_msb.saturating_sub(max_lsb)
                 } else {
                     prev_msb
                 };
-                let top = msb + lsb;
-                let bottom = top + sh.delta_pic_order_cnt_bottom;
+                let top = msb.saturating_add(lsb);
+                let bottom = top.saturating_add(sh.delta_pic_order_cnt_bottom);
                 Poc { top, bottom, msb, frame_num_offset: 0 }
             }
             1 => {
                 let frame_num_offset = self.frame_num_offset(sh.idr, sh.frame_num, sps);
                 let n = sps.offset_for_ref_frame.len() as i32;
-                let mut abs_frame_num = if n != 0 { frame_num_offset + sh.frame_num as i32 } else { 0 };
+                let mut abs_frame_num = if n != 0 { frame_num_offset.saturating_add(sh.frame_num as i32) } else { 0 };
                 if sh.nal_ref_idc == 0 && abs_frame_num > 0 {
                     abs_frame_num -= 1;
                 }
@@ -447,17 +488,17 @@ impl PocState {
                 if abs_frame_num > 0 {
                     let cycle_cnt = (abs_frame_num - 1) / n;
                     let in_cycle = (abs_frame_num - 1) % n;
-                    let delta_cycle: i32 = sps.offset_for_ref_frame.iter().sum();
-                    expected = cycle_cnt.wrapping_mul(delta_cycle);
+                    let delta_cycle: i32 = sps.offset_for_ref_frame.iter().fold(0i32, |a, &o| a.saturating_add(o));
+                    expected = cycle_cnt.saturating_mul(delta_cycle);
                     for &o in &sps.offset_for_ref_frame[..=in_cycle as usize] {
-                        expected += o;
+                        expected = expected.saturating_add(o);
                     }
                 }
                 if sh.nal_ref_idc == 0 {
-                    expected += sps.offset_for_non_ref_pic;
+                    expected = expected.saturating_add(sps.offset_for_non_ref_pic);
                 }
-                let top = expected + sh.delta_pic_order_cnt[0];
-                let bottom = top + sps.offset_for_top_to_bottom_field + sh.delta_pic_order_cnt[1];
+                let top = expected.saturating_add(sh.delta_pic_order_cnt[0]);
+                let bottom = top.saturating_add(sps.offset_for_top_to_bottom_field).saturating_add(sh.delta_pic_order_cnt[1]);
                 Poc { top, bottom, msb: 0, frame_num_offset }
             }
             _ => {
@@ -465,9 +506,9 @@ impl PocState {
                 let temp = if sh.idr {
                     0
                 } else if sh.nal_ref_idc == 0 {
-                    2 * (frame_num_offset + sh.frame_num as i32) - 1
+                    2i32.saturating_mul(frame_num_offset.saturating_add(sh.frame_num as i32)).saturating_sub(1)
                 } else {
-                    2 * (frame_num_offset + sh.frame_num as i32)
+                    2i32.saturating_mul(frame_num_offset.saturating_add(sh.frame_num as i32))
                 };
                 Poc { top: temp, bottom: temp, msb: 0, frame_num_offset }
             }
@@ -478,7 +519,7 @@ impl PocState {
         if idr {
             0
         } else if self.prev_frame_num > frame_num {
-            self.prev_frame_num_offset + sps.max_frame_num() as i32
+            self.prev_frame_num_offset.saturating_add(sps.max_frame_num() as i32)
         } else {
             self.prev_frame_num_offset
         }
@@ -491,7 +532,7 @@ impl PocState {
         if sh.nal_ref_idc != 0 {
             if mmco5 {
                 self.prev_ref_msb = 0;
-                self.prev_ref_lsb = poc.top - poc.frame();
+                self.prev_ref_lsb = poc.top.saturating_sub(poc.frame());
             } else {
                 self.prev_ref_msb = poc.msb;
                 self.prev_ref_lsb = sh.pic_order_cnt_lsb as i32;
@@ -511,5 +552,103 @@ impl PocState {
         let off = self.frame_num_offset(false, frame_num, sps);
         self.prev_frame_num_offset = off;
         self.prev_frame_num = frame_num;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bitstream::BitWriter;
+
+    fn sps_pps() -> (Sps, Pps) {
+        let mut w = BitWriter::new();
+        w.write_bits(66, 8);
+        w.write_bits(0xC0, 8);
+        w.write_bits(30, 8);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_ue(2);
+        w.write_ue(1);
+        w.write_bit(false);
+        w.write_ue(10);
+        w.write_ue(8);
+        w.write_bit(true);
+        w.write_bit(true);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.rbsp_trailing();
+        let sps = Sps::parse(&w.finish()).unwrap();
+        let mut w = BitWriter::new();
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_bit(false);
+        w.write_bits(0, 2);
+        w.write_se(0);
+        w.write_se(0);
+        w.write_se(0);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.rbsp_trailing();
+        let pps = Pps::parse(&w.finish(), &[Some(sps.clone())]).unwrap();
+        (sps, pps)
+    }
+
+    /// Parse a non-IDR slice header of `slice_type` whose override flag is set with the given counts.
+    fn parse_override(slice_type: u32, l0_minus1: u32, l1_minus1: u32, qp_delta: i32) -> Result<SliceHeader> {
+        let (sps, pps) = sps_pps();
+        let mut w = BitWriter::new();
+        w.write_ue(0);
+        w.write_ue(slice_type);
+        w.write_ue(0);
+        w.write_bits(0, 4);
+        if slice_type == 1 {
+            w.write_bit(true); // direct_spatial_mv_pred
+        }
+        w.write_bit(true); // num_ref_idx_active_override_flag
+        w.write_ue(l0_minus1);
+        if slice_type == 1 {
+            w.write_ue(l1_minus1);
+        }
+        w.write_bit(false); // ref_pic_list_modification_flag_l0
+        if slice_type == 1 {
+            w.write_bit(false);
+        }
+        w.write_bit(false); // adaptive_ref_pic_marking_mode_flag
+        w.write_se(qp_delta);
+        w.rbsp_trailing();
+        let nal = NalHeader { nal_ref_idc: 1, nal_unit_type: 1 };
+        SliceHeader::parse(&w.finish(), nal, |_| Ok((&pps, &sps))).map(|(h, _, _)| h)
+    }
+
+    #[test]
+    fn huge_num_ref_idx_override_is_invalid() {
+        assert!(matches!(parse_override(0, u32::MAX, 0, 0), Err(crate::h264::Error::Invalid(_))));
+        assert!(matches!(parse_override(1, 0, u32::MAX, 0), Err(crate::h264::Error::Invalid(_))));
+        assert!(matches!(parse_override(0, 16, 0, 0), Err(crate::h264::Error::Invalid(_))));
+        assert_eq!(parse_override(0, 15, 0, 0).unwrap().num_ref_idx_active, [16, 0]);
+    }
+
+    #[test]
+    fn huge_slice_qp_delta_is_invalid() {
+        assert!(matches!(parse_override(0, 0, 0, i32::MAX), Err(crate::h264::Error::Invalid(_))));
+    }
+
+    #[test]
+    fn poc0_huge_bottom_delta_does_not_overflow() {
+        let (mut sps, _) = sps_pps();
+        sps.pic_order_cnt_type = 0;
+        sps.log2_max_poc_lsb = 4;
+        let mut sh = parse_override(0, 0, 0, 0).unwrap();
+        sh.pic_order_cnt_lsb = 1;
+        sh.delta_pic_order_cnt_bottom = i32::MAX;
+        let poc = PocState::default().compute(&sh, &sps);
+        assert_eq!(poc.top, 1);
+        assert_eq!(poc.bottom, i32::MAX);
     }
 }

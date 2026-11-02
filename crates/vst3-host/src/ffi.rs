@@ -39,7 +39,7 @@ mod process;
 
 pub(crate) use editor::EditorLink;
 pub(crate) use host::HostContext;
-pub(crate) use instance::{Instance, PARAM_BYPASS, PARAM_HIDDEN, PARAM_READ_ONLY, RawParam};
+pub(crate) use instance::{Instance, PARAM_BYPASS, PARAM_HIDDEN, PARAM_READ_ONLY, ProcessInput, RawParam};
 #[cfg(test)]
 use instance::{apply_transport, split_state};
 pub(crate) use module::{Bundle, exit_modules, hex};

@@ -1,7 +1,10 @@
 use super::plugin_menu::{MenuSearch, menu_row};
 use super::routing::route_name;
 use super::slots::{COMPACT_SLOT, Mark, empty_slot, level_icon, used_slot};
-use super::*;
+use super::{
+    Align2, Rect, Route, Sense, SoundApp, Stroke, StrokeKind, Tokens, Track, TrackId, TrackKind, Ui, db_text, fader, json, pan_knob, pan_text, pos2,
+    regular, text_toggle, vec2,
+};
 use craft_ui::combo::Menu;
 
 /// Draw one send slot: the route area picks a destination, while the level area opens or edits the send level.
@@ -43,6 +46,7 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
                 // applying it to the already-updated value made trackpad adjustment accelerate.
                 let (dy, fine) = ui.input(|i| (i.pointer.delta().y, i.modifiers.shift));
                 let db = dragged_send_db(s.level_db, dy, fine);
+                app.gesture = Some(crate::Gesture::SendFader { track: id, slot });
                 let _ =
                     app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
             }
@@ -117,6 +121,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                 // Distinct from the strip's "Send A level for <track>" icon and from the slot's "Send level", so a
                 // label query while the window is open still picks one node.
                 if let Some(db) = fader(ui, fr, send.level_db, ui.scope_id().with("send_fader"), "Send level fader") {
+                    app.gesture = Some(crate::Gesture::SendFader { track: id, slot });
                     let _ = app.engine.execute_merged(
                         "mix.send_level",
                         &json!({"track": id.0, "slot": slot, "db": db}),

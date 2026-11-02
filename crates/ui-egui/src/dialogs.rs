@@ -281,11 +281,184 @@ fn clear_message(s: &Session, clips: &[ClipId], sources: &[SourceId]) -> Option<
     Some(text)
 }
 
+/// The New Tracks form; the command to run once Create is pressed.
+fn new_tracks_form(
+    ui: &mut egui::Ui,
+    count: &mut u32,
+    format: &mut String,
+    kind: &mut String,
+    timebase: &mut String,
+    name: &mut String,
+    enter: bool,
+) -> Option<(String, Value)> {
+    ui.horizontal(|ui| {
+        let create = ui.label("Create");
+        ui.add(egui::DragValue::new(count).range(1..=128)).labelled_by(create.id);
+        ui.label("new");
+        let fmt = craft_ui::ComboBox::from_id_salt("nt_fmt").selected_text(format.as_str()).show_ui(ui, |ui| {
+            for f in soundcraft_model::ChannelFormat::ALL {
+                ui.selectable_value(format, f.label().to_string(), f.label());
+            }
+        });
+        fmt.response.accessible_name("Channel format");
+        let kind_combo = craft_ui::ComboBox::from_id_salt("nt_kind")
+            .selected_text(soundcraft_model::TrackKind::from_id(kind).map_or("Audio Track", |k| k.label()))
+            .show_ui(ui, |ui| {
+                for k in soundcraft_model::TrackKind::ALL {
+                    if ui.selectable_label(kind == k.id(), k.label()).clicked() {
+                        *kind = k.id().to_string();
+                        *name = k.default_name().to_string();
+                    }
+                }
+            });
+        kind_combo.response.accessible_name("Track kind");
+        ui.label("in");
+        let tb = craft_ui::ComboBox::from_id_salt("nt_tb").selected_text(if timebase == "ticks" { "Ticks" } else { "Samples" }).show_ui(ui, |ui| {
+            ui.selectable_value(timebase, "samples".to_string(), "Samples");
+            ui.selectable_value(timebase, "ticks".to_string(), "Ticks");
+        });
+        tb.response.accessible_name("Timebase");
+    });
+    ui.horizontal(|ui| {
+        ui.label("Name:");
+        crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(name).desired_width(240.0)), "Name");
+    });
+    if buttons(ui, "Create", enter) {
+        return Some(("track.new".into(), json!({"count": count, "format": format, "kind": kind, "timebase": timebase, "name": name})));
+    }
+    None
+}
+
+/// The Bounce form's file row: a path field and a Browse button that also picks the format.
+fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, format: &mut FileFormat) {
+    ui.horizontal(|ui| {
+        ui.label("File");
+        crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "File");
+        if let Some(pick) = &app.services.pick_save
+            && ui.button("Browse…").clicked()
+            && let Some(p) = pick("file.bounce_mix", std::path::Path::new(path.as_str()))
+        {
+            match unicode(&p) {
+                Ok(text) => {
+                    *path = text.to_owned();
+                    if let Some(picked) = p.extension().and_then(std::ffi::OsStr::to_str).and_then(FileFormat::from_write_extension) {
+                        *format = picked;
+                    }
+                }
+                Err(e) => app.ui.status = e.to_string(),
+            }
+        }
+    });
+}
+
+/// The path prompt's form; the command to run once it is confirmed.
+fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut String, key: &str, enter: bool) -> Option<(String, Value)> {
+    crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "Path");
+    let mut picked = None;
+    if let Some(pick) = &app.services.pick_open
+        && cmd != "session.save_as"
+        && cmd != "session.save_copy"
+        && key != "dir"
+        && ui.button("Browse…").clicked()
+        && let Some(p) = pick(cmd, &[])
+    {
+        picked = Some(p);
+    }
+    if let Some(pick) = &app.services.pick_folder
+        && key == "dir"
+        && ui.button("Browse…").clicked()
+        && let Some(p) = pick(std::path::Path::new(path.as_str()))
+    {
+        picked = Some(p);
+    }
+    if let Some(pick) = &app.services.pick_save
+        && (cmd == "session.save_as" || cmd == "session.save_copy")
+        && ui.button("Browse…").clicked()
+        && let Some(p) = pick(cmd, std::path::Path::new(path.as_str()))
+    {
+        picked = Some(p);
+    }
+    match picked.as_deref().map(unicode) {
+        Some(Ok(text)) => *path = text.to_owned(),
+        Some(Err(e)) => app.ui.status = e.to_string(),
+        None => {}
+    }
+    let file = soundcraft_engine::io::session_file(path);
+    let replaces = soundcraft_engine::io::replaces(&app.engine, cmd, &file);
+    if replaces {
+        ui.label(format!("“{}” already exists. Do you want to replace it?", file.file_name().unwrap_or_default().to_string_lossy()));
+    }
+    if buttons(ui, if replaces { "Replace" } else { "OK" }, enter && !replaces) {
+        let mut v = json!({});
+        v[key] = json!(path);
+        if replaces {
+            v["replace"] = json!(true);
+        }
+        return Some((cmd.to_string(), v));
+    }
+    None
+}
+
+/// The Strip Silence form: the Strip Silence command to run, or the values to carry into Rename.
+fn strip_silence_form(
+    ui: &mut egui::Ui,
+    values: &mut [f64; 4],
+    strip_names: &StripNames,
+    enter: bool,
+) -> (Option<(String, Value)>, Option<[f64; 4]>) {
+    let mut action = None;
+    let mut rename_from = None;
+    let [threshold, min_ms, pre_ms, post_ms] = values;
+    let before = [*threshold, *min_ms, *pre_ms, *post_ms];
+    ui.add(egui::Slider::new(threshold, -96.0..=0.0).text("Threshold dB"));
+    ui.add(egui::Slider::new(min_ms, 0.0..=4000.0).text("Min strip duration ms"));
+    ui.add(egui::Slider::new(pre_ms, 0.0..=500.0).text("Clip start pad ms"));
+    ui.add(egui::Slider::new(post_ms, 0.0..=2000.0).text("Clip end pad ms"));
+    let values = [*threshold, *min_ms, *pre_ms, *post_ms];
+    // The Edit window is drawn before this window, so it draws the rectangles for new values in the next frame.
+    if values != before {
+        ui.ctx().request_repaint();
+    }
+    if !strip_names.name.trim().is_empty() {
+        let names = format!("New clips are named {}, {} and so on.", strip_names.clip_name(0), strip_names.clip_name(1));
+        ui.label(egui::RichText::new(names).small().color(Tokens::current().text_dim));
+    }
+    ui.separator();
+    ui.horizontal(|ui| {
+        let mut mode = None;
+        let mut rename = false;
+        if ui.button("Extract").clicked() {
+            mode = Some("extract");
+        }
+        if ui.button("Rename…").clicked() {
+            rename = true;
+        }
+        if ui.button("Separate").clicked() {
+            mode = Some("separate");
+        }
+        // Enter on a focused Extract or Separate clicks that button, so Enter presses Strip only when neither was clicked.
+        if buttons(ui, "Strip", enter) && mode.is_none() {
+            mode = Some("strip");
+        }
+        // Enter on a focused Rename… also presses Strip, so Rename… goes first.
+        if rename {
+            rename_from = Some(values);
+        } else if let Some(mode) = mode {
+            action = Some(strip_silence_action(mode, values, strip_names));
+        }
+    });
+    (action, rename_from)
+}
+
 /// Show the open dialog, if any.
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     audiosuite_window(app, ctx);
     crate::bounce::show(app, ctx);
     crate::import::show(app, ctx);
+    // Whichever window shows, closing Strip Silence drops its rectangles and stops their scan.
+    if !matches!(app.dialogs.open, Some(Dialog::StripSilence { .. } | Dialog::StripSilenceRename { .. })) {
+        app.dialogs.strip_rectangles = StripRectangles::default();
+    }
     let Some(mut d) = app.dialogs.open.take() else { return };
     let mut keep = true;
     let mut action: Option<(String, Value)> = None;
@@ -328,44 +501,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             match &mut d {
                 Dialog::NewTracks { count, format, kind, timebase, name } => {
-                    ui.horizontal(|ui| {
-                        let create = ui.label("Create");
-                        ui.add(egui::DragValue::new(count).range(1..=128)).labelled_by(create.id);
-                        ui.label("new");
-                        let fmt = craft_ui::ComboBox::from_id_salt("nt_fmt").selected_text(format.as_str()).show_ui(ui, |ui| {
-                            for f in soundcraft_model::ChannelFormat::ALL {
-                                ui.selectable_value(format, f.label().to_string(), f.label());
-                            }
-                        });
-                        fmt.response.accessible_name("Channel format");
-                        let kind_combo = craft_ui::ComboBox::from_id_salt("nt_kind")
-                            .selected_text(soundcraft_model::TrackKind::from_id(kind).map_or("Audio Track", |k| k.label()))
-                            .show_ui(ui, |ui| {
-                                for k in soundcraft_model::TrackKind::ALL {
-                                    if ui.selectable_label(kind == k.id(), k.label()).clicked() {
-                                        *kind = k.id().to_string();
-                                        *name = k.default_name().to_string();
-                                    }
-                                }
-                            });
-                        kind_combo.response.accessible_name("Track kind");
-                        ui.label("in");
-                        let tb = craft_ui::ComboBox::from_id_salt("nt_tb").selected_text(if timebase == "ticks" { "Ticks" } else { "Samples" }).show_ui(
-                            ui,
-                            |ui| {
-                                ui.selectable_value(timebase, "samples".to_string(), "Samples");
-                                ui.selectable_value(timebase, "ticks".to_string(), "Ticks");
-                            },
-                        );
-                        tb.response.accessible_name("Timebase");
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Name:");
-                        crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(name).desired_width(240.0)), "Name");
-                    });
-                    if buttons(ui, "Create", enter) {
-                        action =
-                            Some(("track.new".into(), json!({"count": count, "format": format, "kind": kind, "timebase": timebase, "name": name})));
+                    if let Some(cmd) = new_tracks_form(ui, count, format, kind, timebase, name, enter) {
+                        action = Some(cmd);
                     }
                 }
                 Dialog::NewSession { name, sample_rate, demo } => {
@@ -387,24 +524,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 }
                 Dialog::Bounce { path, format, bit_depth, normalize, dither } => {
-                    ui.horizontal(|ui| {
-                        ui.label("File");
-                        crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "File");
-                        if let Some(pick) = &app.services.pick_save
-                            && ui.button("Browse…").clicked()
-                            && let Some(p) = pick("file.bounce_mix", std::path::Path::new(path.as_str()))
-                        {
-                            match unicode(&p) {
-                                Ok(text) => {
-                                    *path = text.to_owned();
-                                    if let Some(picked) = p.extension().and_then(std::ffi::OsStr::to_str).and_then(FileFormat::from_write_extension) {
-                                        *format = picked;
-                                    }
-                                }
-                                Err(e) => app.ui.status = e.to_string(),
-                            }
-                        }
-                    });
+                    bounce_file_row(app, ui, path, format);
                     ui.horizontal(|ui| {
                         craft_ui::ComboBox::from_label("Format").selected_text(format.name()).show_ui(ui, |ui| {
                             for &f in FileFormat::WRITE {
@@ -463,48 +583,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 }
                 Dialog::PathPrompt { cmd, path, key, .. } => {
-                    crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "Path");
-                    let mut picked = None;
-                    if let Some(pick) = &app.services.pick_open
-                        && cmd != "session.save_as"
-                        && cmd != "session.save_copy"
-                        && key != "dir"
-                        && ui.button("Browse…").clicked()
-                        && let Some(p) = pick(cmd, &[])
-                    {
-                        picked = Some(p);
-                    }
-                    if let Some(pick) = &app.services.pick_folder
-                        && key == "dir"
-                        && ui.button("Browse…").clicked()
-                        && let Some(p) = pick(std::path::Path::new(path.as_str()))
-                    {
-                        picked = Some(p);
-                    }
-                    if let Some(pick) = &app.services.pick_save
-                        && (cmd == "session.save_as" || cmd == "session.save_copy")
-                        && ui.button("Browse…").clicked()
-                        && let Some(p) = pick(cmd, std::path::Path::new(path.as_str()))
-                    {
-                        picked = Some(p);
-                    }
-                    match picked.as_deref().map(unicode) {
-                        Some(Ok(text)) => *path = text.to_owned(),
-                        Some(Err(e)) => app.ui.status = e.to_string(),
-                        None => {}
-                    }
-                    let file = soundcraft_engine::io::session_file(path);
-                    let replaces = soundcraft_engine::io::replaces(&app.engine, cmd, &file);
-                    if replaces {
-                        ui.label(format!("“{}” already exists. Do you want to replace it?", file.file_name().unwrap_or_default().to_string_lossy()));
-                    }
-                    if buttons(ui, if replaces { "Replace" } else { "OK" }, enter && !replaces) {
-                        let mut v = json!({});
-                        v[key.as_str()] = json!(path);
-                        if replaces {
-                            v["replace"] = json!(true);
-                        }
-                        action = Some((cmd.clone(), v));
+                    if let Some(c) = path_prompt_form(app, ui, cmd, path, key, enter) {
+                        action = Some(c);
                     }
                 }
                 Dialog::Number { cmd, key, value, suffix, .. } => {
@@ -543,44 +623,11 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 }
                 Dialog::StripSilence { threshold, min_ms, pre_ms, post_ms } => {
-                    let before = [*threshold, *min_ms, *pre_ms, *post_ms];
-                    ui.add(egui::Slider::new(threshold, -96.0..=0.0).text("Threshold dB"));
-                    ui.add(egui::Slider::new(min_ms, 0.0..=4000.0).text("Min strip duration ms"));
-                    ui.add(egui::Slider::new(pre_ms, 0.0..=500.0).text("Clip start pad ms"));
-                    ui.add(egui::Slider::new(post_ms, 0.0..=2000.0).text("Clip end pad ms"));
-                    let values = [*threshold, *min_ms, *pre_ms, *post_ms];
-                    // The Edit window is drawn before this window, so it draws the rectangles for new values in the next frame.
-                    if values != before {
-                        ui.ctx().request_repaint();
-                    }
-                    if !strip_names.name.trim().is_empty() {
-                        let names = format!("New clips are named {}, {} and so on.", strip_names.clip_name(0), strip_names.clip_name(1));
-                        ui.label(egui::RichText::new(names).small().color(Tokens::current().text_dim));
-                    }
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        let mut mode = None;
-                        let mut rename = false;
-                        if ui.button("Extract").clicked() {
-                            mode = Some("extract");
-                        }
-                        if ui.button("Rename…").clicked() {
-                            rename = true;
-                        }
-                        if ui.button("Separate").clicked() {
-                            mode = Some("separate");
-                        }
-                        // Enter on a focused Extract or Separate clicks that button, so Enter presses Strip only when neither was clicked.
-                        if buttons(ui, "Strip", enter) && mode.is_none() {
-                            mode = Some("strip");
-                        }
-                        // Enter on a focused Rename… also presses Strip, so Rename… goes first.
-                        if rename {
-                            rename_from = Some(values);
-                        } else if let Some(mode) = mode {
-                            action = Some(strip_silence_action(mode, values, &strip_names));
-                        }
-                    });
+                    let mut values = [*threshold, *min_ms, *pre_ms, *post_ms];
+                    let (a, r) = strip_silence_form(ui, &mut values, &strip_names, enter);
+                    [*threshold, *min_ms, *pre_ms, *post_ms] = values;
+                    action = a.or(action.take());
+                    rename_from = r.or(rename_from);
                 }
                 Dialog::StripSilenceRename { names, .. } => {
                     strip_name_fields(ui, names, STRIP_NAME_LABELS);

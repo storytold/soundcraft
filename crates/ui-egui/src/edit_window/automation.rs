@@ -1,5 +1,5 @@
 use super::layout::{sample_at, x_of};
-use super::*;
+use super::{Align2, AutoParam, Color32, Pos2, Rect, Samples, Session, Shape, Stroke, Tokens, Track, TrackKind, pos2, regular};
 
 pub(super) fn draw_automation(painter: &egui::Painter, s: &Session, track: &Track, p: &AutoParam, tl: Rect, lane: Rect) {
     let t = Tokens::current();

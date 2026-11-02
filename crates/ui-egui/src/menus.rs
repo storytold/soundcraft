@@ -518,6 +518,11 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
     if id == "ui.audio_device" {
         return Some(crate::windows::audio_device_command(app, p));
     }
+    // Menu clicks never get here: Setup › Playback Engine / Hardware open the window
+    // (`MENU_WINDOWS`). A programmatic call applies the open device instead.
+    if matches!(id, "setup.playback_engine" | "setup.hardware") {
+        return Some(crate::windows::setup_audio_command(app, id, p));
+    }
     let toggle = |v: &mut bool| {
         *v = p.get("value").and_then(Value::as_bool).unwrap_or(!*v);
         json!({"value": *v})
