@@ -74,6 +74,7 @@ pub fn session(e: &Engine, full: bool) -> Value {
     let s = e.session();
     json!({
         "name": s.name, "path": e.path, "dirty": e.is_dirty(), "sample_rate": s.sample_rate.hz(), "bit_depth": s.bit_depth,
+        "secondary_frame_rate": s.secondary_frame_rate.map(|r| r.label()), "chords": s.chords, "key_signatures": s.key_signatures,
         "frame_rate": s.frame_rate.label(), "tempo": s.tempo.tempos(), "meter": s.tempo.meters(), "main_format": s.main_format().label(),
         "length_samples": s.content_end(),
         "tracks": s.tracks.iter().map(|t| track_json(e, t, full)).collect::<Vec<_>>(),

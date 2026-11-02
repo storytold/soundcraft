@@ -469,11 +469,8 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
         )),
         "ui.menu.invoke" => {
             let path = p.get("path").and_then(Value::as_str).unwrap_or("");
-            let id = p
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| soundcraft_engine::catalog::implemented_by(path, &crate::menus::ui_aliases()));
+            let id =
+                p.get("id").and_then(Value::as_str).map(str::to_string).or_else(|| crate::menus::command_for_path(path, &crate::menus::ui_aliases()));
             match id {
                 Some(id) => {
                     crate::menus::invoke_menu(app, &id, path);

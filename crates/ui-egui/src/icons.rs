@@ -11,6 +11,19 @@ fn p(r: Rect, x: f32, y: f32) -> Pos2 {
 pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
     let s = Stroke::new((r.width() / 14.0).clamp(1.2, 2.4), c);
     match name {
+        "rulers" => {
+            for y in [0.28, 0.5, 0.72] {
+                painter.line_segment([p(r, 0.08, y), p(r, 0.62, y)], s);
+            }
+            painter.add(Shape::convex_polygon(vec![p(r, 0.74, 0.4), p(r, 0.98, 0.4), p(r, 0.86, 0.62)], c, Stroke::NONE));
+        }
+        "marker" => {
+            painter.add(Shape::convex_polygon(
+                vec![p(r, 0.28, 0.18), p(r, 0.72, 0.18), p(r, 0.72, 0.82), p(r, 0.5, 0.64), p(r, 0.28, 0.82)],
+                Color32::TRANSPARENT,
+                s,
+            ));
+        }
         "play" => {
             painter.add(Shape::convex_polygon(vec![p(r, 0.28, 0.18), p(r, 0.82, 0.5), p(r, 0.28, 0.82)], c, Stroke::NONE));
         }

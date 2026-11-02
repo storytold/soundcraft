@@ -111,8 +111,20 @@ fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
         Some(_) => return Err(bad("setup.session", "bit_depth must be 16, 24 or 32f")),
         None => None,
     };
+    let secondary = match str_param(p, "secondary_frame_rate") {
+        Some(label) => Some(
+            soundcraft_time::FrameRate::ALL
+                .into_iter()
+                .find(|r| r.label() == label)
+                .ok_or_else(|| bad("setup.session", "unknown secondary frame rate"))?,
+        ),
+        None => None,
+    };
     let tc = position_param(e, "setup.session", p, "timecode_start")?;
     let s = e.session_mut();
+    if let Some(f) = secondary {
+        s.secondary_frame_rate = Some(f);
+    }
     if let Some(f) = fr {
         s.frame_rate = f;
     }

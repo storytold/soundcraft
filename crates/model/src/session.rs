@@ -286,10 +286,17 @@ impl Default for EditState {
             delay_compensation: true,
             keyboard_focus: "commands".into(),
             timeline_selection: Range::default(),
-            flags: ["view.clip.name", "view.clip.gain_line", "waveform.peak", "view.clip.overlap_shadows", "view.marker.ruler_lines"]
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
+            flags: [
+                "view.clip.name",
+                "view.clip.gain_line",
+                "waveform.peak",
+                "view.clip.overlap_shadows",
+                "view.marker.ruler_lines",
+                "view.marker.ruler_lane_color",
+            ]
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
             values: std::collections::BTreeMap::new(),
         }
     }
@@ -337,6 +344,10 @@ pub struct Session {
     pub sample_rate: SampleRate,
     pub bit_depth: BitDepthSetting,
     pub frame_rate: FrameRate,
+    #[serde(default)]
+    pub secondary_frame_rate: Option<FrameRate>,
+    #[serde(default)]
+    pub chords: Vec<crate::ChordEvent>,
     /// Timecode of sample 0 (session start), as a sample count.
     pub timecode_start: Samples,
     pub tempo: TempoMap,
@@ -386,6 +397,8 @@ impl Session {
             sample_rate,
             bit_depth: BitDepthSetting::Int24,
             frame_rate: FrameRate::Fps30,
+            secondary_frame_rate: Some(FrameRate::Fps25),
+            chords: Vec::new(),
             timecode_start: 0,
             tempo: TempoMap::default(),
             key_signatures: Vec::new(),
@@ -592,6 +605,11 @@ impl Session {
 
     /// Repair invariants after loading untrusted data.
     pub fn sanitize(&mut self) {
+        self.secondary_frame_rate.get_or_insert(if self.frame_rate == FrameRate::Fps25 { FrameRate::Fps30 } else { FrameRate::Fps25 });
+        self.chords.retain(|c| c.symbol.valid());
+        self.chords.truncate(10_000);
+        self.chords.iter_mut().for_each(|c| bound(&mut c.at));
+        self.chords.sort_by_key(|c| c.at);
         let max_id = self
             .tracks
             .iter()
@@ -602,6 +620,7 @@ impl Session {
             .chain(self.videos.iter().map(|v| v.id.0))
             .chain(self.busses.iter().map(|b| b.id.0))
             .chain(self.markers.iter().map(|m| m.id.0))
+            .chain(self.chords.iter().map(|c| c.id.0))
             .chain(self.groups.iter().map(|g| g.id.0))
             .max()
             .unwrap_or(0);
@@ -700,6 +719,7 @@ impl Session {
         distinct("video", self.videos.iter().map(|v| v.id.0))?;
         distinct("bus", self.busses.iter().map(|b| b.id.0))?;
         distinct("marker", self.markers.iter().map(|m| m.id.0))?;
+        distinct("chord", self.chords.iter().map(|c| c.id.0))?;
         distinct("group", self.groups.iter().map(|g| g.id.0))?;
         Ok(())
     }

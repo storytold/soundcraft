@@ -12,34 +12,42 @@ pub enum FrameRate {
     Fps29_97,
     Fps29_97Drop,
     Fps30,
+    Fps30Drop,
     Fps47_952,
     Fps48,
     Fps50,
     Fps59_94,
     Fps59_94Drop,
     Fps60,
+    Fps60Drop,
     Fps100,
     Fps119_88,
+    Fps119_88Drop,
     Fps120,
+    Fps120Drop,
 }
 
 impl FrameRate {
-    pub const ALL: [FrameRate; 15] = [
+    pub const ALL: [FrameRate; 19] = [
         FrameRate::Fps23_976,
         FrameRate::Fps24,
         FrameRate::Fps25,
         FrameRate::Fps29_97,
         FrameRate::Fps29_97Drop,
         FrameRate::Fps30,
+        FrameRate::Fps30Drop,
         FrameRate::Fps47_952,
         FrameRate::Fps48,
         FrameRate::Fps50,
         FrameRate::Fps59_94,
         FrameRate::Fps59_94Drop,
         FrameRate::Fps60,
+        FrameRate::Fps60Drop,
         FrameRate::Fps100,
         FrameRate::Fps119_88,
+        FrameRate::Fps119_88Drop,
         FrameRate::Fps120,
+        FrameRate::Fps120Drop,
     ];
 
     /// Real frames per second as a rational (num, den).
@@ -49,15 +57,15 @@ impl FrameRate {
             FrameRate::Fps24 => (24, 1),
             FrameRate::Fps25 => (25, 1),
             FrameRate::Fps29_97 | FrameRate::Fps29_97Drop => (30_000, 1001),
-            FrameRate::Fps30 => (30, 1),
+            FrameRate::Fps30 | FrameRate::Fps30Drop => (30, 1),
             FrameRate::Fps47_952 => (48_000, 1001),
             FrameRate::Fps48 => (48, 1),
             FrameRate::Fps50 => (50, 1),
             FrameRate::Fps59_94 | FrameRate::Fps59_94Drop => (60_000, 1001),
-            FrameRate::Fps60 => (60, 1),
+            FrameRate::Fps60 | FrameRate::Fps60Drop => (60, 1),
             FrameRate::Fps100 => (100, 1),
-            FrameRate::Fps119_88 => (120_000, 1001),
-            FrameRate::Fps120 => (120, 1),
+            FrameRate::Fps119_88 | FrameRate::Fps119_88Drop => (120_000, 1001),
+            FrameRate::Fps120 | FrameRate::Fps120Drop => (120, 1),
         }
     }
 
@@ -68,7 +76,15 @@ impl FrameRate {
     }
 
     pub fn is_drop(self) -> bool {
-        matches!(self, FrameRate::Fps29_97Drop | FrameRate::Fps59_94Drop)
+        matches!(
+            self,
+            FrameRate::Fps29_97Drop
+                | FrameRate::Fps30Drop
+                | FrameRate::Fps59_94Drop
+                | FrameRate::Fps60Drop
+                | FrameRate::Fps119_88Drop
+                | FrameRate::Fps120Drop
+        )
     }
 
     pub fn label(self) -> &'static str {
@@ -78,15 +94,19 @@ impl FrameRate {
             FrameRate::Fps25 => "25",
             FrameRate::Fps29_97 => "29.97",
             FrameRate::Fps29_97Drop => "29.97 Drop",
+            FrameRate::Fps30Drop => "30 Drop",
             FrameRate::Fps30 => "30",
             FrameRate::Fps47_952 => "47.952",
             FrameRate::Fps48 => "48",
             FrameRate::Fps50 => "50",
             FrameRate::Fps59_94 => "59.94",
             FrameRate::Fps59_94Drop => "59.94 Drop",
+            FrameRate::Fps60Drop => "60 Drop",
             FrameRate::Fps60 => "60",
             FrameRate::Fps100 => "100",
+            FrameRate::Fps119_88Drop => "119.88 Drop",
             FrameRate::Fps119_88 => "119.88",
+            FrameRate::Fps120Drop => "120 Drop",
             FrameRate::Fps120 => "120",
         }
     }
@@ -141,7 +161,7 @@ impl Timecode {
         let base = i128::from(rate.nominal().max(1));
         if rate.is_drop() {
             // Drop 2 (or 4) labels each minute except every tenth.
-            let drop = if base >= 60 { 4 } else { 2 };
+            let drop = 2 * (base / 30);
             let per_10min = base * 600 - drop * 9;
             let per_min = base * 60 - drop;
             let tens = f / per_10min;
@@ -166,8 +186,8 @@ impl Timecode {
         let total_min = i128::from(self.hours) * 60 + i128::from(self.minutes);
         let mut f = (total_min * 60 + i128::from(self.seconds)) * i128::from(base) + i128::from(self.frames);
         if rate.is_drop() {
-            let drop = if base >= 60 { 4 } else { 2 };
-            f -= drop * (total_min - total_min / 10);
+            let drop = 2 * (base / 30);
+            f -= i128::from(drop) * (total_min - total_min / 10);
         }
         let f = if self.negative { -f } else { f };
         i64::try_from(f).unwrap_or(if f < 0 { i64::MIN } else { i64::MAX })
@@ -305,5 +325,22 @@ mod tests {
     fn feet_and_frames() {
         let sr = SampleRate::HZ_48000;
         assert_eq!(feet_frames(48_000, FrameRate::Fps24, sr, 0), (1, 8));
+    }
+}
+
+#[cfg(test)]
+mod extended_rate_tests {
+    use super::*;
+    #[test]
+    fn every_rate_round_trips_frame_labels_at_minute_and_hour_boundaries() {
+        for rate in FrameRate::ALL {
+            for seconds in [0, 1, 59, 60, 61, 599, 600, 601, 3599, 3600, 3601] {
+                let frame = seconds * rate.nominal();
+                for delta in [-1, 0, 1] {
+                    let frame = frame + delta;
+                    assert_eq!(Timecode::from_frames(frame, rate).to_frames(rate), frame, "{rate:?} frame {frame}");
+                }
+            }
+        }
     }
 }

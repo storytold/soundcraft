@@ -118,7 +118,7 @@ fn ruler(e: &mut Engine, p: &Value) -> Result<Value> {
     s.edit.rulers.retain(|x| x != &r);
     if vis {
         s.edit.rulers.push(r.clone());
-        s.edit.rulers.sort_by_key(|x| ALL.iter().position(|a| a == x));
+        s.edit.rulers.sort_by_key(|x| super::view_more::RULERS.iter().position(|a| a == x));
     }
     Ok(json!({"ruler": r, "visible": vis}))
 }

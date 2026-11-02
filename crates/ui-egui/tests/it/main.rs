@@ -62,3 +62,5 @@ mod tracks_scroll_bar;
 mod waveform;
 mod window_shortcuts;
 mod zoom_toggle;
+
+mod ruler_workflows;

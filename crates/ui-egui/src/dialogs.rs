@@ -12,6 +12,7 @@ use soundcraft_time::Samples;
 use std::sync::Arc;
 
 mod audiosuite;
+pub mod conductor;
 mod files;
 mod strip_silence;
 
@@ -30,6 +31,7 @@ pub mod spot;
 
 #[derive(Debug, Clone)]
 pub enum Dialog {
+    Conductor(conductor::Conductor),
     NewTracks { count: u32, format: String, kind: String, timebase: String, name: String },
     NewSession { name: String, sample_rate: u32, demo: bool },
     Bounce { path: String, format: FileFormat, bit_depth: String, normalize: bool, dither: bool },
@@ -39,7 +41,7 @@ pub enum Dialog {
     ClearClips { clips: Vec<ClipId>, sources: Vec<SourceId>, message: String },
     PathPrompt { cmd: String, title: String, path: String, key: String },
     Number { cmd: String, title: String, key: String, value: f64, suffix: String },
-    TempoChange { at: Samples, bpm: f64 }, // from double-clicking the tempo ruler
+    TempoChange { at: Samples, original: Option<Samples>, bpm: f64 }, // from double-clicking the tempo ruler
     Spot(crate::spot::Spot),
     Fades { shape: String },
     StripSilence { threshold: f64, min_ms: f64, pre_ms: f64, post_ms: f64 },
@@ -49,7 +51,7 @@ pub enum Dialog {
     AutoRename { clips: Vec<ClipId>, names: StripNames },
     // `id: None` creates (Track › Group…); `id: Some` modifies that group (Groups list › Modify Group…).
     Group { id: Option<GroupId>, name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
-    Session { frame_rate: String, bit_depth: String },
+    Session { frame_rate: String, secondary_frame_rate: String, bit_depth: String },
     // Clip › Loop…: `length` is typed in `format`, measured from `start` (the first selected clip's).
     // `filled` is the text the field opened with and the exact length it stands for.
     Loop { by: LoopBy, count: u32, length: String, format: soundcraft_time::TimeFormat, start: Samples, filled: (String, Samples) },
@@ -93,6 +95,7 @@ impl Dialogs {
             Dialog::ClearClips { .. } => "clear_clips",
             Dialog::PathPrompt { .. } => "path",
             Dialog::Number { .. } => "number",
+            Dialog::Conductor(_) => "conductor_change",
             Dialog::TempoChange { .. } => "tempo_change",
             Dialog::Spot(_) => "spot",
             Dialog::Fades { .. } => "fades",
@@ -217,7 +220,14 @@ impl Dialogs {
                 let members = s.tracks.iter().map(|t| (t.id.0, t.name.clone(), s.edit.selected_tracks.contains(&t.id))).collect();
                 Dialog::Group { id: None, name: format!("Group {}", s.groups.len() + 1), edit: true, mix: true, members }
             }
-            "setup.session" => Dialog::Session { frame_rate: e.session().frame_rate.label().into(), bit_depth: "24".into() },
+            "event.add_key_change" => Dialog::Conductor(conductor::Conductor::new(e.session(), "key", e.session().edit.selection.start, None)),
+            "event.meter" => Dialog::Conductor(conductor::Conductor::new(e.session(), "meter", e.session().edit.selection.start, None)),
+            "chord.add" => Dialog::Conductor(conductor::Conductor::new(e.session(), "chords", e.session().edit.selection.start, None)),
+            "setup.session" => Dialog::Session {
+                frame_rate: e.session().frame_rate.label().into(),
+                secondary_frame_rate: e.session().secondary_frame_rate.unwrap_or(soundcraft_time::FrameRate::Fps25).label().into(),
+                bit_depth: "24".into(),
+            },
             "file.score_setup" => {
                 let s = soundcraft_engine::score::ScoreSetup::from_session(e.session());
                 Dialog::ScoreSetup { title: s.title, composer: s.composer, bars_per_system: s.bars_per_system, show_track_names: s.show_track_names }
@@ -477,6 +487,11 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::RenameMarker { .. } => "Rename Marker",
         Dialog::ClearClips { .. } => "Clear",
         Dialog::PathPrompt { title, .. } | Dialog::Number { title, .. } => title.as_str(),
+        Dialog::Conductor(d) => match d.kind.as_str() {
+            "key" => "Key Change",
+            "meter" => "Meter Change",
+            _ => "Chord Change",
+        },
         Dialog::TempoChange { .. } => "Tempo Change (BPM)",
         Dialog::Spot(_) => "Spot",
         Dialog::Fades { .. } => "Fades",
@@ -597,14 +612,19 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         action = Some((cmd.clone(), v));
                     }
                 }
-                Dialog::TempoChange { at, bpm } => {
+                Dialog::Conductor(d) => {
+                    d.fields(ui);
+                    if buttons(ui,"OK",enter) { action=Some(d.command()); }
+                }
+                Dialog::TempoChange { at, original, bpm } => {
+                    ui.horizontal(|ui|{ui.label("Position (samples)");ui.add(egui::DragValue::new(at).range(0..=soundcraft_time::MAX_POSITION)).accessible_name("Tempo position");});
                     ui.horizontal(|ui| {
                         // Same limits the engine enforces (time crate `valid_bpm`).
                         ui.add(egui::DragValue::new(bpm).speed(0.1).range(5.0..=1000.0)).accessible_name("Tempo (BPM)");
                         ui.label("bpm");
                     });
                     if buttons(ui, "OK", enter) {
-                        action = Some(tempo_change_action(*at, *bpm));
+                        action = Some(if let Some(from)=original.filter(|from| *from != *at) {("event.tempo_edit".into(),json!({"at":from,"to":at,"bpm":bpm}))} else {tempo_change_action(*at,*bpm)});
                     }
                 }
                 Dialog::Spot(d) => {
@@ -676,11 +696,14 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         action = Some((cmd.into(), params));
                     }
                 }
-                Dialog::Session { frame_rate, bit_depth } => {
+                Dialog::Session { frame_rate, secondary_frame_rate, bit_depth } => {
                     craft_ui::ComboBox::from_label("Timecode Rate").selected_text(frame_rate.as_str()).show_ui(ui, |ui| {
                         for r in soundcraft_time::FrameRate::ALL {
                             ui.selectable_value(frame_rate, r.label().to_string(), r.label());
                         }
+                    });
+                    craft_ui::ComboBox::from_label("Timecode 2 Rate").selected_text(secondary_frame_rate.as_str()).show_ui(ui, |ui| {
+                        for r in soundcraft_time::FrameRate::ALL {ui.selectable_value(secondary_frame_rate,r.label().to_string(),r.label());}
                     });
                     craft_ui::ComboBox::from_label("Bit Depth").selected_text(bit_depth.as_str()).show_ui(ui, |ui| {
                         for b in ["16", "24", "32f"] {
@@ -688,7 +711,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         }
                     });
                     if buttons(ui, "OK", enter) {
-                        action = Some(("setup.session".into(), json!({"frame_rate": frame_rate, "bit_depth": bit_depth})));
+                        action = Some(("setup.session".into(), json!({"frame_rate": frame_rate, "secondary_frame_rate": secondary_frame_rate, "bit_depth": bit_depth})));
                     }
                 }
                 Dialog::Loop { by, count, length, format, start, filled } => {

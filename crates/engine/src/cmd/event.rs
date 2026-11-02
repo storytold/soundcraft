@@ -137,12 +137,27 @@ fn tempo_constant(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn meter(e: &mut Engine, p: &Value) -> Result<Value> {
+    let old = position_param(e, "event.meter", p, "original")?;
     let num = i64_or(p, "numerator", 4).clamp(1, 64) as u32;
     let den = i64_or(p, "denominator", 4).clamp(1, 64) as u32;
     let at = position_param(e, "event.meter", p, "at")?.unwrap_or(0);
-    let s = e.session_mut();
+    let s = e.session();
     let tick = s.tempo.samples_to_ticks(at, s.sample_rate);
-    s.tempo.set_meter(tick, num, den).map_err(|err| bad("event.meter", err.to_string()))?;
+    // Validate before removing the source, and publish only a complete map. A failed
+    // edit never mutates the session, even before Engine::execute's rollback.
+    let mut tempo = s.tempo.clone();
+    tempo.set_meter(tick, num, den).map_err(|err| bad("event.meter", err.to_string()))?;
+    if let Some(old) = old {
+        let old_tick = s.tempo.samples_to_ticks(old, s.sample_rate);
+        if old_tick != tick {
+            tempo = s.tempo.clone();
+            if !tempo.remove_meter(old_tick) {
+                return Err(bad("event.meter", "there is no movable meter at the original position"));
+            }
+            tempo.set_meter(tick, num, den).map_err(|err| bad("event.meter", err.to_string()))?;
+        }
+    }
+    e.session_mut().tempo = tempo;
     Ok(json!({"meter": format!("{num}/{den}")}))
 }
 
@@ -167,6 +182,11 @@ fn insert_time(e: &mut Engine, p: &Value) -> Result<Value> {
             m.end += r.len();
         } else if m.end > r.start {
             m.end += r.len();
+        }
+    }
+    for c in &mut s.chords {
+        if c.at >= r.start {
+            c.at = c.at.saturating_add(r.len());
         }
     }
     for (at, _) in &mut s.key_signatures {
@@ -206,6 +226,12 @@ fn cut_time(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     s.key_signatures.retain(|(at, _)| !r.contains(*at));
+    s.chords.retain(|c| !r.contains(c.at));
+    for c in &mut s.chords {
+        if c.at >= r.end {
+            c.at -= r.len();
+        }
+    }
     for (at, _) in &mut s.key_signatures {
         if *at >= r.end {
             *at -= r.len();
@@ -428,6 +454,70 @@ fn step_marker(e: &mut Engine, dir: i64) -> Result<Value> {
 mod tests {
     use crate::demo::demo_engine;
     use serde_json::json;
+
+    #[test]
+    fn initial_or_missing_meter_sources_cannot_be_moved() {
+        let mut e = crate::Engine::default();
+        let before = e.session_arc();
+        let undo = e.undo_history().len();
+        let journal = e.journal.clone();
+        for original in [0, 48000] {
+            let params = json!({"original":original,"at":96000,"numerator":3,"denominator":4});
+            assert!(super::meter(&mut e, &params).is_err());
+            assert!(std::sync::Arc::ptr_eq(&before, &e.session_arc()));
+            assert!(e.execute("event.meter", &params).is_err());
+            assert_eq!(e.session(), before.as_ref());
+            assert_eq!(e.undo_history().len(), undo);
+            assert_eq!(e.journal, journal);
+            assert!(!e.is_dirty());
+        }
+        // The initial meter remains editable in place, and Add needs no source.
+        e.execute("event.meter", &json!({"original":0,"at":0,"numerator":3,"denominator":4})).unwrap();
+        assert_eq!(e.session().tempo.meters()[0].numerator, 3);
+        e.execute("event.meter", &json!({"at":96000,"numerator":7,"denominator":8})).unwrap();
+        assert_eq!(e.session().tempo.meters().len(), 2);
+    }
+
+    #[test]
+    fn rejected_meter_move_never_mutates_even_without_execute_rollback() {
+        let mut e = crate::Engine::default();
+        e.execute("event.meter", &json!({"at":96000,"numerator":3,"denominator":4})).unwrap();
+        let before = e.session_arc();
+        let journal = e.journal.clone();
+        let undo = e.undo_history().len();
+        let dirty = e.is_dirty();
+        let params = json!({"original":96000,"at":192000,"numerator":7,"denominator":3});
+        // Test the handler itself so Engine::execute cannot hide a partial mutation.
+        assert!(super::meter(&mut e, &params).is_err());
+        assert!(std::sync::Arc::ptr_eq(&before, &e.session_arc()));
+        assert!(e.execute("event.meter", &params).is_err());
+        assert_eq!(e.session(), before.as_ref());
+        assert_eq!(e.journal, journal);
+        assert_eq!(e.undo_history().len(), undo);
+        assert_eq!(e.is_dirty(), dirty);
+    }
+
+    #[test]
+    fn meter_move_is_one_undo_step_and_preserves_later_bar_numbers() {
+        let mut e = crate::Engine::default();
+        e.execute("event.meter", &json!({"at":96000,"numerator":3,"denominator":4})).unwrap();
+        e.execute("event.meter", &json!({"at":384000,"numerator":5,"denominator":8})).unwrap();
+        let before = e.session().tempo.clone();
+        let later_bar = before.bar_beat_at_tick(before.meters().last().unwrap().tick).bar;
+        let undo = e.undo_history().len();
+        e.execute("event.meter", &json!({"original":96000,"at":192000,"numerator":7,"denominator":8})).unwrap();
+        let after = e.session().tempo.clone();
+        assert_ne!(after, before);
+        assert_eq!(after.meters().len(), 3);
+        assert!(!after.meters().iter().any(|m| m.numerator == 3));
+        assert!(after.meters().iter().any(|m| m.numerator == 7 && m.denominator == 8));
+        assert_eq!(after.bar_beat_at_tick(after.meters().last().unwrap().tick).bar, later_bar);
+        assert_eq!(e.undo_history().len(), undo + 1);
+        assert!(e.undo());
+        assert_eq!(e.session().tempo, before);
+        assert!(e.redo());
+        assert_eq!(e.session().tempo, after);
+    }
 
     #[test]
     fn tempo_constant_with_an_empty_range_sets_the_tempo_at_its_start() {

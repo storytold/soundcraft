@@ -121,7 +121,7 @@ pub fn parse_position(
                 return Err(err());
             }
             if rate.is_drop() && tc.seconds == 0 && tc.minutes % 10 != 0 {
-                let dropped = if rate.nominal() >= 60 { 4 } else { 2 };
+                let dropped = 2 * (rate.nominal() / 30);
                 if tc.frames < dropped {
                     return Err(err());
                 }
