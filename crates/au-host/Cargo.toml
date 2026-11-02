@@ -13,7 +13,7 @@ serde.workspace = true
 thiserror.workspace = true
 log.workspace = true
 
-# An isolated unsafe helper crate (craftrules never-crash), like soundcraft-vst3-host: this crate
+# An isolated unsafe helper crate, like soundcraft-vst3-host: this crate
 # opts out of the workspace `unsafe_code = "forbid"` for itself only. It denies unsafe everywhere
 # and allows it solely on the FFI module (`src/ffi.rs`). The rest mirrors `[workspace.lints]`.
 [lints.rust]

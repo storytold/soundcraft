@@ -1,4 +1,5 @@
-//! Zoom Toggle: zoom in on the edit selection, then back out to the view before.
+//! Zoom Toggle: zoom in on the edit selection, then back out to the view before. Cancel Zoom Toggle turns it off
+//! and keeps the current view.
 use super::{CommandSpec, always, f64_or};
 use soundcraft_model::{TrackHeight, ZoomToggle};
 use soundcraft_time::MAX_POSITION;
@@ -7,7 +8,16 @@ use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![cmd!(noundo "view.zoom_toggle", "Zoom Toggle", [], None, "{width_px?: 1200, height_px?: 600}", always, toggle)]
+    vec![
+        cmd!(noundo "view.zoom_toggle", "Zoom Toggle", [], None, "{width_px?: 1200, height_px?: 600}", always, toggle),
+        cmd!(noundo "view.zoom_toggle_cancel", "Cancel Zoom Toggle", [], Some("Alt+Shift+E"), "{}", always, cancel),
+    ]
+}
+
+/// Forget the view Zoom Toggle would go back to, leaving the zoom, scroll and track heights as they are.
+fn cancel(e: &mut Engine, _: &Value) -> Result<Value> {
+    let was_on = e.session_mut().edit.zoom_toggle.take().is_some();
+    Ok(json!({"on": false, "canceled": was_on}))
 }
 
 fn toggle(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -71,6 +81,24 @@ mod tests {
         e.execute("edit.select", &json!({"tracks": ["Audio 2"], "start": 5000})).unwrap();
         e.execute("view.zoom_toggle", &json!({"height_px": 300.0})).unwrap();
         assert_eq!(view(&e), (500.0, 1000, vec![Medium, Fit(299), Medium]));
+    }
+
+    #[test]
+    fn cancel_keeps_the_zoomed_view_and_the_next_toggle_zooms_in_again() {
+        let mut e = engine(json!({"tracks": ["Audio 1", "Audio 3"], "start": 48_000, "end": 96_000}));
+        e.execute("view.zoom_toggle", &json!({"width_px": 1000.0, "height_px": 500.0})).unwrap();
+        let zoomed = view(&e);
+        assert_eq!(e.execute("view.zoom_toggle_cancel", &json!({})).unwrap(), json!({"on": false, "canceled": true}));
+        assert_eq!(e.session().edit.zoom_toggle, None);
+        assert_eq!(view(&e), zoomed, "cancel keeps the view Zoom Toggle zoomed in to");
+        assert_eq!(e.execute("view.zoom_toggle_cancel", &json!({})).unwrap(), json!({"on": false, "canceled": false}));
+        assert_eq!(view(&e), zoomed);
+        e.execute("view.zoom_set", &json!({"samples_per_px": 200.0})).unwrap();
+        assert_eq!(e.execute("view.zoom_toggle", &json!({"width_px": 1000.0, "height_px": 500.0})).unwrap(), json!({"on": true}));
+        e.execute("view.zoom_toggle", &json!({})).unwrap();
+        assert_eq!(view(&e), (200.0, 48_000, vec![Fit(249), Medium, Fit(249)]), "the toggle goes back to the view it saw after the cancel");
+        let spec = crate::cmd::command_specs().iter().find(|c| c.id == "view.zoom_toggle_cancel").unwrap();
+        assert_eq!(spec.shortcut, Some("Alt+Shift+E"));
     }
 
     #[test]
