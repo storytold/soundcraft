@@ -1275,6 +1275,34 @@ fn pre_fader_metering_reads_before_the_fader_in_step_with_delay_compensation() {
 }
 
 #[test]
+fn the_pre_fader_tap_comes_back_without_old_audio() {
+    let (mut s, a) = session_with_dc(0.5, 48_000);
+    let b = add_dc_track(&mut s, 0.5, 48_000);
+    s.track_mut(a).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.late"));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: a,
+        slot: 0,
+        id: "clap:test.late".into(),
+        ch: 1,
+        plugin: Box::new(Late(soundcraft_dsp::create("gain").unwrap(), 1024)),
+    }]);
+    s.edit.pre_fader_metering = true;
+    for i in 0..4 {
+        render_block(&mut eng, &s, i * 512);
+    }
+    assert!((eng.meters[&b].peak[0] - 0.5).abs() < 1e-3, "the delay line holds audio");
+    s.edit.pre_fader_metering = false;
+    render_block(&mut eng, &s, 4 * 512);
+    // The option comes back on a track that has gone quiet.
+    s.edit.pre_fader_metering = true;
+    s.track_mut(b).unwrap().playlist_mut().unwrap().clips.clear();
+    render_block(&mut eng, &s, 5 * 512);
+    assert_eq!(eng.meters[&b].peak[0], 0.0, "{:?}", eng.meters[&b]);
+}
+
+#[test]
 fn master_faders_meter_post_fader_even_with_pre_fader_metering() {
     let (mut s, _) = session_with_dc(0.5, 48_000);
     let m = s.add_track(TrackKind::Master, ChannelFormat::Stereo, None);

@@ -125,6 +125,14 @@ impl DelayLine {
     pub(crate) fn clear(&mut self) {
         self.bufs.iter_mut().for_each(|b| b.fill(0.0));
     }
+    /// The signal stopped passing through: drop its history once, so that when it comes back
+    /// the line starts from silence instead of old audio.
+    pub(crate) fn stop(&mut self) {
+        if self.len > 0 {
+            self.clear();
+            self.len = 0;
+        }
+    }
 }
 
 impl Strip {

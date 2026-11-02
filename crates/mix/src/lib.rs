@@ -468,6 +468,8 @@ impl MixEngine {
             if needs_pre_tap(s, t) {
                 st.align_pre.set(lmax_t.saturating_sub(st.latency), ch);
                 st.align_pre.process(&mut st.pre, frames);
+            } else {
+                st.align_pre.stop();
             }
             let waits = match &t.mixer.output {
                 Route::Main => true,
