@@ -1161,6 +1161,107 @@ fn surround_upmix_and_downmix_between_layouts() {
 }
 
 #[test]
+fn a_hosted_plugin_keeps_its_own_values_where_the_session_holds_its_defaults() {
+    let (mut s, t) = session_with_dc(0.5, 48_000);
+    let id = "vst3:00000000000000000000000000000002";
+    let mut ins = Insert::new(id);
+    // Older sessions store every parameter at the default the plugin reports (0 for gain).
+    ins.params.insert("gain".into(), 0.0);
+    ins.set_state_bytes(b"stored");
+    s.track_mut(t).unwrap().mixer.inserts[0] = Some(ins);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    let sets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fake = Stateful { inner: soundcraft_dsp::create("gain").unwrap(), blob: Vec::new(), sets: Arc::clone(&sets) };
+    eng.adopt(vec![PreparedInstance { track: t, slot: 0, id: id.into(), ch: 1, plugin: Box::new(fake) }]);
+    let count = || sets.load(std::sync::atomic::Ordering::Relaxed);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(count(), 0, "a stored default is not pushed over the restored plugin");
+    render_block(&mut eng, &s, 512);
+    assert_eq!(count(), 0);
+    // Later edits are pushed, including a return to the default.
+    s.track_mut(t).unwrap().mixer.inserts[0].as_mut().unwrap().params.insert("gain".into(), -6.0);
+    render_block(&mut eng, &s, 1024);
+    assert_eq!(count(), 1);
+    s.track_mut(t).unwrap().mixer.inserts[0].as_mut().unwrap().params.insert("gain".into(), 0.0);
+    render_block(&mut eng, &s, 1536);
+    assert_eq!(count(), 2);
+}
+
+#[test]
+fn a_held_back_default_survives_a_parameter_map_that_grows() {
+    let (mut s, t) = session_with_dc(0.5, 48_000);
+    let id = "vst3:00000000000000000000000000000005";
+    let mut ins = Insert::new(id);
+    // The session holds the plugin's default; the instance restored its own value instead.
+    ins.params.insert("gain".into(), 0.0);
+    s.track_mut(t).unwrap().mixer.inserts[0] = Some(ins);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    let sets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fake = Stateful { inner: soundcraft_dsp::create("gain").unwrap(), blob: Vec::new(), sets: Arc::clone(&sets) };
+    eng.adopt(vec![PreparedInstance { track: t, slot: 0, id: id.into(), ch: 1, plugin: Box::new(fake) }]);
+    let count = || sets.load(std::sync::atomic::Ordering::Relaxed);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(count(), 0, "a stored default is not pushed over the restored plugin");
+    // A live `mix.insert_param` grows the map while the slot keeps its instance. The held-back
+    // default must stay held back: only the new parameter is sent.
+    s.track_mut(t).unwrap().mixer.inserts[0].as_mut().unwrap().params.insert("freq".into(), 1000.0);
+    render_block(&mut eng, &s, 512);
+    assert_eq!(count(), 1, "the new parameter is sent and the held-back default is not");
+    render_block(&mut eng, &s, 1024);
+    assert_eq!(count(), 1, "and neither is sent again");
+}
+
+#[test]
+fn an_automated_value_equal_to_the_default_is_sent_on_the_first_pass() {
+    let (mut s, t) = session_with_dc(0.5, 48_000);
+    let id = "vst3:00000000000000000000000000000003";
+    let mut ins = Insert::new(id);
+    // Older sessions store every parameter at the default the plugin reports (0 for gain).
+    ins.params.insert("gain".into(), 0.0);
+    s.track_mut(t).unwrap().mixer.inserts[0] = Some(ins);
+    // An automation lane is a choice even when its value is that same default.
+    let mut lane = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: 0, param: "gain".into() });
+    lane.set_point(0, 0.0);
+    s.track_mut(t).unwrap().automation.push(lane);
+
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    let sets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fake = Stateful { inner: soundcraft_dsp::create("gain").unwrap(), blob: Vec::new(), sets: Arc::clone(&sets) };
+    eng.adopt(vec![PreparedInstance { track: t, slot: 0, id: id.into(), ch: 1, plugin: Box::new(fake) }]);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(sets.load(std::sync::atomic::Ordering::Relaxed), 1, "an automated param is sent even at its default");
+}
+
+#[test]
+fn a_value_held_back_before_read_automation_is_sent_when_it_turns_on() {
+    let (mut s, t) = session_with_dc(0.5, 48_000);
+    let id = "vst3:00000000000000000000000000000004";
+    let mut ins = Insert::new(id);
+    ins.params.insert("gain".into(), 0.0);
+    s.track_mut(t).unwrap().mixer.inserts[0] = Some(ins);
+    let mut lane = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: 0, param: "gain".into() });
+    lane.set_point(0, 0.0);
+    let tr = s.track_mut(t).unwrap();
+    tr.automation.push(lane);
+    tr.mixer.automation_mode = soundcraft_model::AutomationMode::Off;
+
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    let sets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fake = Stateful { inner: soundcraft_dsp::create("gain").unwrap(), blob: Vec::new(), sets: Arc::clone(&sets) };
+    eng.adopt(vec![PreparedInstance { track: t, slot: 0, id: id.into(), ch: 1, plugin: Box::new(fake) }]);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(sets.load(std::sync::atomic::Ordering::Relaxed), 0, "automation off: the stored default is held back");
+    // Turning read automation on makes the lane a choice: its value goes out although unchanged.
+    s.track_mut(t).unwrap().mixer.automation_mode = soundcraft_model::AutomationMode::Read;
+    render_block(&mut eng, &s, 512);
+    assert_eq!(sets.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
+#[test]
 fn apply_matrix_span_matches_the_plain_per_sample_sum() {
     let src: Vec<Vec<f32>> = (0..3).map(|c| (0..300).map(|i| ((i * 7 + c * 13) % 23) as f32 * 0.037 - 0.4).collect()).collect();
     let short = vec![src[0].clone(), src[1][..150].to_vec(), src[2].clone()];

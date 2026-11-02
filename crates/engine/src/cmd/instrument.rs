@@ -1,7 +1,7 @@
 //! An instrument track's instrument (`mix.instrument`): the plugin that turns the track's MIDI
 //! into audio, built in or hosted (CLAP, VST3, Audio Units). The mixer plays `Track::instrument`;
 //! the instrument is otherwise only set when the track is created (`track.new`).
-use super::{CommandSpec, bad, has_selection, str_param, tracks_required};
+use super::{CommandSpec, bad, fill_default_params, has_selection, str_param, tracks_required};
 
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
@@ -61,9 +61,7 @@ fn set_instrument(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     let mut ins = Insert::new(info.id);
-    for pi in info.params {
-        ins.params.insert(pi.id.to_string(), pi.default);
-    }
+    fill_default_params(&mut ins, info);
     for (k, v) in values {
         ins.params.insert(k, v);
     }
@@ -94,6 +92,32 @@ mod tests {
     use soundcraft_midi::{Note, Sequence};
     use soundcraft_model::{Clip, TrackId};
     use soundcraft_time::{Range, TICKS_PER_QUARTER};
+
+    #[test]
+    fn hosted_plugins_start_with_an_empty_parameter_map() {
+        use soundcraft_dsp::{Category, ParamInfo, PluginInfo, Taper, Unit};
+        use soundcraft_model::Insert;
+        static PARAMS: [ParamInfo; 1] =
+            [ParamInfo { id: "volume", name: "Volume", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, taper: Taper::Linear, choices: &[] }];
+        let hosted = PluginInfo {
+            id: "vst3:00000000000000000000000000000003",
+            name: "Hosted",
+            short_name: "Hosted",
+            category: Category::Instrument,
+            params: &PARAMS,
+            is_instrument: true,
+            audiosuite: false,
+        };
+        let builtin = PluginInfo { id: "builtin", ..hosted.clone() };
+        // The default a hosted plugin reports (often 0) is not its real setting: pushing it would
+        // overwrite what the plugin loads by itself.
+        let mut a = Insert::new(hosted.id);
+        super::fill_default_params(&mut a, &hosted);
+        assert!(a.params.is_empty());
+        let mut b = Insert::new(builtin.id);
+        super::fill_default_params(&mut b, &builtin);
+        assert_eq!(b.params.get("volume"), Some(&0.0));
+    }
 
     fn track(e: &mut Engine, kind: &str) -> TrackId {
         e.execute("track.new", &json!({"kind": kind})).unwrap();

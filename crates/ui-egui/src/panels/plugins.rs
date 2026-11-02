@@ -65,7 +65,7 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     egui::Grid::new(("pg", tid.0, slot)).num_columns(3).show(ui, |ui| {
                         for p in info.params {
-                            let v = ins.params.get(p.id).copied().unwrap_or(p.default);
+                            let v = shown_value(&ins, p);
                             let label = ui.label(p.name);
                             let mut x = v;
                             let resp = if !p.choices.is_empty() {
@@ -220,4 +220,32 @@ fn preset_menu(
         }
     });
     ui.ctx().memory_mut(|m| m.data.insert_temp(key, name));
+}
+
+/// The value the generic plugin window shows for a parameter: the session's, else the default the
+/// plugin reports. A hosted plugin's map starts empty (it keeps its settings in its own state), so
+/// until the user moves a control the window shows those reported defaults, not what the plugin
+/// loaded by itself: its own editor is where those live. This is intended.
+pub(super) fn shown_value(ins: &soundcraft_model::Insert, p: &soundcraft_dsp::ParamInfo) -> f32 {
+    ins.params.get(p.id).copied().unwrap_or(p.default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shown_value;
+    use soundcraft_dsp::{ParamInfo, Taper, Unit};
+    use soundcraft_model::Insert;
+
+    #[test]
+    fn hosted_plugin_window_shows_reported_defaults_until_a_control_moves() {
+        let p = ParamInfo { id: "volume", name: "Volume", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, taper: Taper::Linear, choices: &[] };
+        // A hosted plugin's map starts empty: the window shows the default the plugin reports,
+        // even if the plugin loaded another value by itself (Rhapsody's volume is not 0).
+        let mut ins = Insert::new("vst3:00000000000000000000000000000003");
+        assert!(ins.params.is_empty());
+        assert_eq!(shown_value(&ins, &p), 0.0);
+        // Once the user sets it, the session value is shown.
+        ins.params.insert("volume".into(), 0.8);
+        assert_eq!(shown_value(&ins, &p), 0.8);
+    }
 }

@@ -280,6 +280,19 @@ pub fn tracks_required(e: &Engine, cmd: &str, p: &Value) -> Result<Vec<TrackId>>
     if t.is_empty() { Err(bad(cmd, "no tracks: pass `track`/`tracks` or select tracks")) } else { Ok(t) }
 }
 
+/// Fills a new insert's or instrument's parameter map with the plugin's defaults. A hosted plugin
+/// (CLAP, VST3, Audio Unit) keeps its settings in its own state, so its map starts empty:
+/// the defaults it reports are often 0, and pushing them would overwrite what it loads by itself
+/// (Rhapsody came up with its volume and pan at minimum).
+pub(super) fn fill_default_params(ins: &mut soundcraft_model::Insert, info: &soundcraft_dsp::PluginInfo) {
+    if soundcraft_mix::is_third_party(info.id) {
+        return;
+    }
+    for pi in info.params {
+        ins.params.insert(pi.id.to_string(), pi.default);
+    }
+}
+
 pub use soundcraft_time::MAX_POSITION;
 
 /// Position from `key`: a number of samples, or `{"seconds": x}`, or a string in the main counter format.
