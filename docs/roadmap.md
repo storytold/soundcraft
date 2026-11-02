@@ -18,8 +18,7 @@ Hours are Opus 5.5 agent-hours.
 ## Alpha gate
 
 The core workflows a Pro Tools professional does every day, checked end to end on macOS (the
-main platform). Any **no** keeps SoundCraft **pre-alpha**, and those rows are the alpha checklist
-(craftrules `standards/progress-docs.md`, Stages).
+main platform). Any **no** keeps SoundCraft **pre-alpha**, and those rows are the alpha checklist.
 
 | Workflow | Works end to end? | Evidence | Hours to pass |
 |---|---|---|---:|
