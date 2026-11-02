@@ -204,11 +204,13 @@ mod name_tests {
         };
         let mut e = Engine::default();
         let before = e.session().clone();
+        let (revision, dirty) = (e.revision, e.is_dirty());
         let err = import_midi_bytes(&mut e, &soundcraft_midi::write_smf(&smf).unwrap(), 0, true).unwrap_err();
         assert!(err.to_string().contains("MIDI track 2: longer than 24 hours"), "{err}");
         assert_eq!(e.session().tracks.len(), before.tracks.len());
         assert_eq!(e.session().tempo, before.tempo);
         assert_eq!(*e.session(), before);
+        assert_eq!((e.revision, e.is_dirty()), (revision, dirty), "a refused file is not an edit");
     }
 
     #[test]

@@ -27,8 +27,9 @@ pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: b
     if tracks_to_import > MAX_MIDI_TRACKS {
         return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_TRACKS} tracks")));
     }
-    let s = e.session_mut();
-    // Phase 1: the tempo map the clips will be placed with, built apart from the session.
+    // Phase 1, read only: the tempo map the clips will be placed with, built apart from the
+    // session. `session_mut` would already count as an edit (revision, unsaved mark).
+    let s = e.session();
     let mut tempo = s.tempo.clone();
     if tempo_map {
         for (tick, bpm) in &smf.tempos {
@@ -57,6 +58,7 @@ pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: b
         clips.push((i, tr, len));
     }
     // Phase 2: nothing can fail from here on.
+    let s = e.session_mut();
     if tempo_map {
         s.tempo = tempo;
     }
