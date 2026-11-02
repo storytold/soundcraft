@@ -19,6 +19,7 @@ fn is_control_method(method: &str) -> bool {
             | "ui.menu.list"
             | "ui.menu.invoke"
             | "ui.set"
+            | "ui.language"
             | "ui.move"
             | "ui.click"
             | "ui.drag"

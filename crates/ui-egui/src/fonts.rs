@@ -42,6 +42,24 @@ const HANGUL: &[(&str, u32)] = &[
     ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", 0),
     ("/usr/share/fonts/naver-nanum/NanumGothic.ttf", 0),
 ];
+/// Simplified Chinese fallback, appended *before* the Hangul one so Han glyphs take the
+/// Simplified style (a Korean face renders them too, but with Korean glyph variants). Face 2 of
+/// the Noto Sans CJK collection is its Simplified Chinese face.
+const CJK_SC: &[(&str, u32)] = &[
+    ("/System/Library/Fonts/PingFang.ttc", 0),
+    ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+    ("C:\\Windows\\Fonts\\msyh.ttc", 0),
+    ("C:\\Windows\\Fonts\\msyh.ttf", 0),
+    ("C:\\Windows\\Fonts\\simsun.ttc", 0),
+    ("C:\\Windows\\Fonts\\simhei.ttf", 0),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
+    ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
+    ("/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc", 0),
+    ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0),
+];
 /// Font files larger than this are skipped: egui keeps the whole file in memory.
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_FONT_BYTES: u64 = 64 << 20;
@@ -108,7 +126,9 @@ fn load(_: &[(&str, u32)], _: &str, _: Option<&str>, _: bool) -> Option<FontData
     None
 }
 
-/// The font set: the bundled faces, plus the system ones when `system_fonts` is true.
+/// The font set: egui's bundled faces plus the system's when `system_fonts` is true — the desktop
+/// UI font for regular and bold, then the Simplified Chinese and Hangul fallbacks appended to
+/// every family.
 pub fn definitions(system_fonts: bool) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let base: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
@@ -126,6 +146,15 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
         bold_family.insert(0, "system-regular".into());
     }
     fonts.families.insert(FontFamily::Name("bold".into()), bold_family);
+    // Simplified Chinese before Hangul, so Han glyphs prefer the Simplified face (see CJK_SC).
+    // The lang check is exact: a Traditional-only face would render the simplified interface
+    // with Traditional glyph variants; such systems fall through to the candidate list below.
+    if let Some(c) = load(CJK_SC, "sans-serif:lang=zh-cn", Some("zh-cn"), system_fonts) {
+        fonts.font_data.insert("system-cjk".into(), Arc::new(c));
+        for family in fonts.families.values_mut() {
+            family.push("system-cjk".into());
+        }
+    }
     if let Some(h) = load(HANGUL, "sans-serif:lang=ko", Some("ko"), system_fonts) {
         fonts.font_data.insert("system-hangul".into(), Arc::new(h));
         for family in fonts.families.values_mut() {
@@ -175,6 +204,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cjk_candidates_cover_every_desktop_platform() {
+        for prefix in ["/System/Library/Fonts/", "C:\\Windows\\Fonts\\", "/usr/share/fonts/"] {
+            assert!(CJK_SC.iter().any(|(p, _)| p.starts_with(prefix)), "no Simplified Chinese candidate under {prefix}");
+        }
+        // The Korean face is 1 and the Japanese face 0; the Simplified Chinese face is 2.
+        assert!(CJK_SC.iter().filter(|(p, _)| p.ends_with("NotoSansCJK-Regular.ttc")).all(|(_, i)| *i == 2));
+    }
+
     /// Korean names draw in every family, not as boxes; skipped when the system has no Korean font.
     #[test]
     fn every_family_draws_hangul_with_a_system_korean_font() {
@@ -191,6 +229,26 @@ mod tests {
         for family in families {
             let font = egui::FontId::new(13.0, family.clone());
             assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "가한국어세션")), "{family:?} has no Hangul");
+        }
+    }
+
+    /// Chinese names and the translated interface draw in every family, not as boxes; skipped
+    /// when the system has no Simplified Chinese font.
+    #[test]
+    fn every_family_draws_chinese_with_a_system_cjk_font() {
+        let defs = definitions(true);
+        if !defs.font_data.contains_key("system-cjk") {
+            eprintln!("skipping: no Simplified Chinese system font");
+            return;
+        }
+        let families: Vec<FontFamily> = defs.families.keys().cloned().collect();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        for family in families {
+            let font = egui::FontId::new(13.0, family.clone());
+            assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "并轨混音轨道剪")), "{family:?} has no Chinese");
         }
     }
 }

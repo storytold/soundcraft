@@ -137,6 +137,8 @@ pub struct UiState {
     pub configurations: Vec<(String, Value)>,
     /// Appearance (`ui.theme`): dark by default, light or follow the system on request.
     pub theme: theme::ThemeMode,
+    /// Interface language (`ui.language`): a BCP 47 id ("en", "zh-Hans"), English until changed.
+    pub language: String,
     /// The main window's size (logical points) and maximized state, and the interface scale, as
     /// the desktop app last saw them; it restores them at launch.
     pub window_size: [f32; 2],
@@ -145,6 +147,8 @@ pub struct UiState {
 }
 
 impl Default for UiState {
+    /// The interface out of the box: Edit window with the track and clip lists, English, dark
+    /// theme, 1× scale.
     fn default() -> Self {
         UiState {
             recent_sessions: Vec::new(),
@@ -200,6 +204,7 @@ impl Default for UiState {
             workspace_dir: String::new(),
             configurations: Vec::new(),
             theme: theme::ThemeMode::Dark,
+            language: "en".into(),
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,

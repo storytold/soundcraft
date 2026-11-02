@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 craft-ui.workspace = true
+soundcraft-l10n.workspace = true
 soundcraft-time.workspace = true
 soundcraft-audio-io.workspace = true
 soundcraft-midi.workspace = true
