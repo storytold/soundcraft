@@ -11,8 +11,9 @@ Hours are Opus 5.5 agent-hours.
 Conductor rulers now provide Tempo/Meter/Key/Chord forms, a key-signature staff, independent
 chord symbols and extraction, graphical tempo editing and a saved secondary timecode rate.
 Review fixes distinguish Add from Edit, retain context-menu targets and validate meter moves
-before publishing a complete map. Regression tests cover event preservation, popup actions,
-failed meter moves and single-step undo/redo. Alpha readiness estimates remain unchanged.
+before publishing a complete map. Missing or non-movable meter sources return an error.
+Regression tests cover event preservation, popup actions, failed meter moves and single-step
+undo/redo. Alpha readiness estimates remain unchanged.
 
 1. **Merge or close the open bug-fix PRs** (#123–#134, #146, #148, #75) and fix the rest of the
    correctness backlog (G-04). ≈ 15–25 h.
@@ -94,7 +95,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-02 | minor | Record conductor ruler editing and review regressions; alpha gate and readiness estimates unchanged |
+| 2026-11-02 | minor | Record conductor ruler editing, invalid meter-source rejection and review regressions; alpha gate and readiness estimates unchanged |
 | 2026-10-25 | trivial | Record-workflow evidence: `setup.playback_engine` applies the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | 27 built-in processors, as the plugin registry holds; the sampler (#108) is no longer listed under plugin essentials |
 | 2026-10-14 | trivial | M8: reject oversized MCP batches before execution (#460) |

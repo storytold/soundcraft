@@ -179,7 +179,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-02 | minor | Conductor Add forms preserve existing events; context menus retain their target; meter moves validate before mutation and undo atomically |
+| 2026-11-02 | minor | Conductor Add forms preserve existing events; context menus retain their target; meter moves validate before mutation, reject invalid sources and undo atomically |
 | 2026-11-01 | minor | Conductor ruler editing, independent chords and secondary timecode rate; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Cancel Zoom Toggle; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: side panels in dock columns; readiness estimates unchanged |

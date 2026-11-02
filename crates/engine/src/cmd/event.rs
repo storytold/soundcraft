@@ -151,7 +151,9 @@ fn meter(e: &mut Engine, p: &Value) -> Result<Value> {
         let old_tick = s.tempo.samples_to_ticks(old, s.sample_rate);
         if old_tick != tick {
             tempo = s.tempo.clone();
-            tempo.remove_meter(old_tick);
+            if !tempo.remove_meter(old_tick) {
+                return Err(bad("event.meter", "there is no movable meter at the original position"));
+            }
             tempo.set_meter(tick, num, den).map_err(|err| bad("event.meter", err.to_string()))?;
         }
     }
@@ -452,6 +454,29 @@ fn step_marker(e: &mut Engine, dir: i64) -> Result<Value> {
 mod tests {
     use crate::demo::demo_engine;
     use serde_json::json;
+
+    #[test]
+    fn initial_or_missing_meter_sources_cannot_be_moved() {
+        let mut e = crate::Engine::default();
+        let before = e.session_arc();
+        let undo = e.undo_history().len();
+        let journal = e.journal.clone();
+        for original in [0, 48000] {
+            let params = json!({"original":original,"at":96000,"numerator":3,"denominator":4});
+            assert!(super::meter(&mut e, &params).is_err());
+            assert!(std::sync::Arc::ptr_eq(&before, &e.session_arc()));
+            assert!(e.execute("event.meter", &params).is_err());
+            assert_eq!(e.session(), before.as_ref());
+            assert_eq!(e.undo_history().len(), undo);
+            assert_eq!(e.journal, journal);
+            assert!(!e.is_dirty());
+        }
+        // The initial meter remains editable in place, and Add needs no source.
+        e.execute("event.meter", &json!({"original":0,"at":0,"numerator":3,"denominator":4})).unwrap();
+        assert_eq!(e.session().tempo.meters()[0].numerator, 3);
+        e.execute("event.meter", &json!({"at":96000,"numerator":7,"denominator":8})).unwrap();
+        assert_eq!(e.session().tempo.meters().len(), 2);
+    }
 
     #[test]
     fn rejected_meter_move_never_mutates_even_without_execute_rollback() {
