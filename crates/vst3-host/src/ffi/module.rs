@@ -449,6 +449,7 @@ impl Bundle {
             active: false,
             processing: false,
             max_frames: 0,
+            process_mode: sv::ProcessModes_::kRealtime as i32,
             in_params: ComWrapper::new(ParamChanges::new(PARAM_QUEUE_CAP)),
             out_params: ComWrapper::new(ParamChanges::new(PARAM_QUEUE_CAP)),
             in_events: ComWrapper::new(EventList::new(EVENT_CAP)),
