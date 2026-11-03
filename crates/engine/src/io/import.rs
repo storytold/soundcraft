@@ -7,11 +7,16 @@ use super::{
 /// Largest import we accept (samples per channel × channels), ~4 GiB of f32.
 pub(crate) const MAX_IMPORT_SAMPLES: usize = 1 << 30;
 
-/// `buf` converted to `rate`, unless it would then hold more than `limit` samples: a file with a
-/// tiny sample rate grows by orders of magnitude.
+/// The most a file's audio may grow when converted to the session rate. Sessions run at 8 kHz to
+/// 768 kHz (96×); past this a file is lying about its rate, and converting a few kilobytes would
+/// otherwise allocate and filter hundreds of megabytes.
+const MAX_RATE_EXPANSION: u32 = 128;
+
+/// `buf` converted to `rate`, unless it would then hold more than `limit` samples, or grow more
+/// than [`MAX_RATE_EXPANSION`]-fold: a file with a tiny sample rate grows by orders of magnitude.
 pub(crate) fn at_rate(mut buf: AudioBuffer, rate: u32, limit: usize) -> Option<AudioBuffer> {
     let from = buf.sample_rate.max(1);
-    if buf.frames() as f64 * buf.num_channels() as f64 * f64::from(rate) / f64::from(from) > limit as f64 {
+    if rate / from > MAX_RATE_EXPANSION || buf.frames() as f64 * buf.num_channels() as f64 * f64::from(rate) / f64::from(from) > limit as f64 {
         return None;
     }
     if from != rate {
@@ -218,5 +223,14 @@ mod rate_tests {
         assert!(at_rate(buf(1), 48_000, 1_000_000).is_none());
         let ok = at_rate(buf(8_000), 48_000, 1_000_000).unwrap();
         assert_eq!((ok.sample_rate, ok.frames()), (48_000, 600));
+    }
+
+    #[test]
+    fn an_extreme_rate_expansion_is_refused_whatever_the_sample_budget() {
+        let buf = |rate| AudioBuffer { sample_rate: rate, channels: vec![vec![0.5; 100]; 2] };
+        // 100 frames at 300 Hz would fit the budget as 128 000 samples, but grow 640-fold.
+        assert!(at_rate(buf(300), 192_000, usize::MAX).is_none());
+        assert!(at_rate(buf(1_500), 192_000, usize::MAX).is_some(), "128-fold is the supported extreme");
+        assert!(at_rate(buf(8_000), 768_000, usize::MAX).is_some(), "the slowest file at the fastest session");
     }
 }
