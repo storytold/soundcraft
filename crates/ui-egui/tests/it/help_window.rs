@@ -104,6 +104,120 @@ fn every_help_page_draws_without_closing_help() {
     assert!(matches!(app.ui.help.page, Page::Process(_) | Page::Command(_)));
 }
 
+/// A whole app frame on a 1600×1000 screen.
+fn app_frame(ctx: &egui::Context, app: &mut SoundApp, events: Vec<Event>) {
+    let raw = RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))), events, ..Default::default() };
+    ctx.run_ui(raw, |ui| {
+        app.logic(ui.ctx());
+        app.ui(ui);
+    })
+    .textures_delta
+    .clear();
+}
+
+/// Point at `at` and press Cmd+? there.
+fn help_key_at(ctx: &egui::Context, app: &mut SoundApp, at: egui::Pos2) {
+    app_frame(ctx, app, vec![Event::PointerMoved(at)]);
+    let presses = [true, false].map(|pressed| Event::Key {
+        key: Key::Slash,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: MAC_CMD | Modifiers::SHIFT,
+    });
+    app_frame(ctx, app, [Event::ModifiersChanged(MAC_CMD | Modifiers::SHIFT)].into_iter().chain(presses).collect());
+    app_frame(ctx, app, vec![Event::ModifiersChanged(Modifiers::NONE)]);
+}
+
+#[test]
+fn cmd_question_mark_opens_the_page_of_the_window_under_the_pointer() {
+    let (ctx, mut app) = rig(OperatingSystem::Mac);
+    app_frame(&ctx, &mut app, vec![]);
+    let mut checked = 0;
+    for (title, id) in help::WINDOW_PAGES {
+        // Search and Check for Updates open as overlays of their own; the rest are plain windows.
+        if matches!(id, "window.search" | "app.checkForUpdates") {
+            continue;
+        }
+        app.ui.show_help = false;
+        app.ui.help = Default::default();
+        app.run(id, json!({"value": true})).unwrap_or_else(|e| panic!("{id}: {e}"));
+        for _ in 0..3 {
+            app_frame(&ctx, &mut app, vec![]);
+        }
+        let rect = ctx.memory(|m| m.area_rect(help::window_id(title)));
+        let Some(rect) = rect else { panic!("{title} ({id}) did not open as a window titled {title:?}") };
+        help_key_at(&ctx, &mut app, rect.center() + egui::vec2(0.0, 10.0));
+        assert!(app.ui.show_help, "{title}: help did not open");
+        assert_eq!(app.ui.help.page, Page::Command(id.into()), "{title}");
+        // Close it again so the next window isn't hidden behind it.
+        app.run(id, json!({"value": false})).unwrap_or_else(|e| panic!("{id}: {e}"));
+        app.ui.show_help = false;
+        for _ in 0..2 {
+            app_frame(&ctx, &mut app, vec![]);
+        }
+        checked += 1;
+    }
+    assert!(checked >= 25, "{checked} windows");
+}
+
+#[test]
+fn cmd_question_mark_over_the_main_window_or_help_itself() {
+    let (ctx, mut app) = rig(OperatingSystem::Mac);
+    for _ in 0..2 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    // Over the Edit window's tracks.
+    let [x0, y0, x1, y1] = app.edit_layout.timeline;
+    help_key_at(&ctx, &mut app, egui::pos2((x0 + x1) / 2.0, (y0 + y1) / 2.0));
+    assert!(app.ui.show_help);
+    assert_eq!(app.ui.help.page, Page::Command("window.edit".into()));
+    // Over help itself it stays where it is.
+    app.ui.help.go(Page::Guide("record_audio".into()));
+    for _ in 0..2 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    let rect = ctx.memory(|m| m.area_rect(help::window_id("SoundCraft Help"))).unwrap();
+    help_key_at(&ctx, &mut app, rect.center());
+    assert_eq!(app.ui.help.page, Page::Guide("record_audio".into()));
+    // In the Mix window it opens the Mix window's page.
+    app.ui.show_help = false;
+    app.run("window.mix", json!({})).unwrap();
+    for _ in 0..2 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    help_key_at(&ctx, &mut app, egui::pos2(800.0, 600.0));
+    assert_eq!(app.ui.help.page, Page::Command("window.mix".into()));
+}
+
+#[test]
+fn guide_pages_draw_on_every_platform_and_their_links_work() {
+    for os in [OperatingSystem::Mac, OperatingSystem::Windows, OperatingSystem::Nix] {
+        let (ctx, mut app) = rig(os);
+        app.ui.show_help = true;
+        for page in help::pages().into_iter().filter(|p| matches!(p, Page::Guide(_))) {
+            app.ui.help.go(page.clone());
+            for _ in 0..2 {
+                app_frame(&ctx, &mut app, vec![]);
+            }
+            assert_eq!(app.ui.help.page, page, "{os:?}");
+        }
+    }
+}
+
+#[test]
+fn cmd_question_mark_over_an_audiosuite_window_opens_its_process() {
+    let (ctx, mut app) = rig(OperatingSystem::Mac);
+    menus::invoke_menu(&mut app, "audiosuite.process", "AudioSuite > Dynamics > Dyn3 Compressor/Limiter");
+    assert_eq!(app.ui.audiosuite.as_deref(), Some("compressor"));
+    for _ in 0..3 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    let rect = ctx.memory(|m| m.layer_ids().filter(|l| l.order == egui::Order::Middle).find_map(|l| m.area_rect(l.id))).unwrap();
+    help_key_at(&ctx, &mut app, rect.center() + egui::vec2(0.0, 10.0));
+    assert_eq!(app.ui.help.page, Page::Process("compressor".into()));
+}
+
 /// With the app's real fonts every character on every help page has a glyph: the test harness
 /// panics on one that would draw as a box. On a small screen every page also fits inside it:
 /// nothing on a page may push the help window past the edge.

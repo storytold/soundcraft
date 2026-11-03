@@ -1,0 +1,223 @@
+{
+  "guides": [
+    {
+      "id": "using_help",
+      "title": "Using SoundCraft Help",
+      "category": "workspace",
+      "summary": "How to find a page, move around help, and get help on the window you're looking at.",
+      "steps": [
+        "Press {keys:Cmd+Shift+/} (the ? key with {keys:Cmd}) or choose {menu:help.open} to open help.",
+        "Point at a SoundCraft window, such as the Big Counter or Beat Detective, and press {keys:Cmd+Shift+/}: help opens on that window's page.",
+        "Contents lists every page by topic. Index lists them A to Z: type the first letters of a word to jump to it. Search finds pages by any word, menu name or shortcut, so typing Cmd+S finds Save Session.",
+        "Use the arrows at the top left, or {keys:Alt+Left} and {keys:Alt+Right} while the pointer is over help, to go back and forward.",
+        "On a command's page, Do it now runs the command just as its menu item would. When it's greyed out, the line under it says why."
+      ],
+      "related": ["help.open", "help.search", "help.index", "help.report"]
+    },
+    {
+      "id": "first_session",
+      "title": "Start a session and save it",
+      "category": "sessions",
+      "summary": "Make a new session, add tracks, and keep your work safe.",
+      "steps": [
+        "Choose {menu:session.new} ({key:session.new}). Give the session a name and choose its sample rate, or start from the demo song to look around.",
+        "Add tracks with {menu:track.new} ({key:track.new}): choose how many, mono or stereo, and the kind of track (audio, MIDI, instrument, aux input and more).",
+        "Save with {menu:session.save} ({key:session.save}). The first save asks where to put the session. Later saves write to the same place.",
+        "To keep a separate version, use {menu:session.save_as} ({key:session.save_as}).",
+        "Open a saved session later with {menu:session.open} ({key:session.open})."
+      ],
+      "related": ["session.new", "track.new", "session.save", "session.save_as", "session.open"]
+    },
+    {
+      "id": "record_audio",
+      "title": "Record audio",
+      "category": "recording",
+      "summary": "Set up a track, hear your input, and record a take.",
+      "steps": [
+        "Add an audio track with {menu:track.new} if the session has none.",
+        "Click the track's R button, or select the track and press {key:mix.record_arm}, to arm it for recording.",
+        "To hear yourself through SoundCraft before recording, turn on input monitoring with the track's I button or {key:mix.input_monitor}.",
+        "Click in the timeline where recording should start, or select a range to record only that range.",
+        "Press {key:transport.record} or {keys:F12} to start recording. Press it again, or {keys:Space}, to stop.",
+        "To record several takes over the same range, select it and turn on {menu:options.loop_record} ({key:options.loop_record}) before you press record."
+      ],
+      "related": ["track.new", "mix.record_arm", "mix.input_monitor", "transport.record", "options.loop_record", "options.pre_post_roll"]
+    },
+    {
+      "id": "import_audio",
+      "title": "Import audio files",
+      "category": "sessions",
+      "summary": "Bring existing audio files into the session.",
+      "steps": [
+        "Choose {menu:file.import_audio} ({key:file.import_audio}).",
+        "Type the file's path, or click Browse… in the desktop app to pick it.",
+        "Click OK. Each file goes on a new track, starting at the beginning of the session. Drag the clip with the Grabber tool ({keys:F8}) to move it.",
+        "Long files are decoded in the background, so you can keep working while they load."
+      ],
+      "related": ["file.import_audio", "file.import_midi"]
+    },
+    {
+      "id": "edit_clips",
+      "title": "Cut, move and fade clips",
+      "category": "editing",
+      "summary": "The everyday edits: split a clip, remove part of it, move it and smooth the joins.",
+      "steps": [
+        "Pick the Selector tool ({keys:F7}) and drag across a clip to select part of it.",
+        "Split the clip at the selection edges with {menu:edit.separate} ({key:edit.separate}).",
+        "Remove the selected audio with {menu:edit.clear} ({key:edit.clear}), or use {menu:edit.cut} ({key:edit.cut}) to keep a copy you can paste.",
+        "Pick the Grabber tool ({keys:F8}) to drag clips to a new place. The edit mode decides how they move: Slip ({keys:F2}) moves freely, Grid ({keys:F4}) snaps to the grid, Shuffle ({keys:F1}) closes up gaps.",
+        "Select across the place where two clips meet and choose {menu:edit.fades_create} ({key:edit.fades_create}) to add a crossfade. Select the start or end of a clip for a fade-in or fade-out.",
+        "Made a mistake? {menu:edit.undo} ({key:edit.undo}) undoes it, and {menu:window.undo_history} shows every change so you can go back several steps at once."
+      ],
+      "related": ["edit.separate", "edit.clear", "edit.cut", "edit.paste", "edit.fades_create", "edit.heal", "edit.undo", "window.undo_history"]
+    },
+    {
+      "id": "loop_playback",
+      "title": "Loop a section",
+      "category": "transport",
+      "summary": "Play part of the song over and over while you listen or work.",
+      "steps": [
+        "Select the range you want to hear in the timeline.",
+        "Turn on {menu:options.loop_playback} ({key:options.loop_playback}).",
+        "Press {keys:Space}. Playback repeats the selection until you press {keys:Space} again.",
+        "With loop playback off, {keys:Space} plays the selection once and stops at its end."
+      ],
+      "related": ["options.loop_playback", "transport.toggle", "transport.play_selection", "options.loop_record"]
+    },
+    {
+      "id": "markers",
+      "title": "Mark places in the song",
+      "category": "viewing",
+      "summary": "Drop markers on verses and choruses so you can find them again.",
+      "steps": [
+        "Click in the timeline where the marker should go and press {keys:Enter}.",
+        "Select a range first and the marker remembers the whole selection.",
+        "Open {menu:window.memory_locations} ({key:window.memory_locations}) to see, rename and recall your markers."
+      ],
+      "related": ["markers.add", "window.memory_locations"]
+    },
+    {
+      "id": "bounce_mix",
+      "title": "Export your mix",
+      "category": "sessions",
+      "summary": "Render the finished mix to a single audio file.",
+      "steps": [
+        "Select the range to export, or select nothing to export the whole session.",
+        "Choose {menu:file.bounce_mix} ({key:file.bounce_mix}).",
+        "Pick the file name, format and bit depth. Turn on normalize or dither if you need them.",
+        "SoundCraft renders the mix with a progress window, then reports the file's peak level and loudness (LUFS)."
+      ],
+      "related": ["file.bounce_mix"]
+    },
+    {
+      "id": "zoom_and_scroll",
+      "title": "Zoom and find your way around",
+      "category": "viewing",
+      "summary": "Get the part of the session you need on screen.",
+      "steps": [
+        "Press {keys:T} to zoom in and {keys:R} to zoom out, or use {key:view.zoom_in} and {key:view.zoom_out}.",
+        "Press {key:view.zoom_fit} to fit the whole session in the window, or {key:view.zoom_to_selection} to fill the window with the selection.",
+        "Press {keys:Home} to go back to the start and {keys:End} to go to the end.",
+        "Make quiet waveforms easier to see with {keys:Cmd+Alt+]}, and smaller again with {keys:Cmd+Alt+[}. This changes only the picture, not the sound.",
+        "Make the selected tracks taller or shorter with {keys:Ctrl+Up} and {keys:Ctrl+Down}."
+      ],
+      "related": ["view.zoom_in", "view.zoom_out", "view.zoom_fit", "view.zoom_to_selection", "view.waveform_zoom", "transport.rtz", "transport.go_to_end", "track.height_up", "track.height_down"]
+    },
+    {
+      "id": "keys_edit_modes",
+      "title": "Keys: edit modes and tools",
+      "category": "editing",
+      "summary": "The function keys switch how clips move and which tool the mouse is.",
+      "keys": [
+        ["F1", "Shuffle mode: clips close up gaps when moved or deleted."],
+        ["F2", "Slip mode: clips move freely."],
+        ["F3", "Spot mode: you type an exact time for a clip."],
+        ["F4", "Grid mode: clips snap to the grid. Press F4 again to switch between Absolute and Relative Grid, unless Edit/Tool Mode Keyboard Lock is on."],
+        ["F4 + F1, F2 or F3", "Hold F4 while pressing F1–F3 (in either order) to turn on Snap to Grid in that mode."],
+        ["Alt+1 to Alt+4", "The same as F1 to F4, for keyboards whose function keys do something else."],
+        ["`", "Steps through the modes in order: Shuffle, Slip, Spot, Grid."],
+        ["F5", "Zoom tool."],
+        ["F6", "Trim tool: drag a clip's edge to make it longer or shorter."],
+        ["F7", "Selector tool: drag to select a range."],
+        ["F8", "Grabber tool: drag clips to move them."],
+        ["F9", "Scrubber tool: drag to hear the audio under the pointer."],
+        ["F10", "Pencil tool: draw automation and MIDI notes."]
+      ],
+      "steps": [
+        "These keys work when you aren't typing in a text box."
+      ],
+      "related": ["edit.mode", "edit.tool", "edit.snap_to_grid", "options.keyboard_lock"]
+    },
+    {
+      "id": "keys_transport",
+      "title": "Keys: playing and recording",
+      "category": "transport",
+      "summary": "The keys that start, stop and move playback.",
+      "keys": [
+        ["Space", "Play, or stop if playing. With a selection, plays the selection."],
+        ["Shift+Space", "Play at half speed and an octave lower."],
+        ["Cmd+Space", "Start recording on the armed tracks. Press again to stop."],
+        ["F12", "Also starts and stops recording."],
+        ["Alt+[", "Play only the edit selection."],
+        ["Home", "Go to the start of the session."],
+        ["End", "Go to the end of the session."],
+        ["Enter", "Add a marker at the insertion point."]
+      ],
+      "steps": [
+        "These keys work when you aren't typing in a text box."
+      ],
+      "related": ["transport.toggle", "transport.half_speed", "transport.record", "transport.play_selection", "transport.rtz", "transport.go_to_end", "markers.add"]
+    },
+    {
+      "id": "keys_nudge",
+      "title": "Keys: nudge, grid and selection",
+      "category": "editing",
+      "summary": "Move clips and selections in small steps from the keyboard. These work in the Edit window.",
+      "keys": [
+        ["+ or =", "Nudge the selected clips or selection later by the Nudge value."],
+        ["-", "Nudge earlier."],
+        ["Shift+= / Shift+-", "Make the Grid value one step larger or smaller."],
+        ["Alt+Shift+= / Alt+Shift+-", "Make the Nudge value one step larger or smaller."],
+        ["Tab", "Move the insertion point to the next clip edge. Add Shift to extend the selection."],
+        ["Alt+Tab", "Move to the previous clip edge (on Windows and Linux, Ctrl+Tab, since the desktop uses Alt+Tab)."],
+        ["Ctrl+Up / Ctrl+Down", "Make the selected tracks taller or shorter."],
+        ["Ctrl+Shift+Up / Ctrl+Shift+Down", "Turn the selected clips' gain up or down a step."]
+      ],
+      "related": ["edit.nudge", "view.grid", "view.nudge", "edit.tab", "track.height_up", "track.height_down", "clip.gain_nudge_up", "clip.gain_nudge_down"]
+    },
+    {
+      "id": "keys_commands_focus",
+      "title": "Keys: Commands Keyboard Focus",
+      "category": "editing",
+      "summary": "Single-key editing: with Commands Focus on, letter keys run edit commands in the Edit window.",
+      "steps": [
+        "Turn Commands Focus on or off with the a-z button at the right of the Edit window toolbar. It is lit while it's on.",
+        "The single keys work only in the Edit window, and not while you're typing in a text box. A key pressed together with {keys:Cmd}, Ctrl or Alt keeps its usual meaning."
+      ],
+      "keys": [
+        ["A", "Trim the clip's start to the insertion point."],
+        ["S", "Trim the clip's end to the insertion point."],
+        ["D", "Fade in from the clip's start to the insertion point."],
+        ["G", "Fade out from the insertion point to the clip's end."],
+        ["F", "Create fades for the selection."],
+        ["B", "Separate the clip at the selection."],
+        ["X / C / V", "Cut, copy and paste."],
+        ["Z / Shift+Z", "Undo and redo."],
+        [", / .", "Nudge earlier or later by the Nudge value."],
+        ["M / /", "Nudge earlier or later by the next larger Nudge value."],
+        ["P / ;", "Move the selection to the track above or below."],
+        ["Shift+P / Shift+;", "Extend the selection to the track above or below."],
+        ["L / '", "Go to the previous or next clip edge on the selected tracks."],
+        ["[", "Play the edit selection."],
+        ["]", "Play the timeline selection."],
+        ["0", "Make the edit selection match the timeline selection."],
+        ["O", "Make the timeline selection match the edit selection."],
+        ["N", "Turn Insertion Follows Playback on or off."],
+        ["E", "Zoom Toggle: zoom in on the selection, press again to go back."],
+        ["1 to 5", "Recall zoom presets 1 to 5."],
+        ["R / T", "Zoom out and in (these work with Commands Focus off too)."]
+      ],
+      "related": ["options.keyboard_focus", "edit.trim_start_to_insertion", "edit.trim_end_to_insertion", "edit.fade_to_start", "edit.fade_to_end", "edit.nudge", "view.zoom_toggle", "view.zoom_preset", "options.insertion_follows_playback"]
+    }
+  ]
+}

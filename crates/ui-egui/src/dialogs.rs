@@ -11,7 +11,7 @@ use soundcraft_model::{ClipId, GroupId, Session, SourceId, TrackId};
 use soundcraft_time::Samples;
 use std::sync::Arc;
 
-mod audiosuite;
+pub(crate) mod audiosuite;
 mod files;
 mod strip_silence;
 

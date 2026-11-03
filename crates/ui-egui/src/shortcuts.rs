@@ -98,7 +98,7 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
             }
             continue;
         }
-        if fixed(app, key, mods, mac) {
+        if fixed(app, ctx, key, mods, mac) {
             continue;
         }
         if let Some(id) = command_for(key, mods, mac) {
@@ -132,7 +132,7 @@ fn command_for(key: Key, mods: Modifiers, mac: bool) -> Option<&'static str> {
 }
 
 /// Keys with context-dependent meaning. Returns true when handled.
-fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
+fn fixed(app: &mut SoundApp, ctx: &egui::Context, key: Key, m: Modifiers, mac: bool) -> bool {
     let plain = !m.command && !m.alt && !m.ctrl && !m.shift;
     match key {
         Key::Space if !m.command && !m.alt => {
@@ -145,9 +145,10 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             true
         }
         // Cmd+? (Ctrl+Shift+/ off macOS) opens Help. egui may report the key as `?` or as `/`, and
-        // on some keyboards `?` isn't Shift+/ at all, so both spellings count.
+        // on some keyboards `?` isn't Shift+/ at all, so both spellings count. Help opens on the page
+        // for the window under the pointer.
         Key::Questionmark | Key::Slash if help_chord(key, m, mac) => {
-            let _ = app.run("help.open", json!({}));
+            crate::help::open_here(app, ctx);
             true
         }
         Key::S if search_chord(m, mac) => {

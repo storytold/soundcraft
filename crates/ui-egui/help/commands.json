@@ -1117,7 +1117,7 @@
   },
   "options.keyboard_focus": {
    "category": "options",
-   "text": "Chooses what single-key presses do in the Edit window. Commands focus turns letter keys into edit commands; the a-z button in the Edit window toolbar turns it on and off. Clip List and Groups focus exist but are only partly done."
+   "text": "Chooses what single-key presses do in the Edit window. Commands focus turns letter keys into edit commands: the a-z button in the Edit window toolbar turns it on and off, and the page Keys: Commands Keyboard Focus lists every key. Clip List and Groups focus exist but are only partly done."
   },
   "options.keyboard_lock": {
    "category": "editing",
