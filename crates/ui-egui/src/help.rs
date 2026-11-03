@@ -145,6 +145,10 @@ pub struct HelpState {
     /// Help › Report a Problem… opens the browser on the next frame (it needs the egui context).
     #[serde(skip)]
     pub open_report: bool,
+    /// A text box had the keyboard at the end of last frame. egui drops focus as soon as Escape is
+    /// pressed, so this is how Escape that leaves a box is told from Escape that closes help.
+    #[serde(skip)]
+    typing: bool,
 }
 
 impl HelpState {
@@ -479,6 +483,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     }
     if !app.ui.show_help {
         app.ui.help.was_open = false;
+        app.ui.help.typing = false;
         return;
     }
     if !std::mem::replace(&mut app.ui.help.was_open, true) {
@@ -510,22 +515,25 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             app.ui.help.go_forward();
         }
         // Escape closes help, unless it is clearing a search box that has the keyboard.
-        if !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+        if !app.ui.help.typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             open = false;
         }
     }
     app.ui.show_help = open;
+    app.ui.help.typing = ctx.egui_wants_keyboard_input();
 }
 
 fn window_body(app: &mut SoundApp, ui: &mut Ui) {
+    // The highlight is the accent blue in both themes: white text on it reads in light mode too.
+    ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
     toolbar(app, ui);
     ui.separator();
     let height = ui.available_height();
     ui.horizontal_top(|ui| {
-        ui.allocate_ui_with_layout(vec2(NAV_WIDTH, height), Layout::top_down(Align::Min), |ui| {
-            ui.set_min_size(vec2(NAV_WIDTH, height));
-            // The same width on every tab: long titles wrap rather than widen the panel.
-            ui.set_max_width(NAV_WIDTH);
+        // Exactly the same width on every tab: a long title is cut short rather than widening it.
+        let (rect, _) = ui.allocate_exact_size(vec2(NAV_WIDTH, height), egui::Sense::hover());
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)), |ui| {
+            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
             navigation(app, ui);
         });
         ui.separator();
@@ -605,7 +613,7 @@ fn contents(app: &mut SoundApp, ui: &mut Ui) {
             }
             state
                 .show_header(ui, |ui| {
-                    let r = ui.selectable_label(h.page == Page::Category(c.id.clone()), &c.title);
+                    let r = ui.add(egui::Button::selectable(h.page == Page::Category(c.id.clone()), &c.title).truncate());
                     if r.clicked() {
                         go = Some(Page::Category(c.id.clone()));
                     }
@@ -917,6 +925,17 @@ fn guide_line(ui: &mut Ui, line: &str, mac: bool) {
 
 /// A key column entry such as `Ctrl+Up / Ctrl+Down`, spelled for this platform.
 fn keys_cell(keys: &str, mac: bool) -> String {
+    // "Mac keys | PC keys" when the two differ by more than Cmd and Ctrl.
+    let keys = match keys.split_once(" | ") {
+        Some((on_mac, on_pc)) => {
+            if mac {
+                on_mac
+            } else {
+                on_pc
+            }
+        }
+        None => keys,
+    };
     keys.split(" / ")
         .map(|k| {
             let label = crate::shortcuts::shortcut_label(k, mac);
@@ -1304,6 +1323,27 @@ mod tests {
         assert_eq!(keys_cell("Ctrl+Up / Ctrl+Down", false), "Ctrl+Up / Ctrl+Down");
         assert_eq!(keys_cell("Z / Shift+Z", false), "Z / Shift+Z");
         assert_eq!(keys_cell("Cmd+Space", false), "Ctrl+Space");
+        assert_eq!(keys_cell("Alt+Tab | Ctrl+Tab", true), "Alt+Tab");
+        assert_eq!(keys_cell("Alt+Tab | Ctrl+Tab", false), "Ctrl+Tab");
+    }
+
+    #[test]
+    fn guides_read_right_off_the_mac() {
+        // Cmd becomes Ctrl off the Mac, so a guide must not also name Ctrl beside it, and a PC
+        // must never be told to press Alt+Tab, which the desktop takes.
+        for g in &data().guides {
+            for mac in [true, false] {
+                for line in g.steps.iter().chain(g.keys.iter().map(|(_, what)| what)) {
+                    let text: String = spans(line, mac).into_iter().map(|(t, _)| t).collect();
+                    for twice in ["Ctrl, Ctrl", "Ctrl or Ctrl", "Ctrl and Ctrl", "Cmd, Cmd"] {
+                        assert!(!text.contains(twice), "{} ({}): {text}", g.id, if mac { "Mac" } else { "PC" });
+                    }
+                }
+                for (keys, _) in &g.keys {
+                    assert!(mac || !keys_cell(keys, mac).contains("Alt+Tab"), "{}: {keys}", g.id);
+                }
+            }
+        }
     }
 
     #[test]
