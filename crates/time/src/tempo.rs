@@ -40,14 +40,34 @@ pub struct BarBeat {
 
 /// Tempo and meter changes for a session. Always has at least one of each, at tick 0.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "TempoMapData")]
 pub struct TempoMap {
+    tempos: Vec<TempoEvent>,
+    meters: Vec<MeterEvent>,
+    /// For each tempo event, the elapsed time at its tick in quarter-note minutes (ticks / bpm,
+    /// summed over the earlier segments). Lets tick/sample conversions binary-search the segment
+    /// instead of walking every earlier tempo change, so converting many positions against a large
+    /// tempo map stays O(log n) each. Rebuilt whenever `tempos` changes.
+    #[serde(skip)]
+    elapsed: Vec<f64>,
+}
+
+/// The serialized form of [`TempoMap`], without the derived lookup table.
+#[derive(serde::Deserialize)]
+struct TempoMapData {
     tempos: Vec<TempoEvent>,
     meters: Vec<MeterEvent>,
 }
 
+impl From<TempoMapData> for TempoMap {
+    fn from(d: TempoMapData) -> Self {
+        TempoMap::from_parts(d.tempos, d.meters)
+    }
+}
+
 impl Default for TempoMap {
     fn default() -> Self {
-        TempoMap { tempos: vec![TempoEvent { tick: 0, bpm: 120.0 }], meters: vec![MeterEvent { tick: 0, numerator: 4, denominator: 4 }] }
+        TempoMap::from_parts(vec![TempoEvent { tick: 0, bpm: 120.0 }], vec![MeterEvent { tick: 0, numerator: 4, denominator: 4 }])
     }
 }
 
@@ -60,6 +80,43 @@ fn valid_meter(numerator: u32, denominator: u32) -> bool {
 }
 
 impl TempoMap {
+    fn from_parts(tempos: Vec<TempoEvent>, meters: Vec<MeterEvent>) -> Self {
+        let mut m = TempoMap { tempos, meters, elapsed: Vec::new() };
+        m.reindex();
+        m
+    }
+
+    /// Rebuild `elapsed` from `tempos`. The first segment runs from tick 0 at the first tempo.
+    fn reindex(&mut self) {
+        let mut elapsed = Vec::with_capacity(self.tempos.len());
+        let mut acc = 0.0;
+        let mut seg_tick = 0i64;
+        let mut bpm = self.tempos.first().map_or(120.0, |e| e.bpm);
+        for (i, e) in self.tempos.iter().enumerate() {
+            if i > 0 {
+                // Saturating: a file's ticks are indexed before `sanitize` orders them.
+                acc += e.tick.saturating_sub(seg_tick) as f64 / bpm;
+                seg_tick = e.tick;
+                bpm = e.bpm;
+            }
+            elapsed.push(acc);
+        }
+        self.elapsed = elapsed;
+    }
+
+    /// Samples per quarter-note minute (the unit of `elapsed`) at `sr`.
+    fn samples_per_elapsed(sr: SampleRate) -> f64 {
+        sr.as_f64() * 60.0 / TICKS_PER_QUARTER as f64
+    }
+
+    /// The tempo segment `i` (an index into `tempos`, 0 when it is empty): its start tick (0 for
+    /// the first), bpm and elapsed time at its start.
+    fn segment(&self, i: usize) -> (i64, f64, f64) {
+        let bpm = self.tempos.get(i).or(self.tempos.first()).map_or(120.0, |e| e.bpm);
+        let tick = if i == 0 { 0 } else { self.tempos.get(i).map_or(0, |e| e.tick) };
+        (tick, bpm, self.elapsed.get(i).copied().unwrap_or(0.0))
+    }
+
     pub fn new(bpm: f64, numerator: u32, denominator: u32) -> Result<Self, TimeError> {
         let mut m = TempoMap::default();
         m.set_tempo(0, bpm)?;
@@ -91,6 +148,7 @@ impl TempoMap {
             let (numerator, denominator) = self.meters.first().map_or((4, 4), |m| (m.numerator, m.denominator));
             self.meters.insert(0, MeterEvent { tick: 0, numerator, denominator });
         }
+        self.reindex();
     }
 
     /// Insert or replace the tempo at `tick`.
@@ -105,6 +163,7 @@ impl TempoMap {
             }
             Err(i) => self.tempos.insert(i, TempoEvent { tick, bpm }),
         }
+        self.reindex();
         Ok(())
     }
 
@@ -115,6 +174,7 @@ impl TempoMap {
         }
         let before = self.tempos.len();
         self.tempos.retain(|e| e.tick != tick);
+        self.reindex();
         before != self.tempos.len()
     }
 
@@ -238,36 +298,20 @@ impl TempoMap {
     }
 
     fn tick_to_samples_f(&self, tick: i64, sr: SampleRate) -> f64 {
-        let mut acc = 0.0;
-        let mut seg_tick = 0i64;
-        let mut bpm = self.tempos.first().map_or(120.0, |e| e.bpm);
-        for e in self.tempos.iter().skip(1) {
-            if e.tick >= tick {
-                break;
-            }
-            acc += (e.tick - seg_tick) as f64 * Self::samples_per_tick(bpm, sr);
-            seg_tick = e.tick;
-            bpm = e.bpm;
-        }
-        acc + (tick - seg_tick) as f64 * Self::samples_per_tick(bpm, sr)
+        // Tempo events after the first that start before `tick` (the segments it has passed).
+        let passed = self.tempos.get(1..).map_or(0, |rest| rest.partition_point(|e| e.tick < tick));
+        let (seg_tick, bpm, elapsed) = self.segment(passed);
+        elapsed * Self::samples_per_elapsed(sr) + (tick - seg_tick) as f64 * Self::samples_per_tick(bpm, sr)
     }
 
     /// Samples → ticks (fractional).
     pub fn samples_to_ticks_f(&self, s: Samples, sr: SampleRate) -> f64 {
         let s = s as f64;
-        let mut acc = 0.0;
-        let mut seg_tick = 0i64;
-        let mut bpm = self.tempos.first().map_or(120.0, |e| e.bpm);
-        for e in self.tempos.iter().skip(1) {
-            let seg = (e.tick - seg_tick) as f64 * Self::samples_per_tick(bpm, sr);
-            if acc + seg > s {
-                break;
-            }
-            acc += seg;
-            seg_tick = e.tick;
-            bpm = e.bpm;
-        }
-        seg_tick as f64 + (s - acc) / Self::samples_per_tick(bpm, sr)
+        let scale = Self::samples_per_elapsed(sr);
+        // Tempo events after the first that start at or before `s`.
+        let passed = self.elapsed.get(1..).map_or(0, |rest| rest.partition_point(|e| e * scale <= s));
+        let (seg_tick, bpm, elapsed) = self.segment(passed);
+        seg_tick as f64 + (s - elapsed * scale) / Self::samples_per_tick(bpm, sr)
     }
 
     pub fn samples_to_ticks(&self, s: Samples, sr: SampleRate) -> i64 {
@@ -353,6 +397,7 @@ impl TempoMap {
             e.bpm = valid_bpm(e.bpm * factor)?;
         }
         self.tempos = out;
+        self.reindex();
         Ok(())
     }
 }
@@ -471,24 +516,24 @@ mod tests {
     fn sanitize_keeps_what_the_setters_accept() {
         let tempo = |tick, bpm| TempoEvent { tick, bpm };
         let meter = |tick, numerator, denominator| MeterEvent { tick, numerator, denominator };
-        let mut m = TempoMap {
-            tempos: vec![tempo(960, 4e9), tempo(3840, 90.0), tempo(-5, 100.0), tempo(1920, 60.0), tempo(1920, 70.0)],
-            meters: vec![meter(0, 0, 4), meter(3840, 3, 4)],
-        };
+        let mut m = TempoMap::from_parts(
+            vec![tempo(960, 4e9), tempo(3840, 90.0), tempo(-5, 100.0), tempo(1920, 60.0), tempo(1920, 70.0)],
+            vec![meter(0, 0, 4), meter(3840, 3, 4)],
+        );
         m.sanitize();
         assert_eq!(m.tempos(), [tempo(0, 60.0), tempo(1920, 60.0), tempo(3840, 90.0)]);
         assert_eq!(m.meters(), [meter(0, 3, 4), meter(3840, 3, 4)]);
-        let mut empty = TempoMap { tempos: Vec::new(), meters: Vec::new() };
+        let mut empty = TempoMap::from_parts(Vec::new(), Vec::new());
         empty.sanitize();
         assert_eq!(empty, TempoMap::default());
     }
 
     #[test]
     fn sanitize_drops_events_beyond_the_position_range() {
-        let mut m = TempoMap {
-            tempos: vec![TempoEvent { tick: 0, bpm: 120.0 }, TempoEvent { tick: i64::MAX, bpm: 90.0 }],
-            meters: vec![MeterEvent { tick: 0, numerator: 4, denominator: 4 }, MeterEvent { tick: i64::MAX, numerator: 3, denominator: 4 }],
-        };
+        let mut m = TempoMap::from_parts(
+            vec![TempoEvent { tick: 0, bpm: 120.0 }, TempoEvent { tick: i64::MAX, bpm: 90.0 }],
+            vec![MeterEvent { tick: 0, numerator: 4, denominator: 4 }, MeterEvent { tick: i64::MAX, numerator: 3, denominator: 4 }],
+        );
         m.sanitize();
         assert_eq!(m, TempoMap::default());
         assert_eq!(m.bar_start_tick(2), TICKS_PER_QUARTER * 4);
@@ -509,5 +554,69 @@ mod tests {
         let m = TempoMap::default();
         assert_eq!(m.bar_beat_at_tick(-TICKS_PER_QUARTER * 4), BarBeat { bar: 0, beat: 1, tick: 0 });
         assert_eq!(m.bar_beat_at_tick(-TICKS_PER_QUARTER), BarBeat { bar: 0, beat: 4, tick: 0 });
+    }
+
+    /// The segment walk the indexed conversions replaced, kept as the reference they must match.
+    fn linear_tick_to_samples(m: &TempoMap, tick: i64, sr: SampleRate) -> i64 {
+        let mut acc = 0.0;
+        let mut seg_tick = 0i64;
+        let mut bpm = m.tempos[0].bpm;
+        for e in m.tempos.iter().skip(1) {
+            if e.tick >= tick {
+                break;
+            }
+            acc += (e.tick - seg_tick) as f64 * TempoMap::samples_per_tick(bpm, sr);
+            seg_tick = e.tick;
+            bpm = e.bpm;
+        }
+        to_samples(acc + (tick - seg_tick) as f64 * TempoMap::samples_per_tick(bpm, sr))
+    }
+
+    #[test]
+    fn indexed_conversions_match_the_segment_walk() {
+        let sr = SampleRate::HZ_48000;
+        let mut m = TempoMap::default();
+        for i in 1..200i64 {
+            m.set_tempo(i * 487, 40.0 + ((i * 37) % 300) as f64).unwrap();
+        }
+        assert!(m.remove_tempo(487 * 50));
+        for tick in (-1000..200 * 487 + 5000).step_by(113) {
+            let s = m.tick_to_samples(tick, sr);
+            assert_eq!(s, linear_tick_to_samples(&m, tick, sr), "tick {tick}");
+            assert!((m.samples_to_ticks(s, sr) - tick).abs() <= 1, "tick {tick}");
+        }
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("elapsed"));
+        let back: TempoMap = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
+        assert_eq!(back.tick_to_samples(150 * 487 + 3, sr), m.tick_to_samples(150 * 487 + 3, sr));
+    }
+
+    #[test]
+    fn a_file_with_wild_ticks_is_indexed_without_overflow() {
+        let json = r#"{"tempos":[{"tick":0,"bpm":120.0},{"tick":-9223372036854775808,"bpm":100.0},{"tick":9223372036854775807,"bpm":90.0}],"meters":[{"tick":0,"numerator":4,"denominator":4}]}"#;
+        let mut m: TempoMap = serde_json::from_str(json).unwrap();
+        m.sanitize();
+        assert_eq!(m.tempos().first().map(|e| e.tick), Some(0));
+        assert_eq!(m.elapsed.len(), m.tempos().len());
+    }
+
+    #[test]
+    fn conversions_against_a_large_tempo_map_stay_fast() {
+        // 200k tempo changes, then 200k conversions each way: quadratic if every conversion walks
+        // the earlier segments, well under a second when it binary-searches them.
+        let sr = SampleRate::HZ_48000;
+        let n = 200_000i64;
+        let tempos = (0..n).map(|i| TempoEvent { tick: i * 10, bpm: 60.0 + (i % 7) as f64 }).collect();
+        let mut m = TempoMap::from_parts(tempos, vec![MeterEvent { tick: 0, numerator: 4, denominator: 4 }]);
+        m.sanitize();
+        let start = std::time::Instant::now();
+        let mut sum = 0i64;
+        for i in 0..n {
+            let s = m.tick_to_samples(i * 10 + 5, sr);
+            sum = sum.wrapping_add(s).wrapping_add(m.samples_to_ticks(s, sr));
+        }
+        assert!(sum != 0);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "{:?}", start.elapsed());
     }
 }

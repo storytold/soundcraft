@@ -178,6 +178,13 @@ pub struct Bounce {
     enc: Option<soundcraft_audio_io::FileEncoder<Out>>,
 }
 
+/// The Broadcast Wave stamp of timeline position `at`: the session's timecode start plus `at`, in
+/// samples since midnight (`bext` TimeReference; 0 before midnight).
+fn time_stamp(s: &Session, at: Samples) -> soundcraft_audio_io::BwfInfo {
+    let time_reference = u64::try_from(s.timecode_start.saturating_add(at)).unwrap_or(0);
+    soundcraft_audio_io::BwfInfo { time_reference, ..Default::default() }
+}
+
 /// A finished bounce: the size of its file and its levels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounced {
@@ -208,6 +215,9 @@ impl Bounce {
         let part = path.with_file_name(format!("{name}.part"));
         crate::file_access::check_write(path).map_err(EngineError::Io)?;
         crate::file_access::check_write(&part).map_err(EngineError::Io)?;
+        // A WAV bounce says where it starts on the session's timecode, as other DAWs' bounces do,
+        // so post and broadcast tools can place it (only WAV has a `bext` chunk to say it in).
+        let opts = &EncodeOptions { bwf: opts.bwf.clone().or_else(|| Some(time_stamp(&s, r.start))), ..opts.clone() };
         let enc = (|| -> std::result::Result<_, soundcraft_audio_io::AudioError> {
             let enc = soundcraft_audio_io::FileEncoder::new(Out::create(&part)?, opts, channels, s.sample_rate.hz(), Some(fmt.channel_mask()))?;
             enc.check_room(u64::try_from(r.len()).unwrap_or(0))?;
@@ -733,6 +743,12 @@ fn read_bundle(bytes: &[u8], limits: BundleLimits) -> Result<(String, std::colle
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(zerr)?;
     if z.len() > limits.entries {
         return Err(EngineError::Io("bundle: too many files".into()));
+    }
+    // Entries are stored, so the files we keep can only outgrow the bundle when several entries
+    // point at the same bytes: a small bundle naming one payload thousands of times would be
+    // copied out once per name.
+    if z.has_overlapping_files().map_err(zerr)? {
+        return Err(EngineError::Io("bundle: files share data".into()));
     }
     let (mut text, mut files, mut total) = (None, std::collections::HashMap::new(), 0u64);
     for i in 0..z.len() {

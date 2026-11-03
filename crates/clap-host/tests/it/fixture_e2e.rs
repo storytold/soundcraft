@@ -131,6 +131,19 @@ fn layouts_beyond_the_host_limits_are_rejected_not_truncated() {
 }
 
 #[test]
+fn offline_renders_set_the_render_mode() {
+    fixture_dir();
+    for (offline, want) in [(false, 1.0), (true, 2.0)] {
+        let mut p = soundcraft_clap_host::create("clap:org.soundcraft.test.wide16").unwrap();
+        p.set_offline(offline);
+        p.prepare(44_100.0, 64, 2);
+        let mut io = vec![vec![0.5f32; 64]; 2];
+        p.process(&mut io, 64);
+        assert!(io.iter().flatten().all(|&x| x == want), "offline {offline}: {:?}", &io[0][..4]);
+    }
+}
+
+#[test]
 fn many_instances_create_and_drop_cleanly() {
     fixture_dir();
     for _ in 0..50 {
