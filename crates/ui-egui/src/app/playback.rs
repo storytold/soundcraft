@@ -155,15 +155,18 @@ impl SoundApp {
     /// autosave folder. Returns the takes it records.
     fn arm_recorder(&mut self) -> Result<Vec<soundcraft_engine::io::Take>, String> {
         let name = soundcraft_engine::io::sanitize_name(&self.engine.session().name);
-        let unsaved_dir = self.autosave_dir.as_ref().map_or_else(std::env::temp_dir, |d| d.join(name));
+        // Without a settings folder the takes go under the temporary folder, in a folder of this
+        // process's own rather than beside every other account's files.
+        let unsaved_dir =
+            self.autosave_dir.as_ref().map_or_else(|| std::env::temp_dir().join(format!("SoundCraft-{}", std::process::id())), |d| d.join(name));
         let Some(r) = &mut self.recorder else { return Err("no audio input device".into()) };
         let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels);
         if plan.is_empty() {
             return Err("no audio track is record-enabled".into());
         }
-        // The takes are unsaved work: the folder they go into under the autosave root is
-        // owner-only, like the autosaves, before the recorder makes anything in it.
-        if self.engine.path.is_none() && self.autosave_dir.is_some() {
+        // The takes are unsaved work: the folder they go into is owner-only, like the
+        // autosaves, before the recorder makes anything in it.
+        if self.engine.path.is_none() {
             for dir in plan.iter().filter_map(|(_, _, path)| path.parent()) {
                 soundcraft_engine::autosave::create_folder(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
             }
