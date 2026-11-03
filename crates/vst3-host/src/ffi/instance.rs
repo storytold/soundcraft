@@ -75,6 +75,8 @@ pub(crate) struct Instance {
     pub(super) active: bool,
     pub(super) processing: bool,
     pub(super) max_frames: usize,
+    /// `kRealtime` or `kOffline`, for `setupProcessing` and every `process` call.
+    pub(super) process_mode: i32,
     pub(super) in_params: ComWrapper<ParamChanges>,
     pub(super) out_params: ComWrapper<ParamChanges>,
     pub(super) in_events: ComWrapper<EventList>,
@@ -251,6 +253,12 @@ impl Instance {
         self.active
     }
 
+    /// Offline (`kOffline`: no realtime pressure, e.g. a bounce) or realtime processing, from the
+    /// next [`Instance::configure`] on.
+    pub fn set_offline(&mut self, offline: bool) {
+        self.process_mode = if offline { sv::ProcessModes_::kOffline } else { sv::ProcessModes_::kRealtime } as i32;
+    }
+
     fn bus_count(&self, media: sv::MediaTypes, dir: sv::BusDirections) -> i32 {
         // SAFETY: valid component.
         unsafe { self.component.getBusCount(media as sv::MediaType, dir as sv::BusDirection) }.max(0)
@@ -359,12 +367,8 @@ impl Instance {
             return Err(Vst3Error::Process("plugin cannot process 32-bit float".into()));
         }
         let max = i32::try_from(max_frames).unwrap_or(i32::MAX);
-        let mut setup = sv::ProcessSetup {
-            processMode: sv::ProcessModes_::kRealtime as i32,
-            symbolicSampleSize: sample32,
-            maxSamplesPerBlock: max,
-            sampleRate: sample_rate,
-        };
+        let mut setup =
+            sv::ProcessSetup { processMode: self.process_mode, symbolicSampleSize: sample32, maxSamplesPerBlock: max, sampleRate: sample_rate };
         // SAFETY: valid processor, inactive; `setup` is a valid struct for the call.
         if !ok(unsafe { p.setupProcessing(&mut setup) }) {
             return Err(Vst3Error::Process("setupProcessing failed".into()));
@@ -450,7 +454,7 @@ impl Instance {
             None => self.context.projectTimeSamples = project_time,
         }
         let mut data = sv::ProcessData {
-            processMode: sv::ProcessModes_::kRealtime as i32,
+            processMode: self.process_mode,
             symbolicSampleSize: sv::SymbolicSampleSizes_::kSample32 as i32,
             numSamples: i32::try_from(frames).unwrap_or(0),
             numInputs: i32::try_from(inputs.bufs.len()).unwrap_or(0),

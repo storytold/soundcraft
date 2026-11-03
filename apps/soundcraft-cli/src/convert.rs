@@ -15,6 +15,7 @@ pub(crate) fn convert(args: &ConvertArgs, out: &mut dyn Write) -> Result<(), Cli
     let bytes = std::fs::read(input).map_err(|source| CliError::File { path: input.clone(), source })?;
     let ext = input.extension().and_then(std::ffi::OsStr::to_str);
     let (info, mut buf) = soundcraft_audio_io::decode(&bytes, ext).map_err(|source| CliError::Audio { path: input.clone(), source })?;
+    let source_rate = buf.sample_rate;
     if let Some(rate) = rate {
         buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, rate);
         buf.sample_rate = rate;
@@ -30,11 +31,26 @@ pub(crate) fn convert(args: &ConvertArgs, out: &mut dyn Write) -> Result<(), Cli
     let Some(format) = soundcraft_audio_io::FileFormat::from_write_extension(&out_ext) else {
         return Err(ConvertError::OutputFormat { output: output.clone(), ext: out_ext }.into());
     };
-    let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither, bwf: None };
+    // A BWF source keeps its `bext` (written for WAV output only). The time reference counts
+    // samples, so it moves to the output rate.
+    let bwf = info.bwf.map(|mut b| {
+        b.time_reference = at_rate(b.time_reference, source_rate, buf.sample_rate);
+        b
+    });
+    let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither, bwf };
     let bytes = soundcraft_audio_io::encode(&buf, &opts).map_err(|source| CliError::Audio { path: output.clone(), source })?;
     write_replacing(&args.write_path(), &bytes).map_err(|source| CliError::File { path: output.clone(), source })?;
     outln!(out, "wrote {} ({} ch, {} Hz, {:.2} s)", output.display(), buf.num_channels(), buf.sample_rate, buf.duration_secs());
     Ok(())
+}
+
+/// The sample position `pos` at `from` Hz as the nearest sample at `to` Hz.
+fn at_rate(pos: u64, from: u32, to: u32) -> u64 {
+    if from == 0 || from == to {
+        return pos;
+    }
+    let scaled = (u128::from(pos) * u128::from(to) + u128::from(from) / 2) / u128::from(from);
+    u64::try_from(scaled).unwrap_or(u64::MAX)
 }
 
 /// Writes `bytes` to a new file next to `target`, flushes it and renames it over `target`, so `target`
