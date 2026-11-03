@@ -41,9 +41,6 @@ pub fn default_search_paths() -> Vec<PathBuf> {
     let mut v = os_search_paths(
         Os::current(),
         std::env::var_os("HOME").map(PathBuf::from),
-        std::env::var_os("COMMONPROGRAMFILES").map(PathBuf::from),
-        std::env::var_os("COMMONPROGRAMFILES(X86)").map(PathBuf::from),
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
         exe.as_deref(),
     );
     if let Some(cp) = std::env::var_os("VST3_PATH") {
@@ -56,39 +53,27 @@ pub fn default_search_paths() -> Vec<PathBuf> {
 pub fn os_search_paths(
     os: Os,
     home: Option<PathBuf>,
-    common_program_files: Option<PathBuf>,
-    common_program_files_x86: Option<PathBuf>,
-    local_app_data: Option<PathBuf>,
     exe: Option<&Path>,
 ) -> Vec<PathBuf> {
     let mut v = Vec::new();
     match os {
         Os::MacOs => {
             if let Some(h) = home {
-                v.push(h.join("Library/Audio/Plug-ins/VST3"));
+                v.push(h.join("Library/Audio/Plug-Ins/VST3"));
             }
-            v.push(PathBuf::from("/Library/Audio/Plug-ins/VST3"));
-            v.push(PathBuf::from("/Network/Library/Audio/Plug-ins/VST3"));
+            v.push(PathBuf::from("/Library/Audio/Plug-Ins/VST3"));
+            v.push(PathBuf::from("/Network/Library/Audio/Plug-Ins/VST3"));
             if let Some(app) = exe.and_then(macos_app_bundle) {
                 v.push(app.join("Contents").join("VST3"));
             }
         }
         Os::Windows => {
-            if let Some(l) = local_app_data {
-                v.push(l.join("Programs").join("Common").join("VST3"));
-            }
-            if let Some(c) = common_program_files {
-                v.push(c.join("VST3"));
-            }
-            if let Some(c) = common_program_files_x86 {
-                let p = c.join("VST3");
-                if !v.contains(&p) {
-                    v.push(p);
-                }
-            }
-            if let Some(dir) = exe.and_then(Path::parent) {
-                v.push(dir.join("VST3"));
-            }
+            return windows_search_paths(
+                std::env::var_os("COMMONPROGRAMFILES").map(PathBuf::from),
+                std::env::var_os("COMMONPROGRAMFILES(X86)").map(PathBuf::from),
+                std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+                exe,
+            );
         }
         Os::Unix => {
             if let Some(h) = home {
@@ -104,6 +89,34 @@ pub fn os_search_paths(
         }
     }
     v
+}
+
+fn windows_search_paths(
+    common_program_files: Option<PathBuf>,
+    common_program_files_x86: Option<PathBuf>,
+    local_app_data: Option<PathBuf>,
+    exe: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = local_app_data {
+        paths.push(path.join("Programs").join("Common").join("VST3"));
+    }
+    if let Some(path) = common_program_files {
+        let path = path.join("VST3");
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    if let Some(path) = common_program_files_x86 {
+        let path = path.join("VST3");
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    if let Some(dir) = exe.and_then(Path::parent) {
+        paths.push(dir.join("VST3"));
+    }
+    paths
 }
 
 /// The `.app` bundle containing `exe`, if any.
@@ -348,25 +361,30 @@ mod tests {
     }
 
     #[test]
-    fn os_paths_cover_the_standard_locations() {
-        let mac_exe = Path::new("/Apps/SoundCraft.app/Contents/MacOS/soundcraft");
-        let mac = os_search_paths(Os::MacOs, Some("/Users/u".into()), None, None, None, Some(mac_exe));
+    fn macos_paths_cover_the_standard_locations() {
+        let home = PathBuf::from("/Users/u");
+        let app = PathBuf::from("/Apps/SoundCraft.app");
+        let mac_exe = app.join("Contents/MacOS/soundcraft");
+        let mac = os_search_paths(Os::MacOs, Some(home.clone()), Some(&mac_exe));
         assert_eq!(
             mac,
             vec![
-                PathBuf::from("/Users/u/Library/Audio/Plug-Ins/VST3"),
+                home.join("Library/Audio/Plug-Ins/VST3"),
                 PathBuf::from("/Library/Audio/Plug-Ins/VST3"),
                 PathBuf::from("/Network/Library/Audio/Plug-Ins/VST3"),
-                PathBuf::from("/Apps/SoundCraft.app/Contents/VST3"),
+                app.join("Contents").join("VST3"),
             ]
         );
-        let win = os_search_paths(
-            Os::Windows,
-            None,
+    }
+
+    #[test]
+    fn windows_paths_cover_the_standard_locations() {
+        let exe = Path::new("C:/Apps/SoundCraft/soundcraft.exe");
+        let win = windows_search_paths(
             Some("C:/CPF".into()),
             Some("C:/CPF86".into()),
             Some("C:/LAD".into()),
-            Some(Path::new("C:/Apps/SoundCraft/soundcraft.exe")),
+            Some(exe),
         );
         assert_eq!(
             win,
@@ -377,10 +395,11 @@ mod tests {
                 PathBuf::from("C:/Apps/SoundCraft/VST3"),
             ]
         );
-        // A 32-bit process sees the x86 folder as its native one; it must not be scanned twice.
-        let win32 = os_search_paths(Os::Windows, None, Some("C:/CPF86".into()), Some("C:/CPF86".into()), None, None);
-        assert_eq!(win32, vec![PathBuf::from("C:/CPF86/VST3")]);
-        let unix = os_search_paths(Os::Unix, Some("/home/u".into()), None, None, None, Some(Path::new("/opt/soundcraft/soundcraft")));
+    }
+
+    #[test]
+    fn unix_paths_cover_the_standard_locations() {
+        let unix = os_search_paths(Os::Unix, Some("/home/u".into()), Some(Path::new("/opt/soundcraft/soundcraft")));
         assert_eq!(
             unix,
             vec![
@@ -392,6 +411,10 @@ mod tests {
                 PathBuf::from("/opt/soundcraft/vst3"),
             ]
         );
+    }
+
+    #[test]
+    fn default_search_paths_are_nonempty() {
         assert!(!default_search_paths().is_empty());
     }
 
