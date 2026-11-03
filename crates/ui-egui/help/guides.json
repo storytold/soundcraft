@@ -179,7 +179,7 @@
         ["Shift+= / Shift+-", "Make the Grid value one step larger or smaller."],
         ["Alt+Shift+= / Alt+Shift+-", "Make the Nudge value one step larger or smaller."],
         ["Tab", "Move the insertion point to the next clip edge. Add Shift to extend the selection."],
-        ["Alt+Tab", "Move to the previous clip edge (on Windows and Linux, Ctrl+Tab, since the desktop uses Alt+Tab)."],
+        ["Alt+Tab | Ctrl+Tab", "Move the insertion point to the previous clip edge. Add Shift to extend the selection."],
         ["Ctrl+Up / Ctrl+Down", "Make the selected tracks taller or shorter."],
         ["Ctrl+Shift+Up / Ctrl+Shift+Down", "Turn the selected clips' gain up or down a step."]
       ],
@@ -192,7 +192,7 @@
       "summary": "Single-key editing: with Commands Focus on, letter keys run edit commands in the Edit window.",
       "steps": [
         "Turn Commands Focus on or off with the a-z button at the right of the Edit window toolbar. It is lit while it's on.",
-        "The single keys work only in the Edit window, and not while you're typing in a text box. A key pressed together with {keys:Cmd}, Ctrl or Alt keeps its usual meaning."
+        "The single keys work only in the Edit window, and not while you're typing in a text box. A key pressed together with {keys:Cmd} or any other modifier keeps its usual meaning."
       ],
       "keys": [
         ["A", "Trim the clip's start to the insertion point."],

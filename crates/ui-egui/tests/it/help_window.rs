@@ -264,6 +264,15 @@ fn help_opens_below_the_menu_bar_and_escape_over_it_closes_it() {
     let esc = |pressed| Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
     app_frame(&ctx, &mut app, vec![esc(true), esc(false)]);
     assert!(app.ui.show_help);
+    // Escape while typing in the search box only leaves the box.
+    app.ui.help.tab = Tab::Search;
+    app.ui.help.focus_search = true;
+    app_frame(&ctx, &mut app, vec![Event::PointerMoved(rect.center())]);
+    app_frame(&ctx, &mut app, vec![Event::Text("solo".into())]);
+    assert_eq!(app.ui.help.query, "solo", "the search box should have the keyboard");
+    app_frame(&ctx, &mut app, vec![esc(true), esc(false)]);
+    app_frame(&ctx, &mut app, vec![]);
+    assert!(app.ui.show_help, "Escape in the search box closed help");
     // Over help it closes it.
     app_frame(&ctx, &mut app, vec![Event::PointerMoved(rect.center())]);
     app_frame(&ctx, &mut app, vec![esc(true), esc(false)]);
