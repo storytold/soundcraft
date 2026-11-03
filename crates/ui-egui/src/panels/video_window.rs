@@ -115,6 +115,10 @@ fn first_movie_aspect(s: &soundcraft_model::Session) -> Option<f32> {
     s.videos.first().map(|v| v.aspect() as f32)
 }
 
+/// Most thumbnails one clip draws in the Video Universe strip: 8 pt each, so more than the
+/// widest strip holds.
+const MAX_UNIVERSE_THUMBS: usize = 1 << 12;
+
 fn universe(app: &mut SoundApp, ctx: &egui::Context) {
     app.video.poll(ctx);
     let s = app.engine.session_arc();
@@ -145,8 +149,13 @@ fn universe(app: &mut SoundApp, ctx: &egui::Context) {
             }
             let tw = (cr.height() * v.aspect() as f32).max(8.0);
             let hpx = ((cr.height() * ppp / 16.0).ceil() * 16.0).clamp(16.0, 256.0) as u32;
-            let mut x = cr.min.x;
-            while x < cr.max.x {
+            // Only the thumbnails inside the strip, counted rather than stepped: a clip starting
+            // far left of it has an edge so large that adding a thumbnail's width wouldn't move it.
+            let shown = cr.intersect(r);
+            let first = ((shown.min.x - cr.min.x) / tw).floor().max(0.0);
+            let count = ((shown.max.x - cr.min.x) / tw - first).ceil().max(0.0) as usize;
+            for i in 0..count.min(MAX_UNIVERSE_THUMBS) {
+                let x = cr.min.x + (first + i as f32) * tw;
                 let secs = movie_secs(&s, c.start, offset, strip_position(x, r.min.x, r.width(), end, c.start)).max(0.0);
                 if let Some(tex) = app.video.thumb(ctx, key, &v.path, secs, hpx) {
                     let tr = Rect::from_min_size(pos2(x, cr.min.y), vec2(tw, cr.height()));
@@ -154,7 +163,6 @@ fn universe(app: &mut SoundApp, ctx: &egui::Context) {
                     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2((vis.width() / tw).clamp(0.0, 1.0), 1.0));
                     painter.image(tex.id(), vis, uv, Color32::WHITE);
                 }
-                x += tw;
             }
         }
         // The Edit window's visible range and the playhead.

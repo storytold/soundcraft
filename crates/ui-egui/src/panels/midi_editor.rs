@@ -265,18 +265,33 @@ fn draw_roll_background(painter: &egui::Painter, g: &Roll<'_>) {
         }
     }
     // Grid.
+    let step = grid_stride(grid_ticks, px_per_tick);
     let mut tick = 0;
     while tick <= len_ticks {
         let bar = tick % (TICKS_PER_QUARTER * 4) == 0;
         let x = g.x_of(tick);
-        if grid_ticks as f32 * px_per_tick > 4.0 || bar {
-            painter.line_segment(
-                [pos2(x, roll.min.y), pos2(x, roll.max.y)],
-                Stroke::new(1.0, if bar { Color32::from_rgb(80, 80, 86) } else { Color32::from_rgb(50, 50, 54) }),
-            );
-        }
-        tick += grid_ticks;
+        painter.line_segment(
+            [pos2(x, roll.min.y), pos2(x, roll.max.y)],
+            Stroke::new(1.0, if bar { Color32::from_rgb(80, 80, 86) } else { Color32::from_rgb(50, 50, 54) }),
+        );
+        tick = tick.saturating_add(step);
     }
+}
+
+/// Closest lines the grid draws, in points.
+const MIN_GRID_PX: f32 = 4.0;
+
+/// Ticks between grid lines: the grid when its lines are more than [`MIN_GRID_PX`] apart, else
+/// bars, else as many bars as keep that spacing. The lines drawn are then bounded by the roll's
+/// width, however long the clip, instead of by its length.
+fn grid_stride(grid_ticks: i64, px_per_tick: f32) -> i64 {
+    let bar_ticks = TICKS_PER_QUARTER * 4;
+    if grid_ticks as f32 * px_per_tick > MIN_GRID_PX {
+        return grid_ticks.max(1);
+    }
+    // `as` saturates a huge or NaN quotient; a zero `px_per_tick` gives one bar.
+    let bars = (MIN_GRID_PX / (bar_ticks as f32 * px_per_tick)).ceil().max(1.0) as i64;
+    bar_ticks.saturating_mul(bars)
 }
 
 /// The notes, with a drag in progress applied.
@@ -477,6 +492,19 @@ fn velocity_lane(app: &mut SoundApp, ui: &mut Ui, g: &Roll<'_>, cid: ClipId, bas
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_lines_are_bounded_by_the_roll_width_not_the_clip_length() {
+        let sixteenth = TICKS_PER_QUARTER / 4;
+        // A 1000 pt roll showing a 4-bar clip: every sixteenth is 16 pt apart and drawn.
+        assert_eq!(grid_stride(sixteenth, 1000.0 / (16.0 * TICKS_PER_QUARTER as f32)), sixteenth);
+        // The same roll over a clip a billion ticks long: at most a line every 4 pt.
+        let (len, px_per_tick) = (1_000_000_000i64, 1000.0 / 1_000_000_000.0f32);
+        let step = grid_stride(sixteenth, px_per_tick);
+        assert_eq!(step % (TICKS_PER_QUARTER * 4), 0, "lines fall on bars");
+        assert!((len / step) <= 251, "{} lines", len / step);
+        assert!(grid_stride(0, 0.0) >= TICKS_PER_QUARTER * 4, "a zero grid or width still advances");
+    }
 
     #[test]
     fn switching_clip_drops_selection_and_gestures() {
