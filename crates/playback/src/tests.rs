@@ -716,11 +716,13 @@ fn only_input_monitored_tracks_are_heard_and_metered_after_playback_stops() {
     ring.push(&[0.5; 4096]);
     st.fill(&mut out, 2);
     assert!(out.iter().all(|x| x.abs() < 1e-6), "armed alone: the input is not heard (#42)");
+    assert!(shared.meters.lock().unwrap().tracks.get(&t).is_none_or(|m| m.peak[0] < 1e-6), "nor metered");
     let mut s = (*st.session).clone();
     s.track_mut(t).unwrap().mixer.input_monitor = true;
     tx.send(Cmd::Session(Arc::new(s), Vec::new())).unwrap();
-    ring.push(&[0.5; 4096]);
+    ring.push(&[0.1; 4096]);
     st.fill(&mut out, 2);
-    assert!(out.iter().any(|x| x.abs() > 0.1), "input-monitored: the input is heard");
-    assert!(shared.meters.lock().unwrap().tracks.get(&t).is_some_and(|m| m.peak[0] > 0.1), "and metered");
+    assert!(out.iter().any(|x| x.abs() > 0.05), "input-monitored: the input is heard");
+    assert!(out.iter().all(|x| x.abs() < 0.2), "fresh input only: the unmonitored 0.5 was dropped, not queued");
+    assert!(shared.meters.lock().unwrap().tracks.get(&t).is_some_and(|m| m.peak[0] > 0.05), "and metered");
 }

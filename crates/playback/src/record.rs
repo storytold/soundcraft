@@ -653,6 +653,15 @@ impl InputRing {
         }
     }
 
+    /// Drop everything buffered, so monitoring that starts later begins with fresh input instead
+    /// of up to half a second of stale frames. Skipped if the input callback holds the lock.
+    pub fn clear(&self) {
+        if let Ok(mut s) = self.state.try_lock() {
+            s.data.clear();
+            s.phase = 0.0;
+        }
+    }
+
     /// Fill `out` (planar, at `session_rate`) with up to `frames` frames, converting from the
     /// input rate. Missing frames are silence.
     pub fn pop_into(&self, out: &mut [Vec<f32>], frames: usize, session_rate: u32) {

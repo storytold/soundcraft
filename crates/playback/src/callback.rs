@@ -278,6 +278,10 @@ impl AudioState {
         let channels = channels.max(1);
         let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor);
         if !self.playing && !monitoring {
+            // Nothing reads the monitor input now; keep it from piling up into latency.
+            if let Some(ring) = &self.input {
+                ring.clear();
+            }
             out.iter_mut().for_each(|x| *x = 0.0);
             self.unsent.silence();
             self.forget_meters();

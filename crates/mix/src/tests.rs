@@ -976,11 +976,11 @@ fn record_arm_alone_does_not_monitor_input() {
     eng.monitor_only = true;
     eng.render(&s, 0, 512, &mut out);
     assert!(out[0][100].abs() < 1e-6, "stopped, armed: {}", out[0][100]);
-    // Recording and armed: the input is not heard.
+    // Recording and armed: the clips play as on any track, and the input is not heard.
     eng.monitor_only = false;
     eng.recording = true;
     eng.render(&s, 0, 512, &mut out);
-    assert!((out[0][100] - 0.25 * std::f32::consts::FRAC_1_SQRT_2).abs() > 1e-3, "recording, armed: {}", out[0][100]);
+    assert!((out[0][100] - clip).abs() < 1e-3, "recording, armed: {}", out[0][100]);
     // Playing back after the take, still armed and unmuted: the clips play.
     eng.recording = false;
     eng.render(&s, 512, 512, &mut out);
