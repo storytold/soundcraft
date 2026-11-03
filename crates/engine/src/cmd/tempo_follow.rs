@@ -75,6 +75,7 @@ fn overlapping_pairs(s: &Session) -> HashSet<(ClipId, ClipId)> {
 
 /// Trim a clip that now runs into the next one, unless the two overlapped before the tempo change.
 fn trim_new_overlaps(s: &mut Session, overlapping: &HashSet<(ClipId, ClipId)>) {
+    let values = &mut s.edit.values;
     for tr in s.tracks.iter_mut().filter(|t| t.ticks_timebase && t.kind.has_playlist()) {
         for pl in &mut tr.playlists {
             pl.sort();
@@ -83,11 +84,23 @@ fn trim_new_overlaps(s: &mut Session, overlapping: &HashSet<(ClipId, ClipId)>) {
                 if a.end() > b.start && b.start > a.start && !a.time_locked && !overlapping.contains(&(a.id, b.id)) {
                     let next_start = b.start;
                     if let Some(a) = pl.clips.get_mut(i) {
+                        let before = a.length;
                         a.trim_end_to(next_start);
+                        trim_warp_source(values, a.id, before - a.length);
                     }
                 }
             }
         }
+    }
+}
+
+/// A trimmed warped clip must not get its cut audio back when it is re-warped from the original:
+/// shorten the stored source span by the trimmed samples, converted through the stored ratio.
+fn trim_warp_source(values: &mut std::collections::BTreeMap<String, f64>, id: ClipId, trimmed: Samples) {
+    let key = |k: &str| format!("elastic.{}.{k}", id.0);
+    let (Some(&len), Some(&ratio)) = (values.get(&key("len")), values.get(&key("ratio"))) else { return };
+    if trimmed > 0 && ratio > 0.0 {
+        values.insert(key("len"), (len - trimmed as f64 / ratio).max(1.0).round());
     }
 }
 
@@ -253,6 +266,21 @@ mod tests {
         e.execute("event.tempo", &json!({"bpm": 5.0})).unwrap();
         let expected = length * 24;
         assert!((span(&e, ids[0]).1 - expected).abs() <= 2, "length {}, expected {expected}", span(&e, ids[0]).1);
+    }
+
+    #[test]
+    fn trimming_a_warped_clip_shortens_its_stored_source_span() {
+        let mut values = std::collections::BTreeMap::new();
+        let id = ClipId(7);
+        values.insert("elastic.7.len".to_string(), 48_000.0);
+        values.insert("elastic.7.ratio".to_string(), 2.0);
+        // 20 000 rendered samples cut from a clip stretched twice: 10 000 source samples go.
+        trim_warp_source(&mut values, id, 20_000);
+        assert_eq!(values["elastic.7.len"], 38_000.0);
+        assert_eq!(values["elastic.7.ratio"], 2.0);
+        // A clip that was never warped has nothing to update.
+        trim_warp_source(&mut values, ClipId(8), 100);
+        assert_eq!(values.len(), 2);
     }
 
     fn span(e: &Engine, id: ClipId) -> (Samples, Samples) {
