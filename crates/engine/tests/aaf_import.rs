@@ -27,9 +27,9 @@ impl Fixture {
         .unwrap();
         std::fs::write(&path, bytes).unwrap();
         let params = json!({"plan":{"schema_version":1,"name":"AAF test","sample_rate":48000,"timecode_start":[3600,1],"frame_rate":{"rate":[25,1],"drop":false},"warnings":["Test warning"],
-            "sources":[{"key":"source","name":"Original source","path":path,"channels":1,"frames":480000,"sample_rate":48000}],
+            "sources":[{"key":"source","name":"Original source","path":std::fs::canonicalize(&path).unwrap(),"channels":1,"frames":480000,"sample_rate":48000}],
             "tracks":[{"name":"DX","channels":1,"clips":[{"name":"Cut","source":"source","start":[1,1],"end":[3,1],"offset":[2,1]}]},
-                      {"name":"Empty","channels":1,"clips":[]}]},"selected":[0],"mapping":"absolute","media":"copy","offset_samples":0});
+                      {"name":"Empty","channels":1,"clips":[]}]},"media_dir":dir,"selected":[0],"mapping":"absolute","media":"copy","offset_samples":0});
         Self { dir, params }
     }
 }
@@ -127,6 +127,37 @@ fn sample_rate_changes_and_confined_media_are_rejected() {
     assert_eq!(e.session().tracks.len(), 1);
 }
 #[test]
+fn import_confines_the_plans_media_to_the_media_folder_again() {
+    // A plan is caller-supplied (MCP, automation): editing its paths must not reach other files.
+    let f = Fixture::new();
+    let mut e = existing();
+    let before = e.session().to_json().unwrap();
+    let elsewhere = f.dir.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::copy(f.dir.join("Source á with spaces.wav"), elsewhere.join("Source á with spaces.wav")).unwrap();
+    let outside = std::fs::canonicalize(elsewhere.join("Source á with spaces.wav")).unwrap();
+    let traversal = elsewhere.join("..").join("elsewhere").join("Source á with spaces.wav");
+    for path in [json!(outside), json!(traversal)] {
+        let mut p = f.params.clone();
+        p["plan"]["sources"][0]["path"] = path.clone();
+        let err = e.execute("file.import_aaf", &p).unwrap_err().to_string();
+        assert!(err.contains("outside the media folder"), "{path}: {err}");
+    }
+    #[cfg(unix)]
+    {
+        let link = f.dir.join("link.wav");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let mut p = f.params.clone();
+        p["plan"]["sources"][0]["path"] = json!(link);
+        assert!(e.execute("file.import_aaf", &p).unwrap_err().to_string().contains("outside the media folder"));
+    }
+    let mut p = f.params.clone();
+    p.as_object_mut().unwrap().remove("media_dir");
+    assert!(e.execute("file.import_aaf", &p).unwrap_err().to_string().contains("media_dir"));
+    assert_eq!(e.session().to_json().unwrap(), before);
+    assert!(e.undo_label().is_none());
+}
+#[test]
 fn playing_import_cannot_bypass_the_transport_guard_with_target_params() {
     let f = Fixture::new();
     let mut e = existing();
@@ -181,7 +212,7 @@ fn rust_reader_turns_an_aaf_file_into_editable_tracks() {
     assert!(plan["sources"][0]["path"].as_str().unwrap().ends_with("Diálogo á #1.wav"));
 
     let mut e = Engine::default();
-    e.execute("file.import_aaf", &json!({"plan": plan, "selected": [0, 1]})).unwrap();
+    e.execute("file.import_aaf", &json!({"plan": plan, "media_dir": f.dir, "selected": [0, 1]})).unwrap();
     let edits: Vec<_> = e.session().tracks.iter().flat_map(|t| t.clips()).map(|c| (c.start, c.length, c.source_offset())).collect();
     assert_eq!(edits, [(48000, 96000, 48000), (192000, 48000, 168000), (0, 240000, 72000)]);
     assert_eq!(e.session().timecode_start, 3600 * 48000);
@@ -202,7 +233,7 @@ fn missing_media_is_reported_and_its_edits_skipped_without_failing_the_import() 
     assert_eq!(plan["tracks"][1]["clips"].as_array().unwrap().len(), 1);
     assert_eq!(plan["sources"].as_array().unwrap().len(), 1);
     let mut e = Engine::default();
-    e.execute("file.import_aaf", &json!({"plan": plan, "selected": [0, 1]})).unwrap();
+    e.execute("file.import_aaf", &json!({"plan": plan, "media_dir": f.dir, "selected": [0, 1]})).unwrap();
     let edits: Vec<_> = e.session().tracks.iter().flat_map(|t| t.clips()).map(|c| (c.start, c.length, c.source_offset())).collect();
     assert_eq!(edits, [(0, 240000, 72000)]);
 

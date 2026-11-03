@@ -32,9 +32,13 @@ pub fn preview(path: &str, media_dir: &str, composition: Option<&str>) -> Result
 }
 
 /// No destination mutation until all options, times and decoded source files have been checked.
+/// Every source must be a file directly inside `media_dir`, the folder given to the analysis.
 pub fn import_into(destination: &Session, params: &Value) -> Result<(Session, Value)> {
     let plan_value = params.get("plan").ok_or_else(|| bad("`plan` from file.preview_aaf is required"))?;
     let mut plan: Plan = serde_json::from_value(plan_value.clone()).map_err(|e| bad(e.to_string()))?;
+    // The plan comes from the caller, so its media is confined again here, not only at analysis.
+    let media_dir = params.get("media_dir").and_then(Value::as_str).ok_or_else(|| bad("`media_dir` used for file.preview_aaf is required"))?;
+    crate::file_access::check_read(media_dir).map_err(EngineError::Io)?;
     let indices = params.get("selected").and_then(Value::as_array).ok_or_else(|| bad("`selected` track indices required"))?;
     let mut selected = HashSet::new();
     for v in indices {
@@ -98,6 +102,7 @@ pub fn import_into(destination: &Session, params: &Value) -> Result<(Session, Va
             .checked_add(src.frames.saturating_mul(u64::from(src.channels)))
             .filter(|n| *n <= 1 << 27)
             .ok_or_else(|| bad("selected media exceeds the decoded import memory limit (512 MiB)"))?;
+        crate::io::check_in_media_dir(Path::new(&src.path), Path::new(media_dir))?;
         let bytes = crate::io::read_interchange_file(Path::new(&src.path), 512 * 1024 * 1024)?;
         let info = soundcraft_audio_io::probe(&bytes, Some("wav")).map_err(|e| bad(e.to_string()))?;
         if (info.sample_rate, info.channels, info.frames) != (src.sample_rate, src.channels, src.frames)

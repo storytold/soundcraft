@@ -145,7 +145,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     if state.pending {
         state.pending = false;
         let indices: Vec<_> = state.selected.iter().enumerate().filter_map(|(i, on)| on.then_some(i)).collect();
-        let params = json!({"plan":state.preview.as_ref().and_then(|v|v.get("plan")),"selected":indices,"media":"copy","mapping":if state.absolute{"absolute"}else{"relative"},"offset_samples":state.offset.parse::<i64>().ok()});
+        let params = json!({"plan":state.preview.as_ref().and_then(|v|v.get("plan")),"media_dir":state.media_dir,"selected":indices,"media":"copy","mapping":if state.absolute{"absolute"}else{"relative"},"offset_samples":state.offset.parse::<i64>().ok()});
         match app.run("file.import_aaf", params) {
             Ok(v) => {
                 state.report = Some(v);
