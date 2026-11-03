@@ -246,6 +246,16 @@ fn hold_clears_when_playhead_returns_or_transport_stops() {
     );
 }
 
+/// Cancel Zoom Toggle with Zoom Toggle already off keeps the scroll position a pending toggle-off restores.
+#[test]
+fn a_cancel_with_zoom_toggle_off_keeps_the_scroll_to_restore() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+    app.edit_layout.zoom_back = Some(120.0);
+    let v = app.run("view.zoom_toggle_cancel", json!({})).unwrap();
+    assert_eq!(v["canceled"], json!(false));
+    assert_eq!(app.edit_layout.zoom_back, Some(120.0));
+}
+
 fn harness(n: usize) -> Harness<'static, SoundApp> {
     let mut engine = soundcraft_engine::Engine::default();
     engine.execute("track.new", &json!({"count": n})).unwrap();
@@ -1760,4 +1770,21 @@ fn an_overlapping_clip_covers_the_pill_of_the_clip_below() {
         shapes[lower + 1..upper].iter().any(|shape| matches!(&shape.shape, Shape::Rect(r) if r.fill != PILL_BG && r.rect.contains_rect(pill))),
         "the top clip's body is painted between the two pills, so it hides the lower pill"
     );
+}
+
+#[test]
+fn alt_click_on_a_marker_deletes_it() {
+    let mut engine = soundcraft_engine::demo::demo_engine();
+    engine.session_mut().edit.rulers = vec!["markers".into()];
+    engine.execute("markers.add", &json!({"at": 48_000, "name": "Alt-delete me"})).unwrap();
+    let mut h = harness_with(engine);
+    let s = h.state().engine.session_arc();
+    let marker = s.markers.iter().find(|m| m.name == "Alt-delete me").unwrap();
+    let at = pos2(x_of(&s, timeline(&h), marker.start), timeline(&h).min.y - 11.5);
+    let before = s.markers.len();
+
+    click_with(&mut h, at, egui::Modifiers::ALT);
+
+    assert_eq!(h.state().engine.session().markers.len(), before - 1);
+    assert!(!h.state().engine.session().markers.iter().any(|m| m.name == "Alt-delete me"));
 }

@@ -25,8 +25,6 @@ const KNOWN_UNREACHED: &[&str] = &[
     "mix.solo_safe",
     "options.post_roll",
     "options.pre_roll",
-    "setup.hardware",        // menu opens the Playback Engine window, which doesn't run it
-    "setup.playback_engine", // same
     "setup.reset_edit_state",
     "track.load_preset",
     "track.pin",
@@ -91,6 +89,13 @@ fn every_command_has_a_ui_path() {
     }
     assert!(unreached.is_empty(), "commands with no menu, shortcut or UI reference: {unreached:?}");
     assert!(stale.is_empty(), "now reachable, remove from KNOWN_UNREACHED: {stale:?}");
+}
+
+#[test]
+fn playback_engine_menu_opens_the_window_instead_of_running_the_command() {
+    let extra = menus::ui_aliases();
+    assert_eq!(catalog::implemented_by("Setup > Playback Engine...", &extra).as_deref(), Some("window.playback_engine"));
+    assert_eq!(catalog::implemented_by("Setup > Hardware...", &extra).as_deref(), Some("window.playback_engine"));
 }
 
 #[test]
