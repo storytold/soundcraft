@@ -6,7 +6,7 @@ use crate::{SoundApp, icons};
 use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
 use soundcraft_engine::edit::{SHUFFLE_LOCK, SNAP_TO_GRID};
-use soundcraft_model::{EditState, EditMode, Tool};
+use soundcraft_model::{EditMode, EditState, Tool};
 use soundcraft_time::{TimeFormat, format_length};
 
 pub const HEIGHT: f32 = 78.0;
