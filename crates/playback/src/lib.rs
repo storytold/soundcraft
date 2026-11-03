@@ -33,7 +33,7 @@ use soundcraft_model::{Session, TrackId};
 use soundcraft_time::{Range, Samples};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
-use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
 
 const BLOCK: usize = 512;
@@ -533,6 +533,22 @@ impl Player {
     }
 }
 
+/// How long a dropped player waits for its stream to hand the audio state back.
+const RETURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Waits up to `timeout` for the audio state a stream hands back and drops it on this thread.
+/// False if it did not come in time (a stream that never had one is disconnected: true).
+fn drop_returned(returned: &Receiver<AudioState>, timeout: std::time::Duration) -> bool {
+    match returned.recv_timeout(timeout) {
+        Ok(state) => {
+            drop(state);
+            true
+        }
+        Err(RecvTimeoutError::Disconnected) => true,
+        Err(RecvTimeoutError::Timeout) => false,
+    }
+}
+
 impl Drop for Player {
     /// The stream's callback owns the audio state, and with it the plugin instances. Close the
     /// editors first, on the thread dropping the player (the UI thread), then stop the stream and
@@ -540,7 +556,14 @@ impl Drop for Player {
     /// earlier (the device went away) has waited here until now, with its editors still usable.
     fn drop(&mut self) {
         self.close_editors();
-        drop(self._stream.take());
+        // Stops the stream: the taken value is a temporary, dropped at the end of the statement.
+        let had_stream = self._stream.take().is_some();
+        // cpal may release the callback a moment after the stream is dropped, on another thread
+        // (CoreAudio's device monitors briefly hold the stream): wait for it, so the receiver is
+        // still here. The wasm player renders on this thread and cannot block.
+        if had_stream && cfg!(not(target_arch = "wasm32")) && !drop_returned(&self.returned, RETURN_TIMEOUT) {
+            log::warn!("audio state not handed back in time; its plugins may be released off the main thread");
+        }
         self.returned.try_iter().for_each(drop);
     }
 }

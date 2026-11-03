@@ -526,7 +526,7 @@ impl PluginEditor for Window {
 }
 
 #[test]
-fn the_audio_state_comes_back_when_the_callback_is_dropped_on_its_thread() {
+fn the_audio_state_comes_back_even_when_the_callback_is_released_late_on_another_thread() {
     // What cpal does with the callback when the stream goes, or (ALSA) when the device does.
     let shared = Arc::new(Shared {
         position: AtomicI64::new(0),
@@ -538,10 +538,15 @@ fn the_audio_state_comes_back_when_the_callback_is_dropped_on_its_thread() {
     let st = AudioState::new(channel().1, shared, session, 48_000.0, channel().0);
     let (back, returned) = channel();
     let callback = ReturnedOnDrop::new(st, back);
-    let audio = std::thread::spawn(move || drop(callback)).thread().id();
-    let st = returned.recv_timeout(std::time::Duration::from_secs(5)).expect("handed back");
-    assert_ne!(audio, std::thread::current().id());
-    drop(st);
+    // Released a moment after the stream is dropped, like CoreAudio's device monitors can.
+    let late = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(callback);
+    });
+    assert!(drop_returned(&returned, std::time::Duration::from_secs(5)), "waited for and dropped here");
+    late.join().unwrap();
+    // Nothing more to wait for once the stream (the only sender) is gone.
+    assert!(drop_returned(&returned, std::time::Duration::from_secs(5)));
 }
 
 /// An open editor that records whether it was closed.
