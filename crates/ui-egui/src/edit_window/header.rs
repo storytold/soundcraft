@@ -115,7 +115,12 @@ fn name_plate(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, select
         track.name.clone()
     };
     let name_color = if selected { t.text_dark } else { t.text.lerp_to_gamma(t.text_dim, 0.4) };
-    ui.painter().with_clip_rect(name_r).text(name_r.center(), Align2::CENTER_CENTER, &shown_name, bold(12.5), name_color);
+    let font = bold(12.5);
+    let galley = ui.painter().layout_no_wrap(shown_name.clone(), font.clone(), name_color);
+    let overflows = galley.size().x > name_r.width() - 3.0;
+    let (text_pos, align) =
+        if overflows { (pos2(name_r.min.x + 1.5, name_r.center().y), Align2::LEFT_CENTER) } else { (name_r.center(), Align2::CENTER_CENTER) };
+    ui.painter().with_clip_rect(name_r).text(text_pos, align, &shown_name, font, name_color);
     let nresp = ui.interact(name_r, ui.scope_id().with(("name", id.0)), Sense::click_and_drag());
     if nresp.double_clicked() {
         app.dialogs.open_rename_track(id, &track.name);
