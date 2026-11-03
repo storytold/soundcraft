@@ -388,15 +388,17 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
         },
     );
     let Some((picked, footer)) = shown else { return };
-    // As in Pro Tools, a new send opens its Send window, so its fader is on screen right away.
-    let created = |app: &mut SoundApp, sent: bool| {
-        if sent && !has_send {
+    // As in Pro Tools, a new send opens its Send window (moving it from any other send), so its
+    // fader is on screen right away. A send that only changes destination leaves the window alone.
+    let show_new_send = |app: &mut SoundApp| {
+        if !has_send {
             app.ui.send_window = Some((id, slot));
         }
     };
-    if let Some(bus) = picked {
-        let sent = app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": bus})).is_ok();
-        created(app, sent);
+    if let Some(bus) = picked
+        && app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": bus})).is_ok()
+    {
+        show_new_send(app);
     }
     match footer {
         Some(SendFooter::NewBus) => {
@@ -406,9 +408,10 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
             {
                 n += 1;
             }
-            if app.run("mix.new_bus", json!({"name": format!("Bus {n}")})).is_ok() {
-                let sent = app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": format!("Bus {n}")})).is_ok();
-                created(app, sent);
+            if app.run("mix.new_bus", json!({"name": format!("Bus {n}")})).is_ok()
+                && app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": format!("Bus {n}")})).is_ok()
+            {
+                show_new_send(app);
             }
         }
         Some(SendFooter::RemoveSend) => {
@@ -473,13 +476,14 @@ mod tests {
         assert!((footer(&h).top() - full.top()).abs() < 1.0, "cleared, the footer is back under the full list: {:?} vs {full:?}", footer(&h));
     }
 
-    /// A send slot drawn in a test harness, for the track named "Kick", with an "Aux" bus to pick.
-    fn kick_send_harness(send_first: bool) -> (Harness<'static, (SoundApp, TrackId)>, TrackId) {
+    /// Kick's send A slot in a test harness, with buses "Aux" and "Other"; with `existing_send`, the
+    /// slot already sends to "Other".
+    fn kick_send_harness(existing_send: bool) -> (Harness<'static, (SoundApp, TrackId)>, TrackId) {
         let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
         app.run("mix.new_bus", json!({"name": "Aux"})).unwrap();
         app.run("mix.new_bus", json!({"name": "Other"})).unwrap();
         let kick = app.engine.session().track_by_name("Kick").unwrap().id;
-        if send_first {
+        if existing_send {
             app.run("mix.send", json!({"track": kick.0, "slot": 0, "bus": "Other"})).unwrap();
         }
         let mut ready = false;
