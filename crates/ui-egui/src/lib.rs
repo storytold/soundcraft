@@ -21,6 +21,7 @@ pub mod dialogs;
 pub mod docking;
 pub mod edit_window;
 pub mod fonts;
+pub mod help;
 pub mod icons;
 pub mod import;
 pub mod menus;
@@ -129,6 +130,9 @@ pub struct UiState {
     pub show_rtp: bool,
     pub show_score: bool,
     pub show_search: bool,
+    /// Help › SoundCraft Help (Cmd+?) and where it was left.
+    pub show_help: bool,
+    pub help: help::HelpState,
     /// Window › Video, Window › Video Universe, timecode burn-in in the Video window.
     pub show_video: bool,
     pub show_video_universe: bool,
@@ -194,6 +198,8 @@ impl Default for UiState {
             show_rtp: false,
             show_score: false,
             show_search: false,
+            show_help: false,
+            help: help::HelpState::default(),
             show_video: false,
             show_video_universe: false,
             video_burn_in: false,

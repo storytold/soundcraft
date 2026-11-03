@@ -54,6 +54,12 @@ fn search_chord(m: Modifiers, mac: bool) -> bool {
     mac && m.command && m.ctrl
 }
 
+/// Cmd+? opens Help: Cmd (Ctrl off macOS) with `?`, or with Shift and `/`; not with Alt or the Mac
+/// Control key, which belong to other chords.
+fn help_chord(key: Key, m: Modifiers, mac: bool) -> bool {
+    m.command && !m.alt && !(mac && m.ctrl) && (key == Key::Questionmark || m.shift)
+}
+
 /// Dispatch global keyboard shortcuts once no text field or dialog wants input, ignoring non-scripted auto-repeats
 /// while still running a host press alongside a scripted one.
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
@@ -123,6 +129,12 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
         }
         Key::Space if m.command => {
             let _ = app.run("transport.record", json!({}));
+            true
+        }
+        // Cmd+? (Ctrl+Shift+/ off macOS) opens Help. egui may report the key as `?` or as `/`, and
+        // on some keyboards `?` isn't Shift+/ at all, so both spellings count.
+        Key::Questionmark | Key::Slash if help_chord(key, m, mac) => {
+            let _ = app.run("help.open", json!({}));
             true
         }
         Key::S if search_chord(m, mac) => {
