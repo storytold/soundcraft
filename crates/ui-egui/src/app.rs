@@ -114,6 +114,7 @@ impl SoundApp {
             frame_ms: 0.0,
             last_frame: None,
             last_meter_poll: f64::NEG_INFINITY,
+            last_meter_block: f64::NEG_INFINITY,
             video: video_track::VideoPool::default(),
             bounce: None,
             imports: import::Imports::default(),

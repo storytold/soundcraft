@@ -125,6 +125,26 @@ impl SoundApp {
     }
 }
 
+/// How long the meters keep the last reading when no block arrives: well past the longest device
+/// buffer (8192 frames are under 0.2 s at 44.1 kHz), which renders blocks in bursts between polls.
+const METER_STALE: f64 = 0.5;
+
+/// Whether the last meter reading, taken with a new block at `last_block`, is too old to show at
+/// `now` (both `uptime`): the output stopped rendering, so the meters should fall.
+pub(super) fn meters_stale(now: f64, last_block: f64) -> bool {
+    now - last_block > METER_STALE
+}
+
+/// Fold a strip's last reading `m` into its meter (with gain reduction `gr`), or silence once
+/// that reading is `stale` (see [`meters_stale`]).
+pub(super) fn feed_reading(d: &mut MeterDisplay, m: &soundcraft_mix::StripMeter, gr: f32, stale: bool, dt: f32) {
+    if stale {
+        feed_meter(d, [0.0, 0.0], &[], 0.0, dt);
+    } else {
+        feed_meter(d, m.peak, &m.peaks, gr, dt);
+    }
+}
+
 /// Fold one reading into a strip's meter. `peak` is the stereo pair (a mono strip repeats its one
 /// channel), `peaks` every channel of the strip: channels from the third on read from `peaks`.
 pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], peaks: &[f32], gr: f32, dt: f32) {
@@ -153,7 +173,8 @@ pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], peaks: &[f32], gr
 
 #[cfg(test)]
 mod tests {
-    use super::{MeterDisplay, feed_meter};
+    use super::{MeterDisplay, feed_meter, feed_reading, meters_stale};
+    use soundcraft_mix::StripMeter;
 
     #[test]
     fn surround_channels_get_levels_holds_and_clip_like_the_stereo_pair() {
@@ -196,6 +217,27 @@ mod tests {
         let l = d.hold.first().copied().unwrap_or_default();
         assert!(l < 0.5, "the L hold expires while C plays on: {l}");
         assert_eq!(d.hold.get(2).copied(), Some(0.3));
+    }
+
+    #[test]
+    fn meters_fall_once_the_output_stops_rendering_but_ride_out_a_large_buffer() {
+        // The last block read 0.5 on L at t = 0; then the device stops asking for audio while
+        // monitoring keeps the meters live. The UI keeps feeding what it has, 60 times a second.
+        let mut d = MeterDisplay::default();
+        let reading = StripMeter { peak: [0.5, 0.0], peaks: vec![0.5, 0.0], ..StripMeter::default() };
+        let last_block = 0.0;
+        let mut t = 0.0;
+        while t < 3.5 {
+            feed_reading(&mut d, &reading, 0.0, meters_stale(t, last_block), 1.0 / 60.0);
+            t += 1.0 / 60.0;
+            if (t - 0.2f64).abs() < 0.5 / 60.0 {
+                // A gap the longest device buffer can leave: the reading holds.
+                assert_eq!(d.level.first().copied(), Some(0.5));
+            }
+        }
+        let l = d.level.first().copied().unwrap_or_default();
+        assert!(l < 0.1, "L falls once the reading is stale: {l}");
+        assert_eq!(d.hold, d.level, "and its peak hold expires");
     }
 
     #[test]
