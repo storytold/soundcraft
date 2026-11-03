@@ -123,6 +123,22 @@ impl SoundApp {
         self.recorder_failed = false;
         self.player = Some(Player::with_config(self.engine.session_arc(), &self.ui.audio));
     }
+
+    /// Open the enabled MIDI input ports on the player (for live playing), rescanned every few
+    /// seconds so a device plugged in later works; silent or absent output opens none.
+    pub fn service_midi_inputs(&mut self, retry: bool) {
+        const EVERY_S: f64 = 3.0;
+        let Some(p) = self.player.as_ref().filter(|p| !p.silent) else {
+            self.midi_inputs.unroute();
+            self.midi_inputs.close_all();
+            return;
+        };
+        self.midi_inputs.route_to(p);
+        if retry || self.midi_checked.is_none_or(|t| self.uptime - t >= EVERY_S) {
+            self.midi_checked = Some(self.uptime);
+            self.midi_inputs.sync(&self.ui.midi_inputs_disabled, retry);
+        }
+    }
 }
 
 pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32) {

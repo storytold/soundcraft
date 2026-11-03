@@ -25,6 +25,10 @@ pub(crate) fn structure_fingerprint(s: &Session) -> usize {
         sample.hash(&mut h);
         // Which decoded audio it is, so new audio under the same id (another session) re-syncs.
         sample.and_then(|id| s.pool.get(id)).map(|a| Arc::as_ptr(a) as usize).hash(&mut h);
+        // The SoundFont bank: a new file for the same player must resync (and retire the old one).
+        let bank = t.instrument.as_ref().and_then(|x| x.soundfont.as_deref());
+        bank.hash(&mut h);
+        bank.and_then(|p| s.pool.bank(p)).map(|b| Arc::as_ptr(b) as *const () as usize).hash(&mut h);
     }
     for b in &s.busses {
         b.id.hash(&mut h);

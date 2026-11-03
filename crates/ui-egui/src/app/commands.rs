@@ -36,6 +36,24 @@ impl SoundApp {
                 if id == "track.clear_clip_indicators" {
                     self.meters.values_mut().chain([&mut self.main_meter]).for_each(|m| m.clip = false);
                 }
+                if id == "setup.midi_input_devices" {
+                    // Scripted calls change only the session flags; keep the ports the live input
+                    // service opens in step with them, not just the MIDI Input Devices window.
+                    for (key, on) in [("enable", true), ("disable", false)] {
+                        let names = params.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str)).into_iter().flatten();
+                        for name in names {
+                            let name = name.trim();
+                            if name.is_empty() {
+                                continue;
+                            }
+                            self.ui.midi_inputs_disabled.retain(|n| n.as_str() != name);
+                            if !on {
+                                self.ui.midi_inputs_disabled.push(name.to_string());
+                            }
+                        }
+                    }
+                    self.service_midi_inputs(true);
+                }
                 Ok(v)
             }
             Err(e) => {

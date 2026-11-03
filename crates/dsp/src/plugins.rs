@@ -9,6 +9,7 @@ pub mod modulation;
 pub mod pitch;
 pub mod reverb;
 pub mod sampler;
+pub mod soundfont;
 pub mod strip;
 pub mod synth;
 pub mod utility;
@@ -47,6 +48,7 @@ pub(crate) static REGISTRY: &[&PluginInfo] = &[
     &synth::SYNTH_INFO,
     &drums::DRUM_INFO,
     &sampler::SAMPLER_INFO,
+    &soundfont::SOUNDFONT_INFO,
 ];
 
 /// Constructs an (unprepared) plugin by id.
@@ -82,6 +84,7 @@ pub(crate) fn instantiate(id: &str) -> Option<Box<dyn Plugin>> {
         "subtractive_synth" => Box::new(synth::SubtractiveSynth::new()),
         "drum_synth" => Box::new(drums::DrumSynth::new()),
         "sampler" => Box::new(sampler::Sampler::new()),
+        "soundfont" => Box::new(soundfont::SoundFontPlayer::new()),
         _ => return None,
     })
 }

@@ -27,7 +27,20 @@ pub fn specs() -> Vec<CommandSpec> {
             "Marker Target Follows First Selected Track",
             "options.marker_target_follows_first_selected_track"
         ),
-        option!("options.midi_thru", "MIDI Thru", "options.midi_thru"),
+        cmd!(
+            noundo "options.midi_thru",
+            "MIDI Thru",
+            ["Options"],
+            None,
+            "{value?: bool} (toggles when omitted)",
+            always,
+            |e, p| {
+                let s = e.session_mut();
+                let on = p.get("value").and_then(Value::as_bool).unwrap_or(!s.edit.midi_thru());
+                s.edit.set_flag("options.midi_thru_off", !on);
+                Ok(json!({"flag": "options.midi_thru", "value": on}))
+            }
+        ),
         option!("options.auto_spot_clips", "Auto-Spot Clips", "options.auto_spot_clips"),
         option!("options.keyboard_lock", "Edit/Tool Mode Keyboard Lock", "options.edit_tool_mode_keyboard_lock"),
         option!("options.calibration_mode", "Calibration Mode", "options.calibration_mode"),
@@ -583,10 +596,11 @@ mod tests {
     #[test]
     fn option_flags_toggle() {
         let mut e = Engine::default();
-        assert_eq!(e.execute("options.midi_thru", &json!({})).unwrap()["value"], true);
-        assert!(e.session().edit.flag("options.midi_thru"));
-        e.execute("options.midi_thru", &json!({"value": false})).unwrap();
-        assert!(!e.session().edit.flag("options.midi_thru"));
+        assert!(e.session().edit.midi_thru(), "Thru is on in a new session");
+        assert_eq!(e.execute("options.midi_thru", &json!({})).unwrap()["value"], false);
+        assert!(!e.session().edit.midi_thru());
+        e.execute("options.midi_thru", &json!({"value": true})).unwrap();
+        assert!(e.session().edit.midi_thru());
     }
 
     #[test]

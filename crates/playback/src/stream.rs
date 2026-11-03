@@ -1,5 +1,6 @@
 use super::callback::{AudioState, Fault, guarded_block};
-use super::{Arc, AudioConfig, Cmd, Ordering, Plugin, Receiver, Sender, Shared, devices, mark_audio_thread};
+use super::{Arc, AudioConfig, Cmd, Ordering, Receiver, Sender, Shared, devices, mark_audio_thread};
+use soundcraft_mix::Retired;
 
 /// Start a freshly built output stream. `false` when the device refuses to start it, so the caller
 /// treats it like a stream that failed to build and tries the next configuration.
@@ -17,7 +18,7 @@ pub(crate) fn start_stream(stream: &impl cpal::traits::StreamTrait) -> bool {
 pub(crate) struct Opened {
     pub(crate) stream: cpal::Stream,
     pub(crate) tx: Sender<Cmd>,
-    pub(crate) grx: Receiver<Vec<Box<dyn Plugin>>>,
+    pub(crate) grx: Receiver<Retired>,
     pub(crate) fault: Arc<Fault>,
 }
 

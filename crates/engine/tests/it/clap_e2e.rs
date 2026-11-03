@@ -108,7 +108,7 @@ fn clap_state_is_captured_stored_and_restored_before_the_first_block() {
     eng.ensure_synced(e.session());
     let blob = reader.save_state().unwrap();
     e.execute("mix.insert_state", &json!({"track": t.0, "slot": 0, "state": soundcraft_model::b64::encode(&blob)})).unwrap();
-    assert_eq!(eng.take_retired().len(), 0);
+    assert_eq!(eng.take_retired().plugins.len(), 0);
 
     // Offline render (synchronous creation): the state is restored before the first block.
     // With the gain absent from the session's params, the state's 1.5 is what plays.

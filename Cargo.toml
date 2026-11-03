@@ -48,6 +48,8 @@ rustfft = "6"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
 cpal = "0.18"
+# MIDI input devices (WinMM, CoreMIDI, ALSA sequencer).
+midir = "0.11"
 
 # Which file paths stored in a session may be opened.
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c5a1cbfb5f9049f9270955caffb5bee5997aebf7" }

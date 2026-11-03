@@ -57,8 +57,10 @@ use soundcraft_model::{
     AutoParam, BusId, ChannelFormat, Clip, ClipContent, Route, Session, SourceAudio, Speaker, SurroundPan, Track, TrackId, TrackKind,
 };
 use soundcraft_time::{Range, Samples, TICKS_PER_QUARTER};
+use std::any::Any;
 use std::collections::HashMap;
 use std::ops::Bound;
+use std::sync::Arc;
 
 mod automation;
 mod clips;
@@ -74,7 +76,8 @@ mod threads;
 use automation::{GainRamp, pan_at, pan_segment, send_level, transport_at, volume_db_at};
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
 pub use meter::StripMeter;
-use midi::sync_sample;
+pub use midi::{LIVE_MIDI_CAPACITY, midi_thru_track, takes_midi_input};
+use midi::{sync_sample, sync_soundfont};
 pub use offline::{
     MAX_RENDER_SAMPLES, RangeRender, fold_down_stereo, render_bus, render_clips, render_range, render_track_pre_fader, source_channels,
 };
@@ -103,6 +106,20 @@ pub const MAX_CHANNELS: usize = 16;
 /// Number of channels of a session's main mix.
 pub fn main_channels(s: &Session) -> usize {
     s.main_format().channels().clamp(MAIN_CHANNELS, MAX_CHANNELS)
+}
+
+/// Work the realtime engine took out of service for the host to drop on another thread: plugin
+/// instances (closing an editor, freeing a big buffer) and sample banks (hundreds of megabytes).
+#[derive(Default)]
+pub struct Retired {
+    pub plugins: Vec<Box<dyn Plugin>>,
+    pub banks: Vec<Arc<dyn Any + Send + Sync>>,
+}
+
+impl Retired {
+    pub fn is_empty(&self) -> bool {
+        self.plugins.is_empty() && self.banks.is_empty()
+    }
 }
 
 /// Renders sessions. Keep one per playback stream; plugin state persists across blocks.
@@ -135,6 +152,10 @@ pub struct MixEngine {
     aux_latency: usize,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
     pub input: Vec<Vec<f32>>,
+    /// Live MIDI for the next block (MIDI 1.0 channel messages from keyboards and controllers),
+    /// set by the audio host. Played by the instruments of tracks that take MIDI input (see
+    /// [`takes_midi_input`]) whether or not the transport runs; emptied by each render.
+    pub live_midi: Vec<[u8; 3]>,
     /// Transport stopped: only monitored inputs sound (no clips).
     pub monitor_only: bool,
     /// Recording: record-armed tracks hear their input (auto input).
@@ -148,6 +169,8 @@ pub struct MixEngine {
     adopt: HashMap<(TrackId, usize), PreparedInstance>,
     /// Instances `sync` took out of service, for the host to drop (see [`MixEngine::take_retired`]).
     retired: Vec<Box<dyn Plugin>>,
+    /// Sample banks `sync` took out of service: freeing one must not happen on the audio thread.
+    retired_banks: Vec<Arc<dyn Any + Send + Sync>>,
     /// Ownership workspace reused for parallel strip processing.
     work: Vec<(usize, Strip)>,
 }
@@ -173,12 +196,14 @@ impl MixEngine {
             aux_fed: Vec::new(),
             aux_latency: 0,
             input: Vec::new(),
+            live_midi: Vec::with_capacity(LIVE_MIDI_CAPACITY),
             monitor_only: false,
             recording: false,
             metronome: false,
             external: false,
             adopt: HashMap::new(),
             retired: Vec::new(),
+            retired_banks: Vec::new(),
             work: Vec::new(),
         }
     }
@@ -201,28 +226,56 @@ impl MixEngine {
         self.synced = (usize::MAX, usize::MAX, usize::MAX);
     }
 
-    /// Instances taken out of service since the last call (drop them off the audio thread).
+    /// Work taken out of service since the last call (drop it off the audio thread).
     /// Does not allocate.
-    pub fn take_retired(&mut self) -> Vec<Box<dyn Plugin>> {
-        std::mem::take(&mut self.retired)
+    pub fn take_retired(&mut self) -> Retired {
+        Retired { plugins: std::mem::take(&mut self.retired), banks: std::mem::take(&mut self.retired_banks) }
     }
 
     /// Every instance this engine holds (strips, instruments, clip effects excluded) plus the
     /// retired and waiting ones, leaving the engine empty: hand them to another thread to drop
     /// before replacing the engine.
-    pub fn drain_plugins(&mut self) -> Vec<Box<dyn Plugin>> {
-        let mut out = std::mem::take(&mut self.retired);
+    pub fn drain_plugins(&mut self) -> Retired {
+        let mut out = Retired { plugins: std::mem::take(&mut self.retired), banks: std::mem::take(&mut self.retired_banks) };
         for st in self.strips.values_mut() {
-            out.extend(st.plugins.iter_mut().filter_map(Option::take).map(|s| s.plugin));
-            out.extend(st.instrument.take().map(|s| s.plugin));
+            out.plugins.extend(st.plugins.iter_mut().filter_map(Option::take).map(|s| s.plugin));
+            out.plugins.extend(st.instrument.take().map(|s| s.plugin));
+            out.banks.extend(st.bank.take());
         }
-        out.extend(self.adopt.drain().map(|(_, p)| p.plugin));
+        out.plugins.extend(self.adopt.drain().map(|(_, p)| p.plugin));
         self.synced = (usize::MAX, usize::MAX, usize::MAX);
         out
     }
 
     pub fn max_block(&self) -> usize {
         self.max_block
+    }
+
+    /// True while an instrument is holding a note played from live MIDI input, or the live
+    /// sustain pedal is down: the host must keep rendering that track, or a key held down would be
+    /// cut off.
+    pub fn live_held(&self) -> bool {
+        self.strips.values().any(|s| !s.live_held.is_empty() || s.live_sustain)
+    }
+
+    /// How long an instrument's release can ring after the last live note, in samples: how long
+    /// the host should keep rendering a stopped transport for what was just played to finish.
+    pub fn live_tail_samples(&self) -> usize {
+        self.strips.values().filter_map(|s| s.instrument.as_ref()).filter(|i| !i.failed).map(|i| i.plugin.tail_samples()).max().unwrap_or(0)
+    }
+
+    /// Silences everything played from live MIDI input now (a port closed or was disabled before
+    /// its note-offs arrived), without stopping clips or the transport.
+    pub fn panic_live(&mut self) {
+        for strip in self.strips.values_mut() {
+            if let Some(inst) = strip.instrument.as_mut().filter(|i| !i.failed) {
+                inst.plugin.midi(0, [0xB0, 64, 0]);
+                inst.plugin.all_notes_off();
+            }
+            strip.live_held.clear();
+            strip.live_sustain = false;
+        }
+        self.live_midi.clear();
     }
 
     /// Format of the main mix as of the last sync.
@@ -248,6 +301,8 @@ impl MixEngine {
                 i.failed = false;
             }
             s.held.clear();
+            s.live_held.clear();
+            s.live_sustain = false;
             s.chase = true;
             s.align.clear();
             s.align_pre.clear();
@@ -280,6 +335,7 @@ impl MixEngine {
                     cx.retire(p);
                 }
                 cx.retire(st.instrument.take());
+                self.retired_banks.extend(st.bank.take());
             }
         }
         for t in &s.tracks {
@@ -316,8 +372,12 @@ impl MixEngine {
                 cx.retire(old);
                 strip.instrument = want.and_then(|i| cx.make(t.id, INSTRUMENT_SLOT, i, ich));
                 strip.sample = None;
+                if let Some(old) = strip.bank.take() {
+                    self.retired_banks.push(old);
+                }
             }
             sync_sample(strip, want, s);
+            sync_soundfont(strip, want, s, &mut self.retired_banks);
         }
         // Instances nobody claimed (the session changed again before they arrived).
         let leftovers: Vec<(TrackId, usize)> = cx.adopt.keys().copied().collect();
@@ -373,7 +433,8 @@ impl MixEngine {
             }
         }
         let busses = std::mem::take(&mut self.busses);
-        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+        let thru = midi_thru_track(s);
+        let live_in = LiveInput { input: &self.input, midi: &self.live_midi, thru, monitor_only: self.monitor_only, recording: self.recording };
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
                 process_strip(s, t, st, &busses, &live_in, blk);
@@ -393,7 +454,9 @@ impl MixEngine {
 
     /// Silence what a seek leaves ringing, sync to the session and clear the block's accumulators.
     fn begin_block(&mut self, s: &Session, pos: Samples, frames: usize) {
-        if pos != self.last_end {
+        // Stopped, the host renders the same position block after block: that is not a seek, and
+        // must not silence notes being played live (play, stop and locate reset on their own).
+        if pos != self.last_end && !self.monitor_only {
             // Seek: silence held notes and ringing plugins.
             for st in self.strips.values_mut() {
                 if let Some(i) = &mut st.instrument {
@@ -493,7 +556,7 @@ impl MixEngine {
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
-            let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+            let live_in = LiveInput { input: &self.input, midi: &[], thru: None, monitor_only: self.monitor_only, recording: self.recording };
             process_strip(s, t, &mut st, &self.busses, &live_in, blk);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
@@ -573,6 +636,8 @@ impl MixEngine {
             }
         }
         self.main_meter.measure(&self.main, frames, 0.0);
+        // Live MIDI is played once (keeps its capacity: no allocation on the audio thread).
+        self.live_midi.clear();
     }
 
     /// The delay-compensation latency written onto `bus`: the slowest track insert, plus the

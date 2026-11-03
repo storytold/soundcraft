@@ -151,6 +151,7 @@ fn services() -> Services {
             let d = match purpose {
                 "session.open" => d.add_filter("SoundCraft Session", &["scraft"]),
                 "file.import_midi" => d.add_filter("MIDI", &["mid", "midi", "smf"]),
+                "mix.soundfont_load" => d.add_filter("SoundFont", &["sf2", "SF2"]),
                 _ => d.add_filter("Audio", &FileFormat::readable_extensions()),
             };
             d.pick_file()

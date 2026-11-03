@@ -481,7 +481,7 @@ fn instances_arrive_with_the_session_and_leave_through_the_return_channel() {
     // A session without the insert retires the instance to the return channel.
     tx.send(Cmd::Session(Arc::new(soundcraft_model::Session::default()), Vec::new())).unwrap();
     st.fill(&mut out, 2);
-    assert_eq!(grx.try_recv().unwrap().len(), 1);
+    assert_eq!(grx.try_recv().unwrap().plugins.len(), 1);
     // A sample-rate change rebuilds the engine without dropping plugins on this thread.
     tx.send(Cmd::Session(
         Arc::clone(&s),
@@ -493,7 +493,7 @@ fn instances_arrive_with_the_session_and_leave_through_the_return_channel() {
     s44.sample_rate = soundcraft_time::SampleRate::new(44_100).unwrap();
     tx.send(Cmd::Session(Arc::new(s44), Vec::new())).unwrap();
     st.fill(&mut out, 2);
-    assert_eq!(grx.try_recv().unwrap().len(), 1);
+    assert_eq!(grx.try_recv().unwrap().plugins.len(), 1);
 }
 
 #[test]
@@ -717,4 +717,135 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     st.fill(&mut out, 2);
     assert!(out.iter().any(|x| x.abs() > 0.1), "the input is heard");
     assert!(shared.meters.lock().unwrap().tracks.get(&t).is_some_and(|m| m.peak[0] > 0.1), "and metered");
+}
+
+#[test]
+fn live_midi_reaches_the_mix_once_and_a_flood_is_capped() {
+    let s = Arc::new(soundcraft_model::Session::default());
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
+    let sink = MidiSink { player: 1, tx: tx.clone() };
+    assert!(sink.send([0x90, 60, 100]));
+    st.drain();
+    assert_eq!(st.mix.live_midi, vec![[0x90, 60, 100]]);
+    // Stopped with no track taking MIDI input: nothing renders, and nothing piles up.
+    let mut out = vec![0.0f32; 4096];
+    st.fill(&mut out, 2);
+    assert!(st.mix.live_midi.is_empty());
+    // An armed instrument track: stopped, the block renders and plays the message.
+    let mut armed = soundcraft_model::Session::default();
+    let t = armed.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, None);
+    if let Some(tr) = armed.track_mut(t) {
+        tr.mixer.record_arm = true;
+    }
+    tx.send(Cmd::Session(Arc::new(armed), Vec::new())).unwrap();
+    sink.send([0x90, 60, 100]);
+    st.drain();
+    assert_eq!(st.mix.live_midi.len(), 1);
+    let mut out = vec![0.0f32; 4096];
+    st.fill(&mut out, 2);
+    assert!(st.mix.live_midi.is_empty());
+    for _ in 0..soundcraft_mix::LIVE_MIDI_CAPACITY + 50 {
+        sink.send([0xB0, 1, 2]);
+    }
+    st.drain();
+    assert_eq!(st.mix.live_midi.len(), soundcraft_mix::LIVE_MIDI_CAPACITY);
+    drop(st);
+    assert!(!sink.send([0x80, 60, 0]), "a gone player refuses messages");
+}
+
+#[test]
+fn a_key_played_on_the_selected_synth_sounds_while_stopped() {
+    let mut s = soundcraft_model::Session::default();
+    let t = s.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, Some("Keys"));
+    if let Some(tr) = s.track_mut(t) {
+        tr.instrument = Some(soundcraft_model::Insert::new("subtractive_synth"));
+    }
+    s.edit.selected_tracks = vec![t];
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
+    let sink = MidiSink { player: 1, tx };
+    sink.send([0x90, 60, 110]);
+    let mut peak = 0.0f32;
+    for _ in 0..20 {
+        let mut out = vec![0.0f32; 1024];
+        st.fill(&mut out, 2);
+        peak = out.iter().fold(peak, |m, x| m.max(x.abs()));
+    }
+    assert!(peak > 0.01, "the synth stayed silent: {peak}");
+}
+
+#[test]
+fn midi_played_while_recording_is_stamped_with_its_position() {
+    let s = Arc::new(soundcraft_model::Session::default());
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
+    let (mtx, mrx) = sync_channel(16);
+    tx.send(Cmd::MidiRecorder(mtx)).unwrap();
+    tx.send(Cmd::Play { from: 48_000, end: None, looped: None }).unwrap();
+    // Playing but not recording: nothing is kept.
+    tx.send(Cmd::Midi([0x90, 60, 100])).unwrap();
+    let mut out = vec![0.0f32; 512];
+    st.fill(&mut out, 2);
+    assert!(mrx.try_recv().is_err());
+    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Midi([0x80, 60, 0])).unwrap();
+    st.fill(&mut out, 2);
+    let (at, m) = mrx.try_recv().unwrap();
+    assert_eq!(m, [0x80, 60, 0]);
+    // Stamped at the block it was played in, less the device's own buffer (256 frames).
+    assert!((48_000..48_000 + 512).contains(&(at + 256)), "{at}");
+    // Stopping the take sends the end marker the host waits for before placing it.
+    tx.send(Cmd::Recording(false)).unwrap();
+    st.fill(&mut out, 2);
+    assert_eq!(mrx.try_recv().unwrap().1, [0xFF, 0, 0]);
+}
+
+#[test]
+fn stopping_a_take_does_not_record_the_last_notes_twice() {
+    let s = Arc::new(soundcraft_model::Session::default());
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
+    let (mtx, mrx) = sync_channel(16);
+    tx.send(Cmd::MidiRecorder(mtx)).unwrap();
+    tx.send(Cmd::Play { from: 48_000, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 512];
+    st.fill(&mut out, 2);
+    tx.send(Cmd::Recording(true)).unwrap();
+    st.fill(&mut out, 2);
+    // A key played in the last callback interval: the UI sends Stop and the take's end in the
+    // same frame, so no render hands the message over before the first flush.
+    tx.send(Cmd::Midi([0x90, 60, 100])).unwrap();
+    tx.send(Cmd::Stop).unwrap();
+    tx.send(Cmd::Recording(false)).unwrap();
+    st.fill(&mut out, 2);
+    let mut got = Vec::new();
+    while let Ok((_, m)) = mrx.try_recv() {
+        got.push(m);
+    }
+    assert_eq!(got, vec![[0x90, 60, 100], [0xFF, 0, 0]], "the last note must be kept once, then the end marker");
 }

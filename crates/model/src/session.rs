@@ -234,6 +234,11 @@ impl EditState {
             self.flags.remove(id);
         }
     }
+    /// Options › MIDI Thru: on unless the session turned it off. Stored inverted so sessions
+    /// saved before the switch existed keep Through on.
+    pub fn midi_thru(&self) -> bool {
+        !self.flag("options.midi_thru_off")
+    }
     pub fn value(&self, id: &str, default: f64) -> f64 {
         self.values.get(id).copied().filter(|v| v.is_finite()).unwrap_or(default)
     }

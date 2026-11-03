@@ -1,13 +1,14 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (bounces of a bus fed by an aux compensate its latency (#246); previously minor: audio device, rate and buffer choice; ASIO feature) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-03 · **Last updated:** 2026-11-03 · **Change:** minor (MIDI input devices play armed tracks live and record; keys release on disarm and a lost port sends All Off; previously trivial: bounces of a bus fed by an aux compensate its latency (#246); previously minor: audio device, rate and buffer choice; ASIO) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 A DAW is judged by how it drives audio interfaces, MIDI gear, control surfaces and sync. This is
-SoundCraft's weakest dimension. Ours is measured from `crates/playback` (cpal) and the absence of
-any MIDI-device or control-surface code; Pro Tools' from its documentation and Setup menus.
+SoundCraft's weakest dimension. Ours is measured from `crates/playback` (cpal; `midir` for MIDI
+input on the desktop) and the absence of MIDI output, control-surface and sync code; Pro Tools'
+from its documentation and Setup menus.
 
-**Hardware: ~12 % ready** (estimated). **Performance: ~35 %** (estimated; nothing benchmarked
-against Pro Tools). Remaining ≈ 110–180 h for hardware, 40–70 h for performance.
+**Hardware: ~14 % ready** (estimated). **Performance: ~35 %** (estimated; nothing benchmarked
+against Pro Tools). Remaining ≈ 95–165 h for hardware, 40–70 h for performance.
 
 Legend: ✅ works · 🟡 partial · ❌ missing.
 
@@ -31,9 +32,9 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Feature | Pro Tools | SoundCraft (all platforms) |
 |---|---|---|
-| MIDI input devices (keyboards, pads) | ✅ | ❌ no MIDI device layer at all (`setup.midi_input_devices` stores names) |
+| MIDI input devices (keyboards, pads) | ✅ | 🟡 Setup › MIDI › MIDI Input Devices lists and opens the ports (`midir`: WinMM, CoreMIDI, ALSA; none on the web or FreeBSD); playing sounds the armed instrument/MIDI tracks live, Record captures it into a MIDI clip, keys release when a track is disarmed or a port closes, and the tail of a stopped take is flushed (no MIDI Merge yet) |
 | MIDI output to external gear | ✅ | ❌ |
-| MIDI Thru, input filter | ✅ | ❌ (stored flags only) |
+| MIDI Thru, input filter | ✅ | 🟡 Thru to the selected instrument track when none is armed (Options › MIDI Thru, on by default); input filter still stored flags only |
 | MIDI Beat Clock out, MTC generate/chase | ✅ | ❌ |
 | MIDI learn / controller mapping | ✅ (via surfaces and plug-in maps) | ❌ |
 | Virtual MIDI keyboard | ✅ (MIDI Keyboard window) | 🟡 window exists, no live audition path |
@@ -72,6 +73,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-03 | minor | MIDI input devices: ports open on the desktop, play armed instrument/MIDI tracks live and record into clips; notes release on disarm or port loss (All Off), stopped tails render to their end, and a take's tail is flushed at stop. Hardware estimate 12 → 14 %, remaining 110–180 → 95–165 h |
 | 2026-10-13 | trivial | bounces of a bus fed by an aux compensate its latency (#246) |
 | 2026-10-12 | minor | Audio device settings: system, output, input, sample rate and buffer size; opt-in ASIO |
 | 2026-10-10 | major | Created: audit of audio interface, MIDI, control-surface, sync and performance support against Pro Tools 2026.4.1 |

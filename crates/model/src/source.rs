@@ -82,6 +82,9 @@ impl SourceAudio {
 #[derive(Debug, Clone, Default)]
 pub struct SourcePool {
     map: BTreeMap<SourceId, Arc<SourceAudio>>,
+    /// Parsed SoundFont banks, by file path. Opaque here (the bank type belongs to the DSP
+    /// crate, which plays it); loaded off the audio thread and shared with the instruments.
+    banks: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 impl SourcePool {
@@ -106,10 +109,25 @@ impl SourcePool {
     pub fn ids(&self) -> impl Iterator<Item = SourceId> + '_ {
         self.map.keys().copied()
     }
+    /// Keep the parsed SoundFont bank of the file at `path`.
+    pub fn insert_bank(&mut self, path: impl Into<String>, bank: Arc<dyn std::any::Any + Send + Sync>) {
+        self.banks.insert(path.into(), bank);
+    }
+    /// The parsed SoundFont bank of the file at `path`, if loaded.
+    pub fn bank(&self, path: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
+        self.banks.get(path)
+    }
+    /// Drop the banks no instrument plays any more.
+    pub fn retain_banks(&mut self, keep: impl Fn(&str) -> bool) {
+        self.banks.retain(|k, _| keep(k));
+    }
 }
 
 impl PartialEq for SourcePool {
     fn eq(&self, other: &Self) -> bool {
-        self.map.len() == other.map.len() && self.map.iter().zip(other.map.iter()).all(|((a, x), (b, y))| a == b && Arc::ptr_eq(x, y))
+        self.map.len() == other.map.len()
+            && self.map.iter().zip(other.map.iter()).all(|((a, x), (b, y))| a == b && Arc::ptr_eq(x, y))
+            && self.banks.len() == other.banks.len()
+            && self.banks.iter().zip(other.banks.iter()).all(|((a, x), (b, y))| a == b && Arc::ptr_eq(x, y))
     }
 }

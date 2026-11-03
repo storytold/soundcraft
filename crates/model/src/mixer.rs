@@ -441,6 +441,10 @@ pub struct Insert {
     /// The session audio source a sample-playing instrument (the built-in Sampler) plays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample: Option<SourceId>,
+    /// The SoundFont (`.sf2`) file a SoundFont-playing instrument plays, by path. The parsed bank
+    /// is kept in the session's pool under this path ([`crate::SourcePool::bank`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soundfont: Option<String>,
 }
 
 fn yes() -> bool {
@@ -457,6 +461,7 @@ impl Insert {
             preset: String::from("<factory default>"),
             state: None,
             sample: None,
+            soundfont: None,
         }
     }
 

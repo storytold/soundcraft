@@ -66,6 +66,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.midi_ops", "MIDI Operations", "", None),
     ("window.rtp", "MIDI Real-Time Properties", "", None),
     ("window.playback_engine", "Playback Engine", "", None),
+    ("window.midi_input_devices", "MIDI Input Devices", "", None),
     ("ui.audio_device", "Audio Device", "", None),
     ("window.io_setup", "I/O Setup", "", None),
     ("window.shortcuts", "Keyboard Shortcuts", "", None),
@@ -304,7 +305,7 @@ fn instrument_menu(app: &mut SoundApp, ui: &mut egui::Ui) {
 }
 
 /// The first selected instrument track, in track order.
-fn instrument_track(s: &soundcraft_model::Session) -> Option<soundcraft_model::TrackId> {
+pub(crate) fn instrument_track(s: &soundcraft_model::Session) -> Option<soundcraft_model::TrackId> {
     s.tracks.iter().find(|t| t.kind == soundcraft_model::TrackKind::Instrument && s.edit.selected_tracks.contains(&t.id)).map(|t| t.id)
 }
 
@@ -443,6 +444,7 @@ const MENU_WINDOWS: &[(&str, &str)] = &[
     ("Setup > Hardware...", "window.playback_engine"),
     ("Setup > Playback Engine...", "window.playback_engine"),
     ("Setup > I/O...", "window.io_setup"),
+    ("Setup > MIDI > MIDI Input Devices...", "window.midi_input_devices"),
     ("Setup > Keyboard Shortcuts...", "window.shortcuts"),
     ("Setup > Session", "setup.session"),
     ("Event > Beat Detective", "window.beat_detective"),
@@ -587,6 +589,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         "window.midi_ops" => toggle(&mut app.ui.show_midi_ops),
         "window.rtp" => toggle(&mut app.ui.show_rtp),
         "window.playback_engine" => toggle(&mut app.ui.show_playback_engine),
+        "window.midi_input_devices" => toggle(&mut app.ui.show_midi_input_devices),
         "window.io_setup" => toggle(&mut app.ui.show_io_setup),
         "window.shortcuts" => toggle(&mut app.ui.show_shortcuts),
         "window.color_palette" => toggle(&mut app.ui.show_color_palette),

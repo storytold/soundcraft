@@ -1,8 +1,8 @@
 # SoundCraft roadmap
 
-**Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
+**Stage: pre-alpha** · next: alpha, ~5% and ~85–145 h away (the alpha gate's two failing workflows)
 
-> **Last reviewed:** 2026-10-24 · **Last updated:** 2026-10-25 · **Change:** trivial (Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-03 · **Last updated:** 2026-11-03 · **Change:** minor (MIDI input devices play and record; SoundFont Player; previously trivial: Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -20,7 +20,7 @@ menu checklist).
 | **Ready for real work** | **~40 %** | estimated, weighted by dimension |
 | Mainstream practitioner (tracking/mixing engineer) | **~36 %** | estimated: 50.6 % weekly-area depth × 0.90 interaction × 0.92 stability × 0.85 file exchange ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
 | Essentials user (song or podcast, defaults) | **~57 %** | estimated: 72.4 % core-feature depth × 0.90 launch/stability × 0.90 discoverability × 0.97 files ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
-| Remaining to alpha | **~110–180 Opus 5.5 agent-hours** (the failing gate rows) | estimated, calibrated on PR history |
+| Remaining to alpha | **~85–145 Opus 5.5 agent-hours** (the failing gate rows) | estimated, calibrated on PR history |
 | Remaining to beta | **~350–570 Opus 5.5 agent-hours** (includes the alpha work; ~60–70 % parallelizable) | estimated |
 | Remaining to full parity | **~950–1,450 Opus 5.5 agent-hours** | estimated |
 
@@ -36,8 +36,9 @@ Detail: [target-app-parity.md](docs/target-app-parity.md#readiness-by-audience).
 **Why pre-alpha:** the core-workflow gate in [docs/roadmap.md](docs/roadmap.md#alpha-gate) fails.
 Editing, mixing, bouncing, and saving and reopening work end to end. But a Pro Tools user can't
 record from a chosen audio interface at a chosen buffer size (only the default devices, a fixed
-512-sample block, and takes held in RAM). They can't record MIDI from a keyboard (there is no
-MIDI device layer). And they can't bring a session in or hand one back (no AAF/OMF/`.ptx`).
+512-sample block, and takes held in RAM). MIDI input from a keyboard now plays and records on the
+desktop (MIDI output, Merge and clock remain). And they can't bring a session in or hand one back
+(no AAF/OMF/`.ptx`).
 Readiness (~40 %) sits right at the alpha bar, but a gate failure keeps the app pre-alpha. The
 2026-10-07 estimate ("~65 % overall, 110–150 h to 100 %") counted feature presence. This one
 measures readiness and adds hardware, localization and field bug reports.
@@ -49,7 +50,7 @@ measures readiness and adds hardware, localization and field bug reports.
 | Features | ~45 % | 520–810 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
 | UI/UX fidelity | ~55 % | 60–100 | [ui-parity.md](docs/ui-parity.md) |
 | File formats | ~40 % | 70–120 | [file-format-parity.md](docs/file-format-parity.md) |
-| Hardware (interfaces, MIDI, surfaces, sync) | ~12 % | 110–180 | [hardware-parity.md](docs/hardware-parity.md) |
+| Hardware (interfaces, MIDI, surfaces, sync) | ~14 % | 95–165 | [hardware-parity.md](docs/hardware-parity.md) |
 | Localization | ~12 % (1 of Pro Tools' 8 languages) | 70–110 | [localization-parity.md](docs/localization-parity.md) |
 | Performance | ~35 % (unmeasured) | 40–70 | [hardware-parity.md](docs/hardware-parity.md#performance) |
 | Stability | ~45 % | 50–80 | [gaps.md](docs/gaps.md) |
@@ -103,7 +104,7 @@ Other languages shipped: 0. Detail: [localization-parity.md](docs/localization-p
 Ranked; the alpha gate, the alpha checklist and the beta plan are in [docs/roadmap.md](docs/roadmap.md).
 
 1. **Alpha blocker:** audio interfaces: device and buffer-size choice, duplex stream, ASIO; record to disk (G-01, G-06). 35–55 h.
-2. **Alpha blocker:** MIDI devices: record from keyboards, play instruments live, output (G-02). 20–35 h.
+2. MIDI devices: input from keyboards plays and records; output, Merge, the input filter and clock remain (G-02). 8–16 h.
 3. **Alpha blocker:** AAF/OMF import and export (G-03). 50–90 h.
 4. macOS plugin entitlement (#153), then AU editors (G-05). 1 h for the entitlement (needed for the mix row), then 15–25 h.
 5. Land the open bug-fix PRs and clear the correctness backlog (G-04). 15–25 h.
@@ -122,6 +123,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
+- **2026-11-03:** MIDI input devices play armed instrument and MIDI tracks live, through the selected track when none is armed, and Record places a take as a MIDI clip at stop (punch and loop ranges kept). A device port opens per platform (`midir`: CoreMIDI, ALSA, WinMM; the web and FreeBSD have no port layer), notes release when a track stops listening or a port closes, and stopped notes ring to the end of their release. A SoundFont Player plays a preset of a `.sf2` bank with 64 voices, SF2 envelopes, loops, exclusive classes, General MIDI controllers, pitch bend and Program Change. MIDI output, Merge, the input filter and clock remain (G-02); hardware readiness 12 → 14 %.
 - **2026-10-25:** Alt+Shift+E (`view.zoom_toggle_cancel`) and an Alt-click on the Zoom Toggle button cancel Zoom Toggle and keep the current view: the zoom, the scroll and the track heights stay as they are, and the button is no longer lit. The next Zoom Toggle zooms in from that view and goes back to it. No readiness percentage change.
 - **2026-10-25:** Tracks and Groups and the Clip List sit in dock columns that run the Edit window's full height at its left and right edges, with the MIDI Editor under the session view between them; Mix docks Tracks and Groups at its left edge. A panel dragged onto a dock group joins it as a tab, stacks above or below it, or makes a new column; one dragged to an empty window edge makes a dock there. A list with no saved place reopens in its dock, and makes the dock again when it is gone. Preferences and window configurations saved with the earlier split-frame layouts load with the new default layouts and keep their other settings. No readiness percentage change.
 - **2026-10-25:** Auto Pan moves the balance of a stereo track: the left channel's level falls as the position moves right and the right channel's as it moves left, at constant power, and each channel stays on its own side. At the center the track passes unchanged, so a wide or out-of-phase stereo image keeps its width, and the envelope follower follows the louder channel. No readiness percentage change.

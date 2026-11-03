@@ -505,6 +505,187 @@ fn real_time_properties_reach_the_instrument() {
     assert_eq!(*heard.lock().unwrap(), vec![(72, 80)]);
 }
 
+/// Records what an instrument is sent: (kind, a, b) with kind 'n' note on, 'f' note off,
+/// 'm' other message (a = status, b = first data byte).
+struct LiveKeys {
+    inner: Box<dyn Plugin>,
+    heard: Arc<std::sync::Mutex<Vec<(char, u8, u8)>>>,
+}
+
+impl Plugin for LiveKeys {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+    }
+    fn note_on(&mut self, _offset: usize, note: u8, velocity: u8) {
+        self.heard.lock().unwrap().push(('n', note, velocity));
+    }
+    fn note_off(&mut self, _offset: usize, note: u8) {
+        self.heard.lock().unwrap().push(('f', note, 0));
+    }
+    fn midi(&mut self, _offset: usize, msg: [u8; 3]) {
+        if msg != [0xB0, 121, 0] {
+            self.heard.lock().unwrap().push(('m', msg[0], msg[1]));
+        }
+    }
+    fn all_notes_off(&mut self) {
+        self.heard.lock().unwrap().push(('a', 0, 0));
+    }
+}
+
+fn live_session() -> (Session, TrackId, TrackId, MixEngine, Arc<std::sync::Mutex<Vec<(char, u8, u8)>>>) {
+    let mut s = Session::default();
+    let a = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let b = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(a).unwrap().instrument = Some(Insert::new("clap:test.live"));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let p = LiveKeys { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance { track: a, slot: INSTRUMENT_SLOT, id: "clap:test.live".into(), ch: 2, plugin: Box::new(p) }]);
+    (s, a, b, eng, heard)
+}
+
+#[test]
+fn live_midi_plays_the_armed_instrument_while_stopped() {
+    let (mut s, a, _, mut eng, heard) = live_session();
+    s.track_mut(a).unwrap().mixer.record_arm = true;
+    eng.monitor_only = true;
+    // Note on (channel 3), sustain pedal, pitch bend, then the same note off as velocity 0.
+    eng.live_midi.extend([[0x92, 60, 100], [0xB2, 64, 127], [0xE2, 0, 80]]);
+    render_block(&mut eng, &s, 0);
+    assert!(eng.live_midi.is_empty(), "live MIDI is played once");
+    // Stopped, the same position renders again: not a seek, the note keeps sounding.
+    eng.live_midi.push([0x92, 60, 0]);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(*heard.lock().unwrap(), vec![('n', 60, 100), ('m', 0xB0, 64), ('m', 0xE0, 0), ('f', 60, 0)]);
+    // The note-off released the key, but the pedal is still down: keep rendering its tail.
+    assert!(eng.live_held());
+    eng.live_midi.push([0xB2, 64, 0]);
+    render_block(&mut eng, &s, 0);
+    assert!(!eng.live_held());
+}
+
+#[test]
+fn live_midi_goes_to_the_selected_instrument_when_none_is_armed() {
+    let (mut s, a, b, mut eng, heard) = live_session();
+    eng.monitor_only = true;
+    // Nothing armed, nothing selected: nobody plays.
+    eng.live_midi.push([0x90, 64, 90]);
+    render_block(&mut eng, &s, 0);
+    assert!(heard.lock().unwrap().is_empty());
+    // Selected (MIDI Thru): it plays.
+    s.edit.selected_tracks = vec![a];
+    eng.live_midi.push([0x90, 64, 90]);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![('n', 64, 90)]);
+    // Another instrument track armed: only the armed one takes the input.
+    s.track_mut(b).unwrap().mixer.record_arm = true;
+    eng.live_midi.push([0x90, 65, 90]);
+    render_block(&mut eng, &s, 0);
+    // The selected track loses the input (and releases the key it was holding); the armed one
+    // gets it, but has no adopted instance here.
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![('m', 0xB0, 64), ('f', 64, 0)]);
+    assert_eq!(midi_thru_track(&s), None);
+}
+
+#[test]
+fn midi_thru_option_off_stops_the_selected_track_listening() {
+    let (mut s, a, _, mut eng, heard) = live_session();
+    eng.monitor_only = true;
+    s.edit.selected_tracks = vec![a];
+    s.edit.set_flag("options.midi_thru_off", true);
+    eng.live_midi.push([0x90, 66, 80]);
+    render_block(&mut eng, &s, 0);
+    assert!(heard.lock().unwrap().is_empty());
+    assert_eq!(midi_thru_track(&s), None);
+    // Turning the switch back on lets the key through.
+    s.edit.set_flag("options.midi_thru_off", false);
+    eng.live_midi.push([0x90, 66, 80]);
+    render_block(&mut eng, &s, 512);
+    assert_eq!(*heard.lock().unwrap(), vec![('n', 66, 80)]);
+}
+
+#[test]
+fn live_midi_plays_over_the_clips_while_playing() {
+    let (mut s, a, _, mut eng, heard) = live_session();
+    s.track_mut(a).unwrap().mixer.input_monitor = true;
+    eng.live_midi.push([0x90, 48, 70]);
+    render_block(&mut eng, &s, 0);
+    eng.live_midi.push([0x80, 48, 0]);
+    render_block(&mut eng, &s, 512);
+    assert_eq!(*heard.lock().unwrap(), vec![('n', 48, 70), ('f', 48, 0)]);
+}
+
+#[test]
+fn disarming_a_track_releases_the_notes_it_was_playing() {
+    let (mut s, a, _, mut eng, heard) = live_session();
+    s.track_mut(a).unwrap().mixer.record_arm = true;
+    eng.monitor_only = true;
+    eng.live_midi.push([0x90, 60, 100]);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![('n', 60, 100)]);
+    assert!(eng.live_held());
+    // Disarmed mid-note: the note is released (pedal up first), not left sounding.
+    s.track_mut(a).unwrap().mixer.record_arm = false;
+    render_block(&mut eng, &s, 512);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![('m', 0xB0, 64), ('f', 60, 0)]);
+    assert!(!eng.live_held());
+}
+
+#[test]
+fn panic_releases_live_notes_and_pending_input() {
+    let (mut s, a, _, mut eng, heard) = live_session();
+    s.track_mut(a).unwrap().mixer.record_arm = true;
+    eng.monitor_only = true;
+    eng.live_midi.push([0x90, 60, 100]);
+    render_block(&mut eng, &s, 0);
+    heard.lock().unwrap().clear();
+    eng.live_midi.push([0x90, 61, 100]);
+    eng.panic_live();
+    assert!(eng.live_midi.is_empty(), "pending input is dropped");
+    assert!(!eng.live_held());
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![('m', 0xB0, 64), ('a', 0, 0)]);
+}
+
+#[test]
+fn replacing_a_soundfont_bank_retires_it_for_the_host_to_drop() {
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let mut ins = Insert::new("soundfont");
+    ins.soundfont = Some("a".into());
+    s.track_mut(t).unwrap().instrument = Some(ins);
+    let bank = || -> Arc<dyn std::any::Any + Send + Sync> {
+        Arc::new(soundcraft_dsp::soundfont::SoundFont::parse(&soundcraft_dsp::soundfont::fixture::test_bank()).unwrap())
+    };
+    s.pool.insert_bank("a", bank());
+    s.pool.insert_bank("b", bank());
+    let mut eng = MixEngine::new(48_000.0, 512);
+    render_block(&mut eng, &s, 0);
+    assert!(eng.take_retired().banks.is_empty(), "the bank in use stays");
+    s.track_mut(t).unwrap().instrument.as_mut().unwrap().soundfont = Some("b".into());
+    render_block(&mut eng, &s, 512);
+    assert_eq!(eng.take_retired().banks.len(), 1, "the old bank is handed over, not freed in the callback");
+    // Removing the instrument retires its bank too.
+    s.track_mut(t).unwrap().instrument = None;
+    render_block(&mut eng, &s, 1024);
+    assert_eq!(eng.take_retired().banks.len(), 1);
+}
+
 fn render_block(eng: &mut MixEngine, s: &Session, pos: i64) -> f32 {
     let mut out = vec![vec![0.0f32; 512]; 2];
     eng.render(s, pos, 512, &mut out);
@@ -533,7 +714,7 @@ fn external_instances_are_adopted_and_retired() {
     let wrong = Stateful { inner: soundcraft_dsp::create("gain").unwrap(), blob: Vec::new(), sets: Arc::clone(&sets) };
     eng.adopt(vec![PreparedInstance { track: t, slot: 0, id: "clap:test.fake".into(), ch: 2, plugin: Box::new(wrong) }]);
     assert!(render_block(&mut eng, &s, 512) > 0.3);
-    assert_eq!(eng.take_retired().len(), 1);
+    assert_eq!(eng.take_retired().plugins.len(), 1);
     eng.adopt(vec![PreparedInstance { track: t, slot: 0, id: "clap:test.fake".into(), ch: 1, plugin: Box::new(fake) }]);
     let mut wet = 0.0;
     for b in 2..20 {
@@ -545,11 +726,11 @@ fn external_instances_are_adopted_and_retired() {
     // Removing the insert retires the instance instead of dropping it here.
     s.track_mut(t).unwrap().mixer.inserts[0] = None;
     render_block(&mut eng, &s, 20 * 512);
-    assert_eq!(eng.take_retired().len(), 1);
+    assert_eq!(eng.take_retired().plugins.len(), 1);
     // Instances nobody claims are retired too; drain_plugins empties the engine.
     eng.adopt(vec![PreparedInstance { track: t, slot: 3, id: "clap:x".into(), ch: 1, plugin: soundcraft_dsp::create("gain").unwrap() }]);
     render_block(&mut eng, &s, 21 * 512);
-    assert_eq!(eng.take_retired().len(), 1);
+    assert_eq!(eng.take_retired().plugins.len(), 1);
     assert!(eng.drain_plugins().is_empty());
 }
 
@@ -702,8 +883,8 @@ fn a_new_instance_replaces_a_matching_one_in_its_slot() {
     eng.adopt(vec![PreparedInstance { track: t, slot: 0, id: "clap:test.fake".into(), ch: 1, plugin: make(b"new") }]);
     render_block(&mut eng, &s, 512);
     let mut retired = eng.take_retired();
-    assert_eq!(retired.len(), 1, "the old instance is retired");
-    assert_eq!(retired[0].save_state(), Some(b"old".to_vec()), "the new instance stays");
+    assert_eq!(retired.plugins.len(), 1, "the old instance is retired");
+    assert_eq!(retired.plugins[0].save_state(), Some(b"old".to_vec()), "the new instance stays");
 }
 
 #[test]

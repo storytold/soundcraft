@@ -1,6 +1,6 @@
 # Plugin parity: built-in processors and plugin hosting
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** trivial (Auto Pan stereo balance; previously minor: AudioSuite speed ramps (speed_ramp); Auto Pan; Subharmonic; previously minor: Ring Modulator; VST3 host messages: IMessage and IAttributeList; previously trivial: Sampler ping-pong loop phase (#463); previously trivial: mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-03 · **Last updated:** 2026-11-03 · **Change:** minor (SoundFont Player banks: size, preset and zone budgets; stereo samples documented as mono; previously minor: SoundFont Player; previously trivial: Auto Pan stereo balance; previously minor: AudioSuite speed ramps (speed_ramp); Auto Pan; Subharmonic; previously minor: Ring Modulator; VST3 host messages: IMessage and IAttributeList; previously trivial: Sampler ping-pong loop phase (#463); previously trivial: mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Pro Tools users live in plugins: the bundled set covers everyday mixing, and third-party plugins
 cover the rest. This doc tracks both. Our plugins have our own names and are written from
@@ -21,8 +21,8 @@ scratch (clean-room rule): Avid plugin names are not used here, only categories.
 | Harmonic | lo-fi, rectifier, amp simulation, saturation, tape, subharmonic synthesis | `lofi`, `rectifier`, `saturator`, `subharmonic` (octave-down bass from a lower and an upper band, direct bass, drive characters, HP and LP filters) | Amp and cabinet models, tape; subharmonic MIDI tuning and surround (LFE) version |
 | Pitch and time | pitch shift, varispeed effects, time shift | `pitch_shifter`, `time_shift`; the AudioSuite speed ramp (`speed_ramp`) slows a clip down to a stop or speeds it up from one, fitted to the clip's length or extended to 150 %, with or without a fade. | Formant control, pitch correction |
 | Utility | trim, gain, invert, DC offset, signal generator, dither, time adjuster | `trim`, `gain`, `invert`, `dc_offset_removal`, `signal_generator`, `dither` | Time adjuster, meter/analyzer plugins, noise shaping options |
-| Instruments | several virtual instruments (multi-sampler, piano, drum machine, organ, synths, sample player; Massive X Player added in 2026.4) | `subtractive_synth`, `drum_synth`, `sampler`; `mix.instrument` takes the instrument's parameters in `params` and refuses unknown fields (#265). The sampler's ping-pong loop keeps its phase when a step is wider than the loop (#463). | Piano, organ, wavetable, content library |
-| **Total** | **≈ 80 processors and instruments** (estimate from Avid's bundle documentation) | **27 processors + 3 instruments** | |
+| Instruments | several virtual instruments (multi-sampler, piano, drum machine, organ, synths, sample player; Massive X Player added in 2026.4) | `subtractive_synth`, `drum_synth`, `sampler`, `soundfont` (SoundFont Player: plays a preset of a `.sf2` bank loaded with `mix.soundfont_load`, 64 voices, SF2 volume envelopes, loops, exclusive classes, General MIDI controllers (volume, expression, pan, modulation and pressure vibrato, brightness/resonance low-pass, attack/release, sustain, pitch bend with RPN 0 range), Program Change picks the preset; no SF2 modulators, filter or modulation envelope/LFO yet); `mix.instrument` takes the instrument's parameters in `params` and refuses unknown fields (#265). The sampler's ping-pong loop keeps its phase when a step is wider than the loop (#463). | Piano, organ, wavetable, content library |
+| **Total** | **≈ 80 processors and instruments** (estimate from Avid's bundle documentation) | **27 processors + 4 instruments** | |
 
 AudioSuite: every catalog AudioSuite leaf maps to one of our processes (`AUDIOSUITE` in
 `crates/ui-egui/src/menus.rs`), so the AudioSuite menu is 100 % present. Depth: no preview,
@@ -58,6 +58,7 @@ User report #152: a saved instrument level does not reach the bounce.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-03 | minor | SoundFont Player (`soundfont`) fully documented: 27 processors + 4 instruments; banks capped at 512 MiB, 65k records, 4k zones and 1k regions per preset, 262k regions and 1M zone resolutions per bank; presets limited to the 0–1023 plugin address range; linked stereo samples play as one mono stream (not decoded as pairs yet) |
 | 2026-10-25 | trivial | Auto Pan: constant-power balance of the left and right channels; stereo passes unchanged at the center |
 | 2026-10-24 | minor | AudioSuite speed ramps (`speed_ramp`): down to a stop and up from one, Fit To or Extend, fades on or off |
 | 2026-10-24 | minor | Auto Pan: LFO and envelope panning of stereo tracks; built-in count 27 processors + 3 instruments |

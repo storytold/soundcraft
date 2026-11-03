@@ -114,6 +114,10 @@ pub struct UiState {
     pub show_workspace: bool,
     pub show_configurations: bool,
     pub show_playback_engine: bool,
+    /// Setup › MIDI › MIDI Input Devices.
+    pub show_midi_input_devices: bool,
+    /// MIDI input ports the user turned off in that window (by name).
+    pub midi_inputs_disabled: Vec<String>,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
@@ -182,6 +186,8 @@ impl Default for UiState {
             show_workspace: false,
             show_configurations: false,
             show_playback_engine: false,
+            show_midi_input_devices: false,
+            midi_inputs_disabled: Vec::new(),
             audio: soundcraft_playback::AudioConfig::default(),
             mix_separate: false,
             show_io_setup: false,
@@ -252,6 +258,17 @@ pub enum Gesture {
     ZoomBox { start: f32 },
 }
 
+/// A finished MIDI take waiting for the audio callback to hand over its last messages: the
+/// callback closes the take behind `Player::set_recording(false)` and marks the end with a
+/// `[0xFF, 0, 0]` sentinel, because the UI cannot know when its next block ran.
+struct MidiFinish {
+    start: Samples,
+    pass: Option<Samples>,
+    punch: Option<Range>,
+    /// Frames left to wait for the sentinel (the audio device may have stopped altogether).
+    wait: u8,
+}
+
 pub struct SoundApp {
     pub engine: Engine,
     /// The session path as of the last frame, and whether the recent list changed since the host
@@ -261,6 +278,17 @@ pub struct SoundApp {
     /// When the recent sessions were last checked for existence, which list, and the result.
     recent_checked: Option<(f64, Vec<String>, Vec<bool>)>,
     pub player: Option<Player>,
+    /// MIDI input ports opened on the player's behalf (see `service_midi_inputs`), and when they
+    /// were last checked for new or removed devices.
+    pub midi_inputs: soundcraft_playback::midi_in::MidiInputs,
+    midi_checked: Option<f64>,
+    /// This take records MIDI (armed instrument or MIDI tracks) and/or audio (armed audio tracks).
+    recording_midi: bool,
+    recording_audio: bool,
+    /// The MIDI played so far in this take: (timeline position, message).
+    midi_take: Vec<(Samples, [u8; 3])>,
+    /// A MIDI take whose recording just stopped, waiting to be placed (see [`MidiFinish`]).
+    midi_finish: Option<MidiFinish>,
     /// Input capture, opened on first record.
     pub recorder: Option<soundcraft_playback::record::Recorder>,
     record_start: Samples,

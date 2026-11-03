@@ -1,8 +1,9 @@
 use super::{
-    Arc, AtomicBool, BLOCK, BTreeMap, Cmd, HashMap, HashSet, MAX_CHANNELS, MeterSnapshot, MixEngine, OLD_SESSIONS, Ordering, OutputTrouble, Plugin,
+    Arc, AtomicBool, BLOCK, BTreeMap, Cmd, HashMap, HashSet, MAX_CHANNELS, MeterSnapshot, MixEngine, OLD_SESSIONS, Ordering, OutputTrouble,
     PluginEditor, PluginStateReader, PluginStates, PreparedInstance, Range, Receiver, Samples, Sender, Session, Shared, SyncSender, TrackId,
     itu_stereo_fold, main_channels, record, sync_channel,
 };
+use soundcraft_mix::Retired;
 
 /// How the audio output is doing, for the UI.
 #[derive(Default)]
@@ -80,8 +81,19 @@ pub(crate) struct AudioState {
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
+    /// Samples left to render for the tail of what was played from live MIDI input, so a
+    /// release still sounds after the key went up and rendering then stops (see `fill`).
+    midi_left: usize,
+    /// Where MIDI played while recording goes (see [`Player::take_recorded_midi`]).
+    midi_rec: Option<SyncSender<(Samples, [u8; 3])>>,
+    /// How many entries of `mix.live_midi` this take already handed to `midi_rec`: Stop and the
+    /// take's end arrive in one drain, and each would otherwise record the same messages again.
+    midi_flushed: usize,
+    /// The device's last callback in session samples: what is rendered now is heard that much
+    /// later, so MIDI played to it is stamped that much earlier.
+    out_latency: i64,
     /// Retired plugin instances go back to the UI thread to be dropped there.
-    garbage: Sender<Vec<Box<dyn Plugin>>>,
+    garbage: Sender<Retired>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
     /// Meters of blocks rendered while the UI held the shared snapshot (`try_lock` failed), so
     /// their peaks reach it with the next block instead of being lost.
@@ -98,13 +110,7 @@ fn new_engine(sr: f32) -> MixEngine {
 }
 
 impl AudioState {
-    pub(crate) fn new(
-        rx: Receiver<Cmd>,
-        shared: Arc<Shared>,
-        session: Arc<Session>,
-        device_rate: f64,
-        garbage: Sender<Vec<Box<dyn Plugin>>>,
-    ) -> Self {
+    pub(crate) fn new(rx: Receiver<Cmd>, shared: Arc<Shared>, session: Arc<Session>, device_rate: f64, garbage: Sender<Retired>) -> Self {
         let sr = session.sample_rate.as_f64() as f32;
         let nch = main_channels(&session);
         AudioState {
@@ -125,12 +131,16 @@ impl AudioState {
             device_rate,
             input: None,
             recording: false,
+            midi_left: 0,
+            midi_rec: None,
+            midi_flushed: 0,
+            out_latency: 0,
             unsent: MeterSnapshot::default(),
             forget_shared: Vec::new(),
         }
     }
 
-    fn drain(&mut self) {
+    pub(crate) fn drain(&mut self) {
         let mut changed = false;
         while let Ok(c) = self.rx.try_recv() {
             match c {
@@ -144,7 +154,28 @@ impl AudioState {
                     }
                     self.forget_meters();
                 }
-                Cmd::Recording(r) => self.recording = r,
+                Cmd::Recording(r) => {
+                    if !r {
+                        // Commit what was played since the last block and mark the end, so the
+                        // UI can collect the whole take instead of racing the audio callback.
+                        self.finish_midi_recording();
+                    }
+                    self.recording = r;
+                }
+                Cmd::MidiRecorder(tx) => self.midi_rec = Some(tx),
+                Cmd::Midi(msg) if self.mix.live_midi.len() < soundcraft_mix::LIVE_MIDI_CAPACITY => {
+                    self.mix.live_midi.push(msg);
+                    self.midi_left = self.midi_left.max(self.mix.live_tail_samples()).max((self.session.sample_rate.hz() as usize) / 2);
+                }
+                // Full for this block: dropped, as is a message after the player stopped.
+                Cmd::Midi(_) => {}
+                Cmd::MidiPanic => {
+                    // A port went away with keys down: release them now, and stop rendering
+                    // the tail too (All Off cuts the voices).
+                    self.mix.panic_live();
+                    self.midi_left = 0;
+                    self.midi_flushed = 0;
+                }
                 Cmd::Session(s, instances) => {
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
@@ -173,18 +204,24 @@ impl AudioState {
                     self.playing = true;
                     self.pending_len = 0;
                     self.read = 0.0;
+                    self.midi_left = 0;
                     self.mix.reset();
                 }
                 Cmd::Stop => {
+                    if self.recording {
+                        self.flush_live_midi();
+                    }
                     self.playing = false;
                     self.end = None;
                     self.looped = None;
+                    self.midi_left = 0;
                     self.mix.reset();
                 }
                 Cmd::Locate(at) => {
                     self.pos = at;
                     self.pending_len = 0;
                     self.read = 0.0;
+                    self.midi_left = 0;
                     self.mix.reset();
                 }
             }
@@ -203,6 +240,34 @@ impl AudioState {
         if !g.is_empty() {
             let _ = self.garbage.send(g);
         }
+    }
+
+    /// Hands the MIDI received since the last block to the take (the block may not have rendered
+    /// yet when the transport stops).
+    fn flush_live_midi(&mut self) {
+        if !self.recording {
+            return;
+        }
+        let Some(tx) = &self.midi_rec else { return };
+        let at = self.pos.saturating_sub(self.out_latency);
+        // Only what no render has handed over yet: Stop and the take's end can be drained
+        // together, and `mix.reset` leaves `live_midi` alone, so a plain re-send would duplicate
+        // the last notes played.
+        for m in self.mix.live_midi.iter().skip(self.midi_flushed) {
+            let _ = tx.try_send((at, *m));
+        }
+        self.midi_flushed = self.mix.live_midi.len();
+    }
+
+    /// Closes the take: flushes what is left and sends a `[0xFF, 0, 0]` end marker (no real
+    /// channel message has status `0xFF`, the input layer drops System Reset), so the UI knows
+    /// the callback is done with everything it played.
+    fn finish_midi_recording(&mut self) {
+        self.flush_live_midi();
+        self.midi_flushed = 0;
+        let Some(tx) = &self.midi_rec else { return };
+        let at = self.pos.saturating_sub(self.out_latency);
+        let _ = tx.try_send((at, [0xFF, 0, 0]));
     }
 
     /// Render the next block at the session rate into `pending`.
@@ -239,9 +304,22 @@ impl AudioState {
             }
             ring.pop_into(&mut self.mix.input, n, self.session.sample_rate.hz());
         }
+        if self.recording
+            && self.playing
+            && let Some(tx) = &self.midi_rec
+        {
+            // Bounded channel: never allocates or blocks; a full queue drops (the UI is stuck).
+            let at = self.pos.saturating_sub(self.out_latency);
+            for m in &self.mix.live_midi {
+                let _ = tx.try_send((at, *m));
+            }
+        }
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
         self.mix.render(&self.session, self.pos, n, &mut self.pending);
+        // `render` consumed (and cleared) live MIDI, so nothing of it is left to flush.
+        self.midi_flushed = 0;
+        self.midi_left = self.midi_left.saturating_sub(n);
         self.send_garbage();
         self.pending_len = n;
         self.publish_meters();
@@ -276,8 +354,14 @@ impl AudioState {
     pub(crate) fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
         let channels = channels.max(1);
-        let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        let monitoring = (self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm))
+            || ((self.midi_left > 0 || self.mix.live_held())
+                && (self.session.tracks.iter().any(|t| soundcraft_mix::takes_midi_input(t, None))
+                    || soundcraft_mix::midi_thru_track(&self.session).is_some()));
         if !self.playing && !monitoring {
+            // Nothing renders: live MIDI would otherwise pile up and sound later in a burst.
+            self.mix.live_midi.clear();
+            self.midi_flushed = 0;
             out.iter_mut().for_each(|x| *x = 0.0);
             self.unsent.silence();
             self.forget_meters();
@@ -290,6 +374,7 @@ impl AudioState {
         let step = self.session.sample_rate.as_f64() / self.device_rate.max(1.0) * speed.clamp(0.1, 4.0);
         let callback_frames = out.len() / channels;
         let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
+        self.out_latency = (callback_frames as f64 * step).round() as i64;
         for frame in out.chunks_mut(channels) {
             while self.read >= self.pending_len as f64 {
                 self.read -= self.pending_len as f64;
@@ -368,14 +453,14 @@ pub(crate) struct Side {
     /// Instances that refused their stored state: saves keep that state until the plugin's editor
     /// is opened.
     pub(crate) refused: HashSet<(TrackId, usize)>,
-    garbage: Receiver<Vec<Box<dyn Plugin>>>,
+    garbage: Receiver<Retired>,
     old_sessions: Option<Receiver<Arc<Session>>>,
     /// The tracks of the session last sent, to tell the audio thread which ones went.
     tracks: HashSet<TrackId>,
 }
 
 impl Side {
-    pub(crate) fn new(rate: f32, garbage: Receiver<Vec<Box<dyn Plugin>>>) -> Side {
+    pub(crate) fn new(rate: f32, garbage: Receiver<Retired>) -> Side {
         Side {
             shadow: HashMap::new(),
             rate,
@@ -400,10 +485,14 @@ impl Side {
     /// replaced session snapshots.
     pub(crate) fn collect_garbage(&mut self) {
         while let Ok(g) = self.garbage.try_recv() {
-            for p in g {
+            let Retired { plugins, banks } = g;
+            for p in plugins {
                 log::debug!("plugin instance released: {}", p.info().name);
                 drop(p);
             }
+            // A SoundFont can be hundreds of megabytes; freeing it here keeps the audio callback out
+            // of the allocator.
+            drop(banks);
         }
         if let Some(rx) = &self.old_sessions {
             rx.try_iter().for_each(drop);

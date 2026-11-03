@@ -30,6 +30,15 @@ fn new_session_stops_playback_and_the_old_clock() {
 }
 
 #[test]
+fn scripted_midi_input_choices_update_the_live_disabled_set() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("setup.midi_input_devices", json!({"disable": ["Keys"]})).unwrap();
+    assert!(app.ui.midi_inputs_disabled.iter().any(|n| n == "Keys"));
+    app.run("setup.midi_input_devices", json!({"enable": ["Keys"]})).unwrap();
+    assert!(!app.ui.midi_inputs_disabled.iter().any(|n| n == "Keys"));
+}
+
+#[test]
 fn the_status_names_a_plugin_the_engine_took_out() {
     use soundcraft_model::{ChannelFormat, Insert, TrackKind};
     let mut s = soundcraft_model::Session::default();
@@ -1617,4 +1626,28 @@ fn assert_history_unchanged(
     assert_eq!(app.engine.undo_history().len(), undo);
     assert_eq!(app.engine.undo_history(), history);
     assert_eq!(&app.engine.journal, journal);
+}
+
+#[test]
+fn recording_with_only_an_instrument_track_armed_places_the_played_midi() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    app.run("track.new", json!({"count": 1, "kind": "instrument"})).unwrap();
+    let t = app.engine.session().tracks.iter().find(|t| t.kind == soundcraft_model::TrackKind::Instrument).map(|t| t.id).unwrap();
+    app.run("mix.record_arm", json!({"track": t.0, "value": true})).unwrap();
+    assert!(app.engine.session().track(t).unwrap().mixer.record_arm);
+    app.run("transport.record", json!({})).unwrap();
+    app.handle_transport(0.25);
+    // No audio input is needed for a MIDI-only take.
+    assert!(app.engine.transport.recording, "{}", app.ui.status);
+    assert!(app.recorder.is_none());
+    // What the player collected (stamped 100 samples early for the first one: device buffer).
+    app.midi_take = vec![(-100, [0x90, 60, 100]), (24_000, [0x80, 60, 0])];
+    app.engine.transport.position = 48_000;
+    app.stop_play();
+    assert!(!app.engine.transport.recording);
+    assert!(app.ui.status.contains("1 MIDI note"), "{}", app.ui.status);
+    let clips = app.engine.session().track(t).unwrap().clips();
+    assert_eq!(clips.len(), 1);
+    let soundcraft_model::ClipContent::Midi { sequence } = &clips[0].content else { panic!("not MIDI") };
+    assert_eq!(sequence.notes.iter().map(|n| (n.pitch, n.start)).collect::<Vec<_>>(), vec![(60, 0)]);
 }

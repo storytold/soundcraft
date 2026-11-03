@@ -58,6 +58,7 @@ pub(crate) fn open_session_linked(e: &mut Engine, path: &Path, links: &Path) -> 
         }
     }
     missing.extend(relink_videos(&mut s, links));
+    missing.extend(crate::cmd::reload_banks(&mut s, links));
     s.folder = Some(dir);
     e.replace_session(s);
     // Save writes back to `e.path`, which is text: a session at a name that isn't valid Unicode
