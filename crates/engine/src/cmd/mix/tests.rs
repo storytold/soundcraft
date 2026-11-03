@@ -345,3 +345,36 @@ fn insert_and_send_reject_invalid_slot() {
     let r = e.execute("mix.send", &json!({"track": "Gtr", "bus": "Verb"})).unwrap();
     assert_eq!(r["slot"], 0);
 }
+
+#[test]
+fn indexed_envelope_lookup_matches_the_walk() {
+    let envs: [Vec<(i64, f32)>; 5] = [
+        Vec::new(),
+        vec![(100, -3.0)],
+        vec![(0, 0.0), (100, -6.0), (100, 3.0), (250, -12.0), (900, 1.0)],
+        // Out of order, as a hand-edited session file may hold.
+        vec![(500, -1.0), (100, -6.0), (700, 4.0), (300, 2.0), (700, -9.0), (50, 0.5)],
+        (0..200).map(|i| ((i * 37) % 1000, (i as f32 * 0.7).sin() * 12.0)).collect(),
+    ];
+    for env in &envs {
+        let lookup = EnvLookup::new(env);
+        for at in -20..1100 {
+            assert_eq!(lookup.db(at).to_bits(), env_db(env, at).to_bits(), "{env:?} at {at}");
+        }
+    }
+}
+
+#[test]
+fn clip_gain_to_volume_with_a_large_envelope_stays_fast() {
+    let (mut e, t) = tone_session(&[]);
+    let clip = e.session().track(t).unwrap().clips()[0].id;
+    let n = 200_000i64;
+    let c = e.session_mut().find_clip_mut(clip).unwrap();
+    c.length = n * 5 + 10;
+    c.gain_env = (0..n).map(|i| (i * 5, if i % 2 == 0 { -6.0 } else { 0.0 })).collect();
+    let start = std::time::Instant::now();
+    e.execute("automation.clip_gain_to_volume", &json!({"track": t.0, "start": 0, "end": n * 5 + 10})).unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+    let lane = e.session().track(t).unwrap().lane(&AutoParam::Volume).unwrap();
+    assert!(lane.points.len() as i64 >= n);
+}
