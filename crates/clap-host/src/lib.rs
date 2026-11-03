@@ -222,10 +222,22 @@ mod tests {
         assert!(plugin_info("reverb").is_none());
     }
 
+    /// A new directory under the temp dir that this test alone created, readable only by its user
+    /// on Unix. Creation fails if the path already exists: the test then loads native libraries
+    /// from it, so it must never reuse a directory someone else could have put a library in.
+    fn fresh_private_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_nanos());
+        let d = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&d).unwrap_or_else(|e| panic!("cannot create a fresh test directory {}: {e}", d.display()));
+        d
+    }
+
     #[test]
     fn garbage_files_are_errors_not_crashes() {
-        let d = std::env::temp_dir().join(format!("soundcraft-clap-garbage-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = fresh_private_dir("soundcraft-clap-garbage");
         std::fs::create_dir_all(d.join("Bundle.clap/Contents/MacOS")).unwrap();
         std::fs::write(d.join("garbage.clap"), b"\x7fELF this is not a plugin \x00\x01\x02").unwrap();
         std::fs::write(d.join("empty.clap"), b"").unwrap();
