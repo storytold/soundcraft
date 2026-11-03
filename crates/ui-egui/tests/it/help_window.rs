@@ -103,3 +103,34 @@ fn every_help_page_draws_without_closing_help() {
     }
     assert!(matches!(app.ui.help.page, Page::Process(_) | Page::Command(_)));
 }
+
+/// With the app's real fonts every character on every help page has a glyph: the test harness
+/// panics on one that would draw as a box. On a small screen every page also fits inside it:
+/// nothing on a page may push the help window past the edge.
+#[test]
+fn every_help_page_draws_with_real_glyphs_and_fits_a_small_screen() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.ui.show_help = true;
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(760.0, 700.0)).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(2);
+    let tabs = [Tab::Contents, Tab::Index, Tab::Search];
+    for (i, page) in help::pages().into_iter().enumerate() {
+        let s = h.state_mut();
+        s.ui.help.go(page);
+        s.ui.help.tab = tabs[i % 3];
+        s.ui.help.query = ["mix", "cmd+s", "loop record"][i % 3].into();
+        h.step();
+        h.step();
+        assert!(h.state().ui.show_help);
+        let page = &h.state().ui.help.page;
+        let window = h.ctx.memory(|m| m.area_rect(egui::Id::unique(Some("SoundCraft Help")))).unwrap();
+        assert!(window.max.x <= 760.0 && window.min.x >= 0.0, "{page:?} widens help to {window:?}");
+    }
+}

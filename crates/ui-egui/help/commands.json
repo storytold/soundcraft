@@ -749,7 +749,7 @@
   },
   "event.quantize": {
    "category": "midi",
-   "text": "Moves notes onto the grid to tighten timing. Strength controls how far they move; swing adds a shuffle feel."
+   "text": "Moves the selected notes onto the grid to tighten timing. Strength sets how far they move: 100% puts them exactly on the grid. Scripts can also add swing."
   },
   "event.remove_duplicate_notes": {
    "category": "tempo",
@@ -823,7 +823,7 @@
   },
   "file.bounce_mix": {
    "category": "sessions",
-   "text": "Renders the mix (or one bus) to an audio file. You choose format, bit depth and range, and can normalize or dither. It reports peak, loudness (LUFS) and true peak when done."
+   "text": "Renders the mix to an audio file: the edit selection, or the whole session when nothing is selected. You choose the file, the format (WAV, AIFF or FLAC) and the bit depth, and can normalize or dither. When it's done, the status bar shows the file's peak level and loudness (LUFS). Scripts can also bounce a single bus."
   },
   "file.bounce_stems": {
    "category": "sessions",
@@ -859,7 +859,7 @@
   },
   "file.import_audio": {
    "category": "sessions",
-   "text": "Brings audio files into the session, on new tracks or on the selected track, at a chosen position."
+   "text": "Brings an audio file into the session on a new track, starting at the beginning of the session. Long files load in the background so you can keep working. Scripts can also choose the track and the start position."
   },
   "file.import_clip_groups": {
    "category": "sessions",
@@ -1117,12 +1117,12 @@
   },
   "options.keyboard_focus": {
    "category": "options",
-   "text": "Chooses what single-key presses do in the Edit window. Commands focus turns letter keys into edit commands (see the Commands Focus keys below). Clip List and Groups focus exist but are only partly done."
+   "text": "Chooses what single-key presses do in the Edit window. Commands focus turns letter keys into edit commands; the a-z button in the Edit window toolbar turns it on and off. Clip List and Groups focus exist but are only partly done."
   },
   "options.keyboard_lock": {
    "category": "editing",
-   "text": "Locks the edit mode and tool so the keys that normally switch them (F1 to F10) can't change them by accident.",
-   "limits": "Setting stored only; nothing uses it yet."
+   "text": "Keeps the keyboard from changing the edit mode by accident. While it's on and you're in Grid mode, F4 no longer switches between Absolute and Relative Grid.",
+   "limits": "Only F4 in Grid mode is locked so far: F1 to F3 and the tool keys (F5 to F10) still switch, and clicking the toolbar always works."
   },
   "options.layered_editing": {
    "category": "editing",
@@ -1247,7 +1247,7 @@
   },
   "session.new": {
    "category": "sessions",
-   "text": "Starts a new session. You choose name, sample rate and bit depth, or start from the demo song."
+   "text": "Starts a new session. You choose its name and sample rate, or start from the demo song."
   },
   "session.open": {
    "category": "sessions",
@@ -1351,7 +1351,7 @@
   },
   "setup.session": {
    "category": "workspace",
-   "text": "Session settings: frame rate, bit depth, timecode start and session name."
+   "text": "Session settings: the timecode rate and the bit depth of the session's audio. Scripts can also set the timecode start and the session name."
   },
   "setup.transcription_settings": {
    "category": "workspace",
@@ -2007,7 +2007,7 @@
   },
   "view.ruler": {
    "category": "viewing",
-   "text": "Shows or hides one ruler above the tracks: bars|beats, minutes:seconds, timecode, feet+frames, samples, tempo, meter, markers, key or chords."
+   "text": "Shows or hides one ruler above the tracks: bars and beats, minutes:seconds, timecode, feet+frames, samples, tempo, meter, markers, key or chords."
   },
   "view.ruler_all": {
    "category": "viewing",
