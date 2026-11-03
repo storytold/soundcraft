@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (the cut of a crossfade in SoundCraft sessions; previously trivial: Float32 file headroom, #791) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-11-02 · **Change:** trivial (bounces carry a BWF time reference, #1296; previously minor: the cut of a crossfade in SoundCraft sessions) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every format Pro Tools reads or writes, and ours. The Pro Tools list comes from the document types
 its bundle declares (`CFBundleDocumentTypes` in Info.plist: names only, nothing else read) and its
@@ -33,7 +33,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 
 | Format | Pro Tools | Read | Write | Tests / notes |
 |---|---|---|---|---|
-| WAV / BWF (PCM 16/24/32, float 32), `bext` | native | ✅ | ✅ | Native reader/writer, TPDF dither option; Float32 retains finite headroom (#791); also 8-bit and float 64 read. An empty data chunk followed by metadata reads as no audio; an unfinalised recording's audio is still read (#466). |
+| WAV / BWF (PCM 16/24/32, float 32), `bext` | native | ✅ | ✅ | Native reader/writer, TPDF dither option; Float32 retains finite headroom (#791); also 8-bit and float 64 read. An empty data chunk followed by metadata reads as no audio; an unfinalised recording's audio is still read (#466). WAV bounces (mix and stems) carry a `bext` TimeReference: the session's timecode start plus the bounce start (#1296). |
 | RF64 / BW64 (> 4 GiB) | read/write | ✅ | ✅ | `encode_wav_rf64` |
 | WAV `WAVE_FORMAT_EXTENSIBLE` multichannel with channel mask | read/write | ✅ | ✅ | `encode_with_channel_mask`; default 5.1 import creates a stereo track (#89, PR #128) |
 | AIFF / AIFF-C | native | ✅ | ✅ (`fl32`) | Native; `fl32` retains finite headroom (#791) |
@@ -80,6 +80,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-02 | trivial | WAV bounces (mix and stems) write a `bext` TimeReference: session timecode start plus bounce start (#1296) |
 | 2026-10-23 | minor | Crossfade cut round-trips in sessions (`cut` on the later clip; absent or `null` = middle of the overlap, `#[serde(default)]`) and the selected crossfade is saved in the edit state (`selected_crossfade`, absent when none). Format version and readiness estimate unchanged |
 | 2026-10-19 | trivial | WAV and AIFF-C Float32 encoders retain finite headroom (#791); whole-file, streaming and bounce regression tests |
 | 2026-10-13 | trivial | WAV: empty data chunk with trailing metadata (#466) |

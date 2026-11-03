@@ -195,6 +195,23 @@ mod bundle_tests {
     }
 
     #[test]
+    fn entries_sharing_one_payload_are_refused() {
+        use std::io::Write as _;
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        w.start_file("Song.scraft", opts).unwrap();
+        w.write_all(Session::default().to_json().unwrap().as_bytes()).unwrap();
+        w.start_file("Audio Files/a.wav", opts).unwrap();
+        w.write_all(&[7u8; 4096]).unwrap();
+        for i in 0..100 {
+            w.shallow_copy_file("Audio Files/a.wav", &format!("Audio Files/copy{i}.wav")).unwrap();
+        }
+        let bundle = w.finish().unwrap().into_inner();
+        let err = read_bundle(&bundle, BUNDLE_LIMITS).unwrap_err();
+        assert!(err.to_string().contains("share data"), "{err}");
+    }
+
+    #[test]
     fn a_bundle_is_saved_only_if_it_opens_again() {
         // #433: the writer keeps to the reader's limits.
         let e = crate::demo::demo_engine();

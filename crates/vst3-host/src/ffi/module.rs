@@ -137,6 +137,16 @@ mod cf {
     }
 }
 
+/// A libloading error with the system's reason. libloading's own text is only "dlopen failed"
+/// (or "dlsym failed", "LoadLibraryExW failed"); the reason (`dlerror`, the Windows error) is its
+/// source.
+fn with_reason(e: &libloading::Error) -> String {
+    match std::error::Error::source(e) {
+        Some(why) => format!("{e}: {why}"),
+        None => e.to_string(),
+    }
+}
+
 /// Opens the shared library and runs the platform module entry (`bundleEntry` with a
 /// `CFBundleRef` on macOS, `InitDll` on Windows, `ModuleEntry` with the `dlopen` handle on Linux).
 /// Also returns the matching module exit, when the entry ran and the module exports one.
@@ -146,7 +156,7 @@ fn open_library(bundle: &Path, exe: &Path) -> Result<(libloading::Library, Optio
         use libloading::os::unix::{Library as UnixLib, RTLD_LOCAL, RTLD_NOW};
         // SAFETY: loading a shared library runs its static initialisers. That is inherent to
         // hosting plugins; we only load files found in VST3 plugin folders or named explicitly.
-        let lib = unsafe { UnixLib::open(Some(exe), RTLD_NOW | RTLD_LOCAL) }.map_err(|e| e.to_string())?;
+        let lib = unsafe { UnixLib::open(Some(exe), RTLD_NOW | RTLD_LOCAL) }.map_err(|e| with_reason(&e))?;
         type ModuleEntry = unsafe extern "C" fn(*mut c_void) -> bool;
         // SAFETY: `ModuleEntry` is the VST3-mandated Linux entry with this signature.
         let entry = unsafe { lib.get::<ModuleEntry>(b"ModuleEntry\0") }.ok().map(|s| *s);
@@ -170,7 +180,7 @@ fn open_library(bundle: &Path, exe: &Path) -> Result<(libloading::Library, Optio
     {
         // SAFETY: loading a shared library runs its static initialisers. That is inherent to
         // hosting plugins; we only load files found in VST3 plugin folders or named explicitly.
-        let lib = unsafe { libloading::Library::new(exe) }.map_err(|e| e.to_string())?;
+        let lib = unsafe { libloading::Library::new(exe) }.map_err(|e| with_reason(&e))?;
         let mut exit: Option<ModuleExit> = None;
         #[cfg(windows)]
         {
@@ -335,7 +345,7 @@ impl Bundle {
         // SAFETY: `GetPluginFactory` is the VST3-mandated export with this signature.
         let get = match unsafe { lib.get::<GetFactory>(b"GetPluginFactory\0") } {
             Ok(sym) => *sym,
-            Err(e) => return Err(fail(format!("not a VST3 plugin: {e}"))),
+            Err(e) => return Err(fail(format!("not a VST3 plugin (no GetPluginFactory): {}", with_reason(&e)))),
         };
         // SAFETY: the module is loaded and its entry function (if any) has run.
         let raw = unsafe { get() };
@@ -449,6 +459,7 @@ impl Bundle {
             active: false,
             processing: false,
             max_frames: 0,
+            process_mode: sv::ProcessModes_::kRealtime as i32,
             in_params: ComWrapper::new(ParamChanges::new(PARAM_QUEUE_CAP)),
             out_params: ComWrapper::new(ParamChanges::new(PARAM_QUEUE_CAP)),
             in_events: ComWrapper::new(EventList::new(EVENT_CAP)),
