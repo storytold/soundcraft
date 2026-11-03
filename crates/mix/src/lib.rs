@@ -145,6 +145,8 @@ pub struct MixEngine {
     pub metronome: bool,
     /// Third-party instances come from [`MixEngine::adopt`] instead of being created in `sync`.
     external: bool,
+    /// An offline render: the plugins `sync` creates are told so ([`Plugin::set_offline`]).
+    offline: bool,
     /// Instances handed over by the host, waiting for `sync` to place them.
     adopt: HashMap<(TrackId, usize), PreparedInstance>,
     /// Instances `sync` took out of service, for the host to drop (see [`MixEngine::take_retired`]).
@@ -178,6 +180,7 @@ impl MixEngine {
             recording: false,
             metronome: false,
             external: false,
+            offline: false,
             adopt: HashMap::new(),
             retired: Vec::new(),
             work: Vec::new(),
@@ -188,6 +191,11 @@ impl MixEngine {
     /// [`MixEngine::adopt`] instead of being created in `sync` (see the crate docs).
     pub fn set_external_instances(&mut self, on: bool) {
         self.external = on;
+    }
+
+    /// Offline render (a bounce): plugins created from now on are told they render offline.
+    pub fn set_offline(&mut self, on: bool) {
+        self.offline = on;
     }
 
     /// Takes instances created off the audio thread; the next render's `sync` places them.
@@ -272,7 +280,8 @@ impl MixEngine {
         if self.main.len() != main_ch {
             self.main = vec![vec![0.0; mb]; main_ch];
         }
-        let mut cx = SlotCtx { sr: self.sample_rate, mb, external: self.external, adopt: &mut self.adopt, retired: &mut self.retired };
+        let mut cx =
+            SlotCtx { sr: self.sample_rate, mb, external: self.external, offline: self.offline, adopt: &mut self.adopt, retired: &mut self.retired };
         let gone: Vec<TrackId> = self.strips.keys().filter(|id| s.track(**id).is_none()).copied().collect();
         for id in gone {
             self.meters.remove(&id);
