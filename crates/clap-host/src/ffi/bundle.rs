@@ -9,6 +9,7 @@ use super::{
 };
 #[cfg(all(unix, not(target_os = "macos")))]
 use super::{CLAP_EXT_POSIX_FD_SUPPORT, CLAP_EXT_TIMER_SUPPORT, clap_plugin_posix_fd_support, clap_plugin_timer_support};
+use super::{CLAP_EXT_RENDER, clap_plugin_render};
 
 // ---- loaded binaries -----------------------------------------------------------------------
 
@@ -44,6 +45,16 @@ fn loaded() -> &'static Mutex<HashMap<PathBuf, Arc<Bundle>>> {
     L.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// A libloading error with the system's reason. libloading's own text is only "dlopen failed"
+/// (or "dlsym failed", "LoadLibraryExW failed"); the reason (`dlerror`, the Windows error) is its
+/// source.
+fn with_reason(e: &libloading::Error) -> String {
+    match std::error::Error::source(e) {
+        Some(why) => format!("{e}: {why}"),
+        None => e.to_string(),
+    }
+}
+
 impl Bundle {
     /// Loads (once per path, then cached for the life of the process) and initialises a `.clap`.
     pub fn load(path: &Path) -> Result<Arc<Bundle>, ClapError> {
@@ -61,12 +72,12 @@ impl Bundle {
         let exe = scan::bundle_executable(path).ok_or_else(|| err("no loadable binary".into()))?;
         // SAFETY: loading a shared library runs its static initialisers. That is inherent to
         // hosting plugins; we only load files found in CLAP plugin folders or named explicitly.
-        let lib = unsafe { libloading::Library::new(&exe) }.map_err(|e| err(e.to_string()))?;
+        let lib = unsafe { libloading::Library::new(&exe) }.map_err(|e| err(with_reason(&e)))?;
         // SAFETY: `clap_entry` is the CLAP-mandated exported data symbol of type
         // `const clap_plugin_entry`; the symbol's address is therefore a `*const clap_plugin_entry`.
         let entry: *const clap_plugin_entry = match unsafe { lib.get::<*const clap_plugin_entry>(b"clap_entry\0") } {
             Ok(sym) => *sym,
-            Err(e) => return Err(err(format!("not a CLAP plugin: {e}"))),
+            Err(e) => return Err(err(format!("not a CLAP plugin (no clap_entry): {}", with_reason(&e)))),
         };
         if entry.is_null() {
             return Err(err("null clap_entry".into()));
@@ -180,6 +191,7 @@ impl Bundle {
             latency: std::ptr::null(),
             notes: std::ptr::null(),
             state_ext: std::ptr::null(),
+            render: std::ptr::null(),
             gui: Arc::new(GuiLink::default()),
             raw: Vec::with_capacity(EVENT_CAP),
             out_params: Vec::with_capacity(EVENT_CAP),
@@ -207,6 +219,7 @@ impl Bundle {
         inst.latency = inst.extension::<clap_plugin_latency>(CLAP_EXT_LATENCY);
         inst.notes = inst.extension::<clap_plugin_note_ports>(CLAP_EXT_NOTE_PORTS);
         inst.state_ext = inst.extension::<clap_plugin_state>(CLAP_EXT_STATE);
+        inst.render = inst.extension::<clap_plugin_render>(CLAP_EXT_RENDER);
         let gui = inst.extension::<clap_plugin_gui>(CLAP_EXT_GUI);
         inst.gui = Arc::new(GuiLink {
             inner: Mutex::new(GuiInner {

@@ -309,6 +309,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// A binary the system refuses to load reports the system's reason (missing library, wrong
+    /// glibc, not an ELF file), not just "dlopen failed".
+    #[test]
+    fn a_binary_that_does_not_load_says_why() {
+        let d = std::env::temp_dir().join(format!("soundcraft-vst3-reason-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("garbage.vst3");
+        std::fs::write(&f, b"\x7fELF this is not a plugin \x00\x01\x02").unwrap();
+        let msg = load_bundle(&f).err().map(|e| e.to_string()).unwrap_or_default();
+        let reason = msg.split_once("failed: ").map_or("", |(_, r)| r.trim());
+        assert!(!reason.is_empty(), "no reason in: {msg}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     // Unix only: the test points a ".vst3" at a system library through a symlink.
     #[cfg(unix)]
     #[test]
@@ -328,6 +343,7 @@ mod tests {
         std::os::unix::fs::symlink(&lib, d.join("z.vst3")).unwrap();
         let e = load_bundle(&d.join("z.vst3")).unwrap_err();
         assert!(e.to_string().contains("not a VST3 plugin"), "{e}");
+        assert!(e.to_string().contains("GetPluginFactory"), "the system's reason names the missing export: {e}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
