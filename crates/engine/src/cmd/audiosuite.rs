@@ -91,7 +91,8 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids: Vec<_> = ids.into_iter().filter(|id| seen.insert(*id)).collect();
     // Refuse before processing anything. Every result is kept as a new source for the life of
     // the command (and undo holds it), so cap the total output across clips, not just each one.
-    let grows = growth(&name, ratio, semitones, sr.as_f64(), to, selection).max(1.0);
+    // (pitch_shift resamples its stretched result back to the input length)
+    let grows = if name == "pitch_shift" { 1.0 } else { growth(&name, ratio, semitones, sr.as_f64(), to, selection).max(1.0) };
     let mut budget = soundcraft_mix::MAX_RENDER_SAMPLES;
     for id in &ids {
         let Some((track, clip)) = e.session().find_clip(*id) else { continue };
