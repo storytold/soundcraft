@@ -41,7 +41,7 @@ pub fn midi_thru_track(s: &Session) -> Option<TrackId> {
 
 /// Hand live MIDI to an instrument at the start of the block: notes (velocity 0 is a note off)
 /// and the other channel messages, all on channel 1 like the clips' events.
-pub(crate) fn play_live_midi(inst: &mut PluginSlot, events: &[[u8; 3]], held: &mut Vec<u8>) {
+pub(crate) fn play_live_midi(inst: &mut PluginSlot, events: &[[u8; 3]], held: &mut Vec<u8>, sustain: &mut bool) {
     for &[status, d1, d2] in events {
         let (d1, d2) = (d1 & 0x7F, d2 & 0x7F);
         match status & 0xF0 {
@@ -55,7 +55,12 @@ pub(crate) fn play_live_midi(inst: &mut PluginSlot, events: &[[u8; 3]], held: &m
                 inst.plugin.note_off(0, d1);
                 held.retain(|p| *p != d1);
             }
-            kind @ (0xA0 | 0xB0 | 0xC0 | 0xD0 | 0xE0) => inst.plugin.midi(0, [kind, d1, d2]),
+            kind @ (0xA0 | 0xB0 | 0xC0 | 0xD0 | 0xE0) => {
+                if kind == 0xB0 && d1 == 64 {
+                    *sustain = d2 >= 64;
+                }
+                inst.plugin.midi(0, [kind, d1, d2]);
+            }
             _ => {}
         }
     }
@@ -63,7 +68,8 @@ pub(crate) fn play_live_midi(inst: &mut PluginSlot, events: &[[u8; 3]], held: &m
 
 /// Releases every note the instrument is holding from live input (the track was disarmed, or
 /// its port closed). The pedal goes up first, or the note-offs would just sustain.
-pub(crate) fn release_live_midi(inst: &mut PluginSlot, held: &mut Vec<u8>) {
+pub(crate) fn release_live_midi(inst: &mut PluginSlot, held: &mut Vec<u8>, sustain: &mut bool) {
+    *sustain = false;
     inst.plugin.midi(0, [0xB0, 64, 0]);
     for pitch in held.drain(..) {
         inst.plugin.note_off(0, pitch);

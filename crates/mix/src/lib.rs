@@ -251,10 +251,11 @@ impl MixEngine {
         self.max_block
     }
 
-    /// True while an instrument is holding a note played from live MIDI input: the host must keep
-    /// rendering that track, or a key held down would be cut off.
+    /// True while an instrument is holding a note played from live MIDI input, or the live
+    /// sustain pedal is down: the host must keep rendering that track, or a key held down would be
+    /// cut off.
     pub fn live_held(&self) -> bool {
-        self.strips.values().any(|s| !s.live_held.is_empty())
+        self.strips.values().any(|s| !s.live_held.is_empty() || s.live_sustain)
     }
 
     /// How long an instrument's release can ring after the last live note, in samples: how long
@@ -272,6 +273,7 @@ impl MixEngine {
                 inst.plugin.all_notes_off();
             }
             strip.live_held.clear();
+            strip.live_sustain = false;
         }
         self.live_midi.clear();
     }
@@ -300,6 +302,7 @@ impl MixEngine {
             }
             s.held.clear();
             s.live_held.clear();
+            s.live_sustain = false;
             s.chase = true;
             s.align.clear();
             s.align_pre.clear();

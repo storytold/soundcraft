@@ -6,6 +6,7 @@ use soundcraft_audio_io::{AudioBuffer, EncodeOptions, FileFormat};
 use soundcraft_model::{BusId, ChannelFormat, Clip, ClipContent, Session, Source, SourceAudio, SourceId, TrackId, TrackKind};
 use soundcraft_time::{Range, Samples};
 use std::ffi::OsStr;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,7 +59,8 @@ pub fn read_file_max(path: impl AsRef<Path>, max: u64) -> Result<Vec<u8>> {
     if meta.len() > max {
         return Err(EngineError::Io(format!("{}: too large ({} bytes, limit {max})", path.display(), meta.len())));
     }
-    let bytes = std::fs::read(path).map_err(err)?;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).map_err(err)?.take(max.saturating_add(1)).read_to_end(&mut bytes).map_err(err)?;
     if bytes.len() as u64 > max {
         return Err(EngineError::Io(format!("{}: too large ({} bytes, limit {max})", path.display(), bytes.len())));
     }

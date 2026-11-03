@@ -573,6 +573,11 @@ fn live_midi_plays_the_armed_instrument_while_stopped() {
     eng.live_midi.push([0x92, 60, 0]);
     render_block(&mut eng, &s, 0);
     assert_eq!(*heard.lock().unwrap(), vec![('n', 60, 100), ('m', 0xB0, 64), ('m', 0xE0, 0), ('f', 60, 0)]);
+    // The note-off released the key, but the pedal is still down: keep rendering its tail.
+    assert!(eng.live_held());
+    eng.live_midi.push([0xB2, 64, 0]);
+    render_block(&mut eng, &s, 0);
+    assert!(!eng.live_held());
 }
 
 #[test]

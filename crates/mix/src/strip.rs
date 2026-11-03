@@ -43,6 +43,8 @@ pub(crate) struct Strip {
     /// Pitches this strip's instrument is holding from live MIDI input, so they can be released
     /// when the track stops taking input or the port goes away.
     pub(crate) live_held: Vec<u8>,
+    /// The live sustain pedal (CC 64) is down: voices stay sounding after their keys are released.
+    pub(crate) live_sustain: bool,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
     pub(crate) muted: bool,
@@ -144,6 +146,7 @@ impl Strip {
             bank: None,
             held: Vec::new(),
             live_held: Vec::new(),
+            live_sustain: false,
             chase: true,
             muted: false,
             gr: 0.0,
@@ -320,11 +323,11 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
             schedule_notes(s, t, pos, frames, inst, &mut strip.held);
         }
         if !live.midi.is_empty() && takes_midi_input(t, live.thru) {
-            play_live_midi(inst, live.midi, &mut strip.live_held);
-        } else if !takes_midi_input(t, live.thru) && !strip.live_held.is_empty() {
+            play_live_midi(inst, live.midi, &mut strip.live_held, &mut strip.live_sustain);
+        } else if !takes_midi_input(t, live.thru) && (!strip.live_held.is_empty() || strip.live_sustain) {
             // The track was disarmed or unmonitored while a key was down: the note-off can no
             // longer reach it, so release what it was holding instead of leaving it sounding.
-            release_live_midi(inst, &mut strip.live_held);
+            release_live_midi(inst, &mut strip.live_held, &mut strip.live_sustain);
         }
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
@@ -442,9 +445,9 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
             // Stopped and no longer taking input: nothing renders, but a note played just before
             // the disarm must still be released (the note-off has nowhere else to come from).
             if let Some(inst) = strip.instrument.as_mut().filter(|i| !i.failed)
-                && !strip.live_held.is_empty()
+                && (!strip.live_held.is_empty() || strip.live_sustain)
             {
-                release_live_midi(inst, &mut strip.live_held);
+                release_live_midi(inst, &mut strip.live_held, &mut strip.live_sustain);
             }
         }
         TrackKind::Audio => render_audio_clips(s, t, strip, blk),

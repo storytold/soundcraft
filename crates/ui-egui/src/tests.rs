@@ -30,6 +30,15 @@ fn new_session_stops_playback_and_the_old_clock() {
 }
 
 #[test]
+fn scripted_midi_input_choices_update_the_live_disabled_set() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("setup.midi_input_devices", json!({"disable": ["Keys"]})).unwrap();
+    assert!(app.ui.midi_inputs_disabled.iter().any(|n| n == "Keys"));
+    app.run("setup.midi_input_devices", json!({"enable": ["Keys"]})).unwrap();
+    assert!(!app.ui.midi_inputs_disabled.iter().any(|n| n == "Keys"));
+}
+
+#[test]
 fn the_status_names_a_plugin_the_engine_took_out() {
     use soundcraft_model::{ChannelFormat, Insert, TrackKind};
     let mut s = soundcraft_model::Session::default();
