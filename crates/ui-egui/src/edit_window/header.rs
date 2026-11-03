@@ -121,7 +121,12 @@ fn name_plate(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, select
     let (text_pos, align) =
         if overflows { (pos2(name_r.min.x + 1.5, name_r.center().y), Align2::LEFT_CENTER) } else { (name_r.center(), Align2::CENTER_CENTER) };
     ui.painter().with_clip_rect(name_r).text(text_pos, align, &shown_name, font, name_color);
-    let nresp = ui.interact(name_r, ui.scope_id().with(("name", id.0)), Sense::click_and_drag());
+    let mut nresp = ui.interact(name_r, ui.scope_id().with(("name", id.0)), Sense::click_and_drag());
+    if overflows {
+        nresp = nresp.on_hover_ui(|ui| {
+            ui.label(&shown_name);
+        });
+    }
     if nresp.double_clicked() {
         app.dialogs.open_rename_track(id, &track.name);
     } else if nresp.clicked() {

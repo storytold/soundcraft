@@ -1540,7 +1540,7 @@ fn short_track_name_is_centered_and_long_name_is_left_aligned() {
     let r1 = row(&h, 1);
 
     let first_text = h.output().shapes.iter().find_map(|s| match &s.shape {
-        Shape::Text(t) if t.galley.text() == "Vocal" && s.clip_rect.intersects(r0) => Some(t.pos),
+        Shape::Text(t) if t.galley.text() == "Vocal" && s.clip_rect.intersects(r0) => Some((t.pos, t.galley.size())),
         _ => None,
     });
     let long_text = h.output().shapes.iter().find_map(|s| match &s.shape {
@@ -1548,9 +1548,10 @@ fn short_track_name_is_centered_and_long_name_is_left_aligned() {
         _ => None,
     });
 
-    let first_pos = first_text.expect("short track name should be rendered in edit header");
+    let (first_pos, first_size) = first_text.expect("short track name should be rendered in edit header");
     let long_pos = long_text.expect("long track name should be rendered in edit header");
 
     assert_eq!(long_pos.x, r1.min.x + 17.5);
-    assert!(first_pos.x > r0.min.x + 25.0, "short name should be centered (was at {})", first_pos.x);
+    let first_center_x = first_pos.x + first_size.x * 0.5;
+    assert!((first_center_x - (r0.min.x + 64.5)).abs() <= 0.1, "short name should be centered (center was at {first_center_x})");
 }
