@@ -785,6 +785,17 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
         .collect()
 }
 
+/// Checks that `path` is a file directly inside the media folder `media_dir` once both are
+/// canonical (symlinks resolved), so a plan handed to an import cannot name media elsewhere.
+pub(crate) fn check_in_media_dir(path: &Path, media_dir: &Path) -> Result<()> {
+    let dir = std::fs::canonicalize(media_dir).map_err(|e| EngineError::Io(format!("media folder {}: {e}", media_dir.display())))?;
+    let file = std::fs::canonicalize(path).map_err(|e| EngineError::Io(format!("{}: {e}", path.display())))?;
+    if file.parent() != Some(dir.as_path()) {
+        return Err(EngineError::Io(format!("{} is outside the media folder {}", path.display(), dir.display())));
+    }
+    Ok(())
+}
+
 /// Bounded, root-checked media read for interchange imports.
 pub(crate) fn read_interchange_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
     use std::io::Read;

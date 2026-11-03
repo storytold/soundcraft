@@ -14,7 +14,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Session Data (AAF)...",
             ["File", "Import"],
             None,
-            "{plan, selected:[track indices], media?: copy, mapping?: absolute|relative, offset_samples?: 0} — new tracks, full source handles, undoable",
+            "{plan, media_dir, selected:[track indices], media?: copy, mapping?: absolute|relative, offset_samples?: 0} — new tracks, full source handles, undoable",
             stopped,
             |e, p| {
                 stopped(e).map_err(|why| bad("file.import_aaf", why))?;
