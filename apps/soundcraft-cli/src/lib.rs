@@ -11,6 +11,7 @@ mod catalog;
 mod convert;
 mod error;
 mod info;
+pub mod logger;
 mod mcp;
 mod session;
 
