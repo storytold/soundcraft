@@ -14,6 +14,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 const PLAYER: &str = "soundfont";
+/// The largest bank file the engine will read into memory (a hostile or mistaken path cannot ask
+/// for more). The parser caps the sample data it accepts at 256 MiB; the rest is headers.
+const MAX_BANK_BYTES: u64 = 512 * 1024 * 1024;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -40,7 +43,7 @@ fn instrument_track(e: &Engine, id: &str, p: &Value) -> Result<TrackId> {
 
 /// Read and parse the bank at `path` (a file the person picked, or one a session names).
 pub(crate) fn read_bank(path: &Path) -> Result<Arc<SoundFont>> {
-    let bytes = crate::io::read_file(path)?;
+    let bytes = crate::io::read_file_max(path, MAX_BANK_BYTES)?;
     SoundFont::parse(&bytes).map(Arc::new).map_err(|why| EngineError::Io(format!("{}: {why}", path.display())))
 }
 
@@ -58,19 +61,37 @@ pub fn track_bank(s: &Session, t: TrackId) -> Option<(String, Arc<SoundFont>)> {
 fn load(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "mix.soundfont_load";
     let path = str_param(p, "path").filter(|x| !x.trim().is_empty()).ok_or_else(|| bad(id, "`path` required"))?.to_string();
+    // Store an absolute path: playback reloads it from the session, which remembers where the
+    // session file is, not the folder the app happened to run in. Relative paths resolve against
+    // the process working directory now, exactly as they did when picked.
+    let path = if Path::new(&path).is_absolute() {
+        path
+    } else {
+        let cwd = std::env::current_dir().map_err(|why| EngineError::Io(format!("{path}: {why}")))?;
+        cwd.join(Path::new(&path)).to_str().map(str::to_string).ok_or_else(|| bad(id, "the path is not valid UTF-8"))?
+    };
     let t = instrument_track(e, id, p)?;
     let info = soundcraft_dsp::plugin_info(PLAYER).ok_or_else(|| bad(id, "the SoundFont Player is not available"))?;
     let bank = read_bank(Path::new(&path))?;
     let preset = match p.get("preset") {
         None => 0,
         Some(v) => match (v.as_u64(), v.as_str()) {
-            (Some(n), _) if (n as usize) < bank.presets.len() => n as usize,
+            (Some(n), _) => match usize::try_from(n) {
+                Ok(n) if n < bank.presets.len() && n <= 1023 => n,
+                _ => {
+                    return Err(bad(
+                        id,
+                        format!("`preset` must be an index below {} (the player addresses 0–1023) or a preset name", bank.presets.len().min(1024)),
+                    ));
+                }
+            },
             (_, Some(name)) => bank
                 .presets
                 .iter()
                 .position(|x| x.name.eq_ignore_ascii_case(name.trim()))
-                .ok_or_else(|| bad(id, format!("no preset named `{name}`")))?,
-            _ => return Err(bad(id, format!("`preset` must be an index below {} or a preset name", bank.presets.len()))),
+                .filter(|n| *n <= 1023)
+                .ok_or_else(|| bad(id, format!("no preset named `{name}` in the first 1024 presets")))?,
+            _ => return Err(bad(id, format!("`preset` must be an index below {} or a preset name", bank.presets.len().min(1024)))),
         },
     };
     let (name, list) = (bank.name.clone(), preset_list(&bank));
@@ -103,7 +124,7 @@ fn presets(e: &mut Engine, p: &Value) -> Result<Value> {
 
 /// Forget banks no track plays any more (they can be hundreds of megabytes).
 fn drop_unused_banks(s: &mut Session) {
-    let used: Vec<String> = s.tracks.iter().filter_map(|t| t.instrument.as_ref()?.soundfont.clone()).collect();
+    let used: Vec<String> = s.tracks.iter().filter_map(|t| t.instrument.as_ref().filter(|i| i.plugin == PLAYER)?.soundfont.clone()).collect();
     s.pool.retain_banks(|k| used.iter().any(|u| u == k));
 }
 

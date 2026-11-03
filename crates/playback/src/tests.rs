@@ -481,7 +481,7 @@ fn instances_arrive_with_the_session_and_leave_through_the_return_channel() {
     // A session without the insert retires the instance to the return channel.
     tx.send(Cmd::Session(Arc::new(soundcraft_model::Session::default()), Vec::new())).unwrap();
     st.fill(&mut out, 2);
-    assert_eq!(grx.try_recv().unwrap().len(), 1);
+    assert_eq!(grx.try_recv().unwrap().plugins.len(), 1);
     // A sample-rate change rebuilds the engine without dropping plugins on this thread.
     tx.send(Cmd::Session(
         Arc::clone(&s),
@@ -493,7 +493,7 @@ fn instances_arrive_with_the_session_and_leave_through_the_return_channel() {
     s44.sample_rate = soundcraft_time::SampleRate::new(44_100).unwrap();
     tx.send(Cmd::Session(Arc::new(s44), Vec::new())).unwrap();
     st.fill(&mut out, 2);
-    assert_eq!(grx.try_recv().unwrap().len(), 1);
+    assert_eq!(grx.try_recv().unwrap().plugins.len(), 1);
 }
 
 #[test]
@@ -813,4 +813,8 @@ fn midi_played_while_recording_is_stamped_with_its_position() {
     assert_eq!(m, [0x80, 60, 0]);
     // Stamped at the block it was played in, less the device's own buffer (256 frames).
     assert!((48_000..48_000 + 512).contains(&(at + 256)), "{at}");
+    // Stopping the take sends the end marker the host waits for before placing it.
+    tx.send(Cmd::Recording(false)).unwrap();
+    st.fill(&mut out, 2);
+    assert_eq!(mrx.try_recv().unwrap().1, [0xFF, 0, 0]);
 }

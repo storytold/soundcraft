@@ -2,8 +2,9 @@
 //!
 //! The host hands the parsed bank over with [`Plugin::set_soundfont`] (parsing a bank of hundreds
 //! of megabytes is never done here); without one the player is silent. Each note starts a voice
-//! for every region of the current preset whose key and velocity ranges hold it (a stereo sample
-//! is two regions panned apart, a layered sound several). A voice reads its sample with linear
+//! for every region of the current preset whose key and velocity ranges hold it (a layered sound
+//! is several regions, each panned by its zone; linked stereo samples are not decoded as pairs
+//! yet, so a stereo region reads one mono stream). A voice reads its sample with linear
 //! interpolation at the pitch the region and the key give, loops as the region says, and follows
 //! the region's delay–attack–hold–decay–sustain–release volume envelope. Exclusive classes (an
 //! open hi-hat cut by a closed one) are honoured, and a Program Change picks the bank's preset for
@@ -47,6 +48,9 @@ pub static SOUNDFONT_INFO: PluginInfo = PluginInfo {
 };
 
 const VOICES: usize = 64;
+/// Most voices one note-on may start: a layered preset with more regions would steal the voices
+/// it started itself and multiply the work on the audio thread.
+const MAX_STARTED: usize = 16;
 /// Pitch bend range, semitones each way.
 const BEND_RANGE: f32 = 2.0;
 /// Below this an envelope is silent (-100 dB).
@@ -404,10 +408,17 @@ impl SoundFontPlayer {
         // Retriggering a held key releases the earlier voices instead of stacking them.
         self.stop_note(note);
         let vel_gain = (1.0 - self.sens) + self.sens * (f32::from(vel) / 127.0).powi(2);
+        // Voices started by this note-on are newer than `generation`: releasing a class must not
+        // cut a layered region started a moment ago.
+        let generation = self.started;
+        let mut started = 0usize;
         for r in preset.regions.iter().filter(|r| (r.keys.0..=r.keys.1).contains(&note) && (r.vels.0..=r.vels.1).contains(&vel)) {
+            if started >= MAX_STARTED {
+                break;
+            }
             if r.exclusive_class != 0 {
                 let class = r.exclusive_class;
-                for v in self.voices.iter_mut().filter(|v| v.active() && v.region.exclusive_class == class) {
+                for v in self.voices.iter_mut().filter(|v| v.active() && v.region.exclusive_class == class && v.age <= generation) {
                     Self::release(v, CUT_SECONDS, sr);
                 }
             }
@@ -420,6 +431,7 @@ impl SoundFontPlayer {
             let gain = db_to_gain(r.gain_db) * vel_gain;
             let slot = self.free_voice();
             self.started = self.started.wrapping_add(1);
+            started += 1;
             let mut region = *r;
             region.env.attack *= Controllers::scale(self.ctl.attack);
             let env = region.env;
@@ -537,7 +549,7 @@ impl SoundFontPlayer {
                 let i = v.pos as usize;
                 let t = (v.pos - i as f64) as f32;
                 let looping = v.looping();
-                let next = if looping && i + 1 >= v.region.loop_end { v.region.loop_start } else { i + 1 };
+                let next = if looping && i + 1 >= v.region.loop_end { v.region.loop_start } else { i.saturating_add(1) };
                 let at = |k: usize| f32::from(data.get(k).copied().unwrap_or(0)) / 32_768.0;
                 let x = at(i) + (at(next) - at(i)) * t;
                 l += x * a * v.gain_l;
@@ -644,6 +656,7 @@ impl Plugin for SoundFontPlayer {
             s.set_time(10.0, self.sr);
         }
         self.update();
+        self.controllers_changed();
         self.reset();
     }
 
@@ -698,12 +711,13 @@ impl Plugin for SoundFontPlayer {
     }
 
     fn tail_samples(&self) -> usize {
-        // The longest release of the preset's regions (the envelope's own time to silence).
+        // The longest release of the preset's regions, up to the 8× CC 72 can stretch it (the
+        // envelope's own time to silence), capped so a hostile timecent can't run for hours.
         let secs = self
             .current()
             .and_then(|i| self.bank.as_ref()?.presets.get(i))
-            .map_or(0.0, |p| p.regions.iter().map(|r| r.env.release).fold(0.0f32, f32::max))
-            .min(30.0);
+            .map_or(30.0, |p| p.regions.iter().map(|r| r.env.release).fold(0.0f32, f32::max) * 8.0)
+            .clamp(30.0, 900.0);
         (secs * self.sr) as usize
     }
 
@@ -733,9 +747,12 @@ impl Plugin for SoundFontPlayer {
                 return;
             }
             (0xC0, program) => {
-                // New notes use the program's preset; sounding ones finish with theirs.
+                // New notes use the program's preset; sounding ones finish with theirs. The
+                // parameter is the host's copy: keep it in step so a later prepare (device
+                // sample rate change, editor reopen) does not revert the Program Change.
                 if let Some(i) = self.bank.as_ref().and_then(|b| b.preset_for_program(program & 0x7F)) {
                     self.preset = i;
+                    self.p.set("preset", i as f32);
                 }
                 return;
             }

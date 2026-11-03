@@ -42,13 +42,27 @@ pub use strip::{StripMode, StripNames, StripScan, bounded_to_track, name_strippe
 /// one. Only a regular file qualifies: a device or a pipe named by a session or a command would
 /// never end or never answer. Errors name the file.
 pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
+    read_file_max(path, u64::MAX)
+}
+
+/// [`read_file`] with a size limit (bytes): a hostile or mistaken path cannot make the engine
+/// allocate a file of any size. The file is checked before and after reading, since it may grow.
+pub fn read_file_max(path: impl AsRef<Path>, max: u64) -> Result<Vec<u8>> {
     let path = path.as_ref();
     crate::file_access::check_read(path).map_err(EngineError::Io)?;
     let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
-    if !std::fs::metadata(path).map_err(err)?.is_file() {
+    let meta = std::fs::metadata(path).map_err(err)?;
+    if !meta.is_file() {
         return Err(EngineError::Io(format!("{}: not a regular file", path.display())));
     }
-    std::fs::read(path).map_err(err)
+    if meta.len() > max {
+        return Err(EngineError::Io(format!("{}: too large ({} bytes, limit {max})", path.display(), meta.len())));
+    }
+    let bytes = std::fs::read(path).map_err(err)?;
+    if bytes.len() as u64 > max {
+        return Err(EngineError::Io(format!("{}: too large ({} bytes, limit {max})", path.display(), bytes.len())));
+    }
+    Ok(bytes)
 }
 
 /// [`read_file`] as UTF-8 text.
@@ -787,6 +801,20 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
 
 #[cfg(test)]
 mod stem_tests {
+    use std::io::Write;
+
+    #[test]
+    fn read_file_max_refuses_a_file_over_the_limit() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-readmax-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("ten");
+        std::fs::File::create(&f).unwrap().write_all(b"0123456789").unwrap();
+        assert!(super::read_file_max(&f, 9).is_err(), "ten bytes must not pass a nine-byte limit");
+        assert_eq!(super::read_file_max(&f, 10).unwrap(), b"0123456789");
+        assert_eq!(super::read_file(&f).unwrap().len(), 10);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn stems_one_file_per_track() {
         let mut e = crate::demo::demo_engine();

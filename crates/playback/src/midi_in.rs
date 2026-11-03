@@ -74,6 +74,7 @@ impl MidiInputs {
 
     /// Stop sending anywhere (messages are dropped until [`MidiInputs::route_to`]).
     pub fn unroute(&mut self) {
+        self.panic();
         *self.route.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
@@ -95,6 +96,12 @@ impl MidiInputs {
             return;
         };
         let ports = named_ports(&probe);
+        // Dropping a connection closes the port; release the notes it may be holding first, since
+        // their note-offs can no longer arrive.
+        let lost = self.open.iter().any(|(name, _, _)| disabled.contains(name) || !ports.iter().any(|(n, _)| n == name));
+        if lost {
+            self.panic();
+        }
         // Dropping a connection closes the port.
         self.open.retain(|(name, _, _)| !disabled.contains(name) && ports.iter().any(|(n, _)| n == name));
         self.failed.retain(|f| ports.iter().any(|(n, _)| *n == f.port));
@@ -122,8 +129,19 @@ impl MidiInputs {
     /// Close every port.
     pub fn close_all(&mut self) {
         #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+        if !self.open.is_empty() {
+            self.panic();
+        }
+        #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
         self.open.clear();
         self.failed.clear();
+    }
+
+    /// Tells the player to release whatever the open ports were holding.
+    fn panic(&self) {
+        if let Some(sink) = self.route.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+            let _ = sink.panic();
+        }
     }
 
     /// The ports open now, by name.

@@ -1,6 +1,7 @@
 use super::audio::feed_meter;
 use super::plugins::failed_plugin_status;
 use super::{Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, Value, json};
+use crate::MidiFinish;
 
 /// Whether another automation-write pass is due: the transport moved at least
 /// `step` since `last` in either direction. `last == i64::MIN` marks "never
@@ -118,6 +119,7 @@ impl SoundApp {
         self.recording_audio = armed_audio || !armed_midi;
         self.recording_midi = armed_midi;
         self.midi_take.clear();
+        self.midi_finish = None;
         if let Some(p) = &self.player {
             // What was played before this take is not part of it.
             let mut stale = Vec::new();
@@ -197,11 +199,27 @@ impl SoundApp {
             p.set_recording(false);
         }
         let plan = self.take_plan.take();
-        let midi_note = if std::mem::take(&mut self.recording_midi) { self.place_midi_take(plan.as_ref()) } else { None };
+        if std::mem::take(&mut self.recording_midi) {
+            // Only a real audio callback sends the end marker: with a silent clock (or no player
+            // at all, as in tests) nothing more can arrive, so place the take right away.
+            let live = self.player.as_ref().is_some_and(|p| !p.silent);
+            self.midi_finish = Some(MidiFinish {
+                start: plan.as_ref().map_or(self.record_start, |p| p.start),
+                pass: plan.as_ref().and_then(|p| p.pass),
+                punch: self.punch,
+                wait: if live { 90 } else { 0 },
+            });
+            // The callback may still hold the last block's messages behind the stop: drain what
+            // is already queued, then place the take once it sends its end marker.
+            self.collect_recorded_midi();
+            if !live {
+                self.poll_midi_finish();
+            }
+        }
         if !std::mem::take(&mut self.recording_audio) {
             self.punch = None;
-            if let Some(note) = midi_note {
-                self.ui.status = note;
+            if self.midi_finish.is_some() {
+                self.ui.status = "Finishing MIDI take…".into();
             }
             return;
         }
@@ -224,34 +242,60 @@ impl SoundApp {
             log::warn!("recording: {p}");
             self.ui.status = format!("{} ({p})", self.ui.status);
         }
-        if let Some(note) = midi_note {
-            self.ui.status = format!("{} · {note}", self.ui.status);
-        }
     }
 
     /// Collect the MIDI played while recording (called every frame, so the player's queue never
-    /// fills).
-    pub(super) fn collect_recorded_midi(&mut self) {
+    /// fills). Returns true when the callback's end marker arrived.
+    pub(super) fn collect_recorded_midi(&mut self) -> bool {
         /// A take keeps this many messages at most (hours of dense playing).
         const MAX: usize = 500_000;
-        if !self.recording_midi || self.midi_take.len() >= MAX {
-            return;
+        if (!self.recording_midi && self.midi_finish.is_none()) || self.midi_take.len() >= MAX {
+            return false;
         }
+        let mut done = false;
         if let Some(p) = &self.player {
             p.take_recorded_midi(&mut self.midi_take);
             self.midi_take.truncate(MAX);
+        }
+        // No channel message has status 0xFF (the input layer drops System Reset): the callback
+        // uses it to mark the end of a take.
+        self.midi_take.retain(|(_, m)| {
+            if m[0] == 0xFF {
+                done = true;
+                false
+            } else {
+                true
+            }
+        });
+        done
+    }
+
+    /// Place a finished MIDI take once the player has handed over everything it played (or the
+    /// wait ran out: the audio device may have stopped, so no marker will come).
+    pub(super) fn poll_midi_finish(&mut self) {
+        let done = self.collect_recorded_midi();
+        let Some(finish) = self.midi_finish.as_mut() else { return };
+        if !done && finish.wait > 0 {
+            finish.wait -= 1;
+            return;
+        }
+        let Some(finish) = self.midi_finish.take() else { return };
+        let Some(note) = self.place_midi_take(finish.start, finish.pass, finish.punch) else { return };
+        if self.ui.status.starts_with("Recorded ") || self.ui.status.starts_with("Loop-recorded ") {
+            self.ui.status = format!("{} · {note}", self.ui.status);
+        } else {
+            self.ui.status = note;
         }
     }
 
     /// Turn the MIDI played during the take into a clip on each armed instrument and MIDI track
     /// (`midi.record_take`): the punch range when punching in, the loop when loop recording, else
     /// from where recording started to where it stopped. Returns what to tell the user.
-    fn place_midi_take(&mut self, plan: Option<&soundcraft_engine::io::Recording>) -> Option<String> {
+    fn place_midi_take(&mut self, start: Samples, pass: Option<Samples>, punch: Option<Range>) -> Option<String> {
         self.collect_recorded_midi();
         let events = std::mem::take(&mut self.midi_take);
-        let start = self.record_start;
         let last = events.iter().map(|(at, _)| *at).max().unwrap_or(start);
-        let range = match (self.punch, plan.and_then(|p| p.pass)) {
+        let range = match (punch, pass) {
             (Some(punch), _) => punch,
             (None, Some(pass)) => Range::new(start, start.saturating_add(pass.max(1))),
             (None, None) => Range::new(start, self.engine.transport.position.max(last.saturating_add(1)).max(start.saturating_add(1))),
@@ -261,7 +305,7 @@ impl SoundApp {
         }
         // Played right as recording began, a message can be stamped up to a device buffer early:
         // it belongs at the start (not when punching: the pre-roll is not recorded).
-        let early = |at: Samples| self.punch.is_none() && at < range.start && range.start - at < 8_192;
+        let early = |at: Samples| punch.is_none() && at < range.start && range.start - at < 8_192;
         let list: Vec<Value> = events.iter().map(|&(at, [st, a, b])| json!([if early(at) { range.start } else { at }, st, a, b])).collect();
         match self.run("midi.record_take", json!({"start": range.start, "end": range.end, "events": list})) {
             Ok(r) => {

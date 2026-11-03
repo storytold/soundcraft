@@ -1,6 +1,6 @@
 # Target-app parity: SoundCraft vs Avid Pro Tools
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** trivial (built-in plugin counts; the sampler shipped; previously minor: hours to ~95 % for each audience; full number confirmed as an additive weighted sum) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
+> **Last reviewed:** 2026-11-03 · **Last updated:** 2026-11-03 · **Change:** trivial (facts only: MIDI input devices play and record, SoundFont Player makes 27 processors + 4 instruments, hardware estimate 14 % / 95–165 h; percentages elsewhere unchanged; previously trivial: built-in plugin counts; the sampler shipped) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
 
 The authoritative assessment of how close SoundCraft is to Pro Tools. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimension docs go deeper:
@@ -44,7 +44,8 @@ at 0.5–1.5 h each, features at about 200–300 tested lines per agent-hour, fr
 The previous figure in ROADMAP.md (2026-10-07: "~65 % overall feature parity", "110–150 h to 100 %")
 measured feature *presence*. This pass measures readiness, and finds new evidence that pulls the
 numbers down: 37 open GitHub issues from the first public week (about 25 of them correctness bugs
-in features counted as done), no MIDI hardware input or output at all, no audio device or buffer
+in features counted as done), no MIDI hardware input or output at all (input has since landed;
+see G-02), no audio device or buffer
 size selection, no localization, and a macOS release that cannot load signed third-party VST3s
 (#153). The estimates did not drift up; the scope of what is measured widened.
 
@@ -82,7 +83,7 @@ post-production, tracking) can switch. "Ready" is depth, correctness and fidelit
 | Features | 45 % | **~45 %** | estimated | 520–810 | [area table](#feature-areas) | Menu breadth 94 % measured, but depth is thin: see the area table |
 | UI/UX fidelity | 10 % | **~55 %** | estimated | 60–100 | [ui-parity.md](ui-parity.md) | Edit/Mix windows, every menu, floating windows; open UX bugs #3 #5 #6 #7 #140 #144; shortcuts only recently right on Windows/Linux (#15, #41); generic plugin UIs |
 | File formats | 10 % | **~40 %** | estimated | 70–120 | [file-format-parity.md](file-format-parity.md) | WAV/BWF/RF64/AIFF/FLAC read+write, compressed formats read; no `.ptx`, AAF, OMF, ADM BWF, MP3/AAC export, video export |
-| Hardware | 10 % | **~12 %** | estimated | 110–180 | [hardware-parity.md](hardware-parity.md) | Default output and default input device only, fixed 512-sample block, no ASIO, no MIDI devices, no control surfaces, no sync |
+| Hardware | 10 % | **~14 %** | estimated | 95–165 | [hardware-parity.md](hardware-parity.md) | Default output and default input device only, fixed 512-sample block, no ASIO, MIDI input devices but no MIDI output, no control surfaces, no sync |
 | Stability | 10 % | **~45 %** | estimated | 50–80 | [gaps.md](gaps.md) | Never-crash rules and proptests (random edits, mutated sessions, hostile params); but ~25 open correctness bugs, a launch failure (#142), an X11 llvmpipe failure (#107) |
 | Performance | 5 % | **~35 %** | estimated (unmeasured) | 40–70 | [hardware-parity.md](hardware-parity.md) | Parallel strip rendering and PDC exist; whole files decoded into RAM, recording into RAM (#84 open), no track-count or latency benchmarks |
 | Ecosystem / plugins | 4 % | **~30 %** | estimated | in Features + Hardware | [plugin-parity.md](plugin-parity.md) | CLAP/VST3/AU hosting; no AAX (Pro Tools' only format), no ARA, no sidechain, no control-surface ecosystem, no content library |
@@ -181,9 +182,9 @@ Weights by what Pro Tools users actually spend time on. **Breadth** = the featur
 | Editing | 15 % | 92 % | **65 %** | 40–60 | Slip/Shuffle/Spot/Grid, every Edit menu command, fades/crossfades, playlists and comping, clip groups, nudge, Tab to transient, separate/heal/consolidate/strip silence. Open bugs: #3, #5 (Multitool handles), #140 (Heal shortcut), #86, #91, #92; no batch fade presets, no field-recorder workflows |
 | Mixing and routing | 12 % | 85 % | **60 %** | 35–50 | Faders, pan, sends, busses, aux, masters, VCAs, folders, 10 inserts, PDC, solo modes, I/O Setup. Missing: sidechain inputs, hardware-channel I/O mapping, bus/AFL/PFL paths verified, HEAT; bugs #59, #103 |
 | Automation | 7 % | 80 % | **55 %** | 20–30 | Lanes for volume/pan/mute/sends/plugin params, trim, Write/Touch/Latch, glide/thin/coalesce. Missing: surround-pan and object automation, Touch/Latch prime and preview modes, automation on control surfaces; bug #104 |
-| Built-in plugins and AudioSuite | 8 % | 40 % | **35 %** | 80–120 | 27 processors + 3 instruments covering every AudioSuite category; Pro Tools bundles roughly three times as many plugins plus virtual instruments. No fidelity comparison, generic parameter UIs (#139). See [plugin-parity.md](plugin-parity.md) |
+| Built-in plugins and AudioSuite | 8 % | 40 % | **35 %** | 80–120 | 27 processors + 4 instruments covering every AudioSuite category; Pro Tools bundles roughly three times as many plugins plus virtual instruments. No fidelity comparison, generic parameter UIs (#139). See [plugin-parity.md](plugin-parity.md) |
 | Third-party plugin hosting | 8 % | 70 % | **45 %** | 40–60 | CLAP, VST3, AU: audio, params, latency, notes, state, presets, off-thread lifecycle, CLAP floating GUIs, VST3 editors on macOS. Missing: AU editors, VST3 editors on Windows/Linux, sidechain buses, ARA, out-of-process sandboxing, macOS library-validation entitlement (#153, #149). AAX cannot be hosted (Avid SDK licence, PACE signing) |
-| MIDI and instruments | 8 % | 70 % | **30 %** | 50–80 | Piano roll, event list, step input, quantize/transpose, real-time properties, SMF import/export. Missing: **any MIDI device input/output** (no keyboard recording, no external synths, no MIDI clock/MTC out), MIDI learn, instrument depth (no piano, organ or wavetable instrument), bug #98 |
+| MIDI and instruments | 8 % | 70 % | **30 %** | 50–80 | Piano roll, event list, step input, quantize/transpose, real-time properties, SMF import/export. MIDI input devices on the desktop (`midir`) play armed instrument/MIDI tracks live and Record captures a take into a clip. Missing: **MIDI device output** (no external synths, no MIDI clock/MTC out), MIDI Merge, the input filter, MIDI learn, instrument depth (no piano, organ or wavetable instrument), bug #98 |
 | Score and notation | 2 % | 60 % | **35 %** | 20–30 | Grand-staff Score Editor, MusicXML export, printable SVG. Missing: notation editing depth (tuplets, articulations, lyrics, parts layout) |
 | Elastic Audio, TCE, Beat Detective, pitch | 5 % | 70 % | **35 %** | 40–60 | Pitch-preserving warp on Elastic tracks, TCE, conform to tempo, Beat Detective and Identify Beat, audio-to-MIDI. Missing: per-algorithm choice (polyphonic/rhythmic/monophonic/varispeed/X-Form), warp markers UI depth, Elastic Pitch, quality vs Pro Tools unmeasured |
 | Surround and immersive | 5 % | 55 % | **35 %** | 50–80 | Formats stereo → 9.1.6 and Ambisonics, surround panner, fold-down, multichannel bounce, object/bed routing. Missing: Dolby Atmos renderer integration and ADM BWF, MPEG-H (new in 2026.4), binaural/headphone monitoring, surround automation; bug #89 |
@@ -202,7 +203,9 @@ platform:
 - Tracking from a chosen interface at a chosen buffer size: **no**. Only the default devices are
   used, the mix runs in fixed 512-sample blocks, input and output are separate streams, and
   takes are held in RAM.
-- MIDI recording: **no**. There is no MIDI device layer.
+- MIDI recording: **yes (rough)**. Desktop input devices (`midir`: CoreMIDI, ALSA, WinMM) play
+  armed instrument and MIDI tracks live and Record places a clip at stop; no MIDI output, Merge or
+  input filter yet, and no port support on the web or FreeBSD.
 - Session interchange with Pro Tools or picture editors: **no**. No AAF/OMF/`.ptx`.
 
 Editing, mixing with plugins, bouncing, and saving and reopening pass (with known bugs).
@@ -245,6 +248,7 @@ serializes more, because it needs hands-on testing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-03 | trivial | Facts: MIDI input devices and MIDI recording land (hardware 12 → 14 %, 110–180 → 95–165 h); SoundFont Player is the fourth built-in instrument (27 + 4); rest of the percentages unchanged |
 | 2026-10-24 | trivial | Built-in plugin counts: 27 processors + 3 instruments on `main`, and 24 + 2 in the 3bc2d92 code snapshot; the sampler (#108) is no longer listed as missing. Percentages unchanged |
 | 2026-10-10 | minor | Readiness-by-audience table: hours to ~95 % for full (950–1,450 h), mainstream (380–600 h) and essentials (110–200 h). The full number is already the additive weighted sum over the written dimension table (40.6 %); method unchanged |
 | 2026-10-10 | minor | Added the mainstream-practitioner (~36 %) and essentials-user (~57 %) numbers with written weights, discounts and user evidence. Checked the full ~40 %: it is the written dimension weights × values (40.6 %), so it doesn't move |

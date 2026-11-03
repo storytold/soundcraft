@@ -28,8 +28,8 @@ pub mod record;
 
 pub use devices::AudioConfig;
 
-use soundcraft_dsp::{Plugin, PluginEditor, PluginStateReader};
-use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
+use soundcraft_dsp::{PluginEditor, PluginStateReader};
+use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, Retired, StripMeter, itu_stereo_fold, main_channels};
 use soundcraft_model::{Session, TrackId};
 use soundcraft_time::{Range, Samples};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -131,6 +131,9 @@ enum Cmd {
     Forget(Vec<TrackId>),
     /// A MIDI 1.0 channel message from a MIDI input device, to play live (see [`MidiSink`]).
     Midi([u8; 3]),
+    /// A MIDI port went away (or was disabled) with keys possibly down: release what it was
+    /// holding, because the matching note-offs will never arrive.
+    MidiPanic,
     /// Where the callback sends the MIDI played while recording, stamped with its position.
     MidiRecorder(SyncSender<(Samples, [u8; 3])>),
 }
@@ -152,6 +155,12 @@ impl MidiSink {
     /// gone (the audio device was reopened): route to the new one with [`Player::midi_sink`].
     pub fn send(&self, msg: [u8; 3]) -> bool {
         self.tx.send(Cmd::Midi(msg)).is_ok()
+    }
+
+    /// Tells the player the port that fed this sink is gone: it releases the notes that port was
+    /// holding. False once the player is gone.
+    pub fn panic(&self) -> bool {
+        self.tx.send(Cmd::MidiPanic).is_ok()
     }
 
     /// The [`Player::id`] of the player this sink feeds.
@@ -281,7 +290,7 @@ impl Player {
         let want = session.sample_rate.hz();
         let want_ch = u16::try_from(main_channels(&session)).unwrap_or(2);
         let side_rate = session.sample_rate.as_f64() as f32;
-        let new_side = |garbage: Receiver<Vec<Box<dyn Plugin>>>| {
+        let new_side = |garbage: Receiver<Retired>| {
             let mut side = Side::new(side_rate, garbage);
             side.gone_tracks(&session);
             Mutex::new(side)
@@ -357,14 +366,7 @@ impl Player {
         }
     }
 
-    fn silent_clock(
-        shared: Arc<Shared>,
-        tx: Sender<Cmd>,
-        rx: Receiver<Cmd>,
-        rate: u32,
-        side: Mutex<Side>,
-        gtx: Sender<Vec<Box<dyn Plugin>>>,
-    ) -> Player {
+    fn silent_clock(shared: Arc<Shared>, tx: Sender<Cmd>, rx: Receiver<Cmd>, rate: u32, side: Mutex<Side>, gtx: Sender<Retired>) -> Player {
         let s = Arc::new(Session::new("Untitled", soundcraft_time::SampleRate::new(rate).unwrap_or_default()));
         Player::silent_clock_with(shared, tx, rx, s, side, gtx)
     }
@@ -376,7 +378,7 @@ impl Player {
         rx: Receiver<Cmd>,
         session: Arc<Session>,
         side: Mutex<Side>,
-        gtx: Sender<Vec<Box<dyn Plugin>>>,
+        gtx: Sender<Retired>,
     ) -> Player {
         let rate = session.sample_rate.hz();
         let mut state = AudioState::new(rx, Arc::clone(&shared), session, f64::from(rate), gtx);
@@ -427,7 +429,7 @@ impl Player {
         _rx: Receiver<Cmd>,
         session: Arc<Session>,
         side: Mutex<Side>,
-        _gtx: Sender<Vec<Box<dyn Plugin>>>,
+        _gtx: Sender<Retired>,
     ) -> Player {
         Player {
             id: next_player_id(),

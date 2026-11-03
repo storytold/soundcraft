@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** trivial (G-02: MIDI input devices played live and recorded; previously trivial: G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-03 · **Last updated:** 2026-11-03 · **Change:** minor (G-02: MIDI input hardened — keys release when a port or track stops listening, a port loss sends All Off, and a take's tail is flushed instead of raced; previously trivial: MIDI input devices played live and recorded; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -16,7 +16,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
-| G-02 | **Alpha blocker.** No MIDI device input or output | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 20–35 |
+| G-02 | No MIDI device output; input plays live and records (MIDI Merge and the input filter remain) | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 8–16 |
 | G-03 | **Alpha blocker.** Cannot exchange sessions with Pro Tools (no AAF/OMF, no `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 15–25 |
@@ -77,8 +77,8 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   one clip over the loop. No audio input is opened for a MIDI-only take.
 - **Missing:** MIDI Merge (recording replaces what lay underneath), one clip per loop pass,
   sub-block timing, the input filter applied to input, MIDI output to external synths, MIDI
-  clock/MTC.
-  `midi_editor.rs:288` audition could now use the live path.
+  clock/MTC; `midi_editor.rs:288` audition could now use the
+  live path.
 - **Impact:** parts can be played in and recorded from a keyboard; overdubbing into an existing
   clip and driving external gear are not possible yet.
 - **Estimate:** ≈ 8–16 h (MIDI Merge and loop passes, sub-block timestamps, input filter, output

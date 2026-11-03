@@ -57,8 +57,10 @@ use soundcraft_model::{
     AutoParam, BusId, ChannelFormat, Clip, ClipContent, Route, Session, SourceAudio, Speaker, SurroundPan, Track, TrackId, TrackKind,
 };
 use soundcraft_time::{Range, Samples, TICKS_PER_QUARTER};
+use std::any::Any;
 use std::collections::HashMap;
 use std::ops::Bound;
+use std::sync::Arc;
 
 mod automation;
 mod clips;
@@ -104,6 +106,20 @@ pub const MAX_CHANNELS: usize = 16;
 /// Number of channels of a session's main mix.
 pub fn main_channels(s: &Session) -> usize {
     s.main_format().channels().clamp(MAIN_CHANNELS, MAX_CHANNELS)
+}
+
+/// Work the realtime engine took out of service for the host to drop on another thread: plugin
+/// instances (closing an editor, freeing a big buffer) and sample banks (hundreds of megabytes).
+#[derive(Default)]
+pub struct Retired {
+    pub plugins: Vec<Box<dyn Plugin>>,
+    pub banks: Vec<Arc<dyn Any + Send + Sync>>,
+}
+
+impl Retired {
+    pub fn is_empty(&self) -> bool {
+        self.plugins.is_empty() && self.banks.is_empty()
+    }
 }
 
 /// Renders sessions. Keep one per playback stream; plugin state persists across blocks.
@@ -153,6 +169,8 @@ pub struct MixEngine {
     adopt: HashMap<(TrackId, usize), PreparedInstance>,
     /// Instances `sync` took out of service, for the host to drop (see [`MixEngine::take_retired`]).
     retired: Vec<Box<dyn Plugin>>,
+    /// Sample banks `sync` took out of service: freeing one must not happen on the audio thread.
+    retired_banks: Vec<Arc<dyn Any + Send + Sync>>,
     /// Ownership workspace reused for parallel strip processing.
     work: Vec<(usize, Strip)>,
 }
@@ -185,6 +203,7 @@ impl MixEngine {
             external: false,
             adopt: HashMap::new(),
             retired: Vec::new(),
+            retired_banks: Vec::new(),
             work: Vec::new(),
         }
     }
@@ -207,28 +226,54 @@ impl MixEngine {
         self.synced = (usize::MAX, usize::MAX, usize::MAX);
     }
 
-    /// Instances taken out of service since the last call (drop them off the audio thread).
+    /// Work taken out of service since the last call (drop it off the audio thread).
     /// Does not allocate.
-    pub fn take_retired(&mut self) -> Vec<Box<dyn Plugin>> {
-        std::mem::take(&mut self.retired)
+    pub fn take_retired(&mut self) -> Retired {
+        Retired { plugins: std::mem::take(&mut self.retired), banks: std::mem::take(&mut self.retired_banks) }
     }
 
     /// Every instance this engine holds (strips, instruments, clip effects excluded) plus the
     /// retired and waiting ones, leaving the engine empty: hand them to another thread to drop
     /// before replacing the engine.
-    pub fn drain_plugins(&mut self) -> Vec<Box<dyn Plugin>> {
-        let mut out = std::mem::take(&mut self.retired);
+    pub fn drain_plugins(&mut self) -> Retired {
+        let mut out = Retired { plugins: std::mem::take(&mut self.retired), banks: std::mem::take(&mut self.retired_banks) };
         for st in self.strips.values_mut() {
-            out.extend(st.plugins.iter_mut().filter_map(Option::take).map(|s| s.plugin));
-            out.extend(st.instrument.take().map(|s| s.plugin));
+            out.plugins.extend(st.plugins.iter_mut().filter_map(Option::take).map(|s| s.plugin));
+            out.plugins.extend(st.instrument.take().map(|s| s.plugin));
+            out.banks.extend(st.bank.take());
         }
-        out.extend(self.adopt.drain().map(|(_, p)| p.plugin));
+        out.plugins.extend(self.adopt.drain().map(|(_, p)| p.plugin));
         self.synced = (usize::MAX, usize::MAX, usize::MAX);
         out
     }
 
     pub fn max_block(&self) -> usize {
         self.max_block
+    }
+
+    /// True while an instrument is holding a note played from live MIDI input: the host must keep
+    /// rendering that track, or a key held down would be cut off.
+    pub fn live_held(&self) -> bool {
+        self.strips.values().any(|s| !s.live_held.is_empty())
+    }
+
+    /// How long an instrument's release can ring after the last live note, in samples: how long
+    /// the host should keep rendering a stopped transport for what was just played to finish.
+    pub fn live_tail_samples(&self) -> usize {
+        self.strips.values().filter_map(|s| s.instrument.as_ref()).filter(|i| !i.failed).map(|i| i.plugin.tail_samples()).max().unwrap_or(0)
+    }
+
+    /// Silences everything played from live MIDI input now (a port closed or was disabled before
+    /// its note-offs arrived), without stopping clips or the transport.
+    pub fn panic_live(&mut self) {
+        for strip in self.strips.values_mut() {
+            if let Some(inst) = strip.instrument.as_mut().filter(|i| !i.failed) {
+                inst.plugin.midi(0, [0xB0, 64, 0]);
+                inst.plugin.all_notes_off();
+            }
+            strip.live_held.clear();
+        }
+        self.live_midi.clear();
     }
 
     /// Format of the main mix as of the last sync.
@@ -254,6 +299,7 @@ impl MixEngine {
                 i.failed = false;
             }
             s.held.clear();
+            s.live_held.clear();
             s.chase = true;
             s.align.clear();
             s.align_pre.clear();
@@ -286,6 +332,7 @@ impl MixEngine {
                     cx.retire(p);
                 }
                 cx.retire(st.instrument.take());
+                self.retired_banks.extend(st.bank.take());
             }
         }
         for t in &s.tracks {
@@ -322,10 +369,12 @@ impl MixEngine {
                 cx.retire(old);
                 strip.instrument = want.and_then(|i| cx.make(t.id, INSTRUMENT_SLOT, i, ich));
                 strip.sample = None;
-                strip.bank = None;
+                if let Some(old) = strip.bank.take() {
+                    self.retired_banks.push(old);
+                }
             }
             sync_sample(strip, want, s);
-            sync_soundfont(strip, want, s);
+            sync_soundfont(strip, want, s, &mut self.retired_banks);
         }
         // Instances nobody claimed (the session changed again before they arrived).
         let leftovers: Vec<(TrackId, usize)> = cx.adopt.keys().copied().collect();

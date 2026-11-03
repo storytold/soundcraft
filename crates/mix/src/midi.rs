@@ -29,6 +29,9 @@ pub fn takes_midi_input(t: &Track, thru: Option<TrackId>) -> bool {
 /// MIDI Thru: when no instrument or MIDI track is armed or monitored, the first selected one
 /// plays what comes in, so a keyboard sounds as soon as a track is clicked.
 pub fn midi_thru_track(s: &Session) -> Option<TrackId> {
+    if !s.edit.midi_thru() {
+        return None;
+    }
     let midi = |t: &&Track| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && !t.inactive;
     if s.tracks.iter().filter(midi).any(|t| t.mixer.record_arm || t.mixer.input_monitor) {
         return None;
@@ -55,6 +58,15 @@ pub(crate) fn play_live_midi(inst: &mut PluginSlot, events: &[[u8; 3]], held: &m
             kind @ (0xA0 | 0xB0 | 0xC0 | 0xD0 | 0xE0) => inst.plugin.midi(0, [kind, d1, d2]),
             _ => {}
         }
+    }
+}
+
+/// Releases every note the instrument is holding from live input (the track was disarmed, or
+/// its port closed). The pedal goes up first, or the note-offs would just sustain.
+pub(crate) fn release_live_midi(inst: &mut PluginSlot, held: &mut Vec<u8>) {
+    inst.plugin.midi(0, [0xB0, 64, 0]);
+    for pitch in held.drain(..) {
+        inst.plugin.note_off(0, pitch);
     }
 }
 
@@ -224,7 +236,12 @@ pub(crate) fn sync_sample(strip: &mut Strip, want: Option<&soundcraft_model::Ins
 
 /// Hands a strip's instrument its insert's SoundFont bank when it changed (a new file, a
 /// cleared one, or a new instance). A bank not loaded (missing file) plays nothing.
-pub(crate) fn sync_soundfont(strip: &mut Strip, want: Option<&soundcraft_model::Insert>, s: &Session) {
+pub(crate) fn sync_soundfont(
+    strip: &mut Strip,
+    want: Option<&soundcraft_model::Insert>,
+    s: &Session,
+    retired: &mut Vec<Arc<dyn std::any::Any + Send + Sync>>,
+) {
     let bank = want.and_then(|i| i.soundfont.as_deref()).and_then(|p| s.pool.bank(p));
     let same = match (strip.bank.as_ref(), bank) {
         (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -234,9 +251,13 @@ pub(crate) fn sync_soundfont(strip: &mut Strip, want: Option<&soundcraft_model::
     if same {
         return;
     }
+    // Banks run to hundreds of megabytes: dropping the old one here would free it on the audio
+    // thread. The host drops it on its own thread (see `MixEngine::take_retired`).
+    if let Some(old) = std::mem::replace(&mut strip.bank, bank.cloned()) {
+        retired.push(old);
+    }
     if let Some(inst) = strip.instrument.as_mut() {
         let typed = bank.and_then(|b| Arc::clone(b).downcast::<soundcraft_dsp::soundfont::SoundFont>().ok());
         inst.plugin.set_soundfont(typed);
     }
-    strip.bank = bank.cloned();
 }

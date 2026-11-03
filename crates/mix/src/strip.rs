@@ -1,7 +1,7 @@
 use super::automation::{GainRamp, transport_at, volume_db_at};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance, is_third_party};
-use super::midi::{chase_controllers, play_live_midi, schedule_notes, takes_midi_input};
+use super::midi::{chase_controllers, play_live_midi, release_live_midi, schedule_notes, takes_midi_input};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
 use super::routing::receives_solo;
 use super::{
@@ -40,6 +40,9 @@ pub(crate) struct Strip {
     pub(crate) bank: Option<Arc<dyn std::any::Any + Send + Sync>>,
     /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
     pub(crate) held: Vec<u8>,
+    /// Pitches this strip's instrument is holding from live MIDI input, so they can be released
+    /// when the track stops taking input or the port goes away.
+    pub(crate) live_held: Vec<u8>,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
     pub(crate) muted: bool,
@@ -140,6 +143,7 @@ impl Strip {
             sample: None,
             bank: None,
             held: Vec::new(),
+            live_held: Vec::new(),
             chase: true,
             muted: false,
             gr: 0.0,
@@ -316,7 +320,11 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
             schedule_notes(s, t, pos, frames, inst, &mut strip.held);
         }
         if !live.midi.is_empty() && takes_midi_input(t, live.thru) {
-            play_live_midi(inst, live.midi, &mut strip.held);
+            play_live_midi(inst, live.midi, &mut strip.live_held);
+        } else if !takes_midi_input(t, live.thru) && !strip.live_held.is_empty() {
+            // The track was disarmed or unmonitored while a key was down: the note-off can no
+            // longer reach it, so release what it was holding instead of leaving it sounding.
+            release_live_midi(inst, &mut strip.live_held);
         }
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
@@ -430,7 +438,15 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
             monitor_input(t, strip, live, frames);
         }
         TrackKind::Audio if live.monitor_only => {}
-        TrackKind::Instrument | TrackKind::Midi if live.monitor_only && !takes_midi_input(t, live.thru) => {}
+        TrackKind::Instrument | TrackKind::Midi if live.monitor_only && !takes_midi_input(t, live.thru) => {
+            // Stopped and no longer taking input: nothing renders, but a note played just before
+            // the disarm must still be released (the note-off has nowhere else to come from).
+            if let Some(inst) = strip.instrument.as_mut().filter(|i| !i.failed)
+                && !strip.live_held.is_empty()
+            {
+                release_live_midi(inst, &mut strip.live_held);
+            }
+        }
         TrackKind::Audio => render_audio_clips(s, t, strip, blk),
         TrackKind::Aux | TrackKind::Folder => read_aux_bus(t, strip, busses, frames),
         TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, blk, &transport, live),

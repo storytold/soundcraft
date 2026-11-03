@@ -258,6 +258,17 @@ pub enum Gesture {
     ZoomBox { start: f32 },
 }
 
+/// A finished MIDI take waiting for the audio callback to hand over its last messages: the
+/// callback closes the take behind `Player::set_recording(false)` and marks the end with a
+/// `[0xFF, 0, 0]` sentinel, because the UI cannot know when its next block ran.
+struct MidiFinish {
+    start: Samples,
+    pass: Option<Samples>,
+    punch: Option<Range>,
+    /// Frames left to wait for the sentinel (the audio device may have stopped altogether).
+    wait: u8,
+}
+
 pub struct SoundApp {
     pub engine: Engine,
     /// The session path as of the last frame, and whether the recent list changed since the host
@@ -276,6 +287,8 @@ pub struct SoundApp {
     recording_audio: bool,
     /// The MIDI played so far in this take: (timeline position, message).
     midi_take: Vec<(Samples, [u8; 3])>,
+    /// A MIDI take whose recording just stopped, waiting to be placed (see [`MidiFinish`]).
+    midi_finish: Option<MidiFinish>,
     /// Input capture, opened on first record.
     pub recorder: Option<soundcraft_playback::record::Recorder>,
     record_start: Samples,

@@ -11,8 +11,25 @@
 //! filter and modulation envelope/LFO generators, 24-bit `sm24` data, ROM samples. Input is
 //! hostile: every index and size is checked, a damaged file is refused, never trusted.
 
-/// Largest file section kept per record list (a real bank has a few thousand records).
-const MAX_RECORDS: usize = 1 << 20;
+/// Largest file section kept per record list (a real bank has a few thousand records; the
+/// terminal record is not counted).
+const MAX_RECORDS: usize = 1 << 16;
+
+/// Largest sample data kept, in sample points (128M, 256 MiB). A real bank is far smaller.
+const MAX_SAMPLES: usize = 1 << 27;
+
+/// Most zones one bag list may hold. A drum kit with 128 keys and stereo pairs is far below.
+const MAX_ZONES: usize = 4096;
+
+/// Most regions one preset may hold (a layered preset, not a whole bank's cross product).
+const MAX_REGIONS: usize = 1024;
+
+/// Most regions kept across the whole bank (real banks stay in the tens of thousands).
+const MAX_TOTAL_REGIONS: usize = 1 << 18;
+
+/// Most preset-zone/instrument-zone pairs resolved across the whole bank. This is the budget a
+/// damaged file would otherwise turn into millions of combinations.
+const MAX_RESOLVES: usize = 1 << 20;
 
 /// A parsed bank.
 pub struct SoundFont {
@@ -234,6 +251,9 @@ impl SoundFont {
         if smpl.is_empty() {
             return Err("no sample data".into());
         }
+        if smpl.len() / 2 > MAX_SAMPLES {
+            return Err(format!("too much sample data ({} points)", smpl.len() / 2));
+        }
         let samples: Vec<i16> = smpl.as_chunks::<2>().0.iter().map(|p| i16::from_le_bytes([p[0], p[1]])).collect();
         let headers: Vec<SampleHeader> = shdr
             .iter()
@@ -255,18 +275,30 @@ impl SoundFont {
             .collect::<Result<_, _>>()?;
         let preset_bags: Vec<usize> = preset_bag_starts(part(b"phdr")?);
         let mut presets = Vec::with_capacity(phdr.len());
+        // Preset zones times instrument zones: a few damaged records would otherwise ask for
+        // millions of combinations (and keep the regions) from a few kilobytes.
+        let mut total_regions = 0usize;
+        let mut resolves = 0usize;
         for (i, r) in phdr.iter().enumerate() {
+            if total_regions >= MAX_TOTAL_REGIONS || resolves >= MAX_RESOLVES {
+                break;
+            }
             let list = zone_list(preset_bags.get(i).copied(), preset_bags.get(i + 1).copied(), pbag, pgen, INSTRUMENT)?;
             let mut regions = Vec::new();
             for pz in &list.zones {
                 let Some(ins) = pz.link.and_then(|l| instruments.get(usize::from(l))) else { continue };
                 for iz in &ins.zones {
-                    if regions.len() >= MAX_RECORDS {
+                    if regions.len() >= MAX_REGIONS || resolves >= MAX_RESOLVES {
                         break;
                     }
+                    resolves += 1;
                     if let Some(region) = resolve(list.global.as_ref(), pz, ins.global.as_ref(), iz, &headers, samples.len()) {
                         regions.push(region);
+                        total_regions += 1;
                     }
+                }
+                if regions.len() >= MAX_REGIONS {
+                    break;
                 }
             }
             presets.push(Preset { name: name_at(r, 0, 20), program: u16_at(r, 20).unwrap_or(0), bank: u16_at(r, 22).unwrap_or(0), regions });
@@ -301,7 +333,7 @@ fn inst_bag_starts(body: &[u8]) -> Vec<usize> {
 fn zone_list(from: Option<usize>, to: Option<usize>, bags: &[u8], gens: &[u8], link: usize) -> Result<ZoneList, String> {
     let (Some(from), Some(to)) = (from, to) else { return Err("damaged zone index".into()) };
     // Bag `to` (the next list's first, or the terminal record) must exist: it ends the last zone.
-    if to < from || to.saturating_add(1).saturating_mul(4) > bags.len() {
+    if to < from || to - from > MAX_ZONES || to.saturating_add(1).saturating_mul(4) > bags.len() {
         return Err("damaged zone index".into());
     }
     let gen_at = |bag: usize| u16_at(bags, bag * 4).map(usize::from);
@@ -514,6 +546,68 @@ pub mod fixture {
         .concat();
         chunk(b"RIFF", &body)
     }
+
+    /// A bank whose one preset resolves `zones` regions from one instrument (all the same sample),
+    /// for the parser's budget tests.
+    pub fn crowded_bank(zones: usize) -> Vec<u8> {
+        let zones = zones.clamp(1, usize::from(u16::MAX) - 2);
+        let wave: Vec<u8> = (0..200).flat_map(|n| (((n as f32 * 0.3).sin() * 12_000.0) as i16).to_le_bytes()).collect();
+        let mut phdr = Vec::new();
+        for (name, prog, bag) in [("Crowded", 0u16, 0u16), ("EOP", 0, 1)] {
+            phdr.extend(name20(name));
+            phdr.extend(prog.to_le_bytes());
+            phdr.extend(0u16.to_le_bytes());
+            phdr.extend(bag.to_le_bytes());
+            phdr.extend([0u8; 12]);
+        }
+        // One preset zone linking instrument 0, then the terminal bag.
+        let pbag: Vec<u8> = [0u16, 1].iter().flat_map(|g| [g.to_le_bytes(), [0, 0]].concat()).collect();
+        let pgen = gen_rec(41, i(0));
+        let mut inst = Vec::new();
+        for (name, bag) in [("Many", 0u16), ("EOI", zones as u16)] {
+            inst.extend(name20(name));
+            inst.extend(bag.to_le_bytes());
+        }
+        // One bag per instrument zone, each with one sample link (so none is a global zone).
+        let mut ibag = Vec::new();
+        let mut igen = Vec::new();
+        for k in 0..=zones {
+            ibag.extend((k as u16).to_le_bytes());
+            ibag.extend([0u8, 0]);
+            igen.extend(gen_rec(53, i(0)));
+        }
+        let mut shdr = Vec::new();
+        for (name, start, end, rate, pitch) in [("sine", 0u32, 100u32, 44_100u32, 69u8), ("EOS", 0, 0, 0, 0)] {
+            shdr.extend(name20(name));
+            for v in [start, end, 0, 0, rate] {
+                shdr.extend(v.to_le_bytes());
+            }
+            shdr.extend([pitch, 0]);
+            shdr.extend(0u16.to_le_bytes());
+            shdr.extend(1u16.to_le_bytes());
+        }
+        let imod = vec![0u8; 10];
+        let body = [
+            b"sfbk".to_vec(),
+            list(b"sdta", &[chunk(b"smpl", &wave)]),
+            list(
+                b"pdta",
+                &[
+                    chunk(b"phdr", &phdr),
+                    chunk(b"pbag", &pbag),
+                    chunk(b"pmod", &imod),
+                    chunk(b"pgen", &pgen),
+                    chunk(b"inst", &inst),
+                    chunk(b"ibag", &ibag),
+                    chunk(b"imod", &imod),
+                    chunk(b"igen", &igen),
+                    chunk(b"shdr", &shdr),
+                ],
+            ),
+        ]
+        .concat();
+        chunk(b"RIFF", &body)
+    }
 }
 
 #[cfg(test)]
@@ -545,6 +639,27 @@ pub(crate) mod tests {
         assert_eq!(hi.env.sustain, 1.0);
         assert_eq!(sf.preset_for_program(5), Some(0));
         assert_eq!(sf.preset_for_program(6), None);
+    }
+
+    #[test]
+    fn a_zone_list_beyond_the_budget_is_refused() {
+        let at_limit = MAX_ZONES as u16;
+        let bags: Vec<u8> = (0..=at_limit + 1).flat_map(|i| [i.to_le_bytes(), [0, 0]].concat()).collect();
+        let mut gens = Vec::new();
+        for _ in 0..=at_limit + 1 {
+            gens.extend(53u16.to_le_bytes());
+            gens.extend([0u8, 0]);
+        }
+        let zones = zone_list(Some(0), Some(usize::from(at_limit)), &bags, &gens, SAMPLE_ID).unwrap();
+        assert_eq!(zones.zones.len(), usize::from(at_limit));
+        assert!(zone_list(Some(0), Some(usize::from(at_limit) + 1), &bags, &gens, SAMPLE_ID).is_err());
+    }
+
+    #[test]
+    fn one_preset_cannot_hold_the_whole_cross_product() {
+        let sf = SoundFont::parse(&super::fixture::crowded_bank(2_000)).unwrap();
+        assert_eq!(sf.presets.len(), 1);
+        assert_eq!(sf.presets[0].regions.len(), MAX_REGIONS);
     }
 
     #[test]

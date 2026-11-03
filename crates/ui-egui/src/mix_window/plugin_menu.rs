@@ -113,11 +113,15 @@ fn soundfont_items(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
         let mut chosen = None;
         ui.menu_button(format!("Preset: {shown}"), |ui| {
             egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                for (i, p) in bank.presets.iter().enumerate() {
+                // The plugin's preset parameter addresses 0–1023; a bank may hold more.
+                for (i, p) in bank.presets.iter().take(1024).enumerate() {
                     let label = format!("{:03}:{:03}  {}", p.bank, p.program, p.name);
                     if ui.selectable_label(i == current, label).clicked() {
                         chosen = Some(i);
                     }
+                }
+                if bank.presets.len() > 1024 {
+                    ui.label(egui::RichText::new(format!("first 1024 of {} presets", bank.presets.len())).small());
                 }
             });
         });
