@@ -110,22 +110,26 @@ impl Sequence {
 
         self.ctrls.sort_by_key(|c| c.tick);
         let mut kept: Vec<CtrlEvent> = Vec::with_capacity(self.ctrls.len());
-        // Where each channel+kind seen at the current tick sits in `kept`, so a repeat is found
+        // The latest tick and `kept` index of each channel+kind, so a same-tick repeat is found
         // without rescanning the tick's events (a tick can hold many thousands of distinct keys).
-        let mut at_tick: HashMap<(u8, (u8, u8)), usize> = HashMap::new();
+        // An entry from an earlier tick counts as absent; keeping the tick instead of clearing the
+        // map per tick keeps the work per event constant after a dense tick.
+        let mut last_at: HashMap<(u8, (u8, u8)), (i64, usize)> = HashMap::new();
         for c in self.ctrls.drain(..) {
-            if kept.last().is_some_and(|k| k.tick != c.tick) {
-                at_tick.clear();
-            }
             // Within a tick, replace an earlier event of the same channel+kind.
-            match at_tick.entry((c.channel, kind_key(c.kind))) {
-                Entry::Occupied(e) => {
-                    if let Some(slot) = kept.get_mut(*e.get()) {
-                        *slot = c;
+            match last_at.entry((c.channel, kind_key(c.kind))) {
+                Entry::Occupied(mut e) => {
+                    let (tick, idx) = *e.get();
+                    match kept.get_mut(idx) {
+                        Some(slot) if tick == c.tick => *slot = c,
+                        _ => {
+                            e.insert((c.tick, kept.len()));
+                            kept.push(c);
+                        }
                     }
                 }
                 Entry::Vacant(e) => {
-                    e.insert(kept.len());
+                    e.insert((c.tick, kept.len()));
                     kept.push(c);
                 }
             }

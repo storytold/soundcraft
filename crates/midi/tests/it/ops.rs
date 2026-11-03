@@ -239,3 +239,55 @@ fn remove_duplicates_handles_a_large_same_tick_controller_group() {
     assert_eq!(seq.ctrls.len(), keys.len());
     assert!(seq.ctrls.iter().all(|c| c.value == 1));
 }
+
+#[test]
+fn remove_duplicates_matches_a_per_tick_rescan_on_mixed_ticks() {
+    // The straightforward per-tick rescan the indexed version replaced, kept as an oracle.
+    fn reference(mut ctrls: Vec<CtrlEvent>) -> Vec<CtrlEvent> {
+        ctrls.sort_by_key(|c| c.tick);
+        let key = |k: CtrlKind| match k {
+            CtrlKind::Cc(n) => (0, n),
+            CtrlKind::PitchBend => (1, 0),
+            CtrlKind::ChannelPressure => (2, 0),
+            CtrlKind::PolyPressure(p) => (3, p),
+            CtrlKind::Program => (4, 0),
+        };
+        let mut kept: Vec<CtrlEvent> = Vec::new();
+        for c in ctrls {
+            match kept.iter_mut().rev().take_while(|k| k.tick == c.tick).find(|k| k.channel == c.channel && key(k.kind) == key(c.kind)) {
+                Some(slot) => *slot = c,
+                None => kept.push(c),
+            }
+        }
+        kept
+    }
+
+    // Few ticks, channels and kinds, so the same key recurs both within a tick (interleaved with
+    // other keys) and across ticks; unsorted input from a fixed xorshift stream.
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let kinds = |r: u64| match r % 5 {
+        0 => CtrlKind::Cc((r >> 8) as u8 % 4),
+        1 => CtrlKind::PitchBend,
+        2 => CtrlKind::ChannelPressure,
+        3 => CtrlKind::PolyPressure((r >> 8) as u8 % 4),
+        _ => CtrlKind::Program,
+    };
+    for round in 0..200 {
+        let mut ctrls = Vec::new();
+        for i in 0..(next() % 64) {
+            let r = next();
+            ctrls.push(CtrlEvent { tick: (r % 6) as i64 - 2, channel: (r >> 16) as u8 % 3, kind: kinds(r >> 24), value: (round * 100 + i) as i32 });
+        }
+        let mut seq = Sequence { notes: Vec::new(), ctrls: ctrls.clone() };
+        let removed = seq.remove_duplicates();
+        let expected = reference(ctrls.clone());
+        assert_eq!(seq.ctrls, expected, "round {round}");
+        assert_eq!(removed, ctrls.len() - expected.len(), "round {round}");
+    }
+}
