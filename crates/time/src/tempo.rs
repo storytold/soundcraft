@@ -94,7 +94,8 @@ impl TempoMap {
         let mut bpm = self.tempos.first().map_or(120.0, |e| e.bpm);
         for (i, e) in self.tempos.iter().enumerate() {
             if i > 0 {
-                acc += (e.tick - seg_tick) as f64 / bpm;
+                // Saturating: a file's ticks are indexed before `sanitize` orders them.
+                acc += e.tick.saturating_sub(seg_tick) as f64 / bpm;
                 seg_tick = e.tick;
                 bpm = e.bpm;
             }
@@ -525,6 +526,15 @@ mod tests {
         let back: TempoMap = serde_json::from_str(&json).unwrap();
         assert_eq!(back, m);
         assert_eq!(back.tick_to_samples(150 * 487 + 3, sr), m.tick_to_samples(150 * 487 + 3, sr));
+    }
+
+    #[test]
+    fn a_file_with_wild_ticks_is_indexed_without_overflow() {
+        let json = r#"{"tempos":[{"tick":0,"bpm":120.0},{"tick":-9223372036854775808,"bpm":100.0},{"tick":9223372036854775807,"bpm":90.0}],"meters":[{"tick":0,"numerator":4,"denominator":4}]}"#;
+        let mut m: TempoMap = serde_json::from_str(json).unwrap();
+        m.sanitize();
+        assert_eq!(m.tempos().first().map(|e| e.tick), Some(0));
+        assert_eq!(m.elapsed.len(), m.tempos().len());
     }
 
     #[test]
