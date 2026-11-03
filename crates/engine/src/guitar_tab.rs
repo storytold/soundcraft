@@ -22,6 +22,8 @@ pub const MAX_STRINGS: usize = *soundcraft_model::GUITAR_STRINGS.end();
 const SEARCH_BUDGET: usize = 20_000;
 /// Notes of one onset that the fingering search places; the rest stay unplayable.
 const MAX_SEARCHED_NOTES: usize = 16;
+/// Cap on the text tab, so a session of long bars cannot make a huge string.
+const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
 
 /// A named tuning; open-string MIDI pitches, string 1 (highest) first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,11 +209,15 @@ fn fret_on(pitch: u8, open: u8) -> Option<u8> {
 /// Place the notes of one onset (`(pitch, channel)` pairs) on strings of `tuning`.
 /// Notes come back highest pitch first. A pitch on two channels is a unison on two strings.
 pub fn assign(chord: &[(u8, u8)], tuning: &[u8]) -> Vec<TabNote> {
+    assign_into(chord, tuning, &mut vec![false; tuning.len()])
+}
+
+/// [`assign`] on the strings not yet `used`, marking the strings it takes.
+fn assign_into(chord: &[(u8, u8)], tuning: &[u8], used: &mut [bool]) -> Vec<TabNote> {
     let mut notes: Vec<TabNote> =
         chord.iter().map(|(pitch, channel)| TabNote { pitch: *pitch, channel: *channel, string: None, fret: None }).collect();
     notes.sort_by(|a, b| b.pitch.cmp(&a.pitch).then(a.channel.cmp(&b.channel)));
     notes.dedup_by(|a, b| a.pitch == b.pitch && a.channel == b.channel);
-    let mut used = vec![false; tuning.len()];
     // Channel N is string N, when that gives a playable fret on a free string.
     for n in &mut notes {
         let s = usize::from(n.channel);
@@ -227,20 +233,23 @@ pub fn assign(chord: &[(u8, u8)], tuning: &[u8]) -> Vec<TabNote> {
     }
     // The rest: the lowest playable position on the free strings.
     // Notes no free string can reach stay unplayable without taking a place in the search.
-    let reachable = |p: u8| tuning.iter().zip(&used).any(|(open, u)| !*u && fret_on(p, *open).is_some());
+    let reachable = |p: u8| tuning.iter().zip(used.iter()).any(|(open, u)| !*u && fret_on(p, *open).is_some());
     let rest: Vec<usize> =
         (0..notes.len()).filter(|i| notes.get(*i).is_some_and(|n| n.string.is_none() && reachable(n.pitch))).take(MAX_SEARCHED_NOTES).collect();
     if rest.is_empty() {
         return notes;
     }
     let pitches: Vec<u8> = rest.iter().filter_map(|i| notes.get(*i).map(|n| n.pitch)).collect();
-    let best = fingering(&pitches, tuning, &used);
+    let best = fingering(&pitches, tuning, used);
     for (k, choice) in best.into_iter().enumerate() {
         if let (Some(i), Some(s)) = (rest.get(k), choice)
             && let (Some(n), Some(open)) = (notes.get_mut(*i), tuning.get(s))
         {
             n.string = u8::try_from(s + 1).ok();
             n.fret = fret_on(n.pitch, *open);
+            if let Some(u) = used.get_mut(s) {
+                *u = true;
+            }
         }
     }
     notes
@@ -382,8 +391,8 @@ pub struct TimedNote {
 pub fn timeline(s: &Session, track: &Track) -> Vec<TimedNote> {
     let tuning = tuning_of(track);
     let sr = s.sample_rate;
-    // (sixteenth, clip, tick, pitch, channel)
-    let mut raw: Vec<(i64, ClipId, i64, u8, u8)> = Vec::new();
+    // (sixteenth, clip, tick, pitch, channel, muted)
+    let mut raw: Vec<(i64, ClipId, i64, u8, u8, bool)> = Vec::new();
     for c in track.clips() {
         let ClipContent::Midi { sequence } = &c.content else { continue };
         let base = s.tempo.samples_to_ticks(c.start, sr);
@@ -393,15 +402,19 @@ pub fn timeline(s: &Session, track: &Track) -> Vec<TimedNote> {
             if tick < base || tick >= end || n.length <= 0 {
                 continue;
             }
-            raw.push((score::quantize(tick), c.id, tick, n.pitch, n.channel));
+            raw.push((score::quantize(tick), c.id, tick, n.pitch, n.channel, c.muted));
         }
     }
     raw.sort_by_key(|r| (r.0, r.2));
     let mut out = Vec::with_capacity(raw.len());
     for group in raw.chunk_by(|a, b| a.0 == b.0) {
-        let chord: Vec<(u8, u8)> = group.iter().map(|r| (r.3, r.4)).collect();
-        let placed = assign(&chord, &tuning);
-        for (_, clip, tick, pitch, channel) in group {
+        // Unmuted notes first, fingered as the Tab panel does; muted ones take the strings left.
+        let pass = |muted: bool| group.iter().filter(|r| r.5 == muted).map(|r| (r.3, r.4)).collect::<Vec<_>>();
+        let mut used = vec![false; tuning.len()];
+        let active = assign_into(&pass(false), &tuning, &mut used);
+        let muted = assign_into(&pass(true), &tuning, &mut used);
+        for (_, clip, tick, pitch, channel, is_muted) in group {
+            let placed = if *is_muted { &muted } else { &active };
             let found = placed.iter().find(|n| n.pitch == *pitch && n.channel == *channel).copied();
             let note = found.unwrap_or(TabNote { pitch: *pitch, channel: *channel, string: None, fret: None });
             out.push(TimedNote { clip: *clip, at: s.tempo.tick_to_samples(*tick, sr), note });
@@ -427,17 +440,26 @@ pub fn locate(s: &Session, tab: &Tab, at: Samples) -> Option<(usize, f64)> {
 /// The tab as plain text: one block of string lines per `bars_per_line` measures, each sixteenth
 /// three characters wide.
 pub fn text(tab: &Tab, bars_per_line: usize) -> String {
+    text_budgeted(tab, bars_per_line, MAX_TEXT_BYTES)
+}
+
+/// [`text`] that stops after the block that passes `budget` bytes, with a line saying where.
+fn text_budgeted(tab: &Tab, bars_per_line: usize, budget: usize) -> String {
     let per = bars_per_line.max(1);
     let labels: Vec<String> = tab.tuning.iter().map(|p| pitch_class(*p).to_string()).collect();
     let width = labels.iter().map(String::len).max().unwrap_or(1);
     let mut out = String::new();
     for chunk in tab.measures.chunks(per) {
+        if out.len() >= budget {
+            let _ = writeln!(out, "(cut before measure {}: too long for text)", chunk.first().map_or(0, |m| m.number));
+            break;
+        }
         let _ = writeln!(out, "{:width$} {}", "", chunk.first().map_or(0, |m| m.number));
         for (s, label) in labels.iter().enumerate() {
             let string = u8::try_from(s + 1).ok();
             let _ = write!(out, "{label:>width$}|");
             for m in chunk {
-                let mut cells = vec![String::from("---"); usize::try_from(m.units).unwrap_or(0).min(64)];
+                let mut cells = vec![String::from("---"); usize::try_from(m.units).unwrap_or(0)];
                 for e in &m.events {
                     if let Some(n) = e.notes.iter().find(|n| n.string == string)
                         && let (Some(f), Some(cell)) = (n.fret, usize::try_from(e.unit).ok().and_then(|u| cells.get_mut(u)))
@@ -603,6 +625,71 @@ mod tests {
         let notes = assign(&chord, DEFAULT_TUNING);
         let low = notes.iter().find(|n| n.pitch == 40);
         assert_eq!(low.map(|n| (n.string, n.fret)), Some((Some(6), Some(0))));
+    }
+
+    #[test]
+    fn text_writes_long_measures_whole_within_a_budget() {
+        let event = TabEvent { unit: 79, notes: assign(&[(64, 0)], DEFAULT_TUNING) };
+        let m = |number: usize| TabMeasure {
+            number,
+            start: (number as i64 - 1) * 80,
+            units: 80,
+            numerator: 5,
+            denominator: 1,
+            events: vec![event.clone()],
+        };
+        let tab = Tab { track: TrackId(1), name: "Gtr".into(), tuning: DEFAULT_TUNING.to_vec(), measures: (1..=4).map(m).collect() };
+        let full = text(&tab, 1);
+        let first = full.lines().nth(1).unwrap_or_default();
+        assert!(first.ends_with("0--|"), "{first}");
+        assert_eq!(first.len(), 2 + 80 * 3 + 1);
+        let cut = text_budgeted(&tab, 1, full.len() / 2);
+        assert!(cut.len() < full.len());
+        assert!(cut.trim_end().ends_with("(cut before measure 3: too long for text)"), "{cut}");
+    }
+
+    #[test]
+    fn bars_shorter_than_a_sixteenth_keep_the_tab() {
+        let mut e = crate::demo::demo_engine();
+        let Some(track) = target_track(e.session()) else { return };
+        let before = layout(e.session(), track).map(|t| t.measures.len()).unwrap_or(0);
+        assert!(e.execute("event.meter", &json!({"numerator": 1, "denominator": 32, "at": 0})).is_ok());
+        let tab = layout(e.session(), track);
+        let after = tab.as_ref().map(|t| t.measures.len()).unwrap_or(0);
+        assert!(before > 0 && after > 0, "{before} -> {after}");
+        let notes = |t: &Tab| t.measures.iter().flat_map(|m| &m.events).map(|e| e.notes.len()).sum::<usize>();
+        assert!(tab.as_ref().is_some_and(|t| notes(t) > 0));
+    }
+
+    #[test]
+    fn muted_notes_take_only_the_strings_left() {
+        // An unmuted A (45) on channel 1 falls back to the open A string. A muted A on channel 5,
+        // at the same onset, must not take that string from it: the Tab panel never sees it.
+        let mut e = crate::demo::demo_engine();
+        let Some(track) = target_track(e.session()) else { return };
+        let s = e.session_mut();
+        let id = s.new_clip_id();
+        let Some(t) = s.track_mut(track) else { return };
+        let Some(p) = t.playlist_mut() else { return };
+        let Some(mut c) = p.clips.iter().find(|c| matches!(c.content, ClipContent::Midi { .. })).cloned() else { return };
+        let ClipContent::Midi { sequence } = &mut c.content else { return };
+        let Some(mut note) = sequence.notes.first().copied() else { return };
+        note.pitch = 45;
+        note.channel = 0;
+        sequence.notes = vec![note];
+        let mut muted = c.clone();
+        muted.id = id;
+        muted.muted = true;
+        if let ClipContent::Midi { sequence } = &mut muted.content {
+            sequence.notes[0].channel = 4;
+        }
+        p.clips = vec![c, muted];
+        let s = e.session();
+        let t = s.track(track).map(|t| timeline(s, t)).unwrap_or_default();
+        let unmuted = t.iter().find(|n| n.note.channel == 0).map(|n| (n.note.string, n.note.fret));
+        assert_eq!(unmuted, Some((Some(5), Some(0))));
+        let muted = t.iter().find(|n| n.note.channel == 4).map(|n| (n.note.string, n.note.fret));
+        assert_eq!(muted, Some((Some(6), Some(5))));
     }
 
     #[test]

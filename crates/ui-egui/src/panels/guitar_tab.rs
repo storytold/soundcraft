@@ -60,15 +60,23 @@ fn systems(tab: &Tab, width: f32) -> Vec<Vec<(usize, f32)>> {
     out
 }
 
+/// Widest measure, in full-width cells; longer measures narrow their cells to fit.
+const MAX_CELLS: i64 = 64;
+
 fn measure_width(units: i64) -> f32 {
-    units.clamp(1, 64) as f32 * CELL + 2.0 * PAD
+    units.clamp(1, MAX_CELLS) as f32 * CELL + 2.0 * PAD
+}
+
+/// The width of one sixteenth in a measure of `units` sixteenths.
+fn cell_width(units: i64) -> f32 {
+    if units > MAX_CELLS { CELL * MAX_CELLS as f32 / units as f32 } else { CELL }
 }
 
 /// The (measure index, sixteenth) a click `rel` points right of a system's left edge lands on.
 fn clicked_unit(tab: &Tab, system: &[(usize, f32)], rel: f32) -> Option<(usize, f64)> {
     let (i, x) = system.iter().rev().find(|(_, x)| rel >= *x)?;
     let m = tab.measures.get(*i)?;
-    let unit = (((rel - x - PAD) / CELL).floor() as i64).clamp(0, m.units.saturating_sub(1).max(0));
+    let unit = (((rel - x - PAD) / cell_width(m.units)).floor() as i64).clamp(0, m.units.saturating_sub(1).max(0));
     Some((*i, unit as f64))
 }
 
@@ -128,7 +136,7 @@ pub fn guitar_tab_panel(app: &mut SoundApp, ui: &mut Ui) {
                 painter.line_segment([pos2(xe, y0), pos2(xe, y0 + staff_h)], bar);
                 painter.text(pos2(x + 2.0, rect.min.y + 2.0), Align2::LEFT_TOP, m.number.to_string(), regular(9.0), t.text_dim);
                 for e in &m.events {
-                    let cx = x + PAD + (e.unit as f32 + 0.5) * CELL;
+                    let cx = x + PAD + (e.unit as f32 + 0.5) * cell_width(m.units);
                     for n in &e.notes {
                         let (Some(string), Some(fret)) = (n.string, n.fret) else { continue };
                         let y = y0 + f32::from(string.saturating_sub(1)) * LINE_GAP;
@@ -145,7 +153,7 @@ pub fn guitar_tab_panel(app: &mut SoundApp, ui: &mut Ui) {
                 if let Some((ci, unit)) = cursor
                     && ci == *i
                 {
-                    let cx = x + PAD + unit as f32 * CELL;
+                    let cx = x + PAD + unit as f32 * cell_width(m.units);
                     let color = if playing { t.playhead } else { t.accent };
                     painter.line_segment([pos2(cx, y0 - 6.0), pos2(cx, y0 + staff_h + 6.0)], Stroke::new(1.5, color));
                 }
@@ -212,6 +220,19 @@ mod tests {
         assert_eq!(s[1][1], (3, LABEL_W + w));
         // Narrower than one measure: still one per system.
         assert_eq!(systems(&tab, 10.0).len(), 5);
+    }
+
+    #[test]
+    fn long_measures_narrow_their_cells() {
+        let m = |number: usize, start, units| TabMeasure { number, start, units, numerator: units as u32, denominator: 16, events: Vec::new() };
+        let tab =
+            Tab { track: TrackId(1), name: String::new(), tuning: guitar_tab::DEFAULT_TUNING.to_vec(), measures: vec![m(1, 0, 80), m(2, 80, 16)] };
+        let layout = systems(&tab, 10_000.0);
+        let system = &layout[0];
+        let w = measure_width(80);
+        // The last sixteenth of the 80-sixteenth bar is inside that bar, not the next.
+        assert_eq!(clicked_unit(&tab, system, LABEL_W + w - PAD - 0.5 * cell_width(80)), Some((0, 79.0)));
+        assert_eq!(clicked_unit(&tab, system, LABEL_W + w + PAD + 0.5 * CELL), Some((1, 0.0)));
     }
 
     #[test]
