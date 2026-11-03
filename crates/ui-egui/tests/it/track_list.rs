@@ -127,6 +127,8 @@ fn deeply_nested_tracks_keep_indenting_past_six_folders() {
     }
     r.frame(vec![]);
 
-    let parent_name = r.app.engine.session().track(parent).unwrap().name.clone();
-    assert!(r.text_x(&child_name) > r.text_x(&parent_name), "deeply nested child is not indented under its parent");
+    // "Folder 1" is the child's own folder and the seventh level; "Folder 7" is the outermost.
+    assert_eq!(r.app.engine.session().track(parent).unwrap().name, "Folder 7");
+    assert!(r.text_x(&child_name) > r.text_x("Folder 1"), "deeply nested child is not indented under its own folder");
+    assert!(r.text_x("Folder 1") > r.text_x("Folder 2"), "each level indents further");
 }

@@ -89,7 +89,8 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
             }
             ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x + 20.0, r.min.y + 3.0), vec2(4.0, 11.0)), 0.0, rgb(color));
             ui.painter().with_clip_rect(r).text(
-                pos2(r.min.x + 30.0 + depth as f32 * 10.0, r.center().y),
+                // Indent stops growing at eight levels so a deep name keeps room in the column.
+                pos2(r.min.x + 30.0 + depth.min(8) as f32 * 10.0, r.center().y),
                 Align2::LEFT_CENTER,
                 &name,
                 regular(11.5),
