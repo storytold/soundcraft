@@ -131,33 +131,60 @@ pub fn fold_down_stereo(fmt: ChannelFormat, ch: &[Vec<f32>]) -> Vec<Vec<f32>> {
     out
 }
 
+/// Block size for clip effects in [`render_clips`].
+const CLIP_FX_BLOCK: usize = 4096;
+/// Most a clip effect keeps rendering past its clip's end in [`render_clips`], in seconds.
+const MAX_CLIP_FX_TAIL_SECONDS: f64 = 10.0;
+/// A tail block whose peak is below this (-180 dBFS) ends a clip effect's tail.
+const CLIP_FX_TAIL_FLOOR: f32 = 1e-9;
+
 /// Render only one track's clips (no mixer processing) — Consolidate.
 pub fn render_clips(s: &Session, track: TrackId, range: Range) -> Vec<Vec<f32>> {
     let Some(t) = s.track(track) else { return Vec::new() };
     let len = usize::try_from(range.len().max(0)).unwrap_or(0).min(MAX_RENDER_SAMPLES / t.channels().max(1));
     let mut out = vec![vec![0.0f32; len]; t.channels().max(1)];
     let mut scratch = Vec::new();
+    // One reusable block for every clip with effects.
+    let mut block: Vec<Vec<f32>> = Vec::new();
+    let max_tail = s.sample_rate.samples(MAX_CLIP_FX_TAIL_SECONDS).max(0);
     for c in t.clips().iter().filter(|c| !c.muted && c.range().overlaps(&range)) {
         match clip_fx_params(s, c.id.0) {
             None => render_clip(s, c, range.start, len, &mut out, &mut scratch),
             Some(params) => {
-                let mut tmp = vec![vec![0.0f32; len]; out.len()];
-                render_clip(s, c, range.start, len, &mut tmp, &mut scratch);
-                let mut fx = ClipFx::new(s.sample_rate.as_f64() as f32, tmp.len());
+                if block.len() != out.len() {
+                    block = vec![vec![0.0f32; CLIP_FX_BLOCK]; out.len()];
+                }
+                let mut fx = ClipFx::new(s.sample_rate.as_f64() as f32, out.len());
                 fx.configure(params);
-                let mut done = 0;
+                // The effects start from silence, so nothing comes out before the clip starts:
+                // process from there through the clip and a bounded tail, not the whole selection.
+                let offset = |at: Samples| usize::try_from(at.saturating_sub(range.start).max(0)).unwrap_or(usize::MAX).min(len);
+                let first = offset(c.start);
+                let clip_end = offset(c.end());
+                let tail_end = offset(c.end().saturating_add(max_tail));
+                let mut done = first;
                 while done < len {
-                    let n = (len - done).min(4096);
-                    let mut block: Vec<Vec<f32>> = tmp.iter().map(|ch| ch.get(done..done + n).map(<[f32]>::to_vec).unwrap_or_default()).collect();
+                    let n = (len - done).min(CLIP_FX_BLOCK);
+                    for ch in &mut block {
+                        ch.fill(0.0);
+                    }
+                    if done < clip_end {
+                        render_clip(s, c, range.start.saturating_add(done as i64), n, &mut block, &mut scratch);
+                    }
                     fx.process(&mut block, n);
+                    let mut peak = 0.0f32;
                     for (o, b) in out.iter_mut().zip(block.iter()) {
                         if let Some(dst) = o.get_mut(done..done + n) {
                             for (x, y) in dst.iter_mut().zip(b.iter()) {
                                 *x += *y;
+                                peak = peak.max(y.abs());
                             }
                         }
                     }
                     done += n;
+                    if done >= clip_end && (done >= tail_end || peak < CLIP_FX_TAIL_FLOOR) {
+                        break;
+                    }
                 }
             }
         }
