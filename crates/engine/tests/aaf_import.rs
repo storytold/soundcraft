@@ -189,13 +189,142 @@ fn rust_reader_turns_an_aaf_file_into_editable_tracks() {
 }
 
 #[test]
-fn rust_reader_requires_every_locator_in_the_chosen_media_folder() {
+fn missing_media_is_reported_and_its_edits_skipped_without_failing_the_import() {
     let f = AafFolder::new();
     std::fs::remove_file(f.dir.join("Diálogo á #1.wav")).unwrap();
+    let preview = f.preview().unwrap();
+    let plan = &preview["plan"];
+    let missing: Vec<_> = plan["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str()).filter(|w| w.starts_with("Missing media")).collect();
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert!(missing[0].contains("Diálogo á #1.wav") && missing[0].contains("2 edit(s) skipped"), "{}", missing[0]);
+    // The dialogue track keeps its name but loses its two edits; the ambience edit is intact.
+    assert_eq!(plan["tracks"][0]["clips"].as_array().unwrap().len(), 0);
+    assert_eq!(plan["tracks"][1]["clips"].as_array().unwrap().len(), 1);
+    assert_eq!(plan["sources"].as_array().unwrap().len(), 1);
+    let mut e = Engine::default();
+    e.execute("file.import_aaf", &json!({"plan": plan, "selected": [0, 1]})).unwrap();
+    let edits: Vec<_> = e.session().tracks.iter().flat_map(|t| t.clips()).map(|c| (c.start, c.length, c.source_offset())).collect();
+    assert_eq!(edits, [(0, 240000, 72000)]);
+
+    // With no media at all there is nothing to import.
+    std::fs::remove_file(f.dir.join("Ambiente estéreo.wav")).unwrap();
     let err = f.preview().unwrap_err().to_string();
-    assert!(err.contains("Missing media"), "{err}");
+    assert!(err.contains("none of the referenced files were found"), "{err}");
+}
+
+#[test]
+fn media_that_is_present_but_not_a_wav_still_fails() {
+    let f = AafFolder::new();
     std::fs::write(f.dir.join("Diálogo á #1.wav"), b"RIFF\0\0\0\0WAVEnot audio").unwrap();
     assert!(f.preview().is_err());
+}
+
+/// The fixture with its first WAV locator (`Di%C3%A1logo%20%C3%A1%20%231.wav`, 32 UTF-16 units)
+/// replaced by `url`, padded to the same length so the property stream stays well formed.
+fn with_locator(f: &AafFolder, url: &str) -> soundcraft_engine::Result<Value> {
+    let original = "Di%C3%A1logo%20%C3%A1%20%231.wav";
+    assert_eq!(url.encode_utf16().count(), original.encode_utf16().count(), "{url}");
+    let aaf = f.dir.join("Montaje sintético.aaf");
+    let mut bytes = std::fs::read(&aaf).unwrap();
+    let from: Vec<u8> = original.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let to: Vec<u8> = url.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let at = bytes.windows(from.len()).position(|w| w == from.as_slice()).unwrap();
+    bytes[at..at + to.len()].copy_from_slice(&to);
+    std::fs::write(&aaf, bytes).unwrap();
+    f.preview()
+}
+
+#[test]
+fn locators_that_try_to_leave_the_aaf_folder_are_refused() {
+    for url in [
+        "../../../../../../etc/passwd.wav",
+        "%2E%2E/%2E%2E/%2E%2E/secret1.wav",
+        "file:///tmp/../etc/shadow000.wav",
+        "http://evil.example/payload0.wav",
+        "file://server/share/payload0.wav",
+        "Di%C3%A1logo%20%C3%A1%20%231.wa/",
+        "Di%C3%A1logo%20%C3%A1%20%001.wav",
+    ] {
+        let f = AafFolder::new();
+        let err = with_locator(&f, url).unwrap_err().to_string();
+        assert!(err.contains("ocator"), "{url}: {err}");
+    }
+}
+
+#[test]
+fn an_absolute_locator_only_names_a_file_in_the_chosen_media_folder() {
+    // A locator pointing anywhere on disk is reduced to its file name and looked up only in the
+    // media folder the user chose: the real file elsewhere is never opened.
+    let f = AafFolder::new();
+    let preview = with_locator(&f, "file:///etc/Dlogo%20%C3%A1_1.wav").unwrap();
+    let w: Vec<_> = preview["plan"]["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str()).collect();
+    assert!(
+        w.iter().any(
+            |w| w.starts_with("Missing media") && w.contains(&std::fs::canonicalize(&f.dir).unwrap().join("Dlogo á_1.wav").display().to_string())
+        ),
+        "{w:?}"
+    );
+}
+
+/// Offsets into a structured-storage (CFB) file, enough to rewrite one FAT entry.
+struct Cfb {
+    bytes: Vec<u8>,
+    sector: usize,
+}
+impl Cfb {
+    fn new(bytes: Vec<u8>) -> Self {
+        let sector = 1 << u16::from_le_bytes([bytes[0x1E], bytes[0x1F]]);
+        Self { bytes, sector }
+    }
+    fn u32_at(&self, at: usize) -> u32 {
+        u32::from_le_bytes(self.bytes[at..at + 4].try_into().unwrap())
+    }
+    fn fat_entry(&self, i: u32) -> usize {
+        let per = self.sector / 4;
+        let fat_sector = self.u32_at(0x4C + 4 * (i as usize / per));
+        (fat_sector as usize + 1) * self.sector + 4 * (i as usize % per)
+    }
+    fn chain(&self, start: u32) -> Vec<u32> {
+        let mut out = vec![start];
+        while let next @ 0..=0xFFFF_FFF9 = self.u32_at(self.fat_entry(*out.last().unwrap())) {
+            out.push(next);
+        }
+        out
+    }
+    fn point(&mut self, from: u32, to: u32) {
+        let at = self.fat_entry(from);
+        self.bytes[at..at + 4].copy_from_slice(&to.to_le_bytes());
+    }
+}
+
+#[test]
+fn looped_sector_chains_fail_instead_of_hanging() {
+    let fixture = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/synthetic-two-tracks.aaf")).unwrap();
+    let base = Cfb::new(fixture);
+    let root_start = base.u32_at(base.sector + 0x74);
+    // (chain, start sector): directory, mini FAT, mini stream (root entry).
+    let chains = [("directory", base.u32_at(0x30)), ("mini FAT", base.u32_at(0x3C)), ("mini stream", root_start)];
+    for (name, start) in chains {
+        let chain = base.chain(start);
+        assert!(chain.len() >= 2, "{name}: fixture chain too short to loop");
+        let last = *chain.last().unwrap();
+        // Back to the start, and onto itself in the middle (a sector reached twice).
+        for (from, to) in [(last, start), (chain[1], chain[1])] {
+            let mut cfb = Cfb::new(base.bytes.clone());
+            cfb.point(from, to);
+            let f = AafFolder::new();
+            let aaf = f.dir.join("Montaje sintético.aaf");
+            std::fs::write(&aaf, &cfb.bytes).unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let media = f.dir.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Engine::default().execute("file.preview_aaf", &json!({"path": aaf, "media_dir": media})).map(|_| ()));
+            });
+            let result =
+                rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap_or_else(|_| panic!("{name} {from}->{to}: reader did not terminate"));
+            assert!(result.is_err(), "{name} {from}->{to}: a looped chain was accepted");
+        }
+    }
 }
 
 #[test]

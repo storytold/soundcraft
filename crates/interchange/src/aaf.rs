@@ -8,6 +8,26 @@
 //!
 //! No filesystem access happens here: the caller passes the opened AAF and a [`MediaResolver`]
 //! that turns a decoded locator path into checked media properties.
+//!
+//! # Provenance
+//! Written for SoundCraft from the published AAF Object Specification and Low-Level
+//! Container Specification, and checked against the synthetic fixture and its variants
+//! (written with the MIT-licensed pyaaf2 library) and real session exports. No code from the
+//! AAF SDK (AAF SDK Public Source License) or any GPL/LGPL/MPL project was read or copied.
+//!
+//! # Untrusted input
+//! The AAF is hostile input. Every walk is bounded:
+//! - structured storage (FAT, mini FAT, DIFAT and directory chains, directory tree) is parsed by
+//!   `cfb`, which rejects a sector pointed to twice, a chain that returns to its start and a
+//!   loop in the directory tree; we additionally cap the directory at [`MAX_DIRECTORY_ENTRIES`];
+//! - each stream we read is capped at 32 MiB, so no property or index can exceed it;
+//! - collections (mobs, slots, components, set/vector entries) are capped at [`MAX_ITEMS`],
+//!   objects read in total at `4 * MAX_ITEMS`, and mob-to-mob source chains at 32 links with
+//!   cycle detection. Object lookups are iterative except that source chain, so recursion depth
+//!   is bounded by it;
+//! - locator URLs are data: only local `file:` or scheme-less paths, never `..`, and a relative
+//!   locator resolves under the AAF's folder (see `locator_path`). A file that cannot be found
+//!   is reported and its edits skipped; it does not abort the import.
 use crate::{ImportClip, ImportError, ImportTrack, Media, Plan, Rational, TimecodeRate};
 use std::{
     collections::HashMap,
@@ -22,6 +42,8 @@ fn fail(s: impl Into<String>) -> ImportError {
 
 /// Upper bound on mobs, slots, components and collection entries.
 pub const MAX_ITEMS: usize = 100_000;
+/// Upper bound on structured-storage directory entries (storages and streams).
+pub const MAX_DIRECTORY_ENTRIES: usize = 4 * MAX_ITEMS;
 const MAX_STREAM_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SOURCE_DEPTH: usize = 32;
 
@@ -285,6 +307,9 @@ struct Store<F> {
 impl<F: Read + Seek> Store<F> {
     fn open(file: F) -> Result<Self> {
         let cfb = cfb::CompoundFile::open(file).map_err(|e| fail(format!("not an AAF structured-storage file: {e}")))?;
+        if cfb.walk().take(MAX_DIRECTORY_ENTRIES + 1).count() > MAX_DIRECTORY_ENTRIES {
+            return Err(fail("AAF directory has too many entries"));
+        }
         let mut s = Store { cfb, objects_read: 0, weakrefs: Vec::new(), datadefs: HashMap::new() };
         s.weakrefs = s.read_weakref_table()?;
         Ok(s)
@@ -483,8 +508,31 @@ fn locator_path(url: &str, base: &Path) -> Result<PathBuf> {
     if !query.is_empty() || !fragment.is_empty() {
         return Err(fail(format!("Locator must escape special characters: {url}")));
     }
-    let p = PathBuf::from(percent_decode(path));
-    Ok(if p.is_absolute() { p } else { base.join(p) })
+    let decoded = percent_decode(path);
+    if decoded.ends_with(['/', '\\']) {
+        return Err(fail(format!("Locator does not name a file: {url}")));
+    }
+    if decoded.contains('\0') {
+        return Err(fail(format!("Locator contains a NUL byte: {url}")));
+    }
+    let p = PathBuf::from(decoded);
+    // The locator is data: it may name a file, never walk the filesystem. `..` is refused
+    // anywhere (also inside absolute paths), so a relative locator stays under `base`.
+    use std::path::Component;
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(fail(format!("Locator must not contain `..`: {url}")));
+    }
+    if !matches!(p.components().next_back(), Some(Component::Normal(_))) {
+        return Err(fail(format!("Locator does not name a file: {url}")));
+    }
+    if p.is_absolute() {
+        return Ok(p);
+    }
+    // A relative locator may only hold plain names (no drive prefix or root on Windows).
+    if !p.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
+        return Err(fail(format!("Relative locator escapes the AAF folder: {url}")));
+    }
+    Ok(base.join(p))
 }
 
 fn percent_decode(s: &str) -> String {
@@ -515,7 +563,16 @@ struct Builder<'a, F> {
     options: &'a AafOptions<'a>,
     media: &'a mut dyn MediaResolver,
     sources: Vec<Media>,
+    /// Sources whose file could not be found, with the number of edits left out because of them.
+    missing: Vec<MissingMedia>,
     warnings: Vec<String>,
+}
+
+struct MissingMedia {
+    key: String,
+    path: String,
+    url: String,
+    edits: usize,
 }
 
 impl<F: Read + Seek> Builder<'_, F> {
@@ -593,7 +650,7 @@ impl<F: Read + Seek> Builder<'_, F> {
             return Err(fail("Physical channel selection / split stereo unsupported"));
         }
         // Each source file is located, probed and reported once, however many edits use it.
-        if self.sources.iter().any(|s| s.key == key) {
+        if self.sources.iter().any(|s| s.key == key) || self.missing.iter().any(|m| m.key == key) {
             return Ok((key, offset));
         }
         let name = mob.string(PID_MOB_NAME);
@@ -603,10 +660,15 @@ impl<F: Read + Seek> Builder<'_, F> {
             return Err(fail(format!("Expected one unambiguous WAV locator: {}", name.unwrap_or_default())));
         };
         let locator = locator_path(url, self.options.base_dir)?;
-        let info = self.media.resolve(&locator).map_err(|e| match e {
-            MediaError::Missing(p) => fail(format!("Missing media: {p}; locator={url}")),
-            MediaError::Invalid(m) => fail(m),
-        })?;
+        let info = match self.media.resolve(&locator) {
+            Ok(info) => info,
+            // Reported with the edits that need it; the rest of the composition still imports.
+            Err(MediaError::Missing(path)) => {
+                self.missing.push(MissingMedia { key: key.clone(), path, url: url.clone(), edits: 0 });
+                return Ok((key, offset));
+            }
+            Err(MediaError::Invalid(m)) => return Err(fail(m)),
+        };
         if let Some(from) = &info.relinked_from {
             self.warnings.push(format!("Relinked {from} -> {}", info.path));
         }
@@ -633,7 +695,9 @@ impl<F: Read + Seek> Builder<'_, F> {
 }
 
 /// Reads one composition of an AAF as an interchange plan. Fails on anything outside the
-/// supported subset; no partial plan is returned.
+/// supported subset; no partial plan is returned. The one exception is media that cannot be
+/// found: each missing file is listed in the plan's warnings and its edits are left out (the
+/// timeline positions of the other edits are unchanged). It fails only if no file is found.
 pub fn read_aaf<F: Read + Seek>(file: F, options: &AafOptions, media: &mut dyn MediaResolver) -> Result<Plan> {
     let mut store = Store::open(file)?;
     let root = store.object("/")?;
@@ -672,6 +736,7 @@ pub fn read_aaf<F: Read + Seek>(file: F, options: &AafOptions, media: &mut dyn M
         options,
         media,
         sources: Vec::new(),
+        missing: Vec::new(),
         warnings: vec![
             "AAF subset: plugins, routing, automation and metadata are not transferred.".into(),
             "Clip gain, fades, transitions, selectors, nested sequences and embedded media are unsupported; encountered editorial structures fail."
@@ -739,6 +804,11 @@ pub fn read_aaf<F: Read + Seek>(file: F, options: &AafOptions, media: &mut dyn M
                 return Err(fail(format!("Unsupported component in {name}: {}", item.kind())));
             }
             let (sid, offset) = b.resolve(&item, rr, Q::int(0), &mut Vec::new())?;
+            if let Some(m) = b.missing.iter_mut().find(|m| m.key == sid) {
+                m.edits += 1;
+                cursor = cursor.checked_add(len).ok_or_else(|| fail("length overflow"))?;
+                continue;
+            }
             let source = b.sources.iter().find(|s| s.key == sid).ok_or_else(|| fail("source missing"))?;
             if !formats.contains(&source.channels) {
                 formats.push(source.channels);
@@ -774,6 +844,13 @@ pub fn read_aaf<F: Read + Seek>(file: F, options: &AafOptions, media: &mut dyn M
             }
         };
         plan_tracks.push(ImportTrack { name, channels, clips });
+    }
+    for m in &b.missing {
+        b.warnings.push(format!("Missing media: {}; locator={}; {} edit(s) skipped", m.path, m.url, m.edits));
+    }
+    if b.sources.is_empty() && !b.missing.is_empty() {
+        let names: Vec<&str> = b.missing.iter().map(|m| m.path.as_str()).collect();
+        return Err(fail(format!("Missing media: none of the referenced files were found: {}", names.join(", "))));
     }
     let mut rates: Vec<u32> = b.sources.iter().map(|s| s.sample_rate).collect();
     rates.sort_unstable();
@@ -877,6 +954,29 @@ mod tests {
         assert!(locator_path("file://server/x.wav", base).is_err());
         assert!(locator_path("file:///x.wav?y", base).is_err());
         assert!(locator_path("file:///x.wav#y", base).is_err());
+    }
+
+    #[test]
+    fn locators_never_walk_out_of_the_aaf_folder() {
+        let base = Path::new("/base");
+        assert_eq!(locator_path("Audio%20Files/a.wav", base).unwrap(), PathBuf::from("/base/Audio Files/a.wav"));
+        assert_eq!(locator_path("./a.wav", base).unwrap(), PathBuf::from("/base/a.wav"));
+        for url in [
+            "../a.wav",
+            "Audio Files/../../a.wav",
+            "%2E%2E/a.wav",
+            "%2e%2e%2Fsecret.wav",
+            "file:///base/../etc/a.wav",
+            "file:///base/Audio%20Files/%2E%2E/%2E%2E/a.wav",
+            "a.wav%00.txt",
+            "file:///base/folder/",
+            "",
+            "smb://server/share/a.wav",
+            "file://evil.example/a.wav",
+            "javascript:alert(1)",
+        ] {
+            assert!(locator_path(url, base).is_err(), "{url}");
+        }
     }
 
     #[test]
