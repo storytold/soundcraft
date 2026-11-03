@@ -20,7 +20,7 @@ menu checklist).
 | **Ready for real work** | **~40 %** | estimated, weighted by dimension |
 | Mainstream practitioner (tracking/mixing engineer) | **~36 %** | estimated: 50.6 % weekly-area depth × 0.90 interaction × 0.92 stability × 0.85 file exchange ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
 | Essentials user (song or podcast, defaults) | **~57 %** | estimated: 72.4 % core-feature depth × 0.90 launch/stability × 0.90 discoverability × 0.97 files ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
-| Remaining to alpha | **~110–180 Opus 5.5 agent-hours** (the failing gate rows) | estimated, calibrated on PR history |
+| Remaining to alpha | **~85–145 Opus 5.5 agent-hours** (the failing gate rows) | estimated, calibrated on PR history |
 | Remaining to beta | **~350–570 Opus 5.5 agent-hours** (includes the alpha work; ~60–70 % parallelizable) | estimated |
 | Remaining to full parity | **~950–1,450 Opus 5.5 agent-hours** | estimated |
 

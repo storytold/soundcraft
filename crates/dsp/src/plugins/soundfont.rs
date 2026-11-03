@@ -712,12 +712,13 @@ impl Plugin for SoundFontPlayer {
 
     fn tail_samples(&self) -> usize {
         // The longest release of the preset's regions, up to the 8× CC 72 can stretch it (the
-        // envelope's own time to silence), capped so a hostile timecent can't run for hours.
+        // envelope's own time to silence), capped so a hostile timecent can't run for hours. No
+        // preset rings at all; a short release must not keep the host rendering for half a minute.
         let secs = self
             .current()
             .and_then(|i| self.bank.as_ref()?.presets.get(i))
-            .map_or(30.0, |p| p.regions.iter().map(|r| r.env.release).fold(0.0f32, f32::max) * 8.0)
-            .clamp(30.0, 900.0);
+            .map_or(0.0, |p| p.regions.iter().map(|r| r.env.release).fold(0.0f32, f32::max) * 8.0)
+            .clamp(0.5, 900.0);
         (secs * self.sr) as usize
     }
 

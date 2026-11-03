@@ -30,7 +30,7 @@ main platform). Any **no** keeps SoundCraft **pre-alpha**, and those rows are th
 | Bounce mix and stems; save and reopen the session | yes (rough) | WAV/BWF/AIFF/FLAC bounce, stems, `.scraft` save/reopen with plugin state; bugs #59, #103 in bus bounce and aux latency (PRs open) | — |
 | Exchange a session with Pro Tools or a picture editor | **no** | No `.ptx`, AAF or OMF import or export (#40, G-03) | 50–90 |
 
-**Result: pre-alpha.** Three workflows fail. Passing them is ~110–180 h, about 70 % of it
+**Result: pre-alpha.** Two workflows fail. Passing them is ~85–145 h, about 70 % of it
 parallelizable (interfaces, MIDI and AAF are independent crates).
 
 ## Milestones
@@ -89,7 +89,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-03 | minor | MIDI input devices and recording: the alpha-gate MIDI row passes on the desktop (input devices play live and record into clips); MIDI output, Merge, input filter and clock remain (G-02, 8–16 h). SoundFont Player (`.sf2`, 64 voices) |
+| 2026-11-03 | minor | MIDI input devices and recording: the alpha-gate MIDI row passes on the desktop (input devices play live and record into clips), so two of six workflows fail and the remaining gate is 85–145 h; MIDI output, Merge, input filter and clock remain (G-02, 8–16 h). SoundFont Player (`.sf2`, 64 voices) |
 | 2026-10-25 | trivial | Record-workflow evidence: `setup.playback_engine` applies the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | 27 built-in processors, as the plugin registry holds; the sampler (#108) is no longer listed under plugin essentials |
 | 2026-10-14 | trivial | M8: reject oversized MCP batches before execution (#460) |

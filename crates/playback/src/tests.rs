@@ -818,3 +818,34 @@ fn midi_played_while_recording_is_stamped_with_its_position() {
     st.fill(&mut out, 2);
     assert_eq!(mrx.try_recv().unwrap().1, [0xFF, 0, 0]);
 }
+
+#[test]
+fn stopping_a_take_does_not_record_the_last_notes_twice() {
+    let s = Arc::new(soundcraft_model::Session::default());
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
+    let (mtx, mrx) = sync_channel(16);
+    tx.send(Cmd::MidiRecorder(mtx)).unwrap();
+    tx.send(Cmd::Play { from: 48_000, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 512];
+    st.fill(&mut out, 2);
+    tx.send(Cmd::Recording(true)).unwrap();
+    st.fill(&mut out, 2);
+    // A key played in the last callback interval: the UI sends Stop and the take's end in the
+    // same frame, so no render hands the message over before the first flush.
+    tx.send(Cmd::Midi([0x90, 60, 100])).unwrap();
+    tx.send(Cmd::Stop).unwrap();
+    tx.send(Cmd::Recording(false)).unwrap();
+    st.fill(&mut out, 2);
+    let mut got = Vec::new();
+    while let Ok((_, m)) = mrx.try_recv() {
+        got.push(m);
+    }
+    assert_eq!(got, vec![[0x90, 60, 100], [0xFF, 0, 0]], "the last note must be kept once, then the end marker");
+}

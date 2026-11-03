@@ -19,7 +19,7 @@ summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimens
 | **Mainstream practitioner** (a working tracking/mixing engineer) | **~36 %** | estimated: written area weights and discounts ([below](#mainstream-practitioner-and-essentials-user)) |
 | **Essentials user** (making a song or podcast with the core features) | **~57 %** | estimated: written feature weights and discounts ([below](#mainstream-practitioner-and-essentials-user)) |
 | Stage | **pre-alpha** (core-workflow gate fails) | see [Stage](#stage) |
-| Remaining effort to alpha | **~110–180 Opus 5.5 agent-hours** | estimated: the failing gate rows |
+| Remaining effort to alpha | **~85–145 Opus 5.5 agent-hours** | estimated: the failing gate rows |
 | Remaining effort to beta | **~350–570 Opus 5.5 agent-hours** | estimated, calibrated (below) |
 | Remaining effort to full parity | **~950–1,450 Opus 5.5 agent-hours** | estimated, calibrated (below) |
 
@@ -197,7 +197,7 @@ Weights by what Pro Tools users actually spend time on. **Breadth** = the featur
 ## Stage
 
 **Pre-alpha.** Readiness (~40 %) is at the alpha bar, but the core-workflow gate
-([`roadmap.md`](roadmap.md#alpha-gate)) fails three of six Pro Tools workflows on macOS, the main
+([`roadmap.md`](roadmap.md#alpha-gate)) fails two of six Pro Tools workflows on macOS, the main
 platform:
 
 - Tracking from a chosen interface at a chosen buffer size: **no**. Only the default devices are
@@ -210,7 +210,7 @@ platform:
 
 Editing, mixing with plugins, bouncing, and saving and reopening pass (with known bugs).
 
-**Distance to alpha: ~5 points of readiness and ~110–180 agent-hours** (G-01, G-02, G-03, part
+**Distance to alpha: ~5 points of readiness and ~85–145 agent-hours** (G-01, G-02, G-03, part
 of G-06, and the #153 entitlement). **Distance to beta: ~35 points and ~350–570 agent-hours**
 (beta also needs ~75 % ready). The beta plan is in [`roadmap.md`](roadmap.md).
 
@@ -248,7 +248,7 @@ serializes more, because it needs hands-on testing.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-03 | trivial | Facts: MIDI input devices and MIDI recording land (hardware 12 → 14 %, 110–180 → 95–165 h); SoundFont Player is the fourth built-in instrument (27 + 4); rest of the percentages unchanged |
+| 2026-11-03 | trivial | Facts: MIDI input devices and MIDI recording land (hardware 12 → 14 %, 110–180 → 95–165 h; alpha distance 110–180 → 85–145 h, two of six gate workflows fail); SoundFont Player is the fourth built-in instrument (27 + 4); rest of the percentages unchanged |
 | 2026-10-24 | trivial | Built-in plugin counts: 27 processors + 3 instruments on `main`, and 24 + 2 in the 3bc2d92 code snapshot; the sampler (#108) is no longer listed as missing. Percentages unchanged |
 | 2026-10-10 | minor | Readiness-by-audience table: hours to ~95 % for full (950–1,450 h), mainstream (380–600 h) and essentials (110–200 h). The full number is already the additive weighted sum over the written dimension table (40.6 %); method unchanged |
 | 2026-10-10 | minor | Added the mainstream-practitioner (~36 %) and essentials-user (~57 %) numbers with written weights, discounts and user evidence. Checked the full ~40 %: it is the written dimension weights × values (40.6 %), so it doesn't move |
