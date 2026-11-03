@@ -157,12 +157,11 @@ pub fn import_video_bytes(e: &mut Engine, path: &str, bytes: Vec<u8>, at: Sample
 
 /// A bounce of the main mix, or of one bus, over a range, written to its file block by block so no
 /// bounce has to fit in memory, and rendered a slice at a time ([`Bounce::step`]) so a UI can show
-/// progress. The file appears at its path only once complete; a bounce that fails, or is dropped
-/// unfinished, leaves any older file there alone.
+/// progress. Native delivery publishes only complete files at an absent destination. Failure or
+/// cancellation preserves other files and cleans only an identity-verified staging file.
 pub struct Bounce {
     session: Arc<Session>,
     path: PathBuf,
-    part: PathBuf,
     range: Range,
     bus: Option<BusId>,
     fold: Option<ChannelFormat>,
@@ -204,25 +203,18 @@ impl Bounce {
             return Err(EngineError::BadParams("file.bounce_mix".into(), "bounces are limited to 4 hours".into()));
         }
         let (fmt, channels, fold) = bounce_layout(&s, bus, fold_stereo);
-        let name = path.file_name().map_or_else(|| "bounce".into(), |n| n.to_string_lossy().into_owned());
-        let part = path.with_file_name(format!("{name}.part"));
         crate::file_access::check_write(path).map_err(EngineError::Io)?;
-        crate::file_access::check_write(&part).map_err(EngineError::Io)?;
         let enc = (|| -> std::result::Result<_, soundcraft_audio_io::AudioError> {
-            let enc = soundcraft_audio_io::FileEncoder::new(Out::create(&part)?, opts, channels, s.sample_rate.hz(), Some(fmt.channel_mask()))?;
+            let enc = soundcraft_audio_io::FileEncoder::new(Out::create(path)?, opts, channels, s.sample_rate.hz(), Some(fmt.channel_mask()))?;
             enc.check_room(u64::try_from(r.len()).unwrap_or(0))?;
             Ok(enc)
         })()
-        .map_err(|err| {
-            let _ = std::fs::remove_file(&part);
-            EngineError::Io(format!("{}: {err}", path.display()))
-        })?;
+        .map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))?;
         let render = soundcraft_mix::RangeRender::new(&s, bus, r, 1024);
         let meter = soundcraft_dsp::meter::LoudnessMeter::new(s.sample_rate.as_f64() as f32, channels);
         Ok(Bounce {
             session: s,
             path: path.to_path_buf(),
-            part,
             range: r,
             bus,
             fold,
@@ -298,7 +290,7 @@ impl Bounce {
 
     fn finish(&mut self) -> Result<Bounced> {
         let bytes = match self.enc.take() {
-            Some(enc) => enc.finish().map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?.complete(&self.part, &self.path)?,
+            Some(enc) => enc.finish().map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?.complete(&self.path)?,
             None => 0,
         };
         Ok(Bounced {
@@ -310,41 +302,195 @@ impl Bounce {
     }
 }
 
-impl Drop for Bounce {
-    /// Removes the part file unless the bounce completed (which renamed it).
-    fn drop(&mut self) {
-        drop(self.enc.take());
-        let _ = std::fs::remove_file(&self.part);
-    }
-}
-
-/// Where a bounce is written: its part file, or memory in the browser, which has no file system.
+/// Where a bounce is written: an exclusively owned native stage, or browser memory.
 enum Out {
-    File(std::io::BufWriter<std::fs::File>),
+    #[cfg(not(target_arch = "wasm32"))]
+    File(NativeBounceOut),
+    #[cfg(target_arch = "wasm32")]
     Memory(std::io::Cursor<Vec<u8>>),
 }
 
-impl Out {
-    fn create(part: &Path) -> std::io::Result<Out> {
-        if cfg!(target_arch = "wasm32") {
-            return Ok(Out::Memory(std::io::Cursor::new(Vec::new())));
+#[cfg(not(target_arch = "wasm32"))]
+struct BounceStage {
+    path: PathBuf,
+    destination: PathBuf,
+    parent: PathBuf,
+    parent_identity: same_file::Handle,
+    identity: Option<same_file::Handle>,
+    roots: Option<Arc<crate::file_access::AutomationRoots>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BounceStage {
+    fn check(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(roots) = &self.roots {
+            roots.check(path, crate::file_access::Access::Write).map_err(std::io::Error::other)?;
         }
-        Ok(Out::File(std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(part)?)))
+        crate::file_access::check_write(path).map_err(std::io::Error::other)
     }
 
-    /// Puts the finished file at `path` and returns its size: the part file is synced and renamed
-    /// over it; in the browser the bytes are delivered ([`write_file`]).
-    fn complete(self, part: &Path, path: &Path) -> Result<u64> {
-        match self {
-            Out::File(out) => {
-                let mut len = 0;
-                let synced = out.into_inner().map_err(std::io::IntoInnerError::into_error).and_then(|f| {
-                    f.sync_all()?;
-                    len = f.metadata()?.len();
-                    Ok(())
-                });
-                replace_with(part, path, synced).map(|()| len)
+    // Like automation roots, these checks do not defend against hostile concurrent directory
+    // replacement between checking a path and using it; no stronger sandbox is claimed.
+    fn verify(&self) -> std::io::Result<()> {
+        self.check(&self.path)?;
+        self.check(&self.parent)?;
+        let parent = same_file::Handle::from_path(&self.parent)?;
+        if parent != self.parent_identity || std::fs::symlink_metadata(&self.parent)?.file_type().is_symlink() {
+            return Err(std::io::Error::other("bounce destination directory changed"));
+        }
+        if !std::fs::symlink_metadata(&self.path)?.file_type().is_file() {
+            return Err(std::io::Error::other("bounce staging path is no longer a regular file"));
+        }
+        // Open with write access: a bounce needs no read authority for its own output.
+        let current = same_file::Handle::from_file(std::fs::OpenOptions::new().write(true).open(&self.path)?)?;
+        if self.identity.as_ref() != Some(&current) {
+            return Err(std::io::Error::other("bounce staging identity changed"));
+        }
+        Ok(())
+    }
+
+    fn absent(path: &Path) -> std::io::Result<()> {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("bounce destination already exists: {}", path.display()))),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn create(path: &Path) -> std::io::Result<(std::fs::File, Self)> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let roots = crate::file_access::current();
+        crate::file_access::check_write(path).map_err(std::io::Error::other)?;
+        Self::absent(path)?;
+        let name = path.file_name().ok_or_else(|| std::io::Error::other("bounce destination must name a file"))?;
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).canonicalize()?;
+        let destination = parent.join(name);
+        crate::file_access::check_write(&destination).map_err(std::io::Error::other)?;
+        Self::absent(&destination)?;
+        let parent_identity = same_file::Handle::from_path(&parent)?;
+        for _ in 0..64 {
+            let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+            let stage = parent.join(format!(".soundcraft-bounce-{}-{nonce}.part", std::process::id()));
+            crate::file_access::check_write(&stage).map_err(std::io::Error::other)?;
+            let file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&stage) {
+                Ok(file) => file,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err),
+            };
+            // If establishing identity fails, retain the file rather than guessing ownership.
+            let identity = file.try_clone().and_then(same_file::Handle::from_file).inspect_err(|err| {
+                log::warn!("bounce staging retained {}: {err}", stage.display());
+            })?;
+            let owned = Self { path: stage, destination, parent, parent_identity, identity: Some(identity), roots };
+            owned.verify()?;
+            return Ok((file, owned));
+        }
+        Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no unused bounce staging name after 64 attempts"))
+    }
+
+    fn publish(mut self) -> std::io::Result<()> {
+        self.verify()?;
+        self.check(&self.destination)?;
+        Self::absent(&self.destination)?;
+        let mut temp = tempfile::TempPath::try_from_path(self.path.clone())?;
+        // TempPath must never blindly unlink a path replaced by another process.
+        temp.disable_cleanup(true);
+        temp.persist_noclobber(&self.destination).map_err(|err| err.error)?;
+        // On hard-link fallback a retained stage is possible; Drop verifies and removes it.
+        if std::fs::symlink_metadata(&self.path).is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound) {
+            self.identity = None;
+        }
+        sync_dir(&self.parent);
+        Ok(())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for BounceStage {
+    fn drop(&mut self) {
+        if self.identity.is_none() {
+            return;
+        }
+        let cleanup = self.verify().and_then(|()| {
+            drop(self.identity.take());
+            std::fs::remove_file(&self.path)
+        });
+        if let Err(err) = cleanup {
+            log::warn!("bounce staging retained {}: {err}", self.path.display());
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeBounceOut {
+    writer: Option<std::io::BufWriter<std::fs::File>>,
+    stage: Option<BounceStage>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeBounceOut {
+    fn writer(&mut self) -> std::io::Result<&mut std::io::BufWriter<std::fs::File>> {
+        let stage = self.stage.as_ref().ok_or_else(|| std::io::Error::other("bounce staging already completed"))?;
+        stage.check(&stage.path)?;
+        stage.check(&stage.destination)?;
+        self.writer.as_mut().ok_or_else(|| std::io::Error::other("bounce writer already completed"))
+    }
+
+    fn finish(mut self) -> std::io::Result<u64> {
+        // Validate before into_inner, whose flush is explicit successful-completion I/O.
+        let _ = self.writer()?;
+        let writer = self.writer.take().ok_or_else(|| std::io::Error::other("bounce writer already completed"))?;
+        let file = match writer.into_inner() {
+            Ok(file) => file,
+            Err(err) => {
+                let failure = std::io::Error::new(err.error().kind(), err.error().to_string());
+                let (file, buffer) = err.into_inner().into_parts();
+                drop(buffer);
+                drop(file);
+                return Err(failure);
             }
+        };
+        file.sync_all()?;
+        let len = file.metadata()?.len();
+        drop(file);
+        self.stage.take().ok_or_else(|| std::io::Error::other("bounce staging already completed"))?.publish()?;
+        Ok(len)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for NativeBounceOut {
+    fn drop(&mut self) {
+        // BufWriter's normal destructor flushes. Cancellation and denied writes must not.
+        if let Some(writer) = self.writer.take() {
+            let (file, buffer) = writer.into_parts();
+            drop(buffer);
+            drop(file);
+        }
+        drop(self.stage.take());
+    }
+}
+
+impl Out {
+    fn create(path: &Path) -> std::io::Result<Out> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = path;
+            Ok(Out::Memory(std::io::Cursor::new(Vec::new())))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (file, stage) = BounceStage::create(path)?;
+            Ok(Out::File(NativeBounceOut { writer: Some(std::io::BufWriter::with_capacity(1 << 20, file)), stage: Some(stage) }))
+        }
+    }
+
+    fn complete(self, path: &Path) -> Result<u64> {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Out::File(out) => out.finish().map_err(|err| EngineError::Io(format!("{}: {err}", path.display()))),
+            #[cfg(target_arch = "wasm32")]
             Out::Memory(m) => {
                 let bytes = m.into_inner();
                 write_file(&path.to_string_lossy(), &bytes)?;
@@ -357,7 +503,9 @@ impl Out {
 impl std::io::Write for Out {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
-            Out::File(f) => f.write(buf),
+            #[cfg(not(target_arch = "wasm32"))]
+            Out::File(out) => out.writer()?.write(buf),
+            #[cfg(target_arch = "wasm32")]
             Out::Memory(m) => {
                 // A long bounce may not fit in the browser's memory: fail instead of aborting.
                 let end = usize::try_from(m.position()).unwrap_or(usize::MAX).saturating_add(buf.len());
@@ -370,7 +518,9 @@ impl std::io::Write for Out {
 
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
-            Out::File(f) => f.flush(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Out::File(out) => out.writer()?.flush(),
+            #[cfg(target_arch = "wasm32")]
             Out::Memory(_) => Ok(()),
         }
     }
@@ -379,7 +529,9 @@ impl std::io::Write for Out {
 impl std::io::Seek for Out {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         match self {
-            Out::File(f) => f.seek(pos),
+            #[cfg(not(target_arch = "wasm32"))]
+            Out::File(out) => out.writer()?.seek(pos),
+            #[cfg(target_arch = "wasm32")]
             Out::Memory(m) => m.seek(pos),
         }
     }
