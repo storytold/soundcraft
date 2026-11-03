@@ -4,7 +4,7 @@ use super::{CommandSpec, always, bad, bool_or, f32_or, f64_or, i64_or, position_
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_time::TimeFormat;
-use soundcraft_time::{GridValue, MAX_POSITION, NoteValue};
+use soundcraft_time::{GridValue, MAX_POSITION, NoteValue, Samples};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -48,6 +48,7 @@ pub fn specs() -> Vec<CommandSpec> {
             z.scroll = 0;
             Ok(json!({}))
         }),
+        cmd!(view "view.zoom_reset", "Reset Zoom", [], None, "{width_px?: 1200}", always, reset_zoom),
         cmd!(view "view.scroll", "Scroll Timeline", [], None, "{to?: position, by_px?: n}", always, |e, p| {
             let to = position_param(e, "view.scroll", p, "to")?;
             let by = f64_or(p, "by_px", 0.0);
@@ -109,6 +110,33 @@ fn zoom(e: &mut Engine, f: f64, x: Option<f64>) -> Result<Value> {
     Ok(json!({"samples_per_px": new, "scroll": z.scroll}))
 }
 
+/// Restore the default waveform scale and frame the clips on active playlists.
+fn reset_zoom(e: &mut Engine, p: &Value) -> Result<Value> {
+    let width = f64_or(p, "width_px", 1200.0).max(100.0);
+    let clip_bounds = e.session().tracks.iter().flat_map(|track| track.clips()).fold(None::<(Samples, Samples)>, |bounds, clip| {
+        let end = clip.start.saturating_add(clip.length);
+        Some(match bounds {
+            Some((start, previous_end)) => (start.min(clip.start), previous_end.max(end)),
+            None => (clip.start, end),
+        })
+    });
+    let defaults = soundcraft_model::ZoomState::default();
+    let (samples_per_px, scroll) = clip_bounds.map_or((defaults.samples_per_px, defaults.scroll), |(start, end)| {
+        let scroll = start.max(0);
+        let span = end.saturating_sub(scroll).max(1);
+        ((span as f64 * 1.05 / width).clamp(MIN_SPP, MAX_SPP), scroll)
+    });
+    let zoom = e.zoom_mut();
+    zoom.samples_per_px = samples_per_px;
+    zoom.scroll = scroll;
+    zoom.waveform_zoom = defaults.waveform_zoom;
+    Ok(json!({
+        "samples_per_px": zoom.samples_per_px,
+        "scroll": zoom.scroll,
+        "waveform_zoom": zoom.waveform_zoom,
+    }))
+}
+
 fn ruler(e: &mut Engine, p: &Value) -> Result<Value> {
     const ALL: [&str; 10] = ["bars_beats", "min_secs", "timecode", "feet_frames", "samples", "tempo", "meter", "markers", "key", "chords"];
     let r = str_param(p, "ruler").filter(|r| ALL.contains(r)).ok_or_else(|| bad("view.ruler", "unknown ruler"))?.to_string();
@@ -161,7 +189,7 @@ pub fn grid_param(p: &Value, key: &str) -> Option<GridValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soundcraft_time::Samples;
+    use soundcraft_model::{Clip, ClipId, SourceId};
     #[test]
     fn grid_values_parse() {
         assert_eq!(grid_param(&json!({"v": "1/16"}), "v"), Some(GridValue::Note { value: NoteValue::Sixteenth, dotted: false, triplet: false }));
@@ -203,6 +231,37 @@ mod tests {
         assert_eq!(view(&e).1, MAX_POSITION);
         e.execute("view.scroll", &json!({"by_px": -1e300})).unwrap();
         assert_eq!(view(&e).1, 0);
+    }
+
+    #[test]
+    fn zoom_reset_frames_active_clips_and_restores_waveform_scale() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({})).unwrap();
+        let track = e.session().tracks[0].id;
+        let playlist = e.session_mut().track_mut(track).unwrap().playlist_mut().unwrap();
+        playlist.clips.push(Clip::audio(ClipId(1), "first", SourceId(1), 0, 48_000, 48_000));
+        playlist.clips.push(Clip::audio(ClipId(2), "last", SourceId(1), 0, 192_000, 48_000));
+        e.execute("view.zoom_set", &json!({"samples_per_px": 17.0})).unwrap();
+        e.execute("view.scroll", &json!({"to": 12_000})).unwrap();
+        e.execute("view.waveform_zoom", &json!({"value": 8.0})).unwrap();
+
+        e.execute("view.zoom_reset", &json!({"width_px": 1000.0})).unwrap();
+
+        assert_eq!(view(&e), (201.6, 48_000));
+        assert_eq!(e.session().edit.zoom.waveform_zoom, 1.0);
+    }
+
+    #[test]
+    fn zoom_reset_uses_defaults_when_the_session_has_no_clips() {
+        let mut e = Engine::default();
+        e.execute("view.zoom_set", &json!({"samples_per_px": 17.0})).unwrap();
+        e.execute("view.scroll", &json!({"to": 12_000})).unwrap();
+        e.execute("view.waveform_zoom", &json!({"value": 8.0})).unwrap();
+
+        e.execute("view.zoom_reset", &json!({"width_px": 1000.0})).unwrap();
+
+        assert_eq!(view(&e), (1024.0, 0));
+        assert_eq!(e.session().edit.zoom.waveform_zoom, 1.0);
     }
 
     #[test]

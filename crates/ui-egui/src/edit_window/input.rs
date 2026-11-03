@@ -306,7 +306,8 @@ fn start_gesture(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::
                 hit.is_none().then_some(Gesture::MidiClip { track: track.id, from: at_origin, to: at_origin })
             }
             Tool::Pencil => Some(Gesture::Pencil { track: track.id, points: Vec::new() }),
-            Tool::Zoom => Some(Gesture::ZoomBox { start: origin.x }),
+            Tool::Zoom if mods.alt => Some(Gesture::ZoomOut),
+            Tool::Zoom => Some(Gesture::ZoomBox { start: origin.x, current: origin.x, lane_y: [lane.min.y, lane.max.y] }),
         };
     }
 }
@@ -367,6 +368,7 @@ fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Res
             }
             Tool::Zoom => {
                 let _ = app.run(if mods.alt { "view.zoom_out" } else { "view.zoom_in" }, json!({}));
+                let _ = app.run("edit.zoom_complete", json!({}));
             }
             Tool::Pencil => {
                 if let Some(param) = &auto_view {
@@ -429,6 +431,7 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
             Tool::Trim => egui::CursorIcon::ResizeHorizontal,
             Tool::Grabber => egui::CursorIcon::Grab,
             Tool::Selector => egui::CursorIcon::Text,
+            Tool::Zoom if mods.alt => egui::CursorIcon::ZoomOut,
             Tool::Zoom => egui::CursorIcon::ZoomIn,
             Tool::Pencil => egui::CursorIcon::Crosshair,
             _ => egui::CursorIcon::Default,

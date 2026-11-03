@@ -122,6 +122,13 @@ pub(super) fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
         let x = x_of(s, tl, *to);
         painter.line_segment([pos2(x, r[1]), pos2(x, r[3])], Stroke::new(2.0, Color32::WHITE));
     }
+    if let Some(Gesture::ZoomBox { start, current, lane_y }) = &app.gesture {
+        let (x0, x1) = (start.min(*current).clamp(tl.min.x, tl.max.x), start.max(*current).clamp(tl.min.x, tl.max.x));
+        let box_rect = Rect::from_min_max(pos2(x0, lane_y[0].max(tl.min.y)), pos2(x1, lane_y[1].min(tl.max.y)));
+        let zoom_painter = painter.with_clip_rect(tl);
+        zoom_painter.rect_filled(box_rect, 0.0, Color32::from_white_alpha(16));
+        zoom_painter.rect_stroke(box_rect, 0.0, Stroke::new(1.0, Color32::WHITE), StrokeKind::Inside);
+    }
     if let Some(at) = scroll_to {
         let _ = app.engine.execute("view.scroll", &json!({"to": at}));
     }

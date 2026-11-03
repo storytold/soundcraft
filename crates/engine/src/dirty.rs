@@ -43,6 +43,8 @@ fn document_values<'a>(s: &'a Session, navigation: &'a EditState) -> impl Partia
 fn edit_values<'a>(edit: &'a EditState, navigation: &'a EditState) -> impl PartialEq + 'a {
     let EditState {
         tool,
+        zoom_mode,
+        zoom_return_tool: _,
         edit_mode,
         selection: _,
         selected_tracks: _,
@@ -130,7 +132,7 @@ fn edit_values<'a>(edit: &'a EditState, navigation: &'a EditState) -> impl Parti
             scrolling,
             solo_mode,
         ),
-        (pre_fader_metering, delay_compensation, keyboard_focus, &navigation.timeline_selection, flags, values),
+        (zoom_mode, pre_fader_metering, delay_compensation, keyboard_focus, &navigation.timeline_selection, flags, values),
     )
 }
 
@@ -151,6 +153,7 @@ mod tests {
         to.selected_clips.clone_from(&from.selected_clips);
         to.playhead = from.playhead;
         to.zoom = from.zoom;
+        to.zoom_return_tool = from.zoom_return_tool;
         *saved == doc
     }
 
@@ -173,6 +176,7 @@ mod tests {
         doc.edit.zoom.scroll = 600;
         doc.edit.zoom.waveform_zoom = 2.0;
         doc.edit.zoom.presets = [1.0; 5];
+        doc.edit.zoom_return_tool = Some(soundcraft_model::Tool::Grabber);
         check(&saved, &doc, true, "navigation");
     }
 
@@ -181,6 +185,7 @@ mod tests {
         let saved = Session::default();
         let edits: &[(&str, fn(&mut EditState))] = &[
             ("tool", |e| e.tool = soundcraft_model::Tool::Grabber),
+            ("zoom_mode", |e| e.zoom_mode = soundcraft_model::ZoomMode::Single),
             ("edit_mode", |e| e.edit_mode = soundcraft_model::EditMode::Grid),
             ("selected_sources", |e| e.selected_sources.push(SourceId(1))),
             ("grid", |e| e.grid = soundcraft_time::GridValue::Seconds(2.0)),
