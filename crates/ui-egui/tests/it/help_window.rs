@@ -248,3 +248,25 @@ fn every_help_page_draws_with_real_glyphs_and_fits_a_small_screen() {
         assert!(window.max.x <= 760.0 && window.min.x >= 0.0, "{page:?} widens help to {window:?}");
     }
 }
+
+#[test]
+fn help_opens_below_the_menu_bar_and_escape_over_it_closes_it() {
+    let (ctx, mut app) = rig(OperatingSystem::Nix);
+    app.ui.show_help = true;
+    for _ in 0..3 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    let rect = ctx.memory(|m| m.area_rect(help::window_id("SoundCraft Help"))).unwrap();
+    assert!(rect.min.y >= 24.0, "help's title bar covers the menu bar: {rect:?}");
+    assert!(rect.max.x <= 1600.0 && rect.max.y <= 1000.0, "{rect:?}");
+    // Escape away from help leaves it open.
+    app_frame(&ctx, &mut app, vec![Event::PointerMoved(egui::pos2(1590.0, 990.0))]);
+    let esc = |pressed| Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+    app_frame(&ctx, &mut app, vec![esc(true), esc(false)]);
+    assert!(app.ui.show_help);
+    // Over help it closes it.
+    app_frame(&ctx, &mut app, vec![Event::PointerMoved(rect.center())]);
+    app_frame(&ctx, &mut app, vec![esc(true), esc(false)]);
+    app_frame(&ctx, &mut app, vec![]);
+    assert!(!app.ui.show_help, "Escape over help should close it");
+}
