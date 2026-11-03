@@ -1,6 +1,6 @@
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::pan::itu_stereo_fold;
-use super::{AutoParam, BusId, ChannelFormat, MixEngine, Range, Route, Samples, Session, TrackId, main_channels};
+use super::{AutoParam, BlockIter, BlockSizes, BusId, ChannelFormat, MixEngine, Range, Route, Samples, Session, TrackId, main_channels};
 
 /// Ceiling on one in-memory offline render (samples summed over channels): 2^29 f32 = 2 GiB, about
 /// 93 minutes of stereo at 48 kHz. Longer requests are truncated rather than exhausting memory;
@@ -44,7 +44,8 @@ pub fn source_channels(s: &Session, bus: Option<BusId>) -> usize {
 
 /// [`render_range`] or [`render_bus`] of any length, a block at a time.
 pub struct RangeRender {
-    eng: MixEngine,
+    pub(crate) eng: MixEngine,
+    sizes: BlockIter,
     bus: Option<BusId>,
     tmp: Vec<Vec<f32>>,
     start: Samples,
@@ -56,11 +57,16 @@ pub struct RangeRender {
 impl RangeRender {
     /// Renders the main mix over `range`, or `bus` when one is named.
     pub fn new(s: &Session, bus: Option<BusId>, range: Range, block: usize) -> Self {
+        Self::with_block_sizes(s, bus, range, &BlockSizes::fixed(block))
+    }
+
+    /// Like [`RangeRender::new`], in blocks of `sizes` (plugins are prepared for the largest).
+    pub fn with_block_sizes(s: &Session, bus: Option<BusId>, range: Range, sizes: &BlockSizes) -> Self {
         let nch = source_channels(s, bus);
-        let eng = MixEngine::new(s.sample_rate.as_f64() as f32, block);
+        let eng = MixEngine::new(s.sample_rate.as_f64() as f32, sizes.max());
         let tmp = vec![vec![0.0f32; eng.max_block()]; nch];
         let len = if nch == 0 { 0 } else { usize::try_from(range.len().max(0)).unwrap_or(0) };
-        RangeRender { eng, bus, tmp, start: range.start, done: 0, total: len, latency: 0 }
+        RangeRender { eng, sizes: sizes.iter(), bus, tmp, start: range.start, done: 0, total: len, latency: 0 }
     }
 
     fn render(&mut self, s: &Session, pos: Samples, n: usize) {
@@ -73,6 +79,11 @@ impl RangeRender {
         }
     }
 
+    /// The block sizes it renders in.
+    pub fn block_sizes(&self) -> &BlockSizes {
+        self.sizes.sizes()
+    }
+
     /// Renders one more block of the mix of `s` (the session given to [`RangeRender::new`]) and
     /// returns it as `(channels, n)`: the next `n` samples of the range lead each channel (none
     /// while the mix's latency is still being skipped). `None` once the range is done.
@@ -80,7 +91,7 @@ impl RangeRender {
         if self.done >= self.total {
             return None;
         }
-        let n = (self.total - self.done).min(self.eng.max_block());
+        let n = (self.total - self.done).min(self.sizes.next_size()).min(self.eng.max_block());
         self.render(s, self.start + self.done as i64, n);
         if self.done == 0 {
             // The first block tells the mix's latency: render that much more and drop the head.
@@ -101,13 +112,14 @@ impl RangeRender {
     }
 }
 
-/// ITU-R BS.775 stereo fold-down of planar audio in `fmt` (C and surrounds at -3 dB, LFE dropped;
-/// Ambisonics play their W channel). Mono/stereo input is returned unchanged.
-pub fn fold_down_stereo(fmt: ChannelFormat, ch: &[Vec<f32>]) -> Vec<Vec<f32>> {
+/// ITU-R BS.775 stereo fold-down of the first `frames` frames of planar audio in `fmt` (C and
+/// surrounds at -3 dB, LFE dropped; Ambisonics play their W channel). Mono/stereo input is returned
+/// unchanged. Render buffers hold a whole `max_block`, so a tiny block costs only its own frames.
+pub fn fold_down_stereo(fmt: ChannelFormat, ch: &[Vec<f32>], frames: usize) -> Vec<Vec<f32>> {
     if ch.len() <= 2 {
-        return ch.to_vec();
+        return ch.iter().map(|c| c.iter().take(frames).copied().collect()).collect();
     }
-    let len = ch.iter().map(Vec::len).max().unwrap_or(0);
+    let len = ch.iter().map(Vec::len).max().unwrap_or(0).min(frames);
     let mut out = vec![vec![0.0f32; len]; 2];
     let sp = fmt.speakers();
     let h = std::f32::consts::FRAC_1_SQRT_2;

@@ -169,6 +169,8 @@ pub struct Bounce {
     normalize: bool,
     /// Measuring the peak to normalize to, the first of two passes.
     measuring: bool,
+    /// The block sizes it renders in (see [`Bounce::with_block_sizes`]).
+    sizes: soundcraft_mix::BlockSizes,
     render: soundcraft_mix::RangeRender,
     block: Vec<Vec<f32>>,
     done: usize,
@@ -217,7 +219,8 @@ impl Bounce {
             let _ = std::fs::remove_file(&part);
             EngineError::Io(format!("{}: {err}", path.display()))
         })?;
-        let render = soundcraft_mix::RangeRender::new(&s, bus, r, 1024);
+        let sizes = soundcraft_mix::BlockSizes::default();
+        let render = soundcraft_mix::RangeRender::with_block_sizes(&s, bus, r, &sizes);
         let meter = soundcraft_dsp::meter::LoudnessMeter::new(s.sample_rate.as_f64() as f32, channels);
         Ok(Bounce {
             session: s,
@@ -228,6 +231,7 @@ impl Bounce {
             fold,
             normalize,
             measuring: normalize,
+            sizes,
             render,
             block: Vec::new(),
             done: 0,
@@ -236,6 +240,23 @@ impl Bounce {
             meter,
             enc: Some(enc),
         })
+    }
+
+    /// Renders in blocks of `sizes` instead of 1024 samples, with plugins prepared for the largest:
+    /// odd and changing sizes find plugin bugs that fixed ones hide. Call before the first step.
+    pub fn with_block_sizes(mut self, sizes: soundcraft_mix::BlockSizes) -> Self {
+        if self.done != 0 || (self.normalize && !self.measuring) {
+            log::warn!("{}: block sizes can only change before the bounce starts", self.path.display());
+            return self;
+        }
+        self.render = soundcraft_mix::RangeRender::with_block_sizes(&self.session, self.bus, self.range, &sizes);
+        self.sizes = sizes;
+        self
+    }
+
+    /// The block sizes the bounce renders in now (in either pass when normalizing).
+    pub fn block_sizes(&self) -> &soundcraft_mix::BlockSizes {
+        self.render.block_sizes()
     }
 
     pub fn path(&self) -> &Path {
@@ -277,7 +298,7 @@ impl Bounce {
                     self.peak = 0.0;
                     self.done = 0;
                     self.measuring = false;
-                    self.render = soundcraft_mix::RangeRender::new(&self.session, self.bus, self.range, 1024);
+                    self.render = soundcraft_mix::RangeRender::with_block_sizes(&self.session, self.bus, self.range, &self.sizes);
                 }
                 None => return self.finish().map(Some),
             }
@@ -402,7 +423,7 @@ fn bounce_layout(s: &Session, bus: Option<BusId>, fold_stereo: bool) -> (Channel
 
 /// The first `n` frames of `chunk`, folded down from `fold` when set and scaled by `gain`.
 fn fill(block: &mut Vec<Vec<f32>>, chunk: &[Vec<f32>], n: usize, fold: Option<ChannelFormat>, gain: f32) {
-    let folded = fold.map(|from| soundcraft_mix::fold_down_stereo(from, chunk));
+    let folded = fold.map(|from| soundcraft_mix::fold_down_stereo(from, chunk, n));
     let src = folded.as_deref().unwrap_or(chunk);
     block.resize_with(src.len(), Vec::new);
     for (d, c) in block.iter_mut().zip(src) {
@@ -419,26 +440,73 @@ pub fn bounce_stems(e: &Engine, dir: &str, r: Range, opts: &EncodeOptions) -> Re
 
 /// [`bounce_stems`] in the main format, or folded down to stereo when `fold_stereo`.
 pub fn bounce_stems_with(e: &Engine, dir: &str, r: Range, opts: &EncodeOptions, fold_stereo: bool) -> Result<Vec<String>> {
+    bounce_stems_in_blocks(e, dir, r, opts, fold_stereo, &soundcraft_mix::BlockSizes::default())
+}
+
+/// Refuses a job of `renders` passes over `samples` in blocks of `sizes` that would take more than
+/// [`soundcraft_mix::blocks::MAX_RENDER_BLOCKS`] blocks: tiny blocks over a long range would keep
+/// the engine (and an app waiting on it) busy for hours.
+/// Only sizes asked for are limited: a job in the default 1024-sample blocks renders as it always
+/// has, however long, and other sizes may always take as many blocks as the default would.
+/// The mix's latency isn't counted, so this is an estimate: it is only known once the first block
+/// has rendered, and adds up along the path (track, aux return and master fader inserts), each
+/// limited to `MAX_LATENCY` samples per strip.
+pub fn check_block_work(cmd: &str, sizes: &soundcraft_mix::BlockSizes, samples: i64, renders: usize) -> Result<()> {
+    let samples = u64::try_from(samples.max(0)).unwrap_or(0);
+    let blocks = sizes.blocks_for(samples).saturating_mul(renders as u64);
+    let default = soundcraft_mix::BlockSizes::default().blocks_for(samples).saturating_mul(renders as u64);
+    let max = soundcraft_mix::blocks::MAX_RENDER_BLOCKS.max(default);
+    if *sizes != soundcraft_mix::BlockSizes::default() && blocks > max {
+        return Err(EngineError::BadParams(
+            cmd.into(),
+            format!("these block sizes need about {blocks} blocks; a bounce may take at most {max}: use larger blocks or a shorter range"),
+        ));
+    }
+    Ok(())
+}
+
+/// One stem of [`bounce_stems_in_blocks`]: the soloed session `solo` bounced to `path`.
+pub(crate) fn stem_bounce(
+    solo: Session,
+    path: &Path,
+    r: Range,
+    opts: &EncodeOptions,
+    fold_stereo: bool,
+    sizes: &soundcraft_mix::BlockSizes,
+) -> Result<Bounce> {
+    Ok(Bounce::new(Arc::new(solo), path, r, opts, None, false, fold_stereo)?.with_block_sizes(sizes.clone()))
+}
+
+/// [`bounce_stems_with`], rendered in blocks of `sizes` (see [`Bounce::with_block_sizes`]).
+pub fn bounce_stems_in_blocks(
+    e: &Engine,
+    dir: &str,
+    r: Range,
+    opts: &EncodeOptions,
+    fold_stereo: bool,
+    sizes: &soundcraft_mix::BlockSizes,
+) -> Result<Vec<String>> {
     let s = e.session();
     if r.len() > s.sample_rate.samples(MAX_BOUNCE_SECS) {
         return Err(EngineError::BadParams("file.bounce_stems".into(), "bounces are limited to 4 hours".into()));
     }
-    make_dir(dir)?;
-    let ext = opts.format.default_extension();
-    let mut out = Vec::new();
     let stems: Vec<(TrackId, String)> = s
         .tracks
         .iter()
         .filter(|t| matches!(t.kind, TrackKind::Audio | TrackKind::Instrument | TrackKind::Midi) && !t.inactive && !t.mixer.mute)
         .map(|t| (t.id, t.name.clone()))
         .collect();
+    check_block_work("file.bounce_stems", sizes, r.len(), stems.len())?;
+    make_dir(dir)?;
+    let ext = opts.format.default_extension();
+    let mut out = Vec::new();
     for (id, name) in stems {
         let mut solo = s.clone();
         for t in &mut solo.tracks {
             t.mixer.solo = t.id == id;
         }
         let path = Path::new(dir).join(format!("{} - {}.{ext}", sanitize_name(&s.name), sanitize_name(&name)));
-        Bounce::new(Arc::new(solo), &path, r, opts, None, false, fold_stereo)?.run()?;
+        stem_bounce(solo, &path, r, opts, fold_stereo, sizes)?.run()?;
         out.push(path.to_string_lossy().into_owned());
     }
     Ok(out)
