@@ -74,7 +74,7 @@ impl Bundle {
         // `const clap_plugin_entry`; the symbol's address is therefore a `*const clap_plugin_entry`.
         let entry: *const clap_plugin_entry = match unsafe { lib.get::<*const clap_plugin_entry>(b"clap_entry\0") } {
             Ok(sym) => *sym,
-            Err(e) => return Err(err(format!("not a CLAP plugin: {}", with_reason(&e)))),
+            Err(e) => return Err(err(format!("not a CLAP plugin (no clap_entry): {}", with_reason(&e)))),
         };
         if entry.is_null() {
             return Err(err("null clap_entry".into()));

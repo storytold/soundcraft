@@ -345,7 +345,7 @@ impl Bundle {
         // SAFETY: `GetPluginFactory` is the VST3-mandated export with this signature.
         let get = match unsafe { lib.get::<GetFactory>(b"GetPluginFactory\0") } {
             Ok(sym) => *sym,
-            Err(e) => return Err(fail(format!("not a VST3 plugin: {}", with_reason(&e)))),
+            Err(e) => return Err(fail(format!("not a VST3 plugin (no GetPluginFactory): {}", with_reason(&e)))),
         };
         // SAFETY: the module is loaded and its entry function (if any) has run.
         let raw = unsafe { get() };
