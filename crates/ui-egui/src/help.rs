@@ -155,6 +155,9 @@ impl HelpState {
 struct Entry {
     page: Page,
     title: String,
+    /// The title in lists: with its menu location added when another page has the same title
+    /// (Help › Keyboard Shortcuts and Setup › Keyboard Shortcuts… are different commands).
+    name: String,
     /// Menu locations, written `File › Save`.
     paths: Vec<String>,
     text: String,
@@ -183,6 +186,24 @@ fn menu_paths() -> &'static HashMap<String, Vec<String>> {
     })
 }
 
+/// The SoundCraft application menu, which is built by hand rather than from the menu tree: the
+/// item's label in the app's own menu bar (Windows, Linux, web), on macOS ("" when the Mac menu
+/// doesn't have it), and its command.
+const APP_MENU: [(&str, &str, &str); 5] = [
+    ("About SoundCraft", "About SoundCraft", "window.about"),
+    ("Check for Updates…", "", "app.checkForUpdates"),
+    ("Session Info", "Session Info", "window.session_info"),
+    ("Session Audio Health", "Session Audio Health", "window.audio_health"),
+    ("Quit", "Quit SoundCraft", "app.quit"),
+];
+
+/// Where a command is in the SoundCraft application menu on this platform.
+fn app_menu_path(id: &str, mac: bool) -> Option<String> {
+    let (label, mac_label, _) = APP_MENU.iter().find(|(_, _, c)| *c == id)?;
+    let label = if mac { mac_label } else { label };
+    (!label.is_empty()).then(|| format!("SoundCraft › {label}"))
+}
+
 fn pretty_path(path: &str) -> String {
     path.replace(" > ", " › ")
 }
@@ -209,16 +230,34 @@ fn entries() -> &'static [Entry] {
         for (id, h) in &d.commands {
             let title = command_title(id);
             let paths: Vec<String> = menu_paths().get(id).map(|p| p.iter().map(|s| pretty_path(s)).collect()).unwrap_or_default();
-            let shortcut = crate::menus::shortcut_for(id).unwrap_or("");
-            let hay = format!("{title} {} {} {shortcut} {id}", h.text, paths.join(" ")).to_lowercase();
-            v.push(Entry { page: Page::Command(id.clone()), title, paths, text: h.text.clone(), hay });
+            // Search finds a shortcut as written on a Mac (Cmd+S) and on a PC (Ctrl+S).
+            let keys = crate::menus::shortcut_for(id).unwrap_or("");
+            let shortcut = format!("{keys} {}", crate::shortcuts::shortcut_label(keys, false));
+            let app_menu = [true, false].map(|mac| app_menu_path(id, mac).unwrap_or_default()).join(" ");
+            let hay = format!("{title} {} {} {app_menu} {shortcut} {id}", h.text, paths.join(" ")).to_lowercase();
+            v.push(Entry { page: Page::Command(id.clone()), name: title.clone(), title, paths, text: h.text.clone(), hay });
         }
         for p in &d.audiosuite {
             let paths: Vec<String> = process_paths(&p.process).iter().map(|s| pretty_path(s)).collect();
             let hay = format!("{} {} {} audiosuite", p.title, p.text, paths.join(" ")).to_lowercase();
-            v.push(Entry { page: Page::Process(p.process.clone()), title: p.title.clone(), paths, text: p.text.clone(), hay });
+            v.push(Entry { page: Page::Process(p.process.clone()), title: p.title.clone(), name: p.title.clone(), paths, text: p.text.clone(), hay });
         }
         v.sort_by_cached_key(|e| e.title.to_lowercase());
+        let mut count: HashMap<String, usize> = HashMap::new();
+        for e in &v {
+            *count.entry(e.title.clone()).or_default() += 1;
+        }
+        for e in &mut v {
+            if count.get(&e.title).is_some_and(|n| *n > 1) {
+                // A twin that isn't in the menus is one that scripts and agents run.
+                let app_menu = match &e.page {
+                    Page::Command(id) => app_menu_path(id, false),
+                    _ => None,
+                };
+                let place = e.paths.first().cloned().or(app_menu).unwrap_or_else(|| "for scripts".into());
+                e.name = format!("{}  ({place})", e.title);
+            }
+        }
         v
     })
 }
@@ -309,10 +348,14 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         app.ui.help.reveal = true;
     }
     let mut open = true;
+    // Never wider or taller than the app's window, so nothing on a page is cut off at its edge.
+    let screen = ctx.content_rect().size() - vec2(32.0, 48.0);
+    let min = vec2(560.0, 360.0).min(screen);
     let shown = egui::Window::new("SoundCraft Help")
         .open(&mut open)
-        .default_size(vec2(900.0, 600.0))
-        .min_size(vec2(560.0, 360.0))
+        .default_size(vec2(900.0, 600.0).min(screen))
+        .min_size(min)
+        .max_size(screen.max(min))
         .collapsible(false)
         .show(ctx, |ui| window_body(app, ui));
     // Alt+Left / Alt+Right are Back and Forward while the pointer is over help.
@@ -370,7 +413,7 @@ fn toolbar(app: &mut SoundApp, ui: &mut Ui) {
         if r.changed() && !h.query.trim().is_empty() {
             h.tab = Tab::Search;
         }
-        if !h.query.is_empty() && ui.small_button("✕").on_hover_text("Clear the search").clicked() {
+        if !h.query.is_empty() && ui.small_button("Clear").on_hover_text("Clear the search").clicked() {
             h.query.clear();
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -424,7 +467,7 @@ fn contents(app: &mut SoundApp, ui: &mut Ui) {
                 })
                 .body(|ui| {
                     for e in pages_in(&c.id) {
-                        let r = ui.selectable_label(h.page == e.page, &e.title);
+                        let r = ui.selectable_label(h.page == e.page, &e.name);
                         if r.clicked() {
                             go = Some(e.page.clone());
                         }
@@ -451,20 +494,14 @@ fn index(app: &mut SoundApp, ui: &mut Ui) {
     egui::ScrollArea::vertical().id_salt("help_index").auto_shrink([false, false]).show(ui, |ui| {
         let mut letter = None;
         let titles: Vec<&Entry> = entries().iter().filter(|e| e.title.to_lowercase().starts_with(&filter) || filter.is_empty()).collect();
-        for (i, e) in titles.iter().enumerate() {
+        for e in &titles {
             let first = e.title.chars().next().map(|c| c.to_ascii_uppercase());
             if first != letter {
                 letter = first;
                 ui.add_space(4.0);
                 ui.label(RichText::new(first.map(String::from).unwrap_or_default()).font(bold(12.0)).color(t.text_dim));
             }
-            // The same name twice (Clip List, Workspace) gets its menu so the two can be told apart.
-            let twin = titles.get(i.wrapping_sub(1)).is_some_and(|p| p.title == e.title) || titles.get(i + 1).is_some_and(|n| n.title == e.title);
-            let label = match e.paths.first() {
-                Some(path) if twin => format!("{}  ({path})", e.title),
-                _ => e.title.clone(),
-            };
-            if ui.selectable_label(h.page == e.page, label).clicked() {
+            if ui.selectable_label(h.page == e.page, &e.name).clicked() {
                 go = Some(e.page.clone());
             }
         }
@@ -491,7 +528,7 @@ fn search_results(app: &mut SoundApp, ui: &mut Ui) {
             ui.label(RichText::new("No pages match. Try fewer or different words.").color(t.text_dim));
         }
         for e in hits {
-            let r = ui.selectable_label(h.page == e.page, RichText::new(&e.title).font(bold(12.5)));
+            let r = ui.selectable_label(h.page == e.page, RichText::new(&e.name).font(bold(12.5)));
             ui.label(RichText::new(first_sentence(&e.text)).small().color(t.text_dim));
             ui.add_space(4.0);
             if r.clicked() {
@@ -504,11 +541,24 @@ fn search_results(app: &mut SoundApp, ui: &mut Ui) {
     }
 }
 
-/// A rounded tag: a menu location or a shortcut.
+/// A rounded tag: a menu location or a shortcut. Call it inside `horizontal_wrapped`: a chip that
+/// doesn't fit on the current line starts a new one rather than squeezing its text, and one wider
+/// than the whole page is cut short with "…" rather than widening the window.
 fn chip(ui: &mut Ui, text: RichText) {
+    const PAD: Margin = Margin::symmetric(8, 2);
     let t = Tokens::current();
-    egui::Frame::new().stroke(Stroke::new(1.0, t.border_light)).corner_radius(10).inner_margin(Margin::symmetric(8, 2)).show(ui, |ui| {
-        ui.label(text);
+    let extra = f32::from(PAD.left + PAD.right) + 2.0;
+    let galley = egui::WidgetText::from(text.clone()).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
+    let width = galley.size().x + extra;
+    // In a wrapping row `available_width` is the whole row's; what's left is up to the cursor.
+    let left = ui.max_rect().max.x - ui.cursor().min.x;
+    if width > left && ui.cursor().min.x > ui.max_rect().min.x + 1.0 {
+        ui.end_row();
+    }
+    let room = (ui.max_rect().max.x - ui.cursor().min.x - extra).max(40.0);
+    egui::Frame::new().stroke(Stroke::new(1.0, t.border_light)).corner_radius(10).inner_margin(PAD).show(ui, |ui| {
+        ui.set_max_width(room);
+        ui.add(egui::Label::new(text).truncate());
     });
 }
 
@@ -528,6 +578,11 @@ fn title(ui: &mut Ui, text: &str) {
     ui.add_space(6.0);
 }
 
+/// The width of one of the welcome page's two columns: as wide as half the page allows, at most 300.
+fn column_width(ui: &Ui) -> f32 {
+    ((ui.available_width() - 16.0) / 2.0).clamp(120.0, 300.0)
+}
+
 fn welcome(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     title(ui, "SoundCraft Help");
@@ -536,10 +591,11 @@ fn welcome(app: &mut SoundApp, ui: &mut Ui) {
     ui.label(RichText::new("Browse by topic in Contents, look a word up in Index, or type what you want to do in the search box.").color(t.text_dim));
     ui.add_space(12.0);
     let mut go = None;
+    let col = column_width(ui);
     egui::Grid::new("help_topics").num_columns(2).spacing(vec2(16.0, 10.0)).show(ui, |ui| {
         for (i, c) in data().categories.iter().enumerate() {
             ui.vertical(|ui| {
-                ui.set_width(300.0);
+                ui.set_width(col);
                 if ui.link(RichText::new(&c.title).font(bold(13.0))).clicked() {
                     go = Some(Page::Category(c.id.clone()));
                 }
@@ -566,7 +622,7 @@ fn category_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     ui.add_space(10.0);
     let mut go = None;
     for e in pages_in(id) {
-        if ui.link(RichText::new(&e.title).font(bold(12.5))).clicked() {
+        if ui.link(RichText::new(&e.name).font(bold(12.5))).clicked() {
             go = Some(e.page.clone());
         }
         ui.label(first_sentence(&e.text));
@@ -584,6 +640,11 @@ fn breadcrumb(app: &mut SoundApp, ui: &mut Ui, category_id: &str) {
     {
         app.ui.help.go(Page::Category(c.id.clone()));
     }
+}
+
+/// A description with its Cmd shortcuts spelled for this platform (Cmd is Ctrl off macOS).
+fn platform_keys(text: &str, mac: bool) -> String {
+    if mac { text.to_string() } else { text.replace("Cmd+", "Ctrl+") }
 }
 
 fn limits_note(ui: &mut Ui, limits: &str) {
@@ -605,8 +666,9 @@ fn command_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     title(ui, &e.title);
     let mac = ui.ctx().os().is_mac();
     let shortcut = crate::menus::shortcut_for(id).unwrap_or("");
+    let app_menu = app_menu_path(id, mac);
     ui.horizontal_wrapped(|ui| {
-        for path in &e.paths {
+        for path in e.paths.iter().chain(app_menu.as_ref()) {
             chip(ui, RichText::new(path));
         }
         if !shortcut.is_empty() {
@@ -620,9 +682,9 @@ fn command_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
         }
     });
     ui.add_space(8.0);
-    ui.label(RichText::new(&h.text).font(regular(14.0)));
+    ui.label(RichText::new(platform_keys(&h.text, mac)).font(regular(14.0)));
     if let Some(limits) = &h.limits {
-        limits_note(ui, limits);
+        limits_note(ui, &platform_keys(limits, mac));
     }
     ui.add_space(12.0);
     match e.paths.first().map(|p| p.replace(" › ", " > ")) {
@@ -637,8 +699,16 @@ fn command_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
                 crate::menus::invoke_menu(app, id, &path);
             }
         }
-        None if shortcut.is_empty() => {
-            ui.label(RichText::new("Not in the menus. Scripts and agents run it by its command id.").small().color(t.text_dim));
+        // The application menu's items, except Quit: help never quits the app.
+        None if app_menu.is_some() && id != "app.quit" => {
+            let r = ui.add(egui::Button::new(RichText::new("Do it now").font(bold(13.0))).min_size(vec2(110.0, 28.0)));
+            if r.clicked() {
+                let value = if id.starts_with("window.") { serde_json::json!({"value": true}) } else { serde_json::json!({}) };
+                let _ = app.run(id, value);
+            }
+        }
+        None if shortcut.is_empty() && app_menu.is_none() => {
+            ui.label(RichText::new("Not in the menus. Scripts and agents can run it by its command id.").small().color(t.text_dim));
         }
         None => {}
     }
@@ -730,6 +800,8 @@ mod tests {
         assert!(search("reverb").iter().any(|e| e.page == Page::Process("room_reverb".into())));
         let save = crate::menus::shortcut_for("session.save").unwrap().to_lowercase();
         assert!(search(&save).iter().any(|e| e.page == Page::Command("session.save".into())));
+        assert!(search("ctrl+s").iter().any(|e| e.page == Page::Command("session.save".into())), "the PC spelling finds it too");
+        assert!(search("ctrl+shift+i").iter().any(|e| e.page == Page::Command("file.import_audio".into())));
         assert!(search("zzqqxx").is_empty());
         assert!(search("   ").is_empty());
     }
@@ -781,5 +853,68 @@ mod tests {
         let back: HelpState = serde_json::from_value(v).unwrap();
         assert_eq!(back.page, h.page);
         assert_eq!(back.tab, Tab::Index);
+    }
+
+    /// Every character help can show has a glyph in the fonts SoundCraft bundles, so no page draws
+    /// a box on a system without extra fonts.
+    #[test]
+    fn bundled_fonts_draw_every_character_in_help() {
+        let mut defs = egui::FontDefinitions::default();
+        let proportional = defs.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
+        defs.families.insert(egui::FontFamily::Name("bold".into()), proportional);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        let mut text: String = DATA.chars().chain(include_str!("help.rs").chars()).collect();
+        for e in entries() {
+            text.push_str(&e.title);
+            text.extend(e.paths.iter().map(String::as_str));
+        }
+        let mut chars: Vec<char> = text.chars().filter(|c| !c.is_ascii()).collect();
+        chars.sort_unstable();
+        chars.dedup();
+        assert!(!chars.is_empty());
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace, egui::FontFamily::Name("bold".into())] {
+            let font = egui::FontId::new(13.0, family.clone());
+            for c in &chars {
+                assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, &c.to_string())), "{family:?} has no glyph for {c:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn pages_with_the_same_title_are_told_apart_in_lists() {
+        let names: Vec<&str> = entries().iter().map(|e| e.name.as_str()).collect();
+        let unique: HashSet<&str> = names.iter().copied().collect();
+        let mut seen = HashSet::new();
+        let twice: Vec<&str> = names.iter().copied().filter(|n| !seen.insert(*n)).collect();
+        assert!(twice.is_empty(), "pages that share a name in Contents and Index: {twice:?}");
+        assert_eq!(names.len(), unique.len());
+        let shortcuts: Vec<&str> = entries().iter().filter(|e| e.title == "Keyboard Shortcuts").map(|e| e.name.as_str()).collect();
+        assert_eq!(shortcuts.len(), 2);
+        assert!(shortcuts.contains(&"Keyboard Shortcuts  (for scripts)"), "{shortcuts:?}");
+    }
+
+    #[test]
+    fn descriptions_show_ctrl_off_the_mac() {
+        assert_eq!(platform_keys("Cmd+= switches between Mix and Edit", false), "Ctrl+= switches between Mix and Edit");
+        assert_eq!(platform_keys("Cmd+= switches between Mix and Edit", true), "Cmd+= switches between Mix and Edit");
+        // No description names a Mac-only Cmd+Ctrl chord, which would read wrongly as Ctrl+Ctrl.
+        for (id, h) in &data().commands {
+            for text in std::iter::once(&h.text).chain(h.limits.iter()) {
+                assert!(!text.contains("Cmd+Ctrl"), "{id}: {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_application_menu_items_say_where_they_are() {
+        for (_, _, id) in APP_MENU {
+            assert!(data().commands.contains_key(id), "{id} has no page");
+        }
+        assert_eq!(app_menu_path("window.about", false).as_deref(), Some("SoundCraft › About SoundCraft"));
+        assert_eq!(app_menu_path("app.quit", true).as_deref(), Some("SoundCraft › Quit SoundCraft"));
+        assert_eq!(app_menu_path("app.checkForUpdates", true), None, "the Mac menu has no Check for Updates");
+        assert!(search("session audio health").iter().any(|e| e.page == Page::Command("window.audio_health".into())));
     }
 }
