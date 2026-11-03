@@ -178,6 +178,13 @@ pub struct Bounce {
     enc: Option<soundcraft_audio_io::FileEncoder<Out>>,
 }
 
+/// The Broadcast Wave stamp of timeline position `at`: the session's timecode start plus `at`, in
+/// samples since midnight (`bext` TimeReference; 0 before midnight).
+fn time_stamp(s: &Session, at: Samples) -> soundcraft_audio_io::BwfInfo {
+    let time_reference = u64::try_from(s.timecode_start.saturating_add(at)).unwrap_or(0);
+    soundcraft_audio_io::BwfInfo { time_reference, ..Default::default() }
+}
+
 /// A finished bounce: the size of its file and its levels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounced {
@@ -208,6 +215,9 @@ impl Bounce {
         let part = path.with_file_name(format!("{name}.part"));
         crate::file_access::check_write(path).map_err(EngineError::Io)?;
         crate::file_access::check_write(&part).map_err(EngineError::Io)?;
+        // A WAV bounce says where it starts on the session's timecode, as other DAWs' bounces do,
+        // so post and broadcast tools can place it (only WAV has a `bext` chunk to say it in).
+        let opts = &EncodeOptions { bwf: opts.bwf.clone().or_else(|| Some(time_stamp(&s, r.start))), ..opts.clone() };
         let enc = (|| -> std::result::Result<_, soundcraft_audio_io::AudioError> {
             let enc = soundcraft_audio_io::FileEncoder::new(Out::create(&part)?, opts, channels, s.sample_rate.hz(), Some(fmt.channel_mask()))?;
             enc.check_room(u64::try_from(r.len()).unwrap_or(0))?;
