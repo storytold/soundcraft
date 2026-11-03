@@ -202,7 +202,7 @@ mod tests {
         e.execute("view.zoom_in", &json!({})).unwrap();
         let (spp, scroll) = view(&e);
         let x = (1_000_000.0 - scroll as f64) / spp;
-        assert!((0.0..2000.0).contains(&x), "cursor at {x}px");
+        assert!((x - OFFSCREEN_CURSOR_PX).abs() < 1.0, "cursor at {x}px");
     }
 
     #[test]
