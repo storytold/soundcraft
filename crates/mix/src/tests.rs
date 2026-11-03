@@ -1236,7 +1236,8 @@ fn render_clips_full_span(s: &Session, track: TrackId, range: Range) -> Vec<Vec<
 
 #[test]
 fn consolidate_clip_effects_cover_the_clip_and_its_tail() {
-    let fx_sets: [&[(&str, f64)]; 2] = [&[("comp.lookahead", 5.0), ("comp.threshold", -20.0), ("gain", -6.0)], &[("eq.hpf_on", 1.0), ("gain", 3.0)]];
+    let fx_sets: [&[(&str, f64)]; 3] =
+        [&[("comp.lookahead", 5.0), ("comp.threshold", -20.0), ("gain", -6.0)], &[("eq.hpf_on", 1.0), ("gain", 3.0)], &[("eq.low_shelf_gain", 12.0)]];
     for (k, params) in fx_sets.iter().enumerate() {
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);

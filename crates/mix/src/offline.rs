@@ -135,6 +135,9 @@ pub fn fold_down_stereo(fmt: ChannelFormat, ch: &[Vec<f32>]) -> Vec<Vec<f32>> {
 const CLIP_FX_BLOCK: usize = 4096;
 /// Most a clip effect keeps rendering past its clip's end in [`render_clips`], in seconds.
 const MAX_CLIP_FX_TAIL_SECONDS: f64 = 10.0;
+/// Silent lead-in run before a clip with effects so smoothed parameters (EQ) settle, in seconds
+/// (the smoothers settle within ~0.3 s).
+const CLIP_FX_SETTLE_SECONDS: f64 = 1.0;
 /// A tail block whose peak is below this (-180 dBFS) ends a clip effect's tail.
 const CLIP_FX_TAIL_FLOOR: f32 = 1e-9;
 
@@ -162,6 +165,17 @@ pub fn render_clips(s: &Session, track: TrackId, range: Range) -> Vec<Vec<f32>> 
                 let first = offset(c.start);
                 let clip_end = offset(c.end());
                 let tail_end = offset(c.end().saturating_add(max_tail));
+                // Smoothed parameters start at their defaults; settle them on silence, as the
+                // full-span render did, so the clip opens at the configured setting.
+                let mut lead = first.min(usize::try_from(s.sample_rate.samples(CLIP_FX_SETTLE_SECONDS).max(0)).unwrap_or(0));
+                while lead > 0 {
+                    let n = lead.min(CLIP_FX_BLOCK);
+                    for ch in &mut block {
+                        ch.fill(0.0);
+                    }
+                    fx.process(&mut block, n);
+                    lead -= n;
+                }
                 let mut done = first;
                 while done < len {
                     let n = (len - done).min(CLIP_FX_BLOCK);
