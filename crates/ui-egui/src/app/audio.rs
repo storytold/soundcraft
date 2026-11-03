@@ -137,7 +137,9 @@ pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], peaks: &[f32], gr
         if let Some(x) = d.level.get_mut(c) {
             *x = if nv < 1e-5 { 0.0 } else { nv };
         }
-        if v >= d.hold.get(c).copied().unwrap_or(0.0) {
+        // Only a reading refreshes the shared hold timer: a silent or unused channel matching its
+        // zero hold must not keep the other channels' holds up.
+        if v > 0.0 && v >= d.hold.get(c).copied().unwrap_or(0.0) {
             if let Some(h) = d.hold.get_mut(c) {
                 *h = v;
             }
@@ -173,6 +175,19 @@ mod tests {
         let c = d.level.get(2).copied().unwrap_or_default();
         assert!(c > 0.0 && c < 0.3, "C falls, not drops: {c}");
         assert_eq!(d.hold.get(2).copied(), Some(0.3));
+    }
+
+    #[test]
+    fn peak_holds_expire_after_two_seconds_of_silence_on_a_strip_with_unused_channels() {
+        let mut d = MeterDisplay::default();
+        // A stereo strip: every channel past the pair is unused and reads 0.
+        feed_meter(&mut d, [0.5, 0.4], &[0.5, 0.4], 0.0, 0.05);
+        for _ in 0..50 {
+            feed_meter(&mut d, [0.0, 0.0], &[], 0.0, 0.05);
+        }
+        let l = d.hold.first().copied().unwrap_or_default();
+        assert!(l < 0.5, "the L hold drops back to the falling level: {l}");
+        assert_eq!(d.hold, d.level);
     }
 
     #[test]
