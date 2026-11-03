@@ -222,10 +222,33 @@ mod tests {
         assert!(plugin_info("reverb").is_none());
     }
 
+    /// A new directory that this test alone created, readable only by its user on Unix. Creation
+    /// fails if the path already exists: the test then loads native libraries from it, so it must
+    /// never reuse a directory someone else could have put a library in. It lives next to the test
+    /// binary (in the build directory), not under the temp dir: `TMPDIR`/`TEMP` can name a shared
+    /// directory without a sticky bit or with inheritable write access, where another user could
+    /// rename or populate it. Anyone who can write to the build directory can already replace the
+    /// test binary itself, so this parent adds no new trust.
+    fn fresh_private_dir(prefix: &str) -> std::path::PathBuf {
+        let exe = std::env::current_exe().expect("test binary path");
+        let parent = exe.parent().expect("test binary has a parent directory");
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_nanos());
+        let d = parent.join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        #[cfg(unix)]
+        let builder = {
+            let mut b = std::fs::DirBuilder::new();
+            std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+            b
+        };
+        #[cfg(not(unix))]
+        let builder = std::fs::DirBuilder::new();
+        builder.create(&d).unwrap_or_else(|e| panic!("cannot create a fresh test directory {}: {e}", d.display()));
+        d
+    }
+
     #[test]
     fn garbage_files_are_errors_not_crashes() {
-        let d = std::env::temp_dir().join(format!("soundcraft-clap-garbage-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = fresh_private_dir("soundcraft-clap-garbage");
         std::fs::create_dir_all(d.join("Bundle.clap/Contents/MacOS")).unwrap();
         std::fs::write(d.join("garbage.clap"), b"\x7fELF this is not a plugin \x00\x01\x02").unwrap();
         std::fs::write(d.join("empty.clap"), b"").unwrap();

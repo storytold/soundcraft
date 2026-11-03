@@ -734,6 +734,12 @@ fn read_bundle(bytes: &[u8], limits: BundleLimits) -> Result<(String, std::colle
     if z.len() > limits.entries {
         return Err(EngineError::Io("bundle: too many files".into()));
     }
+    // Entries are stored, so the files we keep can only outgrow the bundle when several entries
+    // point at the same bytes: a small bundle naming one payload thousands of times would be
+    // copied out once per name.
+    if z.has_overlapping_files().map_err(zerr)? {
+        return Err(EngineError::Io("bundle: files share data".into()));
+    }
     let (mut text, mut files, mut total) = (None, std::collections::HashMap::new(), 0u64);
     for i in 0..z.len() {
         let mut f = z.by_index(i).map_err(zerr)?;
