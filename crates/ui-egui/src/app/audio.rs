@@ -130,28 +130,23 @@ impl SoundApp {
 pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], peaks: &[f32], gr: f32, dt: f32) {
     // Instant attack, ~26 dB/s release, 2 s peak hold.
     let fall = 10f32.powf(-26.0 * dt / 20.0);
-    for c in 0..d.level.len() {
+    // Each channel times its own hold, so activity on one channel cannot keep another's hold up.
+    let channels = d.level.iter_mut().zip(&mut d.hold).zip(&mut d.hold_age).enumerate();
+    for (c, ((lvl, hold), age)) in channels {
         let v = if c < 2 { peak.get(c) } else { peaks.get(c) }.copied().filter(|v| v.is_finite()).unwrap_or(0.0);
-        let lvl = d.level.get(c).copied().unwrap_or(0.0);
-        let nv = if v >= lvl { v } else { (lvl * fall).max(v) };
-        if let Some(x) = d.level.get_mut(c) {
-            *x = if nv < 1e-5 { 0.0 } else { nv };
+        let nv = if v >= *lvl { v } else { (*lvl * fall).max(v) };
+        *lvl = if nv < 1e-5 { 0.0 } else { nv };
+        if v >= *hold {
+            *hold = v;
+            *age = 0.0;
         }
-        // Only a reading refreshes the shared hold timer: a silent or unused channel matching its
-        // zero hold must not keep the other channels' holds up.
-        if v > 0.0 && v >= d.hold.get(c).copied().unwrap_or(0.0) {
-            if let Some(h) = d.hold.get_mut(c) {
-                *h = v;
-            }
-            d.hold_age = 0.0;
+        *age += dt;
+        if *age > 2.0 {
+            *hold = *lvl;
         }
         if v >= 1.0 {
             d.clip = true;
         }
-    }
-    d.hold_age += dt;
-    if d.hold_age > 2.0 {
-        d.hold = d.level;
     }
     d.gr = if gr > d.gr { gr } else { d.gr * fall };
 }
@@ -188,6 +183,19 @@ mod tests {
         let l = d.hold.first().copied().unwrap_or_default();
         assert!(l < 0.5, "the L hold drops back to the falling level: {l}");
         assert_eq!(d.hold, d.level);
+    }
+
+    #[test]
+    fn a_busy_channel_does_not_keep_a_silent_channels_peak_hold_up() {
+        let mut d = MeterDisplay::default();
+        // A 5.1 strip: L peaks once, then only C carries a steady signal.
+        feed_meter(&mut d, [0.5, 0.0], &[0.5, 0.0, 0.3], 0.0, 0.05);
+        for _ in 0..50 {
+            feed_meter(&mut d, [0.0, 0.0], &[0.0, 0.0, 0.3], 0.0, 0.05);
+        }
+        let l = d.hold.first().copied().unwrap_or_default();
+        assert!(l < 0.5, "the L hold expires while C plays on: {l}");
+        assert_eq!(d.hold.get(2).copied(), Some(0.3));
     }
 
     #[test]

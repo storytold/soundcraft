@@ -228,7 +228,8 @@ pub fn fit_window_to_screen(ctx: &egui::Context) {
 pub struct MeterDisplay {
     pub level: [f32; soundcraft_mix::MAX_CHANNELS],
     pub hold: [f32; soundcraft_mix::MAX_CHANNELS],
-    pub hold_age: f32,
+    /// Seconds since each channel's peak hold was last set.
+    pub hold_age: [f32; soundcraft_mix::MAX_CHANNELS],
     pub clip: bool,
     pub gr: f32,
     /// [`soundcraft_mix::PluginFailures::count`] as last seen.
