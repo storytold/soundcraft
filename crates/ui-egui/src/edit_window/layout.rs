@@ -70,6 +70,11 @@ impl EditLayout {
     pub fn scroll_by(&mut self, dy: f32, view_h: f32) {
         self.scroll_y = (self.scroll_y + dy).clamp(0.0, (self.content_h - view_h + 40.0).max(0.0));
     }
+
+    /// Clears the vertical scroll position Zoom Toggle would restore, so Cancel Zoom Toggle keeps the current scroll.
+    pub(crate) fn forget_zoom_back(&mut self) {
+        self.zoom_back = None;
+    }
 }
 
 pub fn rect([x0, y0, x1, y1]: [f32; 4]) -> Rect {

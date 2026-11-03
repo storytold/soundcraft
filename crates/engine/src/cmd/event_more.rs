@@ -274,7 +274,12 @@ fn tempo_curve(e: &mut Engine, p: &Value, curve: Curve, id: &str) -> Result<Valu
 
 fn tempo_stretch(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "event.tempo_stretch";
-    let (r, t0, t1) = selection_ticks(e, p, id)?;
+    // Here `length` is the new length of the selection, not part of the range.
+    let mut range_params = p.clone();
+    if let Some(m) = range_params.as_object_mut() {
+        m.remove("length");
+    }
+    let (r, t0, t1) = selection_ticks(e, &range_params, id)?;
     let factor = match position_param(e, id, p, "length")? {
         Some(l) if l > 0 => l as f64 / r.len() as f64,
         _ => f64_or(p, "factor", f64::NAN),
@@ -899,6 +904,15 @@ mod tests {
             ClipContent::Midi { sequence } => assert_eq!(sequence.notes.iter().map(|n| n.start).collect::<Vec<_>>(), vec![0]),
             _ => panic!(),
         }
+    }
+
+    /// For `event.tempo_stretch`, `length` is the new length of the selection, so the selection stays the range.
+    #[test]
+    fn tempo_stretch_length_keeps_selection_range() {
+        let mut e = Engine::default();
+        e.session_mut().edit.selection = Range::new(0, 96_000);
+        e.execute("event.tempo_stretch", &json!({"length": 192_000})).unwrap();
+        assert_eq!(e.session().tempo.tempo_at_tick(0), 60.0);
     }
 
     #[test]
