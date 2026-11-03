@@ -55,7 +55,7 @@ use callback::{STALL, copy_meter_snapshot};
 use callback::{guarded_block, stalled};
 #[cfg(test)]
 use stream::pick_output_config;
-use stream::{Opened, build_output, first_started, open_device, start_stream};
+use stream::{Opened, ReturnedOnDrop, build_output, first_started, open_device, start_stream};
 
 /// Meter values for the UI: the highest peak (and gain reduction) of every block rendered since
 /// the UI last took them with [`Player::take_meters`]. The audio thread renders blocks faster than
@@ -162,6 +162,8 @@ pub struct Player {
     _stream: Option<cpal::Stream>,
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
+    /// The audio state the stream's callback hands back when cpal drops it ([`ReturnedOnDrop`]).
+    returned: Receiver<AudioState>,
     pub device_name: String,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
@@ -237,19 +239,20 @@ impl Player {
                         let channels = usize::from(config.channels);
                         let (tx, rx) = channel();
                         let (gtx, grx) = channel();
-                        let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
+                        let (back, returned) = channel();
+                        let state = ReturnedOnDrop::new(AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx), back);
                         let fault = Arc::new(Fault::default());
                         let stream = match format {
                             cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, channels, &fault, &shared),
                             cpal::SampleFormat::I16 => build_output::<i16>(&device, *config, state, channels, &fault, &shared),
                             _ => build_output::<f32>(&device, *config, state, channels, &fault, &shared),
                         }?;
-                        Ok(Opened { stream, tx, grx, fault })
+                        Ok(Opened { stream, tx, grx, fault, returned })
                     },
                     |opened| start_stream(&opened.stream),
                 );
                 match opened {
-                    Some((config, Opened { stream, tx, grx, fault })) => {
+                    Some((config, Opened { stream, tx, grx, fault, returned })) => {
                         let rate = config.sample_rate;
                         let channels = usize::from(config.channels);
                         let buffer = match config.buffer_size {
@@ -268,6 +271,7 @@ impl Player {
                             tx,
                             side: new_side(grx),
                             _stream: Some(stream),
+                            returned,
                             device_name: name,
                             device_rate: rate,
                             device_channels: config.channels,
@@ -345,6 +349,7 @@ impl Player {
             tx,
             side,
             _stream: None,
+            returned: channel().1,
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
             device_channels: 0,
@@ -368,6 +373,7 @@ impl Player {
             tx,
             side,
             _stream: None,
+            returned: channel().1,
             device_name: "No audio device".into(),
             device_rate: session.sample_rate.hz(),
             device_channels: 0,
@@ -528,11 +534,14 @@ impl Player {
 }
 
 impl Drop for Player {
-    /// The stream owns the audio state, and with it the plugin instances: dropping the stream
-    /// drops them on the audio thread (cpal's callback thread), where an open editor cannot be
-    /// destroyed. Close the editors here first, on the thread dropping the player (the UI thread).
+    /// The stream's callback owns the audio state, and with it the plugin instances. Close the
+    /// editors first, on the thread dropping the player (the UI thread), then stop the stream and
+    /// drop here the state it hands back, rather than on cpal's thread. A state handed back
+    /// earlier (the device went away) has waited here until now, with its editors still usable.
     fn drop(&mut self) {
         self.close_editors();
+        drop(self._stream.take());
+        self.returned.try_iter().for_each(drop);
     }
 }
 

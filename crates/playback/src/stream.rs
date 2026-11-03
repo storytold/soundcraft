@@ -19,6 +19,32 @@ pub(crate) struct Opened {
     pub(crate) tx: Sender<Cmd>,
     pub(crate) grx: Receiver<Vec<Box<dyn Plugin>>>,
     pub(crate) fault: Arc<Fault>,
+    pub(crate) returned: Receiver<AudioState>,
+}
+
+/// The audio state as the stream callback owns it. cpal drops the callback on its own thread:
+/// when the stream is dropped, and on some backends when the device goes away (ALSA's worker
+/// returns on `DeviceNotAvailable` while the player lives on). Dropping the state there would
+/// destroy the plugin instances, and any editor still open, off the main thread; instead it is
+/// sent back to the player, which drops it after closing the editors.
+pub(crate) struct ReturnedOnDrop {
+    state: Option<AudioState>,
+    back: Sender<AudioState>,
+}
+
+impl ReturnedOnDrop {
+    pub(crate) fn new(state: AudioState, back: Sender<AudioState>) -> ReturnedOnDrop {
+        ReturnedOnDrop { state: Some(state), back }
+    }
+}
+
+impl Drop for ReturnedOnDrop {
+    fn drop(&mut self) {
+        if let Some(state) = self.state.take() {
+            // With the player already gone (nothing can be open any more) it drops here.
+            let _ = self.back.send(state);
+        }
+    }
 }
 
 /// Build and start the attempts in order; the first that builds and starts wins. A build error or
@@ -44,7 +70,7 @@ pub(crate) fn first_started<A: std::fmt::Debug, S, E: std::fmt::Display>(
 pub(crate) fn build_output<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    mut state: AudioState,
+    mut state: ReturnedOnDrop,
     channels: usize,
     fault: &Arc<Fault>,
     shared: &Arc<Shared>,
@@ -61,6 +87,7 @@ where
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             mark_audio_thread();
+            let Some(state) = state.state.as_mut() else { return };
             for out in data.chunks_mut(chunk) {
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));

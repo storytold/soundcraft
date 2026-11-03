@@ -525,6 +525,25 @@ impl PluginEditor for Window {
     }
 }
 
+#[test]
+fn the_audio_state_comes_back_when_the_callback_is_dropped_on_its_thread() {
+    // What cpal does with the callback when the stream goes, or (ALSA) when the device does.
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let session = Arc::new(Session::new("t", soundcraft_time::SampleRate::new(48_000).unwrap()));
+    let st = AudioState::new(channel().1, shared, session, 48_000.0, channel().0);
+    let (back, returned) = channel();
+    let callback = ReturnedOnDrop::new(st, back);
+    let audio = std::thread::spawn(move || drop(callback)).thread().id();
+    let st = returned.recv_timeout(std::time::Duration::from_secs(5)).expect("handed back");
+    assert_ne!(audio, std::thread::current().id());
+    drop(st);
+}
+
 /// An open editor that records whether it was closed.
 struct Watched(Arc<AtomicBool>);
 
