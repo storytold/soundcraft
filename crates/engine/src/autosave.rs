@@ -212,6 +212,9 @@ impl Autosave {
         let audio_dir = self.dir.join("Audio Files");
         let mut s = session.clone();
         let mut copies = BTreeMap::new();
+        // Copies made in this write, by the audio they hold: sources sharing one decoded buffer
+        // (a session may name one file under many ids) share one file.
+        let mut written: BTreeMap<*const SourceAudio, String> = BTreeMap::new();
         for src in &mut s.sources {
             let file = if Path::new(&src.path).is_absolute() { Some(PathBuf::from(&src.path)) } else { base.as_ref().map(|b| b.join(&src.path)) };
             let audio = s.pool.get(src.id);
@@ -224,6 +227,7 @@ impl Autosave {
             let Some(audio) = audio else { continue };
             let name = match self.copies.remove(&src.id) {
                 Some((copy, name)) if copy.upgrade().is_some_and(|a| Arc::ptr_eq(&a, audio)) => name,
+                _ if written.contains_key(&Arc::as_ptr(audio)) => written.get(&Arc::as_ptr(audio)).cloned().unwrap_or_default(),
                 _ => {
                     let name = format!("{} {}.wav", sanitize_name(&src.name), self.next);
                     self.next += 1;
@@ -235,13 +239,16 @@ impl Autosave {
             };
             src.path = audio_dir.join(&name).to_string_lossy().into_owned();
             src.unsaved = true;
+            written.insert(Arc::as_ptr(audio), name.clone());
             copies.insert(src.id, (Arc::downgrade(audio), name));
         }
         let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
         write_atomically(&self.dir.join(ORIGIN), origin.unwrap_or_default().as_bytes())?;
         write_atomically(&self.dir.join(SESSION), text.as_bytes())?;
         for (_, name) in std::mem::replace(&mut self.copies, copies).into_values() {
-            let _ = std::fs::remove_file(audio_dir.join(name));
+            if !self.copies.values().any(|(_, kept)| *kept == name) {
+                let _ = std::fs::remove_file(audio_dir.join(name));
+            }
         }
         if let Some(r) = recording {
             let plan = serde_json::to_string(r).map_err(|err| EngineError::Io(err.to_string()))?;
@@ -504,6 +511,25 @@ mod tests {
         let paths: Vec<_> = r.session().sources.iter().map(|s| (s.path.starts_with("Audio Files/"), s.unsaved)).collect();
         assert_eq!(paths, [(true, false), (false, true)]);
         assert_eq!(levels(&r), [0.5, -0.25]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sources_sharing_one_buffer_share_one_copy() {
+        let dir = folder("autosave-aliases");
+        let mut e = Engine::default();
+        record(&mut e, 0.5);
+        // Nine more source ids over the same decoded audio, as a session file may declare.
+        let s = e.session_mut();
+        let (src, audio) = (s.sources[0].clone(), s.pool.get(s.sources[0].id).cloned().unwrap());
+        for _ in 0..9 {
+            let id = SourceId(s.alloc());
+            s.sources.push(soundcraft_model::Source { id, ..src.clone() });
+            s.pool.insert(id, audio.clone());
+        }
+        let mut a = Autosave::create(&dir.join("Autosave"), "Song").unwrap();
+        a.write(e.session(), None, None).unwrap();
+        assert_eq!(std::fs::read_dir(a.dir.join("Audio Files")).unwrap().count(), 1, "one file for the ten ids");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
