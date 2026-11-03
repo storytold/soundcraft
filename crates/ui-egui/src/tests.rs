@@ -1645,3 +1645,36 @@ fn punching_out_keeps_the_transport_rolling() {
     app.handle_transport(0.25);
     assert!(!app.engine.transport.recording && !app.is_playing());
 }
+
+/// A punch-out ends the automation pass's undo merge, so automation written after it is its own
+/// undo step instead of joining the pass's step (where the take's Record step would share its
+/// undo with automation written after the punch-out).
+#[test]
+fn automation_after_a_punch_out_gets_its_own_undo_step() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("mix.automation_mode", json!({"tracks": ["Kick"], "mode": "write"})).unwrap();
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    app.write_automation();
+    fn kick_volume_points(app: &SoundApp) -> usize {
+        app.engine.session().track_by_name("Kick").unwrap().lane(&soundcraft_model::AutoParam::Volume).unwrap().points.len()
+    }
+    let during_pass = kick_volume_points(&app);
+    let pass_steps = app.engine.undo_history().len();
+
+    // A take under way (this machine has no input device to arm one for real).
+    app.engine.transport.recording = true;
+    app.run("transport.record", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing() && !app.engine.transport.recording, "the punch-out ends the take, playback continues");
+
+    // Automation written after the punch-out is its own undo step: the history grows, where the
+    // unended pass merge would swallow the write into the pass's step.
+    app.write_automation();
+    assert_eq!(kick_volume_points(&app), during_pass + 1);
+    assert_eq!(app.engine.undo_history().len(), pass_steps + 1, "the post-punch write is its own undo step");
+
+    // Undoing it leaves the pass's points alone.
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(kick_volume_points(&app), during_pass);
+}

@@ -370,6 +370,10 @@ impl SoundApp {
                     if self.engine.transport.recording {
                         if self.is_playing() {
                             // Quick Punch: punching out ends the take; the transport keeps rolling (#1265).
+                            // The take's "Record" undo step must stand alone: end the automation
+                            // pass's merge first, so automation written after the punch-out gets
+                            // its own undo step instead of joining the step before the take.
+                            self.engine.end_merge();
                             self.finish_recording();
                         } else {
                             self.stop_play();
