@@ -125,11 +125,13 @@ impl SoundApp {
     }
 }
 
-pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32) {
+/// Fold one reading into a strip's meter. `peak` is the stereo pair (a mono strip repeats its one
+/// channel), `peaks` every channel of the strip: channels from the third on read from `peaks`.
+pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], peaks: &[f32], gr: f32, dt: f32) {
     // Instant attack, ~26 dB/s release, 2 s peak hold.
     let fall = 10f32.powf(-26.0 * dt / 20.0);
-    for c in 0..2 {
-        let v = peak.get(c).copied().unwrap_or(0.0);
+    for c in 0..d.level.len() {
+        let v = if c < 2 { peak.get(c) } else { peaks.get(c) }.copied().filter(|v| v.is_finite()).unwrap_or(0.0);
         let lvl = d.level.get(c).copied().unwrap_or(0.0);
         let nv = if v >= lvl { v } else { (lvl * fall).max(v) };
         if let Some(x) = d.level.get_mut(c) {
@@ -150,4 +152,33 @@ pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32)
         d.hold = d.level;
     }
     d.gr = if gr > d.gr { gr } else { d.gr * fall };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MeterDisplay, feed_meter};
+
+    #[test]
+    fn surround_channels_get_levels_holds_and_clip_like_the_stereo_pair() {
+        let mut d = MeterDisplay::default();
+        // A 5.1 strip: L R C LFE Ls Rs; the surround right channel clips.
+        let peaks = [0.5, 0.4, 0.3, 0.2, 0.1, 1.0];
+        feed_meter(&mut d, [0.5, 0.4], &peaks, 0.0, 0.05);
+        assert_eq!(d.level.get(..6), Some(&peaks[..]));
+        assert_eq!(d.hold.get(..6), Some(&peaks[..]));
+        assert!(d.clip, "a clip on any channel lights the clip light");
+        assert!(d.level.get(6..).is_some_and(|rest| rest.iter().all(|v| *v == 0.0)));
+        // Silence: every channel falls back smoothly, and its peak hold stays up for now.
+        feed_meter(&mut d, [0.0, 0.0], &[], 0.0, 0.05);
+        let c = d.level.get(2).copied().unwrap_or_default();
+        assert!(c > 0.0 && c < 0.3, "C falls, not drops: {c}");
+        assert_eq!(d.hold.get(2).copied(), Some(0.3));
+    }
+
+    #[test]
+    fn a_misbehaving_plugin_cannot_stick_a_surround_meter() {
+        let mut d = MeterDisplay::default();
+        feed_meter(&mut d, [0.0, 0.0], &[0.0, 0.0, f32::NAN, f32::INFINITY], 0.0, 0.05);
+        assert!(d.level.iter().all(|v| *v == 0.0) && !d.clip);
+    }
 }

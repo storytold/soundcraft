@@ -41,7 +41,10 @@ use input::{clip_at, fade_midpoint};
 use layout::COLUMN_TITLES_H;
 #[cfg(test)]
 use layout::lane_rect;
-pub use layout::{COLUMN_W, EditLayout, HEADER_W, LANE_H, RULER_H, edit_columns, header_width, rect, sample_at, track_height, x_of};
+pub use layout::{
+    COLUMN_W, EditLayout, HEADER_W, LANE_H, RULER_H, edit_columns, header_width, meter_channels, meter_width, rect, sample_at, track_header_width,
+    track_height, x_of,
+};
 use overlay::overlay;
 pub use rulers::ruler_height;
 use rulers::{column_titles, draw_rulers, views_button};
@@ -122,7 +125,7 @@ pub(crate) fn main_area(app: &mut SoundApp, ui: &mut Ui) {
     if session.edit.flag("view.ruler.tempo_editor") && session.edit.rulers.iter().any(|ruler| ruler == "tempo") {
         ruler_height_total += ruler_height("tempo_editor");
     }
-    let minimum = vec2(header_width(&edit_columns(session)) + 64.0, ruler_height_total + 100.0);
+    let minimum = vec2(header_width(session, &edit_columns(session)) + 64.0, ruler_height_total + 100.0);
     crate::docking::minimum_body(ui, minimum, |ui| main_area_content(app, ui));
 }
 
@@ -141,7 +144,8 @@ fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
     let titles_h = if cols.is_empty() { 0.0 } else { COLUMN_TITLES_H };
     let rulers_h = rulers.iter().map(|r| ruler_height(r)).sum::<f32>() + 6.0 + titles_h;
     let hscroll_h = 14.0;
-    let hw = header_width(&cols);
+    let head_w = track_header_width(app.engine.session());
+    let hw = head_w + cols.iter().map(|c| c.3).sum::<f32>();
     let header = Rect::from_min_max(full.min, pos2(full.min.x + hw, full.max.y - hscroll_h));
     let tl = Rect::from_min_max(pos2(full.min.x + hw, full.min.y + rulers_h), pos2(full.max.x - 12.0, full.max.y - hscroll_h));
     let rulers_rect = Rect::from_min_max(pos2(full.min.x, full.min.y), pos2(full.max.x, full.min.y + rulers_h));
@@ -151,7 +155,7 @@ fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
     scroll_and_zoom(app, ui, full, tl);
     draw_rulers(app, ui, rulers_rect, tl, &rulers);
     views_button(app, ui, rulers_rect);
-    column_titles(ui, rulers_rect, &cols);
+    column_titles(ui, app.engine.session(), rulers_rect, &cols);
     if let Some(id) = app.edit_scroll_into_view.take() {
         scroll_into_view(app, id, tl.height());
     }
@@ -172,7 +176,7 @@ fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
         if row.max.y >= clip_rect.min.y && row.min.y <= clip_rect.max.y {
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(row));
             child.set_clip_rect(clip_rect);
-            track_row(app, &mut child, TrackId(id), row, tl, &cols);
+            track_row(app, &mut child, TrackId(id), row, tl, head_w, &cols);
         }
     }
     // Below the tracks a click clears the selection and a double-click opens New Tracks.

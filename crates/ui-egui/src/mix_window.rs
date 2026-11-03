@@ -9,7 +9,6 @@ use crate::widgets::{
 use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
 use soundcraft_model::{ChannelFormat, Route, SurroundPan, Track, TrackId, TrackKind};
-use soundcraft_playback::MeterSnapshot;
 
 mod plugin_menu;
 mod routing;
@@ -60,9 +59,6 @@ pub fn separate_closed(app: &mut SoundApp) {
 /// New Tracks when the space past the last strip is double-clicked.
 pub(crate) fn content(app: &mut SoundApp, ui: &mut Ui) {
     let ids: Vec<TrackId> = app.engine.session().tracks.iter().filter(|x| !x.hidden && x.kind != TrackKind::Video).map(|x| x.id).collect();
-    // Per-channel peaks for multichannel meters, from the snapshot `logic` takes from the player
-    // (taking them here too would split each period's peaks between two readers).
-    let snap = (app.player.is_some() && app.meters_live()).then(|| app.meter_snapshot.clone());
     // Taken for this frame only: a strip that isn't drawn (hidden track) must not scroll the Mix
     // whenever it comes back. A request made during this frame (the strip's menu) waits for the next.
     let scroll_to = app.mix_scroll_into_view.take();
@@ -70,7 +66,7 @@ pub(crate) fn content(app: &mut SoundApp, ui: &mut Ui) {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 1.0;
             for id in ids {
-                strip(app, ui, id, snap.as_ref(), scroll_to == Some(id));
+                strip(app, ui, id, scroll_to == Some(id));
             }
             let rest = Rect::from_min_max(pos2(ui.cursor().min.x, ui.clip_rect().min.y), ui.clip_rect().max);
             if rest.width() > 4.0 && ui.interact(rest, ui.scope_id().with("past_strips"), Sense::click()).double_clicked() {
@@ -102,24 +98,6 @@ fn panner_speakers(fmt: ChannelFormat) -> Vec<PannerSpeaker> {
             PannerSpeaker { label: s.label(), x, y, height: s.is_height() }
         })
         .collect()
-}
-
-/// Ballistic per-channel meter levels for multichannel strips, kept in egui memory.
-fn channel_levels(ui: &Ui, key: (&str, u64), peaks: &[f32], n: usize) -> Vec<f32> {
-    let id = egui::Id::unique(key);
-    let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.25);
-    let fall = 10f32.powf(-26.0 * dt / 20.0);
-    let mut lv: Vec<f32> = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-    lv.resize(n, 0.0);
-    for (i, l) in lv.iter_mut().enumerate() {
-        let p = peaks.get(i).copied().filter(|x| x.is_finite()).unwrap_or(0.0);
-        *l = if p >= *l { p } else { (*l * fall).max(p) };
-        if *l < 1e-5 {
-            *l = 0.0;
-        }
-    }
-    ui.data_mut(|d| d.insert_temp(id, lv.clone()));
-    lv
 }
 
 /// Pro Tools' names for sections in narrow strips, and in any strip too narrow for the full ones.
@@ -175,7 +153,7 @@ impl StripCtx<'_> {
     }
 }
 
-fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapshot>, scroll_here: bool) {
+fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, scroll_here: bool) {
     let t = Tokens::current();
     let session = app.engine.session_arc();
     let Some(track) = session.track(id) else { return };
@@ -211,7 +189,7 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     y = group_selector(app, ui, &cx, y);
     y = pan_section(app, ui, &cx, y);
     y = toggle_rows(app, ui, &cx, y);
-    fader_and_meter(app, ui, &cx, y, snap);
+    fader_and_meter(app, ui, &cx, y);
     name_and_readout(app, ui, &cx);
 }
 
@@ -569,7 +547,7 @@ fn toggle_rows(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -
 }
 
 /// The fader and its meter.
-fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, snap: Option<&MeterSnapshot>) {
+fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32) {
     let StripCtx { track, id, narrow, x0, inner_w, r, .. } = *cx;
     let t = Tokens::current();
     // Fader + meter.
@@ -591,10 +569,10 @@ fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, s
     let chans = if track.kind == TrackKind::Master { 2 } else { track.channels().min(2) };
     if all_chans > 2 {
         // One bar per channel, labelled (L R C LFE …).
-        let peaks = snap.and_then(|s| s.tracks.get(&id)).map(|m| m.peaks.as_slice()).unwrap_or(&[]);
-        let lv = channel_levels(ui, ("mc_meter", id.0), peaks, all_chans);
         let labels: Vec<String> = (0..all_chans).map(|c| strip_fmt.channel_label(c)).collect();
-        multi_meter(ui, mr, &lv, &labels, md.clip);
+        let level = md.level.get(..all_chans).unwrap_or_default();
+        let hold = md.hold.get(..all_chans).unwrap_or_default();
+        multi_meter(ui, mr, level, hold, &labels, md.clip);
     } else if chans >= 2 {
         let mw = mr.width() / 2.0 - 1.0;
         meter(ui, Rect::from_min_size(mr.min, vec2(mw, mr.height())), md.level[0], md.hold[0], md.clip);

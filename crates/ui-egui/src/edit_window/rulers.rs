@@ -1,5 +1,5 @@
 use super::input::snap;
-use super::layout::{COLUMN_TITLES_H, COLUMNS, Column, HEADER_W, RULER_H, edit_columns, header_width, sample_at, x_of};
+use super::layout::{COLUMN_TITLES_H, COLUMNS, Column, RULER_H, edit_columns, sample_at, track_header_width, x_of};
 use super::{
     Align2, Color32, GridValue, NoteValue, Range, Rect, Samples, Sense, Session, Shape, SoundApp, Stroke, TimeFormat, Tokens, Ui, bold,
     format_position, json, pos2, regular, rgb, vec2,
@@ -92,11 +92,12 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
     ui.painter().rect_filled(area, 0.0, t.ruler_bg);
     let view = Range::new(sample_at(&s, tl, tl.min.x), sample_at(&s, tl, tl.max.x));
     let sr = s.sample_rate;
+    let head_w = track_header_width(&s);
     let mut y0 = area.min.y + 3.0;
     for (i, id) in rulers.iter().enumerate() {
         let h = ruler_height(id);
         let row = Rect::from_min_max(pos2(tl.min.x, y0), pos2(tl.max.x, y0 + h));
-        let lab = Rect::from_min_max(pos2(area.min.x, y0), pos2(area.min.x + HEADER_W, y0 + h));
+        let lab = Rect::from_min_max(pos2(area.min.x, y0), pos2(area.min.x + head_w, y0 + h));
         y0 += h;
         let painter = ui.painter().with_clip_rect(row);
         ui.painter().text(pos2(lab.max.x - 12.0, lab.center().y), Align2::RIGHT_CENTER, ruler_label(id), bold(11.0), t.ruler_text);
@@ -358,14 +359,14 @@ fn timebase_ruler(painter: &egui::Painter, s: &Session, place: &RulerRow, f: Tim
 }
 
 /// Captions over the header columns, boxed in their own row under the rulers.
-pub(super) fn column_titles(ui: &Ui, rulers: Rect, cols: &[Column]) {
+pub(super) fn column_titles(ui: &Ui, s: &Session, rulers: Rect, cols: &[Column]) {
     if cols.is_empty() {
         return;
     }
     let t = Tokens::current();
     let line = Stroke::new(1.0, t.border);
-    let mut x = rulers.min.x + HEADER_W;
-    let end = rulers.min.x + header_width(cols);
+    let mut x = rulers.min.x + track_header_width(s);
+    let end = x + cols.iter().map(|c| c.3).sum::<f32>();
     let row = Rect::from_min_max(pos2(x, rulers.max.y - COLUMN_TITLES_H - 3.0), pos2(end, rulers.max.y));
     ui.painter().rect_filled(row, 0.0, t.panel_bg2);
     ui.painter().hline(rulers.min.x..=end, row.min.y + 0.5, line);

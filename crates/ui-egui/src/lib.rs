@@ -221,11 +221,13 @@ pub fn fit_window_to_screen(ctx: &egui::Context) {
     }
 }
 
-/// Ballistic meter display state per strip.
+/// Ballistic meter display state per strip, one level and peak hold per channel. Channels 0 and 1
+/// are the stereo pair (a mono strip repeats channel 0 in 1); a surround or immersive strip fills
+/// as many as it has, up to [`soundcraft_mix::MAX_CHANNELS`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MeterDisplay {
-    pub level: [f32; 2],
-    pub hold: [f32; 2],
+    pub level: [f32; soundcraft_mix::MAX_CHANNELS],
+    pub hold: [f32; soundcraft_mix::MAX_CHANNELS],
     pub hold_age: f32,
     pub clip: bool,
     pub gr: f32,
