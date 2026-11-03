@@ -222,3 +222,20 @@ fn sequence_serde_round_trip() {
     let json = serde_json::to_string(&seq).unwrap();
     assert_eq!(serde_json::from_str::<Sequence>(&json).unwrap(), seq);
 }
+
+#[test]
+fn remove_duplicates_handles_a_large_same_tick_controller_group() {
+    // Every channel x controller number at one tick, twice: the second copy of each wins. A
+    // rescan of the tick's kept events per incoming event would make this quadratic.
+    let keys: Vec<(u8, u8)> = (0..=255u8).flat_map(|ch| (0..=255u8).map(move |cc| (ch, cc))).collect();
+    let ctrls = [0, 1]
+        .iter()
+        .flat_map(|&pass| keys.iter().map(move |&(channel, cc)| CtrlEvent { tick: 7, channel, kind: CtrlKind::Cc(cc), value: pass }))
+        .collect();
+    let mut seq = Sequence { notes: Vec::new(), ctrls };
+    let start = std::time::Instant::now();
+    assert_eq!(seq.remove_duplicates(), keys.len());
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+    assert_eq!(seq.ctrls.len(), keys.len());
+    assert!(seq.ctrls.iter().all(|c| c.value == 1));
+}
