@@ -299,6 +299,22 @@ fn shuffle_clear_moves_automation_with_the_clips() {
     assert_eq!(points(&e, t), [0, 7_000, 18_000, 27_000]);
 }
 
+/// Clearing selected clips by id closes their gaps in Shuffle, as clearing their ranges does, and moves the
+/// automation with the clips.
+#[test]
+fn shuffle_clear_by_clip_id_closes_each_gap() {
+    for (mode, want, want_points) in [
+        ("shuffle", [(0, 10_000), (20_000, 10_000)], [0, 9_000, 20_000, 29_000]),
+        ("slip", [(0, 10_000), (40_000, 10_000)], [0, 9_000, 40_000, 49_000]),
+    ] {
+        let (mut e, t, ids) = long(mode, &[(0, 10_000, 0), (20_000, 10_000, 0), (30_000, 10_000, 0), (40_000, 10_000, 0)]);
+        set_points(&mut e, t, &[0, 9_000, 40_000, 49_000]);
+        run(&mut e, "edit.clear", json!({"clips": [ids[1].0, ids[2].0], "tracks": [t.0], "start": 0}));
+        assert_eq!(clips(&e, t), want, "{mode}");
+        assert_eq!(points(&e, t), want_points, "{mode}");
+    }
+}
+
 #[test]
 fn relative_grid_pastes_land_on_grid_lines_at_any_tempo() {
     let (mut e, t, [a, _]) = engine("relative_grid");
@@ -412,4 +428,31 @@ fn shuffle_lock_and_snap_rules_hold_when_a_call_names_tracks() {
     assert!(e.execute("edit.shuffle_lock", &json!({"value": true, "tracks": [t.0]})).is_err());
     run(&mut e, "edit.mode", json!({"mode": "grid"}));
     assert!(e.execute("edit.snap_to_grid", &json!({"tracks": [t.0]})).is_err());
+}
+
+fn selection_marker(e: &mut Engine, start: i64, end: i64) -> usize {
+    run(e, "markers.add", json!({"kind": "selection", "start": start, "end": end}));
+    e.session().markers.len() - 1
+}
+
+#[test]
+fn cut_and_insert_time_move_the_end_of_a_spanning_selection_memory_location() {
+    let (mut e, _, _) = engine("slip");
+    let a = selection_marker(&mut e, 1000, 5000);
+    let b = selection_marker(&mut e, 1000, 2500);
+    run(&mut e, "event.cut_time", json!({"start": 2000, "end": 3000}));
+    let m = &e.session().markers;
+    assert_eq!((m[a].start, m[a].end), (1000, 4000));
+    assert_eq!((m[b].start, m[b].end), (1000, 2000));
+    run(&mut e, "event.insert_time", json!({"start": 2000, "length": 1000}));
+    let m = &e.session().markers;
+    assert_eq!((m[a].start, m[a].end), (1000, 5000));
+    assert_eq!((m[b].start, m[b].end), (1000, 2000));
+}
+
+#[test]
+fn moving_a_group_left_past_zero_keeps_its_spacing() {
+    let (mut e, t, ids) = long("slip", &[(500, 100, 0), (2000, 100, 0)]);
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "by": -1000}));
+    assert_eq!(clips(&e, t), [(0, 100), (1500, 100)]);
 }

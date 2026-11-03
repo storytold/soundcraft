@@ -626,6 +626,8 @@ impl Session {
             }
             for l in &mut t.automation {
                 l.points.retain(|p| p.value.is_finite());
+                let (lo, hi, _) = l.param.range();
+                l.points.iter_mut().for_each(|p| p.value = p.value.clamp(lo, hi));
                 l.points.iter_mut().for_each(|p| bound(&mut p.at));
                 l.points.sort_by_key(|p| p.at);
             }
@@ -903,6 +905,22 @@ mod tests {
         assert_eq!(tr.active_playlist, 0);
         assert_eq!(tr.mixer.volume_db, 0.0);
         assert!(s.next_id > t.0);
+    }
+
+    #[test]
+    fn loaded_automation_is_clamped_to_its_range() {
+        // #884: a session file can carry points outside a lane's range; load clamps them.
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let tr = s.track_mut(t).unwrap();
+        for p in [crate::AutoParam::Volume, crate::AutoParam::SendLevel(0)] {
+            tr.lane_mut(&p).points.push(crate::AutomationPoint { at: 0, value: 500.0 });
+        }
+        let s = Session::from_json(&serde_json::to_string(&s).unwrap()).unwrap();
+        let tr = s.track(t).unwrap();
+        for p in [crate::AutoParam::Volume, crate::AutoParam::SendLevel(0)] {
+            assert_eq!(tr.lane(&p).unwrap().points[0].value, 12.0, "{p:?}");
+        }
     }
 
     #[test]
