@@ -121,7 +121,7 @@ fn prores_frame_size_is_checked_before_decoding() {
 }
 
 /// In-memory movie bytes, zero-padded up to `len` without storing the padding. Records the
-/// largest read asked of it and refuses reads over 1 MiB (the test movies are much smaller).
+/// largest read asked of it and refuses reads over 32 MiB (the test movies are much smaller).
 struct PaddedSource {
     bytes: Vec<u8>,
     len: u64,
@@ -134,7 +134,7 @@ impl ByteSource for PaddedSource {
     }
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
         self.largest.fetch_max(buf.len(), Ordering::Relaxed);
-        if buf.len() > 1 << 20 {
+        if buf.len() > 32 << 20 {
             return Err(std::io::Error::other("read too large for the test source"));
         }
         let start = usize::try_from(offset).unwrap_or(usize::MAX);
@@ -159,6 +159,35 @@ fn h264_sample_reads_are_capped() {
     assert!(matches!(&r, Err(VideoError::Decode(e)) if e.contains("sample larger than 256 MiB")), "{r:?}");
     let largest = src.largest.load(Ordering::Relaxed);
     assert!(largest <= 256 << 20, "a {largest}-byte read reached the source");
+}
+
+#[test]
+fn one_frame_request_reads_a_bounded_amount_of_samples() {
+    // 17 frames whose `stsz` entries each claim 32 MiB: under the per-sample cap, but together
+    // past what one request may feed the decoder.
+    let mut bytes = h264_mp4(17, 17).unwrap();
+    let at = bytes.windows(4).position(|w| w == b"stsz").unwrap();
+    assert_eq!(bytes[at + 8..at + 12], [0; 4], "one size per sample");
+    for i in 0..17 {
+        let field = at + 16 + 4 * i;
+        bytes[field..field + 4].copy_from_slice(&(32u32 << 20).to_be_bytes());
+    }
+    let src = Arc::new(PaddedSource { bytes, len: 1 << 30, largest: AtomicUsize::new(0) });
+    let mut m = Movie::open_source(src).unwrap();
+    let r = m.frame(16);
+    assert!(matches!(&r, Err(VideoError::Decode(e)) if e.contains("needs more than 512 MiB of samples")), "{r:?}");
+}
+
+#[test]
+fn mjpeg_frame_size_is_checked_before_decoding() {
+    // The first frame's SOF0 header claims 16 000 x 16 000: refused from the header, not decoded.
+    let mut bytes = mjpeg_mov(2).unwrap();
+    let sof = bytes.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+    bytes[sof + 5..sof + 9].copy_from_slice(&[0x3E, 0x80, 0x3E, 0x80]);
+    let mut m = Movie::open(bytes).unwrap();
+    let r = m.frame(0);
+    assert!(matches!(&r, Err(VideoError::Decode(e)) if e.contains("16000x16000 frame in a 32x24 track")), "{r:?}");
+    assert!(m.frame(1).is_ok(), "the untouched frame still decodes");
 }
 
 #[test]

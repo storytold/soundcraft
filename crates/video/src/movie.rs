@@ -415,6 +415,14 @@ impl Movie {
                 Ok(Frame { width: f.width, height: f.height, rgba, index, time })
             }
             Codec::Jpeg => {
+                // The frame's own size, from its header, before a pixel is decoded: the track's
+                // size was checked against `MAX_PIXELS` when the movie opened, and a frame that
+                // differs from it is refused, as a ProRes frame is.
+                let reader = image::ImageReader::with_format(std::io::Cursor::new(&data), image::ImageFormat::Jpeg);
+                let (w, h) = reader.into_dimensions().map_err(|e| VideoError::Decode(e.to_string()))?;
+                if (w, h) != (self.info.width, self.info.height) {
+                    return Err(VideoError::Decode(format!("{w}x{h} frame in a {}x{} track", self.info.width, self.info.height)));
+                }
                 let img = image::load_from_memory_with_format(&data, image::ImageFormat::Jpeg).map_err(|e| VideoError::Decode(e.to_string()))?;
                 let rgba = img.to_rgba8();
                 let (width, height) = rgba.dimensions();
@@ -457,6 +465,14 @@ impl Movie {
         Ok(self.h264_to_frame(p, index))
     }
 
+    /// Most sample bytes one frame request feeds the decoder (two samples at the 256 MiB cap):
+    /// a request decodes from the previous keyframe, and a sample table whose entries all name
+    /// one large payload would otherwise read and parse it once per sample.
+    const MAX_REQUEST_BYTES: usize = 512 << 20;
+    /// Most samples one frame request feeds without a picture coming out: the reorder depth is
+    /// at most 16, so a stream that produces nothing for this long will produce nothing.
+    const MAX_SAMPLES_WITHOUT_PICTURE: usize = 256;
+
     fn decode_h264(&mut self, index: usize) -> Result<Arc<Frame>> {
         let Codec::H264 { avcc } = &self.codec else { return Err(VideoError::Unsupported("not H.264".into())) };
         let target = self.order.get(index).copied().ok_or(VideoError::OutOfRange)?;
@@ -471,6 +487,7 @@ impl Movie {
         }
         let total = self.order.len();
         let mut last_err: Option<String> = None;
+        let (mut fed, mut without_picture) = (0usize, 0usize);
         // Bounded: each iteration feeds one sample, or flushes once at the end.
         for _ in 0..=total.saturating_add(1) {
             let Some(st) = self.h264.as_mut() else { break };
@@ -492,6 +509,10 @@ impl Movie {
                         continue;
                     }
                 };
+                fed = fed.saturating_add(data.len());
+                if fed > Self::MAX_REQUEST_BYTES {
+                    return Err(VideoError::Decode(format!("frame {index} needs more than {} MiB of samples", Self::MAX_REQUEST_BYTES >> 20)));
+                }
                 let Some(st) = self.h264.as_mut() else { break };
                 match st.dec.decode(&data, pts) {
                     Ok(p) => p,
@@ -506,6 +527,10 @@ impl Movie {
                 st.dec.flush()
             };
             let Some(st) = self.h264.as_mut() else { break };
+            without_picture = if pics.is_empty() { without_picture + 1 } else { 0 };
+            if without_picture > Self::MAX_SAMPLES_WITHOUT_PICTURE {
+                return Err(VideoError::Decode(format!("no picture in {} samples before frame {index}", Self::MAX_SAMPLES_WITHOUT_PICTURE)));
+            }
             for p in pics {
                 let q = usize::try_from(p.pts).unwrap_or(usize::MAX);
                 st.last_out = Some(q);
