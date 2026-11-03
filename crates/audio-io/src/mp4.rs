@@ -4,14 +4,25 @@
 use crate::pcm::{be_u32, be_u64};
 use crate::{AudioError, Result};
 
+/// The most `stts` entries a sound track may have. Symphonia finds each packet's timestamp by
+/// scanning the table from its start, so a table of one-sample runs makes decoding quadratic in
+/// the packet count. Audio encoders write one run per packet length (a handful of entries);
+/// this bound keeps the worst case at a few hundred million steps.
+const MAX_AUDIO_STTS_ENTRIES: u32 = 1 << 14;
+
 #[derive(Clone, Copy)]
 enum Level {
     Top,
     Moov,
     Trak,
     Mdia,
-    Minf,
-    Stbl,
+    /// `audio`: the `mdia` has a `soun` handler, so symphonia will decode its packets.
+    Minf {
+        audio: bool,
+    },
+    Stbl {
+        audio: bool,
+    },
     Udta,
     Meta,
     Ilst,
@@ -31,6 +42,7 @@ fn malformed(what: &str) -> AudioError {
 /// Walk the atoms in `pos..end` that symphonia descends into, as it reads them. False where
 /// symphonia stops reading: at a header it refuses, or after an atom that runs past `end`.
 fn atoms(b: &[u8], mut pos: usize, end: usize, level: Level) -> Result<bool> {
+    let start = pos;
     // A header that starts inside the container is read whole, even past its end.
     while pos < end {
         let (Some(size), Some(kind)) = (be_u32(b, pos), b.get(pos + 4..pos + 8)) else { return Ok(false) };
@@ -54,14 +66,21 @@ fn atoms(b: &[u8], mut pos: usize, end: usize, level: Level) -> Result<bool> {
             (Level::Moov, b"trak") => atoms(b, body, inner, Level::Trak)?,
             (Level::Moov, b"udta") => atoms(b, body, inner, Level::Udta)?,
             (Level::Trak, b"mdia") => atoms(b, body, inner, Level::Mdia)?,
-            (Level::Mdia, b"minf") => atoms(b, body, inner, Level::Minf)?,
-            (Level::Minf, b"stbl") => atoms(b, body, inner, Level::Stbl)?,
+            (Level::Mdia, b"minf") => atoms(b, body, inner, Level::Minf { audio: handler_is_sound(b, start, end) })?,
+            (Level::Minf { audio }, b"stbl") => atoms(b, body, inner, Level::Stbl { audio })?,
             (Level::Meta, b"ilst") => atoms(b, body, inner, Level::Ilst)?,
             (Level::Ilst, _) => atoms(b, body, inner, Level::Tag)?,
-            (Level::Stbl, b"stts" | b"co64") => table(b, body + 4, 8, inner)?,
-            (Level::Stbl, b"stsc") => table(b, body + 4, 12, inner)?,
-            (Level::Stbl, b"stco") => table(b, body + 4, 4, inner)?,
-            (Level::Stbl, b"stsz") => sample_sizes(b, body, inner)?,
+            (Level::Stbl { audio }, b"stts") => {
+                let fits = table(b, body + 4, 8, inner)?;
+                if audio && be_u32(b, body + 4).is_some_and(|n| n > MAX_AUDIO_STTS_ENTRIES) {
+                    return Err(AudioError::Malformed("MP4 audio timing table has more runs than packets could need".into()));
+                }
+                fits
+            }
+            (Level::Stbl { .. }, b"co64") => table(b, body + 4, 8, inner)?,
+            (Level::Stbl { .. }, b"stsc") => table(b, body + 4, 12, inner)?,
+            (Level::Stbl { .. }, b"stco") => table(b, body + 4, 4, inner)?,
+            (Level::Stbl { .. }, b"stsz") => sample_sizes(b, body, inner)?,
             (Level::Mdia, b"hdlr") | (Level::Tag, b"data" | b"name" | b"mean") if len > (b.len() - pos) as u64 => {
                 return Err(malformed(&format!("`{}` atom", String::from_utf8_lossy(kind))));
             }
@@ -73,6 +92,29 @@ fn atoms(b: &[u8], mut pos: usize, end: usize, level: Level) -> Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// Whether the `mdia` atom whose children lie in `pos..end` declares a `soun` handler: its
+/// `hdlr` is usually before `minf`, but may follow it, so the children are walked once more.
+fn handler_is_sound(b: &[u8], mut pos: usize, end: usize) -> bool {
+    while pos < end {
+        let (Some(size), Some(kind)) = (be_u32(b, pos), b.get(pos + 4..pos + 8)) else { return false };
+        let head = if size == 1 { 16 } else { 8 };
+        if kind == b"hdlr" {
+            // Version and flags, then the predefined field, then the handler type.
+            return b.get(pos + head + 8..pos + head + 12) == Some(b"soun");
+        }
+        let len = match size {
+            0 => return false,
+            1 => be_u64(b, pos + 8).unwrap_or(0),
+            n => u64::from(n),
+        };
+        match usize::try_from(len).ok().filter(|&n| n >= head).and_then(|n| pos.checked_add(n)) {
+            Some(next) => pos = next,
+            None => return false,
+        }
+    }
+    false
 }
 
 /// A sample table's entries, counted at `count`, must fit in the file: symphonia reserves room for

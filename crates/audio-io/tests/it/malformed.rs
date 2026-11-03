@@ -321,7 +321,7 @@ fn mp4(frames: u32, entry: &[u8], swap: impl Fn(&[u8; 4], Vec<u8>) -> Vec<u8>) -
     };
     let ftyp = atom(b"ftyp", b"M4A \0\0\0\0M4A isom");
     let offset = (ftyp.len() + moov(0).len() + 8) as u32;
-    let pcm: Vec<u8> = (0..frames as i16).flat_map(|i| (i * 40).to_le_bytes()).collect();
+    let pcm: Vec<u8> = (0..frames as i16).flat_map(|i| i.wrapping_mul(40).to_le_bytes()).collect();
     [ftyp, moov(offset), atom(b"mdat", &pcm)].concat()
 }
 
@@ -373,6 +373,25 @@ fn packets_longer_than_any_codec_uses_are_refused() {
     for entry in [lpcm(1 << 21), alac(1 << 21)] {
         assert!(matches!(decode(&mp4(480, &entry, |_, a| a), None), Err(AudioError::Malformed(m)) if m.contains("declares packets")));
     }
+    // Frames and channels multiply into the decoder's packet buffer; an ordinary stereo stream
+    // with long packets stays well inside the bound.
+    let wide = |channels: u32, frames: u32| {
+        let fields = [&be(&[72])[..], &48_000f64.to_be_bytes(), &be(&[channels, 0x7f00_0000, 16, 4, 2 * channels, frames])].concat();
+        sample_entry(b"lpcm", 2, &fields, &[])
+    };
+    assert!(decode(&mp4(480, &wide(2, 1 << 13), |_, a| a), None).is_ok());
+}
+
+#[test]
+fn an_audio_timing_table_with_a_run_per_sample_is_bounded() {
+    let pcm = sample_entry(b"sowt", 0, &[], &[]);
+    // One stts run per sample: symphonia scans the runs from the start for every packet.
+    let runs = |n: u32| atom(b"stts", &[&[0; 4][..], &n.to_be_bytes(), &[1u32, 1].map(u32::to_be_bytes).concat().repeat(n as usize)[..]].concat());
+    let frames = 1 << 14;
+    let (_, buf) = decode(&mp4(frames, &pcm, |k, a| if k == b"stts" { runs(frames) } else { a }), None).unwrap();
+    assert_eq!(buf.frames(), frames as usize, "a table at the bound still decodes");
+    let f = mp4(frames + 1, &pcm, |k, a| if k == b"stts" { runs(frames + 1) } else { a });
+    assert!(matches!(decode(&f, None), Err(AudioError::Malformed(m)) if m.contains("timing table")), "one run past the bound is refused");
 }
 
 /// FLAC metadata blocks with field lengths exceeding their block boundary are refused as malformed.
