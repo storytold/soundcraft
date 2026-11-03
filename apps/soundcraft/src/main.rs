@@ -20,6 +20,7 @@ mod launch_args;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+mod start_failure;
 mod switch;
 
 use env::Env;
@@ -245,7 +246,7 @@ fn main() -> eframe::Result {
             b.with_x11();
         }));
     }
-    eframe::run_native(
+    let result = eframe::run_native(
         "SoundCraft",
         options,
         Box::new(move |cc| {
@@ -286,7 +287,12 @@ fn main() -> eframe::Result {
                 menu,
             )))
         }),
-    )
+    );
+    // Say why instead of exiting silently (`start_failure`).
+    if let Err(e) = &result {
+        start_failure::report(e);
+    }
+    result
 }
 
 /// A saved window size, or the default when the prefs file holds nonsense (NaN, negative, tiny).
