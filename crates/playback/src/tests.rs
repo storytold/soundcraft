@@ -525,6 +525,42 @@ impl PluginEditor for Window {
     }
 }
 
+/// An open editor that records whether it was closed.
+struct Watched(Arc<AtomicBool>);
+
+impl PluginEditor for Watched {
+    fn open(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    fn close(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+    fn is_open(&self) -> bool {
+        !self.0.load(Ordering::SeqCst)
+    }
+    fn idle(&mut self) -> Vec<(String, f32)> {
+        Vec::new()
+    }
+}
+
+#[test]
+fn dropping_the_player_closes_its_editors_on_the_dropping_thread() {
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let (gtx, grx) = channel();
+    let p = Player::silent_clock(shared, tx, rx, 48_000, Mutex::new(Side::new(48_000.0, grx)), gtx);
+    let closed = Arc::new(AtomicBool::new(false));
+    p.side().editors.insert((TrackId(1), 0), Box::new(Watched(Arc::clone(&closed))));
+    assert!(p.editor_open(TrackId(1), 0));
+    drop(p);
+    assert!(closed.load(Ordering::SeqCst), "the editor must be closed before the audio side goes");
+}
+
 #[test]
 fn a_refused_state_is_kept_until_the_editor_opens() {
     let mut side = Side::new(48_000.0, channel().1);

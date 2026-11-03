@@ -527,5 +527,14 @@ impl Player {
     }
 }
 
+impl Drop for Player {
+    /// The stream owns the audio state, and with it the plugin instances: dropping the stream
+    /// drops them on the audio thread (cpal's callback thread), where an open editor cannot be
+    /// destroyed. Close the editors here first, on the thread dropping the player (the UI thread).
+    fn drop(&mut self) {
+        self.close_editors();
+    }
+}
+
 #[cfg(test)]
 mod tests;
