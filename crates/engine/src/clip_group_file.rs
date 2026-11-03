@@ -87,16 +87,23 @@ fn decode_group_audio(
     cmd_id: &str,
 ) -> Result<(Vec<(String, soundcraft_audio_io::AudioBuffer)>, BTreeMap<u64, usize>)> {
     let (mut decoded, mut index, mut file_of) = (Vec::new(), BTreeMap::new(), BTreeMap::new());
+    // The folder as the file system knows it, so a link among the group's files can't lead out.
+    let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+    let root = std::fs::canonicalize(dir).map_err(|err| EngineError::Io(format!("{}: {err}", dir.display())))?;
     for (old, rel) in audio_entries {
         let full = dir.join(rel);
+        let escapes = |rel: &str| EngineError::BadParams(cmd_id.into(), format!("audio path escapes the group folder: {rel}"));
         if !full.starts_with(dir)
             || Path::new(rel)
                 .components()
                 .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_)))
         {
-            return Err(EngineError::BadParams(cmd_id.into(), format!("audio path escapes the group folder: {rel}")));
+            return Err(escapes(rel));
         }
-        let key = crate::io::file_key(&full);
+        let key = std::fs::canonicalize(&full).map_err(|err| EngineError::Io(format!("{rel}: {err}")))?;
+        if !key.starts_with(&root) {
+            return Err(escapes(rel));
+        }
         let n = match index.get(&key) {
             Some(n) => *n,
             None => {
@@ -268,6 +275,20 @@ mod tests {
         std::fs::write(&path, file.to_string()).unwrap();
         let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}));
         assert!(matches!(r, Err(crate::EngineError::BadParams(..))), "absolute paths are refused: {r:?}");
+        // A link inside the folder that leads out of it is refused once resolved.
+        #[cfg(unix)]
+        {
+            let outside = std::env::temp_dir().join(format!("sc-grp-outside-{}.wav", std::process::id()));
+            std::fs::copy(dir.join("Wait... what_0.wav"), &outside).unwrap();
+            std::os::unix::fs::symlink(&outside, dir.join("link.wav")).unwrap();
+            for rel in file["audio"].as_object_mut().unwrap().values_mut() {
+                *rel = json!("link.wav");
+            }
+            std::fs::write(&path, file.to_string()).unwrap();
+            let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}));
+            assert!(matches!(r, Err(crate::EngineError::BadParams(..))), "links out of the folder are refused: {r:?}");
+            let _ = std::fs::remove_file(&outside);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
