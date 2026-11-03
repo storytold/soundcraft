@@ -8,6 +8,7 @@ Claude and other agents can make music with it. The server is the `mcp` subcomma
 soundcraft-cli mcp                    # headless engine (no window, no audio device)
 soundcraft-cli mcp --demo             # headless, starting from the demo session
 soundcraft-cli mcp --automation-read-root DIR --automation-write-root DIR   # headless, confined to folders
+export SOUNDCRAFT_CONTROL_TOKEN=…     # the secret both sides share (see control-protocol.md)
 soundcraft --control 7801 &           # the desktop app…
 soundcraft-cli mcp --connect 7801     # …driven over MCP: same tools plus screenshots and clicks
 ```

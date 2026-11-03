@@ -6,7 +6,7 @@ input), and every command is reachable from:
 
 | Surface | How |
 |---|---|
-| Desktop app control channel | `soundcraft --control <port>` (`0` = pick a free port; printed as `SOUNDCRAFT_CONTROL_PORT=…`) |
+| Desktop app control channel | `soundcraft --control <port>` (`0` = pick a free port; printed as `SOUNDCRAFT_CONTROL_PORT=…`, then the launch's `SOUNDCRAFT_CONTROL_TOKEN=…` unless the variable was set) |
 | CLI against a running app | `soundcraft-cli app --port <port> <method or command id> [JSON]` (see [cli.md](cli.md)) |
 | Headless CLI | `soundcraft-cli run --demo --cmd 'mix.volume={"track":"Kick","db":-6}' --bounce out.wav` |
 | MCP (headless) | `soundcraft-cli mcp [--demo]` |
@@ -29,11 +29,16 @@ input delivery or screen-reader acceptance. Native screenshots use the presented
 Newline-delimited JSON over TCP on `127.0.0.1`. One request per line, one reply per line:
 
 ```json
-{"id": 1, "method": "engine.execute", "params": {"command": "track.new", "params": {"count": 2, "format": "Stereo"}}}
+{"id": 1, "method": "engine.execute", "params": {"command": "track.new", "params": {"count": 2, "format": "Stereo"}}, "token": "…"}
 {"id": 1, "ok": true, "result": {"tracks": [12, 13]}}
 ```
 
 Errors: `{"id": 1, "ok": false, "error": "bad parameters for `mix.volume`: no track named `Nope`"}`.
+
+`token` is the launch's secret: `SOUNDCRAFT_CONTROL_TOKEN` when the app was started with it, otherwise
+the one the app made and printed after the port line. Any local account can reach the loopback port,
+so a request without the right token is refused (`"error": "unauthorized: …"`) and its connection
+closed. `soundcraft-cli app` and `mcp --connect` read the variable.
 
 ## Methods
 
@@ -71,6 +76,7 @@ Scripted input (`ui.click`, `ui.drag`, `ui.scroll`, `ui.zoom`, `ui.key`, `ui.tex
 ## Examples
 
 ```sh
+export SOUNDCRAFT_CONTROL_TOKEN=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
 P=$(soundcraft --demo --control 0 | sed -n 's/SOUNDCRAFT_CONTROL_PORT=//p')   # or read stderr
 soundcraft-cli app --port $P mix.solo '{"track":"Bass"}'
 soundcraft-cli app --port $P transport.play
