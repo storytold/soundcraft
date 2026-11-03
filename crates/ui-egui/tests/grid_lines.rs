@@ -1,5 +1,6 @@
 use egui::{Color32, FullOutput, Pos2, RawInput, Rect, Shape, pos2, vec2};
 use serde_json::json;
+use soundcraft_model::{ChannelFormat, Clip, TrackId, TrackKind};
 use soundcraft_ui_egui::theme::Tokens;
 use soundcraft_ui_egui::{Services, SoundApp, edit_window};
 
@@ -98,4 +99,65 @@ fn clips_markers_grid_draws_a_line_at_a_memory_location() {
                 if a.x == expected_x && b.x == expected_x && a.y == lane.min.y && b.y == lane.max.y
         )
     }));
+}
+
+/// Whether a vertical grid line spans the main lane of a visible track at the requested sample.
+fn line_on_track(out: &FullOutput, app: &SoundApp, track: TrackId, at: i64) -> bool {
+    let s = app.engine.session();
+    let [x0, y0, x1, y1] = app.edit_layout.timeline;
+    let timeline = Rect::from_min_max(pos2(x0, y0), pos2(x1, y1));
+    let row = app.edit_layout.rows.iter().find(|(id, _)| *id == track.0).unwrap().1;
+    let bottom = row[1] + s.track(track).unwrap().height.points();
+    let x = edit_window::x_of(s, timeline, at);
+    out.shapes.iter().any(|shape| {
+        matches!(&shape.shape, Shape::LineSegment { points: [a, b], .. }
+            if a.x == x && b.x == x && a.y == row[1] && b.y == bottom)
+    })
+}
+
+/// Shared frame lines reflect visible children, edited boundaries, scrolling and zoom on every lane.
+#[test]
+fn clips_markers_lines_refresh_across_lanes_and_hidden_open_folders() {
+    let mut engine = soundcraft_engine::Engine::default();
+    let s = engine.session_mut();
+    let folder = s.add_track(TrackKind::Folder, ChannelFormat::Stereo, None);
+    let child = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+    let other = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+    s.track_mut(folder).unwrap().hidden = true;
+    s.track_mut(child).unwrap().folder = Some(folder);
+    let clip = Clip::midi(s.new_clip_id(), "Visible", 1_200, 5_000, Default::default());
+    let clip_id = clip.id;
+    s.track_mut(child).unwrap().playlist_mut().unwrap().clips.push(clip);
+    s.add_marker("Boundary", soundcraft_model::MarkerKind::Marker, 9_000, 9_000);
+    s.edit.grid_clips_markers = true;
+    s.edit.grid_lines = true;
+    let mut app = SoundApp::new(engine, None, Services::default());
+    let ctx = egui::Context::default();
+
+    for (start, marker, scroll, zoom) in [(1_200, 9_000, 0, 20.0), (3_000, 11_000, 0, 20.0), (3_000, 11_000, 1_000, 40.0)] {
+        let s = app.engine.session_mut();
+        s.find_clip_mut(clip_id).unwrap().start = start;
+        s.markers[0].start = marker;
+        s.markers[0].end = marker;
+        s.edit.zoom.scroll = scroll;
+        s.edit.zoom.samples_per_px = zoom;
+        frame(&ctx, &mut app);
+        let out = frame(&ctx, &mut app);
+        assert!(!app.edit_layout.rows.iter().any(|(id, _)| *id == folder.0));
+        for track in [child, other] {
+            assert!(line_on_track(&out, &app, track, start));
+            assert!(line_on_track(&out, &app, track, marker));
+            if start != 1_200 {
+                assert!(!line_on_track(&out, &app, track, 1_200));
+                assert!(!line_on_track(&out, &app, track, 9_000));
+            }
+        }
+    }
+
+    app.engine.session_mut().track_mut(folder).unwrap().folder_open = false;
+    frame(&ctx, &mut app);
+    let out = frame(&ctx, &mut app);
+    assert!(!app.edit_layout.rows.iter().any(|(id, _)| *id == child.0));
+    assert!(!line_on_track(&out, &app, other, 3_000));
+    assert!(line_on_track(&out, &app, other, 11_000));
 }

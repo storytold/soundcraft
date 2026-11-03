@@ -512,7 +512,7 @@ impl Session {
         let mut folder = track.folder;
         for _ in 0..64 {
             let Some(parent) = folder.and_then(|id| self.track(id)) else { return true };
-            if parent.hidden || !parent.folder_open {
+            if !parent.folder_open {
                 return false;
             }
             folder = parent.folder;
@@ -934,6 +934,35 @@ mod tests {
         s.track_mut(track).unwrap().folder = Some(folder);
         s.track_mut(folder).unwrap().folder_open = false;
         assert_eq!(s.grid_lines(0, 5_000, 20), [0, 2_500, 4_000, 4_500]);
+    }
+
+    /// Open hidden folders keep their visible descendants eligible for lines and snapping.
+    #[test]
+    fn clips_markers_grid_keeps_visible_children_of_hidden_open_folders() {
+        let mut s = Session::default();
+        let outer = s.add_track(TrackKind::Folder, ChannelFormat::Stereo, None);
+        let inner = s.add_track(TrackKind::Folder, ChannelFormat::Stereo, None);
+        let child = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+        let clip = Clip::midi(s.new_clip_id(), "Visible", 1_000, 2_000, soundcraft_midi::Sequence::default());
+        s.track_mut(inner).unwrap().folder = Some(outer);
+        s.track_mut(inner).unwrap().hidden = true;
+        s.track_mut(child).unwrap().folder = Some(inner);
+        s.track_mut(child).unwrap().playlist_mut().unwrap().clips.push(clip);
+        s.edit.grid_clips_markers = true;
+
+        assert_eq!(s.grid_lines(0, 5_000, 20), [0, 1_000, 3_000]);
+        assert_eq!(s.snap_to_grid(2_800), 3_000);
+        assert_eq!(s.grid_line_at_or_before(2_800), 1_000);
+
+        s.track_mut(child).unwrap().hidden = true;
+        assert_eq!(s.grid_lines(0, 5_000, 20), [0]);
+        assert_eq!(s.snap_to_grid(2_800), 2_800);
+        s.track_mut(child).unwrap().hidden = false;
+        s.track_mut(inner).unwrap().folder_open = false;
+        assert_eq!(s.grid_lines(0, 5_000, 20), [0]);
+        s.track_mut(inner).unwrap().folder_open = true;
+        s.track_mut(outer).unwrap().folder_open = false;
+        assert_eq!(s.grid_lines(0, 5_000, 20), [0]);
     }
 
     /// With no real Clips/Markers boundaries, snapping leaves the position alone while drawing
