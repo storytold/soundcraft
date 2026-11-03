@@ -241,6 +241,20 @@ mod tests {
     }
 
     #[test]
+    fn a_meter_moving_only_past_the_stereo_pair_still_needs_repaints() {
+        let mut d = MeterDisplay::default();
+        assert!(!d.is_moving());
+        // A 5.1 strip with signal on C only.
+        feed_meter(&mut d, [0.0, 0.0], &[0.0, 0.0, 0.3], 0.0, 0.05);
+        assert!(d.is_moving());
+        // Its level has fallen away but the C hold is still up.
+        d.level = Default::default();
+        assert!(d.is_moving(), "the hold has yet to expire");
+        d.hold = Default::default();
+        assert!(!d.is_moving());
+    }
+
+    #[test]
     fn a_misbehaving_plugin_cannot_stick_a_surround_meter() {
         let mut d = MeterDisplay::default();
         feed_meter(&mut d, [0.0, 0.0], &[0.0, 0.0, f32::NAN, f32::INFINITY], 0.0, 0.05);

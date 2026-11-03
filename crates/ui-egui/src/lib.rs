@@ -236,6 +236,14 @@ pub struct MeterDisplay {
     pub plugin_failures: u32,
 }
 
+impl MeterDisplay {
+    /// Whether any channel still shows a level or a peak hold, so the meter keeps falling (or its
+    /// hold has yet to expire) and needs repainting.
+    pub fn is_moving(&self) -> bool {
+        self.level.iter().chain(&self.hold).any(|v| *v > 0.0001)
+    }
+}
+
 /// An in-progress mouse gesture in the Edit window.
 #[derive(Debug, Clone)]
 pub enum Gesture {
