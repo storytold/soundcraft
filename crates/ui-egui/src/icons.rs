@@ -182,6 +182,19 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
                 painter.line_segment([p(r, x, 0.5 - h), p(r, x, 0.5 + h)], s);
             }
         }
+        "link_track" => {
+            // A link chain below two track rows, so the track link reads apart from the timeline link's plain chain.
+            painter.line_segment([p(r, 0.12, 0.18), p(r, 0.88, 0.18)], s);
+            painter.line_segment([p(r, 0.12, 0.32), p(r, 0.88, 0.32)], s);
+            painter.circle_stroke(p(r, 0.38, 0.72), r.width() * 0.16, s);
+            painter.circle_stroke(p(r, 0.62, 0.72), r.width() * 0.16, s);
+        }
+        "insertion_follows" => {
+            // The insertion line, a lead, and the playhead arrow it follows.
+            painter.line_segment([p(r, 0.3, 0.14), p(r, 0.3, 0.86)], s);
+            painter.line_segment([p(r, 0.42, 0.5), p(r, 0.62, 0.5)], s);
+            painter.add(Shape::convex_polygon(vec![p(r, 0.84, 0.5), p(r, 0.64, 0.34), p(r, 0.64, 0.66)], c, Stroke::NONE));
+        }
         _ => {
             painter.rect_stroke(r.shrink(r.width() * 0.25), 1.0, s, egui::StrokeKind::Middle);
         }
