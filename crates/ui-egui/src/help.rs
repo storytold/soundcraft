@@ -314,6 +314,34 @@ fn entries() -> &'static [Entry] {
     })
 }
 
+/// Whether `query` is this command's shortcut, spelled as on a Mac or on a PC.
+fn is_shortcut_of(e: &Entry, query: &str) -> bool {
+    let Page::Command(id) = &e.page else { return false };
+    let Some(keys) = crate::menus::shortcut_for(id) else { return false };
+    let compact = query.replace(' ', "");
+    [keys.to_string(), crate::shortcuts::shortcut_label(keys, false)].iter().any(|k| k.to_lowercase().replace(' ', "") == compact)
+}
+
+/// `a` and `b` differ by at most one letter added, dropped, changed or swapped with its
+/// neighbour. Short words must match exactly, or "mix" would find "max".
+fn one_typo(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    if a == b {
+        return true;
+    }
+    if a.len().min(b.len()) < 4 || a.len().abs_diff(b.len()) > 1 {
+        return false;
+    }
+    let start = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let (ra, rb) = (&a[start..], &b[start..]);
+    let tail = |x: &[char], y: &[char]| x == y;
+    match ra.len().cmp(&rb.len()) {
+        std::cmp::Ordering::Equal => tail(&ra[1..], &rb[1..]) || (ra.len() >= 2 && ra[0] == rb[1] && ra[1] == rb[0] && tail(&ra[2..], &rb[2..])),
+        std::cmp::Ordering::Greater => tail(&ra[1..], rb),
+        std::cmp::Ordering::Less => tail(ra, &rb[1..]),
+    }
+}
+
 /// Search results, best first. Every word must appear somewhere on the page, or the title must
 /// match loosely (letters in order, so "bnc mix" finds Bounce Mix).
 fn search(query: &str) -> Vec<&'static Entry> {
@@ -326,14 +354,23 @@ fn search(query: &str) -> Vec<&'static Entry> {
         .iter()
         .filter_map(|e| {
             let title = e.title.to_lowercase();
-            let s = if let Some(at) = title.find(&q) {
+            let s = if is_shortcut_of(e, &q) {
+                // "cmd+s" or "ctrl+s": the command on that very key comes before ones that merely
+                // contain it (Cmd+Shift+S…).
+                4000
+            } else if let Some(at) = title.find(&q) {
                 3000 - i32::try_from(at).unwrap_or(999)
             } else if words.iter().all(|w| title.contains(w)) {
                 2500
             } else if words.iter().all(|w| e.hay.contains(w)) {
                 1000
+            } else if let Some(s) = crate::palette::score(&e.title, &q).filter(|s| *s > 450) {
+                s
+            } else if words.iter().all(|w| title.split_whitespace().any(|t| one_typo(w, t))) {
+                // A slip of one letter ("sholo" for Solo) still finds the page.
+                400
             } else {
-                crate::palette::score(&e.title, &q).filter(|s| *s > 450)?
+                return None;
             };
             Some((s, e))
         })
@@ -449,7 +486,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     }
     let mut open = true;
     // Never wider or taller than the app's window, so nothing on a page is cut off at its edge.
-    let screen = ctx.content_rect().size() - vec2(32.0, 48.0);
+    // Below the 24-point menu bar, so the title bar never covers it.
+    let mut free = ctx.content_rect();
+    free.min.y += 24.0;
+    let screen = free.size() - vec2(32.0, 16.0);
     let min = vec2(560.0, 360.0).min(screen);
     let shown = egui::Window::new("SoundCraft Help")
         .open(&mut open)
@@ -457,6 +497,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         .min_size(min)
         .max_size(screen.max(min))
         .collapsible(false)
+        .default_pos(free.min + vec2(16.0, 8.0))
+        .constrain_to(free)
         .show(ctx, |ui| window_body(app, ui));
     // Alt+Left / Alt+Right are Back and Forward while the pointer is over help.
     if shown.is_some_and(|r| r.response.contains_pointer()) {
@@ -466,6 +508,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         }
         if forward {
             app.ui.help.go_forward();
+        }
+        // Escape closes help, unless it is clearing a search box that has the keyboard.
+        if !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            open = false;
         }
     }
     app.ui.show_help = open;
@@ -478,6 +524,8 @@ fn window_body(app: &mut SoundApp, ui: &mut Ui) {
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(vec2(NAV_WIDTH, height), Layout::top_down(Align::Min), |ui| {
             ui.set_min_size(vec2(NAV_WIDTH, height));
+            // The same width on every tab: long titles wrap rather than widen the panel.
+            ui.set_max_width(NAV_WIDTH);
             navigation(app, ui);
         });
         ui.separator();
@@ -620,8 +668,11 @@ fn search_results(app: &mut SoundApp, ui: &mut Ui) {
     let hits = search(&h.query);
     let mut go = None;
     egui::ScrollArea::vertical().id_salt("help_search").auto_shrink([false, false]).show(ui, |ui| {
+        // Leave room for the scroll bar so descriptions wrap before it.
+        ui.set_max_width(ui.available_width() - 12.0);
         if h.query.trim().is_empty() {
-            ui.label(RichText::new("Type in the search box above: a word, a menu name or a shortcut such as Cmd+S.").color(t.text_dim));
+            let example = if cfg!(target_os = "macos") { "Cmd+S" } else { "Ctrl+S" };
+            ui.label(RichText::new(format!("Type in the search box above: a word, a menu name or a shortcut such as {example}.")).color(t.text_dim));
             return;
         }
         if hits.is_empty() {
@@ -1110,6 +1161,21 @@ mod tests {
         assert!(search("ctrl+s").iter().any(|e| e.page == Page::Command("session.save".into())), "the PC spelling finds it too");
         assert!(search("ctrl+shift+i").iter().any(|e| e.page == Page::Command("file.import_audio".into())));
         assert!(search("zzqqxx").is_empty());
+        // The command on exactly that key comes first, before Cmd+Shift+S and friends.
+        assert_eq!(first(&save), Some(Page::Command("session.save".into())));
+        assert_eq!(first("ctrl+s"), Some(Page::Command("session.save".into())));
+        assert_eq!(first("Ctrl + S"), Some(Page::Command("session.save".into())));
+        // One slipped letter still finds the page; short words don't match loosely.
+        assert!(search("sholo").iter().any(|e| e.title == "Solo"), "{:?}", search("sholo").iter().map(|e| &e.title).collect::<Vec<_>>());
+        assert!(search("bounse").iter().any(|e| e.page == Page::Command("file.bounce_mix".into())));
+        assert!(
+            one_typo("solo", "sloo")
+                && one_typo("solo", "soloo")
+                && !one_typo("solo", "slo")
+                && one_typo("loop", "lopo")
+                && !one_typo("mix", "max")
+                && !one_typo("solo", "sold out")
+        );
         assert!(search("   ").is_empty());
     }
 
