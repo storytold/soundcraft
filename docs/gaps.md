@@ -92,7 +92,9 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 **Fixed (2026-10-16):** Aux, folder and master latency calculations now skip inserts already
 render block, matching track faders. A breakpoint at the next block no longer ramps the preceding
 block, and ramps reach their last-sample value. Regression tests cover nonzero render starts,
-one-sample callbacks and several block sizes. Interior automation breakpoints remain block-dependent.
+one-sample callbacks and several block sizes. Since #1354, track and master volume automation is read at
+every sample, so its interior breakpoints no longer depend on the block; send levels and plugin parameters
+are still read once per block.
 
 disabled for producing NaN or infinity. Subsequent blocks compensate only for healthy inserts;
 regression tests verify rendered impulse timing, retained healthy latency and reset/retry at
