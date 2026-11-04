@@ -111,6 +111,15 @@ fn zero_channels_is_malformed() {
 }
 
 #[test]
+fn aiff_negative_channel_count_is_malformed() {
+    let mut aiff = small(FileFormat::Aiff, BitDepth::Int16, 1);
+    let comm = aiff.windows(4).position(|w| w == b"COMM").unwrap();
+    aiff[comm + 8] = 0x80;
+    aiff[comm + 9] = 0;
+    assert!(probe(&aiff, None).is_err());
+}
+
+#[test]
 fn zero_sample_rate_is_malformed() {
     let wav = riff(&[(b"fmt ", fmt(1, 2, 0, 16)), (b"data", vec![0; 16])]);
     assert!(decode(&wav, None).is_err());
@@ -366,6 +375,7 @@ fn packets_longer_than_any_codec_uses_are_refused() {
     }
 }
 
+/// FLAC metadata blocks with field lengths exceeding their block boundary are refused as malformed.
 #[test]
 fn flac_metadata_fields_beyond_their_block_are_refused() {
     let with_block = |kind: u8, body: &[u8]| {
@@ -376,7 +386,8 @@ fn flac_metadata_fields_beyond_their_block_are_refused() {
     let picture = |data: u32| [&[0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0][..], &[0; 16], &data.to_be_bytes(), &[1, 2, 3]].concat();
     assert_eq!(decode(&with_block(6, &picture(3)), None).unwrap().1.frames(), 300);
     let comment = [&0u32.to_le_bytes()[..], &1u32.to_le_bytes(), &u32::MAX.to_le_bytes()].concat();
-    for f in [with_block(6, &picture(0x7fff_fff0)), with_block(4, &comment)] {
+    let vendor_overflow = [&0x7fff_fff0u32.to_le_bytes()[..], &0u32.to_le_bytes()].concat();
+    for f in [with_block(6, &picture(0x7fff_fff0)), with_block(4, &comment), with_block(4, &vendor_overflow)] {
         assert!(matches!(decode(&f, None), Err(AudioError::Malformed(m)) if m.contains("larger than its block")));
     }
 }

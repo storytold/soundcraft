@@ -317,4 +317,19 @@ mod tests {
         assert!(r.call("session.inspect", json!({})).is_ok());
         assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
+
+    #[test]
+    fn remote_returns_an_app_error_unchanged() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = ControlTarget { host: None, port: listener.local_addr().unwrap().port() };
+        std::thread::spawn(move || {
+            let Ok((mut sock, _)) = listener.accept() else { return };
+            let mut line = String::new();
+            let _ = BufReader::new(sock.try_clone().unwrap()).read_line(&mut line);
+            let _ = writeln!(sock, "{}", json!({"id": 1, "ok": false, "error": "transport.locate: nothing to reset"}));
+        });
+        let mut r = Remote::new(&addr);
+        let err = r.call("engine.execute", json!({"command": "transport.locate"})).unwrap_err();
+        assert_eq!(err, "transport.locate: nothing to reset");
+    }
 }

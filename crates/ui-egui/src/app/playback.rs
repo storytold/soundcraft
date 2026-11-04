@@ -368,6 +368,21 @@ impl SoundApp {
                         }
                     }
                 }
+                TransportRequest::PlayFrom(at) => {
+                    if self.is_playing() {
+                        // Playing on from `at` drops the end and loop of the earlier selection.
+                        if let Some(p) = &self.player {
+                            p.play(at, None, None);
+                        }
+                        if let Some(sim) = &mut self.sim {
+                            *sim = (at, None, None);
+                        }
+                        self.last_write_at = i64::MIN;
+                        self.engine.transport.position = at;
+                    } else {
+                        self.start_play(at, None, None);
+                    }
+                }
                 TransportRequest::Stop => self.stop_play(),
                 TransportRequest::Pause => self.pause_play(),
                 TransportRequest::TogglePlay => {
