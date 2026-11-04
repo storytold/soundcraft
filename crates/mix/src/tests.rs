@@ -1262,6 +1262,26 @@ fn consolidate_clip_effects_cover_the_clip_and_its_tail() {
     }
 }
 
+/// A clip that starts a few frames into the selection, while the EQ's smoothers are still settling: the
+/// effect's 32-frame chunks must line up with the full-span render's.
+#[test]
+fn consolidate_clip_effects_keep_the_reference_chunk_grid() {
+    for offset in [1i64, 31, 32, 33, 1000] {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4800]] })));
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "dc", SourceId(900), 0, offset, 4800));
+        s.edit.values.insert(format!("clip_fx.{}.eq.low_shelf_gain", cid.0), 12.0);
+        let range = Range::new(0, 20_000);
+        let got = render_clips(&s, t, range);
+        let want = render_clips_full_span(&s, t, range);
+        for (i, (a, b)) in got[0].iter().zip(&want[0]).enumerate() {
+            assert!((a - b).abs() < 1e-5, "clip at {offset}, sample {i}: {a} vs {b}");
+        }
+    }
+}
+
 #[test]
 fn consolidate_many_tiny_effect_clips_stays_fast() {
     // Thousands of one-sample clips with effects across a long selection: each one is processed

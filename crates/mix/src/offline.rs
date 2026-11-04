@@ -138,6 +138,10 @@ const MAX_CLIP_FX_TAIL_SECONDS: f64 = 10.0;
 /// Silent lead-in run before a clip with effects so smoothed parameters (EQ) settle, in seconds
 /// (the smoothers settle within ~0.3 s).
 const CLIP_FX_SETTLE_SECONDS: f64 = 1.0;
+/// Frames an effect advances its smoothed parameters by at a time (the EQ's chunk). Processing starts on a
+/// multiple of it from the selection's start, as a render of the whole selection would, so the smoothers
+/// step at the same samples.
+const CLIP_FX_CHUNK: usize = 32;
 /// A tail block whose peak is below this (-180 dBFS) ends a clip effect's tail.
 const CLIP_FX_TAIL_FLOOR: f32 = 1e-9;
 
@@ -167,7 +171,14 @@ pub fn render_clips(s: &Session, track: TrackId, range: Range) -> Vec<Vec<f32>> 
                 let tail_end = offset(c.end().saturating_add(max_tail));
                 // Smoothed parameters start at their defaults; settle them on silence, as the
                 // full-span render did, so the clip opens at the configured setting.
-                let mut lead = first.min(usize::try_from(s.sample_rate.samples(CLIP_FX_SETTLE_SECONDS).max(0)).unwrap_or(0));
+                // (the clip's own samples start inside the first chunk when `first` is not on the grid)
+                let grid = first - first % CLIP_FX_CHUNK;
+                let mut lead = grid.min(usize::try_from(s.sample_rate.samples(CLIP_FX_SETTLE_SECONDS).max(0)).unwrap_or(0));
+                lead -= lead % CLIP_FX_CHUNK;
+                // a gain-only effect has no smoother to settle
+                if !fx.has_smoothed_modules() {
+                    lead = 0;
+                }
                 while lead > 0 {
                     let n = lead.min(CLIP_FX_BLOCK);
                     for ch in &mut block {
@@ -176,7 +187,7 @@ pub fn render_clips(s: &Session, track: TrackId, range: Range) -> Vec<Vec<f32>> 
                     fx.process(&mut block, n);
                     lead -= n;
                 }
-                let mut done = first;
+                let mut done = grid;
                 while done < len {
                     let n = (len - done).min(CLIP_FX_BLOCK);
                     for ch in &mut block {
