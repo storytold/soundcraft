@@ -119,6 +119,23 @@ fn import_audio_honours_new_tracks() {
 }
 
 #[test]
+fn bounce_stems_rejects_unsupported_formats_before_writing() {
+    let dir = std::env::temp_dir().join(format!("sc-stems-unsupported-format-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let stems = dir.join("stems");
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 1, "name": "Tone", "format": "mono"})).unwrap();
+    let result = e.execute("file.bounce_stems", &json!({"dir": stems, "format": "not-a-format", "start": 0, "end": 1}));
+    let created_output = stems.exists();
+    // Own this directory exclusively; remove any baseline output before the assertion can fail.
+    std::fs::remove_dir_all(&dir).unwrap();
+    let err = result.map(|_| ()).unwrap_err();
+    assert!(err.to_string().contains("cannot write `not-a-format`"), "{err}");
+    assert!(err.to_string().contains("supported: wav"), "{err}");
+    assert!(!created_output, "an unsupported format must not create the output directory");
+}
+
+#[test]
 fn bounce_refuses_formats_it_cannot_write() {
     let mut e = Engine::default();
     let dir = std::env::temp_dir().join(format!("sc-bounce-ext-{}", std::process::id()));
