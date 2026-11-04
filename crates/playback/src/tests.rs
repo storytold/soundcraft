@@ -682,6 +682,25 @@ fn a_state_marked_changed_while_loading_is_not_a_change() {
 }
 
 #[test]
+fn with_the_output_gone_only_removed_or_replaced_plugins_are_forgotten() {
+    use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+    let mut side = Side::new(48_000.0, channel().1);
+    let mut s = soundcraft_model::Session::default();
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    s.track_mut(t).unwrap().mixer.inserts[0] = Some(Insert::new("clap:kept"));
+    s.track_mut(t).unwrap().mixer.inserts[1] = Some(Insert::new("clap:new"));
+    // Live instances for a stereo strip; slot 1 held another plugin.
+    side.shadow.insert((t, 0), ("clap:kept".into(), 2, true));
+    side.shadow.insert((t, 1), ("clap:old".into(), 2, true));
+    side.states.insert((t, 0), Box::new(|| Some(b"edited".to_vec())));
+    side.states.insert((t, 1), Box::new(|| Some(b"old".to_vec())));
+    side.forget_removed(&s);
+    assert!(side.shadow.contains_key(&(t, 0)), "only the width changed: still that plugin");
+    assert_eq!(side.capture_states(), vec![(t, 0, b"edited".to_vec())], "its unsaved edits can still be saved");
+    assert!(!side.shadow.contains_key(&(t, 1)), "replaced by another plugin");
+}
+
+#[test]
 fn side_creates_each_missing_instance_once() {
     use soundcraft_model::{ChannelFormat, Insert, TrackKind};
     let mut side = Side::new(48_000.0, channel().1);
