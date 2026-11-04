@@ -1,6 +1,7 @@
 //! Mixer, insert, send and automation commands.
 use super::{
-    CommandSpec, always, bad, bool_or, f32_or, has_range, has_selection, has_tracks, i64_or, position_param, range_param, str_param, tracks_required,
+    CommandSpec, always, bad, bool_or, f32_or, has_range, has_selection, has_tracks, i64_param, position_param, range_param, str_param,
+    tracks_required,
 };
 
 use crate::{Engine, EngineError, Result, cmd};
@@ -250,13 +251,32 @@ fn pan(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "mix.pan", p)?;
     let v = (p.get("pan").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad("mix.pan", "`pan` (number) required"))? as f32)
         .clamp(-1.0, 1.0);
-    let idx = i64_or(p, "index", 0).clamp(0, 1) as usize;
     let s = e.session_mut();
-    for t in &tracks {
-        if let Some(tr) = s.track_mut(*t)
-            && let Some(slot) = tr.mixer.pan.get_mut(idx)
-        {
-            *slot = v;
+
+    // Determine whether index is provided explicitly.
+    let explicit_index = p.get("index").is_some() && !p.get("index").is_some_and(|v| v.is_null());
+
+    if explicit_index {
+        // When index is given, it must be a valid integer.
+        let idx = i64_param(p, "mix.pan", "index")?;
+        let idx = idx.clamp(0, 1) as usize;
+        for t in &tracks {
+            if let Some(tr) = s.track_mut(*t) {
+                if idx >= tr.mixer.pan.len() {
+                    return Err(bad(
+                        "mix.pan",
+                        format!("track `{}` has no panner at index {idx} (it has {} panner(s))", tr.name, tr.mixer.pan.len()),
+                    ));
+                }
+                tr.mixer.pan[idx] = v;
+            }
+        }
+    } else {
+        // No index: move all panners, matching the Mix window behaviour.
+        for t in &tracks {
+            if let Some(tr) = s.track_mut(*t) {
+                tr.mixer.pan.fill(v);
+            }
         }
     }
     Ok(json!({"pan": v}))

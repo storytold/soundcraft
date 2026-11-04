@@ -1,4 +1,4 @@
-use super::{bounce, dialogs, menus, SoundApp, Value};
+use super::{SoundApp, Value, bounce, menus};
 use soundcraft_model::{SEND_SLOTS, TrackId};
 
 impl SoundApp {
@@ -18,11 +18,7 @@ impl SoundApp {
         // #1269: before `mix.send`, remember whether the target send slot is empty.
         // If the slot was empty before and is filled after, the send was newly created — open
         // its floating fader window automatically.
-        let was_slot_empty = if id == "mix.send" {
-            self.send_slot_before(&params)
-        } else {
-            None
-        };
+        let was_slot_empty = if id == "mix.send" { self.send_slot_before(&params) } else { None };
 
         let replacing = matches!(id, "session.new" | "session.open" | "session.close" | "session.revert");
         match self.engine.execute(id, &params) {
@@ -48,16 +44,13 @@ impl SoundApp {
                     self.meters.values_mut().chain([&mut self.main_meter]).for_each(|m| m.clip = false);
                 }
                 // #1269: open the send window after creating a new send.
-                if id == "mix.send" {
-                    if let Some((track, slot)) = was_slot_empty {
-                        let s = self.engine.session();
-                        let now_filled = s
-                            .track(track)
-                            .and_then(|t| t.mixer.sends.get(slot))
-                            .is_some_and(Option::is_some);
-                        if now_filled && !self.dialogs.open.is_some() && !self.ui.show_search {
-                            self.ui.send_window = Some((track, slot));
-                        }
+                if id == "mix.send"
+                    && let Some((track, slot)) = was_slot_empty
+                {
+                    let s = self.engine.session();
+                    let now_filled = s.track(track).and_then(|t| t.mixer.sends.get(slot)).is_some_and(Option::is_some);
+                    if now_filled && !self.dialogs.open.is_some() && !self.ui.show_search {
+                        self.ui.send_window = Some((track, slot));
                     }
                 }
                 Ok(v)
