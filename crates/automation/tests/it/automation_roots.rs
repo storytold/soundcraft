@@ -343,20 +343,52 @@ fn media_a_session_names_outside_the_read_root_is_not_loaded() {
     assert!(inspect(&mut free)["sources"].as_array().unwrap().iter().all(|x| x["loaded"] == true));
 }
 
-/// `setup.disk_allocation` stores its path trimmed, so the trimmed path is what gets checked. With
-/// the working folder as the write root, `" /abs/outside"` read as given would be `<cwd>/ /abs/outside`
-/// and pass, yet `/abs/outside` would be kept. An empty path still clears the setting.
+/// `setup.disk_allocation` stores its path trimmed and cut to 200 characters, so that string is
+/// what gets checked. With the working folder as the write root, `" /abs/outside"` read as given
+/// would be `<cwd>/ /abs/outside` and pass, yet `/abs/outside` would be kept. The outside folder
+/// is the working directory's parent, so this does not depend on `TMPDIR`. A space at character
+/// 200 would be checked and then trimmed off again: `<pad>/link ` can sit inside the root while
+/// `<pad>/link` is a symlink out of it. An empty path still clears the setting.
 #[test]
 fn the_record_folder_is_checked_as_it_is_stored() {
-    let f = fixture("trim");
     let cwd = std::env::current_dir().unwrap();
+    let outside = cwd.parent().expect("the working directory has a parent");
     let mut srv = demo_server(None, Some(&cwd));
-    let spaced = format!(" {}", s(f.outside.join("rec")));
+    let spaced = format!(" {}", s(outside.join("rec")));
     refused(&mut srv, "setup.disk_allocation", json!({"path": spaced}), "outside the write root");
     refused(&mut srv, "setup.disk_allocation", json!({"track": "Kick", "path": spaced}), "outside the write root");
     ok(&mut srv, "setup.disk_allocation", json!({"path": "  rec  "}));
     ok(&mut srv, "setup.disk_allocation", json!({"path": ""}));
     ok(&mut srv, "setup.disk_allocation", json!({"path": "   "}));
+
+    // Character 200 is a space, and more follows so the first trim leaves it. The cut used to
+    // keep that space for the check and drop it when the same string was stored.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let tail = "/link";
+        let pad_len = 199 - tail.chars().count();
+        let pad: String = std::iter::repeat('d').take(pad_len).collect();
+        let rel = format!("{pad}{tail}");
+        assert_eq!(rel.chars().count(), 199, "the stored path is 199 characters");
+        let dir = cwd.join(&pad);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The pad is a real directory in the working folder. Drop it when the test ends.
+        struct RemoveDir(PathBuf);
+        impl Drop for RemoveDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = RemoveDir(dir.clone());
+        symlink(outside, dir.join("link")).unwrap();
+        let input = format!("{rel} x");
+        assert_eq!(input.chars().nth(199), Some(' '), "character 200 is a space");
+        refused(&mut srv, "setup.disk_allocation", json!({"path": input}), "outside the write root");
+        let reported = ok(&mut srv, "setup.disk_allocation", json!({}));
+        assert!(!reported.contains(&pad), "a refused record folder was stored: {reported}");
+    }
 }
 
 #[test]

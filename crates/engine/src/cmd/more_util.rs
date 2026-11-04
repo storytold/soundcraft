@@ -35,9 +35,10 @@ pub fn set_flags(e: &mut Engine, ids: &[&str], on: bool) -> Value {
     json!({"flags": ids, "value": on})
 }
 
-/// A string setting as [`set_text`] stores it: trimmed and cut to 200 characters. Empty clears it.
+/// A string setting as [`set_text`] stores it: trimmed, cut to 200 characters, then trimmed again.
+/// The second trim drops a space at the cut, so a later call returns the same string. Empty clears it.
 pub fn text_value(value: &str) -> String {
-    value.trim().chars().take(200).collect()
+    value.trim().chars().take(200).collect::<String>().trim_end().to_string()
 }
 
 /// String settings live in `edit.flags` as `key=value` (one per key).

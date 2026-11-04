@@ -239,7 +239,8 @@ fn engine_settings(e: &mut Engine, p: &Value, id: &str) -> Result<Value> {
 fn disk_allocation(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "setup.disk_allocation";
     let t = track_param(e, id, p, "track")?;
-    // The path that is checked is the path that is stored: trimmed and cut as `set_text` keeps it.
+    // The path that is checked is the path that is stored. `text_value` trims, cuts to 200
+    // characters, and trims again, which is what `set_text` keeps.
     // An empty one clears the setting and names no folder, so it isn't checked.
     let path = str_param(p, "path").map(text_value);
     // Checked before `session_mut` so a refused path leaves the session untouched.
