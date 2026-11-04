@@ -167,15 +167,23 @@ fn one_frame_request_reads_a_bounded_amount_of_samples() {
     // past what one request may feed the decoder.
     let mut bytes = h264_mp4(17, 17).unwrap();
     let at = bytes.windows(4).position(|w| w == b"stsz").unwrap();
-    assert_eq!(bytes[at + 8..at + 12], [0; 4], "one size per sample");
-    for i in 0..17 {
-        let field = at + 16 + 4 * i;
-        bytes[field..field + 4].copy_from_slice(&(32u32 << 20).to_be_bytes());
+    if bytes[at + 8..at + 12] == [0; 4] {
+        // one size per sample
+        for i in 0..17 {
+            let field = at + 16 + 4 * i;
+            bytes[field..field + 4].copy_from_slice(&(32u32 << 20).to_be_bytes());
+        }
+    } else {
+        // the writer stored one size for all the (equally large) samples
+        bytes[at + 8..at + 12].copy_from_slice(&(32u32 << 20).to_be_bytes());
     }
     let src = Arc::new(PaddedSource { bytes, len: 1 << 30, largest: AtomicUsize::new(0) });
     let mut m = Movie::open_source(src).unwrap();
     let r = m.frame(16);
     assert!(matches!(&r, Err(VideoError::Decode(e)) if e.contains("needs more than 512 MiB of samples")), "{r:?}");
+    // the sample that was refused is not skipped: asking again fails the same way instead of decoding past it
+    let again = m.frame(16);
+    assert!(matches!(&again, Err(VideoError::Decode(e)) if e.contains("needs more than 512 MiB of samples")), "{again:?}");
 }
 
 #[test]

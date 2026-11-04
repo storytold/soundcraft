@@ -380,6 +380,11 @@ impl Movie {
             .collect()
     }
 
+    /// Size the sample table declares for `sample` (0 when there is none).
+    fn declared_size(&self, sample: usize) -> usize {
+        self.mp4.tracks.get(self.track).and_then(|t| t.samples.get(sample)).map_or(0, |s| s.size as usize)
+    }
+
     fn read(&self, sample: usize) -> Result<Vec<u8>> {
         let t = self.mp4.tracks.get(self.track).ok_or(VideoError::NoVideoTrack)?;
         let size = t.samples.get(sample).map_or(0, |s| s.size);
@@ -502,17 +507,21 @@ impl Movie {
                 let s = st.next;
                 st.next += 1;
                 let pts = self.rank.get(s).copied().unwrap_or(0) as i64;
+                // The declared size is checked before the read allocates it. An error leaves no decoder
+                // behind that has stepped past this sample: the next request starts from its keyframe.
+                if fed.saturating_add(self.declared_size(s)) > Self::MAX_REQUEST_BYTES {
+                    self.h264 = None;
+                    return Err(VideoError::Decode(format!("frame {index} needs more than {} MiB of samples", Self::MAX_REQUEST_BYTES >> 20)));
+                }
                 let data = match self.read(s) {
                     Ok(d) => d,
                     Err(e) => {
-                        last_err = Some(e.to_string());
-                        continue;
+                        // a failing source is not probed sample after sample (each probe may allocate a whole sample)
+                        self.h264 = None;
+                        return Err(e);
                     }
                 };
                 fed = fed.saturating_add(data.len());
-                if fed > Self::MAX_REQUEST_BYTES {
-                    return Err(VideoError::Decode(format!("frame {index} needs more than {} MiB of samples", Self::MAX_REQUEST_BYTES >> 20)));
-                }
                 let Some(st) = self.h264.as_mut() else { break };
                 match st.dec.decode(&data, pts) {
                     Ok(p) => p,
