@@ -284,7 +284,6 @@ fn fill(bars: &[(i64, i64, u32, u32)], notes: &[(i64, i64, u8)]) -> Vec<Measure>
     measures
 }
 
-
 /// (step, alter, octave) spelled with sharps.
 fn spell(pitch: u8) -> (char, i32, i32) {
     const STEPS: [(char, i32); 12] =
