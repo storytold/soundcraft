@@ -109,6 +109,9 @@ fn flush_guards() {
 fn editor_alongside_block_and_flush() {
     let (mut p, mut ed) = gain_with_editor();
     let (p0, _) = counters();
+    // Opened before the audio thread starts, so an edit is pending whatever the scheduling: the
+    // first block or flush applies it.
+    ed.open().expect("open");
     let audio = std::thread::spawn(move || {
         for _ in 0..2_000 {
             let _ = block(&mut p);
@@ -116,14 +119,15 @@ fn editor_alongside_block_and_flush() {
         }
         p
     });
-    let mut edits = 0;
+    let mut edits = ed.idle().len();
     while !audio.is_finished() {
-        ed.open().expect("open");
-        edits += ed.idle().len();
         ed.close();
+        ed.open().expect("reopen");
+        edits += ed.idle().len();
     }
     let p = audio.join().expect("the fixture saw an overlap or panicked");
     edits += ed.idle().len();
+    ed.close();
     assert!(edits > 0, "some edit got through");
     assert_eq!(counters().0 - p0, 2_000);
     drop(p);
