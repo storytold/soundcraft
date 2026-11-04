@@ -549,6 +549,33 @@ fn the_audio_state_comes_back_even_when_the_callback_is_released_late_on_another
     assert!(drop_returned(&returned, std::time::Duration::from_secs(5)));
 }
 
+#[test]
+fn sessions_stop_going_out_once_the_audio_state_has_come_back() {
+    let shared = || {
+        Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        })
+    };
+    let (tx, rx) = channel();
+    let (gtx, grx) = channel();
+    let mut p = Player::silent_clock(shared(), tx, rx, 48_000, Mutex::new(Side::new(48_000.0, grx)), gtx);
+    let session = Arc::new(Session::new("t", soundcraft_time::SampleRate::new(48_000).unwrap()));
+    let (sent, out) = channel();
+    p.tx = sent;
+    let (back, returned) = channel();
+    p.returned = returned;
+    p.update_session(Arc::clone(&session));
+    assert!(matches!(out.try_recv(), Ok(Cmd::Session(..))), "sent while the output lives");
+    // The device went away: cpal released the callback, which handed its state back.
+    drop(ReturnedOnDrop::new(AudioState::new(channel().1, shared(), Arc::clone(&session), 48_000.0, channel().0), back));
+    p.update_session(Arc::clone(&session));
+    assert!(out.try_recv().is_err(), "nothing renders it any more");
+    drop(p);
+}
+
 /// An open editor that records whether it was closed.
 struct Watched(Arc<AtomicBool>);
 

@@ -164,6 +164,8 @@ pub struct Player {
     _stream: Option<cpal::Stream>,
     /// The audio state the stream's callback hands back when cpal drops it ([`ReturnedOnDrop`]).
     returned: Receiver<AudioState>,
+    /// That state once it has come back: the output is gone, nothing renders sessions any more.
+    held: Mutex<Option<AudioState>>,
     pub device_name: String,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
@@ -272,6 +274,7 @@ impl Player {
                             side: new_side(grx),
                             _stream: Some(stream),
                             returned,
+                            held: Mutex::new(None),
                             device_name: name,
                             device_rate: rate,
                             device_channels: config.channels,
@@ -350,6 +353,7 @@ impl Player {
             side,
             _stream: None,
             returned: channel().1,
+            held: Mutex::new(None),
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
             device_channels: 0,
@@ -374,6 +378,7 @@ impl Player {
             side,
             _stream: None,
             returned: channel().1,
+            held: Mutex::new(None),
             device_name: "No audio device".into(),
             device_rate: session.sample_rate.hz(),
             device_channels: 0,
@@ -385,6 +390,11 @@ impl Player {
     /// Sends a new session snapshot to the audio thread, with freshly created (state-restored,
     /// prepared) instances of any third-party plugin it newly needs. Call on the UI thread.
     pub fn update_session(&self, s: Arc<Session>) {
+        if self.output_released() {
+            // Nothing would take the snapshot or its instances; they would pile up until the
+            // player goes. A reconnect makes a new player for the current session.
+            return;
+        }
         let (instances, gone) = {
             let mut side = self.side();
             (side.prepare(&s), side.gone_tracks(&s))
@@ -393,6 +403,16 @@ impl Player {
         if !gone.is_empty() {
             let _ = self.tx.send(Cmd::Forget(gone));
         }
+    }
+
+    /// True once cpal has released the stream's callback (the device went away) and the audio
+    /// state is back here, kept until the player is dropped.
+    fn output_released(&self) -> bool {
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        if held.is_none() {
+            *held = self.returned.try_recv().ok();
+        }
+        held.is_some()
     }
 
     /// Reads the state of every live third-party plugin, for saving the session.
@@ -558,10 +578,12 @@ impl Drop for Player {
         self.close_editors();
         // Stops the stream: the taken value is a temporary, dropped at the end of the statement.
         let had_stream = self._stream.take().is_some();
+        // A state that came back earlier (the device went away) needs no waiting for.
+        let came_back = self.held.get_mut().unwrap_or_else(PoisonError::into_inner).take().is_some();
         // cpal may release the callback a moment after the stream is dropped, on another thread
         // (CoreAudio's device monitors briefly hold the stream): wait for it, so the receiver is
         // still here. The wasm player renders on this thread and cannot block.
-        if had_stream && cfg!(not(target_arch = "wasm32")) && !drop_returned(&self.returned, RETURN_TIMEOUT) {
+        if had_stream && !came_back && cfg!(not(target_arch = "wasm32")) && !drop_returned(&self.returned, RETURN_TIMEOUT) {
             log::warn!("audio state not handed back in time; its plugins may be released off the main thread");
         }
         self.returned.try_iter().for_each(drop);
