@@ -92,7 +92,10 @@ pub fn specs() -> Vec<CommandSpec> {
             let dir = str_param(p, "dir").ok_or_else(|| bad("file.bounce_stems", "`dir` required"))?.to_string();
             let r = range_param(e, "file.bounce_stems", p)?;
             let r = if r.is_empty() { soundcraft_time::Range::new(0, e.session().content_end().max(1)) } else { r };
-            let format_name = str_param(p, "format").unwrap_or("wav");
+            let format_name = match p.get("format") {
+                None => "wav",
+                Some(value) => value.as_str().ok_or_else(|| bad("file.bounce_stems", "`format` must be a string"))?,
+            };
             let format = soundcraft_audio_io::FileFormat::from_write_extension(format_name).ok_or_else(|| {
                 let supported = soundcraft_audio_io::FileFormat::writable_extensions().join(", ");
                 bad("file.bounce_stems", format!("cannot write `{format_name}` files (supported: {supported})"))
