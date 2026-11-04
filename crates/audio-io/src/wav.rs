@@ -503,6 +503,7 @@ pub(crate) fn header(
 ) -> Result<Vec<u8>> {
     let block = usize::from(bits / 8).checked_mul(channels).ok_or_else(|| AudioError::TooLarge("block size overflow".into()))?;
     let block_align = u16::try_from(block).map_err(|_| AudioError::Encode("too many channels for WAV".into()))?;
+    let byte_rate = sample_rate.checked_mul(u32::from(block_align)).ok_or_else(|| AudioError::Encode("WAV byte rate overflow".into()))?;
     let data_len = u64::from(block_align).checked_mul(frames).ok_or_else(|| AudioError::TooLarge("data size overflow".into()))?;
     let extensible = channels > 2 || bits > 16 || mask.is_some_and(|m| m != channel_mask(channels));
     let fmt_tag = if is_float { WAVE_FORMAT_IEEE_FLOAT } else { WAVE_FORMAT_PCM };
@@ -511,7 +512,7 @@ pub(crate) fn header(
     fmt.extend_from_slice(&(if extensible { WAVE_FORMAT_EXTENSIBLE } else { fmt_tag }).to_le_bytes());
     fmt.extend_from_slice(&(channels as u16).to_le_bytes());
     fmt.extend_from_slice(&sample_rate.to_le_bytes());
-    fmt.extend_from_slice(&sample_rate.saturating_mul(u32::from(block_align)).to_le_bytes());
+    fmt.extend_from_slice(&byte_rate.to_le_bytes());
     fmt.extend_from_slice(&block_align.to_le_bytes());
     fmt.extend_from_slice(&bits.to_le_bytes());
     if extensible {
@@ -559,4 +560,15 @@ pub(crate) fn header(
     head.extend_from_slice(b"data");
     head.extend_from_slice(&(if rf64 { u32::MAX } else { data_len as u32 }).to_le_bytes());
     Ok(head)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::header;
+
+    #[test]
+    fn rejects_byte_rate_overflow() {
+        let result = header(2, 1_100_000_000, (16, false), None, None, 0, false);
+        assert!(result.is_err(), "overflowing byte rate was accepted");
+    }
 }

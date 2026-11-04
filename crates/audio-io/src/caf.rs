@@ -20,7 +20,7 @@ fn chunks(b: &[u8], mut pos: usize) -> Result<()> {
     // Whether the packet table lists each packet's size and frame count (variable per packet).
     let (mut lists_sizes, mut lists_frames, mut described) = (false, false, false);
     while let (Some(kind), Some(size)) = (b.get(pos..pos + 4), be_u64(b, pos + 4)) {
-        let (body, size) = (pos + 12, size as i64);
+        let body = pos + 12;
         let used = match kind {
             b"desc" if size == 32 => {
                 lists_sizes = be_u32(b, body + 16) == Some(0);
@@ -28,12 +28,12 @@ fn chunks(b: &[u8], mut pos: usize) -> Result<()> {
                 described = true;
                 Some(32)
             }
-            b"data" if size == -1 => Some(4),
+            b"data" if size == u64::MAX => Some(4),
             b"chan" if size >= 12 => be_u32(b, body + 8).map(|n| 12 + u64::from(n) * 20),
             b"pakt" if size >= 24 && described => packet_table(b, body, lists_sizes, lists_frames)?,
-            b"kuki" if size >= 0 && size as u64 > b.len().saturating_sub(body) as u64 => return Err(malformed("magic cookie")),
+            b"kuki" if size > b.len().saturating_sub(body) as u64 => return Err(malformed("magic cookie")),
             b"desc" | b"pakt" | b"chan" => None,
-            _ => u64::try_from(size).ok(),
+            _ => Some(size),
         };
         match used.filter(|_| described).and_then(|n| usize::try_from(n).ok()).and_then(|n| body.checked_add(n)) {
             Some(next) if next < b.len() => pos = next,
@@ -84,4 +84,15 @@ fn varint(b: &[u8], at: usize) -> Option<(u64, usize)> {
         v <<= 7;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rejects_cookie_size_above_signed_range() {
+        let mut bytes = b"caff\0\x01\0\0kuki".to_vec();
+        bytes.extend_from_slice(&(1u64 << 63).to_be_bytes());
+
+        assert!(super::check(&bytes, 0).is_err());
+    }
 }

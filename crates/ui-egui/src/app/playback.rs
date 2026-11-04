@@ -110,7 +110,6 @@ impl SoundApp {
     }
 
     fn start_recording(&mut self) {
-
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
         if !armed {
             let why = if self.engine.session().tracks.is_empty() {
@@ -375,6 +374,21 @@ impl SoundApp {
                 TransportRequest::Play => {
                     if !self.is_playing() {
                         self.play_from_selection();
+                    }
+                }
+                TransportRequest::PlayFrom(at) => {
+                    if self.is_playing() {
+                        // Playing on from `at` drops the end and loop of the earlier selection.
+                        if let Some(p) = &self.player {
+                            p.play(at, None, None);
+                        }
+                        if let Some(sim) = &mut self.sim {
+                            *sim = (at, None, None);
+                        }
+                        self.last_write_at = i64::MIN;
+                        self.engine.transport.position = at;
+                    } else {
+                        self.start_play(at, None, None);
                     }
                 }
                 TransportRequest::Stop => self.stop_play(),
