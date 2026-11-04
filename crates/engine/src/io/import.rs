@@ -12,18 +12,43 @@ pub(crate) const MAX_IMPORT_SAMPLES: usize = 1 << 30;
 /// otherwise allocate and filter hundreds of megabytes.
 const MAX_RATE_EXPANSION: u32 = 128;
 
+/// Why [`at_rate`] refused a conversion.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RateError {
+    /// The converted audio would hold more samples than the limit.
+    TooLarge,
+    /// The file's rate is so far below the session's that converting would grow it past [`MAX_RATE_EXPANSION`].
+    Ratio { from: u32, to: u32 },
+}
+
+impl RateError {
+    /// The refusal as a sentence: `size` says what a size refusal means to the caller.
+    pub(crate) fn message(&self, size: &str) -> String {
+        match self {
+            RateError::TooLarge => size.to_string(),
+            RateError::Ratio { from, to } => {
+                format!("its {from} Hz sample rate is too low to convert to the session's {to} Hz (at most {MAX_RATE_EXPANSION}-fold)")
+            }
+        }
+    }
+}
+
 /// `buf` converted to `rate`, unless it would then hold more than `limit` samples, or grow more
 /// than [`MAX_RATE_EXPANSION`]-fold: a file with a tiny sample rate grows by orders of magnitude.
-pub(crate) fn at_rate(mut buf: AudioBuffer, rate: u32, limit: usize) -> Option<AudioBuffer> {
+pub(crate) fn at_rate(mut buf: AudioBuffer, rate: u32, limit: usize) -> std::result::Result<AudioBuffer, RateError> {
     let from = buf.sample_rate.max(1);
-    if rate / from > MAX_RATE_EXPANSION || buf.frames() as f64 * buf.num_channels() as f64 * f64::from(rate) / f64::from(from) > limit as f64 {
-        return None;
+    // widened integers: dividing first would truncate 128.86-fold down to 128
+    if u64::from(rate) > u64::from(from) * u64::from(MAX_RATE_EXPANSION) {
+        return Err(RateError::Ratio { from, to: rate });
+    }
+    if buf.frames() as f64 * buf.num_channels() as f64 * f64::from(rate) / f64::from(from) > limit as f64 {
+        return Err(RateError::TooLarge);
     }
     if from != rate {
         buf.channels = soundcraft_dsp::offline::resample(&buf.channels, from, rate);
         buf.sample_rate = rate;
     }
-    Some(buf)
+    Ok(buf)
 }
 
 /// A relative `Audio Files/` path no other source in `s` already uses.
@@ -120,7 +145,7 @@ pub fn decode_import(path: &str, rate: u32) -> Result<DecodedImport> {
 fn decode_import_bytes(name: &str, bytes: &[u8], rate: u32) -> Result<(soundcraft_audio_io::AudioInfo, Arc<SourceAudio>)> {
     let ext = Path::new(name).extension().and_then(OsStr::to_str).map(str::to_ascii_lowercase);
     let (info, buf) = soundcraft_audio_io::decode(bytes, ext.as_deref()).map_err(|err| EngineError::Io(format!("{name}: {err}")))?;
-    let buf = at_rate(buf, rate, MAX_IMPORT_SAMPLES).ok_or_else(|| EngineError::Io(format!("{name}: file is too large to import")))?;
+    let buf = at_rate(buf, rate, MAX_IMPORT_SAMPLES).map_err(|e| EngineError::Io(format!("{name}: {}", e.message("file is too large to import"))))?;
     if buf.frames() == 0 {
         return Err(EngineError::Io(format!("{name}: no audio")));
     }
@@ -220,7 +245,7 @@ mod rate_tests {
     #[test]
     fn a_tiny_sample_rate_is_refused_before_it_is_converted() {
         let buf = |rate| AudioBuffer { sample_rate: rate, channels: vec![vec![0.5; 100]; 2] };
-        assert!(at_rate(buf(1), 48_000, 1_000_000).is_none());
+        assert!(at_rate(buf(1), 48_000, 1_000_000).is_err());
         let ok = at_rate(buf(8_000), 48_000, 1_000_000).unwrap();
         assert_eq!((ok.sample_rate, ok.frames()), (48_000, 600));
     }
@@ -229,8 +254,13 @@ mod rate_tests {
     fn an_extreme_rate_expansion_is_refused_whatever_the_sample_budget() {
         let buf = |rate| AudioBuffer { sample_rate: rate, channels: vec![vec![0.5; 100]; 2] };
         // 100 frames at 300 Hz would fit the budget as 128 000 samples, but grow 640-fold.
-        assert!(at_rate(buf(300), 192_000, usize::MAX).is_none());
-        assert!(at_rate(buf(1_500), 192_000, usize::MAX).is_some(), "128-fold is the supported extreme");
-        assert!(at_rate(buf(8_000), 768_000, usize::MAX).is_some(), "the slowest file at the fastest session");
+        assert_eq!(at_rate(buf(300), 192_000, usize::MAX).unwrap_err(), RateError::Ratio { from: 300, to: 192_000 });
+        assert!(at_rate(buf(1_500), 192_000, usize::MAX).is_ok(), "128-fold is the supported extreme");
+        assert!(at_rate(buf(8_000), 768_000, usize::MAX).is_ok(), "the slowest file at the fastest session");
+        // 128.86-fold: integer division would truncate it to 128 and let it through
+        assert_eq!(at_rate(buf(1_490), 192_000, usize::MAX).unwrap_err(), RateError::Ratio { from: 1_490, to: 192_000 });
+        // a short file that is only over the sample budget is a size refusal, not a rate one
+        assert_eq!(at_rate(buf(48_000), 48_000, 10).unwrap_err(), RateError::TooLarge);
+        assert!(RateError::Ratio { from: 300, to: 192_000 }.message("big").contains("300 Hz"));
     }
 }

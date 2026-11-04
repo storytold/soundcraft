@@ -103,7 +103,7 @@ fn decode_group_audio(
                 let bytes = crate::io::read_file(&full)?;
                 let (_, buf) = soundcraft_audio_io::decode(&bytes, Some("wav")).map_err(|err| EngineError::Io(format!("{rel}: {err}")))?;
                 let buf = crate::io::at_rate(buf, rate, crate::io::MAX_IMPORT_SAMPLES)
-                    .ok_or_else(|| EngineError::Io(format!("{rel}: too large to import")))?;
+                    .map_err(|r| EngineError::Io(format!("{rel}: {}", r.message("too large to import"))))?;
                 decoded.push((rel.clone(), buf));
                 index.insert(key, decoded.len() - 1);
                 decoded.len() - 1
