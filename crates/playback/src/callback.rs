@@ -275,6 +275,14 @@ impl AudioState {
     /// Fill an interleaved device buffer.
     pub(crate) fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
+        // Plugins whose editor changed a parameter (CLAP `request_flush`) apply it without
+        // processing audio. While playing, `render` processes them, which applies it too (stopped
+        // but input-monitored gets both a flush and a render, one after the other). This
+        // sits before the stopped early return below, which is where a stopped transport would
+        // otherwise never reach a plugin; it touches neither the output nor the meters.
+        if !self.playing {
+            self.mix.flush_requested();
+        }
         let channels = channels.max(1);
         let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
         if !self.playing && !monitoring {

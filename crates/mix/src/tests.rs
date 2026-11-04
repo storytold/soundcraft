@@ -553,6 +553,134 @@ fn external_instances_are_adopted_and_retired() {
     assert!(eng.drain_plugins().is_empty());
 }
 
+/// Call counts of a [`Flusher`] and whether it has an editor edit to flush.
+#[derive(Default)]
+struct FlushCounts {
+    flush: std::sync::atomic::AtomicUsize,
+    process: std::sync::atomic::AtomicUsize,
+    wants_flush: std::sync::atomic::AtomicBool,
+}
+
+impl FlushCounts {
+    fn flushes(&self) -> usize {
+        self.flush.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn processes(&self) -> usize {
+        self.process.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn want(&self) {
+        self.wants_flush.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A hosted plugin that behaves like a CLAP one: it only counts a flush when it asked for one.
+struct Flusher {
+    inner: Box<dyn Plugin>,
+    counts: Arc<FlushCounts>,
+    /// Puts out NaN, which takes the slot out as failed.
+    nan: bool,
+}
+
+impl Plugin for Flusher {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.counts.process.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.process(io, frames);
+        if self.nan {
+            io.iter_mut().for_each(|c| c.iter_mut().take(frames).for_each(|x| *x = f32::NAN));
+        }
+    }
+    fn flush(&mut self) {
+        if self.counts.wants_flush.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            self.counts.flush.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+fn flusher(track: TrackId, slot: usize, ch: usize) -> (PreparedInstance, Arc<FlushCounts>) {
+    flusher_with(track, slot, ch, false)
+}
+
+fn flusher_with(track: TrackId, slot: usize, ch: usize, nan: bool) -> (PreparedInstance, Arc<FlushCounts>) {
+    let counts = Arc::new(FlushCounts::default());
+    let mut inner = soundcraft_dsp::create("gain").unwrap();
+    inner.prepare(48_000.0, 512, ch);
+    let plugin = Box::new(Flusher { inner, counts: Arc::clone(&counts), nan });
+    (PreparedInstance { track, slot, id: "clap:test.flush".into(), ch, plugin }, counts)
+}
+
+#[test]
+fn flush_requested_reaches_the_plugins_that_asked_without_processing() {
+    // An instrument, a track insert, a master insert and an aux insert, with the transport
+    // stopped and the input monitored (`monitor_only`: the render skips instrument strips).
+    let mut s = synth_session(-6.0);
+    let synth = s.tracks[0].id;
+    s.track_mut(synth).unwrap().instrument = Some(Insert::new("clap:test.flush"));
+    let audio = add_dc_track(&mut s, 0.5, 48_000);
+    s.track_mut(audio).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.flush"));
+    let master = s.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+    s.track_mut(master).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.flush"));
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, None);
+    s.track_mut(aux).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.flush"));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.monitor_only = true;
+    let mut counts = Vec::new();
+    for (track, slot, ch) in [(synth, INSTRUMENT_SLOT, 2), (audio, 0, 1), (master, 0, 2), (aux, 0, 2)] {
+        let (inst, c) = flusher(track, slot, ch);
+        eng.adopt(vec![inst]);
+        counts.push(c);
+    }
+    // One block places the instances (and processes the inserts, which is not what we count).
+    render_block(&mut eng, &s, 0);
+    let processed: Vec<usize> = counts.iter().map(|c| c.processes()).collect();
+    eng.flush_requested();
+    assert!(counts.iter().all(|c| c.flushes() == 0), "nobody asked");
+    for (i, who) in counts.iter().enumerate() {
+        who.want();
+        eng.flush_requested();
+        for (j, c) in counts.iter().enumerate() {
+            assert_eq!(c.flushes(), usize::from(j <= i), "flush {j} after the request of {i}");
+        }
+        eng.flush_requested();
+        assert_eq!(who.flushes(), 1, "a request is answered once");
+    }
+    let after: Vec<usize> = counts.iter().map(|c| c.processes()).collect();
+    assert_eq!(after, processed, "flushing never processes");
+}
+
+#[test]
+fn a_failed_slot_is_not_flushed() {
+    let (mut s, a) = session_with_dc(0.5, 48_000);
+    s.track_mut(a).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.flush"));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    let (inst, counts) = flusher_with(a, 0, 1, true);
+    eng.adopt(vec![inst]);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(eng.meters[&a].plugin_failures.count, 1, "the slot failed");
+    counts.want();
+    eng.flush_requested();
+    assert_eq!(counts.flushes(), 0, "a failed slot is left alone");
+    eng.reset();
+    eng.flush_requested();
+    assert_eq!(counts.flushes(), 1, "after the reset it answers again");
+}
+
 struct Nan(Box<dyn Plugin>);
 
 impl Plugin for Nan {
