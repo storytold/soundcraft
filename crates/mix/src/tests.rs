@@ -288,6 +288,19 @@ fn master_volume_breakpoint_does_not_ramp_the_previous_block() {
 }
 
 #[test]
+fn master_trim_changes_the_main_mix() {
+    // #870: the master strip has an input trim like every other strip; it must reach the main mix.
+    let (mut s, _t) = session_with_dc(0.5, 4800);
+    let master = s.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+    s.track_mut(master).unwrap().mixer.trim_db = -6.0;
+
+    let out = render_range(&s, Range::new(0, 4800), 512);
+    let expected = 0.5 * std::f32::consts::FRAC_1_SQRT_2 * db_to_gain(-6.0);
+    assert!((out[0][2000] - expected).abs() < 1e-3, "{} vs {expected}", out[0][2000]);
+    assert!((out[1][2000] - expected).abs() < 1e-3, "{} vs {expected}", out[1][2000]);
+}
+
+#[test]
 fn master_volume_ramp_reaches_the_last_sample_of_the_block() {
     for block in [2, 37, 512, 1024] {
         let start = 37;
