@@ -36,6 +36,10 @@ impl ReturnedOnDrop {
     pub(crate) fn new(state: AudioState, back: Sender<AudioState>) -> ReturnedOnDrop {
         ReturnedOnDrop { state: Some(state), back }
     }
+
+    pub(crate) fn state(&mut self) -> Option<&mut AudioState> {
+        self.state.as_mut()
+    }
 }
 
 impl Drop for ReturnedOnDrop {
@@ -87,7 +91,7 @@ where
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             mark_audio_thread();
-            let Some(state) = state.state.as_mut() else { return };
+            let Some(state) = state.state() else { return };
             for out in data.chunks_mut(chunk) {
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));

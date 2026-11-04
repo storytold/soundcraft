@@ -164,6 +164,8 @@ pub struct Player {
     _stream: Option<cpal::Stream>,
     /// The audio state the stream's callback hands back when cpal drops it ([`ReturnedOnDrop`]).
     returned: Receiver<AudioState>,
+    /// The silent clock's stop flag and thread, when it runs instead of a stream.
+    clock: Option<(Arc<AtomicBool>, std::thread::JoinHandle<()>)>,
     /// That state once it has come back: the output is gone, nothing renders sessions any more.
     held: Mutex<Option<AudioState>>,
     pub device_name: String,
@@ -273,6 +275,7 @@ impl Player {
                             tx,
                             side: new_side(grx),
                             _stream: Some(stream),
+                            clock: None,
                             returned,
                             held: Mutex::new(None),
                             device_name: name,
@@ -321,13 +324,18 @@ impl Player {
         gtx: Sender<Vec<Box<dyn Plugin>>>,
     ) -> Player {
         let rate = session.sample_rate.hz();
-        let mut state = AudioState::new(rx, Arc::clone(&shared), session, f64::from(rate), gtx);
+        // Handed back when the clock stops, like a stream's callback ([`ReturnedOnDrop`]).
+        let (back, returned) = channel();
+        let mut state = ReturnedOnDrop::new(AudioState::new(rx, Arc::clone(&shared), session, f64::from(rate), gtx), back);
         let fault = Arc::new(Fault::default());
         let failed = Arc::clone(&fault);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
         let spawn = std::thread::Builder::new().name("soundcraft-clock".into()).spawn(move || {
             let mut buf = vec![0.0f32; 4096];
             let mut last = std::time::Instant::now();
-            loop {
+            while !stopped.load(Ordering::Relaxed) {
+                let Some(state) = state.state() else { break };
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 let now = std::time::Instant::now();
                 let frames = ((now - last).as_secs_f64() * state.device_rate) as usize;
@@ -342,9 +350,13 @@ impl Player {
                 }
             }
         });
-        if let Err(e) = spawn {
-            log::warn!("clock thread failed: {e}");
-        }
+        let clock = match spawn {
+            Ok(thread) => Some((stop, thread)),
+            Err(e) => {
+                log::warn!("clock thread failed: {e}");
+                None
+            }
+        };
         Player {
             shared,
             fault,
@@ -352,7 +364,8 @@ impl Player {
             tx,
             side,
             _stream: None,
-            returned: channel().1,
+            clock,
+            returned,
             held: Mutex::new(None),
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
@@ -377,6 +390,7 @@ impl Player {
             tx,
             side,
             _stream: None,
+            clock: None,
             returned: channel().1,
             held: Mutex::new(None),
             device_name: "No audio device".into(),
@@ -579,13 +593,19 @@ impl Drop for Player {
     fn drop(&mut self) {
         self.close_editors();
         // Stops the stream: the taken value is a temporary, dropped at the end of the statement.
-        let had_stream = self._stream.take().is_some();
+        let mut had_output = self._stream.take().is_some();
+        if let Some((stop, thread)) = self.clock.take() {
+            // The clock hands its state back as it ends, so it is already here after the join.
+            stop.store(true, Ordering::Relaxed);
+            let _ = thread.join();
+            had_output = true;
+        }
         // A state that came back earlier (the device went away) needs no waiting for.
         let came_back = self.held.get_mut().unwrap_or_else(PoisonError::into_inner).take().is_some();
         // cpal may release the callback a moment after the stream is dropped, on another thread
         // (CoreAudio's device monitors briefly hold the stream): wait for it, so the receiver is
         // still here. The wasm player renders on this thread and cannot block.
-        if had_stream && !came_back && cfg!(not(target_arch = "wasm32")) && !drop_returned(&self.returned, RETURN_TIMEOUT) {
+        if had_output && !came_back && cfg!(not(target_arch = "wasm32")) && !drop_returned(&self.returned, RETURN_TIMEOUT) {
             log::warn!("audio state not handed back in time; its plugins may be released off the main thread");
         }
         self.returned.try_iter().for_each(drop);

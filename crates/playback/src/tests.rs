@@ -701,6 +701,25 @@ fn with_the_output_gone_only_removed_or_replaced_plugins_are_forgotten() {
 }
 
 #[test]
+fn the_silent_clock_hands_its_audio_state_back_when_stopped() {
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let (gtx, grx) = channel();
+    let mut p = Player::silent_clock(shared, tx, rx, 48_000, Mutex::new(Side::new(48_000.0, grx)), gtx);
+    let (stop, thread) = p.clock.take().expect("the clock runs");
+    assert!(p.returned.try_recv().is_err(), "rendering");
+    stop.store(true, Ordering::Relaxed);
+    thread.join().unwrap();
+    assert!(p.returned.try_recv().is_ok(), "back here to be dropped on this thread");
+    drop(p);
+}
+
+#[test]
 fn side_creates_each_missing_instance_once() {
     use soundcraft_model::{ChannelFormat, Insert, TrackKind};
     let mut side = Side::new(48_000.0, channel().1);
