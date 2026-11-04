@@ -309,6 +309,11 @@ fn volume_held_at_the_fader_stop_is_reported() {
     let r = e.execute("mix.volume", &json!({"tracks": [3], "db": 10.0})).unwrap();
     assert_eq!(r["clamped"], json!(true));
     assert_eq!(volumes(&e), [10.0, 12.0]);
+    // Both grouped targets are listed, each at the value it ended with.
+    let mut e = grouped_demo();
+    e.session_mut().track_mut(TrackId(6)).unwrap().mixer.volume_db = -2.0;
+    let r = e.execute("mix.volume", &json!({"tracks": [3, 6], "db": -10.0})).unwrap();
+    assert_eq!(r["volumes"], json!([{"track": 3, "db": -10.0}, {"track": 6, "db": -12.0}]));
 }
 
 #[test]

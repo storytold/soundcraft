@@ -235,7 +235,6 @@ fn volume(e: &mut Engine, p: &Value) -> Result<Value> {
         }
         db.clamp(-144.0, 12.0)
     };
-    let mut volumes = Vec::new();
     // Tracks already moved as a group sibling of an earlier target must not move again.
     let mut done: Vec<TrackId> = Vec::new();
     for t in &tracks {
@@ -252,8 +251,10 @@ fn volume(e: &mut Engine, p: &Value) -> Result<Value> {
         let new = if new.is_finite() { fader(new) } else { cur };
         let d = new - cur;
         set_grouped(s, *t, "volume", |tr| tr.mixer.volume_db = if tr.id == *t { new } else { fader(tr.mixer.volume_db + d) });
-        volumes.push(json!({"track": t.0, "db": new}));
     }
+    // Every requested track at its final volume, also one that moved as a group sibling of an
+    // earlier target and was skipped above.
+    let volumes: Vec<Value> = tracks.iter().filter_map(|t| s.track(*t)).map(|tr| json!({"track": tr.id.0, "db": tr.mixer.volume_db})).collect();
     Ok(json!({"tracks": tracks.len(), "volumes": volumes, "clamped": clamped.get()}))
 }
 
