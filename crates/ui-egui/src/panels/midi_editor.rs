@@ -282,16 +282,23 @@ fn draw_roll_background(painter: &egui::Painter, g: &Roll<'_>) {
 const MIN_GRID_PX: f32 = 4.0;
 
 /// Ticks between grid lines: the grid when its lines are more than [`MIN_GRID_PX`] apart, else
-/// bars, else as many bars as keep that spacing. The lines drawn are then bounded by the roll's
-/// width, however long the clip, instead of by its length.
+/// as few common multiples of the grid and a bar as keep that spacing (so every line is a snap
+/// position and falls on a bar). The lines drawn are then bounded by the roll's width, however long
+/// the clip, instead of by its length.
 fn grid_stride(grid_ticks: i64, px_per_tick: f32) -> i64 {
     let bar_ticks = TICKS_PER_QUARTER * 4;
     if grid_ticks as f32 * px_per_tick > MIN_GRID_PX {
         return grid_ticks.max(1);
     }
-    // `as` saturates a huge or NaN quotient; a zero `px_per_tick` gives one bar.
-    let bars = (MIN_GRID_PX / (bar_ticks as f32 * px_per_tick)).ceil().max(1.0) as i64;
-    bar_ticks.saturating_mul(bars)
+    let grid = grid_ticks.max(1);
+    let (mut a, mut b) = (grid, bar_ticks);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    let common = (grid / a).saturating_mul(bar_ticks);
+    // `as` saturates a huge or NaN quotient; a zero `px_per_tick` gives one common multiple.
+    let n = (MIN_GRID_PX / (common as f32 * px_per_tick)).ceil().max(1.0) as i64;
+    common.saturating_mul(n)
 }
 
 /// The notes, with a drag in progress applied.
@@ -502,6 +509,11 @@ mod tests {
         let (len, px_per_tick) = (1_000_000_000i64, 1000.0 / 1_000_000_000.0f32);
         let step = grid_stride(sixteenth, px_per_tick);
         assert_eq!(step % (TICKS_PER_QUARTER * 4), 0, "lines fall on bars");
+        assert!((len / step) <= 251, "{} lines", len / step);
+        // a dotted quarter grid (1440 ticks): every line is also a grid position
+        let dotted = TICKS_PER_QUARTER * 3 / 2;
+        let step = grid_stride(dotted, px_per_tick);
+        assert_eq!((step % dotted, step % (TICKS_PER_QUARTER * 4)), (0, 0), "lines are snap positions on bars: {step}");
         assert!((len / step) <= 251, "{} lines", len / step);
         assert!(grid_stride(0, 0.0) >= TICKS_PER_QUARTER * 4, "a zero grid or width still advances");
     }
