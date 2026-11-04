@@ -310,6 +310,27 @@ fn links_out_of_the_roots_are_refused() {
     ok(&mut via_alias, "file.import_audio", json!({"path": s(f.read.join("tone.wav"))}));
 }
 
+#[cfg(unix)]
+#[test]
+fn writing_through_hard_links_in_the_write_root_does_not_change_the_linked_file() {
+    let f = fixture("hard-links");
+    let midi = f.write.join("linked.mid");
+    let preset = f.write.join("linked.json");
+    std::fs::hard_link(f.outside.join("secret.mid"), &midi).unwrap();
+    std::fs::hard_link(f.outside.join("secret.json"), &preset).unwrap();
+    let mut srv = demo_server(Some(&f.read), Some(&f.write));
+
+    ok(&mut srv, "file.export_midi", json!({"path": s(&midi)}));
+    let midi_bytes = std::fs::read(&midi).unwrap();
+    assert!(midi_bytes.starts_with(b"MThd"), "destination must contain a MIDI file");
+    assert_eq!(std::fs::read(f.outside.join("secret.mid")).unwrap(), SECRET.as_bytes());
+
+    ok(&mut srv, "track.save_preset", json!({"path": s(&preset), "tracks": ["Kick"]}));
+    let preset_json: Value = serde_json::from_slice(&std::fs::read(&preset).unwrap()).unwrap();
+    assert_eq!(preset_json["name"], "Kick", "destination must contain the saved preset");
+    assert_eq!(std::fs::read(f.outside.join("secret.json")).unwrap(), SECRET.as_bytes());
+}
+
 /// A session file is hostile input too: media it names outside the read root is not loaded,
 /// and the refusal is listed with the other missing media.
 #[test]
