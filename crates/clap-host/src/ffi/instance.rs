@@ -327,6 +327,63 @@ impl Instance {
         }
     }
 
+    /// Hands the parameter changes the plugin reported in the call that just returned to the UI
+    /// queue, then forgets them. Never blocks or grows: a busy UI or a full queue drops the edits.
+    fn publish_out_params(&mut self) {
+        if !self.out_params.is_empty()
+            && let Ok(mut edits) = self.state.edits.try_lock()
+        {
+            for &e in &self.out_params {
+                if edits.len() < edits.capacity() {
+                    edits.push(e);
+                }
+            }
+        }
+        self.out_params.clear();
+    }
+
+    /// Forgets a pending `request_flush`: the `process` call that follows applies the plugin's
+    /// changes itself.
+    pub fn clear_flush_request(&self) {
+        self.state.flush.store(false, Ordering::Relaxed);
+    }
+
+    /// True once per `request_flush`: consumes the flag, so a request made while the flush runs
+    /// arms the next one.
+    pub fn take_flush_request(&self) -> bool {
+        self.state.flush.swap(false, Ordering::AcqRel)
+    }
+
+    /// `clap_plugin_params.flush` with no input events: lets a plugin that is not being processed
+    /// apply its pending (editor) parameter changes and report them as output events, which go to
+    /// the UI like `process` ones. Audio thread; no audio is touched. `params.flush` is meant for
+    /// an active plugin that is not processing (while processing, `process` applies the changes),
+    /// so a plugin still in the started-processing state after a stop is moved out of it first;
+    /// the next `process` starts it again. Does nothing on an inactive instance or without
+    /// `clap.params.flush`.
+    pub fn flush(&mut self) {
+        if !self.active {
+            return;
+        }
+        // SAFETY: the extension pointer, when non-null, points to a static vtable in the plugin.
+        let Some(flush) = (unsafe { self.params.as_ref() }).and_then(|p| p.flush) else { return };
+        self.stop_processing();
+        self.raw.clear();
+        self.out_params.clear();
+        let in_events = clap_input_events {
+            ctx: (&self.raw as *const Vec<RawEvent>).cast_mut().cast::<c_void>(),
+            size: Some(in_events_size),
+            get: Some(in_events_get),
+        };
+        let out_events =
+            clap_output_events { ctx: (&mut self.out_params as *mut Vec<(u32, f64)>).cast::<c_void>(), try_push: Some(out_events_try_push) };
+        // SAFETY: valid, active instance; `&mut self` rules out a concurrent `process`. The event
+        // lists and their contexts live on this stack frame / in `self.raw` and `self.out_params`,
+        // untouched until the call returns.
+        unsafe { flush(self.plugin, &in_events, &out_events) };
+        self.publish_out_params();
+    }
+
     /// Runs one `clap_process` call over `frames` frames. Events must be sorted by time; their
     /// times are made relative to `offset`. Returns the CLAP process status.
     pub fn process(&mut self, input: ProcessInput<'_>) -> Result<i32, ClapError> {
@@ -349,6 +406,9 @@ impl Instance {
             self.processing = true;
         }
         let process = self.vt().process.ok_or_else(|| ClapError::Process("plugin has no process".into()))?;
+        // This call applies whatever the plugin asked to flush (cleared only once it really runs,
+        // so a rejected block does not lose the request).
+        self.clear_flush_request();
         self.raw.clear();
         for e in events.iter().take(self.raw.capacity()) {
             self.raw.push(RawEvent::from_event(e, offset));
@@ -380,17 +440,7 @@ impl Instance {
         // lists and their contexts and the transport live on this stack frame / in `self.raw`,
         // untouched until the call returns.
         let status = unsafe { process(self.plugin, &p) };
-        if !self.out_params.is_empty()
-            && let Ok(mut edits) = self.state.edits.try_lock()
-        {
-            // Never blocks or grows: a busy UI or a full queue drops the edits.
-            for &e in &self.out_params {
-                if edits.len() < edits.capacity() {
-                    edits.push(e);
-                }
-            }
-        }
-        self.out_params.clear();
+        self.publish_out_params();
         if status == CLAP_PROCESS_ERROR { Err(ClapError::Process("plugin reported a processing error".into())) } else { Ok(status) }
     }
 }

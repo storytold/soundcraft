@@ -166,6 +166,7 @@ impl Plugin for ClapPlugin {
         self.midi_in = port.is_some_and(|p| p.supported & CLAP_NOTE_DIALECT_MIDI != 0);
         self.max_block = mb;
         self.inst.state().restart.store(false, Ordering::Relaxed);
+        self.inst.clear_flush_request();
         match self.inst.activate(sr, 1, u32::try_from(mb).unwrap_or(u32::MAX)) {
             Ok(()) => {
                 self.latency = self.inst.latency() as usize;
@@ -255,6 +256,17 @@ impl Plugin for ClapPlugin {
                 _ => {}
             }
             start += n;
+        }
+    }
+
+    fn flush(&mut self) {
+        // Inactive: keep the request until the plugin is activated.
+        if !self.inst.is_active() {
+            return;
+        }
+        // Consume before calling, so a request made by the plugin during the flush is kept.
+        if self.inst.take_flush_request() {
+            self.inst.flush();
         }
     }
 

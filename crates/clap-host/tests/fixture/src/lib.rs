@@ -14,7 +14,11 @@
 //!
 //! The gain plugin also implements `clap.state` (gain and mode as two little-endian f64s) and a
 //! floating-only `clap.gui` without a real window: showing it "edits" the gain to 0.25 in the GUI,
-//! reported as an output parameter event by the next `process`.
+//! reported as an output parameter event by the next `process` or, when the host answers the
+//! `params.request_flush` it makes from `gui.show` first, by `params.flush`. The gain plugin counts
+//! its `process` and `params.flush` calls into `<tmp>/clap-fixture-counters-<pid>` ("process
+//! flush", decimal) so a test in the same process can read them, and `params.flush` asserts that
+//! it never overlaps a `process` call.
 #![allow(clippy::missing_safety_doc, non_upper_case_globals)]
 
 use clap_sys::audio_buffer::clap_audio_buffer;
@@ -36,6 +40,18 @@ use clap_sys::plugin::*;
 use clap_sys::process::*;
 use clap_sys::version::CLAP_VERSION;
 use std::ffi::{CStr, c_char, c_void};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Set while `process` runs; `params.flush` must never see it.
+static IN_PROCESS: AtomicBool = AtomicBool::new(false);
+static PROCESS_CALLS: AtomicU64 = AtomicU64::new(0);
+static FLUSH_CALLS: AtomicU64 = AtomicU64::new(0);
+
+/// Publishes the call counters for the test that loaded this library (same process, same pid).
+fn publish_counters() {
+    let path = std::env::temp_dir().join(format!("clap-fixture-counters-{}", std::process::id()));
+    let _ = std::fs::write(path, format!("{} {}", PROCESS_CALLS.load(Ordering::Relaxed), FLUSH_CALLS.load(Ordering::Relaxed)));
+}
 
 struct Features<const N: usize>([*const c_char; N]);
 unsafe impl<const N: usize> Sync for Features<N> {}
@@ -103,7 +119,8 @@ struct Fx {
     processing: bool,
     gui_created: bool,
     gui_visible: bool,
-    gui_edit_pending: bool,
+    /// Set from the main thread by `gui.show`, consumed on the audio thread.
+    gui_edit_pending: AtomicBool,
     /// `clap.render` set the offline mode (wide fixtures only).
     offline: bool,
 }
@@ -162,7 +179,12 @@ unsafe extern "C" fn stop_processing(p: *const clap_plugin) {
 }
 
 unsafe extern "C" fn reset(p: *const clap_plugin) {
-    unsafe { fx(p) }.level = 0.0;
+    let f = unsafe { fx(p) };
+    f.level = 0.0;
+    // `clap_host.request_process` only (never `params.request_flush`): the host ignores it.
+    if let Some(rp) = unsafe { (*f.host).request_process } {
+        unsafe { rp(f.host) };
+    }
 }
 
 fn apply(f: &mut Fx, h: &clap_event_header) {
@@ -211,7 +233,7 @@ unsafe fn fill_wide(pr: &clap_process, ports: u32, channels: u32, n: usize, fit:
 }
 
 /// Push the host-visible parameter edit and an ignorable note event onto the output queue.
-unsafe fn push_gui_edit(pr: &clap_process) {
+unsafe fn push_gui_edit(out_events: *const clap_output_events) {
     let e = clap_event_param_value {
         header: clap_event_header {
             size: std::mem::size_of::<clap_event_param_value>() as u32,
@@ -228,8 +250,8 @@ unsafe fn push_gui_edit(pr: &clap_process) {
         key: -1,
         value: 0.25,
     };
-    let out = unsafe { &*pr.out_events };
-    assert!(unsafe { (out.try_push.unwrap())(pr.out_events, &e.header) });
+    let out = unsafe { &*out_events };
+    assert!(unsafe { (out.try_push.unwrap())(out_events, &e.header) });
     // Other event types are accepted and ignored by the host.
     let note = clap_event_note {
         header: clap_event_header {
@@ -245,13 +267,24 @@ unsafe fn push_gui_edit(pr: &clap_process) {
         key: 60,
         velocity: 0.0,
     };
-    assert!(unsafe { (out.try_push.unwrap())(pr.out_events, &note.header) });
+    assert!(unsafe { (out.try_push.unwrap())(out_events, &note.header) });
 }
 
 unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> clap_process_status {
     let f = unsafe { fx(p) };
     let pr = unsafe { &*pr };
     assert!(f.processing, "process while not processing");
+    IN_PROCESS.store(true, Ordering::SeqCst);
+    let status = unsafe { process_block(f, pr) };
+    IN_PROCESS.store(false, Ordering::SeqCst);
+    if !f.synth && f.wide.is_none() {
+        PROCESS_CALLS.fetch_add(1, Ordering::Relaxed);
+        publish_counters();
+    }
+    status
+}
+
+unsafe fn process_block(f: &mut Fx, pr: &clap_process) -> clap_process_status {
     let n = pr.frames_count as usize;
     let ev = unsafe { &*pr.in_events };
     let count = unsafe { (ev.size.unwrap())(pr.in_events) };
@@ -274,10 +307,9 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
         }
         Some(unsafe { &*pr.audio_inputs })
     };
-    if f.gui_edit_pending {
-        f.gui_edit_pending = false;
+    if f.gui_edit_pending.swap(false, Ordering::SeqCst) {
         f.gain = 0.25;
-        unsafe { push_gui_edit(pr) };
+        unsafe { push_gui_edit(pr.out_events) };
     }
     let mut next = 0u32;
     let mut last_time = 0u32;
@@ -363,8 +395,19 @@ unsafe extern "C" fn params_value_to_text(_p: *const clap_plugin, id: clap_id, v
     true
 }
 
-unsafe extern "C" fn params_flush(p: *const clap_plugin, inp: *const clap_input_events, _out: *const clap_output_events) {
+unsafe extern "C" fn params_flush(p: *const clap_plugin, inp: *const clap_input_events, out: *const clap_output_events) {
     let f = unsafe { fx(p) };
+    assert!(!IN_PROCESS.load(Ordering::SeqCst), "params.flush overlapped process");
+    assert!(!f.processing, "params.flush while the plugin is in the processing state");
+    if !f.synth && f.wide.is_none() {
+        FLUSH_CALLS.fetch_add(1, Ordering::Relaxed);
+        publish_counters();
+    }
+    // The GUI edit made before the host answered `request_flush` (the nice-plug pattern).
+    if f.gui_edit_pending.swap(false, Ordering::SeqCst) {
+        f.gain = 0.25;
+        unsafe { push_gui_edit(out) };
+    }
     let ev = unsafe { &*inp };
     let n = unsafe { (ev.size.unwrap())(inp) };
     for i in 0..n {
@@ -515,9 +558,14 @@ unsafe extern "C" fn gui_show(p: *const clap_plugin) -> bool {
     let f = unsafe { fx(p) };
     assert!(f.gui_created, "show without create");
     f.gui_visible = true;
-    f.gui_edit_pending = true;
+    f.gui_edit_pending.store(true, Ordering::SeqCst);
     // Exercise the host GUI extension.
     let host = unsafe { &*f.host };
+    // Like nice-plug: an edit in the GUI asks the host to flush the parameter change.
+    let hp = unsafe { (host.get_extension.unwrap())(f.host, CLAP_EXT_PARAMS.as_ptr()) } as *const clap_host_params;
+    if let Some(rf) = unsafe { hp.as_ref() }.and_then(|h| h.request_flush) {
+        unsafe { rf(f.host) };
+    }
     let hg = unsafe { (host.get_extension.unwrap())(f.host, CLAP_EXT_GUI.as_ptr()) } as *const clap_host_gui;
     let hg = unsafe { hg.as_ref() }.expect("host gui extension");
     assert!(unsafe { (hg.request_resize.unwrap())(f.host, 300, 200) });
@@ -639,7 +687,7 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         processing: false,
         gui_created: false,
         gui_visible: false,
-        gui_edit_pending: false,
+        gui_edit_pending: AtomicBool::new(false),
         offline: false,
     });
     let raw = Box::into_raw(b);

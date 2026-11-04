@@ -9,7 +9,12 @@ use super::{
 /// Flags the plugin raises through the host callbacks (any thread).
 pub(crate) struct HostState {
     pub restart: AtomicBool,
+    /// `clap_host.request_process`. Recorded but never read: we process every block while the
+    /// transport runs and do not wake a stopped plugin (open question).
     pub process: AtomicBool,
+    /// `clap_host_params.request_flush`: the audio thread answers with `clap_plugin_params.flush`
+    /// once per callback while stopped (`Plugin::flush`), or `process` does while playing.
+    pub flush: AtomicBool,
     pub callback: AtomicBool,
     pub latency_changed: AtomicBool,
     pub params_rescan: AtomicBool,
@@ -32,6 +37,7 @@ impl Default for HostState {
         HostState {
             restart: AtomicBool::new(false),
             process: AtomicBool::new(false),
+            flush: AtomicBool::new(false),
             callback: AtomicBool::new(false),
             latency_changed: AtomicBool::new(false),
             params_rescan: AtomicBool::new(false),
@@ -99,9 +105,11 @@ unsafe extern "C" fn host_params_rescan(host: *const clap_host, _flags: clap_par
 unsafe extern "C" fn host_params_clear(_host: *const clap_host, _id: clap_id, _flags: clap_param_clear_flags) {}
 
 unsafe extern "C" fn host_params_request_flush(host: *const clap_host) {
+    // Only raises a flag (lock-free, no allocation, never calls into the plugin), so it is safe
+    // from any thread, including from inside `process` or `params.flush`.
     // SAFETY: the plugin passes back the host pointer we gave it.
     if let Some(s) = unsafe { state(host) } {
-        s.process.store(true, Ordering::Relaxed);
+        s.flush.store(true, Ordering::Relaxed);
     }
 }
 
