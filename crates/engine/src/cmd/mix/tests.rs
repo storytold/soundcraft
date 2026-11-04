@@ -378,3 +378,26 @@ fn clip_gain_to_volume_with_a_large_envelope_stays_fast() {
     let lane = e.session().track(t).unwrap().lane(&AutoParam::Volume).unwrap();
     assert!(lane.points.len() as i64 >= n);
 }
+
+/// A stereo track has a panner per channel. `mix.pan` without `index` used to move only the left
+/// one, which folded the left channel into the right.
+#[test]
+fn panning_a_stereo_track_names_the_channel() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"name": "Pad", "format": "stereo"})).unwrap();
+    e.execute("track.new", &json!({"name": "Vox", "format": "mono"})).unwrap();
+    let pans = |e: &Engine, name: &str| e.session().tracks.iter().find(|t| t.name == name).map(|t| t.mixer.pan.clone());
+    assert!(e.execute("mix.pan", &json!({"tracks": ["Pad"], "pan": -0.3})).is_err());
+    assert_eq!(pans(&e, "Pad"), Some(vec![-1.0, 1.0]), "a refused pan leaves the track alone");
+    e.execute("mix.pan", &json!({"tracks": ["Pad"], "pan": -0.3, "index": 1})).unwrap();
+    assert_eq!(pans(&e, "Pad"), Some(vec![-1.0, -0.3]));
+    // A mono track has one panner: no index needed, and any other index is an error, not a no-op.
+    e.execute("mix.pan", &json!({"tracks": ["Vox"], "pan": 0.5})).unwrap();
+    assert_eq!(pans(&e, "Vox"), Some(vec![0.5]));
+    for index in [json!(1), json!(2), json!(-1), json!("1")] {
+        assert!(e.execute("mix.pan", &json!({"tracks": ["Vox"], "pan": 0.0, "index": index})).is_err(), "index {index}");
+    }
+    // One stereo track without an index stops the whole command.
+    assert!(e.execute("mix.pan", &json!({"tracks": ["Vox", "Pad"], "pan": 0.2})).is_err());
+    assert_eq!(pans(&e, "Vox"), Some(vec![0.5]));
+}

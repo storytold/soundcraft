@@ -10,7 +10,7 @@ use soundcraft_model::{AutoParam, AutomationMode, INSERT_SLOTS, Insert, SEND_SLO
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("mix.volume", "Set Volume", [], None, "{tracks?, db: -144..12 | delta_db}", has_selection, volume),
-        cmd!("mix.pan", "Set Pan", [], None, "{tracks?, pan: -1..1, index?: 0|1}", has_selection, pan),
+        cmd!("mix.pan", "Set Pan", [], None, "{tracks?, pan: -1..1, index?: 0|1 (stereo: required, 0 = left, 1 = right)}", has_selection, pan),
         cmd!("mix.mute", "Mute", [], Some("Shift+M"), "{tracks?, value?: bool}", has_selection, |e, p| toggle(
             e,
             p,
@@ -250,8 +250,21 @@ fn pan(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "mix.pan", p)?;
     let v = (p.get("pan").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad("mix.pan", "`pan` (number) required"))? as f32)
         .clamp(-1.0, 1.0);
-    let idx = i64_or(p, "index", 0).clamp(0, 1) as usize;
+    // A stereo track has one panner per channel, so it must say which: moving only the left one
+    // by default folded the left channel into the right. An index the track lacks is an error too.
+    let idx = match p.get("index") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(usize::try_from(i64_or(p, "index", -1)).ok().filter(|i| *i <= 1).ok_or_else(|| bad("mix.pan", "`index` must be 0 or 1"))?),
+    };
     let s = e.session_mut();
+    for tr in tracks.iter().filter_map(|t| s.track(*t)) {
+        match (idx, tr.mixer.pan.len()) {
+            (None, 2) => return Err(bad("mix.pan", format!("`{}` is stereo: give `index` 0 (left channel) or 1 (right channel)", tr.name))),
+            (Some(1), 1) => return Err(bad("mix.pan", format!("`{}` is mono: its only panner is `index` 0", tr.name))),
+            _ => {}
+        }
+    }
+    let idx = idx.unwrap_or(0);
     for t in &tracks {
         if let Some(tr) = s.track_mut(*t)
             && let Some(slot) = tr.mixer.pan.get_mut(idx)
