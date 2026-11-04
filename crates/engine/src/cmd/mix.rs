@@ -252,9 +252,13 @@ fn pan(e: &mut Engine, p: &Value) -> Result<Value> {
         .clamp(-1.0, 1.0);
     // A stereo track has one panner per channel, so it must say which: moving only the left one
     // by default folded the left channel into the right. An index the track lacks is an error too.
+    // `null` means no index, as with `slot`. `i64_or` rounds, so the number has to be whole already.
     let idx = match p.get("index") {
         None | Some(Value::Null) => None,
-        Some(_) => Some(usize::try_from(i64_or(p, "index", -1)).ok().filter(|i| *i <= 1).ok_or_else(|| bad("mix.pan", "`index` must be 0 or 1"))?),
+        Some(i) => {
+            let whole = i.as_f64().is_some_and(|f| f.fract() == 0.0);
+            Some(usize::try_from(i64_or(p, "index", -1)).ok().filter(|n| whole && *n <= 1).ok_or_else(|| bad("mix.pan", "`index` must be 0 or 1"))?)
+        }
     };
     let s = e.session_mut();
     for tr in tracks.iter().filter_map(|t| s.track(*t)) {

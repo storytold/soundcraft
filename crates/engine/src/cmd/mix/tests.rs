@@ -391,10 +391,19 @@ fn panning_a_stereo_track_names_the_channel() {
     assert_eq!(pans(&e, "Pad"), Some(vec![-1.0, 1.0]), "a refused pan leaves the track alone");
     e.execute("mix.pan", &json!({"tracks": ["Pad"], "pan": -0.3, "index": 1})).unwrap();
     assert_eq!(pans(&e, "Pad"), Some(vec![-1.0, -0.3]));
+    // A whole number written as a float counts; a fraction is an error (1.4 used to round to 1).
+    assert!(e.execute("mix.pan", &json!({"tracks": ["Pad"], "pan": 0.9, "index": 1.4})).is_err());
+    assert_eq!(pans(&e, "Pad"), Some(vec![-1.0, -0.3]));
+    e.execute("mix.pan", &json!({"tracks": ["Pad"], "pan": 0.9, "index": 1.0})).unwrap();
+    assert_eq!(pans(&e, "Pad"), Some(vec![-1.0, 0.9]));
+    // `null` means no index, as with `slot`, so a stereo track still needs one.
+    assert!(e.execute("mix.pan", &json!({"tracks": ["Pad"], "pan": 0.0, "index": null})).is_err());
     // A mono track has one panner: no index needed, and any other index is an error, not a no-op.
+    e.execute("mix.pan", &json!({"tracks": ["Vox"], "pan": 0.25, "index": null})).unwrap();
+    assert_eq!(pans(&e, "Vox"), Some(vec![0.25]));
     e.execute("mix.pan", &json!({"tracks": ["Vox"], "pan": 0.5})).unwrap();
     assert_eq!(pans(&e, "Vox"), Some(vec![0.5]));
-    for index in [json!(1), json!(2), json!(-1), json!("1")] {
+    for index in [json!(1), json!(2), json!(-1), json!("1"), json!(0.4)] {
         assert!(e.execute("mix.pan", &json!({"tracks": ["Vox"], "pan": 0.0, "index": index})).is_err(), "index {index}");
     }
     // One stereo track without an index stops the whole command.
