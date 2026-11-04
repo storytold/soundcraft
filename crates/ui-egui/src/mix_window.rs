@@ -231,7 +231,7 @@ fn preamp_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32
             let mut c = ui.new_child(egui::UiBuilder::new().max_rect(kr));
             let resp = c
                 .add_sized(kr.size(), egui::DragValue::new(&mut db).range(-24.0..=24.0).speed(0.1).suffix(" dB").max_decimals(1))
-                .accessible_name("Input trim (dB)");
+                .accessible_name(crate::localization::text("Input trim (dB)"));
             if resp.changed() {
                 let _ = app.engine.execute_merged("mix.trim", &json!({"tracks": [id.0], "db": db}), &format!("trim:{}", id.0));
             }
@@ -258,7 +258,7 @@ fn instrument_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y:
             _ if track.kind == TrackKind::Instrument => instrument_slot(app, ui, track, sr),
             Some(k) => insert_slot(app, ui, track, k, sr),
             None if track.kind == TrackKind::Midi => {
-                ui.painter().text(sr.center(), Align2::CENTER_CENTER, "MIDI in: all", regular(9.0), t.text_dim);
+                ui.painter().text(sr.center(), Align2::CENTER_CENTER, crate::localization::text("MIDI in: all"), regular(9.0), t.text_dim);
             }
             None => {}
         }
@@ -276,8 +276,11 @@ fn object_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32
         if has_input {
             let on = app.engine.session().edit.flag(&format!("object.{}", id.0));
             let mut c = ui.new_child(egui::UiBuilder::new().max_rect(sec));
-            let label = egui::RichText::new(if on { "OBJECT" } else { "BED" }).font(bold(9.0));
-            if c.add_sized(sec.size(), egui::Button::new(label).selected(on)).on_hover_text("Route as an immersive object or to the bed").clicked() {
+            let label = egui::RichText::new(crate::localization::text(if on { "OBJECT" } else { "BED" })).font(bold(9.0));
+            if c.add_sized(sec.size(), egui::Button::new(label).selected(on))
+                .on_hover_text(crate::localization::text("Route as an immersive object or to the bed"))
+                .clicked()
+            {
                 let _ = app.run("track.object", json!({"tracks": [id.0], "object": !on}));
             }
         }
@@ -389,7 +392,7 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
             in_r.height(),
             &input,
             t.text,
-            SelectorLabels { name: &format!("Input for {}", track.name), value: &input, tooltip: "Input" },
+            SelectorLabels { name: &crate::localized_format!("Input for {}", track.name), value: &input, tooltip: "Input" },
         );
         route_popup(app, &resp, id, true);
         let mut c = ui.new_child(egui::UiBuilder::new().id_salt(("mix-output", id.0)).max_rect(out_r));
@@ -400,7 +403,7 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
             out_r.height(),
             &output,
             t.text,
-            SelectorLabels { name: &format!("Output for {}", track.name), value: &output, tooltip: "Output" },
+            SelectorLabels { name: &crate::localized_format!("Output for {}", track.name), value: &output, tooltip: "Output" },
         );
         route_popup(app, &resp, id, false);
         // Automation mode.
@@ -415,11 +418,11 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
         } else {
             t.auto_write
         };
-        let full_label = format!("auto {}", mode.label());
+        let full_label = crate::localized_format!("auto {}", crate::localization::text(mode.label()));
         let label = if mode == soundcraft_model::AutomationMode::TouchLatch {
-            if narrow { "t/l" } else { mode.label() }
+            if narrow { "t/l" } else { crate::localization::text(mode.label()) }
         } else if narrow {
-            mode.label()
+            crate::localization::text(mode.label())
         } else {
             &full_label
         };
@@ -429,11 +432,11 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
             am_r.height(),
             label,
             col,
-            SelectorLabels { name: &format!("Automation mode for {}", track.name), value: &full_label, tooltip: &full_label },
+            SelectorLabels { name: &crate::localized_format!("Automation mode for {}", track.name), value: &full_label, tooltip: &full_label },
         );
         egui::Popup::menu(&resp).show(|ui| {
             for m in soundcraft_model::AutomationMode::ALL {
-                if ui.selectable_label(m == mode, m.label()).clicked() {
+                if ui.selectable_label(m == mode, crate::localization::text(m.label())).clicked() {
                     let _ = app.run("mix.automation_mode", json!({"track": id.0, "mode": m.label()}));
                 }
             }
@@ -458,7 +461,7 @@ fn group_selector(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32
         gr.height(),
         &gname,
         t.text_dim,
-        SelectorLabels { name: &format!("Group for {}", track.name), value: &gname, tooltip: "Group" },
+        SelectorLabels { name: &crate::localized_format!("Group for {}", track.name), value: &gname, tooltip: "Group" },
     );
     y += 22.0;
     y

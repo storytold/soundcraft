@@ -70,11 +70,11 @@ fn strip_buttons(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
     ui.painter().circle_filled(round.center(), 5.0, shade(strip, if rresp.hovered() { 0.6 } else { 0.45 }));
     arrow(ui.painter(), round.center(), !track.is_folder() || track.folder_open, ink);
     if track.is_folder() {
-        if rresp.on_hover_text(if track.folder_open { "Close folder" } else { "Open folder" }).clicked() {
+        if rresp.on_hover_text(crate::localization::text(if track.folder_open { "Close folder" } else { "Open folder" })).clicked() {
             let _ = app.run("track.folder_toggle", json!({"track": id.0}));
         }
     } else {
-        egui::Popup::menu(&rresp.on_hover_text("Track options")).show(|ui| track_context_menu(app, ui, id));
+        egui::Popup::menu(&rresp.on_hover_text(crate::localization::text("Track options"))).show(|ui| track_context_menu(app, ui, id));
     }
     if h >= 40.0 && track.kind.has_playlist() {
         let ar = at(3.0, h - 12.0, 9.0, 9.0);
@@ -85,7 +85,7 @@ fn strip_buttons(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
         ui.painter().line_segment([a, b], Stroke::new(1.0, ink));
         ui.painter().circle_filled(a, 1.3, ink);
         ui.painter().circle_filled(b, 1.3, ink);
-        if aresp.on_hover_text(if showing { "Hide automation" } else { "Show volume automation" }).clicked() {
+        if aresp.on_hover_text(crate::localization::text(if showing { "Hide automation" } else { "Show volume automation" })).clicked() {
             let view = if !showing {
                 "volume"
             } else if track.kind.is_midi() {
@@ -175,14 +175,14 @@ fn playlist_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, hea
     let presp = ui.interact(pl_r, ui.scope_id().with(("pl", id.0)), Sense::click());
     ui.painter().rect_filled(pl_r, 1.5, shade(head_bg, if presp.hovered() { -0.2 } else { -0.35 }));
     arrow(ui.painter(), pos2(pl_r.center().x, pl_r.min.y + 5.75), true, t.text);
-    egui::Popup::menu(&presp.on_hover_text("Playlists")).show(|ui| {
-        if ui.button("New...").clicked() {
+    egui::Popup::menu(&presp.on_hover_text(crate::localization::text("Playlists"))).show(|ui| {
+        if ui.button(crate::localization::text("New...")).clicked() {
             let _ = app.run("track.playlist_new", json!({"track": id.0}));
         }
-        if ui.button("Duplicate...").clicked() {
+        if ui.button(crate::localization::text("Duplicate...")).clicked() {
             let _ = app.run("track.playlist_duplicate", json!({"track": id.0}));
         }
-        if ui.button("Delete Unused...").clicked() {
+        if ui.button(crate::localization::text("Delete Unused...")).clicked() {
             let _ = app.run("track.playlist_delete_unused", json!({"track": id.0}));
         }
         ui.separator();
@@ -232,10 +232,10 @@ fn view_selector(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
             ui,
             at(17.0, view_y, 105.0, 17.0),
             ui.scope_id().with(("view", id.0)),
-            &view_label(&track.view),
+            crate::localization::text(&view_label(&track.view)),
             t.text,
             true,
-            &format!("Track view for {}", track.name),
+            &crate::localized_format!("Track view for {}", track.name),
         );
         egui::Popup::menu(&vresp).show(|ui| view_menu(app, ui, track));
     }
@@ -248,11 +248,19 @@ fn view_selector(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
             soundcraft_model::AutomationMode::Latch => t.auto_latch,
             _ => t.text_dim,
         };
-        let mode_name = format!("Automation mode for {}", track.name);
-        let aresp = header_selector(ui, at(17.0, 39.0, 105.0, 17.0), ui.scope_id().with(("auto_mode", id.0)), mode.label(), col, true, &mode_name);
+        let mode_name = crate::localized_format!("Automation mode for {}", track.name);
+        let aresp = header_selector(
+            ui,
+            at(17.0, 39.0, 105.0, 17.0),
+            ui.scope_id().with(("auto_mode", id.0)),
+            crate::localization::text(mode.label()),
+            col,
+            true,
+            &mode_name,
+        );
         egui::Popup::menu(&aresp).show(|ui| {
             for m in soundcraft_model::AutomationMode::ALL {
-                if ui.selectable_label(m == mode, m.label()).clicked() {
+                if ui.selectable_label(m == mode, crate::localization::text(m.label())).clicked() {
                     let _ = app.run("mix.automation_mode", json!({"track": id.0, "mode": m.label()}));
                 }
             }
@@ -279,17 +287,25 @@ fn voice_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
                 let d = vec2(a.to_radians().sin(), a.to_radians().cos()) * 3.5;
                 ui.painter().line_segment([r.center() - d, r.center() + d], Stroke::new(1.5, t.text));
             }
-            if resp.on_hover_text(if track.frozen { "Unfreeze" } else { "Freeze" }).clicked() {
+            if resp.on_hover_text(crate::localization::text(if track.frozen { "Unfreeze" } else { "Freeze" })).clicked() {
                 let _ = app.run("track.freeze", json!({"tracks": [id.0]}));
             }
         }
         if !matches!(track.kind, TrackKind::Master | TrackKind::Vca | TrackKind::Folder) {
             let (voice, color) = if track.inactive { ("off", t.text_dim) } else { ("dyn", t.text) };
-            let voice_name = format!("Voice for {}", track.name);
-            let resp = header_selector(ui, at(31.0, 57.0, 31.0, 17.0), ui.scope_id().with(("voice", id.0)), voice, color, false, &voice_name);
-            egui::Popup::menu(&resp.on_hover_text("Voice: dyn plays the track, off makes it inactive")).show(|ui| {
+            let voice_name = crate::localized_format!("Voice for {}", track.name);
+            let resp = header_selector(
+                ui,
+                at(31.0, 57.0, 31.0, 17.0),
+                ui.scope_id().with(("voice", id.0)),
+                crate::localization::text(voice),
+                color,
+                false,
+                &voice_name,
+            );
+            egui::Popup::menu(&resp.on_hover_text(crate::localization::text("Voice: dyn plays the track, off makes it inactive"))).show(|ui| {
                 for (label, inactive) in [("dyn", false), ("off", true)] {
-                    if ui.selectable_label(track.inactive == inactive, label).clicked() {
+                    if ui.selectable_label(track.inactive == inactive, crate::localization::text(label)).clicked() {
                         let _ = app.run("track.make_inactive", json!({"tracks": [id.0], "inactive": inactive}));
                     }
                 }
@@ -303,11 +319,19 @@ fn voice_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
             soundcraft_model::AutomationMode::Latch => t.auto_latch,
             _ => t.text_dim,
         };
-        let mode_name = format!("Automation mode for {}", track.name);
-        let aresp = header_selector(ui, at(63.0, 57.0, 59.0, 17.0), ui.scope_id().with(("auto_mode", id.0)), mode.label(), col, true, &mode_name);
+        let mode_name = crate::localized_format!("Automation mode for {}", track.name);
+        let aresp = header_selector(
+            ui,
+            at(63.0, 57.0, 59.0, 17.0),
+            ui.scope_id().with(("auto_mode", id.0)),
+            crate::localization::text(mode.label()),
+            col,
+            true,
+            &mode_name,
+        );
         egui::Popup::menu(&aresp).show(|ui| {
             for m in soundcraft_model::AutomationMode::ALL {
-                if ui.selectable_label(m == mode, m.label()).clicked() {
+                if ui.selectable_label(m == mode, crate::localization::text(m.label())).clicked() {
                     let _ = app.run("mix.automation_mode", json!({"track": id.0, "mode": m.label()}));
                 }
             }
@@ -357,7 +381,7 @@ fn field_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, head_bg
                 let name =
                     track.instrument.as_ref().and_then(|i| crate::mix_window::plugin_info(&i.plugin)).map_or("no instrument", |p| p.short_name);
                 ui.painter().with_clip_rect(field).text(pos2(field.min.x + 5.0, field.center().y), Align2::LEFT_CENTER, name, bold(10.0), t.text);
-                egui::Popup::menu(&resp.on_hover_text("Instrument"))
+                egui::Popup::menu(&resp.on_hover_text(crate::localization::text("Instrument")))
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .show(|ui| crate::mix_window::instrument_menu(app, ui, id));
             } else {
@@ -367,7 +391,7 @@ fn field_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, head_bg
                 if let Some(alg) = &track.elastic {
                     ui.painter().with_clip_rect(field).text(pos2(field.min.x + 14.0, field.center().y), Align2::LEFT_CENTER, alg, bold(10.0), t.text);
                 }
-                egui::Popup::menu(&resp.on_hover_text("Elastic Audio")).show(|ui| {
+                egui::Popup::menu(&resp.on_hover_text(crate::localization::text("Elastic Audio"))).show(|ui| {
                     for alg in ["none", "polyphonic", "rhythmic", "monophonic", "varispeed", "x-form"] {
                         let current = track.elastic.as_deref().unwrap_or("none") == alg;
                         if ui.selectable_label(current, alg).clicked() {
@@ -396,13 +420,13 @@ fn arrow(p: &egui::Painter, c: Pos2, down: bool, color: Color32) {
 pub(super) fn header_selector(ui: &Ui, r: Rect, id: egui::Id, text: &str, color: Color32, menu: bool, name: &str) -> egui::Response {
     let resp = ui.interact(r, id, Sense::click());
     resp.widget_info(|| {
-        let mut info = egui::WidgetInfo::labeled(egui::accesskit::Role::ComboBox, ui.is_enabled(), name);
-        info.current_text_value = Some(text.to_string());
+        let mut info = egui::WidgetInfo::labeled(egui::accesskit::Role::ComboBox, ui.is_enabled(), crate::localization::text(name));
+        info.current_text_value = Some(crate::localization::text(text).to_string());
         info
     });
     raised_key(ui.painter(), r, Tokens::current().slot_face, resp.hovered());
     let tr = if menu { r.with_max_x(r.max.x - 7.0) } else { r };
-    ui.painter().with_clip_rect(tr.shrink(1.0)).text(tr.center(), Align2::CENTER_CENTER, text, bold(10.0), color);
+    ui.painter().with_clip_rect(tr.shrink(1.0)).text(tr.center(), Align2::CENTER_CENTER, crate::localization::text(text), bold(10.0), color);
     if menu {
         arrow(ui.painter(), pos2(r.max.x - 5.5, r.min.y + 5.75), true, Tokens::current().text);
     }
@@ -421,14 +445,15 @@ enum HeaderKey {
 /// mute that another track's solo implies). Record keys stay dark red when off, as in Pro Tools.
 fn header_toggle(ui: &Ui, r: Rect, track: TrackId, track_name: &str, key: HeaderKey, lit: bool, implied: bool) -> egui::Response {
     let t = Tokens::current();
-    let (label, color) = match key {
+    let (source_label, color) = match key {
         HeaderKey::Rec => ("Record enable", t.rec),
         HeaderKey::Input => ("Input monitoring", t.input),
         HeaderKey::Solo => ("Solo", t.solo),
         HeaderKey::Mute => ("Mute", t.mute),
     };
-    let name = format!("{label} for {track_name}");
-    let resp = ui.interact(r, ui.scope_id().with((label, track.0)), Sense::click());
+    let label = crate::localization::text(source_label);
+    let name = crate::localized_format!("{} for {}", label, track_name);
+    let resp = ui.interact(r, ui.scope_id().with((source_label, track.0)), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), lit, &name));
     let rec = key == HeaderKey::Rec;
     let (tint, k) = if lit {
@@ -523,7 +548,7 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
     if let Some(input) = row(4.0, 15.0) {
         let input_name = crate::mix_window::input_name(app, track);
         let resp = header_selector(&ui, input, ui.scope_id().with(("in", id.0)), &input_name, t.text, true, &format!("Input for {}", track.name));
-        crate::mix_window::route_popup(app, &resp.on_hover_text("Input"), id, true);
+        crate::mix_window::route_popup(app, &resp.on_hover_text(crate::localization::text("Input")), id, true);
     }
     if let Some(out) = row(21.0, 17.0) {
         let (sel, fader) = (out.with_max_x(out.max.x - 11.0), out.with_min_x(out.max.x - 11.0));
@@ -541,8 +566,8 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
         let c = fader.center() + vec2(0.5, 0.0);
         ui.painter().vline(c.x, c.y - 5.0..=c.y + 5.0, Stroke::new(1.0, t.text));
         ui.painter().rect_filled(Rect::from_center_size(c + vec2(0.0, -1.5), vec2(5.0, 2.5)), 0.5, t.text);
-        crate::mix_window::route_popup(app, &resp.on_hover_text("Output"), id, false);
-        if fresp.on_hover_text("Show in the Mix window").clicked() {
+        crate::mix_window::route_popup(app, &resp.on_hover_text(crate::localization::text("Output")), id, false);
+        if fresp.on_hover_text(crate::localization::text("Show in the Mix window")).clicked() {
             let _ = app.run("edit.select", json!({"tracks": [id.0]}));
             let _ = app.run("window.mix", json!({}));
         }

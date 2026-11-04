@@ -114,6 +114,7 @@ pub(crate) fn named_text_field(resp: egui::Response, name: &str) -> egui::Respon
 /// A toolbar button with an icon; `on` draws the blue selected state.
 pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &str) -> Response {
     let t = Tokens::current();
+    let tip = crate::localization::text(tip);
     let style = button_style(t.accent, t.text, 3);
     let resp = IconButton::new(tip, size, &style).selected(on).single_shape_frame().show(ui, |ui, r, tint| {
         key_light(ui.painter(), r.shrink(1.0));
@@ -130,6 +131,7 @@ pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &st
 /// the accessible name and the tooltip.
 pub fn close_button(ui: &mut Ui, label: &str) -> Response {
     let t = Tokens::current();
+    let label = crate::localization::text(label);
     let size = Vec2::splat(ui.spacing().interact_size.y.max(14.0));
     let style = IconButtonStyle {
         normal: ButtonVisuals { fill: Color32::TRANSPARENT, stroke: Stroke::NONE, icon: t.text_dim },
@@ -200,12 +202,16 @@ pub(crate) struct SelectorLabels<'a> {
 /// published separately in the accessibility tree.
 pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &str, color: Color32, labels: SelectorLabels<'_>) -> Response {
     let t = Tokens::current();
+    let text = crate::localization::text(text);
+    let name = crate::localization::text(labels.name);
+    let value = crate::localization::text(labels.value);
+    let tooltip = crate::localization::text(labels.tooltip);
     let (r, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     // The compact visible text can be an abbreviation ("t/l"); the full meaning on hover is the
     // accessible name, not the tooltip. `current_text_value` tells a screen reader the selection.
     resp.widget_info(|| {
-        let mut info = egui::WidgetInfo::labeled(egui::Role::ComboBox, ui.is_enabled(), labels.name);
-        info.current_text_value = Some(labels.value.to_string());
+        let mut info = egui::WidgetInfo::labeled(egui::Role::ComboBox, ui.is_enabled(), name);
+        info.current_text_value = Some(value.to_string());
         info
     });
     key(ui.painter(), r, &resp, key_fill(&resp));
@@ -219,7 +225,7 @@ pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &st
     let galley = ui.painter().layout_job(job);
     let pos = text_rect.center() - galley.size() * 0.5;
     ui.painter().with_clip_rect(r.shrink(1.0)).galley(pos, galley, color);
-    resp.on_hover_text(labels.tooltip)
+    resp.on_hover_text(tooltip)
 }
 
 /// Rotary knob for pan / send pan (-1..1). Drag vertically; double-click resets.
@@ -502,7 +508,7 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
         painter.circle(pp, 5.0 + div * half, Color32::from_rgba_unmultiplied(80, 160, 230, 28), Stroke::new(1.0, Color32::from_rgb(70, 130, 190)));
     }
     painter.circle(pp, 5.0, t.counter_text, Stroke::new(1.0, Color32::BLACK));
-    let tip = "Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence";
+    let tip = crate::localization::text("Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence");
     let _ = resp.on_hover_text(tip);
     // Sliders below: divergence, then elevation for height formats.
     let mut sliders: Vec<(&str, f32, u8)> = vec![("div", div, 0)];
@@ -528,7 +534,8 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
         if sresp.double_clicked() {
             edit = Some(if kind == 0 { PannerEdit::Divergence(0.0) } else { PannerEdit::Height(0.0) });
         }
-        let _ = sresp.on_hover_text(if kind == 0 { "Divergence (0 = point source)" } else { "Elevation (height speakers)" });
+        let _ =
+            sresp.on_hover_text(crate::localization::text(if kind == 0 { "Divergence (0 = point source)" } else { "Elevation (height speakers)" }));
     }
     edit
 }

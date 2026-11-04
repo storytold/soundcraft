@@ -26,19 +26,22 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                     // Bypass and presets act on insert slots.
                     if !instrument {
                         ui.label(egui::RichText::new(&ins.preset).color(Tokens::current().text_dim));
-                        let label = if ins.bypass { "BYPASSED" } else { "Bypass" };
+                        let label = crate::localization::text(if ins.bypass { "BYPASSED" } else { "Bypass" });
                         if ui.button(label).clicked() {
                             let _ = app.run("mix.insert_bypass", json!({"track": tid.0, "slot": slot}));
                         }
-                        ui.menu_button("Presets v", |ui| preset_menu(app, ui, tid, slot, info, &ins));
+                        ui.menu_button(crate::localization::text("Presets v"), |ui| preset_menu(app, ui, tid, slot, info, &ins));
                     }
                     if soundcraft_mix::is_third_party(&ins.plugin) {
                         let open = app.player.as_ref().is_some_and(|p| p.editor_open(tid, slot));
                         let available = app.player.as_ref().is_some_and(|p| p.has_editor(tid, slot));
-                        let label = if open { "Close Plugin Editor" } else { "Open Plugin Editor" };
+                        let label = crate::localization::text(if open { "Close Plugin Editor" } else { "Open Plugin Editor" });
                         let resp = ui.add_enabled(available, egui::Button::new(label));
-                        let resp =
-                            if available { resp } else { resp.on_disabled_hover_text("This plugin has no editor of its own, or it is not loaded") };
+                        let resp = if available {
+                            resp
+                        } else {
+                            resp.on_disabled_hover_text(crate::localization::text("This plugin has no editor of its own, or it is not loaded"))
+                        };
                         if resp.clicked()
                             && let Some(p) = &app.player
                         {
@@ -52,7 +55,10 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                 });
                 if instrument && soundcraft_mix::is_third_party(&ins.plugin) {
                     // A hosted instrument keeps its sounds and settings in its own editor.
-                    ui.label(egui::RichText::new("Load and edit sounds in the plugin's own editor.").color(Tokens::current().text_dim));
+                    ui.label(
+                        egui::RichText::new(crate::localization::text("Load and edit sounds in the plugin's own editor."))
+                            .color(Tokens::current().text_dim),
+                    );
                     return;
                 }
                 if instrument && ins.plugin == crate::sampler_window::SAMPLER {
@@ -66,15 +72,15 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                     egui::Grid::new(("pg", tid.0, slot)).num_columns(3).show(ui, |ui| {
                         for p in info.params {
                             let v = ins.params.get(p.id).copied().unwrap_or(p.default);
-                            let label = ui.label(p.name);
+                            let label = ui.label(crate::localization::text(p.name));
                             let mut x = v;
                             let resp = if !p.choices.is_empty() {
                                 let mut idx = x.round().max(0.0) as usize;
                                 let r = craft_ui::ComboBox::from_id_salt(("pc", tid.0, slot, p.id))
-                                    .selected_text(p.choices.get(idx).copied().unwrap_or("?"))
+                                    .selected_text(crate::localization::text(p.choices.get(idx).copied().unwrap_or("?")))
                                     .show_ui(ui, |ui| {
                                         for (i, c) in p.choices.iter().enumerate() {
-                                            ui.selectable_value(&mut idx, i, *c);
+                                            ui.selectable_value(&mut idx, i, crate::localization::text(c));
                                         }
                                     });
                                 x = idx as f32;
@@ -172,13 +178,13 @@ fn preset_menu(
     info: &soundcraft_dsp::PluginInfo,
     ins: &soundcraft_model::Insert,
 ) {
-    if ui.button("<factory default>").clicked() {
+    if ui.button(crate::localization::text("<factory default>")).clicked() {
         let defaults: serde_json::Map<String, serde_json::Value> = info.params.iter().map(|p| (p.id.to_string(), json!(p.default))).collect();
         let _ = app.run("mix.insert_params", json!({"track": tid.0, "slot": slot, "params": defaults, "preset": "<factory default>"}));
         ui.close();
     }
     let Some(dir) = preset_dir(app, info.id) else {
-        ui.label("User presets need the desktop app.");
+        ui.label(crate::localization::text("User presets need the desktop app."));
         return;
     };
     let mut names: Vec<String> = std::fs::read_dir(&dir)
@@ -209,7 +215,7 @@ fn preset_menu(
     let mut name: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| format!("{} preset", info.name));
     ui.horizontal(|ui| {
         crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut name).desired_width(140.0)), "Preset name");
-        if ui.button("Save").clicked() {
+        if ui.button(crate::localization::text("Save")).clicked() {
             let clean = soundcraft_engine::io::sanitize_name(&name);
             let body = json!({"format": "soundcraft-plugin-preset", "plugin": info.id, "params": ins.params});
             let ok = std::fs::create_dir_all(&dir).is_ok() && std::fs::write(dir.join(format!("{clean}.json")), body.to_string()).is_ok();

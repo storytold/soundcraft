@@ -70,10 +70,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
         ui.set_width(320.0);
         let name = job.path().file_name().unwrap_or_default().to_string_lossy();
-        ui.label(egui::RichText::new(format!("Bouncing {name}")).font(bold(13.0)));
+        ui.label(egui::RichText::new(crate::localized_format!("Bouncing {name}", name = name)).font(bold(13.0)));
         ui.add(egui::ProgressBar::new(job.progress()));
         ui.horizontal(|ui| {
-            cancel |= ui.button("Cancel").clicked();
+            cancel |= ui.button(crate::localization::text("Cancel")).clicked();
             ui.label(egui::RichText::new(format!("{:.0}%", job.progress() * 100.0)).color(Tokens::current().text_dim));
         });
     });

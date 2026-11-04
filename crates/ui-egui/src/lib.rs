@@ -23,6 +23,7 @@ pub mod edit_window;
 pub mod fonts;
 pub mod icons;
 pub mod import;
+pub mod localization;
 pub mod menus;
 pub mod mix_window;
 pub mod palette;
@@ -135,6 +136,8 @@ pub struct UiState {
     pub video_burn_in: bool,
     pub workspace_dir: String,
     pub configurations: Vec<(String, Value)>,
+    /// Interface language (`ui.language`).
+    pub language: localization::Language,
     /// Appearance (`ui.theme`): dark by default, light or follow the system on request.
     pub theme: theme::ThemeMode,
     /// The main window's size (logical points) and maximized state, and the interface scale, as
@@ -199,6 +202,7 @@ impl Default for UiState {
             video_burn_in: false,
             workspace_dir: String::new(),
             configurations: Vec::new(),
+            language: localization::Language::default(),
             theme: theme::ThemeMode::Dark,
             window_size: [1600.0, 1000.0],
             window_maximized: false,

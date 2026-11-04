@@ -65,19 +65,29 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let t = Tokens::current();
     let mut run: Option<String> = None;
     let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
-    egui::Window::new("Search")
+    egui::Window::new(crate::localization::text("Search"))
         .collapsible(false)
         .resizable(false)
         .title_bar(false)
         .anchor(Align2::CENTER_TOP, vec2(0.0, 90.0))
         .fixed_size(vec2(560.0, 380.0))
         .show(ctx, |ui| {
-            let r = ui
-                .add(egui::TextEdit::singleline(&mut app.palette.query).hint_text("Search commands…").desired_width(f32::INFINITY).font(mono(15.0)));
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut app.palette.query)
+                    .hint_text(crate::localization::text("Search commands…"))
+                    .desired_width(f32::INFINITY)
+                    .font(mono(15.0)),
+            );
             r.request_focus();
             let q = app.palette.query.trim().to_string();
-            let mut hits: Vec<(i32, Entry)> =
-                entries().into_iter().filter_map(|e| score(&format!("{} {} {}", e.label, e.path, e.id), &q).map(|s| (s, e))).collect();
+            let mut hits: Vec<(i32, Entry)> = entries()
+                .into_iter()
+                .filter_map(|e| {
+                    let label = crate::localization::text(&e.label);
+                    let path = e.path.split(" › ").map(crate::localization::text).collect::<Vec<_>>().join(" › ");
+                    score(&format!("{label} {path} {} {} {}", e.label, e.path, e.id), &q).map(|s| (s, e))
+                })
+                .collect();
             hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.label.cmp(&b.1.label)));
             hits.truncate(14);
             let (down, up, enter) = ctx.input(|i| (i.key_pressed(Key::ArrowDown), i.key_pressed(Key::ArrowUp), i.key_pressed(Key::Enter)));
@@ -92,8 +102,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             for (i, (_, e)) in hits.iter().enumerate() {
                 let sel = i == app.palette.selected;
                 let resp = ui.horizontal(|ui| {
-                    let l = ui.selectable_label(sel, &e.label);
-                    ui.label(egui::RichText::new(&e.path).small().color(t.text_dim));
+                    let l = ui.selectable_label(sel, crate::localization::text(&e.label));
+                    let path = e.path.split(" › ").map(crate::localization::text).collect::<Vec<_>>().join(" › ");
+                    ui.label(egui::RichText::new(path).small().color(t.text_dim));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let sc = crate::shortcuts::shortcut_label(&e.shortcut, ctx.os().is_mac());
                         ui.label(egui::RichText::new(sc).font(mono(10.0)).color(t.text_dim));

@@ -123,7 +123,7 @@ impl Contributor {
 
     /// One line with everything we know, for tooltips.
     pub fn summary(&self) -> String {
-        format!(
+        crate::localized_format!(
             "@{}: {} PRs, {} commits, +{} / −{} lines (Δ {}), +{} / −{} binary assets, {} – {}",
             self.login,
             self.prs,
@@ -213,31 +213,31 @@ impl Default for View {
 /// Controls for name style, sort key and sort direction above the contributor table.
 fn contributors_toolbar(ui: &mut egui::Ui, v: &mut View) {
     ui.horizontal_wrapped(|ui| {
-        ui.label("Show");
+        ui.label(crate::localization::text("Show"));
         for m in NameMode::ALL {
-            if ui.selectable_label(v.names == m, m.label()).clicked() {
+            if ui.selectable_label(v.names == m, crate::localization::text(m.label())).clicked() {
                 v.names = m;
             }
         }
         ui.separator();
-        let sort = ui.label("Sort");
-        let combo = craft_ui::ComboBox::from_id_salt("credits_sort").selected_text(v.key.label().0).show_ui(ui, |ui| {
+        let sort = ui.label(crate::localization::text("Sort"));
+        let combo = craft_ui::ComboBox::from_id_salt("credits_sort").selected_text(crate::localization::text(v.key.label().0)).show_ui(ui, |ui| {
             for k in SortKey::ALL {
-                if ui.selectable_label(v.key == k, k.label().0).clicked() {
+                if ui.selectable_label(v.key == k, crate::localization::text(k.label().0)).clicked() {
                     v.key = k;
                     v.ascending = k.default_ascending();
                 }
             }
         });
         combo.response.labelled_by(sort.id);
-        if ui.button(if v.ascending { "⏶" } else { "⏷" }).on_hover_text("Reverse the order").clicked() {
+        if ui.button(if v.ascending { "⏶" } else { "⏷" }).on_hover_text(crate::localization::text("Reverse the order")).clicked() {
             v.ascending = !v.ascending;
         }
         ui.separator();
-        if ui.selectable_label(!v.table, "Grab bag").clicked() {
+        if ui.selectable_label(!v.table, crate::localization::text("Grab bag")).clicked() {
             v.table = false;
         }
-        if ui.selectable_label(v.table, "Table").clicked() {
+        if ui.selectable_label(v.table, crate::localization::text("Table")).clicked() {
             v.table = true;
         }
     });
@@ -247,7 +247,7 @@ fn contributors_grab_bag(ui: &mut egui::Ui, list: &[&Contributor], names: NameMo
     ui.horizontal_wrapped(|ui| {
         for (i, c) in list.iter().enumerate() {
             if i > 0 {
-                ui.label(RichText::new("·").weak());
+                ui.label(RichText::new(crate::localization::text("·")).weak());
             }
             ui.hyperlink_to(c.name(names), format!("https://github.com/{}", c.login)).on_hover_text(c.summary());
         }
@@ -260,11 +260,11 @@ pub fn contributors_ui(ui: &mut egui::Ui) {
     let mut v = ui.data_mut(|d| d.get_temp::<View>(id)).unwrap_or_default();
     contributors_toolbar(ui, &mut v);
     let list = sorted(CONTRIBUTORS, v.names, v.key, v.ascending);
-    ui.label(RichText::new(format!("{} contributors · {} commits", list.len(), group(TOTAL_COMMITS))).small().weak());
+    ui.label(RichText::new(crate::localized_format!("{} contributors · {} commits", list.len(), group(TOTAL_COMMITS))).small().weak());
     ui.separator();
     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
         if list.is_empty() {
-            ui.label("No contributor data was built into this copy.");
+            ui.label(crate::localization::text("No contributor data was built into this copy."));
         } else if v.table {
             table(ui, &list, &mut v);
         } else {
@@ -278,7 +278,11 @@ fn table(ui: &mut egui::Ui, list: &[&Contributor], v: &mut View) {
     egui::Grid::new("credits_table").striped(true).num_columns(SortKey::ALL.len()).show(ui, |ui| {
         for k in SortKey::ALL {
             let arrow = if v.key == k { if v.ascending { " ⏶" } else { " ⏷" } } else { "" };
-            if ui.button(RichText::new(format!("{}{arrow}", k.label().1)).strong()).on_hover_text(k.label().0).clicked() {
+            if ui
+                .button(RichText::new(format!("{}{arrow}", crate::localization::text(k.label().1))).strong())
+                .on_hover_text(crate::localization::text(k.label().0))
+                .clicked()
+            {
                 if v.key == k {
                     v.ascending = !v.ascending;
                 } else {
@@ -307,14 +311,14 @@ fn table(ui: &mut egui::Ui, list: &[&Contributor], v: &mut View) {
 /// About › Models: AI models credited in Co-Authored-By trailers.
 pub fn models_ui(ui: &mut egui::Ui) {
     if MODELS.is_empty() {
-        ui.label("No model credits were built into this copy.");
+        ui.label(crate::localization::text("No model credits were built into this copy."));
         return;
     }
     let assisted: u64 = MODELS.iter().map(|m| m.commits).max().unwrap_or(0).max(1);
     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
         egui::Grid::new("credits_models").striped(true).num_columns(6).show(ui, |ui| {
             for h in ["Company", "Model", "Version", "Commits", "% of all commits", "Lines +/−"] {
-                ui.label(RichText::new(h).strong());
+                ui.label(RichText::new(crate::localization::text(h)).strong());
             }
             ui.end_row();
             for m in MODELS {

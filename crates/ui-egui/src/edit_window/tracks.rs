@@ -160,7 +160,7 @@ fn playlist_lanes(app: &mut SoundApp, ui: &mut Ui, track: &Track, row: Rect, mai
                 let _ = app.run("track.playlist_promote", json!({"track": track.id.0, "playlist": i, "start": a, "end": b}));
             }
         }
-        resp.on_hover_text("Click a take (or the selection) to promote it to the main playlist");
+        resp.on_hover_text(crate::localization::text("Click a take (or the selection) to promote it to the main playlist"));
         y += LANE_H;
     }
 }
@@ -237,7 +237,7 @@ pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
         .map(|track| (track.id.0, track.name.clone()))
         .collect();
     if !folders.is_empty() {
-        ui.menu_button("Move to Folder", |ui| {
+        ui.menu_button(crate::localization::text("Move to Folder"), |ui| {
             for (folder, name) in &folders {
                 if ui.button(name).clicked() {
                     let _ = app.run("track.move_to_folder", json!({"tracks": selection, "folder": folder}));
@@ -245,15 +245,17 @@ pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
             }
         });
     }
-    if app.engine.session().track(id).is_some_and(|track| track.folder.is_some()) && ui.button("Remove from Folder").clicked() {
+    if app.engine.session().track(id).is_some_and(|track| track.folder.is_some())
+        && ui.button(crate::localization::text("Remove from Folder")).clicked()
+    {
         let _ = app.run("track.remove_from_folder", json!({"tracks": selection}));
     }
     // Only the track clicked: the command has one target, and the selection stays as it is.
-    if ui.button("Scroll Into View").clicked() {
+    if ui.button(crate::localization::text("Scroll Into View")).clicked() {
         let _ = app.run("view.scroll_into_view", json!({"track": id.0}));
     }
     ui.separator();
-    ui.menu_button("Track Height", |ui| {
+    ui.menu_button(crate::localization::text("Track Height"), |ui| {
         for h in TrackHeight::ALL {
             if ui.button(h.label()).clicked() {
                 let own: Vec<TrackId> = selection.iter().map(|&t| TrackId(t)).collect();
@@ -262,7 +264,7 @@ pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
             }
         }
     });
-    ui.menu_button("Track Color", |ui| {
+    ui.menu_button(crate::localization::text("Track Color"), |ui| {
         for (i, c) in soundcraft_model::TRACK_COLORS.iter().enumerate() {
             let (r, resp) = ui.allocate_exact_size(vec2(120.0, 14.0), Sense::click());
             ui.painter().rect_filled(r, 2.0, rgb(*c));

@@ -144,7 +144,7 @@ pub fn show(app: &SoundApp, ctx: &egui::Context) {
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new());
                     let more = if waiting > 0 { format!(" ({waiting} more)") } else { String::new() };
-                    ui.label(format!("Importing {name}{more}"));
+                    ui.label(crate::localized_format!("Importing {name}{more}", name = name, more = more));
                 });
             });
         },
