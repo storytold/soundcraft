@@ -166,7 +166,6 @@ impl Plugin for ClapPlugin {
         self.midi_in = port.is_some_and(|p| p.supported & CLAP_NOTE_DIALECT_MIDI != 0);
         self.max_block = mb;
         self.inst.state().restart.store(false, Ordering::Relaxed);
-        self.inst.clear_flush_request();
         match self.inst.activate(sr, 1, u32::try_from(mb).unwrap_or(u32::MAX)) {
             Ok(()) => {
                 self.latency = self.inst.latency() as usize;

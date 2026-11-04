@@ -78,7 +78,8 @@ fn request_process_is_ignored() {
     assert_eq!(counters(), (p0, f0));
 }
 
-/// `prepare` forgets a stale request. After a processed block (the plugin is then in the
+/// A request made before `prepare` survives activation: the pending edit reaches `idle` through
+/// the first flush, without `process`. After a processed block (the plugin is then in the
 /// processing state) a flush leaves that state first (the fixture asserts `params.flush` never
 /// runs while processing).
 fn flush_guards() {
@@ -88,7 +89,8 @@ fn flush_guards() {
     ed.open().expect("open: requests a flush");
     p.prepare(48_000.0, 64, 2);
     p.flush();
-    assert_eq!(counters().1 - f0, 0, "prepare forgot the stale request");
+    assert_eq!(counters(), (p0, f0 + 1), "the request survived prepare: one flush, no process");
+    assert_eq!(ed.idle(), vec![("7".to_string(), 0.25)], "the pending edit got through");
     ed.close();
     let mut ed = p.editor().expect("editor handle");
     ed.open().expect("open");
@@ -96,7 +98,7 @@ fn flush_guards() {
     ed.close();
     ed.open().expect("reopen: requests a flush again");
     p.flush();
-    assert_eq!(counters().1 - f0, 1, "flushed after a processed block, outside the processing state");
+    assert_eq!(counters().1 - f0, 2, "flushed after a processed block, outside the processing state");
     let _ = block(&mut p);
     assert_eq!(counters().0 - p0, 2, "processing restarts on the next block");
 }
