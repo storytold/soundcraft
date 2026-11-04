@@ -478,6 +478,43 @@ fn synth_follows_the_sustain_pedal_and_pitch_bend() {
 }
 
 #[test]
+fn synth_noise_waves_are_appended_and_old_indexes_keep_their_waveform() {
+    // #1312: White and Pink Noise come after the four original choices, so a saved index 0..=3
+    // still means the same waveform.
+    let info = plugin_info("subtractive_synth").unwrap();
+    for id in ["osc1_wave", "osc2_wave"] {
+        let p = info.params.iter().find(|p| p.id == id).unwrap();
+        assert_eq!(p.choices, ["Saw", "Square", "Sine", "Triangle", "White Noise", "Pink Noise"], "{id}");
+        assert_eq!((p.min, p.max, p.default), (0.0, 5.0, 0.0), "{id}");
+    }
+    let rises = |x: &[f32]| x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+    let render = |wave: f32| {
+        let mut p = prepared("subtractive_synth");
+        p.set_param("osc1_wave", wave);
+        p.set_param("osc_mix", 0.0);
+        p.set_param("cutoff", 20_000.0);
+        p.set_param("filter_env_amount", 0.0);
+        p.note_on(0, 69, 100);
+        run(p.as_mut(), &[vec![0.0; 48_000]]).remove(0)
+    };
+    // The tones keep their pitch: one rising zero crossing per 440 Hz cycle.
+    for wave in 0..=3 {
+        let out = render(wave as f32);
+        let n = rises(&out[4800..]);
+        assert!((390..=400).contains(&n), "wave {wave}: {n} rising crossings in 0.9 s");
+    }
+    // The noises sound, stay bounded and finite, and are not a 440 Hz tone.
+    for wave in [4.0, 5.0] {
+        let out = render(wave);
+        assert!(out.iter().all(|v| v.is_finite()), "wave {wave} not finite");
+        assert!(rms(&out[4800..]) > 0.01, "wave {wave} silent");
+        assert!(peak(&out) <= 1.0, "wave {wave} peak {}", peak(&out));
+        let n = rises(&out[4800..]);
+        assert!(n > 1500, "wave {wave} looks tonal: {n} rising crossings");
+    }
+}
+
+#[test]
 fn synth_event_offsets_are_sample_accurate() {
     let mut p = prepared("subtractive_synth");
     p.set_param("amp_attack", 0.5);
