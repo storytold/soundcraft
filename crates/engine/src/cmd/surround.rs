@@ -1,8 +1,8 @@
 //! Surround mixing: the main output format and the surround panners of tracks and sends.
+use super::{CommandSpec, always, bad, bool_or, f32_or, has_selection, str_param, tracks_required};
 
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
 use soundcraft_model::{ChannelFormat, Mixer, OutputPath, Route, SEND_SLOTS, Session, SurroundPan, TrackKind};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -184,6 +184,7 @@ mod tests {
         assert!(e.session().track(t).unwrap().mixer.surround.is_none());
         // Sends.
         assert!(e.execute("mix.send_surround_pan", &json!({"track": t.0, "slot": "a", "x": 1.0})).is_err(), "empty slot");
+        e.execute("mix.new_bus", &json!({"name": "FX"})).unwrap();
         e.execute("mix.send", &json!({"track": t.0, "slot": 0, "bus": "FX"})).unwrap();
         e.execute("mix.send_surround_pan", &json!({"track": t.0, "slot": "a", "x": 1.0, "y": -1.0})).unwrap();
         let snd = e.session().track(t).unwrap().mixer.sends[0].clone().unwrap();

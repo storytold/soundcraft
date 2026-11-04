@@ -122,7 +122,7 @@ impl GridValue {
             GridValue::Note { value, dotted, triplet } => {
                 let t0 = map.samples_to_ticks(at, sr);
                 let dt = Self::note_ticks(value, dotted, triplet, map, t0);
-                (map.tick_to_samples(t0 + dt, sr) - map.tick_to_samples(t0, sr)).max(1)
+                (map.tick_to_samples(t0.saturating_add(dt), sr).saturating_sub(map.tick_to_samples(t0, sr))).max(1)
             }
             GridValue::Seconds(s) => sr.samples(s.clamp(0.000_01, 3600.0)).max(1),
             GridValue::Frames(f) => to_samples(rate.samples_per_frame(sr) * f.clamp(1, 1_000_000) as f64).max(1),
@@ -155,15 +155,49 @@ impl GridValue {
                 let k = (t - bar_tick).div_euclid(step);
                 map.tick_to_samples(bar_tick + k * step, sr)
             }
-            _ => {
-                let step = self.step_samples(pos, sr, map, rate);
-                pos.div_euclid(step).saturating_mul(step)
-            }
+            _ => self.abs_line(self.abs_index_at_or_before(pos, sr, rate), sr, rate),
         }
+    }
+
+    /// Position of absolute grid line `k` (Seconds, Frames, Samples), at an exact multiple of the step
+    /// rounded once, so rounding never accumulates from line to line.
+    fn abs_line(&self, k: i64, sr: SampleRate, rate: FrameRate) -> Samples {
+        match *self {
+            GridValue::Seconds(s) => to_samples(k as f64 * Self::seconds_step(s, sr)),
+            GridValue::Frames(f) => rate.samples_at_frame(k.saturating_mul(f.clamp(1, 1_000_000)), sr),
+            GridValue::Samples(n) => k.saturating_mul(n.max(1)),
+            GridValue::Note { .. } => 0,
+        }
+    }
+
+    /// Index of the absolute grid line at or before `pos`.
+    fn abs_index_at_or_before(&self, pos: Samples, sr: SampleRate, rate: FrameRate) -> i64 {
+        let mut k = match *self {
+            GridValue::Seconds(s) => (pos as f64 / Self::seconds_step(s, sr)).floor() as i64,
+            GridValue::Frames(f) => rate.frames_at(pos, sr).div_euclid(f.clamp(1, 1_000_000)),
+            GridValue::Samples(n) => return pos.div_euclid(n.max(1)),
+            GridValue::Note { .. } => return 0,
+        };
+        // Lines are rounded to whole samples, so the floored index can be one off either way.
+        if self.abs_line(k, sr, rate) > pos {
+            k = k.saturating_sub(1);
+        } else if self.abs_line(k.saturating_add(1), sr, rate) <= pos {
+            k = k.saturating_add(1);
+        }
+        k
+    }
+
+    /// The exact (fractional) Seconds step in samples, at least one sample.
+    fn seconds_step(s: f64, sr: SampleRate) -> f64 {
+        (s.clamp(0.000_01, 3600.0) * sr.as_f64()).max(1.0)
     }
 
     /// The first grid line strictly after `line`.
     pub fn next_line(&self, line: Samples, sr: SampleRate, map: &TempoMap, rate: FrameRate) -> Samples {
+        if !matches!(self, GridValue::Note { .. }) {
+            let next = self.abs_line(self.abs_index_at_or_before(line, sr, rate).saturating_add(1), sr, rate);
+            return if next > line { next } else { line.saturating_add(1) };
+        }
         let step = self.step_samples(line, sr, map, rate);
         let candidate = self.line_at_or_before(line.saturating_add(step), sr, map, rate);
         if candidate > line { candidate } else { line.saturating_add(step) }
@@ -223,6 +257,41 @@ mod tests {
     }
 
     #[test]
+    fn seconds_grid_lines_land_on_whole_seconds() {
+        let (sr, map, rate) = (SampleRate::HZ_44100, TempoMap::default(), FrameRate::Fps30);
+        for g in [GridValue::Seconds(0.001), GridValue::Seconds(0.01)] {
+            for n in 0..20 {
+                let s = n * 44_100;
+                assert_eq!(g.snap(s, sr, &map, rate), s, "{g:?} at {n} s");
+                assert_eq!(g.line_at_or_before(s, sr, &map, rate), s, "{g:?} at {n} s");
+            }
+        }
+    }
+
+    #[test]
+    fn frame_grid_lines_land_on_frame_starts() {
+        let sr = SampleRate::HZ_48000;
+        let map = TempoMap::default();
+        for rate in [FrameRate::Fps29_97, FrameRate::Fps23_976] {
+            for f in [1, 10] {
+                let g = GridValue::Frames(f);
+                for k in (0..5000).step_by(37) {
+                    let s = rate.samples_at_frame(k, sr);
+                    let line = rate.samples_at_frame(k.div_euclid(f) * f, sr);
+                    assert_eq!(g.line_at_or_before(s, sr, &map, rate), line, "{rate:?} {f} frames at frame {k}");
+                    if k % f == 0 {
+                        assert_eq!(g.snap(s, sr, &map, rate), s, "{rate:?} {f} frames at frame {k}");
+                    }
+                }
+                let start = rate.samples_at_frame(4000, sr);
+                let end = rate.samples_at_frame(4000 + 20 * f, sr);
+                let want: Vec<_> = (0..20).map(|i| rate.samples_at_frame(4000 + i * f, sr)).collect();
+                assert_eq!(g.lines(start, end, sr, &map, rate, 100), want, "{rate:?} {f} frames");
+            }
+        }
+    }
+
+    #[test]
     fn lines_are_capped() {
         let (sr, map, rate) = (SampleRate::HZ_48000, TempoMap::default(), FrameRate::Fps25);
         assert_eq!(GridValue::Samples(1).lines(0, 1_000_000, sr, &map, rate, 50).len(), 50);
@@ -250,5 +319,12 @@ mod tests {
         assert_eq!(GridValue::Frames(1).stepped(true), GridValue::Frames(10));
         assert_eq!(GridValue::Samples(100).stepped(false), GridValue::Samples(10));
         assert_eq!(GridValue::Samples(1).stepped(false), GridValue::Samples(1));
+    }
+
+    #[test]
+    fn snap_at_extreme_position_does_not_overflow() {
+        let sr = SampleRate::new(8000).unwrap();
+        let map = TempoMap::new(1000.0, 4, 4).unwrap();
+        let _ = GridValue::default().snap(i64::MAX, sr, &map, FrameRate::Fps30);
     }
 }

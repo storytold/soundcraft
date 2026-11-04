@@ -54,20 +54,24 @@ impl Matrix {
     }
 }
 
+/// The planes (and their geometry) of an 8-bit planar Y'CbCr picture for [`planar_to_rgba`].
+#[derive(Clone, Copy)]
+pub struct Planes<'a> {
+    pub width: usize,
+    pub height: usize,
+    pub y: &'a [u8],
+    pub y_stride: usize,
+    pub u: &'a [u8],
+    pub v: &'a [u8],
+    pub uv_stride: usize,
+    pub cx: usize,
+    pub cy: usize,
+}
+
 /// Planar 8-bit Y'CbCr with chroma subsampled by `cx` horizontally and `cy` vertically
 /// (1 or 2 each) → packed RGBA. Missing samples (short planes) read as black / neutral.
-pub fn planar_to_rgba(
-    width: usize,
-    height: usize,
-    y: &[u8],
-    y_stride: usize,
-    u: &[u8],
-    v: &[u8],
-    uv_stride: usize,
-    cx: usize,
-    cy: usize,
-    m: &Matrix,
-) -> Vec<u8> {
+pub fn planar_to_rgba(p: &Planes<'_>, m: &Matrix) -> Vec<u8> {
+    let Planes { width, height, y, y_stride, u, v, uv_stride, cx, cy } = *p;
     let (cx, cy) = (cx.max(1), cy.max(1));
     let mut out = vec![0u8; width.saturating_mul(height).saturating_mul(4)];
     for (row, line) in out.chunks_exact_mut(width.max(1) * 4).enumerate().take(height) {
@@ -164,7 +168,7 @@ mod tests {
     #[test]
     fn planar_conversion_tolerates_short_planes() {
         let m = Matrix::new(true, false);
-        let out = planar_to_rgba(4, 4, &[235; 3], 4, &[], &[], 2, 2, 2, &m);
+        let out = planar_to_rgba(&Planes { width: 4, height: 4, y: &[235; 3], y_stride: 4, u: &[], v: &[], uv_stride: 2, cx: 2, cy: 2 }, &m);
         assert_eq!(out.len(), 64);
         assert_eq!(&out[..4], &[255, 255, 255, 255]);
     }

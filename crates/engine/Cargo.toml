@@ -23,6 +23,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 log.workspace = true
 zip.workspace = true
+craft-docpath.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
