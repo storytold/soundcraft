@@ -89,7 +89,7 @@ fn decode_group_audio(
     let (mut decoded, mut index, mut file_of) = (Vec::new(), BTreeMap::new(), BTreeMap::new());
     // The folder as the file system knows it, so a link among the group's files can't lead out.
     let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
-    let root = std::fs::canonicalize(dir).map_err(|err| EngineError::Io(format!("{}: {err}", dir.display())))?;
+    let root = crate::io::canonical_path(dir)?;
     for (old, rel) in audio_entries {
         let full = dir.join(rel);
         let escapes = |rel: &str| EngineError::BadParams(cmd_id.into(), format!("audio path escapes the group folder: {rel}"));
@@ -100,7 +100,7 @@ fn decode_group_audio(
         {
             return Err(escapes(rel));
         }
-        let key = std::fs::canonicalize(&full).map_err(|err| EngineError::Io(format!("{rel}: {err}")))?;
+        let key = crate::io::canonical_path(&full)?;
         if !key.starts_with(&root) {
             return Err(escapes(rel));
         }
@@ -290,6 +290,42 @@ mod tests {
             let _ = std::fs::remove_file(&outside);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Under a read root, a link in the group folder to a folder outside the root is refused the same way
+    /// whether or not the file asked for exists there, so the group cannot be used to probe for names.
+    #[cfg(unix)]
+    #[test]
+    fn links_out_of_the_read_root_are_refused_alike_for_existing_and_missing_files() {
+        let base = std::env::temp_dir().join(format!("sc-grp-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (dir, outside) = (base.join("group"), base.join("outside"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let path = dir.join("drums.scgrp").to_string_lossy().to_string();
+        let mut e = crate::demo::demo_engine();
+        let kick = e.session().tracks.iter().find(|t| t.name == "Kick").map(|t| t.id).unwrap();
+        let ids: Vec<_> = e.session().track(kick).unwrap().clips().iter().take(1).map(|c| c.id.0).collect();
+        e.execute("file.export_clip_groups", &json!({"path": path, "clips": ids})).unwrap();
+        let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let exported = file["audio"].as_object().unwrap().values().next().unwrap().as_str().unwrap().to_string();
+        std::fs::copy(dir.join(&exported), outside.join("real.wav")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("out")).unwrap();
+        let roots = crate::file_access::AutomationRoots::new(&[&dir], &[]).unwrap().unwrap();
+        let mut refusals = Vec::new();
+        for target in ["out/real.wav", "out/missing.wav"] {
+            for rel in file["audio"].as_object_mut().unwrap().values_mut() {
+                *rel = json!(target);
+            }
+            std::fs::write(&path, file.to_string()).unwrap();
+            let r = crate::file_access::confine(Some(&roots), || {
+                e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}))
+            });
+            refusals.push(r.unwrap_err().to_string());
+        }
+        assert!(refusals[0].contains("outside the read root"), "{}", refusals[0]);
+        assert_eq!(refusals[0].replace("real.wav", "X"), refusals[1].replace("missing.wav", "X"), "existing and missing names are refused alike");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

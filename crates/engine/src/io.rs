@@ -85,6 +85,17 @@ pub(crate) fn make_dir(dir: impl AsRef<Path>) -> Result<()> {
     std::fs::create_dir_all(dir).map_err(|err| EngineError::Io(format!("{}: {err}", dir.display())))
 }
 
+/// `path` with its links followed, inside the automation read root when there is one. The root is
+/// checked on the path as named (links followed, a missing tail resolved by its nearest folder)
+/// before anything is resolved, so a name that leads out of the root is refused the same way
+/// whether or not it exists there.
+pub(crate) fn canonical_path(path: impl AsRef<Path>) -> Result<PathBuf> {
+    let path = path.as_ref();
+    let checked = if path.as_os_str().is_empty() { Path::new(".") } else { path };
+    crate::file_access::check_read(checked).map_err(EngineError::Io)?;
+    std::fs::canonicalize(path).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))
+}
+
 /// Write `bytes` to the file at `path`, inside the automation write root when there is one.
 pub(crate) fn write_path(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> Result<()> {
     let path = path.as_ref();
@@ -465,11 +476,16 @@ pub fn export_clips(e: &Engine, ids: &[soundcraft_model::ClipId], dir: &str) -> 
         // The name is taken by creating the file, so whatever entry already has it (a link
         // to elsewhere included) is left alone rather than written through.
         let mut file = loop {
-            crate::file_access::check_write(&path).map_err(EngineError::Io)?;
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(f) => break f,
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(err) => return Err(EngineError::Io(format!("{}: {err}", path.display()))),
+            // An occupied name is taken whatever it is (a link whose target is outside the write
+            // root too): it is only looked at, never resolved, so the root check does not stop the
+            // search for a free name. The folder itself was checked above.
+            if std::fs::symlink_metadata(&path).is_err() {
+                crate::file_access::check_write(&path).map_err(EngineError::Io)?;
+                match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                    Ok(f) => break f,
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(err) => return Err(EngineError::Io(format!("{}: {err}", path.display()))),
+                }
             }
             path = Path::new(dir).join(format!("{stem}-{k}.wav"));
             k = k.saturating_add(1);
@@ -848,6 +864,25 @@ mod exclusive_tests {
         assert!(!target.exists(), "the export followed the link");
         assert!(dir.join(format!("{}-2.wav", sanitize_name(&c.name))).is_file(), "the next free name was used");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With a write root, a link out of it that holds the name is still just an occupied name.
+    #[cfg(unix)]
+    #[test]
+    fn export_skips_a_link_out_of_the_write_root_too() {
+        let dir = scratch("export-root-link");
+        let e = crate::demo::demo_engine();
+        let c = e.session().tracks.iter().find_map(|t| t.clips().iter().find(|c| c.is_audio()).cloned()).unwrap();
+        let elsewhere = scratch("export-root-elsewhere");
+        let target = elsewhere.join("target.wav");
+        std::os::unix::fs::symlink(&target, dir.join(format!("{}.wav", sanitize_name(&c.name)))).unwrap();
+        let roots = crate::file_access::AutomationRoots::new(&[], &[&dir]).unwrap().unwrap();
+        let n = crate::file_access::confine(Some(&roots), || export_clips(&e, &[c.id], &dir.to_string_lossy())).unwrap();
+        assert_eq!(n, 1);
+        assert!(!target.exists(), "the export followed the link out of the root");
+        assert!(dir.join(format!("{}-2.wav", sanitize_name(&c.name))).is_file(), "the next free name was used");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&elsewhere);
     }
 }
 
