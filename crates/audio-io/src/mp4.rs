@@ -16,10 +16,9 @@ enum Level {
     Moov,
     Trak,
     Mdia,
-    /// `audio`: the `mdia` has a `soun` handler, so symphonia will decode its packets.
-    Minf {
-        audio: bool,
-    },
+    Minf,
+    /// `audio`: the sample entry is an audio format, so symphonia will decode its packets (whatever the
+    /// handler says: it builds codec parameters from `stsd` alone).
     Stbl {
         audio: bool,
     },
@@ -42,7 +41,6 @@ fn malformed(what: &str) -> AudioError {
 /// Walk the atoms in `pos..end` that symphonia descends into, as it reads them. False where
 /// symphonia stops reading: at a header it refuses, or after an atom that runs past `end`.
 fn atoms(b: &[u8], mut pos: usize, end: usize, level: Level) -> Result<bool> {
-    let start = pos;
     // A header that starts inside the container is read whole, even past its end.
     while pos < end {
         let (Some(size), Some(kind)) = (be_u32(b, pos), b.get(pos + 4..pos + 8)) else { return Ok(false) };
@@ -66,8 +64,8 @@ fn atoms(b: &[u8], mut pos: usize, end: usize, level: Level) -> Result<bool> {
             (Level::Moov, b"trak") => atoms(b, body, inner, Level::Trak)?,
             (Level::Moov, b"udta") => atoms(b, body, inner, Level::Udta)?,
             (Level::Trak, b"mdia") => atoms(b, body, inner, Level::Mdia)?,
-            (Level::Mdia, b"minf") => atoms(b, body, inner, Level::Minf { audio: handler_is_sound(b, start, end) })?,
-            (Level::Minf { audio }, b"stbl") => atoms(b, body, inner, Level::Stbl { audio })?,
+            (Level::Mdia, b"minf") => atoms(b, body, inner, Level::Minf)?,
+            (Level::Minf, b"stbl") => atoms(b, body, inner, Level::Stbl { audio: entry_is_audio(b, body, inner) })?,
             (Level::Meta, b"ilst") => atoms(b, body, inner, Level::Ilst)?,
             (Level::Ilst, _) => atoms(b, body, inner, Level::Tag)?,
             (Level::Stbl { audio }, b"stts") => {
@@ -94,15 +92,22 @@ fn atoms(b: &[u8], mut pos: usize, end: usize, level: Level) -> Result<bool> {
     Ok(true)
 }
 
-/// Whether the `mdia` atom whose children lie in `pos..end` declares a `soun` handler: its
-/// `hdlr` is usually before `minf`, but may follow it, so the children are walked once more.
-fn handler_is_sound(b: &[u8], mut pos: usize, end: usize) -> bool {
+/// The sample entry formats symphonia reads as audio (the list `stsd` is matched against in
+/// symphonia-format-isomp4 0.6); every other format, video and subtitles included, has no audio packets.
+const AUDIO_FORMATS: [&[u8; 4]; 18] = [
+    b"mp4a", b"alac", b"ac-3", b"ec-3", b"fLaC", b"Opus", b".mp3", b"lpcm", b"wave", b"alaw", b"ulaw", b"raw ", b"sowt", b"twos", b"in24", b"in32",
+    b"fl32", b"fl64",
+];
+
+/// Whether the `stbl` atom whose children lie in `pos..end` describes audio: its `stsd` may come before
+/// or after the timing tables, so the children are walked once more for it.
+fn entry_is_audio(b: &[u8], mut pos: usize, end: usize) -> bool {
     while pos < end {
         let (Some(size), Some(kind)) = (be_u32(b, pos), b.get(pos + 4..pos + 8)) else { return false };
         let head = if size == 1 { 16 } else { 8 };
-        if kind == b"hdlr" {
-            // Version and flags, then the predefined field, then the handler type.
-            return b.get(pos + head + 8..pos + head + 12) == Some(b"soun");
+        if kind == b"stsd" {
+            // Version and flags, the entry count, then the first entry's size and format.
+            return b.get(pos + head + 12..pos + head + 16).is_some_and(|f| AUDIO_FORMATS.iter().any(|a| a.as_slice() == f));
         }
         let len = match size {
             0 => return false,

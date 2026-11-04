@@ -538,6 +538,13 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
         if packet.track_id != track_id {
             continue;
         }
+        // The declared frames per packet are not the packet's size: a container supplies that on its
+        // own, and the PCM decoder sizes its output by the bytes it is given.
+        if let Some(bytes_per_sample) = params.bits_per_coded_sample.map(|b| u64::from(b / 8)).filter(|&n| n > 0)
+            && packet.data.len() as u64 / bytes_per_sample > MAX_PACKET_SAMPLES
+        {
+            return Err(AudioError::Malformed("a packet holds far more samples than any codec uses".into()));
+        }
         let decoded = match decoder.decode(&packet) {
             Ok(d) => d,
             Err(SymError::DecodeError(m)) => {

@@ -394,6 +394,32 @@ fn an_audio_timing_table_with_a_run_per_sample_is_bounded() {
     assert!(matches!(decode(&f, None), Err(AudioError::Malformed(m)) if m.contains("timing table")), "one run past the bound is refused");
 }
 
+#[test]
+fn the_audio_timing_bound_follows_the_sample_entry_not_the_handler() {
+    let pcm = sample_entry(b"sowt", 0, &[], &[]);
+    let runs = |n: u32| atom(b"stts", &[&[0; 4][..], &n.to_be_bytes(), &[1u32, 1].map(u32::to_be_bytes).concat().repeat(n as usize)[..]].concat());
+    // an audio sample entry under a video handler is still decoded as audio by symphonia
+    let video_handler = atom(b"hdlr", &[0u32, 0, u32::from_be_bytes(*b"vide"), 0, 0, 0, 0].map(u32::to_be_bytes).concat());
+    let frames = (1 << 14) + 1;
+    let f = mp4(frames, &pcm, |k, a| match k {
+        b"stts" => runs(frames),
+        b"hdlr" => video_handler.clone(),
+        _ => a,
+    });
+    assert!(matches!(decode(&f, None), Err(AudioError::Malformed(m)) if m.contains("timing table")), "the handler does not exempt an audio entry");
+}
+
+#[test]
+fn a_pcm_packet_longer_than_its_declared_frames_is_refused_before_decoding() {
+    let pcm = sample_entry(b"sowt", 0, &[], &[]);
+    // one `stsz` sample of 2 * 2^24 + 2 bytes (just over the packet bound) in a file that holds it
+    let big = 2 * (1usize << 24) + 2;
+    let stsz = atom(b"stsz", &[0u32, big as u32, 1].map(u32::to_be_bytes).concat());
+    let mut f = mp4(1, &pcm, |k, a| if k == b"stsz" { stsz.clone() } else { a });
+    f.resize(f.len() + big, 0);
+    assert!(matches!(decode(&f, None), Err(AudioError::Malformed(m)) if m.contains("packet holds far more samples")));
+}
+
 /// FLAC metadata blocks with field lengths exceeding their block boundary are refused as malformed.
 #[test]
 fn flac_metadata_fields_beyond_their_block_are_refused() {
