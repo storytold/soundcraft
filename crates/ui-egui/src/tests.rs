@@ -3,6 +3,40 @@ use serde_json::json;
 use soundcraft_model::TrackId;
 
 #[test]
+fn the_document_title_names_the_open_document_and_unsaved_changes() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    assert_eq!(app.document_title(), "Midnight Groove — SoundCraft");
+    app.run("track.new", json!({"count": 1, "format": "mono"})).unwrap();
+    assert!(app.engine.is_dirty());
+    assert_eq!(app.document_title(), "Midnight Groove • — SoundCraft");
+    app.run("session.new", json!({"name": "New Song"})).unwrap();
+    assert!(!app.engine.is_dirty());
+    assert_eq!(app.document_title(), "New Song — SoundCraft");
+}
+
+#[test]
+fn the_document_title_names_the_opened_file_not_the_name_inside_it() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let (bytes, _) = soundcraft_engine::io::session_bundle(app.engine.session()).unwrap();
+    // The browser delivers the bytes under the picked name, which need not match the session name
+    // stored inside: the host reads the title to confirm which file opened (#809).
+    crate::dialogs::open_session_bytes(&mut app, "Song.scraftz".into(), bytes);
+    assert_eq!(app.document_title(), "Song.scraftz — SoundCraft");
+    app.run("track.new", json!({"count": 1, "format": "mono"})).unwrap();
+    assert_eq!(app.document_title(), "Song.scraftz • — SoundCraft");
+}
+
+#[test]
+fn the_document_title_marks_an_open_plugin_editor_gesture_as_unsaved() {
+    // An active gesture holds plugin state the session hasn't taken yet: the session itself is
+    // clean, but the title must still show unsaved work (#809).
+    let (app, dir) = app_with_editor_gesture("gesture-title", true);
+    assert!(!app.engine.is_dirty());
+    assert_eq!(app.document_title(), "Midnight Groove • — SoundCraft");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn new_session_stops_playback_and_the_old_clock() {
     for (command, params) in [
         ("session.new", json!({"name": "New project", "sample_rate": 96_000})),

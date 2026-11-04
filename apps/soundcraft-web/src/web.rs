@@ -42,7 +42,7 @@ pub fn start() {
                     let engine = if query().contains("empty") { Engine::default() } else { soundcraft_engine::demo::demo_engine() };
                     let player = soundcraft_playback::Player::new(Arc::new(engine.session().clone()));
                     let app = SoundApp::new(engine, Some(player), Services::default());
-                    Ok(Box::new(WebShell { app, inbox: Rc::default(), samples: Rc::default() }))
+                    Ok(Box::new(WebShell { app, inbox: Rc::default(), samples: Rc::default(), title: None }))
                 }),
             )
             .await;
@@ -114,6 +114,8 @@ struct WebShell {
     app: SoundApp,
     inbox: Inbox,
     samples: SampleInbox,
+    /// The title last written to the browser tab, so it changes only when the document does.
+    title: Option<String>,
 }
 
 impl WebShell {
@@ -165,6 +167,19 @@ impl WebShell {
         }
     }
 
+    /// The browser tab is this build's only title bar: name the open document there, with its
+    /// unsaved marker. eframe's web runner logs `ViewportCommand::Title` as unhandled, so set the
+    /// DOM title directly and only when it changes.
+    fn sync_title(&mut self) {
+        let title = self.app.document_title();
+        if self.title.as_deref() == Some(title.as_str()) {
+            return;
+        }
+        let Some(document) = web_sys::window().and_then(|w| w.document()) else { return };
+        document.set_title(&title);
+        self.title = Some(title);
+    }
+
     fn handle(&mut self, purpose: Purpose, name: String, bytes: Vec<u8>) {
         let e = &mut self.app.engine;
         let at = e.session().edit.selection.start.max(0);
@@ -206,6 +221,7 @@ impl eframe::App for WebShell {
         self.app.logic(ctx);
         // A prompt opened during this frame becomes a picker on the next one.
         self.take_path_prompt(ctx);
+        self.sync_title();
     }
 
     /// Forward raw input to the shared app hook so scripted gestures and host-key protection behave like the desktop
