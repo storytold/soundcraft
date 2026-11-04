@@ -6,7 +6,7 @@ use crate::{SoundApp, icons};
 use egui::{Align2, Color32, CornerRadius, Painter, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
 use soundcraft_engine::edit::{SHUFFLE_LOCK, SNAP_TO_GRID};
-use soundcraft_model::{EditMode, Session, Tool};
+use soundcraft_model::{EditMode, EditState, Session, Tool};
 use soundcraft_time::{FeetFramesValue, GridScale, GridValue, NoteValue, TimeFormat, TimecodeValue, format_length};
 
 pub const HEIGHT: f32 = 78.0;
@@ -205,14 +205,7 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let e = app.engine.session().edit.clone();
-                let toggles: [(&str, &str, bool, &str); 5] = [
-                    ("options.tab_to_transient", "tab_transient", e.tab_to_transient, "Tab to Transient"),
-                    ("options.link_timeline_edit", "link", e.link_timeline_edit, "Link Timeline and Edit Selection"),
-                    ("options.link_track_edit", "link", e.link_track_edit, "Link Track and Edit Selection"),
-                    ("options.mirrored_midi", "note", e.mirrored_midi, "Mirrored MIDI Editing"),
-                    ("options.automation_follows_edit", "wave", e.automation_follows_edit, "Automation Follows Edit"),
-                ];
-                for (id, icon, on, tip) in toggles {
+                for (id, icon, on, tip) in option_toggles(&e) {
                     if icon_button(ui, vec2(36.0, 18.0), icon, on, tip).clicked() {
                         let _ = app.run(id, json!({}));
                     }
@@ -225,6 +218,18 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             });
         });
     });
+}
+
+/// The Edit-window toolbar's option toggles: (command id, icon, on, tooltip).
+fn option_toggles(e: &EditState) -> [(&'static str, &'static str, bool, &'static str); 6] {
+    [
+        ("options.tab_to_transient", "tab_transient", e.tab_to_transient, "Tab to Transient"),
+        ("options.link_timeline_edit", "link", e.link_timeline_edit, "Link Timeline and Edit Selection"),
+        ("options.link_track_edit", "link_track", e.link_track_edit, "Link Track and Edit Selection"),
+        ("options.insertion_follows_playback", "insertion_follows", e.insertion_follows_playback, "Insertion Follows Playback"),
+        ("options.mirrored_midi", "note", e.mirrored_midi, "Mirrored MIDI Editing"),
+        ("options.automation_follows_edit", "wave", e.automation_follows_edit, "Automation Follows Edit"),
+    ]
 }
 
 fn fmt_pos(app: &SoundApp, at: i64, f: TimeFormat) -> String {
@@ -430,7 +435,7 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str, current: Gri
                 for value in NoteValue::ALL {
                     let id = match value {
                         NoteValue::Bar => "1 bar",
-                        NoteValue::Whole => "1/1",
+                        NoteValue::Whole => "whole",
                         NoteValue::Half => "1/2",
                         NoteValue::Quarter => "1/4",
                         NoteValue::Eighth => "1/8",
@@ -447,7 +452,7 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str, current: Gri
                 };
                 let base = match value {
                     NoteValue::Bar => "1 bar",
-                    NoteValue::Whole => "1/1",
+                    NoteValue::Whole => "whole",
                     NoteValue::Half => "1/2",
                     NoteValue::Quarter => "1/4",
                     NoteValue::Eighth => "1/8",
@@ -733,6 +738,12 @@ mod tests {
         let edit = &harness.state().engine.session().edit;
         assert_eq!(edit.grid, GridValue::Timecode(TimecodeValue::QuarterFrame));
         assert!(edit.grid_clips_markers);
+        open(&mut harness, "Grid menu");
+        harness.get_by_label("1/2 frame").click();
+        harness.run_steps(3);
+        let edit = &harness.state().engine.session().edit;
+        assert_eq!(edit.grid, GridValue::Timecode(TimecodeValue::HalfFrame));
+        assert!(!edit.grid_clips_markers);
     }
 
     /// Selecting another musical increment preserves the active dotted or triplet modifier.
@@ -745,6 +756,10 @@ mod tests {
         harness.get_by_label("1/16 note").click();
         harness.run_steps(3);
         assert_eq!(harness.state().engine.session().edit.grid, GridValue::Note { value: NoteValue::Sixteenth, dotted: false, triplet: true });
+        open(&mut harness, "Grid menu");
+        harness.get_by_label("Whole note").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().engine.session().edit.grid, GridValue::Note { value: NoteValue::Whole, dotted: false, triplet: true });
     }
 
     /// The Nudge menu exposes every numeric scale without the Grid-only Clips/Markers mode.
@@ -762,5 +777,18 @@ mod tests {
         for label in ["10000 samples", "1000 samples", "100 samples", "10 samples", "2 samples", "1 sample"] {
             let _ = harness.get_by_label(label);
         }
+    }
+
+    /// #1262: the two link toggles differ only by their icon, so each option toggle needs its own.
+    #[test]
+    fn option_toggles_have_distinct_icons() {
+        let toggles = option_toggles(&EditState::default());
+        let timeline = toggles.iter().find(|t| t.0 == "options.link_timeline_edit").unwrap();
+        let track = toggles.iter().find(|t| t.0 == "options.link_track_edit").unwrap();
+        assert_ne!(timeline.1, track.1, "the timeline and track links need different icons");
+        let mut icons: Vec<&str> = toggles.iter().map(|t| t.1).collect();
+        icons.sort_unstable();
+        icons.dedup();
+        assert_eq!(icons.len(), toggles.len(), "every option toggle needs its own icon");
     }
 }

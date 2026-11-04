@@ -504,8 +504,8 @@ impl Session {
         soundcraft_time::parse_position(text, fmt, self.sample_rate, &self.tempo, self.frame_rate, self.timecode_start, self.feet_frames_start())
     }
 
-    /// Whether a track contributes visible boundaries to the Edit window grid.
-    fn grid_track_visible(&self, track: &Track) -> bool {
+    /// Whether the Edit window shows a track: unhidden, with every parent folder open.
+    pub fn track_shown(&self, track: &Track) -> bool {
         if track.hidden {
             return false;
         }
@@ -527,12 +527,8 @@ impl Session {
         if include_zero && keep(0) {
             points.push(0);
         }
-        for clip in self
-            .tracks
-            .iter()
-            .filter(|track| self.grid_track_visible(track))
-            .flat_map(|track| track.clips())
-            .filter(|clip| !excluded.contains(&clip.id))
+        for clip in
+            self.tracks.iter().filter(|track| self.track_shown(track)).flat_map(|track| track.clips()).filter(|clip| !excluded.contains(&clip.id))
         {
             points.extend([clip.start, clip.end()].into_iter().filter(|point| keep(*point)));
         }
@@ -549,11 +545,10 @@ impl Session {
         points
     }
 
-    /// Counter reference expressed in samples for the current frame-based Grid scale.
+    /// Sample-domain Timecode reference; Feet+Frames applies its origin in frames separately.
     fn grid_origin(&self) -> Samples {
         match self.edit.grid.scale() {
             GridScale::Timecode => self.timecode_start,
-            GridScale::FeetFrames => self.frame_rate.samples_at_frame(self.feet_frames_start(), self.sample_rate),
             _ => 0,
         }
     }
@@ -561,6 +556,9 @@ impl Session {
     /// Grid lines for the current Grid value, including clip and marker boundaries.
     pub fn grid_lines(&self, start: Samples, end: Samples, max: usize) -> Vec<Samples> {
         if !self.edit.grid_clips_markers {
+            if let GridValue::FeetFrames(value) = self.edit.grid {
+                return value.lines(start, end, self.sample_rate, self.frame_rate, self.feet_frames_start(), max);
+            }
             let origin = self.grid_origin();
             return self
                 .edit
@@ -604,6 +602,9 @@ impl Session {
     /// Find the current Grid line at or before `position` without boundaries of `excluded` clips.
     pub fn grid_line_at_or_before_excluding(&self, position: Samples, excluded: &[ClipId]) -> Samples {
         if !self.edit.grid_clips_markers {
+            if let GridValue::FeetFrames(value) = self.edit.grid {
+                return value.line_at_or_before(position, self.sample_rate, self.frame_rate, self.feet_frames_start());
+            }
             let origin = self.grid_origin();
             return self
                 .edit
@@ -622,6 +623,9 @@ impl Session {
     /// Snap to the nearest current Grid line without using boundaries of `excluded` clips.
     pub fn snap_to_grid_excluding(&self, position: Samples, excluded: &[ClipId]) -> Samples {
         if !self.edit.grid_clips_markers {
+            if let GridValue::FeetFrames(value) = self.edit.grid {
+                return value.snap(position, self.sample_rate, self.frame_rate, self.feet_frames_start());
+            }
             let origin = self.grid_origin();
             return self.edit.grid.snap(position.saturating_add(origin), self.sample_rate, &self.tempo, self.frame_rate).saturating_sub(origin);
         }
@@ -987,6 +991,32 @@ mod tests {
         s.edit.values.insert(FEET_FRAMES_START.into(), 1.0);
         assert_eq!(s.grid_line_at_or_before(25_000), 24_000);
         assert_eq!(s.snap_to_grid(24_000), 24_000);
+    }
+
+    /// Every Feet+Frames increment shares the parser's single rounding at fractional frame rates.
+    #[test]
+    fn feet_frames_grid_matches_parsed_positions_with_signed_frame_origins() {
+        use soundcraft_time::FeetFramesValue;
+        for rate in [FrameRate::Fps23_976, FrameRate::Fps29_97, FrameRate::Fps29_97Drop, FrameRate::Fps59_94Drop] {
+            let mut s = Session { sample_rate: SampleRate::HZ_48000, frame_rate: rate, ..Session::default() };
+            for origin in [-17, -1, 1, 17] {
+                s.edit.values.insert(FEET_FRAMES_START.into(), origin as f64);
+                for value in FeetFramesValue::ALL {
+                    s.edit.grid = GridValue::FeetFrames(value);
+                    for feet in [-64, -2, 0, 1, 2, 4, 7, 12, 128] {
+                        let at = s.parse_position(&format!("{feet}+00"), TimeFormat::FeetFrames).unwrap();
+                        assert_eq!(s.grid_line_at_or_before(at), at, "{rate:?} {value:?} origin {origin}, foot {feet}");
+                        assert_eq!(s.snap_to_grid(at), at);
+                        assert_eq!(s.grid_lines(at - 1, at + 2, 4), [at]);
+                    }
+                }
+            }
+        }
+        let mut s = Session { sample_rate: SampleRate::HZ_48000, frame_rate: FrameRate::Fps29_97, ..Session::default() };
+        s.edit.values.insert(FEET_FRAMES_START.into(), 1.0);
+        s.edit.grid = GridValue::FeetFrames(FeetFramesValue::Foot);
+        assert_eq!(s.snap_to_grid(49_649), 49_650);
+        assert_eq!(s.format_position(49_650, TimeFormat::FeetFrames), "2+00");
     }
 
     /// Drop-frame minute boundaries keep their counter alignment with signed session origins.

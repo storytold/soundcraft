@@ -576,20 +576,7 @@ fn put_clips(s: &mut Session, placed: Vec<(TrackId, Clip)>) {
 
 /// Whether the Edit window shows track `t`: not hidden, and not inside a closed folder at any level.
 pub fn shown(s: &Session, t: &Track) -> bool {
-    !t.hidden && !folder_collapsed(s, t)
-}
-
-/// Hidden because a folder at any level above this track is closed.
-fn folder_collapsed(s: &Session, track: &Track) -> bool {
-    let mut current = track.folder;
-    for _ in 0..64 {
-        let Some(folder) = current.and_then(|folder| s.track(folder)) else { return false };
-        if !folder.folder_open {
-            return true;
-        }
-        current = folder.folder;
-    }
-    false
+    s.track_shown(t)
 }
 
 /// Where the tracks of clips `ids` go when track `from` goes to `to`: each keeps its distance

@@ -104,6 +104,7 @@ impl GridScale {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TimecodeValue {
     Second,
+    /// Five physical frames, independent of skipped drop-frame labels.
     FiveFrames,
     Frame,
     HalfFrame,
@@ -164,7 +165,7 @@ impl TimecodeValue {
     }
 }
 
-/// Feet+Frames Grid/Nudge increments.
+/// Feet+Frames Grid/Nudge increments in physical frames, independent of drop-frame label skips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FeetFramesValue {
     Foot,
@@ -204,12 +205,77 @@ impl FeetFramesValue {
 
     /// Returns the increment length in frames.
     fn frames(self) -> f64 {
+        let (num, den) = self.frame_ratio();
+        num as f64 / den as f64
+    }
+
+    /// Exact numerator and denominator of the increment in physical frames.
+    fn frame_ratio(self) -> (i128, i128) {
         match self {
-            FeetFramesValue::Foot => 16.0,
-            FeetFramesValue::Frame => 1.0,
-            FeetFramesValue::QuarterFrame => 0.25,
-            FeetFramesValue::SubFrame => 0.01,
+            Self::Foot => (16, 1),
+            Self::Frame => (1, 1),
+            Self::QuarterFrame => (1, 4),
+            Self::SubFrame => (1, 100),
         }
+    }
+
+    /// Apply the counter origin in frames before rounding once to the nearest sample.
+    fn sample_line(self, index: i128, sr: SampleRate, rate: FrameRate, origin: i64) -> Samples {
+        let (num, den) = self.frame_ratio();
+        let (rate_num, rate_den) = rate.rational();
+        let frames = index * num - i128::from(origin) * den;
+        let samples = frames * i128::from(sr.hz().max(1)) * i128::from(rate_den);
+        let divisor = den * i128::from(rate_num);
+        let magnitude = (samples.abs() + divisor / 2) / divisor;
+        let rounded = if samples < 0 { -magnitude } else { magnitude };
+        i64::try_from(rounded).unwrap_or(if rounded < 0 { i64::MIN } else { i64::MAX })
+    }
+
+    /// Find a line index using exact frame arithmetic, allowing for whole-sample rounding.
+    fn line_index(self, position: Samples, sr: SampleRate, rate: FrameRate, origin: i64) -> i128 {
+        let (num, den) = self.frame_ratio();
+        let (rate_num, rate_den) = rate.rational();
+        let scale = i128::from(sr.hz().max(1)) * i128::from(rate_den);
+        let frames = i128::from(position) * i128::from(rate_num) + i128::from(origin) * scale;
+        let mut index = (frames * den).div_euclid(scale * num);
+        if self.sample_line(index + 1, sr, rate, origin) <= position {
+            index += 1;
+        }
+        index
+    }
+
+    /// The Feet+Frames line at or before a sample, relative to the counter's frame origin.
+    pub fn line_at_or_before(self, position: Samples, sr: SampleRate, rate: FrameRate, origin: i64) -> Samples {
+        self.sample_line(self.line_index(position, sr, rate, origin), sr, rate, origin)
+    }
+
+    /// The next distinct sample line; subframe increments may share a sample at low sample rates.
+    fn next_line(self, position: Samples, sr: SampleRate, rate: FrameRate, origin: i64) -> Samples {
+        self.sample_line(self.line_index(position, sr, rate, origin) + 1, sr, rate, origin).max(position.saturating_add(1))
+    }
+
+    /// Snap against frame-origin lines, choosing the earlier line when distances are equal.
+    pub fn snap(self, position: Samples, sr: SampleRate, rate: FrameRate, origin: i64) -> Samples {
+        let lo = self.line_at_or_before(position, sr, rate, origin);
+        let hi = self.next_line(lo, sr, rate, origin);
+        if i128::from(position) - i128::from(lo) <= i128::from(hi) - i128::from(position) { lo } else { hi }
+    }
+
+    /// Distinct Feet+Frames sample lines within `[start, end)`, capped at `max`.
+    pub fn lines(self, start: Samples, end: Samples, sr: SampleRate, rate: FrameRate, origin: i64, max: usize) -> Vec<Samples> {
+        let mut out = Vec::new();
+        let mut line = self.line_at_or_before(start, sr, rate, origin);
+        while line < end && out.len() < max {
+            if line >= start {
+                out.push(line);
+            }
+            let next = self.next_line(line, sr, rate, origin);
+            if next <= line {
+                break;
+            }
+            line = next;
+        }
+        out
     }
 }
 
@@ -340,6 +406,9 @@ impl GridValue {
 
     /// Nearest grid line to `pos`.
     pub fn snap(&self, pos: Samples, sr: SampleRate, map: &TempoMap, rate: FrameRate) -> Samples {
+        if let Self::FeetFrames(value) = *self {
+            return value.snap(pos, sr, rate, 0);
+        }
         let lo = self.line_at_or_before(pos, sr, map, rate);
         let hi = self.next_line(lo, sr, map, rate);
         if (pos - lo) <= (hi - pos) { lo } else { hi }
@@ -348,6 +417,7 @@ impl GridValue {
     /// The grid line at or before `pos`.
     pub fn line_at_or_before(&self, pos: Samples, sr: SampleRate, map: &TempoMap, rate: FrameRate) -> Samples {
         match *self {
+            Self::FeetFrames(value) => value.line_at_or_before(pos, sr, rate, 0),
             GridValue::Note { value, dotted, triplet } => {
                 // Float ticks can land a hair either side of a line's own tick.
                 let mut t = map.samples_to_ticks_f(pos, sr).floor() as i64;
@@ -372,6 +442,9 @@ impl GridValue {
     /// Position of absolute grid line `k` (Seconds, Frames, Samples), at an exact multiple of the step
     /// rounded once, so rounding never accumulates from line to line.
     fn abs_line(&self, k: i64, sr: SampleRate, rate: FrameRate) -> Samples {
+        if let Self::FeetFrames(value) = *self {
+            return value.sample_line(i128::from(k), sr, rate, 0);
+        }
         if matches!(self, GridValue::Timecode(TimecodeValue::Second)) && rate.is_drop() {
             return rate.samples_at_frame(Self::drop_second_frame(k, rate), sr);
         }
@@ -465,6 +538,9 @@ impl GridValue {
 
     /// The first grid line strictly after `line`.
     pub fn next_line(&self, line: Samples, sr: SampleRate, map: &TempoMap, rate: FrameRate) -> Samples {
+        if let Self::FeetFrames(value) = *self {
+            return value.next_line(line, sr, rate, 0);
+        }
         if !matches!(self, GridValue::Note { .. }) {
             let next = self.abs_line(self.abs_index_at_or_before(line, sr, rate).saturating_add(1), sr, rate);
             return if next > line { next } else { line.saturating_add(1) };
@@ -476,6 +552,9 @@ impl GridValue {
 
     /// All grid lines within `[start, end)`, capped at `max` lines.
     pub fn lines(&self, start: Samples, end: Samples, sr: SampleRate, map: &TempoMap, rate: FrameRate, max: usize) -> Vec<Samples> {
+        if let Self::FeetFrames(value) = *self {
+            return value.lines(start, end, sr, rate, 0, max);
+        }
         let mut out = Vec::new();
         let mut p = self.line_at_or_before(start, sr, map, rate);
         while p < end && out.len() < max {
@@ -502,6 +581,32 @@ fn step_enum<T: Copy + PartialEq>(values: &[T], value: T, larger: bool) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Frame origins are subtracted before rounding whole frames, quarter frames and subframes.
+    #[test]
+    fn feet_frames_origins_round_only_after_applying_the_frame_offset() {
+        let (sr, rate) = (SampleRate::HZ_48000, FrameRate::Fps29_97);
+        for at in [49_650, 100_901, 177_778] {
+            assert_eq!(FeetFramesValue::Foot.line_at_or_before(at, sr, rate, 1), at);
+            assert_eq!(FeetFramesValue::Foot.snap(at - 1, sr, rate, 1), at);
+        }
+        assert_eq!(FeetFramesValue::QuarterFrame.snap(50_049, sr, rate, 1), 50_050);
+        assert_eq!(FeetFramesValue::SubFrame.lines(49_665, 49_667, sr, rate, 1, 4), [49_666]);
+    }
+
+    /// Dense subframes retain distinct sample lines and remain bounded with extreme signed origins.
+    #[test]
+    fn feet_frames_subframes_handle_dense_steps_and_extreme_origins() {
+        let sr = SampleRate::new(8_000).unwrap();
+        let rate = FrameRate::Fps120;
+        for origin in [i64::MIN, -1, 0, 1, i64::MAX] {
+            assert_eq!(FeetFramesValue::SubFrame.lines(-3, 4, sr, rate, origin, 20), [-3, -2, -1, 0, 1, 2, 3]);
+            for at in [i64::MIN, -1, 0, 1, i64::MAX] {
+                assert_eq!(FeetFramesValue::SubFrame.line_at_or_before(at, sr, rate, origin), at);
+                assert_eq!(FeetFramesValue::SubFrame.snap(at, sr, rate, origin), at);
+            }
+        }
+    }
 
     #[test]
     fn grid_lines_are_their_own_line_at_odd_tempos() {

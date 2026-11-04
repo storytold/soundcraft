@@ -98,15 +98,18 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             let s = e.session_mut();
             s.edit.grid = g;
+            if p.get("value").is_some() || p.get("step").is_some() {
+                s.edit.grid_clips_markers = false;
+            }
             if let Some(scale) = requested_scale {
                 s.edit.grid_clips_markers = scale == GridScale::ClipsMarkers;
             }
-            if let Some(follow) = follow {
-                s.edit.grid_follow_main = follow;
-                if follow {
-                    s.edit.grid_clips_markers = false;
-                }
+            if follow == Some(true) {
+                s.edit.grid_clips_markers = false;
             }
+            s.edit.grid_follow_main = follow.unwrap_or(
+                s.edit.grid_follow_main && !s.edit.grid_clips_markers && g.scale() == grid_scale(s.edit.main_counter),
+            );
             if let Some(l) = lines { s.edit.grid_lines = l }
             let format = if s.edit.grid_clips_markers { GridScale::ClipsMarkers } else { g.scale() };
             Ok(json!({"grid": g.label(), "format": format.id(), "follow_main": s.edit.grid_follow_main}))
@@ -131,9 +134,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             let edit = &mut e.session_mut().edit;
             edit.nudge = g;
-            if let Some(follow) = follow {
-                edit.nudge_follow_main = follow;
-            }
+            edit.nudge_follow_main = follow.unwrap_or(edit.nudge_follow_main && g.scale() == grid_scale(edit.main_counter));
             Ok(json!({"nudge": g.label(), "format": g.scale().id(), "follow_main": edit.nudge_follow_main}))
         }),
     ]
@@ -141,14 +142,22 @@ pub fn specs() -> Vec<CommandSpec> {
 
 const MIN_SPP: f64 = 0.25;
 const MAX_SPP: f64 = 1_000_000.0;
+/// Pixel column an off-screen edit cursor is brought to when zooming (the engine does not know the viewport width).
+const OFFSCREEN_CURSOR_PX: f64 = 500.0;
 
 fn zoom(e: &mut Engine, f: f64, x: Option<f64>) -> Result<Value> {
     let insertion = e.session().edit.selection.start as f64;
     let z = e.zoom_mut();
     let (old, scroll) = (z.samples_per_px, z.scroll as f64);
     let new = (old * f).clamp(MIN_SPP, MAX_SPP);
-    if let Some(x) = x.or_else(|| Some((insertion - scroll) / old).filter(|x| (0.0..4000.0).contains(x))) {
+    // Without a pointer, the edit cursor is the reference: held in place when visible, centred when off-screen.
+    let cursor_x = (insertion - scroll) / old;
+    if let Some(x) = x {
         z.scroll = soundcraft_time::to_samples(scroll + x * (old - new)).clamp(0, MAX_POSITION);
+    } else if (0.0..4000.0).contains(&cursor_x) {
+        z.scroll = soundcraft_time::to_samples(scroll + cursor_x * (old - new)).clamp(0, MAX_POSITION);
+    } else {
+        z.scroll = soundcraft_time::to_samples(insertion - OFFSCREEN_CURSOR_PX * new).clamp(0, MAX_POSITION);
     }
     z.samples_per_px = new;
     Ok(json!({"samples_per_px": new, "scroll": z.scroll}))
@@ -200,7 +209,7 @@ fn requested_grid_value(p: &Value, current: GridValue) -> Option<GridValue> {
     }
 }
 
-/// Parse grid/nudge values.
+/// Parse grid/nudge values; legacy `1` and `1/1` mean a bar, while `whole` means four quarter notes.
 pub fn grid_param(p: &Value, key: &str) -> Option<GridValue> {
     let v = p.get(key)?;
     if let Some(sec) = v.get("seconds").and_then(Value::as_f64) {
@@ -224,8 +233,8 @@ pub fn grid_param(p: &Value, key: &str) -> Option<GridValue> {
     let core = s.replace("triplet", "").replace("dotted", "");
     let core = core.trim().trim_end_matches(['t', '.']);
     let value = match core.trim() {
-        "1 bar" | "bar" => NoteValue::Bar,
-        "1/1" | "whole" | "whole note" => NoteValue::Whole,
+        "1" | "1/1" | "1 bar" | "bar" => NoteValue::Bar,
+        "whole" | "whole note" => NoteValue::Whole,
         "1/2" => NoteValue::Half,
         "1/4" => NoteValue::Quarter,
         "1/8" => NoteValue::Eighth,
@@ -248,12 +257,50 @@ mod tests {
         assert_eq!(grid_param(&json!({"v": "1/8t"}), "v"), Some(GridValue::Note { value: NoteValue::Eighth, dotted: false, triplet: true }));
         assert_eq!(grid_param(&json!({"v": "1/8 triplet"}), "v"), Some(GridValue::Note { value: NoteValue::Eighth, dotted: false, triplet: true }));
         assert_eq!(grid_param(&json!({"v": "1/4."}), "v"), Some(GridValue::Note { value: NoteValue::Quarter, dotted: true, triplet: false }));
-        assert_eq!(grid_param(&json!({"v": "1/1"}), "v"), Some(GridValue::Note { value: NoteValue::Whole, dotted: false, triplet: false }));
+        for alias in ["1", "1/1"] {
+            assert_eq!(grid_param(&json!({"v": alias}), "v"), Some(GridValue::Note { value: NoteValue::Bar, dotted: false, triplet: false }));
+        }
+        assert_eq!(grid_param(&json!({"v": "whole"}), "v"), Some(GridValue::Note { value: NoteValue::Whole, dotted: false, triplet: false }));
         assert_eq!(grid_param(&json!({"v": "whole note"}), "v"), Some(GridValue::Note { value: NoteValue::Whole, dotted: false, triplet: false }));
         assert_eq!(grid_param(&json!({"v": {"seconds": 0.5}}), "v"), Some(GridValue::Seconds(0.5)));
         assert_eq!(grid_param(&json!({"v": {"timecode": "quarter_frame"}}), "v"), Some(GridValue::Timecode(TimecodeValue::QuarterFrame)));
         assert_eq!(grid_param(&json!({"v": {"feet_frames": "foot"}}), "v"), Some(GridValue::FeetFrames(FeetFramesValue::Foot)));
         assert_eq!(grid_param(&json!({"v": "nonsense"}), "v"), None);
+    }
+
+    /// Explicit values and formats retain Follow Main only when the selected scale still matches.
+    #[test]
+    fn explicit_grid_and_nudge_scales_keep_follow_state_consistent() {
+        for command in ["view.grid", "view.nudge"] {
+            let mut e = Engine::default();
+            e.execute("view.main_counter", &json!({"format": "min_secs"})).unwrap();
+            e.execute(command, &json!({"follow_main": true})).unwrap();
+            let result = e.execute(command, &json!({"value": {"seconds": 0.1}})).unwrap();
+            assert_eq!(result["follow_main"], true);
+            let result = e.execute(command, &json!({"value": {"feet_frames": "foot"}})).unwrap();
+            assert_eq!(result["follow_main"], false);
+            e.execute(command, &json!({"follow_main": true})).unwrap();
+            let result = e.execute(command, &json!({"format": "bars_beats"})).unwrap();
+            assert_eq!(result["follow_main"], false);
+        }
+        let mut e = Engine::default();
+        e.execute("view.grid", &json!({"format": "clips_markers"})).unwrap();
+        assert!(!e.session().edit.grid_follow_main);
+        e.execute("view.grid", &json!({"value": {"samples": 100}})).unwrap();
+        assert!(!e.session().edit.grid_clips_markers);
+        assert_eq!(e.session().edit.grid, GridValue::Samples(100));
+    }
+
+    /// Historical bar aliases retain meter-dependent duration; the explicit whole note remains distinct.
+    #[test]
+    fn legacy_bar_aliases_and_whole_notes_remain_distinct_in_odd_meter() {
+        let mut e = Engine::default();
+        e.session_mut().tempo = soundcraft_time::TempoMap::new(120.0, 3, 4).unwrap();
+        for (value, expected) in [("1", 72_000), ("1/1", 72_000), ("whole", 96_000)] {
+            e.execute("view.grid", &json!({"value": value, "follow_main": false})).unwrap();
+            let s = e.session();
+            assert_eq!(s.edit.grid.step_samples(0, s.sample_rate, &s.tempo, s.frame_rate), expected);
+        }
     }
 
     fn view(e: &Engine) -> (f64, Samples) {
@@ -269,6 +316,17 @@ mod tests {
         assert_eq!(view(&e), (50.0, 78_000 - 300 * 50));
         e.execute("view.zoom_by", &json!({"factor": 0.5, "x": 300.0})).unwrap();
         assert_eq!(view(&e), (100.0, 48_000));
+    }
+
+    #[test]
+    fn zoom_in_brings_an_offscreen_edit_cursor_into_view() {
+        let mut e = Engine::default();
+        e.execute("view.zoom_set", &json!({"samples_per_px": 100.0})).unwrap();
+        e.execute("edit.select", &json!({"start": 1_000_000, "end": 1_000_000})).unwrap();
+        e.execute("view.zoom_in", &json!({})).unwrap();
+        let (spp, scroll) = view(&e);
+        let x = (1_000_000.0 - scroll as f64) / spp;
+        assert!((x - OFFSCREEN_CURSOR_PX).abs() < 1.0, "cursor at {x}px");
     }
 
     #[test]
