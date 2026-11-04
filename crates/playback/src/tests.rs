@@ -550,7 +550,7 @@ fn the_audio_state_comes_back_even_when_the_callback_is_released_late_on_another
 }
 
 #[test]
-fn sessions_stop_going_out_once_the_audio_state_has_come_back() {
+fn sessions_stop_going_out_once_the_audio_state_has_come_back_but_removed_editors_still_go() {
     let shared = || {
         Arc::new(Shared {
             position: AtomicI64::new(0),
@@ -571,23 +571,31 @@ fn sessions_stop_going_out_once_the_audio_state_has_come_back() {
     assert!(matches!(out.try_recv(), Ok(Cmd::Session(..))), "sent while the output lives");
     // The device went away: cpal released the callback, which handed its state back.
     drop(ReturnedOnDrop::new(AudioState::new(channel().1, shared(), Arc::clone(&session), 48_000.0, channel().0), back));
+    // A plugin the session no longer has, with its editor: removed while the output was gone.
+    let removed = (TrackId(9), 0);
+    let closed = Arc::new(Mutex::new(None));
+    p.side().shadow.insert(removed, ("clap:gone".into(), 2, true));
+    p.side().editors.insert(removed, Box::new(Watched(Arc::clone(&closed))));
+    assert!(p.has_editor(removed.0, removed.1));
     p.update_session(Arc::clone(&session));
     assert!(out.try_recv().is_err(), "nothing renders it any more");
+    assert!(!p.has_editor(removed.0, removed.1), "the removed plugin's editor handle goes");
+    assert!(closed.lock().unwrap().is_some(), "and its window is closed");
     drop(p);
 }
 
-/// An open editor that records whether it was closed.
-struct Watched(Arc<AtomicBool>);
+/// An open editor that records the thread that closed it.
+struct Watched(Arc<Mutex<Option<std::thread::ThreadId>>>);
 
 impl PluginEditor for Watched {
     fn open(&mut self) -> Result<(), String> {
         Ok(())
     }
     fn close(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
+        *self.0.lock().unwrap() = Some(std::thread::current().id());
     }
     fn is_open(&self) -> bool {
-        !self.0.load(Ordering::SeqCst)
+        self.0.lock().unwrap().is_none()
     }
     fn idle(&mut self) -> Vec<(String, f32)> {
         Vec::new()
@@ -605,11 +613,11 @@ fn dropping_the_player_closes_its_editors_on_the_dropping_thread() {
     let (tx, rx) = channel();
     let (gtx, grx) = channel();
     let p = Player::silent_clock(shared, tx, rx, 48_000, Mutex::new(Side::new(48_000.0, grx)), gtx);
-    let closed = Arc::new(AtomicBool::new(false));
+    let closed = Arc::new(Mutex::new(None));
     p.side().editors.insert((TrackId(1), 0), Box::new(Watched(Arc::clone(&closed))));
     assert!(p.editor_open(TrackId(1), 0));
     drop(p);
-    assert!(closed.load(Ordering::SeqCst), "the editor must be closed before the audio side goes");
+    assert_eq!(*closed.lock().unwrap(), Some(std::thread::current().id()), "closed on the dropping thread, before the audio side goes");
 }
 
 #[test]

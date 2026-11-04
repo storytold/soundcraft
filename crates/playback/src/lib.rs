@@ -392,7 +392,9 @@ impl Player {
     pub fn update_session(&self, s: Arc<Session>) {
         if self.output_released() {
             // Nothing would take the snapshot or its instances; they would pile up until the
-            // player goes. A reconnect makes a new player for the current session.
+            // player goes. A reconnect makes a new player for the current session. The editors
+            // of plugins removed or replaced meanwhile still go.
+            self.side().forget_removed(&s);
             return;
         }
         let (instances, gone) = {
