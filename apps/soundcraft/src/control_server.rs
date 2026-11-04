@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::time::Duration;
 
 /// Longest accepted request line (bytes, without the newline). The largest payload a request
@@ -22,9 +22,15 @@ const MAX_LINE: usize = soundcraft_engine::model::b64::MAX_DECODED_BYTES.div_cei
 const _: () = assert!(MAX_LINE <= 96 << 20);
 /// Connections served at once; further ones get an error line and are closed.
 const MAX_CONNECTIONS: usize = 16;
+/// Requests that may wait for the UI thread. Each connection handles one request at a time, so
+/// this matches [`MAX_CONNECTIONS`] and makes the transport's bound explicit instead of relying
+/// on an unbounded channel.
+const MAX_QUEUED_REQUESTS: usize = MAX_CONNECTIONS;
 
+/// Bind the loopback control listener and return the request receiver. Port 0 picks a free one and the actual port is
+/// printed; bind or spawn failures are logged instead of panicking.
 pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
-    let (tx, rx) = channel::<ControlRequest>();
+    let (tx, rx) = sync_channel::<ControlRequest>(MAX_QUEUED_REQUESTS);
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
@@ -52,7 +58,9 @@ impl Drop for Slot {
     }
 }
 
-fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context) {
+/// Accept until the listener closes, admitting at most [`MAX_CONNECTIONS`] peers; excess peers get one error line.
+/// Each admitted connection is served on its own thread, releasing its slot on exit.
+fn accept_loop(listener: TcpListener, tx: SyncSender<ControlRequest>, ctx: egui::Context) {
     let open = Arc::new(AtomicUsize::new(0));
     for mut stream in listener.incoming().flatten() {
         if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
@@ -94,7 +102,9 @@ fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -
     Ok(true)
 }
 
-fn serve(stream: TcpStream, tx: Sender<ControlRequest>, ctx: egui::Context) {
+/// Answer newline-delimited JSON requests for one connection: bound each line, forward it to the UI thread with a 90
+/// s reply deadline, and stop at EOF, invalid UTF-8 or a closed request queue. Bad JSON still gets an error reply.
+fn serve(stream: TcpStream, tx: SyncSender<ControlRequest>, ctx: egui::Context) {
     let Ok(read) = stream.try_clone() else { return };
     let mut out = stream;
     let mut reader = BufReader::new(read);
@@ -119,15 +129,19 @@ fn serve(stream: TcpStream, tx: Sender<ControlRequest>, ctx: egui::Context) {
                 let method = msg.get("method").and_then(Value::as_str).unwrap_or("").to_string();
                 let params = msg.get("params").cloned().unwrap_or(json!({}));
                 let (req, rrx) = ControlRequest::new(method, params);
-                if tx.send(req).is_err() {
-                    break;
+                match tx.try_send(req) {
+                    Ok(()) => {
+                        ctx.request_repaint();
+                        let mut r = rrx.recv_timeout(Duration::from_secs(90)).unwrap_or_else(|_| json!({"ok": false, "error": "timeout"}));
+                        if let Some(o) = r.as_object_mut() {
+                            o.insert("id".into(), id);
+                        }
+                        r
+                    }
+                    // Refuse rather than grow or block: the UI drains a bounded batch each tick.
+                    Err(TrySendError::Full(_)) => json!({"ok": false, "id": id, "error": "control queue full"}),
+                    Err(TrySendError::Disconnected(_)) => break,
                 }
-                ctx.request_repaint();
-                let mut r = rrx.recv_timeout(Duration::from_secs(90)).unwrap_or_else(|_| json!({"ok": false, "error": "timeout"}));
-                if let Some(o) = r.as_object_mut() {
-                    o.insert("id".into(), id);
-                }
-                r
             }
             Err(e) => json!({"ok": false, "error": format!("bad JSON: {e}")}),
         };
@@ -175,7 +189,7 @@ mod tests {
     fn serve_echo() -> std::net::SocketAddr {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
-        let (tx, rx) = channel::<ControlRequest>();
+        let (tx, rx) = sync_channel::<ControlRequest>(MAX_QUEUED_REQUESTS);
         std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default()));
         std::thread::spawn(move || {
             for req in rx {

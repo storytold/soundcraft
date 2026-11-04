@@ -1,9 +1,10 @@
 //! View menu commands that change saved view state (zoom, rulers, counters, grid/nudge).
+use super::{CommandSpec, always, bad, bool_or, f32_or, f64_or, i64_or, position_param, str_param};
 
-use super::*;
-use crate::cmd;
-use serde_json::json;
-use soundcraft_time::{GridValue, NoteValue, TimeFormat};
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
+use soundcraft_time::TimeFormat;
+use soundcraft_time::{GridValue, MAX_POSITION, NoteValue};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -95,14 +96,22 @@ pub fn specs() -> Vec<CommandSpec> {
 
 const MIN_SPP: f64 = 0.25;
 const MAX_SPP: f64 = 1_000_000.0;
+/// Pixel column an off-screen edit cursor is brought to when zooming (the engine does not know the viewport width).
+const OFFSCREEN_CURSOR_PX: f64 = 500.0;
 
 fn zoom(e: &mut Engine, f: f64, x: Option<f64>) -> Result<Value> {
     let insertion = e.session().edit.selection.start as f64;
     let z = e.zoom_mut();
     let (old, scroll) = (z.samples_per_px, z.scroll as f64);
     let new = (old * f).clamp(MIN_SPP, MAX_SPP);
-    if let Some(x) = x.or_else(|| Some((insertion - scroll) / old).filter(|x| (0.0..4000.0).contains(x))) {
+    // Without a pointer, the edit cursor is the reference: held in place when visible, centred when off-screen.
+    let cursor_x = (insertion - scroll) / old;
+    if let Some(x) = x {
         z.scroll = soundcraft_time::to_samples(scroll + x * (old - new)).clamp(0, MAX_POSITION);
+    } else if (0.0..4000.0).contains(&cursor_x) {
+        z.scroll = soundcraft_time::to_samples(scroll + cursor_x * (old - new)).clamp(0, MAX_POSITION);
+    } else {
+        z.scroll = soundcraft_time::to_samples(insertion - OFFSCREEN_CURSOR_PX * new).clamp(0, MAX_POSITION);
     }
     z.samples_per_px = new;
     Ok(json!({"samples_per_px": new, "scroll": z.scroll}))
@@ -160,7 +169,7 @@ pub fn grid_param(p: &Value, key: &str) -> Option<GridValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use soundcraft_time::Samples;
     #[test]
     fn grid_values_parse() {
         assert_eq!(grid_param(&json!({"v": "1/16"}), "v"), Some(GridValue::Note { value: NoteValue::Sixteenth, dotted: false, triplet: false }));
@@ -183,6 +192,17 @@ mod tests {
         assert_eq!(view(&e), (50.0, 78_000 - 300 * 50));
         e.execute("view.zoom_by", &json!({"factor": 0.5, "x": 300.0})).unwrap();
         assert_eq!(view(&e), (100.0, 48_000));
+    }
+
+    #[test]
+    fn zoom_in_brings_an_offscreen_edit_cursor_into_view() {
+        let mut e = Engine::default();
+        e.execute("view.zoom_set", &json!({"samples_per_px": 100.0})).unwrap();
+        e.execute("edit.select", &json!({"start": 1_000_000, "end": 1_000_000})).unwrap();
+        e.execute("view.zoom_in", &json!({})).unwrap();
+        let (spp, scroll) = view(&e);
+        let x = (1_000_000.0 - scroll as f64) / spp;
+        assert!((x - OFFSCREEN_CURSOR_PX).abs() < 1.0, "cursor at {x}px");
     }
 
     #[test]
