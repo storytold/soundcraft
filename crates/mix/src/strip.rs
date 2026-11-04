@@ -125,6 +125,7 @@ impl DelayLine {
         }
         self.idx = end;
     }
+    /// Zeroes every ring, keeping the capacity and the current delay.
     pub(crate) fn clear(&mut self) {
         self.bufs.iter_mut().for_each(|b| b.fill(0.0));
     }

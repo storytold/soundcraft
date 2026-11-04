@@ -693,6 +693,7 @@ fn locate_while_playing_drops_the_old_position_audio() {
     }
 }
 
+/// An armed track with input connected is heard and metered once playback has stopped.
 #[test]
 fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     use soundcraft_model::{ChannelFormat, TrackKind};
@@ -729,27 +730,35 @@ struct Calls {
     in_call: AtomicBool,
 }
 
+/// A hosted plugin wrapping `inner` that records its calls in `calls`.
 struct Flusher {
     inner: Box<dyn soundcraft_dsp::Plugin>,
     calls: Arc<Calls>,
 }
 
 impl soundcraft_dsp::Plugin for Flusher {
+    /// Delegates to the wrapped plugin.
     fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
         self.inner.info()
     }
+    /// Delegates to the wrapped plugin.
     fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
         self.inner.prepare(sr, mb, ch);
     }
+    /// Delegates to the wrapped plugin.
     fn reset(&mut self) {
         self.inner.reset();
     }
+    /// Delegates to the wrapped plugin.
     fn set_param(&mut self, id: &str, v: f32) -> bool {
         self.inner.set_param(id, v)
     }
+    /// Delegates to the wrapped plugin.
     fn param(&self, id: &str) -> Option<f32> {
         self.inner.param(id)
     }
+    /// Counts the call, clears the pending want and processes through the wrapped plugin; asserts it
+    /// does not overlap `flush`.
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
         assert!(!self.calls.in_call.swap(true, Ordering::SeqCst), "process overlapped another call");
         self.calls.process.fetch_add(1, Ordering::Relaxed);
@@ -758,6 +767,8 @@ impl soundcraft_dsp::Plugin for Flusher {
         self.inner.process(io, frames);
         self.calls.in_call.store(false, Ordering::SeqCst);
     }
+    /// Counts a flush only if an edit was wanted, and consumes the want; asserts it does not overlap
+    /// `process`.
     fn flush(&mut self) {
         assert!(!self.calls.in_call.swap(true, Ordering::SeqCst), "flush overlapped another call");
         if self.calls.wants_flush.swap(false, Ordering::Relaxed) {
@@ -768,12 +779,15 @@ impl soundcraft_dsp::Plugin for Flusher {
 }
 
 impl Calls {
+    /// Number of `process` calls.
     fn processes(&self) -> usize {
         self.process.load(Ordering::Relaxed)
     }
+    /// Number of `flush` calls that found an edit to answer.
     fn flushes(&self) -> usize {
         self.flush.load(Ordering::Relaxed)
     }
+    /// Gives the plugin an editor edit to flush.
     fn want(&self) {
         self.wants_flush.store(true, Ordering::Relaxed);
     }
@@ -812,6 +826,7 @@ fn flush_rig(arm: bool) -> (AudioState, Sender<Cmd>, Arc<Shared>, [Arc<Calls>; 2
     (st, tx, shared, calls)
 }
 
+/// With the transport stopped, a requested flush is answered once without processing or sound.
 #[test]
 fn stopped_transport_serves_flush_requests() {
     let (mut st, _tx, shared, calls) = flush_rig(false);
@@ -829,6 +844,7 @@ fn stopped_transport_serves_flush_requests() {
     assert_eq!((calls[1].flushes(), calls[1].processes()), (0, 0), "a plugin that did not ask is left alone");
 }
 
+/// While playing, `process` answers the request and no `flush` call is made.
 #[test]
 fn playing_does_not_flush_because_processing_answers() {
     let (mut st, tx, _shared, calls) = flush_rig(false);
@@ -840,6 +856,7 @@ fn playing_does_not_flush_because_processing_answers() {
     assert_eq!(calls[0].flushes(), 0, "and process() applied the edit, no flush call");
 }
 
+/// Input monitoring with the transport stopped still serves flush requests.
 #[test]
 fn monitoring_but_stopped_still_flushes() {
     let (mut st, tx, shared, calls) = flush_rig(true);
@@ -854,6 +871,8 @@ fn monitoring_but_stopped_still_flushes() {
     assert_eq!(calls[0].flushes(), 0);
 }
 
+/// Over alternating play and stop blocks, each stopped request gets exactly one flush and no
+/// process, and each playing block processes without flushing.
 #[test]
 fn alternating_play_and_stop_answers_each_stopped_request_once_and_never_flushes_playing() {
     let (mut st, tx, _shared, calls) = flush_rig(false);

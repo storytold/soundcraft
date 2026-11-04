@@ -178,6 +178,8 @@ unsafe extern "C" fn stop_processing(p: *const clap_plugin) {
     unsafe { fx(p) }.processing = false;
 }
 
+/// Zeroes the level and calls `clap_host.request_process` (not `request_flush`), which the host
+/// is expected to ignore.
 unsafe extern "C" fn reset(p: *const clap_plugin) {
     let f = unsafe { fx(p) };
     f.level = 0.0;
@@ -270,6 +272,8 @@ unsafe fn push_gui_edit(out_events: *const clap_output_events) {
     assert!(unsafe { (out.try_push.unwrap())(out_events, &note.header) });
 }
 
+/// Asserts the plugin is in the processing state, marks the call as running so `params.flush` can
+/// detect an overlap, runs `process_block`, and counts the call for the plain gain fixture.
 unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> clap_process_status {
     let f = unsafe { fx(p) };
     let pr = unsafe { &*pr };
@@ -284,6 +288,10 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
     status
 }
 
+/// The audio work of one `process` call: renders the wide variant (and returns early), or the synth
+/// or gain variant, which also applies the input events and reports a pending GUI edit as an output
+/// event; returns an error status on a wrong port count. Split from `process` so that wraps it with
+/// the overlap flag and the counters.
 unsafe fn process_block(f: &mut Fx, pr: &clap_process) -> clap_process_status {
     let n = pr.frames_count as usize;
     let ev = unsafe { &*pr.in_events };
@@ -395,6 +403,8 @@ unsafe extern "C" fn params_value_to_text(_p: *const clap_plugin, id: clap_id, v
     true
 }
 
+/// Asserts it overlaps neither `process` nor the processing state, counts the call for the plain gain
+/// fixture, reports a pending GUI edit as an output event, then applies the input parameter events.
 unsafe extern "C" fn params_flush(p: *const clap_plugin, inp: *const clap_input_events, out: *const clap_output_events) {
     let f = unsafe { fx(p) };
     assert!(!IN_PROCESS.load(Ordering::SeqCst), "params.flush overlapped process");
@@ -554,6 +564,8 @@ unsafe extern "C" fn gui_suggest_title(p: *const clap_plugin, title: *const c_ch
     assert!(!unsafe { CStr::from_ptr(title) }.to_bytes().is_empty());
 }
 
+/// Marks the GUI visible with a pending edit, asks the host to flush it through
+/// `params.request_flush`, then exercises the host GUI extension.
 unsafe extern "C" fn gui_show(p: *const clap_plugin) -> bool {
     let f = unsafe { fx(p) };
     assert!(f.gui_created, "show without create");
@@ -647,6 +659,8 @@ unsafe extern "C" fn factory_desc(_f: *const clap_plugin_factory, i: u32) -> *co
     }
 }
 
+/// Creates the fixture instance for a plugin id (gain, synth or one of the wide variants); null for
+/// an unknown id.
 unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const clap_host, id: *const c_char) -> *const clap_plugin {
     let id = unsafe { CStr::from_ptr(id) };
     let (desc, synth, wide) = if id == c"org.soundcraft.test.gain" {

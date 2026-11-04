@@ -8,6 +8,7 @@ use soundcraft_dsp::Plugin;
 
 const GAIN: &str = "clap:org.soundcraft.test.gain";
 
+/// Runs one 64-frame stereo block of ones through `p` and returns the output.
 fn block(p: &mut Box<dyn Plugin>) -> Vec<Vec<f32>> {
     let mut io = vec![vec![1.0f32; 64]; 2];
     p.process(&mut io, 64);
@@ -23,6 +24,7 @@ fn counters() -> (u64, u64) {
     (it.next().unwrap_or(0), it.next().unwrap_or(0))
 }
 
+/// A prepared gain fixture (48 kHz, 64 frames, 2 channels) and its editor handle, not yet opened.
 fn gain_with_editor() -> (Box<dyn Plugin>, Box<dyn soundcraft_dsp::PluginEditor>) {
     let mut p = soundcraft_clap_host::create(GAIN).expect("fixture");
     p.prepare(48_000.0, 64, 2);
@@ -133,6 +135,8 @@ fn editor_alongside_block_and_flush() {
     drop(p);
 }
 
+/// Custom harness entry point: answers nextest's `--list`, then drives the editor lifecycle on the main
+/// thread and runs the flush scenarios above.
 fn main() {
     // nextest lists custom-harness tests with `--list`; each binary here is one test.
     if std::env::args().any(|a| a == "--list") {

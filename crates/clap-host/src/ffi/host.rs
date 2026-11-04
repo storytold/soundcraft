@@ -33,6 +33,8 @@ pub(crate) struct HostState {
 }
 
 impl Default for HostState {
+    /// All flags cleared, and an empty edit queue allocated up front with room for `EDIT_CAP` edits, so
+    /// pushing from the audio thread never grows it.
     fn default() -> Self {
         HostState {
             restart: AtomicBool::new(false),
@@ -104,6 +106,7 @@ unsafe extern "C" fn host_params_rescan(host: *const clap_host, _flags: clap_par
 
 unsafe extern "C" fn host_params_clear(_host: *const clap_host, _id: clap_id, _flags: clap_param_clear_flags) {}
 
+/// `clap_host_params.request_flush`: raises `HostState::flush` for the audio thread to answer.
 unsafe extern "C" fn host_params_request_flush(host: *const clap_host) {
     // Only raises a flag (lock-free, no allocation, never calls into the plugin), so it is safe
     // from any thread, including from inside `process` or `params.flush`.

@@ -511,6 +511,8 @@ fn render_block(eng: &mut MixEngine, s: &Session, pos: i64) -> f32 {
     out[0][500]
 }
 
+/// External instances are adopted into their slot, wrong-channel ones are retired, and removing an
+/// insert or leaving an instance unclaimed retires it instead of dropping it on the audio thread.
 #[test]
 fn external_instances_are_adopted_and_retired() {
     let (mut s, t) = session_with_dc(0.5, 48_000);
@@ -562,12 +564,15 @@ struct FlushCounts {
 }
 
 impl FlushCounts {
+    /// Number of `flush` calls the plugin answered.
     fn flushes(&self) -> usize {
         self.flush.load(std::sync::atomic::Ordering::Relaxed)
     }
+    /// Number of `process` calls.
     fn processes(&self) -> usize {
         self.process.load(std::sync::atomic::Ordering::Relaxed)
     }
+    /// Gives the plugin an editor edit to flush (its next `flush` consumes it).
     fn want(&self) {
         self.wants_flush.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -582,21 +587,28 @@ struct Flusher {
 }
 
 impl Plugin for Flusher {
+    /// Delegates to the wrapped plugin.
     fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
         self.inner.info()
     }
+    /// Delegates to the wrapped plugin.
     fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
         self.inner.prepare(sr, mb, ch);
     }
+    /// Delegates to the wrapped plugin.
     fn reset(&mut self) {
         self.inner.reset();
     }
+    /// Delegates to the wrapped plugin.
     fn set_param(&mut self, id: &str, v: f32) -> bool {
         self.inner.set_param(id, v)
     }
+    /// Delegates to the wrapped plugin.
     fn param(&self, id: &str) -> Option<f32> {
         self.inner.param(id)
     }
+    /// Counts the call and processes through the wrapped plugin; with `nan` the output is then
+    /// overwritten with NaN.
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
         self.counts.process.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.inner.process(io, frames);
@@ -604,6 +616,7 @@ impl Plugin for Flusher {
             io.iter_mut().for_each(|c| c.iter_mut().take(frames).for_each(|x| *x = f32::NAN));
         }
     }
+    /// Counts a flush only if an edit was wanted, and consumes the want.
     fn flush(&mut self) {
         if self.counts.wants_flush.swap(false, std::sync::atomic::Ordering::Relaxed) {
             self.counts.flush.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -611,10 +624,12 @@ impl Plugin for Flusher {
     }
 }
 
+/// A [`Flusher`] around a `gain` plugin for `slot` of `track`, with its counters.
 fn flusher(track: TrackId, slot: usize, ch: usize) -> (PreparedInstance, Arc<FlushCounts>) {
     flusher_with(track, slot, ch, false)
 }
 
+/// Like [`flusher`], with `nan` choosing whether the plugin puts out NaN (and so fails its slot).
 fn flusher_with(track: TrackId, slot: usize, ch: usize, nan: bool) -> (PreparedInstance, Arc<FlushCounts>) {
     let counts = Arc::new(FlushCounts::default());
     let mut inner = soundcraft_dsp::create("gain").unwrap();
@@ -623,6 +638,8 @@ fn flusher_with(track: TrackId, slot: usize, ch: usize, nan: bool) -> (PreparedI
     (PreparedInstance { track, slot, id: "clap:test.flush".into(), ch, plugin }, counts)
 }
 
+/// `flush_requested` reaches exactly the plugins that asked (instrument, track, master and aux
+/// inserts), answers each request once, and never processes.
 #[test]
 fn flush_requested_reaches_the_plugins_that_asked_without_processing() {
     // An instrument, a track insert, a master insert and an aux insert, with the transport
@@ -663,6 +680,7 @@ fn flush_requested_reaches_the_plugins_that_asked_without_processing() {
     assert_eq!(after, processed, "flushing never processes");
 }
 
+/// A slot that failed is skipped by `flush_requested` until `reset` brings it back.
 #[test]
 fn a_failed_slot_is_not_flushed() {
     let (mut s, a) = session_with_dc(0.5, 48_000);

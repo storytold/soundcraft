@@ -318,6 +318,8 @@ impl Instance {
         }
     }
 
+    /// Calls the plugin's `clap_plugin.reset` (clears its audio state). Does nothing on an
+    /// inactive instance or for a plugin without `reset`.
     pub fn reset(&mut self) {
         if self.active
             && let Some(f) = self.vt().reset
