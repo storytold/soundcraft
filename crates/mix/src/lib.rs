@@ -270,6 +270,17 @@ impl MixEngine {
         self.main_meter.reset_levels();
     }
 
+    /// Lets every plugin that asked for it apply its own parameter changes without processing any
+    /// audio (`Plugin::flush`, CLAP `request_flush`): what a transport that is not running needs,
+    /// since `render` is not called then. Audio thread, once per callback; no allocation, never
+    /// blocks (at most a `try_lock` on a CLAP plugin's editor-edit queue). Call it outside `render` (which takes strips out of the map while it runs). Covers
+    /// the instruments and inserts of every track, aux and master strip.
+    pub fn flush_requested(&mut self) {
+        for strip in self.strips.values_mut() {
+            strip.flush_plugins();
+        }
+    }
+
     /// Bring plugin instances in line with the session (creates/destroys as needed). Allocates;
     /// call outside the realtime thread when the document changes, or let `render` do it.
     pub fn sync(&mut self, s: &Session) {

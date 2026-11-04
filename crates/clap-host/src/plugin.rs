@@ -258,6 +258,19 @@ impl Plugin for ClapPlugin {
         }
     }
 
+    /// Answers a pending `request_flush` with `params.flush`, at most once per request. Does nothing
+    /// while the plugin is inactive (the request is kept until activation) or when none is pending.
+    fn flush(&mut self) {
+        // Inactive: keep the request until the plugin is activated.
+        if !self.inst.is_active() {
+            return;
+        }
+        // Consume before calling, so a request made by the plugin during the flush is kept.
+        if self.inst.take_flush_request() {
+            self.inst.flush();
+        }
+    }
+
     fn latency(&self) -> usize {
         self.latency
     }

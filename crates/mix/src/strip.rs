@@ -125,12 +125,23 @@ impl DelayLine {
         }
         self.idx = end;
     }
+    /// Zeroes every ring, keeping the capacity and the current delay.
     pub(crate) fn clear(&mut self) {
         self.bufs.iter_mut().for_each(|b| b.fill(0.0));
     }
 }
 
 impl Strip {
+    /// Lets the instrument and the inserts that asked for it apply their own parameter changes
+    /// (`Plugin::flush`). Failed slots stay out of the signal path, so they are skipped here too.
+    pub(crate) fn flush_plugins(&mut self) {
+        for slot in self.instrument.iter_mut().chain(self.plugins.iter_mut().flatten()) {
+            if !slot.failed {
+                slot.plugin.flush();
+            }
+        }
+    }
+
     pub(crate) fn new() -> Self {
         Strip {
             buf: Vec::new(),

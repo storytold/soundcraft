@@ -69,3 +69,8 @@ sync_github_name = true
 [people.kk376]
 real_name = "Kushagra Kumar"
 sync_github_name = true
+
+[people.morgan-voltz]
+real_name = "Morgan Voltz"
+display_name = "Morgan Voltz"
+sync_github_name = false
