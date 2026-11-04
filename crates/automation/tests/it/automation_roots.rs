@@ -368,7 +368,7 @@ fn the_record_folder_is_checked_as_it_is_stored() {
         use std::os::unix::fs::symlink;
         let tail = "/link";
         let pad_len = 199 - tail.chars().count();
-        let pad: String = std::iter::repeat('d').take(pad_len).collect();
+        let pad = "d".repeat(pad_len);
         let rel = format!("{pad}{tail}");
         assert_eq!(rel.chars().count(), 199, "the stored path is 199 characters");
         let dir = cwd.join(&pad);
