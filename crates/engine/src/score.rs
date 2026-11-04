@@ -745,7 +745,7 @@ mod tests {
 
     /// Note onsets (pitch count of every chord that is not a tie continuation).
     fn note_starts(parts: &[Part]) -> usize {
-        parts.iter().flat_map(|p| &p.measures).flat_map(|m| &m.items).filter(|i| !i.tie_stop.is_empty()).map(|i| i.pitches.len()).sum()
+        parts.iter().flat_map(|p| &p.measures).flat_map(|m| &m.items).filter(|i| i.tie_stop.is_empty()).map(|i| i.pitches.len()).sum()
     }
 
     #[test]
