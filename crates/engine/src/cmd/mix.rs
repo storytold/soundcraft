@@ -226,6 +226,16 @@ fn volume(e: &mut Engine, p: &Value) -> Result<Value> {
         return Err(bad("mix.volume", "`db` or `delta_db` required"));
     }
     let s = e.session_mut();
+    // The fader stops at -144 and +12 dB. The reply says when a value was held there: +15 dB used
+    // to play at +12 with nothing to show it.
+    let clamped = std::cell::Cell::new(false);
+    let fader = |db: f32| {
+        if !(-144.0..=12.0).contains(&db) {
+            clamped.set(true);
+        }
+        db.clamp(-144.0, 12.0)
+    };
+    let mut volumes = Vec::new();
     // Tracks already moved as a group sibling of an earlier target must not move again.
     let mut done: Vec<TrackId> = Vec::new();
     for t in &tracks {
@@ -239,11 +249,12 @@ fn volume(e: &mut Engine, p: &Value) -> Result<Value> {
             (None, Some(d)) => cur + d as f32,
             _ => cur,
         };
-        let new = if new.is_finite() { new.clamp(-144.0, 12.0) } else { cur };
+        let new = if new.is_finite() { fader(new) } else { cur };
         let d = new - cur;
-        set_grouped(s, *t, "volume", |tr| tr.mixer.volume_db = if tr.id == *t { new } else { (tr.mixer.volume_db + d).clamp(-144.0, 12.0) });
+        set_grouped(s, *t, "volume", |tr| tr.mixer.volume_db = if tr.id == *t { new } else { fader(tr.mixer.volume_db + d) });
+        volumes.push(json!({"track": t.0, "db": new}));
     }
-    Ok(json!({"tracks": tracks.len()}))
+    Ok(json!({"tracks": tracks.len(), "volumes": volumes, "clamped": clamped.get()}))
 }
 
 fn pan(e: &mut Engine, p: &Value) -> Result<Value> {

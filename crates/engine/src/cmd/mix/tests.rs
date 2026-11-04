@@ -294,6 +294,23 @@ fn volume_absolute_on_a_whole_group_keeps_offsets() {
     assert_eq!(volumes(&e), [-10.0, -12.0]);
 }
 
+/// The fader stops at +12 dB; the reply says what each track got, and when a value was held at a stop.
+#[test]
+fn volume_held_at_the_fader_stop_is_reported() {
+    let mut e = grouped_demo();
+    let r = e.execute("mix.volume", &json!({"tracks": [3], "db": -6.0})).unwrap();
+    assert_eq!((r["volumes"].clone(), r["clamped"].clone()), (json!([{"track": 3, "db": -6.0}]), json!(false)));
+    let r = e.execute("mix.volume", &json!({"tracks": [3], "db": 15.0})).unwrap();
+    assert_eq!((r["volumes"].clone(), r["clamped"].clone()), (json!([{"track": 3, "db": 12.0}]), json!(true)));
+    assert_eq!(volumes(&e), [12.0, 12.0]);
+    // A group member held at the stop counts too.
+    let mut e = grouped_demo();
+    e.session_mut().track_mut(TrackId(6)).unwrap().mixer.volume_db = 6.0;
+    let r = e.execute("mix.volume", &json!({"tracks": [3], "db": 10.0})).unwrap();
+    assert_eq!(r["clamped"], json!(true));
+    assert_eq!(volumes(&e), [10.0, 12.0]);
+}
+
 #[test]
 fn clear_with_unknown_param_keeps_lanes() {
     let (mut e, t) = tone_session(&[(0, -6.0), (100, -3.0)]);
