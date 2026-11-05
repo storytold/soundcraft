@@ -70,19 +70,23 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     egui::Grid::new(("pg", tid.0, slot)).num_columns(3).show(ui, |ui| {
+                        // Built-in parameters are translated; a third-party plugin supplies its own names.
+                        let localize_params = !soundcraft_mix::is_third_party(&ins.plugin);
                         for p in info.params {
                             let v = ins.params.get(p.id).copied().unwrap_or(p.default);
-                            let label = ui.label(crate::localization::text(p.name));
+                            let label_text = if localize_params { crate::localization::text(p.name) } else { p.name };
+                            let label = ui.label(label_text);
                             let mut x = v;
                             let resp = if !p.choices.is_empty() {
                                 let mut idx = x.round().max(0.0) as usize;
-                                let r = craft_ui::ComboBox::from_id_salt(("pc", tid.0, slot, p.id))
-                                    .selected_text(crate::localization::text(p.choices.get(idx).copied().unwrap_or("?")))
-                                    .show_ui(ui, |ui| {
-                                        for (i, c) in p.choices.iter().enumerate() {
-                                            ui.selectable_value(&mut idx, i, crate::localization::text(c));
-                                        }
-                                    });
+                                let selected = p.choices.get(idx).copied().unwrap_or("?");
+                                let selected_text = if localize_params { crate::localization::text(selected) } else { selected };
+                                let r = craft_ui::ComboBox::from_id_salt(("pc", tid.0, slot, p.id)).selected_text(selected_text).show_ui(ui, |ui| {
+                                    for (i, c) in p.choices.iter().enumerate() {
+                                        let choice_text = if localize_params { crate::localization::text(c) } else { c };
+                                        ui.selectable_value(&mut idx, i, choice_text);
+                                    }
+                                });
                                 x = idx as f32;
                                 r.response
                             } else {

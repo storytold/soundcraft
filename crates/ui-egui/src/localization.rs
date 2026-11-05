@@ -20,6 +20,7 @@ pub enum Language {
 }
 
 impl Language {
+    /// All supported languages, in the order they are shown in the language menu.
     pub const ALL: [Self; 2] = [Self::English, Self::PortugueseBrazil];
 
     /// Stable language tag used in preferences and control commands.
@@ -62,9 +63,11 @@ pub fn text(source: &str) -> &str {
     CURRENT_LANGUAGE.with(|language| language.get().text(source))
 }
 
+/// Guard that restores the previously active language when dropped.
 pub struct LanguageScope(Language);
 
 impl Drop for LanguageScope {
+    /// Restores the language that was active when the scope was created.
     fn drop(&mut self) {
         CURRENT_LANGUAGE.with(|language| language.set(self.0));
     }
@@ -81,10 +84,12 @@ pub struct Arg {
 }
 
 impl Arg {
+    /// Builds the argument, pre-rendering the fixed-precision variants the formatter may select.
     pub fn new<T: std::fmt::Display + ?Sized>(value: &T) -> Self {
         Self { text: format!("{value}"), fixed: [format!("{value:.0}"), format!("{value:.1}"), format!("{value:.2}"), format!("{value:.3}")] }
     }
 
+    /// Renders the argument for the given precision specifier, if any.
     fn render(&self, spec: Option<&str>) -> &str {
         match spec.and_then(|spec| spec.strip_prefix('.')) {
             Some(digits) => digits.parse::<usize>().ok().and_then(|n| self.fixed.get(n)).map_or(self.text.as_str(), String::as_str),
@@ -104,6 +109,7 @@ pub fn format_named(source: &str, args: &[(&str, Arg)]) -> String {
     format_template(source, &[], args, false)
 }
 
+/// Shared implementation behind `format_positional` and `format_named`.
 fn format_template(source: &str, positional: &[Arg], named: &[(&str, Arg)], positional_mode: bool) -> String {
     let template = text(source);
     let mut out = String::with_capacity(template.len());

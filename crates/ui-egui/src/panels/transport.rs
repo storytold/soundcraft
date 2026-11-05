@@ -7,7 +7,7 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
     }
     let t = Tokens::current();
     egui::Window::new(crate::localization::text("Transport"))
-        .id(egui::Id::new("Transport"))
+        .id(egui::Id::unique("Transport"))
         .open(&mut open)
         .resizable(false)
         .default_pos(pos2(400.0, 500.0))
@@ -80,7 +80,7 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                         ("Loop Rec", loop_rec, "options.loop_record"),
                         ("Pre/Post", prepost, "options.pre_post_roll"),
                     ] {
-                        if ui.selectable_label(on, label).clicked() {
+                        if ui.selectable_label(on, crate::localization::text(label)).clicked() {
                             let _ = app.run(cmd, json!({}));
                         }
                     }
@@ -100,7 +100,7 @@ pub(super) fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     egui::Window::new(crate::localization::text("Big Counter"))
-        .id(egui::Id::new("Big Counter"))
+        .id(egui::Id::unique("Big Counter"))
         .open(&mut open)
         .default_size(vec2(520.0, 110.0))
         .show(ctx, |ui| {

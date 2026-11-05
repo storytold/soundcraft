@@ -323,6 +323,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
     })
 }
 
+/// Translates the formatted messages, whose templates are chosen at run time.
 fn menu_translate(source: &str) -> Option<&'static str> {
     Some(match source {
         "1" => "1",
@@ -969,7 +970,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "{} for {}" => "{} para {}",
         "{} @ {} Hz" => "{} a {} Hz",
         "{} samples" => "{} amostras",
-        "{} · {} Hz · {} ch · {buf}" => "{} · {} Hz · {} canais · {buf}",
+        "{} · {} Hz · {} ch · {}" => "{} · {} Hz · {} canais · {}",
         "{} · {} Hz · {} ch" => "{} · {} Hz · {} canais",
         "{} audio clips checked · {} issues" => "{} clipes de áudio verificados · {} problemas",
         "{} ch" => "{} canais",
@@ -1173,6 +1174,9 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Unknown vendor" => "Fabricante desconhecido",
         "samples" => "amostras",
         "{v} {unit}" => "{v} {unit}",
+        "Loop Rec" => "Gravação em loop",
+        "MIDI Merge" => "Mesclagem MIDI",
+        "Pre/Post" => "Pré/Pós",
         _ => return None,
     })
 }

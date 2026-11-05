@@ -32,7 +32,7 @@ fn video_status_text(app: &SoundApp, pic: Option<&(MovieKey, Result<String, Stri
 
 fn draw_video_surface(app: &SoundApp, painter: &egui::Painter, img: Rect, pic: Option<&(MovieKey, Result<String, String>, f64, f64)>, on: bool) {
     let msg = if !on {
-        Some("Video Track Offline".to_string())
+        Some(crate::localization::text("Video Track Offline").to_string())
     } else {
         match pic {
             None => None,
@@ -73,7 +73,7 @@ fn video(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = true;
     let mut burn = app.ui.video_burn_in;
     egui::Window::new(crate::localization::text("Video"))
-        .id(egui::Id::new("Video"))
+        .id(egui::Id::unique("Video"))
         .open(&mut open)
         .default_size(vec2(480.0, 480.0 / aspect + 28.0))
         .resizable(true)
@@ -127,7 +127,7 @@ fn universe(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = true;
     let mut locate = None;
     egui::Window::new(crate::localization::text("Video Universe"))
-        .id(egui::Id::new("Video Universe"))
+        .id(egui::Id::unique("Video Universe"))
         .open(&mut open)
         .default_size(vec2(640.0, 90.0))
         .resizable(true)

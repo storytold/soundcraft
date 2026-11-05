@@ -41,7 +41,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     egui::Window::new(crate::localization::text("Score Editor"))
-        .id(egui::Id::new("Score Editor"))
+        .id(egui::Id::unique("Score Editor"))
         .open(&mut open)
         .default_size(vec2(900.0, 340.0))
         .show(ctx, |ui| {

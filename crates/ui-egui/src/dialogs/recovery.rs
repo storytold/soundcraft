@@ -10,7 +10,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = true;
     let mut recover = None;
     egui::Window::new(egui::RichText::new(crate::localization::text("Recover Unsaved Work")).font(bold(13.0)))
-        .id(egui::Id::new("Recover Unsaved Work"))
+        .id(egui::Id::unique("Recover Unsaved Work"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)

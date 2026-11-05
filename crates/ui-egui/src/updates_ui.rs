@@ -105,7 +105,7 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
     if app.updates_rt.manual_window_open {
         let mut open = true;
         egui::Window::new(crate::localization::text("Check for Updates"))
-            .id(egui::Id::new("Check for Updates"))
+            .id(egui::Id::unique("Check for Updates"))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)

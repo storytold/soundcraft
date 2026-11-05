@@ -447,7 +447,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
     let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     egui::Window::new(egui::RichText::new(crate::localization::text(&title)).font(bold(13.0)))
-        .id(egui::Id::new(&title))
+        .id(egui::Id::unique(&title))
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, -80.0))

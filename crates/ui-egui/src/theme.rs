@@ -513,9 +513,10 @@ mod tests {
         assert_eq!(UiState::default().theme, ThemeMode::Dark);
         assert_eq!(UiState::default().language, crate::localization::Language::English);
         // Prefs saved before the setting existed load as Dark.
-        let old: UiState = serde_json::from_value(json!({"show_tracks_list": true})).unwrap_or_default();
+        let old: UiState = serde_json::from_value(json!({"show_tracks_list": false})).unwrap();
         assert_eq!(old.theme, ThemeMode::Dark);
         assert_eq!(old.language, crate::localization::Language::English);
+        assert!(!old.show_tracks_list);
     }
 
     #[test]

@@ -8,7 +8,7 @@ pub(super) fn about(app: &mut SoundApp, ctx: &egui::Context) {
     }
     let tab_id = egui::Id::unique("about_tab");
     egui::Window::new(crate::localization::text("About SoundCraft"))
-        .id(egui::Id::new("About SoundCraft"))
+        .id(egui::Id::unique("About SoundCraft"))
         .open(&mut open)
         .default_size(vec2(820.0, 420.0))
         .collapsible(false)
@@ -45,7 +45,7 @@ pub(super) fn session_info(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     egui::Window::new(crate::localization::text("Session Info"))
-        .id(egui::Id::new("Session Info"))
+        .id(egui::Id::unique("Session Info"))
         .open(&mut open)
         .default_size(vec2(480.0, 360.0))
         .show(ctx, |ui| {

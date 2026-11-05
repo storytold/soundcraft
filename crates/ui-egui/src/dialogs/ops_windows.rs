@@ -95,7 +95,7 @@ fn beat_detective(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     egui::Window::new(crate::localization::text("Beat Detective"))
-        .id(egui::Id::new("Beat Detective"))
+        .id(egui::Id::unique("Beat Detective"))
         .open(&mut open)
         .default_size(vec2(360.0, 220.0))
         .show(ctx, |ui| {
@@ -158,7 +158,7 @@ fn tempo_ops(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     egui::Window::new(crate::localization::text("Tempo Operations"))
-        .id(egui::Id::new("Tempo Operations"))
+        .id(egui::Id::unique("Tempo Operations"))
         .open(&mut open)
         .default_size(vec2(360.0, 200.0))
         .show(ctx, |ui| {
@@ -196,7 +196,7 @@ fn time_ops(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     egui::Window::new(crate::localization::text("Time Operations"))
-        .id(egui::Id::new("Time Operations"))
+        .id(egui::Id::unique("Time Operations"))
         .open(&mut open)
         .default_size(vec2(360.0, 200.0))
         .show(ctx, |ui| {
@@ -249,7 +249,7 @@ fn midi_ops(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     egui::Window::new(crate::localization::text("MIDI Operations"))
-        .id(egui::Id::new("MIDI Operations"))
+        .id(egui::Id::unique("MIDI Operations"))
         .open(&mut open)
         .default_size(vec2(360.0, 220.0))
         .show(ctx, |ui| {
@@ -302,7 +302,7 @@ fn rtp(app: &mut SoundApp, ctx: &egui::Context) {
     let targets = app.engine.target_tracks();
     sync_rtp_form(&mut app.ops, app.engine.session(), targets, ctx.dragged_id().is_some());
     egui::Window::new(crate::localization::text("MIDI Real-Time Properties"))
-        .id(egui::Id::new("MIDI Real-Time Properties"))
+        .id(egui::Id::unique("MIDI Real-Time Properties"))
         .open(&mut open)
         .default_size(vec2(340.0, 200.0))
         .show(ctx, |ui| {

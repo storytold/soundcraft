@@ -88,7 +88,7 @@ fn win(ctx: &egui::Context, open: &mut bool, title: &str, size: egui::Vec2, body
     }
     // The title is translated for display, but the id keeps the English source so a language
     // switch does not move or resize the window.
-    egui::Window::new(crate::localization::text(title)).id(egui::Id::new(title)).open(open).default_size(size).show(ctx, body);
+    egui::Window::new(crate::localization::text(title)).id(egui::Id::unique(title)).open(open).default_size(size).show(ctx, body);
 }
 
 fn automation(app: &mut SoundApp, ctx: &egui::Context) {
@@ -339,9 +339,11 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new(crate::localization::text("Workspace")).id(egui::Id::new("Workspace")).open(&mut open).default_size(vec2(460.0, 420.0)).show(
-        ctx,
-        |ui| {
+    egui::Window::new(crate::localization::text("Workspace"))
+        .id(egui::Id::unique("Workspace"))
+        .open(&mut open)
+        .default_size(vec2(460.0, 420.0))
+        .show(ctx, |ui| {
             let dir =
                 if app.ui.workspace_dir.is_empty() { std::env::var("HOME").unwrap_or_else(|_| ".".into()) } else { app.ui.workspace_dir.clone() };
             ui.horizontal(|ui| {
@@ -392,8 +394,7 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(
                 egui::RichText::new(crate::localization::text("Double-click to import audio/MIDI at the insertion point or open a session.")).small(),
             );
-        },
-    );
+        });
     app.ui.show_workspace = open;
 }
 
@@ -575,7 +576,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
                     let buf = p
                         .device_buffer
                         .map_or(crate::localization::text("default buffer").to_string(), |b| crate::localized_format!("{} samples", b));
-                    crate::localized_format!("{} · {} Hz · {} ch · {buf}", p.device_name, p.device_rate, p.device_channels)
+                    crate::localized_format!("{} · {} Hz · {} ch · {}", p.device_name, p.device_rate, p.device_channels, buf)
                 }
             }));
             ui.end_row();
