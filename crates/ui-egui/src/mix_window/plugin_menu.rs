@@ -3,7 +3,7 @@ use super::{Color32, Rect, SoundApp, TrackId, Ui, json, pos2, vec2};
 /// An insert's menu: a search field that takes typing at once, then (until something is typed)
 /// Bypass and removal and the plugins by category and format.
 pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, occupied: bool) {
-    let search = MenuSearch::show(ui, egui::Id::unique(("plugin-search", id.0, slot)), "Search plugins…");
+    let search = MenuSearch::show(ui, egui::Id::unique(("plugin-search", id.0, slot)), crate::localization::text("Search plugins…"));
     if search.typing() {
         if let Some(plugin) = plugin_search(ui, &search, false) {
             pick_insert(app, ui, id, slot, &plugin);
@@ -44,7 +44,7 @@ pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, oc
 /// instruments.
 pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     let slot = soundcraft_mix::INSTRUMENT_SLOT;
-    let search = MenuSearch::show(ui, egui::Id::unique(("instrument-search", id.0)), "Search instruments…");
+    let search = MenuSearch::show(ui, egui::Id::unique(("instrument-search", id.0)), crate::localization::text("Search instruments…"));
     if search.typing() {
         if let Some(plugin) = plugin_search(ui, &search, true) {
             run_pick(app, ui, "mix.instrument", json!({"track": id.0, "plugin": plugin}));
@@ -143,7 +143,7 @@ fn plugin_search(ui: &mut Ui, search: &MenuSearch, instruments: bool) -> Option<
         }
     });
     if n == 0 {
-        ui.weak("No matches");
+        ui.weak(crate::localization::text("No matches"));
     }
     if clap.is_none() || vst3.is_none() {
         ui.separator();
@@ -286,7 +286,7 @@ fn hosted_menus(ui: &mut Ui, instruments: bool) -> Option<String> {
 /// within the screen so that every plugin stays reachable however many are installed.
 fn vendor_menus(ui: &mut Ui, mut list: Vec<MenuPlugin>, none: &str) -> Option<String> {
     if list.is_empty() {
-        ui.label(none);
+        ui.label(crate::localization::text(none));
         return None;
     }
     list.sort_by_cached_key(|p| (p.vendor.to_lowercase(), p.name.to_lowercase()));

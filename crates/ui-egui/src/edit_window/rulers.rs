@@ -99,7 +99,13 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
         let lab = Rect::from_min_max(pos2(area.min.x, y0), pos2(area.min.x + HEADER_W, y0 + h));
         y0 += h;
         let painter = ui.painter().with_clip_rect(row);
-        ui.painter().text(pos2(lab.max.x - 12.0, lab.center().y), Align2::RIGHT_CENTER, ruler_label(id), bold(11.0), t.ruler_text);
+        ui.painter().text(
+            pos2(lab.max.x - 12.0, lab.center().y),
+            Align2::RIGHT_CENTER,
+            crate::localization::text(ruler_label(id)),
+            bold(11.0),
+            t.ruler_text,
+        );
         let fmt = TimeFormat::from_id(id);
         match id.as_str() {
             "tempo" => {
@@ -380,7 +386,7 @@ pub(super) fn column_titles(ui: &Ui, rulers: Rect, cols: &[Column]) {
     ui.painter().vline(end - 0.5, row.y_range(), line);
     for &(_, _, title, w) in cols {
         ui.painter().vline(x + 0.5, row.y_range(), line);
-        ui.painter().text(pos2(x + w / 2.0, row.center().y), Align2::CENTER_CENTER, title, bold(10.0), t.section_label);
+        ui.painter().text(pos2(x + w / 2.0, row.center().y), Align2::CENTER_CENTER, crate::localization::text(title), bold(10.0), t.section_label);
         x += w;
     }
 }

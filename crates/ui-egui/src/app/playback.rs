@@ -92,9 +92,9 @@ impl SoundApp {
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
         if !armed {
             let why = if self.engine.session().tracks.is_empty() {
-                "Nothing to record on yet: add a track with Track › New…, then click its R button."
+                crate::localization::text("Nothing to record on yet: add a track with Track › New…, then click its R button.")
             } else {
-                "No track is record-enabled: click the R button on the track to record."
+                crate::localization::text("No track is record-enabled: click the R button on the track to record.")
             };
             self.ui.status = why.into();
             self.record_hint = Some((self.last_frame.unwrap_or_default(), why));
@@ -156,10 +156,10 @@ impl SoundApp {
     fn arm_recorder(&mut self) -> Result<Vec<soundcraft_engine::io::Take>, String> {
         let name = soundcraft_engine::io::sanitize_name(&self.engine.session().name);
         let unsaved_dir = self.autosave_dir.as_ref().map_or_else(std::env::temp_dir, |d| d.join(name));
-        let Some(r) = &mut self.recorder else { return Err("no audio input device".into()) };
+        let Some(r) = &mut self.recorder else { return Err(crate::localization::text("no audio input device").into()) };
         let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels);
         if plan.is_empty() {
-            return Err("no audio track is record-enabled".into());
+            return Err(crate::localization::text("no audio track is record-enabled").into());
         }
         // The takes are unsaved work: the folder they go into under the autosave root is
         // owner-only, like the autosaves, before the recorder makes anything in it.

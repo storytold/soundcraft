@@ -17,7 +17,7 @@ fn memory_location_row(app: &mut SoundApp, ui: &mut Ui, n: u32, name: &str, loc:
     }
     ui.label(egui::RichText::new(loc).font(mono(11.0)));
     ui.label(egui::RichText::new(len).font(mono(11.0)));
-    ui.label(kind);
+    ui.label(crate::localization::text(kind));
     if crate::widgets::close_button(ui, "Delete marker").clicked() {
         let _ = app.run("markers.delete", json!({"number": n}));
     }
@@ -52,7 +52,7 @@ pub(crate) fn memory_locations(app: &mut SoundApp, ui: &mut Ui) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         egui::Grid::new("mem_grid").striped(true).num_columns(6).show(ui, |ui| {
             for h in ["#", "Name", "Location", "Length", "Type", ""] {
-                ui.label(egui::RichText::new(h).strong());
+                ui.label(egui::RichText::new(crate::localization::text(h)).strong());
             }
             ui.end_row();
             for (n, name, loc, len, kind) in &rows {

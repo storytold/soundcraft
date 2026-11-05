@@ -18,7 +18,7 @@ pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
         if let Some(info) = soundcraft_dsp::plugin_info(&process) {
             for p in info.params {
                 let v = params.entry(p.id.to_string()).or_insert(p.default);
-                ui.add(egui::Slider::new(v, p.min..=p.max).text(p.name));
+                ui.add(egui::Slider::new(v, p.min..=p.max).text(crate::localization::text(p.name)));
             }
         } else {
             match process.as_str() {
@@ -38,9 +38,9 @@ pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
                     for (id, label, default, choices) in SPEED_RAMP_CHOICES {
                         let v = params.entry(id.to_string()).or_insert(default);
                         ui.horizontal(|ui| {
-                            ui.label(label);
+                            ui.label(crate::localization::text(label));
                             for &(value, name) in choices {
-                                ui.radio_value(v, value, name);
+                                ui.radio_value(v, value, crate::localization::text(name));
                             }
                         });
                     }
@@ -52,9 +52,9 @@ pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
         }
         ui.ctx().memory_mut(|m| m.data.insert_temp(key, params.clone()));
         let hint = if soundcraft_dsp::is_generator(&process) {
-            "Fills the selection on the selected tracks with a new clip."
+            crate::localization::text("Fills the selection on the selected tracks with a new clip.")
         } else {
-            "Processes the selected clips and replaces them with rendered audio."
+            crate::localization::text("Processes the selected clips and replaces them with rendered audio.")
         };
         ui.label(egui::RichText::new(hint).small());
         if ui.button(egui::RichText::new(crate::localization::text("Render")).strong()).clicked() {

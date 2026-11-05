@@ -8,7 +8,7 @@ use serde_json::Value;
 /// Starts the bounce `file.bounce_mix` runs for `params`; [`step`] renders it.
 pub fn start(app: &mut SoundApp, params: &Value) {
     if app.bounce.is_some() {
-        app.ui.status = "A bounce is already running".into();
+        app.ui.status = crate::localization::text("A bounce is already running").into();
         return;
     }
     // Third-party plugins keep state the session can't see: store it first.
@@ -40,7 +40,7 @@ pub fn step(app: &mut SoundApp, ctx: &egui::Context) {
 /// out of memory. True when refused; the status line says why.
 pub fn refuses_session_switch(app: &mut SoundApp) -> bool {
     if app.bounce.is_some() {
-        app.ui.status = "Finish or cancel the bounce first".into();
+        app.ui.status = crate::localization::text("Finish or cancel the bounce first").into();
     }
     app.bounce.is_some()
 }
@@ -79,6 +79,6 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     });
     if cancel {
         app.bounce = None;
-        app.ui.status = "Bounce cancelled".into();
+        app.ui.status = crate::localization::text("Bounce cancelled").into();
     }
 }

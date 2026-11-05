@@ -141,10 +141,13 @@ fn short_label(text: &str) -> &str {
 fn section_label(ui: &Ui, r: Rect, text: &str, narrow: bool) {
     let p = ui.painter();
     let color = Tokens::current().section_label;
-    let text = if narrow { short_label(text) } else { text };
-    let mut galley = p.layout_no_wrap(text.to_owned(), bold(10.0), color);
+    let source = text;
+    let short = crate::localization::text(short_label(source));
+    let text = crate::localization::text(source);
+    let label = if narrow { short } else { text };
+    let mut galley = p.layout_no_wrap(label.to_owned(), bold(10.0), color);
     if galley.size().x > r.width() - 8.0 {
-        galley = p.layout_no_wrap(short_label(text).to_owned(), bold(10.0), color);
+        galley = p.layout_no_wrap(short.to_owned(), bold(10.0), color);
     }
     p.galley(Align2::CENTER_CENTER.anchor_size(pos2(r.center().x, r.min.y + 7.0), galley.size()).min, galley, color);
 }

@@ -73,14 +73,14 @@ impl Worker {
             Job::Frame { key, path, secs } => {
                 let r = match self.open(key, &path, &mut out) {
                     Some(m) => m.frame_at(secs).map_err(|e| e.to_string()),
-                    None => Err("movie offline".to_string()),
+                    None => Err(crate::localization::text("movie offline").to_string()),
                 };
                 out.push(Done::Frame(key, secs, r));
             }
             Job::Thumb { key, path, secs, h, tk } => {
                 let r = match self.open(key, &path, &mut out) {
                     Some(m) => m.thumbnail_at(secs, h).map_err(|e| e.to_string()),
-                    None => Err("movie offline".to_string()),
+                    None => Err(crate::localization::text("movie offline").to_string()),
                 };
                 out.push(Done::Thumb(tk, r));
             }

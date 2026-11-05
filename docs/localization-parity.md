@@ -27,7 +27,7 @@ Language setting), PR #141 (bundled multilingual font fallbacks), issue #67 (Ukr
 | Hindi | hi | 0 (0 %) | ❌ | ❌ no Devanagari font or shaping | no | none | 8–15 | ❌ |
 | Arabic | ar | 0 (0 %) | ❌ | ❌ no RTL layout, no shaping | no | none | 15–25 | ❌ |
 | French | fr | 0 (0 %) — PR #143 pending | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
-| Portuguese (Brazil) | pt-BR | Menus, command labels, Appearance, main panels, dialogs, tooltips and formatted messages (partial, not independently verified) | 🟡 partial | Latin ✅ | no | partial | 3–5 | ❌ |
+| Portuguese (Brazil) | pt-BR | Menus, command labels, built-in plugin parameter labels, Appearance, main panels, dialogs, tooltips and formatted messages (partial, not independently verified) | 🟡 partial | Latin ✅ | no | partial | 3–5 | ❌ |
 | Indonesian | id | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ❌ |
 | Japanese | ja | 0 (0 %) | ❌ | ❌ no CJK font fallback, no IME testing | no | none | 6–10 | ✅ |
 | German | de | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
@@ -42,6 +42,6 @@ Per-language hours exclude the shared catalog and script work above.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-05 | minor | Expanded the pt-BR catalog and formatted messages (PR #1346): dialogs/tooltips/accessibility text localized, then all engine command and menu labels plus dialog titles; user-defined route names kept untranslated |
+| 2026-11-05 | minor | Expanded the pt-BR catalog and formatted messages (PR #1346): dialogs/tooltips/accessibility text, engine command/menu labels, built-in plugin and parameter labels (~40 % of UI strings); user-defined route and plugin names kept untranslated |
 | 2026-11-03 | minor | Added persisted language selection, the `ui.language` command, English fallback, and initial pt-BR translations for main menus and Appearance controls |
 | 2026-10-10 | major | Created: English only, no catalog; the twelve key languages at 0 %; Pro Tools' 8 languages listed from its bundle |

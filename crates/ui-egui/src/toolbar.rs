@@ -254,7 +254,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     icons::draw(ui.painter(), Rect::from_center_size(pos2(main_r.max.x - 9.0, main_r.center().y), vec2(10.0, 10.0)), "triangle_down", t.text_dim);
     egui::Popup::menu(&resp).show(|ui| {
         for f in TimeFormat::ALL {
-            if ui.selectable_label(main_fmt == f, f.label()).clicked() {
+            if ui.selectable_label(main_fmt == f, crate::localization::text(f.label())).clicked() {
                 let _ = app.run("view.main_counter", json!({"format": f.id()}));
             }
         }
@@ -268,7 +268,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     ];
     for (i, (label, val)) in rows.iter().enumerate() {
         let y = r.min.y + 10.0 + i as f32 * 13.0;
-        ui.painter().text(pos2(r.min.x + 214.0, y), Align2::RIGHT_CENTER, *label, regular(11.0), t.counter_label);
+        ui.painter().text(pos2(r.min.x + 214.0, y), Align2::RIGHT_CENTER, crate::localization::text(*label), regular(11.0), t.counter_label);
         ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, val, mono(11.0), t.counter_text);
     }
     // Sub counter row.
@@ -278,7 +278,13 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().text(pos2(r.min.x + 150.0, y), Align2::RIGHT_CENTER, fmt_pos(app, pos, sub_fmt), mono(11.0), t.counter_text);
     let st = if app.engine.is_dirty() { "modified" } else { "saved" };
     let dev = app.player.as_ref().map_or("no audio engine", |p| if p.silent { "silent clock" } else { "audio on" });
-    ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, format!("{st} · {dev}"), regular(10.0), t.text_dim);
+    ui.painter().text(
+        pos2(r.max.x - 8.0, y),
+        Align2::RIGHT_CENTER,
+        format!("{} · {}", crate::localization::text(st), crate::localization::text(dev)),
+        regular(10.0),
+        t.text_dim,
+    );
 }
 
 /// Draws the compact Grid and Nudge readouts and their scale menus.
@@ -308,7 +314,7 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
     if !clips_markers {
         draw_compact_note_icon(ui.painter(), gr, grid, t.counter_text);
     }
-    ui.painter().text(pos2(gr.max.x - 14.0, gr.center().y), Align2::RIGHT_CENTER, grid_label, mono(11.0), t.counter_text);
+    ui.painter().text(pos2(gr.max.x - 14.0, gr.center().y), Align2::RIGHT_CENTER, crate::localization::text(&grid_label), mono(11.0), t.counter_text);
     let gresp = ui.interact(gr, ui.scope_id().with("grid_value"), Sense::click());
     value_menu(app, &gresp, "view.grid", grid, grid_follow, clips_markers, true);
     ui.painter().text(pos2(r.min.x + 10.0, r.min.y + 44.0), Align2::LEFT_CENTER, crate::localization::text("Nudge"), regular(11.0), t.counter_label);
@@ -501,12 +507,12 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str, current: Gri
         ui.separator();
         for scale in GridScale::TIME {
             let selected = !clips_markers && current.scale() == scale;
-            if ui.selectable_label(selected, scale.label()).clicked() {
+            if ui.selectable_label(selected, crate::localization::text(scale.label())).clicked() {
                 let _ = app.run(cmd, json!({"format": scale.id(), "follow_main": false}));
                 ui.close();
             }
         }
-        if allow_clips && ui.selectable_label(clips_markers, GridScale::ClipsMarkers.label()).clicked() {
+        if allow_clips && ui.selectable_label(clips_markers, crate::localization::text(GridScale::ClipsMarkers.label())).clicked() {
             let _ = app.run(cmd, json!({"format": GridScale::ClipsMarkers.id(), "follow_main": false}));
             ui.close();
         }
@@ -520,7 +526,7 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str, current: Gri
 
 /// Adds one text menu value and dispatches its command when selected.
 fn menu_value(ui: &mut Ui, app: &mut SoundApp, cmd: &str, selected: bool, label: &str, value: serde_json::Value) {
-    if ui.selectable_label(selected, label).clicked() {
+    if ui.selectable_label(selected, crate::localization::text(label)).clicked() {
         let _ = app.run(cmd, json!({"value": value}));
         ui.close();
     }

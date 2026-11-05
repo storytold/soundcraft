@@ -89,7 +89,7 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Hindi | hi | none | 0 % |
 | Arabic | ar | none | 0 % |
 | French | fr | none (PR #143 open) | 0 % |
-| Portuguese (Brazil) | pt-BR | partial (PR #1346; menus, command labels, panels, dialogs) | ~25 % |
+| Portuguese (Brazil) | pt-BR | partial (PR #1346; menus, commands, dialogs, plugin labels) | ~40 % |
 | Indonesian | id | none | 0 % |
 | Japanese | ja | none | 0 % |
 | German | de | none | 0 % |
@@ -177,7 +177,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-05 | trivial | Languages table: Brazilian Portuguese (pt-BR) partial via PR #1346 (menus, command/menu labels, dialog titles); readiness estimates unchanged |
+| 2026-11-05 | trivial | Languages table: Brazilian Portuguese (pt-BR) partial via PR #1346 (menus, command/menu labels, dialog titles, plugin/parameter labels); readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Cancel Zoom Toggle; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: side panels in dock columns; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Auto Pan stereo balance; readiness estimates unchanged |

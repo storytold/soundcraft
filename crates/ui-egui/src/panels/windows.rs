@@ -106,7 +106,7 @@ fn automation(app: &mut SoundApp, ctx: &egui::Context) {
                 AutomationMode::Write,
                 AutomationMode::Trim,
             ] {
-                if ui.button(m.label()).clicked() {
+                if ui.button(crate::localization::text(m.label())).clicked() {
                     let ids: Vec<u64> = tracks.iter().map(|t| t.0).collect();
                     let _ = app.run("mix.automation_mode", json!({"tracks": ids, "mode": m.label()}));
                 }
@@ -228,7 +228,7 @@ fn metadata(app: &mut SoundApp, ctx: &egui::Context) {
                 ("Markers", s.markers.len().to_string()),
                 ("Length", s.format_position(s.content_end(), soundcraft_time::TimeFormat::MinSecs)),
             ] {
-                ui.label(k);
+                ui.label(crate::localization::text(k));
                 ui.label(v);
                 ui.end_row();
             }
@@ -259,7 +259,7 @@ fn event_list(app: &mut SoundApp, ctx: &egui::Context) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("evl").num_columns(5).striped(true).show(ui, |ui| {
                 for h in ["Start (ticks)", "Note", "Vel", "Length", ""] {
-                    ui.label(egui::RichText::new(h).strong());
+                    ui.label(egui::RichText::new(crate::localization::text(h)).strong());
                 }
                 ui.end_row();
                 for (i, n) in notes.iter().enumerate() {

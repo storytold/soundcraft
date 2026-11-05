@@ -183,7 +183,7 @@ pub(super) fn view_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
     }
     opts.extend(["volume", "pan", "mute"]);
     for o in opts {
-        if ui.selectable_label(track.view == o, view_label(o)).clicked() {
+        if ui.selectable_label(track.view == o, crate::localization::text(&view_label(o))).clicked() {
             let _ = app.run("track.view", json!({"track": id, "view": o}));
         }
     }
@@ -258,7 +258,7 @@ pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     ui.separator();
     ui.menu_button(crate::localization::text("Track Height"), |ui| {
         for h in TrackHeight::ALL {
-            if ui.button(h.label()).clicked() {
+            if ui.button(crate::localization::text(h.label())).clicked() {
                 let own: Vec<TrackId> = selection.iter().map(|&t| TrackId(t)).collect();
                 let tracks = height_targets(app.engine.session(), ui.input(|i| i.modifiers), &own);
                 let _ = app.run("track.height", json!({"tracks": tracks, "height": h.label()}));

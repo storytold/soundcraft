@@ -88,7 +88,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-05 | trivial | M15: a partial pt-BR catalog (PR #1346) covers menus, panels, dialogs, command labels and tooltips; fonts/RTL and the other languages stay open. Estimates unchanged |
+| 2026-11-05 | trivial | M15: a partial pt-BR catalog (PR #1346) covers menus, panels, dialogs, command labels and built-in plugin parameter labels; fonts/RTL and the other languages stay open. Estimates unchanged |
 | 2026-10-25 | trivial | Record-workflow evidence: `setup.playback_engine` applies the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | 27 built-in processors, as the plugin registry holds; the sampler (#108) is no longer listed under plugin essentials |
 | 2026-10-14 | trivial | M8: reject oversized MCP batches before execution (#460) |
