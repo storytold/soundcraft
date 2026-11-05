@@ -60,6 +60,29 @@ fn help_chord(key: Key, m: Modifiers, mac: bool) -> bool {
     m.command && !m.alt && !(mac && m.ctrl) && (key == Key::Questionmark || m.shift)
 }
 
+/// Handle Help in the native Mix viewport, whose key events never reach the main-window handler.
+/// Keep text entry and dialogs in control of their keys, and ignore native key repeats.
+pub(crate) fn handle_mix_help(app: &mut SoundApp, ctx: &egui::Context) {
+    if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() {
+        return;
+    }
+    let mac = ctx.os().is_mac();
+    let pressed = ctx.input(|i| {
+        i.events.iter().any(|event| {
+            matches!(event,
+                egui::Event::Key { key: key @ (Key::Questionmark | Key::Slash), pressed: true, repeat: false, modifiers, .. }
+                    if help_chord(*key, *modifiers, mac)
+            )
+        })
+    });
+    if pressed {
+        let _ = app.run("help.open", json!({}));
+        app.ui.help.go(crate::help::Page::Command("window.mix".into()));
+        // Help belongs to the main viewport, even when this child is the only window receiving input.
+        ctx.request_repaint_of(egui::ViewportId::ROOT);
+    }
+}
+
 /// Dispatch global keyboard shortcuts once no text field or dialog wants input, ignoring non-scripted auto-repeats
 /// while still running a host press alongside a scripted one.
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
