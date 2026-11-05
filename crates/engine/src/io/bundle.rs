@@ -1,6 +1,6 @@
 use super::render::sanitize_name;
 use super::session::decode_source;
-use super::*;
+use super::{Arc, EncodeOptions, Engine, EngineError, FileFormat, OsStr, Path, Result, Session, SourceAudio, read_bundle, write_file};
 
 // ─── Hosts without a filesystem (the browser) ─────────────────────────────────────────────────
 
@@ -192,6 +192,23 @@ mod bundle_tests {
         for src in &r.session().sources {
             assert!(r.session().pool.get(src.id).is_some(), "{} has no audio", src.name);
         }
+    }
+
+    #[test]
+    fn entries_sharing_one_payload_are_refused() {
+        use std::io::Write as _;
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        w.start_file("Song.scraft", opts).unwrap();
+        w.write_all(Session::default().to_json().unwrap().as_bytes()).unwrap();
+        w.start_file("Audio Files/a.wav", opts).unwrap();
+        w.write_all(&[7u8; 4096]).unwrap();
+        for i in 0..100 {
+            w.shallow_copy_file("Audio Files/a.wav", &format!("Audio Files/copy{i}.wav")).unwrap();
+        }
+        let bundle = w.finish().unwrap().into_inner();
+        let err = read_bundle(&bundle, BUNDLE_LIMITS).unwrap_err();
+        assert!(err.to_string().contains("share data"), "{err}");
     }
 
     #[test]

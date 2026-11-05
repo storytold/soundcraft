@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Align2, Color32, Rect, Sense, SoundApp, Stroke, Tokens, Ui, bold, gutter_scroll, json, panel_header, pos2, regular, rgb, vec2,
+    with_pending_offset,
+};
 
 /// Drag a Tracks list row to reorder the tracks: a line marks the gap it will land in.
 fn drag_track(app: &mut SoundApp, ui: &Ui, row: Rect, id: u64, dropped: bool) {
@@ -43,9 +46,28 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
     if crate::widgets::icon_button(&mut ui.new_child(egui::UiBuilder::new().max_rect(plus)), plus.size(), "plus", false, &tip).clicked() {
         let _ = app.dialogs.open_for_command(&app.engine, "track.new");
     }
-    let tracks: Vec<(u64, String, bool, [u8; 3], bool)> = {
+    let tracks: Vec<(u64, String, bool, [u8; 3], bool, usize)> = {
         let s = app.engine.session();
-        s.tracks.iter().map(|x| (x.id.0, x.name.clone(), !x.hidden, x.color, s.edit.selected_tracks.contains(&x.id))).collect()
+        s.tracks
+            .iter()
+            .map(|x| {
+                let mut current = x.folder;
+                let mut depth = 0;
+                let mut seen = Vec::new();
+                while let Some(folder_id) = current {
+                    if seen.contains(&folder_id) {
+                        break;
+                    }
+                    seen.push(folder_id);
+                    let Some(folder) = s.track(folder_id) else {
+                        break;
+                    };
+                    depth += 1;
+                    current = folder.folder;
+                }
+                (x.id.0, x.name.clone(), !x.hidden, x.color, s.edit.selected_tracks.contains(&x.id), depth)
+            })
+            .collect()
     };
     let hidden = egui::scroll_area::ScrollBarVisibility::AlwaysHidden;
     let lists = with_pending_offset(egui::ScrollArea::vertical().id_salt("tracks_scroll"), ui, "tracks_scroll")
@@ -53,7 +75,7 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
         .auto_shrink([false, false])
         .scroll_bar_visibility(hidden);
     let out = lists.show(ui, |ui| {
-        for (id, name, shown, color, sel) in tracks {
+        for (id, name, shown, color, sel, depth) in tracks {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::click_and_drag());
             resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, sel, &name));
             if sel {
@@ -67,7 +89,8 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
             }
             ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x + 20.0, r.min.y + 3.0), vec2(4.0, 11.0)), 0.0, rgb(color));
             ui.painter().with_clip_rect(r).text(
-                pos2(r.min.x + 30.0, r.center().y),
+                // Indent stops growing at eight levels so a deep name keeps room in the column.
+                pos2(r.min.x + 30.0 + depth.min(8) as f32 * 10.0, r.center().y),
                 Align2::LEFT_CENTER,
                 &name,
                 regular(11.5),

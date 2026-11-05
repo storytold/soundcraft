@@ -38,7 +38,7 @@ Results go to standard output, as JSON where a program is meant to read them. `i
 file), `describe`, `app` and the `--inspect` output of `run` and `script` pretty-print it; `--compact`
 prints the same JSON on one line. The result lines of `run` and `script` (`ID: JSON`) and the
 `--bounce` and `--save` results are always one line each. `commands`, `plugins`, `parity` and the
-`.scraft` summary of `info` are text. Errors go to standard error as `error: <message>`. `mcp` writes only the protocol
+`.scraft` summary of `info` are text. Errors go to standard error as `error: <message>`, and so do the warnings and errors SoundCraft and the plugin hosts log (`warning: <message>`, `error: <message>`), such as a plugin that fails to load. `mcp` writes only the protocol
 to standard output.
 
 | Exit code | Meaning |
