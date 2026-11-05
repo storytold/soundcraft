@@ -16,8 +16,8 @@ CJK/Devanagari/Arabic (PR #141 open), RTL layout and complex-script shaping (egu
 ≈ 25–40 h, or ship Arabic/Hindi menus-only), then ≈ 3–5 h of agent translation per language, plus
 native-speaker review (human).
 
-Open work: PR #143 (French and Spanish, a Language setting), PR #141 (bundled multilingual font
-fallbacks), issue #67 (Ukrainian).
+Open work: PR #1346 (Brazilian Portuguese, partial catalog), PR #143 (French and Spanish, a
+Language setting), PR #141 (bundled multilingual font fallbacks), issue #67 (Ukrainian).
 
 | Language | Code | UI strings translated | Dialogs / tooltips / help | Script support | Native review | Status | Est. to full (h) | In Pro Tools |
 |---|---|---|---|---|---|---|---:|---|
@@ -42,6 +42,6 @@ Per-language hours exclude the shared catalog and script work above.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-05 | minor | Expanded the pt-BR catalog and formatted messages, localized dialogs/tooltips/accessibility text, and kept user-defined route names untranslated |
+| 2026-11-05 | minor | Expanded the pt-BR catalog and formatted messages (PR #1346): dialogs/tooltips/accessibility text localized, user-defined route names kept untranslated |
 | 2026-11-03 | minor | Added persisted language selection, the `ui.language` command, English fallback, and initial pt-BR translations for main menus and Appearance controls |
 | 2026-10-10 | major | Created: English only, no catalog; the twelve key languages at 0 %; Pro Tools' 8 languages listed from its bundle |
