@@ -54,8 +54,13 @@ fn search_chord(m: Modifiers, mac: bool) -> bool {
     mac && m.command && m.ctrl
 }
 
+/// Commands a host auto-repeat runs again, so holding a zoom key keeps zooming (#1377). Every other
+/// shortcut ignores auto-repeats (#1063): holding Cmd+Z undoes once. Decided by the command a chord
+/// resolves to, not by its keys.
+const REPEATING: [&str; 3] = ["view.zoom_in", "view.zoom_out", "view.waveform_zoom"];
+
 /// Dispatch global keyboard shortcuts once no text field or dialog wants input, ignoring non-scripted auto-repeats
-/// while still running a host press alongside a scripted one.
+/// (except the [`REPEATING`] zoom commands) while still running a host press alongside a scripted one.
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -64,29 +69,29 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     }
     // A scripted press is identified by its exact position in this pass's events, not by matching
     // key/modifier values. A fresh host press with the same chord must still run its own action in
-    // addition to the scripted one, while a host auto-repeat stays ignored: egui rewrites an
-    // event's `repeat` flag from the physical key state, which says nothing about whether that
-    // particular event was injected. Every non-scripted repeat is ignored as before.
+    // addition to the scripted one, while a host auto-repeat runs only a zoom command: egui rewrites
+    // an event's `repeat` flag from the physical key state, which says nothing about whether that
+    // particular event was injected.
     let scripted = app.scripted_key_press_indices();
-    let events: Vec<(Key, Modifiers)> = ctx.input(|i| {
+    let events: Vec<(Key, Modifiers, bool)> = ctx.input(|i| {
         i.events
             .iter()
             .enumerate()
             .filter_map(|(index, e)| match e {
-                egui::Event::Key { key, pressed: true, repeat, modifiers, .. } => {
-                    if scripted.contains(&index) {
-                        Some((*key, *modifiers))
-                    } else {
-                        (!*repeat).then_some((*key, *modifiers))
-                    }
-                }
+                egui::Event::Key { key, pressed: true, repeat, modifiers, .. } => Some((*key, *modifiers, *repeat && !scripted.contains(&index))),
                 _ => None,
             })
             .collect()
     });
     // Cmd and Ctrl are separate keys only on macOS (asked at runtime so the web build in a Mac browser agrees).
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
-    for (key, mods) in events {
+    for (key, mods, repeat) in events {
+        if repeat {
+            if let Some((id, params)) = repeating_command(key, mods, mac) {
+                let _ = app.run(id, params);
+            }
+            continue;
+        }
         if fixed(app, key, mods, mac) {
             continue;
         }
@@ -103,6 +108,14 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     }
     // Tab moves the insertion point here, so egui must not also hand focus to the first widget: that would block every shortcut.
     ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+}
+
+/// The command a host auto-repeat of this chord runs, if it is one of [`REPEATING`]. A repeat
+/// resolves its chord the way a press falls through to these zooms ([`zoom_key`], then the
+/// registry) without the earlier [`fixed`] / [`fixed_more`] arms, so an arm added there for one of
+/// these chords must keep the two paths in agreement.
+fn repeating_command(key: Key, mods: Modifiers, mac: bool) -> Option<(&'static str, serde_json::Value)> {
+    zoom_key(key, mods, mac).or_else(|| command_for(key, mods, mac).map(|id| (id, json!({})))).filter(|(id, _)| REPEATING.contains(id))
 }
 
 fn command_for(key: Key, mods: Modifiers, mac: bool) -> Option<&'static str> {
@@ -183,7 +196,6 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
 
 /// The rest of [`fixed`]'s keys.
 fn fixed_more(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
-    let plain = !m.command && !m.alt && !m.ctrl && !m.shift;
     match key {
         // `=` is what a bare press of the unlabeled +/- key reports (it has no shift held, so it
         // can never be `Key::Plus`); `Key::Plus` is kept for a keyboard that does send it (e.g. a
@@ -199,12 +211,7 @@ fn fixed_more(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             let _ = app.run("edit.tab", json!({"back": m.alt || (!mac && m.ctrl), "extend": m.shift}));
             true
         }
-        // The registry's key families "Cmd+Alt+[ / ]", "Cmd+Alt+0-5" and "Cmd+Ctrl+1-5", which `parse` can't read.
-        Key::OpenBracket | Key::CloseBracket if mods_match(Modifiers::COMMAND | Modifiers::ALT, m, mac) => {
-            let factor = if key == Key::CloseBracket { 2.0 } else { 0.5 };
-            let _ = app.run("view.waveform_zoom", json!({"factor": factor}));
-            true
-        }
+        // The registry's key families "Cmd+Alt+0-5" and "Cmd+Ctrl+1-5", which `parse` can't read ("Cmd+Alt+[ / ]" is in `zoom_key`).
         Key::Num0 | Key::Num1 | Key::Num2 | Key::Num3 | Key::Num4 | Key::Num5 if mods_match(Modifiers::COMMAND | Modifiers::ALT, m, mac) => {
             let _ = app.run("clip.rating", json!({"rating": digit(key)}));
             true
@@ -242,13 +249,26 @@ fn fixed_more(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
         {
             true
         }
-        Key::R | Key::T if plain => {
-            // Zoom out / in on the timeline (Commands Focus style).
-            let id = if key == Key::T { "view.zoom_in" } else { "view.zoom_out" };
-            let _ = app.run(id, json!({}));
-            true
+        _ => match zoom_key(key, m, mac) {
+            Some((id, params)) => {
+                let _ = app.run(id, params);
+                true
+            }
+            None => false,
+        },
+    }
+}
+
+/// The zoom keys [`fixed`] handles, shared with [`repeating_command`]: T / R zoom the timeline in / out
+/// (Commands Focus style) and the registry's "Cmd+Alt+[ / ]", which `parse` can't read, steps the waveform zoom.
+fn zoom_key(key: Key, m: Modifiers, mac: bool) -> Option<(&'static str, serde_json::Value)> {
+    let plain = !m.command && !m.alt && !m.ctrl && !m.shift;
+    match key {
+        Key::R | Key::T if plain => Some((if key == Key::T { "view.zoom_in" } else { "view.zoom_out" }, json!({}))),
+        Key::OpenBracket | Key::CloseBracket if mods_match(Modifiers::COMMAND | Modifiers::ALT, m, mac) => {
+            Some(("view.waveform_zoom", json!({"factor": if key == Key::CloseBracket { 2.0 } else { 0.5 }})))
         }
-        _ => false,
+        _ => None,
     }
 }
 
