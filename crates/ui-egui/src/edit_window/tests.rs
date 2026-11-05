@@ -1508,3 +1508,50 @@ fn alt_click_on_a_breakpoint_deletes_it() {
         assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}");
     }
 }
+
+#[test]
+fn alt_click_on_a_marker_deletes_it() {
+    let mut engine = soundcraft_engine::demo::demo_engine();
+    engine.session_mut().edit.rulers = vec!["markers".into()];
+    engine.execute("markers.add", &json!({"at": 48_000, "name": "Alt-delete me"})).unwrap();
+    let mut h = harness_with(engine);
+    let s = h.state().engine.session_arc();
+    let marker = s.markers.iter().find(|m| m.name == "Alt-delete me").unwrap();
+    let at = pos2(x_of(&s, timeline(&h), marker.start), timeline(&h).min.y - 11.5);
+    let before = s.markers.len();
+
+    click_with(&mut h, at, egui::Modifiers::ALT);
+
+    assert_eq!(h.state().engine.session().markers.len(), before - 1);
+    assert!(!h.state().engine.session().markers.iter().any(|m| m.name == "Alt-delete me"));
+}
+
+#[test]
+fn short_track_name_is_centered_and_long_name_is_left_aligned() {
+    let mut h = harness(2);
+    let s = h.state().engine.session_arc();
+    let first = s.tracks[0].id.0;
+    let second = s.tracks[1].id.0;
+    h.state_mut().run("track.rename", json!({"track": first, "name": "Vocal"})).unwrap();
+    h.state_mut().run("track.rename", json!({"track": second, "name": "A Very Long Track Name That Exceeds Header Width"})).unwrap();
+    h.step();
+
+    let r0 = row(&h, 0);
+    let r1 = row(&h, 1);
+
+    let first_text = h.output().shapes.iter().find_map(|s| match &s.shape {
+        Shape::Text(t) if t.galley.text() == "Vocal" && s.clip_rect.intersects(r0) => Some((t.pos, t.galley.size())),
+        _ => None,
+    });
+    let long_text = h.output().shapes.iter().find_map(|s| match &s.shape {
+        Shape::Text(t) if t.galley.text() == "A Very Long Track Name That Exceeds Header Width" && s.clip_rect.intersects(r1) => Some(t.pos),
+        _ => None,
+    });
+
+    let (first_pos, first_size) = first_text.expect("short track name should be rendered in edit header");
+    let long_pos = long_text.expect("long track name should be rendered in edit header");
+
+    assert_eq!(long_pos.x, r1.min.x + 17.5);
+    let first_center_x = first_pos.x + first_size.x * 0.5;
+    assert!((first_center_x - (r0.min.x + 64.5)).abs() <= 0.1, "short name should be centered (center was at {first_center_x})");
+}

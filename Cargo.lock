@@ -4374,6 +4374,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
+ "log",
  "same-file",
  "serde",
  "serde_json",
