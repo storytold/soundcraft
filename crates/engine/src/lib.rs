@@ -119,6 +119,8 @@ pub struct Clipboard {
     pub markers: Vec<soundcraft_model::MemoryLocation>,
     /// How far the copied range started after a grid line; Relative Grid pastes keep it.
     pub grid_offset: Samples,
+    /// Original insertion point when the clipboard was populated by Cut.
+    pub cut_from: Option<Samples>,
     /// Copy Special › Automation: pasting it leaves the clips alone, in Shuffle mode too.
     pub automation_only: bool,
     /// The Auto Rename schemes of the copied clips, keyed as in their `auto_name`.
@@ -128,7 +130,7 @@ pub struct Clipboard {
 impl Clipboard {
     /// An empty clipboard for material copied from `range`.
     pub fn of_range(s: &Session, range: soundcraft_time::Range) -> Clipboard {
-        let line = s.edit.grid.line_at_or_before(range.start, s.sample_rate, &s.tempo, s.frame_rate);
+        let line = s.grid_line_at_or_before(range.start);
         Clipboard { length: range.len(), grid_offset: range.start.saturating_sub(line), ..Clipboard::default() }
     }
 
