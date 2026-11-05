@@ -3,6 +3,9 @@
 use egui::{Color32, FontFamily, FontId};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Standard separation between Edit/Mix panels, in logical points.
+pub(crate) const PANEL_GAP: f32 = 4.0;
+
 /// Whether the Light palette is active. Dark is the default (the incumbent is dark-only).
 static LIGHT_THEME: AtomicBool = AtomicBool::new(false);
 
@@ -108,6 +111,17 @@ pub struct Tokens {
     pub panel_bg2: Color32,
     pub toolbar_bg: Color32,
     pub toolbar_group: Color32,
+    /// Edit-toolbar glyphs, selected keys and LCD numerals.
+    pub toolbar_icon: Color32,
+    pub toolbar_button: Color32,
+    pub toolbar_selected: Color32,
+    pub toolbar_selected_icon: Color32,
+    pub toolbar_readout: Color32,
+    pub transport_blue: Color32,
+    pub transport_green: Color32,
+    pub transport_red: Color32,
+    pub transport_record_led: Color32,
+    pub transport_play_led: Color32,
     pub border: Color32,
     pub border_light: Color32,
     /// The lit top/left edge of raised panels: track headers and Mix strips.
@@ -122,6 +136,8 @@ pub struct Tokens {
     pub accent: Color32,
     pub accent_dark: Color32,
     pub mode_on: Color32,
+    /// Selected Grid/Relative Grid segment in the Edit mode selector.
+    pub mode_grid: Color32,
     pub mode_on_text: Color32,
     pub mode_off_text: Color32,
     pub button: Color32,
@@ -173,8 +189,14 @@ pub struct Tokens {
     pub counter_rule: Color32,
     /// Smart-tool bracket, off.
     pub tool_bracket_off: Color32,
-    /// Selected row in the Tracks, Groups and Clips lists.
+    /// Selected list row or dock tab outside the Tracks list.
     pub row_selected: Color32,
+    /// Neutral background of the compact Tracks and Groups lists.
+    pub track_list_bg: Color32,
+    /// Selected Tracks-list row, spanning all of its columns.
+    pub track_list_selected: Color32,
+    /// Text and neutral symbols on a selected Tracks-list row.
+    pub track_list_selected_text: Color32,
     /// Track-visible dot in the Tracks list.
     pub visible_dot: Color32,
     /// Big Counter background.
@@ -217,8 +239,18 @@ impl Tokens {
         window_bg: Color32::from_rgb(30, 30, 30),
         panel_bg: Color32::from_rgb(37, 37, 38),
         panel_bg2: Color32::from_rgb(44, 44, 45),
-        toolbar_bg: Color32::from_rgb(30, 30, 31),
-        toolbar_group: Color32::from_rgb(24, 24, 25),
+        toolbar_bg: Color32::from_rgb(43, 43, 43),
+        toolbar_group: Color32::from_rgb(34, 34, 34),
+        toolbar_icon: Color32::from_rgb(180, 180, 180),
+        toolbar_button: Color32::from_rgb(55, 55, 55),
+        toolbar_selected: Color32::from_rgb(31, 99, 140),
+        toolbar_selected_icon: Color32::from_rgb(164, 216, 239),
+        toolbar_readout: Color32::from_rgb(110, 213, 169),
+        transport_blue: Color32::from_rgb(56, 161, 196),
+        transport_green: Color32::from_rgb(143, 213, 166),
+        transport_red: Color32::from_rgb(210, 66, 70),
+        transport_record_led: Color32::from_rgb(250, 46, 12),
+        transport_play_led: Color32::from_rgb(102, 222, 24),
         border: Color32::from_rgb(14, 14, 14),
         border_light: Color32::from_rgb(64, 64, 66),
         edge_light: Color32::from_rgba_premultiplied(20, 20, 20, 20),
@@ -232,6 +264,7 @@ impl Tokens {
         accent: Color32::from_rgb(64, 132, 196),
         accent_dark: Color32::from_rgb(40, 92, 146),
         mode_on: Color32::from_rgb(92, 196, 108),
+        mode_grid: Color32::from_rgb(63, 169, 220),
         mode_on_text: Color32::from_rgb(10, 30, 12),
         mode_off_text: Color32::from_rgb(98, 196, 112),
         button: Color32::from_rgb(58, 58, 60),
@@ -271,12 +304,15 @@ impl Tokens {
         automation_line: Color32::from_rgb(240, 240, 240),
         menu_bar: Color32::from_rgb(22, 22, 23),
         group_border: Color32::from_rgb(8, 8, 8),
-        mode_off: Color32::from_rgb(20, 36, 22),
+        mode_off: Color32::from_rgb(5, 43, 28),
         counter_off: Color32::from_rgb(30, 50, 32),
         counter_border: Color32::from_rgb(50, 50, 50),
         counter_rule: Color32::from_rgb(40, 40, 40),
         tool_bracket_off: Color32::from_rgb(64, 64, 66),
         row_selected: Color32::from_rgb(52, 70, 96),
+        track_list_bg: Color32::from_rgb(54, 54, 54),
+        track_list_selected: Color32::from_rgb(32, 119, 153),
+        track_list_selected_text: Color32::from_rgb(246, 246, 246),
         visible_dot: Color32::from_rgb(200, 200, 200),
         big_counter_bg: Color32::from_rgb(0, 0, 0),
         header_selected: Color32::from_rgb(52, 58, 66),
@@ -304,6 +340,16 @@ impl Tokens {
         panel_bg2: Color32::from_rgb(216, 218, 222),
         toolbar_bg: Color32::from_rgb(194, 196, 200),
         toolbar_group: Color32::from_rgb(208, 210, 214),
+        toolbar_icon: Color32::from_rgb(54, 57, 63),
+        toolbar_button: Color32::from_rgb(214, 216, 220),
+        toolbar_selected: Color32::from_rgb(58, 116, 164),
+        toolbar_selected_icon: Color32::from_rgb(240, 247, 255),
+        toolbar_readout: Color32::from_rgb(18, 100, 64),
+        transport_blue: Color32::from_rgb(28, 110, 155),
+        transport_green: Color32::from_rgb(26, 115, 64),
+        transport_red: Color32::from_rgb(179, 43, 48),
+        transport_record_led: Color32::from_rgb(210, 41, 12),
+        transport_play_led: Color32::from_rgb(52, 151, 21),
         border: Color32::from_rgb(100, 103, 109),
         border_light: Color32::from_rgb(150, 153, 159),
         edge_light: Color32::from_rgba_premultiplied(150, 150, 150, 150),
@@ -317,6 +363,7 @@ impl Tokens {
         accent: Color32::from_rgb(62, 116, 180),
         accent_dark: Color32::from_rgb(43, 88, 145),
         mode_on: Color32::from_rgb(75, 158, 88),
+        mode_grid: Color32::from_rgb(62, 116, 180),
         mode_on_text: Color32::from_rgb(255, 255, 255),
         mode_off_text: Color32::from_rgb(38, 106, 52),
         button: Color32::from_rgb(214, 216, 220),
@@ -362,6 +409,9 @@ impl Tokens {
         counter_rule: Color32::from_rgb(188, 191, 196),
         tool_bracket_off: Color32::from_rgb(172, 175, 181),
         row_selected: Color32::from_rgb(174, 196, 226),
+        track_list_bg: Color32::from_rgb(204, 206, 210),
+        track_list_selected: Color32::from_rgb(160, 202, 222),
+        track_list_selected_text: Color32::from_rgb(24, 25, 28),
         visible_dot: Color32::from_rgb(86, 89, 96),
         big_counter_bg: Color32::from_rgb(224, 226, 228),
         header_selected: Color32::from_rgb(184, 200, 224),

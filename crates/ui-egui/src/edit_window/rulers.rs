@@ -206,6 +206,7 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
                 }
                 // Click on the marker ruler: recall a marker; double-click renames it, or adds one.
                 let resp = ui.interact(row, ui.scope_id().with(("marker_ruler", lane)), Sense::click());
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), format!("{id} ruler")));
                 if let Some(p) = resp.interact_pointer_pos() {
                     let hit = s
                         .markers
@@ -358,47 +359,52 @@ fn timebase_ruler(painter: &egui::Painter, s: &Session, place: &RulerRow, f: Tim
     }
 }
 
-/// Captions over the header columns, boxed in their own row under the rulers.
+/// Captions and the view selector share flat faces separated by solid black gaps.
 pub(super) fn column_titles(ui: &Ui, rulers: Rect, cols: &[Column]) {
-    if cols.is_empty() {
-        return;
-    }
+    const GAP: f32 = 1.0;
     let t = Tokens::current();
-    let line = Stroke::new(1.0, t.border);
-    let mut x = rulers.min.x + HEADER_W;
     let end = rulers.min.x + header_width(cols);
-    let row = Rect::from_min_max(pos2(x, rulers.max.y - COLUMN_TITLES_H - 3.0), pos2(end, rulers.max.y));
-    ui.painter().rect_filled(row, 0.0, t.panel_bg2);
-    ui.painter().hline(rulers.min.x..=end, row.min.y + 0.5, line);
-    ui.painter().hline(rulers.min.x..=end, row.max.y - 0.5, line);
-    ui.painter().vline(end - 0.5, row.y_range(), line);
+    let row = Rect::from_min_max(pos2(rulers.min.x, rulers.max.y - COLUMN_TITLES_H - 3.0), pos2(end, rulers.max.y));
+    ui.painter().rect_filled(row, 0.0, Color32::BLACK);
+    // Neighbours share one gap; the outer edges retain its full width.
+    let face_rect = |cell: Rect| cell.shrink2(vec2(GAP / 2.0, GAP)).intersect(row.shrink(GAP));
+    let mut cell = row.with_max_x(row.min.x + HEADER_W);
+    ui.painter().rect_filled(face_rect(cell), 0.0, t.panel_bg2);
     for &(_, _, title, w) in cols {
-        ui.painter().vline(x + 0.5, row.y_range(), line);
-        ui.painter().text(pos2(x + w / 2.0, row.center().y), Align2::CENTER_CENTER, title, bold(10.0), t.section_label);
-        x += w;
+        cell = Rect::from_min_max(pos2(cell.max.x, row.min.y), pos2(cell.max.x + w, row.max.y));
+        let face = face_rect(cell);
+        ui.painter().rect_filled(face, 0.0, t.panel_bg2);
+        ui.painter().with_clip_rect(face).text(cell.center(), Align2::CENTER_CENTER, title, bold(10.0), t.section_label);
     }
 }
 
 /// The Edit window view selector: which columns sit beside the track headers.
 pub(super) fn views_button(app: &mut SoundApp, ui: &mut Ui, rulers: Rect) {
-    let r = Rect::from_min_size(rulers.min + vec2(6.0, 5.0), vec2(50.0, 18.0));
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
-    let resp = crate::widgets::selector_box(&mut child, r.width(), r.height(), "Views", Tokens::current().text);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, child.is_enabled(), "Views"));
+    let t = Tokens::current();
+    let r = Rect::from_min_size(pos2(rulers.min.x + 2.0, rulers.max.y - COLUMN_TITLES_H - 2.0), vec2(24.0, COLUMN_TITLES_H));
+    let resp = ui.interact(r, ui.scope_id().with("edit_views"), Sense::click());
+    if resp.hovered() || resp.has_focus() {
+        ui.painter().rect_filled(r, 0.0, t.button_hi);
+    }
+    crate::icons::draw(ui.painter(), Rect::from_min_size(r.min + vec2(1.0, 2.0), vec2(13.0, 12.0)), "columns", t.section_label);
+    crate::icons::draw(ui.painter(), Rect::from_min_size(r.min + vec2(16.0, 3.0), vec2(6.0, 6.0)), "triangle_down", t.section_label);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, ui.is_enabled(), "Views"));
     let resp = resp.on_hover_text("Columns beside the track headers: inserts, sends, I/O…");
-    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        let shown = edit_columns(app.engine.session());
-        for (id, label, _, _) in COLUMNS {
-            if ui.add(egui::Button::new(label).selected(shown.iter().any(|c| c.0 == id))).clicked() {
-                let _ = app.run(&format!("view.edit_{id}"), json!({}));
+    {
+        egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            let shown = edit_columns(app.engine.session());
+            for (id, label, _, _) in COLUMNS {
+                if ui.add(egui::Button::new(label).selected(shown.iter().any(|c| c.0 == id))).clicked() {
+                    let _ = app.run(&format!("view.edit_{id}"), json!({}));
+                }
             }
-        }
-        ui.separator();
-        if ui.button("All").clicked() {
-            let _ = app.run("view.edit_all", json!({}));
-        }
-        if ui.button("Minimal").clicked() {
-            let _ = app.run("view.edit_minimal", json!({}));
-        }
-    });
+            ui.separator();
+            if ui.button("All").clicked() {
+                let _ = app.run("view.edit_all", json!({}));
+            }
+            if ui.button("Minimal").clicked() {
+                let _ = app.run("view.edit_minimal", json!({}));
+            }
+        });
+    }
 }

@@ -52,3 +52,27 @@ fn groups_list_rows_are_named_and_report_whether_the_group_is_active() {
     assert!(h.state().engine.session().groups.iter().all(|g| !g.active));
     assert_eq!(h.get_by_role_and_label(Role::CheckBox, "Rhythm").accesskit_node().toggled(), Some(Toggled::False));
 }
+
+#[test]
+fn groups_keyboard_focus_button_dispatches_the_existing_focus_state() {
+    let mut h = harness();
+    h.get_by_label("Groups Keyboard Focus").click();
+    h.run_steps(2);
+    assert_eq!(h.state().engine.session().edit.keyboard_focus, "groups");
+    assert_eq!(h.get_by_label("Groups Keyboard Focus").accesskit_node().toggled(), Some(Toggled::True));
+    h.get_by_label("Groups Keyboard Focus").click();
+    h.run_steps(2);
+    assert_eq!(h.state().engine.session().edit.keyboard_focus, "none");
+    assert_eq!(h.get_by_label("Groups Keyboard Focus").accesskit_node().toggled(), Some(Toggled::False));
+}
+
+#[test]
+fn groups_header_menu_opens_the_existing_new_group_form() {
+    let mut h = harness();
+    h.get_by_label("Groups menu").click();
+    h.run_steps(2);
+    h.get_by_label("New Group…").click();
+    h.run_steps(2);
+    assert_eq!(h.state().dialogs.open_name(), Some("group"));
+    assert_eq!(h.state().engine.session().groups.len(), 1, "opening the form does not create a group");
+}

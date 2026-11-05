@@ -9,7 +9,7 @@ Assets must be original, public domain (CC0) or permissively licensed. See `AGEN
 ## Icons
 
 All UI icons (tools, transport, track buttons) are drawn procedurally in
-`crates/ui-egui/src/icons.rs` by the SoundCraft contributors (MIT OR Apache-2.0). No UI icon image
+`crates/ui-egui/src/icons.rs` and `crates/ui-egui/src/icons/toolbar.rs` by the SoundCraft contributors (MIT OR Apache-2.0). No UI icon image
 files are used. The app icon (`assets/app-icon/`, a singing nightingale drawn as original SVG by
 the SoundCraft contributors) is listed under Files below.
 
@@ -39,6 +39,7 @@ here. The subset uses default_fonts; the parent face uses monochrome_emoji_fonts
 
 | Path | Author | Source | License |
 |---|---|---|---|
+| `crates/ui-egui/src/icons/toolbar.rs` | SoundCraft contributors | original procedural Edit-toolbar glyphs | MIT OR Apache-2.0 |
 | `docs/brand/artcraft-logo.svg` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`) |
 | `docs/brand/artcraft-logo.png` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms |
 | `docs/brand/artcraft-logo-white.svg` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms |
@@ -55,4 +56,6 @@ here. The subset uses default_fonts; the parent face uses monochrome_emoji_fonts
 | `assets/app-icon/soundcraft.ico` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
 | `assets/app-icon/hicolor/` | SoundCraft contributors | original, rendered from `icon.svg` (16–512 px PNGs and the scalable SVG) | MIT OR Apache-2.0 |
 | `docs/images/` | SoundCraft contributors | screenshots of SoundCraft rendered from the synthesised demo session | MIT OR Apache-2.0 |
+| `docs/images/ui-polish-dark.png` | SoundCraft contributors | original offscreen SoundCraft screenshot, synthetic demo, dark Edit layout | MIT OR Apache-2.0 |
+| `docs/images/ui-polish-light-midi.png` | SoundCraft contributors | original offscreen SoundCraft screenshot, synthetic demo, light Edit layout with docked MIDI Editor | MIT OR Apache-2.0 |
 | `crates/audio-io/tests/fixtures/` | SoundCraft contributors | original test tones and silence generated with ffmpeg (sine) or by hand; commands in `crates/audio-io/tests/fixtures/README.md` | MIT OR Apache-2.0 |

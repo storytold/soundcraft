@@ -58,8 +58,12 @@ fn gutter_scroll<R>(ui: &Ui, gutter: Rect, out: &egui::scroll_area::ScrollAreaOu
     if content <= view + 0.5 {
         return;
     }
-    let bar = Rect::from_x_y_ranges(gutter.x_range(), out.inner_rect.y_range());
-    let (max, h) = (content - view, (bar.height() * view / content).max(20.0));
+    let bar =
+        Rect::from_min_max(pos2(gutter.min.x, out.inner_rect.min.y.max(gutter.min.y)), pos2(gutter.max.x, out.inner_rect.max.y.min(gutter.max.y)));
+    if bar.height() <= 0.0 || view <= 0.0 {
+        return;
+    }
+    let (max, h) = (content - view, (bar.height() * view / content).max(20.0).min(bar.height()));
     let offset = out.state.clamped_offset().y;
     let thumb = Rect::from_min_size(pos2(bar.min.x + 2.0, bar.min.y + (bar.height() - h) * offset / max), vec2(bar.width() - 4.0, h));
     let resp = ui.interact(bar, out.id.with("gutter"), Sense::click_and_drag());

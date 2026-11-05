@@ -1212,6 +1212,7 @@ fn real_widgets_apply_a_scripted_edit_navigation_and_cut_once_despite_consuming_
         fn new() -> Self {
             let mut engine = soundcraft_engine::Engine::default();
             engine.execute("track.new", &json!({})).unwrap();
+            engine.execute("view.transport_midi_controls", &json!({"value": true})).unwrap();
             let mut rig = Self { ctx: egui::Context::default(), app: SoundApp::new(engine, None, Services::default()), shapes: Vec::new() };
             rig.frames(4);
             rig

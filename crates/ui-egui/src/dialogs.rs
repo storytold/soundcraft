@@ -449,7 +449,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     egui::Window::new(egui::RichText::new(&title).font(bold(13.0)))
         .collapsible(false)
         .resizable(false)
-        .anchor(Align2::CENTER_CENTER, vec2(0.0, -80.0))
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center() + vec2(0.0, -80.0))
         .show(ctx, |ui| {
             // Escape owns the whole frame: no focused button or other control may act first.
             if esc {

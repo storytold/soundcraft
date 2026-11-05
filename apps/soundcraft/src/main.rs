@@ -20,6 +20,8 @@ mod launch_args;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+#[cfg(target_os = "macos")]
+mod native_titlebar;
 mod switch;
 
 use env::Env;
@@ -96,6 +98,8 @@ impl eframe::App for App {
     /// Forward raw input to the shared app hook so scripted gestures and host-key protection behave like the desktop
     /// shell.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        #[cfg(target_os = "macos")]
+        native_titlebar::sync();
         self.0.raw_input_hook(ctx, raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

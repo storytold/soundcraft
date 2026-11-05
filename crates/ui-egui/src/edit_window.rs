@@ -2,7 +2,7 @@
 
 use crate::dialogs::Dialog;
 use crate::spot::Spot;
-use crate::theme::{Tokens, bold, clip_colors, regular, rgb};
+use crate::theme::{PANEL_GAP, Tokens, bold, clip_colors, regular, rgb};
 use crate::widgets::{groove, level_pos, meter_pos, raised_key, shade};
 use crate::{Gesture, SoundApp, toolbar};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
@@ -56,7 +56,18 @@ use universe::universe;
 pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     drive_drag(app, ui.ctx());
-    egui::Panel::top("edit_toolbar").exact_size(toolbar::HEIGHT).frame(egui::Frame::NONE.fill(t.toolbar_bg)).show(ui, |ui| toolbar::show(app, ui));
+    egui::Panel::top("edit_toolbar")
+        .exact_size(toolbar::HEIGHT)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(egui::Frame::NONE.fill(t.toolbar_bg))
+        .show(ui, |ui| toolbar::show(app, ui));
+    egui::Panel::top("edit_toolbar_gap")
+        .exact_size(PANEL_GAP)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(egui::Frame::NONE.fill(Color32::BLACK))
+        .show(ui, |_| {});
     egui::Panel::bottom("edit_status").exact_size(22.0).frame(egui::Frame::NONE.fill(t.toolbar_bg)).show(ui, |ui| status_bar(app, ui));
     egui::Panel::bottom("lower_dock_tabs").exact_size(22.0).frame(egui::Frame::NONE.fill(t.panel_bg2)).show(ui, |ui| dock_tabs(app, ui));
     if app.ui.show_universe {
@@ -138,7 +149,7 @@ fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
         rulers.insert(i + 1, "tempo_editor".into());
     }
     let cols = edit_columns(app.engine.session());
-    let titles_h = if cols.is_empty() { 0.0 } else { COLUMN_TITLES_H };
+    let titles_h = COLUMN_TITLES_H;
     let rulers_h = rulers.iter().map(|r| ruler_height(r)).sum::<f32>() + 6.0 + titles_h;
     let hscroll_h = 14.0;
     let hw = header_width(&cols);
@@ -150,8 +161,8 @@ fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().rect_filled(full, 0.0, t.window_bg);
     scroll_and_zoom(app, ui, full, tl);
     draw_rulers(app, ui, rulers_rect, tl, &rulers);
-    views_button(app, ui, rulers_rect);
     column_titles(ui, rulers_rect, &cols);
+    views_button(app, ui, rulers_rect);
     if let Some(id) = app.edit_scroll_into_view.take() {
         scroll_into_view(app, id, tl.height());
     }

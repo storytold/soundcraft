@@ -17,13 +17,13 @@ pub(super) const COLUMN_TITLES_H: f32 = 16.0;
 pub(super) type Column = (&'static str, &'static str, &'static str, f32);
 
 pub(super) const COLUMNS: [Column; 7] = [
+    ("comments", "Comments", "COMMENTS", COLUMN_W),
     ("instruments", "Instruments", "INSTRUMENT", PLUGIN_COLUMN_W),
     ("inserts_ae", "Inserts A-E", "INSERTS A-E", PLUGIN_COLUMN_W),
     ("inserts_fj", "Inserts F-J", "INSERTS F-J", PLUGIN_COLUMN_W),
     ("sends_ae", "Sends A-E", "SENDS A-E", PLUGIN_COLUMN_W),
     ("sends_fj", "Sends F-J", "SENDS F-J", PLUGIN_COLUMN_W),
     ("io", "I/O", "I/O", 94.0),
-    ("comments", "Comments", "COMMENTS", COLUMN_W),
 ];
 
 /// Optional Edit-window columns (View › Edit Window Views) that are switched on, left to right.

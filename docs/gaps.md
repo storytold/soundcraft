@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** trivial (G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-05 · **Change:** minor (Edit toolbar and panel presentation) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -209,6 +209,8 @@ settings command only. Needs an openly licensed local speech model. ≈ 30–50 
 
 ### G-19. UI feel
 
+**Done (2026-11-05):** The Edit toolbar uses aligned two-row controls, flat joined keys, original procedural glyphs and black readout wells. Quantize and optional MIDI transport controls dispatch existing commands. Edit columns place Comments first and share equal black header gaps. Tracks/Groups use compact column layouts with accessible controls and retained selection, reordering, visibility, activation and scroll behavior. Shared four-point black panel gaps remove doubled dock/gutter borders; toolbar dividers span the full height at 1.5 points, with Grid/Nudge and output wells centered. Main-window titles center on macOS; shared forms and recovery can be dragged from their initial centered position. These presentation improvements do not close the remaining UI/UX behavior gaps or change the readiness estimate.
+
 See [`ui-parity.md`](ui-parity.md). ≈ 60–100 h.
 
 ### G-20. MIDI and instrument depth
@@ -230,6 +232,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-05 | minor | Refine the two-row Edit toolbar, original procedural glyphs, Comments-first column titles, compact Tracks/Groups, centered macOS titles and draggable forms. Share four-point black panel gaps without doubled dock edges; keep readiness estimates unchanged |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-25 | trivial | G-01: `setup.playback_engine` and `setup.hardware` apply the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |
