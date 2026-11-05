@@ -224,6 +224,23 @@ impl Clip {
         }
     }
 
+    /// How many samples of the source file this clip plays: its timeline length divided by the
+    /// stretch ratio (the mixer plays `offset + rel / stretch`), rounded to the nearest sample.
+    pub fn source_span(&self) -> Samples {
+        let stretch = if self.stretch.is_finite() && self.stretch > 0.0 { self.stretch } else { 1.0 };
+        (self.length as f64 / stretch).round() as Samples
+    }
+
+    /// Whether this clip plays only part of a source file `source_len` samples long (#1264): it
+    /// starts into the file, or it ends before the file does. MIDI clips play their own sequence
+    /// and are never subsets.
+    pub fn is_subset(&self, source_len: Samples) -> bool {
+        match self.content {
+            ClipContent::Audio { .. } | ClipContent::Video { .. } => self.source_offset() > 0 || self.source_span() < source_len,
+            ClipContent::Midi { .. } => false,
+        }
+    }
+
     /// Gain (linear) at `rel` samples from the clip start: clip gain × envelope × fades.
     pub fn gain_at(&self, rel: Samples) -> f32 {
         self.gain_at_with_fades(rel, self.fade_in, self.fade_out)
@@ -540,5 +557,26 @@ mod tests {
         let mut c = Clip::audio(ClipId(3), "c", SourceId(1), 0, 0, 2000);
         c.trim_start_to(1000);
         assert_eq!(c.source_offset(), 1000);
+    }
+
+    #[test]
+    fn subset_clips_cover_only_part_of_their_source() {
+        // #1264: a clip spanning the whole file is a whole-file clip; one that starts into the
+        // file or ends before the file does is a subset.
+        let whole = Clip::audio(ClipId(1), "a", SourceId(1), 0, 0, 1000);
+        assert!(!whole.is_subset(1000));
+        assert!(Clip::audio(ClipId(2), "a", SourceId(1), 0, 0, 999).is_subset(1000));
+        assert!(Clip::audio(ClipId(3), "a", SourceId(1), 1, 0, 999).is_subset(1000));
+        assert!(Clip::audio(ClipId(4), "a", SourceId(1), 500, 0, 500).is_subset(1000));
+        // A clip running past the end of the file still covers it whole when it starts at 0.
+        assert!(!Clip::audio(ClipId(5), "a", SourceId(1), 0, 0, 2000).is_subset(1000));
+        // Stretch: a timeline length of 2000 at 2x plays 1000 source samples, the whole file.
+        let mut stretched = Clip::audio(ClipId(6), "a", SourceId(1), 0, 0, 2000);
+        stretched.stretch = 2.0;
+        assert_eq!(stretched.source_span(), 1000);
+        assert!(!stretched.is_subset(1000));
+        // MIDI clips play their own sequence, never part of a file.
+        let midi = Clip::midi(ClipId(7), "m", 0, 100, Sequence::default());
+        assert!(!midi.is_subset(0));
     }
 }
