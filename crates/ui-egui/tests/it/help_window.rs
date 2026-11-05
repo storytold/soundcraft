@@ -190,6 +190,26 @@ fn cmd_question_mark_over_the_main_window_or_help_itself() {
     assert_eq!(app.ui.help.page, Page::Command("window.mix".into()));
 }
 
+/// Context help follows the main viewport even when the saved selection is Mix.
+#[test]
+fn separate_mix_keeps_main_window_context_help_on_edit() {
+    for window in [soundcraft_ui_egui::MainWindow::Edit, soundcraft_ui_egui::MainWindow::Mix] {
+        let (ctx, mut app) = rig(OperatingSystem::Mac);
+        app.ui.mix_separate = true;
+        app.ui.window = window;
+        for _ in 0..2 {
+            app_frame(&ctx, &mut app, vec![]);
+        }
+        // The headless backend embeds the separate Mix viewport as a floating window.
+        // Point outside it so the shortcut targets the main window's background.
+        let at = egui::pos2(1590.0, 990.0);
+        assert_eq!(ctx.layer_id_at(at).unwrap().order, egui::Order::Background);
+        help_key_at(&ctx, &mut app, at);
+        assert!(app.ui.show_help);
+        assert_eq!(app.ui.help.page, Page::Command("window.edit".into()), "{window:?}");
+    }
+}
+
 #[test]
 fn guide_pages_draw_on_every_platform_and_their_links_work() {
     for os in [OperatingSystem::Mac, OperatingSystem::Windows, OperatingSystem::Nix] {
