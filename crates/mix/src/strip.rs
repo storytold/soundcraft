@@ -1,6 +1,6 @@
 use super::automation::{GainRamp, transport_at, volume_db_at};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
-use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance, is_third_party};
+use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
 use super::midi::{chase_controllers, schedule_notes};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
 use super::routing::receives_solo;
@@ -160,6 +160,8 @@ pub(crate) struct SlotCtx<'a> {
     pub(crate) sr: f32,
     pub(crate) mb: usize,
     pub(crate) external: bool,
+    /// The engine renders offline: plugins it creates are told so.
+    pub(crate) offline: bool,
     pub(crate) adopt: &'a mut HashMap<(TrackId, usize), PreparedInstance>,
     pub(crate) retired: &'a mut Vec<Box<dyn Plugin>>,
 }
@@ -192,7 +194,7 @@ impl SlotCtx<'_> {
             }
         } else {
             let state = if third { ins.state_bytes() } else { None };
-            create_instance(&ins.plugin, state.as_deref(), self.sr, self.mb, ch).map(|n| n.plugin)
+            create_instance_for(&ins.plugin, state.as_deref(), self.sr, self.mb, ch, self.offline).map(|n| n.plugin)
         }?;
         Some(PluginSlot { id: ins.plugin.clone(), ch, plugin, applied: Vec::new(), lanes: Vec::new(), failed: false })
     }
