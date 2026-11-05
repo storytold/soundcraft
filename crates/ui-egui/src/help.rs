@@ -1088,6 +1088,10 @@ pub fn window_id(title: &str) -> egui::Id {
 fn page_under_pointer(app: &SoundApp, ctx: &egui::Context) -> Option<Page> {
     let pos = ctx.input(|i| i.pointer.latest_pos())?;
     let layer = ctx.layer_id_at(pos)?;
+    // Backends without native child windows embed Mix using the viewport id as its window id.
+    if app.ui.mix_separate && layer.id == egui::Id::unique(egui::ViewportId::from_hash_of("soundcraft.mix")) {
+        return Some(Page::Command("window.mix".into()));
+    }
     if let Some((_, id)) = WINDOW_PAGES.iter().find(|(title, _)| layer.id == window_id(title)) {
         return Some(Page::Command((*id).to_string()));
     }

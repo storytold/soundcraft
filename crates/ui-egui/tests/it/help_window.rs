@@ -23,6 +23,7 @@ fn rig(os: OperatingSystem) -> (egui::Context, SoundApp) {
     (ctx, SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default()))
 }
 
+/// Accept the supported question-mark spellings on macOS, Windows and Linux without toggling Help closed.
 #[test]
 fn cmd_question_mark_opens_help_on_every_platform() {
     for (os, cmd) in OSES {
@@ -38,6 +39,7 @@ fn cmd_question_mark_opens_help_on_every_platform() {
     }
 }
 
+/// Ensure the Help chord does not take over existing slash-key commands.
 #[test]
 fn neighbouring_slash_keys_keep_their_own_commands() {
     for (os, cmd) in OSES {
@@ -86,6 +88,7 @@ fn help_menu_items_open_help_where_they_say() {
     assert!(!app.ui.show_help);
 }
 
+/// Draw every catalog page under each navigation tab to catch renderer or navigation regressions.
 #[test]
 fn every_help_page_draws_without_closing_help() {
     let (ctx, mut app) = rig(OperatingSystem::Mac);
@@ -129,6 +132,7 @@ fn help_key_at(ctx: &egui::Context, app: &mut SoundApp, at: egui::Pos2) {
     app_frame(ctx, app, vec![Event::ModifiersChanged(Modifiers::NONE)]);
 }
 
+/// Open every mapped floating window and verify that context Help resolves its actual egui layer.
 #[test]
 fn cmd_question_mark_opens_the_page_of_the_window_under_the_pointer() {
     let (ctx, mut app) = rig(OperatingSystem::Mac);
@@ -207,6 +211,66 @@ fn separate_mix_keeps_main_window_context_help_on_edit() {
         help_key_at(&ctx, &mut app, at);
         assert!(app.ui.show_help);
         assert_eq!(app.ui.help.page, Page::Command("window.edit".into()), "{window:?}");
+    }
+}
+
+/// The embedded fallback uses a viewport-based window id rather than the changing session title.
+#[test]
+fn embedded_mix_viewport_help_shortcut_opens_mix_help() {
+    let (ctx, mut app) = rig(OperatingSystem::Mac);
+    app.ui.mix_separate = true;
+    for _ in 0..3 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    let id = egui::Id::unique(egui::ViewportId::from_hash_of("soundcraft.mix"));
+    let rect = ctx.memory(|m| m.area_rect(id)).unwrap();
+    let at = rect.center();
+    help_key_at(&ctx, &mut app, at);
+    assert!(app.ui.show_help);
+    assert_eq!(app.ui.help.page, Page::Command("window.mix".into()));
+}
+
+/// Deliver key events only to the native child callback, as eframe does for a focused Mix window.
+#[test]
+fn native_mix_viewport_help_shortcut_opens_mix_help() {
+    for (os, cmd) in OSES {
+        for window in [soundcraft_ui_egui::MainWindow::Edit, soundcraft_ui_egui::MainWindow::Mix] {
+            let (ctx, mut app) = rig(os);
+            ctx.set_embed_viewports(false);
+            let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let child_events = events.clone();
+            egui::Context::set_immediate_viewport_renderer(move |ctx, mut viewport| {
+                let raw = RawInput {
+                    viewport_id: viewport.ids.this,
+                    viewports: [
+                        (egui::ViewportId::ROOT, egui::ViewportInfo::default()),
+                        (viewport.ids.this, egui::ViewportInfo { parent: Some(viewport.ids.parent), focused: Some(true), ..Default::default() }),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 720.0))),
+                    events: std::mem::take(&mut *child_events.borrow_mut()),
+                    ..Default::default()
+                };
+                ctx.run_ui(raw, |ui| (viewport.viewport_ui_cb)(ui)).textures_delta.clear();
+            });
+            app.ui.mix_separate = true;
+            app.ui.window = window;
+            app_frame(&ctx, &mut app, vec![]);
+            for (key, mods) in [(Key::Slash, cmd | Modifiers::SHIFT), (Key::Questionmark, cmd | Modifiers::SHIFT), (Key::Questionmark, cmd)] {
+                app.ui.show_help = false;
+                app.ui.help.page = Page::Welcome;
+                *events.borrow_mut() = vec![
+                    Event::PointerMoved(egui::pos2(600.0, 400.0)),
+                    Event::ModifiersChanged(mods),
+                    Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: mods },
+                    Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: mods },
+                ];
+                app_frame(&ctx, &mut app, vec![]);
+                assert!(app.ui.show_help, "{os:?} {window:?} {key:?}: child shortcut did not open Help");
+                assert_eq!(app.ui.help.page, Page::Command("window.mix".into()));
+            }
+        }
     }
 }
 
