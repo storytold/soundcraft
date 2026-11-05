@@ -516,10 +516,10 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         egui::Grid::new("pe").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
             let system_label = ui.label(crate::localization::text("Audio system"));
             let def = systems.iter().find(|s| s.is_default).map_or("none".to_string(), |s| s.name.clone());
-            let shown = draft.system.clone().unwrap_or_else(|| format!("Default ({def})"));
+            let shown = draft.system.clone().unwrap_or_else(|| crate::localized_format!("Default ({default})", default = def));
             let system = craft_ui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
                 let before = draft.system.clone();
-                ui.selectable_value(&mut draft.system, None, format!("Default ({def})"));
+                ui.selectable_value(&mut draft.system, None, crate::localized_format!("Default ({default})", default = def));
                 for s in systems.iter() {
                     ui.selectable_value(&mut draft.system, Some(s.name.clone()), &s.name);
                 }
@@ -592,7 +592,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
                 .as_ref()
                 .filter(|p| !p.silent && p.device_rate != sr)
                 .map_or(String::new(), |_| crate::localization::text(" (resampled to the device rate)").to_string());
-            ui.label(format!("{sr} Hz{note}"));
+            ui.label(crate::localized_format!("{sr} Hz{note}", sr = sr, note = note));
             ui.end_row();
         });
         ui.label(

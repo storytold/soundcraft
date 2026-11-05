@@ -1496,6 +1496,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Wet Solo" => "Solo wet",
         "Width" => "Largura",
         "invert" => "Inverter",
+        "{sr} Hz{note}" => "{sr} Hz{note}",
         _ => return None,
     })
 }
