@@ -103,6 +103,7 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
         })
         .collect();
     egui::Window::new(egui::RichText::new(crate::localization::text("Renderer")).font(bold(13.0)))
+        .id(egui::Id::new("Renderer"))
         .open(&mut open)
         .default_size(vec2(380.0, 440.0))
         .resizable(true)
@@ -156,6 +157,7 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
     }
     let language = app.ui.language;
     egui::Window::new(egui::RichText::new(language.text(crate::localization::text("Appearance"))).font(bold(13.0)))
+        .id(egui::Id::new("Appearance"))
         .open(&mut open)
         .default_size(vec2(320.0, 210.0))
         .resizable(false)

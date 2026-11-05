@@ -187,6 +187,8 @@ pub fn selector_box(ui: &mut Ui, width: f32, height: f32, text: &str, color: Col
 
 /// A selector with a compact visible label and the complete meaning on hover.
 pub(crate) fn selector_box_with_tooltip(ui: &mut Ui, width: f32, height: f32, text: &str, color: Color32, tooltip: &str) -> Response {
+    let text = crate::localization::text(text);
+    let tooltip = crate::localization::text(tooltip);
     selector_box_named(ui, width, height, text, color, SelectorLabels { name: tooltip, value: text, tooltip })
 }
 
@@ -202,9 +204,11 @@ pub(crate) struct SelectorLabels<'a> {
 /// published separately in the accessibility tree.
 pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &str, color: Color32, labels: SelectorLabels<'_>) -> Response {
     let t = Tokens::current();
-    let text = crate::localization::text(text);
+    // `text` and `value` can be user-defined route or group names (a bus called "Read"), so they
+    // are shown unchanged. Fixed labels reach this widget already translated, or via the
+    // tooltip-aware helper above.
     let name = crate::localization::text(labels.name);
-    let value = crate::localization::text(labels.value);
+    let value = labels.value;
     let tooltip = crate::localization::text(labels.tooltip);
     let (r, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     // The compact visible text can be an abbreviation ("t/l"); the full meaning on hover is the

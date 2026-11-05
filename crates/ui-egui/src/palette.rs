@@ -66,6 +66,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let mut run: Option<String> = None;
     let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
     egui::Window::new(crate::localization::text("Search"))
+        .id(egui::Id::new("Search"))
         .collapsible(false)
         .resizable(false)
         .title_bar(false)

@@ -895,7 +895,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Input monitoring for {}" => "Monitoramento de entrada para {}",
         "Solo for {}" => "Solo para {}",
         "Mute for {}" => "Silenciar {}",
-        "auto {}" => "auto {}",
+        "auto {}" => "Automação: {}",
         "constant" => "constante",
         "linear" => "linear",
         "parabolic" => "parabólico",
@@ -925,6 +925,79 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "No sample" => "Nenhuma amostra",
         "{}: missing" => "{}: ausente",
         "none" => "nenhum",
+        // Formatted messages. Placeholders mirror the English source so the same arguments fill
+        // them; `localized_format!` selects the template at run time.
+        "Active audio ends at {seconds:.2} seconds" => "O áudio ativo termina em {seconds:.2} segundos",
+        "Active plugin instances: {plugins}" => "Instâncias de plugins ativas: {plugins}",
+        "Active audio end time is unknown (invalid session sample rate)" => {
+            "O fim do áudio ativo é desconhecido (taxa de amostragem da sessão inválida)"
+        }
+        "Audio: {}" => "Áudio: {}",
+        "AudioSuite · {title}" => "AudioSuite · {title}",
+        "Bouncing {name}" => "Renderizando {name}",
+        "Bouncing {} ({:.0}%)" => "Renderizando {} ({:.0}%)",
+        "Configuration {n}" => "Configuração {n}",
+        "Default ({default})" => "Padrão ({default})",
+        "Device default" => "Padrão do dispositivo",
+        "Importing {name}{more}" => "Importando {name}{more}",
+        "Main output: {}" => "Saída principal: {}",
+        "Recording at 24-bit uses {per_min:.1} MB per mono track-minute" => "A gravação em 24 bits usa {per_min:.1} MB por minuto de faixa mono",
+        "Revert “{name}” to its last saved version?" => "Reverter “{name}” para a última versão salva?",
+        "Close “{name}” without saving?" => "Fechar “{name}” sem salvar?",
+        "Save changes to “{name}” before closing?" => "Salvar as alterações em “{name}” antes de fechar?",
+        "Session file: {p}" => "Arquivo da sessão: {p}",
+        "Session media: {} files, {:.1} MB in memory (32-bit float)" => {
+            "Mídia da sessão: {} arquivos, {:.1} MB na memória (ponto flutuante de 32 bits)"
+        }
+        "Tracks: {}" => "Faixas: {}",
+        "UI frame time: {:.1} ms" => "Tempo do quadro da interface: {:.1} ms",
+        "Undo steps: {}" => "Etapas para desfazer: {}",
+        "Value in {suffix}" => "Valor em {suffix}",
+        "Version {}" => "Versão {}",
+        "{bars} bars" => "{bars} compassos",
+        "{} contributors · {} commits" => "{} colaboradores · {} commits",
+        "@{}: {} PRs, {} commits, +{} / −{} lines (Δ {}), +{} / −{} binary assets, {} – {}" => {
+            "@{}: {} PRs, {} commits, +{} / −{} linhas (Δ {}), +{} / −{} recursos binários, {} – {}"
+        }
+        "Instrument for {}" => "Instrumento de {}",
+        "Insert {} for {}" => "Insert {} para {}",
+        "Group for {}" => "Grupo da faixa {}",
+        "In 1-{}" => "Entradas 1-{}",
+        "Send {} for {}" => "Envio {} de {}",
+        "Send {} · {}" => "Envio {} · {}",
+        "Send {which} level for {track}" => "Nível do envio {which} da faixa {track}",
+        "(redo) {r}" => "(refazer) {r}",
+        "{} / {} / {}{}" => "Faixa: {} / Playlist: {} / Clipe: {}{}",
+        "{}  (missing)" => "{}  (ausente)",
+        "Track view for {}" => "Visualização da faixa {}",
+        "Automation mode for {}" => "Modo de automação da faixa {}",
+        "{} for {}" => "{} para {}",
+        "{} @ {} Hz" => "{} a {} Hz",
+        "{} samples" => "{} amostras",
+        "{} · {} Hz · {} ch · {buf}" => "{} · {} Hz · {} canais · {buf}",
+        "{} · {} Hz · {} ch" => "{} · {} Hz · {} canais",
+        "{} audio clips checked · {} issues" => "{} clipes de áudio verificados · {} problemas",
+        "{} ch" => "{} canais",
+        "{} object track(s)" => "{} faixa(s) de objeto",
+        "{} — {} from channel {}" => "{} — {} do canal {}",
+        "“{}” already exists. Do you want to replace it?" => "“{}” já existe. Deseja substituí-lo?",
+        "“{name}” has {what} from an earlier run, autosaved {age}." => {
+            "“{name}” tem {what} de uma execução anterior, salvo automaticamente {age}."
+        }
+        "{question} Your changes will be lost." => "{question} Suas alterações serão perdidas.",
+        "{path}\nnot found" => "{path}\nnão encontrado",
+        "media offline: {why}" => "mídia indisponível: {why}",
+        "media offline: {e}" => "mídia indisponível: {e}",
+        "Window configuration could not be restored: {error}" => "Não foi possível restaurar a configuração da janela: {error}",
+        "unsaved changes and an unfinished recording" => "alterações não salvas e uma gravação inacabada",
+        "unsaved changes" => "alterações não salvas",
+        "recently" => "recentemente",
+        "less than a minute ago" => "há menos de um minuto",
+        "minute" => "minuto",
+        "hour" => "hora",
+        "day" => "dia",
+        "{n} {unit} ago" => "há {n} {unit}",
+        "{n} {unit}s ago" => "há {n} {unit}s",
         _ => return None,
     })
 }

@@ -389,7 +389,7 @@ pub(super) fn column_titles(ui: &Ui, rulers: Rect, cols: &[Column]) {
 pub(super) fn views_button(app: &mut SoundApp, ui: &mut Ui, rulers: Rect) {
     let r = Rect::from_min_size(rulers.min + vec2(6.0, 5.0), vec2(50.0, 18.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
-    let resp = crate::widgets::selector_box(&mut child, r.width(), r.height(), "Views", Tokens::current().text);
+    let resp = crate::widgets::selector_box(&mut child, r.width(), r.height(), crate::localization::text("Views"), Tokens::current().text);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, child.is_enabled(), crate::localization::text("Views")));
     let resp = resp.on_hover_text(crate::localization::text("Columns beside the track headers: inserts, sends, I/O…"));
     egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {

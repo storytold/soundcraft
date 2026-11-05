@@ -62,10 +62,6 @@ pub fn text(source: &str) -> &str {
     CURRENT_LANGUAGE.with(|language| language.get().text(source))
 }
 
-pub fn current_language() -> Language {
-    CURRENT_LANGUAGE.with(Cell::get)
-}
-
 pub struct LanguageScope(Language);
 
 impl Drop for LanguageScope {
@@ -74,86 +70,113 @@ impl Drop for LanguageScope {
     }
 }
 
+/// One formatting argument: its default rendering plus fixed-precision variants.
+///
+/// The template is only known at run time, so the format specifier is too. Building the precision
+/// variants up front lets the formatter honour `{:.0}`–`{:.3}` while evaluating the call site's
+/// arguments exactly once.
+pub struct Arg {
+    text: String,
+    fixed: [String; 4],
+}
+
+impl Arg {
+    pub fn new<T: std::fmt::Display + ?Sized>(value: &T) -> Self {
+        Self { text: format!("{value}"), fixed: [format!("{value:.0}"), format!("{value:.1}"), format!("{value:.2}"), format!("{value:.3}")] }
+    }
+
+    fn render(&self, spec: Option<&str>) -> &str {
+        match spec.and_then(|spec| spec.strip_prefix('.')) {
+            Some(digits) => digits.parse::<usize>().ok().and_then(|n| self.fixed.get(n)).map_or(self.text.as_str(), String::as_str),
+            None => &self.text,
+        }
+    }
+}
+
+/// Formats the translated `source` with positional arguments. Placeholders may carry a `:.N`
+/// precision, as in `format!`; other specifiers are ignored.
+pub fn format_positional(source: &str, args: &[Arg]) -> String {
+    format_template(source, args, &[], true)
+}
+
+/// Formats the translated `source` with named arguments (`name = value`).
+pub fn format_named(source: &str, args: &[(&str, Arg)]) -> String {
+    format_template(source, &[], args, false)
+}
+
+fn format_template(source: &str, positional: &[Arg], named: &[(&str, Arg)], positional_mode: bool) -> String {
+    let template = text(source);
+    let mut out = String::with_capacity(template.len());
+    let mut next = 0usize;
+    let mut chars = template.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                out.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                out.push('}');
+            }
+            '{' => {
+                let mut field = String::new();
+                let mut closed = false;
+                for ch in chars.by_ref() {
+                    if ch == '}' {
+                        closed = true;
+                        break;
+                    }
+                    field.push(ch);
+                }
+                if !closed {
+                    out.push('{');
+                    out.push_str(&field);
+                    break;
+                }
+                let (key, spec) = match field.split_once(':') {
+                    Some((key, spec)) => (key, Some(spec)),
+                    None => (field.as_str(), None),
+                };
+                let value = if positional_mode {
+                    let value = positional.get(next);
+                    next += 1;
+                    value
+                } else {
+                    named.iter().find(|(name, _)| *name == key).map(|(_, value)| value)
+                };
+                match value {
+                    Some(value) => out.push_str(value.render(spec)),
+                    None => {
+                        out.push('{');
+                        out.push_str(&field);
+                        out.push('}');
+                    }
+                }
+            }
+            '}' => out.push('}'),
+            ch => out.push(ch),
+        }
+    }
+    out
+}
+
 #[macro_export]
 macro_rules! localized_format {
     ($source:literal) => {
         $crate::localization::text($source).to_owned()
     };
-    ($source:literal, $($args:tt)*) => {{
-        match $crate::localization::current_language() {
-            $crate::localization::Language::English => format!($source, $($args)*),
-            $crate::localization::Language::PortugueseBrazil => match $source {
-                "Active audio ends at {seconds:.2} seconds" => format!("O áudio ativo termina em {seconds:.2} segundos", $($args)*),
-                "Active plugin instances: {plugins}" => format!("Instâncias de plugins ativas: {plugins}", $($args)*),
-                "Active audio end time is unknown (invalid session sample rate)" => format!("O fim do áudio ativo é desconhecido (taxa de amostragem da sessão inválida)", $($args)*),
-                "Audio: {}" => format!("Áudio: {}", $($args)*),
-                "AudioSuite · {title}" => format!("AudioSuite · {title}", $($args)*),
-                "Bouncing {name}" => format!("Renderizando {name}", $($args)*),
-                "Bouncing {} ({:.0}%)" => format!("Renderizando {} ({:.0}%)", $($args)*),
-                "Configuration {n}" => format!("Configuração {n}", $($args)*),
-                "Default ({default})" => format!("Padrão ({default})", $($args)*),
-                "Device default" => format!("Padrão do dispositivo", $($args)*),
-                "Importing {name}{more}" => format!("Importando {name}{more}", $($args)*),
-                "Main output: {}" => format!("Saída principal: {}", $($args)*),
-                "No engine" => format!("Sem mecanismo de áudio", $($args)*),
-                "Recording at 24-bit uses {per_min:.1} MB per mono track-minute" => {
-                    format!("A gravação em 24 bits usa {per_min:.1} MB por minuto de faixa mono", $($args)*)
-                }
-                "Save changes to “{name}” before closing?" => format!("Salvar as alterações em “{name}” antes de fechar?", $($args)*),
-                "Session file: {p}" => format!("Arquivo da sessão: {p}", $($args)*),
-                "Session media: {} files, {:.1} MB in memory (32-bit float)" => {
-                    format!("Mídia da sessão: {} arquivos, {:.1} MB na memória (ponto flutuante de 32 bits)", $($args)*)
-                }
-                "Tracks: {}" => format!("Faixas: {}", $($args)*),
-                "UI frame time: {:.1} ms" => format!("Tempo do quadro da interface: {:.1} ms", $($args)*),
-                "Undo steps: {}" => format!("Etapas para desfazer: {}", $($args)*),
-                "Value in {suffix}" => format!("Valor em {suffix}", $($args)*),
-                "Version {}" => format!("Versão {}", $($args)*),
-                "{bars} bars" => format!("{bars} compassos", $($args)*),
-                "{} contributors · {} commits" => format!("{} colaboradores · {} commits", $($args)*),
-                "@{}: {} PRs, {} commits, +{} / −{} lines (Δ {}), +{} / −{} binary assets, {} – {}" => {
-                    format!("@{}: {} PRs, {} commits, +{} / −{} linhas (Δ {}), +{} / −{} recursos binários, {} – {}", $($args)*)
-                }
-                "Instrument for {}" => format!("Instrumento de {}", $($args)*),
-                "Insert {} for {}" => format!("Insert {} para {}", $($args)*),
-                "Input for {}" => format!("Entrada da faixa {}", $($args)*),
-                "Output for {}" => format!("Saída da faixa {}", $($args)*),
-                "Group for {}" => format!("Grupo da faixa {}", $($args)*),
-                "In {}" => format!("Entrada {}", $($args)*),
-                "In 1-{}" => format!("Entradas 1-{}", $($args)*),
-                "Send {} for {}" => format!("Envio {} de {}", $($args)*),
-                "Send {} · {}" => format!("Envio {} · {}", $($args)*),
-                "Send {which} level for {track}" => format!("Nível do envio {which} da faixa {track}", $($args)*),
-                "(redo) {r}" => format!("(refazer) {r}", $($args)*),
-                "{} / {} / {}{}" => format!("Faixa: {} / Playlist: {} / Clipe: {}{}", $($args)*),
-                "{}  (missing)" => format!("{}  (ausente)", $($args)*),
-                "Track view for {}" => format!("Visualização da faixa {}", $($args)*),
-                "Automation mode for {}" => format!("Modo de automação da faixa {}", $($args)*),
-                "Voice for {}" => format!("Voz da faixa {}", $($args)*),
-                "{} for {}" => format!("{} para {}", $($args)*),
-                "auto {}" => format!("Automação: {}", $($args)*),
-                "{} @ {} Hz" => format!("{} a {} Hz", $($args)*),
-                "{} samples" => format!("{} amostras", $($args)*),
-                "{} · {} Hz · {} ch · {buf}" => format!("{} · {} Hz · {} canais · {buf}", $($args)*),
-                "{} · {} Hz · {} ch" => format!("{} · {} Hz · {} canais", $($args)*),
-                "{} audio clips checked · {} issues" => format!("{} clipes de áudio verificados · {} problemas", $($args)*),
-                "{} ch" => format!("{} canais", $($args)*),
-                "{} object track(s)" => format!("{} faixa(s) de objeto", $($args)*),
-                "{} — {} from channel {}" => format!("{} — {} do canal {}", $($args)*),
-                "“{}” already exists. Do you want to replace it?" => format!("“{}” já existe. Deseja substituí-lo?", $($args)*),
-                "“{}” has {what} from an earlier run, autosaved {age}." => {
-                    format!("“{}” tem {what} de uma execução anterior, salvo automaticamente {age}.", $($args)*)
-                }
-                "{question} Your changes will be lost." => format!("{question} Suas alterações serão perdidas.", $($args)*),
-                "{path}\nnot found" => format!("{path}\nnão encontrado", $($args)*),
-                "media offline: {why}" => format!("mídia indisponível: {why}", $($args)*),
-                "media offline: {e}" => format!("mídia indisponível: {e}", $($args)*),
-                "Window configuration could not be restored: {error}" => {
-                    format!("Não foi possível restaurar a configuração da janela: {error}", $($args)*)
-                }
-                _ => format!($source, $($args)*),
-            },
-        }
+    ($source:literal, $($name:ident = $value:expr),+ $(,)?) => {{
+        $crate::localization::format_named(
+            $source,
+            &[$( (stringify!($name), $crate::localization::Arg::new(&$value)) ),+],
+        )
+    }};
+    ($source:literal, $($value:expr),+ $(,)?) => {{
+        $crate::localization::format_positional(
+            $source,
+            &[$($crate::localization::Arg::new(&$value)),+],
+        )
     }};
 }
 
@@ -176,7 +199,7 @@ mod tests {
     #[test]
     fn language_translations_fall_back_to_the_english_source() {
         assert_eq!(Language::PortugueseBrazil.text("Appearance"), "Aparência");
-        assert_eq!(Language::PortugueseBrazil.text("Unknown label"), "Unknown label");
+        assert_eq!(Language::PortugueseBrazil.text("A source string with no catalog entry"), "A source string with no catalog entry");
         assert_eq!(Language::English.text("Appearance"), "Appearance");
     }
 

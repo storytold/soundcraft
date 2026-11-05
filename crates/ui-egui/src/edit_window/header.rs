@@ -421,12 +421,13 @@ pub(super) fn header_selector(ui: &Ui, r: Rect, id: egui::Id, text: &str, color:
     let resp = ui.interact(r, id, Sense::click());
     resp.widget_info(|| {
         let mut info = egui::WidgetInfo::labeled(egui::accesskit::Role::ComboBox, ui.is_enabled(), crate::localization::text(name));
-        info.current_text_value = Some(crate::localization::text(text).to_string());
+        // `text` can be a user-defined route name (a bus called "File"), so show it unchanged.
+        info.current_text_value = Some(text.to_string());
         info
     });
     raised_key(ui.painter(), r, Tokens::current().slot_face, resp.hovered());
     let tr = if menu { r.with_max_x(r.max.x - 7.0) } else { r };
-    ui.painter().with_clip_rect(tr.shrink(1.0)).text(tr.center(), Align2::CENTER_CENTER, crate::localization::text(text), bold(10.0), color);
+    ui.painter().with_clip_rect(tr.shrink(1.0)).text(tr.center(), Align2::CENTER_CENTER, text, bold(10.0), color);
     if menu {
         arrow(ui.painter(), pos2(r.max.x - 5.5, r.min.y + 5.75), true, Tokens::current().text);
     }
@@ -452,6 +453,14 @@ fn header_toggle(ui: &Ui, r: Rect, track: TrackId, track_name: &str, key: Header
         HeaderKey::Mute => ("Mute", t.mute),
     };
     let label = crate::localization::text(source_label);
+    // Fixed badges, independent of the translated label: in Portuguese both "Solo" and
+    // "Silenciar" would otherwise start with "S".
+    let badge = match key {
+        HeaderKey::Rec => "",
+        HeaderKey::Input => "I",
+        HeaderKey::Solo => "S",
+        HeaderKey::Mute => "M",
+    };
     let name = crate::localized_format!("{} for {}", label, track_name);
     let resp = ui.interact(r, ui.scope_id().with((source_label, track.0)), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), lit, &name));
@@ -477,7 +486,7 @@ fn header_toggle(ui: &Ui, r: Rect, track: TrackId, track_name: &str, key: Header
     if rec {
         ui.painter().circle_filled(r.center(), 4.0, if lit { Color32::WHITE } else { t.text.lerp_to_gamma(color, 0.3) });
     } else {
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, label.get(..1).unwrap_or_default(), bold(11.0), ink);
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, badge, bold(11.0), ink);
     }
     resp.on_hover_text(label)
 }
@@ -547,7 +556,8 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
     let row = |y: f32, h: f32| (r.height() >= y + h + 1.0).then_some(Rect::from_min_size(r.min + vec2(7.0, y), vec2(r.width() - 14.0, h)));
     if let Some(input) = row(4.0, 15.0) {
         let input_name = crate::mix_window::input_name(app, track);
-        let resp = header_selector(&ui, input, ui.scope_id().with(("in", id.0)), &input_name, t.text, true, &format!("Input for {}", track.name));
+        let name = crate::localized_format!("Input for {}", track.name);
+        let resp = header_selector(&ui, input, ui.scope_id().with(("in", id.0)), &input_name, t.text, true, &name);
         crate::mix_window::route_popup(app, &resp.on_hover_text(crate::localization::text("Input")), id, true);
     }
     if let Some(out) = row(21.0, 17.0) {

@@ -337,57 +337,61 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new(crate::localization::text("Workspace")).open(&mut open).default_size(vec2(460.0, 420.0)).show(ctx, |ui| {
-        let dir = if app.ui.workspace_dir.is_empty() { std::env::var("HOME").unwrap_or_else(|_| ".".into()) } else { app.ui.workspace_dir.clone() };
-        ui.horizontal(|ui| {
-            if ui.button(crate::localization::text("⬆")).on_hover_text(crate::localization::text("Parent folder")).clicked()
-                && let Some(p) = std::path::Path::new(&dir).parent()
-            {
-                app.ui.workspace_dir = p.to_string_lossy().into_owned();
-            }
-            ui.label(egui::RichText::new(&dir).small());
-        });
-        ui.separator();
-        // Names stay paths: a name that is not valid Unicode is shown lossily, and opening it says so.
-        let mut entries: Vec<(std::path::PathBuf, String, bool)> = std::fs::read_dir(&dir)
-            .map(|rd| {
-                rd.flatten()
-                    .filter_map(|e| {
-                        let path = e.path();
-                        let name = e.file_name().to_string_lossy().into_owned();
-                        if name.starts_with('.') {
-                            return None;
+    egui::Window::new(crate::localization::text("Workspace")).id(egui::Id::new("Workspace")).open(&mut open).default_size(vec2(460.0, 420.0)).show(
+        ctx,
+        |ui| {
+            let dir =
+                if app.ui.workspace_dir.is_empty() { std::env::var("HOME").unwrap_or_else(|_| ".".into()) } else { app.ui.workspace_dir.clone() };
+            ui.horizontal(|ui| {
+                if ui.button(crate::localization::text("⬆")).on_hover_text(crate::localization::text("Parent folder")).clicked()
+                    && let Some(p) = std::path::Path::new(&dir).parent()
+                {
+                    app.ui.workspace_dir = p.to_string_lossy().into_owned();
+                }
+                ui.label(egui::RichText::new(&dir).small());
+            });
+            ui.separator();
+            // Names stay paths: a name that is not valid Unicode is shown lossily, and opening it says so.
+            let mut entries: Vec<(std::path::PathBuf, String, bool)> = std::fs::read_dir(&dir)
+                .map(|rd| {
+                    rd.flatten()
+                        .filter_map(|e| {
+                            let path = e.path();
+                            let name = e.file_name().to_string_lossy().into_owned();
+                            if name.starts_with('.') {
+                                return None;
+                            }
+                            let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
+                            let ext = path.extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase();
+                            (is_dir || FileFormat::from_extension(&ext).is_some() || ["mid", "midi", SESSION_EXTENSION].contains(&ext.as_str()))
+                                .then_some((path, name, is_dir))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            entries.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for (path, name, is_dir) in entries.into_iter().take(2000) {
+                    let label = if is_dir { format!("📁 {name}") } else { format!("🔊 {name}") };
+                    let r = ui.selectable_label(false, label);
+                    if r.double_clicked() {
+                        if is_dir {
+                            // The folder is kept as text in the preferences.
+                            match crate::dialogs::unicode(&path) {
+                                Ok(p) => app.ui.workspace_dir = p.to_owned(),
+                                Err(e) => app.ui.status = e.to_string(),
+                            }
+                        } else {
+                            crate::dialogs::open_path(app, &path);
                         }
-                        let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
-                        let ext = path.extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase();
-                        (is_dir || FileFormat::from_extension(&ext).is_some() || ["mid", "midi", SESSION_EXTENSION].contains(&ext.as_str()))
-                            .then_some((path, name, is_dir))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        entries.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.to_lowercase().cmp(&b.1.to_lowercase())));
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (path, name, is_dir) in entries.into_iter().take(2000) {
-                let label = if is_dir { format!("📁 {name}") } else { format!("🔊 {name}") };
-                let r = ui.selectable_label(false, label);
-                if r.double_clicked() {
-                    if is_dir {
-                        // The folder is kept as text in the preferences.
-                        match crate::dialogs::unicode(&path) {
-                            Ok(p) => app.ui.workspace_dir = p.to_owned(),
-                            Err(e) => app.ui.status = e.to_string(),
-                        }
-                    } else {
-                        crate::dialogs::open_path(app, &path);
                     }
                 }
-            }
-        });
-        ui.label(
-            egui::RichText::new(crate::localization::text("Double-click to import audio/MIDI at the insertion point or open a session.")).small(),
-        );
-    });
+            });
+            ui.label(
+                egui::RichText::new(crate::localization::text("Double-click to import audio/MIDI at the insertion point or open a session.")).small(),
+            );
+        },
+    );
     app.ui.show_workspace = open;
 }
 

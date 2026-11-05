@@ -10,14 +10,15 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = true;
     let mut recover = None;
     egui::Window::new(egui::RichText::new(crate::localization::text("Recover Unsaved Work")).font(bold(13.0)))
+        .id(egui::Id::new("Recover Unsaved Work"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, -80.0))
         .show(ctx, |ui| {
-            let age = left.saved.elapsed().map_or_else(|_| "recently".into(), |d| ago(d.as_secs()));
-            let what = if left.recording { "unsaved changes and an unfinished recording" } else { "unsaved changes" };
-            ui.label(crate::localized_format!("“{}” has {what} from an earlier run, autosaved {age}.", left.name, what = what, age = age));
+            let age = left.saved.elapsed().map_or_else(|_| crate::localization::text("recently").to_owned(), |d| ago(d.as_secs()));
+            let what = crate::localization::text(if left.recording { "unsaved changes and an unfinished recording" } else { "unsaved changes" });
+            ui.label(crate::localized_format!("“{name}” has {what} from an earlier run, autosaved {age}.", name = left.name, what = what, age = age));
             ui.separator();
             ui.horizontal(|ui| {
                 if ui.button(crate::localization::text("Discard")).clicked() {
@@ -46,10 +47,15 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
 
 fn ago(secs: u64) -> String {
     let (n, unit) = match secs {
-        0..60 => return "less than a minute ago".into(),
+        0..60 => return crate::localization::text("less than a minute ago").to_owned(),
         60..3_600 => (secs / 60, "minute"),
         3_600..86_400 => (secs / 3_600, "hour"),
         _ => (secs / 86_400, "day"),
     };
-    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+    let unit = crate::localization::text(unit);
+    if n == 1 {
+        crate::localized_format!("{n} {unit} ago", n = n, unit = unit)
+    } else {
+        crate::localized_format!("{n} {unit}s ago", n = n, unit = unit)
+    }
 }

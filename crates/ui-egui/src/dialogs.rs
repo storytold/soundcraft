@@ -689,9 +689,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     let revert = then.0 == "session.revert";
                     if revert || cfg!(target_arch = "wasm32") {
                         let (question, ok) = if revert {
-                            (format!("Revert “{name}” to its last saved version?"), "Revert")
+                            (crate::localized_format!("Revert “{name}” to its last saved version?", name = name), "Revert")
                         } else {
-                            (format!("Close “{name}” without saving?"), "Don't Save")
+                            (crate::localized_format!("Close “{name}” without saving?", name = name), "Don't Save")
                         };
                         ui.label(crate::localized_format!("{question} Your changes will be lost.", question = question));
                         if buttons(ui, ok, false) {
@@ -811,7 +811,7 @@ pub(crate) fn buttons_enabled(ui: &mut egui::Ui, ok: &str, enter: bool, ready: b
             canceled = true;
             ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::unique("dlg_cancel"), true));
         }
-        let b = egui::Button::new(egui::RichText::new(ok).strong()).fill(Tokens::current().accent);
+        let b = egui::Button::new(egui::RichText::new(crate::localization::text(ok)).strong()).fill(Tokens::current().accent);
         if ui.add_enabled(ready, b).clicked() {
             pressed = true;
         }
