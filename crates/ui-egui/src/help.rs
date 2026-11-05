@@ -84,6 +84,7 @@ struct GuideFile {
     guides: Vec<Guide>,
 }
 
+/// Parse the bundled command and guide catalogs, returning either JSON error to the caller.
 fn parse() -> Result<Data, serde_json::Error> {
     let mut d: Data = serde_json::from_str(DATA)?;
     d.guides = serde_json::from_str::<GuideFile>(GUIDES)?.guides;
@@ -242,6 +243,7 @@ fn app_menu_path(id: &str, mac: bool) -> Option<String> {
     (!label.is_empty()).then(|| format!("SoundCraft › {label}"))
 }
 
+/// Show a registry menu path using the separators used on help pages.
 fn pretty_path(path: &str) -> String {
     path.replace(" > ", " › ")
 }
@@ -260,6 +262,7 @@ fn process_paths(process: &str) -> Vec<String> {
     crate::menus::AUDIOSUITE.iter().filter(|(_, p)| *p == process).map(|(path, _)| (*path).to_string()).collect()
 }
 
+/// Build and cache the searchable catalog, disambiguating duplicate titles by menu location.
 fn entries() -> &'static [Entry] {
     static ENTRIES: OnceLock<Vec<Entry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
@@ -392,10 +395,12 @@ pub fn pages() -> Vec<Page> {
     v
 }
 
+/// Find the searchable entry for a command, process or guide page.
 fn entry_for(page: &Page) -> Option<&'static Entry> {
     entries().iter().find(|e| &e.page == page)
 }
 
+/// Look up a Contents category by its catalog id.
 fn category(id: &str) -> Option<&'static Category> {
     data().categories.iter().find(|c| c.id == id)
 }
@@ -411,10 +416,12 @@ fn category_of(page: &Page) -> Option<&str> {
     }
 }
 
+/// Look up a how-to or keyboard guide by its catalog id.
 fn guide(id: &str) -> Option<&'static Guide> {
     data().guides.iter().find(|g| g.id == id)
 }
 
+/// Identify guide entries so Contents can list them before commands.
 fn is_guide(e: &Entry) -> bool {
     matches!(e.page, Page::Guide(_))
 }
@@ -523,6 +530,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.help.typing = ctx.egui_wants_keyboard_input();
 }
 
+/// Lay out the toolbar, fixed-width navigation and scrolling page, then consume the reveal request.
 fn window_body(app: &mut SoundApp, ui: &mut Ui) {
     // The highlight is the accent blue in both themes: white text on it reads in light mode too.
     ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
@@ -549,6 +557,7 @@ fn window_body(app: &mut SoundApp, ui: &mut Ui) {
     app.ui.help.reveal = false;
 }
 
+/// Handle history navigation, search edits and one-shot requests to focus the search box.
 fn toolbar(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     ui.horizontal(|ui| {
@@ -578,6 +587,7 @@ fn toolbar(app: &mut SoundApp, ui: &mut Ui) {
     });
 }
 
+/// Select the navigation tab and draw its Contents, Index or Search panel.
 fn navigation(app: &mut SoundApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         for (tab, name) in [(Tab::Contents, "Contents"), (Tab::Index, "Index"), (Tab::Search, "Search")] {
@@ -597,6 +607,7 @@ fn navigation(app: &mut SoundApp, ui: &mut Ui) {
     }
 }
 
+/// Draw the topic tree, revealing the current page when requested and recording page selections.
 fn contents(app: &mut SoundApp, ui: &mut Ui) {
     let h = &mut app.ui.help;
     let current = category_of(&h.page);
@@ -641,6 +652,7 @@ fn contents(app: &mut SoundApp, ui: &mut Ui) {
     }
 }
 
+/// List pages alphabetically, filtered by title prefix and grouped by initial letter.
 fn index(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let h = &mut app.ui.help;
@@ -670,6 +682,7 @@ fn index(app: &mut SoundApp, ui: &mut Ui) {
     }
 }
 
+/// Show ranked matches and description previews, opening the page selected by the user.
 fn search_results(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let h = &mut app.ui.help;
@@ -721,6 +734,7 @@ fn chip(ui: &mut Ui, text: RichText) {
     });
 }
 
+/// Dispatch the current page to its renderer without holding a borrow of the navigation state.
 fn page(app: &mut SoundApp, ui: &mut Ui) {
     let current = app.ui.help.page.clone();
     match current {
@@ -732,6 +746,7 @@ fn page(app: &mut SoundApp, ui: &mut Ui) {
     }
 }
 
+/// Draw a help page heading with consistent spacing.
 fn title(ui: &mut Ui, text: &str) {
     ui.add_space(6.0);
     ui.label(RichText::new(text).font(bold(20.0)));
@@ -743,6 +758,7 @@ fn column_width(ui: &Ui) -> f32 {
     ((ui.available_width() - 16.0) / 2.0).clamp(120.0, 300.0)
 }
 
+/// Draw guide and topic links in two columns sized to the available page width.
 fn welcome(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     title(ui, "SoundCraft Help");
@@ -794,6 +810,7 @@ fn welcome(app: &mut SoundApp, ui: &mut Ui) {
     }
 }
 
+/// Draw a topic summary and links to its guides and command pages.
 fn category_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     let t = Tokens::current();
     let Some(c) = category(id) else {
@@ -816,6 +833,7 @@ fn category_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     }
 }
 
+/// Open the parent topic when its breadcrumb link is selected.
 fn breadcrumb(app: &mut SoundApp, ui: &mut Ui, category_id: &str) {
     let t = Tokens::current();
     if let Some(c) = category(category_id)
@@ -830,6 +848,7 @@ fn platform_keys(text: &str, mac: bool) -> String {
     if mac { text.to_string() } else { text.replace("Cmd+", "Ctrl+") }
 }
 
+/// Highlight an unfinished feature's limitations alongside its command description.
 fn limits_note(ui: &mut Ui, limits: &str) {
     let t = Tokens::current();
     ui.add_space(8.0);
@@ -839,6 +858,7 @@ fn limits_note(ui: &mut Ui, limits: &str) {
     });
 }
 
+/// Draw command metadata and limitations, offering the same action and availability as its menu.
 fn command_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     let t = Tokens::current();
     let (Some(h), Some(e)) = (data().commands.get(id), entry_for(&Page::Command(id.to_string()))) else {
@@ -945,6 +965,7 @@ fn keys_cell(keys: &str, mac: bool) -> String {
         .join(" / ")
 }
 
+/// Draw platform-specific steps or keyboard tables, followed by links to related commands.
 fn guide_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     let t = Tokens::current();
     let Some(g) = guide(id) else {
@@ -1078,7 +1099,8 @@ fn page_under_pointer(app: &SoundApp, ctx: &egui::Context) -> Option<Page> {
         return Some(Page::Process(process.clone()));
     }
     if layer.order == egui::Order::Background {
-        let id = if app.ui.window == crate::MainWindow::Mix { "window.mix" } else { "window.edit" };
+        // Match SoundApp::ui: a separate Mix viewport leaves Edit in the main window.
+        let id = if !app.ui.mix_separate && app.ui.window == crate::MainWindow::Mix { "window.mix" } else { "window.edit" };
         return Some(Page::Command(id.into()));
     }
     None
@@ -1102,6 +1124,7 @@ fn why_disabled(app: &SoundApp, id: &str) -> Option<String> {
     (c.enabled)(&app.engine).err()
 }
 
+/// Describe an AudioSuite process and offer to open it through its existing menu action.
 fn process_page(app: &mut SoundApp, ui: &mut Ui, process: &str) {
     let t = Tokens::current();
     let Some(p) = data().audiosuite.iter().find(|p| p.process == process) else {
@@ -1134,6 +1157,7 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    /// Validate nonempty help text and unique categories before accepting the bundled catalog.
     #[test]
     fn help_data_parses_and_names_known_categories() {
         let d = parse().unwrap();
@@ -1149,6 +1173,7 @@ mod tests {
 
     /// Every command in the app has a help page, and every help page is a real command: a new
     /// command must ship with its plain-words description in `help/commands.json`.
+    /// Keep help coverage in sync with both engine and UI command registries.
     #[test]
     fn every_command_has_a_help_page() {
         let d = parse().unwrap();
@@ -1161,6 +1186,7 @@ mod tests {
         assert!(stale.is_empty(), "help/commands.json describes commands that no longer exist: {stale:?}");
     }
 
+    /// Require catalog entries for every AudioSuite process exposed by the menus.
     #[test]
     fn every_audiosuite_process_has_a_help_page() {
         let d = parse().unwrap();
@@ -1169,6 +1195,7 @@ mod tests {
         assert_eq!(processes, described);
     }
 
+    /// Exercise title, content, shortcut and approximate matches against the real help catalog.
     #[test]
     fn search_finds_titles_words_shortcuts_and_loose_spellings() {
         let first = |q: &str| search(q).first().map(|e| e.page.clone());
@@ -1198,6 +1225,7 @@ mod tests {
         assert!(search("   ").is_empty());
     }
 
+    /// Check that registered menu commands retain discoverable locations in help.
     #[test]
     fn commands_in_the_menus_list_where_they_are() {
         let e = entry_for(&Page::Command("session.save".into())).unwrap();
@@ -1206,6 +1234,7 @@ mod tests {
         assert_eq!(e.paths, ["Help › SoundCraft Help"]);
     }
 
+    /// Keep common abbreviations intact when shortening search result previews.
     #[test]
     fn first_sentence_skips_abbreviations() {
         assert_eq!(first_sentence("Adds a send (e.g. to a reverb). Then more."), "Adds a send (e.g. to a reverb).");
@@ -1214,6 +1243,7 @@ mod tests {
         assert_eq!(first_sentence("Ends with e.g. "), "Ends with e.g. ");
     }
 
+    /// Check navigation order, forward-history truncation and the history size limit.
     #[test]
     fn back_and_forward_walk_the_history() {
         let mut h = HelpState::default();
@@ -1236,6 +1266,7 @@ mod tests {
         assert_eq!(h.back.len(), HISTORY);
     }
 
+    /// Check which help navigation fields survive preference serialization.
     #[test]
     fn page_and_tab_are_saved_with_the_preferences() {
         let mut h = HelpState { tab: Tab::Index, ..HelpState::default() };
@@ -1274,6 +1305,7 @@ mod tests {
         }
     }
 
+    /// Resolve guide references on both platforms so stale identifiers cannot ship.
     #[test]
     fn every_guide_names_real_menus_keys_and_commands() {
         let d = parse().unwrap();
@@ -1310,6 +1342,7 @@ mod tests {
         }
     }
 
+    /// Check platform-specific rendering of guide shortcut tokens.
     #[test]
     fn guides_show_the_keys_of_each_platform() {
         let line = "Save with {menu:session.save} ({key:session.save}), record with {keys:Cmd+Space}.";
@@ -1327,6 +1360,7 @@ mod tests {
         assert_eq!(keys_cell("Alt+Tab | Ctrl+Tab", false), "Ctrl+Tab");
     }
 
+    /// Check guide key tables and prose for incorrect substitutions off macOS.
     #[test]
     fn guides_read_right_off_the_mac() {
         // Cmd becomes Ctrl off the Mac, so a guide must not also name Ctrl beside it, and a PC
@@ -1346,6 +1380,7 @@ mod tests {
         }
     }
 
+    /// Check guide discovery through both search and the topic listing.
     #[test]
     fn guides_are_found_by_search_and_listed_first_in_their_topic() {
         assert_eq!(search("record audio").first().map(|e| &e.page), Some(&Page::Guide("record_audio".into())));
@@ -1357,6 +1392,7 @@ mod tests {
         assert_eq!(category_of(&Page::Guide("keys_transport".into())), Some("transport"));
     }
 
+    /// Require every mapped floating window to point to an existing help page.
     #[test]
     fn every_window_help_knows_has_a_page() {
         let d = parse().unwrap();
@@ -1367,6 +1403,7 @@ mod tests {
         }
     }
 
+    /// Check that duplicate page titles include enough location information to distinguish them.
     #[test]
     fn pages_with_the_same_title_are_told_apart_in_lists() {
         let names: Vec<&str> = entries().iter().map(|e| e.name.as_str()).collect();
@@ -1380,6 +1417,7 @@ mod tests {
         assert!(shortcuts.contains(&"Keyboard Shortcuts  (for scripts)"), "{shortcuts:?}");
     }
 
+    /// Check platform substitutions in command descriptions and limitation notes.
     #[test]
     fn descriptions_show_ctrl_off_the_mac() {
         assert_eq!(platform_keys("Cmd+= switches between Mix and Edit", false), "Ctrl+= switches between Mix and Edit");
@@ -1392,6 +1430,7 @@ mod tests {
         }
     }
 
+    /// Check platform-specific application-menu locations, including items absent on macOS.
     #[test]
     fn the_application_menu_items_say_where_they_are() {
         for (_, _, id) in APP_MENU {
