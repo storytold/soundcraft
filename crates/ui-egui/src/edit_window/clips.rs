@@ -26,26 +26,41 @@ pub(super) fn draw_strip_silence(painter: &egui::Painter, s: &Session, tl: Rect,
     }
 }
 
-pub(super) fn grid_lines(painter: &egui::Painter, s: &Session, tl: Rect, lane: Rect) {
-    let t = Tokens::current();
-    let view = Range::new(sample_at(s, tl, tl.min.x).max(0), sample_at(s, tl, tl.max.x));
-    let sr = s.sample_rate;
-    // Bar lines always; grid lines when enabled and dense enough.
-    let bar = GridValue::Note { value: NoteValue::Bar, dotted: false, triplet: false };
-    let bar_px = bar.step_samples(view.start, sr, &s.tempo, s.frame_rate) as f64 / s.edit.zoom.samples_per_px;
-    if bar_px > 6.0 {
-        let col = grid_veil(t.bar_line, t.playlist_bg);
-        for at in bar.lines(view.start, view.end, sr, &s.tempo, s.frame_rate, 600) {
-            let x = x_of(s, tl, at);
-            painter.line_segment([pos2(x, lane.min.y), pos2(x, lane.max.y)], Stroke::new(1.0, col));
+/// Grid positions computed once for the current viewport and shared by all visible lanes.
+#[derive(Default)]
+pub(super) struct GridLines {
+    bars: Vec<f32>,
+    grid: Vec<f32>,
+}
+
+impl GridLines {
+    /// Collect and project visible lines before drawing any lanes in this frame.
+    pub(super) fn new(s: &Session, tl: Rect) -> Self {
+        let mut lines = Self::default();
+        let view = Range::new(sample_at(s, tl, tl.min.x).max(0), sample_at(s, tl, tl.max.x));
+        let sr = s.sample_rate;
+        // Bar lines always; grid lines when enabled and dense enough.
+        let bar = GridValue::Note { value: NoteValue::Bar, dotted: false, triplet: false };
+        let bar_px = bar.step_samples(view.start, sr, &s.tempo, s.frame_rate) as f64 / s.edit.zoom.samples_per_px;
+        if bar_px > 6.0 {
+            lines.bars = bar.lines(view.start, view.end, sr, &s.tempo, s.frame_rate, 600).into_iter().map(|at| x_of(s, tl, at)).collect();
         }
+        if s.edit.grid_lines {
+            let step_px = s.edit.grid.step_samples(view.start, sr, &s.tempo, s.frame_rate) as f64 / s.edit.zoom.samples_per_px;
+            if s.edit.grid_clips_markers || step_px > 7.0 {
+                let visible_columns = tl.width().ceil().clamp(1.0, 16_384.0) as usize;
+                lines.grid = s.grid_lines(view.start, view.end, visible_columns).into_iter().map(|at| x_of(s, tl, at)).collect();
+            }
+        }
+        lines
     }
-    if s.edit.grid_lines {
-        let step_px = s.edit.grid.step_samples(view.start, sr, &s.tempo, s.frame_rate) as f64 / s.edit.zoom.samples_per_px;
-        if step_px > 7.0 {
-            let col = grid_veil(t.grid_line, t.playlist_bg);
-            for at in s.edit.grid.lines(view.start, view.end, sr, &s.tempo, s.frame_rate, 2000) {
-                let x = x_of(s, tl, at);
+
+    /// Draw the prepared lines on one lane, preserving bar and grid colors and stacking order.
+    pub(super) fn draw(&self, painter: &egui::Painter, lane: Rect) {
+        let t = Tokens::current();
+        for (positions, color) in [(&self.bars, t.bar_line), (&self.grid, t.grid_line)] {
+            let col = grid_veil(color, t.playlist_bg);
+            for &x in positions {
                 painter.line_segment([pos2(x, lane.min.y), pos2(x, lane.max.y)], Stroke::new(1.0, col));
             }
         }

@@ -2,6 +2,25 @@ use super::*;
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable};
 
+/// A trim cannot snap to the clip's own old boundary in Clips/Markers mode.
+#[test]
+fn clips_markers_trim_ignores_the_trimmed_clip() {
+    let mut s = Session::default();
+    let track = s.add_track(TrackKind::Midi, soundcraft_model::ChannelFormat::Mono, None);
+    let clip = Clip::midi(s.new_clip_id(), "Notes", 1_000, 1_000, soundcraft_midi::Sequence::default());
+    let clip_id = clip.id;
+    s.track_mut(track).and_then(Track::playlist_mut).unwrap().clips.push(clip);
+    s.add_marker("Inside", soundcraft_model::MarkerKind::Marker, 1_500, 1_500);
+    s.add_marker("Target", soundcraft_model::MarkerKind::Marker, 2_500, 2_500);
+    s.edit.edit_mode = soundcraft_model::EditMode::Grid;
+    s.edit.grid_clips_markers = true;
+
+    assert_eq!(super::drag::drag_snap(&s, 2_100, false), 2_000);
+    assert_eq!(super::drag::drag_snap_excluding(&s, 2_100, false, &[clip_id]), 2_500);
+    assert_eq!(super::drag::trim_drag_snap(&s, clip_id, 1_000, true, false), 1_000);
+    assert_eq!(super::drag::trim_drag_snap(&s, clip_id, 2_000, false, false), 2_000);
+}
+
 /// The painted header selectors are interactive controls; their accessible name is the field
 /// they edit, not the short value text ("Read", "Waveform") painted inside them.
 #[test]
@@ -1787,4 +1806,34 @@ fn alt_click_on_a_marker_deletes_it() {
 
     assert_eq!(h.state().engine.session().markers.len(), before - 1);
     assert!(!h.state().engine.session().markers.iter().any(|m| m.name == "Alt-delete me"));
+}
+
+#[test]
+fn short_track_name_is_centered_and_long_name_is_left_aligned() {
+    let mut h = harness(2);
+    let s = h.state().engine.session_arc();
+    let first = s.tracks[0].id.0;
+    let second = s.tracks[1].id.0;
+    h.state_mut().run("track.rename", json!({"track": first, "name": "Vocal"})).unwrap();
+    h.state_mut().run("track.rename", json!({"track": second, "name": "A Very Long Track Name That Exceeds Header Width"})).unwrap();
+    h.step();
+
+    let r0 = row(&h, 0);
+    let r1 = row(&h, 1);
+
+    let first_text = h.output().shapes.iter().find_map(|s| match &s.shape {
+        Shape::Text(t) if t.galley.text() == "Vocal" && s.clip_rect.intersects(r0) => Some((t.pos, t.galley.size())),
+        _ => None,
+    });
+    let long_text = h.output().shapes.iter().find_map(|s| match &s.shape {
+        Shape::Text(t) if t.galley.text() == "A Very Long Track Name That Exceeds Header Width" && s.clip_rect.intersects(r1) => Some(t.pos),
+        _ => None,
+    });
+
+    let (first_pos, first_size) = first_text.expect("short track name should be rendered in edit header");
+    let long_pos = long_text.expect("long track name should be rendered in edit header");
+
+    assert_eq!(long_pos.x, r1.min.x + 17.5);
+    let first_center_x = first_pos.x + first_size.x * 0.5;
+    assert!((first_center_x - (r0.min.x + 64.5)).abs() <= 0.1, "short name should be centered (center was at {first_center_x})");
 }
