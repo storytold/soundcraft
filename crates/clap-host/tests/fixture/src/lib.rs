@@ -102,6 +102,8 @@ struct Fx {
     active: bool,
     processing: bool,
     gui_created: bool,
+    /// The thread that created the GUI (the host's main thread).
+    gui_thread: Option<std::thread::ThreadId>,
     gui_visible: bool,
     gui_edit_pending: bool,
     /// `clap.render` set the offline mode (wide fixtures only).
@@ -130,7 +132,10 @@ unsafe extern "C" fn init(p: *const clap_plugin) -> bool {
 }
 
 unsafe extern "C" fn destroy(p: *const clap_plugin) {
-    assert!(!unsafe { fx(p) }.gui_created, "plugin destroyed with its GUI alive");
+    let f = unsafe { fx(p) };
+    // A host destroying the plugin off the GUI's thread can't destroy the GUI there (clap.gui is
+    // main-thread only), so it may leave it; on the GUI's thread it must destroy it first.
+    assert!(!f.gui_created || f.gui_thread != Some(std::thread::current().id()), "plugin destroyed with its GUI alive");
     let data = unsafe { (*p).plugin_data } as *mut Fx;
     drop(unsafe { Box::from_raw(data) });
 }
@@ -492,6 +497,7 @@ unsafe extern "C" fn gui_create(p: *const clap_plugin, _api: *const c_char, floa
     let f = unsafe { fx(p) };
     assert!(floating && !f.gui_created, "create");
     f.gui_created = true;
+    f.gui_thread = Some(std::thread::current().id());
     true
 }
 
@@ -638,6 +644,7 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         active: false,
         processing: false,
         gui_created: false,
+        gui_thread: None,
         gui_visible: false,
         gui_edit_pending: false,
         offline: false,
