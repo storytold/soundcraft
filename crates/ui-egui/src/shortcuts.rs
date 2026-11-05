@@ -54,17 +54,32 @@ fn search_chord(m: Modifiers, mac: bool) -> bool {
     mac && m.command && m.ctrl
 }
 
+/// Dispatch global keyboard shortcuts once no text field or dialog wants input, ignoring non-scripted auto-repeats
+/// while still running a host press alongside a scripted one.
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
     if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() {
         return;
     }
+    // A scripted press is identified by its exact position in this pass's events, not by matching
+    // key/modifier values. A fresh host press with the same chord must still run its own action in
+    // addition to the scripted one, while a host auto-repeat stays ignored: egui rewrites an
+    // event's `repeat` flag from the physical key state, which says nothing about whether that
+    // particular event was injected. Every non-scripted repeat is ignored as before.
+    let scripted = app.scripted_key_press_indices();
     let events: Vec<(Key, Modifiers)> = ctx.input(|i| {
         i.events
             .iter()
-            .filter_map(|e| match e {
-                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => Some((*key, *modifiers)),
+            .enumerate()
+            .filter_map(|(index, e)| match e {
+                egui::Event::Key { key, pressed: true, repeat, modifiers, .. } => {
+                    if scripted.contains(&index) {
+                        Some((*key, *modifiers))
+                    } else {
+                        (!*repeat).then_some((*key, *modifiers))
+                    }
+                }
                 _ => None,
             })
             .collect()
@@ -162,8 +177,19 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             let _ = app.run("edit.tool", json!({"tool": tool}));
             true
         }
-        Key::Plus | Key::Minus if !m.command && app.ui.window == MainWindow::Edit => {
-            let dir = if key == Key::Plus { 1 } else { -1 };
+        _ => fixed_more(app, key, m, mac),
+    }
+}
+
+/// The rest of [`fixed`]'s keys.
+fn fixed_more(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
+    let plain = !m.command && !m.alt && !m.ctrl && !m.shift;
+    match key {
+        // `=` is what a bare press of the unlabeled +/- key reports (it has no shift held, so it
+        // can never be `Key::Plus`); `Key::Plus` is kept for a keyboard that does send it (e.g. a
+        // numpad +). `!m.alt` leaves Alt+= to `window.event_list`'s registered shortcut.
+        Key::Plus | Key::Equals | Key::Minus if !m.command && !m.alt && app.ui.window == MainWindow::Edit => {
+            let dir = if key == Key::Minus { -1 } else { 1 };
             let _ = app.run("edit.nudge", json!({"direction": dir}));
             true
         }
@@ -238,7 +264,7 @@ fn edit_mode_key(app: &mut SoundApp, pressed: Key) {
     let ed = &app.engine.session().edit;
     let keep_grid = ed.edit_mode.is_grid() && ed.flag("options.edit_tool_mode_keyboard_lock");
     // F4 pressed first in an F4+F1–F3 chord switched the Grid mode on its own; put that back.
-    let flipped = egui::Id::new("edit_mode_key_grid_before_f4");
+    let flipped = egui::Id::unique("edit_mode_key_grid_before_f4");
     let before =
         (ed.edit_mode.is_grid() && !keep_grid).then(|| if ed.flag(soundcraft_engine::edit::RELATIVE_GRID) { "relative_grid" } else { "grid" });
     let restore = match &ctx {

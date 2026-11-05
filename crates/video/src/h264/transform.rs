@@ -91,6 +91,14 @@ fn clip_u8(v: i32) -> u8 {
     v.clamp(0, 255) as u8
 }
 
+/// Clamp a dequantised coefficient to the spec's r range: the inverse-transform output is
+/// unspecified when r falls outside −2^15 to 2^15 − 1 (8.5.12.1, likewise 8.5.13.1), and crafted
+/// streams get there because scale4/scale8 wrap. Clamping keeps the butterflies below overflow.
+#[inline(always)]
+fn r_clamp(v: i32) -> i32 {
+    v.clamp(-(1 << 15), (1 << 15) - 1)
+}
+
 /// Inverse 4x4 transform of raster-order `d` and add to `dst` (8.5.12.2, 8.5.14).
 ///
 /// Rows first, then columns (the spec's order: the `>> 1` steps make it matter). The column
@@ -99,10 +107,11 @@ pub fn idct4_add(d: &[i32; 16], dst: &mut [u8], stride: usize) {
     let mut t = [[0i32; 4]; 4];
     for (i, row) in t.iter_mut().enumerate() {
         let r = &d[i * 4..i * 4 + 4];
-        let e = r[0] + r[2];
-        let f = r[0] - r[2];
-        let g = (r[1] >> 1) - r[3];
-        let h = r[1] + (r[3] >> 1);
+        let (r0, r1, r2, r3) = (r_clamp(r[0]), r_clamp(r[1]), r_clamp(r[2]), r_clamp(r[3]));
+        let e = r0 + r2;
+        let f = r0 - r2;
+        let g = (r1 >> 1) - r3;
+        let h = r1 + (r3 >> 1);
         *row = [e + h, f + g, f - g, e - h];
     }
     let mut o = [[0i32; 4]; 4];
@@ -117,7 +126,7 @@ pub fn idct4_add(d: &[i32; 16], dst: &mut [u8], stride: usize) {
         o[3][j] = e - h;
     }
     for (i, row) in o.iter().enumerate() {
-        let Some(line) = dst.get_mut(i * stride..).and_then(|d| d.first_chunk_mut::<4>()) else {
+        let Some(line) = dst.get_mut(i * stride..).and_then(<[_]>::first_chunk_mut::<4>) else {
             return;
         };
         for (p, &v) in line.iter_mut().zip(row) {
@@ -163,7 +172,7 @@ fn idct8_1d(d: [i32; 8]) -> [i32; 8] {
 pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
     let mut t = [[0i32; 8]; 8];
     for (row, src) in t.iter_mut().zip(d.as_chunks::<8>().0) {
-        *row = idct8_1d(*src);
+        *row = idct8_1d(std::array::from_fn(|k| r_clamp(src[k])));
     }
     let mut o = [[0i32; 8]; 8];
     for j in 0..8 {
@@ -173,7 +182,7 @@ pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
         }
     }
     for (i, row) in o.iter().enumerate() {
-        let Some(line) = dst.get_mut(i * stride..).and_then(|d| d.first_chunk_mut::<8>()) else {
+        let Some(line) = dst.get_mut(i * stride..).and_then(<[_]>::first_chunk_mut::<8>) else {
             return;
         };
         for (p, &v) in line.iter_mut().zip(row) {
@@ -290,6 +299,35 @@ mod tests {
         assert_eq!(scale4(2, 160, 12), (2 * 160 + 2) >> 2);
         assert_eq!(scale8(1, 320, 36), 320);
         assert_eq!(scale8(1, 320, 30), (320 + 1) >> 1);
+    }
+
+    /// Crafted streams scale levels far outside the spec's r range (scale4/scale8 wrap by
+    /// design, so r can be any i32): the spec leaves the inverse-transform output unspecified
+    /// when r falls outside −2^15 to 2^15 − 1 (8.5.12.1), so the IDCT must clamp its input into
+    /// the defined range instead of overflowing the butterfly arithmetic (it panicked in
+    /// debug/overflow-checks builds).
+    #[test]
+    fn idct4_huge_coefficients_are_clamped_to_the_spec_r_range() {
+        let mut d = [0i32; 16];
+        for (i, v) in d.iter_mut().enumerate() {
+            *v = if i % 2 == 0 { i32::MAX } else { i32::MIN };
+        }
+        let (mut a, mut b) = ([0u8; 16], [0u8; 16]);
+        idct4_add(&[i32::MAX; 16], &mut a, 4);
+        idct4_add(&[32767; 16], &mut b, 4);
+        assert_eq!(a, b);
+        let (mut a, mut b) = ([0u8; 16], [0u8; 16]);
+        idct4_add(&d, &mut a, 4);
+        idct4_add(&std::array::from_fn(|i| if i % 2 == 0 { 32767 } else { -32768 }), &mut b, 4);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn idct8_huge_coefficients_are_clamped_to_the_spec_r_range() {
+        let (mut a, mut b) = ([0u8; 64], [0u8; 64]);
+        idct8_add(&[i32::MIN; 64], &mut a, 8);
+        idct8_add(&[-32768; 64], &mut b, 8);
+        assert_eq!(a, b);
     }
 
     /// Corrupt streams can carry huge coefficient levels: dequantisation wraps (as release

@@ -1,0 +1,141 @@
+{
+  "id": "soundcraft",
+  "name": "SoundCraft",
+  "upgradeCode": "EE53D3E5-D0AE-40F9-808D-9417FDEBF61A",
+  "sources": [
+    "soundcraft.wxs"
+  ],
+  "icon": "assets/app-icon/soundcraft.ico",
+  "localization": [],
+  "extensions": [
+    "UI"
+  ],
+  "payloads": [
+    "NOTICE",
+    "soundcraft-cli.exe",
+    "soundcraft.exe"
+  ],
+  "registry": [
+    [
+      "-1",
+      "Software\\Classes\\SoundCraft.Audio\\shell\\open\\command",
+      "",
+      "\"[#SoundcraftExe]\" \"%1\""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\SoundCraft.Midi\\shell\\open\\command",
+      "",
+      "\"[#SoundcraftExe]\" \"%1\""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\.wav\\OpenWithProgids",
+      "SoundCraft.Audio",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\.aif\\OpenWithProgids",
+      "SoundCraft.Audio",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\.aiff\\OpenWithProgids",
+      "SoundCraft.Audio",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\.flac\\OpenWithProgids",
+      "SoundCraft.Audio",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\.mp3\\OpenWithProgids",
+      "SoundCraft.Audio",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\.mid\\OpenWithProgids",
+      "SoundCraft.Midi",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\.midi\\OpenWithProgids",
+      "SoundCraft.Midi",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\soundcraft.exe",
+      "FriendlyAppName",
+      "SoundCraft"
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\soundcraft.exe\\shell\\open\\command",
+      "",
+      "\"[#SoundcraftExe]\" \"%1\""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\soundcraft.exe\\SupportedTypes",
+      ".scraft",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\soundcraft.exe\\SupportedTypes",
+      ".wav",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\soundcraft.exe\\SupportedTypes",
+      ".aif",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\soundcraft.exe\\SupportedTypes",
+      ".aiff",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\soundcraft.exe\\SupportedTypes",
+      ".flac",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\soundcraft.exe\\SupportedTypes",
+      ".mp3",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\soundcraft.exe\\SupportedTypes",
+      ".mid",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\soundcraft.exe\\SupportedTypes",
+      ".midi",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\soundcraft.exe",
+      "",
+      "[#SoundcraftExe]"
+    ]
+  ],
+  "mode": "dualScope"
+}

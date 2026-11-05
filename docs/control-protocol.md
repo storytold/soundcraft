@@ -7,7 +7,7 @@ input), and every command is reachable from:
 | Surface | How |
 |---|---|
 | Desktop app control channel | `soundcraft --control <port>` (`0` = pick a free port; printed as `SOUNDCRAFT_CONTROL_PORT=…`) |
-| CLI against a running app | `soundcraft-cli app --port <port> <method or command id> [JSON]` |
+| CLI against a running app | `soundcraft-cli app --port <port> <method or command id> [JSON]` (see [cli.md](cli.md)) |
 | Headless CLI | `soundcraft-cli run --demo --cmd 'mix.volume={"track":"Kick","db":-6}' --bounce out.wav` |
 | MCP (headless) | `soundcraft-cli mcp [--demo]` |
 | MCP (bridged to the app) | `soundcraft-cli mcp --connect <port>` |
@@ -47,15 +47,17 @@ Errors: `{"id": 1, "ok": false, "error": "bad parameters for `mix.volume`: no tr
 | `ui.set` | any `UiState` fields | e.g. `{"window": "Mix", "narrow_mix": true}`. |
 | `ui.menu.list` | `{}` | Every catalog menu path and the command that implements it (or null). |
 | `ui.menu.invoke` | `{path}` or `{id}` | Like clicking the menu item: may open its dialog (e.g. `"Track > New..."`). |
-| `ui.click` | `{x, y, button?, count?, cmd?, shift?, alt?, ctrl?}` | Synthetic click (window points). |
+| `ui.click` | `{x, y, button?, count?, cmd?, shift?, alt?, ctrl?}` | Synthetic click (window points). The reply is sent only after a UI pass has applied the press/release. |
 | `ui.drag` | `{x, y, to_x, to_y, steps?}` | Synthetic drag with the primary button. |
-| `ui.scroll` | `{x, y, dx?, dy?, unit?: "point"\|"line", steps?, cmd?, shift?, alt?, ctrl?}` | A two-finger trackpad swipe over `(x, y)`: `dx`/`dy` points spread over `steps` frames (default 8). Positive values move the content right/down (natural scrolling). `unit: "line"` sends mouse-wheel notches instead. With `cmd` it zooms; with `shift` it scrolls sideways. |
+| `ui.scroll` | `{x, y, dx?, dy?, unit?: "point"\|"line", steps?, cmd?, shift?, alt?, ctrl?}` | A two-finger trackpad swipe over `(x, y)`: `dx`/`dy` points spread over `steps` frames (default 8). Positive values move the content right/down (natural scrolling). `unit: "line"` sends mouse-wheel notches instead. With `cmd` it zooms; with `shift` it scrolls sideways. Point scrolling is trackpad-like: egui 0.37 scroll areas may rubber-band at an edge and spring back after the gesture, so a script that needs an exact final offset should use `unit: "line"` or drive the target with a command. |
 | `ui.zoom` | `{x, y, factor, steps?}` | A trackpad pinch around `(x, y)`: `factor` > 1 spreads the fingers (zooms in). |
 | `ui.move` | `{x, y}` | Move the pointer. |
 | `ui.key` | `{key, cmd?, shift?, alt?, ctrl?}` | Key press (`Space`, `Enter`, `A`, `F7`, `=`…). |
-| `ui.text` | `{text}` | Type text into the focused field. |
-| `ui.screenshot` | `{path?}` | PNG of the window (base64 in `png_base64` when no path). |
+| `ui.text` | `{text}` | Type text into the focused field. At most 64 KiB of UTF-8 text per request. |
+| `ui.screenshot` | `{path?}` | PNG of the window (base64 in `png_base64` when no path). Exactly one reply per request. A request is bound to the window geometry, focus state and open session it was admitted for. A geometry or DPI change is retried within its 8 s deadline, then fails `screenshot stale`; a change of focused window or of the open document cancels it (`screenshot canceled: focus changed` / `... the session changed`) because those pixels must not be reported as a capture of the new state. It can also fail `screenshot queue full` (8 pending, 4 in flight), `screenshot too large` (64 MiB per image, 192 MiB aggregate **encoding peak**), `screenshot path longer than 4096 bytes`, or `screenshot unavailable: the window has no capturable size yet` (a first request before any window geometry is known, e.g. minimised before the first paint). Each request reserves its own worst-case encode peak — the captured RGBA image plus the raw copy, PNG buffer and base64 text built during encoding — so several small captures cannot retain or encode full-size images past the aggregate. The callback never writes a file: encoding and writing happen after collection, and a result arriving after the deadline returns `screenshot timed out` without creating the file. A native hidden/minimised window is asked for an explicit paint; browser hidden tabs cannot paint on request and time out. |
 | `app.quit` | `{}` | Quit. |
+
+Scripted input (`ui.click`, `ui.drag`, `ui.scroll`, `ui.zoom`, `ui.key`, `ui.text`, `ui.move`) queues at most 4096 waiting events; a request that would exceed that bound fails with `synthetic input queue full` instead of growing the queue. A gesture's reply is delivered only after a UI pass has applied all of its events. Requests that follow it on the same connection (inspect, engine commands, screenshots) are therefore ordered after the gesture; requests already queued behind an undelivered gesture wait as well. If no UI pass can deliver the gesture within 15 s, it is canceled with `synthetic input was not delivered` and the request chain continues. Scripted input is automation, not a clipboard action: copy/selection commands it triggers are not published to the OS clipboard or PRIMARY selection.
 
 ## Positions and references
 
@@ -83,17 +85,25 @@ script events such as `{"system_theme": "dark"}` to change it on subsequent fram
 
 Appearance defaults to Dark. `ui.theme {"mode":"system"}` follows the appearance supplied by
 the native or web integration at launch and on later frames, while the saved choice stays System.
-When the integration cannot report an appearance, System uses Dark. Manual Light and Dark stay
-fixed when the OS appearance changes. An offscreen render without `--system-theme` supplies no
-OS appearance and therefore resolves System to Dark.
+When the integration cannot report an appearance, as on Linux, System reads the desktop's
+settings portal (`org.freedesktop.appearance` `color-scheme`) and follows its changes; without
+a portal answer it uses Dark. Manual Light and Dark stay fixed when the OS appearance changes.
+An offscreen render without `--system-theme` supplies no OS appearance and therefore resolves
+System to Dark, or on Linux to the desktop's portal setting when one is available.
+
+`view.scroll_into_view {"track":"Bass"}` (a track id or name; without it, the first selected
+track) brings the track to the top of the Edit window and the left of the Mix window, the same as
+Scroll Into View in the track name menu. A window not on screen catches up when it is next shown.
 
 ## Panel docking
 
-Tracks and Groups, Clips, MIDI Editor, Memory Locations, and Undo History use movable panels. Commands target the active Edit or Mix view; floating panels stay inside the current viewport. Edit and Mix retain separate arrangements; Clips and MIDI Editor belong to Edit. Transport, plug-in, and specialist utility windows retain their existing hosts. The document/session view is protected. Layouts, active tabs, panel visibility, and floating rectangles are saved with the app's existing UI preferences. These operations do not edit document contents.
+Tracks and Groups, Clips, MIDI Editor, Memory Locations, and Undo History use movable panels. Commands target the active Edit or Mix view; floating panels stay inside the current viewport. Edit and Mix retain separate arrangements; Clips and MIDI Editor belong to Edit. Transport, plug-in, and specialist utility windows retain their existing hosts. The document/session view is protected.
+
+The Edit window starts with Tracks and Groups in a 168-point column in a dock at the left edge, Clips in a 230-point column in a dock at the right edge, and the MIDI Editor under the session view between them. Both docks run the window's full height. Mix starts with Tracks and Groups docked at its left edge. Memory Locations and Undo History float. A dock column stacks tab groups top to bottom: a panel dropped on a group's middle joins it as a tab, on its upper or lower third stacks a new group above or below it, and at a column's edge makes a new column. A panel dropped at an empty window edge makes a dock there. Layouts, active tabs, panel visibility, and floating rectangles are saved with the app's existing UI preferences. These operations do not edit document contents.
 
 Panel IDs: `tracks`, `clips`, `midi`, `memory`, `history`. The protected center is `canvas`.
 
-`ui.dock` accepts `operation` and `panel`. Operations are `open`, `close`, `activate`, `float` (with finite positive `rect: [x, y, width, height]`), or `move` (with `target` and `zone: center|left|right|top|bottom`). Center groups with the target; side zones split beside it. `ui.dock.reset` restores the default arrangement. Invalid moves return an error without changing the layout.
+`ui.dock` accepts `operation` and `panel`. Operations are `open`, `close`, `activate`, `float` (with finite positive `rect: [x, y, width, height]`), or `move` (with `target` and `zone: tab|center|left|right|top|bottom|above|below`; PascalCase names such as `Left` also parse). `open` and `activate` show a hidden panel at its saved location and bring a visible panel to the front. A panel with no saved location, or whose saved anchor cannot be restored, opens at its default place: Tracks and Groups and Clips join their dock's first group, or make that dock again at its default width when it is gone; the MIDI Editor opens under the session view; Memory Locations and Undo History float at their default rectangles. Center and `tab` group with the target; side zones split beside it; `above` and `below` stack the panel in a new group above or below a floating target's group. `ui.dock.reset` restores the default arrangement. Invalid moves return an error without changing the layout.
 
 Invoke these UI commands through `engine.execute`, for example `{"command":"ui.dock","params":{"operation":"float","panel":"tracks","rect":[100,100,320,440]}}`.
 
@@ -105,3 +115,7 @@ A center `move` can include `before` (panel ID or null to append) for tab order.
 The equivalent `{"action": ...}` form accepts a serialized shared docking action;
 this is also the form emitted by the renderer. Protected-canvas and app-specific panel
 rules apply equally to both forms.
+
+The saved UI preferences and window configurations carry `docking_version`. Settings with no
+version, or an older one, hold the split-frame layouts of earlier releases: they load with the
+default Edit and Mix layouts and keep every other setting.

@@ -1,11 +1,15 @@
 //! Edit menu commands.
+use super::{
+    CommandSpec, always, bad, bool_or, can_redo, can_undo, clip_id, clip_ids_param, f32_or, has_clipboard, has_range, has_selection, has_tracks,
+    i64_or, position_param, range_param, str_param, track_param, tracks_param, tracks_required,
+};
+use soundcraft_time::Samples;
 
 use super::more_util::toggle_flag;
-use super::*;
 use crate::edit as ops;
-use crate::{Clipboard, cmd};
-use serde_json::json;
-use soundcraft_model::{EditMode, Fade, FadeShape, Session};
+use crate::{Clipboard, Engine, Result, cmd};
+use serde_json::{Value, json};
+use soundcraft_model::{ClipId, EditMode, Fade, FadeShape, Session, TrackId};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -117,7 +121,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Strip Silence",
             ["Edit"],
             Some("Cmd+U"),
-            "{threshold_db?: -48, min_length_ms?: 50, pad_before_ms?: 5, pad_after_ms?: 20}",
+            "{threshold_db?: -48, min_length_ms?: 50, pad_before_ms?: 5, pad_after_ms?: 20, mode?: strip|extract|separate, name?, number?: 1, zeros?: 0, suffix?} (strip removes the silence; extract removes the audio and keeps the silence; separate separates the clips at the edges of the silence and does not remove any; with a name, the clips left in the selection are named name, zeros, a number counting up from number, suffix)",
             has_range,
             strip_silence
         ),
@@ -276,6 +280,7 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
             .unwrap_or_default();
         cb.automation.push(lanes);
     }
+    cb.keep_auto_names(e.session());
     cb.markers = e
         .session()
         .markers
@@ -296,6 +301,7 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
             cut_track(s, *t, range, sh, follow);
         }
         s.edit.selection = soundcraft_time::Range::point(range.start);
+        cb.cut_from = Some(range.start);
     }
     let n: usize = cb.tracks.iter().map(Vec::len).sum();
     e.clipboard = cb;
@@ -312,16 +318,29 @@ fn cut_track(s: &mut Session, t: TrackId, r: soundcraft_time::Range, sh: bool, f
     ops::clear_range(s, t, r, sh);
 }
 
+/// The clipboard for a paste, with the Auto Rename schemes of its clips put into the session first
+/// ([`Clipboard::adopt_auto_names`]). A paste that succeeds stores it back in `e.clipboard`, so later
+/// pastes find its schemes under their session keys; a refused paste leaves the clipboard as it was.
+pub(super) fn clipboard_for_paste(e: &mut Engine) -> Clipboard {
+    let mut cb = e.clipboard.clone();
+    if cb.tracks.iter().flatten().any(|c| c.auto_name.is_some()) {
+        cb.adopt_auto_names(e.session_mut());
+    }
+    cb
+}
+
+/// Pastes the clipboard at an explicit position or at the current edit insertion point.
 fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.paste", p)?;
     let given = position_param(e, "edit.paste", p, "at")?;
-    let cb = e.clipboard.clone();
+    let cb = clipboard_for_paste(e);
     let s = e.session();
     let at = match given {
         Some(at) => at,
-        None if s.edit.edit_mode == EditMode::GridRelative => {
-            s.edit.grid.line_at_or_before(s.edit.selection.start, s.sample_rate, &s.tempo, s.frame_rate).saturating_add(cb.grid_offset)
+        None if s.edit.edit_mode == EditMode::GridRelative && s.edit.selection.is_empty() && cb.cut_from == Some(s.edit.selection.start) => {
+            s.edit.selection.start
         }
+        None if s.edit.edit_mode == EditMode::GridRelative => s.grid_line_at_or_before(s.edit.selection.start).saturating_add(cb.grid_offset),
         None => s.edit.selection.start,
     };
     let sh = shuffle(s) && !cb.automation_only;
@@ -348,6 +367,7 @@ fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     s.edit.selection = soundcraft_time::Range::new(at, at + cb.length);
+    e.clipboard = cb;
     Ok(json!({"pasted": pasted}))
 }
 
@@ -359,13 +379,7 @@ fn clear(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     let mut n = 0;
     if range.is_empty() && !ids.is_empty() {
-        for t in &mut s.tracks {
-            if let Some(pl) = t.playlist_mut() {
-                let before = pl.clips.len();
-                pl.clips.retain(|c| !ids.contains(&c.id));
-                n += before - pl.clips.len();
-            }
-        }
+        n = ops::remove_clips(s, &ids, sh);
         s.edit.selected_clips.clear();
     } else {
         for t in &tracks {
@@ -413,7 +427,7 @@ fn repeat_to_fill(e: &mut Engine, p: &Value) -> Result<Value> {
     let range = range_param(e, "edit.paste_repeat_to_fill", p)?;
     let len = e.clipboard.length.max(1);
     let tracks = tracks_required(e, "edit.paste_repeat_to_fill", p)?;
-    let cb = e.clipboard.clone();
+    let cb = clipboard_for_paste(e);
     let s = e.session_mut();
     let mut at = range.start;
     let mut n = 0;
@@ -437,6 +451,7 @@ fn repeat_to_fill(e: &mut Engine, p: &Value) -> Result<Value> {
         at += len;
         n += 1;
     }
+    e.clipboard = cb;
     Ok(json!({"repeats": n}))
 }
 
@@ -446,6 +461,38 @@ fn select_all(e: &mut Engine, _: &Value) -> Result<Value> {
     let end = s.content_end();
     s.edit.selection = soundcraft_time::Range::new(0, end);
     Ok(json!({"tracks": s.edit.selected_tracks.len(), "end": end}))
+}
+
+/// Adds the members of every active edit group that touches `t`, then puts `t` in track order.
+fn add_group_members(s: &Session, t: &mut Vec<TrackId>) {
+    let extra: Vec<TrackId> =
+        s.groups.iter().filter(|g| g.active && g.edit && g.members.iter().any(|m| t.contains(m))).flat_map(|g| g.members.clone()).collect();
+    for m in extra {
+        if !t.contains(&m) {
+            t.push(m);
+        }
+    }
+    let order: Vec<TrackId> = s.tracks.iter().map(|x| x.id).collect();
+    t.sort_by_key(|x| order.iter().position(|o| o == x).unwrap_or(usize::MAX));
+}
+
+/// Selecting clips also selects their range and tracks (Grabber click).
+fn select_clip_ids(s: &Session, ed: &mut soundcraft_model::EditState, c: Vec<ClipId>) {
+    let mut range: Option<soundcraft_time::Range> = None;
+    let mut trs = Vec::new();
+    for id in &c {
+        if let Some((tid, clip)) = s.find_clip(*id) {
+            range = Some(range.map_or(clip.range(), |r| soundcraft_time::Range::new(r.start.min(clip.start), r.end.max(clip.end()))));
+            if !trs.contains(&tid) {
+                trs.push(tid);
+            }
+        }
+    }
+    if let Some(r) = range {
+        ed.selection = r;
+        ed.selected_tracks = trs;
+    }
+    ed.selected_clips = c;
 }
 
 fn select(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -463,15 +510,7 @@ fn select(e: &mut Engine, p: &Value) -> Result<Value> {
     if let Some(mut t) = tracks {
         // Active edit groups select all their members together.
         if !exact {
-            let extra: Vec<soundcraft_model::TrackId> =
-                s.groups.iter().filter(|g| g.active && g.edit && g.members.iter().any(|m| t.contains(m))).flat_map(|g| g.members.clone()).collect();
-            for m in extra {
-                if !t.contains(&m) {
-                    t.push(m);
-                }
-            }
-            let order: Vec<soundcraft_model::TrackId> = s.tracks.iter().map(|x| x.id).collect();
-            t.sort_by_key(|x| order.iter().position(|o| o == x).unwrap_or(usize::MAX));
+            add_group_members(s, &mut t);
         }
         ed.selected_tracks = t;
     }
@@ -481,22 +520,7 @@ fn select(e: &mut Engine, p: &Value) -> Result<Value> {
         _ => {}
     }
     if let Some(c) = clips {
-        // Selecting clips also selects their range and tracks (Grabber click).
-        let mut range: Option<soundcraft_time::Range> = None;
-        let mut trs = Vec::new();
-        for id in &c {
-            if let Some((tid, clip)) = s.find_clip(*id) {
-                range = Some(range.map_or(clip.range(), |r| soundcraft_time::Range::new(r.start.min(clip.start), r.end.max(clip.end()))));
-                if !trs.contains(&tid) {
-                    trs.push(tid);
-                }
-            }
-        }
-        if let Some(r) = range {
-            ed.selection = r;
-            ed.selected_tracks = trs;
-        }
-        ed.selected_clips = c;
+        select_clip_ids(s, &mut ed, c);
     } else if list_changes {
         ed.selected_clips.clear();
     }
@@ -647,11 +671,16 @@ fn separate(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"separated": n}))
 }
 
+/// Separates selected clips at every active Grid boundary in the requested range.
 fn separate_on_grid(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.separate_on_grid", p)?;
     let r = range_param(e, "edit.separate_on_grid", p)?;
     let s = e.session_mut();
-    let lines = s.edit.grid.lines(r.start, r.end, s.sample_rate, &s.tempo, s.frame_rate, 10_000);
+    let max = if s.edit.grid_clips_markers { usize::MAX } else { 10_001 };
+    let lines = s.grid_lines(r.start, r.end, max);
+    if lines.len() > 10_000 {
+        return Err(bad("edit.separate_on_grid", "the range contains more than 10,000 grid boundaries"));
+    }
     let mut n = 0;
     for t in &tracks {
         for at in &lines {
@@ -786,24 +815,63 @@ fn copy_to_new_playlist(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn strip_silence(e: &mut Engine, p: &Value) -> Result<Value> {
-    let tracks = tracks_required(e, "edit.strip_silence", p)?;
-    let r = range_param(e, "edit.strip_silence", p)?;
-    let thr = f32_or(p, "threshold_db", -48.0).clamp(-96.0, 0.0);
-    let sr = e.session().sample_rate;
-    let ms = |k: &str, d: f64| sr.samples(f64_or(p, k, d).clamp(0.0, 10_000.0) / 1000.0);
-    let (min_len, pre, post) = (ms("min_length_ms", 50.0), ms("pad_before_ms", 5.0), ms("pad_after_ms", 20.0));
+    let (tracks, r, thr, min_len, (pre, post)) = super::strip_silence::strip_settings(e, "edit.strip_silence", p)?;
+    let mode = match p.get("mode") {
+        None => crate::io::StripMode::Strip,
+        Some(Value::String(m)) => crate::io::StripMode::from_id(m).ok_or_else(|| bad("edit.strip_silence", format!("unknown mode `{m}`")))?,
+        Some(_) => return Err(bad("edit.strip_silence", "mode must be strip, extract or separate")),
+    };
+    let names = strip_names("edit.strip_silence", p)?;
     let s = e.session_mut();
     let mut kept = 0;
+    let mut named = 0;
     for t in &tracks {
-        kept += crate::io::strip_silence(s, *t, r, thr, min_len, pre, post)?;
+        kept += crate::io::strip_silence(s, *t, r, thr, min_len, (pre, post), mode, names.is_some())?;
+        if let Some(names) = &names {
+            named += crate::io::name_stripped_clips(s, *t, r, names, named);
+        }
     }
-    Ok(json!({"clips": kept}))
+    Ok(json!({"clips": kept, "named": named}))
+}
+
+/// The naming scheme in the `name`, `number`, `zeros` and `suffix` params of `cmd`
+/// (`edit.strip_silence`, `clip.auto_rename`), or `None` when `name` is missing or blank.
+pub(super) fn strip_names(cmd: &str, p: &Value) -> Result<Option<crate::io::StripNames>> {
+    use crate::io::StripNames;
+    let text = |k: &str| match p.get(k) {
+        None => Ok(None),
+        Some(Value::String(v)) => Ok(Some(v.clone())),
+        Some(_) => Err(bad(cmd, format!("`{k}` must be text"))),
+    };
+    let whole = |k: &str, max: u64| match p.get(k) {
+        None => Ok(None),
+        Some(v) => v.as_u64().filter(|n| *n <= max).map(Some).ok_or_else(|| bad(cmd, format!("`{k}` must be a whole number from 0 to {max}"))),
+    };
+    let (name, suffix) = (text("name")?, text("suffix")?);
+    let (number, zeros) = (whole("number", StripNames::MAX_NUMBER)?, whole("zeros", StripNames::MAX_ZEROS as u64)?);
+    let Some(name) = name.filter(|n| !n.trim().is_empty()) else {
+        if suffix.is_some() || number.is_some() || zeros.is_some() {
+            return Err(bad(cmd, "`number`, `zeros` and `suffix` need a `name`"));
+        }
+        return Ok(None);
+    };
+    let d = StripNames::default();
+    let suffix = suffix.unwrap_or(d.suffix);
+    let max_text = soundcraft_model::AutoName::MAX_TEXT_CHARS;
+    if name.chars().count() + suffix.chars().count() > max_text {
+        return Err(bad(cmd, format!("`name` and `suffix` together must be at most {max_text} characters")));
+    }
+    Ok(Some(StripNames { name, number: number.unwrap_or(d.number), zeros: zeros.and_then(|z| usize::try_from(z).ok()).unwrap_or(d.zeros), suffix }))
 }
 
 fn fades_create(e: &mut Engine, p: &Value) -> Result<Value> {
-    let shape = str_param(p, "shape")
-        .map_or(Some(FadeShape::EqualPower), FadeShape::from_id)
-        .ok_or_else(|| bad("edit.fades_create", "unknown fade shape"))?;
+    let shape = match p.get("shape") {
+        None => FadeShape::EqualPower,
+        Some(v) => v
+            .as_str()
+            .and_then(FadeShape::from_id)
+            .ok_or_else(|| bad("edit.fades_create", "shape must be linear|equal power|s-curve|exponential|logarithmic"))?,
+    };
     if p.get("clip").is_some() || p.get("side").is_some() {
         let curvature = match p.get("curvature") {
             None => 0.0,
@@ -830,9 +898,6 @@ fn fades_create(e: &mut Engine, p: &Value) -> Result<Value> {
         let available = clip.length.min(clip.end().saturating_sub(clip.start));
         if available <= 0 {
             return Err(bad("edit.fades_create", "clip has no length"));
-        }
-        if p.get("shape").is_some_and(|v| !v.is_string()) {
-            return Err(bad("edit.fades_create", "shape must be a fade shape name"));
         }
         let fade = Fade { len: length.min(available), shape, curvature };
         let clip = e.session_mut().find_clip_mut(id).ok_or_else(|| bad("edit.fades_create", "clip not found"))?;
@@ -899,6 +964,7 @@ fn nudge(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"moved": n, "by": step}))
 }
 
+/// Same-track placement at the existing start is a no-op; quantization is a separate command.
 fn move_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     if ids.is_empty() {
@@ -921,17 +987,21 @@ fn move_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     };
     let mode = s.edit.edit_mode;
     let delta = match first {
-        Some(c) if mode.is_grid() && p.get("to").is_some() => ops::grid_delta(s, c, delta, mode == EditMode::GridRelative),
+        Some(_) if mode.is_grid() && p.get("to").is_some() && delta == 0 && dest.iter().all(|(from, to)| from == to) => 0,
+        Some(c) if mode.is_grid() && p.get("to").is_some() => ops::grid_delta(s, c, delta, mode == EditMode::GridRelative, &ids),
         _ => delta,
     };
+    let effective_delta = first.map_or(delta, |clip| delta.max(clip.start.saturating_neg()));
     let s = e.session_mut();
     let n = if mode == EditMode::Shuffle {
         ops::shuffle_clips(s, &ids, delta, &dest).map_err(|why| bad("edit.move_clips", why))?
+    } else if effective_delta == 0 && dest.iter().all(|(from, to)| from == to) {
+        0
     } else {
-        ops::move_clips(s, &ids, delta, &dest)
+        ops::move_clips(s, &ids, effective_delta, &dest)
     };
     s.edit.selected_clips = ids;
-    Ok(json!({"moved": n, "by": delta}))
+    Ok(json!({"moved": n, "by": if mode == EditMode::Shuffle { delta } else { effective_delta }}))
 }
 
 fn trim_clip(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -1068,6 +1138,19 @@ mod tests {
         let before = e.session().clone();
         assert!(e.execute("edit.fades_create", &json!({"clip": id, "side": "in", "length": 1})).is_err());
         assert_eq!(e.session(), &before);
+    }
+
+    #[test]
+    fn range_fades_refuse_a_shape_that_is_not_a_shape_name() {
+        for shape in [json!("bad"), json!(null), json!(true), json!(1)] {
+            let (mut e, t, _) = trim_session(&[(0, 10_000, 0), (10_000, 10_000, 10_000)]);
+            let before = e.session().clone();
+            let history = e.undo_history();
+            let params = json!({"tracks": [t], "start": 9_500, "end": 10_500, "shape": shape});
+            assert!(e.execute("edit.fades_create", &params).is_err(), "{params}");
+            assert_eq!(e.session(), &before, "{params}");
+            assert_eq!(e.undo_history(), history, "{params}");
+        }
     }
 
     #[test]

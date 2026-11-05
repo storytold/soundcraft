@@ -196,7 +196,7 @@ impl ChannelFormat {
     pub fn channel_label(self, ch: usize) -> String {
         match self.speakers().get(ch) {
             Some(s) => s.label().to_string(),
-            None if self.is_ambisonic() => ["W", "Y", "Z", "X"].get(ch).map_or_else(|| format!("{}", ch + 1), |s| s.to_string()),
+            None if self.is_ambisonic() => ["W", "Y", "Z", "X"].get(ch).map_or_else(|| format!("{}", ch + 1), ToString::to_string),
             None => format!("{}", ch + 1),
         }
     }

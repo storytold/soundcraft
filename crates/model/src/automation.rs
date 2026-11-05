@@ -70,7 +70,7 @@ impl AutoParam {
         match self {
             AutoParam::Volume => "volume".into(),
             AutoParam::Pan(0) => "pan".into(),
-            AutoParam::Pan(i) => format!("pan {}", i + 1),
+            AutoParam::Pan(i) => format!("pan {}", u16::from(*i) + 1),
             AutoParam::Mute => "mute".into(),
             AutoParam::SendLevel(i) => format!("send {} level", slot_letter(*i)),
             AutoParam::SendPan(i) => format!("send {} pan", slot_letter(*i)),
@@ -80,7 +80,8 @@ impl AutoParam {
     }
     /// Parse ids like `volume`, `pan`, `pan2`, `mute`, `send_a_level`, `plugin:a:threshold`.
     pub fn parse(s: &str) -> Option<AutoParam> {
-        let s = s.trim().to_ascii_lowercase();
+        let orig = s.trim();
+        let s = orig.to_ascii_lowercase();
         match s.as_str() {
             "volume" | "vol" => return Some(AutoParam::Volume),
             "pan" | "pan1" => return Some(AutoParam::Pan(0)),
@@ -100,6 +101,8 @@ impl AutoParam {
         }
         if let Some(rest) = s.strip_prefix("plugin:") {
             let (slot, param) = rest.split_once(':')?;
+            // ASCII lowercasing keeps byte offsets, so take the param from the original.
+            let param = orig.get(orig.len() - param.len()..)?;
             return Some(AutoParam::Plugin { slot: letter_slot(slot)?, param: param.to_string() });
         }
         None
@@ -158,7 +161,10 @@ impl AutomationLane {
                 if matches!(self.param, AutoParam::Mute | AutoParam::SendMute(_)) {
                     return a.value;
                 }
-                a.value + (b.value - a.value) * ((at - a.at) as f32 / (b.at - a.at) as f32)
+                // Widen so far-apart breakpoints cannot overflow i64.
+                let span = i128::from(b.at) - i128::from(a.at);
+                let off = i128::from(at) - i128::from(a.at);
+                a.value + (b.value - a.value) * (off as f64 / span as f64) as f32
             }
             (Some(a), _) => a.value,
             _ => default,
@@ -199,7 +205,11 @@ impl AutomationLane {
         }
         self.set_point(start, value);
         self.set_point(end, value);
-        self.set_point(end.saturating_add(1), after);
+        let anchor = end.saturating_add(1);
+        // A real breakpoint already at `end + 1` keeps its own value.
+        if self.points.binary_search_by(|p| p.at.cmp(&anchor)).is_err() {
+            self.set_point(anchor, after);
+        }
     }
 
     /// Thin: remove points whose removal changes the curve by less than `tolerance`.
@@ -252,6 +262,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_keeps_plugin_param_case() {
+        let p = AutoParam::Plugin { slot: 0, param: "Cutoff".into() };
+        assert_eq!(AutoParam::parse("plugin:a:Cutoff"), Some(p));
+        assert_eq!(AutoParam::parse("Plugin:B:Mix"), Some(AutoParam::Plugin { slot: 1, param: "Mix".into() }));
+        assert_eq!(AutoParam::parse("Volume"), Some(AutoParam::Volume));
+        assert_eq!(AutoParam::parse("SEND_B_LEVEL"), Some(AutoParam::SendLevel(1)));
+    }
+
+    #[test]
+    fn value_at_far_apart_points_does_not_overflow() {
+        let mut l = AutomationLane::new(AutoParam::Volume);
+        l.set_point(-1, 0.0);
+        l.set_point(i64::MAX, -10.0);
+        let v = l.value_at(5, 0.0);
+        assert!(v.is_finite() && (-10.0..=0.0).contains(&v));
+        let w = l.value_at(i64::MAX - 1, 0.0);
+        assert!(w.is_finite() && (-10.0..=0.0).contains(&w));
+    }
+
+    #[test]
+    fn pan_label_max_does_not_overflow() {
+        assert_eq!(AutoParam::Pan(255).label(), "pan 256");
+    }
+
+    #[test]
     fn interpolation_and_steps() {
         let mut l = AutomationLane::new(AutoParam::Volume);
         assert_eq!(l.value_at(10, -3.0), -3.0);
@@ -264,6 +299,15 @@ mod tests {
         m.set_point(100, 1.0);
         assert_eq!(m.value_at(99, 0.0), 0.0);
         assert_eq!(m.value_at(100, 0.0), 1.0);
+    }
+
+    #[test]
+    fn write_range_keeps_point_right_after_end() {
+        let mut l = AutomationLane::new(AutoParam::Volume);
+        l.set_point(0, 0.0);
+        l.set_point(11, -100.0);
+        l.write_range(2, 10, -20.0, 0.0);
+        assert_eq!(l.value_at(11, 0.0), -100.0);
     }
 
     #[test]

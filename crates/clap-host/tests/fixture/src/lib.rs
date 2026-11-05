@@ -9,7 +9,8 @@
 //! - `org.soundcraft.test.wide16`, `.wide17ports`, `.wide65ch`: effects advertising wide layouts
 //!   (16 ports of 64 channels, 17 ports of 2 channels, one port of 65 channels per direction).
 //!   `process` writes 1.0 into every output channel it was given when the host's buffers match the
-//!   advertised layout, -1.0 when they do not.
+//!   advertised layout (2.0 once the host set the offline render mode through `clap.render`), -1.0
+//!   when they do not.
 //!
 //! The gain plugin also implements `clap.state` (gain and mode as two little-endian f64s) and a
 //! floating-only `clap.gui` without a real window: showing it "edits" the gain to 0.25 in the GUI,
@@ -27,6 +28,7 @@ use clap_sys::ext::latency::*;
 use clap_sys::ext::log::*;
 use clap_sys::ext::note_ports::*;
 use clap_sys::ext::params::*;
+use clap_sys::ext::render::*;
 use clap_sys::factory::plugin_factory::*;
 use clap_sys::host::clap_host;
 use clap_sys::id::clap_id;
@@ -102,6 +104,8 @@ struct Fx {
     gui_created: bool,
     gui_visible: bool,
     gui_edit_pending: bool,
+    /// `clap.render` set the offline mode (wide fixtures only).
+    offline: bool,
 }
 
 unsafe fn fx<'a>(p: *const clap_plugin) -> &'a mut Fx {
@@ -189,6 +193,61 @@ fn apply(f: &mut Fx, h: &clap_event_header) {
     }
 }
 
+/// Fill every output channel with `fit` when all ports have the wide layout, else -1.0.
+unsafe fn fill_wide(pr: &clap_process, ports: u32, channels: u32, n: usize, fit: f32) {
+    let fits = |bufs: *const clap_audio_buffer, n: u32| {
+        n == ports && (0..n as usize).all(|i| unsafe { &*bufs.add(i) }.channel_count == channels)
+    };
+    let ok = fits(pr.audio_inputs, pr.audio_inputs_count) && fits(pr.audio_outputs, pr.audio_outputs_count);
+    if pr.audio_outputs_count > 0 {
+        let out = unsafe { &*pr.audio_outputs };
+        for c in 0..out.channel_count as usize {
+            let o = unsafe { *out.data32.add(c) };
+            for i in 0..n {
+                unsafe { *o.add(i) = if ok { fit } else { -1.0 } };
+            }
+        }
+    }
+}
+
+/// Push the host-visible parameter edit and an ignorable note event onto the output queue.
+unsafe fn push_gui_edit(pr: &clap_process) {
+    let e = clap_event_param_value {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_param_value>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_PARAM_VALUE,
+            flags: 0,
+        },
+        param_id: 7,
+        cookie: std::ptr::null_mut(),
+        note_id: -1,
+        port_index: -1,
+        channel: -1,
+        key: -1,
+        value: 0.25,
+    };
+    let out = unsafe { &*pr.out_events };
+    assert!(unsafe { (out.try_push.unwrap())(pr.out_events, &e.header) });
+    // Other event types are accepted and ignored by the host.
+    let note = clap_event_note {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_END,
+            flags: 0,
+        },
+        note_id: -1,
+        port_index: 0,
+        channel: 0,
+        key: 60,
+        velocity: 0.0,
+    };
+    assert!(unsafe { (out.try_push.unwrap())(pr.out_events, &note.header) });
+}
+
 unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> clap_process_status {
     let f = unsafe { fx(p) };
     let pr = unsafe { &*pr };
@@ -197,19 +256,7 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
     let ev = unsafe { &*pr.in_events };
     let count = unsafe { (ev.size.unwrap())(pr.in_events) };
     if let Some((ports, channels)) = f.wide {
-        let fits = |bufs: *const clap_audio_buffer, n: u32| {
-            n == ports && (0..n as usize).all(|i| unsafe { &*bufs.add(i) }.channel_count == channels)
-        };
-        let ok = fits(pr.audio_inputs, pr.audio_inputs_count) && fits(pr.audio_outputs, pr.audio_outputs_count);
-        if pr.audio_outputs_count > 0 {
-            let out = unsafe { &*pr.audio_outputs };
-            for c in 0..out.channel_count as usize {
-                let o = unsafe { *out.data32.add(c) };
-                for i in 0..n {
-                    unsafe { *o.add(i) = if ok { 1.0 } else { -1.0 } };
-                }
-            }
-        }
+        unsafe { fill_wide(pr, ports, channels, n, if f.offline { 2.0 } else { 1.0 }) };
         return CLAP_PROCESS_CONTINUE;
     }
     if pr.audio_outputs_count != 1 {
@@ -230,40 +277,7 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
     if f.gui_edit_pending {
         f.gui_edit_pending = false;
         f.gain = 0.25;
-        let e = clap_event_param_value {
-            header: clap_event_header {
-                size: std::mem::size_of::<clap_event_param_value>() as u32,
-                time: 0,
-                space_id: CLAP_CORE_EVENT_SPACE_ID,
-                type_: CLAP_EVENT_PARAM_VALUE,
-                flags: 0,
-            },
-            param_id: 7,
-            cookie: std::ptr::null_mut(),
-            note_id: -1,
-            port_index: -1,
-            channel: -1,
-            key: -1,
-            value: 0.25,
-        };
-        let out = unsafe { &*pr.out_events };
-        assert!(unsafe { (out.try_push.unwrap())(pr.out_events, &e.header) });
-        // Other event types are accepted and ignored by the host.
-        let note = clap_event_note {
-            header: clap_event_header {
-                size: std::mem::size_of::<clap_event_note>() as u32,
-                time: 0,
-                space_id: CLAP_CORE_EVENT_SPACE_ID,
-                type_: CLAP_EVENT_NOTE_END,
-                flags: 0,
-            },
-            note_id: -1,
-            port_index: 0,
-            channel: 0,
-            key: 60,
-            velocity: 0.0,
-        };
-        assert!(unsafe { (out.try_push.unwrap())(pr.out_events, &note.header) });
+        unsafe { push_gui_edit(pr) };
     }
     let mut next = 0u32;
     let mut last_time = 0u32;
@@ -533,6 +547,17 @@ static GUI: clap_plugin_gui = clap_plugin_gui {
     hide: Some(gui_hide),
 };
 
+unsafe extern "C" fn render_hard_realtime(_p: *const clap_plugin) -> bool {
+    false
+}
+
+unsafe extern "C" fn render_set(p: *const clap_plugin, mode: clap_plugin_render_mode) -> bool {
+    unsafe { fx(p) }.offline = mode == CLAP_RENDER_OFFLINE;
+    true
+}
+
+static RENDER: clap_plugin_render = clap_plugin_render { has_hard_realtime_requirement: Some(render_hard_realtime), set: Some(render_set) };
+
 unsafe extern "C" fn get_extension(p: *const clap_plugin, id: *const c_char) -> *const c_void {
     let id = unsafe { CStr::from_ptr(id) };
     let synth = unsafe { fx(p) }.synth;
@@ -548,6 +573,8 @@ unsafe extern "C" fn get_extension(p: *const clap_plugin, id: *const c_char) -> 
         &STATE as *const _ as *const c_void
     } else if id == CLAP_EXT_GUI && !synth {
         &GUI as *const _ as *const c_void
+    } else if id == CLAP_EXT_RENDER && unsafe { fx(p) }.wide.is_some() {
+        &RENDER as *const _ as *const c_void
     } else {
         std::ptr::null()
     }
@@ -613,6 +640,7 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         gui_created: false,
         gui_visible: false,
         gui_edit_pending: false,
+        offline: false,
     });
     let raw = Box::into_raw(b);
     unsafe {
