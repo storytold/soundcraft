@@ -88,7 +88,7 @@ impl SoundApp {
 
         // Explicit slot? Use the engine's slot parsing so "b"/"1" are resolved correctly.
         if let Some(slot) = slot_of(params, SEND_SLOTS) {
-            if tr.mixer.sends.get(slot).is_some_and(Option::is_none) {
+            if tr.mixer.sends.get(slot).is_none() {
                 return Some((track, slot));
             }
             return None;
