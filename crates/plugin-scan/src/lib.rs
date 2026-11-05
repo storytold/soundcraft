@@ -154,15 +154,33 @@ struct Reply<D> {
 /// Loads `file` in a child process: `program flag file`, which answers with [`reply`]. `None`
 /// when `stop` turned true meanwhile: the child was killed.
 pub fn load_in_child<D: DeserializeOwned>(program: &Path, flag: &str, file: &Path, stop: impl Fn() -> bool) -> Option<Result<Vec<D>, String>> {
+    load_in_child_within(program, flag, file, CHILD_TIMEOUT, stop)
+}
+
+/// [`load_in_child`] with the wait for the child given: a plugin that has not answered within
+/// `timeout` is killed and reported (tests use short waits).
+fn load_in_child_within<D: DeserializeOwned>(
+    program: &Path,
+    flag: &str,
+    file: &Path,
+    timeout: Duration,
+    stop: impl Fn() -> bool,
+) -> Option<Result<Vec<D>, String>> {
     let mut stopped = false;
-    let r = run_child(program, flag, file, || {
+    let r = run_child(program, flag, file, timeout, || {
         stopped = stop();
         stopped
     });
     (!stopped).then_some(r)
 }
 
-fn run_child<D: DeserializeOwned>(program: &Path, flag: &str, file: &Path, mut stop: impl FnMut() -> bool) -> Result<Vec<D>, String> {
+fn run_child<D: DeserializeOwned>(
+    program: &Path,
+    flag: &str,
+    file: &Path,
+    timeout: Duration,
+    mut stop: impl FnMut() -> bool,
+) -> Result<Vec<D>, String> {
     use std::process::{Command, Stdio};
     let fail = |m: String| format!("{}: {m}", file.display());
     let mut command = Command::new(program);
@@ -212,7 +230,7 @@ fn run_child<D: DeserializeOwned>(program: &Path, flag: &str, file: &Path, mut s
                 let _ = child.wait();
                 break None;
             }
-            Ok(None) if started.elapsed() < CHILD_TIMEOUT && !stop() => std::thread::sleep(Duration::from_millis(10)),
+            Ok(None) if started.elapsed() < timeout && !stop() => std::thread::sleep(Duration::from_millis(10)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -233,7 +251,7 @@ fn run_child<D: DeserializeOwned>(program: &Path, flag: &str, file: &Path, mut s
                 (None, e) => Err(e.unwrap_or_else(|| fail("the scan process found nothing".into()))),
             }
         }
-        (None, None) => Err(fail(format!("still loading after {} s; stopped", CHILD_TIMEOUT.as_secs()))),
+        (None, None) => Err(fail(format!("still loading after {} s; stopped", timeout.as_secs()))),
         (None, Some(status)) => Err(fail(format!("the plugin ended the scan process ({status})"))),
     }
 }
@@ -366,5 +384,112 @@ mod tests {
         let r = load_in_child::<String>(Path::new(program), flag, Path::new(&script), || false);
         assert_eq!(r, Some(Ok(vec!["Bite".to_string()])));
         assert!(started.elapsed() < Duration::from_secs(30), "waited {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_child_that_never_answers_is_killed_at_the_timeout() {
+        // A plugin that blocks in its load (a dialog, a licence check): no answer at all.
+        #[cfg(windows)]
+        let (program, flag, script) = ("powershell", "-Command", "Start-Sleep 60".to_string());
+        #[cfg(not(windows))]
+        let (program, flag, script) = ("sh", "-c", "exec sleep 60".to_string());
+        let started = Instant::now();
+        let r = load_in_child_within::<String>(Path::new(program), flag, Path::new(&script), Duration::from_secs(2), || false);
+        let err = r.and_then(Result::err).unwrap_or_default();
+        assert!(err.contains("still loading after 2 s; stopped"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(30), "waited {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_child_that_crashes_is_remembered_and_not_retried() {
+        // A plugin that takes the scan process down while it loads: no answer, a failed exit.
+        let d = dir("crash");
+        let f = d.join("bite.vst3");
+        std::fs::write(&f, "bundle").ok();
+        #[cfg(windows)]
+        let (program, flag, script) = {
+            let script = d.join("crash.cmd");
+            std::fs::write(&script, "@exit /b 3\r\n").ok();
+            ("cmd", "/c", script.display().to_string())
+        };
+        #[cfg(not(windows))]
+        let (program, flag, script) = ("sh", "-c", "exit 3".to_string());
+        let failed = load_in_child::<String>(Path::new(program), flag, Path::new(&script), || false).and_then(Result::err).unwrap_or_default();
+        assert!(failed.contains("ended the scan process"), "{failed}");
+
+        // The failure is cached as an error: the same file, unchanged, is not loaded again.
+        let failed_entry: Vec<Entry<String>> = scan(vec![f.clone()], &[], |_| None, |_| Some(Err(failed.clone())), |_, _, _| true);
+        let file = d.join("cache.json");
+        write(&file, &failed_entry);
+        let known: Vec<Entry<String>> = read(&file);
+        let loads = Cell::new(0);
+        let again = scan(
+            vec![f.clone()],
+            &known,
+            |_| None,
+            |p: &Path| {
+                loads.set(loads.get() + 1);
+                Some(Ok(vec![p.display().to_string()]))
+            },
+            |_, _, _| true,
+        );
+        assert_eq!(loads.get(), 0);
+        assert_eq!(again[0].error.as_deref(), Some(failed.as_str()));
+        assert!(again[0].plugins.is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_cache_hit_and_a_changed_file() {
+        let d = dir("hit");
+        let f = d.join("a.vst3");
+        std::fs::write(&f, "a").ok();
+        let loads = Cell::new(0);
+        let load = |p: &Path| {
+            loads.set(loads.get() + 1);
+            Some(Ok(vec![p.display().to_string()]))
+        };
+        let first = scan(vec![f.clone()], &[], |_| None, load, |_, _, _| true);
+        assert_eq!(loads.get(), 1);
+        let file = d.join("cache.json");
+        write(&file, &first);
+
+        // Cache hit: the same size and modification time, nothing is loaded.
+        let known: Vec<Entry<String>> = read(&file);
+        let hit = scan(vec![f.clone()], &known, |_| None, load, |_, _, _| true);
+        assert_eq!(loads.get(), 1);
+        assert_eq!(hit[0].plugins, vec![f.display().to_string()]);
+
+        // Changed: loaded again, and the cache takes the new answer.
+        std::fs::write(&f, "a, longer now").ok();
+        let changed = scan(vec![f.clone()], &known, |_| None, load, |_, _, _| true);
+        assert_eq!(loads.get(), 2);
+        assert_eq!(changed[0].plugins, vec![f.display().to_string()]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_removed_folder_is_dropped_from_the_cache() {
+        let d = dir("folders");
+        let (kept_dir, gone_dir) = (d.join("kept"), d.join("gone"));
+        std::fs::create_dir_all(&kept_dir).ok();
+        std::fs::create_dir_all(&gone_dir).ok();
+        let (kept, gone) = (kept_dir.join("a.vst3"), gone_dir.join("b.vst3"));
+        std::fs::write(&kept, "a").ok();
+        std::fs::write(&gone, "b").ok();
+        let load = |p: &Path| Some(Ok(vec![p.display().to_string()]));
+        let both = scan(vec![kept.clone(), gone.clone()], &[], |_| None, load, |_, _, _| true);
+        assert_eq!(both.len(), 2);
+        let file = d.join("cache.json");
+        write(&file, &both);
+
+        // The user removed the folder: only the kept one is scanned, and the cache follows.
+        let known: Vec<Entry<String>> = read(&file);
+        let after = scan(vec![kept.clone()], &known, |_| None, load, |_, _, _| true);
+        assert_eq!(after.iter().map(|e| e.path.clone()).collect::<Vec<_>>(), vec![kept.clone()]);
+        write(&file, &after);
+        let reread: Vec<Entry<String>> = read(&file);
+        assert_eq!(reread.iter().map(|e| e.path.clone()).collect::<Vec<_>>(), vec![kept]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
