@@ -1,5 +1,6 @@
 //! A send's level opens its Send window, as in Pro Tools: a fader with Alt-click for 0 dB, moved to
-//! another send by clicking that send's level, closed by clicking the same one again.
+//! another send by clicking that send's level, closed by clicking the same one again. Creating a send
+//! opens it too.
 
 use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::Harness;
@@ -72,6 +73,33 @@ fn a_sends_level_opens_its_send_window() {
     h.get_by_label("Send B level for Vox").click();
     h.run_steps(3);
     assert_eq!(h.state().ui.send_window, None, "clicking the same send again closes it");
+    assert!(h.query_by_label_contains("Vox · Send").is_none());
+}
+
+/// Creating a send opens its Send window, so the new send's fader is on screen right away (#1269). The
+/// window moves there from the send it was showing, and undoing the new send closes it.
+#[test]
+fn a_new_send_shows_its_fader_at_once() {
+    let (mut h, vox) = harness();
+    h.get_by_label("Send A level for Vox").click();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Vox · Send A").is_some());
+
+    h.get_by_label("Send C for Vox").click();
+    h.run_steps(3);
+    // Send A's own "Verb" label is on screen too, so pick the menu's button.
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Verb").click();
+    h.run_steps(3);
+    assert!(h.state().engine.session().tracks[0].mixer.sends[2].is_some(), "send C was created");
+    assert_eq!(h.state().ui.send_window, Some((vox, 2)));
+    assert!(h.query_by_label_contains("Vox · Send C").is_some(), "the window shows the new send");
+    assert!(h.query_by_label_contains("Vox · Send A").is_none(), "and no longer send A");
+    assert!(h.query_by_label("Send level").is_some(), "the new send's fader is on screen");
+
+    h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
+    h.run_steps(3);
+    assert!(h.state().engine.session().tracks[0].mixer.sends[2].is_none(), "the send was undone");
+    assert_eq!(h.state().ui.send_window, None, "undoing the send closes its window");
     assert!(h.query_by_label_contains("Vox · Send").is_none());
 }
 
