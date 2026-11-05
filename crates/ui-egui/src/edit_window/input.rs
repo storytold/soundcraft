@@ -340,6 +340,8 @@ fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Res
     let (track, lane, s, auto_view) = (c.inp.track, c.inp.lane, c.inp.s, &c.inp.auto_view);
     let (point_hit, curve_handle, hit) = (&c.hits.point_hit, c.hits.curve_handle, &c.hits.hit);
     let (mods, p, at, eff, selector_press) = (c.mods, c.p, c.at, c.eff, c.selector_press);
+    // Command-click inserts a point like the Pencil without changing the active tool or its drags.
+    let eff = if mods.command && auto_view.is_some() { Tool::Pencil } else { eff };
     if resp.clicked()
         && let Some((param, at)) = &point_hit
     {
