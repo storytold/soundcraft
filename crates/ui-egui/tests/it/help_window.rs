@@ -108,14 +108,14 @@ fn every_help_page_draws_without_closing_help() {
 }
 
 /// A whole app frame on a 1600×1000 screen.
-fn app_frame(ctx: &egui::Context, app: &mut SoundApp, events: Vec<Event>) {
+fn app_frame(ctx: &egui::Context, app: &mut SoundApp, events: Vec<Event>) -> egui::FullOutput {
     let raw = RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))), events, ..Default::default() };
-    ctx.run_ui(raw, |ui| {
+    let mut output = ctx.run_ui(raw, |ui| {
         app.logic(ui.ctx());
         app.ui(ui);
-    })
-    .textures_delta
-    .clear();
+    });
+    output.textures_delta.clear();
+    output
 }
 
 /// Point at `at` and press Cmd+? there.
@@ -266,9 +266,14 @@ fn native_mix_viewport_help_shortcut_opens_mix_help() {
                     Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: mods },
                     Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: mods },
                 ];
-                app_frame(&ctx, &mut app, vec![]);
+                let output = app_frame(&ctx, &mut app, vec![]);
                 assert!(app.ui.show_help, "{os:?} {window:?} {key:?}: child shortcut did not open Help");
                 assert_eq!(app.ui.help.page, Page::Command("window.mix".into()));
+                let root_focused = output
+                    .viewport_output
+                    .get(&egui::ViewportId::ROOT)
+                    .is_some_and(|v| v.commands.iter().any(|command| matches!(command, egui::ViewportCommand::Focus)));
+                assert!(root_focused, "{os:?} {window:?} {key:?}: Help must be brought in front of native Mix");
             }
         }
     }

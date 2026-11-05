@@ -78,8 +78,9 @@ pub(crate) fn handle_mix_help(app: &mut SoundApp, ctx: &egui::Context) {
     if pressed {
         let _ = app.run("help.open", json!({}));
         app.ui.help.go(crate::help::Page::Command("window.mix".into()));
-        // Help belongs to the main viewport, even when this child is the only window receiving input.
-        ctx.request_repaint_of(egui::ViewportId::ROOT);
+        // Help belongs to the main viewport: bring it in front of the native Mix window.
+        // Sending the focus command also requests a repaint of that viewport.
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
     }
 }
 
