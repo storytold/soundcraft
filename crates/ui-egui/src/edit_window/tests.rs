@@ -1528,6 +1528,34 @@ fn alt_click_on_a_breakpoint_deletes_it() {
     }
 }
 
+/// Modifier clicks insert an undoable point with the existing tools; plain clicks leave the curve alone.
+#[test]
+fn command_click_adds_an_automation_point_without_changing_clips_and_undoes() {
+    for tool in ["smart", "grabber", "selector"] {
+        let (mut h, track, [a, b], clips) = breakpoints_over_a_clip(tool);
+        let before = volume_points(&h, track);
+        let at = pos2((a.x + b.x) * 0.5, a.y);
+        let sample = sample_at(h.state().engine.session(), timeline(&h), at.x);
+
+        click(&mut h, at);
+        assert_eq!(volume_points(&h, track), before, "{tool}: a plain click adds no point");
+        h.run_steps(30);
+        fade_shot(&mut h, &format!("automation-command-{tool}-before"));
+        click_with(&mut h, at, egui::Modifiers::COMMAND);
+        let points = volume_points(&h, track);
+        assert_eq!(points.len(), before.len() + 1, "{tool}: {points:?}");
+        let point = points.iter().find(|(at, _)| *at == sample).expect("a point at the clicked sample");
+        assert!((point.1 + 40.0).abs() < 0.01, "{tool}: clicked volume is {}", point.1);
+        assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}: clips stay");
+        h.run_steps(2);
+        fade_shot(&mut h, &format!("automation-command-{tool}-after"));
+
+        h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(volume_points(&h, track), before, "{tool}: one undo removes only the new point");
+        assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}: undo leaves clips alone");
+    }
+}
+
 #[test]
 fn alt_click_on_a_marker_deletes_it() {
     let mut engine = soundcraft_engine::demo::demo_engine();
