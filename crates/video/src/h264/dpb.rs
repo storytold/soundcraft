@@ -72,6 +72,22 @@ impl Dpb {
         self.entries.retain(|e| e.needed_for_output || e.mark != RefMark::Unused);
     }
 
+    /// Make room for a picture: output one (C.4.5.3), or, when none waits for output and
+    /// references alone fill the DPB (marking that keeps more than it holds), drop the reference
+    /// decoded longest ago. False when the DPB is empty.
+    fn make_room(&mut self, out: &mut Vec<Output>) -> bool {
+        if self.bump(out) {
+            return true;
+        }
+        let Some(i) = self.entries.iter().enumerate().filter(|(_, e)| e.mark != RefMark::Unused).min_by_key(|(_, e)| e.frame.id).map(|(i, _)| i)
+        else {
+            return false;
+        };
+        self.entries[i].mark = RefMark::Unused;
+        self.prune();
+        true
+    }
+
     /// Output the picture with the smallest POC (C.4.5.3 "bumping"). Returns false if none waits.
     fn bump(&mut self, out: &mut Vec<Output>) -> bool {
         let Some(i) = self.entries.iter().enumerate().filter(|(_, e)| e.needed_for_output).min_by_key(|(_, e)| e.poc).map(|(i, _)| i) else {
@@ -134,21 +150,29 @@ impl Dpb {
         poc_state: &mut dyn FnMut(u32),
     ) {
         let mut unused = (prev_ref_frame_num + 1) % max_frame_num;
+        // Only the last `max_num_ref_frames` missing frames can still be references when the gap
+        // ends: the sliding window drops the earlier ones first, so building their pictures would
+        // be work (up to 65 535 frame copies from one slice header) thrown straight away. They
+        // advance the POC state only.
+        let gap = (frame_num + max_frame_num - unused) % max_frame_num;
+        let skip = gap.saturating_sub(u32::try_from(max_num_ref_frames.max(1)).unwrap_or(u32::MAX));
         let mut guard = 0;
         while unused != frame_num && guard < max_frame_num {
-            self.sliding_window(unused, max_frame_num, max_num_ref_frames);
-            let (frame, meta) = make_frame(unused);
             poc_state(unused);
-            self.entries.push(DpbEntry {
-                poc: frame.poc,
-                frame,
-                frame_num: unused,
-                long_term_frame_idx: 0,
-                mark: RefMark::Short,
-                needed_for_output: false,
-                non_existing: true,
-                meta,
-            });
+            if guard >= skip {
+                self.sliding_window(unused, max_frame_num, max_num_ref_frames);
+                let (frame, meta) = make_frame(unused);
+                self.entries.push(DpbEntry {
+                    poc: frame.poc,
+                    frame,
+                    frame_num: unused,
+                    long_term_frame_idx: 0,
+                    mark: RefMark::Short,
+                    needed_for_output: false,
+                    non_existing: true,
+                    meta,
+                });
+            }
             unused = (unused + 1) % max_frame_num;
             guard += 1;
         }
@@ -277,6 +301,11 @@ impl Dpb {
                         }
                     }
                 }
+                3 | 6 if self.max_long_term_frame_idx.is_none_or(|max| m.long_term_frame_idx > max) => {
+                    // A long-term index outside what MMCO 4 (or the IDR) allowed (8.2.5.4.3): a
+                    // conforming stream never sends one, and honouring it would let distinct
+                    // indices retain references past the DPB's capacity.
+                }
                 3 => {
                     let pn = i64::from(curr_pic_num) - (i64::from(m.difference_of_pic_nums_minus1) + 1);
                     for e in &mut self.entries {
@@ -384,13 +413,13 @@ impl Dpb {
                     out.push(Output { frame, poc, meta });
                     return;
                 }
-                if !self.bump(out) {
+                if !self.make_room(out) {
                     break;
                 }
             }
         } else {
             while self.entries.len() >= self.capacity {
-                if !self.bump(out) {
+                if !self.make_room(out) {
                     break;
                 }
             }
@@ -427,6 +456,98 @@ mod tests {
 
     fn mmco(op: u32, diff: u32) -> Mmco {
         Mmco { op, difference_of_pic_nums_minus1: diff, long_term_pic_num: 0, long_term_frame_idx: 0, max_long_term_frame_idx_plus1: 0 }
+    }
+
+    fn frame(id: u32) -> (FrameRef, Arc<OutputMeta>) {
+        let meta = OutputMeta {
+            pts: 0,
+            key: false,
+            crop: (0, 0, 0, 0),
+            full_range: false,
+            colour_primaries: 0,
+            transfer_characteristics: 0,
+            matrix_coefficients: 0,
+            sar: (1, 1),
+            draft: false,
+        };
+        (Arc::new(crate::h264::picture::Frame::new(id, 0, 1, 1)), Arc::new(meta))
+    }
+
+    /// A P slice header of a reference picture, with nothing else set.
+    fn reference_slice() -> SliceHeader {
+        SliceHeader {
+            nal_ref_idc: 1,
+            nal_unit_type: 1,
+            idr: false,
+            first_mb_in_slice: 0,
+            slice_type_raw: 0,
+            slice_type: SliceType::P,
+            pps_id: 0,
+            colour_plane_id: 0,
+            frame_num: 0,
+            field_pic: false,
+            bottom_field: false,
+            idr_pic_id: 0,
+            pic_order_cnt_lsb: 0,
+            delta_pic_order_cnt_bottom: 0,
+            delta_pic_order_cnt: [0; 2],
+            redundant_pic_cnt: 0,
+            direct_spatial_mv_pred: false,
+            num_ref_idx_active: [1, 0],
+            ref_pic_list_mod: [Vec::new(), Vec::new()],
+            pred_weight_table: None,
+            no_output_of_prior_pics: false,
+            long_term_reference: false,
+            adaptive_ref_pic_marking: false,
+            mmcos: Vec::new(),
+            cabac_init_idc: 0,
+            slice_qp_delta: 0,
+            sp_for_switch: false,
+            slice_qs_delta: 0,
+            disable_deblocking_filter_idc: 0,
+            slice_alpha_c0_offset_div2: 0,
+            slice_beta_offset_div2: 0,
+            slice_group_change_cycle: 0,
+            header_bits: 0,
+        }
+    }
+
+    #[test]
+    fn a_frame_num_gap_builds_only_the_frames_that_stay_references() {
+        let mut dpb = Dpb::new();
+        let (mut built, mut poc_updates) = (Vec::new(), 0u32);
+        // frame_num 0 was the last reference; the next slice says 60_000: 59 999 missing frames.
+        dpb.fill_frame_num_gap(0, 60_000, 1 << 16, 4, &mut |n| (built.push(n), frame(n)).1, &mut |_| poc_updates += 1);
+        assert_eq!(poc_updates, 59_999, "every missing frame advances the POC state");
+        assert_eq!(built, vec![59_996, 59_997, 59_998, 59_999], "only the ones the sliding window would keep are built");
+        assert_eq!(dpb.entries.iter().map(|e| e.frame_num).collect::<Vec<_>>(), built);
+        // A gap shorter than the window builds every frame, as before.
+        let mut dpb = Dpb::new();
+        let mut built = Vec::new();
+        dpb.fill_frame_num_gap(7, 10, 16, 4, &mut |n| (built.push(n), frame(n)).1, &mut |_| {});
+        assert_eq!(built, vec![8, 9]);
+    }
+
+    #[test]
+    fn long_term_marking_cannot_grow_the_dpb_past_its_capacity() {
+        let mut dpb = Dpb::new();
+        dpb.capacity = 4;
+        let mut out = Vec::new();
+        let mut sh = SliceHeader { adaptive_ref_pic_marking: true, ..reference_slice() };
+        // Each picture takes a distinct long-term index, after MMCO 4 allowed 1000 of them.
+        for n in 0..40u32 {
+            sh.frame_num = n;
+            sh.mmcos = vec![Mmco { op: 4, max_long_term_frame_idx_plus1: 1000, ..mmco(0, 0) }, Mmco { op: 6, long_term_frame_idx: n, ..mmco(0, 0) }];
+            let (f, meta) = frame(n);
+            dpb.store_picture(&sh, f, n as i32, 1 << 16, 16, meta, &mut out);
+            assert!(dpb.entries.len() <= 4, "{} entries after picture {n}", dpb.entries.len());
+        }
+        // An index past what MMCO 4 allowed is ignored: the picture is a short-term reference.
+        sh.frame_num = 40;
+        sh.mmcos = vec![Mmco { op: 6, long_term_frame_idx: 5000, ..mmco(0, 0) }];
+        let (f, meta) = frame(40);
+        dpb.store_picture(&sh, f, 40, 1 << 16, 16, meta, &mut out);
+        assert_eq!(dpb.entries.iter().find(|e| e.frame_num == 40).map(|e| e.mark), Some(RefMark::Short));
     }
 
     #[test]
