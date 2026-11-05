@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-05 · **Change:** minor (Edit toolbar and panel presentation) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-05 · **Change:** trivial (narrow dock seams) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 How SoundCraft feels in the hands of a Pro Tools user: tools, modes, modifiers, shortcuts,
 windows, meters. Measured from `crates/model/src/session.rs` (tools, modes), the command
@@ -62,7 +62,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | Compact Edit toolbar | ✅ layout; 🟡 full behavior parity | Flat joined tool and zoom keys, four edit modes in a black bezel, action-and-return transport glyphs, main/selection/cursor readouts, independent Grid/Nudge values and stereo output. Quantize Grid/Strength/Swing and Input Quantize dispatch `event.input_quantize`; Q applies the displayed values through `event.quantize`. Tempo/Meter/Count Off are available from View › Transport › MIDI Controls and the toolbar gear menu. Existing time-scale menus and narrow-window scrolling are retained. All glyphs are original procedural artwork |
 | Edit column titles | ✅ | Comments precedes Instruments, Inserts, Sends and I/O in captions and per-track controls. Flat faces share one-point black gaps on every edge; an accessible procedural Views selector preserves column visibility controls |
 | Tracks and Groups presentation | ✅ layout; 🟡 full behavior parity | Compact contiguous rows align visibility/status, color, type/ID and names. Selected tracks fill every column in blue; all track kinds have original symbols. Groups includes an italic purple `<ALL>` row, options menu and command-backed keyboard-focus control; per-letter shortcuts remain partial. Selection, visibility, activation, reordering and gutter scrolling retain existing commands |
-| Panel separation | ✅ | Four-point black gaps separate toolbar/body, Tracks/Groups and dock panels. Full-height toolbar columns use 1.5-point gaps. Counter, Grid/Nudge, quantize and output wells have no gray outer rim; Grid/Nudge and output wells are centered. Dock and gutter edge strokes do not double the shared gap, in both themes |
+| Panel separation | ✅ | Two-point black seams separate dock panes, including Tracks from the ruler headers and the docked MIDI Editor. Major horizontal sections (toolbar/body and Tracks/Groups) keep four-point gaps; full-height toolbar columns use 1.5-point gaps. Counter, Grid/Nudge, quantize and output wells have no gray outer rim; Grid/Nudge and output wells are centered. Dock and gutter edge strokes do not double the seams, in both themes |
 | macOS title alignment and dialog movement | ✅ | Public AppKit accessories center the Edit/Mix main-window title while retaining the actual title for accessibility. Shared forms, recovery and the web update notice start centered and can be moved by their title bars without changing form or session state |
 | Dark theme close to Pro Tools' | ✅ | Light theme (#32) and live system appearance (#85) beyond Pro Tools |
 | Interface scaling | 🟡 | Slider in PR #147 |
@@ -75,6 +75,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-05 | trivial | Narrow dock seams from four to two points, including the vertical divider before the ruler headers; keep the four-point toolbar/body and Tracks/Groups section gaps. Readiness estimates unchanged |
 | 2026-11-05 | minor | Refine the two-row Edit toolbar, original procedural glyphs, Comments-first column titles, compact Tracks/Groups, centered macOS titles and draggable forms. Share four-point black panel gaps without doubled dock edges; keep readiness estimates unchanged |
 | 2026-10-25 | minor | Zoom Toggle row: Alt+Shift+E and Alt-click cancel Zoom Toggle and keep the view. Readiness estimate unchanged |
 | 2026-10-25 | minor | Edit and Mix windows: Tracks and Groups and Clips in full-height dock columns. Readiness estimate unchanged |

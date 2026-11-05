@@ -3,8 +3,11 @@
 use egui::{Color32, FontFamily, FontId};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Standard separation between Edit/Mix panels, in logical points.
+/// Separation between major horizontal Edit sections, in logical points.
 pub(crate) const PANEL_GAP: f32 = 4.0;
+
+/// Narrow seams between dock panes; major horizontal sections use [`PANEL_GAP`].
+pub(crate) const DOCK_GAP: f32 = 2.0;
 
 /// Whether the Light palette is active. Dark is the default (the incumbent is dark-only).
 static LIGHT_THEME: AtomicBool = AtomicBool::new(false);

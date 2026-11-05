@@ -458,7 +458,7 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
     }
     cancel_replaced_workspace(app, &before_sync, &workspace, edit);
     let mut style = DockStyle::from_ui(ui);
-    style.gap = crate::theme::PANEL_GAP;
+    style.gap = crate::theme::DOCK_GAP;
     style.min_pane = 96.0;
     style.tab_height = MIDI_TAB_HEIGHT;
     style.background = t.panel_bg;
