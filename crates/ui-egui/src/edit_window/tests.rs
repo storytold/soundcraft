@@ -1534,7 +1534,10 @@ fn command_click_adds_an_automation_point_without_changing_clips_and_undoes() {
     for tool in ["smart", "grabber", "selector"] {
         let (mut h, track, [a, b], clips) = breakpoints_over_a_clip(tool);
         let before = volume_points(&h, track);
-        let at = pos2((a.x + b.x) * 0.5, a.y);
+        let s = h.state().engine.session_arc();
+        let i = h.state().edit_layout.rows.iter().position(|(id, _)| *id == track.0).unwrap();
+        let lane = lane_rect(s.track(track).unwrap(), row(&h, i), timeline(&h));
+        let at = pos2((a.x + b.x) * 0.5, lane.center().y);
         let sample = sample_at(h.state().engine.session(), timeline(&h), at.x);
 
         click(&mut h, at);
@@ -1545,7 +1548,7 @@ fn command_click_adds_an_automation_point_without_changing_clips_and_undoes() {
         let points = volume_points(&h, track);
         assert_eq!(points.len(), before.len() + 1, "{tool}: {points:?}");
         let point = points.iter().find(|(at, _)| *at == sample).expect("a point at the clicked sample");
-        assert!((point.1 + 40.0).abs() < 0.01, "{tool}: clicked volume is {}", point.1);
+        assert!((point.1 + 24.0).abs() < 0.01, "{tool}: the lane midpoint is -24 dB, above the -40 dB curve: {}", point.1);
         assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}: clips stay");
         h.run_steps(2);
         fade_shot(&mut h, &format!("automation-command-{tool}-after"));
@@ -1553,6 +1556,73 @@ fn command_click_adds_an_automation_point_without_changing_clips_and_undoes() {
         h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(volume_points(&h, track), before, "{tool}: one undo removes only the new point");
         assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}: undo leaves clips alone");
+    }
+}
+
+/// A modifier click adds a point while retaining an existing clip and range selection, including after undo.
+#[test]
+fn command_click_preserves_an_existing_edit_selection() {
+    for tool in ["smart", "selector"] {
+        let (mut h, track, [a, b], clips) = breakpoints_over_a_clip(tool);
+        let s = h.state().engine.session_arc();
+        let i = h.state().edit_layout.rows.iter().position(|(id, _)| *id == track.0).unwrap();
+        let lane = lane_rect(s.track(track).unwrap(), row(&h, i), timeline(&h));
+        let at = pos2((a.x + b.x) * 0.5, lane.min.y + lane.height() * 0.35);
+        h.state_mut().engine.execute("edit.select", &json!({"clips": [clips[0].id.0]})).unwrap();
+        h.run_steps(2);
+        let before = h.state().engine.session().edit.clone();
+        let points_before = volume_points(&h, track);
+        assert!(!before.selection.is_empty());
+        assert!(!before.selected_clips.is_empty());
+        fade_shot(&mut h, &format!("automation-command-selection-{tool}-before"));
+
+        click_with(&mut h, at, egui::Modifiers::COMMAND);
+        assert_eq!(volume_points(&h, track).len(), points_before.len() + 1, "{tool}");
+        let after = &h.state().engine.session().edit;
+        assert_eq!(after.selection, before.selection, "{tool}: the range stays");
+        assert_eq!(after.selected_clips, before.selected_clips, "{tool}: selected clips stay");
+        assert_eq!(after.selected_tracks, before.selected_tracks, "{tool}: selected tracks stay");
+        h.run_steps(2);
+        fade_shot(&mut h, &format!("automation-command-selection-{tool}-after"));
+        h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(volume_points(&h, track), points_before, "{tool}: one undo removes the point");
+        assert_eq!(h.state().engine.session().edit.selection, before.selection, "{tool}: undo retains the range");
+        assert_eq!(h.state().engine.session().edit.selected_clips, before.selected_clips, "{tool}: undo retains selected clips");
+
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+        drag(&mut h, at, at + vec2(50.0, 0.0));
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        let after_drag = &h.state().engine.session().edit;
+        assert!(!after_drag.selection.is_empty(), "{tool}: a Command-drag still selects a range");
+        assert_ne!(after_drag.selection, before.selection, "{tool}: drag selection changes once the gesture starts");
+        assert_eq!(volume_points(&h, track), points_before, "{tool}: dragging adds no point");
+        assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}: clips stay");
+    }
+}
+
+/// Tracks that always paint volume automation also accept modifier clicks when their stored view is not automation.
+#[test]
+fn command_click_adds_to_fallback_volume_views() {
+    for kind in [TrackKind::Master, TrackKind::Aux, TrackKind::Vca] {
+        let mut engine = soundcraft_engine::Engine::default();
+        let track = engine.session_mut().add_track(kind, soundcraft_model::ChannelFormat::Stereo, None);
+        engine.execute("track.view", &json!({"track": track.0, "view": "waveform"})).unwrap();
+        engine.execute("edit.tool", &json!({"tool": "smart"})).unwrap();
+        let mut h = harness_with(engine);
+        let s = h.state().engine.session_arc();
+        let lane = lane_rect(s.track(track).unwrap(), row(&h, 0), timeline(&h));
+        let at = pos2(lane.min.x + 100.0, lane.center().y);
+        let sample = sample_at(&s, timeline(&h), at.x);
+        fade_shot(&mut h, &format!("automation-command-fallback-{kind:?}-before"));
+        click_with(&mut h, at, egui::Modifiers::COMMAND);
+        let points = volume_points(&h, track);
+        assert_eq!(points.len(), 1, "{kind:?}: status {}", h.state().ui.status);
+        assert_eq!(points[0].0, sample, "{kind:?}");
+        assert!((points[0].1 + 24.0).abs() < 0.01, "{kind:?}: {}", points[0].1);
+        h.run_steps(2);
+        fade_shot(&mut h, &format!("automation-command-fallback-{kind:?}-after"));
+        h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
+        assert!(volume_points(&h, track).is_empty(), "{kind:?}: one undo removes the point");
     }
 }
 
