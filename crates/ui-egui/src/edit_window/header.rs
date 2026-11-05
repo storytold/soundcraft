@@ -1,3 +1,4 @@
+use super::layout::STRIP_W;
 use super::tracks::{click_track, folder_depth, height_targets, in_edit_window, track_context_menu, view_label, view_menu};
 use super::{
     Align2, AutoParam, Color32, Pos2, Rect, Sense, Shape, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold, groove, json,
@@ -14,6 +15,7 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
         click_track(app, id, ui.input(|i| i.modifiers), in_edit_window);
     }
     bg.context_menu(|ui| track_context_menu(app, ui, id));
+    color_strip(app, ui, id, head);
     resize_edge(app, ui, track, head);
     strip_buttons(app, ui, track, head);
     name_plate(app, ui, track, head, selected);
@@ -24,6 +26,28 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
     field_row(app, ui, track, head, head_bg);
     let md = app.meters.get(&id).copied().unwrap_or_default();
     header_meter(ui, Rect::from_min_max(pos2(head.max.x - 8.0, head.min.y + 1.0), pos2(head.max.x, head.max.y - 1.5)), &md, track.channels() >= 2);
+}
+
+/// The colour strip: a click selects the track as the header does, a double click opens the Color
+/// Palette for the selected tracks. A plain click on a track that is already selected keeps the
+/// selection, so double-clicking one of several selected tracks colours them all. Registered after
+/// the header background, so it sits on top of it, and before the strip's own buttons and the
+/// resize edge, which stay on top of it.
+fn color_strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, head: Rect) {
+    let strip = Rect::from_min_size(head.min, vec2(STRIP_W, head.height()));
+    let resp = ui.interact(strip, ui.scope_id().with(("color_strip", id.0)), Sense::click());
+    let mods = ui.input(|i| i.modifiers);
+    let selected = app.engine.session().edit.selected_tracks.contains(&id);
+    if resp.double_clicked() {
+        // A Cmd click toggles, so a Cmd double click's first click deselected the track: add it back.
+        if !selected {
+            click_track(app, id, mods, in_edit_window);
+        }
+        app.ui.show_color_palette = true;
+    } else if resp.clicked() && !(selected && mods.is_none()) {
+        click_track(app, id, mods, in_edit_window);
+    }
+    resp.context_menu(|ui| track_context_menu(app, ui, id));
 }
 
 /// Drag the bottom edge of the header to resize the track (snaps to the height presets).
