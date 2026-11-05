@@ -296,7 +296,7 @@ fn vendor_menus(ui: &mut Ui, mut list: Vec<MenuPlugin>, none: &str) -> Option<St
     let mut picked = None;
     egui::ScrollArea::vertical().id_salt("vendors").max_height(max_h).show(ui, |ui| {
         for v in vendors {
-            ui.menu_button(if v.is_empty() { "Unknown vendor" } else { v }, |ui| {
+            ui.menu_button(if v.is_empty() { crate::localization::text("Unknown vendor") } else { v }, |ui| {
                 egui::ScrollArea::vertical().id_salt("plugins").max_height(max_h).show(ui, |ui| {
                     for p in list.iter().filter(|p| p.vendor == v) {
                         if ui.button(&p.name).clicked() {

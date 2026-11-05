@@ -153,8 +153,9 @@ parametric request #139. ≈ 80–120 h.
 ### G-09. Localization
 
 See [`localization-parity.md`](localization-parity.md): a pt-BR catalog covers the main menus,
-Appearance, the main panels, dialogs, tooltips and formatted messages (PR #1346), but it is
-partial and not independently reviewed, and parts of the UI still fall back to English. egui has
+engine command labels, Appearance, the main panels, dialogs, tooltips and formatted messages
+(PR #1346), but it is partial and not independently reviewed, and parts of the UI still fall
+back to English. egui has
 no complex-script shaping or RTL; no CJK font fallback (PR #141 open). ≈ 70–110 h plus
 native-speaker review.
 
@@ -232,7 +233,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-05 | minor | G-09: expanded the pt-BR catalog to dialogs, tooltips, formatted messages and accessibility text (PR #1346); coverage is partial and not independently reviewed |
+| 2026-11-05 | minor | G-09: expanded the pt-BR catalog to all command/menu labels, dialog titles, tooltips, formatted messages and accessibility text (PR #1346); coverage is partial and not independently reviewed |
 | 2026-11-03 | minor | G-09: initial pt-BR UI translations and persisted language selection; most UI strings remain English |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-25 | trivial | G-01: `setup.playback_engine` and `setup.hardware` apply the device and buffer in the desktop app; headless returns `applied: false` |

@@ -86,7 +86,9 @@ fn win(ctx: &egui::Context, open: &mut bool, title: &str, size: egui::Vec2, body
     if !*open {
         return;
     }
-    egui::Window::new(title).open(open).default_size(size).show(ctx, body);
+    // The title is translated for display, but the id keeps the English source so a language
+    // switch does not move or resize the window.
+    egui::Window::new(crate::localization::text(title)).id(egui::Id::new(title)).open(open).default_size(size).show(ctx, body);
 }
 
 fn automation(app: &mut SoundApp, ctx: &egui::Context) {
@@ -471,10 +473,10 @@ fn chosen_device<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'
 
 /// Device picker with a Default entry and channel counts, labelled for accessibility.
 fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<String>, devices: &[DeviceInfo]) {
-    let default = devices.iter().find(|d| d.is_default).map_or("none".to_string(), |d| d.name.clone());
-    let shown = value.clone().unwrap_or_else(|| format!("Default ({default})"));
+    let default = devices.iter().find(|d| d.is_default).map_or_else(|| crate::localization::text("none").to_string(), |d| d.name.clone());
+    let shown = value.clone().unwrap_or_else(|| crate::localized_format!("Default ({default})", default = default));
     let combo = craft_ui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
-        ui.selectable_value(value, None, format!("Default ({default})"));
+        ui.selectable_value(value, None, crate::localized_format!("Default ({default})", default = default));
         for d in devices {
             ui.selectable_value(value, Some(d.name.clone()), format!("{} ({} ch)", d.name, d.max_channels));
         }
@@ -484,11 +486,14 @@ fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<Stri
 
 /// Optional-number picker with a Device default entry and a unit, labelled for accessibility.
 fn number_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<u32>, options: &[u32], unit: &str) {
-    let shown = value.map_or("Device default".to_string(), |v| format!("{v} {unit}"));
+    let shown = value.map_or_else(
+        || crate::localization::text("Device default").to_string(),
+        |v| crate::localized_format!("{v} {unit}", v = v, unit = crate::localization::text(unit)),
+    );
     let combo = craft_ui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
-        ui.selectable_value(value, None, "Device default");
+        ui.selectable_value(value, None, crate::localization::text("Device default"));
         for v in options {
-            ui.selectable_value(value, Some(*v), format!("{v} {unit}"));
+            ui.selectable_value(value, Some(*v), crate::localized_format!("{v} {unit}", v = v, unit = crate::localization::text(unit)));
         }
     });
     combo.response.accessible_name(name);
@@ -764,7 +769,8 @@ pub fn shortcuts_window(app: &mut SoundApp, ctx: &egui::Context) {
                 for (shortcut, label, menu) in engine.chain(windows) {
                     let Some(shortcut) = shortcut else { continue };
                     ui.label(egui::RichText::new(crate::shortcuts::shortcut_label(shortcut, mac)).font(mono(11.0)));
-                    ui.label(label);
+                    ui.label(crate::localization::text(label));
+                    let menu = menu.split(" › ").map(crate::localization::text).collect::<Vec<_>>().join(" › ");
                     ui.label(egui::RichText::new(menu).small());
                     ui.end_row();
                 }

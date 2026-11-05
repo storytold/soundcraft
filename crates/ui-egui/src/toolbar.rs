@@ -511,7 +511,7 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str, current: Gri
             ui.close();
         }
         ui.separator();
-        if ui.selectable_label(follow_main, "Follow Main Time Scale").clicked() {
+        if ui.selectable_label(follow_main, crate::localization::text("Follow Main Time Scale")).clicked() {
             let _ = app.run(cmd, json!({"follow_main": !follow_main}));
             ui.close();
         }

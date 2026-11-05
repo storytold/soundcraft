@@ -350,7 +350,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
         match &current {
             Some((_, name)) => {
                 ui.horizontal(|ui| {
-                    ui.strong(format!("Send {which}"));
+                    ui.strong(crate::localized_format!("Send {which}", which = which));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(name).color(Tokens::current().counter_text));
                     });
@@ -358,7 +358,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
                 ui.label(egui::RichText::new(crate::localization::text("DESTINATION")).size(8.0).color(Tokens::current().text_dim));
             }
             None => {
-                ui.strong(format!("Send {which} · Choose destination"));
+                ui.strong(crate::localized_format!("Send {which} · Choose destination", which = which));
             }
         }
         let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), "Search buses…");
