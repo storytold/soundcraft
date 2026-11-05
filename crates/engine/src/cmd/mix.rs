@@ -258,8 +258,7 @@ fn pan(e: &mut Engine, p: &Value) -> Result<Value> {
 
     if explicit_index {
         // When index is given, it must be a valid integer.
-        let idx = i64_param(p, "mix.pan", "index")?;
-        let idx = idx.clamp(0, 1) as usize;
+        let idx = i64_param(p, "mix.pan", "index")? as usize;
         for t in &tracks {
             if let Some(tr) = s.track_mut(*t) {
                 if idx >= tr.mixer.pan.len() {

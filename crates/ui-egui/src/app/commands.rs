@@ -1,6 +1,20 @@
 use super::{SoundApp, Value, bounce, menus};
 use soundcraft_model::{SEND_SLOTS, TrackId};
 
+/// Parse a slot index from a JSON value: u64, or "a".."j" letter, or numeric string.
+/// Returns None if the slot is out of bounds or unparseable.
+fn slot_of(params: &Value, max: usize) -> Option<usize> {
+    let v = params.get("slot")?;
+    let i = if let Some(n) = v.as_u64() {
+        n as usize
+    } else {
+        let s = v.as_str()?.trim().to_ascii_lowercase();
+        let c = s.chars().next()?;
+        if s.len() == 1 && c.is_ascii_lowercase() { (c as u8 - b'a') as usize } else { s.parse().ok()? }
+    };
+    (i < max).then_some(i)
+}
+
 impl SoundApp {
     /// Run a command; errors go to the status line. Returns the result.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
@@ -72,10 +86,9 @@ impl SoundApp {
         let track = Self::resolve_first_track(s, params)?;
         let tr = s.track(track)?;
 
-        // Explicit slot? Check it directly.
-        if let Some(slot) = params.get("slot").and_then(|v| v.as_u64()) {
-            let slot = slot as usize;
-            if slot < SEND_SLOTS && tr.mixer.sends.get(slot).is_none() {
+        // Explicit slot? Use the engine's slot parsing so "b"/"1" are resolved correctly.
+        if let Some(slot) = slot_of(params, SEND_SLOTS) {
+            if tr.mixer.sends.get(slot).is_some_and(Option::is_none) {
                 return Some((track, slot));
             }
             return None;
@@ -97,8 +110,8 @@ impl SoundApp {
         if let Some(v) = params.get("track") {
             return Self::resolve_track_id(s, v);
         }
-        // selection
-        s.edit.selected_tracks.first().copied()
+        // selection: first selected track in session order (matches Engine::target_tracks)
+        s.tracks.iter().find(|t| s.edit.selected_tracks.contains(&t.id)).map(|t| t.id)
     }
 
     fn resolve_track_id(s: &soundcraft_model::Session, v: &Value) -> Option<TrackId> {

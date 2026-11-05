@@ -77,6 +77,21 @@ fn mix_pan_non_integer_index_is_an_error() {
 }
 
 #[test]
+fn mix_pan_index_out_of_range_is_an_error() {
+    let mut e = engine_with_kick();
+    // Stereo track has 2 panners (indices 0 and 1); index 2 is out of range.
+    let r = e.execute("mix.pan", &json!({"tracks": ["Kick"], "pan": 0.5, "index": 2}));
+    assert!(matches!(r, Err(EngineError::BadParams(..))), "index beyond len should error");
+}
+
+#[test]
+fn mix_pan_negative_index_is_an_error() {
+    let mut e = engine_with_kick();
+    let r = e.execute("mix.pan", &json!({"tracks": ["Kick"], "pan": 0.5, "index": -1}));
+    assert!(matches!(r, Err(EngineError::BadParams(..))), "negative index should error");
+}
+
+#[test]
 fn mix_pan_fractional_index_is_an_error() {
     let mut e = engine_with_kick();
     let r = e.execute("mix.pan", &json!({"tracks": ["Kick"], "pan": 0.5, "index": 0.5}));
