@@ -267,6 +267,7 @@ fn save_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "track": first}))
 }
 
+/// Load persistent mixer settings while retaining destination routing and live input flags.
 fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "track.load_preset";
     let path = str_param(p, "path").ok_or_else(|| bad(id, "`path` required"))?.to_string();
@@ -283,15 +284,17 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     for t in &tracks {
         if let Some(tr) = s.track_mut(*t) {
-            // Routing is session-specific: keep the track's own input/output, VCA and arm state.
-            let keep = (tr.mixer.input.clone(), tr.mixer.output.clone(), tr.mixer.vca, tr.mixer.record_arm, tr.mixer.pan.clone());
+            // Routing and live input state are track-specific: a preset must not replace them.
+            let keep =
+                (tr.mixer.input.clone(), tr.mixer.output.clone(), tr.mixer.vca, tr.mixer.record_arm, tr.mixer.input_monitor, tr.mixer.pan.clone());
             tr.mixer = mixer.clone();
             tr.mixer.input = keep.0;
             tr.mixer.output = keep.1;
             tr.mixer.vca = keep.2;
             tr.mixer.record_arm = keep.3;
-            if tr.mixer.pan.len() != keep.4.len() {
-                tr.mixer.pan = keep.4;
+            tr.mixer.input_monitor = keep.4;
+            if tr.mixer.pan.len() != keep.5.len() {
+                tr.mixer.pan = keep.5;
             }
             if tr.kind == TrackKind::Instrument && instrument.is_some() {
                 tr.instrument = instrument.clone();
@@ -602,6 +605,7 @@ mod tests {
         assert_eq!(e.session().track(pad).unwrap().folder, Some(verb));
     }
 
+    /// A preset transfers persistent mix settings without replacing live destination states.
     #[test]
     fn preset_round_trip() {
         let dir = std::env::temp_dir().join(format!("sc-preset-{}", std::process::id()));
@@ -611,10 +615,13 @@ mod tests {
         e.execute("edit.select", &json!({"tracks": ["Bass"]})).unwrap();
         e.execute("track.save_preset", &json!({"path": path})).unwrap();
         e.execute("edit.select", &json!({"tracks": ["Hats"]})).unwrap();
+        e.execute("mix.record_arm", &json!({"value": true})).unwrap();
+        e.execute("mix.input_monitor", &json!({"value": true})).unwrap();
         e.execute("track.load_preset", &json!({"path": path})).unwrap();
         let hats = e.session().track_by_name("Hats").unwrap();
         assert_eq!(hats.mixer.inserts[0].as_ref().map(|i| i.plugin.as_str()), Some("compressor"));
         assert_eq!(hats.mixer.volume_db, -5.0);
+        assert!(hats.mixer.record_arm && hats.mixer.input_monitor, "loading a preset keeps live input state");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
