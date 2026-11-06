@@ -259,6 +259,7 @@ fn a_block_that_panics_goes_silent_and_is_reported_once() {
     assert_eq!(fault.beats.load(Ordering::Relaxed), 3);
 }
 
+/// Fill time is reported in permille of the buffer's real-time length, over 1000 when late.
 #[test]
 fn load_is_the_share_of_the_buffers_real_time_length() {
     // 256 stereo frames at 48 kHz last 5.333 ms.
@@ -268,6 +269,7 @@ fn load_is_the_share_of_the_buffers_real_time_length() {
     assert_eq!(callback::load_permille(budget * 2.5, 512, 2, 48_000.0), 2500);
 }
 
+/// An empty buffer, a zero rate or a non-positive or non-finite timing gives no load.
 #[test]
 fn load_is_zero_for_empty_buffers_and_bad_timings() {
     assert_eq!(callback::load_permille(0.001, 0, 2, 48_000.0), 0);
@@ -278,6 +280,7 @@ fn load_is_zero_for_empty_buffers_and_bad_timings() {
     assert_eq!(callback::load_permille(0.001, 512, 2, 0.0), 0);
 }
 
+/// Zero channels count as one, and a huge timing stops at `u32::MAX` instead of wrapping.
 #[test]
 fn load_with_no_channels_counts_as_mono_and_saturates() {
     assert_eq!(callback::load_permille(0.5, 48_000, 0, 48_000.0), callback::load_permille(0.5, 48_000, 1, 48_000.0));
@@ -285,6 +288,7 @@ fn load_with_no_channels_counts_as_mono_and_saturates() {
     assert_eq!(callback::load_permille(1e12, 1, 1, 48_000.0), u32::MAX);
 }
 
+/// The one-pole smoothing moves an eighth of the way and does not overflow at the top.
 #[test]
 fn smoothing_moves_an_eighth_of_the_way() {
     assert_eq!(callback::smooth_permille(0, 800), 100);
@@ -293,6 +297,7 @@ fn smoothing_moves_an_eighth_of_the_way() {
     assert_eq!(callback::smooth_permille(u32::MAX, u32::MAX), u32::MAX);
 }
 
+/// `note_load` smooths the load, holds the highest value as the peak, and starts again after a reset.
 #[test]
 fn noting_load_smooths_it_and_keeps_the_peak() {
     let fault = Fault::default();
@@ -305,6 +310,7 @@ fn noting_load_smooths_it_and_keeps_the_peak() {
     assert_eq!(fault.peak_permille.load(Ordering::Relaxed), 300);
 }
 
+/// Each xrun is counted, but the output is not marked gone and no trouble is reported.
 #[test]
 fn an_xrun_is_counted_but_does_not_lose_the_device() {
     let fault = Fault::default();
@@ -315,6 +321,7 @@ fn an_xrun_is_counted_but_does_not_lose_the_device() {
     assert_eq!(fault.trouble(false), None);
 }
 
+/// A missing device or an invalidated stream marks the output gone and does not count as an xrun.
 #[test]
 fn a_lost_device_is_marked_gone_without_an_xrun() {
     let fault = Fault::default();
@@ -326,6 +333,7 @@ fn a_lost_device_is_marked_gone_without_an_xrun() {
     assert!(fault.gone.load(Ordering::Relaxed));
 }
 
+/// A fill that takes longer than the block's real-time length shows up in the peak and the smoothed load.
 #[test]
 fn a_slow_block_raises_the_load() {
     let shared = Shared {
@@ -347,6 +355,7 @@ fn a_slow_block_raises_the_load() {
     assert_eq!(out, [0.25; 96]);
 }
 
+/// A block that panics, and the silent blocks after it, are not counted as load.
 #[test]
 fn a_block_that_panics_does_not_count_as_load() {
     let shared = Shared {

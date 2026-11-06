@@ -168,6 +168,8 @@ fn disk_usage(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_disk_usage = open;
 }
 
+/// The System Usage window: UI frame time, the audio device, the audio callback's load, peak and
+/// dropouts (with a button that resets the peak), and the session's plugin, track and undo counts.
 fn system_usage(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_system_usage;
     win(ctx, &mut open, "System Usage", vec2(320.0, 210.0), |ui| {
