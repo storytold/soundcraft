@@ -375,6 +375,7 @@ fn a_block_that_panics_does_not_count_as_load() {
     assert_eq!(out, [0.0; 96]);
 }
 
+/// A lost device, or one that stops asking for audio for `STALL` while playing, is reported to the UI once.
 #[test]
 fn a_lost_or_stalled_device_is_reported_once() {
     let ago = |seen: &mut Option<(u64, std::time::Instant)>| {

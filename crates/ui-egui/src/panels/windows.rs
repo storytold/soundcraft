@@ -28,6 +28,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     clip_effects(app, ctx);
 }
 
+/// The Session Audio Health window: the `session.audio_health` report (run on open and on
+/// Refresh Report), listing each clip issue with its track, playlist and path.
 fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_audio_health;
     win(ctx, &mut open, "Session Audio Health", vec2(620.0, 360.0), |ui| {
@@ -82,6 +84,7 @@ fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
     }
 }
 
+/// Show a closable window titled `title` with `body`, at `size` by default; nothing when `open` is false.
 fn win(ctx: &egui::Context, open: &mut bool, title: &str, size: egui::Vec2, body: impl FnOnce(&mut egui::Ui)) {
     if !*open {
         return;
@@ -89,6 +92,8 @@ fn win(ctx: &egui::Context, open: &mut bool, title: &str, size: egui::Vec2, body
     egui::Window::new(title).open(open).default_size(size).show(ctx, body);
 }
 
+/// The Automation window: automation modes for the selected tracks, the enabled parameter
+/// types, and Write to Current and Thin All.
 fn automation(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_automation;
     win(ctx, &mut open, "Automation", vec2(260.0, 260.0), |ui| {
@@ -130,6 +135,7 @@ fn automation(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_automation = open;
 }
 
+/// The Color Palette window: colors for the selected tracks (or clips) and the track tint.
 fn color_palette(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_color_palette;
     win(ctx, &mut open, "Color Palette", vec2(300.0, 140.0), |ui| {
@@ -153,6 +159,8 @@ fn color_palette(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_color_palette = open;
 }
 
+/// The Disk Usage window: the memory the session's media takes, what recording uses per
+/// track-minute, and the session file.
 fn disk_usage(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_disk_usage;
     win(ctx, &mut open, "Disk Usage", vec2(360.0, 160.0), |ui| {
@@ -194,6 +202,7 @@ fn system_usage(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_system_usage = open;
 }
 
+/// The Task Manager window: the progress of a running background bounce, if any.
 fn task_manager(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_task_manager;
     win(ctx, &mut open, "Task Manager", vec2(320.0, 120.0), |ui| {

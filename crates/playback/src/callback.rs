@@ -140,6 +140,8 @@ pub(crate) struct AudioState {
     forget_shared: Vec<TrackId>,
 }
 
+/// A realtime mix engine at `sr` Hz: third-party instances come from the UI thread, and the
+/// metronome is on.
 fn new_engine(sr: f32) -> MixEngine {
     let mut m = MixEngine::new(sr, BLOCK);
     m.set_external_instances(true);
@@ -148,6 +150,8 @@ fn new_engine(sr: f32) -> MixEngine {
 }
 
 impl AudioState {
+    /// Callback state for `session` on a device running at `device_rate` Hz, stopped at the start.
+    /// Commands arrive on `rx`; retired plugin instances go back on `garbage`.
     pub(crate) fn new(
         rx: Receiver<Cmd>,
         shared: Arc<Shared>,
@@ -180,6 +184,8 @@ impl AudioState {
         }
     }
 
+    /// Apply every command waiting on the channel without blocking: new sessions and instances,
+    /// transport moves, input and recording changes, and deleted tracks.
     fn drain(&mut self) {
         let mut changed = false;
         while let Ok(c) = self.rx.try_recv() {
@@ -248,6 +254,7 @@ impl AudioState {
         self.shared.playing.store(self.playing, Ordering::Relaxed);
     }
 
+    /// Send the mix engine's retired plugin instances to the UI thread, to be dropped there.
     fn send_garbage(&mut self) {
         let g = self.mix.take_retired();
         if !g.is_empty() {
@@ -425,6 +432,7 @@ pub(crate) struct Side {
 }
 
 impl Side {
+    /// Empty bookkeeping for a session at `rate` Hz; retired instances arrive on `garbage`.
     pub(crate) fn new(rate: f32, garbage: Receiver<Vec<Box<dyn Plugin>>>) -> Side {
         Side {
             shadow: HashMap::new(),
@@ -460,12 +468,14 @@ impl Side {
         }
     }
 
+    /// Ask the audio thread to send replaced session snapshots back, so they are dropped here.
     pub(crate) fn return_old_sessions(&mut self, tx: &Sender<Cmd>) {
         let (otx, orx) = sync_channel(OLD_SESSIONS);
         self.old_sessions = Some(orx);
         let _ = tx.send(Cmd::OldSessions(otx));
     }
 
+    /// Drop everything known about the instance in `key`'s slot, closing its editor.
     pub(crate) fn forget(&mut self, key: (TrackId, usize)) {
         self.shadow.remove(&key);
         self.states.remove(&key);
@@ -476,6 +486,8 @@ impl Side {
     }
 }
 
+/// Copy fresh meter readings from `source` into `out` and reset `source`'s levels; when nothing
+/// new was rendered, `out` keeps its readings.
 pub(crate) fn take_meter_snapshot(source: &mut MeterSnapshot, out: &mut MeterSnapshot) {
     if !source.fresh {
         // No block since the last take: keep the readings, but not those of deleted tracks.
@@ -486,6 +498,7 @@ pub(crate) fn take_meter_snapshot(source: &mut MeterSnapshot, out: &mut MeterSna
     source.reset_levels();
 }
 
+/// Copy `source`'s meters into `out`, dropping the tracks `source` no longer has.
 pub(crate) fn copy_meter_snapshot(source: &MeterSnapshot, out: &mut MeterSnapshot) {
     out.tracks.retain(|id, _| source.tracks.contains_key(id));
     for (id, meter) in &source.tracks {
@@ -495,14 +508,17 @@ pub(crate) fn copy_meter_snapshot(source: &MeterSnapshot, out: &mut MeterSnapsho
 }
 
 impl Side {
+    /// The saved state of every live instance, except those that refused their stored state.
     pub(crate) fn capture_states(&mut self) -> PluginStates {
         self.states.iter_mut().filter(|(k, _)| !self.refused.contains(*k)).filter_map(|(&(t, slot), r)| Some((t, slot, r.save_state()?))).collect()
     }
 
+    /// The slots whose editors report a state change since they were last asked.
     pub(crate) fn changed_states(&mut self) -> Vec<(TrackId, usize)> {
         self.editors.iter_mut().filter_map(|(k, e)| e.state_changed().then_some(*k)).collect()
     }
 
+    /// Like [`Side::capture_states`], limited to `slots`.
     pub(crate) fn capture_states_of(&mut self, slots: &[(TrackId, usize)]) -> PluginStates {
         self.states
             .iter_mut()
@@ -517,6 +533,7 @@ impl Side {
         self.editors.insert(key, e);
     }
 
+    /// Open the editor of `key`'s instance; once opened, its own state is saved again.
     pub(crate) fn open_editor(&mut self, key: (TrackId, usize)) -> Result<(), String> {
         let e = self.editors.get_mut(&key).ok_or_else(|| "this plugin has no editor (or it is not loaded)".to_string())?;
         e.open()?;
