@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 /// A MIDI note. Times are in model ticks ([`crate::PPQ`] per quarter note).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -108,14 +110,28 @@ impl Sequence {
 
         self.ctrls.sort_by_key(|c| c.tick);
         let mut kept: Vec<CtrlEvent> = Vec::with_capacity(self.ctrls.len());
+        // The latest tick and `kept` index of each channel+kind, so a same-tick repeat is found
+        // without rescanning the tick's events (a tick can hold many thousands of distinct keys).
+        // An entry from an earlier tick counts as absent; keeping the tick instead of clearing the
+        // map per tick keeps the work per event constant after a dense tick.
+        let mut last_at: HashMap<(u8, (u8, u8)), (i64, usize)> = HashMap::new();
         for c in self.ctrls.drain(..) {
             // Within a tick, replace an earlier event of the same channel+kind.
-            // Only events at the same tick (the tail of `kept`) can match.
-            let slot =
-                kept.iter_mut().rev().take_while(|k| k.tick == c.tick).find(|k| k.channel == c.channel && kind_key(k.kind) == kind_key(c.kind));
-            match slot {
-                Some(slot) => *slot = c,
-                None => kept.push(c),
+            match last_at.entry((c.channel, kind_key(c.kind))) {
+                Entry::Occupied(mut e) => {
+                    let (tick, idx) = *e.get();
+                    match kept.get_mut(idx) {
+                        Some(slot) if tick == c.tick => *slot = c,
+                        _ => {
+                            e.insert((c.tick, kept.len()));
+                            kept.push(c);
+                        }
+                    }
+                }
+                Entry::Vacant(e) => {
+                    e.insert((c.tick, kept.len()));
+                    kept.push(c);
+                }
             }
         }
         self.ctrls = kept;
