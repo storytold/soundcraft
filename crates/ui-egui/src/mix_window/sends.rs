@@ -395,8 +395,17 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
         },
     );
     let Some((picked, footer)) = shown else { return };
-    if let Some(bus) = picked {
-        let _ = app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": bus}));
+    // As in Pro Tools, a new send opens its Send window (moving it from any other send), so its
+    // fader is on screen right away. A send that only changes destination leaves the window alone.
+    let show_new_send = |app: &mut SoundApp| {
+        if !has_send {
+            app.ui.send_window = Some((id, slot));
+        }
+    };
+    if let Some(bus) = picked
+        && app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": bus})).is_ok()
+    {
+        show_new_send(app);
     }
     match footer {
         Some(SendFooter::NewBus) => {
@@ -406,8 +415,10 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
             {
                 n += 1;
             }
-            if app.run("mix.new_bus", json!({"name": format!("Bus {n}")})).is_ok() {
-                let _ = app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": format!("Bus {n}")}));
+            if app.run("mix.new_bus", json!({"name": format!("Bus {n}")})).is_ok()
+                && app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": format!("Bus {n}")})).is_ok()
+            {
+                show_new_send(app);
             }
         }
         Some(SendFooter::RemoveSend) => {
@@ -470,5 +481,80 @@ mod tests {
         }
         assert_eq!(field(&h), search, "the search field stays put");
         assert!((footer(&h).top() - full.top()).abs() < 1.0, "cleared, the footer is back under the full list: {:?} vs {full:?}", footer(&h));
+    }
+
+    /// Kick's send A slot in a test harness, with buses "Aux" and "Other"; with `existing_send`, the
+    /// slot already sends to "Other".
+    fn kick_send_harness(existing_send: bool) -> (Harness<'static, (SoundApp, TrackId)>, TrackId) {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        app.run("mix.new_bus", json!({"name": "Aux"})).unwrap();
+        app.run("mix.new_bus", json!({"name": "Other"})).unwrap();
+        let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+        if existing_send {
+            app.run("mix.send", json!({"track": kick.0, "slot": 0, "bus": "Other"})).unwrap();
+        }
+        let mut ready = false;
+        let h = Harness::builder().with_size(vec2(600.0, 800.0)).build_ui_state(
+            move |ui, (app, kick): &mut (SoundApp, TrackId)| {
+                if !ready {
+                    crate::fonts::install(ui.ctx(), true);
+                    crate::theme::apply(ui.ctx(), false);
+                    ready = true;
+                    return;
+                }
+                let track = app.engine.session().track(*kick).cloned().unwrap();
+                let r = Rect::from_min_size(ui.max_rect().min + vec2(20.0, 20.0), vec2(120.0, 24.0));
+                send_slot(app, ui, &track, 0, r);
+            },
+            (app, kick),
+        );
+        (h, kick)
+    }
+
+    /// Creating a send opens its Send window, so the new send's fader is on screen right away (#1269).
+    #[test]
+    fn creating_a_send_opens_its_send_window() {
+        let _palette = crate::theme::lock_test_palette();
+        let (mut h, kick) = kick_send_harness(false);
+        h.run();
+        h.get_by_label("Send A for Kick").click();
+        h.run();
+        h.get_by_label("Aux").click();
+        h.run();
+        let (app, _) = h.state();
+        let send = app.engine.session().track(kick).and_then(|t| t.mixer.sends.first().cloned().flatten());
+        assert!(send.is_some(), "the send was created");
+        assert_eq!(app.ui.send_window, Some((kick, 0)), "the new send's window is open");
+    }
+
+    /// So does a send made with "new bus...".
+    #[test]
+    fn a_send_to_a_new_bus_opens_its_send_window() {
+        let _palette = crate::theme::lock_test_palette();
+        let (mut h, kick) = kick_send_harness(false);
+        h.run();
+        h.get_by_label("Send A for Kick").click();
+        h.run();
+        h.get_by_label("new bus...").click();
+        h.run();
+        let (app, _) = h.state();
+        assert!(app.engine.session().track(kick).and_then(|t| t.mixer.sends.first().cloned().flatten()).is_some(), "the send was created");
+        assert_eq!(app.ui.send_window, Some((kick, 0)), "the new send's window is open");
+    }
+
+    /// Moving an existing send to another bus keeps the Send window as it was.
+    #[test]
+    fn changing_a_sends_destination_leaves_the_send_window_alone() {
+        let _palette = crate::theme::lock_test_palette();
+        let (mut h, kick) = kick_send_harness(true);
+        h.run();
+        h.get_by_label("Send A for Kick").click();
+        h.run();
+        h.get_by_label("Aux").click();
+        h.run();
+        let (app, _) = h.state();
+        let target = app.engine.session().track(kick).and_then(|t| t.mixer.sends.first().cloned().flatten()).map(|s| route_name(app, &s.target));
+        assert_eq!(target.as_deref(), Some("Aux"), "the send moved");
+        assert_eq!(app.ui.send_window, None, "no window opened");
     }
 }

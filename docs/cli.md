@@ -14,7 +14,7 @@ flags, values and defaults. This page does not repeat them.
 | `convert` | Converts an audio file: resample, change the bit depth, normalize |
 | `run` | Runs engine commands on a new, demo or saved session; can bounce, save and inspect |
 | `script` | Runs a file of engine commands, one `ID JSON` per line |
-| `commands` | Lists the engine commands |
+| `commands` | Lists the engine commands; with `--json`, each one's details as `describe` prints them |
 | `describe` | Prints one engine command's details as JSON |
 | `app` | Calls a running app's control channel (see [the control protocol](control-protocol.md)) |
 | `mcp` | Serves MCP on stdin and stdout (see [the MCP guide](mcp.md)) |
@@ -29,16 +29,19 @@ soundcraft-cli convert in.wav out.flac --bit-depth 16 --rate 44100
 soundcraft-cli run --demo --cmd 'mix.volume={"track":"Kick","db":-6}' --bounce mix.wav
 soundcraft-cli script steps.txt --demo --keep-going --save out.scraft
 soundcraft-cli commands bounce
+soundcraft-cli commands --json --compact
 soundcraft-cli describe file.bounce_mix
 ```
 
 ## Output and exit codes
 
 Results go to standard output, as JSON where a program is meant to read them. `info` (on an audio
-file), `describe`, `app` and the `--inspect` output of `run` and `script` pretty-print it; `--compact`
-prints the same JSON on one line. The result lines of `run` and `script` (`ID: JSON`) and the
-`--bounce` and `--save` results are always one line each. `commands`, `plugins`, `parity` and the
-`.scraft` summary of `info` are text. Errors go to standard error as `error: <message>`. `mcp` writes only the protocol
+file), `describe`, `commands --json`, `app` and the `--inspect` output of `run` and `script`
+pretty-print it; `--compact` prints the same JSON on one line. The result lines of `run` and
+`script` (`ID: JSON`) and the `--bounce` and `--save` results are always one line each. `commands`
+(without `--json`), `plugins`, `parity` and the `.scraft` summary of `info` are text. The
+`enabled` and `disabled_reason` fields of `describe` and `commands --json` are worked out against
+an empty session, not a session you have open. Errors go to standard error as `error: <message>`, and so do the warnings and errors SoundCraft and the plugin hosts log (`warning: <message>`, `error: <message>`), such as a plugin that fails to load. `mcp` writes only the protocol
 to standard output.
 
 | Exit code | Meaning |
@@ -138,8 +141,8 @@ output replacing an input without `--in-place`, and the ast-grep rules in `lint/
 
 Rules not followed yet:
 
-- **JSON flag (rule 1.3).** `commands`, `plugins`, `parity` and the `info` summary of a `.scraft`
-  session print text and have no `--json` flag. Whether such listings need one is an open question
+- **JSON flag (rule 1.3).** `plugins`, `parity` and the `info` summary of a `.scraft` session
+  print text and have no `--json` flag (`commands` has one). Whether such listings need one is an open question
   in the RFC itself.
 - **`string-error` rule (section 3).** Its ast-grep rule is on for the CLI code and the shared flags,
   not yet for the rest of the workspace.

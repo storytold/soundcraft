@@ -150,7 +150,9 @@ mod tests {
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("soundcraft-clap-scan-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        // Created exclusively: a folder still there after the cleanup (someone else's) would
+        // let a link inside it redirect the test's writes.
+        std::fs::create_dir(&d).unwrap();
         d
     }
 
