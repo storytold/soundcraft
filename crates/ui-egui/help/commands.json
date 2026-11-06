@@ -1342,8 +1342,8 @@
   },
   "setup.preferences": {
    "category": "workspace",
-   "text": "Shows the current edit settings. There isn't a full Preferences window yet.",
-   "limits": "No Preferences window yet."
+   "text": "Opens Preferences to change application and editing settings. Choose OK to apply changes or Cancel to discard them. Its menu item is unavailable while playback or recording is active.",
+   "limits": "Settings for features that are not implemented yet are shown disabled."
   },
   "setup.reset_edit_state": {
    "category": "workspace",
@@ -1703,6 +1703,10 @@
    "category": "tracks",
    "text": "Opens the New Tracks dialog."
   },
+  "ui.reduce_visual_effects": {
+   "category": "workspace",
+   "text": "Chooses when optional interface animation and decoration are reduced: never, only during playback, or always. This setting is also available in Preferences."
+  },
   "ui.set": {
    "category": "workspace",
    "text": "Sets a UI option directly (used by scripts)."
@@ -1710,6 +1714,10 @@
   "ui.theme": {
    "category": "workspace",
    "text": "Chooses light, dark, or follow-the-system appearance."
+  },
+  "ui.undo_levels": {
+   "category": "workspace",
+   "text": "Sets how many undo and redo steps the application keeps, from 1 to 64. Lowering the limit discards history beyond that limit. This setting is also available in Preferences."
   },
   "video.list": {
    "category": "scripting",
