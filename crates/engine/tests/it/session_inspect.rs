@@ -1,18 +1,25 @@
+//! `session.inspect` reports what the README promises: tracks, clips, mixer, markers and the last
+//! undo and redo labels, so two inspections taken around an edit show what the edit changed.
+
 use serde_json::{Value, json};
 use soundcraft_engine::Engine;
 
+/// The engine's current `session.inspect` reply, with default (summary) detail.
 fn inspect(e: &mut Engine) -> Value {
     e.execute("session.inspect", &json!({})).expect("session.inspect")
 }
 
+/// Adds one track with default parameters and returns its id.
 fn new_track(e: &mut Engine) -> Value {
     e.execute("track.new", &json!({})).expect("track.new")["tracks"][0].clone()
 }
 
+/// The track with this id in an inspection; panics with the whole reply when it is absent.
 fn track<'a>(v: &'a Value, id: &Value) -> &'a Value {
     v["tracks"].as_array().and_then(|ts| ts.iter().find(|t| &t["id"] == id)).unwrap_or_else(|| panic!("track {id} in {v}"))
 }
 
+/// Every track carries its clips and mixer fields, and the session lists its markers.
 #[test]
 fn inspect_reports_tracks_clips_mixer_and_markers() {
     let mut e = soundcraft_engine::demo::demo_engine();
@@ -29,6 +36,7 @@ fn inspect_reports_tracks_clips_mixer_and_markers() {
     assert!(v["markers"].is_array(), "{v}");
 }
 
+/// With no edits yet, both history labels are null.
 #[test]
 fn a_fresh_session_has_no_undo_or_redo_step() {
     let mut e = Engine::default();
@@ -37,6 +45,7 @@ fn a_fresh_session_has_no_undo_or_redo_step() {
     assert_eq!(v["redo"], Value::Null, "{v}");
 }
 
+/// The undo label is the label of the command that ran last.
 #[test]
 fn undo_names_the_last_edit() {
     let mut e = Engine::default();
@@ -47,6 +56,7 @@ fn undo_names_the_last_edit() {
     assert_eq!(v["redo"], Value::Null, "{v}");
 }
 
+/// Undo moves the step's label to redo, and redo moves it back.
 #[test]
 fn undo_moves_the_step_label_to_redo() {
     let mut e = Engine::default();
@@ -63,6 +73,7 @@ fn undo_moves_the_step_label_to_redo() {
     assert_eq!(again["redo"], Value::Null, "{again}");
 }
 
+/// Inspecting is read-only: two calls in a row agree and add no undo step.
 #[test]
 fn inspecting_does_not_change_the_session_or_history() {
     let mut e = soundcraft_engine::demo::demo_engine();
@@ -73,6 +84,7 @@ fn inspecting_does_not_change_the_session_or_history() {
     assert_eq!(e.undo_history().len(), history, "an inspection is not an undo step");
 }
 
+/// A volume change shows up in that track's `volume_db` and leaves its other fields alone.
 #[test]
 fn comparing_inspections_shows_a_mixer_change() {
     let mut e = Engine::default();
@@ -85,6 +97,7 @@ fn comparing_inspections_shows_a_mixer_change() {
     assert_eq!(track(&before, &t)["pan"], track(&after, &t)["pan"], "untouched fields stay equal");
 }
 
+/// An added marker appears with its name and start, and becomes the last undo step.
 #[test]
 fn comparing_inspections_shows_a_new_marker() {
     let mut e = Engine::default();
@@ -98,6 +111,7 @@ fn comparing_inspections_shows_a_new_marker() {
     assert_ne!(after["undo"], before["undo"], "the marker is the last undo step");
 }
 
+/// A new track appears in the list, with no clips.
 #[test]
 fn comparing_inspections_shows_a_new_track() {
     let mut e = Engine::default();
