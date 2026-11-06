@@ -430,7 +430,7 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_configurations = open;
 }
 
-/// Restore a saved window configuration, keeping the configuration list and the appearance.
+/// Restore a window layout while retaining current application preferences and any open draft.
 /// A configuration saved before the current panel layouts gets the default layouts.
 pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), String> {
     let mut saved = saved.clone();
@@ -440,8 +440,14 @@ pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), Str
     st.configurations = app.ui.configurations.clone();
     st.theme = app.ui.theme;
     st.language = app.ui.language;
+    st.show_preferences = app.ui.show_preferences;
+    st.preferences_page = app.ui.preferences_page;
+    st.preferences_window_pos = app.ui.preferences_window_pos;
+    st.reduce_visual_effects = app.ui.reduce_visual_effects;
+    st.undo_levels = app.ui.undo_levels.clamp(1, 64);
     st.show_configurations = true;
     crate::docking::cancel_replaced_state(app, &st);
+    app.engine.set_history_limit(st.undo_levels);
     app.ui = st;
     Ok(())
 }

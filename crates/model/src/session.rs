@@ -1074,6 +1074,31 @@ mod tests {
         assert_eq!(back.track(t).map(|tr| tr.height), Some(crate::TrackHeight::Medium));
     }
 
+    /// Session JSON omits live flags and ignores their values in legacy documents.
+    #[test]
+    fn live_input_states_are_never_saved_or_restored() {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let track = s.track_mut(t).unwrap();
+        track.mixer.mute = true;
+        track.mixer.record_arm = true;
+        track.mixer.input_monitor = true;
+
+        let mut value = serde_json::to_value(&s).unwrap();
+        let mixer = value["tracks"][0]["mixer"].as_object_mut().unwrap();
+        assert!(!mixer.contains_key("record_arm"));
+        assert!(!mixer.contains_key("input_monitor"));
+
+        // Files written by older versions may still contain these keys; ignore them on input.
+        mixer.insert("record_arm".into(), serde_json::Value::Bool(true));
+        mixer.insert("input_monitor".into(), serde_json::Value::Bool(true));
+        let loaded = Session::from_json(&value.to_string()).unwrap();
+        let track = loaded.track(t).unwrap();
+        assert!(track.mixer.mute, "persistent mixer state still loads");
+        assert!(!track.mixer.record_arm);
+        assert!(!track.mixer.input_monitor);
+    }
+
     #[test]
     fn video_clip_round_trips_and_old_sessions_load() {
         let mut s = Session::default();
