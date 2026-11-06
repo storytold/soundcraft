@@ -23,6 +23,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     workspace(app, ctx);
     configurations(app, ctx);
     playback_engine(app, ctx);
+    crate::plugin_folders::window(app, ctx);
     io_setup(app, ctx);
     shortcuts_window(app, ctx);
     clip_effects(app, ctx);
@@ -417,6 +418,9 @@ pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), Str
     crate::docking::validate(&st.docking).and_then(|()| crate::docking::validate_mix(&st.mix_docking))?;
     st.configurations = app.ui.configurations.clone();
     st.theme = app.ui.theme;
+    // A layout keeps the current plugin folders: a stored one may have come
+    // through `ui.set`, which may not change them.
+    st.plugin_dirs = app.ui.plugin_dirs.clone();
     st.show_configurations = true;
     crate::docking::cancel_replaced_state(app, &st);
     app.ui = st;
