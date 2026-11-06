@@ -343,6 +343,16 @@ impl Engine {
         self.undo.iter().map(|h| h.label.clone()).collect()
     }
 
+    /// Bound Undo and Redo together, dropping farthest redo entries before oldest undo entries.
+    pub fn set_history_limit(&mut self, limit: usize) {
+        let limit = limit.max(1);
+        self.history_limit = limit;
+        let excess = self.undo.len().saturating_add(self.redo.len()).saturating_sub(limit);
+        let from_redo = excess.min(self.redo.len());
+        self.redo.drain(..from_redo);
+        self.undo.drain(..excess - from_redo);
+    }
+
     /// Restore the previous document while retaining current edit mode and live input flags.
     pub fn undo(&mut self) -> bool {
         let Some(h) = self.undo.pop() else { return false };
@@ -715,6 +725,59 @@ mod merge_tests {
 #[cfg(test)]
 mod dirty_tests {
     use super::*;
+
+    /// Lowering the cap immediately removes the oldest retained Undo steps.
+    #[test]
+    fn reducing_the_history_limit_drops_the_oldest_steps_immediately() {
+        let mut e = Engine::default();
+        for _ in 0..4 {
+            e.execute("track.new", &json!({})).unwrap();
+        }
+        assert_eq!(e.undo_history().len(), 4);
+        e.set_history_limit(2);
+        assert_eq!(e.undo_history().len(), 2);
+        assert!(e.undo());
+        assert!(e.undo());
+        assert!(!e.undo());
+    }
+
+    /// A shared history cap retains the closest redo steps without letting either direction exceed it.
+    #[test]
+    fn lowering_history_limit_bounds_undo_and_redo_together() {
+        for (requested, past, future) in [(0, 1, 0), (1, 1, 0), (2, 2, 0), (3, 2, 1), (4, 2, 2), (5, 2, 3), (usize::MAX, 2, 3)] {
+            let mut e = Engine::default();
+            for _ in 0..5 {
+                e.execute("track.new", &json!({})).unwrap();
+            }
+            for _ in 0..3 {
+                assert!(e.undo());
+            }
+            e.mark_clean();
+            e.set_history_limit(requested);
+            let limit = requested.max(1);
+            assert_eq!(e.history_limit, limit);
+            assert_eq!((e.undo.len(), e.redo.len()), (past, future), "requested {requested}");
+            assert!(!e.is_dirty(), "history capacity is not a document edit");
+            assert_eq!(e.session().tracks.len(), 2);
+            for step in 1..=future {
+                assert!(e.redo());
+                assert_eq!(e.session().tracks.len(), 2 + step, "keep the nearest redo entries");
+                assert!(e.undo.len() + e.redo.len() <= limit);
+            }
+            assert!(!e.redo());
+            for step in 1..=past + future {
+                assert!(e.undo());
+                assert_eq!(e.session().tracks.len(), 2 + future - step, "keep the nearest undo entries");
+                assert!(e.undo.len() + e.redo.len() <= limit);
+            }
+            assert!(!e.undo());
+            for _ in 0..past + future {
+                assert!(e.redo());
+                assert!(e.undo.len() + e.redo.len() <= limit);
+            }
+            assert!(!e.redo());
+        }
+    }
 
     #[test]
     fn selecting_locating_and_zooming_leave_the_session_clean() {
