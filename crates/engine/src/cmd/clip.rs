@@ -363,13 +363,19 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
         let boundary = s.track(tid).and_then(|t| t.clips().iter().filter(|x| x.id != c.id && x.start >= c.end()).map(|x| x.start).min());
         let end = if fill { Some(boundary.unwrap_or(session_end)) } else { total.map(|l| c.start.saturating_add(l)) };
         if fit {
-            // A fitted clip may not run into the next clip, or past a requested loop length.
+            // A fitted clip may not run into the next clip, or past a requested loop length. A
+            // crossfade partner overlaps the clip, so the fit may only shrink it: growing would
+            // clear the partner's material when the fitted clip replaces the old one.
+            let partner = s.track(tid).is_some_and(|t| t.clips().iter().any(|x| x.id != c.id && x.start < c.end() && x.end() > c.start));
             let mut room = match (boundary.map(|b| b - c.start), if fill { None } else { total }) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
             if fill {
                 room = room.or(Some(session_end - c.start));
+            }
+            if partner {
+                room = Some(room.map_or(c.length, |r| r.min(c.length)));
             }
             fit_to_beats(s, tid, &mut c, room)?;
         }
@@ -795,5 +801,31 @@ mod tests {
         assert!(err.contains("48000"), "{err}");
         let clips = e.session().track(t).unwrap().clips();
         assert_eq!(clips.iter().map(|c| (c.start, c.length, c.source())).collect::<Vec<_>>(), before);
+    }
+
+    /// A crossfade pair: the loop clip 0..40000 and a partner 36000..56000 overlapping its tail.
+    /// Placed in one paste, so the overlap survives.
+    fn crossfaded_engine() -> (crate::Engine, TrackId, ClipId) {
+        use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Loop"));
+        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 60_000]] };
+        let src = crate::io::add_source(&mut s, "Loop", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let clip = Clip::audio(s.new_clip_id(), "Loop", src, 0, 0, 40_000);
+        let partner = Clip::audio(s.new_clip_id(), "Partner", src, 0, 36_000, 20_000);
+        // Paste keeps overlapping placed clips, so the pair survives as a crossfade.
+        let id = crate::edit::paste(&mut s, t, 0, &[clip, partner], 56_000, false).unwrap()[0];
+        (crate::Engine::new(s), t, id)
+    }
+
+    /// A crossfade partner overlaps the clip's tail, past where the boundary filter looks. The fit
+    /// may shrink the clip but not grow it, or the growth would clear the partner's material.
+    #[test]
+    fn fitting_a_crossfaded_clip_never_grows_over_its_partner() {
+        let (mut e, t, id) = crossfaded_engine();
+        let err = e.execute("clip.loop", &json!({"clips": [id.0], "count": 2, "fit": true})).unwrap_err().to_string();
+        assert!(err.contains("48000") && err.contains("40000"), "{err}");
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(), vec![(0, 40_000), (36_000, 20_000)]);
     }
 }
