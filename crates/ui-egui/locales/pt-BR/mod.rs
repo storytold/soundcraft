@@ -1562,15 +1562,12 @@ fn menu_translate(source: &str) -> Option<&'static str> {
             "{name} em {track} produziu áudio inválido, então foi desativado até a reprodução parar ou começar novamente."
         }
         "{} pan {}" => "{} pan {}",
-        "Input monitoring for {}" => "Monitoramento de entrada de {}",
-        "Record enable for {}" => "Habilitar gravação de {}",
-        "Solo for {}" => "Solo de {}",
-        "Mute for {}" => "Mudo de {}",
         "Comments for {}" => "Comentários de {}",
         "{} volume" => "Volume de {}",
         "{name} · Send {letter}" => "{name} · Envio {letter}",
         "{name} send level" => "Nível de envio de {name}",
         "Type to search preferences" => "Digite para pesquisar as preferências",
+        "{name} loaded into the sampler" => "{name} carregado no sampler",
         "SoundCraft Preferences" => "Preferências do SoundCraft",
         "This preference is not available yet." => "Esta preferência ainda não está disponível.",
         _ => return None,
