@@ -71,6 +71,52 @@ impl ReduceVisualEffects {
     }
 }
 
+/// The level a send made in the Mix window starts at (Mixing › Sends Default to).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendsDefault {
+    #[default]
+    NegativeInfinity,
+    Unity,
+}
+
+impl SendsDefault {
+    pub const ALL: [Self; 2] = [Self::NegativeInfinity, Self::Unity];
+
+    /// Returns the text shown for this level in the preference selector.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NegativeInfinity => "−∞ dB",
+            Self::Unity => "0 dB",
+        }
+    }
+
+    /// Returns the stable command and persistence identifier for this level.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::NegativeInfinity => "-inf",
+            Self::Unity => "0",
+        }
+    }
+
+    /// Parses a command or persistence identifier into a default send level.
+    pub fn parse(id: &str) -> Option<Self> {
+        match id {
+            "-inf" => Some(Self::NegativeInfinity),
+            "0" => Some(Self::Unity),
+            _ => None,
+        }
+    }
+
+    /// The send level in dB; −∞ is the mixer's -144 dB floor.
+    pub const fn level_db(self) -> f32 {
+        match self {
+            Self::NegativeInfinity => -144.0,
+            Self::Unity => 0.0,
+        }
+    }
+}
+
 impl PreferencesPage {
     pub const ALL: [Self; 9] = [
         Self::Display,
@@ -121,9 +167,11 @@ struct PreferencesDraft {
     theme: ThemeMode,
     reduce_visual_effects: ReduceVisualEffects,
     undo_levels: usize,
+    sends_default: SendsDefault,
     theme_edited: bool,
     reduce_visual_effects_edited: bool,
     undo_levels_edited: bool,
+    sends_default_edited: bool,
 }
 
 impl PreferencesDraft {
@@ -133,9 +181,11 @@ impl PreferencesDraft {
             theme: app.ui.theme,
             reduce_visual_effects: app.ui.reduce_visual_effects,
             undo_levels: app.ui.undo_levels,
+            sends_default: app.ui.sends_default,
             theme_edited: false,
             reduce_visual_effects_edited: false,
             undo_levels_edited: false,
+            sends_default_edited: false,
         }
     }
 
@@ -150,6 +200,9 @@ impl PreferencesDraft {
         if !self.undo_levels_edited {
             self.undo_levels = app.ui.undo_levels;
         }
+        if !self.sends_default_edited {
+            self.sends_default = app.ui.sends_default;
+        }
     }
 
     /// Remembers which values the user changed during the current UI frame.
@@ -157,6 +210,7 @@ impl PreferencesDraft {
         self.theme_edited |= self.theme != before.theme;
         self.reduce_visual_effects_edited |= self.reduce_visual_effects != before.reduce_visual_effects;
         self.undo_levels_edited |= self.undo_levels != before.undo_levels;
+        self.sends_default_edited |= self.sends_default != before.sends_default;
     }
 }
 
@@ -189,6 +243,7 @@ enum Control {
     Theme,
     ReduceVisualEffects,
     UndoLevels,
+    SendsDefault,
 }
 
 impl Control {
@@ -204,6 +259,7 @@ impl Control {
             Self::Theme => "UI Theme",
             Self::ReduceVisualEffects => "Reduce Visual Effects",
             Self::UndoLevels => "Levels of Undo",
+            Self::SendsDefault => "Sends Default to",
         }
     }
 
@@ -214,6 +270,7 @@ impl Control {
             Self::ChoiceOptions(label, value, values) => format!("{label} {value} {}", values.join(" ")),
             Self::Radios(label, values) => format!("{label} {}", values.join(" ")),
             Self::ReduceVisualEffects => format!("{} Never Only During Playback Always", self.label()),
+            Self::SendsDefault => format!("{} −∞ dB 0 dB", self.label()),
             _ => self.label().to_string(),
         }
     }
@@ -426,7 +483,7 @@ const MIXING: &[Section] = &[
     Section {
         title: "Setup",
         controls: &[
-            Control::Value("Sends Default to", "−∞ dB"),
+            Control::SendsDefault,
             Control::Check("Send Pans Default to Follow Main Pan"),
             Control::Check("Use Absolute Pan Linking"),
             Control::Check("Allow Sends to Persist During Low-Latency Monitoring"),
@@ -808,6 +865,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             let _ = app.run("ui.theme", json!({"mode": draft.theme.id()}));
             let _ = app.run("ui.reduce_visual_effects", json!({"mode": draft.reduce_visual_effects.id()}));
             let _ = app.run("ui.undo_levels", json!({"levels": draft.undo_levels}));
+            let _ = app.run("ui.sends_default", json!({"level": draft.sends_default.id()}));
             open = false;
             app.preferences.discard_draft();
         }
@@ -948,6 +1006,13 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
             ui.horizontal(|ui| {
                 ui.label(label("Levels of Undo"));
                 ui.add(egui::DragValue::new(&mut draft.undo_levels).range(1..=64));
+            });
+        }
+        Control::SendsDefault => {
+            craft_ui::ComboBox::new(id, label("Sends Default to")).selected_text(draft.sends_default.label()).show_ui(ui, |ui| {
+                for level in SendsDefault::ALL {
+                    ui.selectable_value(&mut draft.sends_default, level, level.label());
+                }
             });
         }
         Control::Check(text) => {
