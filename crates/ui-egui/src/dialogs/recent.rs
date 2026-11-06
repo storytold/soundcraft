@@ -112,7 +112,7 @@ pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
             // Through the dialog layer, so unsaved changes are asked about first.
             if let Err(e) = crate::dialogs::run_or_ask(app, "session.open", json!({"path": path})) {
                 log::warn!("{path}: {e}");
-                app.ui.status = format!("Could not open {path}: {e}");
+                app.ui.status = crate::localized_format!("Could not open {path}: {e}", path = path, e = e);
             }
         }
     });

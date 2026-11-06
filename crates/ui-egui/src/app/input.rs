@@ -153,7 +153,7 @@ impl SoundApp {
                         let r = self.run("mix.sampler_load", json!({"track": track.0, "path": path}));
                         self.sample_loaded(track, path, r);
                     }
-                    Err(e) => self.ui.status = e.to_string(),
+                    Err(e) => self.ui.status = crate::localization::text(&e.to_string()),
                 }
             } else {
                 self.sample_reads.push(sampler_window::SampleRead { track, file });

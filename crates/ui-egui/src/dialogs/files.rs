@@ -52,7 +52,7 @@ pub fn open_path(app: &mut SoundApp, path: &std::path::Path) {
         Ok(p) => p,
         Err(e) => {
             log::warn!("{e}");
-            app.ui.status = e.to_string();
+            app.ui.status = crate::localization::text(&e.to_string());
             return;
         }
     };
@@ -98,7 +98,11 @@ pub(super) fn open_pending_session(app: &mut SoundApp) {
         Ok(missing) => {
             // This path replaces the document without going through `SoundApp::run`.
             app.document_replaced();
-            if missing.is_empty() { format!("Opened {name}") } else { format!("Opened {name} ({} missing media)", missing.len()) }
+            if missing.is_empty() {
+                crate::localized_format!("Opened {name}", name = name)
+            } else {
+                crate::localized_format!("Opened {name} ({missing} missing media)", name = name, missing = missing.len())
+            }
         }
         Err(e) => e.to_string(),
     };

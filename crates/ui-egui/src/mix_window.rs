@@ -36,7 +36,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
 /// be seen at once, e.g. one per monitor. Closing that window brings Mix back into the main one.
 /// Backends without multiple windows show it as a floating egui window instead.
 pub fn show_separate(app: &mut SoundApp, ctx: &egui::Context) {
-    let title = format!("{}  —  Mix", app.engine.session().name);
+    let title = format!("{}  —  {}", app.engine.session().name, crate::localization::text("Mix"));
     let builder = egui::ViewportBuilder::default().with_title(title).with_inner_size([1100.0, 720.0]).with_min_inner_size([480.0, 320.0]);
     ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("soundcraft.mix"), builder, |ui, _class| {
         ui.set_style(ui.ctx().global_style());
@@ -364,10 +364,10 @@ fn comments_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 44.0));
         let mut c = track.comments.clone();
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(sec));
-        let hint = if narrow { "" } else { "comments" };
+        let hint = if narrow { "" } else { crate::localization::text("Comments") };
         let field = crate::widgets::named_text_field(
             child.add(egui::TextEdit::multiline(&mut c).desired_width(inner_w).desired_rows(2).hint_text(hint).font(regular(10.0))),
-            &format!("Comments for {}", track.name),
+            &crate::localized_format!("Comments for {}", track.name),
         );
         if field.changed() {
             let _ = app.engine.execute_merged("track.comments", &json!({"track": id.0, "comments": c}), &format!("comments:{}", id.0));
@@ -519,7 +519,7 @@ fn pan_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -
                 pr,
                 ui.scope_id().with(("pan-value", id.0, i)),
                 Readout {
-                    name: &format!("{} pan {}", track.name, i + 1),
+                    name: &crate::localized_format!("{} pan {}", track.name, i + 1),
                     display: &pan_text(v),
                     edit_initial: &format!("{:.0}", v * 100.0),
                     parse: parse_pan,
@@ -546,11 +546,11 @@ fn toggle_rows(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -
     );
     row.spacing_mut().item_spacing.x = 6.0;
     if track.kind.has_playlist() {
-        let input_label = format!("Input monitoring for {}", track.name);
+        let input_label = crate::localized_format!("Input monitoring for {}", track.name);
         if text_toggle(&mut row, vec2(bw, 18.0), "I", track.mixer.input_monitor, t.input, &input_label).clicked() {
             let _ = app.run("mix.input_monitor", json!({"track": id.0}));
         }
-        let record_label = format!("Record enable for {}", track.name);
+        let record_label = crate::localized_format!("Record enable for {}", track.name);
         if rec_toggle(&mut row, vec2(bw, 18.0), track.mixer.record_arm, &record_label).clicked() {
             let _ = app.run("mix.record_arm", json!({"track": id.0}));
         }
@@ -561,11 +561,11 @@ fn toggle_rows(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -
     );
     row.spacing_mut().item_spacing.x = 6.0;
     if track.kind != TrackKind::Master {
-        let solo_label = format!("Solo for {}", track.name);
+        let solo_label = crate::localized_format!("Solo for {}", track.name);
         if text_toggle(&mut row, vec2(bw, 18.0), "S", track.mixer.solo, t.solo, &solo_label).clicked() {
             let _ = app.run("mix.solo", json!({"track": id.0}));
         }
-        let mute_label = format!("Mute for {}", track.name);
+        let mute_label = crate::localized_format!("Mute for {}", track.name);
         if text_toggle(&mut row, vec2(bw, 18.0), "M", track.mixer.mute, t.mute, &mute_label).clicked() {
             let _ = app.run("mix.mute", json!({"track": id.0}));
         }
@@ -625,7 +625,7 @@ fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
         vr,
         ui.scope_id().with(("volume-value", id.0)),
         Readout {
-            name: &format!("{} volume", track.name),
+            name: &crate::localized_format!("{} volume", track.name),
             display: &db_text(track.mixer.volume_db),
             edit_initial: &format!("{:.1}", track.mixer.volume_db),
             parse: parse_db,

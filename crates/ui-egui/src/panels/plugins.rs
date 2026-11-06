@@ -48,7 +48,7 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                             if open {
                                 p.close_editor(tid, slot);
                             } else if let Err(e) = p.open_editor(tid, slot) {
-                                app.ui.status = format!("{}: {e}", info.name);
+                                app.ui.status = format!("{}: {}", info.name, crate::localization::text(&e));
                             }
                         }
                     }
@@ -223,7 +223,11 @@ fn preset_menu(
             let clean = soundcraft_engine::io::sanitize_name(&name);
             let body = json!({"format": "soundcraft-plugin-preset", "plugin": info.id, "params": ins.params});
             let ok = std::fs::create_dir_all(&dir).is_ok() && std::fs::write(dir.join(format!("{clean}.json")), body.to_string()).is_ok();
-            app.ui.status = if ok { format!("Saved preset {clean}") } else { "Could not save the preset".into() };
+            app.ui.status = if ok {
+                crate::localized_format!("Saved preset {clean}", clean = clean)
+            } else {
+                crate::localization::text("Could not save the preset").into()
+            };
             if ok {
                 let _ = app.run("mix.insert_params", json!({"track": tid.0, "slot": slot, "params": {}, "preset": clean}));
             }

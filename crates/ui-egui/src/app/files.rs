@@ -34,7 +34,7 @@ impl SoundApp {
     /// plugins' own state reaches the session every two minutes (`autosave`).
     pub(super) fn autosave_changes(&mut self) {
         if let Some(e) = self.autosaver.as_ref().and_then(soundcraft_engine::autosave::Autosaver::failure) {
-            self.ui.status = format!("Autosave failed: {e}");
+            self.ui.status = crate::localized_format!("Autosave failed: {e}", e = e);
         }
         if self.autosave_dir.is_none() || self.engine.revision == self.autosaved_rev {
             return;
@@ -60,7 +60,7 @@ impl SoundApp {
         let Some(w) = &self.autosaver else { return false };
         let written = w.flush();
         if let Err(e) = &written {
-            self.ui.status = format!("Autosave failed: {e}");
+            self.ui.status = crate::localized_format!("Autosave failed: {e}", e = e);
         }
         written.is_ok()
     }
@@ -105,9 +105,9 @@ impl SoundApp {
         self.panic_rev = self.engine.revision;
         let saved = self.engine.is_dirty() && self.write_autosave();
         self.ui.status = if saved {
-            "SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft.".into()
+            crate::localization::text("SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft.").into()
         } else {
-            "SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe.".into()
+            crate::localization::text("SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe.").into()
         };
     }
 
@@ -125,11 +125,11 @@ impl SoundApp {
                     soundcraft_engine::autosave::discard(left);
                 }
                 self.ui.status = match missing.len() {
-                    0 => format!("Recovered “{}”. Save it to keep the changes.", left.name),
-                    n => format!("Recovered “{}”, but {n} audio file(s) are missing. Save it to keep the changes.", left.name),
+                    0 => crate::localized_format!("Recovered “{name}”. Save it to keep the changes.", name = left.name),
+                    n => crate::localized_format!("Recovered “{name}”, but {n} audio file(s) are missing. Save it to keep the changes.", name = left.name, n = n),
                 };
             }
-            Err(e) => self.ui.status = format!("Couldn't recover “{}”: {e}", left.name),
+            Err(e) => self.ui.status = crate::localized_format!("Couldn't recover “{name}”: {e}", name = left.name, e = e),
         }
     }
 

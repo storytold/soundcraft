@@ -294,7 +294,7 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                     "{}{}  —  {}",
                     app.engine.session().name,
                     if app.engine.is_dirty() { " *" } else { "" },
-                    if app.ui.window == MainWindow::Edit || app.ui.mix_separate { "Edit" } else { "Mix" }
+                    if app.ui.window == MainWindow::Edit || app.ui.mix_separate { crate::localization::text("Edit") } else { crate::localization::text("Mix") }
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(title).color(t.text_dim));
@@ -489,8 +489,8 @@ pub fn shortcut_for(id: &str) -> Option<&'static str> {
 pub fn live_label(app: &SoundApp, id: Option<&str>) -> Option<String> {
     let e = &app.engine;
     match id? {
-        "edit.undo" => Some(e.undo_label().map_or_else(|| "Can't Undo".into(), |l| format!("Undo {l}"))),
-        "edit.redo" => Some(e.redo_label().map_or_else(|| "Can't Redo".into(), |l| format!("Redo {l}"))),
+        "edit.undo" => Some(e.undo_label().map_or_else(|| crate::localization::text("Can't Undo").into(), |l| crate::localized_format!("Undo {l}", l = crate::localization::text(l)))),
+        "edit.redo" => Some(e.redo_label().map_or_else(|| crate::localization::text("Can't Redo").into(), |l| crate::localized_format!("Redo {l}", l = crate::localization::text(l)))),
         _ => None,
     }
 }
@@ -676,7 +676,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         }
         "window.arrange_tile" | "window.arrange_tile_h" | "window.arrange_tile_v" | "window.arrange_cascade" => {
             if let Err(error) = crate::docking::arrange(app) {
-                app.ui.status = format!("Panel windows could not be arranged: {error}");
+                app.ui.status = crate::localized_format!("Panel windows could not be arranged: {error}", error = error);
             }
             app.arrange_request = true;
             json!({})

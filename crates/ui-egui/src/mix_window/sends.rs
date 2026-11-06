@@ -93,7 +93,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
     };
     let t = Tokens::current();
     let mut open = true;
-    egui::Window::new(format!("{name} · Send {}", (b'A' + slot as u8) as char))
+    egui::Window::new(crate::localized_format!("{name} · Send {letter}", name = name, letter = (b'A' + slot as u8) as char))
         .id(egui::Id::unique("send_window"))
         .open(&mut open)
         .auto_sized()
@@ -143,7 +143,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                     rr,
                     ui.scope_id().with("send_level_value"),
                     Readout {
-                        name: &format!("{name} send level"),
+                        name: &crate::localized_format!("{name} send level", name = name),
                         display: &shown,
                         edit_initial: &format!("{:.1}", send.level_db),
                         parse: parse_db,

@@ -15,7 +15,7 @@ pub fn start(app: &mut SoundApp, params: &Value) {
     app.capture_plugin_states();
     match soundcraft_engine::cmd::bounce_job(&app.engine, params) {
         Ok(job) => app.bounce = Some(job),
-        Err(e) => app.ui.status = e.to_string(),
+        Err(e) => app.ui.status = crate::localization::text(&e.to_string()),
     }
 }
 
@@ -29,9 +29,9 @@ pub fn step(app: &mut SoundApp, ctx: &egui::Context) {
             return;
         }
         Ok(Some(done)) => {
-            format!("Bounced {} (peak {:.1} dBFS, {:.1} LUFS)", job.path().file_name().unwrap_or_default().to_string_lossy(), done.peak_db, done.lufs)
+            crate::localized_format!("Bounced {} (peak {:.1} dBFS, {:.1} LUFS)", job.path().file_name().unwrap_or_default().to_string_lossy(), done.peak_db, done.lufs)
         }
-        Err(e) => e.to_string(),
+        Err(e) => crate::localization::text(&e.to_string()).into_owned(),
     };
     app.bounce = None;
 }

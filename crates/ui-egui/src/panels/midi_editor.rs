@@ -190,7 +190,7 @@ fn empty_state(app: &mut SoundApp, ui: &mut Ui, full: Rect, header: Rect) {
         s.tracks.iter().find(|t| t.kind.is_midi() && s.edit.selected_tracks.contains(&t.id)).map(|t| (t.id, t.name.clone()))
     };
     let msg = match &track {
-        Some((_, name)) => format!("Click to add a MIDI clip to {name} at the insertion point."),
+        Some((_, name)) => crate::localized_format!("Click to add a MIDI clip to {name} at the insertion point.", name = name),
         None => "Select a MIDI clip (or a MIDI track) to edit its notes.".into(),
     };
     ui.painter().text(full.center(), Align2::CENTER_CENTER, msg, regular(13.0), t.text_dim);

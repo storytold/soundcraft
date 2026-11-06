@@ -383,7 +383,7 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
                             // The folder is kept as text in the preferences.
                             match crate::dialogs::unicode(&path) {
                                 Ok(p) => app.ui.workspace_dir = p.to_owned(),
-                                Err(e) => app.ui.status = e.to_string(),
+                                Err(e) => app.ui.status = crate::localization::text(&e.to_string()),
                             }
                         } else {
                             crate::dialogs::open_path(app, &path);
@@ -618,7 +618,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         audio_systems(ctx, true);
     }
     if apply && let Err(e) = app.apply_audio_config(draft.clone()) {
-        app.ui.status = e;
+        app.ui.status = crate::localization::text(&e).to_string();
     }
     if open {
         ctx.data_mut(|d| d.insert_temp(draft_id, draft));

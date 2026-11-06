@@ -536,7 +536,7 @@ pub(super) fn header_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, col:
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink(3.0)));
             let field = crate::widgets::named_text_field(
                 child.add(egui::TextEdit::multiline(&mut c).desired_width(r.width() - 6.0).font(regular(10.0))),
-                &format!("Comments for {}", track.name),
+                &crate::localized_format!("Comments for {}", track.name),
             );
             if field.changed() {
                 let _ =

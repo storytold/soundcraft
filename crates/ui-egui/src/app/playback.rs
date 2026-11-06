@@ -104,7 +104,7 @@ impl SoundApp {
         let takes = match self.arm_recorder() {
             Ok(takes) => takes,
             Err(err) => {
-                self.ui.status = format!("Cannot record: {err}");
+                self.ui.status = crate::localized_format!("Cannot record: {err}", err = err);
                 return;
             }
         };
@@ -195,8 +195,11 @@ impl SoundApp {
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
-        self.ui.status =
-            if plan.pass.is_some() { format!("Loop-recorded {} take(s)", ids.len() / tracks) } else { format!("Recorded {} clip(s)", ids.len()) };
+        self.ui.status = if plan.pass.is_some() {
+            crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
+        } else {
+            crate::localized_format!("Recorded {} clip(s)", ids.len())
+        };
         if let Some(p) = problem {
             log::warn!("recording: {p}");
             self.ui.status = format!("{} ({p})", self.ui.status);

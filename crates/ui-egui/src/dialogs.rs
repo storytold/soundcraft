@@ -302,7 +302,7 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
                         *format = picked;
                     }
                 }
-                Err(e) => app.ui.status = e.to_string(),
+                Err(e) => app.ui.status = crate::localization::text(&e.to_string()),
             }
         }
     });
@@ -337,7 +337,7 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
     }
     match picked.as_deref().map(unicode) {
         Some(Ok(text)) => *path = text.to_owned(),
-        Some(Err(e)) => app.ui.status = e.to_string(),
+        Some(Err(e)) => app.ui.status = crate::localization::text(&e.to_string()),
         None => {}
     }
     let file = soundcraft_engine::io::session_file(path);
@@ -782,10 +782,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         } else {
             match run_then(app, &cmd, params) {
                 Ok(v) if cmd == "file.export_clips" => {
-                    app.ui.status = format!("Exported {} clip(s) to {}", v["written"], v["dir"].as_str().unwrap_or_default());
+                    app.ui.status = crate::localized_format!("Exported {} clip(s) to {}", v["written"], v["dir"].as_str().unwrap_or_default());
                 }
                 Ok(_) => {}
-                Err(e) => app.ui.status = e,
+                Err(e) => app.ui.status = crate::localization::text(&e).to_string(),
             }
         }
     }
@@ -794,7 +794,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         && !app.engine.is_dirty()
         && let Err(e) = run_then(app, &then, params)
     {
-        app.ui.status = e;
+        app.ui.status = crate::localization::text(&e).to_string();
     }
     if keep {
         app.dialogs.open = Some(d);

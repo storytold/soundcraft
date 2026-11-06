@@ -728,7 +728,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
     });
 
-    let mut window = egui::Window::new("SoundCraft Preferences")
+    let mut window = egui::Window::new(crate::localization::text("SoundCraft Preferences"))
         .id(egui::Id::unique("preferences_window"))
         .open(&mut open)
         .order(egui::Order::Foreground)
@@ -743,13 +743,13 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             let (icon_rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), egui::Sense::hover());
             crate::icons::draw(ui.painter(), icon_rect.shrink(1.0), "zoom", Tokens::current().text_dim);
-            let search_label = ui.label("Search");
+            let search_label = ui.label(crate::localization::text("Search"));
             let edit = egui::TextEdit::singleline(&mut search)
                 .id(egui::Id::unique("preferences_search"))
-                .hint_text("Type to search preferences")
+                .hint_text(crate::localization::text("Type to search preferences"))
                 .desired_width(f32::INFINITY);
             ui.add(edit).labelled_by(search_label.id);
-            if !search.is_empty() && ui.small_button("Clear").clicked() {
+            if !search.is_empty() && ui.small_button(crate::localization::text("Clear")).clicked() {
                 search.clear();
             }
         });
@@ -777,10 +777,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         ui.separator();
         ui.horizontal(|ui| {
             ui.add_space(ui.available_width() - 176.0);
-            if ui.add_sized([80.0, 24.0], egui::Button::new("Cancel")).clicked() {
+            if ui.add_sized([80.0, 24.0], egui::Button::new(crate::localization::text("Cancel"))).clicked() {
                 action = Some(Action::Cancel);
             }
-            if ui.add_sized([80.0, 24.0], egui::Button::new("OK").fill(Tokens::current().accent_dark)).clicked() {
+            if ui.add_sized([80.0, 24.0], egui::Button::new(crate::localization::text("OK")).fill(Tokens::current().accent_dark)).clicked() {
                 action = Some(Action::Apply);
             }
         });
@@ -952,14 +952,14 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
         }
         Control::Check(text) => {
             let mut value = false;
-            ui.add_enabled(false, egui::Checkbox::new(&mut value, label(text))).on_disabled_hover_text("This preference is not available yet.");
+            ui.add_enabled(false, egui::Checkbox::new(&mut value, label(text))).on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
         }
         Control::Choice(text, value) | Control::ChoiceOptions(text, value, _) => {
             ui.add_enabled_ui(false, |ui| {
                 craft_ui::ComboBox::new(id, label(text)).selected_text(value).show_ui(ui, |_| {});
             })
             .response
-            .on_disabled_hover_text("This preference is not available yet.");
+            .on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
         }
         Control::Value(text, value) => {
             ui.add_enabled_ui(false, |ui| {
@@ -970,10 +970,10 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
                 });
             })
             .response
-            .on_disabled_hover_text("This preference is not available yet.");
+            .on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
         }
         Control::Button(text) => {
-            ui.add_enabled(false, egui::Button::new(label(text))).on_disabled_hover_text("This preference is not available yet.");
+            ui.add_enabled(false, egui::Button::new(label(text))).on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
         }
         Control::Radios(text, values) => {
             ui.add_enabled_ui(false, |ui| {
@@ -986,7 +986,7 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
                 });
             })
             .response
-            .on_disabled_hover_text("This preference is not available yet.");
+            .on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
         }
     }
 }
