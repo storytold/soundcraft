@@ -8,6 +8,7 @@ use super::{
     clap_plugin, clap_plugin_audio_ports, clap_plugin_latency, clap_plugin_note_ports, clap_plugin_params, clap_plugin_state, clap_process,
     read_name,
 };
+use super::{CLAP_RENDER_OFFLINE, CLAP_RENDER_REALTIME, clap_plugin_render};
 
 // ---- audio buffers -------------------------------------------------------------------------
 
@@ -99,6 +100,7 @@ pub(crate) struct Instance {
     pub(super) latency: *const clap_plugin_latency,
     pub(super) notes: *const clap_plugin_note_ports,
     pub(super) state_ext: *const clap_plugin_state,
+    pub(super) render: *const clap_plugin_render,
     pub(super) gui: Arc<GuiLink>,
     pub(super) raw: Vec<RawEvent>,
     /// Parameter values the plugin reported through output events in the current `process`.
@@ -156,6 +158,16 @@ impl Instance {
         let stream = clap_istream { ctx: (&mut cursor as *mut ReadCursor<'_>).cast::<c_void>(), read: Some(istream_read) };
         // SAFETY: valid instance; the stream and its cursor live on this frame for the call.
         unsafe { load(self.plugin, &stream) }
+    }
+
+    /// `clap_plugin_render.set`: offline (no realtime pressure) or realtime. `false` without the
+    /// extension or when the plugin can't switch.
+    pub fn set_render_mode(&self, offline: bool) -> bool {
+        // SAFETY: the extension pointer, when non-null, points to a static vtable in the plugin.
+        let Some(set) = (unsafe { self.render.as_ref() }).and_then(|r| r.set) else { return false };
+        let mode = if offline { CLAP_RENDER_OFFLINE } else { CLAP_RENDER_REALTIME };
+        // SAFETY: valid instance, called from the thread that owns it.
+        unsafe { set(self.plugin, mode) }
     }
 
     /// Runs `on_main_thread` if the plugin asked for a callback.
