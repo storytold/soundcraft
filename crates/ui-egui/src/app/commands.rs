@@ -39,7 +39,7 @@ impl SoundApp {
                 Ok(v)
             }
             Err(e) => {
-                self.ui.status = crate::localization::text(&e.to_string());
+                self.ui.status = crate::localization::text(&e.to_string()).to_string();
                 log::warn!("{id}: {e}");
                 Err(e.to_string())
             }

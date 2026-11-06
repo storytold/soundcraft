@@ -240,7 +240,10 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                         if ui.button(language.text(crate::localization::text("About SoundCraft"))).clicked() {
                             app.ui.show_about = true;
                         }
-                        if ui.add_enabled(preferences_enabled, egui::Button::new(language.text(crate::localization::text("Preferences...")))).clicked() {
+                        if ui
+                            .add_enabled(preferences_enabled, egui::Button::new(language.text(crate::localization::text("Preferences..."))))
+                            .clicked()
+                        {
                             let _ = app.run("setup.preferences", json!({"value": true}));
                         }
                         if ui.button(language.text(crate::localization::text("Check for Updates…"))).clicked() {
@@ -273,7 +276,9 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                             }
                             if root.label == "AudioSuite" {
                                 ui.separator();
-                                ui.label(egui::RichText::new(crate::localization::text("Processes selected clips offline")).small().color(t.text_dim));
+                                ui.label(
+                                    egui::RichText::new(crate::localization::text("Processes selected clips offline")).small().color(t.text_dim),
+                                );
                             }
                             if root.label == "Window" {
                                 ui.separator();
@@ -294,7 +299,11 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                     "{}{}  —  {}",
                     app.engine.session().name,
                     if app.engine.is_dirty() { " *" } else { "" },
-                    if app.ui.window == MainWindow::Edit || app.ui.mix_separate { crate::localization::text("Edit") } else { crate::localization::text("Mix") }
+                    if app.ui.window == MainWindow::Edit || app.ui.mix_separate {
+                        crate::localization::text("Edit")
+                    } else {
+                        crate::localization::text("Mix")
+                    }
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(title).color(t.text_dim));
@@ -489,8 +498,14 @@ pub fn shortcut_for(id: &str) -> Option<&'static str> {
 pub fn live_label(app: &SoundApp, id: Option<&str>) -> Option<String> {
     let e = &app.engine;
     match id? {
-        "edit.undo" => Some(e.undo_label().map_or_else(|| crate::localization::text("Can't Undo").into(), |l| crate::localized_format!("Undo {l}", l = crate::localization::text(l)))),
-        "edit.redo" => Some(e.redo_label().map_or_else(|| crate::localization::text("Can't Redo").into(), |l| crate::localized_format!("Redo {l}", l = crate::localization::text(l)))),
+        "edit.undo" => Some(e.undo_label().map_or_else(
+            || crate::localization::text("Can't Undo").into(),
+            |l| crate::localized_format!("Undo {l}", l = crate::localization::text(l)),
+        )),
+        "edit.redo" => Some(e.redo_label().map_or_else(
+            || crate::localization::text("Can't Redo").into(),
+            |l| crate::localized_format!("Redo {l}", l = crate::localization::text(l)),
+        )),
         _ => None,
     }
 }

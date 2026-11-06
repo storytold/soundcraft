@@ -383,7 +383,7 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
                             // The folder is kept as text in the preferences.
                             match crate::dialogs::unicode(&path) {
                                 Ok(p) => app.ui.workspace_dir = p.to_owned(),
-                                Err(e) => app.ui.status = crate::localization::text(&e.to_string()),
+                                Err(e) => app.ui.status = crate::localization::text(&e.to_string()).to_string(),
                             }
                         } else {
                             crate::dialogs::open_path(app, &path);

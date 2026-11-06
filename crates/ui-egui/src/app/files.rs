@@ -105,7 +105,10 @@ impl SoundApp {
         self.panic_rev = self.engine.revision;
         let saved = self.engine.is_dirty() && self.write_autosave();
         self.ui.status = if saved {
-            crate::localization::text("SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft.").into()
+            crate::localization::text(
+                "SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft.",
+            )
+            .into()
         } else {
             crate::localization::text("SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe.").into()
         };
@@ -126,7 +129,11 @@ impl SoundApp {
                 }
                 self.ui.status = match missing.len() {
                     0 => crate::localized_format!("Recovered “{name}”. Save it to keep the changes.", name = left.name),
-                    n => crate::localized_format!("Recovered “{name}”, but {n} audio file(s) are missing. Save it to keep the changes.", name = left.name, n = n),
+                    n => crate::localized_format!(
+                        "Recovered “{name}”, but {n} audio file(s) are missing. Save it to keep the changes.",
+                        name = left.name,
+                        n = n
+                    ),
                 };
             }
             Err(e) => self.ui.status = crate::localized_format!("Couldn't recover “{name}”: {e}", name = left.name, e = e),

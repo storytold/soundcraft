@@ -175,13 +175,15 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                     .text(language.text(crate::localization::text("Interface scale"))),
             );
             let mut chosen_effects = None;
-            craft_ui::ComboBox::from_label(language.text(crate::localization::text("Reduce visual effects"))).selected_text(language.text(app.ui.reduce_visual_effects.label())).show_ui(ui, |ui| {
-                for mode in crate::preferences::ReduceVisualEffects::ALL {
-                    if ui.selectable_label(app.ui.reduce_visual_effects == mode, language.text(mode.label())).clicked() {
-                        chosen_effects = Some(mode);
+            craft_ui::ComboBox::from_label(language.text(crate::localization::text("Reduce visual effects")))
+                .selected_text(language.text(app.ui.reduce_visual_effects.label()))
+                .show_ui(ui, |ui| {
+                    for mode in crate::preferences::ReduceVisualEffects::ALL {
+                        if ui.selectable_label(app.ui.reduce_visual_effects == mode, language.text(mode.label())).clicked() {
+                            chosen_effects = Some(mode);
+                        }
                     }
-                }
-            });
+                });
             if let Some(mode) = chosen_effects {
                 let _ = app.run("ui.reduce_visual_effects", json!({"mode": mode.id()}));
             }

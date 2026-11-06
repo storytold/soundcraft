@@ -302,7 +302,7 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
                         *format = picked;
                     }
                 }
-                Err(e) => app.ui.status = crate::localization::text(&e.to_string()),
+                Err(e) => app.ui.status = crate::localization::text(&e.to_string()).to_string(),
             }
         }
     });
@@ -337,7 +337,7 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
     }
     match picked.as_deref().map(unicode) {
         Some(Ok(text)) => *path = text.to_owned(),
-        Some(Err(e)) => app.ui.status = crate::localization::text(&e.to_string()),
+        Some(Err(e)) => app.ui.status = crate::localization::text(&e.to_string()).to_string(),
         None => {}
     }
     let file = soundcraft_engine::io::session_file(path);
