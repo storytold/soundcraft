@@ -1,7 +1,7 @@
 use super::{
-    Arc, AtomicBool, BLOCK, BTreeMap, Cmd, HashMap, HashSet, MAX_CHANNELS, MeterSnapshot, MixEngine, OLD_SESSIONS, Ordering, OutputTrouble, Plugin,
+    Arc, AtomicBool, AtomicU32, BLOCK, BTreeMap, Cmd, HashMap, HashSet, MAX_CHANNELS, MeterSnapshot, MixEngine, OLD_SESSIONS, Ordering, OutputTrouble, Plugin,
     PluginEditor, PluginStateReader, PluginStates, PreparedInstance, Range, Receiver, Samples, Sender, Session, Shared, SyncSender, TrackId,
-    itu_stereo_fold, main_channels, record, sync_channel,
+    devices, itu_stereo_fold, main_channels, record, sync_channel,
 };
 
 /// How the audio output is doing, for the UI.
@@ -15,9 +15,34 @@ pub(crate) struct Fault {
     pub(crate) beats: std::sync::atomic::AtomicU64,
     /// The UI has been told.
     reported: AtomicBool,
+    /// Buffer underruns and overruns the device reported.
+    pub(crate) xruns: std::sync::atomic::AtomicU64,
+    /// Time spent filling a buffer, in permille of its real-time length, smoothed.
+    pub(crate) load_permille: AtomicU32,
+    /// The highest unsmoothed load since the last reset, in permille.
+    pub(crate) peak_permille: AtomicU32,
 }
 
 impl Fault {
+    /// Note a stream error: a lost device marks the output gone, an xrun is counted.
+    pub(crate) fn note_error(&self, e: &cpal::Error) {
+        if devices::stream_lost(e) {
+            self.gone.store(true, Ordering::Relaxed);
+        }
+        if e.kind() == cpal::ErrorKind::Xrun {
+            self.xruns.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Note one buffer's load: folds it into the smoothed load and raises the peak. No lock, no
+    /// allocation, so it is safe on the audio thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn note_load(&self, permille: u32) {
+        let prev = self.load_permille.load(Ordering::Relaxed);
+        self.load_permille.store(smooth_permille(prev, permille), Ordering::Relaxed);
+        self.peak_permille.fetch_max(permille, Ordering::Relaxed);
+    }
+
     /// What stopped the output, once.
     pub(crate) fn trouble(&self, stalled: bool) -> Option<OutputTrouble> {
         let trouble = if self.failed.load(Ordering::Relaxed) {
@@ -50,15 +75,40 @@ pub(crate) fn stalled(seen: &mut Option<(u64, std::time::Instant)>, beats: u64, 
     }
 }
 
+/// How much of a buffer's real-time length `used` seconds took, in permille: `samples` interleaved
+/// samples of `channels` channels at `rate` Hz. 0 when the buffer has no length.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn load_permille(used: f64, samples: usize, channels: usize, rate: f64) -> u32 {
+    let budget = samples as f64 / (channels.max(1) as f64 * rate);
+    if !budget.is_finite() || budget <= 0.0 || !used.is_finite() || used <= 0.0 {
+        return 0;
+    }
+    (used / budget * 1000.0).round().min(f64::from(u32::MAX)) as u32
+}
+
+/// One-pole smoothing of the load: moves an eighth of the way from `prev` to `now`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn smooth_permille(prev: u32, now: u32) -> u32 {
+    ((u64::from(prev) * 7 + u64::from(now)) / 8) as u32
+}
+
 /// Fill one block with `fill`. If it panics, the block and every later one are silent and the
-/// transport stops, rather than the panic taking the app down.
-pub(crate) fn guarded_block(fault: &Fault, shared: &Shared, out: &mut [f32], fill: impl FnOnce(&mut [f32])) {
+/// transport stops, rather than the panic taking the app down. Off the web, the time `fill` takes
+/// is measured against the block's real-time length (`channels` at `rate` Hz) as the DSP load.
+pub(crate) fn guarded_block(fault: &Fault, shared: &Shared, out: &mut [f32], channels: usize, rate: f64, fill: impl FnOnce(&mut [f32])) {
     fault.beats.fetch_add(1, Ordering::Relaxed);
+    #[cfg(not(target_arch = "wasm32"))]
+    let start = std::time::Instant::now();
     if fault.failed.load(Ordering::Relaxed) || std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fill(out))).is_err() {
         fault.failed.store(true, Ordering::Relaxed);
         shared.playing.store(false, Ordering::Relaxed);
         out.fill(0.0);
+        return;
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fault.note_load(load_permille(start.elapsed().as_secs_f64(), out.len(), channels, rate));
+    #[cfg(target_arch = "wasm32")]
+    let _ = (channels, rate);
 }
 
 /// State owned by the audio callback.
