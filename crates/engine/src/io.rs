@@ -178,8 +178,12 @@ pub fn stored_path(stored: &str, session: &Path) -> std::result::Result<PathBuf,
     craft_docpath::resolve_absolute(stored, Some(&session)).map_err(|why| format!("not opened: {why}"))
 }
 
-/// Create `dir` and its parents, inside the automation write root when there is one.
+/// Create `dir` and its parents, inside the automation write root when there is one. The browser
+/// has no folders: there each file is delivered by its name ([`write_file`]) and this does nothing.
 pub(crate) fn make_dir(dir: impl AsRef<Path>) -> Result<()> {
+    if cfg!(target_arch = "wasm32") {
+        return Ok(());
+    }
     let dir = dir.as_ref();
     // The empty folder of a bare file name ("t.scraft") is the working directory, which the root
     // check would refuse as an empty path.
@@ -563,29 +567,37 @@ impl From<StripNames> for soundcraft_model::AutoName {
     }
 }
 
+/// Write each clip as a WAV file named after it into `dir` (in the browser, delivered by name
+/// through [`write_file`]). Returns how many were written.
 pub fn export_clips(e: &Engine, ids: &[soundcraft_model::ClipId], dir: &str) -> Result<usize> {
     let s = e.session();
     make_dir(dir)?;
-    let mut n = 0;
+    let mut taken = std::collections::HashSet::new();
     for id in ids {
         let Some((t, c)) = s.find_clip(*id) else { continue };
         let audio = soundcraft_mix::render_clips(s, t, c.range());
         let buf = AudioBuffer { sample_rate: s.sample_rate.hz(), channels: audio };
         let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).map_err(|err| EngineError::Io(err.to_string()))?;
-        let stem = sanitize_name(&c.name);
-        let mut path = Path::new(dir).join(format!("{stem}.wav"));
-        let mut k = 2u32;
-        while path.exists() {
-            path = Path::new(dir).join(format!("{stem}-{k}.wav"));
-            k = k.saturating_add(1);
-            if k > 10_000 {
-                return Err(EngineError::Io(format!("{dir}: too many files named {stem}")));
-            }
-        }
-        write_path(&path, bytes)?;
-        n += 1;
+        let path = clip_file(dir, &sanitize_name(&c.name), &taken)?;
+        write_file(&path.to_string_lossy(), &bytes)?;
+        taken.insert(path);
     }
-    Ok(n)
+    Ok(taken.len())
+}
+
+/// The first of `<stem>.wav`, `<stem>-2.wav`, … in `dir` that is neither on disk nor `taken` by
+/// this export: the browser has no disk to look at, so same-named clips are kept apart by `taken`.
+fn clip_file(dir: &str, stem: &str, taken: &std::collections::HashSet<PathBuf>) -> Result<PathBuf> {
+    let mut path = Path::new(dir).join(format!("{stem}.wav"));
+    let mut k = 2u32;
+    while path.exists() || taken.contains(&path) {
+        path = Path::new(dir).join(format!("{stem}-{k}.wav"));
+        k = k.saturating_add(1);
+        if k > 10_000 {
+            return Err(EngineError::Io(format!("{dir}: too many files named {stem}")));
+        }
+    }
+    Ok(path)
 }
 
 /// Write `session` to `path`; returns the session with updated media paths, the number of audio
@@ -994,5 +1006,22 @@ mod stem_tests {
         assert!(plain_error <= 0.5 + 1e-3, "{plain_error}");
         assert!(dithered_error > 0.6, "{dithered_error}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod clip_tests {
+    /// The browser has no disk to find earlier files on: same-named clips get their own names
+    /// from the export itself, as they do from the folder natively (#1409).
+    #[test]
+    fn same_named_clips_get_their_own_names_with_nothing_on_disk() {
+        let dir = std::env::temp_dir().join(format!("sc-clip-names-{}", std::process::id()));
+        let mut taken = std::collections::HashSet::new();
+        for want in ["Take.wav", "Take-2.wav", "Take-3.wav"] {
+            let path = super::clip_file(&dir.to_string_lossy(), "Take", &taken).unwrap();
+            assert_eq!(path, dir.join(want));
+            taken.insert(path);
+        }
+        assert!(!dir.exists());
     }
 }
