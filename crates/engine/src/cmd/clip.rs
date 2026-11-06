@@ -302,7 +302,9 @@ const MAX_LOOPS: i64 = 1000;
 
 /// Time-stretch an audio clip in place to the nearest whole number of beats of the tempo map, so
 /// that loops of it land back on the grid. A clip that already spans whole beats is left alone.
-fn fit_to_beats(s: &mut Session, t: TrackId, c: &mut Clip) -> Result<()> {
+/// `room` bounds the fitted length: the clip may not grow past it (the next clip's start, or a
+/// requested loop length).
+fn fit_to_beats(s: &mut Session, t: TrackId, c: &mut Clip, room: Option<Samples>) -> Result<()> {
     let id = "clip.loop";
     if !c.is_audio() {
         return Err(bad(id, "fitting to the grid needs an audio clip"));
@@ -317,6 +319,11 @@ fn fit_to_beats(s: &mut Session, t: TrackId, c: &mut Clip) -> Result<()> {
     let target = s.tempo.tick_to_samples(start_tick + beats * TICKS_PER_QUARTER, sr) - s.tempo.tick_to_samples(start_tick, sr);
     if target <= 0 || target == c.length {
         return Ok(());
+    }
+    if let Some(room) = room {
+        if target > room {
+            return Err(bad(id, format!("fitting “{}” to the grid needs {target} samples; only {room} fit", c.name)));
+        }
     }
     let Some(src) = render_stretched(s, id, c, target)? else { return Err(bad(id, "the clip's audio is not loaded")) };
     let ratio = target as f64 / c.length.max(1) as f64;
@@ -334,6 +341,9 @@ fn fit_to_beats(s: &mut Session, t: TrackId, c: &mut Clip) -> Result<()> {
     Ok(())
 }
 
+/// Loop each selected clip: `count` copies, on to `length` after the start with the last copy cut
+/// short, or on to the next clip (or the session end) with `fill`. `fit` time-stretches each audio
+/// clip to a whole number of beats first, within the room the boundary allows.
 fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     let count = i64_or(p, "count", 4).clamp(1, 512);
@@ -348,17 +358,22 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
         if c.length <= 0 {
             continue;
         }
+        // Where the looped clip ends: the next clip or the session end, or `length` after the
+        // start. Taken before fitting, so a fit cannot move the boundary it is measured against.
+        let boundary = s.track(tid).and_then(|t| t.clips().iter().filter(|x| x.id != c.id && x.start >= c.end()).map(|x| x.start).min());
+        let end = if fill { Some(boundary.unwrap_or(session_end)) } else { total.map(|l| c.start.saturating_add(l)) };
         if fit {
-            fit_to_beats(s, tid, &mut c)?;
+            // A fitted clip may not run into the next clip, or past a requested loop length.
+            let mut room = match (boundary.map(|b| b - c.start), if fill { None } else { total }) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            if fill {
+                room = room.or(Some(session_end - c.start));
+            }
+            fit_to_beats(s, tid, &mut c, room)?;
         }
         let len = c.length;
-        // Where the looped clip ends: the next clip or the session end, or `length` after the start.
-        let end = if fill {
-            let next = s.track(tid).and_then(|t| t.clips().iter().filter(|x| x.id != c.id && x.start >= c.end()).map(|x| x.start).min());
-            Some(next.unwrap_or(session_end))
-        } else {
-            total.map(|l| c.start.saturating_add(l))
-        };
         // Whole iterations, then one cut short to reach `end` exactly.
         let (reps, last) = match end {
             Some(end) => {
@@ -722,5 +737,63 @@ mod tests {
         let mut e = crate::Engine::new(s);
         let err = e.execute("clip.loop", &json!({"clips": [cid.0], "count": 2, "fit": true})).unwrap_err().to_string();
         assert!(err.contains("audio clip"), "{err}");
+    }
+
+    /// The loop clip plus a next clip `gap` samples after its start, both playing the same source.
+    /// A 40 000-sample clip fits to two beats, 48 000 samples at 120 BPM and 48 kHz.
+    fn loop_engine_with_next(gap: i64) -> (crate::Engine, TrackId, ClipId) {
+        use soundcraft_model::Clip;
+        let (mut e, t, id) = loop_engine(40_000);
+        let src = e.session().find_clip(id).unwrap().1.source().unwrap();
+        let cid = e.session_mut().new_clip_id();
+        let next = Clip::audio(cid, "Next", src, 0, gap, 10_000);
+        crate::edit::place_clip(e.session_mut(), t, next);
+        (e, t, id)
+    }
+
+    #[test]
+    fn fitting_refuses_to_grow_into_the_next_clip() {
+        let (mut e, t, id) = loop_engine_with_next(44_000);
+        let err = e.execute("clip.loop", &json!({"clips": [id.0], "count": 2, "fit": true})).unwrap_err().to_string();
+        assert!(err.contains("48000") && err.contains("44000"), "{err}");
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(), vec![(0, 40_000), (44_000, 10_000)]);
+    }
+
+    /// Fill measures the boundary before fitting, and the fit may not move it.
+    #[test]
+    fn fill_with_fit_stops_at_the_next_clip() {
+        let (mut e, t, id) = loop_engine_with_next(50_000);
+        e.execute("clip.loop", &json!({"clips": [id.0], "fill": true, "fit": true})).unwrap();
+        let clips = e.session().track(t).unwrap().clips();
+        // The origin is fitted to two beats, one copy fills the rest of the gap, the next clip
+        // keeps its start and length.
+        assert_eq!(clips.iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(), vec![(0, 48_000), (48_000, 2_000), (50_000, 10_000)]);
+    }
+
+    #[test]
+    fn fill_with_fit_refuses_when_the_fit_would_cross_the_next_clip() {
+        let (mut e, t, id) = loop_engine_with_next(44_000);
+        let err = e.execute("clip.loop", &json!({"clips": [id.0], "fill": true, "fit": true})).unwrap_err().to_string();
+        assert!(err.contains("48000"), "{err}");
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(), vec![(0, 40_000), (44_000, 10_000)]);
+    }
+
+    /// The requested length stays the whole looped clip: the fit fits inside it or is refused.
+    #[test]
+    fn fitting_respects_the_requested_length() {
+        let (mut e, t, id) = loop_engine(40_000);
+        e.execute("clip.loop", &json!({"clips": [id.0], "length": 48_000, "fit": true})).unwrap();
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].length, 48_000);
+
+        let (mut e, t, id) = loop_engine(40_000);
+        let before = e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.length, c.source())).collect::<Vec<_>>();
+        let err = e.execute("clip.loop", &json!({"clips": [id.0], "length": 44_000, "fit": true})).unwrap_err().to_string();
+        assert!(err.contains("48000"), "{err}");
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.iter().map(|c| (c.start, c.length, c.source())).collect::<Vec<_>>(), before);
     }
 }
