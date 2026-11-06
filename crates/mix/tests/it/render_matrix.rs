@@ -208,22 +208,26 @@ fn check_offsets_at(scenarios: &[Scenario], offsets: &[i64], block: usize) {
     }
 }
 
+/// Sends, VCAs and fold-down give the same samples at every block size, odd ones included.
 #[test]
 fn steady_scenarios_match_the_512_block_reference_at_every_block_size() {
     check_blocks(&STEADY, &BLOCKS);
 }
 
+/// Fades and crossfades give the same samples at the block sizes on the clip gain grid.
 #[test]
 fn faded_scenarios_match_the_512_block_reference_on_the_clip_gain_grid() {
     check_blocks(&FADED, &GRID_BLOCKS);
 }
 
+/// Fades and crossfades give the same samples at block sizes off the clip gain grid too.
 #[test]
 #[ignore = "clip gain and fades are stepped every 32 samples from each block's start"]
 fn faded_scenarios_match_the_512_block_reference_at_every_block_size() {
     check_blocks(&FADED, &BLOCKS);
 }
 
+/// Starting inside a block, or inside a crossfade, renders the tail of the render from zero.
 #[test]
 fn a_later_start_renders_the_tail_of_the_full_render() {
     check_offsets(&STEADY, &[1001, 2048]);
@@ -231,17 +235,20 @@ fn a_later_start_renders_the_tail_of_the_full_render() {
     check_offsets(&FADED, &[480, 2048]);
 }
 
+/// A later start at block 37 renders the tail of the 512-block render from zero.
 #[test]
 fn a_later_start_renders_the_tail_at_an_odd_block_size() {
     check_offsets_at(&STEADY, &[1001, 2048], 37);
 }
 
+/// A start exactly on a 512 block edge renders the tail of the render from zero.
 #[test]
 fn a_later_start_on_a_block_edge_renders_the_tail() {
     check_offsets(&STEADY, &[512, 4096]);
     check_offsets(&FADED, &[512, 4096]);
 }
 
+/// Faded scenarios started later render the tail at each block size on the clip gain grid.
 #[test]
 fn faded_later_starts_render_the_tail_at_every_grid_block_size() {
     for &block in &GRID_BLOCKS {
@@ -249,6 +256,7 @@ fn faded_later_starts_render_the_tail_at_every_grid_block_size() {
     }
 }
 
+/// Rendering is deterministic: two renders of one session are bit-identical.
 #[test]
 fn rendering_the_same_session_twice_gives_identical_samples() {
     for sc in STEADY.iter().chain(FADED.iter()) {
@@ -259,6 +267,8 @@ fn rendering_the_same_session_twice_gives_identical_samples() {
     }
 }
 
+/// Volume automation ramps that start and end inside blocks give the same samples at every
+/// block size.
 #[test]
 #[ignore = "#1354"]
 fn interior_volume_ramps_match_the_512_block_reference_at_every_block_size() {
