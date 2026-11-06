@@ -253,3 +253,31 @@ fn script_bounce_without_range_covers_the_session() {
     assert!((secs - 19.2).abs() < 0.01, "bounced {secs} s: {stdout}");
     let _ = std::fs::remove_dir_all(base);
 }
+
+/// `commands --json` lists every command with the details `describe` prints for one (#744).
+#[test]
+fn commands_json_lists_what_describe_prints() {
+    let json = |o: &Output| -> Value {
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice(&o.stdout).unwrap()
+    };
+    let all = json(&run(&["commands", "--json"]));
+    let all = all.as_array().unwrap();
+    let table = run(&["commands"]);
+    assert_eq!(all.len(), String::from_utf8_lossy(&table.stdout).lines().count());
+    let bounce = json(&run(&["describe", "file.bounce_mix"]));
+    assert!(all.contains(&bounce), "{bounce}");
+    assert!(all.iter().all(|c| c["id"].is_string() && c["params"].is_string() && c["menu"].is_array()));
+    // The filter applies, and --compact prints one line.
+    let compact = run(&["commands", "bounce", "--json", "--compact"]);
+    assert_eq!(String::from_utf8_lossy(&compact.stdout).lines().count(), 1);
+    let some = json(&compact);
+    let some = some.as_array().unwrap();
+    assert!(some.contains(&bounce) && some.len() < all.len(), "{some:?}");
+    // No match is an empty list, still JSON.
+    assert_eq!(json(&run(&["commands", "zzzzqq", "--json"])), Value::Array(Vec::new()));
+    // --compact shapes JSON output only.
+    let bad = run(&["commands", "--compact"]);
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("--json"), "{}", String::from_utf8_lossy(&bad.stderr));
+}

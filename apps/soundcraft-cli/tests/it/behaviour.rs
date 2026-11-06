@@ -88,6 +88,25 @@ fn assert_refused(got: &Invoke, port: u16) {
     assert!(got.stderr.starts_with(&prefix) && got.stderr.contains(" (os error ") && got.stderr.ends_with(")\n"), "{}", got.stderr);
 }
 
+// ---- logging ----
+
+/// Warnings SoundCraft logs (a plugin that fails to load, a backup it can't write) go to standard
+/// error. Without a logger they were dropped.
+#[test]
+fn logged_warnings_reach_standard_error() {
+    let dir = sandbox("log");
+    let first = invoke(&dir, &["run", "--save", "s.scraft"]);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    // A file where the backups folder should go: the next save that changes the session can't
+    // back the old one up.
+    std::fs::write(dir.join("Backups"), b"not a folder").unwrap();
+    let again = invoke(&dir, &["run", "--in", "s.scraft", "--cmd", r#"track.new={"count":1}"#, "--save", "s.scraft", "--in-place"]);
+    assert_eq!(again.code, 0, "{}", again.stderr);
+    assert!(again.stderr.contains("warning: no backup of"), "{}", again.stderr);
+    assert!(!again.stdout.contains("no backup"), "results only on standard output: {}", again.stdout);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- unknown flags ----
 
 #[test]
