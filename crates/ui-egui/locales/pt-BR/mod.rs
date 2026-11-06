@@ -1514,17 +1514,33 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Redo {l}" => "Refazer: {l}",
         "Saved preset {clean}" => "Preset salvo: {clean}",
         "Undo {l}" => "Desfazer: {l}",
-        "automation filesystem access is not granted: read authority is absent: {shown_path}" => "acesso ao sistema de arquivos de automação não concedido: autoridade de leitura ausente: {shown_path}",
-        "automation filesystem access is not granted: write authority is absent: {shown_path}" => "acesso ao sistema de arquivos de automação não concedido: autoridade de escrita ausente: {shown_path}",
+        "automation filesystem access is not granted: read authority is absent: {shown_path}" => {
+            "acesso ao sistema de arquivos de automação não concedido: autoridade de leitura ausente: {shown_path}"
+        }
+        "automation filesystem access is not granted: write authority is absent: {shown_path}" => {
+            "acesso ao sistema de arquivos de automação não concedido: autoridade de escrita ausente: {shown_path}"
+        }
         "automation path rejected: a link that leads nowhere: {}" => "caminho de automação rejeitado: link que não leva a lugar algum: {}",
         "automation path rejected: cannot resolve {}: {e}" => "caminho de automação rejeitado: não foi possível resolver {}: {e}",
-        "automation path rejected: outside the read root {root}: {shown_path}" => "caminho de automação rejeitado: fora do diretório de leitura {root}: {shown_path}",
-        "automation path rejected: outside the read roots {}: {shown_path}" => "caminho de automação rejeitado: fora dos diretórios de leitura {}: {shown_path}",
-        "automation path rejected: outside the write root {root}: {shown_path}" => "caminho de automação rejeitado: fora do diretório de escrita {root}: {shown_path}",
-        "automation path rejected: outside the write roots {}: {shown_path}" => "caminho de automação rejeitado: fora dos diretórios de escrita {}: {shown_path}",
-        "automation path rejected: parent traversal below a folder that doesn't exist: {}" => "caminho de automação rejeitado: travessia acima de uma pasta que não existe: {}",
+        "automation path rejected: outside the read root {root}: {shown_path}" => {
+            "caminho de automação rejeitado: fora do diretório de leitura {root}: {shown_path}"
+        }
+        "automation path rejected: outside the read roots {}: {shown_path}" => {
+            "caminho de automação rejeitado: fora dos diretórios de leitura {}: {shown_path}"
+        }
+        "automation path rejected: outside the write root {root}: {shown_path}" => {
+            "caminho de automação rejeitado: fora do diretório de escrita {root}: {shown_path}"
+        }
+        "automation path rejected: outside the write roots {}: {shown_path}" => {
+            "caminho de automação rejeitado: fora dos diretórios de escrita {}: {shown_path}"
+        }
+        "automation path rejected: parent traversal below a folder that doesn't exist: {}" => {
+            "caminho de automação rejeitado: travessia acima de uma pasta que não existe: {}"
+        }
         "automation path rejected: path is empty" => "caminho de automação rejeitado: o caminho está vazio",
-        "automation path rejected: reserved device names are not allowed: {}" => "caminho de automação rejeitado: nomes de dispositivo reservados não são permitidos: {}",
+        "automation path rejected: reserved device names are not allowed: {}" => {
+            "caminho de automação rejeitado: nomes de dispositivo reservados não são permitidos: {}"
+        }
         "internal error (see the log)" => "erro interno (consulte o registro)",
         "make an edit selection first" => "faça uma seleção de edição primeiro",
         "no automation has been copied" => "nenhuma automação foi copiada",

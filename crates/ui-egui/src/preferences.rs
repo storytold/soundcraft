@@ -952,7 +952,8 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
         }
         Control::Check(text) => {
             let mut value = false;
-            ui.add_enabled(false, egui::Checkbox::new(&mut value, label(text))).on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
+            ui.add_enabled(false, egui::Checkbox::new(&mut value, label(text)))
+                .on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
         }
         Control::Choice(text, value) | Control::ChoiceOptions(text, value, _) => {
             ui.add_enabled_ui(false, |ui| {
@@ -973,7 +974,8 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
             .on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
         }
         Control::Button(text) => {
-            ui.add_enabled(false, egui::Button::new(label(text))).on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
+            ui.add_enabled(false, egui::Button::new(label(text)))
+                .on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
         }
         Control::Radios(text, values) => {
             ui.add_enabled_ui(false, |ui| {

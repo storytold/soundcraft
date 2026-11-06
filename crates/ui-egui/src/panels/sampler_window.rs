@@ -147,7 +147,7 @@ pub fn sample_strip(app: &mut SoundApp, ui: &mut Ui, tid: TrackId, ins: &Insert)
                 Ok(path) => {
                     let _ = app.run("mix.sampler_load", json!({"track": tid.0, "path": path}));
                 }
-                Err(e) => app.ui.status = crate::localization::text(&e.to_string()),
+                Err(e) => app.ui.status = crate::localization::text(&e.to_string()).to_string(),
             }
         }
         if ins.sample.is_some() && ui.button(crate::localization::text("Clear")).clicked() {

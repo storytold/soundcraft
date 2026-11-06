@@ -75,7 +75,10 @@ impl SoundApp {
         {
             match p.open_editor(track, slot) {
                 Ok(()) => return,
-                Err(e) => self.ui.status = format!("{}: {}", mix_window::plugin_info(&plugin).map_or(plugin.as_str(), |i| i.name), crate::localization::text(&e)),
+                Err(e) => {
+                    self.ui.status =
+                        format!("{}: {}", mix_window::plugin_info(&plugin).map_or(plugin.as_str(), |i| i.name), crate::localization::text(&e))
+                }
             }
         }
         if !self.ui.plugin_windows.contains(&(track, slot)) {
@@ -130,5 +133,9 @@ pub(crate) fn failed_plugin_status(s: &soundcraft_model::Session, track: TrackId
     let t = s.track(track)?;
     let ins = if slot == soundcraft_mix::INSTRUMENT_SLOT { t.instrument.as_ref() } else { t.mixer.inserts.get(slot)?.as_ref() }?;
     let name = crate::mix_window::plugin_info(&ins.plugin).map_or(ins.plugin.as_str(), |p| p.name);
-    Some(crate::localized_format!("{name} on {track} put out invalid audio, so it is bypassed until playback stops or starts again.", name = name, track = t.name))
+    Some(crate::localized_format!(
+        "{name} on {track} put out invalid audio, so it is bypassed until playback stops or starts again.",
+        name = name,
+        track = t.name
+    ))
 }
