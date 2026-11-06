@@ -188,6 +188,17 @@ pub(crate) fn make_dir(dir: impl AsRef<Path>) -> Result<()> {
     std::fs::create_dir_all(dir).map_err(|err| EngineError::Io(format!("{}: {err}", dir.display())))
 }
 
+/// `path` with its links followed, inside the automation read root when there is one. The root is
+/// checked on the path as named (links followed, a missing tail resolved by its nearest folder)
+/// before anything is resolved, so a name that leads out of the root is refused the same way
+/// whether or not it exists there.
+pub(crate) fn canonical_path(path: impl AsRef<Path>) -> Result<PathBuf> {
+    let path = path.as_ref();
+    let checked = if path.as_os_str().is_empty() { Path::new(".") } else { path };
+    crate::file_access::check_read(checked).map_err(EngineError::Io)?;
+    std::fs::canonicalize(path).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))
+}
+
 /// Write `bytes` to the file at `path`, inside the automation write root when there is one.
 pub(crate) fn write_path(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> Result<()> {
     let path = path.as_ref();
@@ -442,7 +453,7 @@ impl Out {
         if cfg!(target_arch = "wasm32") {
             return Ok(Out::Memory(std::io::Cursor::new(Vec::new())));
         }
-        Ok(Out::File(std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(part)?)))
+        Ok(Out::File(std::io::BufWriter::with_capacity(1 << 20, create_new(part)?)))
     }
 
     /// Puts the finished file at `path` and returns its size: the part file is synced and renamed
@@ -575,14 +586,27 @@ pub fn export_clips(e: &Engine, ids: &[soundcraft_model::ClipId], dir: &str) -> 
         let stem = sanitize_name(&c.name);
         let mut path = Path::new(dir).join(format!("{stem}.wav"));
         let mut k = 2u32;
-        while path.exists() {
+        // The name is taken by creating the file, so whatever entry already has it (a link
+        // to elsewhere included) is left alone rather than written through.
+        let mut file = loop {
+            // An occupied name is taken whatever it is (a link whose target is outside the write
+            // root too): it is only looked at, never resolved, so the root check does not stop the
+            // search for a free name. The folder itself was checked above.
+            if std::fs::symlink_metadata(&path).is_err() {
+                crate::file_access::check_write(&path).map_err(EngineError::Io)?;
+                match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                    Ok(f) => break f,
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(err) => return Err(EngineError::Io(format!("{}: {err}", path.display()))),
+                }
+            }
             path = Path::new(dir).join(format!("{stem}-{k}.wav"));
             k = k.saturating_add(1);
             if k > 10_000 {
                 return Err(EngineError::Io(format!("{dir}: too many files named {stem}")));
             }
-        }
-        write_path(&path, bytes)?;
+        };
+        std::io::Write::write_all(&mut file, &bytes).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))?;
         n += 1;
     }
     Ok(n)
@@ -621,13 +645,13 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
         {
             src.path = f.join(&src.path).to_string_lossy().into_owned();
         }
-        let exists_rel = same_dir && !Path::new(&src.path).is_absolute() && dir.join(&src.path).exists();
+        let exists_rel = same_dir && !Path::new(&src.path).is_absolute() && file_found(dir.join(&src.path));
         let shared = shared_paths.get(i).copied().unwrap_or(false);
         if exists_rel && !src.unsaved && !shared {
             continue;
         }
         let in_folder = Path::new(&src.path).strip_prefix(&audio_dir).ok().and_then(Path::to_str).map(str::to_string);
-        if let Some(f) = in_folder.filter(|_| !src.unsaved && Path::new(&src.path).is_file()) {
+        if let Some(f) = in_folder.filter(|_| !src.unsaved && file_found(&src.path)) {
             src.path = format!("Audio Files/{f}");
             continue;
         }
@@ -650,7 +674,7 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
         if overwrite {
             // One file per source id so autosaves never collide or pile up.
             stem = format!("{stem}_{}", src.id.0);
-            if audio_dir.join(format!("{stem}.wav")).exists() {
+            if file_found(audio_dir.join(format!("{stem}.wav"))) {
                 src.path = format!("Audio Files/{stem}.wav");
                 src.unsaved = false;
                 files.insert(Arc::as_ptr(audio), src.path.clone());
@@ -733,9 +757,20 @@ fn sync_dir(dir: &Path) {
 
 fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let mut f = std::fs::File::create(path)?;
+    let mut f = create_new(path)?;
     f.write_all(bytes)?;
     f.sync_all()
+}
+
+/// Creates `path` as a new file. A leftover of that name (a part file from an interrupted write)
+/// is removed first, but an existing entry is never opened: a link planted at a predictable name
+/// in the destination folder can't redirect the write elsewhere.
+fn create_new(path: &Path) -> std::io::Result<std::fs::File> {
+    match std::fs::remove_file(path) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(err),
+        _ => {}
+    }
+    std::fs::OpenOptions::new().write(true).create_new(true).open(path)
 }
 
 /// Copies `from` to `to`, which must not exist yet; an existing entry, even a link, is never followed.
@@ -832,7 +867,12 @@ fn store_wav(dir: &Path, stem: &str, bytes: &[u8]) -> Result<(String, bool)> {
                 return Ok((name, true));
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                if std::fs::metadata(&path).is_ok_and(|m| m.len() == bytes.len() as u64) && std::fs::read(&path).is_ok_and(|b| b == bytes) {
+                // Reused only when it may be read: whether it equals the audio must not be
+                // learnt about a file the roots allow writing beside but not reading.
+                if crate::file_access::check_read(&path).is_ok()
+                    && std::fs::metadata(&path).is_ok_and(|m| m.len() == bytes.len() as u64)
+                    && std::fs::read(&path).is_ok_and(|b| b == bytes)
+                {
                     return Ok((name, false));
                 }
             }
@@ -937,6 +977,67 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
             (t.id, inputs, path)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod exclusive_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("soundcraft-io-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_link_at_the_part_name_is_not_written_through() {
+        let dir = scratch("part-link");
+        let (target, part) = (dir.join("elsewhere"), dir.join("session.scraft.tmp"));
+        std::os::unix::fs::symlink(&target, &part).unwrap();
+        write_synced(&part, b"new").unwrap();
+        assert!(!target.exists(), "the link's target was created");
+        assert_eq!(std::fs::read(&part).unwrap(), b"new", "the link itself was replaced by the file");
+        // A leftover regular part file is still replaced.
+        write_synced(&part, b"newer").unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), b"newer");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_skips_a_name_held_by_a_dangling_link() {
+        let dir = scratch("export-link");
+        let e = crate::demo::demo_engine();
+        let (t, c) = e.session().tracks.iter().find_map(|t| t.clips().iter().find(|c| c.is_audio()).map(|c| (t.id, c.clone()))).unwrap();
+        let _ = t;
+        let target = dir.join("elsewhere.wav");
+        std::os::unix::fs::symlink(&target, dir.join(format!("{}.wav", sanitize_name(&c.name)))).unwrap();
+        assert_eq!(export_clips(&e, &[c.id], &dir.to_string_lossy()).unwrap(), 1);
+        assert!(!target.exists(), "the export followed the link");
+        assert!(dir.join(format!("{}-2.wav", sanitize_name(&c.name))).is_file(), "the next free name was used");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With a write root, a link out of it that holds the name is still just an occupied name.
+    #[cfg(unix)]
+    #[test]
+    fn export_skips_a_link_out_of_the_write_root_too() {
+        let dir = scratch("export-root-link");
+        let e = crate::demo::demo_engine();
+        let c = e.session().tracks.iter().find_map(|t| t.clips().iter().find(|c| c.is_audio()).cloned()).unwrap();
+        let elsewhere = scratch("export-root-elsewhere");
+        let target = elsewhere.join("target.wav");
+        std::os::unix::fs::symlink(&target, dir.join(format!("{}.wav", sanitize_name(&c.name)))).unwrap();
+        let roots = crate::file_access::AutomationRoots::new(&[], &[&dir]).unwrap().unwrap();
+        let n = crate::file_access::confine(Some(&roots), || export_clips(&e, &[c.id], &dir.to_string_lossy())).unwrap();
+        assert_eq!(n, 1);
+        assert!(!target.exists(), "the export followed the link out of the root");
+        assert!(dir.join(format!("{}-2.wav", sanitize_name(&c.name))).is_file(), "the next free name was used");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&elsewhere);
+    }
 }
 
 #[cfg(test)]
