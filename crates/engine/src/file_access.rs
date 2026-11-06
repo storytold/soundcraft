@@ -475,6 +475,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// On Windows the root matches in any case, and `NUL`, `com1` and `COM¹` are refused.
     #[cfg(windows)]
     #[test]
     fn windows_ignores_case_and_refuses_devices() {
@@ -512,6 +513,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// Reserved device names are `CON`, `NUL`, `COM`/`LPT` plus `1` to `9` or `¹` to `³`, with an
+    /// extension or a colon. A longer or different name is a file name.
     #[test]
     fn device_names() {
         for d in ["CON", "nul", "Com1", "LPT9.txt", "aux.scraft", "NUL ", "COM¹", "Lpt²", "lpt³.txt", "COM1:", "nul:x", "COM¹:"] {
