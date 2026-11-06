@@ -378,3 +378,109 @@ fn clip_gain_to_volume_with_a_large_envelope_stays_fast() {
     let lane = e.session().track(t).unwrap().lane(&AutoParam::Volume).unwrap();
     assert!(lane.points.len() as i64 >= n);
 }
+
+/// Live input toggles stay outside document history in both enabled and disabled states.
+#[test]
+fn live_input_states_are_transient_and_survive_document_history() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let track = e.session().tracks[0].id;
+    e.mark_clean();
+    let history = e.undo_history();
+
+    e.execute("mix.record_arm", &json!({"tracks": [track.0], "value": true})).unwrap();
+    e.execute("track.set_record_to_input_only", &json!({})).unwrap();
+    let mixer = &e.session().track(track).unwrap().mixer;
+    assert!(mixer.record_arm && mixer.input_monitor);
+    assert!(!e.is_dirty(), "live input state is not a document change");
+    assert_eq!(e.undo_history(), history, "live input state has no Undo entry");
+
+    // A later document edit captures a full Session snapshot. Undoing or redoing it must not
+    // resurrect the live state that happened to be present when that snapshot was taken.
+    e.execute("mix.volume", &json!({"tracks": [track.0], "db": -6.0})).unwrap();
+    e.execute("mix.record_arm", &json!({"tracks": [track.0], "value": false})).unwrap();
+    e.execute("mix.input_monitor", &json!({"tracks": [track.0], "value": false})).unwrap();
+    assert!(e.is_dirty());
+
+    assert!(e.undo());
+    let mixer = &e.session().track(track).unwrap().mixer;
+    assert!(!mixer.record_arm && !mixer.input_monitor);
+    assert!(!e.is_dirty(), "undo returned to the saved document");
+
+    assert!(e.redo());
+    let mixer = &e.session().track(track).unwrap().mixer;
+    assert!(!mixer.record_arm && !mixer.input_monitor);
+    assert!(e.is_dirty());
+
+    // Live states that are enabled after another document edit survive both directions too.
+    e.execute("mix.volume", &json!({"tracks": [track.0], "db": -12.0})).unwrap();
+    e.execute("mix.record_arm", &json!({"tracks": [track.0], "value": true})).unwrap();
+    e.execute("mix.input_monitor", &json!({"tracks": [track.0], "value": true})).unwrap();
+
+    assert!(e.undo());
+    let mixer = &e.session().track(track).unwrap().mixer;
+    assert!(mixer.record_arm && mixer.input_monitor);
+
+    assert!(e.redo());
+    let mixer = &e.session().track(track).unwrap().mixer;
+    assert!(mixer.record_arm && mixer.input_monitor);
+}
+
+/// Returning to a saved point stays clean with independently enabled live flags on each track.
+#[test]
+fn live_input_states_keep_saved_history_points_clean() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 2})).unwrap();
+    let (a, b) = (e.session().tracks[0].id, e.session().tracks[1].id);
+    e.mark_clean();
+    e.execute("mix.volume", &json!({"tracks": [a.0], "db": -6.0})).unwrap();
+    e.execute("mix.record_arm", &json!({"tracks": [a.0], "value": true})).unwrap();
+    e.execute("mix.input_monitor", &json!({"tracks": [b.0], "value": true})).unwrap();
+    assert!(e.undo());
+    assert!(!e.is_dirty(), "live flags cannot dirty the saved point reached by Undo");
+    for redo in [true, false, true] {
+        assert!(if redo { e.redo() } else { e.undo() });
+        let a = &e.session().track(a).unwrap().mixer;
+        let b = &e.session().track(b).unwrap().mixer;
+        assert!(a.record_arm && !a.input_monitor);
+        assert!(!b.record_arm && b.input_monitor);
+        assert_eq!(e.is_dirty(), redo);
+    }
+    e.mark_clean();
+    e.execute("mix.record_arm", &json!({"tracks": [a.0], "value": false})).unwrap();
+    e.execute("mix.input_monitor", &json!({"tracks": [b.0], "value": false})).unwrap();
+    assert!(!e.is_dirty());
+    assert!(e.undo());
+    assert!(e.is_dirty());
+    assert!(e.redo());
+    assert!(!e.is_dirty(), "Redo to a saved armed snapshot stays clean after disarming");
+}
+
+/// Restoring a missing track never resurrects its historical arm or monitoring flags.
+#[test]
+fn live_input_states_of_restored_tracks_start_disabled() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 2})).unwrap();
+    let (a, b) = (e.session().tracks[0].id, e.session().tracks[1].id);
+    e.execute("mix.record_arm", &json!({"tracks": [a.0], "value": true})).unwrap();
+    e.execute("mix.input_monitor", &json!({"tracks": [b.0], "value": true})).unwrap();
+    e.execute("track.delete", &json!({"tracks": [a.0]})).unwrap();
+    assert!(e.undo());
+    let mixer = &e.session().track(a).unwrap().mixer;
+    assert!(!mixer.record_arm && !mixer.input_monitor);
+    assert!(e.session().track(b).unwrap().mixer.input_monitor);
+    assert!(e.redo());
+    assert!(e.undo());
+    assert!(!e.session().track(a).unwrap().mixer.record_arm);
+
+    e.execute("track.new", &json!({})).unwrap();
+    let c = e.session().tracks.last().unwrap().id;
+    e.execute("mix.record_arm", &json!({"tracks": [c.0], "value": true})).unwrap();
+    e.execute("mix.input_monitor", &json!({"tracks": [c.0], "value": true})).unwrap();
+    assert!(e.undo());
+    assert!(e.session().track(c).is_none());
+    assert!(e.redo());
+    let mixer = &e.session().track(c).unwrap().mixer;
+    assert!(!mixer.record_arm && !mixer.input_monitor);
+    assert!(e.session().track(b).unwrap().mixer.input_monitor);
+}
