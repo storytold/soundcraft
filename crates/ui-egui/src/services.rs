@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 /// paths as picked: the caller converts one to text where a command takes it ([`crate::dialogs::unicode`]).
 #[derive(Default)]
 pub struct Services {
+    /// Optional web file capability, disabled by default.
+    pub file_providers: crate::file_providers::Host,
+
     pub pick_open: Option<Box<dyn Fn(&str, &[&str]) -> Option<PathBuf>>>,
     /// The purpose and the file to start from.
     pub pick_save: Option<Box<dyn Fn(&str, &Path) -> Option<PathBuf>>>,

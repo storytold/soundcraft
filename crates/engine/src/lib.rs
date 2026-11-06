@@ -327,6 +327,14 @@ impl Engine {
         self.saved = Arc::clone(&self.doc);
     }
 
+    /// Confirm exactly the snapshot durably persisted by an external provider.
+    /// A newer edit stays dirty and undoing to this checkpoint becomes clean.
+    pub fn acknowledge_external_save(&mut self, snapshot: Arc<Session>) {
+        self.saved = snapshot;
+        self.dirty = !same_document(&self.saved, &self.doc);
+        self.dirty_at.set((self.revision, self.dirty));
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -345,7 +353,9 @@ impl Engine {
 
     /// Restore the previous document while retaining current edit mode and live input flags.
     pub fn undo(&mut self) -> bool {
-        let Some(h) = self.undo.pop() else { return false };
+        let Some(h) = self.undo.pop() else {
+            return false;
+        };
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
         self.keep_runtime_track_states(&cur);
@@ -357,7 +367,9 @@ impl Engine {
 
     /// Restore the next document while retaining current edit mode and live input flags.
     pub fn redo(&mut self) -> bool {
-        let Some(h) = self.redo.pop() else { return false };
+        let Some(h) = self.redo.pop() else {
+            return false;
+        };
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
         self.keep_runtime_track_states(&cur);

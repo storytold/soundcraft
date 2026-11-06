@@ -77,6 +77,10 @@ pub(super) const OPEN_PENDING: &str = "ui.open_pending_session";
 /// Opens a session the browser read as bytes (picked or dropped), asking first when the open one
 /// has changes. The read finishes later than the pick, so the question is asked only now.
 pub fn open_session_bytes(app: &mut SoundApp, name: String, bytes: Vec<u8>) {
+    if app.services.file_providers.busy() {
+        app.ui.status = "Finish or cancel the pending provider operation first".into();
+        return;
+    }
     if crate::bounce::refuses_session_switch(app) {
         return;
     }
@@ -89,7 +93,9 @@ pub fn open_session_bytes(app: &mut SoundApp, name: String, bytes: Vec<u8>) {
 /// Open the session bytes read by the browser after the save prompt, stopping transport first. A successful open
 /// marks the document replaced so pending captures cancel and reports any missing media.
 pub(super) fn open_pending_session(app: &mut SoundApp) {
-    let Some((name, bytes)) = app.dialogs.pending_session.take() else { return };
+    let Some((name, bytes)) = app.dialogs.pending_session.take() else {
+        return;
+    };
     if crate::bounce::refuses_session_switch(app) {
         return;
     }

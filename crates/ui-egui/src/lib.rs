@@ -429,3 +429,7 @@ type EditorPollFixture = Box<dyn FnMut(&mut Vec<(TrackId, usize)>) -> (Vec<sound
 
 #[cfg(test)]
 mod tests;
+
+/// Optional file-provider capability; dormant until a trusted host registers one.
+pub mod file_providers;
+pub mod provider_ui;

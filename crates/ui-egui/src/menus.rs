@@ -195,7 +195,9 @@ fn insert_path(roots: &mut Vec<MenuNode>, line: &str) {
                 level.len() - 1
             }
         };
-        let Some(node) = level.get_mut(idx) else { break };
+        let Some(node) = level.get_mut(idx) else {
+            break;
+        };
         level = &mut node.children;
     }
 }
@@ -432,7 +434,9 @@ fn params_for(path: &str, id: &str) -> Value {
         "clip.rating" => json!({"rating": leaf.parse::<u8>().unwrap_or(0)}),
         "track.change_width" => json!({"format": leaf}),
         "view.mix_section" => json!({"section": mix_section_id(leaf)}),
-        "audiosuite.process" => json!({"process": AUDIOSUITE.iter().find(|(p, _)| *p == path).map_or("", |(_, x)| *x)}),
+        "audiosuite.process" => {
+            json!({"process": AUDIOSUITE.iter().find(|(p, _)| *p == path).map_or("", |(_, x)| *x)})
+        }
         _ => json!({}),
     }
 }
@@ -469,6 +473,12 @@ pub fn live_label(app: &SoundApp, id: Option<&str>) -> Option<String> {
 
 /// Menu-style invocation: may open a dialog.
 pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
+    if let Some(result) = crate::provider_ui::choose(app, id) {
+        if let Err(error) = result {
+            app.ui.status = error;
+        }
+        return;
+    }
     if let Some((_, w)) = MENU_WINDOWS.iter().find(|(p, _)| *p == path)
         && w.starts_with("window.")
     {
@@ -499,6 +509,12 @@ pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
 /// Keyboard shortcut for a dialog command, or one that would close a modified session: open its
 /// dialog. Returns true when handled.
 pub fn invoke_shortcut_dialog(app: &mut SoundApp, id: &str) -> bool {
+    if let Some(result) = crate::provider_ui::choose(app, id) {
+        if let Err(error) = result {
+            app.ui.status = error;
+        }
+        return true;
+    }
     (wants_dialog(id) && app.dialogs.open_for_command(&app.engine, id)) || crate::dialogs::ask_to_save(app, id, &json!({}))
 }
 
@@ -670,7 +686,9 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                 Ok(Some(t)) => t,
                 Ok(None) => match app.engine.session().edit.selected_tracks.first() {
                     Some(t) => *t,
-                    None => return Some(Err("view.scroll_into_view: pass `track` or select a track".into())),
+                    None => {
+                        return Some(Err("view.scroll_into_view: pass `track` or select a track".into()));
+                    }
                 },
                 Err(e) => return Some(Err(e.to_string())),
             };
