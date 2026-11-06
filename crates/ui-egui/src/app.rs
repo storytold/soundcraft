@@ -3,7 +3,8 @@ use super::state::MainWindow;
 use super::{
     ControlRequest, Engine, Gesture, HashMap, MeterDisplay, OutputTrouble, Player, Range, Receiver, Samples, SoundApp, TrackId, TransportRequest,
     Trouble, UiState, Value, VecDeque, aaf_import, bounce, dialogs, edit_window, extra_windows, fonts, import, json, menus, midi_editor, mix_window,
-    ops_windows, palette, panels, recovery, sampler_window, score_editor, shortcuts, theme, updates_ui, video_track, video_window, windows,
+    ops_windows, palette, panels, preferences, recovery, sampler_window, score_editor, shortcuts, theme, updates_ui, video_track, video_window,
+    windows,
 };
 
 mod audio;
@@ -64,6 +65,7 @@ impl SoundApp {
             ops: ops_windows::OpsState::default(),
             extra: extra_windows::ExtraState::default(),
             palette: palette::PaletteState::default(),
+            preferences: preferences::PreferencesState::default(),
             focus_mix: false,
             edit_scroll_into_view: None,
             mix_scroll_into_view: None,
@@ -138,6 +140,8 @@ impl SoundApp {
     /// Each host iteration starts with `raw_input_hook`; its editor-poll admission prevents an
     /// empty queue on a discarded pass from ending a still-active plugin gesture.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        self.ui.undo_levels = self.ui.undo_levels.clamp(1, 64);
+        self.engine.set_history_limit(self.ui.undo_levels);
         // Fonts set now take effect next frame, so draw only from the frame after.
         if !self.fonts_ready {
             if self.fonts_installed {
@@ -334,6 +338,7 @@ impl SoundApp {
         }
         panels::floating(self, &ctx);
         windows::show(self, &ctx);
+        preferences::show(self, &ctx);
         video_window::show(self, &ctx);
         ops_windows::show(self, &ctx);
         extra_windows::show(self, &ctx);

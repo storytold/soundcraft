@@ -15,7 +15,7 @@ fn id_of(name: &str) -> String {
 fn scan_lists_both_audio_modules_but_not_the_controller_class() {
     let dir = fixture_dir();
     let found = soundcraft_vst3_host::scan_paths(&[dir.to_path_buf()]);
-    assert_eq!(found.len(), 5, "{found:?}");
+    assert_eq!(found.len(), 6, "{found:?}");
     let g = found.iter().find(|d| d.name == "Fixture Gain").unwrap();
     // `uid()` lays out the first 8 bytes differently on Windows (COM GUID order).
     let want = if cfg!(windows) { "vst3:001D0A5C111122223333444455556666" } else { "vst3:5C0A1D00111122223333444455556666" };
@@ -320,8 +320,8 @@ fn layouts_beyond_the_host_limits_are_rejected_not_truncated() {
     let mut io = vec![vec![0.5f32; 64]; 2];
     p.process(&mut io, 64);
     assert!(io.iter().flatten().all(|&x| x == 1.0), "16x64 layout delivered as advertised: {:?}", &io[0][..4]);
-    // 17 buses, or a 65-channel bus: never activated, never processed with a cut-down layout.
-    for name in ["Fixture Wide 17 buses", "Fixture Wide 65 channels"] {
+    // 65 buses, or a 65-channel bus: never activated, never processed with a cut-down layout.
+    for name in ["Fixture Wide 65 buses", "Fixture Wide 65 channels"] {
         let mut p = soundcraft_vst3_host::create(&id_of(name)).unwrap();
         p.prepare(44_100.0, 64, 2);
         assert_eq!(p.latency(), 0, "{name}: not activated");
@@ -329,6 +329,30 @@ fn layouts_beyond_the_host_limits_are_rejected_not_truncated() {
         p.process(&mut io, 64);
         assert!(io.iter().flatten().all(|&x| x == 0.5), "{name}: the plugin never ran: {:?}", &io[0][..4]);
     }
+}
+
+#[test]
+fn offline_renders_set_up_and_process_in_offline_mode() {
+    for (offline, want) in [(false, 1.0), (true, 2.0)] {
+        let mut p = soundcraft_vst3_host::create(&id_of("Fixture Wide 16x64")).unwrap();
+        p.set_offline(offline);
+        p.prepare(44_100.0, 64, 2);
+        let mut io = vec![vec![0.5f32; 64]; 2];
+        p.process(&mut io, 64);
+        assert!(io.iter().flatten().all(|&x| x == want), "offline {offline}: {:?}", &io[0][..4]);
+    }
+}
+
+#[test]
+fn many_buses_like_multi_out_instruments_are_activated() {
+    // Multi-out instruments declare dozens of buses (SSD Sampler 5: 32); only the main one is
+    // active, but the plugin must still load, get buffers for every bus and play (#1247).
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Wide 32 buses")).unwrap();
+    p.prepare(44_100.0, 64, 2);
+    assert_eq!(p.latency(), 3, "32-bus plugin activated");
+    let mut io = vec![vec![0.5f32; 64]; 2];
+    p.process(&mut io, 64);
+    assert!(io.iter().flatten().all(|&x| x == 1.0), "32-bus layout delivered as advertised: {:?}", &io[0][..4]);
 }
 
 #[test]

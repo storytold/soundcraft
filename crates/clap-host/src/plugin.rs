@@ -178,6 +178,11 @@ impl Plugin for ClapPlugin {
         }
     }
 
+    fn set_offline(&mut self, offline: bool) {
+        // `clap.render`: plugins without it render the same way either way.
+        self.inst.set_render_mode(offline);
+    }
+
     fn reset(&mut self) {
         self.inst.reset();
         self.queue.retain(|e| matches!(e, Event::Param { .. }));

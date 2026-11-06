@@ -111,6 +111,15 @@ fn zero_channels_is_malformed() {
 }
 
 #[test]
+fn aiff_negative_channel_count_is_malformed() {
+    let mut aiff = small(FileFormat::Aiff, BitDepth::Int16, 1);
+    let comm = aiff.windows(4).position(|w| w == b"COMM").unwrap();
+    aiff[comm + 8] = 0x80;
+    aiff[comm + 9] = 0;
+    assert!(probe(&aiff, None).is_err());
+}
+
+#[test]
 fn zero_sample_rate_is_malformed() {
     let wav = riff(&[(b"fmt ", fmt(1, 2, 0, 16)), (b"data", vec![0; 16])]);
     assert!(decode(&wav, None).is_err());

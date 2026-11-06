@@ -123,6 +123,38 @@ fn a_bounce_too_big_for_its_format_fails_and_keeps_the_old_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A WAV bounce is a Broadcast Wave stamped with where it starts on the session's timecode (`bext`
+/// TimeReference, samples since midnight), as other DAWs write it, so post tools can place it.
+#[test]
+fn wav_bounces_carry_their_timecode_position_as_a_bwf_time_reference() {
+    let mut e = soundcraft_engine::demo::demo_engine();
+    let sr = u64::from(e.session().sample_rate.hz());
+    // The session starts at 01:00:00:00; the bounce at 2 s into it.
+    e.session_mut().timecode_start = (3600 * sr) as i64;
+    let (start, end) = (2 * sr, 3 * sr);
+    let dir = scratch("bounce-bext");
+    let stamp = |path: &std::path::Path| {
+        let ext = path.extension().and_then(|x| x.to_str());
+        soundcraft_audio_io::probe(&std::fs::read(path).unwrap(), ext).unwrap().bwf.map(|b| b.time_reference)
+    };
+    let mix = dir.join("Mix.wav");
+    e.execute("file.bounce_mix", &serde_json::json!({"path": mix, "start": start, "end": end})).unwrap();
+    assert_eq!(stamp(&mix), Some(3600 * sr + start), "mix");
+    let stems = dir.join("stems");
+    let files = e.execute("file.bounce_stems", &serde_json::json!({"dir": stems, "start": start, "end": end})).unwrap();
+    let files = files["files"].as_array().unwrap();
+    assert!(!files.is_empty());
+    for f in files {
+        let f = std::path::PathBuf::from(f.as_str().unwrap());
+        assert_eq!(stamp(&f), Some(3600 * sr + start), "{}", f.display());
+    }
+    // A session that starts at zero still says where the bounce starts.
+    e.session_mut().timecode_start = 0;
+    e.execute("file.bounce_mix", &serde_json::json!({"path": mix, "start": start, "end": end})).unwrap();
+    assert_eq!(stamp(&mix), Some(start));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn dropping_an_unfinished_bounce_cancels_it_and_keeps_the_old_file() {
     let e = soundcraft_engine::demo::demo_engine();

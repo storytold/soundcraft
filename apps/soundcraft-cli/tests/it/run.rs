@@ -151,7 +151,7 @@ fn every_subcommand_has_help_listing_its_arguments() {
         ),
         ("run", "run [OPTIONS]", &["--cmd <ID[=JSON]>"]),
         ("script", "script [OPTIONS] <FILE>", &["<FILE>", "--keep-going"]),
-        ("commands", "commands [FILTER]", &["[FILTER]"]),
+        ("commands", "commands [OPTIONS] [FILTER]", &["[FILTER]", "--json", "--compact"]),
         ("describe", "describe [OPTIONS] <ID>", &["<ID>", "--compact"]),
         (
             "app",

@@ -45,6 +45,8 @@ pub fn specs() -> Vec<CommandSpec> {
             s.sources.clear();
             s.videos.clear();
             let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
+            // A template too large to open is not saved (#892).
+            crate::io::session_size(file.display(), text.len() as u64, true)?;
             if cfg!(target_arch = "wasm32") {
                 crate::io::write_file(&file.to_string_lossy(), text.as_bytes())?;
             } else {

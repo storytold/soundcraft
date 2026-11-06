@@ -472,7 +472,7 @@ fn midi_inputs(e: &mut Engine, p: &Value) -> Result<Value> {
 fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "file.import_session_data";
     let path = str_param(p, "path").filter(|x| !x.trim().is_empty()).ok_or_else(|| bad(id, "`path` required"))?.to_string();
-    let text_v = crate::io::read_text(&path)?;
+    let text_v = crate::io::read_session_text(&path)?;
     let other = Session::from_json(&text_v).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
     let names: Option<Vec<String>> =
         p.get("tracks").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect());

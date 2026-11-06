@@ -146,12 +146,20 @@ fn measure_grid(s: &Session, end_unit: i64) -> Vec<(i64, i64, u32, u32)> {
         let a = s.tempo.bar_start_tick(bar);
         let b = s.tempo.bar_start_tick(bar + 1);
         let m = s.tempo.meter_at_tick(a);
-        let (ua, ub) = (a / UNIT, b / UNIT);
-        if ub <= ua {
+        if b <= a {
             break;
         }
-        v.push((ua, ub - ua, m.numerator, m.denominator));
+        let (ua, ub) = (a / UNIT, b / UNIT);
         bar += 1;
+        if ub <= ua {
+            // A bar shorter than a sixteenth that does not reach the next unit: the following
+            // bar carries this span, so the grid stays contiguous.
+            continue;
+        }
+        // Bars shorter than a sixteenth are written as one measure of the units they cover, so
+        // the time signature matches the measure's content.
+        let (num, den) = if m.ticks_per_bar() < UNIT { (u32::try_from(ub - ua).unwrap_or(1), 16) } else { (m.numerator, m.denominator) };
+        v.push((ua, ub - ua, num, den));
         if ub >= end_unit.max(1) || v.len() >= MAX_MEASURES {
             break;
         }
@@ -410,7 +418,9 @@ fn svg_budgeted(parts: &[Part], setup: &ScoreSetup, budget: usize) -> Result<Str
     const STAFF_GAP: f64 = 70.0;
     const SYSTEM_GAP: f64 = 40.0;
     let n_measures = parts.iter().map(|p| p.measures.len()).max().unwrap_or(0);
-    let per = setup.bars_per_system.max(1) as usize;
+    // The layout range the setup offers (1 to 16): a caller's own value can't multiply the
+    // barlines drawn per system beyond it.
+    let per = setup.bars_per_system.clamp(1, 16) as usize;
     let systems = n_measures.div_ceil(per).max(1);
     let label_w = if setup.show_track_names { 70.0 } else { 0.0 };
     let staff_x0 = MARGIN + label_w + 34.0;
@@ -644,6 +654,58 @@ mod tests {
         assert!(s.starts_with("<svg") && s.contains("<ellipse"));
     }
 
+    /// Note onsets (pitch count of every chord that is not a tie continuation).
+    fn note_starts(parts: &[Part]) -> usize {
+        parts.iter().flat_map(|p| &p.measures).flat_map(|m| &m.items).filter(|i| !i.tie_stop).map(|i| i.pitches.len()).sum()
+    }
+
+    #[test]
+    fn bars_shorter_than_a_sixteenth_keep_every_note() {
+        let base = crate::demo::demo_engine();
+        let baseline = note_starts(&layout(base.session(), &[]));
+        assert!(baseline > 0, "demo has notes");
+        for (n, d) in [(1, 32), (1, 64), (2, 64), (3, 64)] {
+            for mid in [false, true] {
+                let mut e = crate::demo::demo_engine();
+                let tick = if mid { e.session().tempo.bar_start_tick(5) } else { 0 };
+                e.session_mut().tempo.set_meter(tick, n, d).expect("valid meter");
+                let parts = layout(e.session(), &[]);
+                assert!(parts.iter().all(|p| !p.measures.is_empty()), "{n}/{d} mid={mid}: empty part");
+                assert_eq!(note_starts(&parts), baseline, "{n}/{d} mid={mid}: notes lost");
+                for p in &parts {
+                    for m in &p.measures {
+                        let units: u32 = m.items.iter().map(|i| i.units).sum();
+                        // The written meter matches the measure's content (divisions are sixteenths).
+                        assert_eq!(units * m.denominator, 16 * m.numerator, "{n}/{d} mid={mid}: meter/content mismatch");
+                    }
+                }
+                let setup = ScoreSetup::from_session(e.session());
+                let x = musicxml(&parts, &setup).expect("musicxml fits");
+                assert!(x.contains("<pitch>"), "{n}/{d} mid={mid}: musicxml has no notes");
+                let s = svg(&parts, &setup).expect("svg fits");
+                assert!(s.contains("<ellipse"), "{n}/{d} mid={mid}: svg has no notes");
+            }
+        }
+    }
+
+    #[test]
+    fn bars_of_a_sixteenth_a_32nd_and_a_64th_in_a_row_keep_a_contiguous_grid() {
+        let base = crate::demo::demo_engine();
+        let baseline = note_starts(&layout(base.session(), &[]));
+        let mut e = crate::demo::demo_engine();
+        // Bars 5 to 8 are 1/16, 1/32, 1/64 and 3/64 long, then 4/4 resumes.
+        for (bar, (n, d)) in (5..).zip([(1, 16), (1, 32), (1, 64), (3, 64), (4, 4)]) {
+            let tick = e.session().tempo.bar_start_tick(bar);
+            e.session_mut().tempo.set_meter(tick, n, d).expect("valid meter");
+        }
+        let grid = measure_grid(e.session(), i64::MAX);
+        assert_eq!(grid.first().map(|m| m.0), Some(0));
+        for w in grid.windows(2) {
+            assert_eq!(w[0].0 + w[0].1, w[1].0, "measures leave no gap or overlap: {w:?}");
+        }
+        assert_eq!(note_starts(&layout(e.session(), &[])), baseline, "notes lost");
+    }
+
     #[test]
     fn output_is_bounded_by_byte_budget() {
         // A part with many notes must not produce an unbounded document.
@@ -720,6 +782,14 @@ mod tests {
         let total: u32 = m.items.iter().map(|i| i.units).sum();
         assert_eq!(total, 256, "the bar still lasts 256 sixteenths");
         assert!(m.items.iter().any(|i| i.pitches.is_empty()), "the discarded suffix became rests");
+    }
+
+    #[test]
+    fn bars_per_system_is_held_to_the_supported_range() {
+        let setup = ScoreSetup { title: "t".into(), composer: String::new(), bars_per_system: u32::MAX, show_track_names: false };
+        let part = Part { name: "p".into(), bass: false, measures: vec![Measure { numerator: 4, denominator: 4, items: Vec::new() }] };
+        let out = svg_budgeted(std::slice::from_ref(&part), &setup, 1 << 20).unwrap();
+        assert_eq!(out.matches("stroke-width=\"1\"").count(), 16, "sixteen barlines, not billions");
     }
 
     #[test]

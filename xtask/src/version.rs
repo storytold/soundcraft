@@ -197,8 +197,11 @@ mod tests {
 
     #[test]
     fn a_failed_update_restores_the_manifest() {
-        let root = std::env::temp_dir().join(format!("xtask-version-restore-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
+        // Created exclusively: a folder already there (planted, or left by a failed run) would be
+        // someone else's, and a link inside it could redirect the writes below.
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+        let root = std::env::temp_dir().join(format!("xtask-version-restore-{}-{nanos}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
         let path = root.join("Cargo.toml");
         std::fs::write(&path, MANIFEST).unwrap();
         let err = set(&root, &path, MANIFEST, "2.0.0", || Err("cargo update failed".into())).unwrap_err();

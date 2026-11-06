@@ -69,6 +69,8 @@ fn session_bundle_within(session: &Session, limits: BundleLimits) -> Result<(Vec
         src.format = FileFormat::Wav;
     }
     let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
+    // Its session too: one the reader would refuse is not saved (#892).
+    super::session_size("the session", text.len() as u64, true)?;
     fits(text.len())?;
     w.start_file(format!("{}.{}", sanitize_name(&s.name), soundcraft_model::SESSION_EXTENSION), opts).map_err(zerr)?;
     w.write_all(text.as_bytes()).map_err(ioerr)?;
@@ -100,10 +102,7 @@ pub fn open_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Ve
     let (text, mut files) = if bytes.starts_with(b"PK\x03\x04") {
         read_bundle(bytes, BUNDLE_LIMITS)?
     } else {
-        (
-            String::from_utf8(bytes.to_vec()).map_err(|_| EngineError::Io(format!("{name}: not a SoundCraft session")))?,
-            std::collections::HashMap::new(),
-        )
+        (super::session_bytes_text(name, bytes)?, std::collections::HashMap::new())
     };
     let mut s = Session::from_json(&text).map_err(|err| EngineError::Io(format!("{name}: {err}")))?;
     let mut missing = Vec::new();
@@ -150,6 +149,38 @@ mod bundle_tests {
     use super::*;
 
     #[test]
+    fn a_session_too_large_to_parse_is_refused_from_bytes() {
+        // #892: a session the browser hands over as bytes has the cap a session file has. The
+        // bytes are zeroed on allocation and never read, so they take no memory.
+        let huge = vec![0u8; usize::try_from(super::super::MAX_SESSION_BYTES).unwrap() + 1];
+        let err = open_session_bytes(&mut Engine::default(), "Huge.scraft", &huge).unwrap_err().to_string();
+        assert_eq!(err, "Huge.scraft is too large to open (over 256 MiB)");
+    }
+
+    #[test]
+    fn bundles_and_bare_sessions_keep_to_the_session_limit_both_ways() {
+        // #892, with the limit lowered for this test: a bundle is saved only if its session can
+        // be opened again (#433), and its reader and the bare-bytes reader refuse one past it.
+        let e = crate::demo::demo_engine();
+        let (bundle, fresh) = session_bundle(e.session()).unwrap();
+        let inside = fresh.to_json().unwrap().len() as u64;
+        let bare = e.session().to_json().unwrap();
+        {
+            let _limit = super::super::SessionLimit::set(inside.max(bare.len() as u64));
+            assert!(session_bundle(e.session()).is_ok());
+            assert!(open_session_bytes(&mut Engine::default(), "Song.scraftz", &bundle).is_ok());
+            assert!(open_session_bytes(&mut Engine::default(), "Song.scraft", bare.as_bytes()).is_ok());
+        }
+        let _limit = super::super::SessionLimit::set(inside.min(bare.len() as u64) - 1);
+        let err = session_bundle(e.session()).unwrap_err().to_string();
+        assert!(err.starts_with("the session is too large to save"), "{err}");
+        let err = open_session_bytes(&mut Engine::default(), "Song.scraftz", &bundle).unwrap_err().to_string();
+        assert!(err.starts_with("bundle: ") && err.contains(".scraft is too large to open"), "{err}");
+        let err = open_session_bytes(&mut Engine::default(), "Song.scraft", bare.as_bytes()).unwrap_err().to_string();
+        assert!(err.starts_with("Song.scraft is too large to open"), "{err}");
+    }
+
+    #[test]
     fn bundle_round_trips_session_and_audio() {
         let mut e = crate::demo::demo_engine();
         e.execute("mix.volume", &serde_json::json!({"track": "Kick", "db": -7.0})).unwrap();
@@ -192,6 +223,23 @@ mod bundle_tests {
         for src in &r.session().sources {
             assert!(r.session().pool.get(src.id).is_some(), "{} has no audio", src.name);
         }
+    }
+
+    #[test]
+    fn entries_sharing_one_payload_are_refused() {
+        use std::io::Write as _;
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        w.start_file("Song.scraft", opts).unwrap();
+        w.write_all(Session::default().to_json().unwrap().as_bytes()).unwrap();
+        w.start_file("Audio Files/a.wav", opts).unwrap();
+        w.write_all(&[7u8; 4096]).unwrap();
+        for i in 0..100 {
+            w.shallow_copy_file("Audio Files/a.wav", &format!("Audio Files/copy{i}.wav")).unwrap();
+        }
+        let bundle = w.finish().unwrap().into_inner();
+        let err = read_bundle(&bundle, BUNDLE_LIMITS).unwrap_err();
+        assert!(err.to_string().contains("share data"), "{err}");
     }
 
     #[test]
