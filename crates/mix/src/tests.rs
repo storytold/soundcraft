@@ -1208,3 +1208,26 @@ fn gain_ramp_matches_converting_both_ends_every_sample() {
         }
     }
 }
+
+#[test]
+fn a_surround_strip_reports_its_loudest_channel_for_the_clip_light() {
+    let mut s = Session::default();
+    s.outputs[0].format = ChannelFormat::Surround51;
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Surround51, None);
+    // L, R quiet; LFE (channel 3) over full scale.
+    let chans: Vec<Vec<f32>> = (0..6).map(|c| vec![if c == 3 { 1.2 } else { 0.1 }; 4800]).collect();
+    s.pool.insert(SourceId(901), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: chans })));
+    let id = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "lfe", SourceId(901), 0, 0, 4800));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    let mut out = vec![vec![0.0; 512]; 6];
+    eng.render(&s, 0, 512, &mut out);
+    let m = &eng.meters[&t];
+    assert!(m.peak[0] < 0.2 && m.peak[1] < 0.2, "{m:?}");
+    assert!((m.peak_all - 1.2).abs() < 1e-3, "{m:?}");
+    assert!((eng.main_meter.peak_all - 1.2).abs() < 1e-3, "the main meter too: {:?}", eng.main_meter);
+    let mut acc = StripMeter::default();
+    acc.accumulate(m);
+    acc.accumulate(&StripMeter { peaks: vec![0.0; m.peaks.len()], ..StripMeter::default() });
+    assert_eq!(acc.peak_all, m.peak_all, "kept until taken");
+}

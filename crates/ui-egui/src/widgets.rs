@@ -271,9 +271,6 @@ pub fn pan_text(v: f32) -> String {
     }
 }
 
-/// The dB marks of a meter's scale, also ruled across its bar.
-const METER_MARKS: [f32; 8] = [0.0, -5.0, -10.0, -15.0, -20.0, -30.0, -40.0, -60.0];
-
 /// The bar of a [`meter`] drawn in `r`, below its clip light.
 fn meter_bar(r: Rect) -> Rect {
     Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 5.0), pos2(r.max.x - 1.0, r.max.y - 1.0))
@@ -282,7 +279,7 @@ fn meter_bar(r: Rect) -> Rect {
 /// The marks that fit on `bar`, at least 9 pt apart from the top down, with their heights.
 fn meter_marks(bar: Rect) -> impl Iterator<Item = (f32, f32)> {
     let mut last = f32::NEG_INFINITY;
-    METER_MARKS.into_iter().filter_map(move |db| {
+    crate::meters::SCALE_MARKS.into_iter().filter_map(move |db| {
         let y = bar.max.y - bar.height() * meter_pos(db);
         (y - last >= 9.0).then(|| {
             last = y;
@@ -300,7 +297,7 @@ pub fn meter(ui: &Ui, r: Rect, level: f32, hold: f32, clip: bool) {
     p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.min.y + 4.0), r.max), 0.0, t.meter_bg);
     let bar = meter_bar(r);
     let y = |pos: f32| bar.max.y - bar.height() * pos;
-    let (amber, red) = (meter_pos(-12.0), meter_pos(-3.0));
+    let (amber, red) = (meter_pos(crate::meters::YELLOW_FROM_DB), meter_pos(crate::meters::RED_FROM_DB));
     let zones = [(0.0, amber, t.meter_green), (amber, red, t.meter_yellow), (red, 1.0, t.meter_red)];
     let lit = level_pos(level);
     let unlit = if t.meter_bg.intensity() > 0.5 { 0.08 } else { 0.18 };
@@ -314,8 +311,9 @@ pub fn meter(ui: &Ui, r: Rect, level: f32, hold: f32, clip: bool) {
     for (_, at) in meter_marks(bar).skip(1) {
         p.hline(bar.x_range(), p.round_to_pixel_center(at), Stroke::new(1.0, Color32::from_black_alpha(90)));
     }
+    // The hold line marks a peak above the bar (none when holds are off and it follows the bar).
     let held = level_pos(hold);
-    if held > 0.01 {
+    if held > 0.01 && held > lit + 0.002 {
         let color = zones.iter().find(|z| held <= z.1).map_or(t.meter_red, |z| z.2);
         p.rect_filled(Rect::from_x_y_ranges(bar.x_range(), y(held) - 1.0..=y(held) + 1.0), 0.0, color);
     }
@@ -332,25 +330,24 @@ pub fn meter_scale(p: &Painter, r: Rect, x: f32) {
 
 /// A linear peak → 0..1 meter position.
 pub fn level_pos(v: f32) -> f32 {
-    meter_pos(if v <= 1e-6 { -80.0 } else { 20.0 * v.log10() })
+    meter_pos(if v.is_nan() || v <= 1e-6 { crate::meters::SCALE_FLOOR_DB } else { 20.0 * v.log10() })
 }
 
-/// dB → 0..1 meter position (logarithmic-ish scale like hardware meters).
+/// dB → 0..1 meter position: piecewise linear in dB between [`crate::meters::SCALE_KNEES`], from
+/// [`crate::meters::SCALE_FLOOR_DB`] (0) to 0 dB (1), like hardware meters.
 pub fn meter_pos(db: f32) -> f32 {
-    if !db.is_finite() || db <= -80.0 {
+    use crate::meters::{SCALE_FLOOR_DB, SCALE_KNEES};
+    if db.is_nan() || db <= SCALE_FLOOR_DB {
         return 0.0;
     }
-    if db >= 0.0 {
-        return 1.0;
+    let (mut lo_db, mut lo_pos) = (SCALE_FLOOR_DB, 0.0);
+    for (hi_db, hi_pos) in SCALE_KNEES {
+        if db < hi_db {
+            return lo_pos + (db - lo_db) / (hi_db - lo_db) * (hi_pos - lo_pos);
+        }
+        (lo_db, lo_pos) = (hi_db, hi_pos);
     }
-    // -80..-40: bottom 10 %, -40..-20: 20 %, -20..0: 70 %.
-    if db < -40.0 {
-        (db + 80.0) / 40.0 * 0.1
-    } else if db < -20.0 {
-        0.1 + (db + 40.0) / 20.0 * 0.2
-    } else {
-        0.3 + (db + 20.0) / 20.0 * 0.7
-    }
+    1.0
 }
 
 /// Clip gain fader taper: the top three quarters span -36..+36 dB evenly, the rest compresses to -144.

@@ -35,6 +35,7 @@ impl SoundApp {
                 }
                 if id == "track.clear_clip_indicators" {
                     self.meters.values_mut().chain([&mut self.main_meter]).for_each(|m| m.clip = false);
+                    crate::meters::forget_readings(&mut self.meter_snapshot);
                 }
                 Ok(v)
             }

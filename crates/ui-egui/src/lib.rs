@@ -24,6 +24,7 @@ pub mod fonts;
 pub mod icons;
 pub mod import;
 pub mod menus;
+pub mod meters;
 pub mod mix_window;
 pub mod palette;
 pub mod panels;
@@ -142,6 +143,8 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// Meter peak hold, clip indication and release (`ui.meters`).
+    pub meters: meters::MeterPrefs,
 }
 
 impl Default for UiState {
@@ -203,6 +206,7 @@ impl Default for UiState {
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
+            meters: meters::MeterPrefs::default(),
         }
     }
 }
@@ -226,8 +230,13 @@ pub fn fit_window_to_screen(ctx: &egui::Context) {
 pub struct MeterDisplay {
     pub level: [f32; 2],
     pub hold: [f32; 2],
-    pub hold_age: f32,
+    /// Seconds since each side's hold was last raised.
+    pub hold_age: [f32; 2],
     pub clip: bool,
+    /// Seconds since the signal last clipped (for timed clip indication).
+    pub clip_age: f32,
+    /// The highest sample peak since the meter was last reset (the numeric peak readout).
+    pub max_peak: f32,
     pub gr: f32,
     /// [`soundcraft_mix::PluginFailures::count`] as last seen.
     pub plugin_failures: u32,

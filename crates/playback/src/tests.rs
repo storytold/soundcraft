@@ -113,8 +113,11 @@ fn reusable_meter_snapshot_updates_and_drops_stale_tracks() {
     let keep = TrackId(1);
     let stale = TrackId(2);
     let mut source = MeterSnapshot::default();
-    source.tracks.insert(keep, StripMeter { peak: [0.5, 0.25], peaks: vec![0.5, 0.25], gain_reduction_db: 3.0, ..StripMeter::default() });
+    source
+        .tracks
+        .insert(keep, StripMeter { peak: [0.5, 0.25], peaks: vec![0.5, 0.25], peak_all: 0.9, gain_reduction_db: 3.0, ..StripMeter::default() });
     source.main.peaks = vec![0.75, 0.5];
+    source.main.peak_all = 0.75;
     let mut out = MeterSnapshot::default();
     out.tracks.insert(stale, StripMeter::default());
     copy_meter_snapshot(&source, &mut out);
@@ -223,9 +226,10 @@ fn a_take_without_new_blocks_still_drops_deleted_tracks() {
 
 #[test]
 fn a_channel_count_change_takes_the_new_stereo_peaks() {
-    let mut acc = StripMeter { peak: [0.9, 0.9], peaks: vec![0.9], ..StripMeter::default() };
-    acc.accumulate(&StripMeter { peak: [0.9, 0.0], peaks: vec![0.9, 0.0], ..StripMeter::default() });
-    assert_eq!(acc.peak, [0.9, 0.0]);
+    let mut acc = StripMeter { peak: [0.9, 0.9], peaks: vec![0.9], peak_all: 0.9, ..StripMeter::default() };
+    acc.accumulate(&StripMeter { peak: [0.2, 0.0], peaks: vec![0.2, 0.0], peak_all: 0.2, ..StripMeter::default() });
+    assert_eq!(acc.peak, [0.2, 0.0]);
+    assert_eq!(acc.peak_all, 0.2, "a peak from the old layout doesn't stay in the clip light's reading");
 }
 
 #[test]
@@ -235,8 +239,9 @@ fn gain_reduction_keeps_its_maximum_until_taken() {
         acc.accumulate(&StripMeter { peak: [0.1, 0.1], peaks: vec![0.1], gain_reduction_db: gr, ..StripMeter::default() });
     }
     assert_eq!(acc.gain_reduction_db, 9.0);
+    acc.peak_all = 0.7;
     acc.reset_levels();
-    assert_eq!((acc.gain_reduction_db, acc.peak, acc.peaks.len()), (0.0, [0.0; 2], 1));
+    assert_eq!((acc.gain_reduction_db, acc.peak, acc.peak_all, acc.peaks.len()), (0.0, [0.0; 2], 0.0, 1));
 }
 
 #[test]

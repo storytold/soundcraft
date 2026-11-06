@@ -1,4 +1,4 @@
-use super::{MeterDisplay, OutputTrouble, Player, SoundApp, Trouble};
+use super::{OutputTrouble, Player, SoundApp, Trouble};
 
 impl SoundApp {
     /// Whether the meters are live: while playing, and while armed or input-monitored tracks are heard.
@@ -123,31 +123,4 @@ impl SoundApp {
         self.recorder_failed = false;
         self.player = Some(Player::with_config(self.engine.session_arc(), &self.ui.audio));
     }
-}
-
-pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32) {
-    // Instant attack, ~26 dB/s release, 2 s peak hold.
-    let fall = 10f32.powf(-26.0 * dt / 20.0);
-    for c in 0..2 {
-        let v = peak.get(c).copied().unwrap_or(0.0);
-        let lvl = d.level.get(c).copied().unwrap_or(0.0);
-        let nv = if v >= lvl { v } else { (lvl * fall).max(v) };
-        if let Some(x) = d.level.get_mut(c) {
-            *x = if nv < 1e-5 { 0.0 } else { nv };
-        }
-        if v >= d.hold.get(c).copied().unwrap_or(0.0) {
-            if let Some(h) = d.hold.get_mut(c) {
-                *h = v;
-            }
-            d.hold_age = 0.0;
-        }
-        if v >= 1.0 {
-            d.clip = true;
-        }
-    }
-    d.hold_age += dt;
-    if d.hold_age > 2.0 {
-        d.hold = d.level;
-    }
-    d.gr = if gr > d.gr { gr } else { d.gr * fall };
 }
