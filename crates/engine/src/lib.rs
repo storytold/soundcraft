@@ -11,6 +11,7 @@ pub mod catalog_more;
 pub mod clip_group_file;
 pub mod cmd;
 pub mod demo;
+mod dirty;
 pub mod edit;
 pub mod file_access;
 pub mod inspect;
@@ -23,14 +24,38 @@ use soundcraft_time::Samples;
 use std::cell::Cell;
 use std::sync::Arc;
 
+use dirty::same_document;
+
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
 pub use soundcraft_model as model;
+
+/// Upper bound on journaled commands, so a long session cannot grow memory without limit.
+const MAX_JOURNAL_ENTRIES: usize = 10_000;
+/// Upper bound on a single journaled entry's params (serialized), so junk fields from MCP or the
+/// control channel cannot keep a huge blob alive for the life of the process.
+const MAX_JOURNAL_ENTRY_BYTES: usize = 64 * 1024; // 64 KiB
 
 /// Shuts the third-party plugin hosts down, running the module exit of every plugin binary they
 /// loaded. Call it at the end of `main`, once every plugin instance (mixer, player) is gone: a
 /// plugin that has been used can crash when its module exit only runs from an exit handler.
 pub fn shutdown_plugin_hosts() {
     soundcraft_vst3_host::shutdown();
+}
+
+/// A new [`soundcraft_model::AutoName::id`] for a scheme in `s`: a hash of a counter, never 0 and
+/// not held by another scheme in `s`. Native builds seed the hash from the system, so each run of
+/// the app gives other ids.
+pub fn new_scheme_id(s: &Session) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    loop {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let id = h.finish();
+        if id != 0 && !s.auto_names.values().any(|a| a.id == id) {
+            return id;
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -59,6 +84,8 @@ pub enum TransportRequest {
     /// Stop the old session's transport without applying stop-time edits to the new document.
     ResetSession,
     Play,
+    /// Start playing at this position (or move there if already playing), ignoring the selection.
+    PlayFrom(Samples),
     Stop,
     TogglePlay,
     Record,
@@ -92,15 +119,52 @@ pub struct Clipboard {
     pub markers: Vec<soundcraft_model::MemoryLocation>,
     /// How far the copied range started after a grid line; Relative Grid pastes keep it.
     pub grid_offset: Samples,
+    /// Original insertion point when the clipboard was populated by Cut.
+    pub cut_from: Option<Samples>,
     /// Copy Special › Automation: pasting it leaves the clips alone, in Shuffle mode too.
     pub automation_only: bool,
+    /// The Auto Rename schemes of the copied clips, keyed as in their `auto_name`.
+    pub auto_names: std::collections::BTreeMap<u64, soundcraft_model::AutoName>,
 }
 
 impl Clipboard {
     /// An empty clipboard for material copied from `range`.
     pub fn of_range(s: &Session, range: soundcraft_time::Range) -> Clipboard {
-        let line = s.edit.grid.line_at_or_before(range.start, s.sample_rate, &s.tempo, s.frame_rate);
+        let line = s.grid_line_at_or_before(range.start);
         Clipboard { length: range.len(), grid_offset: range.start.saturating_sub(line), ..Clipboard::default() }
+    }
+
+    /// Keep a copy of the Auto Rename schemes that the copied clips use, as `s` holds them.
+    pub fn keep_auto_names(&mut self, s: &Session) {
+        self.auto_names = self.tracks.iter().flatten().filter_map(|c| c.auto_name).filter_map(|k| Some((k, s.auto_names.get(&k)?.clone()))).collect();
+    }
+
+    /// Before a paste into `s`: point the copied clips at schemes that `s` holds. A scheme that `s`
+    /// holds with the same [`AutoName::id`](soundcraft_model::AutoName::id), name, zeros and suffix
+    /// is used as it is, and its numbers count on. Any other goes into `s` under a new key, counting
+    /// on from where it was when it was copied.
+    pub fn adopt_auto_names(&mut self, s: &mut Session) {
+        let mut keys = std::collections::BTreeMap::new();
+        for (k, a) in &self.auto_names {
+            let held = s
+                .auto_names
+                .iter()
+                .find(|(_, h)| a.id != 0 && h.id == a.id && h.name == a.name && h.zeros == a.zeros && h.suffix == a.suffix)
+                .map(|(key, _)| *key);
+            let key = match held {
+                Some(key) => key,
+                None => {
+                    let key = s.alloc();
+                    s.auto_names.insert(key, a.clone());
+                    key
+                }
+            };
+            keys.insert(*k, key);
+        }
+        for c in self.tracks.iter_mut().flatten() {
+            c.auto_name = c.auto_name.and_then(|k| keys.get(&k).copied());
+        }
+        self.auto_names = keys.values().filter_map(|k| Some((*k, s.auto_names.get(k)?.clone()))).collect();
     }
 }
 
@@ -109,6 +173,9 @@ struct HistoryEntry {
     label: String,
     doc: Arc<Session>,
 }
+
+/// Most decoded imports [`Engine::offer_import`] holds at once (each can be gigabytes).
+const MAX_OFFERED_IMPORTS: usize = 4;
 
 /// Engine state: the document, history, clipboard and transport plumbing.
 pub struct Engine {
@@ -119,8 +186,9 @@ pub struct Engine {
     pub clipboard: Clipboard,
     pub transport_requests: Vec<TransportRequest>,
     pub transport: TransportStatus,
-    /// Command journal (id, params) for macro recording / agents.
-    pub journal: Vec<(String, Value)>,
+    /// Command journal (id, params) for macro recording / agents. Ring buffer: capped at
+    /// [`MAX_JOURNAL_ENTRIES`] entries of up to [`MAX_JOURNAL_ENTRY_BYTES`] params each.
+    pub journal: std::collections::VecDeque<(String, Value)>,
     /// Path of the session file, if saved.
     pub path: Option<String>,
     /// Revision counter; bumps on every document change but zoom/scroll (UI caches key on it).
@@ -139,6 +207,8 @@ pub struct Engine {
     /// The edit selection (range, tracks) before the last change, for Restore Last Selection.
     /// Kept out of the document so selecting never marks the session modified.
     pub last_selection: Option<(soundcraft_time::Range, Vec<TrackId>)>,
+    /// Audio decoded off the UI thread, waiting for its `file.import_audio` (see `offer_import`).
+    imports: Vec<io::DecodedImport>,
 }
 
 impl Default for Engine {
@@ -160,7 +230,7 @@ impl Engine {
             clipboard: Clipboard::default(),
             transport_requests: Vec::new(),
             transport: TransportStatus::default(),
-            journal: Vec::new(),
+            journal: std::collections::VecDeque::new(),
             path: None,
             revision: 1,
             dirty: false,
@@ -169,7 +239,31 @@ impl Engine {
             merge_hold: None,
             messages: Vec::new(),
             last_selection: None,
+            imports: Vec::new(),
         }
+    }
+
+    /// Hands over audio [`io::decode_import`] made off the UI thread: the next `file.import_audio`
+    /// of the same file at the session's rate places it instead of reading the file again. The
+    /// command still checks the path may be read. Only the few newest are kept.
+    pub fn offer_import(&mut self, d: io::DecodedImport) {
+        self.imports.retain(|x| x.key != d.key);
+        self.imports.push(d);
+        let extra = self.imports.len().saturating_sub(MAX_OFFERED_IMPORTS);
+        self.imports.drain(..extra);
+    }
+
+    /// Drops audio offered for imports that never ran (the command failed or was not sent).
+    pub fn drop_offered_imports(&mut self) {
+        self.imports.clear();
+    }
+
+    /// The offered audio of the file at `path`, if it was decoded for the session's current rate.
+    pub(crate) fn take_import(&mut self, path: &std::path::Path) -> Option<io::DecodedImport> {
+        let key = io::file_key(path);
+        let rate = self.session().sample_rate.hz();
+        let i = self.imports.iter().position(|d| d.key == key && d.rate == rate)?;
+        Some(self.imports.remove(i))
     }
 
     pub fn session(&self) -> &Session {
@@ -184,6 +278,13 @@ impl Engine {
     pub fn session_mut(&mut self) -> &mut Session {
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
+        Arc::make_mut(&mut self.doc)
+    }
+
+    /// Mutable access for live state that redraws and reaches playback but is not part of the
+    /// saved document. Callers must also keep the fields out of serialization and Undo/Redo.
+    pub(crate) fn runtime_session_mut(&mut self) -> &mut Session {
+        self.revision = self.revision.wrapping_add(1);
         Arc::make_mut(&mut self.doc)
     }
 
@@ -242,20 +343,34 @@ impl Engine {
         self.undo.iter().map(|h| h.label.clone()).collect()
     }
 
+    /// Bound Undo and Redo together, dropping farthest redo entries before oldest undo entries.
+    pub fn set_history_limit(&mut self, limit: usize) {
+        let limit = limit.max(1);
+        self.history_limit = limit;
+        let excess = self.undo.len().saturating_add(self.redo.len()).saturating_sub(limit);
+        let from_redo = excess.min(self.redo.len());
+        self.redo.drain(..from_redo);
+        self.undo.drain(..excess - from_redo);
+    }
+
+    /// Restore the previous document while retaining current edit mode and live input flags.
     pub fn undo(&mut self) -> bool {
         let Some(h) = self.undo.pop() else { return false };
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
+        self.keep_runtime_track_states(&cur);
         self.redo.push(HistoryEntry { label: h.label, doc: cur });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         true
     }
 
+    /// Restore the next document while retaining current edit mode and live input flags.
     pub fn redo(&mut self) -> bool {
         let Some(h) = self.redo.pop() else { return false };
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
+        self.keep_runtime_track_states(&cur);
         self.undo.push(HistoryEntry { label: h.label, doc: cur });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
@@ -273,6 +388,25 @@ impl Engine {
             for f in flags {
                 ed.set_flag(f, from.edit.flag(f));
             }
+        }
+    }
+
+    /// Undo and Redo must not restore live input states captured in document snapshots. A track
+    /// absent from the current document comes back safe rather than inheriting a historical arm.
+    fn keep_runtime_track_states(&mut self, from: &Session) {
+        let states: std::collections::HashMap<_, _> = from
+            .tracks
+            .iter()
+            .filter(|track| track.mixer.record_arm || track.mixer.input_monitor)
+            .map(|track| (track.id, (track.mixer.record_arm, track.mixer.input_monitor)))
+            .collect();
+        let state = |id| states.get(&id).copied().unwrap_or((false, false));
+        // Keep shared snapshots untouched when the restored flags already match.
+        if self.doc.tracks.iter().all(|track| (track.mixer.record_arm, track.mixer.input_monitor) == state(track.id)) {
+            return;
+        }
+        for track in &mut Arc::make_mut(&mut self.doc).tracks {
+            (track.mixer.record_arm, track.mixer.input_monitor) = state(track.id);
         }
     }
 
@@ -316,6 +450,7 @@ impl Engine {
         let before = Arc::clone(&self.doc);
         let rev = self.revision;
         let dirty = self.dirty;
+        let side_effects = (self.clipboard.clone(), self.messages.clone(), self.transport_requests.clone(), self.last_selection.clone());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, params)));
         let result = match result {
             Ok(r) => r,
@@ -323,6 +458,7 @@ impl Engine {
                 self.doc = before;
                 self.revision = rev.wrapping_add(1);
                 self.dirty = dirty;
+                (self.clipboard, self.messages, self.transport_requests, self.last_selection) = side_effects;
                 return Err(EngineError::Internal(id.to_string(), panic_message(&*p)));
             }
         };
@@ -337,7 +473,7 @@ impl Engine {
                     self.push_undo(spec.label, before);
                 }
                 if spec.journal {
-                    self.journal.push((id.to_string(), params.clone()));
+                    self.journal_append(id, params);
                 }
                 Ok(v)
             }
@@ -369,7 +505,15 @@ impl Engine {
         let key = self.merge_hold.clone().unwrap_or_else(|| key.to_string());
         let continuing = self.merge_key.as_ref() == Some(&key);
         let before_len = self.undo.len();
-        let r = self.execute(id, params)?;
+        // The step pushed for a continuing tick is dropped again below, so it must not trim the
+        // oldest entry first when the history is full.
+        let limit = self.history_limit;
+        if continuing && before_len > 0 {
+            self.history_limit = limit.max(before_len.saturating_add(1));
+        }
+        let r = self.execute(id, params);
+        self.history_limit = limit;
+        let r = r?;
         if continuing && self.undo.len() == before_len + 1 && before_len > 0 {
             // Drop the step just pushed; the earlier one still holds the pre-gesture document.
             self.undo.pop();
@@ -386,9 +530,24 @@ impl Engine {
         }
     }
 
+    /// The gesture `execute_merged` is continuing, if any.
+    pub fn merge_key(&self) -> Option<&str> {
+        self.merge_key.as_deref()
+    }
+
     /// End a gesture started with `execute_merged`.
     pub fn end_merge(&mut self) {
         self.merge_key = None;
+    }
+
+    /// Append a journaled command, clamping its params to [`MAX_JOURNAL_ENTRY_BYTES`] and the
+    /// buffer to [`MAX_JOURNAL_ENTRIES`] entries (oldest are dropped).
+    fn journal_append(&mut self, id: &str, params: &Value) {
+        let clamped = (id.to_string(), journal_params(params));
+        self.journal.push_back(clamped);
+        if self.journal.len() > MAX_JOURNAL_ENTRIES {
+            self.journal.pop_front();
+        }
     }
 
     /// Convenience: execute with `{}` params.
@@ -416,19 +575,6 @@ impl Engine {
     }
 }
 
-/// Equal apart from what changes without editing: the selection, the playhead and the zoom.
-fn same_document(saved: &Session, doc: &Session) -> bool {
-    let mut doc = doc.clone();
-    let (from, to) = (&saved.edit, &mut doc.edit);
-    to.selection = from.selection;
-    to.timeline_selection = from.timeline_selection;
-    to.selected_tracks.clone_from(&from.selected_tracks);
-    to.selected_clips.clone_from(&from.selected_clips);
-    to.playhead = from.playhead;
-    to.zoom = from.zoom;
-    *saved == doc
-}
-
 fn install_panic_hook() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -441,7 +587,93 @@ fn install_panic_hook() {
 }
 
 fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
-    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
+    p.downcast_ref::<&str>().map(ToString::to_string).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
+}
+
+/// The params to keep in the journal for a command: the value itself when it serializes within
+/// [`MAX_JOURNAL_ENTRY_BYTES`], or a truncation marker when it is too large or unparseable.
+///
+/// Serializes into a [`std::io::Write`] sink that fails as soon as the cap is exceeded, so an
+/// oversized `params` (a multi-MiB line from MCP or the control channel) is never fully
+/// serialized, cloned, or allocated just to be discarded.
+fn journal_params(params: &Value) -> Value {
+    // Write through a bounded sink: serialization stops (WriteZero) the moment the cap is passed,
+    // so an oversized value costs at most ~1× the cap, not its full serialized size.
+    struct Bounded(Vec<u8>);
+    impl std::io::Write for Bounded {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let room = MAX_JOURNAL_ENTRY_BYTES.saturating_sub(self.0.len());
+            if room == 0 {
+                return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "journal entry cap"));
+            }
+            let take = buf.len().min(room);
+            self.0.extend_from_slice(&buf[..take]);
+            if take < buf.len() {
+                return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "journal entry cap"));
+            }
+            Ok(take)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut sink = Bounded(Vec::new());
+    // Fails with WriteZero as soon as the cap is exceeded, so the allocation stays bounded even
+    // for a multi-MiB params.
+    let ok = serde_json::to_writer(&mut sink, params).is_ok();
+    if !ok {
+        return json!({"__truncated__": true});
+    }
+    params.clone()
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use super::*;
+
+    #[test]
+    fn journal_is_bounded_to_max_entries() {
+        let mut e = Engine::default();
+        // Calling the private append helper directly exercises the ring buffer without the cost
+        // of cloning the whole document on 10,000+ `track.new` calls.
+        for i in 0..MAX_JOURNAL_ENTRIES + 500 {
+            let n = format!("t{i}");
+            e.journal_append("track.new", &json!({"name": n}));
+        }
+        assert_eq!(e.journal.len(), MAX_JOURNAL_ENTRIES);
+        // The oldest entries were dropped, the newest kept: the first remaining is the 501st pushed,
+        // and the newest still there.
+        let first = e.journal.front().map(|(_, p)| p["name"].as_str().unwrap_or_default());
+        assert_eq!(first, Some("t500"));
+        let last = e.journal.back().map(|(_, p)| p["name"].as_str().unwrap_or_default());
+        let last_name = format!("t{}", MAX_JOURNAL_ENTRIES + 499);
+        assert_eq!(last, Some(last_name.as_str()));
+        assert_eq!(e.journal.back().map(|(id, _)| id.as_str()), Some("track.new"));
+    }
+
+    #[test]
+    fn oversized_params_are_truncated_in_the_journal() {
+        let big = "x".repeat(MAX_JOURNAL_ENTRY_BYTES * 4);
+        assert_eq!(journal_params(&json!({"name": big})), json!({"__truncated__": true}));
+    }
+
+    #[test]
+    fn small_params_are_kept_whole() {
+        let p = json!({"track": "Kick", "db": -6.0});
+        assert_eq!(journal_params(&p), p);
+    }
+
+    #[test]
+    fn cap_boundary_is_exact() {
+        // A value just under the cap is kept whole; one just over is truncated. "Just" means the
+        // bounded writer made at most ~two allocations of cap size, not a full multi-MiB buffer.
+        // `{"n":"…"}` adds 9 bytes around the string.
+        let small_str = MAX_JOURNAL_ENTRY_BYTES - 64;
+        let small = json!({"n": "x".repeat(small_str)});
+        assert_eq!(journal_params(&small), small);
+        let big = json!({"n": "x".repeat(MAX_JOURNAL_ENTRY_BYTES)});
+        assert_eq!(journal_params(&big), json!({"__truncated__": true}));
+    }
 }
 
 #[cfg(test)]
@@ -494,6 +726,59 @@ mod merge_tests {
 mod dirty_tests {
     use super::*;
 
+    /// Lowering the cap immediately removes the oldest retained Undo steps.
+    #[test]
+    fn reducing_the_history_limit_drops_the_oldest_steps_immediately() {
+        let mut e = Engine::default();
+        for _ in 0..4 {
+            e.execute("track.new", &json!({})).unwrap();
+        }
+        assert_eq!(e.undo_history().len(), 4);
+        e.set_history_limit(2);
+        assert_eq!(e.undo_history().len(), 2);
+        assert!(e.undo());
+        assert!(e.undo());
+        assert!(!e.undo());
+    }
+
+    /// A shared history cap retains the closest redo steps without letting either direction exceed it.
+    #[test]
+    fn lowering_history_limit_bounds_undo_and_redo_together() {
+        for (requested, past, future) in [(0, 1, 0), (1, 1, 0), (2, 2, 0), (3, 2, 1), (4, 2, 2), (5, 2, 3), (usize::MAX, 2, 3)] {
+            let mut e = Engine::default();
+            for _ in 0..5 {
+                e.execute("track.new", &json!({})).unwrap();
+            }
+            for _ in 0..3 {
+                assert!(e.undo());
+            }
+            e.mark_clean();
+            e.set_history_limit(requested);
+            let limit = requested.max(1);
+            assert_eq!(e.history_limit, limit);
+            assert_eq!((e.undo.len(), e.redo.len()), (past, future), "requested {requested}");
+            assert!(!e.is_dirty(), "history capacity is not a document edit");
+            assert_eq!(e.session().tracks.len(), 2);
+            for step in 1..=future {
+                assert!(e.redo());
+                assert_eq!(e.session().tracks.len(), 2 + step, "keep the nearest redo entries");
+                assert!(e.undo.len() + e.redo.len() <= limit);
+            }
+            assert!(!e.redo());
+            for step in 1..=past + future {
+                assert!(e.undo());
+                assert_eq!(e.session().tracks.len(), 2 + future - step, "keep the nearest undo entries");
+                assert!(e.undo.len() + e.redo.len() <= limit);
+            }
+            assert!(!e.undo());
+            for _ in 0..past + future {
+                assert!(e.redo());
+                assert!(e.undo.len() + e.redo.len() <= limit);
+            }
+            assert!(!e.redo());
+        }
+    }
+
     #[test]
     fn selecting_locating_and_zooming_leave_the_session_clean() {
         let mut e = crate::demo::demo_engine();
@@ -511,5 +796,66 @@ mod dirty_tests {
         assert!(e.is_dirty());
         e.undo();
         assert!(!e.is_dirty());
+    }
+
+    /// Unchanged runtime flags do not detach a shared document snapshot.
+    #[test]
+    fn matching_live_states_keep_the_document_shared() {
+        let mut e = Engine::default();
+        let track = e.session_mut().add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Mono, None);
+        e.runtime_session_mut().track_mut(track).unwrap().mixer.record_arm = true;
+        let snapshot = e.session_arc();
+        e.keep_runtime_track_states(&snapshot);
+        assert!(Arc::ptr_eq(&snapshot, &e.session_arc()));
+    }
+
+    #[test]
+    fn dirty_state_follows_save_undo_and_redo_after_navigation() {
+        let mut e = Engine::default();
+        let track = e.session_mut().add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Mono, None);
+        e.mark_clean();
+        e.execute("mix.volume", &json!({"track": track.0, "db": -6.0})).unwrap();
+        assert!(e.is_dirty());
+        // A repeated check uses the revision cache.
+        assert!(e.is_dirty());
+        e.mark_clean();
+        assert!(!e.is_dirty());
+        e.execute("edit.select", &json!({"tracks": [track.0], "start": 100, "end": 200})).unwrap();
+        e.execute("transport.locate", &json!({"at": 300})).unwrap();
+        e.execute("view.zoom_in", &json!({})).unwrap();
+        assert!(!e.is_dirty());
+        assert!(e.undo());
+        assert!(e.is_dirty(), "undoing away from the saved fader value is dirty");
+        assert!(e.redo());
+        assert!(!e.is_dirty(), "redoing to the saved fader value is clean despite navigation changes");
+        e.execute("mix.volume", &json!({"track": track.0, "db": -12.0})).unwrap();
+        assert!(e.is_dirty());
+        assert!(e.undo());
+        assert!(!e.is_dirty());
+        assert!(e.redo());
+        assert!(e.is_dirty());
+    }
+}
+
+#[cfg(test)]
+mod panic_tests {
+    use super::*;
+
+    #[test]
+    fn a_panicking_command_restores_side_effect_state() {
+        let mut e = Engine::default();
+        // Non-default values, so clearing them instead of restoring them would fail.
+        e.clipboard.length = 42;
+        e.messages.push("prior".into());
+        e.transport_requests.push(TransportRequest::Stop);
+        e.last_selection = Some((soundcraft_time::Range::new(20, 30), Vec::new()));
+        let (clipboard, messages, requests, selection) =
+            (e.clipboard.clone(), e.messages.clone(), e.transport_requests.clone(), e.last_selection.clone());
+        let r = e.execute("test.panic_probe", &json!({"panic": true}));
+        assert!(matches!(r, Err(EngineError::Internal(..))));
+        assert_eq!(e.clipboard, clipboard);
+        assert_eq!(e.messages, messages);
+        assert_eq!(e.transport_requests, requests);
+        assert_eq!(e.last_selection, selection);
     }
 }

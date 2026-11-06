@@ -83,7 +83,7 @@ impl TrackKind {
 }
 
 /// Track heights (View › Track Height presets).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize)]
 pub enum TrackHeight {
     /// Any height from Micro to Extreme, in points.
     Custom(u16),
@@ -97,6 +97,71 @@ pub enum TrackHeight {
     Extreme,
     /// Fit To Window: this many points.
     Fit(u16),
+}
+
+/// A saved track height: `"Micro"` … `"Extreme"` (or `{"Micro": null}` …), `{"Custom": points}`,
+/// `{"Fit": points}`, or the bare `"Fit"` older sessions used. Read as it comes, never buffered (as an
+/// untagged enum would), so anything else in a session file is refused at its first token.
+impl<'de> serde::Deserialize<'de> for TrackHeight {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(HeightVisitor)
+    }
+}
+
+const HEIGHT_VARIANTS: &[&str] = &["Custom", "Micro", "Mini", "Small", "Medium", "Large", "Jumbo", "Extreme", "Fit"];
+
+struct HeightVisitor;
+
+impl HeightVisitor {
+    /// The height a variant without a size names.
+    fn preset(name: &str) -> Option<TrackHeight> {
+        Some(match name {
+            "Micro" => TrackHeight::Micro,
+            "Mini" => TrackHeight::Mini,
+            "Small" => TrackHeight::Small,
+            "Medium" => TrackHeight::Medium,
+            "Large" => TrackHeight::Large,
+            "Jumbo" => TrackHeight::Jumbo,
+            "Extreme" => TrackHeight::Extreme,
+            _ => return None,
+        })
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for HeightVisitor {
+    type Value = TrackHeight;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a track height")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<TrackHeight, E> {
+        match v {
+            // Older sessions stored Fit with no size, drawn 88 points tall: the default Medium height.
+            "Fit" => Ok(TrackHeight::Medium),
+            "Custom" => Err(E::invalid_type(serde::de::Unexpected::UnitVariant, &"a height in points")),
+            other => Self::preset(other).ok_or_else(|| E::unknown_variant(other, HEIGHT_VARIANTS)),
+        }
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<TrackHeight, A::Error> {
+        use serde::de::Error as _;
+        let Some(key) = map.next_key::<String>()? else { return Err(A::Error::invalid_length(0, &"one variant")) };
+        let h = match key.as_str() {
+            "Custom" => TrackHeight::Custom(map.next_value()?),
+            // `{"Fit": null}` is the old size-less Fit too, as above.
+            "Fit" => map.next_value::<Option<u16>>()?.map_or(TrackHeight::Medium, TrackHeight::Fit),
+            other => {
+                let h = Self::preset(other).ok_or_else(|| A::Error::unknown_variant(other, HEIGHT_VARIANTS))?;
+                map.next_value::<()>()?;
+                h
+            }
+        };
+        if map.next_key::<serde::de::IgnoredAny>()?.is_some() {
+            return Err(A::Error::invalid_length(2, &"one variant"));
+        }
+        Ok(h)
+    }
 }
 
 impl TrackHeight {
@@ -327,6 +392,45 @@ impl Track {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_fit_string_loads_as_default_height() {
+        assert_eq!(serde_json::from_str::<TrackHeight>("\"Fit\"").unwrap(), TrackHeight::Medium);
+        assert_eq!(serde_json::from_str::<TrackHeight>("{\"Fit\":120}").unwrap(), TrackHeight::Fit(120));
+        assert_eq!(serde_json::to_string(&TrackHeight::Fit(120)).unwrap(), "{\"Fit\":120}");
+        assert_eq!(serde_json::from_str::<TrackHeight>("\"Large\"").unwrap(), TrackHeight::Large);
+        assert_eq!(serde_json::from_str::<TrackHeight>("{\"Custom\":50}").unwrap(), TrackHeight::Custom(50));
+    }
+
+    #[test]
+    fn every_saved_height_form_loads_and_nothing_else() {
+        for h in TrackHeight::ALL.into_iter().chain([TrackHeight::Custom(50), TrackHeight::Fit(120)]) {
+            assert_eq!(serde_json::from_str::<TrackHeight>(&serde_json::to_string(&h).unwrap()).unwrap(), h);
+            assert_eq!(serde_json::from_value::<TrackHeight>(serde_json::to_value(h).unwrap()).unwrap(), h);
+        }
+        for h in TrackHeight::ALL {
+            let null = format!("{{{}:null}}", serde_json::to_string(&h).unwrap());
+            assert_eq!(serde_json::from_str::<TrackHeight>(&null).unwrap(), h, "{null}");
+        }
+        assert_eq!(serde_json::from_str::<TrackHeight>(r#"{"Fit":null}"#).unwrap(), TrackHeight::Medium);
+        assert!(serde_json::from_str::<TrackHeight>(r#"{"Custom":null}"#).is_err());
+        for bad in
+            [r#""Custom""#, r#""Huge""#, "7", "[]", "null", "{}", r#"{"Fit":"x"}"#, r#"{"Fit":70000}"#, r#"{"Large":1}"#, r#"{"Fit":1,"Fit":2}"#]
+        {
+            assert!(serde_json::from_str::<TrackHeight>(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_huge_height_is_refused_at_its_first_token() {
+        // #892: the height was read through an untagged enum, which buffers the whole value
+        // first; a session could hold a huge array there. It is refused where it starts.
+        for (open, rest) in [("[", "0,".repeat(100_000) + "0]"), (r#"{"Fit":["#, "0,".repeat(100_000) + "0]}")] {
+            let text = format!("{open}{rest}");
+            let err = serde_json::from_str::<TrackHeight>(&text).unwrap_err();
+            assert!(err.is_data() && err.line() == 1 && err.column() <= open.len() + 1, "{open}: {err}");
+        }
+    }
 
     #[test]
     fn new_track_defaults() {

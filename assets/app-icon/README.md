@@ -1,7 +1,7 @@
 # SoundCraft app icon (placeholder)
 
 **A nightingale singing**, as an engraving-style head-and-shoulders portrait in the Crafting Apps'
-owl-template framing (craftrules `standards/icon-design.md`): a full-bleed colour field, the bird
+owl-template framing: a full-bleed colour field, the bird
 in three-quarter view with its bill open and its eye on the viewer, its breast and wing running off
 the bottom and right edges, three song arcs leaving the bill.
 

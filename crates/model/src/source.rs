@@ -46,6 +46,9 @@ pub struct VideoSource {
     /// Codec id (`h264`, `prores`, `mjpeg`, `hevc`, …).
     #[serde(default)]
     pub codec: String,
+    /// Why the movie is not opened, when its stored path was refused on opening the session.
+    #[serde(skip)]
+    pub offline: Option<String>,
 }
 
 impl VideoSource {
