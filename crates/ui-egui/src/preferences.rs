@@ -1180,6 +1180,89 @@ mod tests {
         assert_eq!(app.ui.undo_levels, 64);
     }
 
+    /// Window-layout recall preserves live preferences and drafts, including with legacy snapshots.
+    #[test]
+    fn configuration_recall_preserves_live_preferences_and_draft() {
+        for open in [false, true] {
+            for legacy in [false, true] {
+                let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+                app.ui.show_preferences = !open;
+                app.ui.preferences_page = PreferencesPage::Midi;
+                app.ui.preferences_window_pos = Some([600.0, 100.0]);
+                app.ui.theme = ThemeMode::Light;
+                app.ui.undo_levels = 1;
+                app.ui.narrow_mix = true;
+                app.run("window.config_new", json!({})).unwrap();
+                let mut saved = app.ui.configurations[0].1.clone();
+                if legacy {
+                    let fields = saved.as_object_mut().unwrap();
+                    for key in ["show_preferences", "preferences_page", "preferences_window_pos", "reduce_visual_effects", "undo_levels"] {
+                        fields.remove(key);
+                    }
+                }
+
+                app.ui.show_preferences = open;
+                app.ui.preferences_page = PreferencesPage::Editing;
+                app.ui.preferences_window_pos = Some([123.0, 45.0]);
+                app.ui.theme = ThemeMode::System;
+                app.ui.reduce_visual_effects = ReduceVisualEffects::Always;
+                app.ui.undo_levels = 3;
+                app.ui.narrow_mix = false;
+                if open {
+                    let mut draft = PreferencesDraft::from_live(&app);
+                    draft.theme = ThemeMode::Dark;
+                    draft.theme_edited = true;
+                    app.preferences.draft = Some(draft);
+                    app.preferences.search = "current draft".into();
+                    app.preferences.popup_open = true;
+                }
+                for _ in 0..5 {
+                    app.engine.execute("track.new", &json!({})).unwrap();
+                }
+                assert!(app.engine.undo());
+                assert!(app.engine.undo());
+                app.engine.mark_clean();
+                let document = app.engine.session_arc();
+
+                crate::windows::recall_configuration(&mut app, &saved).unwrap();
+                assert_eq!(app.ui.show_preferences, open);
+                assert_eq!(app.ui.preferences_page, PreferencesPage::Editing);
+                assert_eq!(app.ui.preferences_window_pos, Some([123.0, 45.0]));
+                assert_eq!(app.ui.theme, ThemeMode::System);
+                assert_eq!(app.ui.reduce_visual_effects, ReduceVisualEffects::Always);
+                assert_eq!((app.ui.undo_levels, app.engine.history_limit), (3, 3));
+                assert_eq!(app.engine.undo_history().len(), 3);
+                assert!(!app.engine.can_redo(), "the current history cap applies immediately");
+                assert!(std::sync::Arc::ptr_eq(&document, &app.engine.session_arc()));
+                assert!(!app.engine.is_dirty());
+                assert!(app.ui.narrow_mix, "window layout itself is still recalled");
+                assert_eq!(app.ui.configurations.len(), 1);
+                assert_eq!(app.preferences.draft.is_some(), open);
+                assert_eq!(app.preferences.popup_open, open);
+                assert_eq!(app.preferences.search, if open { "current draft" } else { "" });
+                if open {
+                    let draft = app.preferences.draft.unwrap();
+                    assert_eq!(draft.theme, ThemeMode::Dark);
+                    assert!(draft.theme_edited);
+                    assert_eq!(draft.reduce_visual_effects, ReduceVisualEffects::Always);
+                    assert_eq!(draft.undo_levels, 3);
+                }
+            }
+        }
+    }
+
+    /// Recalling a layout clamps hostile current history settings before synchronizing the engine.
+    #[test]
+    fn configuration_recall_bounds_the_current_history_limit() {
+        let saved = serde_json::to_value(crate::UiState::default()).unwrap();
+        for (requested, expected) in [(0, 1), (usize::MAX, 64)] {
+            let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+            app.ui.undo_levels = requested;
+            crate::windows::recall_configuration(&mut app, &saved).unwrap();
+            assert_eq!((app.ui.undo_levels, app.engine.history_limit), (expected, expected));
+        }
+    }
+
     /// Enter belongs to the focused search field and must not apply its window.
     #[test]
     fn enter_in_search_does_not_apply_or_close_preferences() {
