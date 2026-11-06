@@ -228,7 +228,8 @@ soundcraft-cli mcp --automation-read-root DIR --automation-write-root DIR
 
 See [`docs/cli.md`](docs/cli.md) for the command-line tool (subcommands, exit codes, environment
 variables, man pages and completions), [`docs/control-protocol.md`](docs/control-protocol.md) and
-[`docs/mcp.md`](docs/mcp.md). `soundcraft-cli commands` lists every command.
+[`docs/mcp.md`](docs/mcp.md). `soundcraft-cli commands` lists every command (`--json` for each
+one's parameters and details, as JSON).
 
 Open **SoundCraft › Session Audio Health** to check loaded audio availability, sample-rate
 mismatches and clip source bounds across all playlists, including alternate takes. The report

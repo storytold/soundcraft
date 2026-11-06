@@ -215,14 +215,12 @@ fn state_reader_reads_while_another_thread_processes() {
 #[test]
 fn editors_refuse_to_open_off_the_main_thread() {
     fixture_dir();
-    // Test threads are never the process main thread.
+    // Test threads are never the process main thread, on any platform (#901).
     let mut p = soundcraft_clap_host::create(GAIN).unwrap();
     let mut ed = p.editor().expect("the gain fixture has clap.gui");
-    if cfg!(target_os = "macos") {
-        assert!(ed.open().unwrap_err().contains("main thread"));
-        assert!(p.open_editor().is_err());
-        assert!(!ed.is_open());
-    }
+    assert!(ed.open().unwrap_err().contains("main thread"));
+    assert!(p.open_editor().is_err());
+    assert!(!ed.is_open());
     ed.close();
     p.close_editor();
 }
