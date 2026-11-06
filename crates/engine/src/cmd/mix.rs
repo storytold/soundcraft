@@ -114,7 +114,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Assign Send",
             [],
             None,
-            "{track?, slot?: 0..9|a..j, bus: name, level_db?: 0 (kept when re-targeting), pre_fader?: false}",
+            "{track?, slot?: 0..9|a..j, bus: name, level_db?: -144..12, default -144 (silent; kept when re-targeting), pre_fader?: false}",
             has_selection,
             send
         ),
