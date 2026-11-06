@@ -281,6 +281,13 @@ impl Engine {
         Arc::make_mut(&mut self.doc)
     }
 
+    /// Mutable access for live state that redraws and reaches playback but is not part of the
+    /// saved document. Callers must also keep the fields out of serialization and Undo/Redo.
+    pub(crate) fn runtime_session_mut(&mut self) -> &mut Session {
+        self.revision = self.revision.wrapping_add(1);
+        Arc::make_mut(&mut self.doc)
+    }
+
     /// Like `session_mut`, for `edit.zoom` only and without bumping `revision`.
     pub fn zoom_mut(&mut self) -> &mut ZoomState {
         self.dirty = true;
@@ -336,20 +343,34 @@ impl Engine {
         self.undo.iter().map(|h| h.label.clone()).collect()
     }
 
+    /// Bound Undo and Redo together, dropping farthest redo entries before oldest undo entries.
+    pub fn set_history_limit(&mut self, limit: usize) {
+        let limit = limit.max(1);
+        self.history_limit = limit;
+        let excess = self.undo.len().saturating_add(self.redo.len()).saturating_sub(limit);
+        let from_redo = excess.min(self.redo.len());
+        self.redo.drain(..from_redo);
+        self.undo.drain(..excess - from_redo);
+    }
+
+    /// Restore the previous document while retaining current edit mode and live input flags.
     pub fn undo(&mut self) -> bool {
         let Some(h) = self.undo.pop() else { return false };
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
+        self.keep_runtime_track_states(&cur);
         self.redo.push(HistoryEntry { label: h.label, doc: cur });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         true
     }
 
+    /// Restore the next document while retaining current edit mode and live input flags.
     pub fn redo(&mut self) -> bool {
         let Some(h) = self.redo.pop() else { return false };
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
+        self.keep_runtime_track_states(&cur);
         self.undo.push(HistoryEntry { label: h.label, doc: cur });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
@@ -367,6 +388,25 @@ impl Engine {
             for f in flags {
                 ed.set_flag(f, from.edit.flag(f));
             }
+        }
+    }
+
+    /// Undo and Redo must not restore live input states captured in document snapshots. A track
+    /// absent from the current document comes back safe rather than inheriting a historical arm.
+    fn keep_runtime_track_states(&mut self, from: &Session) {
+        let states: std::collections::HashMap<_, _> = from
+            .tracks
+            .iter()
+            .filter(|track| track.mixer.record_arm || track.mixer.input_monitor)
+            .map(|track| (track.id, (track.mixer.record_arm, track.mixer.input_monitor)))
+            .collect();
+        let state = |id| states.get(&id).copied().unwrap_or((false, false));
+        // Keep shared snapshots untouched when the restored flags already match.
+        if self.doc.tracks.iter().all(|track| (track.mixer.record_arm, track.mixer.input_monitor) == state(track.id)) {
+            return;
+        }
+        for track in &mut Arc::make_mut(&mut self.doc).tracks {
+            (track.mixer.record_arm, track.mixer.input_monitor) = state(track.id);
         }
     }
 
@@ -687,6 +727,59 @@ mod merge_tests {
 mod dirty_tests {
     use super::*;
 
+    /// Lowering the cap immediately removes the oldest retained Undo steps.
+    #[test]
+    fn reducing_the_history_limit_drops_the_oldest_steps_immediately() {
+        let mut e = Engine::default();
+        for _ in 0..4 {
+            e.execute("track.new", &json!({})).unwrap();
+        }
+        assert_eq!(e.undo_history().len(), 4);
+        e.set_history_limit(2);
+        assert_eq!(e.undo_history().len(), 2);
+        assert!(e.undo());
+        assert!(e.undo());
+        assert!(!e.undo());
+    }
+
+    /// A shared history cap retains the closest redo steps without letting either direction exceed it.
+    #[test]
+    fn lowering_history_limit_bounds_undo_and_redo_together() {
+        for (requested, past, future) in [(0, 1, 0), (1, 1, 0), (2, 2, 0), (3, 2, 1), (4, 2, 2), (5, 2, 3), (usize::MAX, 2, 3)] {
+            let mut e = Engine::default();
+            for _ in 0..5 {
+                e.execute("track.new", &json!({})).unwrap();
+            }
+            for _ in 0..3 {
+                assert!(e.undo());
+            }
+            e.mark_clean();
+            e.set_history_limit(requested);
+            let limit = requested.max(1);
+            assert_eq!(e.history_limit, limit);
+            assert_eq!((e.undo.len(), e.redo.len()), (past, future), "requested {requested}");
+            assert!(!e.is_dirty(), "history capacity is not a document edit");
+            assert_eq!(e.session().tracks.len(), 2);
+            for step in 1..=future {
+                assert!(e.redo());
+                assert_eq!(e.session().tracks.len(), 2 + step, "keep the nearest redo entries");
+                assert!(e.undo.len() + e.redo.len() <= limit);
+            }
+            assert!(!e.redo());
+            for step in 1..=past + future {
+                assert!(e.undo());
+                assert_eq!(e.session().tracks.len(), 2 + future - step, "keep the nearest undo entries");
+                assert!(e.undo.len() + e.redo.len() <= limit);
+            }
+            assert!(!e.undo());
+            for _ in 0..past + future {
+                assert!(e.redo());
+                assert!(e.undo.len() + e.redo.len() <= limit);
+            }
+            assert!(!e.redo());
+        }
+    }
+
     #[test]
     fn selecting_locating_and_zooming_leave_the_session_clean() {
         let mut e = crate::demo::demo_engine();
@@ -704,6 +797,17 @@ mod dirty_tests {
         assert!(e.is_dirty());
         e.undo();
         assert!(!e.is_dirty());
+    }
+
+    /// Unchanged runtime flags do not detach a shared document snapshot.
+    #[test]
+    fn matching_live_states_keep_the_document_shared() {
+        let mut e = Engine::default();
+        let track = e.session_mut().add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Mono, None);
+        e.runtime_session_mut().track_mut(track).unwrap().mixer.record_arm = true;
+        let snapshot = e.session_arc();
+        e.keep_runtime_track_states(&snapshot);
+        assert!(Arc::ptr_eq(&snapshot, &e.session_arc()));
     }
 
     #[test]
