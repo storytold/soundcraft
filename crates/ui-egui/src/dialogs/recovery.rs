@@ -13,7 +13,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
-        .anchor(Align2::CENTER_CENTER, vec2(0.0, -80.0))
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center() + vec2(0.0, -80.0))
         .show(ctx, |ui| {
             let age = left.saved.elapsed().map_or_else(|_| "recently".into(), |d| ago(d.as_secs()));
             let what = if left.recording { "unsaved changes and an unfinished recording" } else { "unsaved changes" };

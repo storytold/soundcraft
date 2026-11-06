@@ -458,6 +458,7 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
     }
     cancel_replaced_workspace(app, &before_sync, &workspace, edit);
     let mut style = DockStyle::from_ui(ui);
+    style.gap = crate::theme::DOCK_GAP;
     style.min_pane = 96.0;
     style.tab_height = MIDI_TAB_HEIGHT;
     style.background = t.panel_bg;
@@ -465,13 +466,14 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
     style.active_background = t.row_selected;
     style.text = t.text;
     style.inactive_text = t.text_dim;
-    style.border = egui::Stroke::new(1.0, t.border);
+    style.border = egui::Stroke::NONE;
     style.accent = t.accent;
     style.font = crate::theme::regular(11.5);
     // Free docking: a panel dropped at an empty window edge makes a dock there, and the top
     // and bottom edges take frames (`drop_edges` keeps its default).
     style.new_dock_zones = true;
     style.side_edge_zones = false;
+    ui.painter().rect_filled(ui.available_rect_before_wrap(), 0.0, egui::Color32::BLACK);
     let output = DockArea::new(area(edit)).show_with_limits(
         ui,
         &workspace.layout,

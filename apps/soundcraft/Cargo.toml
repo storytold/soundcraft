@@ -44,7 +44,8 @@ winresource = "0.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21.2", default-features = false }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSResponder"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSResponder", "NSView", "NSWindow", "NSViewController", "NSTitlebarAccessoryViewController", "NSTextField", "NSControl", "NSFont", "NSColor", "NSText", "NSCell", "NSLayoutConstraint", "NSParagraphStyle"] }
 
 [target.'cfg(windows)'.dependencies]
 craft-update = { workspace = true }

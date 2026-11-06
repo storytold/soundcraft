@@ -1536,7 +1536,7 @@ fn alt_click_on_a_marker_deletes_it() {
     let mut h = harness_with(engine);
     let s = h.state().engine.session_arc();
     let marker = s.markers.iter().find(|m| m.name == "Alt-delete me").unwrap();
-    let at = pos2(x_of(&s, timeline(&h), marker.start), timeline(&h).min.y - 11.5);
+    let at = pos2(x_of(&s, timeline(&h), marker.start), h.get_by_role_and_label(Role::Button, "markers ruler").rect().center().y);
     let before = s.markers.len();
 
     click_with(&mut h, at, egui::Modifiers::ALT);

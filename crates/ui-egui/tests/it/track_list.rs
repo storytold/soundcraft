@@ -81,13 +81,14 @@ impl Rig {
 fn dragging_a_track_list_row_moves_the_track_to_the_gap_it_is_dropped_in() {
     let mut r = Rig::new();
     let ids = r.order();
-    let (from, lower_half_of_fifth) = (r.row(0), r.row(4) + vec2(0.0, 5.0));
+    let within_row = vec2(0.0, (r.row(1).y - r.row(0).y) / 4.0);
+    let (from, lower_half_of_fifth) = (r.row(0), r.row(4) + within_row);
     r.drag(from, lower_half_of_fifth);
     assert_eq!(r.order(), vec![ids[1], ids[2], ids[3], ids[4], ids[0], ids[5]]);
-    let (from, upper_half_of_second) = (r.row(5), r.row(1) - vec2(0.0, 5.0));
+    let (from, upper_half_of_second) = (r.row(5), r.row(1) - within_row);
     r.drag(from, upper_half_of_second);
     assert_eq!(r.order(), vec![ids[1], ids[5], ids[2], ids[3], ids[4], ids[0]]);
-    let (from, own_lower_half) = (r.row(2), r.row(2) + vec2(0.0, 8.0));
+    let (from, own_lower_half) = (r.row(2), r.row(2) + within_row);
     r.drag(from, own_lower_half);
     assert_eq!(r.order(), vec![ids[1], ids[5], ids[2], ids[3], ids[4], ids[0]]);
 }
