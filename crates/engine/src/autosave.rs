@@ -480,6 +480,27 @@ mod tests {
     use soundcraft_audio_io::AudioBuffer;
     use soundcraft_model::{ChannelFormat, Clip, TrackKind};
 
+    /// Recovery loads document edits without re-enabling live inputs from an autosave.
+    #[test]
+    fn recovered_live_input_states_start_disabled() {
+        let root = folder("live-input-recovery");
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({})).unwrap();
+        let track = e.session().tracks[0].id;
+        e.execute("mix.record_arm", &json!({"tracks": [track.0], "value": true})).unwrap();
+        e.execute("mix.input_monitor", &json!({"tracks": [track.0], "value": true})).unwrap();
+        e.execute("mix.volume", &json!({"tracks": [track.0], "db": -6.0})).unwrap();
+        let mut autosave = Autosave::create(&root, "Live inputs").unwrap();
+        autosave.write(e.session(), None, None).unwrap();
+        drop(autosave);
+        let mut recovered = Engine::default();
+        recover(&mut recovered, &leftovers(&root)[0]).unwrap();
+        let mixer = &recovered.session().track(track).unwrap().mixer;
+        assert!(!mixer.record_arm && !mixer.input_monitor);
+        assert_eq!(mixer.volume_db, -6.0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn folder(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("soundcraft-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

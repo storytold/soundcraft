@@ -281,6 +281,13 @@ impl Engine {
         Arc::make_mut(&mut self.doc)
     }
 
+    /// Mutable access for live state that redraws and reaches playback but is not part of the
+    /// saved document. Callers must also keep the fields out of serialization and Undo/Redo.
+    pub(crate) fn runtime_session_mut(&mut self) -> &mut Session {
+        self.revision = self.revision.wrapping_add(1);
+        Arc::make_mut(&mut self.doc)
+    }
+
     /// Like `session_mut`, for `edit.zoom` only and without bumping `revision`.
     pub fn zoom_mut(&mut self) -> &mut ZoomState {
         self.dirty = true;
@@ -346,20 +353,24 @@ impl Engine {
         self.undo.drain(..excess - from_redo);
     }
 
+    /// Restore the previous document while retaining current edit mode and live input flags.
     pub fn undo(&mut self) -> bool {
         let Some(h) = self.undo.pop() else { return false };
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
+        self.keep_runtime_track_states(&cur);
         self.redo.push(HistoryEntry { label: h.label, doc: cur });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         true
     }
 
+    /// Restore the next document while retaining current edit mode and live input flags.
     pub fn redo(&mut self) -> bool {
         let Some(h) = self.redo.pop() else { return false };
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
+        self.keep_runtime_track_states(&cur);
         self.undo.push(HistoryEntry { label: h.label, doc: cur });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
@@ -377,6 +388,25 @@ impl Engine {
             for f in flags {
                 ed.set_flag(f, from.edit.flag(f));
             }
+        }
+    }
+
+    /// Undo and Redo must not restore live input states captured in document snapshots. A track
+    /// absent from the current document comes back safe rather than inheriting a historical arm.
+    fn keep_runtime_track_states(&mut self, from: &Session) {
+        let states: std::collections::HashMap<_, _> = from
+            .tracks
+            .iter()
+            .filter(|track| track.mixer.record_arm || track.mixer.input_monitor)
+            .map(|track| (track.id, (track.mixer.record_arm, track.mixer.input_monitor)))
+            .collect();
+        let state = |id| states.get(&id).copied().unwrap_or((false, false));
+        // Keep shared snapshots untouched when the restored flags already match.
+        if self.doc.tracks.iter().all(|track| (track.mixer.record_arm, track.mixer.input_monitor) == state(track.id)) {
+            return;
+        }
+        for track in &mut Arc::make_mut(&mut self.doc).tracks {
+            (track.mixer.record_arm, track.mixer.input_monitor) = state(track.id);
         }
     }
 
@@ -766,6 +796,17 @@ mod dirty_tests {
         assert!(e.is_dirty());
         e.undo();
         assert!(!e.is_dirty());
+    }
+
+    /// Unchanged runtime flags do not detach a shared document snapshot.
+    #[test]
+    fn matching_live_states_keep_the_document_shared() {
+        let mut e = Engine::default();
+        let track = e.session_mut().add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Mono, None);
+        e.runtime_session_mut().track_mut(track).unwrap().mixer.record_arm = true;
+        let snapshot = e.session_arc();
+        e.keep_runtime_track_states(&snapshot);
+        assert!(Arc::ptr_eq(&snapshot, &e.session_arc()));
     }
 
     #[test]
