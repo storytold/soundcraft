@@ -368,3 +368,35 @@ fn help_opens_below_the_menu_bar_and_escape_over_it_closes_it() {
     app_frame(&ctx, &mut app, vec![]);
     assert!(!app.ui.show_help, "Escape over help should close it");
 }
+
+/// A dialog opened from a Help command owns Escape, even while the pointer remains over Help.
+#[test]
+fn escape_cancels_a_dialog_before_closing_help() {
+    let (ctx, mut app) = rig(OperatingSystem::Nix);
+    app.ui.show_help = true;
+    app.ui.help.go(Page::Command("session.new".into()));
+    for _ in 0..3 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    let help_id = help::window_id("SoundCraft Help");
+    let rect = ctx.memory(|m| m.area_rect(help_id)).unwrap();
+    let at = rect.min + egui::vec2(24.0, rect.height() - 24.0);
+    let session_name = app.engine.session().name.clone();
+    // This is the same dispatcher used by the page's Do it now button.
+    menus::invoke_menu(&mut app, "session.new", "File > New Session...");
+    for _ in 0..3 {
+        app_frame(&ctx, &mut app, vec![Event::PointerMoved(at)]);
+    }
+    assert_eq!(app.dialogs.open_name(), Some("new_session"));
+    assert_eq!(ctx.layer_id_at(at).unwrap().id, help_id);
+    assert!(!ctx.egui_wants_keyboard_input(), "the test must exercise Help's Escape handler outside a text field");
+    let esc = |pressed| Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+    app_frame(&ctx, &mut app, vec![esc(true), esc(false)]);
+    assert_eq!(app.dialogs.open_name(), None, "Escape should cancel the dialog");
+    assert!(app.ui.show_help, "Escape intended for the dialog closed Help");
+    assert_eq!(app.engine.session().name, session_name, "canceling New Session changed the session");
+    // Once the dialog is gone, Escape over Help still closes Help normally.
+    app_frame(&ctx, &mut app, vec![]);
+    app_frame(&ctx, &mut app, vec![esc(true), esc(false)]);
+    assert!(!app.ui.show_help);
+}

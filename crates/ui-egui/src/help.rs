@@ -521,8 +521,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         if forward {
             app.ui.help.go_forward();
         }
-        // Escape closes help, unless it is clearing a search box that has the keyboard.
-        if !app.ui.help.typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+        // Dialogs run after Help and need Escape to cancel; typing in Help also keeps it open.
+        if app.dialogs.open.is_none() && !app.ui.help.typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             open = false;
         }
     }
