@@ -1,7 +1,8 @@
 //! Clip menu commands.
+use super::more_util::{render_stretched, replace_clip};
 use super::{CommandSpec, always, bad, clip_ids_param, f64_or, has_range, has_selection, i64_or, position_param, str_param, track_param};
-use soundcraft_model::ClipId;
-use soundcraft_time::Samples;
+use soundcraft_model::{Clip, ClipContent, ClipId, Session, TrackId};
+use soundcraft_time::{Samples, TICKS_PER_QUARTER};
 
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
@@ -72,7 +73,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Loop...",
             ["Clip"],
             Some("Cmd+Alt+L"),
-            "{clips?, count?: n, length?: samples, fill?: bool}: count is the clip plus its loops; length is the whole looped clip, with the last loop cut short to fit; fill loops up to the next clip on the track, or else to the session end",
+            "{clips?, count?: n, length?: samples, fill?: bool, fit?: bool}: count is the clip plus its loops; length is the whole looped clip, with the last loop cut short to fit; fill loops up to the next clip on the track, or else to the session end; fit time-stretches each audio clip to a whole number of beats first, so its loops land on the tempo grid",
             has_selection,
             loop_clips
         ),
@@ -299,11 +300,46 @@ fn layer(e: &mut Engine, p: &Value, front: bool) -> Result<Value> {
 /// The most loops `clip.loop` makes of one clip.
 const MAX_LOOPS: i64 = 1000;
 
+/// Time-stretch an audio clip in place to the nearest whole number of beats of the tempo map, so
+/// that loops of it land back on the grid. A clip that already spans whole beats is left alone.
+fn fit_to_beats(s: &mut Session, t: TrackId, c: &mut Clip) -> Result<()> {
+    let id = "clip.loop";
+    if !c.is_audio() {
+        return Err(bad(id, "fitting to the grid needs an audio clip"));
+    }
+    if c.time_locked || c.edit_locked {
+        return Err(bad(id, "the clip is locked"));
+    }
+    let sr = s.sample_rate;
+    let start_tick = s.tempo.samples_to_ticks(c.start, sr);
+    let span_ticks = s.tempo.samples_to_ticks_f(c.start + c.length, sr) - start_tick as f64;
+    let beats = (span_ticks / TICKS_PER_QUARTER as f64).round().max(1.0) as i64;
+    let target = s.tempo.tick_to_samples(start_tick + beats * TICKS_PER_QUARTER, sr) - s.tempo.tick_to_samples(start_tick, sr);
+    if target <= 0 || target == c.length {
+        return Ok(());
+    }
+    let Some(src) = render_stretched(s, id, c, target)? else { return Err(bad(id, "the clip's audio is not loaded")) };
+    let ratio = target as f64 / c.length.max(1) as f64;
+    let scale = |x: Samples| soundcraft_time::to_samples(x as f64 * ratio);
+    let mut nc = c.clone();
+    nc.content = ClipContent::Audio { source: src, offset: 0 };
+    nc.length = target;
+    nc.stretch = 1.0;
+    nc.gain_env = c.gain_env.iter().map(|&(o, v)| (scale(o), v)).collect();
+    nc.fade_in.len = scale(c.fade_in.len).clamp(0, nc.length);
+    nc.fade_out.len = scale(c.fade_out.len).clamp(0, nc.length);
+    nc.sync_point = scale(c.sync_point).clamp(0, nc.length);
+    replace_clip(s, t, c.id, nc.clone());
+    *c = nc;
+    Ok(())
+}
+
 fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     let count = i64_or(p, "count", 4).clamp(1, 512);
     let total = position_param(e, "clip.loop", p, "length")?;
     let fill = p.get("fill").and_then(Value::as_bool).unwrap_or(false);
+    let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(false);
     let s = e.session_mut();
     let session_end = s.content_end();
     let mut made = 0;
@@ -311,6 +347,9 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
         let Some((tid, mut c)) = s.find_clip(id).map(|(t, c)| (t, c.clone())) else { continue };
         if c.length <= 0 {
             continue;
+        }
+        if fit {
+            fit_to_beats(s, tid, &mut c)?;
         }
         let len = c.length;
         // Where the looped clip ends: the next clip or the session end, or `length` after the start.
@@ -613,5 +652,75 @@ mod tests {
         assert_eq!([sync_of(&e, a), sync_of(&e, b)], [0, 0]);
         assert!(e.undo());
         assert_eq!([sync_of(&e, a), sync_of(&e, b)], [1_000, 2_000]);
+    }
+
+    /// One audio clip of `len` samples at the session start. Session::default() runs 120 BPM in 4/4
+    /// at 48 kHz, so one beat is 24 000 samples.
+    fn loop_engine(len: i64) -> (crate::Engine, TrackId, ClipId) {
+        use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Loop"));
+        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; len.max(1) as usize]] };
+        let src = crate::io::add_source(&mut s, "Loop", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let cid = s.new_clip_id();
+        crate::edit::place_clip(&mut s, t, Clip::audio(cid, "Loop", src, 0, 0, len));
+        (crate::Engine::new(s), t, cid)
+    }
+
+    /// Fit stretches an off-grid clip to a whole beat before the copies are made, so they land on
+    /// the grid (#1404).
+    #[test]
+    fn looping_a_fitted_clip_lands_on_the_grid() {
+        let (mut e, t, id) = loop_engine(26_000);
+        e.execute("clip.loop", &json!({"clips": [id.0], "count": 4, "fit": true})).unwrap();
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.len(), 4);
+        assert_eq!(clips[0].id, id, "the clip is stretched in place, not replaced");
+        assert!(clips.iter().all(|c| c.length == 24_000), "every copy is one beat of 120 BPM at 48 kHz");
+        assert!(clips.windows(2).all(|w| w[0].end() == w[1].start), "the copies butt up on the grid");
+        let src = clips[0].source().unwrap();
+        assert_eq!(e.session().source(src).unwrap().frames, 24_000);
+    }
+
+    /// A clip that already spans whole beats is looped without a stretch render.
+    #[test]
+    fn fitting_a_clip_that_already_spans_whole_beats_renders_nothing() {
+        let (mut e, t, id) = loop_engine(24_000);
+        e.execute("clip.loop", &json!({"clips": [id.0], "count": 3, "fit": true})).unwrap();
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.iter().map(|c| c.length).collect::<Vec<_>>(), vec![24_000; 3]);
+        let src = clips[0].source().unwrap();
+        assert!(clips.iter().all(|c| c.source() == Some(src)), "every copy plays the original source");
+    }
+
+    /// Without `fit` the copies still repeat at the clip's own length, off grid or not.
+    #[test]
+    fn looping_without_fit_repeats_at_the_clips_own_length() {
+        let (mut e, t, id) = loop_engine(26_000);
+        e.execute("clip.loop", &json!({"clips": [id.0], "count": 4})).unwrap();
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.iter().map(|c| c.length).collect::<Vec<_>>(), vec![26_000; 4]);
+        let src = clips[0].source().unwrap();
+        assert!(clips.iter().all(|c| c.source() == Some(src)));
+    }
+
+    #[test]
+    fn fitting_to_the_grid_refuses_a_locked_clip() {
+        let (mut e, _, id) = loop_engine(26_000);
+        e.session_mut().find_clip_mut(id).unwrap().edit_locked = true;
+        let err = e.execute("clip.loop", &json!({"clips": [id.0], "count": 2, "fit": true})).unwrap_err().to_string();
+        assert!(err.contains("locked"), "{err}");
+    }
+
+    #[test]
+    fn fitting_to_the_grid_needs_an_audio_clip() {
+        use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+        let cid = s.new_clip_id();
+        crate::edit::place_clip(&mut s, t, Clip::midi(cid, "m", 0, 100, soundcraft_midi::Sequence::default()));
+        let mut e = crate::Engine::new(s);
+        let err = e.execute("clip.loop", &json!({"clips": [cid.0], "count": 2, "fit": true})).unwrap_err().to_string();
+        assert!(err.contains("audio clip"), "{err}");
     }
 }
