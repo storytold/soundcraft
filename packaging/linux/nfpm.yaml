@@ -73,9 +73,32 @@ contents:
   - src: ${STAGE}/usr/bin/soundcraft-cli
     dst: /usr/bin/soundcraft-cli
     file_info: { mode: 0755 }
-  - src: ${STAGE}/usr/share/
-    dst: /usr/share/
+  # Named one by one rather than as a tree of /usr/share: a tree would also own shared directories
+  # such as /usr/share/mime, which openSUSE's filesystem package owns with other modes, and RPM
+  # refuses to install a package that conflicts with it.
+  - src: ${STAGE}/usr/share/applications/ai.storyteller.soundcraft.desktop
+    dst: /usr/share/applications/ai.storyteller.soundcraft.desktop
+  - src: ${STAGE}/usr/share/mime/packages/ai.storyteller.soundcraft.xml
+    dst: /usr/share/mime/packages/ai.storyteller.soundcraft.xml
+  - src: ${STAGE}/usr/share/metainfo/ai.storyteller.soundcraft.metainfo.xml
+    dst: /usr/share/metainfo/ai.storyteller.soundcraft.metainfo.xml
+  - src: ${STAGE}/usr/share/icons/hicolor/
+    dst: /usr/share/icons/hicolor/
     type: tree
+  - src: ${STAGE}/usr/share/doc/soundcraft/
+    dst: /usr/share/doc/soundcraft/
+    type: tree
+  # cli-docs:begin. soundcraft-cli's man pages and completions. When package.sh leaves them out it deletes
+  # this block, through the end marker below: nfpm refuses an entry whose file is missing.
+  - src: ${STAGE}/usr/share/man/man1/*.1
+    dst: /usr/share/man/man1/
+  - src: ${STAGE}/usr/share/bash-completion/completions/soundcraft-cli
+    dst: /usr/share/bash-completion/completions/soundcraft-cli
+  - src: ${STAGE}/usr/share/zsh/site-functions/_soundcraft-cli
+    dst: /usr/share/zsh/site-functions/_soundcraft-cli
+  - src: ${STAGE}/usr/share/fish/vendor_completions.d/soundcraft-cli.fish
+    dst: /usr/share/fish/vendor_completions.d/soundcraft-cli.fish
+  # cli-docs:end
   # Debian's zsh reads vendor-completions, not /usr/share/zsh/site-functions as Fedora's and
   # openSUSE's do (its debian/rules sets --enable-additional-fpath).
   - src: /usr/share/zsh/site-functions/_soundcraft-cli
