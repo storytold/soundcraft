@@ -28,6 +28,7 @@ fn signal(channels: usize) -> Vec<Vec<f32>> {
     (0..channels).map(|c| (0..LEN).map(|i| ((i * (c + 3)) % 61) as f32 / 128.0 - 30.0 / 128.0).collect()).collect()
 }
 
+/// An empty session with the click off and delay compensation on.
 fn base() -> Session {
     let mut s = Session::default();
     s.edit.click = false;
@@ -52,17 +53,21 @@ fn add_audio(s: &mut Session, format: ChannelFormat, clips: &[(i64, i64, i64)]) 
     t
 }
 
+/// The clips on track `t`'s playlist.
 fn clips(s: &mut Session, t: TrackId) -> &mut Vec<Clip> {
     &mut s.track_mut(t).unwrap().playlist_mut().unwrap().clips
 }
 
+/// A fade of `len` samples.
 fn fade(len: i64, shape: FadeShape, curvature: f32) -> Fade {
     Fade { len, shape, curvature }
 }
 
+/// A stereo clip with clip gain and both fades. It starts on the 32-sample clip gain grid (96),
+/// and the fade-in crosses the 512 block edge.
 fn faded_clip() -> Session {
     let mut s = base();
-    let t = add_audio(&mut s, ChannelFormat::Stereo, &[(0, 100, 3000)]);
+    let t = add_audio(&mut s, ChannelFormat::Stereo, &[(0, 96, 3000)]);
     let clip = &mut clips(&mut s, t)[0];
     clip.fade_in = fade(700, FadeShape::EqualPower, 0.0);
     clip.fade_out = fade(900, FadeShape::SCurve, 0.25);
@@ -70,10 +75,10 @@ fn faded_clip() -> Session {
     s
 }
 
-/// The overlap (464..560) straddles the 512 block edge.
+/// The overlap (448..544) lies on the 32-sample clip gain grid and straddles the 512 block edge.
 fn crossfade() -> Session {
     let mut s = base();
-    let t = add_audio(&mut s, ChannelFormat::Stereo, &[(0, 0, 560), (1200, 464, 2000)]);
+    let t = add_audio(&mut s, ChannelFormat::Stereo, &[(0, 0, 544), (1200, 448, 2000)]);
     let pair = clips(&mut s, t);
     pair[0].fade_out = fade(96, FadeShape::EqualPower, 0.0);
     pair[1].fade_in = fade(96, FadeShape::EqualPower, 0.0);
@@ -104,6 +109,7 @@ fn send_to_latent_aux() -> Session {
     s
 }
 
+/// A track whose level is scaled by a VCA master.
 fn vca_member() -> Session {
     let mut s = base();
     let t = add_audio(&mut s, ChannelFormat::Stereo, &[(0, 0, LEN as i64)]);
@@ -115,6 +121,7 @@ fn vca_member() -> Session {
     s
 }
 
+/// A 5.1 track on a 5.1 main mix, folded down to stereo before comparing.
 fn surround_fold_down() -> Session {
     let mut s = base();
     s.outputs[0].format = ChannelFormat::Surround51;
@@ -123,6 +130,7 @@ fn surround_fold_down() -> Session {
     s
 }
 
+/// Volume automation with ramps that start and end inside blocks.
 fn volume_ramp() -> Session {
     let mut s = base();
     let t = add_audio(&mut s, ChannelFormat::Stereo, &[(0, 0, LEN as i64)]);
@@ -144,6 +152,7 @@ const FADED: [Scenario; 2] = [
     Scenario { name: "crossfade across a block edge", build: crossfade, fold: None },
 ];
 
+/// Renders `LEN` samples from `start` at `block`, folded down to stereo if the scenario asks.
 fn render(sc: &Scenario, s: &Session, start: i64, block: usize) -> Vec<Vec<f32>> {
     let out = render_range(s, Range::new(start, LEN as i64), block);
     match sc.fold {
@@ -152,6 +161,7 @@ fn render(sc: &Scenario, s: &Session, start: i64, block: usize) -> Vec<Vec<f32>>
     }
 }
 
+/// Asserts the same shape and every sample within `TOLERANCE`.
 fn assert_close(actual: &[Vec<f32>], expected: &[Vec<f32>], context: &str) {
     assert_eq!(actual.len(), expected.len(), "{context}: channel count");
     for (channel, (actual, expected)) in actual.iter().zip(expected).enumerate() {
@@ -162,6 +172,7 @@ fn assert_close(actual: &[Vec<f32>], expected: &[Vec<f32>], context: &str) {
     }
 }
 
+/// The render from zero at block 512, checked to be stereo and not silent.
 fn reference(sc: &Scenario, s: &Session) -> Vec<Vec<f32>> {
     let out = render(sc, s, 0, 512);
     assert_eq!(out.len(), 2, "{}: stereo result", sc.name);
@@ -169,6 +180,7 @@ fn reference(sc: &Scenario, s: &Session) -> Vec<Vec<f32>> {
     out
 }
 
+/// Each scenario renders the reference at every block size in `blocks`.
 fn check_blocks(scenarios: &[Scenario], blocks: &[usize]) {
     for sc in scenarios {
         let s = (sc.build)();
@@ -179,10 +191,12 @@ fn check_blocks(scenarios: &[Scenario], blocks: &[usize]) {
     }
 }
 
+/// [`check_offsets_at`] at block 512.
 fn check_offsets(scenarios: &[Scenario], offsets: &[i64]) {
     check_offsets_at(scenarios, offsets, 512);
 }
 
+/// Each scenario rendered from each start in `offsets` at `block` is the tail of the reference.
 fn check_offsets_at(scenarios: &[Scenario], offsets: &[i64], block: usize) {
     for sc in scenarios {
         let s = (sc.build)();
