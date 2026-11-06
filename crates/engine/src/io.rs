@@ -572,31 +572,42 @@ impl From<StripNames> for soundcraft_model::AutoName {
 pub fn export_clips(e: &Engine, ids: &[soundcraft_model::ClipId], dir: &str) -> Result<usize> {
     let s = e.session();
     make_dir(dir)?;
-    let mut taken = std::collections::HashSet::new();
+    let mut names = ClipNames::default();
     for id in ids {
         let Some((t, c)) = s.find_clip(*id) else { continue };
         let audio = soundcraft_mix::render_clips(s, t, c.range());
         let buf = AudioBuffer { sample_rate: s.sample_rate.hz(), channels: audio };
         let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).map_err(|err| EngineError::Io(err.to_string()))?;
-        let path = clip_file(dir, &sanitize_name(&c.name), &taken)?;
+        let path = clip_file(dir, &sanitize_name(&c.name), &mut names, Path::exists)?;
         write_file(&path.to_string_lossy(), &bytes)?;
-        taken.insert(path);
     }
-    Ok(taken.len())
+    Ok(names.taken.len())
 }
 
-/// The first of `<stem>.wav`, `<stem>-2.wav`, … in `dir` that is neither on disk nor `taken` by
-/// this export: the browser has no disk to look at, so same-named clips are kept apart by `taken`.
-fn clip_file(dir: &str, stem: &str, taken: &std::collections::HashSet<PathBuf>) -> Result<PathBuf> {
-    let mut path = Path::new(dir).join(format!("{stem}.wav"));
-    let mut k = 2u32;
-    while path.exists() || taken.contains(&path) {
-        path = Path::new(dir).join(format!("{stem}-{k}.wav"));
+/// The files an export has named so far, and for each name the suffix to try next, so a run of
+/// same-named clips doesn't count up from 2 again for every clip.
+#[derive(Default)]
+struct ClipNames {
+    taken: std::collections::HashSet<PathBuf>,
+    next: std::collections::HashMap<String, u32>,
+}
+
+/// The first of `<stem>.wav`, `<stem>-2.wav`, … in `dir` that is neither `on_disk` nor already
+/// named by this export, recorded in `names`: the browser has no disk to look at, so same-named
+/// clips are kept apart by `names`.
+fn clip_file(dir: &str, stem: &str, names: &mut ClipNames, on_disk: impl Fn(&Path) -> bool) -> Result<PathBuf> {
+    let file = |k: u32| Path::new(dir).join(if k < 2 { format!("{stem}.wav") } else { format!("{stem}-{k}.wav") });
+    let mut k = names.next.get(stem).copied().unwrap_or(1);
+    let mut path = file(k);
+    while on_disk(&path) || names.taken.contains(&path) {
         k = k.saturating_add(1);
         if k > 10_000 {
             return Err(EngineError::Io(format!("{dir}: too many files named {stem}")));
         }
+        path = file(k);
     }
+    names.next.insert(stem.to_owned(), k.saturating_add(1));
+    names.taken.insert(path.clone());
     Ok(path)
 }
 
@@ -1016,12 +1027,36 @@ mod clip_tests {
     #[test]
     fn same_named_clips_get_their_own_names_with_nothing_on_disk() {
         let dir = std::env::temp_dir().join(format!("sc-clip-names-{}", std::process::id()));
-        let mut taken = std::collections::HashSet::new();
+        let mut names = super::ClipNames::default();
         for want in ["Take.wav", "Take-2.wav", "Take-3.wav"] {
-            let path = super::clip_file(&dir.to_string_lossy(), "Take", &taken).unwrap();
+            let path = super::clip_file(&dir.to_string_lossy(), "Take", &mut names, std::path::Path::exists).unwrap();
             assert_eq!(path, dir.join(want));
-            taken.insert(path);
         }
         assert!(!dir.exists());
+    }
+
+    /// A file already in the folder is still skipped, and a run of same-named clips picks up where
+    /// the last one left off instead of looking at every earlier name again for each clip.
+    #[test]
+    fn same_named_clips_skip_files_on_disk_and_do_not_count_up_from_the_start_each_time() {
+        let dir = std::env::temp_dir().join(format!("sc-clip-disk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Take-2.wav"), b"").unwrap();
+        let looked = std::cell::Cell::new(0usize);
+        let on_disk = |p: &std::path::Path| {
+            looked.set(looked.get() + 1);
+            p.exists()
+        };
+        let mut names = super::ClipNames::default();
+        for want in ["Take.wav", "Take-3.wav", "Take-4.wav"] {
+            let path = super::clip_file(&dir.to_string_lossy(), "Take", &mut names, on_disk).unwrap();
+            assert_eq!(path, dir.join(want));
+        }
+        let before = looked.get();
+        for _ in 0..1_000 {
+            super::clip_file(&dir.to_string_lossy(), "Take", &mut names, on_disk).unwrap();
+        }
+        assert_eq!(looked.get() - before, 1_000);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
