@@ -190,3 +190,32 @@ fn the_piano_roll_keeps_the_plain_arrows() {
     assert!(note_start(&app) > before, "the note moved right");
     assert_eq!(app.engine.session().edit.zoom.scroll, scroll, "the Edit window kept its view");
 }
+
+/// The MIDI editor open behind another tab has no piano roll on screen: the panel in front of it takes no
+/// arrows, so they centre the Edit window there as anywhere else.
+#[test]
+fn a_midi_editor_behind_another_tab_leaves_the_arrows_to_the_edit_window() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.ui.show_midi_editor = true;
+    let (clip_id, clip) = app.engine.session().tracks.iter().flat_map(|t| t.clips()).find(|c| c.start > 100_000).map(|c| (c.id, c.range())).unwrap();
+    app.run("view.zoom_set", json!({"samples_per_px": 10.0})).unwrap();
+    app.run("view.scroll", json!({"to": 0})).unwrap();
+    let ctx = egui::Context::default();
+    for _ in 0..6 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    let body = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::unique("soundcraft-midi-body"))).unwrap();
+    app.run("ui.dock", json!({"operation": "open", "panel": "history"})).unwrap();
+    app.run("ui.dock", json!({"operation": "move", "panel": "history", "target": "midi", "zone": "tab"})).unwrap();
+    for _ in 0..3 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    assert!(app.ui.show_midi_editor, "the MIDI editor is still open");
+    assert_ne!(app.ui.docking.layout.panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_ui::docking::PanelState::Front);
+    app_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(body.center())]);
+    app.run("edit.select", json!({"clips": [clip_id.0]})).unwrap();
+
+    app_frame(&ctx, &mut app, arrow(Key::ArrowLeft));
+    let (x, middle) = x_and_middle(&app, clip.start);
+    assert!((x - middle).abs() < 1.0, "Left: the clip start at {x}, the middle at {middle}");
+}
