@@ -20,7 +20,7 @@ use audiosuite::SPEED_RAMP_CHOICES;
 use audiosuite::audiosuite_window;
 pub use files::{NotUnicode, ask_to_save, open_path, open_session_bytes, run_or_ask, takes_path, unicode};
 use files::{OPEN_PENDING, default_dir, open_pending_session, path_dialog};
-use strip_silence::{AUTO_NAME_LABELS, STRIP_NAME_LABELS, StripRectangles, auto_rename_action, strip_name_fields, strip_silence_action};
+use strip_silence::{AUTO_NAME_LABELS, STRIP_NAME_LABELS, StripRectangles, StripValues, auto_rename_action, strip_name_fields, strip_silence_action};
 pub use strip_silence::{StripRects, strip_silence_rectangles};
 
 pub mod new_tracks;
@@ -78,6 +78,8 @@ pub struct Dialogs {
     pending_session: Option<(String, Vec<u8>)>,
     /// The naming scheme Strip Silence gives the clips it leaves, kept from one use to the next.
     pub strip_names: StripNames,
+    /// The values Strip Silence last had, which it opens with next time.
+    strip_values: StripValues,
     /// The Strip Silence rectangles the Edit window draws while Strip Silence is open.
     strip_rectangles: StripRectangles,
 }
@@ -211,7 +213,10 @@ impl Dialogs {
                 Dialog::Number { cmd: id.into(), title: "Quantize strength".into(), key: "strength".into(), value: 100.0, suffix: "%".into() }
             }
             "edit.fades_create" => Dialog::Fades { shape: "equal power".into() },
-            "edit.strip_silence" => Dialog::StripSilence { threshold: -48.0, min_ms: 50.0, pre_ms: 5.0, post_ms: 20.0 },
+            "edit.strip_silence" => {
+                let StripValues([threshold, min_ms, pre_ms, post_ms]) = self.strip_values;
+                Dialog::StripSilence { threshold, min_ms, pre_ms, post_ms }
+            }
             "track.group" => {
                 let s = e.session();
                 let members = s.tracks.iter().map(|t| (t.id.0, t.name.clone(), s.edit.selected_tracks.contains(&t.id))).collect();
@@ -713,6 +718,14 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 }
             }
         });
+    // Strip Silence keeps the values it shows, however it closes: Escape, Cancel or one of its actions.
+    match &d {
+        Dialog::StripSilence { threshold, min_ms, pre_ms, post_ms } => {
+            app.dialogs.strip_values = StripValues([*threshold, *min_ms, *pre_ms, *post_ms])
+        }
+        Dialog::StripSilenceRename { strip, .. } => app.dialogs.strip_values = StripValues(*strip),
+        _ => {}
+    }
     if esc || ctx.memory(|m| m.data.get_temp::<bool>(egui::Id::unique("dlg_cancel")).unwrap_or(false)) {
         keep = false;
         action = None;
