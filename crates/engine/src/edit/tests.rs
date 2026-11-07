@@ -239,6 +239,32 @@ fn fades_and_crossfades() {
     assert_eq!((c[0].end(), c[1].start), (3000, 3000));
 }
 
+#[test]
+fn crossfade_on_stretched_clips_stays_inside_the_file() {
+    // Two abutting clips at stretch 0.5 (the mixer reads `offset + rel / stretch`):
+    // A plays timeline 0..4000 from source offset 0, B plays timeline 4000..7000 from source offset 1000.
+    let (mut s, t) = session_with_clip();
+    let frames = i64::try_from(s.source(SourceId(500)).unwrap().frames).unwrap();
+    let (a, b) = (s.new_clip_id(), s.new_clip_id());
+    if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+        let mut ca = Clip::audio(a, "a", SourceId(500), 0, 0, 4000);
+        ca.stretch = 0.5;
+        let mut cb = Clip::audio(b, "b", SourceId(500), 1000, 4000, 3000);
+        cb.stretch = 0.5;
+        pl.clips = vec![ca, cb];
+    }
+    assert_eq!(create_fades(&mut s, t, Range::new(2000, 7000), FadeShape::Linear), 1);
+    let c = s.track(t).unwrap().clips();
+    for c in c {
+        let end = c.source_offset() + (c.length as f64 / c.stretch).round() as Samples;
+        assert!(c.source_offset() >= 0 && end <= frames, "{} reads source {}..{end} of a {frames}-frame file", c.name, c.source_offset());
+    }
+    // The clips still overlap, and each fade covers that overlap.
+    let (ca, cb) = (&c[0], &c[1]);
+    assert!(cb.start < ca.end(), "no crossfade overlap: a ends {}, b starts {}", ca.end(), cb.start);
+    assert!(ca.fade_out.len >= ca.end() - cb.start && cb.fade_in.len >= ca.end() - cb.start);
+}
+
 fn three_clips() -> (Session, TrackId, [ClipId; 3]) {
     let (mut s, t) = session_with_clip();
     let ids = [s.new_clip_id(), s.new_clip_id(), s.new_clip_id()];
