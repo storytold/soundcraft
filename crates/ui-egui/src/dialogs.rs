@@ -52,8 +52,9 @@ pub enum Dialog {
     Group { id: Option<GroupId>, name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
     Session { frame_rate: String, bit_depth: String },
     // Clip › Loop…: `length` is typed in `format`, measured from `start` (the first selected clip's).
-    // `filled` is the text the field opened with and the exact length it stands for.
-    Loop { by: LoopBy, count: u32, length: String, format: soundcraft_time::TimeFormat, start: Samples, filled: (String, Samples) },
+    // `filled` is the text the field opened with and the exact length it stands for. `fit` stretches
+    // the clip to a whole number of beats first, so the copies land on the tempo grid.
+    Loop { by: LoopBy, count: u32, length: String, format: soundcraft_time::TimeFormat, start: Samples, filled: (String, Samples), fit: bool },
     ScoreSetup { title: String, composer: String, bars_per_system: u32, show_track_names: bool },
     SaveChanges { then: (String, Value) },
 }
@@ -240,7 +241,7 @@ impl Dialogs {
                 let format = s.edit.main_counter;
                 let exact = clip.length.saturating_mul(4);
                 let length = soundcraft_time::format_length(clip.start, exact, format, s.sample_rate, &s.tempo, s.frame_rate);
-                Dialog::Loop { by: LoopBy::Count, count: 4, length: length.clone(), format, start: clip.start, filled: (length, exact) }
+                Dialog::Loop { by: LoopBy::Count, count: 4, length: length.clone(), format, start: clip.start, filled: (length, exact), fit: false }
             }
             _ => match path_dialog(id, &home, &name) {
                 Some(d) => d,
@@ -651,7 +652,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         action = Some(("setup.session".into(), json!({"frame_rate": frame_rate, "bit_depth": bit_depth})));
                     }
                 }
-                Dialog::Loop { by, count, length, format, start, filled } => {
+                Dialog::Loop { by, count, length, format, start, filled, fit } => {
                     let s = app.engine.session();
                     ui.horizontal(|ui| {
                         let count_label = ui.radio_value(by, LoopBy::Count, "Number of Loops");
@@ -663,7 +664,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         ui.label(format.label());
                     });
                     ui.radio_value(by, LoopBy::Fill, "Loop Until End of Session or Next Clip");
-                    let params = loop_params(s, *by, *count, length, *format, *start, filled);
+                    ui.checkbox(fit, "Fit to Grid");
+                    let params = loop_params(s, *by, *count, length, *format, *start, filled, *fit);
                     if buttons_enabled(ui, "OK", enter, params.is_some()) {
                         action = params.map(|p| ("clip.loop".into(), p));
                     }
@@ -851,7 +853,11 @@ fn tempo_change_action(at: Samples, bpm: f64) -> (String, Value) {
 
 /// The `clip.loop` params the Clip Looping dialog's OK sends; None while the typed length does not
 /// read as a duration longer than zero. An untouched length field sends the exact length it was
-/// filled with, which its text can round.
+/// filled with, which its text can round. `fit` asks the engine to stretch the clip to a whole
+/// number of beats first, so its copies land on the tempo grid.
+// The arguments are the dialog variant's fields, destructured at the call site; bundling them
+// would build a struct the variant already is.
+#[allow(clippy::too_many_arguments)]
 fn loop_params(
     s: &Session,
     by: LoopBy,
@@ -860,13 +866,18 @@ fn loop_params(
     format: soundcraft_time::TimeFormat,
     start: Samples,
     filled: &(String, Samples),
+    fit: bool,
 ) -> Option<Value> {
-    match by {
-        LoopBy::Count => Some(json!({"count": count})),
-        LoopBy::Length if length == filled.0 => Some(json!({"length": filled.1})),
-        LoopBy::Length => loop_length(s, length, format, start).filter(|l| *l > 0).map(|l| json!({"length": l})),
-        LoopBy::Fill => Some(json!({"fill": true})),
+    let mut params = match by {
+        LoopBy::Count => json!({"count": count}),
+        LoopBy::Length if length == filled.0 => json!({"length": filled.1}),
+        LoopBy::Length => loop_length(s, length, format, start).filter(|l| *l > 0).map(|l| json!({"length": l}))?,
+        LoopBy::Fill => json!({"fill": true}),
+    };
+    if fit {
+        params["fit"] = Value::Bool(true);
     }
+    Some(params)
 }
 
 /// A duration typed in `format`, the way `format_length` writes it, for a span that starts at `start`.
@@ -1294,11 +1305,12 @@ mod tests {
         e.execute("edit.select", &json!({"clips": [clip.id.0]})).unwrap();
         assert!(d.open_for_command(&e, "clip.loop"));
         assert_eq!(d.open_name(), Some("clip_looping"));
-        let Some(Dialog::Loop { by, count, length, format, start, filled }) = &d.open else { panic!("{:?}", d.open) };
+        let Some(Dialog::Loop { by, count, length, format, start, filled, fit }) = &d.open else { panic!("{:?}", d.open) };
         assert_eq!((*by, *count, *start), (LoopBy::Count, 4, clip.start));
+        assert!(!fit, "the dialog opens with Fit to Grid off");
         assert_eq!(*format, e.session().edit.main_counter);
         // OK on the untouched field loops exactly four times, whatever its text rounds to.
-        let sent = loop_params(e.session(), LoopBy::Length, *count, length, *format, *start, filled);
+        let sent = loop_params(e.session(), LoopBy::Length, *count, length, *format, *start, filled, *fit);
         assert_eq!(sent, Some(json!({"length": clip.length * 4})));
     }
 
@@ -1325,13 +1337,17 @@ mod tests {
         let s = e.session();
         let samples = soundcraft_time::TimeFormat::Samples;
         let filled = ("0:01.000".to_string(), 48_001);
-        let send = |by, length: &str| loop_params(s, by, 3, length, samples, 0, &filled);
-        assert_eq!(send(LoopBy::Count, ""), Some(json!({"count": 3})));
-        assert_eq!(send(LoopBy::Length, "4800"), Some(json!({"length": 4800})));
-        assert_eq!(send(LoopBy::Length, "0:01.000"), Some(json!({"length": 48_001})));
-        assert_eq!(send(LoopBy::Length, "0"), None);
-        assert_eq!(send(LoopBy::Length, "soon"), None);
-        assert_eq!(send(LoopBy::Fill, "soon"), Some(json!({"fill": true})));
+        let send = |by, length: &str, fit: bool| loop_params(s, by, 3, length, samples, 0, &filled, fit);
+        assert_eq!(send(LoopBy::Count, "", false), Some(json!({"count": 3})));
+        assert_eq!(send(LoopBy::Length, "4800", false), Some(json!({"length": 4800})));
+        assert_eq!(send(LoopBy::Length, "0:01.000", false), Some(json!({"length": 48_001})));
+        assert_eq!(send(LoopBy::Length, "0", false), None);
+        assert_eq!(send(LoopBy::Length, "soon", false), None);
+        assert_eq!(send(LoopBy::Fill, "soon", false), Some(json!({"fill": true})));
+        // Fit to Grid rides along with whichever loop option is chosen.
+        assert_eq!(send(LoopBy::Count, "", true), Some(json!({"count": 3, "fit": true})));
+        assert_eq!(send(LoopBy::Fill, "soon", true), Some(json!({"fill": true, "fit": true})));
+        assert_eq!(send(LoopBy::Length, "0", true), None, "a length that does not read sends nothing, fit or not");
         assert!(soundcraft_engine::command_specs().iter().any(|c| c.id == "clip.loop"));
     }
 }
