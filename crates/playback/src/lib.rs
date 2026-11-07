@@ -201,6 +201,20 @@ impl Player {
         self.fault.trouble(stalled)
     }
 
+    /// The audio callback's load as a percentage of the real-time budget (smoothed), its peak
+    /// since the last [`Player::reset_dsp_peaks`], and the xruns the device reported. The web
+    /// build does not measure the load and reports 0.
+    pub fn dsp_stats(&self) -> (f32, f32, u64) {
+        let load = self.fault.load_permille.load(Ordering::Relaxed) as f32 / 10.0;
+        let peak = self.fault.peak_permille.load(Ordering::Relaxed) as f32 / 10.0;
+        (load, peak, self.fault.xruns.load(Ordering::Relaxed))
+    }
+
+    /// Start a new peak load period.
+    pub fn reset_dsp_peaks(&self) {
+        self.fault.peak_permille.store(0, Ordering::Relaxed);
+    }
+
     fn side(&self) -> std::sync::MutexGuard<'_, Side> {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -328,7 +342,8 @@ impl Player {
                 let n = (frames * 2).min(buf.len());
                 if let Some(b) = buf.get_mut(..n) {
                     let shared = Arc::clone(&state.shared);
-                    guarded_block(&failed, &shared, b, |b| state.fill(b, 2));
+                    let rate = state.device_rate;
+                    guarded_block(&failed, &shared, b, 2, rate, |b| state.fill(b, 2));
                 }
                 if Arc::strong_count(&state.shared) <= 1 {
                     break;

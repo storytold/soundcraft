@@ -1,7 +1,7 @@
 use super::{
-    Arc, AtomicBool, BLOCK, BTreeMap, Cmd, HashMap, HashSet, MAX_CHANNELS, MeterSnapshot, MixEngine, OLD_SESSIONS, Ordering, OutputTrouble, Plugin,
+    Arc, AtomicBool, AtomicU32, BLOCK, BTreeMap, Cmd, HashMap, HashSet, MAX_CHANNELS, MeterSnapshot, MixEngine, OLD_SESSIONS, Ordering, OutputTrouble, Plugin,
     PluginEditor, PluginStateReader, PluginStates, PreparedInstance, Range, Receiver, Samples, Sender, Session, Shared, SyncSender, TrackId,
-    itu_stereo_fold, main_channels, record, sync_channel,
+    devices, itu_stereo_fold, main_channels, record, sync_channel,
 };
 
 /// How the audio output is doing, for the UI.
@@ -15,9 +15,34 @@ pub(crate) struct Fault {
     pub(crate) beats: std::sync::atomic::AtomicU64,
     /// The UI has been told.
     reported: AtomicBool,
+    /// Buffer underruns and overruns the device reported.
+    pub(crate) xruns: std::sync::atomic::AtomicU64,
+    /// Time spent filling a buffer, in permille of its real-time length, smoothed.
+    pub(crate) load_permille: AtomicU32,
+    /// The highest unsmoothed load since the last reset, in permille.
+    pub(crate) peak_permille: AtomicU32,
 }
 
 impl Fault {
+    /// Note a stream error: a lost device marks the output gone, an xrun is counted.
+    pub(crate) fn note_error(&self, e: &cpal::Error) {
+        if devices::stream_lost(e) {
+            self.gone.store(true, Ordering::Relaxed);
+        }
+        if e.kind() == cpal::ErrorKind::Xrun {
+            self.xruns.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Note one buffer's load: folds it into the smoothed load and raises the peak. No lock, no
+    /// allocation, so it is safe on the audio thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn note_load(&self, permille: u32) {
+        let prev = self.load_permille.load(Ordering::Relaxed);
+        self.load_permille.store(smooth_permille(prev, permille), Ordering::Relaxed);
+        self.peak_permille.fetch_max(permille, Ordering::Relaxed);
+    }
+
     /// What stopped the output, once.
     pub(crate) fn trouble(&self, stalled: bool) -> Option<OutputTrouble> {
         let trouble = if self.failed.load(Ordering::Relaxed) {
@@ -50,15 +75,40 @@ pub(crate) fn stalled(seen: &mut Option<(u64, std::time::Instant)>, beats: u64, 
     }
 }
 
+/// How much of a buffer's real-time length `used` seconds took, in permille: `samples` interleaved
+/// samples of `channels` channels at `rate` Hz. 0 when the buffer has no length.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn load_permille(used: f64, samples: usize, channels: usize, rate: f64) -> u32 {
+    let budget = samples as f64 / (channels.max(1) as f64 * rate);
+    if !budget.is_finite() || budget <= 0.0 || !used.is_finite() || used <= 0.0 {
+        return 0;
+    }
+    (used / budget * 1000.0).round().min(f64::from(u32::MAX)) as u32
+}
+
+/// One-pole smoothing of the load: moves an eighth of the way from `prev` to `now`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn smooth_permille(prev: u32, now: u32) -> u32 {
+    ((u64::from(prev) * 7 + u64::from(now)) / 8) as u32
+}
+
 /// Fill one block with `fill`. If it panics, the block and every later one are silent and the
-/// transport stops, rather than the panic taking the app down.
-pub(crate) fn guarded_block(fault: &Fault, shared: &Shared, out: &mut [f32], fill: impl FnOnce(&mut [f32])) {
+/// transport stops, rather than the panic taking the app down. Off the web, the time `fill` takes
+/// is measured against the block's real-time length (`channels` at `rate` Hz) as the DSP load.
+pub(crate) fn guarded_block(fault: &Fault, shared: &Shared, out: &mut [f32], channels: usize, rate: f64, fill: impl FnOnce(&mut [f32])) {
     fault.beats.fetch_add(1, Ordering::Relaxed);
+    #[cfg(not(target_arch = "wasm32"))]
+    let start = std::time::Instant::now();
     if fault.failed.load(Ordering::Relaxed) || std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fill(out))).is_err() {
         fault.failed.store(true, Ordering::Relaxed);
         shared.playing.store(false, Ordering::Relaxed);
         out.fill(0.0);
+        return;
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fault.note_load(load_permille(start.elapsed().as_secs_f64(), out.len(), channels, rate));
+    #[cfg(target_arch = "wasm32")]
+    let _ = (channels, rate);
 }
 
 /// State owned by the audio callback.
@@ -90,6 +140,8 @@ pub(crate) struct AudioState {
     forget_shared: Vec<TrackId>,
 }
 
+/// A realtime mix engine at `sr` Hz: third-party instances come from the UI thread, and the
+/// metronome is on.
 fn new_engine(sr: f32) -> MixEngine {
     let mut m = MixEngine::new(sr, BLOCK);
     m.set_external_instances(true);
@@ -98,6 +150,8 @@ fn new_engine(sr: f32) -> MixEngine {
 }
 
 impl AudioState {
+    /// Callback state for `session` on a device running at `device_rate` Hz, stopped at the start.
+    /// Commands arrive on `rx`; retired plugin instances go back on `garbage`.
     pub(crate) fn new(
         rx: Receiver<Cmd>,
         shared: Arc<Shared>,
@@ -130,6 +184,8 @@ impl AudioState {
         }
     }
 
+    /// Apply every command waiting on the channel without blocking: new sessions and instances,
+    /// transport moves, input and recording changes, and deleted tracks.
     fn drain(&mut self) {
         let mut changed = false;
         while let Ok(c) = self.rx.try_recv() {
@@ -198,6 +254,7 @@ impl AudioState {
         self.shared.playing.store(self.playing, Ordering::Relaxed);
     }
 
+    /// Send the mix engine's retired plugin instances to the UI thread, to be dropped there.
     fn send_garbage(&mut self) {
         let g = self.mix.take_retired();
         if !g.is_empty() {
@@ -375,6 +432,7 @@ pub(crate) struct Side {
 }
 
 impl Side {
+    /// Empty bookkeeping for a session at `rate` Hz; retired instances arrive on `garbage`.
     pub(crate) fn new(rate: f32, garbage: Receiver<Vec<Box<dyn Plugin>>>) -> Side {
         Side {
             shadow: HashMap::new(),
@@ -410,12 +468,14 @@ impl Side {
         }
     }
 
+    /// Ask the audio thread to send replaced session snapshots back, so they are dropped here.
     pub(crate) fn return_old_sessions(&mut self, tx: &Sender<Cmd>) {
         let (otx, orx) = sync_channel(OLD_SESSIONS);
         self.old_sessions = Some(orx);
         let _ = tx.send(Cmd::OldSessions(otx));
     }
 
+    /// Drop everything known about the instance in `key`'s slot, closing its editor.
     pub(crate) fn forget(&mut self, key: (TrackId, usize)) {
         self.shadow.remove(&key);
         self.states.remove(&key);
@@ -426,6 +486,8 @@ impl Side {
     }
 }
 
+/// Copy fresh meter readings from `source` into `out` and reset `source`'s levels; when nothing
+/// new was rendered, `out` keeps its readings.
 pub(crate) fn take_meter_snapshot(source: &mut MeterSnapshot, out: &mut MeterSnapshot) {
     if !source.fresh {
         // No block since the last take: keep the readings, but not those of deleted tracks.
@@ -436,6 +498,7 @@ pub(crate) fn take_meter_snapshot(source: &mut MeterSnapshot, out: &mut MeterSna
     source.reset_levels();
 }
 
+/// Copy `source`'s meters into `out`, dropping the tracks `source` no longer has.
 pub(crate) fn copy_meter_snapshot(source: &MeterSnapshot, out: &mut MeterSnapshot) {
     out.tracks.retain(|id, _| source.tracks.contains_key(id));
     for (id, meter) in &source.tracks {
@@ -445,14 +508,17 @@ pub(crate) fn copy_meter_snapshot(source: &MeterSnapshot, out: &mut MeterSnapsho
 }
 
 impl Side {
+    /// The saved state of every live instance, except those that refused their stored state.
     pub(crate) fn capture_states(&mut self) -> PluginStates {
         self.states.iter_mut().filter(|(k, _)| !self.refused.contains(*k)).filter_map(|(&(t, slot), r)| Some((t, slot, r.save_state()?))).collect()
     }
 
+    /// The slots whose editors report a state change since they were last asked.
     pub(crate) fn changed_states(&mut self) -> Vec<(TrackId, usize)> {
         self.editors.iter_mut().filter_map(|(k, e)| e.state_changed().then_some(*k)).collect()
     }
 
+    /// Like [`Side::capture_states`], limited to `slots`.
     pub(crate) fn capture_states_of(&mut self, slots: &[(TrackId, usize)]) -> PluginStates {
         self.states
             .iter_mut()
@@ -467,6 +533,7 @@ impl Side {
         self.editors.insert(key, e);
     }
 
+    /// Open the editor of `key`'s instance; once opened, its own state is saved again.
     pub(crate) fn open_editor(&mut self, key: (TrackId, usize)) -> Result<(), String> {
         let e = self.editors.get_mut(&key).ok_or_else(|| "this plugin has no editor (or it is not loaded)".to_string())?;
         e.open()?;

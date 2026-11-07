@@ -249,16 +249,133 @@ fn a_block_that_panics_goes_silent_and_is_reported_once() {
     };
     let fault = Fault::default();
     let mut out = [0.5f32; 8];
-    guarded_block(&fault, &shared, &mut out, |o| o.fill(0.25));
+    guarded_block(&fault, &shared, &mut out, 2, 48_000.0, |o| o.fill(0.25));
     assert_eq!((out, fault.trouble(false)), ([0.25; 8], None));
-    guarded_block(&fault, &shared, &mut out, |_| std::panic::panic_any("a bug in the mix"));
-    guarded_block(&fault, &shared, &mut out, |o| o.fill(0.25));
+    guarded_block(&fault, &shared, &mut out, 2, 48_000.0, |_| std::panic::panic_any("a bug in the mix"));
+    guarded_block(&fault, &shared, &mut out, 2, 48_000.0, |o| o.fill(0.25));
     assert_eq!(out, [0.0; 8]);
     assert!(!shared.playing.load(Ordering::Relaxed));
     assert_eq!((fault.trouble(false), fault.trouble(false)), (Some(OutputTrouble::Bug), None));
     assert_eq!(fault.beats.load(Ordering::Relaxed), 3);
 }
 
+/// Fill time is reported in permille of the buffer's real-time length, over 1000 when late.
+#[test]
+fn load_is_the_share_of_the_buffers_real_time_length() {
+    // 256 stereo frames at 48 kHz last 5.333 ms.
+    let budget = 256.0 / 48_000.0;
+    assert_eq!(callback::load_permille(budget / 2.0, 512, 2, 48_000.0), 500);
+    assert_eq!(callback::load_permille(budget, 512, 2, 48_000.0), 1000);
+    assert_eq!(callback::load_permille(budget * 2.5, 512, 2, 48_000.0), 2500);
+}
+
+/// An empty buffer, a zero rate or a non-positive or non-finite timing gives no load.
+#[test]
+fn load_is_zero_for_empty_buffers_and_bad_timings() {
+    assert_eq!(callback::load_permille(0.001, 0, 2, 48_000.0), 0);
+    assert_eq!(callback::load_permille(0.0, 512, 2, 48_000.0), 0);
+    assert_eq!(callback::load_permille(-1.0, 512, 2, 48_000.0), 0);
+    assert_eq!(callback::load_permille(f64::NAN, 512, 2, 48_000.0), 0);
+    assert_eq!(callback::load_permille(f64::INFINITY, 512, 2, 48_000.0), 0);
+    assert_eq!(callback::load_permille(0.001, 512, 2, 0.0), 0);
+}
+
+/// Zero channels count as one, and a huge timing stops at `u32::MAX` instead of wrapping.
+#[test]
+fn load_with_no_channels_counts_as_mono_and_saturates() {
+    assert_eq!(callback::load_permille(0.5, 48_000, 0, 48_000.0), callback::load_permille(0.5, 48_000, 1, 48_000.0));
+    assert_eq!(callback::load_permille(0.5, 48_000, 0, 48_000.0), 500);
+    assert_eq!(callback::load_permille(1e12, 1, 1, 48_000.0), u32::MAX);
+}
+
+/// The one-pole smoothing moves an eighth of the way and does not overflow at the top.
+#[test]
+fn smoothing_moves_an_eighth_of_the_way() {
+    assert_eq!(callback::smooth_permille(0, 800), 100);
+    assert_eq!(callback::smooth_permille(800, 0), 700);
+    assert_eq!(callback::smooth_permille(500, 500), 500);
+    assert_eq!(callback::smooth_permille(u32::MAX, u32::MAX), u32::MAX);
+}
+
+/// `note_load` smooths the load, holds the highest value as the peak, and starts again after a reset.
+#[test]
+fn noting_load_smooths_it_and_keeps_the_peak() {
+    let fault = Fault::default();
+    fault.note_load(800);
+    assert_eq!((fault.load_permille.load(Ordering::Relaxed), fault.peak_permille.load(Ordering::Relaxed)), (100, 800));
+    fault.note_load(200);
+    assert_eq!((fault.load_permille.load(Ordering::Relaxed), fault.peak_permille.load(Ordering::Relaxed)), (112, 800));
+    fault.peak_permille.store(0, Ordering::Relaxed);
+    fault.note_load(300);
+    assert_eq!(fault.peak_permille.load(Ordering::Relaxed), 300);
+}
+
+/// Each xrun is counted, but the output is not marked gone and no trouble is reported.
+#[test]
+fn an_xrun_is_counted_but_does_not_lose_the_device() {
+    let fault = Fault::default();
+    fault.note_error(&cpal::Error::new(cpal::ErrorKind::Xrun));
+    fault.note_error(&cpal::Error::new(cpal::ErrorKind::Xrun));
+    assert_eq!(fault.xruns.load(Ordering::Relaxed), 2);
+    assert!(!fault.gone.load(Ordering::Relaxed));
+    assert_eq!(fault.trouble(false), None);
+}
+
+/// A missing device or an invalidated stream marks the output gone and does not count as an xrun.
+#[test]
+fn a_lost_device_is_marked_gone_without_an_xrun() {
+    let fault = Fault::default();
+    fault.note_error(&cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
+    assert_eq!(fault.xruns.load(Ordering::Relaxed), 0);
+    assert_eq!(fault.trouble(false), Some(OutputTrouble::Gone));
+    let fault = Fault::default();
+    fault.note_error(&cpal::Error::new(cpal::ErrorKind::StreamInvalidated));
+    assert!(fault.gone.load(Ordering::Relaxed));
+}
+
+/// A fill that takes longer than the block's real-time length shows up in the peak and the smoothed load.
+#[test]
+fn a_slow_block_raises_the_load() {
+    let shared = Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(true),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    };
+    let fault = Fault::default();
+    // 48 stereo frames at 48 kHz last 1 ms; the fill takes at least 3 ms.
+    let mut out = [0.0f32; 96];
+    guarded_block(&fault, &shared, &mut out, 2, 48_000.0, |o| {
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        o.fill(0.25);
+    });
+    let peak = fault.peak_permille.load(Ordering::Relaxed);
+    assert!(peak >= 3000, "peak {peak}");
+    assert_eq!(fault.load_permille.load(Ordering::Relaxed), peak / 8);
+    assert_eq!(out, [0.25; 96]);
+}
+
+/// A block that panics, and the silent blocks after it, are not counted as load.
+#[test]
+fn a_block_that_panics_does_not_count_as_load() {
+    let shared = Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(true),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    };
+    let fault = Fault::default();
+    let mut out = [0.5f32; 96];
+    guarded_block(&fault, &shared, &mut out, 2, 48_000.0, |_| {
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        std::panic::panic_any("a bug in the mix");
+    });
+    guarded_block(&fault, &shared, &mut out, 2, 48_000.0, |_| std::thread::sleep(std::time::Duration::from_millis(3)));
+    assert_eq!((fault.load_permille.load(Ordering::Relaxed), fault.peak_permille.load(Ordering::Relaxed)), (0, 0));
+    assert_eq!(out, [0.0; 96]);
+}
+
+/// A lost device, or one that stops asking for audio for `STALL` while playing, is reported to the UI once.
 #[test]
 fn a_lost_or_stalled_device_is_reported_once() {
     let ago = |seen: &mut Option<(u64, std::time::Instant)>| {
