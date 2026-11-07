@@ -90,6 +90,13 @@ impl Worker {
 }
 
 fn open_movie(path: &str) -> Result<Movie, String> {
+    // The last check before the file system: the path came from a session file, so the read
+    // roots apply, and only a regular file is opened (a pipe would hold the video worker
+    // forever).
+    soundcraft_engine::file_access::check_read(path)?;
+    if !std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?.is_file() {
+        return Err(format!("{path}: not a regular file"));
+    }
     #[cfg(not(target_arch = "wasm32"))]
     {
         let f = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;

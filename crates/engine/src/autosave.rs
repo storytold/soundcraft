@@ -454,6 +454,27 @@ pub fn create_folder(dir: &Path) -> std::io::Result<()> {
     builder.create(dir)
 }
 
+/// A new folder directly in `parent`, named `{prefix}-` and 32 random hex digits. It is made
+/// exclusively (it is created by this call or the call fails), so a folder or link another account
+/// put there first is never used, and the name cannot be guessed ahead. On Unix it is owner-only
+/// (`0o700`); on other systems it has the mode `parent` gives it.
+pub fn create_unique_folder(parent: &Path, prefix: &str) -> std::io::Result<PathBuf> {
+    use std::hash::{BuildHasher, Hasher};
+    for _ in 0..16 {
+        let random = |_| std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let dir = parent.join(format!("{prefix}-{:016x}{:016x}", random(0), random(1)));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no unused folder name"))
+}
+
 fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut f = std::fs::File::create(path)?;
     f.write_all(bytes)?;
@@ -476,6 +497,22 @@ fn io_error(path: &Path, err: std::io::Error) -> EngineError {
 mod tests {
     use super::*;
     use crate::io::open_session;
+
+    #[test]
+    fn unique_folders_are_new_and_owner_only() {
+        let parent = std::env::temp_dir().join(format!("soundcraft-unique-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        let (a, b) = (create_unique_folder(&parent, "T").unwrap(), create_unique_folder(&parent, "T").unwrap());
+        assert_ne!(a, b);
+        assert!(a.is_dir() && a.parent() == Some(parent.as_path()));
+        assert_eq!(a.file_name().unwrap().len(), "T-".len() + 32);
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&a).unwrap().permissions()) & 0o777, 0o700);
+        assert!(create_unique_folder(&parent.join("missing"), "T").is_err(), "no parents are made");
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
     use serde_json::json;
     use soundcraft_audio_io::AudioBuffer;
     use soundcraft_model::{ChannelFormat, Clip, TrackKind};
