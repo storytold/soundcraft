@@ -2,7 +2,7 @@ use super::automation::draw_automation;
 use super::clips::{ClipLane, GridLines, draw_clip, draw_live_take, draw_strip_silence};
 use super::header::{header_column, track_header};
 use super::input::lane_interaction;
-use super::layout::{Column, HEADER_W, LANE_H, STRIP_W, lane_rect, sample_at, x_of};
+use super::layout::{Column, LANE_H, STRIP_W, lane_rect, sample_at, x_of};
 use super::{
     Align2, AutoParam, Range, Rect, Sense, Session, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, json, ops, pos2, regular,
     rgb, vec2,
@@ -58,13 +58,16 @@ pub(crate) fn click_track(app: &mut SoundApp, id: TrackId, mods: egui::Modifiers
 
 // ---- track rows ------------------------------------------------------------------------------
 
-/// Draw one track with grid positions shared by all lanes in the current frame.
+/// Draw one track: its header, optional columns and lane, with grid positions shared by all lanes
+/// in the current frame. The header is the same width for every track (the widest meter shown):
+/// what the row leaves of the header column `tl` starts after, once the columns take theirs.
 pub(super) fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect, tl: Rect, cols: &[Column], grid: &GridLines) {
     let t = Tokens::current();
     let s = app.engine.session_arc();
     let Some(track) = s.track(id) else { return };
     let selected = s.edit.selected_tracks.contains(&id);
-    let head = Rect::from_min_max(row.min, pos2(row.min.x + HEADER_W, row.max.y));
+    let head_w = tl.min.x - row.min.x - cols.iter().map(|c| c.3).sum::<f32>();
+    let head = Rect::from_min_max(row.min, pos2(row.min.x + head_w, row.max.y));
     let (head_bg, lane_bg) = crate::theme::track_backgrounds(track.color, selected, app.ui.track_tint);
     let mut x = head.max.x;
     for &(col, _, _, w) in cols {

@@ -32,8 +32,33 @@ pub fn edit_columns(s: &Session) -> Vec<Column> {
     COLUMNS.into_iter().filter(|c| all || s.edit.flag(&format!("edit_view.{}", c.0))).collect()
 }
 
-pub fn header_width(cols: &[Column]) -> f32 {
-    HEADER_W + cols.iter().map(|c| c.3).sum::<f32>()
+/// The meter at the right of a track header: one bar per channel as Pro Tools draws it, at the
+/// density of the stereo meter (2.5 pt bars, 1 pt apart, inside a 1 pt rim). Mono and stereo
+/// meters share the stereo width.
+pub(super) const METER_W: f32 = 8.0;
+
+/// The width of a track header's meter for `channels` channels.
+pub fn meter_width(channels: usize) -> f32 {
+    let n = channels.clamp(1, soundcraft_mix::MAX_CHANNELS) as f32;
+    (2.0 + 2.5 * n + (n - 1.0)).max(METER_W)
+}
+
+/// How many bars a track's header meter has: its own channels, or the main output's for the
+/// master fader (as on its Mix window strip).
+pub fn meter_channels(s: &Session, t: &Track) -> usize {
+    let format = if t.kind == soundcraft_model::TrackKind::Master { s.main_format() } else { t.format };
+    format.channels().clamp(1, soundcraft_mix::MAX_CHANNELS)
+}
+
+/// The width of the track headers (without the optional columns). Like Pro Tools, it widens to fit
+/// the widest meter of the tracks shown, so every track's meter starts at the same place.
+pub fn track_header_width(s: &Session) -> f32 {
+    let widest = s.tracks.iter().filter(|t| super::tracks::in_edit_window(s, t)).map(|t| meter_channels(s, t)).max().unwrap_or(1);
+    HEADER_W + meter_width(widest) - METER_W
+}
+
+pub fn header_width(s: &Session, cols: &[Column]) -> f32 {
+    track_header_width(s) + cols.iter().map(|c| c.3).sum::<f32>()
 }
 
 pub const RULER_H: f32 = 17.0;

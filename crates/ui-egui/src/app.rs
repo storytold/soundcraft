@@ -115,6 +115,7 @@ impl SoundApp {
             frame_ms: 0.0,
             last_frame: None,
             last_meter_poll: f64::NEG_INFINITY,
+            last_meter_block: f64::NEG_INFINITY,
             video: video_track::VideoPool::default(),
             bounce: None,
             imports: import::Imports::default(),
@@ -391,7 +392,7 @@ impl SoundApp {
         if self.meters_live() {
             let hz = if self.ui.window == MainWindow::Mix { 60 } else { 30 };
             ctx.request_repaint_after(std::time::Duration::from_millis(1000 / hz));
-        } else if self.meters.values().any(|m| m.level[0] > 0.0001) {
+        } else if self.main_meter.is_moving() || self.meters.values().any(MeterDisplay::is_moving) {
             ctx.request_repaint_after(std::time::Duration::from_millis(80));
         } else if !self.pending_shots.is_empty() || !self.synthetic.is_empty() {
             ctx.request_repaint();

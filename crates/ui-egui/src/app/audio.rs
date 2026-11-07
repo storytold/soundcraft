@@ -125,29 +125,139 @@ impl SoundApp {
     }
 }
 
-pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32) {
+/// How long the meters keep the last reading when no block arrives: well past the longest device
+/// buffer (8192 frames are under 0.2 s at 44.1 kHz), which renders blocks in bursts between polls.
+const METER_STALE: f64 = 0.5;
+
+/// Whether the last meter reading, taken with a new block at `last_block`, is too old to show at
+/// `now` (both `uptime`): the output stopped rendering, so the meters should fall.
+pub(super) fn meters_stale(now: f64, last_block: f64) -> bool {
+    now - last_block > METER_STALE
+}
+
+/// Fold a strip's last reading `m` into its meter (with gain reduction `gr`), or silence once
+/// that reading is `stale` (see [`meters_stale`]).
+pub(super) fn feed_reading(d: &mut MeterDisplay, m: &soundcraft_mix::StripMeter, gr: f32, stale: bool, dt: f32) {
+    if stale {
+        feed_meter(d, [0.0, 0.0], &[], 0.0, dt);
+    } else {
+        feed_meter(d, m.peak, &m.peaks, gr, dt);
+    }
+}
+
+/// Fold one reading into a strip's meter. `peak` is the stereo pair (a mono strip repeats its one
+/// channel), `peaks` every channel of the strip: channels from the third on read from `peaks`.
+pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], peaks: &[f32], gr: f32, dt: f32) {
     // Instant attack, ~26 dB/s release, 2 s peak hold.
     let fall = 10f32.powf(-26.0 * dt / 20.0);
-    for c in 0..2 {
-        let v = peak.get(c).copied().unwrap_or(0.0);
-        let lvl = d.level.get(c).copied().unwrap_or(0.0);
-        let nv = if v >= lvl { v } else { (lvl * fall).max(v) };
-        if let Some(x) = d.level.get_mut(c) {
-            *x = if nv < 1e-5 { 0.0 } else { nv };
+    // Each channel times its own hold, so activity on one channel cannot keep another's hold up.
+    let channels = d.level.iter_mut().zip(&mut d.hold).zip(&mut d.hold_age).enumerate();
+    for (c, ((lvl, hold), age)) in channels {
+        let v = if c < 2 { peak.get(c) } else { peaks.get(c) }.copied().filter(|v| v.is_finite()).unwrap_or(0.0);
+        let nv = if v >= *lvl { v } else { (*lvl * fall).max(v) };
+        *lvl = if nv < 1e-5 { 0.0 } else { nv };
+        if v >= *hold {
+            *hold = v;
+            *age = 0.0;
         }
-        if v >= d.hold.get(c).copied().unwrap_or(0.0) {
-            if let Some(h) = d.hold.get_mut(c) {
-                *h = v;
-            }
-            d.hold_age = 0.0;
+        *age += dt;
+        if *age > 2.0 {
+            *hold = *lvl;
         }
         if v >= 1.0 {
             d.clip = true;
         }
     }
-    d.hold_age += dt;
-    if d.hold_age > 2.0 {
-        d.hold = d.level;
-    }
     d.gr = if gr > d.gr { gr } else { d.gr * fall };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MeterDisplay, feed_meter, feed_reading, meters_stale};
+    use soundcraft_mix::StripMeter;
+
+    #[test]
+    fn surround_channels_get_levels_holds_and_clip_like_the_stereo_pair() {
+        let mut d = MeterDisplay::default();
+        // A 5.1 strip: L R C LFE Ls Rs; the surround right channel clips.
+        let peaks = [0.5, 0.4, 0.3, 0.2, 0.1, 1.0];
+        feed_meter(&mut d, [0.5, 0.4], &peaks, 0.0, 0.05);
+        assert_eq!(d.level.get(..6), Some(&peaks[..]));
+        assert_eq!(d.hold.get(..6), Some(&peaks[..]));
+        assert!(d.clip, "a clip on any channel lights the clip light");
+        assert!(d.level.get(6..).is_some_and(|rest| rest.iter().all(|v| *v == 0.0)));
+        // Silence: every channel falls back smoothly, and its peak hold stays up for now.
+        feed_meter(&mut d, [0.0, 0.0], &[], 0.0, 0.05);
+        let c = d.level.get(2).copied().unwrap_or_default();
+        assert!(c > 0.0 && c < 0.3, "C falls, not drops: {c}");
+        assert_eq!(d.hold.get(2).copied(), Some(0.3));
+    }
+
+    #[test]
+    fn peak_holds_expire_after_two_seconds_of_silence_on_a_strip_with_unused_channels() {
+        let mut d = MeterDisplay::default();
+        // A stereo strip: every channel past the pair is unused and reads 0.
+        feed_meter(&mut d, [0.5, 0.4], &[0.5, 0.4], 0.0, 0.05);
+        for _ in 0..50 {
+            feed_meter(&mut d, [0.0, 0.0], &[], 0.0, 0.05);
+        }
+        let l = d.hold.first().copied().unwrap_or_default();
+        assert!(l < 0.5, "the L hold drops back to the falling level: {l}");
+        assert_eq!(d.hold, d.level);
+    }
+
+    #[test]
+    fn a_busy_channel_does_not_keep_a_silent_channels_peak_hold_up() {
+        let mut d = MeterDisplay::default();
+        // A 5.1 strip: L peaks once, then only C carries a steady signal.
+        feed_meter(&mut d, [0.5, 0.0], &[0.5, 0.0, 0.3], 0.0, 0.05);
+        for _ in 0..50 {
+            feed_meter(&mut d, [0.0, 0.0], &[0.0, 0.0, 0.3], 0.0, 0.05);
+        }
+        let l = d.hold.first().copied().unwrap_or_default();
+        assert!(l < 0.5, "the L hold expires while C plays on: {l}");
+        assert_eq!(d.hold.get(2).copied(), Some(0.3));
+    }
+
+    #[test]
+    fn meters_fall_once_the_output_stops_rendering_but_ride_out_a_large_buffer() {
+        // The last block read 0.5 on L at t = 0; then the device stops asking for audio while
+        // monitoring keeps the meters live. The UI keeps feeding what it has, 60 times a second.
+        let mut d = MeterDisplay::default();
+        let reading = StripMeter { peak: [0.5, 0.0], peaks: vec![0.5, 0.0], ..StripMeter::default() };
+        let last_block = 0.0;
+        let mut t = 0.0;
+        while t < 3.5 {
+            feed_reading(&mut d, &reading, 0.0, meters_stale(t, last_block), 1.0 / 60.0);
+            t += 1.0 / 60.0;
+            if (t - 0.2f64).abs() < 0.5 / 60.0 {
+                // A gap the longest device buffer can leave: the reading holds.
+                assert_eq!(d.level.first().copied(), Some(0.5));
+            }
+        }
+        let l = d.level.first().copied().unwrap_or_default();
+        assert!(l < 0.1, "L falls once the reading is stale: {l}");
+        assert_eq!(d.hold, d.level, "and its peak hold expires");
+    }
+
+    #[test]
+    fn a_meter_moving_only_past_the_stereo_pair_still_needs_repaints() {
+        let mut d = MeterDisplay::default();
+        assert!(!d.is_moving());
+        // A 5.1 strip with signal on C only.
+        feed_meter(&mut d, [0.0, 0.0], &[0.0, 0.0, 0.3], 0.0, 0.05);
+        assert!(d.is_moving());
+        // Its level has fallen away but the C hold is still up.
+        d.level = Default::default();
+        assert!(d.is_moving(), "the hold has yet to expire");
+        d.hold = Default::default();
+        assert!(!d.is_moving());
+    }
+
+    #[test]
+    fn a_misbehaving_plugin_cannot_stick_a_surround_meter() {
+        let mut d = MeterDisplay::default();
+        feed_meter(&mut d, [0.0, 0.0], &[0.0, 0.0, f32::NAN, f32::INFINITY], 0.0, 0.05);
+        assert!(d.level.iter().all(|v| *v == 0.0) && !d.clip);
+    }
 }

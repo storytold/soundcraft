@@ -1,4 +1,4 @@
-use super::audio::feed_meter;
+use super::audio::{feed_meter, feed_reading, meters_stale};
 use super::plugins::failed_plugin_status;
 use super::{Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, json};
 
@@ -412,13 +412,18 @@ impl SoundApp {
             let now = self.uptime;
             let meter_interval = if self.ui.window == MainWindow::Mix { 1.0 / 60.0 } else { 1.0 / 20.0 };
             if now - self.last_meter_poll >= meter_interval {
-                p.take_meters(&mut self.meter_snapshot);
+                if p.take_meters(&mut self.meter_snapshot) {
+                    self.last_meter_block = now;
+                }
                 self.last_meter_poll = now;
             }
+            // Monitoring keeps the meters live while stopped, where no stall is reported: if the
+            // output stops rendering, let the meters fall rather than freeze on the last reading.
+            let stale = meters_stale(now, self.last_meter_block);
             let snap = &self.meter_snapshot;
             for (id, m) in &snap.tracks {
                 let d = self.meters.entry(*id).or_default();
-                feed_meter(d, m.peak, m.gain_reduction_db, dt);
+                feed_reading(d, m, m.gain_reduction_db, stale, dt);
                 if m.plugin_failures.count != d.plugin_failures {
                     d.plugin_failures = m.plugin_failures.count;
                     if let Some(msg) = failed_plugin_status(self.engine.session(), *id, m.plugin_failures.last) {
@@ -426,8 +431,7 @@ impl SoundApp {
                     }
                 }
             }
-            let main = snap.main.peak;
-            feed_meter(&mut self.main_meter, main, 0.0, dt);
+            feed_reading(&mut self.main_meter, &snap.main, 0.0, stale, dt);
             if ended {
                 self.stop_play();
             }
@@ -447,9 +451,9 @@ impl SoundApp {
         }
         if !self.meters_live() {
             for d in self.meters.values_mut() {
-                feed_meter(d, [0.0, 0.0], 0.0, dt);
+                feed_meter(d, [0.0, 0.0], &[], 0.0, dt);
             }
-            feed_meter(&mut self.main_meter, [0.0, 0.0], 0.0, dt);
+            feed_meter(&mut self.main_meter, [0.0, 0.0], &[], 0.0, dt);
         }
     }
 }
