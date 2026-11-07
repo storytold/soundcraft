@@ -427,6 +427,10 @@ pub fn trim_to(s: &mut Session, track: TrackId, range: Range) -> usize {
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return 0 };
     let mut n = 0;
     for c in &mut pl.clips {
+        // Locked clips keep their extent, like they don't move for nudge.
+        if locked(c) {
+            continue;
+        }
         if let Some(i) = c.range().intersect(&range)
             && i != c.range()
         {
@@ -448,6 +452,9 @@ pub fn trim_start_to(s: &mut Session, track: TrackId, at: Samples) -> usize {
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return 0 };
     let mut n = 0;
     for c in &mut pl.clips {
+        if locked(c) {
+            continue;
+        }
         if c.range().contains(at) && at > c.start {
             let old = c.start;
             c.trim_start_to(at);
@@ -462,6 +469,9 @@ pub fn trim_end_to(s: &mut Session, track: TrackId, at: Samples) -> usize {
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return 0 };
     let mut n = 0;
     for c in &mut pl.clips {
+        if locked(c) {
+            continue;
+        }
         if at > c.start && at < c.end() {
             c.trim_end_to(at);
             n += 1;
