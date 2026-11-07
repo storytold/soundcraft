@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** minor (Cancel Zoom Toggle) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-30 · **Change:** minor (macOS menu bar shows shortcuts; Cancel Zoom Toggle) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 How SoundCraft feels in the hands of a Pro Tools user: tools, modes, modifiers, shortcuts,
 windows, meters. Measured from `crates/model/src/session.rs` (tools, modes), the command
@@ -64,12 +64,13 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | Meter types and ballistics (peak, RMS, VU, K-scales, gain reduction) | 🟡 | Peak/RMS; meter type choice and GR meters partial |
 | Clip indicators, track colours, waveform views (peak/power/rectified/outlines) | ✅ | |
 | Fader resolution, fine adjust, numeric entry | 🟡 | |
-| macOS system menu bar | ✅ | #10 |
+| macOS system menu bar | ✅ | #10; items show their Command and Control shortcuts (#706) |
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-30 | minor | macOS menu bar: items show their keyboard shortcuts (Command and Control chords). Readiness estimate unchanged |
 | 2026-10-25 | minor | Zoom Toggle row: Alt+Shift+E and Alt-click cancel Zoom Toggle and keep the view. Readiness estimate unchanged |
 | 2026-10-25 | minor | Edit and Mix windows: Tracks and Groups and Clips in full-height dock columns. Readiness estimate unchanged |
 | 2026-10-20 | minor | Preferences uses one fixed non-scrolling size with compact stacked choices, removes the duplicate meter-type list, and command-backs visual-effects reduction and undo depth alongside the UI theme |

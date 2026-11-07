@@ -96,6 +96,11 @@ impl eframe::App for App {
     /// Forward raw input to the shared app hook so scripted gestures and host-key protection behave like the desktop
     /// shell.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // First: the app's hook finds its scripted keys by their place after the host's input.
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = &mut self.3 {
+            menu.raw_input(ctx, raw);
+        }
         self.0.raw_input_hook(ctx, raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
