@@ -1,4 +1,4 @@
-use super::*;
+use super::{SoundApp, bold, mono, vec2};
 
 /// About window tabs for version information, contributors and models.
 pub(super) fn about(app: &mut SoundApp, ctx: &egui::Context) {
@@ -7,7 +7,7 @@ pub(super) fn about(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     let tab_id = egui::Id::unique("about_tab");
-    egui::Window::new("About SoundCraft").open(&mut open).default_size(vec2(640.0, 420.0)).collapsible(false).show(ctx, |ui| {
+    egui::Window::new("About SoundCraft").open(&mut open).default_size(vec2(820.0, 420.0)).collapsible(false).show(ctx, |ui| {
         let mut tab = ui.data_mut(|d| d.get_temp::<u8>(tab_id)).unwrap_or(0);
         ui.horizontal(|ui| {
             for (i, l) in (0u8..).zip(["About", "Contributors", "Models"]) {

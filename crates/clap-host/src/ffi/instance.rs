@@ -2,7 +2,13 @@ use super::bundle::Bundle;
 use super::events::{Event, RawEvent, ReadCursor, in_events_get, in_events_size, istream_read, out_events_try_push, transport_event};
 use super::gui::GuiLink;
 use super::host::HostState;
-use super::*;
+use super::{
+    Arc, CLAP_AUDIO_PORT_IS_MAIN, CLAP_PROCESS_ERROR, CStr, ClapError, MAX_PARAMS, MAX_PORT_CHANNELS, MAX_PORTS, Ordering, Transport, c_char, c_void,
+    clap_audio_buffer, clap_audio_port_info, clap_host, clap_input_events, clap_istream, clap_note_port_info, clap_output_events, clap_param_info,
+    clap_plugin, clap_plugin_audio_ports, clap_plugin_latency, clap_plugin_note_ports, clap_plugin_params, clap_plugin_state, clap_process,
+    read_name,
+};
+use super::{CLAP_RENDER_OFFLINE, CLAP_RENDER_REALTIME, clap_plugin_render};
 
 // ---- audio buffers -------------------------------------------------------------------------
 
@@ -94,6 +100,7 @@ pub(crate) struct Instance {
     pub(super) latency: *const clap_plugin_latency,
     pub(super) notes: *const clap_plugin_note_ports,
     pub(super) state_ext: *const clap_plugin_state,
+    pub(super) render: *const clap_plugin_render,
     pub(super) gui: Arc<GuiLink>,
     pub(super) raw: Vec<RawEvent>,
     /// Parameter values the plugin reported through output events in the current `process`.
@@ -151,6 +158,16 @@ impl Instance {
         let stream = clap_istream { ctx: (&mut cursor as *mut ReadCursor<'_>).cast::<c_void>(), read: Some(istream_read) };
         // SAFETY: valid instance; the stream and its cursor live on this frame for the call.
         unsafe { load(self.plugin, &stream) }
+    }
+
+    /// `clap_plugin_render.set`: offline (no realtime pressure) or realtime. `false` without the
+    /// extension or when the plugin can't switch.
+    pub fn set_render_mode(&self, offline: bool) -> bool {
+        // SAFETY: the extension pointer, when non-null, points to a static vtable in the plugin.
+        let Some(set) = (unsafe { self.render.as_ref() }).and_then(|r| r.set) else { return false };
+        let mode = if offline { CLAP_RENDER_OFFLINE } else { CLAP_RENDER_REALTIME };
+        // SAFETY: valid instance, called from the thread that owns it.
+        unsafe { set(self.plugin, mode) }
     }
 
     /// Runs `on_main_thread` if the plugin asked for a callback.
@@ -312,16 +329,8 @@ impl Instance {
 
     /// Runs one `clap_process` call over `frames` frames. Events must be sorted by time; their
     /// times are made relative to `offset`. Returns the CLAP process status.
-    pub fn process(
-        &mut self,
-        frames: usize,
-        steady_time: i64,
-        inputs: &mut PortBuffers,
-        outputs: &mut PortBuffers,
-        events: &[Event],
-        offset: u32,
-        transport: Option<&Transport>,
-    ) -> Result<i32, ClapError> {
+    pub fn process(&mut self, input: ProcessInput<'_>) -> Result<i32, ClapError> {
+        let ProcessInput { frames, steady_time, inputs, outputs, events, offset, transport } = input;
         if !self.active {
             return Err(ClapError::Process("not active".into()));
         }
@@ -384,6 +393,16 @@ impl Instance {
         self.out_params.clear();
         if status == CLAP_PROCESS_ERROR { Err(ClapError::Process("plugin reported a processing error".into())) } else { Ok(status) }
     }
+}
+
+pub(crate) struct ProcessInput<'a> {
+    pub frames: usize,
+    pub steady_time: i64,
+    pub inputs: &'a mut PortBuffers,
+    pub outputs: &'a mut PortBuffers,
+    pub events: &'a [Event],
+    pub offset: u32,
+    pub transport: Option<&'a Transport>,
 }
 
 impl Drop for Instance {

@@ -1,4 +1,4 @@
-use super::*;
+use super::{ChannelFormat, MAX_CHANNELS, PanLaw, Speaker, SpeakerPos, SurroundPan, SurroundParams, db_to_gain, gains};
 
 /// Per-block routing gains: `m[src][dst]`.
 type Matrix = [[f32; MAX_CHANNELS]; MAX_CHANNELS];
@@ -48,6 +48,22 @@ fn surround_params(sp: &SurroundPan, dx: f32) -> SurroundParams {
     SurroundParams { x: (sp.x + dx).clamp(-1.0, 1.0), y: sp.y, z: sp.z, divergence: sp.divergence, center: sp.center / 100.0 }
 }
 
+/// One source → destination routing: channel counts and formats, plus how the source is panned.
+struct Link<'a> {
+    src_fmt: ChannelFormat,
+    ns: usize,
+    dst_fmt: ChannelFormat,
+    nd: usize,
+    pan: &'a PanSpec<'a>,
+    law: PanLaw,
+}
+
+fn add_gain(m: &mut Matrix, s: usize, d: usize, g: f32) {
+    if let Some(x) = m.get_mut(s).and_then(|r| r.get_mut(d)) {
+        *x += g;
+    }
+}
+
 /// Routing gains from a source (`ns` channels of `src_fmt`) into a destination (`nd` channels of
 /// `dst_fmt`). See the crate docs for the rules.
 pub(crate) fn build_matrix(src_fmt: ChannelFormat, ns: usize, dst_fmt: ChannelFormat, nd: usize, pan: &PanSpec<'_>, law: PanLaw) -> Matrix {
@@ -56,11 +72,6 @@ pub(crate) fn build_matrix(src_fmt: ChannelFormat, ns: usize, dst_fmt: ChannelFo
     if ns == 0 || nd == 0 {
         return m;
     }
-    let set = |m: &mut Matrix, s: usize, d: usize, g: f32| {
-        if let Some(x) = m.get_mut(s).and_then(|r| r.get_mut(d)) {
-            *x += g;
-        }
-    };
     if nd == 1 {
         // Mono destination: the stereo routing summed at -6 dB.
         let st = build_matrix(src_fmt, ns, ChannelFormat::Stereo, 2, pan, law);
@@ -69,131 +80,168 @@ pub(crate) fn build_matrix(src_fmt: ChannelFormat, ns: usize, dst_fmt: ChannelFo
         }
         return m;
     }
-    let src_sp = src_fmt.speakers();
+    let link = Link { src_fmt, ns, dst_fmt, nd, pan, law };
     let src_amb = src_fmt.is_ambisonic() && ns >= 4;
     if nd == 2 && !dst_fmt.is_ambisonic() {
-        match ns {
-            1 => {
-                let (gl, gr) = gains(pan.stereo[0], law);
-                m[0][0] = gl;
-                m[0][1] = gr;
-            }
-            2 if !src_amb => {
-                let (a_l, a_r) = gains(pan.stereo[0], PanLaw::Zero);
-                let (b_l, b_r) = gains(pan.stereo[1], PanLaw::Zero);
-                m[0] = [0.0; MAX_CHANNELS];
-                m[0][0] = a_l;
-                m[0][1] = a_r;
-                m[1][0] = b_l;
-                m[1][1] = b_r;
-            }
-            _ if src_amb => {
-                for (d, az) in [(0usize, -30.0f32), (1, 30.0)] {
-                    let g = soundcraft_dsp::pan::ambisonic_decode(az, 0.0, 2);
-                    for (c, gc) in g.iter().enumerate() {
-                        set(&mut m, c, d, *gc);
-                    }
-                }
-            }
-            _ if src_sp.len() == ns => {
-                for (s, sp) in src_sp.iter().enumerate() {
-                    let (l, r) = itu_stereo_fold(*sp);
-                    set(&mut m, s, 0, l);
-                    set(&mut m, s, 1, r);
-                }
-            }
-            _ => {
-                // Unknown layout: first two channels to L/R, the rest to the centre.
-                let h = std::f32::consts::FRAC_1_SQRT_2;
-                m[0][0] = 1.0;
-                m[1][1] = 1.0;
-                for row in m.iter_mut().take(ns).skip(2) {
-                    row[0] = h;
-                    row[1] = h;
-                }
-            }
-        }
-        return m;
+        return stereo_dest(&link, src_amb);
     }
     if ns > 2 && src_fmt == dst_fmt && ns == nd {
         return identity_matrix(ns);
     }
-    // Multichannel destination.
-    let mut layout = [SpeakerPos::default(); MAX_CHANNELS];
-    let nl = layout_of(dst_fmt, &mut layout);
-    let layout = layout.get(..nl).unwrap_or(&[]);
-    let dst_sp = dst_fmt.speakers();
-    let dst_amb = dst_fmt.is_ambisonic();
-    let find = |sp: Speaker| dst_sp.iter().position(|x| *x == sp).filter(|i| *i < nd);
-    let mut g = [0.0f32; MAX_CHANNELS];
-    if dst_amb {
-        if src_amb || (src_fmt.is_ambisonic() && ns > 2) {
-            return identity_matrix(ns.min(nd));
-        }
-        let mut enc = |m: &mut Matrix, s: usize, az: f32, el: f32, spread: f32| {
-            soundcraft_dsp::pan::ambisonic_encode(az, el, spread, &mut g);
-            for (d, gd) in g.iter().enumerate().take(nd) {
-                set(m, s, d, *gd);
-            }
-        };
-        match (ns, pan.surround) {
-            (1 | 2, Some(sp)) => {
-                for s in 0..ns {
-                    let dx = if ns == 2 { if s == 0 { -1.0 } else { 1.0 } } else { 0.0 };
-                    let p = surround_params(sp, dx);
-                    enc(&mut m, s, soundcraft_dsp::pan::puck_azimuth(&[], p.x, p.y), p.z * 90.0, p.divergence);
-                }
-            }
-            (1, None) => enc(&mut m, 0, pan.stereo[0].clamp(-1.0, 1.0) * 30.0, 0.0, 0.0),
-            (2, None) => {
-                enc(&mut m, 0, -30.0, 0.0, 0.0);
-                enc(&mut m, 1, 30.0, 0.0, 0.0);
-            }
-            _ => {
-                for (s, sp) in src_sp.iter().enumerate().take(ns) {
-                    if !sp.is_lfe() {
-                        enc(&mut m, s, sp.azimuth(), sp.elevation(), 0.0);
-                    }
-                }
-            }
-        }
-        return m;
+    if dst_fmt.is_ambisonic() {
+        return ambisonic_dest(&link, src_amb);
     }
+    layout_dest(&link, src_amb)
+}
+
+/// Routing into a stereo destination.
+fn stereo_dest(l: &Link<'_>, src_amb: bool) -> Matrix {
+    let mut m = [[0.0f32; MAX_CHANNELS]; MAX_CHANNELS];
+    let src_sp = l.src_fmt.speakers();
+    match l.ns {
+        1 => {
+            let (gl, gr) = gains(l.pan.stereo[0], l.law);
+            m[0][0] = gl;
+            m[0][1] = gr;
+        }
+        2 if !src_amb => {
+            let (a_l, a_r) = gains(l.pan.stereo[0], PanLaw::Zero);
+            let (b_l, b_r) = gains(l.pan.stereo[1], PanLaw::Zero);
+            m[0] = [0.0; MAX_CHANNELS];
+            m[0][0] = a_l;
+            m[0][1] = a_r;
+            m[1][0] = b_l;
+            m[1][1] = b_r;
+        }
+        _ if src_amb => {
+            for (d, az) in [(0usize, -30.0f32), (1, 30.0)] {
+                let g = soundcraft_dsp::pan::ambisonic_decode(az, 0.0, 2);
+                for (c, gc) in g.iter().enumerate() {
+                    add_gain(&mut m, c, d, *gc);
+                }
+            }
+        }
+        ns if src_sp.len() == ns => {
+            for (s, sp) in src_sp.iter().enumerate() {
+                let (left, right) = itu_stereo_fold(*sp);
+                add_gain(&mut m, s, 0, left);
+                add_gain(&mut m, s, 1, right);
+            }
+        }
+        ns => {
+            // Unknown layout: first two channels to L/R, the rest to the centre.
+            let h = std::f32::consts::FRAC_1_SQRT_2;
+            m[0][0] = 1.0;
+            m[1][1] = 1.0;
+            for row in m.iter_mut().take(ns).skip(2) {
+                row[0] = h;
+                row[1] = h;
+            }
+        }
+    }
+    m
+}
+
+/// `±1` offset spreading a stereo source's two channels left and right of the surround pan.
+fn spread_dx(ns: usize, s: usize) -> f32 {
+    if ns != 2 {
+        0.0
+    } else if s == 0 {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
+/// Routing into an ambisonic destination.
+fn ambisonic_dest(l: &Link<'_>, src_amb: bool) -> Matrix {
+    let mut m = [[0.0f32; MAX_CHANNELS]; MAX_CHANNELS];
+    let (ns, nd) = (l.ns, l.nd);
+    if src_amb || (l.src_fmt.is_ambisonic() && ns > 2) {
+        return identity_matrix(ns.min(nd));
+    }
+    let src_sp = l.src_fmt.speakers();
+    let mut g = [0.0f32; MAX_CHANNELS];
+    let mut enc = |m: &mut Matrix, s: usize, az: f32, el: f32, spread: f32| {
+        soundcraft_dsp::pan::ambisonic_encode(az, el, spread, &mut g);
+        for (d, gd) in g.iter().enumerate().take(nd) {
+            add_gain(m, s, d, *gd);
+        }
+    };
+    match (ns, l.pan.surround) {
+        (1 | 2, Some(sp)) => {
+            for s in 0..ns {
+                let p = surround_params(sp, spread_dx(ns, s));
+                enc(&mut m, s, soundcraft_dsp::pan::puck_azimuth(&[], p.x, p.y), p.z * 90.0, p.divergence);
+            }
+        }
+        (1, None) => enc(&mut m, 0, l.pan.stereo[0].clamp(-1.0, 1.0) * 30.0, 0.0, 0.0),
+        (2, None) => {
+            enc(&mut m, 0, -30.0, 0.0, 0.0);
+            enc(&mut m, 1, 30.0, 0.0, 0.0);
+        }
+        _ => {
+            for (s, sp) in src_sp.iter().enumerate().take(ns) {
+                if !sp.is_lfe() {
+                    enc(&mut m, s, sp.azimuth(), sp.elevation(), 0.0);
+                }
+            }
+        }
+    }
+    m
+}
+
+/// A surround-panned mono or stereo source into a speaker layout, plus its LFE send.
+fn surround_into_layout(m: &mut Matrix, l: &Link<'_>, layout: &[SpeakerPos], sp: &SurroundPan) {
+    let (ns, nd) = (l.ns, l.nd);
+    let dst_sp = l.dst_fmt.speakers();
+    let mut g = [0.0f32; MAX_CHANNELS];
+    for s in 0..ns {
+        soundcraft_dsp::pan::surround_gains(layout, &surround_params(sp, spread_dx(ns, s)), &mut g);
+        for (d, gd) in g.iter().enumerate().take(nd) {
+            add_gain(m, s, d, *gd);
+        }
+        if let Some(lfe) = dst_sp.iter().position(|x| *x == Speaker::Lfe).filter(|i| *i < nd)
+            && sp.lfe_db > -143.9
+        {
+            add_gain(m, s, lfe, db_to_gain(sp.lfe_db.min(12.0)) / ns as f32);
+        }
+    }
+}
+
+/// Routing into a speaker layout other than stereo or ambisonic.
+fn layout_dest(l: &Link<'_>, src_amb: bool) -> Matrix {
+    let mut m = [[0.0f32; MAX_CHANNELS]; MAX_CHANNELS];
+    let (ns, nd) = (l.ns, l.nd);
+    let src_sp = l.src_fmt.speakers();
+    let mut layout = [SpeakerPos::default(); MAX_CHANNELS];
+    let nl = layout_of(l.dst_fmt, &mut layout);
+    let layout = layout.get(..nl).unwrap_or(&[]);
+    let dst_sp = l.dst_fmt.speakers();
     if dst_sp.len() != nd {
         // No layout to pan on: channel for channel.
         return identity_matrix(ns.min(nd));
     }
+    let find = |sp: Speaker| dst_sp.iter().position(|x| *x == sp).filter(|i| *i < nd);
     let (li, ri) = (find(Speaker::L), find(Speaker::R));
-    match (ns, pan.surround) {
-        (1 | 2, Some(sp)) if !src_amb => {
-            for s in 0..ns {
-                let dx = if ns == 2 { if s == 0 { -1.0 } else { 1.0 } } else { 0.0 };
-                soundcraft_dsp::pan::surround_gains(layout, &surround_params(sp, dx), &mut g);
-                for (d, gd) in g.iter().enumerate().take(nd) {
-                    set(&mut m, s, d, *gd);
-                }
-                if let Some(lfe) = find(Speaker::Lfe)
-                    && sp.lfe_db > -143.9
-                {
-                    set(&mut m, s, lfe, db_to_gain(sp.lfe_db.min(12.0)) / ns as f32);
-                }
-            }
-        }
+    let mut g = [0.0f32; MAX_CHANNELS];
+    match (ns, l.pan.surround) {
+        (1 | 2, Some(sp)) if !src_amb => surround_into_layout(&mut m, l, layout, sp),
         (1, None) => {
-            let (gl, gr) = gains(pan.stereo[0], law);
-            if let (Some(l), Some(r)) = (li, ri) {
-                set(&mut m, 0, l, gl);
-                set(&mut m, 0, r, gr);
+            let (gl, gr) = gains(l.pan.stereo[0], l.law);
+            if let (Some(left), Some(right)) = (li, ri) {
+                add_gain(&mut m, 0, left, gl);
+                add_gain(&mut m, 0, right, gr);
             }
         }
         (2, None) if !src_amb => {
-            let (a_l, a_r) = gains(pan.stereo[0], PanLaw::Zero);
-            let (b_l, b_r) = gains(pan.stereo[1], PanLaw::Zero);
-            if let (Some(l), Some(r)) = (li, ri) {
-                set(&mut m, 0, l, a_l);
-                set(&mut m, 0, r, a_r);
-                set(&mut m, 1, l, b_l);
-                set(&mut m, 1, r, b_r);
+            let (a_l, a_r) = gains(l.pan.stereo[0], PanLaw::Zero);
+            let (b_l, b_r) = gains(l.pan.stereo[1], PanLaw::Zero);
+            if let (Some(left), Some(right)) = (li, ri) {
+                add_gain(&mut m, 0, left, a_l);
+                add_gain(&mut m, 0, right, a_r);
+                add_gain(&mut m, 1, left, b_l);
+                add_gain(&mut m, 1, right, b_r);
             }
         }
         _ if src_amb => {
@@ -204,20 +252,19 @@ pub(crate) fn build_matrix(src_fmt: ChannelFormat, ns: usize, dst_fmt: ChannelFo
                 }
                 let dec = soundcraft_dsp::pan::ambisonic_decode(sp.azimuth(), sp.elevation(), n_spk);
                 for (c, gc) in dec.iter().enumerate() {
-                    set(&mut m, c, d, *gc);
+                    add_gain(&mut m, c, d, *gc);
                 }
             }
         }
         _ if src_sp.len() == ns => {
             for (s, sp) in src_sp.iter().enumerate() {
                 if let Some(d) = find(*sp) {
-                    set(&mut m, s, d, 1.0);
-                } else if sp.is_lfe() {
-                    // No LFE in the destination: dropped.
-                } else {
+                    add_gain(&mut m, s, d, 1.0);
+                } else if !sp.is_lfe() {
+                    // (An LFE with no LFE in the destination is dropped.)
                     soundcraft_dsp::pan::direction_gains(layout, sp.azimuth(), sp.elevation(), &mut g);
                     for (d, gd) in g.iter().enumerate().take(nd) {
-                        set(&mut m, s, d, *gd);
+                        add_gain(&mut m, s, d, *gd);
                     }
                 }
             }

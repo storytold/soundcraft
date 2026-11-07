@@ -39,7 +39,7 @@ mod process;
 
 pub(crate) use editor::EditorLink;
 pub(crate) use host::HostContext;
-pub(crate) use instance::{Instance, PARAM_BYPASS, PARAM_HIDDEN, PARAM_READ_ONLY, RawParam};
+pub(crate) use instance::{Instance, PARAM_BYPASS, PARAM_HIDDEN, PARAM_READ_ONLY, ProcessInput, RawParam};
 #[cfg(test)]
 use instance::{apply_transport, split_state};
 pub(crate) use module::{Bundle, exit_modules, hex};
@@ -51,8 +51,9 @@ pub(crate) use process::{EventList, MemoryStream, ParamChanges};
 const MAX_CLASSES: i32 = 1024;
 /// Most parameters read from one controller.
 pub(crate) const MAX_PARAMS: i32 = 4096;
-/// Most audio buses per direction we provide buffers for.
-const MAX_BUSES: i32 = 16;
+/// Most audio buses per direction we provide buffers for. Multi-out instruments declare dozens
+/// of (mostly inactive) aux buses, e.g. 32 for a drum sampler; every one still gets buffers.
+const MAX_BUSES: i32 = 64;
 /// Most channels per audio bus.
 const MAX_BUS_CHANNELS: u32 = 64;
 /// Capacity of the per-block event lists (preallocated: `process` never allocates).

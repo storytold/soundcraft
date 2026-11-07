@@ -1,5 +1,5 @@
 use super::plugin_menu::{MenuSearch, menu_row};
-use super::*;
+use super::{Route, SoundApp, Track, TrackId, Ui, json};
 
 pub(crate) fn route_name(app: &SoundApp, r: &Route) -> String {
     match r {
@@ -11,7 +11,12 @@ pub(crate) fn route_name(app: &SoundApp, r: &Route) -> String {
 }
 
 pub(crate) fn input_name(app: &SoundApp, track: &Track) -> String {
-    if track.kind.has_playlist() && track.mixer.input == Route::None { "In 1".to_string() } else { route_name(app, &track.mixer.input) }
+    if track.kind.has_playlist() && track.mixer.input == Route::None {
+        let channels = track.format.channels();
+        if channels == 1 { "In 1".to_string() } else { format!("In 1-{channels}") }
+    } else {
+        route_name(app, &track.mixer.input)
+    }
 }
 
 /// The input or output menu under `resp`. It closes only on a click outside, so its bus search
@@ -57,5 +62,21 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
         }
         let _ = app.run(cmd, json!({"track": id.0, key: format!("Bus {n}")}));
         ui.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::input_name;
+    use crate::{Services, SoundApp};
+    use serde_json::json;
+
+    #[test]
+    fn stereo_track_defaults_to_a_stereo_input_pair() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        app.run("track.new", json!({"format": "stereo"})).unwrap();
+        let track = &app.engine.session().tracks[0];
+
+        assert_eq!(input_name(&app, track), "In 1-2");
     }
 }

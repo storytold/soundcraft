@@ -1,7 +1,7 @@
 use super::layout::track_height;
 use super::tracks::in_edit_window;
 use super::universe::content_end;
-use super::*;
+use super::{Rect, Samples, Sense, SoundApp, Tokens, TrackId, Ui, json, pos2, vec2};
 
 /// Scroll Into View: track `id` to the top, as far as the scroll bar reaches. A track the Edit
 /// window doesn't show (hidden, or in a closed folder) leaves the view where it is.
@@ -75,8 +75,13 @@ pub(super) fn hscrollbar(app: &mut SoundApp, ui: &mut Ui, sb: Rect, tl: Rect) {
     }
 }
 
-/// Zoom Toggle sized to the track area on screen.
+/// Zoom Toggle sized to the track area on screen. With Alt held (an Alt-click on the button) it cancels Zoom Toggle
+/// instead and keeps the current view.
 pub fn zoom_toggle(app: &mut SoundApp) {
+    if app.docking_context.as_ref().is_some_and(|c| c.input(|i| i.modifiers.alt)) {
+        let _ = app.run("view.zoom_toggle_cancel", json!({}));
+        return;
+    }
     let [x0, y0, x1, y1] = app.edit_layout.timeline;
     let _ = app.run("view.zoom_toggle", json!({"width_px": x1 - x0, "height_px": y1 - y0}));
 }

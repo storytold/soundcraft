@@ -511,10 +511,13 @@ pub(crate) fn empty_stream_info(b: &[u8], at: usize) -> Option<AudioInfo> {
     Some(AudioInfo { format: FileFormat::Flac, sample_format, sample_rate, channels, frames: 0, bwf: None })
 }
 
-/// Whether a comment in a (little-endian) Vorbis comment block claims more than the block holds.
-/// The vendor string is skipped unread.
+/// Whether a vendor string or comment in a (little-endian) Vorbis comment block claims more than
+/// the block holds.
 fn comments_overrun(b: &[u8], body: usize, end: usize) -> bool {
-    let Some(vendor) = le_u32(b, body) else { return false };
+    let Some(vendor) = le_u32(b, body).filter(|_| body.saturating_add(4) <= end) else { return false };
+    if vendor as usize > end - (body + 4) {
+        return true;
+    }
     let at = (body + 4).saturating_add(vendor as usize);
     let Some(count) = le_u32(b, at).filter(|_| at.saturating_add(4) <= end) else { return false };
     overruns(b, at + 4, end, le_u32, std::iter::repeat_n(0, count as usize))

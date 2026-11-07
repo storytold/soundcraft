@@ -1,4 +1,4 @@
-use super::*;
+use super::AUDIO_THREAD;
 
 /// Mark the calling thread as the realtime audio thread (`soundcraft_playback`'s cpal callbacks
 /// do, every call: one thread-local store). Strips [`MixEngine::render`] hands to worker threads

@@ -59,7 +59,7 @@ fn search_chord(m: Modifiers, mac: bool) -> bool {
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
-    if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() {
+    if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() || app.ui.show_preferences {
         return;
     }
     // A scripted press is identified by its exact position in this pass's events, not by matching
@@ -177,6 +177,14 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             let _ = app.run("edit.tool", json!({"tool": tool}));
             true
         }
+        _ => fixed_more(app, key, m, mac),
+    }
+}
+
+/// The rest of [`fixed`]'s keys.
+fn fixed_more(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
+    let plain = !m.command && !m.alt && !m.ctrl && !m.shift;
+    match key {
         // `=` is what a bare press of the unlabeled +/- key reports (it has no shift held, so it
         // can never be `Key::Plus`); `Key::Plus` is kept for a keyboard that does send it (e.g. a
         // numpad +). `!m.alt` leaves Alt+= to `window.event_list`'s registered shortcut.
@@ -223,6 +231,11 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             let id = if key == Key::ArrowUp { "clip.gain_nudge_up" } else { "clip.gain_nudge_down" };
             let _ = app.run(id, json!({}));
             true
+        }
+        // With an edit selection (a selected clip makes one), Left/Right centre the Edit window on its start/end.
+        // Over the piano roll the arrows move its notes instead.
+        Key::ArrowLeft | Key::ArrowRight if plain && app.ui.window == MainWindow::Edit && !piano_roll_has_pointer(app) => {
+            centre_on_selection(app, key == Key::ArrowRight)
         }
         // Commands Keyboard Focus: single-key editing (Edit window only).
         k if !m.command
@@ -383,6 +396,30 @@ fn tab_clip(app: &mut SoundApp, back: bool) {
     if let Some(n) = next {
         let _ = app.run("transport.locate", json!({"at": n}));
     }
+}
+
+/// Scroll the Edit window so the edit selection's start (or `end`) is in its middle. Returns false, leaving
+/// the key unhandled, when there is only an insertion point.
+fn centre_on_selection(app: &mut SoundApp, end: bool) -> bool {
+    let s = app.engine.session();
+    let sel = s.edit.selection;
+    if sel.start >= sel.end {
+        return false;
+    }
+    let [x0, _, x1, _] = app.edit_layout.timeline;
+    let half = f64::from((x1 - x0).max(0.0)) / 2.0 * s.edit.zoom.samples_per_px.max(0.01);
+    let at = if end { sel.end } else { sel.start };
+    let _ = app.run("view.scroll", json!({"to": at.saturating_sub(soundcraft_time::to_samples(half)).max(0)}));
+    true
+}
+
+/// Whether the pointer is over the MIDI editor, whose piano roll moves the selected notes with the arrow keys.
+fn piano_roll_has_pointer(app: &SoundApp) -> bool {
+    app.ui.show_midi_editor
+        && app.docking_context.as_ref().is_some_and(|c| {
+            let body = c.data(|d| d.get_temp::<egui::Rect>(egui::Id::unique("soundcraft-midi-body")));
+            c.pointer_hover_pos().zip(body).is_some_and(|(p, r)| r.contains(p))
+        })
 }
 
 fn digit(key: Key) -> u8 {

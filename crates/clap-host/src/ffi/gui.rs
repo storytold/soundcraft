@@ -1,6 +1,9 @@
 use super::events::ostream_write;
 use super::host::HostState;
-use super::*;
+use super::{
+    Arc, CStr, CString, Mutex, Ordering, PoisonError, c_void, clap_ostream, clap_plugin, clap_plugin_gui, clap_plugin_state, clap_window,
+    clap_window_handle, hostwin,
+};
 
 // ---- editor (clap.gui) ---------------------------------------------------------------------
 
@@ -14,9 +17,11 @@ pub(crate) fn on_main_thread() -> bool {
     unsafe { pthread_main_np() == 1 }
 }
 
+/// True on the process's main thread: Rust names it "main", and the app runs its UI there (the
+/// rule `hostwin` and the VST3 host use). CLAP makes `clap.gui` main-thread only on every platform.
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn on_main_thread() -> bool {
-    true
+    std::thread::current().name() == Some("main")
 }
 
 /// The windowing API of this platform.

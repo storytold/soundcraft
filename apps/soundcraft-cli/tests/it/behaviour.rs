@@ -88,6 +88,25 @@ fn assert_refused(got: &Invoke, port: u16) {
     assert!(got.stderr.starts_with(&prefix) && got.stderr.contains(" (os error ") && got.stderr.ends_with(")\n"), "{}", got.stderr);
 }
 
+// ---- logging ----
+
+/// Warnings SoundCraft logs (a plugin that fails to load, a backup it can't write) go to standard
+/// error. Without a logger they were dropped.
+#[test]
+fn logged_warnings_reach_standard_error() {
+    let dir = sandbox("log");
+    let first = invoke(&dir, &["run", "--save", "s.scraft"]);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    // A file where the backups folder should go: the next save that changes the session can't
+    // back the old one up.
+    std::fs::write(dir.join("Backups"), b"not a folder").unwrap();
+    let again = invoke(&dir, &["run", "--in", "s.scraft", "--cmd", r#"track.new={"count":1}"#, "--save", "s.scraft", "--in-place"]);
+    assert_eq!(again.code, 0, "{}", again.stderr);
+    assert!(again.stderr.contains("warning: no backup of"), "{}", again.stderr);
+    assert!(!again.stdout.contains("no backup"), "results only on standard output: {}", again.stdout);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- unknown flags ----
 
 #[test]
@@ -238,13 +257,13 @@ fn script_line_errors_stop_unless_keep_going() {
     let dir = sandbox("script-errors");
     std::fs::write(dir.join("bad.txt"), "nosuch.cmd {}\ntrack.new {}\n").unwrap();
     std::fs::write(dir.join("badjson.txt"), "track.new {x\n").unwrap();
-    // A stopping line error carries the `error:` prefix; a --keep-going one is a bare line.
+    // Kept-going line errors stay bare; a final error summary supplies the failing status.
     let stop = invoke(&dir, &["script", "bad.txt"]);
     assert_eq!((stop.code, stop.stdout.as_str()), (1, ""));
     assert_eq!(stop.stderr, "error: bad.txt:1: nosuch.cmd: unknown command `nosuch.cmd`\n");
     let keep = invoke(&dir, &["script", "bad.txt", "--keep-going"]);
-    assert_eq!((keep.code, keep.stdout.as_str()), (0, "track.new: {\"tracks\":[1]}\n"));
-    assert_eq!(keep.stderr, "bad.txt:1: nosuch.cmd: unknown command `nosuch.cmd`\n");
+    assert_eq!((keep.code, keep.stdout.as_str()), (1, "track.new: {\"tracks\":[1]}\n"));
+    assert_eq!(keep.stderr, "bad.txt:1: nosuch.cmd: unknown command `nosuch.cmd`\nerror: script finished with command errors\n");
     assert_fails(&invoke(&dir, &["script", "badjson.txt"]), "badjson.txt:1: bad JSON: key must be a string at line 1 column 2");
 }
 
@@ -515,10 +534,9 @@ fn mcp_roots_with_connect_are_a_usage_error() {
     );
 }
 
-/// A name that isn't valid Unicode works wherever the tool itself reads or writes the file
-/// (`convert`); a session or bounce the engine opens or writes by text name is refused (exit 1),
-/// naming the file. Run in-process: the names need no shell.
-#[cfg(unix)]
+/// Native file paths round-trip on filesystems that accept non-Unicode names. macOS rejects
+/// these names with EILSEQ before the tool can write them. Run in-process: no shell is needed.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn non_unicode_file_names() {
     use std::ffi::OsString;
@@ -543,8 +561,26 @@ fn non_unicode_file_names() {
     std::fs::rename(dir.join("s.scraft"), latin1("scraft")).unwrap();
     let (code, err) = run(vec!["info".into(), latin1("scraft").into()]);
     assert_eq!(code, 0, "{err}");
-    let (code, err) = run(vec!["run".into(), "--demo".into(), "--bounce".into(), latin1("wav").into()]);
-    assert_eq!(code, 1);
-    assert!(err.contains("caf\u{FFFD}.") && err.contains("not valid Unicode"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Engine output paths enter JSON, so invalid Unicode must be refused even on a filesystem
+/// that cannot create such a file (including macOS).
+#[cfg(unix)]
+#[test]
+fn non_unicode_session_outputs_are_rejected() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = sandbox("nonunicode-outputs");
+    for (flag, name) in [("--bounce", b"caf\xe9.wav".as_slice()), ("--save", b"caf\xe9.scraft".as_slice())] {
+        let path = dir.join(OsString::from_vec(name.to_vec()));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = soundcraft_cli::run(vec!["run".into(), "--demo".into(), flag.into(), path.into_os_string()], &mut out, &mut err);
+        let err = String::from_utf8_lossy(&err);
+        assert_eq!(code, 1, "{err}");
+        assert!(err.contains("caf\u{FFFD}.") && err.contains("not valid Unicode"), "{err}");
+        assert!(out.is_empty());
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

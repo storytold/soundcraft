@@ -1,12 +1,34 @@
 use super::tracks::{click_track, folder_depth, height_targets, in_edit_window, track_context_menu, view_label, view_menu};
-use super::*;
+use super::{
+    Align2, AutoParam, Color32, Pos2, Rect, Sense, Shape, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold, groove, json,
+    level_pos, meter_pos, pos2, raised_key, regular, rgb, shade, vec2,
+};
 
 /// Draw one track header: resize edge, selection and context menu, folder/options control, automation-lane toggle,
 /// name and the remaining track controls.
 pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, selected: bool, head_bg: Color32) {
-    let t = Tokens::current();
     let id = track.id;
-    // Drag the bottom edge to resize (snaps to the height presets).
+    // Click on header background selects the track.
+    let bg = ui.interact(head, ui.scope_id().with(("hdr", id.0)), Sense::click());
+    if bg.clicked() {
+        click_track(app, id, ui.input(|i| i.modifiers), in_edit_window);
+    }
+    bg.context_menu(|ui| track_context_menu(app, ui, id));
+    resize_edge(app, ui, track, head);
+    strip_buttons(app, ui, track, head);
+    name_plate(app, ui, track, head, selected);
+    playlist_menu(app, ui, track, head, head_bg);
+    toggle_keys(app, ui, track, head);
+    view_selector(app, ui, track, head);
+    voice_row(app, ui, track, head);
+    field_row(app, ui, track, head, head_bg);
+    let md = app.meters.get(&id).copied().unwrap_or_default();
+    header_meter(ui, Rect::from_min_max(pos2(head.max.x - 8.0, head.min.y + 1.0), pos2(head.max.x, head.max.y - 1.5)), &md, track.channels() >= 2);
+}
+
+/// Drag the bottom edge of the header to resize the track (snaps to the height presets).
+fn resize_edge(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
+    let id = track.id;
     let edge = Rect::from_min_max(pos2(head.min.x, head.max.y - 4.0), pos2(head.max.x, head.max.y + 2.0));
     let eresp = ui.interact(edge, ui.scope_id().with(("hedge", id.0)), Sense::drag());
     if eresp.hovered() || eresp.dragged() {
@@ -34,17 +56,15 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
             ui.ctx().request_repaint();
         }
     }
+}
+
+/// The strip's round options/folder button and the automation-lane toggle.
+fn strip_buttons(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
+    let id = track.id;
     let h = head.height();
-    // Click on header background selects the track.
-    let bg = ui.interact(head, ui.scope_id().with(("hdr", id.0)), Sense::click());
-    if bg.clicked() {
-        click_track(app, id, ui.input(|i| i.modifiers), in_edit_window);
-    }
-    bg.context_menu(|ui| track_context_menu(app, ui, id));
     let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
     let strip = rgb(track.color);
     let ink = shade(strip, -0.8);
-    // The strip's round button opens a folder, or any other track's options.
     let round = at(2.0, 2.0, 10.0, 10.0);
     let rresp = ui.interact(round, ui.scope_id().with(("options", id.0)), Sense::click());
     ui.painter().circle_filled(round.center(), 5.0, shade(strip, if rresp.hovered() { 0.6 } else { 0.45 }));
@@ -76,7 +96,13 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
             let _ = app.run("track.view", json!({"track": id.0, "view": view}));
         }
     }
-    // Name, highlighted when the track is selected, and the playlist menu beside it.
+}
+
+/// The track name, highlighted when selected, with click, rename and drag-to-reorder.
+fn name_plate(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, selected: bool) {
+    let t = Tokens::current();
+    let id = track.id;
+    let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
     let indent = folder_depth(app.engine.session(), track) as f32 * 10.0;
     let name_r = at(16.0 + indent, 1.5, 97.0 - indent, 15.0);
     if selected {
@@ -89,8 +115,18 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
         track.name.clone()
     };
     let name_color = if selected { t.text_dark } else { t.text.lerp_to_gamma(t.text_dim, 0.4) };
-    ui.painter().with_clip_rect(name_r).text(pos2(name_r.min.x + 1.5, name_r.center().y), Align2::LEFT_CENTER, &shown_name, bold(12.5), name_color);
-    let nresp = ui.interact(name_r, ui.scope_id().with(("name", id.0)), Sense::click_and_drag());
+    let font = bold(12.5);
+    let galley = ui.painter().layout_no_wrap(shown_name.clone(), font.clone(), name_color);
+    let overflows = galley.size().x > name_r.width() - 3.0;
+    let (text_pos, align) =
+        if overflows { (pos2(name_r.min.x + 1.5, name_r.center().y), Align2::LEFT_CENTER) } else { (name_r.center(), Align2::CENTER_CENTER) };
+    ui.painter().with_clip_rect(name_r).text(text_pos, align, &shown_name, font, name_color);
+    let mut nresp = ui.interact(name_r, ui.scope_id().with(("name", id.0)), Sense::click_and_drag());
+    if overflows {
+        nresp = nresp.on_hover_ui(|ui| {
+            ui.label(&shown_name);
+        });
+    }
     if nresp.double_clicked() {
         app.dialogs.open_rename_track(id, &track.name);
     } else if nresp.clicked() {
@@ -128,6 +164,13 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
             let _ = app.run("track.move", json!({"track": id.0, "to": to}));
         }
     }
+}
+
+/// The playlist menu button beside the name.
+fn playlist_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, head_bg: Color32) {
+    let t = Tokens::current();
+    let id = track.id;
+    let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
     let pl_r = at(114.0, 1.0, 11.0, 14.5);
     let presp = ui.interact(pl_r, ui.scope_id().with(("pl", id.0)), Sense::click());
     ui.painter().rect_filled(pl_r, 1.5, shade(head_bg, if presp.hovered() { -0.2 } else { -0.35 }));
@@ -149,9 +192,17 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
             }
         }
     });
+}
+
+/// Record, input, solo and mute keys.
+fn toggle_keys(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
+    let id = track.id;
+    let h = head.height();
+    let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
     let m = &track.mixer;
-    if h >= 37.0 {
-        let (records, mixes) = (track.kind.has_playlist(), track.kind != TrackKind::Master);
+    let is_master = track.kind == TrackKind::Master;
+    if h >= 37.0 && !is_master {
+        let (records, mixes) = (track.kind.has_playlist(), true);
         let implied = !m.solo && app.engine.session().tracks.iter().any(|t| t.mixer.solo);
         let keys = [
             (HeaderKey::Rec, m.record_arm, false, "mix.record_arm", records),
@@ -165,10 +216,21 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
             }
         }
     }
-    if h >= 58.0 {
+}
+
+/// The track view selector.
+fn view_selector(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
+    let t = Tokens::current();
+    let id = track.id;
+    let h = head.height();
+    let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
+    let is_master = track.kind == TrackKind::Master;
+    let view_y = if is_master { 20.0 } else { 39.0 };
+    let view_min_h = if is_master { 37.0 } else { 58.0 };
+    if h >= view_min_h {
         let vresp = header_selector(
             ui,
-            at(17.0, 39.0, 105.0, 17.0),
+            at(17.0, view_y, 105.0, 17.0),
             ui.scope_id().with(("view", id.0)),
             &view_label(&track.view),
             t.text,
@@ -177,6 +239,37 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
         );
         egui::Popup::menu(&vresp).show(|ui| view_menu(app, ui, track));
     }
+    if is_master && h >= 58.0 {
+        let mode = track.mixer.automation_mode;
+        let col = match mode {
+            soundcraft_model::AutomationMode::Read => t.auto_read,
+            soundcraft_model::AutomationMode::Write => t.auto_write,
+            soundcraft_model::AutomationMode::Touch | soundcraft_model::AutomationMode::TouchLatch => t.auto_touch,
+            soundcraft_model::AutomationMode::Latch => t.auto_latch,
+            _ => t.text_dim,
+        };
+        let mode_name = format!("Automation mode for {}", track.name);
+        let aresp = header_selector(ui, at(17.0, 39.0, 105.0, 17.0), ui.scope_id().with(("auto_mode", id.0)), mode.label(), col, true, &mode_name);
+        egui::Popup::menu(&aresp).show(|ui| {
+            for m in soundcraft_model::AutomationMode::ALL {
+                if ui.selectable_label(m == mode, m.label()).clicked() {
+                    let _ = app.run("mix.automation_mode", json!({"track": id.0, "mode": m.label()}));
+                }
+            }
+        });
+    }
+}
+
+/// Freeze, voice and automation mode.
+fn voice_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
+    if track.kind == TrackKind::Master {
+        return;
+    }
+    let t = Tokens::current();
+    let id = track.id;
+    let h = head.height();
+    let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
+    let m = &track.mixer;
     if h >= 76.0 {
         if matches!(track.kind, TrackKind::Audio | TrackKind::Instrument | TrackKind::Aux) {
             let r = at(17.0, 57.0, 13.0, 17.0);
@@ -220,6 +313,14 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
             }
         });
     }
+}
+
+/// Timebase key and the instrument or elastic field.
+fn field_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, head_bg: Color32) {
+    let t = Tokens::current();
+    let id = track.id;
+    let h = head.height();
+    let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
     if h >= 94.0 {
         if track.kind.has_playlist() {
             let r = at(17.0, 75.0, 13.0, 17.0);
@@ -277,8 +378,6 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
             }
         }
     }
-    let md = app.meters.get(&id).copied().unwrap_or_default();
-    header_meter(ui, Rect::from_min_max(pos2(head.max.x - 8.0, head.min.y + 1.0), pos2(head.max.x, head.max.y - 1.5)), &md, track.channels() >= 2);
 }
 
 /// A small menu arrow, pointing down, or right for a closed folder.

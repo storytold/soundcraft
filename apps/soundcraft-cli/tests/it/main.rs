@@ -9,3 +9,4 @@ mod closed_stdout;
 mod man_and_completions;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod run;
+mod script_status;

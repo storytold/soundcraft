@@ -1,4 +1,4 @@
-use super::*;
+use super::{Align2, ClipId, Rect, Sense, SoundApp, SourceId, Tokens, Ui, bold, json, panel_header, pos2, regular, rgb, vec2, with_pending_offset};
 
 /// One row of the clip list: a whole file, or a clip on a track (positions in the session).
 #[derive(Clone, Copy)]
