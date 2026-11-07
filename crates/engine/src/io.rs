@@ -8,7 +8,7 @@ use soundcraft_time::{Range, Samples};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 mod bundle;
 mod import;
@@ -891,7 +891,23 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
         return deliver(name, bytes).map_err(EngineError::Io);
     }
     crate::file_access::check_write(path).map_err(EngineError::Io)?;
-    std::fs::write(path, bytes).map_err(|err| EngineError::Io(format!("{path}: {err}")))
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let path = Path::new(path);
+    let dir = path.parent().unwrap_or(Path::new("."));
+    for _ in 0..100 {
+        let tmp = dir.join(format!(".soundcraft-{}-{}.tmp", std::process::id(), NEXT_TEMP.fetch_add(1, Ordering::Relaxed)));
+        crate::file_access::check_write(&tmp).map_err(EngineError::Io)?;
+        let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(EngineError::Io(format!("{}: {err}", path.display()))),
+        };
+        use std::io::Write as _;
+        let written = file.write_all(bytes).and_then(|()| file.sync_all());
+        drop(file);
+        return replace_with(&tmp, path, written);
+    }
+    Err(EngineError::Io(format!("{}: no free temporary file name", path.display())))
 }
 
 /// Unpack a bundle: the one `.scraft` at its top level and the files beside it, by relative path.
