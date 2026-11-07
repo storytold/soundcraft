@@ -150,8 +150,12 @@ fn bounded_aux_depths(s: &Session) -> Vec<usize> {
     depths
 }
 
-/// Implicit solo: an aux is not muted when a soloed track feeds its input bus.
+/// Implicit solo: a folder or VCA is not muted when a soloed track feeds its input bus. An aux
+/// fed by a soloed track is muted by the solo unless it is Solo Safe.
 pub(crate) fn receives_solo(s: &Session, t: &Track) -> bool {
+    if !matches!(t.kind, TrackKind::Folder | TrackKind::Vca) {
+        return false;
+    }
     let Route::Bus(b) = &t.mixer.input else { return false };
     s.tracks
         .iter()
