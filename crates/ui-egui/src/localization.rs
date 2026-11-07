@@ -44,7 +44,7 @@ impl Language {
     }
 
     /// Translates a UI string, falling back to its English source when no translation exists.
-    pub fn text<'a>(self, source: &'a str) -> &'a str {
+    pub fn text(self, source: &str) -> &str {
         match self {
             Self::English => source,
             Self::PortugueseBrazil => pt_br::translate(source).unwrap_or(source),
@@ -188,7 +188,7 @@ macro_rules! localized_format {
 
 #[cfg(test)]
 mod tests {
-    use super::Language;
+    use super::{Language, enter, text};
 
     #[test]
     fn language_tags_are_stable_and_round_trip() {

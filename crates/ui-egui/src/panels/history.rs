@@ -13,7 +13,7 @@ pub(crate) fn undo_history(app: &mut SoundApp, ui: &mut Ui) {
         }
         if let Some(r) = app.engine.redo_label() {
             ui.label(
-                egui::RichText::new(crate::localized_format!("(redo) {r}", r = crate::localization::text(&r)))
+                egui::RichText::new(crate::localized_format!("(redo) {r}", r = crate::localization::text(r)))
                     .italics()
                     .color(Tokens::current().text_dim),
             );
