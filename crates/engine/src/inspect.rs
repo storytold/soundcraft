@@ -29,6 +29,10 @@ fn clip_json(e: &Engine, c: &Clip) -> Value {
     if !c.gain_env.is_empty() {
         v["gain_envelope"] = json!(c.gain_env);
     }
+    // The stored cut of a crossfade (on the later clip), as an offset from this clip's start.
+    if let Some(cut) = c.cut {
+        v["cut"] = json!(cut);
+    }
     v
 }
 
@@ -84,7 +88,7 @@ pub fn session(e: &Engine, full: bool) -> Value {
             "id": x.id, "name": x.name, "channels": x.channels, "frames": x.frames, "path": x.path,
             "loaded": s.pool.contains(x.id),
         })).collect::<Vec<_>>(),
-        "selection": {"start": s.edit.selection.start, "end": s.edit.selection.end, "tracks": s.edit.selected_tracks, "clips": s.edit.selected_clips},
+        "selection": {"start": s.edit.selection.start, "end": s.edit.selection.end, "tracks": s.edit.selected_tracks, "clips": s.edit.selected_clips, "crossfade": crate::edit::selected_crossfade(s).map(|c| c.0)},
         "edit_mode": s.edit.edit_mode, "tool": s.edit.tool, "grid": s.edit.grid.label(), "nudge": s.edit.nudge.label(),
         "zoom": {"samples_per_px": s.edit.zoom.samples_per_px, "scroll": s.edit.zoom.scroll},
         "transport": e.transport,
