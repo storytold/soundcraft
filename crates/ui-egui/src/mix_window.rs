@@ -383,8 +383,7 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
     let t = Tokens::current();
     if cx.shows("io") {
         let has_input = has_input_selector(track.kind);
-        let rows = if has_input { 2.0 } else { 1.0 };
-        let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 16.0 + rows * 18.0 + 30.0));
+        let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 16.0 + 2.0 * 18.0 + 30.0));
         inset(ui.painter(), sec, t.strip_section);
         section_label(ui, sec, "I / O", narrow);
         let in_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0), vec2(inner_w - 4.0, 16.0));
@@ -414,7 +413,7 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
         );
         route_popup(app, &resp, id, false);
         // Automation mode.
-        let am_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0 + rows * 18.0), vec2(inner_w - 4.0, 16.0));
+        let am_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0 + 2.0 * 18.0), vec2(inner_w - 4.0, 16.0));
         ui.painter().text(pos2(am_r.center().x, am_r.min.y - 1.0), Align2::CENTER_BOTTOM, "", regular(9.0), t.text_dim);
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(am_r));
         let mode = track.mixer.automation_mode;
