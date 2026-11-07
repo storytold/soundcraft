@@ -96,7 +96,7 @@ pub(crate) fn open_device(
     cfg: &AudioConfig,
 ) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
     use cpal::traits::DeviceTrait;
-    let host = devices::host(cfg);
+    let host = devices::host(cfg).ok_or_else(|| "no audio system available".to_string())?;
     let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).

@@ -196,6 +196,9 @@ fn main() -> eframe::Result {
     // After the arguments and the logger: reading resolves the settings folder, which creates it,
     // and a malformed switch is logged.
     let env = Env::read();
+    // Record the main/UI thread before any plugin editor can be opened (X11).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    soundcraft_vst3_host::set_main_thread();
     let (demo, no_audio, control_port) = (launch.demo, launch.no_audio, launch.control_port);
     let files = launch.files;
     log::info!("SoundCraft {}", soundcraft_automation::args::long_version());

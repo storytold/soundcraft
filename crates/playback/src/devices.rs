@@ -92,21 +92,44 @@ fn describe(d: &cpal::Device, default_name: Option<&str>, output: bool) -> Optio
     Some(DeviceInfo { is_default: default_name == Some(name.as_str()), name, max_channels, sample_rates, buffer_min, buffer_max })
 }
 
+/// The first audio system that can actually be opened, or `None` when none can.
+///
+/// [`cpal::default_host`] is not used: on Linux it panics when ALSA's configuration cannot be
+/// loaded, because `AlsaHost::is_available()` always reports `true` but `AlsaHost::new()` can
+/// fail. This asks the fallible API instead, so a machine with a broken or missing ALSA
+/// configuration (containers, minimal images, a bad `ALSA_CONFIG_PATH`) gets the silent clock
+/// rather than a crash. The order follows `cpal::available_hosts`, which is the same preference
+/// `default_host` uses.
+pub(crate) fn host_opt() -> Option<cpal::Host> {
+    first_opened(cpal::available_hosts(), cpal::host_from_id)
+}
+
+/// The first host whose opener succeeds. Separated from [`host_opt`] so a failing opener can be
+/// tested without an audio system.
+fn first_opened(
+    ids: impl IntoIterator<Item = cpal::HostId>,
+    mut open: impl FnMut(cpal::HostId) -> Result<cpal::Host, cpal::Error>,
+) -> Option<cpal::Host> {
+    ids.into_iter().find_map(|id| open(id).ok())
+}
+
 /// Every audio system on this machine with its devices. Enumerating can take a moment (some
-/// systems probe each device): call it when the settings window opens, not every frame.
+/// systems probe each device): call it when the settings window opens, not every frame. Empty
+/// when no system can be opened.
 pub fn audio_systems() -> Vec<AudioSystem> {
-    let default_id = cpal::default_host().id();
-    cpal::available_hosts()
-        .into_iter()
-        .filter_map(|id| {
-            let host = cpal::host_from_id(id).ok()?;
-            let def_out = host.default_output_device().as_ref().and_then(device_name);
-            let def_in = host.default_input_device().as_ref().and_then(device_name);
-            let outputs = host.output_devices().map(|ds| ds.filter_map(|d| describe(&d, def_out.as_deref(), true)).collect()).unwrap_or_default();
-            let inputs = host.input_devices().map(|ds| ds.filter_map(|d| describe(&d, def_in.as_deref(), false)).collect()).unwrap_or_default();
-            Some(AudioSystem { name: id.name().to_string(), is_default: id == default_id, outputs, inputs })
-        })
-        .collect()
+    let mut default_id = None;
+    let mut systems = Vec::new();
+    for id in cpal::available_hosts() {
+        let Ok(host) = cpal::host_from_id(id) else { continue };
+        // The first system that opens is the default one, as `host_opt` resolves it.
+        default_id.get_or_insert(id);
+        let def_out = host.default_output_device().as_ref().and_then(device_name);
+        let def_in = host.default_input_device().as_ref().and_then(device_name);
+        let outputs = host.output_devices().map(|ds| ds.filter_map(|d| describe(&d, def_out.as_deref(), true)).collect()).unwrap_or_default();
+        let inputs = host.input_devices().map(|ds| ds.filter_map(|d| describe(&d, def_in.as_deref(), false)).collect()).unwrap_or_default();
+        systems.push(AudioSystem { name: id.name().to_string(), is_default: default_id == Some(id), outputs, inputs });
+    }
+    systems
 }
 
 /// True when a cpal error means the stream is dead and only a rebuild can restore audio. cpal 0.18
@@ -148,18 +171,19 @@ pub(crate) fn supported_format_config(
     best.and_then(|(_, c)| c.try_with_sample_rate(sample_rate))
 }
 
-/// The chosen audio system, else the default one.
-pub(crate) fn host(cfg: &AudioConfig) -> cpal::Host {
-    cfg.system
+/// The chosen audio system, else the default one, or `None` when no system can be opened.
+pub(crate) fn host(cfg: &AudioConfig) -> Option<cpal::Host> {
+    let wanted = cfg
+        .system
         .as_deref()
         .and_then(|want| cpal::available_hosts().into_iter().find(|id| id.name().eq_ignore_ascii_case(want)))
-        .and_then(|id| cpal::host_from_id(id).ok())
-        .unwrap_or_else(|| {
-            if let Some(s) = &cfg.system {
-                log::warn!("audio system `{s}` is not available; using the default");
-            }
-            cpal::default_host()
-        })
+        .and_then(|id| cpal::host_from_id(id).ok());
+    if wanted.is_none()
+        && let Some(s) = &cfg.system
+    {
+        log::warn!("audio system `{s}` is not available; using the default");
+    }
+    wanted.or_else(host_opt)
 }
 
 /// The named output (or input) device of `host`, else its default device.
@@ -285,11 +309,20 @@ mod tests {
     }
 
     #[test]
+    fn a_host_that_cannot_open_is_skipped_without_panicking() {
+        // On Linux `cpal::default_host` panics here; resolving through the fallible API must not.
+        let ids = cpal::available_hosts();
+        let failed = first_opened(ids, |_| Err(cpal::Error::with_message(cpal::ErrorKind::HostUnavailable, "test")));
+        assert!(failed.is_none(), "a host that fails to open must yield no host, not a panic");
+    }
+
+    #[test]
     fn unknown_systems_and_devices_fall_back_to_the_defaults() {
         let cfg = AudioConfig { system: Some("No Such System".into()), ..Default::default() };
-        assert_eq!(host(&cfg).id(), cpal::default_host().id());
+        let resolved = host(&cfg);
+        assert_eq!(resolved.as_ref().map(|h| h.id()), host_opt().as_ref().map(|h| h.id()));
         // No device with this name exists: the default (or none, on a machine without audio).
-        let h = cpal::default_host();
+        let Some(h) = host_opt() else { return };
         let fallback = device(&h, Some("No Such Device 1234"), true).as_ref().and_then(device_name);
         assert_eq!(fallback, h.default_output_device().as_ref().and_then(device_name));
     }

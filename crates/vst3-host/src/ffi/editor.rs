@@ -77,11 +77,10 @@ impl EditorLink {
         unsafe { ComPtr::from_raw(raw) }.ok_or_else(|| "this plugin has no editor".to_string())
     }
 
-    /// Creates the view, checks it supports this platform's window type and reads its size,
-    /// without attaching it anywhere. For diagnostics and tests.
     pub fn probe(&self) -> Result<(u32, u32), String> {
         let g = self.lock();
         let view = EditorLink::create_view(&g)?;
+        // Check platform support before asking the plugin to create a view on some platforms
         let platform = window::PLATFORM_TYPE.ok_or_else(|| "plugin editors are not supported on this platform".to_string())?;
         // SAFETY: valid view; `platform` is a static NUL-terminated string.
         if unsafe { view.isPlatformTypeSupported(platform) } != sb::kResultTrue {
@@ -96,12 +95,16 @@ impl EditorLink {
         Ok((w as u32, h as u32))
     }
 
-    /// Opens (or raises) the editor in a host window. Main thread only.
     pub fn open(&self, title: &str) -> Result<(), String> {
         if !window::on_main_thread() {
             return Err("plugin editors must be opened on the main thread".into());
         }
-        let platform = window::PLATFORM_TYPE.ok_or_else(|| "VST3 editors are not hosted on this platform yet".to_string())?;
+        // On Linux/Unix without a native window backend, still allow probing/attempt if platform type exists
+        // but prefer explicit error only if truly unsupported; we now have X11 support.
+        let platform = match window::PLATFORM_TYPE {
+            Some(p) => p,
+            None => return Err("VST3 editors are not hosted on this platform yet".to_string()),
+        };
         let mut g = self.lock();
         if let Some(w) = &g.window {
             if w.is_visible() {

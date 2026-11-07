@@ -4348,6 +4348,7 @@ dependencies = [
  "soundcraft-engine",
  "soundcraft-playback",
  "soundcraft-ui-egui",
+ "soundcraft-vst3-host",
  "winit",
  "winresource",
 ]
@@ -4572,6 +4573,7 @@ dependencies = [
  "thiserror 2.0.21",
  "vst3",
  "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]

@@ -3,6 +3,7 @@
 use crate::ffi::{Bundle, Instance, RawParam};
 use crate::plugin::ClapPlugin;
 use crate::scan as paths;
+use crate::scan_guard::ScanGuard;
 use crate::{ClapDescriptor, ClapError, parse_id};
 use clap_sys::ext::params::{CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_HIDDEN, CLAP_PARAM_IS_READONLY, CLAP_PARAM_IS_STEPPED};
 use soundcraft_dsp::{ParamInfo, Plugin, PluginInfo, Taper, Unit};
@@ -52,9 +53,30 @@ pub fn load_bundle(path: &Path) -> Result<Vec<ClapDescriptor>, ClapError> {
 /// Scans `dirs` (uncached). Unloadable files are logged and skipped; the first plugin with a
 /// given id wins.
 pub fn scan_paths(dirs: &[PathBuf]) -> Vec<ClapDescriptor> {
+    scan_with(dirs, None)
+}
+
+/// Like [`scan_paths`], but a plugin that crashed the app during an earlier scan is skipped, and
+/// the plugin being loaded is recorded so a crash now is remembered.
+fn scan_guarded(dirs: &[PathBuf]) -> Vec<ClapDescriptor> {
+    let guard = ScanGuard::open("clap");
+    scan_with(dirs, Some(&guard))
+}
+
+fn scan_with(dirs: &[PathBuf], guard: Option<&ScanGuard>) -> Vec<ClapDescriptor> {
     let mut out: Vec<ClapDescriptor> = Vec::new();
     for path in paths::find_bundles(dirs) {
-        match load_bundle(&path) {
+        if let Some(g) = guard {
+            if g.is_blocked(&path) {
+                continue;
+            }
+            g.begin(&path);
+        }
+        let loaded = load_bundle(&path);
+        if let Some(g) = guard {
+            g.end();
+        }
+        match loaded {
             Ok(ds) => {
                 for d in ds {
                     if !out.iter().any(|o| o.id == d.id) {
@@ -73,7 +95,7 @@ fn ensure_scanned(r: &mut Registry) -> &Vec<ClapDescriptor> {
     if r.scanned.is_none() {
         let mut dirs = paths::default_search_paths();
         dirs.extend(r.extra_dirs.iter().cloned());
-        r.scanned = Some(scan_paths(&dirs));
+        r.scanned = Some(scan_guarded(&dirs));
     }
     r.scanned.get_or_insert_with(Vec::new)
 }
@@ -99,7 +121,7 @@ pub fn add_search_dir(dir: &Path) -> usize {
     if !r.extra_dirs.iter().any(|d| d == dir) {
         r.extra_dirs.push(dir.to_path_buf());
     }
-    let found = scan_paths(&[dir.to_path_buf()]);
+    let found = scan_guarded(&[dir.to_path_buf()]);
     let n = found.len();
     let list = r.scanned.get_or_insert_with(Vec::new);
     for d in found {
