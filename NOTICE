@@ -12,6 +12,14 @@ Third-party material
 This product bundles third-party material under its own licenses, listed below. The per-file
 list (author, source, license) is in ATTRIBUTION.md.
 
+Droid Sans Mono 1.00, the first face of the monospace family (counters and readouts):
+  Digitized data copyright (c) 2007, Google Corporation. Designed by Ascender Corporation.
+  Copyright (c) 2005-2008, The Android Open Source Project.
+  Licensed under the Apache License, Version 2.0 (LICENSE-APACHE is a copy of it).
+  File: assets/fonts/droid-sans-mono/DroidSansMono.ttf, unmodified, from the Android Open Source
+  Project; its license notice is assets/fonts/droid-sans-mono/LICENSE.txt.
+
+ATTRIBUTION.md gives the origin of every other bundled asset.
 Original SoundCraft material: icons are drawn in code; demo audio is synthesised in code.
 The egui default fonts (Ubuntu-Light, Hack, Noto Emoji, Emoji Icon Font) ship inside the egui crate
 under their own open licenses (see ATTRIBUTION.md).

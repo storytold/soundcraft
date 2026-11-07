@@ -111,6 +111,7 @@ fn load(_: &[(&str, u32)], _: &str, _: Option<&str>, _: bool) -> Option<FontData
 /// The font set: the bundled faces, plus the system ones when `system_fonts` is true.
 pub fn definitions(system_fonts: bool) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
+    plain_zero_mono(&mut fonts);
     let base: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let mut bold_family = base.clone();
     if let Some(reg) = load(REGULAR, "sans-serif", None, system_fonts) {
@@ -137,6 +138,62 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
 
 pub fn install(ctx: &egui::Context, system_fonts: bool) {
     ctx.set_fonts(definitions(system_fonts));
+}
+
+/// Name of the embedded monospace face in [`FontDefinitions::font_data`].
+const MONO: &str = "droid-sans-mono";
+/// Droid Sans Mono 1.00 (Apache-2.0, see `ATTRIBUTION.md`): counters and readouts need a zero
+/// that is not slashed or dotted. egui cannot switch OpenType features such as `zero`, so the face
+/// itself has to differ. ponytail: the whole 108 KB file is embedded, also on the web build;
+/// subsetting it to the glyphs the UI draws (pyftsubset) would shrink that if size ever matters.
+const MONO_TTF: &[u8] = include_bytes!("../../../assets/fonts/droid-sans-mono/DroidSansMono.ttf");
+
+/// Puts Droid Sans Mono first in the monospace family. egui's Hack stays behind it as the fallback
+/// for glyphs Droid Sans Mono lacks (arrows, geometric shapes), and the system and Hangul faces
+/// after that.
+fn plain_zero_mono(fonts: &mut FontDefinitions) {
+    fonts.font_data.insert(MONO.into(), Arc::new(FontData::from_static(MONO_TTF)));
+    if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
+        family.insert(0, MONO.into());
+    }
+}
+
+#[cfg(test)]
+mod plain_zero_tests {
+    use super::*;
+
+    /// Width of "0" in `family` once `defs` is installed, at a size big enough to tell fonts apart.
+    fn zero_width(defs: FontDefinitions, family: FontFamily) -> f32 {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        ctx.fonts_mut(|f| f.glyph_width(&egui::FontId::new(1000.0, family), '0'))
+    }
+
+    /// Counters and readouts must show a plain zero: Droid Sans Mono leads the monospace family
+    /// (egui's Hack, which slashes its zero, only backs it up) and its digits are the ones drawn.
+    /// The bundled face is told apart from Hack by the advance of its "0" (0.600 em against
+    /// Hack's 0.602 em, 1 000 px apart at this size).
+    #[test]
+    fn monospace_starts_with_the_plain_zero_font() {
+        let defs = definitions(false);
+        let mono = &defs.families[&FontFamily::Monospace];
+        assert_eq!(mono.first().map(String::as_str), Some(MONO), "Droid Sans Mono must come first: {mono:?}");
+        assert!(mono.iter().any(|n| n == "Hack"), "Hack must stay as the fallback: {mono:?}");
+
+        // The bundled file draws the digits by itself, with no fallback to lean on.
+        let mut only_droid = FontDefinitions::empty();
+        only_droid.font_data.insert(MONO.into(), Arc::new(FontData::from_static(MONO_TTF)));
+        only_droid.families.insert(FontFamily::Monospace, vec![MONO.into()]);
+        let droid = zero_width(only_droid, FontFamily::Monospace);
+        let hack = zero_width(FontDefinitions::default(), FontFamily::Monospace);
+        assert!(droid > 0.0 && (hack - droid).abs() > 1.0, "the test cannot tell the faces apart: {droid} vs {hack}");
+
+        // The app's monospace family draws "0" with Droid Sans Mono, not with Hack.
+        let used = zero_width(defs, FontFamily::Monospace);
+        assert!((used - droid).abs() < 0.5, "'0' is {used} px wide, Droid Sans Mono's is {droid}, Hack's is {hack}");
+    }
 }
 
 #[cfg(test)]
