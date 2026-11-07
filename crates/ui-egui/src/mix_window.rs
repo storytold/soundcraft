@@ -38,8 +38,12 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
 pub fn show_separate(app: &mut SoundApp, ctx: &egui::Context) {
     let title = format!("{}  —  Mix", app.engine.session().name);
     let builder = egui::ViewportBuilder::default().with_title(title).with_inner_size([1100.0, 720.0]).with_min_inner_size([480.0, 320.0]);
-    ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("soundcraft.mix"), builder, |ui, _class| {
+    ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("soundcraft.mix"), builder, |ui, class| {
         ui.set_style(ui.ctx().global_style());
+        // Embedded viewports share the main window's events, which were already dispatched there.
+        if class == egui::ViewportClass::Immediate {
+            crate::shortcuts::handle_mix_help(app, ui.ctx());
+        }
         if std::mem::take(&mut app.focus_mix) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
         }
