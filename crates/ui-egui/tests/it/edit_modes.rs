@@ -147,6 +147,40 @@ fn spot_drags_ask_where_before_moving() {
 }
 
 #[test]
+fn a_spot_dialog_that_replaces_an_open_dialog_ignores_the_enter_of_its_first_frame() {
+    let (mut app, ctx, t, ids) = app("spot", "grabber", &[(SEC, SEC)]);
+    assert!(app.dialogs.open_for_command(&app.engine, "setup.session"));
+    frame(&ctx, &mut app, vec![]);
+    frame(&ctx, &mut app, vec![]);
+    let (from, to) = (point(&app, t, SEC * 3 / 2), point(&app, t, SEC * 5 / 2));
+    frame(&ctx, &mut app, vec![Event::PointerMoved(from)]);
+    frame(&ctx, &mut app, vec![button(from, true)]);
+    let started = from + vec2(7.0, 0.0);
+    for k in 0..=5 {
+        frame(&ctx, &mut app, vec![Event::PointerMoved(started + (to - started) * (k as f32 / 5.0))]);
+    }
+    frame(&ctx, &mut app, vec![button(to, false), key_event(Key::Enter, true, Modifiers::NONE)]);
+    assert_eq!(app.dialogs.open_name(), Some("spot"), "the Enter of the Spot dialog's first frame leaves it open");
+    assert_eq!(starts(&app, &ids), vec![SEC]);
+}
+
+#[test]
+fn a_spot_dialog_that_a_click_opens_over_an_open_dialog_ignores_the_enter_of_its_first_frame() {
+    for (tool, at) in [("grabber", SEC * 3 / 2), ("trim", SEC + SEC / 8)] {
+        let (mut app, ctx, t, ids) = app("spot", tool, &[(SEC, SEC)]);
+        assert!(app.dialogs.open_for_command(&app.engine, "setup.session"));
+        frame(&ctx, &mut app, vec![]);
+        frame(&ctx, &mut app, vec![]);
+        let at = point(&app, t, at);
+        frame(&ctx, &mut app, vec![Event::PointerMoved(at)]);
+        frame(&ctx, &mut app, vec![button(at, true)]);
+        frame(&ctx, &mut app, vec![button(at, false), key_event(Key::Enter, true, Modifiers::NONE)]);
+        assert_eq!(app.dialogs.open_name(), Some("spot"), "{tool}: the Enter of the Spot dialog's first frame leaves it open");
+        assert_eq!(starts(&app, &ids), vec![SEC], "{tool}");
+    }
+}
+
+#[test]
 fn slip_trims_stop_at_the_next_clip() {
     let (mut app, ctx, t, ids) = app("slip", "trim", &[(0, SEC), (2 * SEC, SEC)]);
     drag(&ctx, &mut app, t, SEC * 3 / 4, 4 * SEC);
