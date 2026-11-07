@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** trivial (G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-04 · **Change:** trivial (G-01: record-enable no longer forces input monitoring, #42; previously G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -57,7 +57,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
   verification on macOS and Linux. The mix still runs in fixed 512-sample blocks.
 - **Evidence:** code above; Playback Engine window says "Mix block size: 512 samples"; issue #42
-  (no input device selection, forced monitoring feedback with virtual routing).
+  (feedback with virtual routing; record-enable no longer forces input monitoring since 2026-11-04).
 - **Impact:** blocks tracking with any multichannel interface; latency makes overdubs hard.
 - **Estimate:** ≈ 25–40 h (device enumeration and selection, buffer size, duplex stream with one
   clock, ASIO feature build, per-channel I/O mapping into I/O Setup, latency reporting and
@@ -230,6 +230,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-04 | trivial | G-01: record-enable no longer turns on input monitoring (only I does), so the #42 evidence no longer cites forced monitoring |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-25 | trivial | G-01: `setup.playback_engine` and `setup.hardware` apply the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |

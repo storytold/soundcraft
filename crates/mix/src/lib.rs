@@ -137,7 +137,8 @@ pub struct MixEngine {
     pub input: Vec<Vec<f32>>,
     /// Transport stopped: only monitored inputs sound (no clips).
     pub monitor_only: bool,
-    /// Recording: record-armed tracks hear their input (auto input).
+    /// Recording: plug-ins see a recording transport. Only input-monitored tracks hear their input;
+    /// record-armed tracks are not monitored automatically.
     pub recording: bool,
     /// Mix the metronome (Options > Click) into the output. Playback turns this on; offline renders
     /// (bounces, stems, exports) leave it off so the click is never printed into a file.

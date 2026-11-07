@@ -1,6 +1,6 @@
 # Target-app parity: SoundCraft vs Avid Pro Tools
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** trivial (built-in plugin counts; the sampler shipped; previously minor: hours to ~95 % for each audience; full number confirmed as an additive weighted sum) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-04 · **Change:** trivial (record-enable no longer forces input monitoring, #42; previously trivial: built-in plugin counts; the sampler shipped; previously minor: hours to ~95 % for each audience; full number confirmed as an additive weighted sum) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
 
 The authoritative assessment of how close SoundCraft is to Pro Tools. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimension docs go deeper:
@@ -177,7 +177,7 @@ Weights by what Pro Tools users actually spend time on. **Breadth** = the featur
 
 | Area | Weight | Breadth | Ready | Remaining (h) | What's there / what's missing |
 |---|---:|---:|---:|---:|---|
-| Recording and monitoring | 12 % | 75 % | **40 %** | 40–60 | Punch in/out, QuickPunch-style punch on the fly, pre/post-roll, loop record into playlists, input monitoring through the strip, autosave/recovery. Missing: input/output device choice, buffer size, duplex low-latency path, record straight to disk (#84 open), per-channel hardware input routing, TrackPunch/destructive punch beyond flags, monitoring opt-out (#42) |
+| Recording and monitoring | 12 % | 75 % | **40 %** | 40–60 | Punch in/out, QuickPunch-style punch on the fly, pre/post-roll, loop record into playlists, input monitoring through the strip, autosave/recovery. Missing: input/output device choice, buffer size, duplex low-latency path, record straight to disk (#84 open), per-channel hardware input routing, TrackPunch/destructive punch beyond flags |
 | Editing | 15 % | 92 % | **65 %** | 40–60 | Slip/Shuffle/Spot/Grid, every Edit menu command, fades/crossfades, playlists and comping, clip groups, nudge, Tab to transient, separate/heal/consolidate/strip silence. Open bugs: #3, #5 (Multitool handles), #140 (Heal shortcut), #86, #91, #92; no batch fade presets, no field-recorder workflows |
 | Mixing and routing | 12 % | 85 % | **60 %** | 35–50 | Faders, pan, sends, busses, aux, masters, VCAs, folders, 10 inserts, PDC, solo modes, I/O Setup. Missing: sidechain inputs, hardware-channel I/O mapping, bus/AFL/PFL paths verified, HEAT; bugs #59, #103 |
 | Automation | 7 % | 80 % | **55 %** | 20–30 | Lanes for volume/pan/mute/sends/plugin params, trim, Write/Touch/Latch, glide/thin/coalesce. Missing: surround-pan and object automation, Touch/Latch prime and preview modes, automation on control surfaces; bug #104 |
@@ -245,6 +245,7 @@ serializes more, because it needs hands-on testing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-04 | trivial | Recording and monitoring: dropped "monitoring opt-out (#42)" from Missing; record-enable no longer turns on input monitoring, only I does. Percentages unchanged |
 | 2026-10-24 | trivial | Built-in plugin counts: 27 processors + 3 instruments on `main`, and 24 + 2 in the 3bc2d92 code snapshot; the sampler (#108) is no longer listed as missing. Percentages unchanged |
 | 2026-10-10 | minor | Readiness-by-audience table: hours to ~95 % for full (950–1,450 h), mainstream (380–600 h) and essentials (110–200 h). The full number is already the additive weighted sum over the written dimension table (40.6 %); method unchanged |
 | 2026-10-10 | minor | Added the mainstream-practitioner (~36 %) and essentials-user (~57 %) numbers with written weights, discounts and user evidence. Checked the full ~40 %: it is the written dimension weights × values (40.6 %), so it doesn't move |

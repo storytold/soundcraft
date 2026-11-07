@@ -962,6 +962,36 @@ fn input_monitoring_replaces_clips() {
     assert!(out[0][100].abs() < 1e-6, "stopped, unmonitored: silence");
 }
 
+/// Issue #42: record-enable alone never monitors the input (no feedback through the output);
+/// only the input-monitor switch does.
+#[test]
+fn record_arm_alone_does_not_monitor_input() {
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.25; 512]];
+    let mut out = vec![vec![0.0; 512]; 2];
+    let clip = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+    // Stopped and armed: silence, the input is not heard.
+    eng.monitor_only = true;
+    eng.render(&s, 0, 512, &mut out);
+    assert!(out[0][100].abs() < 1e-6, "stopped, armed: {}", out[0][100]);
+    // Recording and armed: the clips play as on any track, and the input is not heard.
+    eng.monitor_only = false;
+    eng.recording = true;
+    eng.render(&s, 0, 512, &mut out);
+    assert!((out[0][100] - clip).abs() < 1e-3, "recording, armed: {}", out[0][100]);
+    // Playing back after the take, still armed and unmuted: the clips play.
+    eng.recording = false;
+    eng.render(&s, 512, 512, &mut out);
+    assert!((out[0][100] - clip).abs() < 1e-3, "playback, armed: {}", out[0][100]);
+    // The input-monitor switch alone turns monitoring on, while recording too.
+    s.track_mut(t).unwrap().mixer.input_monitor = true;
+    eng.recording = true;
+    eng.render(&s, 1024, 512, &mut out);
+    assert!((out[0][100] - 0.25 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3, "recording, monitored: {}", out[0][100]);
+}
+
 #[test]
 fn empty_session_is_silent() {
     let s = Session::default();
