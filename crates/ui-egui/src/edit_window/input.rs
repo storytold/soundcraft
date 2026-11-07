@@ -337,9 +337,13 @@ fn drag_clip_gain(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui:
 
 /// Click handling for the lane: breakpoints, clip selection, spot dialogs, zoom and pencil points.
 fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Response) {
-    let (track, lane, s, auto_view) = (c.inp.track, c.inp.lane, c.inp.s, &c.inp.auto_view);
+    let (track, lane, s) = (c.inp.track, c.inp.lane, c.inp.s);
     let (point_hit, curve_handle, hit) = (&c.hits.point_hit, c.hits.curve_handle, &c.hits.hit);
     let (mods, p, at, eff, selector_press) = (c.mods, c.p, c.at, c.eff, c.selector_press);
+    let command_view = if mods.command { shown_automation(track) } else { None };
+    let auto_view = command_view.as_ref().or(c.inp.auto_view.as_ref());
+    // Command-click inserts a point like the Pencil without changing the active tool or its drags.
+    let eff = if mods.command && auto_view.is_some() { Tool::Pencil } else { eff };
     if resp.clicked()
         && let Some((param, at)) = &point_hit
     {
@@ -370,7 +374,7 @@ fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Res
                 let _ = app.run(if mods.alt { "view.zoom_out" } else { "view.zoom_in" }, json!({}));
             }
             Tool::Pencil => {
-                if let Some(param) = &auto_view {
+                if let Some(param) = auto_view {
                     let (lo, hi, _) = param.range();
                     let (lo, hi) = if matches!(param, AutoParam::Volume | AutoParam::SendLevel(_)) {
                         (-60.0, 12.0)
@@ -452,7 +456,12 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
     }
     let selector_press = eff == Tool::Selector && fade_corner.is_none() && curve_handle.is_none() && gain_icon_at(origin).is_none();
-    if selector_press && resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
+    // A Command-click keeps the prior selection; real drags still start their normal selection gesture.
+    if selector_press
+        && (!mods.command || shown_automation(track).is_none())
+        && resp.is_pointer_button_down_on()
+        && ui.input(|i| i.pointer.primary_pressed())
+    {
         place_insertion(app, ui, &s, track.id, at, mods.shift);
     }
     let gain_drag = if resp.drag_started() { gain_icon_at(origin) } else { None };
