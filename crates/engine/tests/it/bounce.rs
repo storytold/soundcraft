@@ -65,6 +65,39 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 #[test]
+fn an_integer_bounce_reports_the_levels_of_the_clipped_file() {
+    let mut e = soundcraft_engine::Engine::default();
+    let sr = e.session().sample_rate.hz();
+    let frames = sr as usize;
+    let samples: Vec<f32> = (0..frames).map(|i| 1.5 * (std::f32::consts::TAU * 440.0 * i as f32 / sr as f32).sin()).collect();
+    let audio = soundcraft_audio_io::AudioBuffer { sample_rate: sr, channels: vec![samples.clone(), samples] };
+    let s = e.session_mut();
+    let track = s.add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Stereo, Some("Hot"));
+    let source = soundcraft_engine::io::add_source(s, "hot", audio, None, FileFormat::Wav);
+    let clip = soundcraft_model::Clip::audio(s.new_clip_id(), "hot", source, 0, 0, frames as i64);
+    soundcraft_engine::edit::place_clip(s, track, clip);
+    let mix = soundcraft_mix::render_range(e.session(), Range::new(0, frames as i64), 1024);
+    assert!(soundcraft_dsp::offline::peak(&mix) > 1.0);
+    let dir = scratch("bounce-int-clipped");
+    let path = dir.join("Mix.wav");
+    let r = e.execute("file.bounce_mix", &serde_json::json!({"path": path, "bit_depth": 16, "dither": false, "start": 0, "end": frames})).unwrap();
+    let (_, file) = soundcraft_audio_io::decode(&std::fs::read(&path).unwrap(), None).unwrap();
+    assert!(file.peak() <= 1.0);
+    let mut meter = soundcraft_dsp::meter::LoudnessMeter::new(sr as f32, file.num_channels());
+    meter.process(&file.channels, file.frames());
+    for (key, value, tolerance) in [
+        ("peak_db", soundcraft_dsp::offline::peak_db(&file.channels), 0.01),
+        ("lufs", meter.integrated_lufs(), 0.05),
+        ("true_peak_db", meter.true_peak_db(), 0.05),
+    ] {
+        let reported = r[key].as_f64().unwrap();
+        assert!((reported - f64::from(value)).abs() < tolerance, "{key}: reported {reported}, file {value}");
+    }
+    assert!(r["peak_db"].as_f64().unwrap() <= 0.0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bounces_write_exactly_the_mix_and_report_its_levels() {
     let e = soundcraft_engine::demo::demo_engine();
     let s = e.session();
