@@ -202,6 +202,34 @@ fn alt_click_after_typing_in_a_clip_effects_value_box_is_its_own_undo_step() {
     assert_eq!(read(&h), Some(-12.0), "Undo did not bring back the typed value");
 }
 
+/// An Alt-click on a clip effects slider during an automation pass joins the pass's undo step:
+/// the automation written before and after the reset, and the reset, undo together.
+#[test]
+fn alt_click_on_a_clip_effects_slider_during_an_automation_pass_keeps_the_pass_one_undo_step() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let s = app.engine.session();
+    let clip = s.track_by_name("Kick").unwrap().clips().iter().find(|c| c.is_audio()).unwrap().id;
+    app.run("edit.select", json!({"clips": [clip.0]})).unwrap();
+    app.run("clip.effects_set", json!({"clips": [clip.0], "params": {"eq.input_gain": 6.0}})).unwrap();
+    app.engine.end_merge();
+    app.run("mix.automation_mode", json!({"tracks": ["Kick"], "mode": "write"})).unwrap();
+    app.ui.show_clip_effects = true;
+    let mut h = harness(app);
+    let p = param("eq_7band", "input_gain");
+    let key = format!("clip_fx.{}.eq.input_gain", clip.0);
+    let rail = h.get_by_role_and_label(Role::Slider, "Input").rect();
+    let steps = undo_steps(&h);
+    h.state_mut().run("transport.play", json!({})).unwrap();
+    h.run_steps(10);
+    assert_eq!(undo_steps(&h), steps + 1, "the pass did not write automation");
+    alt_press(&mut h, near_left(rail), 0.0);
+    assert_eq!(h.state().engine.session().edit.values.get(&key).copied(), Some(f64::from(p.default)), "Alt-click did not reset Input");
+    h.run_steps(10);
+    h.state_mut().run("transport.stop", json!({})).unwrap();
+    h.run_steps(4);
+    assert_eq!(undo_steps(&h), steps + 1, "the Alt-click split the automation pass into two undo steps");
+}
+
 #[test]
 fn alt_click_returns_audiosuite_parameter_sliders_to_their_defaults() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
