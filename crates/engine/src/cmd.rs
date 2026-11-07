@@ -61,6 +61,7 @@ mod panic_probe {
     }
 }
 
+pub use clip_more::is_looped;
 pub use file::bounce_job;
 
 pub(crate) use edit::remember_selection;
