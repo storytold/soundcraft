@@ -89,6 +89,42 @@ fn add_dc_track(s: &mut Session, level: f32, frames: usize) -> TrackId {
     t
 }
 
+/// Per track: the solo mutes it ([`solo_mutes`]).
+fn shaded(s: &Session) -> Vec<bool> {
+    s.tracks.iter().map(|t| solo_mutes(s, t)).collect()
+}
+
+#[test]
+fn soloing_a_vca_solos_its_members() {
+    let (mut s, member) = session_with_dc(0.5, 4800);
+    // Quieter than the member, so the render tells which of the two sounds.
+    let other = add_dc_track(&mut s, 0.5, 4800);
+    s.track_mut(other).unwrap().mixer.volume_db = -6.0;
+    let vca = s.add_track(TrackKind::Vca, ChannelFormat::Mono, Some("VCA"));
+    s.track_mut(member).unwrap().mixer.vca = Some(vca.0);
+    s.track_mut(other).unwrap().mixer.mute = true;
+    let only_member = render_range(&s, Range::new(0, 4800), 512);
+    assert!(only_member[0][2000].abs() > 0.1, "the member should sound");
+    s.track_mut(other).unwrap().mixer.mute = false;
+    s.track_mut(vca).unwrap().mixer.solo = true;
+    assert_eq!(render_range(&s, Range::new(0, 4800), 512), only_member);
+    assert_eq!(shaded(&s), [false, true, false], "member, other, VCA");
+    // A soloed member leaves its VCA unshaded.
+    s.track_mut(vca).unwrap().mixer.solo = false;
+    s.track_mut(member).unwrap().mixer.solo = true;
+    assert_eq!(shaded(&s), [false, true, false], "member soloed: member, other, VCA");
+}
+
+#[test]
+fn soloing_an_empty_vca_mutes_nothing() {
+    let (mut s, _) = session_with_dc(0.5, 4800);
+    let vca = s.add_track(TrackKind::Vca, ChannelFormat::Mono, Some("VCA"));
+    let all = render_range(&s, Range::new(0, 4800), 512);
+    s.track_mut(vca).unwrap().mixer.solo = true;
+    assert_eq!(render_range(&s, Range::new(0, 4800), 512), all);
+    assert_eq!(shaded(&s), [false, false], "track, VCA");
+}
+
 #[test]
 fn mono_center_pan_is_minus_3db() {
     let (s, _) = session_with_dc(0.5, 4800);

@@ -203,7 +203,7 @@ fn toggle_keys(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
     let is_master = track.kind == TrackKind::Master;
     if h >= 37.0 && !is_master {
         let (records, mixes) = (track.kind.has_playlist(), true);
-        let implied = !m.solo && app.engine.session().tracks.iter().any(|t| t.mixer.solo);
+        let implied = soundcraft_mix::solo_mutes(app.engine.session(), track);
         let keys = [
             (HeaderKey::Rec, m.record_arm, false, "mix.record_arm", records),
             (HeaderKey::Input, m.input_monitor, false, "mix.input_monitor", records),
