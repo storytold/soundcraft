@@ -1,10 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Hardened-runtime entitlements for SoundCraft. The app is pure Rust, loads no unsigned code,
-     needs no JIT, and is not sandboxed (it opens files by path, from the command line and
+<!-- Hardened-runtime entitlements for SoundCraft. The host is Rust, loads third-party plugins,
+     and is not sandboxed (it opens files by path, from the command line and
      drag-and-drop). Add exceptions here only with a reason in a comment. -->
 <plist version="1.0">
 <dict>
+  <!-- VST3/CLAP/AU plugins are signed by their own developers (or ad hoc for local builds).
+       Library validation otherwise rejects these modules in the signed host, even when
+       discovery succeeds in an unpackaged build. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <!-- Third-party plugin runtimes can create executable memory without MAP_JIT. UADx/PACE
+       initialisation is killed with CODESIGNING/Invalid Page without this exception; allow-jit
+       alone does not suffice. Keep executable-page protection and the hardened runtime enabled. -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
   <!-- Recording: the hardened runtime blocks audio input (CoreAudio via cpal) without this,
        even after the user grants microphone access (NSMicrophoneUsageDescription). -->
   <key>com.apple.security.device.audio-input</key>
