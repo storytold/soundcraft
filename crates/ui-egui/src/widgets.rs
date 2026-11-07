@@ -424,6 +424,76 @@ pub fn db_text(db: f32) -> String {
     if db <= -143.9 { "-inf".into() } else { format!("{db:.1}") }
 }
 
+/// Where a [`fine_slider`] drag is anchored: the pointer's x and the value there, and the pass
+/// that last drew the slider during the drag.
+#[derive(Clone, Copy)]
+struct FineDrag {
+    x: f32,
+    value: f64,
+    fine: bool,
+    relative: bool,
+    pass: u64,
+}
+
+/// A horizontal slider that moves a tenth as far for the same drag while Ctrl (Command on a Mac)
+/// is held, as a [`fader`] does, on the rail and on the value box. Pressing or releasing the key
+/// during a drag on the rail leaves the value where it is, and the drag goes on from there. The
+/// value box shows the decimal places that a tenth of a point's step needs, and a drag on the
+/// rail that the key has touched rounds the value to them.
+pub fn fine_slider(ui: &mut Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: &str) -> Response {
+    let id = ui.scope_id().with(("fine_slider", text));
+    let (fine, x) = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.pointer.interact_pos().map(|p| p.x)));
+    // A drag lasts through the pass that releases the button, where egui still sets the value
+    // from the pointer. An anchor that the previous pass did not store was left by an earlier
+    // drag, and is ignored.
+    let pass = ui.ctx().cumulative_pass_nr();
+    let mut drag = ui.data(|d| d.get_temp::<FineDrag>(id)).filter(|d| d.pass + 1 == pass);
+    let (lo, hi) = (*range.start(), *range.end());
+    // The handle's travel along the rail, as `egui::Slider` lays it out.
+    let thickness = ui.text_style_height(&egui::TextStyle::Body).max(ui.spacing().interact_size.y);
+    let travel = (ui.spacing().slider_width - 2.0 * thickness / 2.5).max(1.0);
+    let per_point = (hi - lo) / f64::from(travel);
+    let scale = if fine { 0.1 } else { 1.0 };
+    let decimals = (-(per_point * 0.1).log10()).ceil().clamp(0.0, 3.0) as usize;
+    if let (Some(d), Some(x)) = (&mut drag, x) {
+        if d.fine != fine {
+            *d = FineDrag { x, value: *value, fine, relative: true, pass };
+        } else if d.relative {
+            let moved = d.value + f64::from(x - d.x) * per_point * scale;
+            *value = egui::emath::round_to_decimals(moved, decimals).clamp(lo, hi);
+        }
+    }
+    let hold = drag.is_some_and(|d| d.relative);
+    let mut slider = egui::Slider::from_get_set(range, |v| {
+        if let Some(v) = v
+            && !hold
+        {
+            *value = v;
+        }
+        *value
+    })
+    .min_decimals(decimals)
+    .text(text);
+    if fine {
+        slider = slider.drag_value_speed(per_point * scale);
+    }
+    let resp = ui.add(slider);
+    let rail = Rect::from_min_size(resp.rect.min, vec2(ui.spacing().slider_width, resp.rect.height()));
+    let on_rail = resp.dragged() && ui.input(|i| i.pointer.press_origin()).is_some_and(|p| rail.contains(p));
+    let next = match (on_rail, drag, x) {
+        (true, Some(d), _) => Some(FineDrag { pass, ..d }),
+        (true, None, Some(x)) => Some(FineDrag { x, value: *value, fine, relative: fine, pass }),
+        _ => None,
+    };
+    ui.data_mut(|m| match next {
+        Some(d) => {
+            m.insert_temp(id, d);
+        }
+        None => m.remove::<FineDrag>(id),
+    });
+    resp
+}
+
 /// A speaker dot on the surround panner: label, square position (-1..1, y up = front), height layer.
 pub struct PannerSpeaker {
     pub label: &'static str,
