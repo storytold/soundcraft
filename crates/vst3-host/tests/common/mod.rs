@@ -39,3 +39,30 @@ pub fn fixture_dir() -> &'static Path {
         dir
     })
 }
+
+/// Path of the installed fixture library (call after `fixture_dir`).
+#[allow(dead_code)]
+fn fixture_library() -> PathBuf {
+    let dir = fixture_dir();
+    if cfg!(target_os = "macos") {
+        dir.join("vendor/Fixture.vst3/Contents/MacOS/Fixture")
+    } else if cfg!(windows) {
+        dir.join("vendor/Fixture.vst3/Contents/x86_64-win/Fixture.vst3")
+    } else {
+        let arch = if cfg!(target_arch = "aarch64") { "aarch64-linux" } else { "x86_64-linux" };
+        dir.join("vendor/Fixture.vst3/Contents").join(arch).join("Fixture.so")
+    }
+}
+
+/// The fixture's `setActive`/`setProcessing` calls made on the calling thread since the last
+/// call, oldest first. The host already loaded the library; opening it again shares that copy.
+#[allow(unsafe_code, dead_code)] // test-only symbol lookup in the fixture; not every test binary uses it
+pub fn take_fixture_calls() -> Vec<String> {
+    type TakeLog = unsafe extern "C" fn(*mut u8, usize) -> usize;
+    let lib = unsafe { libloading::Library::new(fixture_library()) }.expect("open fixture library");
+    let take: libloading::Symbol<TakeLog> = unsafe { lib.get(b"fixture_take_call_log\0") }.expect("fixture_take_call_log symbol");
+    let mut buf = vec![0u8; 4096];
+    let n = unsafe { take(buf.as_mut_ptr(), buf.len()) };
+    let text = String::from_utf8(buf[..n].to_vec()).expect("utf8");
+    if text.is_empty() { Vec::new() } else { text.split(',').map(str::to_owned).collect() }
+}
