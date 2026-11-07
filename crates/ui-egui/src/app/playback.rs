@@ -172,7 +172,12 @@ impl SoundApp {
             .iter()
             .map(|(track, inputs, path)| soundcraft_engine::io::Take { track: *track, path: path.clone(), channels: inputs.len() })
             .collect();
-        r.arm(plan)?;
+        // Each take file holds no more than the session can read back; a longer take goes on in the next.
+        let files = soundcraft_playback::record::TakeFiles {
+            samples: soundcraft_engine::io::take_file_samples(r.sample_rate, self.engine.session().sample_rate.hz()),
+            part: soundcraft_engine::io::take_part,
+        };
+        r.arm(plan, files)?;
         Ok(takes)
     }
 

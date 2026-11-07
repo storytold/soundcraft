@@ -23,7 +23,7 @@ pub use bundle::{BUNDLE_EXTENSION, open_session_bytes, session_bundle};
 pub use import::{DecodedImport, add_source, decode_import, import_audio_bytes, load_sampler_bytes, relink_videos};
 pub(crate) use import::{MAX_IMPORT_SAMPLES, at_rate, place_decoded};
 pub use midi::{export_midi, import_midi_bytes};
-pub use record::{Recording, Take, add_recording, live_span, place_recording};
+pub use record::{Recording, Take, add_recording, live_span, place_recording, take_file_samples, take_part};
 pub use render::{commit_track, consolidate, refuse_longer, render_clip_gain, render_limit, sanitize_name};
 pub(crate) use session::{DecodedFiles, decode_file, open_session_linked};
 pub use session::{open_session, save_copy, save_session, save_session_copy};

@@ -3,19 +3,29 @@
 //! A [`Recorder`] opens the default input device. While armed, the input callback copies each
 //! block into a preallocated lock-free ring (it never locks or allocates), and a writer thread
 //! streams the ring into one WAV file per take, rewriting the header every second so a crash leaves
-//! a playable file.
+//! a playable file. A take that fills its file goes on in a new one ([`TakeFiles`]).
 
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use soundcraft_model::TrackId;
 
-/// What [`Recorder::finish`] returns: the takes that hold audio and the first problem met.
+/// What [`Recorder::finish`] returns: the files of the takes that hold audio, a take's files in
+/// order, and the first problem met.
 pub type Takes = (Vec<(TrackId, PathBuf)>, Option<String>);
+
+/// How big a take's files get: each holds at most `samples` samples (frames × channels), so it can
+/// be read back whole, and a take that fills one goes on in the file `part(first, n)` names, its
+/// `n`-th (2, 3, …) after `first`.
+#[derive(Debug, Clone, Copy)]
+pub struct TakeFiles {
+    pub samples: u64,
+    pub part: fn(&Path, usize) -> PathBuf,
+}
 
 /// Frames each block of a [`LiveTake`] sums up.
 pub const LIVE_BLOCK: usize = 128;
@@ -277,13 +287,15 @@ impl Recorder {
     }
 
     /// Create each take's file and start recording into them: a track's take records the given
-    /// input channels into a new file.
-    pub fn arm(&mut self, takes: Vec<(TrackId, Vec<usize>, PathBuf)>) -> Result<(), String> {
+    /// input channels into a new file, and into further files as `files` says.
+    pub fn arm(&mut self, takes: Vec<(TrackId, Vec<usize>, PathBuf)>, files: TakeFiles) -> Result<(), String> {
         if self.writer.is_some() {
             return Err("already recording".into());
         }
-        let takes =
-            takes.into_iter().map(|(id, inputs, path)| TakeWriter::create(id, inputs, path, self.sample_rate)).collect::<Result<Vec<_>, _>>()?;
+        let takes = takes
+            .into_iter()
+            .map(|(id, inputs, path)| TakeWriter::create(id, inputs, path, self.sample_rate, files))
+            .collect::<Result<Vec<_>, _>>()?;
         let live = takes.iter().map(|t| (t.id, Arc::clone(&t.live))).collect();
         let ring = &self.shared.ring;
         ring.tail.store(ring.head.load(Ordering::Acquire), Ordering::Release);
@@ -373,6 +385,7 @@ fn write_takes(shared: &Shared, mut takes: Vec<TakeWriter>, channels: usize) -> 
     let (mut done, mut problem) = (Vec::new(), None);
     for mut t in takes {
         t.write_header();
+        done.extend(t.full.drain(..).map(|path| (t.id, path)));
         if t.frames == 0 {
             let _ = std::fs::remove_file(&t.path);
         } else {
@@ -383,51 +396,97 @@ fn write_takes(shared: &Shared, mut takes: Vec<TakeWriter>, channels: usize) -> 
     (done, problem)
 }
 
-/// One take's file. After an error it stops writing; its header keeps covering what was written.
+/// One take's files. After an error it stops writing; the header of its file keeps covering what
+/// was written.
 struct TakeWriter {
     id: TrackId,
     inputs: Vec<usize>,
+    /// The file it writes now.
     path: PathBuf,
     file: File,
+    /// The take's files before `path`, full, in order.
+    full: Vec<PathBuf>,
     rate: u32,
+    /// Frames in `path`.
     frames: u64,
+    /// Frames in the files in `full`.
+    before: u64,
+    /// Frames a file holds at most.
+    limit: u64,
+    /// Names the take's next file ([`TakeFiles::part`]).
+    part: fn(&Path, usize) -> PathBuf,
     error: Option<String>,
     live: Arc<Mutex<LiveTake>>,
 }
 
+/// A new take file at `path`, its folder made if needed; never one that's there already.
+fn create_take_file(path: &Path) -> Result<File, String> {
+    let file = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| File::create_new(path));
+    file.map_err(|e| format!("{}: {e}", path.display()))
+}
+
 impl TakeWriter {
-    fn create(id: TrackId, inputs: Vec<usize>, path: PathBuf, rate: u32) -> Result<TakeWriter, String> {
-        let file = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| File::create_new(&path));
-        let file = file.map_err(|e| format!("{}: {e}", path.display()))?;
+    fn create(id: TrackId, inputs: Vec<usize>, path: PathBuf, rate: u32, files: TakeFiles) -> Result<TakeWriter, String> {
+        let file = create_take_file(&path)?;
         let live = Arc::new(Mutex::new(vec![Vec::new(); inputs.len()]));
-        let mut take = TakeWriter { id, inputs, path, file, rate, frames: 0, error: None, live };
+        let limit = (files.samples / inputs.len().max(1) as u64).max(1);
+        let (full, part) = (Vec::new(), files.part);
+        let mut take = TakeWriter { id, inputs, path, file, full, rate, frames: 0, before: 0, limit, part, error: None, live };
         take.write_header();
         take.error.take().map_or(Ok(take), Err)
     }
 
-    /// Append this take's channels of `block` (interleaved, `channels` wide).
-    fn write(&mut self, block: &[f32], channels: usize) {
+    /// Append this take's channels of `block` (interleaved, `channels` wide), going on in a new
+    /// file whenever this one is full.
+    fn write(&mut self, mut block: &[f32], channels: usize) {
         let channels = channels.max(1);
+        while !block.is_empty() && self.error.is_none() {
+            if self.frames >= self.limit {
+                self.next_file();
+                continue;
+            }
+            let room = usize::try_from(self.limit - self.frames).unwrap_or(usize::MAX).saturating_mul(channels);
+            let (now, rest) = block.split_at(room.min(block.len()));
+            let bytes: Vec<u8> = now
+                .chunks_exact(channels)
+                .flat_map(|f| self.inputs.iter().flat_map(move |&i| f.get(i).copied().unwrap_or(0.0).to_le_bytes()))
+                .collect();
+            match self.file.write_all(&bytes) {
+                Ok(()) => {
+                    self.summarize(now, channels);
+                    self.frames += (now.len() / channels) as u64;
+                }
+                Err(e) => self.fail(e),
+            }
+            block = rest;
+        }
+    }
+
+    /// Close the full file with its final header and go on in the take's next one.
+    fn next_file(&mut self) {
+        self.write_header();
         if self.error.is_some() {
             return;
         }
-        let bytes: Vec<u8> = block
-            .chunks_exact(channels)
-            .flat_map(|f| self.inputs.iter().flat_map(move |&i| f.get(i).copied().unwrap_or(0.0).to_le_bytes()))
-            .collect();
-        match self.file.write_all(&bytes) {
-            Ok(()) => {
-                self.summarize(block, channels);
-                self.frames += (block.len() / channels) as u64;
+        let first = self.full.first().unwrap_or(&self.path);
+        let next = (self.part)(first, self.full.len() + 2);
+        match create_take_file(&next) {
+            Ok(file) => {
+                self.file = file;
+                self.full.push(std::mem::replace(&mut self.path, next));
+                self.before += std::mem::take(&mut self.frames);
+                self.write_header();
             }
-            Err(e) => self.fail(e),
+            Err(e) => {
+                self.error.get_or_insert(e);
+            }
         }
     }
 
     /// Add this take's channels of `block` to its live take.
     fn summarize(&self, block: &[f32], channels: usize) {
         let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
-        for (f, n) in block.chunks_exact(channels).zip(self.frames..) {
+        for (f, n) in block.chunks_exact(channels).zip(self.before + self.frames..) {
             let at = (n / LIVE_BLOCK as u64) as usize;
             for (blocks, &i) in live.iter_mut().zip(&self.inputs) {
                 let v = f.get(i).copied().unwrap_or(0.0);
@@ -463,6 +522,14 @@ mod tests {
     fn decode(path: &PathBuf) -> Vec<Vec<f32>> {
         soundcraft_audio_io::decode(&std::fs::read(path).unwrap(), None).unwrap().1.channels
     }
+
+    /// The `n`-th file of the take whose first file is `first`, in these tests.
+    fn part(first: &Path, n: usize) -> PathBuf {
+        first.with_file_name(format!("{}-{n}.wav", first.file_stem().unwrap().to_string_lossy()))
+    }
+
+    /// Files no take in these tests fills.
+    const ONE_FILE: TakeFiles = TakeFiles { samples: u64::MAX, part };
 
     #[test]
     fn a_full_ring_owes_the_lost_samples_as_silence() {
@@ -551,7 +618,7 @@ mod tests {
     fn a_failed_write_is_trouble_while_still_recording() {
         let dir = std::env::temp_dir().join(format!("soundcraft-failed-take-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut take = TakeWriter::create(TrackId(1), vec![0], dir.join("Vox_01.wav"), 48_000).unwrap();
+        let mut take = TakeWriter::create(TrackId(1), vec![0], dir.join("Vox_01.wav"), 48_000, ONE_FILE).unwrap();
         take.file = File::open(&take.path).unwrap();
         let shared = Arc::new(Shared::new(CaptureRing::new(1 << 12)));
         shared.armed.store(true, Ordering::Release);
@@ -574,9 +641,9 @@ mod tests {
     fn takes_stream_into_their_files() {
         let dir = std::env::temp_dir().join(format!("soundcraft-takes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let gtr = TakeWriter::create(TrackId(1), vec![1, 2], dir.join("Gtr_01.wav"), 48_000).unwrap();
-        let mut vox = TakeWriter::create(TrackId(2), vec![0], dir.join("Vox_01.wav"), 48_000).unwrap();
-        assert!(TakeWriter::create(TrackId(3), vec![0], dir.join("Vox_01.wav"), 48_000).is_err(), "never overwrites a file");
+        let gtr = TakeWriter::create(TrackId(1), vec![1, 2], dir.join("Gtr_01.wav"), 48_000, ONE_FILE).unwrap();
+        let mut vox = TakeWriter::create(TrackId(2), vec![0], dir.join("Vox_01.wav"), 48_000, ONE_FILE).unwrap();
+        assert!(TakeWriter::create(TrackId(3), vec![0], dir.join("Vox_01.wav"), 48_000, ONE_FILE).is_err(), "never overwrites a file");
         vox.write(&[0.5; 300], 3);
         vox.write_header();
         vox.write(&[0.25; 150], 3);
@@ -598,11 +665,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Files of 100 stereo or 200 mono frames: blocks that straddle a file's end are split there.
+    #[test]
+    fn a_take_that_fills_its_file_goes_on_in_the_next() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-take-parts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let files = TakeFiles { samples: 200, part };
+        let gtr = TakeWriter::create(TrackId(1), vec![1, 2], dir.join("Gtr_01.wav"), 48_000, files).unwrap();
+        let vox = TakeWriter::create(TrackId(2), vec![0], dir.join("Vox_01.wav"), 48_000, files).unwrap();
+        let live = Arc::clone(&gtr.live);
+        let shared = Arc::new(Shared::new(CaptureRing::new(1 << 12)));
+        shared.armed.store(true, Ordering::Release);
+        let sh = Arc::clone(&shared);
+        let writer = std::thread::spawn(move || write_takes(&sh, vec![gtr, vox], 3));
+        let input: Vec<f32> = (0..3 * 250).map(|i| i as f32).collect();
+        input.chunks(3 * 45).for_each(|block| shared.capture(block, &mut 0));
+        shared.armed.store(false, Ordering::Release);
+        let (done, problem) = writer.join().unwrap();
+        assert_eq!(problem, None);
+        let names: Vec<_> = done.iter().map(|(id, p)| (id.0, p.file_name().unwrap().to_string_lossy().into_owned())).collect();
+        assert_eq!(
+            names,
+            [(1, "Gtr_01.wav"), (1, "Gtr_01-2.wav"), (1, "Gtr_01-3.wav"), (2, "Vox_01.wav"), (2, "Vox_01-2.wav")].map(|(i, n)| (i, n.into()))
+        );
+        let decoded: Vec<_> = done.iter().map(|(_, p)| decode(p)).collect();
+        assert_eq!(decoded.iter().map(|d| d[0].len()).collect::<Vec<_>>(), [100, 100, 50, 200, 50]);
+        let channel = |c: usize| input.iter().skip(c).step_by(3).copied().collect::<Vec<f32>>();
+        let joined = |files: &[Vec<Vec<f32>>], c: usize| files.iter().flat_map(|d| d[c].clone()).collect::<Vec<f32>>();
+        assert_eq!((joined(&decoded[..3], 0), joined(&decoded[..3], 1)), (channel(1), channel(2)), "every frame, in order");
+        assert_eq!(joined(&decoded[3..], 0), channel(0));
+        let live = live.lock().unwrap().clone();
+        assert_eq!(live[0], [(1.0, 382.0), (385.0, 748.0)], "the live take runs on across the files");
+
+        // A take that ends just as its file fills makes no empty file after it.
+        let mut bass = TakeWriter::create(TrackId(3), vec![0], dir.join("Bass_01.wav"), 48_000, TakeFiles { samples: 100, part }).unwrap();
+        bass.write(&[0.5; 300], 3);
+        assert!(bass.full.is_empty() && !part(&bass.path, 2).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A take whose next file can't be made (one is there by that name) stops with the error and
+    /// keeps the full file as it was, header included; the file in the way is left alone.
+    #[test]
+    fn a_take_whose_next_file_cannot_be_made_stops_there() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-take-part-taken-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut vox = TakeWriter::create(TrackId(1), vec![0], dir.join("Vox_01.wav"), 48_000, TakeFiles { samples: 100, part }).unwrap();
+        std::fs::write(dir.join("Vox_01-2.wav"), b"someone else's").unwrap();
+        vox.write(&[0.25; 150], 1);
+        vox.write(&[0.5; 10], 1);
+        assert!(vox.error.as_deref().is_some_and(|e| e.contains("Vox_01-2.wav")), "{:?}", vox.error);
+        assert_eq!(decode(&dir.join("Vox_01.wav")), [vec![0.25; 100]]);
+        assert_eq!(std::fs::read(dir.join("Vox_01-2.wav")).unwrap(), b"someone else's");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_take_sums_itself_up_for_drawing_while_it_records() {
         let dir = std::env::temp_dir().join(format!("soundcraft-live-take-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut take = TakeWriter::create(TrackId(4), vec![2, 0], dir.join("Gtr_01.wav"), 48_000).unwrap();
+        let mut take = TakeWriter::create(TrackId(4), vec![2, 0], dir.join("Gtr_01.wav"), 48_000, ONE_FILE).unwrap();
         let input: Vec<f32> = (0..300).flat_map(|f| [f as f32, -1.0, -(f as f32)]).collect();
         take.write(&input[..3 * 100], 3);
         take.write(&input[3 * 100..], 3);

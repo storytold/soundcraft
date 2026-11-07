@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** trivial (G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-30 · **Change:** minor (G-06: recording to disk is done (#84, long takes #888); streaming sources remain) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -20,7 +20,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | G-03 | **Alpha blocker.** Cannot exchange sessions with Pro Tools (no AAF/OMF, no `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 15–25 |
-| G-06 | (Record-to-disk part: alpha blocker for the tracking row) Sources decoded whole into RAM; recording into RAM | Performance | [hardware-parity.md](hardware-parity.md) | 15–25 |
+| G-06 | Sources decoded whole into RAM (recording to disk is done: #84, #888) | Performance | [hardware-parity.md](hardware-parity.md) | 15–25 |
 | G-07 | Nothing is compared against Pro Tools' output (no fidelity harness) | Features | this file | 20–30 |
 | G-08 | Built-in plugin catalogue thin and unverified | Features | [plugin-parity.md](plugin-parity.md) | 80–120 |
 | G-09 | English only, no string catalog, no CJK/RTL rendering | Localization | [localization-parity.md](localization-parity.md) | 70–110 |
@@ -129,10 +129,11 @@ launch #142; Linux #45, #107.
 
 ### G-06. Memory-bound media
 
-- **Missing:** streaming sources from disk; recording to disk. Every source is decoded whole into
-  the `SourcePool`; takes accumulate in RAM until stop (PR #84 open).
-- **Impact:** hour-long multitrack sessions and long takes exhaust memory; a crash during a long
-  take loses it.
+- **Done:** recording to disk: takes are written to disk as they record (#84), and a take that
+  reaches the readable file size goes on in a new file and is placed whole, crash recovery included
+  (#888).
+- **Missing:** streaming sources from disk. Every source is decoded whole into the `SourcePool`.
+- **Impact:** hour-long multitrack sessions exhaust memory.
 - **Estimate:** ≈ 15–25 h.
 
 ### G-07. Fidelity harness against Pro Tools
@@ -230,6 +231,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-30 | minor | G-06: recording to disk is done (takes written as they record, #84; long takes continue in a new file, #888); only streaming sources from disk remain |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-25 | trivial | G-01: `setup.playback_engine` and `setup.hardware` apply the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |
