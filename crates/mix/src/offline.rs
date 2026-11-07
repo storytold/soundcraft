@@ -1,6 +1,6 @@
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::pan::itu_stereo_fold;
-use super::*;
+use super::{AutoParam, BusId, ChannelFormat, MixEngine, Range, Route, Samples, Session, TrackId, main_channels};
 
 /// Ceiling on one in-memory offline render (samples summed over channels): 2^29 f32 = 2 GiB, about
 /// 93 minutes of stereo at 48 kHz. Longer requests are truncated rather than exhausting memory;
@@ -57,7 +57,8 @@ impl RangeRender {
     /// Renders the main mix over `range`, or `bus` when one is named.
     pub fn new(s: &Session, bus: Option<BusId>, range: Range, block: usize) -> Self {
         let nch = source_channels(s, bus);
-        let eng = MixEngine::new(s.sample_rate.as_f64() as f32, block);
+        let mut eng = MixEngine::new(s.sample_rate.as_f64() as f32, block);
+        eng.set_offline(true);
         let tmp = vec![vec![0.0f32; eng.max_block()]; nch];
         let len = if nch == 0 { 0 } else { usize::try_from(range.len().max(0)).unwrap_or(0) };
         RangeRender { eng, bus, tmp, start: range.start, done: 0, total: len, latency: 0 }

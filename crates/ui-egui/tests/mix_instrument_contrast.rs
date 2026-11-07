@@ -72,6 +72,19 @@ fn contrast(a: Color32, b: Color32) -> f64 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
+/// A primary click at `at`, one frame for the press and one for the release.
+fn press_and_release(harness: &mut egui_kittest::Harness<'_, SoundApp>, at: egui::Pos2) {
+    for pressed in [true, false] {
+        harness.input_mut().events.push(Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        harness.step();
+    }
+}
+
 /// In real frames, populated and empty instrument and insert slots use the active theme's readable palette across
 /// light, dark and system modes, and a plugin change leaves the rest of the session and audio pool intact.
 #[test]
@@ -169,15 +182,7 @@ fn populated_mix_instrument_uses_readable_palette_in_real_frames() {
 
     // Exercise the same painted control's ordinary click/picker path after palette changes.
     let at = slot(harness.output(), "SubSynth").rect.center();
-    for pressed in [true, false] {
-        harness.input_mut().events.push(Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: Default::default(),
-        });
-        harness.step();
-    }
+    press_and_release(&mut harness, at);
     harness.step(); // Let the popup finish its initial sizing pass.
     harness.get_by_label("Built-in").hover();
     harness.step();

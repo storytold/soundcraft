@@ -154,7 +154,8 @@ pub(crate) struct RunArgs {
 pub(crate) struct ScriptArgs {
     /// The script to run
     pub(crate) file: PathBuf,
-    /// Report a failing line and go on with the next
+    /// Continue after command errors and finish requested output, then exit nonzero if any command failed.
+    /// Malformed JSON stops immediately
     #[arg(long)]
     pub(crate) keep_going: bool,
     #[command(flatten)]
@@ -167,6 +168,12 @@ pub(crate) struct CommandsArgs {
     /// Only the commands whose id, or label in any case, contains this text
     #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub(crate) filter: Option<String>,
+    /// Print a JSON array of each command's details, as describe prints them
+    #[arg(long)]
+    pub(crate) json: bool,
+    /// One line of JSON instead of pretty-printed
+    #[arg(long, requires = "json")]
+    pub(crate) compact: bool,
 }
 
 /// Print one engine command's details as JSON
