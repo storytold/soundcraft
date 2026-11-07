@@ -197,42 +197,64 @@ fn elastic(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     let mut rendered = 0;
     for id in &ids {
-        let Some((t, c)) = s.find_clip(*id).map(|(t, c)| (t, c.clone())) else { continue };
-        let elastic = s.track(t).and_then(|x| x.elastic.clone()).filter(|a| a != "varispeed");
-        // Start from the unwarped original if this clip was warped before.
-        let key = |k: &str| format!("elastic.{}.{k}", id.0);
-        let orig = warp_original(s, *id);
-        let mut base = c.clone();
-        if let Some((src, off, len)) = orig {
-            base.content = soundcraft_model::ClipContent::Audio { source: src, offset: off };
-            base.length = len.max(1);
-            base.stretch = 1.0;
+        if warp_clip(s, *id, |_| ratio, false)? {
+            rendered += 1;
         }
-        if elastic.is_none() || !base.is_audio() {
-            if let Some(cm) = s.find_clip_mut(*id) {
-                cm.stretch = ratio;
-            }
-            continue;
-        }
-        let out_len = soundcraft_time::to_samples(base.length as f64 * ratio).max(1);
-        let Some(src) = super::more_util::render_stretched(s, "clip.elastic_properties", &base, out_len)? else { continue };
-        if orig.is_none()
-            && let soundcraft_model::ClipContent::Audio { source, offset } = base.content
-        {
-            s.edit.values.insert(key("src"), source.0 as f64);
-            s.edit.values.insert(key("off"), offset as f64);
-            s.edit.values.insert(key("len"), base.length as f64);
-        }
-        s.edit.values.insert(key("ratio"), ratio);
-        let mut nc = base;
-        nc.content = soundcraft_model::ClipContent::Audio { source: src, offset: 0 };
-        nc.length = out_len;
-        nc.stretch = 1.0;
-        nc.clamp_fades();
-        super::more_util::replace_clip(s, t, *id, nc);
-        rendered += 1;
     }
     Ok(json!({"ratio": ratio, "rendered": rendered}))
+}
+
+/// Warp one clip. `ratio_for` gets the unwarped clip and returns the stretch ratio to apply to it.
+/// Elastic tracks render the stretched audio and return `true`; other tracks only set the
+/// varispeed ratio. With `in_place` the clip keeps its neighbours (`place_clip` would overwrite
+/// whatever the longer clip now covers).
+pub(super) fn warp_clip(
+    s: &mut soundcraft_model::Session,
+    id: ClipId,
+    ratio_for: impl FnOnce(&soundcraft_model::Clip) -> f64,
+    in_place: bool,
+) -> Result<bool> {
+    let Some((t, c)) = s.find_clip(id).map(|(t, c)| (t, c.clone())) else { return Ok(false) };
+    let elastic = s.track(t).and_then(|x| x.elastic.clone()).filter(|a| a != "varispeed");
+    // Start from the unwarped original if this clip was warped before.
+    let key = |k: &str| format!("elastic.{}.{k}", id.0);
+    let orig = warp_original(s, id);
+    let mut base = c.clone();
+    if let Some((src, off, len)) = orig {
+        base.content = soundcraft_model::ClipContent::Audio { source: src, offset: off };
+        base.length = len.max(1);
+        base.stretch = 1.0;
+    }
+    let ratio = ratio_for(&base).clamp(0.05, 20.0);
+    if elastic.is_none() || !base.is_audio() {
+        if let Some(cm) = s.find_clip_mut(id) {
+            cm.stretch = ratio;
+        }
+        return Ok(false);
+    }
+    let out_len = soundcraft_time::to_samples(base.length as f64 * ratio).max(1);
+    let Some(src) = super::more_util::render_stretched(s, "clip.elastic_properties", &base, out_len)? else { return Ok(false) };
+    if orig.is_none()
+        && let soundcraft_model::ClipContent::Audio { source, offset } = base.content
+    {
+        s.edit.values.insert(key("src"), source.0 as f64);
+        s.edit.values.insert(key("off"), offset as f64);
+        s.edit.values.insert(key("len"), base.length as f64);
+    }
+    s.edit.values.insert(key("ratio"), ratio);
+    let mut nc = base;
+    nc.content = soundcraft_model::ClipContent::Audio { source: src, offset: 0 };
+    nc.length = out_len;
+    nc.stretch = 1.0;
+    nc.clamp_fades();
+    if in_place {
+        if let Some(cm) = s.find_clip_mut(id) {
+            *cm = nc;
+        }
+    } else {
+        super::more_util::replace_clip(s, t, id, nc);
+    }
+    Ok(true)
 }
 
 fn remove_warp(e: &mut Engine, p: &Value) -> Result<Value> {
