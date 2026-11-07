@@ -39,7 +39,7 @@ impl PeakMeter {
 
     /// Feeds one block of samples.
     pub fn process(&mut self, samples: &[f32]) {
-        let peak = samples.iter().filter(|v| v.is_finite()).fold(0.0f32, |m, v| m.max(v.abs()));
+        let peak = soundcraft_accelerate::peak(samples);
         self.feed(peak, samples.len());
     }
 
