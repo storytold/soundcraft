@@ -274,6 +274,21 @@ fn sysex_skipped() {
 }
 
 #[test]
+fn declared_track_count_matches_chunks() {
+    let empty_track = track(&[]);
+    let matching = [header(1, 1, 96), empty_track.clone()].concat();
+    assert_eq!(read_smf(&matching).unwrap().tracks.len(), 1);
+
+    assert!(matches!(read_smf(&header(1, 1, 96)), Err(MidiError::Invalid { .. })));
+
+    let too_few = [header(1, 2, 96), empty_track.clone()].concat();
+    assert!(matches!(read_smf(&too_few), Err(MidiError::Invalid { .. })));
+
+    let too_many = [header(1, 1, 96), empty_track.clone(), empty_track].concat();
+    assert!(matches!(read_smf(&too_many), Err(MidiError::Invalid { .. })));
+}
+
+#[test]
 fn malformed_inputs_are_errors() {
     assert!(matches!(read_smf(b""), Err(MidiError::NotSmf)));
     assert!(matches!(read_smf(b"RIFF\x00\x00\x00\x06"), Err(MidiError::NotSmf)));

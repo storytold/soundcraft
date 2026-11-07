@@ -172,7 +172,7 @@ pub fn read_smf(bytes: &[u8]) -> Result<Smf, MidiError> {
     let header = cur.bytes(header_len).map_err(|_| MidiError::BadChunkLength { offset: 4, len: u64::try_from(header_len).unwrap_or(u64::MAX) })?;
     let mut hc = Cursor { data: header, pos: 0, base: 8 };
     let format = hc.u16()?;
-    let _ntrks = hc.u16()?;
+    let ntrks = hc.u16()?;
     let division = hc.u16()?;
     if format > 2 {
         return Err(MidiError::Unsupported("SMF format greater than 2"));
@@ -202,6 +202,9 @@ pub fn read_smf(bytes: &[u8]) -> Result<Smf, MidiError> {
         }
         let track = read_track(body, body_at, conv, &mut globals, &mut event_budget)?;
         tracks.push(track);
+    }
+    if tracks.len() != usize::from(ntrks) {
+        return Err(MidiError::Invalid { offset: 10, reason: "declared track count does not match MTrk chunks" });
     }
 
     // A lone track is only a conductor track if it carried global data and has no name; otherwise it is kept.
