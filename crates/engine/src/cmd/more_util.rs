@@ -185,12 +185,31 @@ pub fn render_stretched(s: &mut Session, cmd: &str, c: &Clip, out_len: Samples) 
     Ok(Some(crate::io::add_source(s, &format!("{}-TCE", c.name), buf, None, FileFormat::Wav)))
 }
 
-/// Replace clip `old` on track `t` with `new` (overwriting whatever `new` covers).
+/// Replace clip `old` on track `t` with `new`, overwriting whatever `new` covers, except a clip that
+/// overlapped `old` on a side `new` does not reach past: the other half of a crossfade keeps its
+/// overlap and its fade, so processing a clip in place does not turn the crossfade into a dip.
 pub fn replace_clip(s: &mut Session, t: TrackId, old: soundcraft_model::ClipId, new: Clip) {
-    if let Some(pl) = s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
-        pl.clips.retain(|c| c.id != old);
-    }
+    let kept: Vec<Clip> = match s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
+        Some(pl) => {
+            let was = pl.clips.iter().find(|c| c.id == old).map(Clip::range);
+            let to = new.range();
+            // Overlaps `old`, and on each side where it sticks out of `old`, `new` does not reach further than `old` did.
+            let keep = |c: &Clip| {
+                was.is_some_and(|w| {
+                    c.range().intersect(&w).is_some() && (c.start >= w.start || to.start >= w.start) && (c.end() <= w.end || to.end <= w.end)
+                })
+            };
+            let (kept, rest) = std::mem::take(&mut pl.clips).into_iter().filter(|c| c.id != old).partition(keep);
+            pl.clips = rest;
+            kept
+        }
+        None => Vec::new(),
+    };
     crate::edit::place_clip(s, t, new);
+    if let Some(pl) = s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
+        pl.clips.extend(kept);
+        pl.sort();
+    }
 }
 
 #[cfg(test)]
