@@ -18,21 +18,29 @@ pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
         if let Some(info) = soundcraft_dsp::plugin_info(&process) {
             for p in info.params {
                 let v = params.entry(p.id.to_string()).or_insert(p.default);
-                ui.add(egui::Slider::new(v, p.min..=p.max).text(p.name));
+                let mut wide = f64::from(*v);
+                crate::widgets::fine_slider(ui, &mut wide, f64::from(p.min)..=f64::from(p.max), p.name);
+                *v = wide as f32;
             }
         } else {
             match process.as_str() {
                 "normalize" => {
                     let v = params.entry("target_db".into()).or_insert(-0.1);
-                    ui.add(egui::Slider::new(v, -24.0..=0.0).text("Peak dB"));
+                    let mut wide = f64::from(*v);
+                    crate::widgets::fine_slider(ui, &mut wide, -24.0..=0.0, "Peak dB");
+                    *v = wide as f32;
                 }
                 "time_stretch" => {
                     let v = params.entry("ratio".into()).or_insert(1.0);
-                    ui.add(egui::Slider::new(v, 0.25..=4.0).text("Length ratio"));
+                    let mut wide = f64::from(*v);
+                    crate::widgets::fine_slider(ui, &mut wide, 0.25..=4.0, "Length ratio");
+                    *v = wide as f32;
                 }
                 "pitch_shift" => {
                     let v = params.entry("semitones".into()).or_insert(0.0);
-                    ui.add(egui::Slider::new(v, -24.0..=24.0).text("Semitones"));
+                    let mut wide = f64::from(*v);
+                    crate::widgets::fine_slider(ui, &mut wide, -24.0..=24.0, "Semitones");
+                    *v = wide as f32;
                 }
                 "speed_ramp" => {
                     for (id, label, default, choices) in SPEED_RAMP_CHOICES {
