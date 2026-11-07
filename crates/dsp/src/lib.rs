@@ -210,6 +210,11 @@ pub trait Plugin: Send {
     fn latency(&self) -> usize {
         0
     }
+    /// Main-thread time between blocks, for hosted plugins: runs the callbacks the plugin asked
+    /// for, restarts it when it asked to, and reads its latency again (some plugins only know it
+    /// once they have processed). Offline renders call it after every block; the realtime audio
+    /// thread never does.
+    fn idle(&mut self) {}
     /// How long the output keeps ringing after the input stops, in samples.
     fn tail_samples(&self) -> usize {
         0

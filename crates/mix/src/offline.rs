@@ -64,6 +64,12 @@ impl RangeRender {
         RangeRender { eng, bus, tmp, start: range.start, done: 0, total: len, latency: 0 }
     }
 
+    /// The engine, for tests that hand it fake hosted plugins.
+    #[cfg(test)]
+    pub(crate) fn engine(&mut self) -> &mut MixEngine {
+        &mut self.eng
+    }
+
     fn render(&mut self, s: &Session, pos: Samples, n: usize) {
         match self.bus {
             Some(id) => {
@@ -83,6 +89,16 @@ impl RangeRender {
         }
         let n = (self.total - self.done).min(self.eng.max_block());
         self.render(s, self.start + self.done as i64, n);
+        // Hosted plugins may only find their latency once they process, and apply it when they
+        // are restarted. If one did on the first block, start over from a clean state, so that
+        // block and the latency trimmed off it line up too. The head trim is the first block's:
+        // a later change (an automated lookahead) moves the alignment from that block on, as in
+        // playback, since the audio before it has already gone out.
+        if self.eng.idle_plugins() && self.done == 0 {
+            self.eng.reset_and_reprepare();
+            self.render(s, self.start, n);
+            self.eng.idle_plugins();
+        }
         if self.done == 0 {
             // The first block tells the mix's latency: render that much more and drop the head.
             self.latency = match self.bus {
