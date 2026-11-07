@@ -7,4 +7,6 @@ mod bus_aux_interval;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod master_insert_latency;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod render_matrix;
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod strip_mute_automation;
