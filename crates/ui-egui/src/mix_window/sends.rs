@@ -44,14 +44,16 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
             if level_resp.dragged() {
                 // Use this frame's pointer movement. `Response::drag_delta()` is cumulative, so
                 // applying it to the already-updated value made trackpad adjustment accelerate.
-                let (dy, fine) = ui.input(|i| (i.pointer.delta().y, i.modifiers.shift));
+                // Ctrl (Command on a Mac) gives fine control, as on a fader, and so does Shift.
+                let (dy, fine) = ui.input(|i| (i.pointer.delta().y, i.modifiers.shift || i.modifiers.command || i.modifiers.ctrl));
                 let db = dragged_send_db(s.level_db, dy, fine);
                 app.gesture = Some(crate::Gesture::SendFader { track: id, slot });
                 let _ =
                     app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
             }
+            let fine_drag = if ui.ctx().os().is_mac() { "⌘-drag" } else { "Ctrl-drag" };
             let _ = level_resp.clone().on_hover_text(format!(
-                "Send {which} to {name}: {} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options",
+                "Send {which} to {name}: {} dB\nClick for the send fader · drag vertically to adjust · {fine_drag} or Shift-drag for fine control · Alt-click for 0 dB · right-click for options",
                 db_text(s.level_db)
             ));
             level_resp.context_menu(|ui| send_options_menu(app, ui, id, slot, s));
@@ -157,8 +159,11 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
 fn send_options_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, send: &soundcraft_model::SendSlot) {
     ui.set_min_width(230.0);
     ui.strong(format!("Send {} · {}", (b'A' + slot as u8) as char, route_name(app, &send.target)));
-    let mut db = send.level_db.max(-60.0);
-    if ui.add(egui::Slider::new(&mut db, -60.0..=12.0).text("Level").suffix(" dB")).changed() {
+    let before = send.level_db.max(-60.0);
+    let mut db = f64::from(before);
+    crate::widgets::FineSlider::new(&mut db, -60.0..=12.0).text("Level").suffix(" dB").show(ui);
+    let db = db as f32;
+    if (db - before).abs() > f32::EPSILON {
         let _ = app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
     }
     send_level_scale(ui, send.level_db);
@@ -176,8 +181,10 @@ fn send_options_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, 
             let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "db": -144.0}));
         }
     });
-    let mut pan = send.pan;
-    if ui.add(egui::Slider::new(&mut pan, -1.0..=1.0).text("Pan")).changed() {
+    let mut pan = f64::from(send.pan);
+    crate::widgets::FineSlider::new(&mut pan, -1.0..=1.0).text("Pan").show(ui);
+    let pan = pan as f32;
+    if (pan - send.pan).abs() > f32::EPSILON {
         let _ = app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "pan": pan}), &format!("send-pan:{}:{slot}", id.0));
     }
     ui.horizontal(|ui| {

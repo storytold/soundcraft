@@ -78,16 +78,28 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                                         }
                                     });
                                 x = idx as f32;
+                                // An Alt-click (Option-click on a Mac) returns the choice to its
+                                // default, as on the sliders, instead of opening the list.
+                                if r.response.clicked() && ui.input(|i| i.modifiers.alt) {
+                                    x = p.default;
+                                    egui::Popup::close_all(ui.ctx());
+                                }
                                 r.response
                             } else {
-                                let mut sl = egui::Slider::new(&mut x, p.min..=p.max).show_value(false);
+                                let mut wide = f64::from(x);
+                                let mut sl = crate::widgets::FineSlider::new(&mut wide, f64::from(p.min)..=f64::from(p.max))
+                                    .id_salt(p.id)
+                                    .show_value(false)
+                                    .default_value(f64::from(p.default));
                                 if instrument && crate::sampler_window::whole_number(&ins.plugin, p.id) {
                                     sl = sl.integer();
                                 }
                                 if p.taper == soundcraft_dsp::Taper::Log && p.min > 0.0 {
                                     sl = sl.logarithmic(true);
                                 }
-                                ui.add(sl)
+                                let r = sl.show(ui);
+                                x = wide as f32;
+                                r
                             };
                             // The grid cell's painted label is not an accesskit name; tie the
                             // combo box or slider to it so screen readers and label queries find it.

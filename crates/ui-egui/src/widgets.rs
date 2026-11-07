@@ -222,14 +222,16 @@ pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &st
     resp.on_hover_text(labels.tooltip)
 }
 
-/// Rotary knob for pan / send pan (-1..1). Drag vertically; double-click resets.
+/// Rotary knob for pan / send pan (-1..1). Drag vertically; double-click resets. While Ctrl
+/// (Command on a Mac) is held, a drag turns it a tenth as far, as on a [`fader`].
 pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response {
     let t = Tokens::current();
     let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
     resp.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(*value), tip));
     if resp.dragged() {
         let d = resp.drag_delta();
-        *value = (*value + (d.x - d.y) * 0.01).clamp(-1.0, 1.0);
+        let fine = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
+        *value = (*value + (d.x - d.y) * if fine { 0.001 } else { 0.01 }).clamp(-1.0, 1.0);
     }
     if resp.double_clicked() {
         *value = 0.0;
@@ -422,6 +424,184 @@ pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> Option<
 
 pub fn db_text(db: f32) -> String {
     if db <= -143.9 { "-inf".into() } else { format!("{db:.1}") }
+}
+
+/// Where a [`fine_slider`] drag is anchored: the pointer's x and the value there, and the pass
+/// that last drew the slider during the drag.
+#[derive(Clone, Copy)]
+struct FineDrag {
+    x: f32,
+    value: f64,
+    fine: bool,
+    relative: bool,
+    pass: u64,
+}
+
+/// A horizontal slider that moves a tenth as far for the same drag while Ctrl (Command on a Mac)
+/// is held, as a [`fader`] does, on the rail and on the value box. A press on the rail with the
+/// key held, and pressing or releasing the key during a drag on the rail, leave the value where
+/// it is, and the drag goes on from there. The
+/// value box shows the decimal places that a tenth of a point's step needs, and a drag on the
+/// rail that the key has touched rounds the value to them.
+pub fn fine_slider(ui: &mut Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: &str) -> Response {
+    FineSlider::new(value, range).text(text).show(ui)
+}
+
+/// A [`fine_slider`] with the options of `egui::Slider` that plug-in parameters use.
+pub struct FineSlider<'a> {
+    value: &'a mut f64,
+    range: std::ops::RangeInclusive<f64>,
+    text: &'a str,
+    id_salt: Option<&'a str>,
+    show_value: bool,
+    logarithmic: bool,
+    integer: bool,
+    default: Option<f64>,
+    suffix: &'a str,
+}
+
+impl<'a> FineSlider<'a> {
+    pub fn new(value: &'a mut f64, range: std::ops::RangeInclusive<f64>) -> Self {
+        Self { value, range, text: "", id_salt: None, show_value: true, logarithmic: false, integer: false, default: None, suffix: "" }
+    }
+
+    /// Text after the number in the value box, as `egui::Slider::suffix`.
+    pub fn suffix(mut self, suffix: &'a str) -> Self {
+        self.suffix = suffix;
+        self
+    }
+
+    /// The value that an Alt-click (Option-click on a Mac) on the slider or its value box sets,
+    /// as a [`fader`] returns to 0 dB. While Alt is held, a drag leaves the value where it is, and
+    /// an Alt-click on the value box does not open it for typing.
+    pub fn default_value(mut self, default: f64) -> Self {
+        self.default = Some(default);
+        self
+    }
+
+    /// The label after the slider. It also tells sliders in the same `Ui` apart unless
+    /// [`Self::id_salt`] is set.
+    pub fn text(mut self, text: &'a str) -> Self {
+        self.text = text;
+        self
+    }
+
+    /// Tells sliders in the same `Ui` apart when they have no label.
+    pub fn id_salt(mut self, salt: &'a str) -> Self {
+        self.id_salt = Some(salt);
+        self
+    }
+
+    /// Whether the value box is shown. Without it, a drag that the key has touched rounds the
+    /// value only on a whole-number slider.
+    pub fn show_value(mut self, show: bool) -> Self {
+        self.show_value = show;
+        self
+    }
+
+    /// A logarithmic rail, as `egui::Slider::logarithmic`, for a range above zero. A range that
+    /// reaches zero or below stays linear.
+    pub fn logarithmic(mut self, logarithmic: bool) -> Self {
+        self.logarithmic = logarithmic;
+        self
+    }
+
+    /// Whole numbers only, as `egui::Slider::integer`.
+    pub fn integer(mut self) -> Self {
+        self.integer = true;
+        self
+    }
+
+    pub fn show(self, ui: &mut Ui) -> Response {
+        let Self { value, range, text, id_salt, show_value, logarithmic, integer, default, suffix } = self;
+        let id = ui.scope_id().with(("fine_slider", id_salt.unwrap_or(text)));
+        let (fine, x) = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.pointer.interact_pos().map(|p| p.x)));
+        let reset = default.is_some() && ui.input(|i| i.modifiers.alt);
+        // A drag lasts through the pass that releases the button, where egui still sets the value
+        // from the pointer. An anchor that the previous pass did not store was left by an earlier
+        // drag, and is ignored.
+        let pass = ui.ctx().cumulative_pass_nr();
+        let mut drag = ui.data(|d| d.get_temp::<FineDrag>(id)).filter(|d| d.pass + 1 == pass);
+        let (lo, hi) = (*range.start(), *range.end());
+        let log = logarithmic && lo > 0.0 && hi > lo;
+        // The handle's travel along the rail, as `egui::Slider` lays it out.
+        let thickness = ui.text_style_height(&egui::TextStyle::Body).max(ui.spacing().interact_size.y);
+        let travel = f64::from((ui.spacing().slider_width - 2.0 * thickness / 2.5).max(1.0));
+        // Where a value sits along the rail (0 to 1), and back, as `egui::Slider` maps them.
+        let span = if log { (hi / lo).ln() } else { hi - lo };
+        let along = |v: f64| if span > 0.0 { if log { (v / lo).ln() / span } else { (v - lo) / span } } else { 0.0 };
+        let at = |n: f64| {
+            let n = n.clamp(0.0, 1.0);
+            if log { lo * (n * span).exp() } else { lo + n * span }
+        };
+        // How far the value moves for one point of the rail at `v`.
+        let per_point = |v: f64| if log { v * span / travel } else { span / travel };
+        let scale = if fine { 0.1 } else { 1.0 };
+        let decimals = if integer { 0 } else { (-(per_point(lo) * 0.1).log10()).ceil().clamp(0.0, 3.0) as usize };
+        if let (Some(d), Some(x)) = (&mut drag, x) {
+            if d.fine != fine || reset {
+                *d = FineDrag { x, value: *value, fine, relative: true, pass };
+            } else if d.relative {
+                let moved = at(along(d.value) + f64::from(x - d.x) / travel * scale);
+                let moved = if show_value || integer { egui::emath::round_to_decimals(moved, decimals) } else { moved };
+                *value = moved.clamp(lo, hi);
+            }
+        }
+        let start = *value;
+        let hold = reset || drag.is_some_and(|d| d.relative);
+        let speed = per_point(*value) * scale;
+        let mut slider = egui::Slider::from_get_set(range, |v| {
+            if let Some(v) = v
+                && !hold
+            {
+                *value = v;
+            }
+            *value
+        })
+        .show_value(show_value)
+        .logarithmic(log)
+        .min_decimals(decimals)
+        .suffix(suffix)
+        .text(text);
+        if integer {
+            slider = slider.integer();
+        }
+        if fine {
+            slider = slider.drag_value_speed(speed);
+        }
+        let mut resp = ui.add(slider);
+        // The rail senses drags only, so a click on it ends as a drag that the pointer did not
+        // move far enough to count as one.
+        let clicked = resp.clicked() || (resp.drag_stopped() && ui.input(|i| i.pointer.could_any_button_be_click()));
+        if let Some(d) = default
+            && reset
+            && clicked
+        {
+            let d = if integer { d.round() } else { d };
+            *value = d.clamp(lo, hi);
+            resp.surrender_focus();
+            resp.mark_changed();
+        }
+        let rail = Rect::from_min_size(resp.rect.min, vec2(ui.spacing().slider_width, resp.rect.height()));
+        let on_rail = resp.dragged() && ui.input(|i| i.pointer.press_origin()).is_some_and(|p| rail.contains(p));
+        // On the pass that starts a drag, egui has already set the value under the pointer. A drag
+        // that starts with the key held keeps the value from before the press instead.
+        if on_rail && drag.is_none() && fine {
+            *value = start;
+        }
+        let next = match (on_rail, drag, x) {
+            (true, Some(d), _) => Some(FineDrag { pass, ..d }),
+            (true, None, Some(x)) => Some(FineDrag { x, value: *value, fine, relative: fine, pass }),
+            _ => None,
+        };
+        ui.data_mut(|m| match next {
+            Some(d) => {
+                m.insert_temp(id, d);
+            }
+            None => m.remove::<FineDrag>(id),
+        });
+        resp
+    }
 }
 
 /// A speaker dot on the surround panner: label, square position (-1..1, y up = front), height layer.
