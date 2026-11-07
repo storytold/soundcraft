@@ -575,7 +575,12 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
     if planar.is_empty() {
         planar = (0..usize::from(info.channels)).map(|_| Vec::new()).collect();
     }
-    info.frames = if count_only { frames } else { planar.iter().map(Vec::len).min().unwrap_or(0) as u64 };
+    // An MP4 edit list leaves out the encoder delay at the start and the padding at the end.
+    let trim = crate::mp4::edit_trim(bytes, info.sample_rate);
+    if let Some(t) = trim.filter(|_| !count_only) {
+        t.apply(&mut planar);
+    }
+    info.frames = if count_only { trim.map_or(frames, |t| t.frames(frames)) } else { planar.iter().map(Vec::len).min().unwrap_or(0) as u64 };
     let sample_rate = info.sample_rate;
     Ok((info, AudioBuffer { sample_rate, channels: planar }))
 }
@@ -621,6 +626,9 @@ pub(crate) fn probe(bytes: &[u8], detected: FileFormat) -> Result<AudioInfo> {
             info.frames = mp4_aac_frames(reader.as_mut(), track_id)?;
         }
         if info.frames > 0 && info.channels > 0 {
+            if let Some(t) = crate::mp4::edit_trim(bytes, info.sample_rate) {
+                info.frames = t.frames(info.frames);
+            }
             return Ok(info);
         }
         // Length not in the header (e.g. MP3 without a Xing frame): count by decoding.
