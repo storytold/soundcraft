@@ -526,6 +526,101 @@ impl PluginEditor for Window {
 }
 
 #[test]
+fn the_audio_state_comes_back_even_when_the_callback_is_released_late_on_another_thread() {
+    // What cpal does with the callback when the stream goes, or (ALSA) when the device does.
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let session = Arc::new(Session::new("t", soundcraft_time::SampleRate::new(48_000).unwrap()));
+    let st = AudioState::new(channel().1, shared, session, 48_000.0, channel().0);
+    let (back, returned) = channel();
+    let callback = ReturnedOnDrop::new(st, back);
+    // Released a moment after the stream is dropped, like CoreAudio's device monitors can.
+    let late = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(callback);
+    });
+    assert!(drop_returned(&returned, std::time::Duration::from_secs(5)), "waited for and dropped here");
+    late.join().unwrap();
+    // Nothing more to wait for once the stream (the only sender) is gone.
+    assert!(drop_returned(&returned, std::time::Duration::from_secs(5)));
+}
+
+#[test]
+fn sessions_stop_going_out_once_the_audio_state_has_come_back_but_removed_editors_still_go() {
+    let shared = || {
+        Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        })
+    };
+    let (tx, rx) = channel();
+    let (gtx, grx) = channel();
+    let mut p = Player::silent_clock(shared(), tx, rx, 48_000, Mutex::new(Side::new(48_000.0, grx)), gtx);
+    let session = Arc::new(Session::new("t", soundcraft_time::SampleRate::new(48_000).unwrap()));
+    let (sent, out) = channel();
+    p.tx = sent;
+    let (back, returned) = channel();
+    p.returned = returned;
+    p.update_session(Arc::clone(&session));
+    assert!(matches!(out.try_recv(), Ok(Cmd::Session(..))), "sent while the output lives");
+    // The device went away: cpal released the callback, which handed its state back.
+    drop(ReturnedOnDrop::new(AudioState::new(channel().1, shared(), Arc::clone(&session), 48_000.0, channel().0), back));
+    // A plugin the session no longer has, with its editor: removed while the output was gone.
+    let removed = (TrackId(9), 0);
+    let closed = Arc::new(Mutex::new(None));
+    p.side().shadow.insert(removed, ("clap:gone".into(), 2, true));
+    p.side().editors.insert(removed, Box::new(Watched(Arc::clone(&closed))));
+    assert!(p.has_editor(removed.0, removed.1));
+    p.update_session(Arc::clone(&session));
+    assert!(out.try_recv().is_err(), "nothing renders it any more");
+    assert!(!p.has_editor(removed.0, removed.1), "the removed plugin's editor handle goes");
+    assert!(closed.lock().unwrap().is_some(), "and its window is closed");
+    drop(p);
+}
+
+/// An open editor that records the thread that closed it.
+struct Watched(Arc<Mutex<Option<std::thread::ThreadId>>>);
+
+impl PluginEditor for Watched {
+    fn open(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    fn close(&mut self) {
+        *self.0.lock().unwrap() = Some(std::thread::current().id());
+    }
+    fn is_open(&self) -> bool {
+        self.0.lock().unwrap().is_none()
+    }
+    fn idle(&mut self) -> Vec<(String, f32)> {
+        Vec::new()
+    }
+}
+
+#[test]
+fn dropping_the_player_closes_its_editors_on_the_dropping_thread() {
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let (gtx, grx) = channel();
+    let p = Player::silent_clock(shared, tx, rx, 48_000, Mutex::new(Side::new(48_000.0, grx)), gtx);
+    let closed = Arc::new(Mutex::new(None));
+    p.side().editors.insert((TrackId(1), 0), Box::new(Watched(Arc::clone(&closed))));
+    assert!(p.editor_open(TrackId(1), 0));
+    drop(p);
+    assert_eq!(*closed.lock().unwrap(), Some(std::thread::current().id()), "closed on the dropping thread, before the audio side goes");
+}
+
+#[test]
 fn a_refused_state_is_kept_until_the_editor_opens() {
     let mut side = Side::new(48_000.0, channel().1);
     let k = (TrackId(1), 0);
@@ -584,6 +679,44 @@ fn a_state_marked_changed_while_loading_is_not_a_change() {
     side.states.insert(k, Box::new(|| Some(b"loaded".to_vec())));
     side.add_editor(k, Box::new(Dirty(true)));
     assert!(side.changed_states().is_empty());
+}
+
+#[test]
+fn with_the_output_gone_only_removed_or_replaced_plugins_are_forgotten() {
+    use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+    let mut side = Side::new(48_000.0, channel().1);
+    let mut s = soundcraft_model::Session::default();
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    s.track_mut(t).unwrap().mixer.inserts[0] = Some(Insert::new("clap:kept"));
+    s.track_mut(t).unwrap().mixer.inserts[1] = Some(Insert::new("clap:new"));
+    // Live instances for a stereo strip; slot 1 held another plugin.
+    side.shadow.insert((t, 0), ("clap:kept".into(), 2, true));
+    side.shadow.insert((t, 1), ("clap:old".into(), 2, true));
+    side.states.insert((t, 0), Box::new(|| Some(b"edited".to_vec())));
+    side.states.insert((t, 1), Box::new(|| Some(b"old".to_vec())));
+    side.forget_removed(&s);
+    assert!(side.shadow.contains_key(&(t, 0)), "only the width changed: still that plugin");
+    assert_eq!(side.capture_states(), vec![(t, 0, b"edited".to_vec())], "its unsaved edits can still be saved");
+    assert!(!side.shadow.contains_key(&(t, 1)), "replaced by another plugin");
+}
+
+#[test]
+fn the_silent_clock_hands_its_audio_state_back_when_stopped() {
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let (gtx, grx) = channel();
+    let mut p = Player::silent_clock(shared, tx, rx, 48_000, Mutex::new(Side::new(48_000.0, grx)), gtx);
+    let (stop, thread) = p.clock.take().expect("the clock runs");
+    assert!(p.returned.try_recv().is_err(), "rendering");
+    stop.store(true, Ordering::Relaxed);
+    thread.join().unwrap();
+    assert!(p.returned.try_recv().is_ok(), "back here to be dropped on this thread");
+    drop(p);
 }
 
 #[test]
