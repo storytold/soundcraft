@@ -413,7 +413,14 @@ impl TakeWriter {
         }
         let bytes: Vec<u8> = block
             .chunks_exact(channels)
-            .flat_map(|f| self.inputs.iter().flat_map(move |&i| f.get(i).copied().unwrap_or(0.0).to_le_bytes()))
+            .flat_map(|f| {
+                self.inputs.iter().flat_map(move |&i| {
+                    let s = f.get(i).copied().unwrap_or(0.0);
+                    // Match audio-io's Float32 policy: retain finite headroom, silence NaN/Inf.
+                    let s = if s.is_finite() { s } else { 0.0 };
+                    s.to_le_bytes()
+                })
+            })
             .collect();
         match self.file.write_all(&bytes) {
             Ok(()) => {
@@ -609,6 +616,32 @@ mod tests {
         let live = take.live.lock().unwrap().clone();
         assert_eq!(live, [[(-127.0, 0.0), (-255.0, -128.0), (-299.0, -256.0)], [(0.0, 127.0), (128.0, 255.0), (256.0, 299.0)]]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn take_payload_retains_float_headroom_and_silences_nonfinite_input() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-take-float-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("Headroom.wav");
+        let mut take = TakeWriter::create(TrackId(1), vec![2, 0], path.clone(), 48_000).unwrap();
+        take.write(&[1.25, -2.5, -0.0, f32::from_bits(1), -0.25, 4.0], 3);
+        take.write(&[f32::NAN, 0.5, f32::INFINITY, f32::NEG_INFINITY, 0.75, -3.25], 3);
+        take.write_header();
+        assert!(take.error.is_none());
+        assert_eq!(take.frames, 4);
+        let expected = [vec![-0.0, 4.0, 0.0, -3.25], vec![1.25, f32::from_bits(1), 0.0, 0.0]];
+        let bytes = std::fs::read(&path).unwrap();
+        let header = soundcraft_audio_io::wav_float_header(2, 48_000, 4).unwrap();
+        let expected_bytes: Vec<u8> = (0..4).flat_map(|frame| expected.iter().flat_map(move |channel| channel[frame].to_le_bytes())).collect();
+        assert_eq!(&bytes[header.len()..], expected_bytes);
+        let actual = decode(&path);
+        for (actual, expected) in actual.iter().zip(&expected) {
+            assert_eq!(
+                actual.iter().map(|sample| sample.to_bits()).collect::<Vec<_>>(),
+                expected.iter().map(|sample| sample.to_bits()).collect::<Vec<_>>()
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
 
