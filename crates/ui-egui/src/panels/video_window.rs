@@ -115,6 +115,20 @@ fn first_movie_aspect(s: &soundcraft_model::Session) -> Option<f32> {
     s.videos.first().map(|v| v.aspect() as f32)
 }
 
+/// Most thumbnails one clip draws in the Video Universe strip: 8 pt each, so more than the
+/// widest strip holds.
+const MAX_UNIVERSE_THUMBS: usize = 1 << 12;
+
+/// Left edges of the thumbnails of a clip starting at `clip_x` (each `tw` wide) that lie in
+/// `shown_min..shown_max`. The index and position are worked out in `f64`: an `f32` this far from
+/// the origin (a clip starting a billion points left) cannot step by a thumbnail's width.
+fn thumb_xs(clip_x: f32, shown_min: f32, shown_max: f32, tw: f32) -> impl Iterator<Item = f32> {
+    let (origin, tw) = (f64::from(clip_x), f64::from(tw));
+    let first = ((f64::from(shown_min) - origin) / tw).floor().max(0.0);
+    let count = ((f64::from(shown_max) - origin) / tw - first).ceil().max(0.0) as usize;
+    (0..count.min(MAX_UNIVERSE_THUMBS)).map(move |i| (origin + (first + i as f64) * tw) as f32)
+}
+
 fn universe(app: &mut SoundApp, ctx: &egui::Context) {
     app.video.poll(ctx);
     let s = app.engine.session_arc();
@@ -145,8 +159,10 @@ fn universe(app: &mut SoundApp, ctx: &egui::Context) {
             }
             let tw = (cr.height() * v.aspect() as f32).max(8.0);
             let hpx = ((cr.height() * ppp / 16.0).ceil() * 16.0).clamp(16.0, 256.0) as u32;
-            let mut x = cr.min.x;
-            while x < cr.max.x {
+            // Only the thumbnails inside the strip, counted rather than stepped: a clip starting
+            // far left of it has an edge so large that adding a thumbnail's width wouldn't move it.
+            let shown = cr.intersect(r);
+            for x in thumb_xs(cr.min.x, shown.min.x, shown.max.x, tw) {
                 let secs = movie_secs(&s, c.start, offset, strip_position(x, r.min.x, r.width(), end, c.start)).max(0.0);
                 if let Some(tex) = app.video.thumb(ctx, key, &v.path, secs, hpx) {
                     let tr = Rect::from_min_size(pos2(x, cr.min.y), vec2(tw, cr.height()));
@@ -154,7 +170,6 @@ fn universe(app: &mut SoundApp, ctx: &egui::Context) {
                     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2((vis.width() / tw).clamp(0.0, 1.0), 1.0));
                     painter.image(tex.id(), vis, uv, Color32::WHITE);
                 }
-                x += tw;
             }
         }
         // The Edit window's visible range and the playhead.
@@ -182,7 +197,18 @@ fn universe(app: &mut SoundApp, ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_position;
+    use super::{strip_position, thumb_xs};
+
+    #[test]
+    fn thumbnails_of_a_clip_far_left_of_the_strip_are_evenly_spaced() {
+        // 2^30 points left of the strip with 8 pt thumbnails: f32 steps of `first + i` here are 16 apart
+        let xs: Vec<f32> = thumb_xs(-1_073_741_824.0, 0.0, 80.0, 8.0).collect();
+        assert_eq!(xs.len(), 10);
+        assert!(xs.windows(2).all(|w| w[1] - w[0] == 8.0), "{xs:?}");
+        assert_eq!(xs[0], 0.0);
+        // a clip inside the strip starts at its own edge
+        assert_eq!(thumb_xs(10.0, 10.0, 34.0, 8.0).collect::<Vec<_>>(), vec![10.0, 18.0, 26.0]);
+    }
 
     // A 1024 px strip over 1_024_000 samples: 1000 samples per point, exact in f32.
     const LEFT: f32 = 100.0;
