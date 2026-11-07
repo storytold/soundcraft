@@ -52,6 +52,7 @@ mod strip_silence_dialog;
 mod strip_silence_rectangles;
 mod strip_silence_rename;
 mod sub_counter;
+mod toolbar_fit;
 mod toolbar_scroll;
 mod toolbar_tempo;
 mod track_height;
