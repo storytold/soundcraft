@@ -15,7 +15,7 @@ const LOADING_ID: &str = "soundcraft_loading";
 
 pub fn start() {
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
-    io::set_deliver(download);
+    io::set_deliver(|name, bytes| crate::host::deliver(name, bytes, download));
     wasm_bindgen_futures::spawn_local(async {
         let Some(document) = web_sys::window().and_then(|w| w.document()) else {
             log::error!("no document");
@@ -25,6 +25,11 @@ pub fn start() {
             log::error!("missing <canvas id=\"{CANVAS_ID}\">");
             return;
         };
+        // `?host=parent`: a same-origin page framing SoundCraft opens files in it and stores what
+        // it saves (`host`).
+        let bridge =
+            if query_param("host").as_deref() == Some("parent") { crate::host::Bridge::new(query_param("host_origin").as_deref()) } else { None };
+        let app_bridge = bridge.clone();
         let mut options = eframe::WebOptions::default();
         if query().contains("webgl")
             && let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup
@@ -39,13 +44,24 @@ pub fn start() {
                     if let Some(rs) = &cc.wgpu_render_state {
                         log::info!("soundcraft-web: wgpu backend {:?}", rs.adapter.get_info().backend);
                     }
-                    let engine = if query().contains("empty") { Engine::default() } else { soundcraft_engine::demo::demo_engine() };
+                    let engine =
+                        if app_bridge.is_some() || query().contains("empty") { Engine::default() } else { soundcraft_engine::demo::demo_engine() };
                     let player = soundcraft_playback::Player::new(Arc::new(engine.session().clone()));
                     let app = SoundApp::new(engine, Some(player), Services::default());
-                    Ok(Box::new(WebShell { app, inbox: Rc::default(), samples: Rc::default() }))
+                    if let Some(bridge) = &app_bridge {
+                        bridge.connect(cc.egui_ctx.clone());
+                    }
+                    Ok(Box::new(WebShell { app, inbox: Rc::default(), samples: Rc::default(), bridge: app_bridge }))
                 }),
             )
             .await;
+        // Ready only once the runner started; otherwise the parent hears why it didn't.
+        if let Some(bridge) = &bridge {
+            match &result {
+                Ok(()) => bridge.post_ready(),
+                Err(e) => bridge.post_failed(&format!("{e:?}")),
+            }
+        }
         if let Some(el) = document.get_element_by_id(LOADING_ID) {
             match result {
                 Ok(()) => el.remove(),
@@ -57,6 +73,10 @@ pub fn start() {
 
 fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
+}
+
+fn query_param(key: &str) -> Option<String> {
+    web_sys::UrlSearchParams::new_with_str(&query()).ok()?.get(key)
 }
 
 /// What a file read from the browser is for.
@@ -114,6 +134,7 @@ struct WebShell {
     app: SoundApp,
     inbox: Inbox,
     samples: SampleInbox,
+    bridge: Option<crate::host::Bridge>,
 }
 
 impl WebShell {
@@ -195,6 +216,11 @@ impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.take_drops(ctx);
         self.take_path_prompt(ctx);
+        if let Some(bridge) = &self.bridge {
+            // Files from the host page are handled like dropped ones.
+            let received = std::mem::take(&mut *bridge.received.borrow_mut());
+            self.inbox.borrow_mut().extend(received.into_iter().map(|(name, bytes)| (Purpose::of(&name), name, bytes)));
+        }
         let pending = std::mem::take(&mut *self.inbox.borrow_mut());
         for (purpose, name, bytes) in pending {
             self.handle(purpose, name, bytes);
@@ -216,6 +242,9 @@ impl eframe::App for WebShell {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.app.ui(ui);
+        if let Some(bridge) = &self.bridge {
+            bridge.report_dirty(self.app.engine.is_dirty());
+        }
     }
 }
 
