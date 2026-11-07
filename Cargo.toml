@@ -12,6 +12,7 @@ repository = "https://github.com/storytold/soundcraft"
 
 [workspace.dependencies]
 # internal
+soundcraft-interchange = { path = "crates/interchange" }
 soundcraft-time = { path = "crates/time" }
 soundcraft-audio-io = { path = "crates/audio-io" }
 soundcraft-midi = { path = "crates/midi" }
@@ -45,6 +46,8 @@ proptest = "1"
 # audio
 symphonia = { version = "0.6", default-features = false, features = ["mp1", "mp2", "mp3", "flac", "vorbis", "ogg", "wav", "pcm", "aiff", "isomp4", "aac", "alac", "adpcm", "caf", "mkv"] }
 rustfft = "6"
+# AAF interchange: Compound File Binary (structured storage) container reader.
+cfb = "0.15"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
 cpal = "0.18"
