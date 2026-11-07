@@ -4,6 +4,12 @@
 use crate::pcm::{be_u32, be_u64};
 use crate::{AudioError, Result};
 
+/// The most `stts` entries a sound track may have. Symphonia finds each packet's timestamp by
+/// scanning the table from its start, so a table of one-sample runs makes decoding quadratic in
+/// the packet count. Audio encoders write one run per packet length (a handful of entries);
+/// this bound keeps the worst case at a few hundred million steps.
+const MAX_AUDIO_STTS_ENTRIES: u32 = 1 << 14;
+
 #[derive(Clone, Copy)]
 enum Level {
     Top,
@@ -11,7 +17,11 @@ enum Level {
     Trak,
     Mdia,
     Minf,
-    Stbl,
+    /// `audio`: the sample entry is an audio format, so symphonia will decode its packets (whatever the
+    /// handler says: it builds codec parameters from `stsd` alone).
+    Stbl {
+        audio: bool,
+    },
     Udta,
     Meta,
     Ilst,
@@ -55,13 +65,20 @@ fn atoms(b: &[u8], mut pos: usize, end: usize, level: Level) -> Result<bool> {
             (Level::Moov, b"udta") => atoms(b, body, inner, Level::Udta)?,
             (Level::Trak, b"mdia") => atoms(b, body, inner, Level::Mdia)?,
             (Level::Mdia, b"minf") => atoms(b, body, inner, Level::Minf)?,
-            (Level::Minf, b"stbl") => atoms(b, body, inner, Level::Stbl)?,
+            (Level::Minf, b"stbl") => atoms(b, body, inner, Level::Stbl { audio: entry_is_audio(b, body, inner) })?,
             (Level::Meta, b"ilst") => atoms(b, body, inner, Level::Ilst)?,
             (Level::Ilst, _) => atoms(b, body, inner, Level::Tag)?,
-            (Level::Stbl, b"stts" | b"co64") => table(b, body + 4, 8, inner)?,
-            (Level::Stbl, b"stsc") => table(b, body + 4, 12, inner)?,
-            (Level::Stbl, b"stco") => table(b, body + 4, 4, inner)?,
-            (Level::Stbl, b"stsz") => sample_sizes(b, body, inner)?,
+            (Level::Stbl { audio }, b"stts") => {
+                let fits = table(b, body + 4, 8, inner)?;
+                if audio && be_u32(b, body + 4).is_some_and(|n| n > MAX_AUDIO_STTS_ENTRIES) {
+                    return Err(AudioError::Malformed("MP4 audio timing table has more runs than packets could need".into()));
+                }
+                fits
+            }
+            (Level::Stbl { .. }, b"co64") => table(b, body + 4, 8, inner)?,
+            (Level::Stbl { .. }, b"stsc") => table(b, body + 4, 12, inner)?,
+            (Level::Stbl { .. }, b"stco") => table(b, body + 4, 4, inner)?,
+            (Level::Stbl { .. }, b"stsz") => sample_sizes(b, body, inner)?,
             (Level::Mdia, b"hdlr") | (Level::Tag, b"data" | b"name" | b"mean") if len > (b.len() - pos) as u64 => {
                 return Err(malformed(&format!("`{}` atom", String::from_utf8_lossy(kind))));
             }
@@ -73,6 +90,36 @@ fn atoms(b: &[u8], mut pos: usize, end: usize, level: Level) -> Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// The sample entry formats symphonia reads as audio (the list `stsd` is matched against in
+/// symphonia-format-isomp4 0.6); every other format, video and subtitles included, has no audio packets.
+const AUDIO_FORMATS: [&[u8; 4]; 18] = [
+    b"mp4a", b"alac", b"ac-3", b"ec-3", b"fLaC", b"Opus", b".mp3", b"lpcm", b"wave", b"alaw", b"ulaw", b"raw ", b"sowt", b"twos", b"in24", b"in32",
+    b"fl32", b"fl64",
+];
+
+/// Whether the `stbl` atom whose children lie in `pos..end` describes audio: its `stsd` may come before
+/// or after the timing tables, so the children are walked once more for it.
+fn entry_is_audio(b: &[u8], mut pos: usize, end: usize) -> bool {
+    while pos < end {
+        let (Some(size), Some(kind)) = (be_u32(b, pos), b.get(pos + 4..pos + 8)) else { return false };
+        let head = if size == 1 { 16 } else { 8 };
+        if kind == b"stsd" {
+            // Version and flags, the entry count, then the first entry's size and format.
+            return b.get(pos + head + 12..pos + head + 16).is_some_and(|f| AUDIO_FORMATS.iter().any(|a| a.as_slice() == f));
+        }
+        let len = match size {
+            0 => return false,
+            1 => be_u64(b, pos + 8).unwrap_or(0),
+            n => u64::from(n),
+        };
+        match usize::try_from(len).ok().filter(|&n| n >= head).and_then(|n| pos.checked_add(n)) {
+            Some(next) => pos = next,
+            None => return false,
+        }
+    }
+    false
 }
 
 /// A sample table's entries, counted at `count`, must fit in the file: symphonia reserves room for
