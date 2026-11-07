@@ -27,6 +27,7 @@ mod universe;
 
 #[cfg(test)]
 use automation::automation_id;
+pub(crate) use clips::crossfade_partner;
 pub use clips::strip_silence_stroke;
 #[cfg(test)]
 use clips::{clip_name_height, fade_curve_points};
