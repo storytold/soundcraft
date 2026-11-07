@@ -14,7 +14,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "AudioSuite Process",
         [],
         None,
-        "{process: <plugin id> | normalize | reverse | invert | gain | duplicate | time_stretch | pitch_shift | varispeed | speed_ramp | signal_generator, params?: {..}, clips?, tracks?, start?, end?} — signal_generator fills start..end (default: the selection) with a new clip on each audio track in `tracks` (default: the selected tracks); speed_ramp takes change (0 slow down, 1 speed up), selection (0 fit to, 1 extend) and fades (1 on, 0 off)",
+        "{process: <built-in plugin id (engine.plugins)> | normalize | reverse | invert | gain | duplicate | time_stretch | pitch_shift | varispeed | speed_ramp | signal_generator, params?: {..}, clips?, tracks?, start?, end?} — signal_generator fills start..end (default: the selection) with a new clip on each audio track in `tracks` (default: the selected tracks); speed_ramp takes change (0 slow down, 1 speed up), selection (0 fit to, 1 extend) and fades (1 on, 0 off)",
         has_selection,
         process
     )]
@@ -55,6 +55,9 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
                 | "speed_ramp"
                 | "dc_offset_removal"
         );
+    if !known && soundcraft_mix::is_third_party(&name) {
+        return Err(bad("audiosuite.process", format!("`{name}` is a hosted plugin; AudioSuite runs built-in plugins only (engine.plugins)")));
+    }
     if !known {
         return Err(bad("audiosuite.process", format!("unknown process `{name}`")));
     }
@@ -137,6 +140,7 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
         nc.name = new_name;
         nc.content = ClipContent::Audio { source: src, offset: 0 };
         nc.length = i64::try_from(frames).unwrap_or(nc.length);
+        nc.clamp_fades();
         // The render already has the clip's stretch applied; keeping it would stretch the new file again.
         nc.stretch = 1.0;
         // Invert and Duplicate are phase/copy operations. The clip's gain stays a clip gain,
@@ -228,6 +232,17 @@ mod tests {
     }
 
     #[test]
+    fn hosted_plugin_ids_are_refused_with_the_reason() {
+        let (mut e, id) = gained_clip();
+        for plugin in ["clap:com.example.reverb", "vst3:00112233445566778899AABBCCDDEEFF", "au:aufx:dely:appl"] {
+            let err = e.execute("audiosuite.process", &json!({"process": plugin, "clips": [id.0]})).unwrap_err().to_string();
+            assert!(err.contains("built-in"), "{plugin}: {err}");
+        }
+        let spec = specs().into_iter().find(|s| s.id == "audiosuite.process").unwrap();
+        assert!(spec.params.contains("<built-in plugin id"), "the help says which ids it takes: {}", spec.params);
+    }
+
+    #[test]
     fn invert_and_duplicate_keep_clip_gain() {
         let (mut e, id) = gained_clip();
         e.execute("audiosuite.process", &json!({"process": "invert", "clips": [id.0]})).unwrap();
@@ -244,6 +259,21 @@ mod tests {
         assert_eq!(c.gain_env, vec![(0, 0.0), (32, -12.0)]);
         let sample = e.session().pool.get(c.source().unwrap()).unwrap().buffer.channels[0][0];
         assert!((sample - 0.5).abs() < 1e-3, "duplicate keeps the file level and the clip gain, got {sample}");
+    }
+
+    #[test]
+    fn shortening_process_clamps_fades_to_the_new_length() {
+        let (mut e, id) = gained_clip();
+        {
+            let c = e.session_mut().find_clip_mut(id).unwrap();
+            c.fade_in.len = 60;
+            c.fade_out.len = 40;
+        }
+        e.execute("audiosuite.process", &json!({"process": "time_stretch", "params": {"ratio": 0.25}, "clips": [id.0]})).unwrap();
+        let c = e.session().tracks[0].clips()[0].clone();
+        assert!(c.length < 64, "{}", c.length);
+        assert!(c.fade_in.len <= c.length, "fade in {} > length {}", c.fade_in.len, c.length);
+        assert_eq!(c.fade_out.len, 40.min(c.length));
     }
 
     #[test]

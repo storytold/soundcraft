@@ -155,6 +155,14 @@ pub fn render_stretched(s: &mut Session, cmd: &str, c: &Clip, out_len: Samples) 
     if !(0.1..=10.0).contains(&ratio) {
         return Err(bad(cmd, format!("stretch ratio {ratio:.3} is outside 0.1..10")));
     }
+    // The source span read in can be 10× the output, and both are held for every channel: bound
+    // each like any other offline render (a session's clip length and stretch are not trusted).
+    let channels = audio.buffer.channels.len().max(1);
+    let limit = crate::io::render_limit(channels);
+    if src_len > limit as f64 || usize::try_from(out_len).map_or(true, |n| n > limit) {
+        let secs = limit as f64 / s.sample_rate.as_f64();
+        return Err(bad(cmd, format!("the clip is too long to stretch: one render holds at most {secs:.0} s of {channels}-channel audio")));
+    }
     let a = usize::try_from(offset.max(0)).unwrap_or(0);
     let n = src_len as usize;
     let ch: Vec<Vec<f32>> = audio
@@ -212,5 +220,39 @@ mod tests {
         assert_eq!(max_render(&s), s.sample_rate.samples(3600.0));
         s.sample_rate = soundcraft_time::SampleRate::new(96_000).unwrap();
         assert_eq!(max_render(&s), soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES as Samples);
+    }
+
+    /// A stereo session with a one-frame source and one clip on it.
+    fn stretched_clip(length: Samples, stretch: f64) -> (Session, Clip) {
+        use soundcraft_model::{ChannelFormat, TrackKind};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, Some("Long"));
+        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5]; 2] };
+        let src = crate::io::add_source(&mut s, "One", buf, None, FileFormat::Wav);
+        let cid = s.new_clip_id();
+        let mut clip = Clip::audio(cid, "Clip", src, 0, 0, length);
+        clip.stretch = stretch;
+        crate::edit::place_clip(&mut s, t, clip.clone());
+        (s, clip)
+    }
+
+    /// #895: a session's clip length and stretch made the source span read in 10× the one-hour
+    /// output limit, for every channel (about 14 GB here), and the allocation aborted the app.
+    #[test]
+    fn a_stretch_over_the_render_limit_is_refused_before_allocating() {
+        let hour = Session::default().sample_rate.samples(3600.0);
+        let (mut s, clip) = stretched_clip(hour, 0.1);
+        let err = render_stretched(&mut s, "clip.remove_pitch_shift", &clip, clip.length).unwrap_err();
+        assert!(err.to_string().contains("too long to stretch"), "{err}");
+
+        let mut e = crate::Engine::new(s);
+        assert!(e.execute("clip.remove_pitch_shift", &serde_json::json!({"clips": [clip.id.0]})).is_err());
+        let (_, kept) = e.session().find_clip(clip.id).unwrap();
+        assert_eq!((kept.stretch, kept.length), (0.1, hour), "the clip is left as it was");
+
+        // An ordinary stretch still renders, at the length asked for.
+        let (mut s, clip) = stretched_clip(1_000, 0.5);
+        let src = render_stretched(&mut s, "clip.remove_pitch_shift", &clip, clip.length).unwrap().unwrap();
+        assert!(s.pool.get(src).unwrap().buffer.channels.iter().all(|c| c.len() == 1_000));
     }
 }

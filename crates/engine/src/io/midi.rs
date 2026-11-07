@@ -2,17 +2,33 @@ use super::{ChannelFormat, Clip, ClipContent, Engine, EngineError, Result, Sampl
 
 /// Most meter changes a MIDI file may bring into the tempo map; scores have a handful.
 pub(super) const MAX_MIDI_METERS: usize = 10_000;
+/// Most tempo changes a MIDI file may bring into the tempo map: conversions walk the tempo events.
+pub(super) const MAX_MIDI_TEMPOS: usize = 10_000;
+/// Most synth tracks a MIDI file may create in the session.
+pub(super) const MAX_MIDI_TRACKS: usize = 512;
 
 /// Import a Standard MIDI File as MIDI tracks (one per SMF track).
 pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: bool) -> Result<Vec<TrackId>> {
     let smf = soundcraft_midi::read_smf(bytes).map_err(|err| EngineError::Io(err.to_string()))?;
-    let s = e.session_mut();
     if tempo_map {
         // Each meter is placed by walking the ones before it.
         if smf.meters.len() > MAX_MIDI_METERS {
             return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_METERS} meter changes")));
         }
+        if smf.tempos.len() > MAX_MIDI_TEMPOS {
+            return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_TEMPOS} tempo changes")));
+        }
+    }
+    let tracks_to_import = smf.tracks.iter().filter(|tr| !tr.sequence.notes.is_empty() || !tr.sequence.ctrls.is_empty()).count();
+    if tracks_to_import > MAX_MIDI_TRACKS {
+        return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_TRACKS} tracks")));
+    }
+    let s = e.session_mut();
+    if tempo_map {
         for (tick, bpm) in &smf.tempos {
+            if s.tempo.tempo_at_tick(*tick) == *bpm {
+                continue;
+            }
             let _ = s.tempo.set_tempo(*tick, *bpm);
         }
         for (tick, n, d) in &smf.meters {
@@ -66,15 +82,37 @@ pub fn export_midi(e: &Engine, only: Option<&[TrackId]>) -> Result<Vec<u8>> {
         for c in t.clips() {
             if let ClipContent::Midi { sequence } = &c.content {
                 let base = s.tempo.samples_to_ticks(c.start, s.sample_rate);
-                for n in &sequence.notes {
+                // Only what plays: notes starting inside the clip, cut at its end.
+                let clip_end = s.tempo.samples_to_ticks(c.end(), s.sample_rate);
+                for n in sequence.notes.iter().filter(|n| n.start.saturating_add(base) < clip_end) {
                     let mut n = *n;
                     n.start = n.start.saturating_add(base);
+                    n.length = n.length.min(clip_end - n.start).max(1);
                     seq.notes.push(n);
                 }
-                for ev in &sequence.ctrls {
+                let mut kept: Vec<soundcraft_midi::CtrlEvent> = Vec::new();
+                for ev in sequence.ctrls.iter().filter(|ev| ev.tick.saturating_add(base) < clip_end) {
                     let mut ev = *ev;
                     ev.tick = ev.tick.saturating_add(base);
-                    seq.ctrls.push(ev);
+                    kept.push(ev);
+                }
+                // A sustain still held at the clip end is released there.
+                let mut release: Vec<soundcraft_midi::CtrlEvent> = Vec::new();
+                for ev in &kept {
+                    if ev.kind != soundcraft_midi::CtrlKind::Cc(64) {
+                        continue;
+                    }
+                    match release.iter_mut().find(|r| r.channel == ev.channel) {
+                        Some(r) if ev.tick >= r.tick => *r = *ev,
+                        Some(_) => {}
+                        None => release.push(*ev),
+                    }
+                }
+                seq.ctrls.append(&mut kept);
+                for mut r in release.into_iter().filter(|r| r.value >= 64) {
+                    r.tick = clip_end;
+                    r.value = 0;
+                    seq.ctrls.push(r);
                 }
             }
         }

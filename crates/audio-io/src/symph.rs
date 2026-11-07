@@ -580,13 +580,46 @@ fn run(bytes: &[u8], detected: FileFormat, count_only: bool) -> Result<(AudioInf
     Ok((info, AudioBuffer { sample_rate, channels: planar }))
 }
 
+/// Frames symphonia's AAC decoder yields for every packet; it supports no other frame length.
+const AAC_FRAMES_PER_PACKET: u64 = 1024;
+
+/// Whether `track` of `reader` is AAC in MP4. The MP4 reader reports the stts total as the length,
+/// but the decoder yields a whole frame per packet (sample durations are not applied), so a last
+/// sample whose duration differs from a frame makes the two disagree.
+fn is_mp4_aac(reader: &dyn FormatReader, track_id: u32) -> bool {
+    reader.format_info().short_name == "isomp4"
+        && reader.tracks().iter().find(|t| t.id == track_id).and_then(audio_params).is_some_and(|p| p.codec == CODEC_ID_AAC)
+}
+
+/// The decoded length of AAC in MP4: count the track's packets without decoding them.
+fn mp4_aac_frames(reader: &mut dyn FormatReader, track_id: u32) -> Result<u64> {
+    let mut frames: u64 = 0;
+    loop {
+        match reader.next_packet() {
+            Ok(Some(packet)) if packet.track_id == track_id => frames = frames.saturating_add(AAC_FRAMES_PER_PACKET),
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(SymError::ResetRequired) => break,
+            Err(e) => {
+                demux_failure(frames, e)?;
+                break;
+            }
+        }
+    }
+    Ok(frames)
+}
+
 pub(crate) fn probe(bytes: &[u8], detected: FileFormat) -> Result<AudioInfo> {
     guarded(|| {
-        let reader = match open(bytes, detected)? {
+        let mut reader = match open(bytes, detected)? {
             Opened::Reader(reader) => reader,
             Opened::Empty(info) => return Ok(info),
         };
-        let (_, info) = info_of(reader.as_ref(), detected)?;
+        let (track_id, mut info) = info_of(reader.as_ref(), detected)?;
+        if info.frames > 0 && info.channels > 0 && is_mp4_aac(reader.as_ref(), track_id) {
+            info.frames = mp4_aac_frames(reader.as_mut(), track_id)?;
+        }
         if info.frames > 0 && info.channels > 0 {
             return Ok(info);
         }

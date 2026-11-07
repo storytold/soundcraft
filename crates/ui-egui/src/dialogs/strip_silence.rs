@@ -3,6 +3,17 @@ use super::{Arc, ClipId, Dialog, SoundApp, StripNames, Tokens, TrackId, Value, j
 /// What Strip keeps on each track: the Strip Silence rectangles.
 pub type StripRects = Arc<Vec<(TrackId, Vec<soundcraft_time::Range>)>>;
 
+/// The Strip Silence values (threshold dB, min strip duration, clip start and end pads in ms) the
+/// window opens with: the ones it last had, or these defaults before its first use.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct StripValues(pub(super) [f64; 4]);
+
+impl Default for StripValues {
+    fn default() -> Self {
+        Self([-48.0, 50.0, 5.0, 20.0])
+    }
+}
+
 /// The session revision and the Strip Silence values (as bits) that rectangles were found for.
 type StripKey = (u64, [u64; 4]);
 
@@ -42,10 +53,7 @@ pub fn strip_silence_rectangles(app: &mut SoundApp, ctx: &egui::Context) -> Stri
     let values = match &app.dialogs.open {
         Some(Dialog::StripSilence { threshold, min_ms, pre_ms, post_ms }) => [*threshold, *min_ms, *pre_ms, *post_ms],
         Some(Dialog::StripSilenceRename { strip, .. }) => *strip,
-        _ => {
-            app.dialogs.strip_rectangles = StripRectangles::default();
-            return Arc::default();
-        }
+        _ => return Arc::default(),
     };
     let key: StripKey = (app.engine.revision, values.map(f64::to_bits));
     let r = &mut app.dialogs.strip_rectangles;
