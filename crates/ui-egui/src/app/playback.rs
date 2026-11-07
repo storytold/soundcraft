@@ -368,7 +368,14 @@ impl SoundApp {
                 }
                 TransportRequest::Record => {
                     if self.engine.transport.recording {
-                        self.stop_play();
+                        // Punching out ends the take; while playing, the transport keeps
+                        // running, like QuickPunch. `finish_recording` places the take
+                        // without touching playback.
+                        if self.is_playing() {
+                            self.finish_recording();
+                        } else {
+                            self.stop_play();
+                        }
                     } else {
                         self.start_recording();
                     }
@@ -451,5 +458,37 @@ impl SoundApp {
             }
             feed_meter(&mut self.main_meter, [0.0, 0.0], 0.0, dt);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Punching out (Record pressed again mid-take) ends the take and leaves the transport
+    /// running, like QuickPunch: the take is placed and playback continues from where it was.
+    #[test]
+    fn punching_out_while_playing_keeps_the_transport_running() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.start_play(0, None, None);
+        app.engine.transport.recording = true;
+        app.engine.transport_requests.push(TransportRequest::Record);
+        app.handle_transport(1.0 / 60.0);
+        assert!(!app.engine.transport.recording, "the take ends");
+        assert!(app.is_playing(), "playback continues after the punch-out");
+    }
+
+    /// A Record press while recording but not playing (a player that died mid-take, say)
+    /// still stops everything.
+    #[test]
+    fn a_record_press_while_recording_but_stopped_still_stops() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.start_play(0, None, None);
+        app.engine.transport.playing = false;
+        app.engine.transport.recording = true;
+        app.engine.transport_requests.push(TransportRequest::Record);
+        app.handle_transport(1.0 / 60.0);
+        assert!(!app.engine.transport.recording);
+        assert!(!app.is_playing());
     }
 }
