@@ -67,8 +67,8 @@ pub(crate) struct AudioState {
     pub(crate) shared: Arc<Shared>,
     pub(crate) session: Arc<Session>,
     pub(crate) mix: MixEngine,
-    pos: Samples,
-    playing: bool,
+    pub(crate) pos: Samples,
+    pub(crate) playing: bool,
     end: Option<Samples>,
     looped: Option<Range>,
     /// Rendered frames waiting to be consumed (planar, main channels) and the fractional read index.
@@ -130,9 +130,10 @@ impl AudioState {
         }
     }
 
-    fn drain(&mut self) {
+    pub(crate) fn drain(&mut self) {
         let mut changed = false;
         while let Ok(c) = self.rx.try_recv() {
+            let replacement = matches!(&c, Cmd::ReplaceSession(..));
             match c {
                 Cmd::Input(r) => self.input = Some(r),
                 Cmd::Forget(gone) => {
@@ -145,11 +146,21 @@ impl AudioState {
                     self.forget_meters();
                 }
                 Cmd::Recording(r) => self.recording = r,
-                Cmd::Session(s, instances) => {
+                Cmd::Session(s, instances) | Cmd::ReplaceSession(s, instances) => {
                     changed = true;
-                    if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
+                    if replacement || (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
                         let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
                         let _ = self.garbage.send(old.drain_plugins());
+                    }
+                    if replacement {
+                        self.playing = false;
+                        self.pos = s.edit.playhead;
+                        self.shared.position.store(self.pos, Ordering::Relaxed);
+                        self.recording = false;
+                        self.end = None;
+                        self.looped = None;
+                        self.pending_len = 0;
+                        self.read = 0.0;
                     }
                     self.mix.adopt(instances);
                     // The main format changed (a document edit, not steady state): resize.

@@ -30,8 +30,8 @@ impl SoundApp {
     }
 
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        self.sync_player_session();
         if let Some(p) = &self.player {
-            p.update_session(self.engine.session_arc());
             p.play(from, end, looped);
         } else {
             self.sim = Some((from, end, looped));
@@ -45,6 +45,18 @@ impl SoundApp {
         self.edit_layout.follow_hold = false;
         self.edit_layout.last_scroll = self.engine.session().edit.zoom.scroll;
         self.edit_layout.last_follow_to = None;
+    }
+
+    pub(super) fn sync_player_session(&mut self) {
+        if let Some(p) = &self.player {
+            let generation = self.engine.session_generation();
+            if generation != self.last_session_generation {
+                p.replace_session(self.engine.session_arc());
+            } else {
+                p.update_session(self.engine.session_arc());
+            }
+            self.last_session_generation = generation;
+        }
     }
 
     pub(crate) fn stop_play(&mut self) {
