@@ -28,6 +28,26 @@ fn clip_rows(s: &soundcraft_model::Session, needle: &str) -> Vec<ClipRow> {
     sources.chain(clips).collect()
 }
 
+/// Whether a clip on a track plays only part of its source file (#1264). A clip whose file is
+/// not in the session has nothing to be a subset of.
+fn clip_subset(s: &soundcraft_model::Session, c: &soundcraft_model::Clip) -> bool {
+    match c.content {
+        soundcraft_model::ClipContent::Audio { source, .. } => {
+            s.source(source).is_some_and(|src| c.is_subset(i64::try_from(src.frames).unwrap_or(i64::MAX)))
+        }
+        soundcraft_model::ClipContent::Video { source, .. } => {
+            s.video_source(source).is_some_and(|v| c.is_subset((v.duration * f64::from(s.sample_rate)).round() as i64))
+        }
+        soundcraft_model::ClipContent::Midi { .. } => false,
+    }
+}
+
+/// The name a clip row shows in the clip list: subset clips carry a suffix, so they do not read
+/// the same as whole-file clips (#1264). The clip's own name is never changed.
+fn clip_display_name(s: &soundcraft_model::Session, c: &soundcraft_model::Clip) -> String {
+    if clip_subset(s, c) { format!("{} (subset)", c.name) } else { c.name.clone() }
+}
+
 /// Clips panel with a filter and a revision-cached list of audio sources and clips.
 pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
@@ -52,24 +72,31 @@ pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
     let clips_area = with_pending_offset(egui::ScrollArea::vertical().id_salt("clips_scroll"), ui, "clips_scroll");
     clips_area.auto_shrink([false, false]).show_rows(ui, row_h, rows.len(), |ui, shown| {
         // Only the rows in view: what they show is read now, before any of them acts on the session.
-        let items: Vec<(u64, String, bool, [u8; 3], bool)> = {
+        let items: Vec<(u64, String, bool, [u8; 3], bool, bool)> = {
             let s = app.engine.session();
             rows.get(shown)
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|row| match *row {
                     ClipRow::Source(i) => s.sources.get(i).map(|src| {
-                        (src.id.0, format!("{} ({}ch)", src.name, src.channels), true, [150, 150, 150], s.edit.selected_sources.contains(&src.id))
+                        (src.id.0, format!("{} ({}ch)", src.name, src.channels), true, [150, 150, 150], s.edit.selected_sources.contains(&src.id), false)
                     }),
                     ClipRow::Clip { track, clip } => {
                         let tr = s.tracks.get(track)?;
                         let c = tr.clips().get(clip)?;
-                        Some((c.id.0, c.name.clone(), false, c.color.unwrap_or(tr.color), s.edit.selected_clips.contains(&c.id)))
+                        Some((
+                            c.id.0,
+                            clip_display_name(s, c),
+                            false,
+                            c.color.unwrap_or(tr.color),
+                            s.edit.selected_clips.contains(&c.id),
+                            clip_subset(s, c),
+                        ))
                     }
                 })
                 .collect()
         };
-        for (id, name, whole, color, selected) in items {
+        for (id, name, whole, color, selected, subset) in items {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), if whole { Sense::click_and_drag() } else { Sense::click() });
             resp.context_menu(|ui| {
                 if whole {
@@ -114,7 +141,8 @@ pub fn clip_list(app: &mut SoundApp, ui: &mut Ui) {
                 Align2::LEFT_CENTER,
                 &name,
                 if whole { bold(11.0) } else { regular(11.0) },
-                t.text,
+                // Subset clips are grayed out (#1264); whole files and whole-file clips are not.
+                if subset { t.text_dim } else { t.text },
             );
             if resp.clicked() {
                 let _ = app.run("edit.select", if whole { json!({"sources": [id]}) } else { json!({"clips": [id]}) });
@@ -149,5 +177,35 @@ mod tests {
         assert_eq!(names(clip_rows(&s, "")), ["Kick 1", "Snare 1", "Kick 2", "Tom"]);
         assert_eq!(names(clip_rows(&s, "kick")), ["Kick 1", "Kick 2"]);
         assert!(clip_rows(&s, "cowbell").is_empty());
+    }
+
+    #[test]
+    fn subset_clips_get_a_distinct_name_in_the_clip_list() {
+        // #1264: a subset clip (part of a file) must not read the same as a whole-file clip.
+        let mut s = Session::default();
+        s.sources.push(soundcraft_model::Source {
+            id: SourceId(1),
+            name: "Vox.wav".into(),
+            path: "Audio Files/Vox.wav".into(),
+            channels: 1,
+            frames: 1000,
+            sample_rate: 48_000,
+            format: soundcraft_audio_io::FileFormat::Wav,
+            time_reference: 0,
+            unsaved: false,
+        });
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let whole = Clip::audio(s.new_clip_id(), "Vox", SourceId(1), 0, 0, 1000);
+        let subset = Clip::audio(s.new_clip_id(), "Vox", SourceId(1), 250, 1000, 500);
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(whole.clone());
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(subset.clone());
+        assert!(!clip_subset(&s, &whole));
+        assert!(clip_subset(&s, &subset));
+        assert_eq!(clip_display_name(&s, &whole), "Vox");
+        assert_eq!(clip_display_name(&s, &subset), "Vox (subset)");
+        // A clip whose file is not in the session has nothing to be a subset of.
+        let orphan = Clip::audio(s.new_clip_id(), "Ghost", SourceId(99), 10, 0, 10);
+        assert!(!clip_subset(&s, &orphan));
+        assert_eq!(clip_display_name(&s, &orphan), "Ghost");
     }
 }
