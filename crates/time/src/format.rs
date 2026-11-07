@@ -75,10 +75,32 @@ pub fn format_length(start: Samples, len: Samples, fmt: TimeFormat, sr: SampleRa
         TimeFormat::BarsBeats => {
             let t0 = map.samples_to_ticks(start, sr);
             let t1 = map.samples_to_ticks(start.saturating_add(len), sr);
-            let m = map.meter_at_tick(t0);
-            let d = (t1 - t0).max(0);
-            let bars = d / m.ticks_per_bar().max(1);
-            let rem = d % m.ticks_per_bar().max(1);
+            // Count whole bars through the meter segments the range crosses.
+            let mut pos = t0;
+            let mut bars = 0i64;
+            let mut m = map.meter_at_tick(t0);
+            for (i, seg) in map.meters().iter().enumerate() {
+                if seg.tick > t0 && seg.tick <= pos {
+                    m = *seg;
+                }
+                let Some(end) = map.meters().get(i + 1).map(|n| n.tick) else { break };
+                if end <= pos || end > t1 || end <= t0 {
+                    continue;
+                }
+                let tpb = m.ticks_per_bar().max(1);
+                let n = (end - pos).saturating_add(tpb - 1) / tpb;
+                let next = pos.saturating_add(n.saturating_mul(tpb));
+                if next > t1 {
+                    break;
+                }
+                bars = bars.saturating_add(n);
+                pos = next;
+                m = map.meter_at_tick(pos);
+            }
+            let tpb = m.ticks_per_bar().max(1);
+            let d = (t1 - pos).max(0);
+            let rem = d % tpb;
+            bars = bars.saturating_add(d / tpb);
             format!("{bars}| {}| {:03}", rem / m.ticks_per_beat().max(1), rem % m.ticks_per_beat().max(1))
         }
         TimeFormat::Timecode => Timecode::from_samples(len, rate, sr).format(rate),
@@ -153,6 +175,17 @@ mod tests {
 
     fn ctx() -> (SampleRate, TempoMap, FrameRate) {
         (SampleRate::HZ_48000, TempoMap::default(), FrameRate::Fps30)
+    }
+
+    #[test]
+    fn bars_beats_length_counts_through_meter_changes() {
+        let (sr, mut map, rate) = ctx();
+        map.set_meter(3840, 3, 4).unwrap();
+        let f = |start, len| format_length(start, len, TimeFormat::BarsBeats, sr, &map, rate);
+        assert_eq!(f(0, 168_000), "2| 0| 000");
+        assert_eq!(f(96_000, 72_000), "1| 0| 000");
+        assert_eq!(f(0, 48_000), "0| 2| 000");
+        assert_eq!(f(0, 120_000), "1| 1| 000");
     }
 
     #[test]
