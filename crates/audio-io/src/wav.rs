@@ -3,7 +3,7 @@
 
 use crate::pcm::{PcmKind, Quantizer, deinterleave, le_u16, le_u32, le_u64, sample_format, tag, validate_buffer, validate_layout, write_interleaved};
 use crate::{AudioBuffer, AudioError, AudioInfo, BitDepth, BwfInfo, FileFormat, Result, SampleFormat};
-use std::io::{Cursor, Seek, SeekFrom, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
 const WAVE_FORMAT_PCM: u16 = 1;
 const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
@@ -275,6 +275,10 @@ pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
         };
     }
 
+    finish(fmt, bwf, data)
+}
+
+fn finish(fmt: Option<Fmt>, bwf: Option<BwfInfo>, data: Option<(usize, usize)>) -> Result<WavParse> {
     let fmt = fmt.ok_or_else(|| AudioError::Malformed("WAV has no fmt chunk".into()))?;
     if fmt.channels == 0 {
         return Err(AudioError::Malformed("WAV declares zero channels".into()));
@@ -296,6 +300,139 @@ pub(crate) fn parse(b: &[u8]) -> Result<WavParse> {
         data_start,
         data_len,
     }))
+}
+
+/// A file-backed PCM/float WAV reader. It keeps only the requested interleaved window in memory.
+/// Compressed WAV stays on the existing decoder. `open` is native-only; [`Self::from_reader`]
+/// accepts any [`Read`] + [`Seek`] (including an in-memory cursor on wasm).
+pub struct DiskWavReader<R> {
+    reader: R,
+    layout: WavLayout,
+    block: usize,
+}
+
+impl DiskWavReader<std::fs::File> {
+    /// Open a native PCM or float WAV without decoding the recording into one allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let file = std::fs::File::open(path)?;
+        Self::from_reader(file)
+    }
+}
+
+impl<R: Read + Seek> DiskWavReader<R> {
+    /// Probe `reader` by walking its chunks. The data-chunk size from the header is kept, so a
+    /// chunk after `data` is not treated as samples. A header that ends before `fmt ` or `data`
+    /// is an error.
+    pub fn from_reader(mut reader: R) -> Result<Self> {
+        let layout = layout_from_reader(&mut reader)?;
+        let block = layout
+            .kind
+            .bytes()
+            .checked_mul(usize::from(layout.info.channels))
+            .ok_or_else(|| AudioError::Malformed("WAV block size overflow".into()))?;
+        Ok(Self { reader, layout, block })
+    }
+
+    /// Metadata from the header. `frames` counts only whole frames inside the data chunk.
+    pub fn info(&self) -> &AudioInfo {
+        &self.layout.info
+    }
+
+    /// Read at most `frames` starting at `start`, as planar samples. A start at or past the end,
+    /// or a count of zero, returns an empty buffer. The read never panics on a large `start` or
+    /// `frames`.
+    pub fn read_frames(&mut self, start: u64, frames: usize) -> Result<AudioBuffer> {
+        let total = self.layout.info.frames;
+        let available = total.saturating_sub(start);
+        let count = available.min(u64::try_from(frames).unwrap_or(u64::MAX));
+        let channels = usize::from(self.layout.info.channels);
+        if count == 0 {
+            return Ok(AudioBuffer { sample_rate: self.layout.info.sample_rate, channels: vec![Vec::new(); channels] });
+        }
+        let count_us = usize::try_from(count).map_err(|_| AudioError::TooLarge("frame count exceeds address space".into()))?;
+        let bytes = count_us.checked_mul(self.block).ok_or_else(|| AudioError::TooLarge("requested audio window is too large".into()))?;
+        let offset = (self.layout.data_start as u64).saturating_add(start.saturating_mul(self.block as u64));
+        self.reader.seek(SeekFrom::Start(offset))?;
+        let mut data = vec![0; bytes];
+        self.reader.read_exact(&mut data).map_err(|_| AudioError::Malformed("WAV data chunk is truncated".into()))?;
+        let decoded = deinterleave(&data, self.layout.kind, channels, count)?;
+        Ok(AudioBuffer { sample_rate: self.layout.info.sample_rate, channels: decoded })
+    }
+}
+
+/// Walk chunk headers in the file. Bodies are read only for `fmt `, `bext`, and `ds64`. A large
+/// chunk before `data` (iXML, bext) is skipped by seeking, so the data chunk may start past 1 MiB.
+fn layout_from_reader<R: Read + Seek>(reader: &mut R) -> Result<WavLayout> {
+    let len = reader.seek(SeekFrom::End(0))?;
+    reader.seek(SeekFrom::Start(0))?;
+    let mut head = [0u8; 12];
+    read_at(reader, &mut head).map_err(|_| AudioError::Malformed("WAV header is truncated".into()))?;
+    if !is_wav(&head) {
+        return Err(AudioError::Malformed("not a RIFF/RF64 WAVE file".into()));
+    }
+    let is_rf64 = &head[0..4] != b"RIFF";
+    let mut ds64_data: Option<u64> = None;
+    let mut fmt: Option<Fmt> = None;
+    let mut bwf: Option<BwfInfo> = None;
+    let mut data: Option<(usize, usize)> = None;
+    let mut pos: u64 = 12;
+    for _ in 0..100_000 {
+        if pos.saturating_add(8) > len {
+            break;
+        }
+        reader.seek(SeekFrom::Start(pos))?;
+        let mut hdr = [0u8; 8];
+        read_at(reader, &mut hdr).map_err(|_| AudioError::Malformed("WAV header is truncated".into()))?;
+        let id: [u8; 4] = hdr[0..4].try_into().map_err(|_| AudioError::Malformed("WAV chunk id is truncated".into()))?;
+        let size32 = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
+        let body = pos.checked_add(8).ok_or_else(|| AudioError::Malformed("chunk offset overflow".into()))?;
+        let remaining = len.saturating_sub(body);
+        let mut size = u64::from(size32);
+        if &id == b"data" && is_rf64 && size32 == u32::MAX {
+            size = ds64_data.unwrap_or(remaining);
+        }
+        let declared = usize::try_from(size).unwrap_or(usize::MAX);
+        if &id == b"data" {
+            let data_len = if size32 == 0 && !is_rf64 { remaining } else { u64::try_from(declared).unwrap_or(u64::MAX).min(remaining) };
+            if data.is_none() {
+                let start = usize::try_from(body).map_err(|_| AudioError::TooLarge("WAV data offset exceeds address space".into()))?;
+                let len_us = usize::try_from(data_len).map_err(|_| AudioError::TooLarge("WAV data length exceeds address space".into()))?;
+                data = Some((start, len_us));
+            }
+            if u64::try_from(declared).unwrap_or(u64::MAX) > remaining {
+                break;
+            }
+        } else if u64::try_from(declared).unwrap_or(u64::MAX) > remaining {
+            break;
+        } else if matches!(&id, b"fmt " | b"bext" | b"ds64") {
+            if declared > 1024 * 1024 {
+                return Err(AudioError::Malformed("WAV metadata chunk is larger than 1 MiB".into()));
+            }
+            let mut c = vec![0u8; declared];
+            reader.seek(SeekFrom::Start(body))?;
+            read_at(reader, &mut c).map_err(|_| AudioError::Malformed("WAV header is truncated".into()))?;
+            match &id {
+                b"fmt " => fmt = Some(parse_fmt(&c)?),
+                b"bext" => bwf = parse_bext(&c),
+                b"ds64" => ds64_data = le_u64(&c, 8),
+                _ => {}
+            }
+        }
+        let padded = u64::try_from(declared).unwrap_or(u64::MAX).saturating_add(u64::from(declared & 1 != 0));
+        pos = match body.checked_add(padded) {
+            Some(p) => p,
+            None => break,
+        };
+    }
+    match finish(fmt, bwf, data)? {
+        WavParse::Native(layout) => Ok(layout),
+        WavParse::Foreign { .. } => Err(AudioError::Unsupported("disk streaming currently supports native PCM/float WAV only".into())),
+    }
+}
+
+fn read_at<R: Read>(reader: &mut R, buf: &mut [u8]) -> std::io::Result<()> {
+    reader.read_exact(buf)
 }
 
 pub(crate) fn decode(b: &[u8], layout: &WavLayout) -> Result<AudioBuffer> {
