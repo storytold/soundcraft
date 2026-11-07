@@ -655,7 +655,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     let s = app.engine.session();
                     ui.horizontal(|ui| {
                         let count_label = ui.radio_value(by, LoopBy::Count, "Number of Loops");
-                        ui.add_enabled(*by == LoopBy::Count, egui::DragValue::new(count).range(1..=512)).labelled_by(count_label.id);
+                        ui.add_enabled(*by == LoopBy::Count, egui::DragValue::new(count).range(1..=soundcraft_engine::cmd::MAX_LOOPS + 1)).labelled_by(count_label.id);
                     });
                     ui.horizontal(|ui| {
                         let length_label = ui.radio_value(by, LoopBy::Length, "Loop Length");

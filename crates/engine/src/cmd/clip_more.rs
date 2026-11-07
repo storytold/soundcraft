@@ -469,6 +469,24 @@ mod tests {
         assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "length": 100_100})).unwrap()["loops"], 1000);
     }
 
+    /// Number of Loops reaches the same limit as Loop Length and Fill: the clip and 1000 loops.
+    #[test]
+    fn a_loop_count_makes_up_to_1000_loops() {
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 1001})).unwrap()["loops"], 1000);
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.len(), 1001);
+        assert_eq!(clips.last().map(|c| (c.start, c.length)), Some((100_000, 100)));
+        assert!(clips.windows(2).all(|w| w[0].end() == w[1].start));
+        // A larger count stops at the limit.
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 5000})).unwrap()["loops"], 1000);
+        assert_eq!(spans(&e, t).len(), 1001);
+        // All of them come off again.
+        e.execute("clip.unloop", &json!({"clip": ids[0].0})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 100)]);
+    }
+
     #[test]
     fn regroup_reuses_group() {
         let (mut e, _, ids) = engine_with(&[(0, 100, 0), (500, 100, 0), (900, 100, 0)]);
