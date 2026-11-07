@@ -17,6 +17,12 @@ log.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
+# The X11 host window for embedded editors on Linux and the BSDs, and the polling behind
+# `clap.posix-fd-support`.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+x11rb = "0.13"
+libc = "0.2"
+
 [[test]]
 name = "editor_main_thread"
 harness = false
