@@ -252,8 +252,9 @@ struct MenuPlugin {
     vendor: String,
 }
 
-/// The CLAP, VST3 and (on macOS) Audio Units submenus, of effects or of instruments; returns the
-/// id picked. Each format is scanned the first time its submenu opens, then cached by its host.
+/// The CLAP, VST3, JSFX (effects only) and (on macOS) Audio Units submenus, of effects or of
+/// instruments; returns the id picked. Each format is scanned the first time its submenu opens,
+/// then cached by its host.
 fn hosted_menus(ui: &mut Ui, instruments: bool) -> Option<String> {
     let mut picked = None;
     ui.menu_button("CLAP", |ui| {
@@ -268,6 +269,25 @@ fn hosted_menus(ui: &mut Ui, instruments: bool) -> Option<String> {
             picked = Some(p);
         }
     });
+    // JSFX are effects only; vendors are the top-level folders of the Effects folder.
+    if !instruments {
+        ui.menu_button("JSFX", |ui| {
+            // Only effects this host can run are offered; the rest are counted, not listed.
+            let (usable, unusable): (Vec<_>, Vec<_>) = soundcraft_jsfx_host::scan().into_iter().partition(|d| d.unsupported.is_none());
+            let list = usable.into_iter().map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect();
+            if let Some(p) = vendor_menus(ui, list, "No JSFX found") {
+                picked = Some(p);
+            }
+            ui.separator();
+            if ui.button("Browse JSFX Repositories…").clicked() {
+                crate::jsfx_browser::request_open(ui.ctx());
+                ui.close();
+            }
+            if !unusable.is_empty() {
+                ui.weak(format!("{} more use features SoundCraft does not support yet", unusable.len()));
+            }
+        });
+    }
     if cfg!(target_os = "macos") {
         ui.menu_button("Audio Units", |ui| {
             let list = soundcraft_au_host::scan().into_iter().filter(|d| d.is_instrument == instruments);
@@ -308,11 +328,12 @@ fn vendor_menus(ui: &mut Ui, mut list: Vec<MenuPlugin>, none: &str) -> Option<St
     picked
 }
 
-/// A built-in plugin's description, else a hosted CLAP (`clap:<id>`), VST3 (`vst3:<class id>`) or
-/// Audio Unit (`au:<type>:<subtype>:<manufacturer>`) plugin's.
+/// A built-in plugin's description, else a hosted CLAP (`clap:<id>`), VST3 (`vst3:<class id>`),
+/// JSFX (`jsfx:<path>`) or Audio Unit (`au:<type>:<subtype>:<manufacturer>`) plugin's.
 pub fn plugin_info(id: &str) -> Option<&'static soundcraft_dsp::PluginInfo> {
     soundcraft_dsp::plugin_info(id)
         .or_else(|| soundcraft_clap_host::plugin_info(id))
         .or_else(|| soundcraft_vst3_host::plugin_info(id))
+        .or_else(|| soundcraft_jsfx_host::plugin_info(id))
         .or_else(|| soundcraft_au_host::plugin_info(id))
 }

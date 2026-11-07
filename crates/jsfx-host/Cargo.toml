@@ -1,0 +1,17 @@
+[package]
+name = "soundcraft-jsfx-host"
+description = "SoundCraft JSFX host: loads REAPER-style JS effects (.jsfx) with a from-scratch EEL2 interpreter behind the safe soundcraft-dsp Plugin trait"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+soundcraft-dsp.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true
