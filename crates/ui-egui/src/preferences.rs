@@ -1134,9 +1134,11 @@ mod tests {
         assert!(app.run("ui.theme", json!({"mode": ThemeMode::Light.id()})).is_ok());
         assert!(app.run("ui.reduce_visual_effects", json!({"mode": "playback"})).is_ok());
         assert!(app.run("ui.undo_levels", json!({"levels": 32})).is_ok());
+        assert!(app.run("ui.sends_default", json!({"level": "0"})).is_ok());
         assert_eq!(app.ui.theme, ThemeMode::Light);
         assert_eq!(app.ui.reduce_visual_effects, ReduceVisualEffects::Playback);
         assert_eq!((app.ui.undo_levels, app.engine.history_limit), (32, 32));
+        assert_eq!(app.ui.sends_default, SendsDefault::Unity);
         assert!(!app.engine.is_dirty());
     }
 
@@ -1150,6 +1152,7 @@ mod tests {
             assert!(app.run("ui.theme", json!({"mode": ThemeMode::Light.id()})).is_ok());
             assert!(app.run("ui.reduce_visual_effects", json!({"mode": "always"})).is_ok());
             assert!(app.run("ui.undo_levels", json!({"levels": 17})).is_ok());
+            assert!(app.run("ui.sends_default", json!({"level": "0"})).is_ok());
         }
         harness.run_steps(2);
         harness.get_by_label("OK").click();
@@ -1159,6 +1162,7 @@ mod tests {
         assert_eq!(app.ui.theme, ThemeMode::Light);
         assert_eq!(app.ui.reduce_visual_effects, ReduceVisualEffects::Always);
         assert_eq!((app.ui.undo_levels, app.engine.history_limit), (17, 17));
+        assert_eq!(app.ui.sends_default, SendsDefault::Unity);
         assert!(!app.ui.show_preferences);
     }
 
@@ -1174,11 +1178,13 @@ mod tests {
         app.ui.theme = ThemeMode::System;
         app.ui.reduce_visual_effects = ReduceVisualEffects::Always;
         app.ui.undo_levels = 17;
+        app.ui.sends_default = SendsDefault::Unity;
         draft.sync_unedited_from_live(&app);
 
         assert_eq!(draft.theme, ThemeMode::Light);
         assert_eq!(draft.reduce_visual_effects, ReduceVisualEffects::Always);
         assert_eq!(draft.undo_levels, 17);
+        assert_eq!(draft.sends_default, SendsDefault::Unity);
     }
 
     /// Command inputs reject unknown modes and bound undo depth safely.
@@ -1359,6 +1365,25 @@ mod tests {
 
         assert!(!harness.state().ui.show_preferences);
         assert_eq!(harness.state().ui.theme, ThemeMode::Dark);
+    }
+
+    /// Choosing 0 dB for Sends Default to applies on OK and is discarded on Cancel (#1423).
+    #[test]
+    fn sends_default_choice_applies_on_ok_and_not_on_cancel() {
+        for (button, expected) in [("OK", SendsDefault::Unity), ("Cancel", SendsDefault::NegativeInfinity)] {
+            let mut harness = preferences_harness(egui::vec2(1280.0, 1000.0));
+            harness.state_mut().ui.preferences_page = PreferencesPage::Mixing;
+            harness.run_steps(4);
+            harness.get_by_value("−∞ dB").click();
+            harness.run_steps(2);
+            harness.get_by_label("0 dB").click();
+            harness.run_steps(2);
+            assert_eq!(harness.state().ui.sends_default, SendsDefault::NegativeInfinity, "staged until {button}");
+            harness.get_by_label(button).click();
+            harness.run_steps(2);
+            assert_eq!(harness.state().ui.sends_default, expected, "after {button}");
+            assert!(!harness.state().ui.show_preferences);
+        }
     }
 
     /// Escape closes an open choice popup before it can cancel the complete window.
