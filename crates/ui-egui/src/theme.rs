@@ -1,6 +1,7 @@
 //! Design tokens. Colours were chosen by eye to give a dark, studio-style look; they are ours.
 
 use egui::{Color32, FontFamily, FontId};
+use soundcraft_model::EditMode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Whether the Light palette is active. Dark is the default (the incumbent is dark-only).
@@ -165,6 +166,13 @@ pub struct Tokens {
     pub group_border: Color32,
     /// Edit-mode cell, not selected.
     pub mode_off: Color32,
+    /// Edit-mode cell, selected: one colour per mode so the active mode reads at a glance
+    /// (see [`Tokens::edit_mode_on`]). The label on them is `mode_on_text`.
+    pub mode_shuffle: Color32,
+    pub mode_spot: Color32,
+    pub mode_slip: Color32,
+    pub mode_grid: Color32,
+    pub mode_grid_relative: Color32,
     /// Counter-panel toggle (Grid, Count Off), off.
     pub counter_off: Color32,
     /// Outline of the counter panels.
@@ -272,6 +280,11 @@ impl Tokens {
         menu_bar: Color32::from_rgb(22, 22, 23),
         group_border: Color32::from_rgb(8, 8, 8),
         mode_off: Color32::from_rgb(20, 36, 22),
+        mode_shuffle: Color32::from_rgb(246, 112, 102),
+        mode_spot: Color32::from_rgb(236, 148, 38),
+        mode_slip: Color32::from_rgb(92, 196, 108),
+        mode_grid: Color32::from_rgb(86, 162, 238),
+        mode_grid_relative: Color32::from_rgb(176, 134, 238),
         counter_off: Color32::from_rgb(30, 50, 32),
         counter_border: Color32::from_rgb(50, 50, 50),
         counter_rule: Color32::from_rgb(40, 40, 40),
@@ -357,6 +370,11 @@ impl Tokens {
         menu_bar: Color32::from_rgb(204, 206, 210),
         group_border: Color32::from_rgb(118, 121, 127),
         mode_off: Color32::from_rgb(202, 212, 204),
+        mode_shuffle: Color32::from_rgb(188, 48, 42),
+        mode_spot: Color32::from_rgb(176, 94, 4),
+        mode_slip: Color32::from_rgb(44, 128, 62),
+        mode_grid: Color32::from_rgb(62, 116, 180),
+        mode_grid_relative: Color32::from_rgb(124, 82, 178),
         counter_off: Color32::from_rgb(192, 212, 198),
         counter_border: Color32::from_rgb(118, 121, 127),
         counter_rule: Color32::from_rgb(188, 191, 196),
@@ -385,6 +403,19 @@ impl Tokens {
 
     pub fn current() -> Tokens {
         if is_light() { Self::LIGHT } else { Self::DARK }
+    }
+
+    /// Fill of the edit-mode key while `mode` is the active one.
+    // ponytail: one label colour (`mode_on_text`) serves the five fills; Light needs fills dark enough for
+    // white text, so Spot is a deep orange. A per-mode label token is the way out if a fill must go lighter.
+    pub fn edit_mode_on(&self, mode: EditMode) -> Color32 {
+        match mode {
+            EditMode::Shuffle => self.mode_shuffle,
+            EditMode::Spot => self.mode_spot,
+            EditMode::Slip => self.mode_slip,
+            EditMode::Grid => self.mode_grid,
+            EditMode::GridRelative => self.mode_grid_relative,
+        }
     }
 }
 
@@ -617,6 +648,38 @@ mod tests {
                 assert_eq!(is_light(), latest == egui::Theme::Light);
                 assert_eq!(ctx.global_style().visuals.dark_mode, latest != egui::Theme::Light);
                 frame(&mut app, &ctx, Some(latest), latest == egui::Theme::Light);
+            }
+        }
+    }
+
+    #[test]
+    fn each_edit_mode_has_its_own_readable_active_colour() {
+        // WCAG relative luminance and contrast ratio.
+        fn lum(c: Color32) -> f64 {
+            let lin = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+        }
+        fn contrast(a: Color32, b: Color32) -> f64 {
+            let (a, b) = (lum(a), lum(b));
+            (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        }
+        let modes = [EditMode::Shuffle, EditMode::Spot, EditMode::Slip, EditMode::Grid, EditMode::GridRelative];
+        for (name, t) in [("dark", Tokens::DARK), ("light", Tokens::LIGHT)] {
+            for (i, a) in modes.into_iter().enumerate() {
+                let fill = t.edit_mode_on(a);
+                assert_ne!(fill, t.mode_off, "{name}: {a:?} active must differ from inactive");
+                // Small bold label: WCAG AA wants 4.5:1, at rest and at both ends of the pressed gradient.
+                let pressed = crate::widgets::PRESSED_SHADE.map(|k| crate::widgets::shade(fill, k));
+                for (state, face) in [("active", fill), ("pressed top", pressed[0]), ("pressed bottom", pressed[1])] {
+                    let ratio = contrast(face, t.mode_on_text);
+                    assert!(ratio >= 4.5, "{name}: {a:?} {state} label contrast {ratio:.2} is below 4.5");
+                }
+                for b in &modes[i + 1..] {
+                    assert_ne!(fill, t.edit_mode_on(*b), "{name}: {a:?} and {b:?} share an active colour");
+                }
             }
         }
     }
