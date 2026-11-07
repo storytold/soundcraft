@@ -467,7 +467,8 @@ pub(crate) fn apply_params(slot: &mut PluginSlot, ins: &soundcraft_model::Insert
     // Automation lanes address insert slots; the instrument (`INSTRUMENT_SLOT`) has none, so it
     // must not pick up slot A's lanes.
     let Ok(slot_u8) = u8::try_from(i) else {
-        return apply_values(slot, ins, |_, v| v, |_| false);
+        let stored: Vec<(String, f32)> = ins.params.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        return apply_values(slot, &stored, |_, v| v, |_| false);
     };
     let lane = |k: &str| {
         t.automation
@@ -476,26 +477,42 @@ pub(crate) fn apply_params(slot: &mut PluginSlot, ins: &soundcraft_model::Insert
             .filter(|l| !l.points.is_empty())
     };
     let read = t.mixer.automation_mode.reads();
-    apply_values(slot, ins, |k, val| if read { lane(k).map_or(val, |l| l.value_at(pos, val)) } else { val }, |k| read && lane(k).is_some());
+    // A lane can name a parameter the insert never stored: a hosted plugin keeps its settings in
+    // its own state, so its map starts empty. The lane is then the only value there is — without
+    // this, the lane was never read at all — and where it has no point the parameter keeps the
+    // default the plugin reports.
+    let mut entries: Vec<(String, f32)> = ins.params.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    if read {
+        for l in &t.automation {
+            let AutoParam::Plugin { slot: lane_slot, param } = &l.param else { continue };
+            if *lane_slot != slot_u8 || l.points.is_empty() || entries.iter().any(|(k, _)| k == param) {
+                continue;
+            }
+            let base = slot.plugin.info().param(param).map_or(0.0, |pi| pi.default);
+            entries.push((param.clone(), base));
+        }
+    }
+    apply_values(slot, &entries, |k, val| if read { lane(k).map_or(val, |l| l.value_at(pos, val)) } else { val }, |k| read && lane(k).is_some());
 }
 
-/// Sends each stored param (as mapped by `value`) to the plugin when it changed since last time.
-/// `intentional` marks the parameters the session definitely chose (an automation lane), which are
-/// always sent even when the value happens to equal the plugin's default.
-fn apply_values(slot: &mut PluginSlot, ins: &soundcraft_model::Insert, value: impl Fn(&str, f32) -> f32, intentional: impl Fn(&str) -> bool) {
+/// Sends each parameter (as mapped by `value`) to the plugin when it changed since last time.
+/// `entries` is what the insert stores plus, under read automation, the parameters only a lane
+/// names; `intentional` marks the parameters the session definitely chose (an automation lane),
+/// which are always sent even when the value happens to equal the plugin's default.
+fn apply_values(slot: &mut PluginSlot, entries: &[(String, f32)], value: impl Fn(&str, f32) -> f32, intentional: impl Fn(&str) -> bool) {
     // The bookkeeping is per parameter, not per position: `mix.insert_param` can grow the map while
     // this slot lives (`sync` keeps it when the plugin and channel count are unchanged), and
     // clearing the vectors would forget which values the first pass held back. The next block would
     // then push those defaults over the values the plugin restored, which is what silences a plugin
     // whose session holds its defaults.
-    let stale = slot.keys.len() != ins.params.len() || !slot.keys.iter().zip(ins.params.keys()).all(|(a, b)| a == b);
+    let stale = slot.keys.len() != entries.len() || !slot.keys.iter().zip(entries.iter()).all(|(a, (b, _))| a == b);
     if stale {
         let old_keys = std::mem::take(&mut slot.keys);
         let old_applied = std::mem::take(&mut slot.applied);
         let old_skipped = std::mem::take(&mut slot.skipped);
-        let mut applied = Vec::with_capacity(ins.params.len());
-        let mut skipped = Vec::with_capacity(ins.params.len());
-        for k in ins.params.keys() {
+        let mut applied = Vec::with_capacity(entries.len());
+        let mut skipped = Vec::with_capacity(entries.len());
+        for (k, _) in entries {
             match old_keys.iter().position(|o| o == k) {
                 Some(j) => {
                     applied.push(old_applied.get(j).copied().unwrap_or(f32::NAN));
@@ -509,7 +526,7 @@ fn apply_values(slot: &mut PluginSlot, ins: &soundcraft_model::Insert, value: im
         }
         slot.applied = applied;
         slot.skipped = skipped;
-        slot.keys = ins.params.keys().cloned().collect();
+        slot.keys = entries.iter().map(|(k, _)| k.clone()).collect();
     }
     // First pass over a hosted plugin: it has just loaded its own settings, so a stored value equal to
     // the default it reports is not a choice and is left alone. Older sessions store every parameter
@@ -519,7 +536,7 @@ fn apply_values(slot: &mut PluginSlot, ins: &soundcraft_model::Insert, value: im
     let first = std::mem::take(&mut slot.fresh);
     let mut applied = std::mem::take(&mut slot.applied);
     let mut skipped = std::mem::take(&mut slot.skipped);
-    for (i, ((k, v), last)) in ins.params.iter().zip(applied.iter_mut()).enumerate() {
+    for (i, ((k, v), last)) in entries.iter().zip(applied.iter_mut()).enumerate() {
         let val = value(k, *v);
         // A value held back on the first pass is sent as soon as the session makes it a choice —
         // read automation switched on afterwards — even though it still equals the default.

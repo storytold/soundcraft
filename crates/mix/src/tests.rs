@@ -344,6 +344,37 @@ impl Plugin for Stateful {
     }
 }
 
+/// A built-in gain behind a third-party id, remembering every value pushed to it.
+struct Recording {
+    inner: Box<dyn Plugin>,
+    pushed: Arc<std::sync::Mutex<Vec<(String, f32)>>>,
+}
+
+impl Plugin for Recording {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.pushed.lock().unwrap().push((id.to_string(), v));
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+    }
+    fn state_reader(&mut self) -> Option<Box<dyn soundcraft_dsp::PluginStateReader>> {
+        Some(Box::new(|| Some(Vec::new())))
+    }
+}
+
 struct Clock {
     inner: Box<dyn Plugin>,
     seen: Arc<std::sync::Mutex<Vec<Transport>>>,
@@ -1250,6 +1281,29 @@ fn a_value_held_back_before_read_automation_is_sent_when_it_turns_on() {
     s.track_mut(t).unwrap().mixer.automation_mode = soundcraft_model::AutomationMode::Read;
     render_block(&mut eng, &s, 512);
     assert_eq!(sets.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
+#[test]
+fn an_automation_lane_reaches_a_parameter_the_insert_never_stored() {
+    let (mut s, t) = session_with_dc(0.5, 48_000);
+    let id = "clap:test.lane";
+    // A hosted plugin keeps its settings in its own state, so its stash starts empty: the lane below
+    // names a parameter the session never stored, and walking only the insert's parameters ignored
+    // it entirely — a lane that moved nothing.
+    s.track_mut(t).unwrap().mixer.inserts[0] = Some(Insert::new(id));
+    let mut lane = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: 0, param: "gain".into() });
+    lane.set_point(0, 0.75);
+    s.track_mut(t).unwrap().automation.push(lane);
+
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    let pushed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let fake = Recording { inner: soundcraft_dsp::create("gain").unwrap(), pushed: Arc::clone(&pushed) };
+    eng.adopt(vec![PreparedInstance { track: t, slot: 0, id: id.into(), ch: 1, plugin: Box::new(fake) }]);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(*pushed.lock().unwrap(), vec![("gain".to_string(), 0.75)], "the lane drives a parameter the insert never stored");
+    render_block(&mut eng, &s, 512);
+    assert_eq!(pushed.lock().unwrap().len(), 1, "and it is not sent again while the value holds");
 }
 
 #[test]
