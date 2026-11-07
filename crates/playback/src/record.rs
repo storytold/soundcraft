@@ -623,6 +623,11 @@ struct RingState {
 /// monitoring. Both sides only `try_lock`; it holds at most ~0.5 s and drops the oldest frames.
 /// The input device may run at a different rate than the session, so the reader converts
 /// rates with linear interpolation (cheap, allocation-free, fine for monitoring).
+///
+/// Whatever sits in the FIFO is heard that much later, so the reader also drops any backlog
+/// beyond one input callback plus one read (and some slack for jitter): the input and output
+/// streams start at different moments and their clocks drift, and without the trim that skew
+/// would stay as monitoring latency for as long as the stream runs.
 pub struct InputRing {
     state: Mutex<RingState>,
     pub channels: std::sync::atomic::AtomicUsize,
@@ -630,7 +635,15 @@ pub struct InputRing {
     rate: u32,
     /// Most samples kept: half a second of input, or 24 000 frames when the rate is unknown.
     cap: usize,
+    /// Frames delivered by the last input callback (the input side's buffer size).
+    last_push: std::sync::atomic::AtomicUsize,
 }
+
+/// Input frames kept beyond one input callback plus one read before a backlog is dropped.
+const MONITOR_SLACK: usize = 32;
+/// A backlog is only dropped once it exceeds the allowance by at least this many frames (or by
+/// the allowance itself, whichever is more), so ordinary callback jitter never trims.
+const MONITOR_TRIM_HYSTERESIS: usize = 128;
 
 impl InputRing {
     pub fn new(channels: usize, rate: u32) -> Arc<InputRing> {
@@ -641,12 +654,16 @@ impl InputRing {
             channels: std::sync::atomic::AtomicUsize::new(ch),
             rate,
             cap: frames * ch,
+            last_push: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
     pub fn push(&self, samples: &[f32]) {
+        let ch = self.channels.load(Ordering::Relaxed).max(1);
         if let Ok(mut s) = self.state.try_lock() {
             s.data.extend(samples.iter().copied().map(finite));
+            // Only a callback whose frames were queued sets the backlog allowance.
+            self.last_push.store(samples.len() / ch, Ordering::Relaxed);
             while s.data.len() > self.cap {
                 s.data.pop_front();
             }
@@ -663,6 +680,14 @@ impl InputRing {
         let Ok(mut s) = self.state.try_lock() else { return };
         // Input frames consumed per output frame.
         let step = if self.rate == 0 || session_rate == 0 { 1.0 } else { f64::from(self.rate) / f64::from(session_rate) };
+        // Drop a backlog (oldest first) down to what this read and the next input callback need.
+        let needed = ((frames as f64 * step).ceil() as usize).saturating_add(1);
+        let allowed = self.last_push.load(Ordering::Relaxed).saturating_add(needed).saturating_add(MONITOR_SLACK);
+        let held = s.data.len() / ch;
+        if held > allowed.saturating_add(allowed.max(MONITOR_TRIM_HYSTERESIS)) {
+            let drop = (held - allowed).saturating_mul(ch).min(s.data.len());
+            s.data.drain(..drop);
+        }
         for f in 0..frames {
             // Drop input frames we have moved past; keep the one at `phase` and the next one.
             while s.phase >= 1.0 && s.data.len() >= 2 * ch {
@@ -731,6 +756,34 @@ mod ring_tests {
         assert_eq!(out[0][0], 0.0);
         assert_eq!(out[1][0], 1.0);
         assert_eq!(out[0][49], 98.0);
+    }
+
+    #[test]
+    fn monitor_backlog_is_dropped() {
+        // An output that falls behind by half a second must not keep that half second as latency.
+        let r = InputRing::new(1, 48_000);
+        for i in 0..200 {
+            r.push(&vec![i as f32; 64]);
+        }
+        let mut out = vec![vec![0.0; 64]];
+        r.pop_into(&mut out, 64, 48_000);
+        // What is heard now is from the newest input callbacks, not from 12 800 frames ago.
+        assert!(out[0][0] >= 196.0, "heard frame from callback {}", out[0][0]);
+        let held = r.state.lock().unwrap().data.len();
+        assert!(held <= 64 + 65 + super::MONITOR_SLACK, "{held} frames still queued");
+    }
+
+    #[test]
+    fn monitor_jitter_is_not_trimmed() {
+        // Two input callbacks queued before one read is ordinary jitter: nothing is dropped.
+        let r = InputRing::new(1, 48_000);
+        let first: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        r.push(&first);
+        r.push(&[100.0; 64]);
+        let mut out = vec![vec![0.0; 64]];
+        r.pop_into(&mut out, 64, 48_000);
+        assert_eq!(out[0][0], 0.0);
+        assert_eq!(out[0][63], 63.0);
     }
 
     /// Nothing buffered: silence, not stale data.
