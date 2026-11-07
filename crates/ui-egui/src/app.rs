@@ -243,6 +243,7 @@ impl SoundApp {
 
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        let _language = crate::localization::enter(self.ui.language);
         let ctx = ui.ctx().clone();
         // egui just processed the scripted key events. A scripted release while the host still
         // physically holds the key would report it up; put the host-only state back before any

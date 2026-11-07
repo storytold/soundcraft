@@ -92,9 +92,9 @@ impl SoundApp {
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
         if !armed {
             let why = if self.engine.session().tracks.is_empty() {
-                "Nothing to record on yet: add a track with Track › New…, then click its R button."
+                crate::localization::text("Nothing to record on yet: add a track with Track › New…, then click its R button.")
             } else {
-                "No track is record-enabled: click the R button on the track to record."
+                crate::localization::text("No track is record-enabled: click the R button on the track to record.")
             };
             self.ui.status = why.into();
             self.record_hint = Some((self.last_frame.unwrap_or_default(), why));
@@ -104,7 +104,7 @@ impl SoundApp {
         let takes = match self.arm_recorder() {
             Ok(takes) => takes,
             Err(err) => {
-                self.ui.status = format!("Cannot record: {err}");
+                self.ui.status = crate::localized_format!("Cannot record: {err}", err = err);
                 return;
             }
         };
@@ -156,10 +156,10 @@ impl SoundApp {
     fn arm_recorder(&mut self) -> Result<Vec<soundcraft_engine::io::Take>, String> {
         let name = soundcraft_engine::io::sanitize_name(&self.engine.session().name);
         let unsaved_dir = self.autosave_dir.as_ref().map_or_else(std::env::temp_dir, |d| d.join(name));
-        let Some(r) = &mut self.recorder else { return Err("no audio input device".into()) };
+        let Some(r) = &mut self.recorder else { return Err(crate::localization::text("no audio input device").into()) };
         let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels);
         if plan.is_empty() {
-            return Err("no audio track is record-enabled".into());
+            return Err(crate::localization::text("no audio track is record-enabled").into());
         }
         // The takes are unsaved work: the folder they go into under the autosave root is
         // owner-only, like the autosaves, before the recorder makes anything in it.
@@ -195,8 +195,11 @@ impl SoundApp {
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
-        self.ui.status =
-            if plan.pass.is_some() { format!("Loop-recorded {} take(s)", ids.len() / tracks) } else { format!("Recorded {} clip(s)", ids.len()) };
+        self.ui.status = if plan.pass.is_some() {
+            crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
+        } else {
+            crate::localized_format!("Recorded {} clip(s)", ids.len())
+        };
         if let Some(p) = problem {
             log::warn!("recording: {p}");
             self.ui.status = format!("{} ({p})", self.ui.status);

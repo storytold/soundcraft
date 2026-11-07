@@ -73,14 +73,14 @@ impl Worker {
             Job::Frame { key, path, secs } => {
                 let r = match self.open(key, &path, &mut out) {
                     Some(m) => m.frame_at(secs).map_err(|e| e.to_string()),
-                    None => Err("movie offline".to_string()),
+                    None => Err(crate::localization::text("movie offline").to_string()),
                 };
                 out.push(Done::Frame(key, secs, r));
             }
             Job::Thumb { key, path, secs, h, tk } => {
                 let r = match self.open(key, &path, &mut out) {
                     Some(m) => m.thumbnail_at(secs, h).map_err(|e| e.to_string()),
-                    None => Err("movie offline".to_string()),
+                    None => Err(crate::localization::text("movie offline").to_string()),
                 };
                 out.push(Done::Thumb(tk, r));
             }
@@ -445,20 +445,44 @@ pub fn draw_lane(app: &mut SoundApp, painter: &Painter, s: &Session, track: &Tra
         }
         let p = painter.with_clip_rect(vis);
         let Some(v) = s.video(source) else {
-            p.text(vis.center(), egui::Align2::CENTER_CENTER, "movie missing from session", regular(10.0), Color32::from_rgb(220, 120, 120));
+            p.text(
+                vis.center(),
+                egui::Align2::CENTER_CENTER,
+                crate::localization::text("movie missing from session"),
+                regular(10.0),
+                Color32::from_rgb(220, 120, 120),
+            );
             continue;
         };
         if !on {
-            p.text(vis.center(), egui::Align2::CENTER_CENTER, "Video Track Offline", regular(10.0), Color32::from_gray(170));
+            p.text(
+                vis.center(),
+                egui::Align2::CENTER_CENTER,
+                crate::localization::text("Video Track Offline"),
+                regular(10.0),
+                Color32::from_gray(170),
+            );
             continue;
         }
         if let Some(why) = &v.offline {
-            p.text(vis.center(), egui::Align2::CENTER_CENTER, format!("media offline: {why}"), regular(10.0), Color32::from_rgb(220, 120, 120));
+            p.text(
+                vis.center(),
+                egui::Align2::CENTER_CENTER,
+                crate::localized_format!("media offline: {why}", why = why),
+                regular(10.0),
+                Color32::from_rgb(220, 120, 120),
+            );
             continue;
         }
         let key = MovieKey::new(source, &v.path);
         if let Some(Err(e)) = app.video.info(key) {
-            p.text(vis.center(), egui::Align2::CENTER_CENTER, format!("media offline: {e}"), regular(10.0), Color32::from_rgb(220, 120, 120));
+            p.text(
+                vis.center(),
+                egui::Align2::CENTER_CENTER,
+                crate::localized_format!("media offline: {e}", e = e),
+                regular(10.0),
+                Color32::from_rgb(220, 120, 120),
+            );
             continue;
         }
         let aspect = app.video.info(key).and_then(|i| i.as_ref().ok()).map_or(v.aspect(), MovieInfo::display_aspect) as f32;

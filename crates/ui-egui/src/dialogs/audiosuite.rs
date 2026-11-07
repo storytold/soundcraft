@@ -18,46 +18,46 @@ pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
         if let Some(info) = soundcraft_dsp::plugin_info(&process) {
             for p in info.params {
                 let v = params.entry(p.id.to_string()).or_insert(p.default);
-                ui.add(egui::Slider::new(v, p.min..=p.max).text(p.name));
+                ui.add(egui::Slider::new(v, p.min..=p.max).text(crate::localization::text(p.name)));
             }
         } else {
             match process.as_str() {
                 "normalize" => {
                     let v = params.entry("target_db".into()).or_insert(-0.1);
-                    ui.add(egui::Slider::new(v, -24.0..=0.0).text("Peak dB"));
+                    ui.add(egui::Slider::new(v, -24.0..=0.0).text(crate::localization::text("Peak dB")));
                 }
                 "time_stretch" => {
                     let v = params.entry("ratio".into()).or_insert(1.0);
-                    ui.add(egui::Slider::new(v, 0.25..=4.0).text("Length ratio"));
+                    ui.add(egui::Slider::new(v, 0.25..=4.0).text(crate::localization::text("Length ratio")));
                 }
                 "pitch_shift" => {
                     let v = params.entry("semitones".into()).or_insert(0.0);
-                    ui.add(egui::Slider::new(v, -24.0..=24.0).text("Semitones"));
+                    ui.add(egui::Slider::new(v, -24.0..=24.0).text(crate::localization::text("Semitones")));
                 }
                 "speed_ramp" => {
                     for (id, label, default, choices) in SPEED_RAMP_CHOICES {
                         let v = params.entry(id.to_string()).or_insert(default);
                         ui.horizontal(|ui| {
-                            ui.label(label);
+                            ui.label(crate::localization::text(label));
                             for &(value, name) in choices {
-                                ui.radio_value(v, value, name);
+                                ui.radio_value(v, value, crate::localization::text(name));
                             }
                         });
                     }
                 }
                 _ => {
-                    ui.label("No parameters.");
+                    ui.label(crate::localization::text("No parameters."));
                 }
             }
         }
         ui.ctx().memory_mut(|m| m.data.insert_temp(key, params.clone()));
         let hint = if soundcraft_dsp::is_generator(&process) {
-            "Fills the selection on the selected tracks with a new clip."
+            crate::localization::text("Fills the selection on the selected tracks with a new clip.")
         } else {
-            "Processes the selected clips and replaces them with rendered audio."
+            crate::localization::text("Processes the selected clips and replaces them with rendered audio.")
         };
         ui.label(egui::RichText::new(hint).small());
-        if ui.button(egui::RichText::new("Render").strong()).clicked() {
+        if ui.button(egui::RichText::new(crate::localization::text("Render")).strong()).clicked() {
             let p: serde_json::Map<String, Value> = params.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
             let _ = app.run("audiosuite.process", json!({"process": process, "params": p}));
         }
