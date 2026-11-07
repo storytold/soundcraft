@@ -1197,14 +1197,53 @@ fn apply_matrix_span_matches_the_plain_per_sample_sum() {
     }
 }
 
+/// A volume lane through `points` (sample, dB).
+fn volume_lane(points: &[(i64, f32)]) -> soundcraft_model::AutomationLane {
+    let mut l = soundcraft_model::AutomationLane::new(AutoParam::Volume);
+    for &(at, db) in points {
+        l.set_point(at, db);
+    }
+    l
+}
+
+/// Volume automation is read at every sample: a breakpoint acts on its own sample, and between
+/// breakpoints the gain follows the lane (linear in dB), whatever size the render blocks are. A
+/// 480-sample crossfade used to be resolved once per block, so it moved by up to a block and left
+/// a hole or not depending on where the block edge fell.
 #[test]
-fn gain_ramp_matches_converting_both_ends_every_sample() {
-    for (db0, db1, n) in [(-6.0f32, 3.0f32, 512usize), (0.0, 0.0, 1), (-144.0, 0.0, 300), (2.5, -60.0, 0), (f32::NAN, -3.0, 64), (-200.0, 12.0, 7)] {
-        let ramp = crate::automation::GainRamp::new(db0, db1, n);
-        let (g0, g1) = (db_to_gain(db0), db_to_gain(db1));
-        for i in 0..=n {
-            let want = if n == 0 { g0 } else { g0 + (g1 - g0) * (i as f32 / n as f32) };
-            assert_eq!(ramp.at(i).to_bits(), want.to_bits(), "{db0} -> {db1} dB, sample {i} of {n}");
+fn volume_automation_follows_its_breakpoints_in_any_block_size() {
+    let (mut s, a) = session_with_dc(0.5, 8192);
+    let b = add_dc_track(&mut s, 0.5, 8192);
+    // A falls from 0 to -144 dB across 2760..3240 while B rises, and back across 5760..6240.
+    let fall = volume_lane(&[(0, 0.0), (2760, 0.0), (3240, -144.0), (5760, -144.0), (6240, 0.0)]);
+    let rise = volume_lane(&[(0, -144.0), (2760, -144.0), (3240, 0.0), (5760, 0.0), (6240, -144.0)]);
+    // One track's level at 0 dB, through the pan law.
+    let per_track = render_range(&s, Range::new(0, 64), 64)[0][0] / 2.0;
+    s.track_mut(a).unwrap().automation.push(fall.clone());
+    s.track_mut(b).unwrap().automation.push(rise.clone());
+    let want = |i: i64| per_track * (db_to_gain(fall.value_at(i, 0.0)) + db_to_gain(rise.value_at(i, 0.0)));
+    for block in [1024, 512, 333, 64] {
+        let out = render_range(&s, Range::new(0, 8192), block);
+        for (i, &x) in out[0].iter().enumerate() {
+            let w = want(i as i64);
+            assert!((x - w).abs() <= 1e-5 * w.max(1e-3), "block {block}, sample {i}: {x} vs {w}");
+        }
+    }
+}
+
+/// A master fader's breakpoint acts on its own sample too.
+#[test]
+fn master_volume_automation_follows_its_breakpoints_in_any_block_size() {
+    let (mut s, _) = session_with_dc(0.5, 4096);
+    let dry = render_range(&s, Range::new(0, 64), 64)[0][0];
+    let m = s.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+    let lane = volume_lane(&[(0, 0.0), (1500, 0.0), (1501, -144.0), (2600, -144.0), (2700, -6.0)]);
+    s.track_mut(m).unwrap().automation.push(lane.clone());
+    for block in [1024, 256, 100] {
+        let out = render_range(&s, Range::new(0, 4096), block);
+        for (i, &x) in out[0].iter().enumerate() {
+            let w = dry * db_to_gain(lane.value_at(i as i64, 0.0));
+            assert!((x - w).abs() <= 1e-5 * w.max(1e-3), "block {block}, sample {i}: {x} vs {w}");
         }
     }
 }
