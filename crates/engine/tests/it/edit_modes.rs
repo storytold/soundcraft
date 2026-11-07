@@ -579,3 +579,30 @@ fn moving_a_group_left_past_zero_keeps_its_spacing() {
     run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "by": -1000}));
     assert_eq!(clips(&e, t), [(0, 100), (1500, 100)]);
 }
+
+#[test]
+fn separate_and_range_edits_leave_locked_clips_whole() {
+    let edits = [
+        ("edit.separate", json!({"at": 24_000})),
+        ("edit.separate", json!({"start": 12_000, "end": 36_000})),
+        ("edit.separate_on_grid", json!({"start": 12_000, "end": 36_000})),
+        ("edit.clear", json!({"start": 12_000, "end": 36_000})),
+        ("edit.insert_silence", json!({"start": 24_000, "end": 25_000})),
+    ];
+    for lock in [None, Some("clip.edit_lock"), Some("clip.time_lock")] {
+        for (cmd, p) in &edits {
+            let (mut e, t, ids) = long("slip", &[(0, 48_000, 0)]);
+            if let Some(lock) = lock {
+                run(&mut e, lock, json!({"clips": [ids[0].0]}));
+            }
+            let mut p = p.clone();
+            p["tracks"] = json!([t.0]);
+            run(&mut e, cmd, p);
+            if lock.is_some() {
+                assert_eq!(clips(&e, t), vec![(0, 48_000)], "{lock:?} {cmd}");
+            } else {
+                assert_ne!(clips(&e, t), vec![(0, 48_000)], "unlocked control {cmd}");
+            }
+        }
+    }
+}
