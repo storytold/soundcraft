@@ -3,8 +3,9 @@
 //! Usage: `soundcraft [--demo] [--control <port>] [--no-audio] [session.scraft | audio files…]`; `soundcraft --help` lists the flags and `SOUNDCRAFT_CONTROL_PORT`.
 //!
 //! `--control <port>` (or `SOUNDCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server
-//! (`0` picks a free port and prints it): `{"id":1,"method":"ui.inspect","params":{}}` →
-//! `{"id":1,"ok":true,"result":…}`. See `soundcraft_ui_egui::control` for the methods.
+//! (`0` picks a free port and prints it): `{"id":1,"method":"ui.inspect","params":{},"token":"…"}` →
+//! `{"id":1,"ok":true,"result":…}`, where `token` is `SOUNDCRAFT_CONTROL_TOKEN` (or the one made for
+//! this launch, printed after the port). See `soundcraft_ui_egui::control` for the methods.
 //!
 //! `log` records go to standard error and `<settings dir>/logs/soundcraft.log` (`RUST_LOG` sets the
 //! levels); see [`logging`].
@@ -260,7 +261,7 @@ fn main() -> eframe::Result {
             app.extra.ui_scale = prefs.ui_scale;
             app.ui = prefs;
             if let Some(port) = control_port {
-                let rx = control_server::start(port, cc.egui_ctx.clone());
+                let rx = control_server::start(port, soundcraft_automation::control_token(), cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }
             for f in &files {

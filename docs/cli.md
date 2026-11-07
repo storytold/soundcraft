@@ -80,6 +80,8 @@ link stays. An existing file that is not an input is replaced without asking.
 |---|---|---|
 | `SOUNDCRAFT_CONTROL_PORT` | `app --port` (CLI), `--control` (desktop app) | A port or `host:port`, an IPv6 host in brackets (`[::1]:7979`). The desktop app takes the port of a loopback `host:port` (`127.0.0.1`, `localhost`). Its control server listens on `127.0.0.1` only, so it ignores another host from the variable, with a log warning, and starts no control server; given to `--control`, another host is a usage error |
 
+| `SOUNDCRAFT_CONTROL_TOKEN` | none | The secret every control request carries as `token`. The desktop app refuses requests without it; unset, it makes one per launch and prints it after the port line (`SOUNDCRAFT_CONTROL_TOKEN=…`). `app` and `mcp --connect` send the variable's value |
+
 - A flag wins over its variable.
 - An empty variable counts as unset.
 - A bad value is a usage error that names the variable.

@@ -214,7 +214,8 @@ soundcraft-cli run --demo \
   --cmd 'mix.insert={"track":"Bass","plugin":"eq_7band"}' \
   --bounce mix.wav
 
-# Drive the running app.
+# Drive the running app (the token keeps other local accounts off the loopback port).
+export SOUNDCRAFT_CONTROL_TOKEN=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
 soundcraft --demo --control 7801 &
 soundcraft-cli app --port 7801 transport.play
 soundcraft-cli app --port 7801 ui.screenshot '{"path":"shot.png"}'
