@@ -176,8 +176,8 @@ pub fn load_sampler_bytes(e: &mut Engine, track: TrackId, name: &str, bytes: &[u
 
 /// Resolve each movie referenced by the session file `session` ([`stored_path`]): keep the
 /// resolved path when its file exists, else look for a file of the same name next to the session
-/// (moved projects) and relink. A movie whose stored path is refused and has no such copy is
-/// marked offline. Returns the movies still missing.
+/// (moved projects) and relink. A movie whose stored path is refused, or resolves to a file that
+/// is not there, and has no such copy is marked offline. Returns the movies still missing.
 pub fn relink_videos(s: &mut Session, session: &Path) -> Vec<String> {
     let session_dir = session.parent().unwrap_or(Path::new(""));
     let mut missing = Vec::new();
@@ -198,7 +198,13 @@ pub fn relink_videos(s: &mut Session, session: &Path) -> Vec<String> {
             .find(|c| !name.as_os_str().is_empty() && file_found(c));
         match (near, p) {
             (Some(c), _) => v.path = c.to_string_lossy().into_owned(),
-            (None, Ok(p)) => missing.push(format!("{} (video)", p.display())),
+            // The movie is gone: mark it offline, so the Video track never opens the stored
+            // string (which the working directory would resolve). The string itself is kept as
+            // stored, so saving does not swap a path relative to the session for this folder's.
+            (None, Ok(p)) => {
+                missing.push(format!("{} (video)", p.display()));
+                v.offline = Some("file not found".into());
+            }
             (None, Err(why)) => {
                 missing.push(format!("{} (video): {why}", v.path));
                 v.offline = Some(why);
