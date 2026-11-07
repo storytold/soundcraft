@@ -25,6 +25,11 @@
 //!
 //! Host callbacks report the session's tempo, meter, position and play state.
 //!
+//! `SOUNDCRAFT_AU_MANUFACTURERS` restricts discovery before component enumeration. It accepts
+//! at most 64 distinct, comma-separated, exact four-byte printable ASCII manufacturer codes
+//! (`appl` for Apple).
+//! Empty or invalid overrides disable discovery; leaving it unset preserves the system scan.
+//!
 //! Not hosted yet: Audio Unit editor views (Cocoa `AUCocoaUIBase`), sidechain/extra buses, and
 //! parameters outside the global scope.
 //!
@@ -33,6 +38,8 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[cfg(any(target_os = "macos", test))]
+mod discovery;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod ffi;
@@ -352,5 +359,37 @@ mod tests {
         assert!(create(missing).is_none());
         assert!(plugin_info(missing).is_none());
         assert!(instantiate(missing).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn discovery_override_controls_public_scan_and_rescan() -> std::io::Result<()> {
+        const CHILD_ENV: &str = "SOUNDCRAFT_AU_DISCOVERY_POLICY_CHILD";
+        const TEST_NAME: &str = "tests::discovery_override_controls_public_scan_and_rescan";
+        if let Ok(scenario) = std::env::var(CHILD_ENV) {
+            for descriptors in [scan(), rescan(), scan()] {
+                if scenario == "apple" {
+                    assert!(!descriptors.is_empty(), "macOS supplies Apple Audio Units");
+                    assert!(descriptors.iter().all(|descriptor| descriptor.manufacturer == "appl"), "{descriptors:?}");
+                } else {
+                    assert!(descriptors.is_empty(), "{scenario} override enumerated components: {descriptors:?}");
+                }
+            }
+            return Ok(());
+        }
+        for (scenario, manufacturers) in [("apple", "appl"), ("empty", ""), ("invalid", "appl,bad")] {
+            let result = std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(CHILD_ENV, scenario)
+                .env(discovery::MANUFACTURERS_ENV, manufacturers)
+                .output()?;
+            assert!(
+                result.status.success(),
+                "{scenario} child failed:\n{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        Ok(())
     }
 }

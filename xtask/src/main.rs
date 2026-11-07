@@ -11,13 +11,27 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn cargo_bin() -> String {
-    std::env::var("CARGO").unwrap_or_else(|_| "cargo".into())
+fn cargo_command(args: &[&str], isolate_plugins: bool) -> Command {
+    let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    command.args(args).current_dir(root());
+    if isolate_plugins {
+        command.env("SOUNDCRAFT_CLAP_SEARCH_PATHS", "");
+        command.env("SOUNDCRAFT_VST3_SEARCH_PATHS", "");
+        command.env("SOUNDCRAFT_AU_MANUFACTURERS", "appl");
+        for name in ["SOUNDCRAFT_CLAP_SMOKE", "SOUNDCRAFT_VST3_SMOKE", "SOUNDCRAFT_AU_SMOKE"] {
+            command.env_remove(name);
+        }
+    }
+    command
+}
+
+fn run_cargo(args: &[&str], isolate_plugins: bool) -> Result<(), String> {
+    let st = cargo_command(args, isolate_plugins).status().map_err(|e| e.to_string())?;
+    if st.success() { Ok(()) } else { Err(format!("cargo {} failed", args.join(" "))) }
 }
 
 fn cargo(args: &[&str]) -> Result<(), String> {
-    let st = Command::new(cargo_bin()).args(args).current_dir(root()).status().map_err(|e| e.to_string())?;
-    if st.success() { Ok(()) } else { Err(format!("cargo {} failed", args.join(" "))) }
+    run_cargo(args, false)
 }
 
 /// Layer table: crate name (minus `soundcraft-`) → layer. Apps and xtask are exempt.
@@ -42,9 +56,8 @@ const STANDALONE: &[&str] = &["time", "audio-io", "midi", "video", "dsp"];
 const UI_CRATES: &[&str] = &["craft-ui", "egui", "eframe", "winit", "egui_kittest", "rfd", "egui-wgpu", "egui_glow"];
 const EXEMPT: &[&str] = &["soundcraft", "soundcraft-cli", "soundcraft-web", "xtask"];
 
-fn layers() -> Result<(), String> {
-    let out =
-        Command::new("cargo").args(["metadata", "--format-version", "1", "--no-deps"]).current_dir(root()).output().map_err(|e| e.to_string())?;
+fn layers(isolate_plugins: bool) -> Result<(), String> {
+    let out = cargo_command(&["metadata", "--format-version", "1", "--no-deps"], isolate_plugins).output().map_err(|e| e.to_string())?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
     let mut problems = Vec::new();
     for p in v["packages"].as_array().cloned().unwrap_or_default() {
@@ -135,7 +148,7 @@ const WASM: &[&str] = &[
     "soundcraft-ui-egui",
 ];
 
-fn wasm() -> Result<(), String> {
+fn wasm(isolate_plugins: bool) -> Result<(), String> {
     let mut args = vec!["check", "--target", "wasm32-unknown-unknown", "--keep-going"];
     for c in WASM {
         args.push("-p");
@@ -145,22 +158,21 @@ fn wasm() -> Result<(), String> {
         args.push("-p");
         args.push("soundcraft-web");
     }
-    cargo(&args)
+    run_cargo(&args, isolate_plugins)
 }
 
 /// Test targets for the test build. Examples are left out so they aren't linked; clippy
 /// `--all-targets` still compiles them.
 const TEST_TARGETS: [&str; 4] = ["--workspace", "--lib", "--bins", "--tests"];
 
-fn nextest_available() -> bool {
-    Command::new(cargo_bin()).args(["nextest", "--version"]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+fn nextest_available(isolate_plugins: bool) -> bool {
+    cargo_command(&["nextest", "--version"], isolate_plugins).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
 /// `[[test]]` targets with `harness = false`, as (package, target). Their own `main` cannot answer
 /// nextest's `--list`, so they run under `cargo test`.
-fn own_main_tests() -> Result<Vec<(String, String)>, String> {
-    let out =
-        Command::new(cargo_bin()).args(["metadata", "--format-version", "1", "--no-deps"]).current_dir(root()).output().map_err(|e| e.to_string())?;
+fn own_main_tests(isolate_plugins: bool) -> Result<Vec<(String, String)>, String> {
+    let out = cargo_command(&["metadata", "--format-version", "1", "--no-deps"], isolate_plugins).output().map_err(|e| e.to_string())?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
     let mut found = Vec::new();
     for p in v["packages"].as_array().cloned().unwrap_or_default() {
@@ -185,12 +197,12 @@ fn harness_false_tests(manifest: &str) -> Vec<String> {
 }
 
 /// Workspace tests: cargo nextest when installed, else cargo test. Doctests run apart.
-fn test() -> Result<(), String> {
-    if !nextest_available() {
+fn test(isolate_plugins: bool) -> Result<(), String> {
+    if !nextest_available(isolate_plugins) {
         eprintln!("note: cargo-nextest is not installed, running cargo test (cargo install cargo-nextest --locked)");
-        return cargo(&[&["test"][..], &TEST_TARGETS[..]].concat());
+        return run_cargo(&[&["test"][..], &TEST_TARGETS[..]].concat(), isolate_plugins);
     }
-    let own = own_main_tests()?;
+    let own = own_main_tests(isolate_plugins)?;
     let mut args = vec!["nextest", "run"];
     args.extend(TEST_TARGETS);
     let skip = format!("not ({})", own.iter().map(|(p, t)| format!("binary_id(={p}::{t})")).collect::<Vec<_>>().join(" | "));
@@ -198,7 +210,7 @@ fn test() -> Result<(), String> {
         // A binary-level filter keeps nextest from running these binaries to list their tests.
         args.extend(["-E", &skip]);
     }
-    cargo(&args)?;
+    run_cargo(&args, isolate_plugins)?;
     if own.is_empty() {
         return Ok(());
     }
@@ -211,23 +223,23 @@ fn test() -> Result<(), String> {
     for t in targets {
         args.extend(["--test", t]);
     }
-    cargo(&args)
+    run_cargo(&args, isolate_plugins)
 }
 
 /// nextest does not run doctests.
-fn doctest() -> Result<(), String> {
-    cargo(&["test", "--workspace", "--doc"])
+fn doctest(isolate_plugins: bool) -> Result<(), String> {
+    run_cargo(&["test", "--workspace", "--doc"], isolate_plugins)
 }
 
 fn ci() -> Result<(), String> {
     let steps: Vec<(&str, Box<dyn Fn() -> Result<(), String>>)> = vec![
-        ("fmt", Box::new(|| cargo(&["fmt", "--all", "--", "--check"]))),
-        ("clippy", Box::new(|| cargo(&["clippy", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]))),
-        ("test", Box::new(test)),
-        ("doctest", Box::new(doctest)),
+        ("fmt", Box::new(|| run_cargo(&["fmt", "--all", "--", "--check"], true))),
+        ("clippy", Box::new(|| run_cargo(&["clippy", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"], true))),
+        ("test", Box::new(|| test(true))),
+        ("doctest", Box::new(|| doctest(true))),
         ("assets", Box::new(assets)),
-        ("layers", Box::new(layers)),
-        ("wasm", Box::new(wasm)),
+        ("layers", Box::new(|| layers(true))),
+        ("wasm", Box::new(|| wasm(true))),
     ];
     let mut summary = Vec::new();
     for (name, f) in &steps {
@@ -248,11 +260,11 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
         Some("ci") => ci(),
-        Some("test") => test(),
-        Some("layers") => layers(),
+        Some("test") => test(false),
+        Some("layers") => layers(false),
         Some("assets") => assets(),
         Some("parity") => parity(),
-        Some("wasm") => wasm(),
+        Some("wasm") => wasm(false),
         Some("version") => version::run(args.get(1..).unwrap_or(&[])),
         Some("ico") => ico::run(args.get(1..).unwrap_or(&[])),
         _ => Err("usage: cargo xtask <ci|test|layers|assets|parity|wasm|version>".into()),

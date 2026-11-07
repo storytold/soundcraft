@@ -2,7 +2,7 @@
 
 use crate::ffi::{self, Instance, PARAM_FLAG_DISPLAY_LOG, PARAM_FLAG_METER_READ_ONLY, PARAM_FLAG_WRITABLE, RawParam};
 use crate::plugin::AuPlugin;
-use crate::{AuDescriptor, AuError, SUPPORTED_TYPES, TYPE_EFFECT, TYPE_INSTRUMENT, TYPE_MUSIC_EFFECT, parse_id};
+use crate::{AuDescriptor, AuError, TYPE_EFFECT, TYPE_INSTRUMENT, TYPE_MUSIC_EFFECT, parse_id};
 use soundcraft_dsp::{ParamInfo, Plugin, PluginInfo, Taper, Unit};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -43,8 +43,10 @@ fn version_string(v: u32) -> String {
 
 fn list() -> Vec<AuDescriptor> {
     let mut out: Vec<AuDescriptor> = Vec::new();
-    for ty in SUPPORTED_TYPES {
-        for c in ffi::components(ty) {
+    let override_value = std::env::var_os(crate::discovery::MANUFACTURERS_ENV);
+    let policy = crate::discovery::DiscoveryPolicy::from_override(override_value.as_deref());
+    policy.for_each_query(|ty, manufacturer| {
+        for c in ffi::components(ty, manufacturer) {
             let id = crate::format_id(c.ty, c.subtype, c.manufacturer);
             if out.iter().any(|o| o.id == id) {
                 continue;
@@ -63,7 +65,7 @@ fn list() -> Vec<AuDescriptor> {
                 vendor,
             });
         }
-    }
+    });
     out.sort_by_key(|d| d.name.to_lowercase());
     out
 }
