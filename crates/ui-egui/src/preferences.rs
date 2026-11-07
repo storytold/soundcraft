@@ -73,10 +73,12 @@ impl ReduceVisualEffects {
 
 /// The level a send made in the Mix window starts at (Mixing › Sends Default to).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum SendsDefault {
+    // Stored and set (`ui.set`) with the same ids as `ui.sends_default` takes.
     #[default]
+    #[serde(rename = "-inf")]
     NegativeInfinity,
+    #[serde(rename = "0")]
     Unity,
 }
 

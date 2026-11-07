@@ -860,6 +860,22 @@ mod tests {
         assert!(!app.engine.is_dirty(), "a preference is not a document edit");
     }
 
+    /// `ui.set` takes the same `-inf` and `0` as `ui.sends_default`, and a bad value changes nothing.
+    #[test]
+    fn ui_set_takes_the_same_sends_default_levels() {
+        use crate::preferences::SendsDefault;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let result = app.run("ui.set", json!({"sends_default": "0"})).unwrap();
+        assert_eq!((result["ui"]["sends_default"].clone(), app.ui.sends_default), (json!("0"), SendsDefault::Unity));
+        let result = app.run("ui.set", json!({"sends_default": "-inf"})).unwrap();
+        assert_eq!((result["ui"]["sends_default"].clone(), app.ui.sends_default), (json!("-inf"), SendsDefault::NegativeInfinity));
+        app.run("ui.set", json!({"sends_default": "0"})).unwrap();
+        for bad in [json!("unity"), json!("-6"), json!(0)] {
+            assert!(app.run("ui.set", json!({"sends_default": bad})).is_err(), "{bad} accepted");
+            assert_eq!(app.ui.sends_default, SendsDefault::Unity, "{bad} changed the setting");
+        }
+    }
+
     #[test]
     fn mix_view_aliases_are_allocated_once() {
         let first = ui_aliases();
