@@ -534,6 +534,53 @@ fn shift_and_cmd_click_on_track_names_extend_the_selection() {
     }
 }
 
+/// #1254: double-clicking a track's colour strip selects the track and opens the Color Palette;
+/// a single click only selects it.
+#[test]
+fn double_clicking_the_color_strip_opens_the_color_palette() {
+    let mut h = harness(3);
+    let ids = row_ids(&h);
+    let strip = |h: &Harness<SoundApp>, i: usize| pos2(row(h, i).min.x + layout::STRIP_W / 2.0, row(h, i).center().y);
+    h.state_mut().engine.execute("edit.select", &json!({"tracks": [ids[0].0]})).unwrap();
+    h.run_steps(2);
+    let at = strip(&h, 1);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[1]]);
+    assert!(!h.state().ui.show_color_palette, "a single click on the strip doesn't open the palette");
+    h.run_steps(30);
+    let at = strip(&h, 2);
+    click(&mut h, at);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[2]]);
+    assert!(h.state().ui.show_color_palette, "a double click on the strip opens the palette");
+}
+
+/// #1254: a double click on the strip of one of several selected tracks keeps them all selected,
+/// so the palette colours every one; with Cmd held the double-clicked track ends selected too.
+#[test]
+fn double_clicking_a_selected_tracks_strip_keeps_the_selection() {
+    let mut h = harness(3);
+    let ids = row_ids(&h);
+    let strip = |h: &Harness<SoundApp>, i: usize| pos2(row(h, i).min.x + layout::STRIP_W / 2.0, row(h, i).center().y);
+    h.state_mut().engine.execute("edit.select", &json!({"tracks": [ids[0].0, ids[2].0]})).unwrap();
+    h.run_steps(2);
+    let at = strip(&h, 2);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[0], ids[2]], "a plain click on a selected strip keeps the selection");
+    assert!(!h.state().ui.show_color_palette);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[0], ids[2]], "both tracks stay selected");
+    assert!(h.state().ui.show_color_palette, "a double click on the strip opens the palette");
+
+    h.state_mut().ui.show_color_palette = false;
+    h.run_steps(30);
+    let at = strip(&h, 0);
+    click_with(&mut h, at, egui::Modifiers::COMMAND);
+    click_with(&mut h, at, egui::Modifiers::COMMAND);
+    assert!(h.state().engine.session().edit.selected_tracks.contains(&ids[0]), "a Cmd double click leaves its track selected");
+    assert!(h.state().ui.show_color_palette, "a Cmd double click on the strip opens the palette");
+}
+
 #[test]
 fn a_quick_drag_from_a_clip_edge_trims_it() {
     let mut h = smart_demo();
