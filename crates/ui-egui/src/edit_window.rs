@@ -27,9 +27,13 @@ mod universe;
 
 #[cfg(test)]
 use automation::automation_id;
+pub(crate) use clips::draw_clip_labels;
 pub use clips::strip_silence_stroke;
 #[cfg(test)]
-use clips::{clip_name_height, fade_curve_points};
+use clips::{
+    ClipCut, PILL_BG, PILL_HEIGHT, PILL_INSET, PILL_MIN_WIDTH, PILL_PAD, clip_cut, clip_cut_in, clip_cuts, clip_marks, fade_curve_points,
+    marks_pill_left, name_pill_width,
+};
 use drag::drive_drag;
 #[cfg(test)]
 use drag::fade_drag_range;
