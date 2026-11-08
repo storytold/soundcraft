@@ -197,7 +197,8 @@ impl Player {
         self.load.snapshot()
     }
 
-    /// Starts the worst load and the late count again.
+    /// Clears the published load and the dropout counts. The in-progress window is dropped on the
+    /// next callback.
     pub fn reset_audio_load(&self) {
         self.load.reset();
     }
