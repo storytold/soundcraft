@@ -956,4 +956,79 @@ mod tests {
             assert_eq!(display_menu_label(path, path.rsplit(" > ").next().unwrap()), expected);
         }
     }
+
+    fn retired_feature_label(label: &str) -> Option<&'static str> {
+        let lower = label.to_lowercase();
+        [
+            "audiosuite",
+            "beat detective",
+            "elastic audio",
+            "x-form",
+            "quickpunch",
+            "trackpunch",
+            "ableton link",
+            "pro tools search",
+            "pro tools projects",
+            "melodyne",
+            "heat",
+            "eq3",
+            "bf-76",
+            "dyn3",
+            "maxim",
+            "pitch ii",
+            "pitch shift legacy",
+            "vari-fi",
+            "d-verb",
+            "mod delay iii",
+            "sci-fi",
+            "eleven lite",
+            "lo-fi",
+            "recti-fi",
+            "sansamp psa-1",
+        ]
+        .into_iter()
+        // Whole labels or words: Maximizer is our processor, not the retired Maxim name.
+        .find(|retired| {
+            lower.match_indices(retired).any(|(start, token)| {
+                let before = lower[..start].chars().next_back();
+                let after = lower[start + token.len()..].chars().next();
+                before.is_none_or(|c| !c.is_alphanumeric()) && after.is_none_or(|c| !c.is_alphanumeric())
+            })
+        })
+    }
+
+    #[test]
+    fn retired_labels_stay_out_of_rendered_menus_and_public_registries() {
+        fn check(nodes: &[MenuNode]) {
+            for node in nodes {
+                assert_eq!(retired_feature_label(&node.label), None, "{}: {}", node.path, node.label);
+                check(&node.children);
+            }
+        }
+        check(&tree());
+        for (_, label, _, _) in UI_COMMANDS {
+            assert_eq!(retired_feature_label(label), None, "UI command: {label}");
+        }
+        for command in soundcraft_engine::cmd::command_specs() {
+            assert_eq!(retired_feature_label(command.label), None, "{}: {}", command.id, command.label);
+        }
+        for plugin in soundcraft_dsp::plugins() {
+            assert_eq!(retired_feature_label(plugin.name), None, "{}: {}", plugin.id, plugin.name);
+            assert_eq!(retired_feature_label(plugin.short_name), None, "{}: {}", plugin.id, plugin.short_name);
+        }
+        // The guard only checks built-in display values. Paths, processor ids and user text stay unchanged.
+        assert!(AUDIOSUITE.iter().any(|(path, _)| *path == "AudioSuite > Harmonic > Lo-Fi"));
+        assert!(soundcraft_dsp::plugin_info("lofi").is_some());
+        assert_eq!(soundcraft_engine::feature_names::display_label("A future descriptive feature"), "A future descriptive feature");
+    }
+
+    #[test]
+    fn display_guard_rejects_retired_labels_without_rejecting_own_processors() {
+        for label in ["AUDIOSUITE", "Beat Detective", "QuickPunch", "Activate HEAT", "BF-76", "Dyn3 De-Esser", "Lo-Fi"] {
+            assert!(retired_feature_label(label).is_some(), "{label}");
+        }
+        for label in ["Offline Processing", "Beat Analysis", "Audio Stretch", "Pitch Preserving", "Maximizer", "Bit Crusher", "Room Reverb"] {
+            assert_eq!(retired_feature_label(label), None, "{label}");
+        }
+    }
 }

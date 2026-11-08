@@ -158,7 +158,7 @@ pub struct PluginInfo {
     pub category: Category,
     pub params: &'static [ParamInfo],
     pub is_instrument: bool,
-    /// Usable as an offline (offline) process.
+    /// Usable as an offline process.
     pub audiosuite: bool,
 }
 

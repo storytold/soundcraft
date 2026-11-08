@@ -44,13 +44,15 @@ Other offline items already have descriptive names. Multiple legacy entries mapp
 
 ## Product-name decision
 
+Deferred by the owner. The SoundCraft product name remains unchanged; this work only changes feature labels.
+
 The SoundCraft app name has a separate clearance concern involving the established audio brand Soundcraft. A candidate for review is **ArtCraft Audio**, a descriptive extension of the existing suite identity. It is only a proposal; no availability or legal clearance is claimed. Avoid adopting another audio product name simply because it ends in “Craft.”
 
 A product rename needs an owner decision and a separate migration PR covering app/window titles, website and release copy, package/binary names, bundle/application ids, installers, desktop files, update feeds, settings locations, file associations, shortcuts, URLs and external integrations. Preserve old command/package aliases and discover existing user data rather than resetting it. Verify the existing ArtCraft mark license applies to the new context before changing any brand assets. This feature-label draft makes none of those product-identity changes.
 
 ## Validation and release gates
 
-- Regression tests cover old catalog-to-command mappings, own processor names, deduplication and continued opening of the Beat Analysis dialog through its legacy menu path.
+- Regression tests cover old catalog-to-command mappings, own processor names, deduplication and continued opening of the Beat Analysis dialog through its legacy menu path. Guards scan the rendered menu tree, UI/engine command labels and processor display names for retired labels; compatibility paths and ids are excluded, and unknown display text still falls back unchanged.
 - Menu tree identity uses the stable path, not the rendered name. Preferences keep their existing section identity while drawing and searching the descriptive name.
 - This main branch currently ships an English-only interface. Carry the mapping into pending localization PRs as they land; do not reintroduce vendor marks in translated labels.
 - Run `cargo xtask ci` on the final head. Exercise offline processing from the menus, old automation paths, opening saved sessions containing `lofi` and `x-form`, Undo/Redo, and preference search.
