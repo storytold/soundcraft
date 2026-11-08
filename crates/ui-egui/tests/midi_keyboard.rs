@@ -67,6 +67,27 @@ fn the_computer_rows_play_two_octaves_while_the_keyboard_is_open() {
 }
 
 #[test]
+fn a_key_held_across_a_replaced_player_is_not_left_counted() {
+    let (mut h, keys) = harness();
+    key(&mut h, Key::Z, true);
+    assert_eq!(sounding(&h), vec![(keys, 60)]);
+    // A device change builds a new player: the note went to the old one, which is gone. An entry
+    // left behind keeps its count at one, so the next press of that key is never sent (`*n == 1`
+    // never holds) and the key stays silent for good.
+    h.state_mut().player_gen += 1;
+    h.step();
+    assert!(sounding(&h).is_empty(), "nothing is held on a player that never heard it");
+    // The physical release arrives after the swap: there is nothing left to release.
+    key(&mut h, Key::Z, false);
+    assert!(sounding(&h).is_empty());
+    // And the key plays again, counted from one on the new player.
+    key(&mut h, Key::Z, true);
+    assert_eq!(h.state().keyboard.sounding.get(&(keys, 60)), Some(&1), "the count belongs to the new player");
+    key(&mut h, Key::Z, false);
+    assert!(sounding(&h).is_empty());
+}
+
+#[test]
 fn octave_velocity_and_transpose_move_the_notes() {
     let (mut h, keys) = harness();
     key(&mut h, Key::Quote, true);

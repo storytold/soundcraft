@@ -72,6 +72,8 @@ pub struct KeyboardState {
     mouse: Option<Held>,
     /// Notes playing, per track and pitch, with how many keys hold each.
     pub sounding: BTreeMap<(TrackId, u8), u32>,
+    /// Which player those notes went to: a replaced player has heard none of them.
+    player_gen: u64,
     /// Step input: where the chord being held goes.
     chord_at: Option<Samples>,
 }
@@ -213,6 +215,30 @@ fn stop(app: &mut SoundApp, held: Held) {
     }
 }
 
+/// A player that was replaced has heard none of what is held on the old one. What is held goes to
+/// the new player, and the count starts over there: an entry left behind also blocks the next press
+/// of that key, because its count is already 1 and the note is never sent.
+fn follow_player(app: &mut SoundApp) {
+    if app.keyboard.player_gen == app.player_gen {
+        return;
+    }
+    app.keyboard.player_gen = app.player_gen;
+    let held: Vec<(TrackId, u8)> = app.keyboard.sounding.keys().copied().collect();
+    let Some(player) = &app.player else {
+        // No player, nothing has sounded: what the map describes belongs to the one that is gone,
+        // and a key still recorded as down would swallow its next press.
+        app.keyboard.sounding.clear();
+        app.keyboard.keys.clear();
+        app.keyboard.mouse = None;
+        app.keyboard.chord_at = None;
+        return;
+    };
+    let velocity = app.ui.midi_keyboard.velocity.clamp(1, 127);
+    for (t, pitch) in held {
+        player.note(t, pitch, velocity);
+    }
+}
+
 /// Lets go of every note (the window closed, the keyboard lost the keys, the app lost focus).
 fn release_all(app: &mut SoundApp) {
     let keys = std::mem::take(&mut app.keyboard.keys);
@@ -270,6 +296,7 @@ fn velocity_by(app: &mut SoundApp, d: i32) {
 /// Takes the keyboard's keys out of this frame's input before the shortcuts see them. Call before
 /// `shortcuts::handle`.
 pub fn capture(app: &mut SoundApp, ctx: &egui::Context) {
+    follow_player(app);
     let open = app.ui.show_midi_keyboard;
     if open && !app.keyboard.was_open {
         // Opening the keyboard means playing it.
