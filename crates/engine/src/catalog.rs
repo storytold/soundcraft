@@ -12,14 +12,6 @@ pub const MENUS: &str = include_str!("../catalog/menus.txt");
 
 /// Catalog path → command id, for entries whose label or menu differs from ours.
 pub const ALIASES: &[(&str, &str)] = &[
-    // Historical catalog paths remain valid when their display names change.
-    ("Clip > Elastic Properties", "clip.elastic_properties"),
-    ("Options > QuickPunch", "options.quickpunch"),
-    ("Options > TrackPunch", "options.trackpunch"),
-    ("View > Transport > Ableton Link", "view.transport_ableton_link"),
-    ("Event > Beat Detective", "event.beat_detective"),
-    ("File > Export > Sibelius...", "file.export_sibelius"),
-    ("File > Send To... > Sibelius", "file.send_to_sibelius"),
     ("File > Open > Session...", "session.open"),
     ("Edit > Can't Undo", "edit.undo"),
     ("Edit > Can't Redo", "edit.redo"),
@@ -73,13 +65,32 @@ pub const ALIASES: &[(&str, &str)] = &[
     ("View > Rulers > Chord Symbols", "view.ruler"),
 ];
 
+// Name migration fallbacks run after explicit UI mappings so opening a dialog
+// keeps its original command and enablement rather than becoming a direct edit.
+const LEGACY_LABEL_ALIASES: &[(&str, &str)] = &[
+    // Historical catalog paths remain valid when their display names change.
+    ("Clip > Elastic Properties", "clip.elastic_properties"),
+    ("Options > QuickPunch", "options.quickpunch"),
+    ("Options > TrackPunch", "options.trackpunch"),
+    ("View > Transport > Ableton Link", "view.transport_ableton_link"),
+    ("Event > Beat Detective", "event.beat_detective"),
+    ("File > Export > Sibelius...", "file.export_sibelius"),
+    ("File > Send To... > Sibelius", "file.send_to_sibelius"),
+];
+
 pub fn catalog() -> Vec<&'static str> {
     MENUS.lines().map(str::trim).filter(|l| !l.is_empty()).collect()
 }
 
 /// Command id implementing a catalog entry, if any.
 pub fn implemented_by(entry: &str, extra: &[(&str, &str)]) -> Option<String> {
-    if let Some((_, id)) = ALIASES.iter().chain(crate::catalog_more::ALIASES_MORE.iter()).chain(extra.iter()).find(|(p, _)| *p == entry) {
+    if let Some((_, id)) = ALIASES
+        .iter()
+        .chain(crate::catalog_more::ALIASES_MORE.iter())
+        .chain(extra.iter())
+        .chain(LEGACY_LABEL_ALIASES.iter())
+        .find(|(p, _)| *p == entry)
+    {
         return Some((*id).to_string());
     }
     let parts: Vec<&str> = entry.split(" > ").collect();
@@ -124,7 +135,7 @@ mod tests {
 
     #[test]
     fn aliases_point_at_real_commands() {
-        for (path, id) in ALIASES.iter().chain(crate::catalog_more::ALIASES_MORE.iter()) {
+        for (path, id) in ALIASES.iter().chain(crate::catalog_more::ALIASES_MORE.iter()).chain(LEGACY_LABEL_ALIASES.iter()) {
             assert!(crate::find_command(id).is_some(), "{path} → unknown {id}");
             assert!(catalog().contains(path), "alias for unknown catalog entry {path}");
         }
@@ -142,6 +153,8 @@ mod tests {
 
     #[test]
     fn renamed_labels_keep_legacy_catalog_dispatch() {
+        let ui = [("Event > Beat Detective", "window.beat_detective")];
+        assert_eq!(implemented_by("Event > Beat Detective", &ui).as_deref(), Some("window.beat_detective"));
         for (path, id, label) in [
             ("Options > QuickPunch", "options.quickpunch", "Punch Recording"),
             ("Options > TrackPunch", "options.trackpunch", "Track Punch Recording"),
