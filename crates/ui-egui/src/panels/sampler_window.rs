@@ -139,10 +139,10 @@ pub fn sample_strip(app: &mut SoundApp, ui: &mut Ui, tid: TrackId, ins: &Insert)
         let can_pick = app.services.pick_open.is_some();
         let load = ui.add_enabled(can_pick, egui::Button::new("Load Sample…"));
         let load = if can_pick { load } else { load.on_disabled_hover_text("Drop an audio file on this window") };
-        if load.clicked()
-            && let Some(pick) = &app.services.pick_open
-            && let Some(path) = pick("mix.sampler_load", &FileFormat::readable_extensions())
-        {
+        if load.clicked() {
+            app.services.ask(&format!("sample{}", tid.0), crate::services::Pick::Open("mix.sampler_load".into()));
+        }
+        if let Some(path) = app.services.take(&format!("sample{}", tid.0)) {
             match crate::dialogs::unicode(&path) {
                 Ok(path) => {
                     let _ = app.run("mix.sampler_load", json!({"track": tid.0, "path": path}));

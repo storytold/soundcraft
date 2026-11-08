@@ -63,7 +63,7 @@ mod state;
 
 #[cfg(test)]
 use app::{automation_step_due, editor_changes, editor_states_due, failed_plugin_status};
-pub use services::Services;
+pub use services::{Pick, Services, StartPick};
 pub use state::{DragSource, MainWindow};
 
 /// UI state (serde, so agents can read and set it).

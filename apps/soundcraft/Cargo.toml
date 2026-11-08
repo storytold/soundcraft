@@ -42,6 +42,9 @@ rfd.workspace = true
 winresource = "0.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# File dialogs as sheets (src/sheet.rs): the window to hang them on, and waiting for their answer.
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+pollster = "1"
 muda = { version = "0.21.2", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSResponder"] }

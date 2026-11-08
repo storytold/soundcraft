@@ -20,6 +20,8 @@ mod launch_args;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+#[cfg(target_os = "macos")]
+mod sheet;
 mod switch;
 
 use env::Env;
@@ -144,22 +146,32 @@ fn save_prefs(env: &Env, ui: &UiState) {
     }
 }
 
+/// The file types an open dialog for `purpose` offers: (name, extensions).
+fn open_filter(purpose: &str) -> (&'static str, Vec<&'static str>) {
+    match purpose {
+        "session.open" => ("SoundCraft Session", vec!["scraft"]),
+        "file.import_midi" => ("MIDI", vec!["mid", "midi", "smf"]),
+        _ => ("Audio", FileFormat::readable_extensions()),
+    }
+}
+
+/// The file type a save dialog for `purpose` offers.
+fn save_filter(purpose: &str) -> (&'static str, Vec<&'static str>) {
+    match purpose {
+        "file.bounce_mix" => ("Audio", FileFormat::writable_extensions()),
+        _ => ("SoundCraft Session", vec!["scraft"]),
+    }
+}
+
 fn services() -> Services {
     Services {
         pick_open: Some(Box::new(|purpose: &str, _exts: &[&str]| {
-            let d = rfd::FileDialog::new();
-            let d = match purpose {
-                "session.open" => d.add_filter("SoundCraft Session", &["scraft"]),
-                "file.import_midi" => d.add_filter("MIDI", &["mid", "midi", "smf"]),
-                _ => d.add_filter("Audio", &FileFormat::readable_extensions()),
-            };
-            d.pick_file()
+            let (name, exts) = open_filter(purpose);
+            rfd::FileDialog::new().add_filter(name, &exts).pick_file()
         })),
         pick_save: Some(Box::new(|purpose: &str, path: &std::path::Path| {
-            let mut d = match purpose {
-                "file.bounce_mix" => rfd::FileDialog::new().add_filter("Audio", &FileFormat::writable_extensions()),
-                _ => rfd::FileDialog::new().add_filter("SoundCraft Session", &["scraft"]),
-            };
+            let (name, exts) = save_filter(purpose);
+            let mut d = rfd::FileDialog::new().add_filter(name, &exts);
             if let Some(dir) = path.parent().filter(|dir| dir.is_dir()) {
                 d = d.set_directory(dir);
             }
@@ -169,6 +181,9 @@ fn services() -> Services {
             d.save_file()
         })),
         pick_folder: Some(Box::new(|start: &std::path::Path| rfd::FileDialog::new().set_directory(start).pick_folder())),
+        // macOS shows dialogs as sheets (`sheet::start_pick`), set once the window exists.
+        start_pick: None,
+        ..Services::default()
     }
 }
 
@@ -252,6 +267,12 @@ fn main() -> eframe::Result {
             let player =
                 if no_audio { None } else { Some(soundcraft_playback::Player::with_config(Arc::new(engine.session().clone()), &prefs.audio)) };
             let mut app = SoundApp::new(engine, player, services());
+            // File dialogs are sheets on macOS: a modal loop inside the event handler crashes the app
+            // when the dialog is resized.
+            #[cfg(target_os = "macos")]
+            if let Some(window) = cc.winit_window().cloned() {
+                app.services.start_pick = Some(sheet::start_pick(window, cc.egui_ctx.clone()));
+            }
             app.set_startup_update_check(true);
             app.set_system_fonts(env.system_fonts());
             app.autosave_dir = env.config_dir.as_ref().map(|d| d.join("Autosave"));
