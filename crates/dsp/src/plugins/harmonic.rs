@@ -1,4 +1,4 @@
-//! Harmonic effects: Saturator (tanh), Lo-Fi (bit/sample-rate reduction), Rectifier and
+//! Harmonic effects: Saturator (tanh), Bit Crusher (bit/sample-rate reduction), Rectifier and
 //! Subharmonic (octave-down bass synthesis).
 
 use crate::biquad::{Biquad, FilterType};
@@ -134,8 +134,8 @@ static LOFI_PARAMS: [ParamInfo; 4] = [
 
 pub static LOFI_INFO: PluginInfo = PluginInfo {
     id: "lofi",
-    name: "Lo-Fi",
-    short_name: "LoFi",
+    name: "Bit Crusher",
+    short_name: "Crush",
     category: Category::Harmonic,
     params: &LOFI_PARAMS,
     is_instrument: false,

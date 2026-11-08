@@ -60,7 +60,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.clip_effects_dock", "Clip Effects", "View > Other Displays > Lower Dock > Clip Effects", Some("Alt+6")),
     ("window.search", "Search", "Window > Pro Tools Search", Some("Cmd+Ctrl+S")),
     ("window.score", "Score Editor", "Window > Score Editor", Some("Cmd+Ctrl+=")),
-    ("window.beat_detective", "Beat Detective", "", None),
+    ("window.beat_detective", "Beat Analysis", "", None),
     ("window.tempo_ops", "Tempo Operations", "", None),
     ("window.time_ops", "Time Operations", "", None),
     ("window.midi_ops", "MIDI Operations", "", None),
@@ -190,10 +190,10 @@ fn insert_path(roots: &mut Vec<MenuNode>, line: &str) {
             path.push_str(" > ");
         }
         path.push_str(p);
-        let idx = match level.iter().position(|n| n.label == *p) {
+        let idx = match level.iter().position(|n| n.path == path) {
             Some(i) => i,
             None => {
-                level.push(MenuNode { label: p.to_string(), path: path.clone(), children: Vec::new() });
+                level.push(MenuNode { label: display_menu_label(&path, p), path: path.clone(), children: Vec::new() });
                 level.len() - 1
             }
         };
@@ -202,21 +202,47 @@ fn insert_path(roots: &mut Vec<MenuNode>, line: &str) {
     }
 }
 
+/// Display names come from our processor registry; paths remain legacy automation keys.
+fn display_menu_label(path: &str, fallback: &str) -> String {
+    if let Some((_, process)) = AUDIOSUITE.iter().find(|(key, _)| *key == path) {
+        if let Some(info) = soundcraft_dsp::plugin_info(process) {
+            return info.name.to_string();
+        }
+        let label = match *process {
+            "pitch_shift" => "Pitch Shift",
+            "time_stretch" => "Time Stretch",
+            "speed_ramp" => "Speed Ramp",
+            _ => fallback,
+        };
+        return label.to_string();
+    }
+    soundcraft_engine::feature_names::display_label(fallback).to_string()
+}
+
 pub fn tree() -> Vec<MenuNode> {
     let mut roots: Vec<MenuNode> = Vec::new();
+    let mut processors = std::collections::HashSet::new();
     for line in catalog::catalog() {
+        // Several legacy entries map to one processor. List it once per category,
+        // while keeping every historical path accepted by command_for_path.
+        if let Some((_, process)) = AUDIOSUITE.iter().find(|(path, _)| *path == line) {
+            let category = line.rsplit_once(" > ").map_or(line, |(category, _)| category);
+            if !processors.insert((category, *process)) {
+                continue;
+            }
+        }
         insert_path(&mut roots, line);
     }
     insert_path(&mut roots, "Window > Reset Panel Layout");
     // Not in the observed catalog either; Pro Tools lists it right under Identify Sync Point.
-    if let Some(clip) = roots.iter_mut().find(|n| n.label == "Clip") {
-        let at = clip.children.iter().position(|n| n.label == "Identify Sync Point").map_or(clip.children.len(), |i| i + 1);
+    if let Some(clip) = roots.iter_mut().find(|n| n.path == "Clip") {
+        let at = clip.children.iter().position(|n| n.path == "Clip > Identify Sync Point").map_or(clip.children.len(), |i| i + 1);
         clip.children.insert(at, MenuNode { label: "Remove Sync Point".into(), path: "Clip > Remove Sync Point".into(), children: Vec::new() });
     }
     // Not in the incumbent catalog, but the only UI path to an empty MIDI clip (#282).
     // It creates a clip rather than acting on the selected ones, so it leads the Clip menu.
     insert_path(&mut roots, "Clip > New MIDI Clip");
-    if let Some(clip) = roots.iter_mut().find(|n| n.label == "Clip") {
+    if let Some(clip) = roots.iter_mut().find(|n| n.path == "Clip") {
         clip.children.rotate_right(1);
     }
     for (path, _) in MENU_WINDOWS {
@@ -269,11 +295,11 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                                     instrument_menu(app, ui);
                                 }
                             }
-                            if root.label == "AudioSuite" {
+                            if root.path == "AudioSuite" {
                                 ui.separator();
                                 ui.label(egui::RichText::new("Processes selected clips offline").small().color(t.text_dim));
                             }
-                            if root.label == "Window" {
+                            if root.path == "Window" {
                                 ui.separator();
                                 let mut separate = app.ui.mix_separate;
                                 if ui
@@ -901,5 +927,33 @@ mod tests {
         assert_eq!(app.ui.audiosuite.as_deref(), Some("ring_mod"));
         let info = soundcraft_dsp::plugin_info("ring_mod").unwrap();
         assert!(info.audiosuite && info.category == soundcraft_dsp::Category::Modulation);
+    }
+
+    #[test]
+    fn offline_menu_uses_own_names_and_keeps_legacy_dispatch() {
+        for (path, process) in AUDIOSUITE {
+            assert_eq!(command_for_path(path, &ui_aliases()).as_deref(), Some("audiosuite.process"));
+            assert_eq!(params_for(path, "audiosuite.process")["process"], *process);
+            if let Some(info) = soundcraft_dsp::plugin_info(process) {
+                assert_eq!(display_menu_label(path, "ignored"), info.name);
+            }
+        }
+        let tree = tree();
+        let offline = tree.iter().find(|node| node.path == "AudioSuite").unwrap();
+        assert_eq!(offline.label, "Offline Processing");
+        let dynamics = offline.children.iter().find(|node| node.path == "AudioSuite > Dynamics").unwrap();
+        assert_eq!(dynamics.children.iter().filter(|node| node.label == "Compressor/Limiter").count(), 1);
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let command = command_for_path("Event > Beat Detective", &ui_aliases()).unwrap();
+        invoke_menu(&mut app, &command, "Event > Beat Detective");
+        assert!(app.ui.show_beat_detective);
+        for (path, expected) in [
+            ("AudioSuite > Pitch Shift > Vari-Fi", "Speed Ramp"),
+            ("AudioSuite > Harmonic > Lo-Fi", "Bit Crusher"),
+            ("Track > ARA Plugins > Melodyne", "Pitch Editor"),
+            ("Options > Activate HEAT", "Activate Harmonic Processing"),
+        ] {
+            assert_eq!(display_menu_label(path, path.rsplit(" > ").next().unwrap()), expected);
+        }
     }
 }

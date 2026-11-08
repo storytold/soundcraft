@@ -12,6 +12,14 @@ pub const MENUS: &str = include_str!("../catalog/menus.txt");
 
 /// Catalog path → command id, for entries whose label or menu differs from ours.
 pub const ALIASES: &[(&str, &str)] = &[
+    // Historical catalog paths remain valid when their display names change.
+    ("Clip > Elastic Properties", "clip.elastic_properties"),
+    ("Options > QuickPunch", "options.quickpunch"),
+    ("Options > TrackPunch", "options.trackpunch"),
+    ("View > Transport > Ableton Link", "view.transport_ableton_link"),
+    ("Event > Beat Detective", "event.beat_detective"),
+    ("File > Export > Sibelius...", "file.export_sibelius"),
+    ("File > Send To... > Sibelius", "file.send_to_sibelius"),
     ("File > Open > Session...", "session.open"),
     ("Edit > Can't Undo", "edit.undo"),
     ("Edit > Can't Redo", "edit.redo"),
@@ -130,5 +138,20 @@ mod tests {
         // The floor only ever rises.
         assert!(pct >= 25.0, "engine parity regressed: {pct}%");
         assert!(done >= 396, "engine parity regressed: {done} menu items");
+    }
+
+    #[test]
+    fn renamed_labels_keep_legacy_catalog_dispatch() {
+        for (path, id, label) in [
+            ("Options > QuickPunch", "options.quickpunch", "Punch Recording"),
+            ("Options > TrackPunch", "options.trackpunch", "Track Punch Recording"),
+            ("View > Transport > Ableton Link", "view.transport_ableton_link", "Tempo Sync Display"),
+            ("Event > Beat Detective", "event.beat_detective", "Beat Analysis"),
+            ("File > Export > Sibelius...", "file.export_sibelius", "MusicXML..."),
+            ("File > Send To... > Sibelius", "file.send_to_sibelius", "MusicXML"),
+        ] {
+            assert_eq!(implemented_by(path, &[]).as_deref(), Some(id));
+            assert_eq!(crate::find_command(id).unwrap().label, label);
+        }
     }
 }

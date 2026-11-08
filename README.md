@@ -69,7 +69,7 @@
 ## What it does
 
 SoundCraft follows the workflow audio engineers already know: an **Edit window** for arranging and
-editing, a **Mix window** for balancing, edit modes, tools, playlists, memory locations, AudioSuite
+editing, a **Mix window** for balancing, edit modes, tools, playlists, memory locations, Offline Processing
 processing and the rest. If you've spent years in that workflow, your hands should already know
 where things are.
 
@@ -126,7 +126,7 @@ where things are.
   modulator, saturator, lo-fi, rectifier, subharmonic, pitch shifter, time shift, gain, trim,
   invert, DC removal, signal generator, dither, a subtractive synth, a drum synth and a sampler
   (plays any WAV, AIFF, FLAC, MP3 or OGG across the keyboard), all original. **CLAP plugins**
-  load too. Any processor runs offline as AudioSuite, and user presets save per plugin.
+  load too. Any processor is available in Offline Processing, and user presets save per plugin.
 - **MIDI:** instrument and MIDI tracks, a piano-roll MIDI editor with a velocity lane, an event
   list, a score view, step input, quantize, transpose, real-time properties, Standard MIDI Files,
   and Audio-to-MIDI from a sung or played melody.
@@ -134,7 +134,7 @@ where things are.
   playlist per take, input monitoring through the full channel strip, and autosave with recovery.
 - **Time and tempo:** Bars|Beats, Min:Secs, Timecode (every rate, drop-frame included),
   Feet+Frames and Samples; tempo and meter maps with a tempo editor; linear, parabolic and
-  S-curve tempo ramps; key signatures and detected chords; Beat Detective and Identify Beat;
+  S-curve tempo ramps; key signatures and detected chords; Beat Analysis and Identify Beat;
   pitch-preserving Elastic warping.
 - **Audio files:** WAV/BWF/RF64, AIFF/AIFC and FLAC in and out; MP3, Ogg Vorbis, AAC, ALAC, CAF
   and the audio of MP4/MOV movies in. Any sample rate and bit depth.
