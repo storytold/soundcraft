@@ -60,6 +60,46 @@ fn main() {
         }
         flags
     }
+    // The character AppKit shows and matches for `key`: the key's own (lower case) for letters,
+    // digits and punctuation, AppKit's function-key characters for the others.
+    fn equivalent(key: egui::Key) -> String {
+        use egui::Key;
+        let f = |c: u32| char::from_u32(c).map(String::from).unwrap_or_default();
+        match key {
+            Key::ArrowUp => f(0xF700),
+            Key::ArrowDown => f(0xF701),
+            Key::ArrowLeft => f(0xF702),
+            Key::ArrowRight => f(0xF703),
+            Key::Home => f(0xF729),
+            Key::End => f(0xF72B),
+            Key::PageUp => f(0xF72C),
+            Key::PageDown => f(0xF72D),
+            Key::Delete => f(0xF728),
+            Key::Backspace => f(0x08),
+            Key::Enter => "\r".into(),
+            Key::Tab => "\t".into(),
+            Key::Escape => f(0x1B),
+            Key::Space => " ".into(),
+            Key::Colon => ":".into(),
+            Key::Comma => ",".into(),
+            Key::Minus => "-".into(),
+            Key::Period => ".".into(),
+            Key::Plus => "+".into(),
+            Key::Equals => "=".into(),
+            Key::Semicolon => ";".into(),
+            Key::Backslash => "\\".into(),
+            Key::Slash => "/".into(),
+            Key::OpenBracket => "[".into(),
+            Key::CloseBracket => "]".into(),
+            Key::Backtick => "`".into(),
+            Key::Quote => "'".into(),
+            k if k.name().chars().count() == 1 => k.name().to_lowercase(),
+            k => match k.name().strip_prefix('F').and_then(|n| n.parse::<u32>().ok()) {
+                Some(n) => f(0xF704 + n - 1),
+                None => panic!("no key equivalent character known for {k:?}"),
+            },
+        }
+    }
     fn check(menu: &NSMenu, node: &menus::MenuNode, aliases: &[(&str, &str)], shown: &mut usize) {
         // AppKit adds its own items to the end of the Edit menu (Start Dictation, Emoji & Symbols).
         assert!(menu.numberOfItems() >= node.children.len() as isize, "{}", node.label);
@@ -73,7 +113,7 @@ fn main() {
             let key = item.keyEquivalent().to_string();
             match shortcut.and_then(shortcuts::menu_key_equivalent) {
                 Some(want) => {
-                    assert!(!key.is_empty(), "{} shows no {shortcut:?}", child.path);
+                    assert_eq!(key, equivalent(want.1), "{} {shortcut:?}", child.path);
                     assert_eq!(item.keyEquivalentModifierMask(), mask(want), "{} {shortcut:?}", child.path);
                     *shown += 1;
                 }
@@ -103,6 +143,8 @@ fn main() {
     };
     let edit = submenu(&bar, "Edit");
     let copy = edit.itemAtIndex(index(&edit, "Copy")).expect("Edit › Copy");
+    let cut = edit.itemAtIndex(index(&edit, "Cut")).expect("Edit › Cut");
+    let paste = edit.itemAtIndex(index(&edit, "Paste")).expect("Edit › Paste");
     assert_eq!((copy.keyEquivalent().to_string().as_str(), copy.keyEquivalentModifierMask()), ("c", NSEventModifierFlags::Command), "⌘C");
     let app_menu = submenu(&bar, "SoundCraft");
     let quit = app_menu.itemAtIndex(index(&app_menu, "Quit SoundCraft")).expect("Quit");
@@ -212,22 +254,42 @@ fn main() {
     // ⌘C and ⌘V are egui-winit's clipboard events, so a text field still copies and pastes while
     // Edit › Copy and Paste are enabled and AppKit takes the keys.
     let track = app.engine.session().tracks.first().map(|t| t.id.0).expect("a demo track");
-    // The menu refreshes its enabled items a few times a second (`SYNC_EVERY`).
-    let synced = |app: &mut SoundApp, menu: &mut NativeMenu| {
-        std::thread::sleep(std::time::Duration::from_millis(300));
+    // The menu refreshes its enabled items a few times a second (`SYNC_EVERY`): run frames until
+    // `item` is enabled, for at most five seconds.
+    let synced = |app: &mut SoundApp, menu: &mut NativeMenu, item: &objc2_app_kit::NSMenuItem| {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
         frame(app, menu);
+        while !item.isEnabled() {
+            assert!(std::time::Instant::now() < until, "{} never became enabled", item.title());
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            frame(app, menu);
+        }
     };
+
+    // A disabled item's key equivalent queues nothing: with nothing selected, Copy is disabled and
+    // ⌘C doesn't run it (in the app, the window then gets the key as without the menu bar).
+    assert!(!copy.isEnabled(), "nothing selected yet");
+    bar.performKeyEquivalent(&dequeue(&key_down("c", 8, NSEventModifierFlags::Command, false)));
+    let (events, _) = frame(&mut app, &mut menu);
+    assert!(events.is_empty(), "a disabled item's key equivalent adds nothing: {events:?}");
+
     app.engine.execute("edit.select", &json!({"tracks": [track], "start": 0, "end": 48_000})).expect("a selection");
-    synced(&mut app, &mut menu);
+    synced(&mut app, &mut menu, &copy);
     assert!(bar.performKeyEquivalent(&dequeue(&key_down("c", 8, NSEventModifierFlags::Command, false))), "⌘C is Edit › Copy's key equivalent");
     let (events, _) = frame(&mut app, &mut menu);
     assert_eq!(events, [egui::Event::Copy], "⌘C is a Copy event");
     app.engine.execute("edit.copy", &json!({})).expect("clips on the clipboard");
-    synced(&mut app, &mut menu);
+    synced(&mut app, &mut menu, &paste);
     assert!(bar.performKeyEquivalent(&dequeue(&key_down("v", 9, NSEventModifierFlags::Command, false))), "⌘V is Edit › Paste's key equivalent");
     let (events, commands) = frame(&mut app, &mut menu);
     assert!(events.is_empty(), "the paste comes from the clipboard next frame: {events:?}");
     assert!(commands.contains(&egui::ViewportCommand::RequestPaste), "⌘V asks the window for the clipboard: {commands:?}");
+
+    // ⌘X is egui-winit's Cut event, as ⌘C is Copy.
+    synced(&mut app, &mut menu, &cut);
+    assert!(bar.performKeyEquivalent(&dequeue(&key_down("x", 7, NSEventModifierFlags::Command, false))), "⌘X is Edit › Cut's key equivalent");
+    let (events, _) = frame(&mut app, &mut menu);
+    assert_eq!(events, [egui::Event::Cut], "⌘X is a Cut event");
 
     println!("native_menu_appkit: ok");
 }
