@@ -51,7 +51,7 @@ pub fn default_search_paths() -> Vec<PathBuf> {
 
 /// The OS-specific standard locations, given the relevant environment values.
 /// Also reads `COMMONPROGRAMFILES(X86)` on Windows and the current executable for the
-/// application-local directory on Windows and Unix, when available.
+/// application-local directory, when available (macOS requires a `Contents/MacOS` bundle layout).
 pub fn os_search_paths(os: Os, home: Option<PathBuf>, common_program_files: Option<PathBuf>, local_app_data: Option<PathBuf>) -> Vec<PathBuf> {
     search_paths(
         os,
@@ -79,6 +79,12 @@ fn search_paths(
                 v.push(h.join("Library/Audio/Plug-Ins/VST3"));
             }
             v.push(PathBuf::from("/Library/Audio/Plug-Ins/VST3"));
+            v.push(PathBuf::from("/Network/Library/Audio/Plug-Ins/VST3"));
+            // Standalone binaries have no app bundle; don't scan a directory above their executable.
+            let contents = executable.as_deref().and_then(Path::parent).filter(|dir| dir.ends_with("Contents/MacOS")).and_then(Path::parent);
+            if let Some(contents) = contents {
+                v.push(contents.join("VST3"));
+            }
         }
         Os::Windows => {
             if let Some(l) = local_app_data {
@@ -331,10 +337,34 @@ mod tests {
     }
 
     #[test]
-    fn os_paths_cover_the_standard_locations() {
-        let mac = os_search_paths(Os::MacOs, Some("/Users/u".into()), None, None);
-        assert_eq!(mac, vec![PathBuf::from("/Users/u/Library/Audio/Plug-Ins/VST3"), PathBuf::from("/Library/Audio/Plug-Ins/VST3")]);
+    fn default_paths_are_not_empty() {
         assert!(!default_search_paths().is_empty());
+    }
+
+    #[test]
+    fn macos_paths_cover_documented_locations_in_order() {
+        let exe = PathBuf::from("/Applications/SoundCraft.app/Contents/MacOS/soundcraft");
+        let global_and_app = vec![
+            PathBuf::from("/Library/Audio/Plug-Ins/VST3"),
+            PathBuf::from("/Network/Library/Audio/Plug-Ins/VST3"),
+            PathBuf::from("/Applications/SoundCraft.app/Contents/VST3"),
+        ];
+        let mut with_home = vec![PathBuf::from("/Users/u/Library/Audio/Plug-Ins/VST3")];
+        with_home.extend(global_and_app.iter().cloned());
+        assert_eq!(search_paths(Os::MacOs, Some("/Users/u".into()), None, None, None, Some(exe.clone())), with_home);
+        assert_eq!(search_paths(Os::MacOs, None, None, None, None, Some(exe)), global_and_app);
+    }
+
+    #[test]
+    fn macos_paths_without_a_bundle_keep_only_standard_directories() {
+        let globals = vec![PathBuf::from("/Library/Audio/Plug-Ins/VST3"), PathBuf::from("/Network/Library/Audio/Plug-Ins/VST3")];
+        assert_eq!(search_paths(Os::MacOs, None, None, None, None, None), globals);
+        for exe in ["/usr/local/bin/soundcraft", "/tmp/MacOS/soundcraft", "/tmp/Contents/bin/soundcraft"] {
+            assert_eq!(search_paths(Os::MacOs, None, None, None, None, Some(exe.into())), globals);
+        }
+        let mut with_home = vec![PathBuf::from("/Users/u/Library/Audio/Plug-Ins/VST3")];
+        with_home.extend(globals);
+        assert_eq!(search_paths(Os::MacOs, Some("/Users/u".into()), None, None, None, None), with_home);
     }
 
     #[test]
