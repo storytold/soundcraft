@@ -10,16 +10,22 @@ Use short, descriptive names for our own features. Built-in processing menus use
 | --- | --- | --- |
 | AudioSuite | Offline Processing | `audiosuite.process`, catalog paths, UI state |
 | Beat Detective | Beat Analysis | `event.beat_detective`, `window.beat_detective` |
-| Elastic Audio / Elastic Properties | Audio Stretch / Audio Stretch Properties | `track.elastic`, `clip.elastic_properties`, saved track values |
-| x-form | Pitch Preserving | serialized `x-form` algorithm value |
+| Elastic Audio / Elastic Properties | Real-Time Stretch / Real-Time Stretch Properties | `track.elastic`, `clip.elastic_properties`, saved track values |
+| x-form | Rendered (High Quality) | serialized `x-form` algorithm value |
 | QuickPunch / TrackPunch | Punch Recording / Track Punch Recording | option ids and stored fields |
-| Ableton Link | Tempo Sync Display | existing display flag only, no claim of Link interoperability |
+| Ableton Link | Tempo Sync | existing display flag only, no claim of Link interoperability; disabled placeholder |
 | Pro Tools Search / Pro Tools Projects | Search / Shared Projects | historical catalog paths |
-| Melodyne | Pitch Editor | disabled ARA placeholder, no added implementation |
-| HEAT / Activate HEAT | Harmonic Processing / Activate Harmonic Processing | disabled catalog entries |
+| Melodyne | No ARA plug-ins | disabled ARA placeholder, no added implementation |
+| HEAT / Activate HEAT | Analog Saturation / Activate Analog Saturation | disabled catalog entries |
 | Sibelius export/send | MusicXML | command ids; actual export format unchanged |
 
-The stretch algorithm labels describe the existing behavior. This change does not add a distinct third-party algorithm, synchronization protocol, ARA integration or hosted service. Disabled placeholders stay disabled.
+The stretch algorithm labels describe the existing behavior. This change does not add a distinct third-party algorithm, synchronization protocol, ARA integration or hosted service.
+
+## Disabled placeholders
+
+Four features we do not have keep their five catalog leaves: Tempo Sync (the incumbent's Ableton Link item), No ARA plug-ins (Track and Clip › ARA Plugins › Melodyne) and Analog Saturation (View › Mix Window Views › HEAT and Options › Activate HEAT). They keep the incumbent's place in the menu, and therefore the parity floor, but they are never interactive: the menu draws them disabled with a "Not available yet." hover, `item_state` refuses them whatever their command would allow, and no label claims the protocol, plug-in format or processor behind them. "No ARA plug-ins" says what the item is: a place where plug-ins of that kind would be listed once a host exists. Preferences already has the same rule for settings without a backend.
+
+Adding a placeholder means adding its catalog path to `PLACEHOLDERS` in `crates/engine/src/catalog.rs`; an engine test checks that each one is still a catalog entry with a descriptive label, and a UI test opens each one and checks that it is still in the menu and stays disabled. A placeholder becomes a feature by wiring a command and removing its path from that list.
 
 ## Offline processor names
 

@@ -78,6 +78,24 @@ const LEGACY_LABEL_ALIASES: &[(&str, &str)] = &[
     ("File > Send To... > Sibelius", "file.send_to_sibelius"),
 ];
 
+/// Catalog leaves naming features we do not have. They keep the incumbent's place — and with it
+/// the parity floor — under a descriptive label, but they are never interactive: the UI draws them
+/// disabled with a "Not available yet." hover until the behaviour exists, as Preferences does for
+/// settings without a backend. Naming the place does not claim the protocol, plug-in format or
+/// processor behind it.
+pub const PLACEHOLDERS: &[&str] = &[
+    "View > Transport > Ableton Link",
+    "Track > ARA Plugins > Melodyne",
+    "Clip > ARA Plugins > Melodyne",
+    "View > Mix Window Views > HEAT",
+    "Options > Activate HEAT",
+];
+
+/// Whether `path` is a catalog leaf kept as a placeholder for a feature we do not have.
+pub fn is_placeholder(path: &str) -> bool {
+    PLACEHOLDERS.contains(&path)
+}
+
 pub fn catalog() -> Vec<&'static str> {
     MENUS.lines().map(str::trim).filter(|l| !l.is_empty()).collect()
 }
@@ -151,6 +169,25 @@ mod tests {
         assert!(done >= 396, "engine parity regressed: {done} menu items");
     }
 
+    /// A placeholder must keep its catalog place (so the floor holds and the menu still lists it)
+    /// and must not read as the incumbent's own name: the label says what it is, not who makes it.
+    #[test]
+    fn placeholders_keep_their_place_with_honest_labels() {
+        let entries = catalog();
+        for path in PLACEHOLDERS {
+            assert!(entries.contains(path), "placeholder for an unknown catalog entry: {path}");
+            assert!(is_placeholder(path), "{path}");
+            let leaf = path.rsplit_once(" > ").map_or(*path, |(_, leaf)| leaf);
+            let label = crate::feature_names::display_label(leaf);
+            assert_ne!(label, leaf, "{path} still shows the incumbent's name");
+            for retired in ["ableton", "melodyne", "heat"] {
+                assert!(!label.to_lowercase().contains(retired), "{path}: {label}");
+            }
+        }
+        assert!(!is_placeholder("Options > Loop Record"), "an implemented item is not a placeholder");
+        assert!(!is_placeholder("View > Transport > MIDI Controls"));
+    }
+
     #[test]
     fn renamed_labels_keep_legacy_catalog_dispatch() {
         let ui = [("Event > Beat Detective", "window.beat_detective")];
@@ -158,7 +195,7 @@ mod tests {
         for (path, id, label) in [
             ("Options > QuickPunch", "options.quickpunch", "Punch Recording"),
             ("Options > TrackPunch", "options.trackpunch", "Track Punch Recording"),
-            ("View > Transport > Ableton Link", "view.transport_ableton_link", "Tempo Sync Display"),
+            ("View > Transport > Ableton Link", "view.transport_ableton_link", "Tempo Sync"),
             ("Event > Beat Detective", "event.beat_detective", "Beat Analysis"),
             ("File > Export > Sibelius...", "file.export_sibelius", "MusicXML..."),
             ("File > Send To... > Sibelius", "file.send_to_sibelius", "MusicXML"),

@@ -1,5 +1,8 @@
 //! The menu bar, built from the incumbent's menu catalog so every item has its place. Items
 //! that map to a command are live; the rest are shown disabled (and listed in the parity report).
+//! A few features we do not have yet keep their catalog place as placeholders
+//! ([`catalog::PLACEHOLDERS`]): they are never interactive and say so on hover, as the Preferences
+//! placeholders do.
 
 use crate::{MainWindow, SoundApp};
 use serde_json::{Value, json};
@@ -360,7 +363,9 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
     let label = if checked { format!("✔ {label}") } else { label };
     let shortcut = id.as_deref().and_then(shortcut_for).unwrap_or("");
     let btn = egui::Button::new(label).shortcut_text(crate::shortcuts::shortcut_label(shortcut, ui.ctx().os().is_mac()));
-    if ui.add_enabled(enabled, btn).clicked()
+    let response = ui.add_enabled(enabled, btn);
+    let response = if catalog::is_placeholder(&n.path) { response.on_disabled_hover_text("Not available yet.") } else { response };
+    if response.clicked()
         && let Some(id) = id
     {
         invoke_menu(app, &id, &n.path);
@@ -375,7 +380,7 @@ pub fn command_for_path(path: &str, extra: &[(&str, &str)]) -> Option<String> {
 
 /// Enabled and checked state shared by all menu presentations.
 pub fn item_state(app: &SoundApp, path: &str, id: Option<&str>) -> (bool, bool) {
-    let enabled = if app.ui.show_preferences {
+    let enabled = if app.ui.show_preferences || catalog::is_placeholder(path) {
         false
     } else {
         match id {
@@ -950,8 +955,8 @@ mod tests {
         for (path, expected) in [
             ("AudioSuite > Pitch Shift > Vari-Fi", "Speed Ramp"),
             ("AudioSuite > Harmonic > Lo-Fi", "Bit Crusher"),
-            ("Track > ARA Plugins > Melodyne", "Pitch Editor"),
-            ("Options > Activate HEAT", "Activate Harmonic Processing"),
+            ("Track > ARA Plugins > Melodyne", "No ARA plug-ins"),
+            ("Options > Activate HEAT", "Activate Analog Saturation"),
         ] {
             assert_eq!(display_menu_label(path, path.rsplit(" > ").next().unwrap()), expected);
         }
@@ -1022,12 +1027,49 @@ mod tests {
         assert_eq!(soundcraft_engine::feature_names::display_label("A future descriptive feature"), "A future descriptive feature");
     }
 
+    /// A placeholder keeps the incumbent's catalog place with an honest label, and is never
+    /// interactive: `item_state` refuses it however enabled its command would be.
+    #[test]
+    fn feature_placeholders_stay_disabled_with_honest_labels() {
+        fn leaf<'a>(nodes: &'a [MenuNode], path: &str) -> Option<&'a MenuNode> {
+            for node in nodes {
+                if node.path == path && node.children.is_empty() {
+                    return Some(node);
+                }
+                if let Some(found) = leaf(&node.children, path) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let tree = tree();
+        for (path, label) in [
+            ("View > Transport > Ableton Link", "Tempo Sync"),
+            ("Track > ARA Plugins > Melodyne", "No ARA plug-ins"),
+            ("Clip > ARA Plugins > Melodyne", "No ARA plug-ins"),
+            ("View > Mix Window Views > HEAT", "Analog Saturation"),
+            ("Options > Activate HEAT", "Activate Analog Saturation"),
+        ] {
+            assert!(catalog::is_placeholder(path), "{path} is not listed as a placeholder");
+            let node = leaf(&tree, path).unwrap_or_else(|| panic!("placeholder missing from the menu: {path}"));
+            assert_eq!(node.label, label, "{path}");
+            let id = command_for_path(path, &ui_aliases());
+            assert!(!item_state(&app, path, id.as_deref()).0, "{path} must stay disabled");
+        }
+        // The flag command behind Tempo Sync is still registered (ids stay), only its menu item is a
+        // placeholder: nothing claims a synchronization protocol we do not implement.
+        assert!(soundcraft_engine::find_command("view.transport_ableton_link").is_some());
+    }
+
     #[test]
     fn display_guard_rejects_retired_labels_without_rejecting_own_processors() {
         for label in ["AUDIOSUITE", "Beat Detective", "QuickPunch", "Activate HEAT", "BF-76", "Dyn3 De-Esser", "Lo-Fi"] {
             assert!(retired_feature_label(label).is_some(), "{label}");
         }
-        for label in ["Offline Processing", "Beat Analysis", "Audio Stretch", "Pitch Preserving", "Maximizer", "Bit Crusher", "Room Reverb"] {
+        for label in
+            ["Offline Processing", "Beat Analysis", "Real-Time Stretch", "Rendered (High Quality)", "Maximizer", "Bit Crusher", "Room Reverb"]
+        {
             assert_eq!(retired_feature_label(label), None, "{label}");
         }
     }

@@ -184,7 +184,7 @@ pub fn specs() -> Vec<CommandSpec> {
         flag!("view.transport_counters", "Counters", ["View", "Transport"], "view.transport.counters"),
         flag!("view.transport_midi_controls", "MIDI Controls", ["View", "Transport"], "view.transport.midi_controls"),
         flag!("view.transport_synchronization", "Synchronization", ["View", "Transport"], "view.transport.synchronization"),
-        flag!("view.transport_ableton_link", "Tempo Sync Display", ["View", "Transport"], "view.transport.ableton_link"),
+        flag!("view.transport_ableton_link", "Tempo Sync", ["View", "Transport"], "view.transport.ableton_link"),
         flag!("view.transport_output_meters", "Output Meters", ["View", "Transport"], "view.transport.output_meters"),
         flag!("view.transport_expanded", "Expanded", ["View", "Transport"], "view.transport.expanded"),
         cmd!(query "view.flags", "View Flags", [], None, "{prefix?} — lists the view/option flags that are on", always, |e, p| {
