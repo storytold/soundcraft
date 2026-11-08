@@ -6,6 +6,7 @@ use crate::SoundApp;
 use crate::theme::{ThemeMode, Tokens};
 use egui::{Key, Modifiers, RichText, Stroke, vec2};
 use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
 
 const PREFERENCES_WINDOW_WIDTH: f32 = 900.0;
 const PREFERENCES_WINDOW_HEIGHT: f32 = 945.0;
@@ -116,11 +117,13 @@ impl PreferencesPage {
 }
 
 /// Values edited in the window before the user applies or cancels them.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PreferencesDraft {
     theme: ThemeMode,
     reduce_visual_effects: ReduceVisualEffects,
     undo_levels: usize,
+    shortcuts: BTreeMap<String, String>,
+    edited_shortcuts: BTreeSet<String>,
     theme_edited: bool,
     reduce_visual_effects_edited: bool,
     undo_levels_edited: bool,
@@ -133,6 +136,8 @@ impl PreferencesDraft {
             theme: app.ui.theme,
             reduce_visual_effects: app.ui.reduce_visual_effects,
             undo_levels: app.ui.undo_levels,
+            shortcuts: app.ui.shortcut_overrides.clone(),
+            edited_shortcuts: BTreeSet::new(),
             theme_edited: false,
             reduce_visual_effects_edited: false,
             undo_levels_edited: false,
@@ -141,6 +146,10 @@ impl PreferencesDraft {
 
     /// Pulls in scripted setting changes while retaining fields edited in this window.
     fn sync_unedited_from_live(&mut self, app: &SoundApp) {
+        self.shortcuts.retain(|id, _| self.edited_shortcuts.contains(id));
+        self.shortcuts.extend(
+            app.ui.shortcut_overrides.iter().filter(|(id, _)| !self.edited_shortcuts.contains(*id)).map(|(id, chord)| (id.clone(), chord.clone())),
+        );
         if !self.theme_edited {
             self.theme = app.ui.theme;
         }
@@ -153,7 +162,12 @@ impl PreferencesDraft {
     }
 
     /// Remembers which values the user changed during the current UI frame.
-    fn remember_user_edits(&mut self, before: Self) {
+    fn remember_user_edits(&mut self, before: &Self) {
+        for id in self.shortcuts.keys().chain(before.shortcuts.keys()) {
+            if self.shortcuts.get(id) != before.shortcuts.get(id) {
+                self.edited_shortcuts.insert(id.clone());
+            }
+        }
         self.theme_edited |= self.theme != before.theme;
         self.reduce_visual_effects_edited |= self.reduce_visual_effects != before.reduce_visual_effects;
         self.undo_levels_edited |= self.undo_levels != before.undo_levels;
@@ -189,6 +203,7 @@ enum Control {
     Theme,
     ReduceVisualEffects,
     UndoLevels,
+    Shortcut(&'static str, &'static str),
 }
 
 impl Control {
@@ -200,7 +215,8 @@ impl Control {
             | Self::Choice(label, _)
             | Self::ChoiceOptions(label, _, _)
             | Self::Value(label, _)
-            | Self::Radios(label, _) => label,
+            | Self::Radios(label, _)
+            | Self::Shortcut(label, _) => label,
             Self::Theme => "UI Theme",
             Self::ReduceVisualEffects => "Reduce Visual Effects",
             Self::UndoLevels => "Levels of Undo",
@@ -420,6 +436,7 @@ const EDITING: &[Section] = &[
         ],
     },
     Section { title: "Undo", controls: &[Control::UndoLevels] },
+    Section { title: "Keyboard Shortcuts", controls: &[Control::Shortcut("Open Help Shortcut", "help.open")] },
 ];
 
 const MIXING: &[Section] = &[
@@ -705,9 +722,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
 
-    let mut draft = app.preferences.draft.unwrap_or_else(|| PreferencesDraft::from_live(app));
+    let mut draft = app.preferences.draft.take().unwrap_or_else(|| PreferencesDraft::from_live(app));
     draft.sync_unedited_from_live(app);
-    let draft_before_ui = draft;
+    let draft_before_ui = draft.clone();
     let mut search = std::mem::take(&mut app.preferences.search);
     let mut page = app.ui.preferences_page;
     let mut action = None;
@@ -791,7 +808,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             app.ui.preferences_window_pos = Some([rect.min.x, rect.min.y]);
         }
     }
-    draft.remember_user_edits(draft_before_ui);
+    draft.remember_user_edits(&draft_before_ui);
     app.preferences.popup_open = ctx.any_popup_open();
 
     if ctx.input(|i| i.key_pressed(Key::Escape)) && !popup_was_open {
@@ -808,6 +825,13 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             let _ = app.run("ui.theme", json!({"mode": draft.theme.id()}));
             let _ = app.run("ui.reduce_visual_effects", json!({"mode": draft.reduce_visual_effects.id()}));
             let _ = app.run("ui.undo_levels", json!({"levels": draft.undo_levels}));
+            for id in draft.edited_shortcuts {
+                if let Some(chord) = draft.shortcuts.remove(&id) {
+                    app.ui.shortcut_overrides.insert(id, chord);
+                } else {
+                    app.ui.shortcut_overrides.remove(&id);
+                }
+            }
             open = false;
             app.preferences.discard_draft();
         }
@@ -949,6 +973,40 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
                 ui.label(label("Levels of Undo"));
                 ui.add(egui::DragValue::new(&mut draft.undo_levels).range(1..=64));
             });
+        }
+        Control::Shortcut(text, command) => {
+            let mac = ui.ctx().os().is_mac();
+            let label_for = |chord: &str| crate::shortcuts::shortcut_label(chord, mac);
+            let default = format!("Default ({})", label_for(crate::menus::shortcut_for(command).unwrap_or("")));
+            let mut selected = draft.shortcuts.get(command).filter(|chord| crate::shortcuts::available(chord)).cloned();
+            let shown = selected.as_deref().map_or_else(|| default.clone(), label_for);
+            if craft_ui::ComboBox::new(id, label(text))
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    let mut changed = ui.selectable_label(selected.is_none(), default).clicked();
+                    if changed {
+                        selected = None;
+                    }
+                    for prefix in ["Cmd+Shift", "Cmd+Alt", "Cmd+Alt+Shift"] {
+                        for key in 'A'..='Z' {
+                            let chord = format!("{prefix}+{key}");
+                            if crate::shortcuts::available(&chord) {
+                                let caption = label_for(&chord);
+                                changed |= ui.selectable_value(&mut selected, Some(chord), caption).changed();
+                            }
+                        }
+                    }
+                    changed
+                })
+                .inner
+                == Some(true)
+            {
+                if let Some(chord) = selected {
+                    draft.shortcuts.insert(command.into(), chord);
+                } else {
+                    draft.shortcuts.remove(command);
+                }
+            }
         }
         Control::Check(text) => {
             let mut value = false;
@@ -1102,9 +1160,9 @@ mod tests {
     fn draft_sync_preserves_only_user_edited_fields() {
         let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
         let mut draft = PreferencesDraft::from_live(&app);
-        let before = draft;
+        let before = draft.clone();
         draft.theme = ThemeMode::Light;
-        draft.remember_user_edits(before);
+        draft.remember_user_edits(&before);
 
         app.ui.theme = ThemeMode::System;
         app.ui.reduce_visual_effects = ReduceVisualEffects::Always;
@@ -1144,7 +1202,7 @@ mod tests {
         draft.theme = ThemeMode::Light;
         draft.reduce_visual_effects = ReduceVisualEffects::Always;
         draft.undo_levels = 1;
-        app.preferences.draft = Some(draft);
+        app.preferences.draft = Some(draft.clone());
 
         assert_eq!(app.run("setup.preferences", json!({})), Ok(json!({"value": false})));
         assert!(app.preferences.draft.is_none());
@@ -1261,6 +1319,42 @@ mod tests {
             crate::windows::recall_configuration(&mut app, &saved).unwrap();
             assert_eq!((app.ui.undo_levels, app.engine.history_limit), (expected, expected));
         }
+    }
+
+    /// The shortcut choice is staged, saved through UI settings, and reset through the same control.
+    #[test]
+    fn help_shortcut_preferences_apply_cancel_and_reset() {
+        let mut harness = preferences_harness(egui::vec2(1280.0, 1000.0));
+        harness.ctx.set_os(egui::os::OperatingSystem::Nix);
+        harness.state_mut().ui.preferences_page = PreferencesPage::Editing;
+        for button in ["Cancel", "OK"] {
+            harness.state_mut().ui.show_preferences = true;
+            harness.run_steps(4);
+            harness.get_by_value("Default (Ctrl+Shift+/)").click();
+            harness.run_steps(2);
+            harness.get_by_label("Ctrl+Shift+A").click();
+            harness.run_steps(2);
+            assert!(harness.state().ui.shortcut_overrides.is_empty());
+            harness.get_by_label(button).click();
+            harness.run_steps(2);
+        }
+        let saved = serde_json::to_value(&harness.state().ui).unwrap();
+        let restored: crate::UiState = serde_json::from_value(saved).unwrap();
+        assert_eq!(crate::shortcuts::binding(&restored, "help.open"), Some("Cmd+Shift+A"));
+        let legacy: crate::UiState = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(crate::shortcuts::binding(&legacy, "help.open"), Some("Cmd+Shift+/"));
+        crate::windows::recall_configuration(harness.state_mut(), &serde_json::to_value(legacy).unwrap()).unwrap();
+        assert_eq!(crate::shortcuts::binding(&harness.state().ui, "help.open"), Some("Cmd+Shift+A"));
+
+        harness.state_mut().ui.show_preferences = true;
+        harness.run_steps(4);
+        harness.get_by_value("Ctrl+Shift+A").click();
+        harness.run_steps(2);
+        harness.get_by_label("Default (Ctrl+Shift+/)").click();
+        harness.run_steps(2);
+        harness.get_by_label("OK").click();
+        harness.run_steps(2);
+        assert!(harness.state().ui.shortcut_overrides.is_empty());
     }
 
     /// Enter belongs to the focused search field and must not apply its window.

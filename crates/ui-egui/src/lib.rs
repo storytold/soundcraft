@@ -123,6 +123,8 @@ pub struct UiState {
     pub preferences_window_pos: Option<[f32; 2]>,
     pub reduce_visual_effects: preferences::ReduceVisualEffects,
     pub undo_levels: usize,
+    /// Per-machine keyboard shortcut overrides by command ID.
+    pub shortcut_overrides: std::collections::BTreeMap<String, String>,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
@@ -199,6 +201,7 @@ impl Default for UiState {
             preferences_window_pos: None,
             reduce_visual_effects: preferences::ReduceVisualEffects::default(),
             undo_levels: 64,
+            shortcut_overrides: Default::default(),
             audio: soundcraft_playback::AudioConfig::default(),
             mix_separate: false,
             show_io_setup: false,

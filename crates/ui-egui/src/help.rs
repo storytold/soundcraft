@@ -290,7 +290,7 @@ fn entries() -> &'static [Entry] {
             let title = command_title(id);
             let paths: Vec<String> = menu_paths().get(id).map(|p| p.iter().map(|s| pretty_path(s)).collect()).unwrap_or_default();
             // Search finds a shortcut as written on a Mac (Cmd+S) and on a PC (Ctrl+S).
-            let keys = crate::menus::shortcut_for(id).unwrap_or("");
+            let keys = crate::menus::shortcut_for(id).filter(|_| !crate::shortcuts::customizable(id)).unwrap_or("");
             let shortcut = format!("{keys} {}", crate::shortcuts::shortcut_label(keys, false));
             let app_menu = [true, false].map(|mac| app_menu_path(id, mac).unwrap_or_default()).join(" ");
             let hay = format!("{title} {} {} {app_menu} {shortcut} {id}", h.text, paths.join(" ")).to_lowercase();
@@ -340,9 +340,9 @@ fn entries() -> &'static [Entry] {
 }
 
 /// Whether `query` is this command's shortcut, spelled as on a Mac or on a PC.
-fn is_shortcut_of(e: &Entry, query: &str) -> bool {
+fn is_shortcut_of(state: &crate::UiState, e: &Entry, query: &str) -> bool {
     let Page::Command(id) = &e.page else { return false };
-    let Some(keys) = crate::menus::shortcut_for(id) else { return false };
+    let Some(keys) = crate::shortcuts::binding(state, id) else { return false };
     let compact = query.replace(' ', "");
     [keys.to_string(), crate::shortcuts::shortcut_label(keys, false)].iter().any(|k| k.to_lowercase().replace(' ', "") == compact)
 }
@@ -369,7 +369,7 @@ fn one_typo(a: &str, b: &str) -> bool {
 
 /// Search results, best first. Every word must appear somewhere on the page, or the title must
 /// match loosely (letters in order, so "bnc mix" finds Bounce Mix).
-fn search(query: &str) -> Vec<&'static Entry> {
+fn search(state: &crate::UiState, query: &str) -> Vec<&'static Entry> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return Vec::new();
@@ -379,7 +379,7 @@ fn search(query: &str) -> Vec<&'static Entry> {
         .iter()
         .filter_map(|e| {
             let title = e.title.to_lowercase();
-            let s = if is_shortcut_of(e, &q) {
+            let s = if is_shortcut_of(state, e, &q) {
                 // "cmd+s" or "ctrl+s": the command on that very key comes before ones that merely
                 // contain it (Cmd+Shift+S…).
                 4000
@@ -767,8 +767,8 @@ fn index(app: &mut SoundApp, ui: &mut Ui) {
 /// Show ranked matches and description previews, opening the page selected by the user.
 fn search_results(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
+    let hits = search(&app.ui, &app.ui.help.query);
     let h = &mut app.ui.help;
-    let hits = search(&h.query);
     let mut go = None;
     egui::ScrollArea::vertical().id_salt("help_search").auto_shrink([false, false]).show(ui, |ui| {
         // Leave room for the scroll bar so descriptions wrap before it.
@@ -845,7 +845,7 @@ fn welcome(app: &mut SoundApp, ui: &mut Ui) {
     ui.add_space(4.0);
     ui.label(RichText::new("Browse by topic in Contents, look a word up in Index, or type what you want to do in the search box.").color(t.text_dim));
     ui.label(
-        RichText::new("Point at any SoundCraft window and press Cmd+? to open help on that window's page.".replace("Cmd+?", &help_key(ui)))
+        RichText::new("Point at any SoundCraft window and press Cmd+? to open help on that window's page.".replace("Cmd+?", &help_key(app, ui)))
             .color(t.text_dim),
     );
     ui.add_space(12.0);
@@ -960,7 +960,7 @@ fn command_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     breadcrumb(app, ui, &h.category);
     title(ui, &e.title);
     let mac = ui.ctx().os().is_mac();
-    let shortcut = crate::menus::shortcut_for(id).unwrap_or("");
+    let shortcut = crate::shortcuts::binding(&app.ui, id).unwrap_or("");
     let app_menu = app_menu_path(id, mac);
     ui.horizontal_wrapped(|ui| {
         for path in e.paths.iter().chain(app_menu.as_ref()) {
@@ -1014,8 +1014,8 @@ fn list_title(e: &Entry, selected: bool) -> RichText {
 }
 
 /// The help key as this platform spells it.
-fn help_key(ui: &Ui) -> String {
-    if ui.ctx().os().is_mac() { "Cmd+?".into() } else { "Ctrl+Shift+/".into() }
+fn help_key(app: &SoundApp, ui: &Ui) -> String {
+    crate::shortcuts::binding(&app.ui, "help.open").map_or_else(String::new, |chord| key_text(chord, ui.ctx().os().is_mac()))
 }
 
 /// One guide line, with the menu locations and keys it names in bold.
@@ -1377,22 +1377,26 @@ mod tests {
     /// Exercise title, content, shortcut and approximate matches against the real help catalog.
     #[test]
     fn search_finds_titles_words_shortcuts_and_loose_spellings() {
-        let first = |q: &str| search(q).first().map(|e| e.page.clone());
+        let first = |q: &str| search(&Default::default(), q).first().map(|e| e.page.clone());
         assert_eq!(first("bounce mix"), Some(Page::Command("file.bounce_mix".into())));
         assert_eq!(first("bnc mix"), Some(Page::Command("file.bounce_mix".into())));
-        assert!(search("reverb").iter().any(|e| e.page == Page::Process("room_reverb".into())));
+        assert!(search(&Default::default(), "reverb").iter().any(|e| e.page == Page::Process("room_reverb".into())));
         let save = crate::menus::shortcut_for("session.save").unwrap().to_lowercase();
-        assert!(search(&save).iter().any(|e| e.page == Page::Command("session.save".into())));
-        assert!(search("ctrl+s").iter().any(|e| e.page == Page::Command("session.save".into())), "the PC spelling finds it too");
-        assert!(search("ctrl+shift+i").iter().any(|e| e.page == Page::Command("file.import_audio".into())));
-        assert!(search("zzqqxx").is_empty());
+        assert!(search(&Default::default(), &save).iter().any(|e| e.page == Page::Command("session.save".into())));
+        assert!(search(&Default::default(), "ctrl+s").iter().any(|e| e.page == Page::Command("session.save".into())), "the PC spelling finds it too");
+        assert!(search(&Default::default(), "ctrl+shift+i").iter().any(|e| e.page == Page::Command("file.import_audio".into())));
+        assert!(search(&Default::default(), "zzqqxx").is_empty());
         // The command on exactly that key comes first, before Cmd+Shift+S and friends.
         assert_eq!(first(&save), Some(Page::Command("session.save".into())));
         assert_eq!(first("ctrl+s"), Some(Page::Command("session.save".into())));
         assert_eq!(first("Ctrl + S"), Some(Page::Command("session.save".into())));
         // One slipped letter still finds the page; short words don't match loosely.
-        assert!(search("sholo").iter().any(|e| e.title == "Solo"), "{:?}", search("sholo").iter().map(|e| &e.title).collect::<Vec<_>>());
-        assert!(search("bounse").iter().any(|e| e.page == Page::Command("file.bounce_mix".into())));
+        assert!(
+            search(&Default::default(), "sholo").iter().any(|e| e.title == "Solo"),
+            "{:?}",
+            search(&Default::default(), "sholo").iter().map(|e| &e.title).collect::<Vec<_>>()
+        );
+        assert!(search(&Default::default(), "bounse").iter().any(|e| e.page == Page::Command("file.bounce_mix".into())));
         assert!(
             one_typo("solo", "sloo")
                 && one_typo("solo", "soloo")
@@ -1401,7 +1405,18 @@ mod tests {
                 && !one_typo("mix", "max")
                 && !one_typo("solo", "sold out")
         );
-        assert!(search("   ").is_empty());
+        assert!(search(&Default::default(), "   ").is_empty());
+    }
+
+    /// Help search uses the live shortcut and stops indexing the replaced default.
+    #[test]
+    fn rebound_help_shortcut_is_searchable() {
+        let mut state = crate::UiState::default();
+        let help = Page::Command("help.open".into());
+        assert_eq!(search(&state, "ctrl+shift+/").first().map(|entry| &entry.page), Some(&help));
+        state.shortcut_overrides.insert("help.open".into(), "Cmd+Shift+A".into());
+        assert_eq!(search(&state, "ctrl+shift+a").first().map(|entry| &entry.page), Some(&help));
+        assert!(!search(&state, "ctrl+shift+/").iter().any(|entry| entry.page == help));
     }
 
     /// Check that registered menu commands retain discoverable locations in help.
@@ -1560,9 +1575,9 @@ mod tests {
     /// Check guide discovery through both search and the topic listing.
     #[test]
     fn guides_are_found_by_search_and_listed_first_in_their_topic() {
-        assert_eq!(search("record audio").first().map(|e| &e.page), Some(&Page::Guide("record_audio".into())));
-        assert!(search("ctrl+shift+n").iter().any(|e| e.page == Page::Guide("first_session".into())), "PC keys are searchable");
-        assert!(search("cmd+shift+n").iter().any(|e| e.page == Page::Guide("first_session".into())), "Mac keys are searchable");
+        assert_eq!(search(&Default::default(), "record audio").first().map(|e| &e.page), Some(&Page::Guide("record_audio".into())));
+        assert!(search(&Default::default(), "ctrl+shift+n").iter().any(|e| e.page == Page::Guide("first_session".into())), "PC keys are searchable");
+        assert!(search(&Default::default(), "cmd+shift+n").iter().any(|e| e.page == Page::Guide("first_session".into())), "Mac keys are searchable");
         let first = pages_in("recording").next().map(|e| e.page.clone());
         assert_eq!(first, Some(Page::Guide("record_audio".into())));
         assert!(pages().contains(&Page::Guide("keys_commands_focus".into())));
@@ -1616,6 +1631,6 @@ mod tests {
         assert_eq!(app_menu_path("window.about", false).as_deref(), Some("SoundCraft › About SoundCraft"));
         assert_eq!(app_menu_path("app.quit", true).as_deref(), Some("SoundCraft › Quit SoundCraft"));
         assert_eq!(app_menu_path("app.checkForUpdates", true), None, "the Mac menu has no Check for Updates");
-        assert!(search("session audio health").iter().any(|e| e.page == Page::Command("window.audio_health".into())));
+        assert!(search(&Default::default(), "session audio health").iter().any(|e| e.page == Page::Command("window.audio_health".into())));
     }
 }

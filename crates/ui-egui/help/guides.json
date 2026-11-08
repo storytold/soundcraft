@@ -6,8 +6,10 @@
       "category": "workspace",
       "summary": "How to find a page, move around help, and get help on the window you're looking at.",
       "steps": [
-        "Press {keys:Cmd+Shift+/} (the ? key with {keys:Cmd}) or choose {menu:help.open} to open help.",
-        "Point at a SoundCraft window, such as the Big Counter or Beat Analysis, and press {keys:Cmd+Shift+/}: help opens on that window's page.",
+        "Choose {menu:help.open} or press the shortcut shown beside that menu item.",
+        "Point at a SoundCraft window, such as the Big Counter or Beat Analysis, and press the Help shortcut. Help opens on that window's page.",
+        "To change the shortcut, open {menu:setup.preferences}, select Editing, and choose Open Help Shortcut under Keyboard Shortcuts. Choose an available binding, then click OK. Cancel discards the change.",
+        "Choose Default in the same list and click OK to restore the original shortcut. The Help menu shows the active binding.",
         "Contents lists every page by topic. Index lists them A to Z: type the first letters of a word to jump to it. Search finds pages by any word, menu name or shortcut, so typing {keys:Cmd+S} finds Save Session.",
         "Use the arrows at the top left, or {keys:Alt+Left} and {keys:Alt+Right} while Help has focus or the pointer is over it, to go back and forward.",
         "On a command's page, Do it now runs the command just as its menu item would. When it's greyed out, the line under it says why."

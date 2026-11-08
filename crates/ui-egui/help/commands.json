@@ -895,7 +895,7 @@
   },
   "help.open": {
    "category": "workspace",
-   "text": "Opens SoundCraft Help, where every command is explained in plain words, with its menu and shortcut."
+   "text": "Opens SoundCraft Help, where every command is explained in plain words, with its menu and shortcut. Change or restore this shortcut in Setup › Preferences › Editing under Keyboard Shortcuts."
   },
   "help.report": {
    "category": "workspace",

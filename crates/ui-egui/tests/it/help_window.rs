@@ -39,6 +39,27 @@ fn cmd_question_mark_opens_help_on_every_platform() {
     }
 }
 
+/// A saved binding replaces both default spellings without taking over an existing command.
+#[test]
+fn rebound_help_shortcut_replaces_the_default() {
+    for (os, cmd) in OSES {
+        let (ctx, mut app) = rig(os);
+        app.ui.shortcut_overrides.insert("help.open".into(), "Cmd+Shift+A".into());
+        press(&ctx, &mut app, Key::Questionmark, cmd);
+        press(&ctx, &mut app, Key::Slash, cmd | Modifiers::SHIFT);
+        assert!(!app.ui.show_help);
+        press(&ctx, &mut app, Key::A, cmd | Modifiers::SHIFT);
+        assert!(app.ui.show_help);
+        let (ctx, mut app) = rig(os);
+        app.ui.shortcut_overrides.insert("help.open".into(), "Cmd+Shift+N".into());
+        press(&ctx, &mut app, Key::N, cmd | Modifiers::SHIFT);
+        assert!(!app.ui.show_help, "an existing command cannot become the Help shortcut");
+        app.dialogs.open = None;
+        press(&ctx, &mut app, Key::Questionmark, cmd);
+        assert!(app.ui.show_help, "a conflicting saved override falls back to the default");
+    }
+}
+
 /// Ensure the Help chord does not take over existing slash-key commands.
 #[test]
 fn neighbouring_slash_keys_keep_their_own_commands() {
@@ -262,7 +283,15 @@ fn check_native_mix_help() {
             app.ui.mix_separate = true;
             app.ui.window = window;
             app_frame(&ctx, &mut app, vec![]);
-            for (key, mods) in [(Key::Slash, cmd | Modifiers::SHIFT), (Key::Questionmark, cmd | Modifiers::SHIFT), (Key::Questionmark, cmd)] {
+            for (key, mods) in [
+                (Key::Slash, cmd | Modifiers::SHIFT),
+                (Key::Questionmark, cmd | Modifiers::SHIFT),
+                (Key::Questionmark, cmd),
+                (Key::A, cmd | Modifiers::SHIFT),
+            ] {
+                if key == Key::A {
+                    app.ui.shortcut_overrides.insert("help.open".into(), "Cmd+Shift+A".into());
+                }
                 app.ui.show_help = false;
                 app.ui.help.page = Page::Welcome;
                 *events.borrow_mut() = vec![

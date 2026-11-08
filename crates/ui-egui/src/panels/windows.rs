@@ -422,6 +422,7 @@ pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), Str
     st.preferences_window_pos = app.ui.preferences_window_pos;
     st.reduce_visual_effects = app.ui.reduce_visual_effects;
     st.undo_levels = app.ui.undo_levels.clamp(1, 64);
+    st.shortcut_overrides.clone_from(&app.ui.shortcut_overrides);
     st.show_configurations = true;
     crate::docking::cancel_replaced_state(app, &st);
     app.engine.set_history_limit(st.undo_levels);
@@ -734,8 +735,9 @@ pub fn shortcuts_window(app: &mut SoundApp, ctx: &egui::Context) {
     win(ctx, &mut open, "Keyboard Shortcuts", vec2(520.0, 480.0), |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("sc").num_columns(3).striped(true).show(ui, |ui| {
-                let engine = soundcraft_engine::command_specs().iter().map(|c| (c.shortcut, c.label, c.menu.join(" › ")));
-                let windows = crate::menus::UI_COMMANDS.iter().map(|c| (c.3, c.1, c.2.replace(" > ", " › ")));
+                let engine =
+                    soundcraft_engine::command_specs().iter().map(|c| (crate::shortcuts::binding(&app.ui, c.id), c.label, c.menu.join(" › ")));
+                let windows = crate::menus::UI_COMMANDS.iter().map(|c| (crate::shortcuts::binding(&app.ui, c.0), c.1, c.2.replace(" > ", " › ")));
                 for (shortcut, label, menu) in engine.chain(windows) {
                     let Some(shortcut) = shortcut else { continue };
                     ui.label(egui::RichText::new(crate::shortcuts::shortcut_label(shortcut, mac)).font(mono(11.0)));

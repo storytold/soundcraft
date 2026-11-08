@@ -382,7 +382,7 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
     let (enabled, checked) = item_state(app, &n.path, id.as_deref());
     let label = live_label(app, id.as_deref()).unwrap_or_else(|| n.label.clone());
     let label = if checked { format!("✔ {label}") } else { label };
-    let shortcut = id.as_deref().and_then(shortcut_for).unwrap_or("");
+    let shortcut = id.as_deref().and_then(|id| crate::shortcuts::binding(&app.ui, id)).unwrap_or("");
     let btn = egui::Button::new(label).shortcut_text(crate::shortcuts::shortcut_label(shortcut, ui.ctx().os().is_mac()));
     let response = ui.add_enabled(enabled, btn);
     let response = if catalog::is_placeholder(&n.path) { response.on_disabled_hover_text("Not available yet.") } else { response };
