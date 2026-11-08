@@ -59,6 +59,27 @@ fn enter_on_a_focused_flatten_flattens() {
 }
 
 #[test]
+fn enter_with_no_button_focused_removes() {
+    let (mut h, track, looped) = unloop_dialog();
+    h.event(Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(clips(&h, track).len(), looped - 2, "Enter presses Remove, which keeps only the source clip");
+}
+
+#[test]
+fn enter_on_a_focused_cancel_leaves_the_loop() {
+    let (mut h, track, _) = unloop_dialog();
+    let before = clips(&h, track);
+    h.get_by_role_and_label(Role::Button, "Cancel").focus();
+    h.run_steps(2);
+    h.event(Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(clips(&h, track), before);
+}
+
+#[test]
 fn a_flatten_click_with_enter_in_the_same_frame_flattens() {
     let (h, _, _) = unloop_dialog();
     let pos = h.get_by_role_and_label(Role::Button, "Flatten").rect().center();
