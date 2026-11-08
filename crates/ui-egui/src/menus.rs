@@ -378,6 +378,7 @@ fn preferences_menu_enabled(app: &SoundApp) -> bool {
     !app.ui.show_preferences && !app.is_playing() && !app.engine.transport.recording
 }
 
+/// Checks whether the menu item at path/id is currently in a checked/active state.
 fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
     let e = &app.engine.session().edit;
     match id {
@@ -411,6 +412,7 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
     }
 }
 
+/// Maps a ruler label string to its internal ruler identifier.
 fn ruler_id(label: &str) -> &'static str {
     match label {
         "Bars|Beats" => "bars_beats",
@@ -427,6 +429,7 @@ fn ruler_id(label: &str) -> &'static str {
     }
 }
 
+/// Maps a mix window view section label to its internal section identifier.
 fn mix_section_id(label: &str) -> &'static str {
     match label {
         "Inserts A-E" => "inserts_ae",

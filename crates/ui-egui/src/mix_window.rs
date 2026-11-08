@@ -177,6 +177,7 @@ impl StripCtx<'_> {
     }
 }
 
+/// Renders an individual mixer channel strip with its assigned sections, meters, and faders.
 fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapshot>, scroll_here: bool) {
     let t = Tokens::current();
     let session = app.engine.session_arc();
