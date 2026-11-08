@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Store Plugin State",
         menu: &[],
         shortcut: None,
-        params: "{track, slot: 0..9 | \"a\"..\"j\" | \"instrument\", state: base64 | null, params?: {id: number}} → {bytes}. `params` keys are parameter ids as strings (a numeric hosted id is written as its decimal text); unknown ids and non-finite values are errors, values are clamped and rounded like mix.insert_params. The state is not undoable and not journaled (states can be large). `params`, when a value changes, is stored in that same edit as one undo step and is not journaled.",
+        params: "{track, slot (required, no default): 0..9 | \"a\"..\"j\" | \"instrument\", state: base64 | null, params?: {id: number}} → {bytes}. `params` keys are parameter ids as strings (a numeric hosted id is written as its decimal text); unknown ids and non-finite values are errors, values are clamped and rounded like mix.insert_params. The state is not undoable and not journaled (states can be large). `params`, when a value changes, is stored in that same edit as one undo step and is not journaled.",
         enabled: has_tracks,
         run: insert_state,
         journal: false,
@@ -272,5 +272,19 @@ mod tests {
         ] {
             assert!(e.execute("mix.insert_state", &p).is_err(), "{p}");
         }
+    }
+
+    /// `slot` has no default here: the instrument and insert 0 are both plausible targets for a
+    /// state blob, so leaving it out is an error rather than a guess.
+    #[test]
+    fn slot_is_required_and_never_defaults() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+        let t = e.session().tracks[0].id.0;
+        e.execute("mix.insert", &json!({"track": t, "plugin": "gain", "slot": 0})).unwrap();
+        let blob = b64::encode(b"state");
+        let err = e.execute("mix.insert_state", &json!({"track": t, "state": blob})).unwrap_err();
+        assert!(err.to_string().contains("`slot` required"), "{err}");
+        assert!(e.session().tracks[0].mixer.inserts[0].as_ref().and_then(|i| i.state_bytes()).is_none());
     }
 }
