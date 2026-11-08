@@ -1620,3 +1620,33 @@ fn assert_history_unchanged(
     assert_eq!(app.engine.undo_history(), history);
     assert_eq!(&app.engine.journal, journal);
 }
+
+#[test]
+fn workspace_back_keeps_workspace_open_and_changes_z_order() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.ui.show_workspace = true;
+    app.ui.workspace_send_to_back = false;
+
+    // Send to Back must NOT hide or close the workspace
+    let r = app.run("window.workspace_back", json!({})).unwrap();
+    assert_eq!(r["value"], true);
+    assert!(app.ui.show_workspace, "window.workspace_back must leave show_workspace as true");
+    assert!(app.ui.workspace_send_to_back, "window.workspace_back must flag workspace_send_to_back");
+
+    // Close All Workspaces hides the workspace
+    let r_close = app.run("window.workspace_close", json!({})).unwrap();
+    assert_eq!(r_close["value"], false);
+    assert!(!app.ui.show_workspace, "window.workspace_close must set show_workspace to false");
+
+    // Machine track arming toggle
+    assert!(!app.ui.show_machine_track_arming);
+    app.run("window.machine_track_arming", json!({})).unwrap();
+    assert!(app.ui.show_machine_track_arming);
+    app.run("window.machine_track_arming", json!({})).unwrap();
+    assert!(!app.ui.show_machine_track_arming);
+
+    // Mix section views include heat and delay_compensation
+    app.run("view.mix_section", json!({"section": "all"})).unwrap();
+    assert!(app.ui.mix_views.iter().any(|v| v == "heat"));
+    assert!(app.ui.mix_views.iter().any(|v| v == "delay_compensation"));
+}

@@ -1,7 +1,7 @@
 //! Secondary floating windows (Window menu).
 
 use crate::SoundApp;
-use crate::theme::{Tokens, mono, rgb};
+use crate::theme::{Tokens, bold, mono, regular, rgb};
 use egui::{Color32, Sense, vec2};
 use serde_json::{Value, json};
 use soundcraft_audio_io::FileFormat;
@@ -21,6 +21,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     event_list(app, ctx);
     midi_keyboard(app, ctx);
     workspace(app, ctx);
+    machine_track_arming(app, ctx);
     configurations(app, ctx);
     playback_engine(app, ctx);
     io_setup(app, ctx);
@@ -324,7 +325,8 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new("Workspace").open(&mut open).default_size(vec2(460.0, 420.0)).show(ctx, |ui| {
+    let win_id = egui::Id::unique("workspace_window");
+    egui::Window::new("Workspace").id(win_id).open(&mut open).default_size(vec2(460.0, 420.0)).show(ctx, |ui| {
         let dir = if app.ui.workspace_dir.is_empty() { std::env::var("HOME").unwrap_or_else(|_| ".".into()) } else { app.ui.workspace_dir.clone() };
         ui.horizontal(|ui| {
             if ui.button("⬆").on_hover_text("Parent folder").clicked()
@@ -373,7 +375,96 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
         });
         ui.label(egui::RichText::new("Double-click to import audio/MIDI at the insertion point or open a session.").small());
     });
+    if app.ui.workspace_send_to_back {
+        let others: Vec<_> =
+            ctx.memory(|mem| mem.areas().visible_layer_ids().into_iter().filter(|l| l.order == egui::Order::Middle && l.id != win_id).collect());
+        for l in others {
+            ctx.move_to_top(l);
+        }
+        app.ui.workspace_send_to_back = false;
+    }
     app.ui.show_workspace = open;
+}
+
+fn machine_track_arming(app: &mut SoundApp, ctx: &egui::Context) {
+    let mut open = app.ui.show_machine_track_arming;
+    if !open {
+        return;
+    }
+    let t = Tokens::current();
+    egui::Window::new("Machine Track Arming").open(&mut open).default_size(vec2(380.0, 320.0)).show(ctx, |ui| {
+        let edit = &app.engine.session().edit;
+        let prefix_list = "setup.machine_track_arming_profiles.list=";
+        let list_str = edit.flags.iter().find_map(|f| f.strip_prefix(prefix_list)).unwrap_or_default();
+        let profiles: Vec<String> = if list_str.is_empty() {
+            vec!["Default".into(), "9-Pin Machine 1".into(), "9-Pin Machine 2".into()]
+        } else {
+            serde_json::from_str(list_str).unwrap_or_else(|_| vec!["Default".into()])
+        };
+        let prefix_active = "setup.machine_track_arming_profiles.active=";
+        let mut active = edit
+            .flags
+            .iter()
+            .find_map(|f| f.strip_prefix(prefix_active))
+            .filter(|a| profiles.iter().any(|p| p == *a))
+            .map(str::to_string)
+            .unwrap_or_else(|| profiles.first().cloned().unwrap_or_default());
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Profile:").font(bold(11.0)));
+            let mut changed_profile = None;
+            craft_ui::ComboBox::from_id_salt("mta_profile").selected_text(&active).show_ui(ui, |ui| {
+                for p in &profiles {
+                    if ui.selectable_value(&mut active, p.clone(), p).clicked() {
+                        changed_profile = Some(p.clone());
+                    }
+                }
+            });
+            if let Some(p) = changed_profile {
+                let _ = app.run("setup.machine_track_arming_profiles", json!({"active": p}));
+            }
+        });
+        ui.separator();
+
+        let tracks: Vec<(soundcraft_model::TrackId, String, bool)> =
+            app.engine.session().tracks.iter().map(|tr| (tr.id, tr.name.clone(), tr.mixer.record_arm)).collect();
+
+        if tracks.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(egui::RichText::new("No tracks in session").color(t.text_dim).italics());
+            });
+        } else {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::Grid::new("mta_grid").striped(true).min_col_width(50.0).spacing([12.0, 6.0]).show(ui, |ui| {
+                    ui.label(egui::RichText::new("CH").font(bold(10.0)).color(t.text_dim));
+                    ui.label(egui::RichText::new("TRACK NAME").font(bold(10.0)).color(t.text_dim));
+                    ui.label(egui::RichText::new("ARM STATUS").font(bold(10.0)).color(t.text_dim));
+                    ui.end_row();
+
+                    for (idx, (tid, name, armed)) in tracks.into_iter().enumerate() {
+                        ui.label(egui::RichText::new(format!("{:02}", idx + 1)).font(regular(11.0)));
+
+                        let short_name = if name.chars().count() > 22 {
+                            let s: String = name.chars().take(20).collect();
+                            format!("{s}…")
+                        } else {
+                            name.clone()
+                        };
+                        ui.label(egui::RichText::new(short_name).font(regular(11.0))).on_hover_text(&name);
+
+                        let (btn_text, btn_col) = if armed { ("ARMED", t.meter_red) } else { ("SAFE", t.text_dim) };
+                        let btn = egui::Button::new(egui::RichText::new(btn_text).font(bold(10.0)).color(btn_col));
+                        if ui.add_sized([60.0, 18.0], btn).clicked() {
+                            let _ = app.run("mix.record_arm", json!({"tracks": [tid.0], "value": !armed}));
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+        }
+    });
+    app.ui.show_machine_track_arming = open;
 }
 
 /// Window Configurations window: capture the current UI state and restore a saved configuration after validating both

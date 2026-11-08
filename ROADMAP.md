@@ -13,22 +13,22 @@ menu checklist).
 
 ## Headline numbers
 
-| Number | Value | Kind |
-|---|---|---|
-| Menu breadth | **482 / 512 Pro Tools menu leaves (94.1 %)**; engine alone 397 / 512 | measured (`cargo xtask parity` + UI-layer aliases) |
-| Feature breadth | **~70 %** | estimated (menus plus plugins, hardware, formats, immersive, cloud) |
-| **Ready for real work** | **~40 %** | estimated, weighted by dimension |
-| Mainstream practitioner (tracking/mixing engineer) | **~36 %** | estimated: 50.6 % weekly-area depth × 0.90 interaction × 0.92 stability × 0.85 file exchange ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
-| Essentials user (song or podcast, defaults) | **~57 %** | estimated: 72.4 % core-feature depth × 0.90 launch/stability × 0.90 discoverability × 0.97 files ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
-| Remaining to alpha | **~110–180 Opus 5.5 agent-hours** (the failing gate rows) | estimated, calibrated on PR history |
-| Remaining to beta | **~350–570 Opus 5.5 agent-hours** (includes the alpha work; ~60–70 % parallelizable) | estimated |
-| Remaining to full parity | **~950–1,450 Opus 5.5 agent-hours** | estimated |
+| Number                                             | Value                                                                                | Kind                                                                                                                                                                            |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Menu breadth                                       | **486 / 512 Pro Tools menu leaves (94.9 %)**; engine alone 401 / 512 (78.3 %)        | measured (`cargo xtask parity` + UI-layer aliases)                                                                                                                              |
+| Feature breadth                                    | **~70 %**                                                                            | estimated (menus plus plugins, hardware, formats, immersive, cloud)                                                                                                             |
+| **Ready for real work**                            | **~40 %**                                                                            | estimated, weighted by dimension                                                                                                                                                |
+| Mainstream practitioner (tracking/mixing engineer) | **~36 %**                                                                            | estimated: 50.6 % weekly-area depth × 0.90 interaction × 0.92 stability × 0.85 file exchange ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user))     |
+| Essentials user (song or podcast, defaults)        | **~57 %**                                                                            | estimated: 72.4 % core-feature depth × 0.90 launch/stability × 0.90 discoverability × 0.97 files ([how](docs/target-app-parity.md#mainstream-practitioner-and-essentials-user)) |
+| Remaining to alpha                                 | **~110–180 Opus 5.5 agent-hours** (the failing gate rows)                            | estimated, calibrated on PR history                                                                                                                                             |
+| Remaining to beta                                  | **~350–570 Opus 5.5 agent-hours** (includes the alpha work; ~60–70 % parallelizable) | estimated                                                                                                                                                                       |
+| Remaining to full parity                           | **~950–1,450 Opus 5.5 agent-hours**                                                  | estimated                                                                                                                                                                       |
 
-| Audience | Ready % | Agent-hours to ~95 % | Work that dominates |
-|---|---:|---:|---|
-| Full target (ready for real work) | ~40 % | ~950–1,450 h | Hardware, the stock plugin catalogue, AAF/OMF and immersive, localization, fidelity |
-| Mainstream practitioner | ~36 % | ~380–600 h | Interface and MIDI recording, AAF/OMF, stock-plugin depth, core-path bugs |
-| Essentials user | ~57 % | ~110–200 h | Launch and platform fixes, onboarding, effect panels and presets, MP3/AAC export |
+| Audience                          | Ready % | Agent-hours to ~95 % | Work that dominates                                                                 |
+| --------------------------------- | ------: | -------------------: | ----------------------------------------------------------------------------------- |
+| Full target (ready for real work) |   ~40 % |         ~950–1,450 h | Hardware, the stock plugin catalogue, AAF/OMF and immersive, localization, fidelity |
+| Mainstream practitioner           |   ~36 % |           ~380–600 h | Interface and MIDI recording, AAF/OMF, stock-plugin depth, core-path bugs           |
+| Essentials user                   |   ~57 % |           ~110–200 h | Launch and platform fixes, onboarding, effect panels and presets, MP3/AAC export    |
 
 Hours are Opus 5.5 agent wall-clock hours, calibrated on this repo's PRs; 60–70 % parallelizes.
 Detail: [target-app-parity.md](docs/target-app-parity.md#readiness-by-audience).
@@ -44,57 +44,57 @@ measures readiness and adds hardware, localization and field bug reports.
 
 ## By dimension
 
-| Dimension | Ready | Remaining (h) | Doc |
-|---|---:|---:|---|
-| Features | ~45 % | 520–810 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
-| UI/UX fidelity | ~55 % | 60–100 | [ui-parity.md](docs/ui-parity.md) |
-| File formats | ~40 % | 70–120 | [file-format-parity.md](docs/file-format-parity.md) |
-| Hardware (interfaces, MIDI, surfaces, sync) | ~12 % | 110–180 | [hardware-parity.md](docs/hardware-parity.md) |
-| Localization | ~12 % (1 of Pro Tools' 8 languages) | 70–110 | [localization-parity.md](docs/localization-parity.md) |
-| Performance | ~35 % (unmeasured) | 40–70 | [hardware-parity.md](docs/hardware-parity.md#performance) |
-| Stability | ~45 % | 50–80 | [gaps.md](docs/gaps.md) |
-| Platforms | ~65 % (5 platforms built, macOS exercised) | 20–40 | [gaps.md](docs/gaps.md) |
-| Ecosystem / plugins | ~30 % | in Features + Hardware | [plugin-parity.md](docs/plugin-parity.md) |
-| AI features | ~5 % | 30–50 | [gaps.md](docs/gaps.md) |
-| Agent control | ahead of Pro Tools | 3 | [control-protocol.md](docs/control-protocol.md), [mcp.md](docs/mcp.md) |
+| Dimension                                   |                                      Ready |          Remaining (h) | Doc                                                                    |
+| ------------------------------------------- | -----------------------------------------: | ---------------------: | ---------------------------------------------------------------------- |
+| Features                                    |                                      ~45 % |                520–810 | [target-app-parity.md](docs/target-app-parity.md#feature-areas)        |
+| UI/UX fidelity                              |                                      ~55 % |                 60–100 | [ui-parity.md](docs/ui-parity.md)                                      |
+| File formats                                |                                      ~40 % |                 70–120 | [file-format-parity.md](docs/file-format-parity.md)                    |
+| Hardware (interfaces, MIDI, surfaces, sync) |                                      ~12 % |                110–180 | [hardware-parity.md](docs/hardware-parity.md)                          |
+| Localization                                |        ~12 % (1 of Pro Tools' 8 languages) |                 70–110 | [localization-parity.md](docs/localization-parity.md)                  |
+| Performance                                 |                         ~35 % (unmeasured) |                  40–70 | [hardware-parity.md](docs/hardware-parity.md#performance)              |
+| Stability                                   |                                      ~45 % |                  50–80 | [gaps.md](docs/gaps.md)                                                |
+| Platforms                                   | ~65 % (5 platforms built, macOS exercised) |                  20–40 | [gaps.md](docs/gaps.md)                                                |
+| Ecosystem / plugins                         |                                      ~30 % | in Features + Hardware | [plugin-parity.md](docs/plugin-parity.md)                              |
+| AI features                                 |                                       ~5 % |                  30–50 | [gaps.md](docs/gaps.md)                                                |
+| Agent control                               |                         ahead of Pro Tools |                      3 | [control-protocol.md](docs/control-protocol.md), [mcp.md](docs/mcp.md) |
 
 ## Features
 
-| Area | Breadth | Ready | Remaining (h) |
-|---|---:|---:|---:|
-| Recording and monitoring | 75 % | 40 % | 40–60 |
-| Editing | 92 % | 65 % | 40–60 |
-| Mixing and routing | 85 % | 60 % | 35–50 |
-| Automation | 80 % | 55 % | 20–30 |
-| Built-in plugins and AudioSuite | 40 % | 35 % | 80–120 |
-| Third-party plugin hosting | 70 % | 45 % | 40–60 |
-| MIDI and instruments | 70 % | 30 % | 50–80 |
-| Score and notation | 60 % | 35 % | 20–30 |
-| Elastic Audio, TCE, Beat Detective | 70 % | 35 % | 40–60 |
-| Surround and immersive | 55 % | 35 % | 50–80 |
-| Video and post | 60 % | 40 % | 40–60 |
-| Session, file management, interchange | 55 % | 35 % | 60–100 |
-| Collaboration and cloud (Avid services) | 0 % | 0 % | owner decision |
-| Agent control | 100 % | 100 % | 3 |
+| Area                                    | Breadth | Ready |  Remaining (h) |
+| --------------------------------------- | ------: | ----: | -------------: |
+| Recording and monitoring                |    75 % |  40 % |          40–60 |
+| Editing                                 |    92 % |  65 % |          40–60 |
+| Mixing and routing                      |    85 % |  60 % |          35–50 |
+| Automation                              |    80 % |  55 % |          20–30 |
+| Built-in plugins and AudioSuite         |    40 % |  35 % |         80–120 |
+| Third-party plugin hosting              |    70 % |  45 % |          40–60 |
+| MIDI and instruments                    |    70 % |  30 % |          50–80 |
+| Score and notation                      |    60 % |  35 % |          20–30 |
+| Elastic Audio, TCE, Beat Detective      |    70 % |  35 % |          40–60 |
+| Surround and immersive                  |    55 % |  35 % |          50–80 |
+| Video and post                          |    60 % |  40 % |          40–60 |
+| Session, file management, interchange   |    55 % |  35 % |         60–100 |
+| Collaboration and cloud (Avid services) |     0 % |   0 % | owner decision |
+| Agent control                           |   100 % | 100 % |              3 |
 
 Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#feature-areas).
 
 ## Languages
 
-| Language | Code | Status | Translated |
-|---|---|---|---:|
-| English | en | full | 100 % |
-| Simplified Chinese | zh-Hans | none | 0 % |
-| Spanish | es | none (PR #143 open) | 0 % |
-| Hindi | hi | none | 0 % |
-| Arabic | ar | none | 0 % |
-| French | fr | none (PR #143 open) | 0 % |
-| Portuguese | pt | none | 0 % |
-| Indonesian | id | none | 0 % |
-| Japanese | ja | none | 0 % |
-| German | de | none | 0 % |
-| Korean | ko | none | 0 % |
-| Vietnamese | vi | none | 0 % |
+| Language           | Code    | Status              | Translated |
+| ------------------ | ------- | ------------------- | ---------: |
+| English            | en      | full                |      100 % |
+| Simplified Chinese | zh-Hans | none                |        0 % |
+| Spanish            | es      | none (PR #143 open) |        0 % |
+| Hindi              | hi      | none                |        0 % |
+| Arabic             | ar      | none                |        0 % |
+| French             | fr      | none (PR #143 open) |        0 % |
+| Portuguese         | pt      | none                |        0 % |
+| Indonesian         | id      | none                |        0 % |
+| Japanese           | ja      | none                |        0 % |
+| German             | de      | none                |        0 % |
+| Korean             | ko      | none                |        0 % |
+| Vietnamese         | vi      | none                |        0 % |
 
 Other languages shipped: 0. Detail: [localization-parity.md](docs/localization-parity.md).
 
@@ -175,37 +175,37 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Revision history
 
-| Date | Change | Summary |
-|---|---|---|
-| 2026-10-25 | trivial | Progress log: Cancel Zoom Toggle; readiness estimates unchanged |
-| 2026-10-25 | trivial | Progress log: side panels in dock columns; readiness estimates unchanged |
-| 2026-10-25 | trivial | Progress log: Auto Pan stereo balance; readiness estimates unchanged |
-| 2026-10-24 | trivial | Progress log: Clip List Auto Rename; readiness estimates unchanged |
-| 2026-10-24 | trivial | Progress log: Strip Silence rectangles; readiness estimates unchanged |
-| 2026-10-24 | trivial | Progress log: Strip Silence Rename; readiness estimates unchanged |
-| 2026-10-24 | trivial | Progress log: Strip Silence Extract and Separate; readiness estimates unchanged |
-| 2026-10-24 | trivial | Progress log: Clip Looping dialog; readiness estimates unchanged |
-| 2026-10-24 | trivial | Progress log: AudioSuite Vari-Fi speed ramps; readiness estimates unchanged |
-| 2026-10-24 | trivial | Progress log: Auto Pan plugin; readiness estimates unchanged |
-| 2026-10-24 | trivial | Progress log: Subharmonic plugin; readiness estimates unchanged |
-| 2026-10-23 | trivial | Progress log: Ring Modulator plugin; readiness estimates unchanged |
-| 2026-10-19 | trivial | Float32 file encoding preserves finite headroom (#791); readiness estimates unchanged |
-| 2026-10-18 | trivial | Mono device playback retains both stereo sides and surround fold-down channels; readiness estimates unchanged |
-| 2026-10-16 | trivial | Master volume automation block boundaries corrected; readiness estimates unchanged |
-| 2026-10-16 | trivial | Failed inserts no longer contribute aux, folder or master latency after containment; readiness estimates unchanged |
-| 2026-10-16 | trivial | Split into Mono preserves each source channel, clip edits and saved audio; readiness estimates unchanged |
-| 2026-10-14 | trivial | Progress log: oversized MCP batches rejected before execution (#460) |
-| 2026-10-13 | trivial | Progress log: empty WAV data chunk followed by metadata (#466) |
-| 2026-10-13 | trivial | Progress log: sampler ping-pong phase for wide steps (#463) |
-| 2026-10-13 | trivial | Progress log: mix.instrument params, unknown fields refused (#265) |
-| 2026-10-13 | trivial | Progress log: bus bounce compensates aux returns (#246) |
-| 2026-10-13 | trivial | Progress log: master insert latency compensated (#351) |
-| 2026-10-12 | trivial | Progress log: convert option validation (#256) |
-| 2026-10-12 | trivial | Progress log: timecode overflow (#248) |
-| 2026-10-12 | trivial | Progress log: bar offset saturates (#249) |
-| 2026-10-10 | minor | Readiness-by-audience table with hours: full 950–1,450 h, mainstream 380–600 h, essentials 110–200 h |
-| 2026-10-10 | minor | Added mainstream practitioner ~36 % and essentials user ~57 % to the headline numbers |
-| 2026-10-10 | minor | Stage alpha → pre-alpha: the core-workflow gate fails on interface recording, MIDI recording and session interchange; alpha distance added |
-| 2026-10-10 | major | Progress docs restructured: stage alpha (re-normalized the same day), two numbers (breadth ~70 %, ready ~40 %), dimension/feature/language tables, hours re-calibrated; area table moved to docs/target-app-parity.md, milestones to docs/roadmap.md |
-| 2026-10-07 | major | Menu parity 94 %, ~65 % estimated feature parity, alpha list |
-| 2026-10-06 | minor | Alpha and parity estimates |
+| Date       | Change  | Summary                                                                                                                                                                                                                                              |
+| ---------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-10-25 | trivial | Progress log: Cancel Zoom Toggle; readiness estimates unchanged                                                                                                                                                                                      |
+| 2026-10-25 | trivial | Progress log: side panels in dock columns; readiness estimates unchanged                                                                                                                                                                             |
+| 2026-10-25 | trivial | Progress log: Auto Pan stereo balance; readiness estimates unchanged                                                                                                                                                                                 |
+| 2026-10-24 | trivial | Progress log: Clip List Auto Rename; readiness estimates unchanged                                                                                                                                                                                   |
+| 2026-10-24 | trivial | Progress log: Strip Silence rectangles; readiness estimates unchanged                                                                                                                                                                                |
+| 2026-10-24 | trivial | Progress log: Strip Silence Rename; readiness estimates unchanged                                                                                                                                                                                    |
+| 2026-10-24 | trivial | Progress log: Strip Silence Extract and Separate; readiness estimates unchanged                                                                                                                                                                      |
+| 2026-10-24 | trivial | Progress log: Clip Looping dialog; readiness estimates unchanged                                                                                                                                                                                     |
+| 2026-10-24 | trivial | Progress log: AudioSuite Vari-Fi speed ramps; readiness estimates unchanged                                                                                                                                                                          |
+| 2026-10-24 | trivial | Progress log: Auto Pan plugin; readiness estimates unchanged                                                                                                                                                                                         |
+| 2026-10-24 | trivial | Progress log: Subharmonic plugin; readiness estimates unchanged                                                                                                                                                                                      |
+| 2026-10-23 | trivial | Progress log: Ring Modulator plugin; readiness estimates unchanged                                                                                                                                                                                   |
+| 2026-10-19 | trivial | Float32 file encoding preserves finite headroom (#791); readiness estimates unchanged                                                                                                                                                                |
+| 2026-10-18 | trivial | Mono device playback retains both stereo sides and surround fold-down channels; readiness estimates unchanged                                                                                                                                        |
+| 2026-10-16 | trivial | Master volume automation block boundaries corrected; readiness estimates unchanged                                                                                                                                                                   |
+| 2026-10-16 | trivial | Failed inserts no longer contribute aux, folder or master latency after containment; readiness estimates unchanged                                                                                                                                   |
+| 2026-10-16 | trivial | Split into Mono preserves each source channel, clip edits and saved audio; readiness estimates unchanged                                                                                                                                             |
+| 2026-10-14 | trivial | Progress log: oversized MCP batches rejected before execution (#460)                                                                                                                                                                                 |
+| 2026-10-13 | trivial | Progress log: empty WAV data chunk followed by metadata (#466)                                                                                                                                                                                       |
+| 2026-10-13 | trivial | Progress log: sampler ping-pong phase for wide steps (#463)                                                                                                                                                                                          |
+| 2026-10-13 | trivial | Progress log: mix.instrument params, unknown fields refused (#265)                                                                                                                                                                                   |
+| 2026-10-13 | trivial | Progress log: bus bounce compensates aux returns (#246)                                                                                                                                                                                              |
+| 2026-10-13 | trivial | Progress log: master insert latency compensated (#351)                                                                                                                                                                                               |
+| 2026-10-12 | trivial | Progress log: convert option validation (#256)                                                                                                                                                                                                       |
+| 2026-10-12 | trivial | Progress log: timecode overflow (#248)                                                                                                                                                                                                               |
+| 2026-10-12 | trivial | Progress log: bar offset saturates (#249)                                                                                                                                                                                                            |
+| 2026-10-10 | minor   | Readiness-by-audience table with hours: full 950–1,450 h, mainstream 380–600 h, essentials 110–200 h                                                                                                                                                 |
+| 2026-10-10 | minor   | Added mainstream practitioner ~36 % and essentials user ~57 % to the headline numbers                                                                                                                                                                |
+| 2026-10-10 | minor   | Stage alpha → pre-alpha: the core-workflow gate fails on interface recording, MIDI recording and session interchange; alpha distance added                                                                                                           |
+| 2026-10-10 | major   | Progress docs restructured: stage alpha (re-normalized the same day), two numbers (breadth ~70 %, ready ~40 %), dimension/feature/language tables, hours re-calibrated; area table moved to docs/target-app-parity.md, milestones to docs/roadmap.md |
+| 2026-10-07 | major   | Menu parity 94 %, ~65 % estimated feature parity, alpha list                                                                                                                                                                                         |
+| 2026-10-06 | minor   | Alpha and parity estimates                                                                                                                                                                                                                           |

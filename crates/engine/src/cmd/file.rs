@@ -89,6 +89,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 crate::io::import_video_bytes(e, &path, bytes, at)
             }
         ),
+        cmd!(
+            "file.import_venue_channel_names",
+            "VENUE Channel Names as Track Names",
+            ["File", "Import"],
+            None,
+            "{path?: string, names?: [string], start_track?: 0} — imports channel names from a VENUE channel list file or array and applies them to session tracks",
+            has_tracks,
+            import_venue_channel_names
+        ),
         cmd!(noundo "file.bounce_mix", "Bounce Mix...", ["File"], Some("Cmd+Alt+B"), "{path, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, source?: main|bus name, normalize?: false, dither?: true, fold_down?: stereo}", always, bounce),
         cmd!(noundo "file.bounce_stems", "Bounce Stems...", [], None, "{dir, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, dither?: true, fold_down?: stereo}", has_tracks, |e, p| {
             let dir = str_param(p, "dir").ok_or_else(|| bad("file.bounce_stems", "`dir` required"))?.to_string();
@@ -255,6 +264,119 @@ fn import_audio(e: &mut Engine, p: &Value) -> Result<Value> {
         out.push(r);
     }
     Ok(json!({"imported": out}))
+}
+
+fn import_venue_channel_names(e: &mut Engine, p: &Value) -> Result<Value> {
+    let id = "file.import_venue_channel_names";
+    let has_names = p.get("names").is_some();
+    let has_path = p.get("path").is_some();
+    if has_names && has_path {
+        return Err(bad(id, "provide either `path` or `names`, not both"));
+    }
+    if !has_names && !has_path {
+        return Err(bad(id, "expected `path` or `names` parameter"));
+    }
+
+    let track_count = e.session().tracks.len();
+    if track_count == 0 {
+        return Err(bad(id, "no tracks in session"));
+    }
+
+    let start = match p.get("start_track") {
+        Some(v) => match v.as_i64() {
+            Some(n) if n >= 0 && v.as_u64().is_some() => n as usize,
+            _ => return Err(bad(id, "`start_track` must be a non-negative integer")),
+        },
+        None => 0,
+    };
+
+    if start >= track_count {
+        return Err(bad(id, format!("`start_track` {start} is out of range for session with {track_count} tracks")));
+    }
+
+    let available = track_count.saturating_sub(start);
+    let mut names: Vec<String> = Vec::new();
+
+    if let Some(v) = p.get("names") {
+        let arr = v.as_array().ok_or_else(|| bad(id, "`names` must be an array of strings"))?;
+        if arr.is_empty() {
+            return Err(bad(id, "`names` array cannot be empty"));
+        }
+        if arr.len() > available {
+            return Err(bad(id, format!("too many names provided ({} names for {available} available tracks from index {start})", arr.len())));
+        }
+        for (i, item) in arr.iter().enumerate() {
+            let s = item.as_str().ok_or_else(|| bad(id, format!("name at index {i} must be a string")))?;
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Err(bad(id, format!("name at index {i} cannot be empty")));
+            }
+            if trimmed.chars().count() > 64 {
+                return Err(bad(id, format!("name at index {i} exceeds maximum length of 64 characters")));
+            }
+            names.push(trimmed.to_string());
+        }
+    } else if let Some(path) = str_param(p, "path") {
+        let bytes = crate::io::read_file_capped(path, 1024 * 1024)?;
+        let text = String::from_utf8(bytes).map_err(|e| bad(id, format!("invalid UTF-8 in file: {e}")))?;
+        let mut parsed = Vec::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let name = if let Some((_, rest)) = trimmed.split_once('\t') {
+                rest.trim()
+            } else if let Some((_, rest)) = trimmed.split_once(',') {
+                rest.trim()
+            } else if let Some((_, rest)) = trimmed.split_once(':') {
+                rest.trim()
+            } else {
+                trimmed
+            };
+            if name.is_empty() {
+                continue;
+            }
+            if name.chars().count() > 64 {
+                return Err(bad(id, format!("channel name '{name}' exceeds maximum length of 64 characters")));
+            }
+            parsed.push(name.to_string());
+        }
+        if parsed.is_empty() {
+            return Err(bad(id, "no channel names found in file"));
+        }
+        if parsed.len() > available {
+            return Err(bad(
+                id,
+                format!("file contains more channel names ({}) than available tracks ({available} from index {start})", parsed.len()),
+            ));
+        }
+        names = parsed;
+    }
+
+    // Check uniqueness within names
+    let mut seen = std::collections::HashSet::new();
+    for name in &names {
+        if !seen.insert(name) {
+            return Err(bad(id, format!("duplicate channel name: '{name}'")));
+        }
+    }
+
+    // Check collision with tracks outside the renamed range
+    for (idx, tr) in e.session().tracks.iter().enumerate() {
+        if (idx < start || idx >= start + names.len()) && seen.contains(&tr.name) {
+            return Err(bad(id, format!("track name '{}' already exists in session", tr.name)));
+        }
+    }
+
+    for (i, name) in names.iter().enumerate() {
+        e.session_mut().tracks[start + i].name = name.clone();
+    }
+
+    Ok(json!({
+        "renamed": names.len(),
+        "names": names,
+    }))
 }
 
 /// Destination for `file.import_audio`: an explicit `track` wins; otherwise `new_tracks`

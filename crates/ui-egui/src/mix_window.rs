@@ -130,6 +130,8 @@ fn short_label(text: &str) -> &str {
         "SENDS A-E" => "S A-E",
         "SENDS F-J" => "S F-J",
         "INSTRUMENT" => "INST",
+        "HEAT (GLOBAL)" => "HEAT",
+        "DLY COMP (GLOBAL)" => "DLY",
         _ => text,
     }
 }
@@ -203,10 +205,12 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     // their controls only appear on tracks with an input.
     y = preamp_section(app, ui, &cx, y);
     y = instrument_section(app, ui, &cx, y);
+    y = heat_section(app, ui, &cx, y);
     y = object_section(app, ui, &cx, y);
     y = slot_sections(app, ui, &cx, y);
     y = eq_section(ui, &cx, y);
     y = comments_section(app, ui, &cx, y);
+    y = delay_comp_section(app, ui, &cx, y);
     y = io_section(app, ui, &cx, y);
     y = group_selector(app, ui, &cx, y);
     y = pan_section(app, ui, &cx, y);
@@ -261,6 +265,37 @@ fn instrument_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y:
                 ui.painter().text(sr.center(), Align2::CENTER_CENTER, "MIDI in: all", regular(9.0), t.text_dim);
             }
             None => {}
+        }
+        y = sec.max.y + 4.0;
+    }
+    y
+}
+
+/// The HEAT harmonic enhancement section (global option toggle).
+fn heat_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
+    let StripCtx { narrow, x0, inner_w, .. } = *cx;
+    let t = Tokens::current();
+    if cx.shows("heat") {
+        let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 34.0));
+        inset(ui.painter(), sec, t.strip_section);
+        section_label(ui, sec, "HEAT (GLOBAL)", narrow);
+        let hr = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0), vec2(inner_w - 4.0, 15.0));
+        let heat_on = app.engine.session().edit.flag("options.activate_heat");
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(hr));
+        let label_text = if narrow {
+            if heat_on { "HT" } else { "BYP" }
+        } else if heat_on {
+            "HEAT"
+        } else {
+            "BYPASS"
+        };
+        let label = egui::RichText::new(label_text).font(bold(9.0));
+        let col = if heat_on { t.meter_yellow } else { t.text_dim };
+        if c.add_sized(hr.size(), egui::Button::new(label.color(col)).selected(heat_on))
+            .on_hover_text("Global HEAT Activation (Options) — click to toggle session HEAT")
+            .clicked()
+        {
+            let _ = app.run("options.activate_heat", json!({}));
         }
         y = sec.max.y + 4.0;
     }
@@ -365,6 +400,37 @@ fn comments_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f
         );
         if field.changed() {
             let _ = app.engine.execute_merged("track.comments", &json!({"track": id.0, "comments": c}), &format!("comments:{}", id.0));
+        }
+        y = sec.max.y + 4.0;
+    }
+    y
+}
+
+/// The Delay Compensation status section (global option toggle / status).
+fn delay_comp_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
+    let StripCtx { narrow, x0, inner_w, .. } = *cx;
+    let t = Tokens::current();
+    if cx.shows("delay_compensation") {
+        let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 34.0));
+        inset(ui.painter(), sec, t.strip_section);
+        section_label(ui, sec, "DLY COMP (GLOBAL)", narrow);
+        let dc_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0), vec2(inner_w - 4.0, 15.0));
+        let dc_on = app.engine.session().edit.delay_compensation;
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(dc_r));
+        let label_text = if narrow {
+            if dc_on { "ON" } else { "OFF" }
+        } else if dc_on {
+            "CMP ON"
+        } else {
+            "CMP OFF"
+        };
+        let label = egui::RichText::new(label_text).font(bold(9.0));
+        let col = if dc_on { t.meter_green } else { t.text_dim };
+        if c.add_sized(dc_r.size(), egui::Button::new(label.color(col)).selected(dc_on))
+            .on_hover_text("Global Delay Compensation (Options) — click to toggle session delay compensation")
+            .clicked()
+        {
+            let _ = app.run("options.delay_compensation", json!({}));
         }
         y = sec.max.y + 4.0;
     }

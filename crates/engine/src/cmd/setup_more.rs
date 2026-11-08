@@ -32,6 +32,7 @@ pub fn specs() -> Vec<CommandSpec> {
         option!("options.keyboard_lock", "Edit/Tool Mode Keyboard Lock", "options.edit_tool_mode_keyboard_lock"),
         option!("options.calibration_mode", "Calibration Mode", "options.calibration_mode"),
         option!("options.midi_live_mode", "MIDI Live Mode", "options.midi_live_mode"),
+        option!("options.activate_heat", "Activate HEAT", "options.activate_heat"),
         option!("options.low_latency_monitoring", "Low Latency Monitoring", "options.low_latency_monitoring"),
         cmd!(
             "options.prepare_dpe_tracks",
@@ -62,6 +63,15 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(noundo "setup.disk_allocation", "Disk Allocation...", ["Setup"], None, "{path?, track?} — the record folder for the session, or for one track", always, disk_allocation),
         cmd!(noundo "setup.peripherals", "Peripherals...", ["Setup"], None, "{settings?: {name: number|bool|string}} — control surface / sync device settings", always, peripherals),
+        cmd!(
+            noundo "setup.machine_track_arming_profiles",
+            "Machine Track Arming Profiles...",
+            ["Setup"],
+            None,
+            "{profiles?: [string], active?: string} — machine track arming profiles for machine control",
+            always,
+            machine_track_arming_profiles
+        ),
         cmd!(
             "setup.io",
             "I/O...",
@@ -277,6 +287,67 @@ fn peripherals(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     let flags: Vec<&String> = s.edit.flags.iter().filter(|f| f.starts_with("peripherals.")).collect();
     Ok(json!({"values": values_with_prefix(&s.edit, "peripherals."), "flags": flags}))
+}
+
+fn machine_track_arming_profiles(e: &mut Engine, p: &Value) -> Result<Value> {
+    let id = "setup.machine_track_arming_profiles";
+
+    let list_str = text(&e.session().edit, "setup.machine_track_arming_profiles.list").unwrap_or_default();
+    let mut profiles: Vec<String> = if list_str.is_empty() {
+        vec!["Default".into(), "9-Pin Machine 1".into(), "9-Pin Machine 2".into()]
+    } else {
+        serde_json::from_str(&list_str).unwrap_or_else(|_| vec!["Default".into(), "9-Pin Machine 1".into(), "9-Pin Machine 2".into()])
+    };
+
+    if let Some(v) = p.get("profiles") {
+        let arr = v.as_array().ok_or_else(|| bad(id, "`profiles` must be an array of strings"))?;
+        if arr.len() > 64 {
+            return Err(bad(id, "`profiles` array cannot exceed 64 entries"));
+        }
+        let mut list = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (i, item) in arr.iter().enumerate() {
+            let s = item.as_str().ok_or_else(|| bad(id, format!("profile at index {i} must be a string")))?;
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Err(bad(id, format!("profile at index {i} cannot be empty")));
+            }
+            if trimmed.chars().count() > 64 {
+                return Err(bad(id, format!("profile at index {i} exceeds maximum length of 64 characters")));
+            }
+            if !seen.insert(trimmed.to_string()) {
+                return Err(bad(id, format!("duplicate profile name: '{trimmed}'")));
+            }
+            list.push(trimmed.to_string());
+        }
+        let serialized = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
+        set_text(&mut e.session_mut().edit, "setup.machine_track_arming_profiles.list", Some(&serialized));
+        profiles = list;
+    }
+
+    if let Some(v) = p.get("active") {
+        let s = v.as_str().ok_or_else(|| bad(id, "`active` must be a string"))?;
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Err(bad(id, "`active` profile cannot be empty"));
+        }
+        if trimmed.chars().count() > 64 {
+            return Err(bad(id, "`active` profile exceeds maximum length of 64 characters"));
+        }
+        if !profiles.iter().any(|p| p == trimmed) {
+            return Err(bad(id, format!("active profile '{trimmed}' is not in profiles list")));
+        }
+        set_text(&mut e.session_mut().edit, "setup.machine_track_arming_profiles.active", Some(trimmed));
+    }
+
+    let active = text(&e.session().edit, "setup.machine_track_arming_profiles.active")
+        .filter(|a| profiles.contains(a))
+        .unwrap_or_else(|| profiles.first().cloned().unwrap_or_default());
+
+    Ok(json!({
+        "profiles": profiles,
+        "active": active,
+    }))
 }
 
 fn io_state(s: &Session) -> Value {
@@ -580,6 +651,97 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn activate_heat_and_machine_track_arming_profiles() {
+        let mut e = Engine::default();
+        let r = e.execute("options.activate_heat", &json!({})).unwrap();
+        assert_eq!(r["value"], true);
+        assert!(e.session().edit.flag("options.activate_heat"));
+        let r = e.execute("options.activate_heat", &json!({"value": false})).unwrap();
+        assert_eq!(r["value"], false);
+        assert!(!e.session().edit.flag("options.activate_heat"));
+
+        // Default profiles
+        let r = e.execute("setup.machine_track_arming_profiles", &json!({})).unwrap();
+        assert_eq!(r["profiles"], json!(["Default", "9-Pin Machine 1", "9-Pin Machine 2"]));
+        assert_eq!(r["active"], "Default");
+
+        // Custom profiles including pipe '|' character, round-tripping safely
+        let r = e
+            .execute(
+                "setup.machine_track_arming_profiles",
+                &json!({
+                    "profiles": ["Sony 9-Pin | A", "DA-88"],
+                    "active": "Sony 9-Pin | A"
+                }),
+            )
+            .unwrap();
+        assert_eq!(r["profiles"], json!(["Sony 9-Pin | A", "DA-88"]));
+        assert_eq!(r["active"], "Sony 9-Pin | A");
+
+        // Empty list round-trips as []
+        let r_empty = e.execute("setup.machine_track_arming_profiles", &json!({"profiles": []})).unwrap();
+        assert_eq!(r_empty["profiles"], json!([]));
+        assert_eq!(r_empty["active"], "");
+
+        // Validation: active not in profiles
+        assert!(
+            e.execute(
+                "setup.machine_track_arming_profiles",
+                &json!({
+                    "profiles": ["A", "B"],
+                    "active": "C"
+                })
+            )
+            .is_err()
+        );
+
+        // Validation: non-string in profiles
+        assert!(
+            e.execute(
+                "setup.machine_track_arming_profiles",
+                &json!({
+                    "profiles": [123]
+                })
+            )
+            .is_err()
+        );
+
+        // Validation: duplicate profile
+        assert!(
+            e.execute(
+                "setup.machine_track_arming_profiles",
+                &json!({
+                    "profiles": ["A", "A"]
+                })
+            )
+            .is_err()
+        );
+
+        // Validation: empty string profile
+        assert!(
+            e.execute(
+                "setup.machine_track_arming_profiles",
+                &json!({
+                    "profiles": ["  "]
+                })
+            )
+            .is_err()
+        );
+
+        // Validation: overlong profile name (> 64 chars)
+        let long_p = "P".repeat(65);
+        assert!(
+            e.execute(
+                "setup.machine_track_arming_profiles",
+                &json!({
+                    "profiles": [long_p]
+                })
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn option_flags_toggle() {
         let mut e = Engine::default();

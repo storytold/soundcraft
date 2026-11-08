@@ -45,6 +45,21 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     read_file_within(path.as_ref(), false)
 }
 
+/// The bytes of the file at `path`, capped at `max_bytes`.
+pub fn read_file_capped(path: impl AsRef<Path>, max_bytes: usize) -> Result<Vec<u8>> {
+    let path = path.as_ref();
+    crate::file_access::check_read(path).map_err(EngineError::Io)?;
+    let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
+    let meta = std::fs::metadata(path).map_err(err)?;
+    if !meta.is_file() {
+        return Err(EngineError::Io(format!("{}: not a regular file", path.display())));
+    }
+    if meta.len() > max_bytes as u64 {
+        return Err(EngineError::Io(format!("{}: file exceeds limit of {max_bytes} bytes", path.display())));
+    }
+    std::fs::read(path).map_err(err)
+}
+
 /// [`read_file`]; a `session` file is refused ([`session_size`]) past [`session_limit`].
 fn read_file_within(path: &Path, session: bool) -> Result<Vec<u8>> {
     use std::io::Read as _;
