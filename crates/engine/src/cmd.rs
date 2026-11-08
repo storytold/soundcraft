@@ -234,6 +234,13 @@ pub fn str_param<'a>(p: &'a Value, key: &str) -> Option<&'a str> {
     p.get(key).and_then(Value::as_str)
 }
 
+/// A plugin parameter id: a string, or a whole number in `u32` range (hosted plugins' ids are
+/// decimal `u32`s, such as an Audio Unit's `1575`).
+pub fn param_id(p: &Value, key: &str) -> Option<String> {
+    let v = p.get(key)?;
+    v.as_str().map(str::to_string).or_else(|| v.as_u64().and_then(|n| u32::try_from(n).ok()).map(|n| n.to_string()))
+}
+
 /// Resolve a track from `track` (id number or name) params.
 pub fn track_param(e: &Engine, cmd: &str, p: &Value, key: &str) -> Result<Option<TrackId>> {
     let Some(v) = p.get(key) else { return Ok(None) };
