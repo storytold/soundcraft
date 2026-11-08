@@ -289,6 +289,7 @@ fn peripherals(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"values": values_with_prefix(&s.edit, "peripherals."), "flags": flags}))
 }
 
+/// Machine track arming profiles for machine control.
 fn machine_track_arming_profiles(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "setup.machine_track_arming_profiles";
 
@@ -321,6 +322,9 @@ fn machine_track_arming_profiles(e: &mut Engine, p: &Value) -> Result<Value> {
             list.push(trimmed.to_string());
         }
         let serialized = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
+        if serialized.chars().count() > 200 {
+            return Err(bad(id, "profiles list exceeds 200-character storage limit"));
+        }
         set_text(&mut e.session_mut().edit, "setup.machine_track_arming_profiles.list", Some(&serialized));
         profiles = list;
     }
@@ -736,6 +740,18 @@ mod tests {
                 "setup.machine_track_arming_profiles",
                 &json!({
                     "profiles": [long_p]
+                })
+            )
+            .is_err()
+        );
+
+        // Validation: JSON exceeds 200-char storage limit
+        let big_profiles: Vec<_> = (0..10).map(|i| format!("Machine Profile Long Name {i}")).collect();
+        assert!(
+            e.execute(
+                "setup.machine_track_arming_profiles",
+                &json!({
+                    "profiles": big_profiles
                 })
             )
             .is_err()

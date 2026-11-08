@@ -47,6 +47,7 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
 
 /// The bytes of the file at `path`, capped at `max_bytes`.
 pub fn read_file_capped(path: impl AsRef<Path>, max_bytes: usize) -> Result<Vec<u8>> {
+    use std::io::Read as _;
     let path = path.as_ref();
     crate::file_access::check_read(path).map_err(EngineError::Io)?;
     let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
@@ -54,10 +55,16 @@ pub fn read_file_capped(path: impl AsRef<Path>, max_bytes: usize) -> Result<Vec<
     if !meta.is_file() {
         return Err(EngineError::Io(format!("{}: not a regular file", path.display())));
     }
+    let too_big = || EngineError::Io(format!("{}: file exceeds limit of {max_bytes} bytes", path.display()));
     if meta.len() > max_bytes as u64 {
-        return Err(EngineError::Io(format!("{}: file exceeds limit of {max_bytes} bytes", path.display())));
+        return Err(too_big());
     }
-    std::fs::read(path).map_err(err)
+    let mut data = Vec::new();
+    std::fs::File::open(path).map_err(err)?.take((max_bytes as u64).saturating_add(1)).read_to_end(&mut data).map_err(err)?;
+    if data.len() > max_bytes {
+        return Err(too_big());
+    }
+    Ok(data)
 }
 
 /// [`read_file`]; a `session` file is refused ([`session_size`]) past [`session_limit`].

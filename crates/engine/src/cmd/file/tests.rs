@@ -430,6 +430,17 @@ fn import_venue_channel_names_validates_inputs() {
     // Neither path nor names
     assert!(e.execute("file.import_venue_channel_names", &json!({})).is_err());
 
+    // Non-string path
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "path": 123
+            })
+        )
+        .is_err()
+    );
+
     // Both path and names
     assert!(
         e.execute(
@@ -560,9 +571,18 @@ fn import_venue_channel_names_validates_inputs() {
 
 #[test]
 fn import_venue_channel_names_file_formats_and_limits() {
-    let dir = std::env::temp_dir().join(format!("sc-venue-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    struct TempDir(std::path::PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let dir_path = std::env::temp_dir().join(format!("sc-venue-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir_path);
+    std::fs::create_dir_all(&dir_path).unwrap();
+    let _guard = TempDir(dir_path.clone());
+    let dir = &dir_path;
 
     let tab_file = dir.join("venue_tabs.txt");
     std::fs::write(&tab_file, "# VENUE Channel Export\n1\tLead Vocal\n2\tBacking Vocal\n").unwrap();
@@ -591,11 +611,12 @@ fn import_venue_channel_names_file_formats_and_limits() {
     assert_eq!(e.session().tracks[0].name, "Bass");
     assert_eq!(e.session().tracks[1].name, "Synth");
 
-    // File over 1 MiB rejected
+    // File over 1 MiB rejected using repeated short, valid names
     let big_file = dir.join("oversized.txt");
-    let big_data = vec![b'A'; 1024 * 1024 + 10];
+    let line = "CH: Vocal\n";
+    let repeats = (1024 * 1024 / line.len()) + 10;
+    let big_data = line.repeat(repeats);
     std::fs::write(&big_file, big_data).unwrap();
-    assert!(e.execute("file.import_venue_channel_names", &json!({"path": big_file.to_string_lossy()})).is_err());
-
-    let _ = std::fs::remove_dir_all(&dir);
+    let err = e.execute("file.import_venue_channel_names", &json!({"path": big_file.to_string_lossy()})).unwrap_err();
+    assert!(err.to_string().contains("exceeds limit"), "expected error containing 'exceeds limit', got: {err}");
 }

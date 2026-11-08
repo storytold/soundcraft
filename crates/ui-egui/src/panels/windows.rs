@@ -386,6 +386,7 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_workspace = open;
 }
 
+/// Machine Track Arming window: display/select active profile and toggle per-track arm states.
 fn machine_track_arming(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_machine_track_arming;
     if !open {
@@ -399,7 +400,7 @@ fn machine_track_arming(app: &mut SoundApp, ctx: &egui::Context) {
         let profiles: Vec<String> = if list_str.is_empty() {
             vec!["Default".into(), "9-Pin Machine 1".into(), "9-Pin Machine 2".into()]
         } else {
-            serde_json::from_str(list_str).unwrap_or_else(|_| vec!["Default".into()])
+            serde_json::from_str(list_str).unwrap_or_else(|_| vec!["Default".into(), "9-Pin Machine 1".into(), "9-Pin Machine 2".into()])
         };
         let prefix_active = "setup.machine_track_arming_profiles.active=";
         let mut active = edit

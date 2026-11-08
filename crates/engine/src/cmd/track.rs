@@ -757,6 +757,7 @@ const ALLOWED_WIDTH_FORMATS: &[&str] = &[
     "ambisonics_3",
 ];
 
+/// Normalizes track width format name aliases to their canonical representation.
 fn normalize_width_format(s: &str) -> Option<&'static str> {
     let lower = s.trim().to_ascii_lowercase();
     match lower.as_str() {
@@ -769,6 +770,7 @@ fn normalize_width_format(s: &str) -> Option<&'static str> {
     }
 }
 
+/// Shows or hides track width formats in the Change Track Width menu.
 fn change_width_show_hide(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "track.change_width_show_hide";
     let visible = p.get("visible").and_then(Value::as_bool).unwrap_or(true);
@@ -778,6 +780,7 @@ fn change_width_show_hide(e: &mut Engine, p: &Value) -> Result<Value> {
         if arr.len() > 64 {
             return Err(bad(id, "`formats` array cannot exceed 64 entries"));
         }
+        let mut canonical = Vec::new();
         for (i, item) in arr.iter().enumerate() {
             let s = item.as_str().ok_or_else(|| bad(id, format!("format at index {i} must be a string")))?;
             let trimmed = s.trim();
@@ -788,6 +791,9 @@ fn change_width_show_hide(e: &mut Engine, p: &Value) -> Result<Value> {
                 return Err(bad(id, format!("format at index {i} exceeds maximum length of 32 characters")));
             }
             let canon = normalize_width_format(trimmed).ok_or_else(|| bad(id, format!("unknown width format: '{trimmed}'")))?;
+            canonical.push(canon);
+        }
+        for canon in canonical {
             e.session_mut().edit.set_flag(&format!("track.width_visible.{canon}"), visible);
             updated.push(canon.to_string());
         }
@@ -1346,8 +1352,10 @@ mod tests {
         assert_eq!(r_hide["visible"], false);
         assert!(!e.session().edit.flag("track.width_visible.mono"));
 
-        // Invalid format rejected
-        assert!(e.execute("track.change_width_show_hide", &json!({"formats": ["invalid_format"]})).is_err());
+        // Invalid format rejected without partial update
+        assert!(!e.session().edit.flag("track.width_visible.quad"));
+        assert!(e.execute("track.change_width_show_hide", &json!({"formats": ["quad", "invalid_format"]})).is_err());
+        assert!(!e.session().edit.flag("track.width_visible.quad"));
 
         // Non-string entry rejected
         assert!(e.execute("track.change_width_show_hide", &json!({"formats": [123]})).is_err());

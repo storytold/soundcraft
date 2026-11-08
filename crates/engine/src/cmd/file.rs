@@ -266,6 +266,7 @@ fn import_audio(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"imported": out}))
 }
 
+/// Imports channel names from a VENUE channel list file or array and applies them to session tracks.
 fn import_venue_channel_names(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "file.import_venue_channel_names";
     let has_names = p.get("names").is_some();
@@ -316,7 +317,8 @@ fn import_venue_channel_names(e: &mut Engine, p: &Value) -> Result<Value> {
             }
             names.push(trimmed.to_string());
         }
-    } else if let Some(path) = str_param(p, "path") {
+    } else {
+        let path = str_param(p, "path").ok_or_else(|| bad(id, "`path` must be a string"))?;
         let bytes = crate::io::read_file_capped(path, 1024 * 1024)?;
         let text = String::from_utf8(bytes).map_err(|e| bad(id, format!("invalid UTF-8 in file: {e}")))?;
         let mut parsed = Vec::new();
