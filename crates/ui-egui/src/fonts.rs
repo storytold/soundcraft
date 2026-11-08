@@ -42,6 +42,19 @@ const HANGUL: &[(&str, u32)] = &[
     ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", 0),
     ("/usr/share/fonts/naver-nanum/NanumGothic.ttf", 0),
 ];
+/// Thai fallback, appended after every family (after Hangul) so Thai session, track and clip names
+/// draw instead of boxes whatever the interface language.
+const THAI: &[(&str, u32)] = &[
+    ("/System/Library/Fonts/Supplemental/Thonburi.ttc", 0),
+    ("/System/Library/Fonts/Thonburi.ttc", 0),
+    ("C:\\Windows\\Fonts\\LeelawUI.ttf", 0),
+    ("C:\\Windows\\Fonts\\leelawad.ttf", 0),
+    ("C:\\Windows\\Fonts\\tahoma.ttf", 0),
+    ("/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf", 0),
+    ("/usr/share/fonts/noto/NotoSansThai-Regular.ttf", 0),
+    ("/usr/share/fonts/google-noto/NotoSansThai-Regular.ttf", 0),
+    ("/usr/share/fonts/truetype/tlwg/Loma.ttf", 0),
+];
 /// Font files larger than this are skipped: egui keeps the whole file in memory.
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_FONT_BYTES: u64 = 64 << 20;
@@ -132,6 +145,12 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
             family.push("system-hangul".into());
         }
     }
+    if let Some(t) = load(THAI, "sans-serif:lang=th", Some("th"), system_fonts) {
+        fonts.font_data.insert("system-thai".into(), Arc::new(t));
+        for family in fonts.families.values_mut() {
+            family.push("system-thai".into());
+        }
+    }
     fonts
 }
 
@@ -191,6 +210,33 @@ mod tests {
         for family in families {
             let font = egui::FontId::new(13.0, family.clone());
             assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "가한국어세션")), "{family:?} has no Hangul");
+        }
+    }
+
+    #[test]
+    fn thai_candidates_cover_every_desktop_platform() {
+        for prefix in ["/System/Library/Fonts/", "C:\\Windows\\Fonts\\", "/usr/share/fonts/"] {
+            assert!(THAI.iter().any(|(p, _)| p.starts_with(prefix)), "no Thai candidate under {prefix}");
+        }
+    }
+
+    /// Thai names draw in every family, not as boxes (#1458); skipped when the system has no Thai
+    /// font.
+    #[test]
+    fn every_family_draws_thai_with_a_system_thai_font() {
+        if load(THAI, "sans-serif:lang=th", Some("th"), true).is_none() {
+            eprintln!("skipping: no Thai system font");
+            return;
+        }
+        let defs = definitions(true);
+        let families: Vec<FontFamily> = defs.families.keys().cloned().collect();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        for family in families {
+            let font = egui::FontId::new(13.0, family.clone());
+            assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "สวัสดีเซสชัน")), "{family:?} has no Thai");
         }
     }
 }
