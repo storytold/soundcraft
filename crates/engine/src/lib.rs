@@ -209,6 +209,13 @@ pub struct Engine {
     /// True while `execute_merged` runs a command that continues the current gesture, whose
     /// step it will drop (see `merge_snapshot_mut`).
     merge_continuing: bool,
+    /// Undo steps pushed so far (never decreases), so a gesture can tell whether the newest step
+    /// is still its own.
+    undo_pushes: u64,
+    /// `undo_pushes` right after the current gesture pushed its step, while that step is the
+    /// newest one. `None` while the gesture owns no step: it started with a no-op, or history
+    /// moved since (Undo, Redo, another command, a new document).
+    merge_step: Option<u64>,
     /// Messages for the UI status line / agents.
     pub messages: Vec<String>,
     /// The edit selection (range, tracks) before the last change, for Restore Last Selection.
@@ -247,6 +254,8 @@ impl Engine {
             merge_key: None,
             merge_hold: None,
             merge_continuing: false,
+            undo_pushes: 0,
+            merge_step: None,
             messages: Vec::new(),
             last_selection: None,
             imports: Vec::new(),
@@ -331,6 +340,7 @@ impl Engine {
         self.saved = Arc::clone(&self.doc);
         self.undo.clear();
         self.redo.clear();
+        self.merge_step = None;
         self.last_selection = None;
         self.revision = self.revision.wrapping_add(1);
         self.dirty = false;
@@ -384,6 +394,7 @@ impl Engine {
     /// Restore the previous document while retaining current edit mode and live input flags.
     pub fn undo(&mut self) -> bool {
         let Some(h) = self.undo.pop() else { return false };
+        self.merge_step = None;
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
         self.keep_runtime_track_states(&cur);
@@ -396,6 +407,7 @@ impl Engine {
     /// Restore the next document while retaining current edit mode and live input flags.
     pub fn redo(&mut self) -> bool {
         let Some(h) = self.redo.pop() else { return false };
+        self.merge_step = None;
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
         self.keep_runtime_track_states(&cur);
@@ -444,6 +456,7 @@ impl Engine {
             return;
         }
         self.undo.push(HistoryEntry { label: label.to_string(), doc: before });
+        self.undo_pushes = self.undo_pushes.wrapping_add(1);
         self.redo.clear();
         if self.undo.len() > self.history_limit {
             let excess = self.undo.len() - self.history_limit;
@@ -532,21 +545,31 @@ impl Engine {
     pub fn execute_merged(&mut self, id: &str, params: &Value, key: &str) -> Result<Value> {
         let key = self.merge_hold.clone().unwrap_or_else(|| key.to_string());
         let continuing = self.merge_key.as_ref() == Some(&key);
+        // Continue only into the gesture's own step. A gesture that started with a no-op owns
+        // none yet, and the newest step then belongs to an unrelated edit.
+        let owns_step = continuing && !self.undo.is_empty() && self.merge_step == Some(self.undo_pushes);
         let before_len = self.undo.len();
+        let pushes = self.undo_pushes;
         // The step pushed for a continuing tick is dropped again below, so it must not trim the
         // oldest entry first when the history is full.
         let limit = self.history_limit;
-        if continuing && before_len > 0 {
+        if owns_step {
             self.history_limit = limit.max(before_len.saturating_add(1));
         }
-        self.merge_continuing = continuing && before_len > 0;
+        self.merge_continuing = owns_step;
         let r = self.execute(id, params);
         self.merge_continuing = false;
         self.history_limit = limit;
         let r = r?;
-        if continuing && self.undo.len() == before_len + 1 && before_len > 0 {
+        let pushed = self.undo_pushes != pushes;
+        if owns_step && pushed && self.undo.len() == before_len + 1 {
             // Drop the step just pushed; the earlier one still holds the pre-gesture document.
             self.undo.pop();
+            self.merge_step = Some(self.undo_pushes);
+        } else if pushed {
+            self.merge_step = Some(self.undo_pushes);
+        } else if !continuing {
+            self.merge_step = None;
         }
         self.merge_key = Some(key);
         Ok(r)
@@ -747,6 +770,20 @@ mod merge_tests {
         e.hold_merge(None);
         e.execute_merged("mix.volume", &json!({"track": t.0, "db": -6.0}), "fader").unwrap();
         assert_eq!(e.undo_history().len(), 2);
+    }
+
+    /// Undo inside a gesture hands the newest step back to history: the next tick starts a step.
+    #[test]
+    fn undo_mid_gesture_does_not_fold_the_next_tick_into_an_older_step() {
+        let mut e = Engine::default();
+        let t = e.session_mut().add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Mono, None);
+        e.execute("mix.mute", &json!({"track": t.0})).unwrap();
+        e.execute_merged("mix.volume", &json!({"track": t.0, "db": -1.0}), "fader").unwrap();
+        e.undo();
+        e.execute_merged("mix.volume", &json!({"track": t.0, "db": -2.0}), "fader").unwrap();
+        assert_eq!(e.undo_history().len(), 2);
+        e.undo();
+        assert!(e.session().track(t).unwrap().mixer.mute, "the mute is still its own step");
     }
 
     #[test]
