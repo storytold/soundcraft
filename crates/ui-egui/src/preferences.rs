@@ -1065,7 +1065,7 @@ mod tests {
         assert!(page_matches(PreferencesPage::Metering, "K-20"));
         assert!(page_matches(PreferencesPage::Synchronization, "linked systems"));
         assert!(!page_matches(PreferencesPage::Midi, "waveform cache"));
-        assert!(page_matches(PreferencesPage::Processing, "Audio Stretch"));
+        assert!(page_matches(PreferencesPage::Processing, "Real-Time Stretch"));
     }
 
     /// Implemented preferences use commands without becoming document edits.

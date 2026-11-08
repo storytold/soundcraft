@@ -1,15 +1,16 @@
 //! Display-only terminology. Catalog paths, command ids, processor ids and saved values are stable.
-//! Never use the returned label for command dispatch or persistence.
+//! Never use the returned label for command dispatch or persistence. Labels for features we do not
+//! have describe a placeholder, which the menu draws disabled once the list exists.
 
 pub fn display_label(label: &str) -> &str {
     match label {
         "AudioSuite" => "Offline Processing",
         "AudioSuite Process" => "Process Clips Offline",
         "Beat Detective" => "Beat Analysis",
-        "Elastic Audio" => "Audio Stretch",
-        "Elastic Properties" => "Audio Stretch Properties",
-        "Enable Elastic Audio on New Tracks" => "Enable Audio Stretch on New Tracks",
-        "x-form" => "Pitch Preserving",
+        "Elastic Audio" => "Real-Time Stretch",
+        "Elastic Properties" => "Real-Time Stretch Properties",
+        "Enable Elastic Audio on New Tracks" => "Enable Real-Time Stretch on New Tracks",
+        "x-form" => "Rendered (High Quality)",
         "QuickPunch" => "Punch Recording",
         "TrackPunch" => "Track Punch Recording",
         "Ableton Link" => "Tempo Sync Display",
@@ -33,8 +34,8 @@ mod tests {
         for (old, new) in [
             ("AudioSuite", "Offline Processing"),
             ("Beat Detective", "Beat Analysis"),
-            ("Elastic Audio", "Audio Stretch"),
-            ("x-form", "Pitch Preserving"),
+            ("Elastic Audio", "Real-Time Stretch"),
+            ("x-form", "Rendered (High Quality)"),
             ("QuickPunch", "Punch Recording"),
             ("TrackPunch", "Track Punch Recording"),
             ("Ableton Link", "Tempo Sync Display"),
