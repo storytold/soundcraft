@@ -67,7 +67,7 @@ mod audio_thread_tests {
 
     /// What `on_audio_thread` says inside each strip job, for strips run from a thread that is
     /// (or is not) the audio thread.
-    fn seen_by_strips(audio: bool) -> Vec<bool> {
+    fn seen_by_strips(audio: bool) -> Result<Vec<bool>, &'static str> {
         std::thread::spawn(move || {
             if audio {
                 mark_audio_thread();
@@ -78,16 +78,16 @@ mod audio_thread_tests {
                 std::thread::sleep(std::time::Duration::from_millis(1));
                 *w = Some(on_audio_thread());
             });
-            work.into_iter().map(|w| w.unwrap()).collect()
+            work.into_iter().collect::<Option<Vec<_>>>().ok_or("a strip did not run")
         })
         .join()
-        .unwrap()
+        .map_err(|_| "the strip render thread panicked")?
     }
 
     #[test]
     fn strips_rendered_for_the_audio_thread_count_as_the_audio_thread_and_only_then() {
-        assert!(seen_by_strips(true).iter().all(|&rt| rt), "strips rendered for the audio thread are on it");
-        assert!(seen_by_strips(false).iter().all(|&rt| !rt), "the workers don't stay marked afterwards");
+        assert_eq!(seen_by_strips(true), Ok(vec![true; 64]), "strips rendered for the audio thread are on it");
+        assert_eq!(seen_by_strips(false), Ok(vec![false; 64]), "the workers don't stay marked afterwards");
     }
 
     #[test]
