@@ -316,6 +316,32 @@ mod tests {
         assert_eq!(gain(&e), Some(-6.0), "the fader move is not undone with the instrument");
     }
 
+    /// A gesture whose first tick only captures state owns no undo step (state is not undoable).
+    /// Its later parameter ticks get their own step instead of patching the unrelated one before.
+    #[test]
+    fn a_gesture_that_starts_with_state_only_gets_its_own_undo_step() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+        let inst = e.session().tracks[0].id;
+        e.execute("mix.instrument_param", &json!({"track": inst.0, "param": "cutoff", "value": 1000.0})).unwrap();
+        e.execute("mix.mute", &json!({"tracks": [inst.0], "value": true})).unwrap();
+        let undo = e.undo_history().len();
+
+        let state = b64::encode(b"first");
+        e.execute_merged("mix.insert_state", &json!({"track": inst.0, "slot": "instrument", "state": state}), "knob").unwrap();
+        assert_eq!(e.undo_history().len(), undo, "captured state alone is not an undo step");
+        let state = b64::encode(b"second");
+        let p = json!({"track": inst.0, "slot": "instrument", "state": state, "params": {"cutoff": 55.0}});
+        e.execute_merged("mix.insert_state", &p, "knob").unwrap();
+        assert_eq!(e.undo_history().len(), undo + 1, "the parameter change is its own step");
+
+        assert!(e.undo());
+        let track = e.session().track(inst).unwrap();
+        assert_eq!(track.instrument.as_ref().unwrap().params.get("cutoff").copied(), Some(1000.0));
+        assert!(track.mixer.mute, "undoing the knob does not undo the mute");
+        assert_eq!(track.instrument.as_ref().unwrap().state_bytes().as_deref(), Some(&b"second"[..]), "undo keeps the captured state");
+    }
+
     #[test]
     fn storing_the_same_state_again_changes_nothing() {
         let mut e = Engine::default();
