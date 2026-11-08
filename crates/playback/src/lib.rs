@@ -215,6 +215,7 @@ impl Player {
         self.fault.peak_permille.store(0, Ordering::Relaxed);
     }
 
+    /// The UI-thread plugin bookkeeping, still usable if a panic poisoned its lock.
     fn side(&self) -> std::sync::MutexGuard<'_, Side> {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
     }

@@ -260,6 +260,7 @@ fn a_block_that_panics_goes_silent_and_is_reported_once() {
 }
 
 /// Fill time is reported in permille of the buffer's real-time length, over 1000 when late.
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn load_is_the_share_of_the_buffers_real_time_length() {
     // 256 stereo frames at 48 kHz last 5.333 ms.
@@ -270,6 +271,7 @@ fn load_is_the_share_of_the_buffers_real_time_length() {
 }
 
 /// An empty buffer, a zero rate or a non-positive or non-finite timing gives no load.
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn load_is_zero_for_empty_buffers_and_bad_timings() {
     assert_eq!(callback::load_permille(0.001, 0, 2, 48_000.0), 0);
@@ -281,6 +283,7 @@ fn load_is_zero_for_empty_buffers_and_bad_timings() {
 }
 
 /// Zero channels count as one, and a huge timing stops at `u32::MAX` instead of wrapping.
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn load_with_no_channels_counts_as_mono_and_saturates() {
     assert_eq!(callback::load_permille(0.5, 48_000, 0, 48_000.0), callback::load_permille(0.5, 48_000, 1, 48_000.0));
@@ -289,6 +292,7 @@ fn load_with_no_channels_counts_as_mono_and_saturates() {
 }
 
 /// The one-pole smoothing moves an eighth of the way and does not overflow at the top.
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn smoothing_moves_an_eighth_of_the_way() {
     assert_eq!(callback::smooth_permille(0, 800), 100);
@@ -298,6 +302,7 @@ fn smoothing_moves_an_eighth_of_the_way() {
 }
 
 /// `note_load` smooths the load, holds the highest value as the peak, and starts again after a reset.
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn noting_load_smooths_it_and_keeps_the_peak() {
     let fault = Fault::default();
@@ -333,7 +338,9 @@ fn a_lost_device_is_marked_gone_without_an_xrun() {
     assert!(fault.gone.load(Ordering::Relaxed));
 }
 
-/// A fill that takes longer than the block's real-time length shows up in the peak and the smoothed load.
+/// A fill that takes longer than the block's real-time length shows up in the peak and the smoothed
+/// load. The web build does not time blocks.
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_slow_block_raises_the_load() {
     let shared = Shared {
