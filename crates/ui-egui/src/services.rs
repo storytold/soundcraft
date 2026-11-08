@@ -42,6 +42,8 @@ impl Services {
         if self.pending.is_some() {
             return;
         }
+        // A path nobody took must not answer this request.
+        self.picked = None;
         if let Some(start) = &self.start_pick {
             if let Some(answer) = start(pick) {
                 self.pending = Some((tag.to_string(), answer));
@@ -108,6 +110,9 @@ mod tests {
         assert_eq!(services.take("a"), Some(PathBuf::from("/tmp/x.scraft")));
         assert_eq!(services.take("a"), None, "taken once");
         assert!(!blocked.get(), "the blocking picker was never called");
+        services.picked = Some(("a".into(), PathBuf::from("/tmp/old")));
+        services.ask("a", Pick::Open("session.open".into()));
+        assert_eq!(services.take("a"), None, "a new request drops an untaken path");
     }
 
     /// Without `start_pick` the blocking picker answers at once.
