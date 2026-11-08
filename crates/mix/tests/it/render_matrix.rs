@@ -1,6 +1,12 @@
-//! Offline renders do not depend on the block size or on where the render starts: each scenario
-//! renders the same samples at every block size as at 512, and a render from a later start is
-//! the tail of the render from zero.
+//! Offline renders do not depend on the block size or on where the render starts: a render from
+//! a later start is the tail of the render from zero, and each scenario renders the same samples
+//! at every block size as at 512, with two known exceptions kept as ignored tests:
+//!
+//! - Fades and crossfades (`FADED`) match only at block sizes on the 32-sample clip gain grid
+//!   (`GRID_BLOCKS`), because clip gain and fades are stepped every 32 samples from each block's
+//!   start.
+//! - Volume automation with breakpoints inside a block (`volume_ramp`, #1354) does not match,
+//!   because the fader ramps between the levels at the block's first and last samples.
 
 use soundcraft_audio_io::AudioBuffer;
 use soundcraft_mix::{fold_down_stereo, render_range};
@@ -10,14 +16,20 @@ use soundcraft_model::{
 use soundcraft_time::Range;
 use std::sync::Arc;
 
+/// Samples per render (0.1 s at 48 kHz), and the length of every source.
 const LEN: usize = 4800;
+/// Largest allowed difference between a sample and its reference.
 const TOLERANCE: f32 = 1e-6;
+/// Block sizes every scenario is rendered at, odd ones included.
 const BLOCKS: [usize; 5] = [1, 37, 64, 512, 4096];
 /// Block sizes that share the 32-sample grid clip gain is stepped on.
 const GRID_BLOCKS: [usize; 3] = [64, 512, 4096];
 
+/// A session to render, with what to do with the result before comparing.
 struct Scenario {
+    /// Shown in assertion messages.
     name: &'static str,
+    /// Builds the session; called once per check.
     build: fn() -> Session,
     /// Main mix format folded down to stereo before comparing.
     fold: Option<ChannelFormat>,
@@ -130,7 +142,8 @@ fn surround_fold_down() -> Session {
     s
 }
 
-/// Volume automation with ramps that start and end inside blocks.
+/// Volume automation with ramps that start and end inside blocks. It is in neither `STEADY` nor
+/// `FADED`: only the ignored test at the end of this file renders it.
 fn volume_ramp() -> Session {
     let mut s = base();
     let t = add_audio(&mut s, ChannelFormat::Stereo, &[(0, 0, LEN as i64)]);
@@ -141,12 +154,14 @@ fn volume_ramp() -> Session {
     s
 }
 
+/// Scenarios without clip gain or fades, which match at every block size.
 const STEADY: [Scenario; 3] = [
     Scenario { name: "send to a latent aux", build: send_to_latent_aux, fold: None },
     Scenario { name: "VCA member", build: vca_member, fold: None },
     Scenario { name: "5.1 folded down", build: surround_fold_down, fold: Some(ChannelFormat::Surround51) },
 ];
 
+/// Scenarios with fades, which match only at block sizes on the 32-sample clip gain grid.
 const FADED: [Scenario; 2] = [
     Scenario { name: "stereo clip with fades", build: faded_clip, fold: None },
     Scenario { name: "crossfade across a block edge", build: crossfade, fold: None },
@@ -270,7 +285,7 @@ fn rendering_the_same_session_twice_gives_identical_samples() {
 /// Volume automation ramps that start and end inside blocks give the same samples at every
 /// block size.
 #[test]
-#[ignore = "#1354"]
+#[ignore = "#1354: the fader ramps between the block's first and last samples, so a breakpoint inside a block is missed"]
 fn interior_volume_ramps_match_the_512_block_reference_at_every_block_size() {
     check_blocks(&[Scenario { name: "interior volume ramp", build: volume_ramp, fold: None }], &BLOCKS);
 }
