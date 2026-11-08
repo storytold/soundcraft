@@ -1206,6 +1206,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-web-api"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=fd5e2feff6ea25bed371a99cc732b3968d621505#fd5e2feff6ea25bed371a99cc732b3968d621505"
+dependencies = [
+ "js-sys",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "craft-zip"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=6a86adb58a6e8e1929484a4514600ed54bca36dc#6a86adb58a6e8e1929484a4514600ed54bca36dc"
@@ -4624,6 +4635,7 @@ name = "soundcraft-web"
 version = "0.20.1"
 dependencies = [
  "craft-audio",
+ "craft-web-api",
  "eframe",
  "egui",
  "js-sys",

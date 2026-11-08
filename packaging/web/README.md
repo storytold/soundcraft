@@ -87,5 +87,17 @@ A browser with neither WebGPU nor WebGL2 gets a message in place of the app.
 
 Playback goes through WebAudio. Browsers only start an `AudioContext` after a user gesture, so
 the first click or key press in the page may be needed before sound is heard. In an iframe,
-`allow="autoplay"` lets the embedding page grant that up front. The web build has no recording,
-no native file dialogs and no control channel; it opens the synthesised demo session.
+`allow="autoplay"` lets the embedding page grant that up front. The web build has no recording
+and no native file dialogs; it opens the synthesised demo session. There is no TCP control channel, but the page can drive the same one through `window.soundcraft` (below).
+
+## Driving it from the page (`window.soundcraft`)
+
+Every SoundCraft web build puts `window.soundcraft` on the page, from [`craft-web-api`](https://github.com/storytold/craft-libs/tree/main/crates/web-api) (storytold/craft-libs#413), the same shape in every Craft app. `soundcraft.request(method, params)` calls any method of the control channel the desktop app serves (`docs/control-protocol.md`), and `execute(command, params)`, `commands()`, `docInspect(params)`, `uiInspect(params)` and `screenshot(params)` are shortcuts for the common ones. Each returns a Promise that resolves with the method's result and rejects with an `Error`; a call the app does not answer within 30 seconds rejects. SoundCraft's control requests cannot be withdrawn, so a call that times out in the page still runs when the app reaches it, as it does for a desktop client that timed out.
+
+```js
+const session = await soundcraft.docInspect();                       // tracks, clips, routing
+await soundcraft.execute("track.new", { count: 2, format: "Stereo" });
+const { data } = await soundcraft.screenshot();                      // the window as PNG (base64)
+```
+
+The API is installed in every session. Playback still needs a user gesture before the browser starts audio.
