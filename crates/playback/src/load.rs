@@ -1,6 +1,6 @@
 //! The audio callback's load: how long each device callback takes to render, against how long its
-//! buffer lasts. The audio thread is the only writer and the UI reads; both lock-free and
-//! allocation-free.
+//! buffer lasts. `record` runs on the audio thread; `reset` (UI) clears the published atomics.
+//! Both are lock-free and allocation-free.
 //!
 //! A callback that takes longer than its buffer lasts is *late*: the device ran out of audio
 //! before the callback returned, which is heard as a dropout. cpal doesn't report the device's
@@ -42,7 +42,8 @@ pub(crate) struct LoadMeter {
     late: AtomicU64,
     callbacks: AtomicU64,
     buffer_ms: AtomicU32,
-    /// Asked by the UI; the audio thread clears the counters at its next callback.
+    /// Asked by the UI; published values are cleared immediately, and the audio thread drops the
+    /// in-progress window at its next callback.
     reset: AtomicBool,
 }
 
@@ -57,30 +58,38 @@ pub(crate) struct LoadWindow {
 impl LoadMeter {
     /// One callback: `busy` seconds rendering `audio` seconds of output. Audio thread only.
     pub(crate) fn record(&self, w: &mut LoadWindow, busy: f64, audio: f64) {
-        if !(audio > 0.0 && busy.is_finite() && busy >= 0.0) {
+        if !(audio > 0.0 && audio.is_finite() && busy.is_finite() && busy >= 0.0) {
+            return;
+        }
+        let load = busy / audio;
+        let load_f = load as f32;
+        let buffer_ms_f = (audio * 1000.0) as f32;
+        if !(load.is_finite() && load_f.is_finite() && buffer_ms_f.is_finite()) {
             return;
         }
         if self.reset.swap(false, Relaxed) {
-            self.worst.store(0, Relaxed);
-            self.late.store(0, Relaxed);
-            self.callbacks.store(0, Relaxed);
+            *w = LoadWindow::default();
+            self.clear_published();
         }
-        let load = busy / audio;
         self.callbacks.store(self.callbacks.load(Relaxed).saturating_add(1), Relaxed);
         if load > 1.0 {
             self.late.store(self.late.load(Relaxed).saturating_add(1), Relaxed);
         }
-        if load as f32 > f32::from_bits(self.worst.load(Relaxed)) {
-            self.worst.store((load as f32).to_bits(), Relaxed);
+        if load_f > f32::from_bits(self.worst.load(Relaxed)) {
+            self.worst.store(load_f.to_bits(), Relaxed);
         }
-        self.buffer_ms.store(((audio * 1000.0) as f32).to_bits(), Relaxed);
+        self.buffer_ms.store(buffer_ms_f.to_bits(), Relaxed);
         self.measured.store(true, Relaxed);
         w.busy += busy;
         w.audio += audio;
         w.peak = w.peak.max(load);
         if w.audio >= WINDOW_S {
-            self.average.store(((w.busy / w.audio) as f32).to_bits(), Relaxed);
-            self.peak.store((w.peak as f32).to_bits(), Relaxed);
+            let average = (w.busy / w.audio) as f32;
+            let peak = w.peak as f32;
+            if average.is_finite() && peak.is_finite() && !self.reset.load(Relaxed) {
+                self.average.store(average.to_bits(), Relaxed);
+                self.peak.store(peak.to_bits(), Relaxed);
+            }
             *w = LoadWindow::default();
         }
     }
@@ -98,9 +107,20 @@ impl LoadMeter {
         }
     }
 
-    /// Starts the worst load and the counts again (at the next callback).
+    /// Clears the published load and the counts. The in-progress window is dropped on the next
+    /// callback. Lock-free; the audio thread is still the only writer of a closing window.
     pub(crate) fn reset(&self) {
         self.reset.store(true, Relaxed);
+        self.clear_published();
+    }
+
+    fn clear_published(&self) {
+        self.average.store(0, Relaxed);
+        self.peak.store(0, Relaxed);
+        self.worst.store(0, Relaxed);
+        self.late.store(0, Relaxed);
+        self.callbacks.store(0, Relaxed);
+        self.buffer_ms.store(0, Relaxed);
     }
 }
 
@@ -148,9 +168,62 @@ mod tests {
     fn hostile_timings_are_ignored() {
         let m = LoadMeter::default();
         let mut w = LoadWindow::default();
-        for (busy, audio) in [(0.01, 0.0), (0.01, -1.0), (f64::NAN, 0.1), (f64::INFINITY, 0.1), (-0.01, 0.1), (0.01, f64::NAN)] {
+        for (busy, audio) in [
+            (0.01, 0.0),
+            (0.01, -1.0),
+            (f64::NAN, 0.1),
+            (f64::INFINITY, 0.1),
+            (-0.01, 0.1),
+            (0.01, f64::NAN),
+            (0.01, f64::INFINITY),
+            (0.01, f64::NEG_INFINITY),
+            (f64::MAX, f64::MIN_POSITIVE),
+            (f64::MAX, 1.0),
+            (1.0, 1e40),
+        ] {
             m.record(&mut w, busy, audio);
         }
         assert_eq!(m.snapshot(), AudioLoad::default());
+    }
+
+    #[test]
+    fn reset_clears_published_values_before_any_callback() {
+        let m = LoadMeter::default();
+        let mut w = LoadWindow::default();
+        for busy in [0.025, 0.025, 0.15, 0.025] {
+            m.record(&mut w, busy, 0.125);
+        }
+        let before = m.snapshot();
+        assert!(before.measured && before.average > 0.0 && before.late == 1 && before.callbacks == 4);
+        m.reset();
+        let s = m.snapshot();
+        assert!(s.measured);
+        assert_eq!((s.average, s.peak, s.worst, s.buffer_ms), (0.0, 0.0, 0.0, 0.0));
+        assert_eq!((s.late, s.callbacks), (0, 0));
+    }
+
+    #[test]
+    fn reset_then_snapshot_before_any_callback_is_clear() {
+        let m = LoadMeter::default();
+        m.reset();
+        assert_eq!(m.snapshot(), AudioLoad::default());
+    }
+
+    #[test]
+    fn reset_discards_a_partial_window() {
+        let m = LoadMeter::default();
+        let mut w = LoadWindow::default();
+        m.record(&mut w, 0.1, 0.125);
+        assert_eq!(m.snapshot().average, 0.0);
+        assert!((m.snapshot().worst - 0.8).abs() < 1e-6);
+        m.reset();
+        assert_eq!(m.snapshot().worst, 0.0);
+        for _ in 0..4 {
+            m.record(&mut w, 0.0125, 0.125);
+        }
+        let s = m.snapshot();
+        assert!((s.average - 0.1).abs() < 1e-6 && (s.peak - 0.1).abs() < 1e-6, "{s:?}");
+        assert!((s.worst - 0.1).abs() < 1e-6);
+        assert_eq!((s.late, s.callbacks), (0, 4));
     }
 }
