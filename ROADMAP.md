@@ -2,7 +2,7 @@
 
 **Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
 
-> **Last reviewed:** 2026-10-24 · **Last updated:** 2026-11-05 · **Change:** trivial (Command-click automation points, Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-24 · **Last updated:** 2026-11-08 · **Change:** trivial (Command-click target priority and cursor, Command-click automation points, Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -122,6 +122,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
+- **2026-11-08:** Command-click near an existing automation breakpoint keeps that point as the click target with every active tool, and existing fade and clip-gain controls retain their normal priority. Empty automation space shows a crosshair and an insertion hint while Command is held. The active tool's drag gestures stay unchanged. No readiness percentage change.
 - **2026-11-05:** Command-click in an automation lane adds a point at the clicked time and value with the current editing tool (#1394), using the existing Pencil mapping. Command-click preserves the existing selection and also works on the fallback volume lanes of Master, Aux and VCA tracks. Plain clicks and clip contents stay unchanged, and one Undo removes the new point. No readiness percentage change.
 - **2026-10-25:** Alt+Shift+E (`view.zoom_toggle_cancel`) and an Alt-click on the Zoom Toggle button cancel Zoom Toggle and keep the current view: the zoom, the scroll and the track heights stay as they are, and the button is no longer lit. The next Zoom Toggle zooms in from that view and goes back to it. No readiness percentage change.
 - **2026-10-25:** Tracks and Groups and the Clip List sit in dock columns that run the Edit window's full height at its left and right edges, with the MIDI Editor under the session view between them; Mix docks Tracks and Groups at its left edge. A panel dragged onto a dock group joins it as a tab, stacks above or below it, or makes a new column; one dragged to an empty window edge makes a dock there. A list with no saved place reopens in its dock, and makes the dock again when it is gone. Preferences and window configurations saved with the earlier split-frame layouts load with the new default layouts and keep their other settings. No readiness percentage change.
@@ -178,6 +179,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-08 | trivial | Command-click breakpoint/control priority and insertion affordance; active-tool drags retained; readiness estimates unchanged |
 | 2026-11-05 | trivial | Progress log: Command-click adds an undoable automation point (#1394); readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Cancel Zoom Toggle; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: side panels in dock columns; readiness estimates unchanged |
