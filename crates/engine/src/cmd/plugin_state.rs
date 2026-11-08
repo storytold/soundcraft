@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Store Plugin State",
         menu: &[],
         shortcut: None,
-        params: "{track, slot: 0..9 | \"a\"..\"j\" | \"instrument\", state: base64 | null, params?: {id: number}} → {bytes}. The state is not undoable and not journaled (states can be large). `params`, when a value changes, is stored in that same edit as one undo step and is not journaled.",
+        params: "{track, slot: 0..9 | \"a\"..\"j\" | \"instrument\", state: base64 | null, params?: {id: number}} → {bytes}. `params` keys are parameter ids as strings (a numeric hosted id is written as its decimal text); unknown ids and non-finite values are errors, values are clamped and rounded like mix.insert_params. The state is not undoable and not journaled (states can be large). `params`, when a value changes, is stored in that same edit as one undo step and is not journaled.",
         enabled: has_tracks,
         run: insert_state,
         journal: false,
@@ -69,7 +69,7 @@ fn param_writes(e: &Engine, track: soundcraft_model::TrackId, slot: Option<usize
         return Ok(Vec::new());
     }
     let ins = stored_insert(e, track, slot).ok_or_else(|| bad(CMD, "empty slot"))?;
-    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad(CMD, "unknown plugin"))?;
+    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad(CMD, format!("unknown plugin `{}`", ins.plugin)))?;
     let mut unknown = Vec::new();
     let mut non_numeric = Vec::new();
     for (k, v) in obj {

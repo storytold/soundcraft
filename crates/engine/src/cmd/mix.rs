@@ -425,11 +425,11 @@ fn insert_bypass(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn insert_param(e: &mut Engine, p: &Value) -> Result<Value> {
     let (t, slot) = track_plugin_slot(e, p, "mix.insert_param")?;
-    let param = param_id(p, "param").ok_or_else(|| bad("mix.insert_param", "`param` required (a string, or a whole number)"))?;
+    let param = param_id("mix.insert_param", p, "param")?;
     let value =
         p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad("mix.insert_param", "`value` must be a number"))? as f32;
     let ins = plugin_mut(e.session_mut(), t, slot, "mix.insert_param")?;
-    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad("mix.insert_param", "unknown plugin"))?;
+    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad("mix.insert_param", format!("unknown plugin `{}`", ins.plugin)))?;
     let pi =
         info.params.iter().find(|x| x.id == param).ok_or_else(|| bad("mix.insert_param", format!("`{}` has no parameter `{param}`", info.id)))?;
     let v = pi.clamp(value);
@@ -444,7 +444,7 @@ fn insert_params(e: &mut Engine, p: &Value) -> Result<Value> {
     let obj = p.get("params").and_then(Value::as_object).cloned().ok_or_else(|| bad("mix.insert_params", "`params` must be an object"))?;
     let preset = str_param(p, "preset").map(str::to_string);
     let ins = plugin_mut(e.session_mut(), t, slot, "mix.insert_params")?;
-    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad("mix.insert_params", "unknown plugin"))?;
+    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad("mix.insert_params", format!("unknown plugin `{}`", ins.plugin)))?;
     let mut unknown: Vec<&str> = Vec::new();
     let mut non_numeric: Vec<&str> = Vec::new();
     for (k, v) in &obj {
