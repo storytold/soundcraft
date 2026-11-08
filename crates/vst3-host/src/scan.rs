@@ -39,7 +39,8 @@ pub fn default_search_paths() -> Vec<PathBuf> {
     let mut v = os_search_paths(
         Os::current(),
         std::env::var_os("HOME").map(PathBuf::from),
-        std::env::var_os("COMMONPROGRAMFILES").map(PathBuf::from),
+        // A 32-bit process on 64-bit Windows sees the x86 directory in COMMONPROGRAMFILES.
+        std::env::var_os("COMMONPROGRAMW6432").or_else(|| std::env::var_os("COMMONPROGRAMFILES")).map(PathBuf::from),
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
     );
     if let Some(cp) = std::env::var_os("VST3_PATH") {
@@ -49,8 +50,28 @@ pub fn default_search_paths() -> Vec<PathBuf> {
 }
 
 /// The OS-specific standard locations, given the relevant environment values.
-/// On Unix, also includes `vst3` beside the current executable when its path is available.
+/// Also reads `COMMONPROGRAMFILES(X86)` on Windows and the current executable for the
+/// application-local directory on Windows and Unix, when available.
 pub fn os_search_paths(os: Os, home: Option<PathBuf>, common_program_files: Option<PathBuf>, local_app_data: Option<PathBuf>) -> Vec<PathBuf> {
+    search_paths(
+        os,
+        home,
+        common_program_files,
+        std::env::var_os("COMMONPROGRAMFILES(X86)").map(PathBuf::from),
+        local_app_data,
+        std::env::current_exe().ok(),
+    )
+}
+
+/// Builds the search list without reading process state, so every OS layout is testable anywhere.
+fn search_paths(
+    os: Os,
+    home: Option<PathBuf>,
+    common_program_files: Option<PathBuf>,
+    common_program_files_x86: Option<PathBuf>,
+    local_app_data: Option<PathBuf>,
+    executable: Option<PathBuf>,
+) -> Vec<PathBuf> {
     let mut v = Vec::new();
     match os {
         Os::MacOs => {
@@ -60,11 +81,20 @@ pub fn os_search_paths(os: Os, home: Option<PathBuf>, common_program_files: Opti
             v.push(PathBuf::from("/Library/Audio/Plug-Ins/VST3"));
         }
         Os::Windows => {
-            if let Some(c) = common_program_files {
-                v.push(c.join("VST3"));
-            }
             if let Some(l) = local_app_data {
                 v.push(l.join("Programs").join("Common").join("VST3"));
+            }
+            for c in [common_program_files, common_program_files_x86].into_iter().flatten() {
+                let path = c.join("VST3");
+                // Both environment variables can name the same 32-bit common-files directory.
+                if !v.contains(&path) {
+                    v.push(path);
+                }
+            }
+            if let Some(exe) = executable
+                && let Some(app_dir) = exe.parent()
+            {
+                v.push(app_dir.join("VST3"));
             }
         }
         Os::Unix => {
@@ -76,7 +106,7 @@ pub fn os_search_paths(os: Os, home: Option<PathBuf>, common_program_files: Opti
             v.push(PathBuf::from("/usr/lib/vst3"));
             v.push(PathBuf::from("/usr/local/lib64/vst3"));
             v.push(PathBuf::from("/usr/local/lib/vst3"));
-            if let Ok(exe) = std::env::current_exe()
+            if let Some(exe) = executable
                 && let Some(app_dir) = exe.parent()
             {
                 v.push(app_dir.join("vst3"));
@@ -304,10 +334,40 @@ mod tests {
     fn os_paths_cover_the_standard_locations() {
         let mac = os_search_paths(Os::MacOs, Some("/Users/u".into()), None, None);
         assert_eq!(mac, vec![PathBuf::from("/Users/u/Library/Audio/Plug-Ins/VST3"), PathBuf::from("/Library/Audio/Plug-Ins/VST3")]);
-        let win = os_search_paths(Os::Windows, None, Some("C:/CPF".into()), Some("C:/LAD".into()));
-        assert_eq!(win[0], PathBuf::from("C:/CPF").join("VST3"));
-        assert_eq!(win.len(), 2);
         assert!(!default_search_paths().is_empty());
+    }
+
+    #[test]
+    fn windows_paths_cover_documented_locations_in_order() {
+        let paths = search_paths(
+            Os::Windows,
+            None,
+            Some("D:/Program Files/Common Files".into()),
+            Some("D:/Program Files (x86)/Common Files".into()),
+            Some("C:/Users/u/AppData/Local".into()),
+            Some("D:/SoundCraft/soundcraft.exe".into()),
+        );
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("C:/Users/u/AppData/Local/Programs/Common/VST3"),
+                PathBuf::from("D:/Program Files/Common Files/VST3"),
+                PathBuf::from("D:/Program Files (x86)/Common Files/VST3"),
+                PathBuf::from("D:/SoundCraft/VST3"),
+            ]
+        );
+    }
+
+    #[test]
+    fn windows_paths_handle_missing_values_and_shared_common_directory() {
+        assert!(search_paths(Os::Windows, None, None, None, None, None).is_empty());
+        assert_eq!(
+            search_paths(Os::Windows, None, None, None, None, Some("C:/SoundCraft/soundcraft.exe".into())),
+            vec![PathBuf::from("C:/SoundCraft/VST3")]
+        );
+        let common = PathBuf::from("C:/Program Files (x86)/Common Files");
+        assert_eq!(search_paths(Os::Windows, None, Some(common.clone()), Some(common.clone()), None, None), vec![common.join("VST3")]);
+        assert_eq!(search_paths(Os::Windows, None, None, Some(common.clone()), None, None), vec![common.join("VST3")]);
     }
 
     #[test]
