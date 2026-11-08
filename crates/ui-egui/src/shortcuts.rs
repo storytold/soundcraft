@@ -196,6 +196,7 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
 
 /// The rest of [`fixed`]'s keys.
 fn fixed_more(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
+    let plain = !m.command && !m.alt && !m.ctrl && !m.shift;
     match key {
         // `=` is what a bare press of the unlabeled +/- key reports (it has no shift held, so it
         // can never be `Key::Plus`); `Key::Plus` is kept for a keyboard that does send it (e.g. a
@@ -528,5 +529,64 @@ mod tests {
         assert_eq!(command_for(Key::K, Modifiers { shift: true, ..MAC_CMD }, true), Some("file.export_clips"));
         assert_eq!(command_for(Key::K, Modifiers { shift: true, ..PC_CTRL }, false), Some("file.export_clips"));
         assert!(crate::dialogs::takes_path("file.export_clips"));
+    }
+
+    fn app_with_selection() -> crate::SoundApp {
+        let mut app = crate::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, crate::Services::default());
+        app.ui.window = crate::MainWindow::Edit;
+        app.edit_layout.timeline = [0.0, 0.0, 100.0, 100.0];
+        app.run("view.zoom_set", serde_json::json!({"samples_per_px": 10.0})).unwrap();
+        app.run("edit.select", serde_json::json!({"start": 2000, "end": 4000})).unwrap();
+        app
+    }
+
+    #[test]
+    fn plain_arrows_centre_selection_but_modified_arrows_do_not() {
+        for mac in [false, true] {
+            for (key, expected) in [(Key::ArrowLeft, 1500), (Key::ArrowRight, 3500)] {
+                let mut app = app_with_selection();
+                assert!(super::fixed_more(&mut app, key, Modifiers::NONE, mac));
+                assert_eq!(app.engine.session().edit.zoom.scroll, expected);
+                for modifiers in [Modifiers::SHIFT, Modifiers::ALT, Modifiers::CTRL, Modifiers::COMMAND, PC_CTRL, MAC_CMD] {
+                    app.run("view.scroll", serde_json::json!({"to": 123})).unwrap();
+                    assert!(!super::fixed_more(&mut app, key, modifiers, mac));
+                    assert_eq!(app.engine.session().edit.zoom.scroll, 123, "{key:?} {modifiers:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selection_arrows_do_not_scroll_the_mix_window_or_an_insertion_point() {
+        for key in [Key::ArrowLeft, Key::ArrowRight] {
+            let mut app = app_with_selection();
+            app.ui.window = crate::MainWindow::Mix;
+            assert!(!super::fixed_more(&mut app, key, Modifiers::NONE, false));
+            assert_eq!(app.engine.session().edit.zoom.scroll, 0);
+            app.ui.window = crate::MainWindow::Edit;
+            app.run("edit.select", serde_json::json!({"start": 2000, "end": 2000})).unwrap();
+            assert!(!super::fixed_more(&mut app, key, Modifiers::NONE, false));
+            assert_eq!(app.engine.session().edit.zoom.scroll, 0);
+        }
+    }
+
+    #[test]
+    fn selection_arrows_leave_the_piano_roll_in_control_under_its_pointer() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_selection();
+        app.ui.show_midi_editor = true;
+        app.docking_context = Some(ctx.clone());
+        let body = egui::Rect::from_min_max(egui::pos2(10.0, 10.0), egui::pos2(100.0, 100.0));
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique("soundcraft-midi-body"), body));
+        for (pointer, handled) in [(body.center(), false), (egui::pos2(200.0, 200.0), true)] {
+            let mut output = ctx.run_ui(egui::RawInput { events: vec![egui::Event::PointerMoved(pointer)], ..Default::default() }, |_| {
+                for key in [Key::ArrowLeft, Key::ArrowRight] {
+                    app.run("view.scroll", serde_json::json!({"to": 0})).unwrap();
+                    assert_eq!(super::fixed_more(&mut app, key, Modifiers::NONE, false), handled);
+                    assert_eq!(app.engine.session().edit.zoom.scroll > 0, handled);
+                }
+            });
+            output.textures_delta.clear();
+        }
     }
 }
