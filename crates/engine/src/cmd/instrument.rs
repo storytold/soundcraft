@@ -25,7 +25,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Instrument Parameter",
             [],
             None,
-            "{track?, param: id (string or number), value}: one parameter of an instrument track's instrument, built in or hosted (clamped into range); the same as mix.insert_param with slot \"instrument\"",
+            "{track?, param: id (string or number), value}: one parameter of an instrument track's instrument, built in or hosted (clamped into range, and rounded to the step for toggle, choice and stepped parameters); the same as mix.insert_param with slot \"instrument\"",
             has_selection,
             set_instrument_param
         ),
@@ -77,7 +77,7 @@ fn set_instrument(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn set_instrument_param(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "mix.instrument_param";
-    let param = param_id(p, "param").ok_or_else(|| bad(id, "`param` required (a string, or a whole number)"))?;
+    let param = param_id(id, p, "param")?;
     let value = p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(id, "`value` must be a number"))? as f32;
     let t = tracks_required(e, id, p)?.first().copied().ok_or_else(|| bad(id, "no track"))?;
     let ins = e.session_mut().track_mut(t).and_then(|tr| tr.instrument.as_mut()).ok_or_else(|| bad(id, "the track has no instrument"))?;
