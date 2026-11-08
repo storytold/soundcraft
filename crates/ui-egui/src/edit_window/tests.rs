@@ -1626,6 +1626,84 @@ fn command_click_adds_to_fallback_volume_views() {
     }
 }
 
+/// Command-click keeps an existing visible breakpoint as the hit target with every active tool.
+#[test]
+fn command_click_near_an_existing_breakpoint_does_not_insert_another_point() {
+    for tool in ["smart", "grabber", "pencil", "selector", "trim", "scrubber", "zoom"] {
+        let (mut h, track, [_, point], clips) = breakpoints_over_a_clip(tool);
+        h.state_mut().engine.execute("edit.select", &json!({"clips": [clips[0].id.0]})).unwrap();
+        h.run_steps(2);
+        let before = volume_points(&h, track);
+        let edit = h.state().engine.session().edit.clone();
+        assert!(!edit.selection.is_empty());
+        assert!(!edit.selected_clips.is_empty());
+        // Inside the six-point hit target, but a different sample from the stored point.
+        let near = point + vec2(3.0, 0.0);
+        let sample = sample_at(h.state().engine.session(), timeline(&h), near.x);
+        assert_ne!(sample, before[1].0);
+        click_with(&mut h, near, egui::Modifiers::COMMAND);
+        assert_eq!(volume_points(&h, track), before, "{tool}: the existing point wins over insertion");
+        let after = &h.state().engine.session().edit;
+        assert_eq!(after.tool, edit.tool, "{tool}: active tool stays");
+        assert_eq!(after.selection, edit.selection, "{tool}: range selection stays");
+        assert_eq!(after.selected_clips, edit.selected_clips, "{tool}: clip selection stays");
+        assert_eq!(after.selected_tracks, edit.selected_tracks, "{tool}: track selection stays");
+        assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}: clips stay");
+
+        click_with(&mut h, near, egui::Modifiers::COMMAND | egui::Modifiers::ALT);
+        assert_eq!(volume_points(&h, track), before[..1], "{tool}: Alt still deletes the existing point");
+        h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(volume_points(&h, track), before, "{tool}: deletion remains undoable");
+    }
+}
+
+/// Command advertises insertion over empty automation space, while a breakpoint keeps its grab cursor.
+#[test]
+fn command_hover_shows_insertion_only_away_from_existing_breakpoints() {
+    let (mut h, track, [a, b], _) = breakpoints_over_a_clip("selector");
+    let s = h.state().engine.session_arc();
+    let i = h.state().edit_layout.rows.iter().position(|(id, _)| *id == track.0).unwrap();
+    let lane = lane_rect(s.track(track).unwrap(), row(&h, i), timeline(&h));
+    let at = pos2((a.x + b.x) * 0.5, lane.center().y);
+    let points = volume_points(&h, track);
+
+    h.hover_at(at);
+    h.step();
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Text, "plain Selector hover stays unchanged");
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    h.hover_at(at);
+    h.step();
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Crosshair, "Command shows the insertion gesture");
+    h.run_steps(40);
+    fade_shot(&mut h, "automation-command-hover-insertion");
+    h.hover_at(b + vec2(3.0, 0.0));
+    h.step();
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Grab, "the existing point stays the target");
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.hover_at(at);
+    h.step();
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Text, "releasing Command restores the active tool cursor");
+    assert_eq!(volume_points(&h, track), points, "hover adds no points");
+}
+
+/// The Command click shortcut does not turn a Selector drag beginning beside a point into a point move.
+#[test]
+fn command_drag_near_an_existing_breakpoint_retains_the_selector_gesture() {
+    let (mut h, track, [_, point], clips) = breakpoints_over_a_clip("selector");
+    let points = volume_points(&h, track);
+    let before = h.state().engine.session().edit.clone();
+    let near = point + vec2(3.0, 0.0);
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    drag(&mut h, near, near + vec2(50.0, 0.0));
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    let after = &h.state().engine.session().edit;
+    assert!(!after.selection.is_empty(), "a Command-drag still selects a range");
+    assert_ne!(after.selection, before.selection, "the Selector gesture changes the range");
+    assert_eq!(after.tool, before.tool, "the active tool stays selected");
+    assert_eq!(volume_points(&h, track), points, "dragging the selection does not move or insert a point");
+    assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "the clips stay");
+}
+
 #[test]
 fn alt_click_on_a_marker_deletes_it() {
     let mut engine = soundcraft_engine::demo::demo_engine();
