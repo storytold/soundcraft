@@ -47,7 +47,7 @@ pub(crate) fn run_strips<T: Send>(work: &mut [T], f: impl Fn(&mut T) + Sync + Se
     work.iter_mut().for_each(f);
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod audio_thread_tests {
     use super::*;
 
