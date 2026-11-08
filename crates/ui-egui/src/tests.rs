@@ -390,6 +390,17 @@ fn instrument_param(app: &SoundApp, t: TrackId, id: &str) -> Option<f32> {
     app.engine.session().track(t).and_then(|tr| tr.instrument.as_ref()).and_then(|i| i.params.get(id).copied())
 }
 
+/// What a test pushes when it fills the queue directly: the session value recorded now is the
+/// one the flush compares against.
+fn push_queued_param(app: &mut SoundApp, track: TrackId, param: &str, value: f32) {
+    app.editor_instrument_params.push(super::QueuedInstrumentParam {
+        track,
+        param: param.to_string(),
+        value,
+        session_at_queue: instrument_param(app, track, param),
+    });
+}
+
 #[test]
 fn an_instrument_parameter_the_session_holds_follows_its_editor_with_the_state() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
@@ -415,6 +426,33 @@ fn an_instrument_parameter_the_session_holds_follows_its_editor_with_the_state()
     editor_frame(&mut app, &[], &[], &[], 50);
     assert_eq!(instrument_param(&app, keys, "cutoff"), None);
     assert_eq!(instrument_state(&app, keys), Some(vec![50, 1]));
+}
+
+/// `SoundApp::logic` drains control commands before it polls editor edits. A command that
+/// changes a queued parameter before the gesture flushes owns that parameter.
+#[test]
+fn a_later_command_wins_over_a_queued_editor_value() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 1000})).unwrap();
+    // The gesture stays open, so the editor value is queued and not stored yet.
+    editor_frame(&mut app, &[keys], &[], &[], 44);
+    assert_eq!(app.editor_instrument_params.len(), 1);
+    assert_eq!(app.editor_instrument_params[0].value, 44.0);
+    assert_eq!(app.editor_instrument_params[0].session_at_queue, Some(1000.0));
+    assert_eq!(instrument_param(&app, keys, "cutoff"), Some(1000.0));
+    app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 2000})).unwrap();
+    assert_eq!(instrument_param(&app, keys, "cutoff"), Some(2000.0));
+    // The same key again keeps the newest editor value and the first recorded session value.
+    editor_frame(&mut app, &[keys], &[], &[], 50);
+    assert_eq!(app.editor_instrument_params.len(), 1);
+    assert_eq!(app.editor_instrument_params[0].value, 50.0);
+    assert_eq!(app.editor_instrument_params[0].session_at_queue, Some(1000.0));
+    // Gesture flush through the state store. The queued 50 must not replace 2000.
+    app.store_plugin_states(vec![(keys, soundcraft_mix::INSTRUMENT_SLOT, vec![50, 1])]);
+    assert_eq!(instrument_param(&app, keys, "cutoff"), Some(2000.0), "a later command owns the parameter");
+    assert_eq!(instrument_state(&app, keys), Some(vec![50, 1]), "the plugin state is still stored");
+    assert!(app.editor_instrument_params.is_empty());
 }
 
 /// A hosted instrument whose `save_state` returns `None` (VST3 `getState` refused) still
@@ -463,8 +501,8 @@ fn held_instrument_params_persist_when_state_capture_returns_none() {
     assert_eq!(instrument_param(&app, keys, "cutoff"), Some(clamped(44.0)), "stored with mix.insert_params");
     assert_eq!(instrument_state(&app, keys), kept, "a missing state does not clear the stored bytes");
     assert_eq!(instrument_param(&app, lead, "cutoff"), Some(800.0), "a gesture still in progress stays queued");
-    assert!(app.editor_instrument_params.iter().any(|e| e.0 == lead));
-    assert!(!app.editor_instrument_params.iter().any(|e| e.0 == keys));
+    assert!(app.editor_instrument_params.iter().any(|e| e.track == lead));
+    assert!(!app.editor_instrument_params.iter().any(|e| e.track == keys));
 
     app.editor_poll_due = true;
     app.apply_editor_edits();
@@ -480,7 +518,7 @@ fn a_save_with_no_state_capture_keeps_queued_instrument_params() {
     app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 1000})).unwrap();
     app.engine.session_mut().track_mut(keys).and_then(|tr| tr.instrument.as_mut()).unwrap().set_state_bytes(b"keep");
     let kept = instrument_state(&app, keys);
-    app.editor_instrument_params.push((keys, "cutoff".to_string(), 44.0));
+    push_queued_param(&mut app, keys, "cutoff", 44.0);
     assert!(app.player.is_none(), "this capture has no hosted instrument to ask");
     app.capture_plugin_states();
     let cutoff = soundcraft_dsp::plugin_info("subtractive_synth").and_then(|i| i.param("cutoff")).unwrap();
@@ -489,7 +527,7 @@ fn a_save_with_no_state_capture_keeps_queued_instrument_params() {
     assert!(app.editor_instrument_params.is_empty());
 
     // The player going away mid-gesture takes the same path through the editor poll.
-    app.editor_instrument_params.push((keys, "cutoff".to_string(), 70.0));
+    push_queued_param(&mut app, keys, "cutoff", 70.0);
     app.editor_states.push((keys, soundcraft_mix::INSTRUMENT_SLOT));
     app.editor_poll_due = true;
     app.apply_editor_edits();
@@ -504,13 +542,13 @@ fn queued_instrument_params_are_discarded_when_the_instrument_or_document_is_gon
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let keys = app.engine.session().track_by_name("Keys").unwrap().id;
     app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 1000})).unwrap();
-    app.editor_instrument_params.push((keys, "cutoff".to_string(), 44.0));
+    push_queued_param(&mut app, keys, "cutoff", 44.0);
     app.engine.execute("track.delete", &json!({"tracks": [keys.0]})).unwrap();
     app.capture_plugin_states();
     assert!(app.editor_instrument_params.is_empty(), "a missing instrument is not retried");
 
     let keys = app.engine.session().track_by_name("Lead").unwrap().id;
-    app.editor_instrument_params.push((keys, "cutoff".to_string(), 70.0));
+    push_queued_param(&mut app, keys, "cutoff", 70.0);
     app.document_replaced();
     assert!(app.editor_instrument_params.is_empty(), "a new document does not keep the old queue");
 }
