@@ -12,9 +12,12 @@
 #[allow(dead_code)]
 mod native_menu;
 
+/// The menu bar is macOS's: elsewhere there is nothing to check.
 #[cfg(not(target_os = "macos"))]
 fn main() {}
 
+/// AppKit needs the main thread, so this test runs without libtest's harness (`harness = false`):
+/// it installs the menu bar on a `SoundApp` and checks its items and their key equivalents.
 #[cfg(target_os = "macos")]
 fn main() {
     use native_menu::NativeMenu;
@@ -46,6 +49,7 @@ fn main() {
 
     // Every leaf shows the shortcut the in-window menus show, wherever it can be a key equivalent,
     // and nothing elsewhere. The tree is built in order, after the application menu.
+    /// The AppKit modifier flags of a shortcut's modifiers.
     fn mask((m, _): (egui::Modifiers, egui::Key)) -> NSEventModifierFlags {
         let mut flags = NSEventModifierFlags::empty();
         for (on, flag) in [
@@ -60,8 +64,8 @@ fn main() {
         }
         flags
     }
-    // The character AppKit shows and matches for `key`: the key's own (lower case) for letters,
-    // digits and punctuation, AppKit's function-key characters for the others.
+    /// The character AppKit shows and matches for `key`: the key's own (lower case) for letters,
+    /// digits and punctuation, AppKit's function-key characters for the others.
     fn equivalent(key: egui::Key) -> String {
         use egui::Key;
         let f = |c: u32| char::from_u32(c).map(String::from).unwrap_or_default();
@@ -100,6 +104,8 @@ fn main() {
             },
         }
     }
+    /// Check `menu` against the in-window menu `node`, submenus included: each item's key
+    /// equivalent is its command's shortcut, or none; `shown` counts the items that have one.
     fn check(menu: &NSMenu, node: &menus::MenuNode, aliases: &[(&str, &str)], shown: &mut usize) {
         // AppKit adds its own items to the end of the Edit menu (Start Dictation, Emoji & Symbols).
         assert!(menu.numberOfItems() >= node.children.len() as isize, "{}", node.label);
