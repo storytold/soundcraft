@@ -360,7 +360,20 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
         }
         // Where the looped clip ends: the next clip or the session end, or `length` after the
         // start. Taken before fitting, so a fit cannot move the boundary it is measured against.
-        let boundary = s.track(tid).and_then(|t| t.clips().iter().filter(|x| x.id != c.id && x.start >= c.end()).map(|x| x.start).min());
+        // Crossfade partners that overlap (and extend beyond) this clip also bound the region:
+        // looping must not overwrite their material.
+        let boundary = s.track(tid).and_then(|t| {
+            let next = t.clips().iter().filter(|x| x.id != c.id && x.start >= c.end()).map(|x| x.start).min();
+            // Partners overlapping this clip constrain the boundary to their end, so loops
+            // do not overwrite the partner's material.
+            let mut b = next;
+            for x in t.clips().iter() {
+                if x.id != c.id && x.start < c.end() && x.end() > c.end() {
+                    b = Some(b.map_or(x.end(), |cur| cur.min(x.end())));
+                }
+            }
+            b
+        });
         let end = if fill { Some(boundary.unwrap_or(session_end)) } else { total.map(|l| c.start.saturating_add(l)) };
         if fit {
             // A fitted clip may not run into the next clip, or past a requested loop length. A
