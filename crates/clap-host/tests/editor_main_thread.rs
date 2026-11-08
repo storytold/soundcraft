@@ -42,21 +42,11 @@ fn main() {
     log::set_max_level(log::LevelFilter::Warn);
     common::fixture_dir();
     let mut p = soundcraft_clap_host::create(GAIN).expect("fixture");
-    let info = soundcraft_clap_host::plugin_info(GAIN).expect("info");
-    assert_eq!(info.param("3").expect("mode").choices, &["A", "B", "C"], "the main thread reads the plugin's choice text");
-    assert_eq!(p.value_text("3", 1.0).as_deref(), Some("B"));
-    assert_eq!(p.value_from_text("3", "b"), Some(1.0));
-    assert_eq!(p.value_from_text("3", "not a mode"), None);
-    assert_eq!(p.value_from_text("3", &"x".repeat(257)), None);
+    plugin_text_on_the_main_thread(p.as_mut());
     p.prepare(48_000.0, 64, 2);
     let mut ed = p.editor().expect("editor handle");
     assert!(!ed.is_open());
-    // Text and the live value go through the same main-thread handle as the window, before any
-    // GUI edit.
-    assert_eq!(ed.value_text("3", 1.0).as_deref(), Some("B"));
-    assert_eq!(ed.value_from_text("3", "b"), Some(1.0));
-    assert_eq!(ed.value_from_text("3", "nope"), None);
-    assert!((ed.param("7").unwrap_or(-1.0) - 1.0).abs() < 1e-6);
+    editor_text_before_any_edit(ed.as_mut());
     ed.open().expect("open on the main thread");
     assert!(ed.is_open());
     ed.open().expect("opening again just raises it");
@@ -117,4 +107,23 @@ fn main() {
     assert!(!ed.is_open());
     assert!(ed.open().is_err());
     println!("editor_main_thread: ok");
+}
+
+/// The plugin answers choice and value text on the main thread, and refuses text it can't parse.
+fn plugin_text_on_the_main_thread(p: &mut dyn Plugin) {
+    let info = soundcraft_clap_host::plugin_info(GAIN).expect("info");
+    assert_eq!(info.param("3").expect("mode").choices, &["A", "B", "C"], "the main thread reads the plugin's choice text");
+    assert_eq!(p.value_text("3", 1.0).as_deref(), Some("B"));
+    assert_eq!(p.value_from_text("3", "b"), Some(1.0));
+    assert_eq!(p.value_from_text("3", "not a mode"), None);
+    assert_eq!(p.value_from_text("3", &"x".repeat(257)), None);
+}
+
+/// Text and the live value go through the same main-thread handle as the window, before any GUI
+/// edit.
+fn editor_text_before_any_edit(ed: &mut dyn soundcraft_dsp::PluginEditor) {
+    assert_eq!(ed.value_text("3", 1.0).as_deref(), Some("B"));
+    assert_eq!(ed.value_from_text("3", "b"), Some(1.0));
+    assert_eq!(ed.value_from_text("3", "nope"), None);
+    assert!((ed.param("7").unwrap_or(-1.0) - 1.0).abs() < 1e-6);
 }
