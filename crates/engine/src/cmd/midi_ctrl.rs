@@ -40,7 +40,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Draw Controller Events",
             [],
             None,
-            "{clip, kind, channel?, points: [[tick, value]] (Free Hand) | shape: line|triangle|square|random|parabolic|s_curve, from: [tick, value], to: [tick, value], period?: ticks (the grid; Triangle/Square/Random), step?: ticks (default a 64th), seed?} — replaces the kind's events between the first and last tick",
+            "{clip, kind, channel?, points: [[tick, value]] (Free Hand) | shape: line|triangle|square|random|parabolic|s_curve, from: [tick, value], to: [tick, value], period?: ticks (the grid; Triangle/Square/Random), step?: ticks (default a 64th), seed?} — replaces the kind's events on the stroke's channel between the first and last tick",
             always,
             ctrls_draw
         ),
@@ -195,9 +195,10 @@ pub fn stroke_points(p: &Value, cmd: &str) -> Result<Vec<(i64, f64)>> {
     Ok(pts)
 }
 
-/// Replaces the kind's events between the stroke's first and last tick (on every channel, as the
-/// lane shows them all) with the stroke. Points that repeat the value before them are left out:
-/// a controller holds its value until the next event.
+/// Replaces the kind's events between the stroke's first and last tick, on the stroke's own
+/// channel, with the stroke: the lane shows every channel, but a stroke belongs to one, and taking
+/// the others' events away without drawing them back would lose them silently. Points that repeat
+/// the value before them are left out: a controller holds its value until the next event.
 fn ctrls_draw(e: &mut Engine, p: &Value) -> Result<Value> {
     const CMD: &str = "midi.ctrls_draw";
     let id = clip_id(p, CMD)?;
@@ -206,7 +207,7 @@ fn ctrls_draw(e: &mut Engine, p: &Value) -> Result<Value> {
     let (lo, hi) = (pts.first().map_or(0, |pt| pt.0), pts.last().map_or(0, |pt| pt.0));
     let seq = seq_mut(e, id, CMD)?;
     let channel = channel_for(seq, kind, p);
-    seq.ctrls.retain(|c| c.kind != kind || c.tick < lo || c.tick > hi);
+    seq.ctrls.retain(|c| c.kind != kind || c.channel != channel || c.tick < lo || c.tick > hi);
     let mut new = Vec::with_capacity(pts.len());
     let mut last = None;
     for (tick, v) in pts {
@@ -295,6 +296,39 @@ mod tests {
         assert_eq!(events(&mut e, c, "cc7"), vec![(480, 20), (720, 15), (960, 20)]);
         e.execute("midi.ctrls_move", &json!({"clip": c, "indices": [0, 1, 2], "ticks": i64::MIN, "value": i64::MAX})).unwrap();
         assert_eq!(events(&mut e, c, "cc7"), vec![(0, 127)], "all three land on tick 0: one event remains");
+    }
+
+    /// `(tick, channel, value)` for one kind, so a test can see the channels apart.
+    fn events_by_channel(e: &mut Engine, clip: u64, kind: &str) -> Vec<(i64, i64, i64)> {
+        let r = e.execute("midi.ctrls", &json!({"clip": clip, "kind": kind})).unwrap();
+        r["ctrls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| (c["tick"].as_i64().unwrap(), c["channel"].as_i64().unwrap(), c["value"].as_i64().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn a_stroke_leaves_the_other_channels_alone() {
+        let mut e = Engine::default();
+        let (_, c) = clip(&mut e);
+        for ch in [0, 1] {
+            for tick in [0, 480, 960] {
+                e.execute("midi.ctrl_add", &json!({"clip": c, "kind": "cc1", "channel": ch, "tick": tick, "value": 20})).unwrap();
+            }
+        }
+        e.execute(
+            "midi.ctrls_draw",
+            &json!({"clip": c, "kind": "cc1", "channel": 0, "shape": "line", "from": [480, 0], "to": [960, 40], "step": 240}),
+        )
+        .unwrap();
+        let got = events_by_channel(&mut e, c, "cc1");
+        assert_eq!(
+            got,
+            vec![(0, 0, 20), (0, 1, 20), (480, 1, 20), (480, 0, 0), (720, 0, 20), (960, 1, 20), (960, 0, 40)],
+            "channel 0 is redrawn between the ends of the stroke, channel 1 keeps its events"
+        );
     }
 
     #[test]
