@@ -33,6 +33,8 @@ pub struct Services {
     pub pending: Option<(String, Receiver<Option<PathBuf>>)>,
     /// A path picked, for the `tag` that asked for it to [`Self::take`].
     pub picked: Option<(String, PathBuf)>,
+    /// A dialog that could not be shown; the app moves it to the status line.
+    pub error: Option<String>,
 }
 
 impl Services {
@@ -45,8 +47,10 @@ impl Services {
         // A path nobody took must not answer this request.
         self.picked = None;
         if let Some(start) = &self.start_pick {
-            if let Some(answer) = start(pick) {
-                self.pending = Some((tag.to_string(), answer));
+            match start(pick) {
+                Some(answer) => self.pending = Some((tag.to_string(), answer)),
+                // No blocking fallback: on macOS that is what crashed
+                None => self.error = Some("The file dialog could not be shown".into()),
             }
             return;
         }
@@ -68,6 +72,16 @@ impl Services {
                 self.pending = None;
             }
             Err(TryRecvError::Disconnected) => self.pending = None,
+        }
+    }
+
+    /// Forgets what `tag` asked for: its open dialog's answer, or a path it never took, is dropped.
+    pub fn discard(&mut self, tag: &str) {
+        if let Some((t, _)) = self.pending.as_mut().filter(|(t, _)| t == tag) {
+            t.clear();
+        }
+        if self.picked.as_ref().is_some_and(|(t, _)| t == tag) {
+            self.picked = None;
         }
     }
 
@@ -113,6 +127,21 @@ mod tests {
         services.picked = Some(("a".into(), PathBuf::from("/tmp/old")));
         services.ask("a", Pick::Open("session.open".into()));
         assert_eq!(services.take("a"), None, "a new request drops an untaken path");
+    }
+
+    /// A closed prompt's answer is dropped, an open one's kept.
+    #[test]
+    fn discard_drops_a_dialogs_answer_and_a_failed_start_is_reported() {
+        let (tx, rx) = mpsc::channel();
+        let rx = Rc::new(Cell::new(Some(rx)));
+        let mut services = Services { start_pick: Some(Box::new(move |_| rx.take())), ..Default::default() };
+        services.ask("prompt", Pick::Open("session.open".into()));
+        services.discard("prompt");
+        tx.send(Some(PathBuf::from("/tmp/x"))).unwrap();
+        services.poll();
+        assert_eq!(services.take("prompt"), None);
+        services.ask("again", Pick::Open("session.open".into()));
+        assert!(services.error.is_some(), "the slot was used up, start returns None");
     }
 
     /// Without `start_pick` the blocking picker answers at once.
