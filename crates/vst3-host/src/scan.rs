@@ -52,7 +52,7 @@ pub fn default_search_paths() -> Vec<PathBuf> {
 /// The OS-specific standard locations, given the relevant environment values.
 /// Also reads `COMMONPROGRAMFILES(X86)` on Windows and the current executable for the
 /// application-local directory, when available (macOS requires a `Contents/MacOS` bundle layout).
-pub fn os_search_paths(os: Os, home: Option<PathBuf>, common_program_files: Option<PathBuf>, local_app_data: Option<PathBuf>) -> Vec<PathBuf> {
+fn os_search_paths(os: Os, home: Option<PathBuf>, common_program_files: Option<PathBuf>, local_app_data: Option<PathBuf>) -> Vec<PathBuf> {
     search_paths(
         os,
         home,
