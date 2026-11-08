@@ -49,6 +49,7 @@ pub fn default_search_paths() -> Vec<PathBuf> {
 }
 
 /// The OS-specific standard locations, given the relevant environment values.
+/// On Unix, also includes `vst3` beside the current executable when its path is available.
 pub fn os_search_paths(os: Os, home: Option<PathBuf>, common_program_files: Option<PathBuf>, local_app_data: Option<PathBuf>) -> Vec<PathBuf> {
     let mut v = Vec::new();
     match os {
@@ -67,11 +68,19 @@ pub fn os_search_paths(os: Os, home: Option<PathBuf>, common_program_files: Opti
             }
         }
         Os::Unix => {
+            // Keep the user/global/application order from Steinberg's Linux plug-in locations.
             if let Some(h) = home {
                 v.push(h.join(".vst3"));
             }
+            v.push(PathBuf::from("/usr/lib64/vst3"));
             v.push(PathBuf::from("/usr/lib/vst3"));
+            v.push(PathBuf::from("/usr/local/lib64/vst3"));
             v.push(PathBuf::from("/usr/local/lib/vst3"));
+            if let Ok(exe) = std::env::current_exe()
+                && let Some(app_dir) = exe.parent()
+            {
+                v.push(app_dir.join("vst3"));
+            }
         }
     }
     v
@@ -298,9 +307,23 @@ mod tests {
         let win = os_search_paths(Os::Windows, None, Some("C:/CPF".into()), Some("C:/LAD".into()));
         assert_eq!(win[0], PathBuf::from("C:/CPF").join("VST3"));
         assert_eq!(win.len(), 2);
-        let unix = os_search_paths(Os::Unix, Some("/home/u".into()), None, None);
-        assert_eq!(unix, vec![PathBuf::from("/home/u/.vst3"), PathBuf::from("/usr/lib/vst3"), PathBuf::from("/usr/local/lib/vst3")]);
         assert!(!default_search_paths().is_empty());
+    }
+
+    #[test]
+    fn unix_paths_cover_documented_locations_in_order() {
+        let exe = std::env::current_exe().unwrap();
+        let global_and_app = vec![
+            PathBuf::from("/usr/lib64/vst3"),
+            PathBuf::from("/usr/lib/vst3"),
+            PathBuf::from("/usr/local/lib64/vst3"),
+            PathBuf::from("/usr/local/lib/vst3"),
+            exe.parent().unwrap().join("vst3"),
+        ];
+        let mut with_home = vec![PathBuf::from("/home/u/.vst3")];
+        with_home.extend(global_and_app.iter().cloned());
+        assert_eq!(os_search_paths(Os::Unix, Some("/home/u".into()), None, None), with_home);
+        assert_eq!(os_search_paths(Os::Unix, None, None, None), global_and_app);
     }
 
     #[test]
