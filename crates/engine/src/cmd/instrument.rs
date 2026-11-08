@@ -1,7 +1,9 @@
 //! An instrument track's instrument (`mix.instrument`): the plugin that turns the track's MIDI
 //! into audio, built in or hosted (CLAP, VST3, Audio Units). The mixer plays `Track::instrument`;
-//! the instrument is otherwise only set when the track is created (`track.new`).
-use super::{CommandSpec, bad, has_selection, str_param, tracks_required};
+//! the instrument is otherwise only set when the track is created (`track.new`). Its parameters
+//! (`mix.instrument_param`, or `mix.insert_param` with `slot: "instrument"`) are applied on top
+//! of a hosted instrument's stored state, like an insert's.
+use super::{CommandSpec, bad, has_selection, param_id, str_param, tracks_required};
 
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
@@ -23,7 +25,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Instrument Parameter",
             [],
             None,
-            "{track?, param, value}: one parameter of an instrument track's built-in instrument (clamped into range)",
+            "{track?, param: id (string or number), value}: one parameter of an instrument track's instrument, built in or hosted (clamped into range); the same as mix.insert_param with slot \"instrument\"",
             has_selection,
             set_instrument_param
         ),
@@ -75,12 +77,11 @@ fn set_instrument(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn set_instrument_param(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "mix.instrument_param";
-    let param = str_param(p, "param").ok_or_else(|| bad(id, "`param` required"))?.to_string();
+    let param = param_id(p, "param").ok_or_else(|| bad(id, "`param` required (a string, or a whole number)"))?;
     let value = p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(id, "`value` must be a number"))? as f32;
     let t = tracks_required(e, id, p)?.first().copied().ok_or_else(|| bad(id, "no track"))?;
     let ins = e.session_mut().track_mut(t).and_then(|tr| tr.instrument.as_mut()).ok_or_else(|| bad(id, "the track has no instrument"))?;
-    // Hosted instruments keep their parameters in their own state.
-    let info = soundcraft_dsp::plugin_info(&ins.plugin).ok_or_else(|| bad(id, format!("`{}` is not a built-in instrument", ins.plugin)))?;
+    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad(id, format!("unknown plugin `{}`", ins.plugin)))?;
     let pi = info.param(&param).ok_or_else(|| bad(id, format!("`{}` has no parameter `{param}`", info.id)))?;
     let v = pi.clamp(value);
     ins.params.insert(param.clone(), v);

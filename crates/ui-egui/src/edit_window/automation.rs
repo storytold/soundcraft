@@ -82,8 +82,8 @@ pub(super) fn breakpoint_at(s: &Session, tl: Rect, lane: Rect, track: &Track, p:
 
 pub(super) fn plugin_range(track: &Track, p: &AutoParam) -> (f32, f32) {
     if let AutoParam::Plugin { slot, param } = p
-        && let Some(Some(ins)) = track.mixer.inserts.get(usize::from(*slot))
-        && let Some(info) = soundcraft_dsp::plugin_info(&ins.plugin)
+        && let Some(ins) = track.plugin_at(*slot)
+        && let Some(info) = crate::mix_window::plugin_info(&ins.plugin)
         && let Some(pi) = info.param(param)
     {
         return (pi.min, pi.max);
@@ -106,5 +106,8 @@ pub(super) fn automation_id(p: &AutoParam) -> String {
 
 /// A slot as `AutoParam::parse` reads it: a letter for 0..=25, the number beyond that.
 fn slot_id(i: u8) -> String {
+    if i == soundcraft_model::INSTRUMENT_AUTO_SLOT {
+        return "instrument".into();
+    }
     if i < 26 { char::from(b'a' + i).to_string() } else { i.to_string() }
 }

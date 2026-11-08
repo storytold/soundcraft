@@ -4,7 +4,7 @@
 
 use super::*;
 use craft_audio::AudioBuffer;
-use soundcraft_model::{Insert, SourceAudio, SourceId};
+use soundcraft_model::{AutomationMode, Insert, SourceAudio, SourceId};
 use std::sync::Arc;
 
 fn synth_session(level_db: f32) -> Session {
@@ -59,6 +59,256 @@ fn stored_instrument_params_reach_the_plugin() {
     let (loud, quiet) = (rms(-6.0), rms(-12.0));
     assert!(loud > 0.0, "the synth should sound");
     assert!((quiet / loud - 0.5).abs() < 0.05, "-12 dB vs -6 dB should halve the level: {quiet} / {loud}");
+}
+
+#[test]
+fn instrument_automation_drives_the_instrument() {
+    let quiet = render_range(&synth_session(-48.0), Range::new(0, 12_000), 512);
+    let mut s = synth_session(-6.0);
+    let tr = &mut s.tracks[0];
+    let mut lane = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: soundcraft_model::INSTRUMENT_AUTO_SLOT, param: "level".into() });
+    lane.set_point(0, -48.0);
+    tr.automation.push(lane);
+    assert_eq!(render_range(&s, Range::new(0, 12_000), 512), quiet, "the lane overrides the stored -6 dB");
+}
+
+#[test]
+fn automation_drives_a_parameter_the_session_holds_no_value_for() {
+    // A hosted instrument made by `track.new` starts with an empty parameter map.
+    let quiet = render_range(&synth_session(-48.0), Range::new(0, 12_000), 512);
+    let mut s = synth_session(-6.0);
+    let tr = &mut s.tracks[0];
+    if let Some(ins) = tr.instrument.as_mut() {
+        ins.params.clear();
+    }
+    let mut lane = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: soundcraft_model::INSTRUMENT_AUTO_SLOT, param: "level".into() });
+    lane.set_point(0, -48.0);
+    tr.automation.push(lane);
+    assert_eq!(render_range(&s, Range::new(0, 12_000), 512), quiet);
+}
+
+/// Built-in synth with an empty parameter map, the hosted-instrument case: values live on the
+/// plugin until a lane takes them.
+fn unstored_synth() -> Option<(super::strip::PluginSlot, Insert, Session, TrackId)> {
+    let plugin = super::instances::create_plugin("subtractive_synth")?;
+    let slot = super::strip::PluginSlot::new("subtractive_synth".into(), 2, plugin);
+    let ins = Insert::new("subtractive_synth");
+    let mut session = Session::default();
+    let track = session.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    Some((slot, ins, session, track))
+}
+
+fn level_lane(value: f32) -> soundcraft_model::AutomationLane {
+    let mut lane = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: soundcraft_model::INSTRUMENT_AUTO_SLOT, param: "level".into() });
+    lane.set_point(0, value);
+    lane
+}
+
+#[test]
+fn a_new_unstored_lane_in_the_place_of_another_is_sent() {
+    // The cache of lane values is per parameter: a different parameter whose value happens to
+    // equal the previous one's must still reach the plugin.
+    let Some((mut slot, ins, mut s, t)) = unstored_synth() else { return };
+    let lane = |param: &str| {
+        let mut l = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: soundcraft_model::INSTRUMENT_AUTO_SLOT, param: param.into() });
+        l.set_point(0, -30.0);
+        l
+    };
+    let tr = s.track_mut(t).unwrap();
+    tr.automation = vec![lane("level")];
+    super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    assert_eq!(slot.plugin.param("level"), Some(-30.0));
+    let cutoff = slot.plugin.param("cutoff");
+    tr.automation = vec![lane("cutoff")];
+    super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    assert_ne!(slot.plugin.param("cutoff"), cutoff, "the cutoff lane reached the plugin");
+}
+
+#[test]
+fn a_lane_on_another_parameter_is_not_the_old_hold() {
+    // Holds are keyed by parameter, not by where the lane's string lives: a `cutoff` lane that
+    // replaces a `level` lane gives `level` back and starts its own hold.
+    let Some(plugin) = super::instances::create_plugin("subtractive_synth") else { return };
+    let mut slot = super::strip::PluginSlot::new("subtractive_synth".into(), 2, plugin);
+    let ins = Insert::new("subtractive_synth");
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let lane = |param: &str, v: f32| {
+        let mut l = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: soundcraft_model::INSTRUMENT_AUTO_SLOT, param: param.into() });
+        l.set_point(0, v);
+        l
+    };
+    let level = slot.plugin.param("level").unwrap();
+    let cutoff = slot.plugin.param("cutoff").unwrap();
+    let tr = s.track_mut(t).unwrap();
+    tr.automation = vec![lane("level", -30.0)];
+    super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    assert_eq!(slot.plugin.param("level"), Some(-30.0));
+    tr.automation = vec![lane("cutoff", 300.0)];
+    super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    assert_eq!(slot.plugin.param("level"), Some(level), "level is given back");
+    assert_eq!(slot.plugin.param("cutoff"), Some(300.0), "cutoff follows its own lane");
+    assert_ne!(cutoff, 300.0);
+}
+
+#[test]
+fn an_unstored_lane_regains_control_after_an_editor_change() {
+    let Some((mut slot, ins, mut session, track)) = unstored_synth() else { return };
+    {
+        let tr = session.track_mut(track).unwrap();
+        tr.automation = vec![level_lane(-30.0)];
+        super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    }
+    assert_eq!(slot.plugin.param("level"), Some(-30.0));
+    // The plug-in editor moves the parameter while the lane stays at -30.
+    slot.plugin.set_param("level", -5.0);
+    assert_eq!(slot.plugin.param("level"), Some(-5.0));
+    let tr = session.track_mut(track).unwrap();
+    super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    assert_eq!(slot.plugin.param("level"), Some(-30.0));
+}
+
+/// Rounds every write to an integer and counts `set_param` calls.
+struct Rounding {
+    inner: Box<dyn Plugin>,
+    value: f32,
+    sets: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Plugin for Rounding {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        if self.inner.info().param(id).is_none() {
+            return false;
+        }
+        self.sets.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.value = v.round();
+        true
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.info().param(id).map(|_| self.value)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+    }
+}
+
+#[test]
+fn a_rounding_plugin_is_written_once_while_the_lane_holds_and_an_editor_edit_retakes_it() {
+    let Some(inner) = super::instances::create_plugin("gain") else { return };
+    let sets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let value = inner.param("gain").unwrap_or(0.0);
+    let rounding = Rounding { inner, value, sets: Arc::clone(&sets) };
+    let mut slot = super::strip::PluginSlot::new("gain".into(), 1, Box::new(rounding));
+    let ins = Insert::new("gain");
+    let mut session = Session::default();
+    let track = session.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let mut lane = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: 0, param: "gain".into() });
+    // 0.4 rounds to 0, so the value the plugin settles on is not the lane target.
+    lane.set_point(0, 0.4);
+    {
+        let tr = session.track_mut(track).unwrap();
+        tr.automation = vec![lane];
+        for _ in 0..32 {
+            super::strip::apply_params(&mut slot, &ins, tr, 0, 0);
+        }
+    }
+    assert_eq!(sets.load(std::sync::atomic::Ordering::Relaxed), 1, "a constant lane writes once");
+    assert_eq!(slot.plugin.param("gain"), Some(0.0));
+    assert_eq!(slot.holds.first().map(|h| h.settled), Some(0.0));
+    assert_eq!(slot.holds.first().map(|h| h.last), Some(0.4));
+
+    // The editor moves the parameter. The lane target is unchanged, so only the live value
+    // differs from what the plugin settled on.
+    assert!(slot.plugin.set_param("gain", 3.2));
+    assert_eq!(sets.load(std::sync::atomic::Ordering::Relaxed), 2);
+    assert_eq!(slot.plugin.param("gain"), Some(3.0));
+    let tr = session.track_mut(track).unwrap();
+    super::strip::apply_params(&mut slot, &ins, tr, 0, 0);
+    assert_eq!(sets.load(std::sync::atomic::Ordering::Relaxed), 3, "the lane takes the parameter back");
+    assert_eq!(slot.plugin.param("gain"), Some(0.0));
+    for _ in 0..16 {
+        super::strip::apply_params(&mut slot, &ins, tr, 0, 0);
+    }
+    assert_eq!(sets.load(std::sync::atomic::Ordering::Relaxed), 3, "the retaken lane holds again");
+}
+
+#[test]
+fn removing_an_unstored_lane_restores_the_plugin_value() {
+    let Some((mut slot, ins, mut session, track)) = unstored_synth() else { return };
+    let original = slot.plugin.param("level");
+    {
+        let tr = session.track_mut(track).unwrap();
+        tr.automation = vec![level_lane(-30.0)];
+        super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    }
+    assert_eq!(slot.plugin.param("level"), Some(-30.0));
+    let tr = session.track_mut(track).unwrap();
+    tr.automation.clear();
+    super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    assert_eq!(slot.plugin.param("level"), original);
+    assert!(slot.holds.is_empty());
+}
+
+#[test]
+fn an_unstored_lane_restores_when_reading_stops_and_again_after_reenable() {
+    let Some((mut slot, ins, mut session, track)) = unstored_synth() else { return };
+    let original = slot.plugin.param("level");
+    {
+        let tr = session.track_mut(track).unwrap();
+        tr.automation = vec![level_lane(-30.0)];
+        super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    }
+    assert_eq!(slot.plugin.param("level"), Some(-30.0));
+    {
+        let tr = session.track_mut(track).unwrap();
+        tr.mixer.automation_mode = AutomationMode::Off;
+        super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    }
+    assert_eq!(slot.plugin.param("level"), original, "stopping read restores the pre-lane value");
+    {
+        let tr = session.track_mut(track).unwrap();
+        tr.mixer.automation_mode = AutomationMode::Read;
+        super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    }
+    assert_eq!(slot.plugin.param("level"), Some(-30.0), "the lane takes the parameter again");
+    {
+        let tr = session.track_mut(track).unwrap();
+        tr.mixer.automation_mode = AutomationMode::Off;
+        super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    }
+    assert_eq!(slot.plugin.param("level"), original, "a second stop restores again");
+}
+
+#[test]
+fn unstored_holds_do_not_grow_across_identical_blocks() {
+    let Some((mut slot, ins, mut session, track)) = unstored_synth() else { return };
+    let cap = slot.holds.capacity();
+    assert!(cap >= super::strip::UNSTORED_HOLD_CAP, "a new slot reserves room for a few unstored holds");
+    {
+        let tr = session.track_mut(track).unwrap();
+        tr.automation = vec![level_lane(-30.0)];
+        super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    }
+    assert_eq!(slot.holds.capacity(), cap, "the first hold fit in the reserved capacity");
+    assert_eq!(slot.holds.len(), 1);
+    let ptr = slot.holds.as_ptr();
+    for _ in 0..100 {
+        let tr = session.track_mut(track).unwrap();
+        super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    }
+    assert_eq!(slot.holds.capacity(), cap, "holds reallocated across identical blocks");
+    assert_eq!(slot.holds.as_ptr(), ptr);
+    assert_eq!(slot.holds.len(), 1);
+    assert_eq!(slot.plugin.param("level"), Some(-30.0));
 }
 
 #[test]

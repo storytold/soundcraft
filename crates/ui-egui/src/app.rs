@@ -113,6 +113,7 @@ impl SoundApp {
             editor_poll_due: true,
             #[cfg(test)]
             editor_poll_fixture: None,
+            editor_instrument_params: Vec::new(),
             frame_ms: 0.0,
             last_frame: None,
             last_meter_poll: f64::NEG_INFINITY,

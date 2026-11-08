@@ -386,6 +386,119 @@ fn an_instrument_editor_drag_reads_and_stores_its_state_once() {
     assert_eq!(instrument_state(&app, keys), Some(vec![59, 1]));
 }
 
+fn instrument_param(app: &SoundApp, t: TrackId, id: &str) -> Option<f32> {
+    app.engine.session().track(t).and_then(|tr| tr.instrument.as_ref()).and_then(|i| i.params.get(id).copied())
+}
+
+#[test]
+fn an_instrument_parameter_the_session_holds_follows_its_editor_with_the_state() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 1000})).unwrap();
+    let steps = app.engine.undo_history().len();
+    for now in 40..45 {
+        editor_frame(&mut app, &[keys], &[], &[], now);
+    }
+    assert_eq!(instrument_param(&app, keys, "cutoff"), Some(1000.0), "mid-gesture the session is left alone");
+    let revision = app.engine.revision;
+    editor_frame(&mut app, &[], &[], &[], 44);
+    assert_eq!(app.engine.revision, revision.wrapping_add(1), "the parameter and the state share one document revision");
+    let cutoff = soundcraft_dsp::plugin_info("subtractive_synth").and_then(|i| i.param("cutoff")).unwrap();
+    assert_eq!(instrument_param(&app, keys, "cutoff"), Some(44f32.clamp(cutoff.min, cutoff.max)), "stored with the state");
+    assert_eq!(instrument_state(&app, keys), Some(vec![44, 1]));
+    assert_eq!(app.engine.undo_history().len(), steps + 1, "one undo step for the gesture");
+    assert!(app.editor_instrument_params.is_empty());
+
+    // A parameter the session doesn't hold stays in the instrument's state only.
+    app.engine.session_mut().track_mut(keys).and_then(|tr| tr.instrument.as_mut()).unwrap().params.remove("cutoff");
+    editor_frame(&mut app, &[keys], &[], &[], 50);
+    editor_frame(&mut app, &[], &[], &[], 50);
+    assert_eq!(instrument_param(&app, keys, "cutoff"), None);
+    assert_eq!(instrument_state(&app, keys), Some(vec![50, 1]));
+}
+
+/// A hosted instrument whose `save_state` returns `None` (VST3 `getState` refused) still
+/// stores the parameters the session holds. The stored state blob is left as it was.
+#[test]
+fn held_instrument_params_persist_when_state_capture_returns_none() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    let lead = app.engine.session().track_by_name("Lead").unwrap().id;
+    app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 1000})).unwrap();
+    app.engine.execute("mix.instrument_param", &json!({"track": lead.0, "param": "cutoff", "value": 800})).unwrap();
+    app.engine.session_mut().track_mut(keys).and_then(|tr| tr.instrument.as_mut()).unwrap().set_state_bytes(b"keep");
+    let kept = instrument_state(&app, keys);
+    let phase = Rc::new(Cell::new(0u8));
+    let phase_poll = phase.clone();
+    app.editor_poll_fixture = Some(Box::new(move |pending| {
+        let n = phase_poll.get();
+        phase_poll.set(n + 1);
+        // Frame 0: both gestures are in progress. Frame 1: Keys ends, Lead continues.
+        // Frame 2: Lead ends. The capture returns no state for whatever is due.
+        let edits = match n {
+            0 => vec![
+                (keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".to_string(), 44.0),
+                (lead, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".to_string(), 55.0),
+            ],
+            1 => vec![(lead, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".to_string(), 56.0)],
+            _ => Vec::new(),
+        };
+        super::editor_changes(pending, edits, Vec::new(), |_| false, |_due| Vec::new())
+    }));
+    let cutoff = soundcraft_dsp::plugin_info("subtractive_synth").and_then(|i| i.param("cutoff")).unwrap();
+    let clamped = |v: f32| v.clamp(cutoff.min, cutoff.max);
+
+    app.editor_poll_due = true;
+    app.apply_editor_edits();
+    assert_eq!(instrument_param(&app, keys, "cutoff"), Some(1000.0), "mid-gesture the session is left alone");
+    assert_eq!(instrument_param(&app, lead, "cutoff"), Some(800.0));
+    assert_eq!(app.editor_instrument_params.len(), 2);
+    assert!(app.has_unsaved_changes(), "queued parameters count as unsaved work");
+
+    app.editor_poll_due = true;
+    app.apply_editor_edits();
+    assert_eq!(instrument_param(&app, keys, "cutoff"), Some(clamped(44.0)), "stored with mix.insert_params");
+    assert_eq!(instrument_state(&app, keys), kept, "a missing state does not clear the stored bytes");
+    assert_eq!(instrument_param(&app, lead, "cutoff"), Some(800.0), "a gesture still in progress stays queued");
+    assert!(app.editor_instrument_params.iter().any(|e| e.0 == lead));
+    assert!(!app.editor_instrument_params.iter().any(|e| e.0 == keys));
+
+    app.editor_poll_due = true;
+    app.apply_editor_edits();
+    assert_eq!(instrument_param(&app, lead, "cutoff"), Some(clamped(56.0)));
+    assert!(app.editor_instrument_params.is_empty(), "no queued entry is left behind");
+}
+
+/// Saving (or closing) with no live state reader must not drop parameters already queued.
+#[test]
+fn a_save_with_no_state_capture_keeps_queued_instrument_params() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 1000})).unwrap();
+    app.engine.session_mut().track_mut(keys).and_then(|tr| tr.instrument.as_mut()).unwrap().set_state_bytes(b"keep");
+    let kept = instrument_state(&app, keys);
+    app.editor_instrument_params.push((keys, "cutoff".to_string(), 44.0));
+    assert!(app.player.is_none(), "this capture has no hosted instrument to ask");
+    app.capture_plugin_states();
+    let cutoff = soundcraft_dsp::plugin_info("subtractive_synth").and_then(|i| i.param("cutoff")).unwrap();
+    assert_eq!(instrument_param(&app, keys, "cutoff"), Some(44.0f32.clamp(cutoff.min, cutoff.max)));
+    assert_eq!(instrument_state(&app, keys), kept);
+    assert!(app.editor_instrument_params.is_empty());
+
+    // The player going away mid-gesture takes the same path through the editor poll.
+    app.editor_instrument_params.push((keys, "cutoff".to_string(), 70.0));
+    app.editor_states.push((keys, soundcraft_mix::INSTRUMENT_SLOT));
+    app.editor_poll_due = true;
+    app.apply_editor_edits();
+    assert_eq!(instrument_param(&app, keys, "cutoff"), Some(70.0f32.clamp(cutoff.min, cutoff.max)));
+    assert!(app.editor_states.is_empty());
+    assert!(app.editor_instrument_params.is_empty());
+    assert_eq!(instrument_state(&app, keys), kept);
+}
+
 #[test]
 fn two_instrument_editor_drags_store_its_state_twice() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
@@ -1640,8 +1753,7 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     assert!(captures.borrow().is_empty(), "the ongoing gesture has not ended");
     assert_eq!(app.editor_states, [(keys, soundcraft_mix::INSTRUMENT_SLOT)]);
     assert_eq!(instrument_state(&app, keys), original);
-    assert_eq!(app.engine.revision, revision);
-    assert_eq!(app.engine.undo_history().len(), undo);
+    assert_history_unchanged(&app, revision, undo, &history, &journal);
     assert!(app.has_unsaved_changes(), "pending editor work still needs autosave/recovery");
 
     // The next host hook is hidden: it still polls the continuing gesture despite a stale
@@ -1668,15 +1780,16 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     assert_eq!(instrument_state(&app, keys), Some(vec![2, 1]));
     assert_eq!(app.engine.revision, revision.wrapping_add(1), "the completed gesture persists exactly one document revision");
     assert!(app.engine.is_dirty(), "captured instrument state is unsaved document work");
-    assert_eq!(app.engine.undo_history().len(), undo, "state-only instrument persistence does not create an undo step");
-    assert_eq!(app.engine.undo_history(), history, "state capture does not replace another history entry");
-    assert_eq!(app.engine.journal, journal, "plugin-state blobs are not journaled");
+    let held = held_param_history(&history);
+    assert_held_parameter_undo(&app, &held, undo + 1, &journal);
     let settled_revision = app.engine.revision;
     app.raw_input_hook(&ctx, &mut hidden);
     let _ = ctx.run_logic(&hidden, |ctx| app.logic(ctx));
     assert_eq!(polls.get(), 4, "a fresh empty host iteration is still live");
     assert_eq!(captures.borrow().len(), 1, "the completed gesture is captured once");
-    assert_history_unchanged(&app, settled_revision, undo, &history, &journal);
+    assert_eq!(app.engine.revision, settled_revision);
+    assert_eq!(app.engine.undo_history(), held, "a later empty poll does not store the gesture again");
+    assert_eq!(app.engine.journal, journal);
 }
 
 /// The engine's revision, undo history and journal are as they were.
@@ -1691,4 +1804,18 @@ fn assert_history_unchanged(
     assert_eq!(app.engine.undo_history().len(), undo);
     assert_eq!(app.engine.undo_history(), history);
     assert_eq!(&app.engine.journal, journal);
+}
+
+/// The demo instrument already holds cutoff, so the editor value is stored with the state as one
+/// undo step. The blob itself is not journaled, and nothing earlier is replaced.
+fn held_param_history(history: &[String]) -> Vec<String> {
+    let mut held = history.to_vec();
+    held.push("Set Plugin Parameters".to_string());
+    held
+}
+
+fn assert_held_parameter_undo(app: &SoundApp, held: &[String], undo: usize, journal: &std::collections::VecDeque<(String, serde_json::Value)>) {
+    assert_eq!(app.engine.undo_history(), held, "a held parameter is one undo step with the state");
+    assert_eq!(app.engine.undo_history().len(), undo);
+    assert_eq!(&app.engine.journal, journal, "plugin-state blobs are not journaled");
 }

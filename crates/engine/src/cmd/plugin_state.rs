@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Store Plugin State",
         menu: &[],
         shortcut: None,
-        params: "{track, slot: 0..9 | \"a\"..\"j\" | \"instrument\", state: base64 | null} → {bytes}. Not undoable and not journaled (states can be large).",
+        params: "{track, slot: 0..9 | \"a\"..\"j\" | \"instrument\", state: base64 | null, params?: {id: number}} → {bytes}. The state is not undoable and not journaled (states can be large). `params`, when a value changes, is stored in that same edit as one undo step and is not journaled.",
         enabled: has_tracks,
         run: insert_state,
         journal: false,
@@ -40,6 +40,62 @@ fn slot_param(p: &Value) -> Result<Option<usize>> {
     }
 }
 
+fn stored_insert(e: &Engine, track: soundcraft_model::TrackId, slot: Option<usize>) -> Option<&soundcraft_model::Insert> {
+    let tr = e.session().track(track)?;
+    match slot {
+        Some(i) => tr.mixer.inserts.get(i).and_then(Option::as_ref),
+        None => tr.instrument.as_ref(),
+    }
+}
+
+fn insert_mut(s: &mut soundcraft_model::Session, track: soundcraft_model::TrackId, slot: Option<usize>) -> Option<&mut soundcraft_model::Insert> {
+    let tr = s.track_mut(track)?;
+    match slot {
+        Some(i) => tr.mixer.inserts.get_mut(i).and_then(Option::as_mut),
+        None => tr.instrument.as_mut(),
+    }
+}
+
+fn state_matches(ins: &soundcraft_model::Insert, state: Option<&[u8]>) -> bool {
+    ins.state_bytes().as_deref() == state.filter(|b| !b.is_empty())
+}
+
+/// Optional `params` on `mix.insert_state`. Absent or empty stores nothing. Keys are parameter
+/// ids; values are finite numbers, clamped the same way as `mix.insert_params`.
+fn param_writes(e: &Engine, track: soundcraft_model::TrackId, slot: Option<usize>, p: &Value) -> Result<Vec<(String, f32)>> {
+    let Some(raw) = p.get("params") else { return Ok(Vec::new()) };
+    let obj = raw.as_object().ok_or_else(|| bad(CMD, "`params` must be an object"))?;
+    if obj.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ins = stored_insert(e, track, slot).ok_or_else(|| bad(CMD, "empty slot"))?;
+    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad(CMD, "unknown plugin"))?;
+    let mut unknown = Vec::new();
+    let mut non_numeric = Vec::new();
+    for (k, v) in obj {
+        if !info.params.iter().any(|x| x.id == k.as_str()) {
+            unknown.push(k.as_str());
+        } else if v.as_f64().is_none_or(|f| !f.is_finite()) {
+            non_numeric.push(k.as_str());
+        }
+    }
+    if !unknown.is_empty() {
+        unknown.sort_unstable();
+        return Err(bad(CMD, format!("`{}` has no parameter(s): {}", info.id, unknown.join(", "))));
+    }
+    if !non_numeric.is_empty() {
+        non_numeric.sort_unstable();
+        return Err(bad(CMD, format!("parameter(s) need a numeric value: {}", non_numeric.join(", "))));
+    }
+    let mut out = Vec::with_capacity(obj.len());
+    for (k, v) in obj {
+        let Some(pi) = info.params.iter().find(|x| x.id == k.as_str()) else { continue };
+        let Some(f) = v.as_f64().filter(|f| f.is_finite()) else { continue };
+        out.push((k.clone(), pi.clamp(f as f32)));
+    }
+    Ok(out)
+}
+
 fn insert_state(e: &mut Engine, p: &Value) -> Result<Value> {
     let t = track_param(e, CMD, p, "track")?.ok_or_else(|| bad(CMD, "`track` required"))?;
     let slot = slot_param(p)?;
@@ -49,24 +105,40 @@ fn insert_state(e: &mut Engine, p: &Value) -> Result<Value> {
         Some(_) => return Err(bad(CMD, "`state` must be a base64 string or null")),
     };
     let n = state.as_ref().map_or(0, Vec::len);
+    let writes = param_writes(e, t, slot, p)?;
     // Plugins report changes that leave their state as it was: don't modify the session for those.
-    let stored = e.session().track(t).and_then(|tr| match slot {
-        Some(i) => tr.mixer.inserts.get(i).and_then(Option::as_ref),
-        None => tr.instrument.as_ref(),
-    });
-    if stored.is_some_and(|ins| ins.state_bytes().as_deref() == state.as_deref().filter(|b| !b.is_empty())) {
+    // A held parameter that actually moved is part of the same edit, so it does not publish a
+    // second revision on its own.
+    let (unchanged, params_changed) = {
+        let Some(stored) = stored_insert(e, t, slot) else { return Err(bad(CMD, "empty slot")) };
+        let params_changed = writes.iter().any(|(k, v)| stored.params.get(k).copied() != Some(*v));
+        (state_matches(stored, state.as_deref()) && !params_changed, params_changed)
+    };
+    if unchanged {
         return Ok(json!({"bytes": n}));
     }
-    let s = e.session_mut();
-    let tr = s.track_mut(t).ok_or_else(|| bad(CMD, "no track"))?;
-    let ins = match slot {
-        Some(i) => tr.mixer.inserts.get_mut(i).and_then(Option::as_mut),
-        None => tr.instrument.as_mut(),
+    let undo = params_changed.then(|| e.session_arc());
+    {
+        let s = e.session_mut();
+        let ins = insert_mut(s, t, slot).ok_or_else(|| bad(CMD, "empty slot"))?;
+        for (k, v) in &writes {
+            ins.params.insert(k.clone(), *v);
+        }
+        match &state {
+            Some(bytes) => ins.set_state_bytes(bytes),
+            None => ins.state = None,
+        }
     }
-    .ok_or_else(|| bad(CMD, "empty slot"))?;
-    match state {
-        Some(bytes) => ins.set_state_bytes(&bytes),
-        None => ins.state = None,
+    if let Some(mut before) = undo {
+        // State is not undoable. The snapshot was taken before this command, so it still has the
+        // previous bytes; put the bytes just stored back, and let undo restore only the parameters.
+        if let Some(ins) = insert_mut(std::sync::Arc::make_mut(&mut before), t, slot) {
+            match &state {
+                Some(bytes) => ins.set_state_bytes(bytes),
+                None => ins.state = None,
+            }
+        }
+        e.push_undo("Set Plugin Parameters", before);
     }
     Ok(json!({"bytes": n}))
 }
@@ -103,6 +175,69 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         e.execute("mix.insert_state", &json!({"track": t, "slot": 2, "state": null})).unwrap();
         assert_eq!(e.session().tracks[0].mixer.inserts[2].as_ref().unwrap().state, None);
+    }
+
+    #[test]
+    fn held_params_share_the_state_revision_and_one_undo_step() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+        let t = e.session().tracks[0].id.0;
+        let rev = e.revision;
+        let undo = e.undo_history().len();
+        let blob = b64::encode(&[9, 1]);
+        e.execute("mix.insert_state", &json!({"track": t, "slot": "instrument", "state": blob, "params": {"cutoff": 44.0}})).unwrap();
+        assert_eq!(e.revision, rev.wrapping_add(1), "the parameter and the state are one document revision");
+        assert_eq!(e.undo_history().len(), undo + 1);
+        assert_eq!(e.undo_history().last().map(String::as_str), Some("Set Plugin Parameters"));
+        let ins = e.session().tracks[0].instrument.clone().unwrap();
+        assert_eq!(ins.params.get("cutoff").copied(), Some(44.0));
+        assert_eq!(ins.state_bytes().as_deref(), Some(&[9, 1][..]));
+        assert!(e.journal.iter().all(|(id, _)| id != "mix.insert_state"), "not journaled");
+        // The same bytes and the same value publish nothing more.
+        let rev = e.revision;
+        let undo = e.undo_history().len();
+        e.execute("mix.insert_state", &json!({"track": t, "slot": "instrument", "state": blob, "params": {"cutoff": 44.0}})).unwrap();
+        assert_eq!(e.revision, rev);
+        assert_eq!(e.undo_history().len(), undo);
+    }
+
+    #[test]
+    fn undo_restores_parameters_and_keeps_the_new_state() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+        let t = e.session().tracks[0].id.0;
+        let old_state = b64::encode(b"old-state");
+        e.execute("mix.insert_state", &json!({"track": t, "slot": "instrument", "state": old_state})).unwrap();
+        e.execute("mix.instrument_param", &json!({"track": t, "param": "cutoff", "value": 1000.0})).unwrap();
+        let new_state = b64::encode(b"new-state");
+        e.execute("mix.insert_state", &json!({"track": t, "slot": "instrument", "state": new_state, "params": {"cutoff": 44.0}})).unwrap();
+        let ins = e.session().tracks[0].instrument.clone().unwrap();
+        assert_eq!(ins.params.get("cutoff").copied(), Some(44.0));
+        assert_eq!(ins.state_bytes().as_deref(), Some(&b"new-state"[..]));
+        assert!(e.undo());
+        let ins = e.session().tracks[0].instrument.clone().unwrap();
+        assert_eq!(ins.params.get("cutoff").copied(), Some(1000.0), "undo restores the parameter");
+        assert_eq!(ins.state_bytes().as_deref(), Some(&b"new-state"[..]), "undo keeps the new state");
+        assert!(e.redo());
+        let ins = e.session().tracks[0].instrument.clone().unwrap();
+        assert_eq!(ins.params.get("cutoff").copied(), Some(44.0));
+        assert_eq!(ins.state_bytes().as_deref(), Some(&b"new-state"[..]));
+
+        // Clearing the state is the new state: undo restores the parameter and leaves it cleared.
+        e.execute("track.new", &json!({})).unwrap();
+        let audio = e.session().tracks.last().unwrap().id;
+        let a = audio.0;
+        e.execute("mix.insert", &json!({"track": a, "plugin": "gain", "slot": 0})).unwrap();
+        let blob = b64::encode(b"gain-state");
+        e.execute("mix.insert_state", &json!({"track": a, "slot": 0, "state": blob})).unwrap();
+        e.execute("mix.insert_param", &json!({"track": a, "slot": 0, "param": "gain", "value": -6.0})).unwrap();
+        let before = e.session().track(audio).unwrap().mixer.inserts[0].as_ref().unwrap().params.get("gain").copied();
+        e.execute("mix.insert_state", &json!({"track": a, "slot": 0, "state": null, "params": {"gain": -12.0}})).unwrap();
+        assert_eq!(e.session().track(audio).unwrap().mixer.inserts[0].as_ref().unwrap().state, None);
+        assert!(e.undo());
+        let ins = e.session().track(audio).unwrap().mixer.inserts[0].as_ref().unwrap();
+        assert_eq!(ins.params.get("gain").copied(), before);
+        assert_eq!(ins.state, None, "undo does not bring the cleared state back");
     }
 
     #[test]

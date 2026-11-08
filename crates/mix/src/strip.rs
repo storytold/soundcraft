@@ -8,6 +8,7 @@ use super::{
     AutoParam, BusId, ChannelFormat, MAX_CHANNELS, PanLaw, Plugin, Range, Route, Samples, Session, SourceAudio, Track, TrackId, TrackKind, Transport,
     db_to_gain,
 };
+use soundcraft_model::{AutomationLane, INSTRUMENT_AUTO_SLOT};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -17,17 +18,51 @@ pub(crate) struct BusBuf {
     pub(crate) buf: Vec<Vec<f32>>,
 }
 
+/// One unstored parameter an automation lane is driving.
+///
+/// `param` is an index into `plugin.info().params` (those ids are `'static`, so restoring does
+/// not keep the session's `String`); it is the hold's identity, so a lane removed and added again
+/// for the same parameter keeps the hold, and a lane on another parameter never takes it over.
+/// `last` is the lane target
+/// last sent, so a steady lane does not write again. `settled` is the value the plugin reported
+/// after that write: a host may clamp or round, and an editor edit is a move away from that
+/// settled value, not away from the raw lane target. `original` is the plugin's value from before
+/// the lane took over; nothing in the session stores it.
+pub(crate) struct LaneHold {
+    param: usize,
+    pub(crate) last: f32,
+    pub(crate) settled: f32,
+    original: f32,
+}
+
+/// Unstored automated parameters a new slot can take before the holds vector has to grow.
+/// Growing past this happens once, on the block a further parameter comes under automation.
+pub(crate) const UNSTORED_HOLD_CAP: usize = 8;
+
+/// Absolute and relative tolerance for "the plugin already has the lane's value". A plugin that
+/// quantizes can sit a hair off what automation sent; an editor move is far larger.
+const PARAM_MATCH_TOLERANCE: f32 = 1.0e-6;
+
 pub(crate) struct PluginSlot {
     pub(crate) id: String,
     /// Channel count the plugin was prepared for.
     pub(crate) ch: usize,
     pub(crate) plugin: Box<dyn Plugin>,
     /// Last values pushed to the plugin, in the insert's parameter-map order.
-    applied: Vec<f32>,
+    pub(crate) applied: Vec<f32>,
     /// Scratch for `apply_params`: indexes of the track's automation lanes for this slot, kept
     /// so the audio thread reuses its allocation.
     lanes: Vec<usize>,
+    /// Unstored parameters currently under automation, looked up by parameter index. Reserved for [`UNSTORED_HOLD_CAP`] at creation; it grows only
+    /// when a new hold is pushed.
+    pub(crate) holds: Vec<LaneHold>,
     pub(crate) failed: bool,
+}
+
+impl PluginSlot {
+    pub(crate) fn new(id: String, ch: usize, plugin: Box<dyn Plugin>) -> Self {
+        PluginSlot { id, ch, plugin, applied: Vec::new(), lanes: Vec::new(), holds: Vec::with_capacity(UNSTORED_HOLD_CAP), failed: false }
+    }
 }
 
 pub(crate) struct Strip {
@@ -196,7 +231,7 @@ impl SlotCtx<'_> {
             let state = if third { ins.state_bytes() } else { None };
             create_instance_for(&ins.plugin, state.as_deref(), self.sr, self.mb, ch, self.offline).map(|n| n.plugin)
         }?;
-        Some(PluginSlot { id: ins.plugin.clone(), ch, plugin, applied: Vec::new(), lanes: Vec::new(), failed: false })
+        Some(PluginSlot::new(ins.plugin.clone(), ch, plugin))
     }
 }
 
@@ -478,16 +513,23 @@ pub(crate) fn note_insert_latency(t: &Track, strip: &mut Strip, pos: Samples) {
 }
 
 pub(crate) fn apply_params(slot: &mut PluginSlot, ins: &soundcraft_model::Insert, t: &Track, i: usize, pos: Samples) {
-    // Automation lanes address insert slots; the instrument (`INSTRUMENT_SLOT`) has none, so it
-    // must not pick up slot A's lanes.
-    let Ok(slot_u8) = u8::try_from(i) else {
-        return apply_values(slot, ins, |_, v| v);
+    // Automation lanes address insert slots by index and the instrument (`INSTRUMENT_SLOT`) by
+    // `INSTRUMENT_AUTO_SLOT`, so the instrument never picks up slot A's lanes.
+    let slot_u8 = match u8::try_from(i) {
+        _ if i == INSTRUMENT_SLOT => INSTRUMENT_AUTO_SLOT,
+        Ok(s) => s,
+        Err(_) => {
+            // This call is not driving the slot, so a lane that was driving it has let go.
+            release_inactive_holds(slot, |_| false);
+            return apply_values(slot, ins, |_, v| v);
+        }
     };
     let lanes = &t.automation;
     let name = |j: usize| match lanes.get(j).map(|l| &l.param) {
         Some(AutoParam::Plugin { param, .. }) => param.as_str(),
         _ => "",
     };
+    let active = |j: usize| lanes.get(j).filter(|l| !l.points.is_empty());
     // This slot's lanes, ordered by parameter name (the parameter map's order) and keeping only
     // the first lane per name (the one a lookup by name finds). Matching them to the parameters
     // in one merge costs O(lanes log lanes + params) per block, not O(lanes x params).
@@ -496,23 +538,133 @@ pub(crate) fn apply_params(slot: &mut PluginSlot, ins: &soundcraft_model::Insert
     if t.mixer.automation_mode.reads() {
         order
             .extend(lanes.iter().enumerate().filter(|(_, l)| matches!(&l.param, AutoParam::Plugin { slot, .. } if *slot == slot_u8)).map(|(j, _)| j));
-        if !order.iter().any(|&j| lanes.get(j).is_some_and(|l| !l.points.is_empty())) {
+        if !order.iter().any(|&j| active(j).is_some()) {
             order.clear();
         }
         order.sort_unstable_by(|&a, &b| name(a).cmp(name(b)).then(a.cmp(&b)));
         order.dedup_by(|later, kept| name(*later) == name(*kept));
     }
+    if !slot.holds.is_empty() {
+        // A hold stays while a lane with points still drives its parameter and the insert does
+        // not store that parameter; otherwise the plugin gets back the value it had before.
+        let info = slot.plugin.info();
+        release_inactive_holds(slot, |hold| {
+            info.params.get(hold.param).is_some_and(|p| {
+                !ins.params.contains_key(p.id)
+                    && order.binary_search_by(|&j| name(j).cmp(p.id)).ok().and_then(|k| order.get(k)).and_then(|&j| active(j)).is_some()
+            })
+        });
+    }
+    // Parameters the insert stores go through `apply_values`.
     let mut next = order.iter().copied().peekable();
     apply_values(slot, ins, |k, val| {
         while next.next_if(|&j| name(j) < k).is_some() {}
-        if let Some(l) = next.peek().filter(|&&j| name(j) == k).and_then(|&j| lanes.get(j))
-            && !l.points.is_empty()
-        {
+        if let Some(l) = next.peek().filter(|&&j| name(j) == k).and_then(|&j| active(j)) {
             return l.value_at(pos, val);
         }
         val
     });
+    // The rest live in the plugin (a hosted plug-in's state blob) and are tracked in
+    // `slot.holds`. Same merge: a lane whose name the parameter map lacks is unstored.
+    let mut keys = ins.params.keys().map(String::as_str).peekable();
+    for &j in &order {
+        let Some(lane) = active(j) else { continue };
+        let n = name(j);
+        while keys.next_if(|k| *k < n).is_some() {}
+        if keys.peek() != Some(&n) {
+            drive_unstored_lane(slot, n, lane, pos);
+        }
+    }
     slot.lanes = order;
+}
+
+fn plugin_param_index(slot: &PluginSlot, id: &str) -> Option<usize> {
+    slot.plugin.info().params.iter().position(|p| p.id == id)
+}
+
+fn plugin_param_id(slot: &PluginSlot, index: usize) -> Option<&'static str> {
+    slot.plugin.info().params.get(index).map(|p| p.id)
+}
+
+/// Plugin value to put back when the lane lets go. The live value wins; the parameter's default
+/// covers a plugin that does not report it. Non-finite values are not a value we can restore.
+fn read_original(slot: &PluginSlot, id: &str, index: usize) -> f32 {
+    let reported = slot.plugin.param(id).filter(|v| v.is_finite());
+    if let Some(v) = reported {
+        return v;
+    }
+    slot.plugin.info().params.get(index).map(|p| p.default).filter(|v| v.is_finite()).unwrap_or(0.0)
+}
+
+fn live_differs_from_lane(live: f32, lane: f32) -> bool {
+    if live.to_bits() == lane.to_bits() {
+        return false;
+    }
+    let diff = (live - lane).abs();
+    if !diff.is_finite() {
+        return true;
+    }
+    let scale = live.abs().max(lane.abs());
+    diff > PARAM_MATCH_TOLERANCE * (1.0 + scale)
+}
+
+fn release_inactive_holds(slot: &mut PluginSlot, mut still_active: impl FnMut(&LaneHold) -> bool) {
+    let mut i = 0;
+    while i < slot.holds.len() {
+        let active = match slot.holds.get(i) {
+            Some(hold) => still_active(hold),
+            None => break,
+        };
+        if active {
+            i += 1;
+            continue;
+        }
+        restore_hold(slot, i);
+        slot.holds.swap_remove(i);
+    }
+}
+
+fn restore_hold(slot: &mut PluginSlot, index: usize) {
+    let Some((param, original)) = slot.holds.get(index).map(|h| (h.param, h.original)) else { return };
+    if let Some(id) = plugin_param_id(slot, param) {
+        slot.plugin.set_param(id, original);
+    }
+}
+
+fn drive_unstored_lane(slot: &mut PluginSlot, name: &str, lane: &AutomationLane, pos: Samples) {
+    let info = slot.plugin.info();
+    let index = if let Some(i) = slot.holds.iter().position(|h| info.params.get(h.param).is_some_and(|p| p.id == name)) {
+        i
+    } else if let Some(param) = plugin_param_index(slot, name) {
+        // Read the plugin before the first write, so the lane can give the parameter back.
+        let original = read_original(slot, name, param);
+        slot.holds.push(LaneHold { param, last: f32::NAN, settled: f32::NAN, original });
+        match slot.holds.len().checked_sub(1) {
+            Some(i) => i,
+            None => return,
+        }
+    } else {
+        return;
+    };
+    drive_hold(slot, index, lane, pos);
+}
+
+fn drive_hold(slot: &mut PluginSlot, index: usize, lane: &AutomationLane, pos: Samples) {
+    let Some((param, original, last, settled)) = slot.holds.get(index).map(|h| (h.param, h.original, h.last, h.settled)) else { return };
+    let value = lane.value_at(pos, original);
+    let Some(id) = plugin_param_id(slot, param) else { return };
+    let changed = value.to_bits() != last.to_bits();
+    // An editor edit moves the live value off what the plugin settled on. Comparing with the
+    // raw lane target would stay true forever when the plugin clamps or rounds the write.
+    let diverged = slot.plugin.param(id).is_some_and(|live| live_differs_from_lane(live, settled));
+    if changed || diverged {
+        slot.plugin.set_param(id, value);
+        let settled_now = slot.plugin.param(id).unwrap_or(value);
+        if let Some(hold) = slot.holds.get_mut(index) {
+            hold.last = value;
+            hold.settled = settled_now;
+        }
+    }
 }
 
 /// Sends each stored param (as mapped by `value`) to the plugin when it changed since last time.
@@ -566,7 +718,7 @@ mod apply_params_tests {
     fn recorder() -> (PluginSlot, Arc<Mutex<Vec<(String, f32)>>>) {
         let sets = Arc::new(Mutex::new(Vec::new()));
         let plugin = Box::new(Recorder { inner: soundcraft_dsp::create("gain").unwrap(), sets: Arc::clone(&sets) });
-        (PluginSlot { id: "gain".into(), ch: 2, plugin, applied: Vec::new(), lanes: Vec::new(), failed: false }, sets)
+        (PluginSlot::new("gain".into(), 2, plugin), sets)
     }
 
     fn lane(slot: u8, param: &str, point: Option<f32>) -> AutomationLane {
