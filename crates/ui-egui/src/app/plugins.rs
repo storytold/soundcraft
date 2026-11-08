@@ -1,4 +1,5 @@
 use super::{SoundApp, TrackId, Value, json, mix_window};
+use crate::QueuedInstrumentParam;
 
 /// The plugins whose state the session takes this frame, out of those changed in their editors
 /// (`pending`, kept across frames). A plugin editor doesn't say when a gesture ends: a plugin's
@@ -79,18 +80,18 @@ impl SoundApp {
             let mut params = json!({"track": t.0, "slot": slot, "state": soundcraft_model::b64::encode(&data)});
             let mut edited = Vec::new();
             if instrument {
-                let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.editor_instrument_params).into_iter().partition(|e| e.0 == t);
-                self.editor_instrument_params = rest;
-                if !taken.is_empty() {
+                edited = self.take_track_instrument_params(t);
+                // A later command owns a parameter whose session value moved since the queue.
+                edited.retain(|e| self.queued_param_matches_session(e));
+                if !edited.is_empty() {
                     // Same command as the state, so the gesture is one document revision. A value
                     // that moved is one undo step inside that command.
-                    let values: serde_json::Map<String, Value> = taken.iter().map(|(_, k, v)| (k.clone(), json!(*v))).collect();
+                    let values: serde_json::Map<String, Value> = edited.iter().map(|e| (e.param.clone(), json!(e.value))).collect();
                     params["params"] = json!(values);
                 }
-                edited = taken;
             }
             if !self.execute_in_gesture("mix.insert_state", &params) {
-                self.editor_instrument_params.extend(edited);
+                self.requeue_held_instrument_params(edited);
             }
         }
     }
@@ -98,12 +99,47 @@ impl SoundApp {
     /// Tracks that still have held instrument parameters waiting to be stored.
     fn queued_instrument_tracks(&self) -> Vec<TrackId> {
         let mut tracks = Vec::new();
-        for (t, _, _) in &self.editor_instrument_params {
-            if !tracks.contains(t) {
-                tracks.push(*t);
+        for entry in &self.editor_instrument_params {
+            if !tracks.contains(&entry.track) {
+                tracks.push(entry.track);
             }
         }
         tracks
+    }
+
+    /// Takes every queued parameter for `track` out of the queue.
+    fn take_track_instrument_params(&mut self, track: TrackId) -> Vec<QueuedInstrumentParam> {
+        let (taken, rest) = std::mem::take(&mut self.editor_instrument_params).into_iter().partition(|e| e.track == track);
+        self.editor_instrument_params = rest;
+        taken
+    }
+
+    /// The value the session stores for this instrument parameter, if the map holds it.
+    fn session_instrument_param(&self, track: TrackId, param: &str) -> Option<f32> {
+        self.engine.session().track(track).and_then(|tr| tr.instrument.as_ref()).and_then(|i| i.params.get(param).copied())
+    }
+
+    /// The session still holds the value recorded when `entry` was queued. A mismatch means a
+    /// later command wrote the parameter; flushing the editor value would overwrite that command.
+    fn queued_param_matches_session(&self, entry: &QueuedInstrumentParam) -> bool {
+        self.session_instrument_param(entry.track, &entry.param) == entry.session_at_queue
+    }
+
+    /// Puts held editor values back after a store command failed. Drops any entry whose session
+    /// value moved since it was queued: a later command owns that parameter.
+    fn requeue_held_instrument_params(&mut self, entries: Vec<QueuedInstrumentParam>) {
+        let still: Vec<_> = entries.into_iter().filter(|e| self.queued_param_matches_session(e)).collect();
+        self.editor_instrument_params.extend(still);
+    }
+
+    /// Remember an editor edit for a parameter the session also holds. A second edit of the same
+    /// parameter replaces `value` and keeps the session value recorded the first time.
+    fn queue_editor_instrument_param(&mut self, track: TrackId, param: String, value: f32) {
+        let Some(current) = self.session_instrument_param(track, &param) else { return };
+        let session_at_queue =
+            self.editor_instrument_params.iter().find(|e| e.track == track && e.param == param).map_or(Some(current), |e| e.session_at_queue);
+        self.editor_instrument_params.retain(|e| e.track != track || e.param != param);
+        self.editor_instrument_params.push(QueuedInstrumentParam { track, param, value, session_at_queue });
     }
 
     /// Stores queued held parameters for `tracks` with `mix.insert_params` (slot `"instrument"`).
@@ -111,18 +147,22 @@ impl SoundApp {
     /// that would clear the blob the plugin already has.
     fn persist_queued_instrument_params(&mut self, tracks: &[TrackId]) {
         for &t in tracks {
-            let (edited, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.editor_instrument_params).into_iter().partition(|e| e.0 == t);
-            self.editor_instrument_params = rest;
+            let mut edited = self.take_track_instrument_params(t);
             if edited.is_empty() {
                 continue;
             }
+            // The instrument is gone: retrying cannot succeed, and the values belong to the old track.
             if !self.engine.session().track(t).is_some_and(|tr| tr.instrument.is_some()) {
                 continue;
             }
-            let values: serde_json::Map<String, Value> = edited.iter().map(|(_, k, v)| (k.clone(), json!(*v))).collect();
+            edited.retain(|e| self.queued_param_matches_session(e));
+            if edited.is_empty() {
+                continue;
+            }
+            let values: serde_json::Map<String, Value> = edited.iter().map(|e| (e.param.clone(), json!(e.value))).collect();
             let params = json!({"track": t.0, "slot": "instrument", "params": values});
             if !self.execute_in_gesture("mix.insert_params", &params) {
-                self.editor_instrument_params.extend(edited);
+                self.requeue_held_instrument_params(edited);
             }
         }
     }
@@ -208,12 +248,9 @@ impl SoundApp {
             if slot == soundcraft_mix::INSTRUMENT_SLOT {
                 // The instrument's state carries its edits. A value the session holds as well (set
                 // by command) follows the editor when the state is stored, or it would undo the edit
-                // on top of the state when the session is opened again.
-                let held = self.engine.session().track(t).and_then(|tr| tr.instrument.as_ref()).is_some_and(|i| i.params.contains_key(&param));
-                if held {
-                    self.editor_instrument_params.retain(|(pt, pp, _)| (*pt, pp) != (t, &param));
-                    self.editor_instrument_params.push((t, param, value));
-                }
+                // on top of the state when the session is opened again. A command that changes the
+                // stored value after the queue owns the parameter instead.
+                self.queue_editor_instrument_param(t, param, value);
                 continue;
             }
             let key = format!("param:{}:{slot}:{param}", t.0);
