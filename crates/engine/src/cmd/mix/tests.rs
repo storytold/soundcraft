@@ -843,6 +843,36 @@ impl Plugin for GarbageParsesAsZero {
     }
 }
 
+/// A live instance that renders text but refuses every string.
+struct RefusingLive;
+
+impl crate::LivePlugins for RefusingLive {
+    fn plugin_id(&mut self, _track: TrackId, _slot: usize) -> Option<String> {
+        Some("clap:not.installed".to_string())
+    }
+    fn value_text(&mut self, _track: TrackId, _slot: usize, _id: &str, value: f32) -> Option<String> {
+        Some(format!("{value:.1} live"))
+    }
+    fn value_from_text(&mut self, _track: TrackId, _slot: usize, _id: &str, _text: &str) -> Option<f32> {
+        None
+    }
+    fn value(&mut self, _track: TrackId, _slot: usize, _id: &str) -> Option<f32> {
+        None
+    }
+}
+
+#[test]
+fn text_the_live_instance_refuses_does_not_load_a_temporary_plugin() {
+    let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
+    let mut live = RefusingLive;
+    let insert = Insert::new("clap:not.installed");
+    let mut resolver = ParameterValueResolver::new("mix.insert_param", &insert, 48_000.0, TrackId(0), 0, Some(&mut live));
+    let err = resolver.resolve(gain, &json!("loud")).unwrap_err().to_string();
+    assert!(err.contains("`loud` is not a value of"), "{err}");
+    assert!(err.contains("live"), "examples come from the live instance: {err}");
+    assert!(!resolver.tried_instance, "no temporary instance for refused text");
+}
+
 #[test]
 fn a_plugin_that_parses_garbage_as_zero_is_rejected() {
     let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();

@@ -398,6 +398,15 @@ pub(super) fn plugin_slot_index(slot: PluginSlot) -> usize {
     }
 }
 
+/// What the live instance made of parameter text.
+enum LiveParse {
+    Parsed(f32),
+    /// The live instance read the text and refused it.
+    Rejected,
+    /// No matching live instance, or it could not be asked.
+    Unavailable,
+}
+
 pub(super) struct ParameterValueResolver<'a> {
     cmd: &'static str,
     insert: Insert,
@@ -428,11 +437,18 @@ impl<'a> ParameterValueResolver<'a> {
         live.plugin_id(self.track, self.slot).as_deref() == Some(self.insert.plugin.as_str())
     }
 
-    fn live_value_from_text(&mut self, id: &str, text: &str) -> Option<f32> {
+    fn live_value_from_text(&mut self, param: &soundcraft_dsp::ParamInfo, text: &str) -> LiveParse {
         if !self.live_matches() {
-            return None;
+            return LiveParse::Unavailable;
         }
-        self.live.as_mut()?.value_from_text(self.track, self.slot, id, text).filter(|parsed| parsed.is_finite())
+        let (track, slot) = (self.track, self.slot);
+        let Some(live) = self.live.as_mut() else { return LiveParse::Unavailable };
+        if let Some(parsed) = live.value_from_text(track, slot, param.id, text).filter(|parsed| parsed.is_finite()) {
+            return LiveParse::Parsed(parsed);
+        }
+        // The hosts answer `None` both for text they refuse and when they cannot be asked (not on
+        // the main thread). An instance that still renders this parameter's text was asked.
+        if live.value_text(track, slot, param.id, param.default).is_some() { LiveParse::Rejected } else { LiveParse::Unavailable }
     }
 
     fn live_display(&mut self, param: &soundcraft_dsp::ParamInfo, value: f32) -> String {
@@ -489,13 +505,18 @@ impl<'a> ParameterValueResolver<'a> {
         // any string. Keep the value only when the plugin's own text for it agrees with what
         // was typed, and refuse a number outside the displayed range instead of clamping it.
         // The live instance is asked first; its display text is the round trip.
-        if let Some(parsed) = self.live_value_from_text(param.id, text) {
-            return self.accept_plugin_text(param, text, parsed);
-        }
-        if self.uses_plugin_text()
-            && let Some(parsed) = self.instance()?.value_from_text(param.id, text).filter(|parsed| parsed.is_finite())
-        {
-            return self.accept_plugin_text(param, text, parsed);
+        // A live refusal is final: a temporary instance of the same plugin would refuse it too, and
+        // loading one for bad text is slow (or fails with an unrelated error).
+        match self.live_value_from_text(param, text) {
+            LiveParse::Parsed(parsed) => return self.accept_plugin_text(param, text, parsed),
+            LiveParse::Rejected => {}
+            LiveParse::Unavailable => {
+                if self.uses_plugin_text()
+                    && let Some(parsed) = self.instance()?.value_from_text(param.id, text).filter(|parsed| parsed.is_finite())
+                {
+                    return self.accept_plugin_text(param, text, parsed);
+                }
+            }
         }
         if !soundcraft_mix::is_third_party(&self.insert.plugin)
             && let Ok(parsed) = trimmed.parse::<f32>()
