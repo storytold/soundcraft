@@ -465,6 +465,7 @@ pub fn trim_start_to(s: &mut Session, track: TrackId, at: Samples) -> usize {
     n
 }
 
+/// Trim the end of clips after `at` to `at` (Trim End to Insertion).
 pub fn trim_end_to(s: &mut Session, track: TrackId, at: Samples) -> usize {
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return 0 };
     let mut n = 0;
