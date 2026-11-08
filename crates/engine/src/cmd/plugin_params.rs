@@ -17,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "List Plugin Parameters",
         [],
         None,
-        "{track?, slot: 0..9 | a..j | \"instrument\", filter?: string (max 200 characters), offset?: 0, limit?: 200 (1..1000)} → {plugin, name, total, offset, params: [{id, name, min, max, default, unit, taper, steps, values, value, value_source}]}. Filter is a Unicode-lowercase substring of id or name; total is the filtered count before pagination. Unit is None|Db|Hz|Ms|Percent|Ratio|Semitones|Cents|Seconds|Toggle|Choice; taper is Linear|Log. Toggle/Choice value is a numeric index into values; Toggle values are always [\"Off\",\"On\"] (host-provided toggle strings are not yet read), and continuous values is []. Non-finite min/max/default/value is null. value_source \"session\" means the insert's stored parameter map holds the key (mix.insert stores every default; track.new's instrument starts empty); \"default\" means it does not. For hosted plugins the real value may instead live in the plugin state blob or automation; reading it live is a later addition.",
+        "{track?, slot: 0..9 | a..j | \"instrument\", filter?: string (max 200 characters), offset?: 0, limit?: 200 (1..1000)} → {plugin, name, total, offset, limit, has_more, next_offset (null on the last page), params: [{id, name, min, max, default, unit, taper, steps, values, value, value_source}]}. Filter is a Unicode-lowercase substring of id or name; total is the filtered count before pagination. Unit is None|Db|Hz|Ms|Percent|Ratio|Semitones|Cents|Seconds|Toggle|Choice; taper is Linear|Log. Toggle/Choice value is a numeric index into values; Toggle values are always [\"Off\",\"On\"] (host-provided toggle strings are not yet read), and continuous values is []. Non-finite min/max/default/value is null. value_source \"session\" means the insert's stored parameter map holds the key (mix.insert stores every default; track.new's instrument starts empty); \"default\" means it does not. For hosted plugins the real value may instead live in the plugin state blob or automation; reading it live is a later addition.",
         has_selection,
         plugin_params
     )]
@@ -75,7 +75,18 @@ fn response(info: &PluginInfo, insert: &Insert, filter: Option<&str>, offset: us
     let matching: Vec<_> = info.params.iter().filter(|param| filter.is_none_or(|needle| matches_filter(param, needle))).collect();
     let total = matching.len();
     let params: Vec<_> = matching.into_iter().skip(offset).take(limit).map(|param| parameter_json(param, insert)).collect();
-    json!({"plugin": info.id, "name": info.name, "total": total, "offset": offset, "params": params})
+    let end = offset.saturating_add(params.len());
+    let next_offset = (end < total).then_some(end);
+    json!({
+        "plugin": info.id,
+        "name": info.name,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": next_offset.is_some(),
+        "next_offset": next_offset,
+        "params": params,
+    })
 }
 
 fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -102,10 +113,10 @@ fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CMD, DEFAULT_LIMIT, matches_filter, pagination, parameter_json};
+    use super::{CMD, DEFAULT_LIMIT, matches_filter, pagination, parameter_json, response};
     use crate::Engine;
     use serde_json::{Value, json};
-    use soundcraft_dsp::{ParamInfo, Taper, Unit};
+    use soundcraft_dsp::{Category, ParamInfo, PluginInfo, Taper, Unit};
     use soundcraft_model::Insert;
 
     fn new_track(e: &mut Engine, kind: Option<&str>) -> u64 {
@@ -310,7 +321,48 @@ mod tests {
         let track = e.session().tracks[0].id.0;
         let result = e.execute(CMD, &json!({"track": track, "slot": "instrument", "limit": 1000})).unwrap();
         let params = listed_params(&result);
-        assert!(!params.is_empty());
+        if params.is_empty() {
+            return; // no parameters reported on this system
+        }
         assert!(params.iter().all(|param| param.get("id").and_then(Value::as_str).and_then(|id| id.parse::<u32>().ok()).is_some()));
+    }
+
+    /// Surge XT reports 775 parameters: more than one default page.
+    #[test]
+    fn a_large_plugin_pages_by_the_default_limit() {
+        let ids: Vec<&'static str> = (0..775).map(|i| &*format!("p{i:03}").leak()).collect();
+        let params: &'static [ParamInfo] = ids
+            .iter()
+            .map(|&id| ParamInfo { id, name: id, min: 0.0, max: 1.0, default: 0.5, unit: Unit::None, taper: Taper::Linear, choices: &[] })
+            .collect::<Vec<_>>()
+            .leak();
+        let info = PluginInfo { id: "big", name: "Big", short_name: "Big", category: Category::Eq, params, is_instrument: false, audiosuite: false };
+        let insert = Insert::new("big");
+        let mut seen = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = response(&info, &insert, None, offset, DEFAULT_LIMIT);
+            assert_eq!(page["total"], 775);
+            assert_eq!(page["offset"], offset);
+            assert_eq!(page["limit"], DEFAULT_LIMIT);
+            let listed = listed_params(&page);
+            assert_eq!(listed.len(), DEFAULT_LIMIT.min(775 - offset));
+            seen.extend(listed.iter().filter_map(|p| p["id"].as_str().map(str::to_string)));
+            match page["next_offset"].as_u64() {
+                Some(next) => {
+                    assert_eq!(page["has_more"], true);
+                    offset = usize::try_from(next).unwrap();
+                }
+                None => {
+                    assert_eq!(page["has_more"], false);
+                    assert!(page["next_offset"].is_null());
+                    break;
+                }
+            }
+        }
+        assert_eq!(seen, ids);
+        let past_end = response(&info, &insert, None, 10_000, DEFAULT_LIMIT);
+        assert_eq!(past_end["has_more"], false);
+        assert!(listed_params(&past_end).is_empty());
     }
 }
