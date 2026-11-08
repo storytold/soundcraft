@@ -122,4 +122,52 @@ mod tests {
         services.ask("dir", Pick::Folder(PathBuf::from("/")));
         assert_eq!(services.take("dir"), Some(PathBuf::from("/tmp")));
     }
+
+    /// A cancelled or abandoned sheet frees the slot for the next dialog.
+    #[test]
+    fn a_cancelled_or_dropped_sheet_does_not_block_later_dialogs() {
+        let (tx, rx) = mpsc::channel();
+        let rx = Rc::new(Cell::new(Some(rx)));
+        let mut services = Services { start_pick: Some(Box::new(move |_| rx.take())), ..Default::default() };
+        services.ask("a", Pick::Open("session.open".into()));
+        tx.send(None).unwrap();
+        services.poll();
+        assert!(services.pending.is_none() && services.take("a").is_none(), "cancel answers nothing");
+
+        let (tx, rx) = mpsc::channel::<Option<PathBuf>>();
+        let rx = Rc::new(Cell::new(Some(rx)));
+        services.start_pick = Some(Box::new(move |_| rx.take()));
+        services.ask("b", Pick::Open("session.open".into()));
+        drop(tx);
+        services.poll();
+        assert!(services.pending.is_none(), "a dropped sheet frees the slot");
+
+        let (tx, rx) = mpsc::channel();
+        let rx = Rc::new(Cell::new(Some(rx)));
+        services.start_pick = Some(Box::new(move |_| rx.take()));
+        services.ask("c", Pick::Open("session.open".into()));
+        tx.send(Some(PathBuf::from("/tmp/c"))).unwrap();
+        services.poll();
+        assert_eq!(services.take("c"), Some(PathBuf::from("/tmp/c")));
+    }
+
+    /// A sheet that cannot start leaves nothing pending and never falls back to the blocking picker.
+    #[test]
+    fn a_sheet_that_cannot_start_does_not_block() {
+        let blocked = Rc::new(Cell::new(false));
+        let b = Rc::clone(&blocked);
+        let mut services = Services {
+            pick_open: Some(Box::new(move |_, _| {
+                b.set(true);
+                None
+            })),
+            start_pick: Some(Box::new(|_| None)),
+            ..Default::default()
+        };
+        services.ask("a", Pick::Open("session.open".into()));
+        assert!(services.pending.is_none() && services.take("a").is_none());
+        assert!(!blocked.get());
+        services.ask("a", Pick::Open("session.open".into()));
+        assert!(services.pending.is_none(), "a retry is possible");
+    }
 }
