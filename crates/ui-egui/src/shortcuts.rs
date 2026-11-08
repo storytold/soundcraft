@@ -68,7 +68,7 @@ fn help_chord(key: Key, m: Modifiers, mac: bool) -> bool {
 /// Handle Help in the native Mix viewport, whose key events never reach the main-window handler.
 /// Keep text entry and dialogs in control of their keys, and ignore native key repeats.
 pub(crate) fn handle_mix_help(app: &mut SoundApp, ctx: &egui::Context) {
-    if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() {
+    if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() || app.ui.show_preferences {
         return;
     }
     let mac = ctx.os().is_mac();
@@ -539,6 +539,29 @@ mod tests {
 
     fn want(s: &str) -> Modifiers {
         parse(s).map(|(m, _)| m).unwrap()
+    }
+
+    /// Help from either viewport must not bypass the new modal Preferences window.
+    #[test]
+    fn help_shortcuts_respect_modal_preferences() {
+        for native_mix in [false, true] {
+            let ctx = egui::Context::default();
+            ctx.set_os(egui::os::OperatingSystem::Nix);
+            let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+            app.ui.show_preferences = true;
+            let modifiers = PC_CTRL | Modifiers::SHIFT;
+            let events = vec![egui::Event::Key { key: Key::Slash, physical_key: None, pressed: true, repeat: false, modifiers }];
+            ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                if native_mix {
+                    super::handle_mix_help(&mut app, ui.ctx());
+                } else {
+                    super::handle(&mut app, ui.ctx());
+                }
+            })
+            .textures_delta
+            .clear();
+            assert!(!app.ui.show_help, "native_mix={native_mix}: Help bypassed modal Preferences");
+        }
     }
 
     #[test]

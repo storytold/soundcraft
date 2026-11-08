@@ -826,6 +826,7 @@ mod tests {
     fn preferences_menu_state_tracks_transport_and_modality() {
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
         assert!(item_state(&app, "Setup > Preferences...", Some("setup.preferences")).0);
+        assert!(item_state(&app, "Help > SoundCraft Help", Some("help.open")).0);
 
         app.engine.transport.playing = true;
         assert!(!item_state(&app, "Setup > Preferences...", Some("setup.preferences")).0);
@@ -837,6 +838,7 @@ mod tests {
         app.ui.show_preferences = true;
         assert!(!item_state(&app, "Setup > Preferences...", Some("setup.preferences")).0);
         assert!(!item_state(&app, "Window > About", Some("window.about")).0);
+        assert!(!item_state(&app, "Help > SoundCraft Help", Some("help.open")).0);
         assert!(!item_state(&app, "File > Save Session", Some("session.save")).0);
     }
 
