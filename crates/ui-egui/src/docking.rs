@@ -472,6 +472,11 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
     // and bottom edges take frames (`drop_edges` keeps its default).
     style.new_dock_zones = true;
     style.side_edge_zones = false;
+    // The MIDI body's rect stands for a piano roll on screen (the arrow keys go to it), so only a
+    // frame that draws the panel records one: open behind another tab, the old rect is gone.
+    if edit {
+        ui.ctx().data_mut(|data| data.remove::<egui::Rect>(egui::Id::unique("soundcraft-midi-body")));
+    }
     let output = DockArea::new(area(edit)).show_with_limits(
         ui,
         &workspace.layout,
