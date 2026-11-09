@@ -129,6 +129,29 @@ fn a_small_ctrl_drag_at_the_low_end_of_a_log_slider_moves_the_value() {
 }
 
 #[test]
+fn a_small_ctrl_drag_at_the_low_end_of_a_log_slider_with_a_value_box_moves_the_value() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let clip = app.engine.session().track_by_name("Kick").unwrap().clips().iter().find(|c| c.is_audio()).unwrap().id;
+    app.run("edit.select", json!({"clips": [clip.0]})).unwrap();
+    app.ui.show_clip_effects = true;
+    let mut h = harness(app);
+    let attack = slider_params("compressor")[2];
+    assert_eq!(attack.id, "attack");
+    let key = format!("clip_fx.{}.comp.attack", clip.0);
+    let from = h.get_by_role_and_label(Role::Slider, attack.name).rect().left_center() + vec2(1.0, 0.0);
+    hold(&mut h, Modifiers::COMMAND);
+    move_to(&mut h, from);
+    press(&mut h, from, true, Modifiers::COMMAND);
+    let read = |h: &Harness<'_, SoundApp>| h.state().engine.session().edit.values.get(&key).copied().unwrap();
+    let start = read(&h);
+    assert!((start - f64::from(attack.min)).abs() < 1e-6, "the press put Attack at {start}");
+    move_to(&mut h, from + vec2(1.0, 0.0));
+    let moved = read(&h);
+    press(&mut h, from + vec2(1.0, 0.0), false, Modifiers::COMMAND);
+    assert!(moved > start, "a one-point Ctrl-drag left Attack at {moved}");
+}
+
+#[test]
 fn whole_number_instrument_sliders_move_a_tenth_as_far_and_stay_whole() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let keys = app.engine.session().track_by_name("Keys").unwrap().id;

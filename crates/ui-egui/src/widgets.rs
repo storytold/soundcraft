@@ -527,7 +527,7 @@ impl<'a> FineSlider<'a> {
         // How far the value moves for one point of the rail at `v`.
         let per_point = |v: f64| if log { v * span / travel } else { span / travel };
         let scale = if fine { 0.1 } else { 1.0 };
-        let decimals = if integer { 0 } else { (-(per_point(lo) * 0.1).log10()).ceil().clamp(0.0, 3.0) as usize };
+        let decimals = if integer { 0 } else { (-(per_point(lo) * 0.1).log10()).ceil().clamp(0.0, 6.0) as usize };
         if let (Some(d), Some(x)) = (&mut drag, x) {
             if d.fine != fine || reset {
                 *d = FineDrag { x, value: *value, fine, relative: true, pass };
