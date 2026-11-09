@@ -65,13 +65,50 @@ pub const ALIASES: &[(&str, &str)] = &[
     ("View > Rulers > Chord Symbols", "view.ruler"),
 ];
 
+// Name migration fallbacks run after explicit UI mappings so opening a dialog
+// keeps its original command and enablement rather than becoming a direct edit.
+const LEGACY_LABEL_ALIASES: &[(&str, &str)] = &[
+    // Historical catalog paths remain valid when their display names change.
+    ("Clip > Elastic Properties", "clip.elastic_properties"),
+    ("Options > QuickPunch", "options.quickpunch"),
+    ("Options > TrackPunch", "options.trackpunch"),
+    ("View > Transport > Ableton Link", "view.transport_ableton_link"),
+    ("Event > Beat Detective", "event.beat_detective"),
+    ("File > Export > Sibelius...", "file.export_sibelius"),
+    ("File > Send To... > Sibelius", "file.send_to_sibelius"),
+];
+
+/// Catalog leaves naming features we do not have. They keep the incumbent's place — and with it
+/// the parity floor — under a descriptive label, but they are never interactive: the UI draws them
+/// disabled with a "Not available yet." hover until the behaviour exists, as Preferences does for
+/// settings without a backend. Naming the place does not claim the protocol, plug-in format or
+/// processor behind it.
+pub const PLACEHOLDERS: &[&str] = &[
+    "View > Transport > Ableton Link",
+    "Track > ARA Plugins > Melodyne",
+    "Clip > ARA Plugins > Melodyne",
+    "View > Mix Window Views > HEAT",
+    "Options > Activate HEAT",
+];
+
+/// Whether `path` is a catalog leaf kept as a placeholder for a feature we do not have.
+pub fn is_placeholder(path: &str) -> bool {
+    PLACEHOLDERS.contains(&path)
+}
+
 pub fn catalog() -> Vec<&'static str> {
     MENUS.lines().map(str::trim).filter(|l| !l.is_empty()).collect()
 }
 
 /// Command id implementing a catalog entry, if any.
 pub fn implemented_by(entry: &str, extra: &[(&str, &str)]) -> Option<String> {
-    if let Some((_, id)) = ALIASES.iter().chain(crate::catalog_more::ALIASES_MORE.iter()).chain(extra.iter()).find(|(p, _)| *p == entry) {
+    if let Some((_, id)) = ALIASES
+        .iter()
+        .chain(crate::catalog_more::ALIASES_MORE.iter())
+        .chain(extra.iter())
+        .chain(LEGACY_LABEL_ALIASES.iter())
+        .find(|(p, _)| *p == entry)
+    {
         return Some((*id).to_string());
     }
     let parts: Vec<&str> = entry.split(" > ").collect();
@@ -116,7 +153,7 @@ mod tests {
 
     #[test]
     fn aliases_point_at_real_commands() {
-        for (path, id) in ALIASES.iter().chain(crate::catalog_more::ALIASES_MORE.iter()) {
+        for (path, id) in ALIASES.iter().chain(crate::catalog_more::ALIASES_MORE.iter()).chain(LEGACY_LABEL_ALIASES.iter()) {
             assert!(crate::find_command(id).is_some(), "{path} → unknown {id}");
             assert!(catalog().contains(path), "alias for unknown catalog entry {path}");
         }
@@ -130,5 +167,41 @@ mod tests {
         // The floor only ever rises.
         assert!(pct >= 25.0, "engine parity regressed: {pct}%");
         assert!(done >= 396, "engine parity regressed: {done} menu items");
+    }
+
+    /// A placeholder must keep its catalog place (so the floor holds and the menu still lists it)
+    /// and must not read as the incumbent's own name: the label says what it is, not who makes it.
+    #[test]
+    fn placeholders_keep_their_place_with_honest_labels() {
+        let entries = catalog();
+        for path in PLACEHOLDERS {
+            assert!(entries.contains(path), "placeholder for an unknown catalog entry: {path}");
+            assert!(is_placeholder(path), "{path}");
+            let leaf = path.rsplit_once(" > ").map_or(*path, |(_, leaf)| leaf);
+            let label = crate::feature_names::display_label(leaf);
+            assert_ne!(label, leaf, "{path} still shows the incumbent's name");
+            for retired in ["ableton", "melodyne", "heat"] {
+                assert!(!label.to_lowercase().contains(retired), "{path}: {label}");
+            }
+        }
+        assert!(!is_placeholder("Options > Loop Record"), "an implemented item is not a placeholder");
+        assert!(!is_placeholder("View > Transport > MIDI Controls"));
+    }
+
+    #[test]
+    fn renamed_labels_keep_legacy_catalog_dispatch() {
+        let ui = [("Event > Beat Detective", "window.beat_detective")];
+        assert_eq!(implemented_by("Event > Beat Detective", &ui).as_deref(), Some("window.beat_detective"));
+        for (path, id, label) in [
+            ("Options > QuickPunch", "options.quickpunch", "Punch Recording"),
+            ("Options > TrackPunch", "options.trackpunch", "TrackPunch"),
+            ("View > Transport > Ableton Link", "view.transport_ableton_link", "Tempo Sync"),
+            ("Event > Beat Detective", "event.beat_detective", "Beat Analysis"),
+            ("File > Export > Sibelius...", "file.export_sibelius", "MusicXML..."),
+            ("File > Send To... > Sibelius", "file.send_to_sibelius", "MusicXML"),
+        ] {
+            assert_eq!(implemented_by(path, &[]).as_deref(), Some(id));
+            assert_eq!(crate::find_command(id).unwrap().label, label);
+        }
     }
 }
