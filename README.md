@@ -123,10 +123,11 @@ where things are.
   Trim passes recorded live from the faders; thin, glide, coalesce and convert to clip gain.
 - **Plugins:** 7-band and 1-band EQ, compressor/limiter, expander/gate, de-esser, maximizer,
   channel strip, room and plate reverbs, mod delay, auto pan, chorus, flanger, phaser, ring
-  modulator, saturator, lo-fi, rectifier, subharmonic, pitch shifter, time shift, gain, trim,
-  invert, DC removal, signal generator, dither, a subtractive synth, a drum synth and a sampler
-  (plays any WAV, AIFF, FLAC, MP3 or OGG across the keyboard), all original. **CLAP plugins**
-  load too. Any processor runs offline as AudioSuite, and user presets save per plugin.
+  modulator, frequency shifter, saturator, lo-fi, rectifier, subharmonic, pitch shifter, time
+  shift, gain, trim, invert, DC removal, signal generator, dither, a subtractive synth, a drum
+  synth and a sampler (plays any WAV, AIFF, FLAC, MP3 or OGG across the keyboard), all original.
+  **CLAP plugins** load too. Any processor runs offline as AudioSuite, and user presets save
+  per plugin.
 - **MIDI:** instrument and MIDI tracks, a piano-roll MIDI editor with a velocity lane, an event
   list, a score view, step input, quantize, transpose, real-time properties, Standard MIDI Files,
   and Audio-to-MIDI from a sung or played melody.
