@@ -43,7 +43,9 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.workspace_presets", "Workspace", "Window > New Workspace > Track Presets", None),
     ("window.workspace_sounds", "Workspace", "Window > New Workspace > Soundbase", None),
     ("window.workspace_front", "Workspaces to Front", "Window > Workspaces > Bring to Front", Some("Alt+J")),
+    ("window.workspace_back", "Send to Back", "Window > Workspaces > Send to Back", None),
     ("window.workspace_close", "Close All Workspaces", "Window > Workspaces > Close All Workspaces", None),
+    ("window.machine_track_arming", "Machine Track Arming", "Window > Machine Track Arming", None),
     ("window.configurations", "Window Configuration List", "Window > Configurations > Window Configuration List", Some("Cmd+Alt+J")),
     ("window.config_new", "New Configuration", "Window > Configurations > New Configuration...", None),
     ("window.config_update", "Update Active Configuration", "Window > Configurations > Update Active Configuration", None),
@@ -107,6 +109,8 @@ fn mix_view_aliases() -> &'static [(&'static str, &'static str)] {
             "Mic Preamps",
             "Instruments",
             "Object",
+            "HEAT",
+            "Delay Compensation",
         ]
         .into_iter()
         .map(|sec| {
@@ -374,6 +378,7 @@ fn preferences_menu_enabled(app: &SoundApp) -> bool {
     !app.ui.show_preferences && !app.is_playing() && !app.engine.transport.recording
 }
 
+/// Checks whether the menu item at path/id is currently in a checked/active state.
 fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
     let e = &app.engine.session().edit;
     match id {
@@ -389,6 +394,7 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
         Some("options.markers_follow_edit") => e.markers_follow_edit,
         Some("options.click") => e.click,
         Some("options.delay_compensation") => e.delay_compensation,
+        Some("options.activate_heat") => e.flag("options.activate_heat"),
         Some("options.pre_fader_metering") => e.pre_fader_metering,
         Some("view.ruler") => path.rsplit(" > ").next().map(ruler_id).is_some_and(|r| e.rulers.iter().any(|x| x == r)),
         Some("view.main_counter") => path.rsplit(" > ").next().map(ruler_id).is_some_and(|r| e.main_counter.id() == r),
@@ -396,6 +402,7 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
         Some("window.edit") => app.ui.window == MainWindow::Edit,
         Some("window.track_list") => app.ui.show_tracks_list,
         Some("window.clip_list_view") | Some("window.clip_list") => app.ui.show_clip_list,
+        Some("window.machine_track_arming") => app.ui.show_machine_track_arming,
         Some("window.narrow_mix") => app.ui.narrow_mix,
         Some("window.renderer") => app.extra.show_renderer,
         Some("window.ui_customization") => app.extra.show_ui_customization,
@@ -405,6 +412,7 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
     }
 }
 
+/// Maps a ruler label string to its internal ruler identifier.
 fn ruler_id(label: &str) -> &'static str {
     match label {
         "Bars|Beats" => "bars_beats",
@@ -421,6 +429,7 @@ fn ruler_id(label: &str) -> &'static str {
     }
 }
 
+/// Maps a mix window view section label to its internal section identifier.
 fn mix_section_id(label: &str) -> &'static str {
     match label {
         "Inserts A-E" => "inserts_ae",
@@ -437,6 +446,8 @@ fn mix_section_id(label: &str) -> &'static str {
         "Mic Preamps" => "mic_preamps",
         "Instruments" => "instruments",
         "Object" => "object",
+        "HEAT" => "heat",
+        "Delay Compensation" => "delay_compensation",
         _ => "",
     }
 }
@@ -466,6 +477,9 @@ const MENU_WINDOWS: &[(&str, &str)] = &[
     ("Setup > Appearance", "window.ui_customization"),
     ("Setup > Hardware...", "window.playback_engine"),
     ("Setup > Playback Engine...", "window.playback_engine"),
+    ("Setup > Machine Track Arming Profiles...", "window.machine_track_arming"),
+    ("Window > Machine Track Arming", "window.machine_track_arming"),
+    ("Window > Workspaces > Send to Back", "window.workspace_back"),
     ("Setup > I/O...", "window.io_setup"),
     ("Setup > Keyboard Shortcuts...", "window.shortcuts"),
     ("Setup > Session", "setup.session"),
@@ -637,10 +651,16 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.ui.show_workspace = true;
             json!({"value": true})
         }
+        "window.workspace_back" => {
+            app.ui.show_workspace = true;
+            app.ui.workspace_send_to_back = true;
+            json!({"value": true})
+        }
         "window.workspace_close" => {
             app.ui.show_workspace = false;
             json!({"value": false})
         }
+        "window.machine_track_arming" => toggle(&mut app.ui.show_machine_track_arming),
         "window.configurations" => toggle(&mut app.ui.show_configurations),
         "window.config_new" | "window.config_update" => {
             if let Err(error) = crate::docking::validate(&app.ui.docking).and_then(|()| crate::docking::validate_mix(&app.ui.mix_docking)) {
@@ -688,8 +708,10 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             let sec = p.get("section").and_then(Value::as_str).unwrap_or("");
             match sec {
                 "all" => {
-                    app.ui.mix_views =
-                        ["inserts_ae", "inserts_fj", "sends_ae", "sends_fj", "io", "comments", "color"].iter().map(ToString::to_string).collect()
+                    app.ui.mix_views = ["inserts_ae", "inserts_fj", "sends_ae", "sends_fj", "io", "comments", "color", "heat", "delay_compensation"]
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect()
                 }
                 "minimal" => app.ui.mix_views.clear(),
                 "" => return Some(Err("`section` required".into())),
@@ -843,7 +865,7 @@ mod tests {
         let a = first.iter().find(|(path, _)| path.contains("Mix Window Views > All")).map(|(path, _)| *path).unwrap();
         let b = second.iter().find(|(path, _)| path.contains("Mix Window Views > All")).map(|(path, _)| *path).unwrap();
         assert!(std::ptr::eq(a, b));
-        assert_eq!(first.iter().filter(|(path, _)| path.contains("Mix Window Views")).count(), 14);
+        assert_eq!(first.iter().filter(|(path, _)| path.contains("Mix Window Views")).count(), 16);
     }
 
     #[test]

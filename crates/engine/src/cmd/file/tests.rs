@@ -401,3 +401,222 @@ fn save_copy_leaves_the_open_session_alone() {
     assert!(from_copy.session().track_by_name("Extra").is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn import_venue_channel_names_from_array_and_offset() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 3, "format": "mono"})).unwrap();
+    let r = e
+        .execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "names": ["Snare Top", "Snare Bottom"],
+                "start_track": 1
+            }),
+        )
+        .unwrap();
+    assert_eq!(r["renamed"], 2);
+    assert_eq!(r["names"], json!(["Snare Top", "Snare Bottom"]));
+    assert_eq!(e.session().tracks[0].name, "Audio 1");
+    assert_eq!(e.session().tracks[1].name, "Snare Top");
+    assert_eq!(e.session().tracks[2].name, "Snare Bottom");
+}
+
+#[test]
+fn import_venue_channel_names_validates_inputs() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 2, "format": "mono"})).unwrap();
+
+    // Neither path nor names
+    assert!(e.execute("file.import_venue_channel_names", &json!({})).is_err());
+
+    // Non-string path
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "path": 123
+            })
+        )
+        .is_err()
+    );
+
+    // Both path and names
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "names": ["Kick"],
+                "path": "dummy.txt"
+            })
+        )
+        .is_err()
+    );
+
+    // Non-integer start_track
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "names": ["Kick"],
+                "start_track": "first"
+            })
+        )
+        .is_err()
+    );
+
+    // Negative start_track
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "names": ["Kick"],
+                "start_track": -1
+            })
+        )
+        .is_err()
+    );
+
+    // Out of range start_track
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "names": ["Kick"],
+                "start_track": 5
+            })
+        )
+        .is_err()
+    );
+
+    // Empty names array
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "names": []
+            })
+        )
+        .is_err()
+    );
+
+    // Non-string entry in names
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "names": [123]
+            })
+        )
+        .is_err()
+    );
+
+    // Empty string entry in names
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "names": ["   "]
+            })
+        )
+        .is_err()
+    );
+
+    // Overlong name (> 64 chars)
+    let long_name = "A".repeat(65);
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "names": [long_name]
+            })
+        )
+        .is_err()
+    );
+
+    // Excess names beyond available tracks
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "names": ["Ch1", "Ch2", "Ch3"]
+            })
+        )
+        .is_err()
+    );
+
+    // Duplicate names in input
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "names": ["Kick", "Kick"]
+            })
+        )
+        .is_err()
+    );
+
+    // Name collision with existing unrenamed track
+    assert!(
+        e.execute(
+            "file.import_venue_channel_names",
+            &json!({
+                "names": ["Audio 1"],
+                "start_track": 1
+            })
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn import_venue_channel_names_file_formats_and_limits() {
+    struct TempDir(std::path::PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let dir_path = std::env::temp_dir().join(format!("sc-venue-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir_path);
+    std::fs::create_dir_all(&dir_path).unwrap();
+    let _guard = TempDir(dir_path.clone());
+    let dir = &dir_path;
+
+    let tab_file = dir.join("venue_tabs.txt");
+    std::fs::write(&tab_file, "# VENUE Channel Export\n1\tLead Vocal\n2\tBacking Vocal\n").unwrap();
+
+    let comma_file = dir.join("venue_comma.txt");
+    std::fs::write(&comma_file, "# Comment line\n1,Guitar L\n2,Guitar R\n").unwrap();
+
+    let colon_file = dir.join("venue_colon.txt");
+    std::fs::write(&colon_file, "CH01: Bass\nCH02: Synth\n").unwrap();
+
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 2, "format": "mono"})).unwrap();
+
+    let r = e.execute("file.import_venue_channel_names", &json!({"path": tab_file.to_string_lossy()})).unwrap();
+    assert_eq!(r["renamed"], 2);
+    assert_eq!(e.session().tracks[0].name, "Lead Vocal");
+    assert_eq!(e.session().tracks[1].name, "Backing Vocal");
+
+    let r2 = e.execute("file.import_venue_channel_names", &json!({"path": comma_file.to_string_lossy()})).unwrap();
+    assert_eq!(r2["renamed"], 2);
+    assert_eq!(e.session().tracks[0].name, "Guitar L");
+    assert_eq!(e.session().tracks[1].name, "Guitar R");
+
+    let r3 = e.execute("file.import_venue_channel_names", &json!({"path": colon_file.to_string_lossy()})).unwrap();
+    assert_eq!(r3["renamed"], 2);
+    assert_eq!(e.session().tracks[0].name, "Bass");
+    assert_eq!(e.session().tracks[1].name, "Synth");
+
+    // File over 1 MiB rejected using repeated short, valid names
+    let big_file = dir.join("oversized.txt");
+    let line = "CH: Vocal\n";
+    let repeats = (1024 * 1024 / line.len()) + 10;
+    let big_data = line.repeat(repeats);
+    std::fs::write(&big_file, big_data).unwrap();
+    let err = e.execute("file.import_venue_channel_names", &json!({"path": big_file.to_string_lossy()})).unwrap_err();
+    assert!(err.to_string().contains("exceeds limit"), "expected error containing 'exceeds limit', got: {err}");
+}

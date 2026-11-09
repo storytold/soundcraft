@@ -113,6 +113,8 @@ pub struct UiState {
     pub show_event_list: bool,
     pub show_midi_keyboard: bool,
     pub show_workspace: bool,
+    pub workspace_send_to_back: bool,
+    pub show_machine_track_arming: bool,
     pub show_configurations: bool,
     pub show_playback_engine: bool,
     /// Setup › Preferences. The selected page is kept per machine; the search and staged values
@@ -188,6 +190,8 @@ impl Default for UiState {
             show_event_list: false,
             show_midi_keyboard: false,
             show_workspace: false,
+            workspace_send_to_back: false,
+            show_machine_track_arming: false,
             show_configurations: false,
             show_playback_engine: false,
             show_preferences: false,

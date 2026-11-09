@@ -60,6 +60,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             change_width
         ),
+        cmd!(
+            noundo "track.change_width_show_hide",
+            "Show / Hide...",
+            ["Track", "Change Track Width"],
+            None,
+            "{formats?: [string], visible?: bool} — shows or hides track width formats in the Change Track Width menu",
+            always,
+            change_width_show_hide
+        ),
         cmd!("track.delete", "Delete", ["Track"], None, "{tracks?}", has_selection, delete),
         cmd!("track.rename", "Rename Track", [], None, "{track, name}", has_tracks, rename),
         cmd!("track.comments", "Track Comments", [], None, "{track, comments}", has_tracks, comments),
@@ -715,6 +724,86 @@ fn change_width(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"format": f}))
 }
 
+const ALLOWED_WIDTH_FORMATS: &[&str] = &[
+    "mono",
+    "stereo",
+    "lcr",
+    "quad",
+    "lcrs",
+    "5.0",
+    "5.1",
+    "6.0",
+    "6.1",
+    "7.0",
+    "7.1",
+    "7.0_sdds",
+    "7.1_sdds",
+    "5.0.2",
+    "5.1.2",
+    "5.0.4",
+    "5.1.4",
+    "7.0.2",
+    "7.1.2",
+    "7.0.4",
+    "7.1.4",
+    "7.0.6",
+    "7.1.6",
+    "9.0.4",
+    "9.1.4",
+    "9.0.6",
+    "9.1.6",
+    "ambisonics_1",
+    "ambisonics_2",
+    "ambisonics_3",
+];
+
+/// Normalizes track width format name aliases to their canonical representation.
+fn normalize_width_format(s: &str) -> Option<&'static str> {
+    let lower = s.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "7.0 sdds" | "7.0_sdds" => Some("7.0_sdds"),
+        "7.1 sdds" | "7.1_sdds" => Some("7.1_sdds"),
+        "1st order ambisonics" | "ambisonics_1" => Some("ambisonics_1"),
+        "2nd order ambisonics" | "ambisonics_2" => Some("ambisonics_2"),
+        "3rd order ambisonics" | "ambisonics_3" => Some("ambisonics_3"),
+        other => ALLOWED_WIDTH_FORMATS.iter().copied().find(|&f| f == other),
+    }
+}
+
+/// Shows or hides track width formats in the Change Track Width menu.
+fn change_width_show_hide(e: &mut Engine, p: &Value) -> Result<Value> {
+    let id = "track.change_width_show_hide";
+    let visible = p.get("visible").and_then(Value::as_bool).unwrap_or(true);
+    let mut updated = Vec::new();
+    if let Some(v) = p.get("formats") {
+        let arr = v.as_array().ok_or_else(|| bad(id, "`formats` must be an array of strings"))?;
+        if arr.len() > 64 {
+            return Err(bad(id, "`formats` array cannot exceed 64 entries"));
+        }
+        let mut canonical = Vec::new();
+        for (i, item) in arr.iter().enumerate() {
+            let s = item.as_str().ok_or_else(|| bad(id, format!("format at index {i} must be a string")))?;
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Err(bad(id, format!("format at index {i} cannot be empty")));
+            }
+            if trimmed.chars().count() > 32 {
+                return Err(bad(id, format!("format at index {i} exceeds maximum length of 32 characters")));
+            }
+            let canon = normalize_width_format(trimmed).ok_or_else(|| bad(id, format!("unknown width format: '{trimmed}'")))?;
+            canonical.push(canon);
+        }
+        for canon in canonical {
+            e.session_mut().edit.set_flag(&format!("track.width_visible.{canon}"), visible);
+            updated.push(canon.to_string());
+        }
+    }
+    Ok(json!({
+        "visible": visible,
+        "formats": updated,
+    }))
+}
+
 /// The nearest ancestor folder of `folder` that is not itself being deleted (walks at most 64 levels).
 fn surviving_parent(s: &Session, deleted: &[TrackId], folder: TrackId) -> Option<TrackId> {
     let mut parent = s.track(folder).and_then(|folder| folder.folder);
@@ -1231,5 +1320,55 @@ mod tests {
         assert_eq!(vca(&e), None);
         assert!(e.undo());
         assert_eq!(vca(&e), Some(master.0));
+    }
+
+    #[test]
+    fn change_width_show_hide_validates_and_stores() {
+        let mut e = Engine::default();
+        let r = e
+            .execute(
+                "track.change_width_show_hide",
+                &json!({
+                    "formats": ["mono", "stereo", "5.1", "7.1 SDDS"],
+                    "visible": true
+                }),
+            )
+            .unwrap();
+        assert_eq!(r["visible"], true);
+        assert_eq!(r["formats"], json!(["mono", "stereo", "5.1", "7.1_sdds"]));
+        assert!(e.session().edit.flag("track.width_visible.mono"));
+        assert!(e.session().edit.flag("track.width_visible.7.1_sdds"));
+
+        // Hide
+        let r_hide = e
+            .execute(
+                "track.change_width_show_hide",
+                &json!({
+                    "formats": ["mono"],
+                    "visible": false
+                }),
+            )
+            .unwrap();
+        assert_eq!(r_hide["visible"], false);
+        assert!(!e.session().edit.flag("track.width_visible.mono"));
+
+        // Invalid format rejected without partial update
+        assert!(!e.session().edit.flag("track.width_visible.quad"));
+        assert!(e.execute("track.change_width_show_hide", &json!({"formats": ["quad", "invalid_format"]})).is_err());
+        assert!(!e.session().edit.flag("track.width_visible.quad"));
+
+        // Non-string entry rejected
+        assert!(e.execute("track.change_width_show_hide", &json!({"formats": [123]})).is_err());
+
+        // Empty string rejected
+        assert!(e.execute("track.change_width_show_hide", &json!({"formats": ["  "]})).is_err());
+
+        // Overlong string (> 32 chars) rejected
+        let long_str = "A".repeat(33);
+        assert!(e.execute("track.change_width_show_hide", &json!({"formats": [long_str]})).is_err());
+
+        // Oversized array (> 64 items) rejected
+        let large_arr: Vec<_> = (0..65).map(|_| "mono").collect();
+        assert!(e.execute("track.change_width_show_hide", &json!({"formats": large_arr})).is_err());
     }
 }
