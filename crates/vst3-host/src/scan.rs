@@ -276,6 +276,7 @@ mod tests {
         d
     }
 
+    /// Returns a closure that looks up environment variables from the given pairs, for testing.
     fn env_from(pairs: Vec<(&'static str, std::ffi::OsString)>) -> impl Fn(&str) -> Option<std::ffi::OsString> {
         move |name| pairs.iter().find(|(key, _)| *key == name).map(|(_, value)| value.clone())
     }
