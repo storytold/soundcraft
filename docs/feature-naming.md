@@ -1,6 +1,6 @@
 # Feature naming migration
 
-Status: draft, 2026-11-08. This is an engineering naming policy and rollout plan, not trademark clearance.
+Status: draft, 2026-11-08, revised 2026-11-09. This is an engineering naming policy and rollout plan, not trademark clearance.
 
 ## Scheme
 
@@ -8,18 +8,22 @@ Use short, descriptive names for our own features. Built-in processing menus use
 
 | Previous visible name | Display name | Compatibility retained |
 | --- | --- | --- |
-| AudioSuite | Offline Processing | `audiosuite.process`, catalog paths, UI state |
 | Beat Detective | Beat Analysis | `event.beat_detective`, `window.beat_detective` |
-| Elastic Audio / Elastic Properties | Real-Time Stretch / Real-Time Stretch Properties | `track.elastic`, `clip.elastic_properties`, saved track values |
 | x-form | Rendered (High Quality) | serialized `x-form` algorithm value |
-| QuickPunch / TrackPunch | Punch Recording / Track Punch Recording | option ids and stored fields |
+| QuickPunch | Punch Recording | option id and stored field |
 | Ableton Link | Tempo Sync | existing display flag only, no claim of Link interoperability; disabled placeholder |
 | Pro Tools Search / Pro Tools Projects | Search / Shared Projects | historical catalog paths |
 | Melodyne | No ARA plug-ins | disabled ARA placeholder, no added implementation |
 | HEAT / Activate HEAT | Analog Saturation / Activate Analog Saturation | disabled catalog entries |
 | Sibelius export/send | MusicXML | command ids; actual export format unchanged |
 
-The stretch algorithm labels describe the existing behavior. This change does not add a distinct third-party algorithm, synchronization protocol, ARA integration or hosted service.
+The algorithm labels describe the existing behavior. This change does not add a distinct third-party algorithm, synchronization protocol, ARA integration or hosted service.
+
+## Deferred to RFC-0029
+
+Some names are still being decided, so they keep the incumbent's label and nothing here renames them: AudioSuite (the menu, its process window title, `AudioSuite Process`, the task-manager note and the README wording), Elastic Audio, Elastic Properties, "Enable Elastic Audio on New Tracks" and the Preferences section that holds it, TrackPunch, Pitch Shift Legacy and Time Compression Expansion. RFC-0029 settles whether first-party feature names change at all; renaming ahead of it produced labels that had to be withdrawn, so the mapping waits for the RFC instead.
+
+Their ids, catalog paths, menu rows and saved values were never renamed, so re-applying a name later stays a display-map change. Two of them, Pitch Shift Legacy and Time Compression Expansion, sit in menus whose other entries show our processor name (Pitch Shift, Time Stretch). They are listed beside that processor under their own catalog label rather than folded into it, because they wait on the RFC and because a menu item is never dropped.
 
 ## Disabled placeholders
 
@@ -36,8 +40,8 @@ Adding a placeholder means adding its catalog path to `PLACEHOLDERS` in `crates/
 | Dyn3 De-Esser | De-Esser / `de_esser` |
 | Dyn3 Expander/Gate | Expander/Gate / `expander_gate` |
 | Maxim | Maximizer / `maximizer` |
-| Pitch II / Pitch Shift Legacy | Pitch Shift / `pitch_shift` |
-| Time Shift / Time Compression Expansion | Time Stretch / `time_stretch` |
+| Pitch II | Pitch Shift / `pitch_shift` |
+| Time Shift | Time Stretch / `time_stretch` |
 | Vari-Fi | Speed Ramp / `speed_ramp` |
 | D-Verb | Room Reverb / `room_reverb` |
 | Mod Delay III | Mod Delay / `mod_delay` |
@@ -45,6 +49,8 @@ Adding a placeholder means adding its catalog path to `PLACEHOLDERS` in `crates/
 | Eleven Lite / SansAmp PSA-1 | Saturator / `saturator` |
 | Lo-Fi | Bit Crusher / `lofi` |
 | Recti-Fi | Rectifier / `rectifier` |
+
+Time Shift here is the incumbent's offline pitch-and-time process, which our `time_stretch` implements. It is not our own Time Shift plug-in (`time_shift`), a millisecond or sample delay that stays under that name; the two share a name and nothing else.
 
 Other offline items already have descriptive names. Multiple legacy entries mapping to the same processor appear once per menu category. Every historical catalog path remains invokable. The catalog remains an observed interoperability/parity record; it is not used verbatim for rendered labels. Changing `lofi`'s display name does not change its id, parameters or audio implementation.
 
@@ -58,9 +64,9 @@ A product rename needs an owner decision and a separate migration PR covering ap
 
 ## Validation and release gates
 
-- Regression tests cover old catalog-to-command mappings, own processor names, deduplication and continued opening of the Beat Analysis dialog through its legacy menu path. Guards scan the rendered menu tree, UI/engine command labels and processor display names for retired labels; compatibility paths and ids are excluded, and unknown display text still falls back unchanged.
-- Menu tree identity uses the stable path, not the rendered name. Preferences keep their existing section identity while drawing and searching the descriptive name.
+- Regression tests cover old catalog-to-command mappings, own processor names, deduplication, the deferred leaves that keep their catalog label, and continued opening of the Beat Analysis dialog through its legacy menu path. Guards scan the rendered menu tree, UI/engine command labels and processor display names for retired labels; compatibility paths, ids and the deferred names are excluded, and unknown display text still falls back unchanged.
+- Menu tree identity uses the stable path, not the rendered name.
 - This main branch currently ships an English-only interface. Carry the mapping into pending localization PRs as they land; do not reintroduce vendor marks in translated labels.
-- Run `cargo xtask ci` on the final head. Exercise offline processing from the menus, old automation paths, opening saved sessions containing `lofi` and `x-form`, Undo/Redo, and preference search.
+- Run `cargo xtask ci` on the final head. Exercise offline processing from the AudioSuite menus, old automation paths, opening saved sessions containing `lofi` and `x-form`, Undo/Redo, and preference search.
 - Recapture the UI with the supported `ui_shot` example. `docs/images/edit.png` has been visually inspected and still shows the old processing-menu title. Inspect and refresh all affected README images and attribution records from the running app; unchanged screenshots are not claimed to be refreshed by this draft.
 - Review current help/marketing copy and localization work after integration. Historical parity documents, API examples and factual interoperability references may retain old names with their context. Preserve license/attribution records.
