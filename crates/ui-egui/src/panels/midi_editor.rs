@@ -408,7 +408,8 @@ fn note_keys(app: &mut SoundApp, ui: &mut Ui, g: &Roll<'_>, cid: ClipId) {
         let (all, up, down, left, right, shift) = ui.input(|i| {
             let arrows = !i.modifiers.alt && !i.modifiers.command && !i.modifiers.ctrl;
             (
-                i.modifiers.command && i.key_pressed(egui::Key::A),
+                // Only plain Cmd+A: with Shift or Alt it is another chord, possibly the Help shortcut.
+                i.modifiers.command && !i.modifiers.shift && !i.modifiers.alt && i.key_pressed(egui::Key::A),
                 arrows && i.key_pressed(egui::Key::ArrowUp),
                 arrows && i.key_pressed(egui::Key::ArrowDown),
                 arrows && !i.modifiers.shift && i.key_pressed(egui::Key::ArrowLeft),

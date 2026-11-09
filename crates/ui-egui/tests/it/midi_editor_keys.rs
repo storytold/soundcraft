@@ -55,3 +55,35 @@ fn deleting_in_the_editor_still_removes_the_selected_notes() {
         assert!(h.state().midi.selected.is_empty());
     }
 }
+
+/// Cmd+A over the piano roll selects every note; Cmd+Shift+A is another chord (it can be the Help
+/// shortcut) and must leave the selection alone.
+#[test]
+fn only_plain_cmd_a_selects_every_note() {
+    let mut h = harness(false);
+    h.ctx.set_os(egui::os::OperatingSystem::Nix);
+    let ctrl = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+    let chord = |h: &mut Harness<'_, SoundApp>, modifiers: Modifiers| {
+        h.key_press_modifiers(modifiers, Key::A);
+        h.step();
+    };
+    // The roll starts under the editor's header, where its Quantize button sits.
+    use egui_kittest::kittest::Queryable;
+    let header = h.get_by_label("Quantize").rect();
+    let at = egui::pos2(header.min.x - 300.0, header.max.y + 80.0);
+    h.state_mut().midi.selected = vec![0];
+    h.hover_at(at);
+    h.step();
+    // The pointer is over the roll: Up there transposes the selected note.
+    let before = h.state().engine.session().clone();
+    h.input_mut().events.push(Event::Key { key: Key::ArrowUp, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.step();
+    assert!(*h.state().engine.session() != before, "the pointer at {at:?} should be over the piano roll");
+    for extra in [Modifiers::SHIFT, Modifiers::ALT] {
+        h.state_mut().midi.selected = vec![0];
+        h.hover_at(at);
+        h.step();
+        chord(&mut h, ctrl | extra);
+        assert_eq!(h.state().midi.selected, vec![0], "Cmd+A with {extra:?} selected every note");
+    }
+}
