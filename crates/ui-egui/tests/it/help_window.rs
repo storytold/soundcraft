@@ -564,3 +564,46 @@ fn pointer_clicks_in_help_keep_its_keys_away_from_the_pointer() {
     h.run_steps(2);
     assert!(h.state().ui.show_help, "Escape after clicking outside Help closed it");
 }
+
+/// The focused search box and index filter keep a visible focus outline in the light theme: Help's
+/// white selection text must not turn their outline white on a light window.
+#[test]
+fn help_text_fields_show_their_focus_in_both_themes() {
+    for (mode, tab) in [("light", Tab::Search), ("light", Tab::Index), ("dark", Tab::Search)] {
+        let (ctx, mut app) = rig(OperatingSystem::Nix);
+        app.run("ui.theme", json!({"mode": mode})).unwrap();
+        app.run(if tab == Tab::Search { "help.search" } else { "help.index" }, json!({})).unwrap();
+        for _ in 0..3 {
+            app_frame(&ctx, &mut app, vec![]);
+        }
+        if tab == Tab::Index {
+            // Click into the index filter.
+            let area = ctx.memory(|m| m.area_rect(help::window_id("SoundCraft Help"))).unwrap();
+            let at = area.min + egui::vec2(120.0, 140.0);
+            let click = |pressed| Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+            app_frame(&ctx, &mut app, vec![Event::PointerMoved(at), click(true), click(false)]);
+        }
+        let out = app_frame(&ctx, &mut app, vec![]);
+        assert!(ctx.text_edit_focused(), "{mode} {tab:?}: a Help text field should have the keyboard");
+        let window = ctx.global_style().visuals.window_fill;
+        let lum = |c: egui::Color32| 0.2126 * f32::from(c.r()) + 0.7152 * f32::from(c.g()) + 0.0722 * f32::from(c.b());
+        let help_layer = egui::LayerId::new(egui::Order::Middle, help::window_id("SoundCraft Help"));
+        let faint: Vec<_> = out
+            .shapes
+            .iter()
+            .filter(|s| ctx.layer_id_at(s.clip_rect.center()) == Some(help_layer))
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r)
+                    if r.stroke.width >= 1.0
+                        && (lum(r.stroke.color) - lum(window)).abs() < 40.0
+                        && r.rect.height() < 30.0
+                        && r.rect.width() > 100.0 =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(faint.is_empty(), "{mode} {tab:?}: a focus outline barely differs from the window: {faint:?}");
+    }
+}

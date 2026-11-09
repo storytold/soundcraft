@@ -663,7 +663,7 @@ fn toolbar(app: &mut SoundApp, ui: &mut Ui) {
         let label = ui.label("Search");
         let width = (ui.available_width() - 96.0).clamp(60.0, 320.0);
         let edit = egui::TextEdit::singleline(&mut h.query).hint_text("Search help").desired_width(width).font(regular(13.0));
-        let r = ui.add(edit).labelled_by(label.id);
+        let r = text_field(ui, edit).labelled_by(label.id);
         if std::mem::take(&mut h.focus_search) {
             r.request_focus();
         }
@@ -677,6 +677,16 @@ fn toolbar(app: &mut SoundApp, ui: &mut Ui) {
             ui.label(RichText::new(format!("{} pages", entries().len())).small().color(t.text_dim));
         });
     });
+}
+
+/// A text field outlined, when focused, in the theme's own colour. Help draws selected list text in
+/// white, and egui outlines a focused field in that same colour, which vanishes on a light window.
+fn text_field(ui: &mut Ui, edit: egui::TextEdit<'_>) -> egui::Response {
+    ui.scope(|ui| {
+        ui.visuals_mut().selection.stroke = ui.ctx().global_style().visuals.selection.stroke;
+        ui.add(edit)
+    })
+    .inner
 }
 
 /// Select the navigation tab and draw its Contents, Index or Search panel.
@@ -753,7 +763,8 @@ fn index(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let h = &mut app.ui.help;
     let label = ui.label("Filter index");
-    ui.add(egui::TextEdit::singleline(&mut h.index_filter).hint_text("Type a word to jump to it").desired_width(f32::INFINITY)).labelled_by(label.id);
+    text_field(ui, egui::TextEdit::singleline(&mut h.index_filter).hint_text("Type a word to jump to it").desired_width(f32::INFINITY))
+        .labelled_by(label.id);
     let filter = h.index_filter.trim().to_lowercase();
     let mut go = None;
     egui::ScrollArea::vertical().id_salt("help_index").auto_shrink([false, false]).show(ui, |ui| {
@@ -927,17 +938,24 @@ fn category_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
 
 /// The title and preview share a clickable and keyboard-focusable result row.
 fn result_row(ui: &mut Ui, entry: &Entry, selected: bool) -> bool {
-    let theme = Tokens::current();
-    let title = if is_guide(entry) { format!("Guide: {}", entry.name) } else { entry.name.clone() };
-    let mut job = egui::text::LayoutJob::default();
-    job.append(&title, 0.0, egui::TextFormat { font_id: bold(12.5), color: theme.text, ..Default::default() });
-    job.append("\n", 0.0, egui::TextFormat::default());
-    job.append(first_sentence(&entry.text), 0.0, egui::TextFormat { font_id: regular(11.5), color: theme.text, ..Default::default() });
+    let job = result_job(entry, selected, ui.visuals());
     let response = ui.add(egui::Button::selectable(selected, job).wrap());
     if response.clicked() {
         response.request_focus();
     }
     response.clicked()
+}
+
+/// A search result's title and first sentence. On the selection highlight they take the selected
+/// text colour, as Contents and Index rows do: the page text colour is too faint on the accent.
+fn result_job(entry: &Entry, selected: bool, visuals: &egui::Visuals) -> egui::text::LayoutJob {
+    let color = if selected { visuals.selection.stroke.color } else { Tokens::current().text };
+    let title = if is_guide(entry) { format!("Guide: {}", entry.name) } else { entry.name.clone() };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&title, 0.0, egui::TextFormat { font_id: bold(12.5), color, ..Default::default() });
+    job.append("\n", 0.0, egui::TextFormat::default());
+    job.append(first_sentence(&entry.text), 0.0, egui::TextFormat { font_id: regular(11.5), color, ..Default::default() });
+    job
 }
 
 /// Open the parent topic when its breadcrumb link is selected.
@@ -1417,6 +1435,21 @@ mod tests {
                 && !one_typo("solo", "sold out")
         );
         assert!(search("   ").is_empty());
+    }
+
+    /// A selected search result is drawn in the selected text colour, which Help makes white on
+    /// the accent highlight in both themes.
+    #[test]
+    fn selected_search_results_use_the_selected_text_colour() {
+        let entry = entries().first().unwrap();
+        for light in [false, true] {
+            let mut visuals = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
+            visuals.selection.stroke.color = egui::Color32::WHITE;
+            let colors = |selected| result_job(entry, selected, &visuals).sections.iter().map(|s| s.format.color).collect::<Vec<_>>();
+            assert!(colors(true).iter().all(|c| *c == egui::Color32::WHITE || *c == egui::text::TextFormat::default().color), "light={light}");
+            assert!(colors(true).contains(&egui::Color32::WHITE), "light={light}");
+            assert!(!colors(false).contains(&egui::Color32::WHITE), "light={light}");
+        }
     }
 
     /// Check that registered menu commands retain discoverable locations in help.
