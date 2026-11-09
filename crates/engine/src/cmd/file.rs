@@ -45,6 +45,8 @@ pub fn specs() -> Vec<CommandSpec> {
             s.sources.clear();
             s.videos.clear();
             let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
+            // A template too large to open is not saved (#892).
+            crate::io::session_size(file.display(), text.len() as u64, true)?;
             if cfg!(target_arch = "wasm32") {
                 crate::io::write_file(&file.to_string_lossy(), text.as_bytes())?;
             } else {
@@ -142,10 +144,10 @@ pub fn specs() -> Vec<CommandSpec> {
             crate::io::save_session(&mut tmp, &path)?;
             Ok(json!({"path": path}))
         }),
-        cmd!(noundo "file.export_sibelius", "Sibelius...", ["File", "Export"], None, "{path, tracks?} — MIDI tracks as MusicXML (.musicxml)", always, |e, p| {
+        cmd!(noundo "file.export_sibelius", "MusicXML...", ["File", "Export"], None, "{path, tracks?} — MIDI tracks as MusicXML (.musicxml)", always, |e, p| {
             write_score(e, p, "file.export_sibelius", false)
         }),
-        cmd!(noundo "file.send_to_sibelius", "Sibelius", ["File", "Send To..."], None, "{path?, tracks?} — writes MusicXML for a notation program (to the temp folder when no `path`)", always, |e, p| {
+        cmd!(noundo "file.send_to_sibelius", "MusicXML", ["File", "Send To..."], None, "{path?, tracks?} — writes MusicXML for a notation program (to the temp folder when no `path`)", always, |e, p| {
             write_score(e, p, "file.send_to_sibelius", false)
         }),
         cmd!(noundo "file.print_score", "Print Score...", ["File"], Some("Cmd+P"), "{path?, tracks?} — engraves the MIDI tracks as a printable SVG page", always, |e, p| {

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use soundcraft_audio_io::{AudioBuffer, BitDepth, EncodeOptions, FileFormat};
+use soundcraft_audio_io::{AudioBuffer, BitDepth, BwfInfo, EncodeOptions, FileFormat};
 
 fn tmpdir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("sc-cli-convert-{tag}-{}", std::process::id()));
@@ -91,5 +91,33 @@ fn convert_dithers_when_reducing_depth_unless_told_not_to() {
     let plain = dir.join("p16.wav");
     convert(&src, &plain, &["--bit-depth", "16", "--no-dither"]);
     assert!(steps16(&plain).iter().all(|s| *s == 0.0), "--no-dither still dithered");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn convert_keeps_the_bwf_time_stamp() {
+    let dir = tmpdir("bext");
+    let src = dir.join("take.wav");
+    // 01:00:00:00 at 48 kHz.
+    let bwf = BwfInfo {
+        description: "take 3".into(),
+        originator: "recorder".into(),
+        origination_date: "2026-11-03".into(),
+        origination_time: "10:00:00".into(),
+        time_reference: 172_800_000,
+        ..Default::default()
+    };
+    let buf = AudioBuffer::new(48_000, 1, 4800);
+    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int24, dither: false, bwf: Some(bwf.clone()) };
+    std::fs::write(&src, soundcraft_audio_io::encode(&buf, &opts).unwrap()).unwrap();
+    let bext = |p: &Path| soundcraft_audio_io::probe(&std::fs::read(p).unwrap(), None).unwrap().bwf;
+
+    let out = dir.join("16.wav");
+    convert(&src, &out, &["--bit-depth", "16"]);
+    assert_eq!(bext(&out), Some(bwf.clone()));
+    // Resampled, the stamp still points at 01:00:00:00: 158,760,000 samples at 44.1 kHz.
+    let out = dir.join("44k.wav");
+    convert(&src, &out, &["--rate", "44100"]);
+    assert_eq!(bext(&out), Some(BwfInfo { time_reference: 158_760_000, ..bwf }));
     let _ = std::fs::remove_dir_all(&dir);
 }
