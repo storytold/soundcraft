@@ -7,6 +7,7 @@ use super::{
     IPluginBaseTrait, MAX_BUS_CHANNELS, MAX_BUSES, MAX_PARAMS, MAX_STATE_BYTES, Mutex, Ordering, PARAM_QUEUE_CAP, PITCH_BEND, STATE_MAGIC, Transport,
     Vst3Error, ok, read_c16, sb, sv,
 };
+use soundcraft_dsp::MidiOut;
 
 // ---- instances -----------------------------------------------------------------------------
 
@@ -33,6 +34,8 @@ pub(crate) struct Layout {
     pub inputs: Vec<u32>,
     pub outputs: Vec<u32>,
     pub event_input: bool,
+    /// The plugin has an event (MIDI) output bus that we activated: it may produce MIDI.
+    pub event_output: bool,
 }
 
 /// `"input"` or `"output"`, for error messages.
@@ -83,6 +86,13 @@ pub(crate) struct Instance {
     pub(super) out_events: ComWrapper<EventList>,
     pub(super) context: sv::ProcessContext,
     pub(super) event_in: bool,
+    /// The event output bus is active, so `out_events` is where the plugin writes its MIDI.
+    pub(super) event_out: bool,
+    /// Number of output event buses activated during configuration.
+    pub(super) event_out_buses: i32,
+    /// MIDI converted out of `out_events` by the last `process` call, in time order, block
+    /// relative. Preallocated: `process` never allocates.
+    pub(super) midi_out: Vec<MidiOut>,
     pub(super) editor: Arc<EditorLink>,
     // Field order matters for drop: `Drop::drop` shuts the plugin down first; then the component
     // and host objects are released, and the bundle (which keeps the code mapped) goes last.
@@ -333,7 +343,9 @@ impl Instance {
             }
             // SAFETY: valid processor; the arrays hold exactly `nin`/`nout` arrangements and
             // outlive the call.
-            if ok(unsafe { p.setBusArrangements(ins.as_mut_ptr(), nin, outs.as_mut_ptr(), nout) }) {
+            let in_ptr = if ins.is_empty() { std::ptr::null_mut() } else { ins.as_mut_ptr() };
+            let out_ptr = if outs.is_empty() { std::ptr::null_mut() } else { outs.as_mut_ptr() };
+            if ok(unsafe { p.setBusArrangements(in_ptr, nin, out_ptr, nout) }) {
                 tried_ok = true;
                 break;
             }
@@ -344,10 +356,13 @@ impl Instance {
         if !tried_ok {
             log::debug!("vst3: plugin refused mono/stereo bus arrangements; using its own");
         }
+        let event_inputs = self.bus_count(event, din);
+        let event_outputs = self.bus_count(event, dout);
         let layout = Layout {
             inputs: (0..nin).map(|i| self.bus_channels(din, i)).collect::<Result<_, _>>()?,
             outputs: (0..nout).map(|i| self.bus_channels(dout, i)).collect::<Result<_, _>>()?,
-            event_input: self.bus_count(event, din) > 0,
+            event_input: event_inputs > 0,
+            event_output: event_outputs > 0,
         };
         // Main buses on, aux buses off (VST3 still gets buffers for every bus).
         for (dir, n) in [(din, nin), (dout, nout)] {
@@ -356,11 +371,19 @@ impl Instance {
                 unsafe { self.component.activateBus(audio as sv::MediaType, dir as sv::BusDirection, i, u8::from(i == 0)) };
             }
         }
-        if layout.event_input {
-            // SAFETY: valid component; event input bus 0 exists.
-            unsafe { self.component.activateBus(event as sv::MediaType, din as sv::BusDirection, 0, 1) };
+        for i in 0..event_inputs {
+            // SAFETY: valid component; `i` is below the event input bus count.
+            unsafe { self.component.activateBus(event as sv::MediaType, din as sv::BusDirection, i, u8::from(i == 0)) };
+        }
+        for i in 0..event_outputs {
+            // The event output bus is what lets a MIDI generator report its events; without it a
+            // plugin that only produces MIDI has no audio output to write to either.
+            // SAFETY: valid component; `i` is below the event output bus count.
+            unsafe { self.component.activateBus(event as sv::MediaType, dout as sv::BusDirection, i, 1) };
         }
         self.event_in = layout.event_input;
+        self.event_out = layout.event_output;
+        self.event_out_buses = event_outputs;
         let sample32 = sv::SymbolicSampleSizes_::kSample32 as i32;
         // SAFETY: valid processor.
         if !ok(unsafe { p.canProcessSampleSize(sample32) }) {
@@ -446,6 +469,7 @@ impl Instance {
             }
         });
         self.out_events.with(Vec::clear);
+        self.midi_out.clear();
         inputs.refresh();
         outputs.refresh();
         self.context.continousTimeSamples = project_time;
@@ -472,7 +496,119 @@ impl Instance {
         // parameter/event objects and the context are owned by `self` and untouched until the
         // call returns.
         let r = unsafe { p.process(&mut data) };
+        if ok(r) && self.event_out {
+            // The plugin has written its MIDI into `out_events`: convert it now, while the events
+            // are still there, into MIDI 1.0 messages stamped with their offset in this block
+            // (`offset` is where this block starts in the caller's block). Bounded: at most
+            // `EVENT_CAP` per block, no allocation.
+            let midi = &mut self.midi_out;
+            let event_out_buses = self.event_out_buses;
+            self.out_events.with(|v| {
+                for e in v.drain(..).take(EVENT_CAP) {
+                    let Ok(sample_offset) = usize::try_from(e.sampleOffset) else { continue };
+                    if sample_offset >= frames || e.busIndex < 0 || e.busIndex >= event_out_buses {
+                        continue;
+                    }
+                    if let Some(msg) = event_to_midi(&e)
+                        && let Some(at) = u32::try_from(sample_offset).ok().and_then(|sample_offset| offset.checked_add(sample_offset))
+                        && midi.len() < midi.capacity()
+                    {
+                        midi.push(MidiOut { offset: at, msg });
+                    }
+                }
+            });
+        } else {
+            self.out_events.with(Vec::clear);
+        }
         if ok(r) { Ok(()) } else { Err(Vst3Error::Process(format!("process returned {r}"))) }
+    }
+
+    /// True when the plugin has an event (MIDI) output bus, whether or not it is configured yet.
+    pub fn has_event_output(&self) -> bool {
+        self.bus_count(sv::MediaTypes_::kEvent, sv::BusDirections_::kOutput) > 0
+    }
+
+    /// MIDI the plugin produced in the last [`Instance::process`] call, oldest first, each with
+    /// its offset in that block. Takes them: a second call yields nothing.
+    pub fn take_midi_out(&mut self, sink: &mut dyn FnMut(MidiOut)) {
+        for e in self.midi_out.drain(..) {
+            sink(e);
+        }
+    }
+}
+
+/// A 0..1 VST3 event value as a MIDI 1.0 data byte (0..=127).
+fn midi_byte(v: f32) -> Option<u8> {
+    if !v.is_finite() {
+        return None;
+    }
+    let x = (f64::from(v) * 127.0).round();
+    u8::try_from(x.clamp(0.0, 127.0) as i64).ok()
+}
+
+/// A VST3 note number as the 0..=127 byte a channel voice message carries.
+fn note_byte(p: i16) -> Option<u8> {
+    u8::try_from(p).ok().filter(|p| *p < 128)
+}
+
+/// A VST3 channel (0..15) as the low nibble of a status byte.
+fn channel_nibble(c: i16) -> Option<u8> {
+    u8::try_from(c).ok().filter(|c| *c < 16)
+}
+
+/// A `LegacyMIDICCOutEvent` value byte as a MIDI data byte.
+fn cc_byte(v: i8) -> u8 {
+    (v as u8) & 0x7F
+}
+
+/// Converts one VST3 output event into a MIDI 1.0 channel message: the status byte with the
+/// channel in its low nibble, then two data bytes. Note on/off, polyphonic and channel pressure,
+/// pitch bend, program change and control change all survive losslessly (channel and sample
+/// offset are kept by the caller). Events with no MIDI 1.0 equivalent (raw data, note
+/// expressions, chords, scales, system realtime) return `None`.
+pub(crate) fn event_to_midi(e: &sv::Event) -> Option<[u8; 3]> {
+    // The flag constants are the C default enum type: i32 on Windows, u32 elsewhere.
+    #[allow(clippy::unnecessary_cast)]
+    match u32::from(e.r#type) {
+        t if t == sv::Event_::EventTypes_::kNoteOnEvent as u32 => {
+            // SAFETY: `Event` is plain data and the union field matches the type just checked.
+            let n = unsafe { e.__field0.noteOn };
+            Some([0x90 | channel_nibble(n.channel)?, note_byte(n.pitch)?, midi_byte(n.velocity)?])
+        }
+        t if t == sv::Event_::EventTypes_::kNoteOffEvent as u32 => {
+            // SAFETY: as above.
+            let n = unsafe { e.__field0.noteOff };
+            Some([0x80 | channel_nibble(n.channel)?, note_byte(n.pitch)?, midi_byte(n.velocity)?])
+        }
+        t if t == sv::Event_::EventTypes_::kPolyPressureEvent as u32 => {
+            // SAFETY: as above.
+            let n = unsafe { e.__field0.polyPressure };
+            Some([0xA0 | channel_nibble(n.channel)?, note_byte(n.pitch)?, midi_byte(n.pressure)?])
+        }
+        t if t == sv::Event_::EventTypes_::kLegacyMIDICCOutEvent as u32 => {
+            // SAFETY: as above.
+            let c = unsafe { e.__field0.midiCCOut };
+            let ch = channel_nibble(i16::from(c.channel))?;
+            let value = cc_byte(c.value);
+            match u32::from(c.controlNumber) {
+                // A plain control change: the number is data1, the value data2.
+                0..=127 => Some([0xB0 | ch, c.controlNumber & 0x7F, value]),
+                // The SDK's extra numbers (midictls.h) carry the other channel messages.
+                x if x == sv::ControllerNumbers_::kAfterTouch as u32 => Some([0xD0 | ch, value, 0]),
+                x if x == sv::ControllerNumbers_::kPitchBend as u32 => {
+                    // 14-bit: data1 is the low 7 bits, data2 the high ones.
+                    let bend = u32::from(value) | (u32::from(cc_byte(c.value2)) << 7);
+                    Some([0xE0 | ch, (bend & 0x7F) as u8, ((bend >> 7) & 0x7F) as u8])
+                }
+                x if x == sv::ControllerNumbers_::kCtrlProgramChange as u32 => Some([0xC0 | ch, value, 0]),
+                x if x == sv::ControllerNumbers_::kCtrlPolyPressure as u32 => Some([0xA0 | ch, value, cc_byte(c.value2)]),
+                // Quarter frame, song select/pointer, clock, sensing: no MIDI 1.0 channel message.
+                _ => None,
+            }
+        }
+        // kDataEvent carries a pointer to raw bytes we do not own, and the note-expression,
+        // chord and scale events have no MIDI 1.0 equivalent.
+        _ => None,
     }
 }
 

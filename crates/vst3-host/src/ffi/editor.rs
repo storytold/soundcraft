@@ -106,6 +106,7 @@ impl EditorLink {
         if let Some(w) = &g.window {
             if w.is_visible() {
                 w.raise();
+                w.focus();
                 return Ok(());
             }
             // The user closed the window: start over.
@@ -134,7 +135,11 @@ impl EditorLink {
             win.close();
             return Err("the editor could not attach to its window".into());
         }
+        // Show the window now: mapping and placing it sends the configure event that tells the
+        // plugin (through a bridge) how big its window really is.
+        win.map();
         win.raise();
+        win.focus();
         g.view = Some(view);
         g.frame = Some(frame);
         g.window = Some(win);
@@ -213,7 +218,13 @@ impl EditorLink {
             return;
         }
         let mut g = self.lock();
-        if g.window.as_ref().is_some_and(|w| !w.is_visible()) {
+        let mut gone = false;
+        if let Some(w) = g.window.as_mut() {
+            // Reads the window's events (X11): the user closing the window ends the editor.
+            w.pump();
+            gone = !w.is_visible();
+        }
+        if gone {
             EditorLink::teardown(&mut g);
         }
     }

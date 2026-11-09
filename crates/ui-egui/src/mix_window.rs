@@ -16,13 +16,13 @@ mod routing;
 mod sends;
 mod slots;
 
-pub use plugin_menu::{instrument_menu, plugin_info, plugin_menu};
+pub use plugin_menu::{SlotKind, Vst3Fit, editor_blocked_reason, instrument_menu, plugin_info, plugin_menu};
 pub(crate) use routing::{input_name, route_name, route_popup};
 #[cfg(test)]
 use sends::dragged_send_db;
 use sends::{Readout, editable_readout, parse_db, parse_pan};
 pub(crate) use sends::{send_slot, send_window};
-pub(crate) use slots::{insert_slot, instrument_slot};
+pub(crate) use slots::{insert_slot, instrument_slot, midi_out_button};
 
 pub fn strip_width(narrow: bool) -> f32 {
     if narrow { 64.0 } else { 98.0 }
@@ -255,11 +255,22 @@ fn instrument_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y:
         let sr = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 16.0), vec2(inner_w - 4.0, 15.0));
         let slot = track.mixer.inserts.iter().position(|i| i.as_ref().is_some_and(|i| plugin_info(&i.plugin).is_some_and(|p| p.is_instrument)));
         match slot {
-            _ if track.kind == TrackKind::Instrument => instrument_slot(app, ui, track, sr),
-            Some(k) => insert_slot(app, ui, track, k, sr),
-            None if track.kind == TrackKind::Midi => {
-                ui.painter().text(sr.center(), Align2::CENTER_CENTER, "MIDI in: all", regular(9.0), t.text_dim);
+            // Both MIDI and instrument tracks have the instrument slot: the one slot the mixer
+            // feeds MIDI to, where a synth or a MIDI generator goes.
+            _ if track.kind.is_midi() => {
+                let generates_midi =
+                    !track.midi_out.is_empty() || track.instrument.as_ref().and_then(|i| plugin_info(&i.plugin)).is_some_and(|p| p.midi_out);
+                if generates_midi {
+                    // The narrow button at the right is where this generator's MIDI goes: to its
+                    // own instrument and/or other tracks' instruments.
+                    let (slot_r, midi_r) = (sr.with_max_x(sr.max.x - 44.0), sr.with_min_x(sr.max.x - 42.0));
+                    instrument_slot(app, ui, track, slot_r);
+                    midi_out_button(app, ui, track, midi_r);
+                } else {
+                    instrument_slot(app, ui, track, sr);
+                }
             }
+            Some(k) => insert_slot(app, ui, track, k, sr),
             None => {}
         }
         y = sec.max.y + 4.0;

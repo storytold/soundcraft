@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** trivial (G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-09 · **Change:** minor (G-02: internal VST3 MIDI routing done, hardware I/O still missing; G-05: VST3 editors on Windows and Linux/X11 done); previously trivial (G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -65,9 +65,13 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 ### G-02. MIDI devices
 
-- **Missing:** all MIDI hardware I/O. No `midir`/CoreMIDI/WinMM/ALSA sequencer code exists;
+- **Done (2026-10-20):** VST3 MIDI-generator events can route to another track's instrument in the
+  same block, with persistent session routes, sample offsets, MIDI channels, cycle rejection and
+  bounded event queues. This is internal plugin routing only.
+- **Still missing:** all MIDI hardware I/O. No `midir`/CoreMIDI/WinMM/ALSA sequencer code exists;
   `setup.midi_input_devices` and `setup.midi_studio` only store names. You cannot record from a
-  keyboard, play a hosted instrument live, drive external synths, or send MIDI clock/MTC.
+  keyboard, drive external synths, or send MIDI clock/MTC. CLAP and Audio Unit plugin MIDI output
+  are not yet collected.
   `midi_editor.rs:288` notes audition "needs a live MIDI input path".
 - **Impact:** MIDI production is limited to drawing notes and importing SMF.
 - **Estimate:** ≈ 20–35 h (device layer, realtime input to armed tracks and instruments with
@@ -124,8 +128,8 @@ launch #142; Linux #45, #107.
 - **Missing:** the `com.apple.security.cs.disable-library-validation` entitlement in the signed
   build, so hardened runtime refuses third-party VST3 bundles (#153, #149). AU editor views
   (`crates/au-host/src/lib.rs` header: "Not hosted yet: Audio Unit editor views"). Embedded CLAP
-  GUIs; VST3 editors on Windows/Linux.
-- **Estimate:** ≈ 15–25 h (entitlement ≈ 1 h; AU Cocoa views and VST3 HWND/X11 views most of it).
+  GUIs. (VST3 editors are hosted on macOS, Windows and Linux/X11.)
+- **Estimate:** ≈ 10–20 h (entitlement ≈ 1 h; AU Cocoa views most of it).
 
 ### G-06. Memory-bound media
 
@@ -214,7 +218,8 @@ See [`ui-parity.md`](ui-parity.md). ≈ 60–100 h.
 ### G-20. MIDI and instrument depth
 
 MIDI learn, drum machine depth, notation editing (tuplets, lyrics,
-articulations, parts). ≈ 40–60 h.
+articulations, parts). VST3-generated MIDI now routes between track instruments; external MIDI
+device I/O remains G-02. ≈ 40–60 h.
 
 ### G-21. Compressed export
 
@@ -230,9 +235,11 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-09 | minor | G-05 shrunk: VST3 editors on Windows and Linux/X11 are hosted |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-25 | trivial | G-01: `setup.playback_engine` and `setup.hardware` apply the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |
+| 2026-10-20 | minor | G-02 records internal VST3 MIDI routing as done while hardware MIDI I/O remains open |
 | 2026-10-19 | trivial | G-04: Float32 encoding retains finite headroom (#791); integer clipping and non-finite handling retained |
 | 2026-10-18 | trivial | G-04: mono device stereo/surround fold-down fixed and regression-tested; estimates unchanged |
 | 2026-10-16 | trivial | G-04: master volume automation block boundaries fixed and regression-tested; estimates unchanged |

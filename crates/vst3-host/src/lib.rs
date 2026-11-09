@@ -27,12 +27,13 @@
 //! Plugin editors (`IPlugView`): on macOS the view is attached to the content `NSView` of a host
 //! `NSWindow` (titled and closable, floating above the app, resized on `IPlugFrame::resizeView`);
 //! on Windows it is attached to a host `HWND` owned by the app's window (no taskbar button,
-//! closing it hides it until the link tears it down).
+//! closing it hides it until the link tears it down); on Linux and the BSDs it is attached to an
+//! X11 window (VST3's `X11EmbedWindowID` platform type) that the plugin embeds itself into.
 //! [`Plugin::open_editor`] opens it directly; [`Plugin::editor`] returns a handle usable on the
 //! main thread while the instance processes on the audio thread (VST3's own threading model:
 //! the controller and its views live on the UI thread). Parameter edits made in the editor
 //! (`IComponentHandler::performEdit`) are reported by the handle's `idle` so the host can write
-//! them into the session. Linux (X11) editor windows are not hosted yet: opening reports
+//! them into the session. Where no window host exists (Android, wasm), opening reports
 //! "unsupported".
 //!
 //! Not hosted yet: `IMessage`/`IAttributeList` creation through the host (plugins that need it
@@ -62,6 +63,19 @@ pub const ID_PREFIX: &str = "vst3:";
 
 /// The factory class category of audio processors (the only classes SoundCraft lists).
 pub const AUDIO_MODULE_CLASS: &str = "Audio Module Class";
+
+/// True when this build can host VST3 plugin editor windows on this platform. Editor windows are
+/// hosted on macOS (a Cocoa view), Windows (a Win32 window) and, where X11 is available, on
+/// Linux and the BSDs (an X11 window the plugin embeds itself into). Where no window host
+/// exists, opening a plugin's editor reports that it is unsupported instead of leaving the user
+/// with a button that does nothing.
+pub const EDITORS_SUPPORTED: bool = cfg!(any(target_os = "macos", windows)) || cfg!(all(unix, not(target_os = "macos"), not(target_os = "android")));
+
+/// True when this build can host VST3 plugin editor windows on this platform (see
+/// [`EDITORS_SUPPORTED`]).
+pub fn editors_supported() -> bool {
+    EDITORS_SUPPORTED
+}
 
 /// The 16-byte class id inside a `vst3:<32 hex digits>` SoundCraft id (`None` for other ids).
 pub fn parse_id(id: &str) -> Option<[u8; 16]> {
@@ -93,6 +107,11 @@ pub struct Vst3Descriptor {
     pub sub_categories: Vec<String>,
     pub category: Category,
     pub is_instrument: bool,
+    /// A MIDI processor/generator by its declared VST3 sub-category (a scan-time hint).
+    pub is_midi_processor: bool,
+    /// The scan metadata suggests MIDI generation. The loaded plugin's event buses confirm the
+    /// runtime capability before MIDI output is routed.
+    pub midi_out: bool,
     /// The `.vst3` bundle or file it lives in.
     pub path: PathBuf,
 }
@@ -140,6 +159,9 @@ mod api {
     pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
         registry::plugin_info(id)
     }
+    pub fn loaded_info(id: &str) -> Option<&'static PluginInfo> {
+        registry::loaded_info(id)
+    }
     pub fn shutdown() {
         ffi::exit_modules();
     }
@@ -171,6 +193,9 @@ mod api {
         Err(Vst3Error::Unsupported)
     }
     pub fn plugin_info(_id: &str) -> Option<&'static PluginInfo> {
+        None
+    }
+    pub fn loaded_info(_id: &str) -> Option<&'static PluginInfo> {
         None
     }
     pub fn shutdown() {}
@@ -249,6 +274,14 @@ pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
     api::plugin_info(id)
 }
 
+/// The description of a `vst3:<class id>` plugin type that has already been instantiated
+/// (`None` otherwise): unlike [`plugin_info`] it never loads anything, so a menu can call it every
+/// frame. Its `midi_out` is the runtime capability (an event output bus), which the scan's
+/// sub-category hint ([`Vst3Descriptor::midi_out`]) only guesses at.
+pub fn loaded_info(id: &str) -> Option<&'static PluginInfo> {
+    api::loaded_info(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +304,15 @@ mod tests {
         assert!(create("eq_7band").is_none());
         assert!(create("clap:com.x").is_none());
         assert!(plugin_info("reverb").is_none());
+    }
+
+    #[test]
+    fn the_editor_support_matches_the_platform() {
+        // macOS, Windows and the X11 platforms host editor windows; Android and the wasm
+        // build do not.
+        let x11 = cfg!(all(unix, not(target_os = "macos"), not(target_os = "android")));
+        assert_eq!(editors_supported(), cfg!(any(target_os = "macos", windows)) || x11);
+        assert_eq!(EDITORS_SUPPORTED, editors_supported());
     }
 
     #[test]

@@ -12,7 +12,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "List CLAP Plugins",
         [],
         None,
-        "{rescan?: bool} → [{id: \"clap:…\", plugin_id, name, vendor, version, description, features, category, is_instrument, path}]",
+        "{rescan?: bool} → [{id: \"clap:…\", plugin_id, name, vendor, version, description, features, category, is_instrument, is_midi_processor, midi_out, path}]",
         always,
         |_, p| {
             let list = if p.get("rescan").and_then(Value::as_bool).unwrap_or(false) {

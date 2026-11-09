@@ -35,7 +35,7 @@ pub struct ClapPlugin {
     notes: NoteMode,
     /// The note port takes raw MIDI (controllers, pitch bend, program changes).
     midi_in: bool,
-    held: [bool; 128],
+    held: [[bool; 128]; 16],
     channels: usize,
     max_block: usize,
     latency: usize,
@@ -59,7 +59,7 @@ impl ClapPlugin {
             out_main: None,
             notes: NoteMode::None,
             midi_in: false,
-            held: [false; 128],
+            held: [[false; 128]; 16],
             channels: 2,
             max_block: 0,
             latency: 0,
@@ -87,6 +87,28 @@ impl ClapPlugin {
         }
         let pos = self.queue.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
         self.queue.insert(pos, e);
+    }
+
+    fn push_note_on(&mut self, time: u32, channel: u8, key: u8, velocity: u8) {
+        match self.notes {
+            NoteMode::Clap => self.push(Event::NoteOn { time, channel, key, velocity: f64::from(velocity.min(127)) / 127.0 }),
+            NoteMode::Midi => self.push(Event::Midi { time, data: [0x90 | channel, key, velocity.min(127)] }),
+            NoteMode::None => return,
+        }
+        if let Some(h) = self.held.get_mut(usize::from(channel)).and_then(|c| c.get_mut(usize::from(key))) {
+            *h = true;
+        }
+    }
+
+    fn push_note_off(&mut self, time: u32, channel: u8, key: u8, velocity: u8) {
+        match self.notes {
+            NoteMode::Clap => self.push(Event::NoteOff { time, channel, key, velocity: f64::from(velocity.min(127)) / 127.0 }),
+            NoteMode::Midi => self.push(Event::Midi { time, data: [0x80 | channel, key, velocity.min(127)] }),
+            NoteMode::None => return,
+        }
+        if let Some(h) = self.held.get_mut(usize::from(channel)).and_then(|c| c.get_mut(usize::from(key))) {
+            *h = false;
+        }
     }
 }
 
@@ -186,7 +208,7 @@ impl Plugin for ClapPlugin {
     fn reset(&mut self) {
         self.inst.reset();
         self.queue.retain(|e| matches!(e, Event::Param { .. }));
-        self.held = [false; 128];
+        self.held = [[false; 128]; 16];
     }
 
     fn set_param(&mut self, id: &str, value: f32) -> bool {
@@ -271,15 +293,7 @@ impl Plugin for ClapPlugin {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        let vel = velocity.min(127);
-        match self.notes {
-            NoteMode::Clap => self.push(Event::NoteOn { time, key: note, velocity: f64::from(vel) / 127.0 }),
-            NoteMode::Midi => self.push(Event::Midi { time, data: [0x90, note, vel] }),
-            NoteMode::None => return,
-        }
-        if let Some(h) = self.held.get_mut(note as usize) {
-            *h = true;
-        }
+        self.push_note_on(time, 0, note, velocity);
     }
 
     fn note_off(&mut self, offset: usize, note: u8) {
@@ -287,26 +301,35 @@ impl Plugin for ClapPlugin {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        match self.notes {
-            NoteMode::Clap => self.push(Event::NoteOff { time, key: note }),
-            NoteMode::Midi => self.push(Event::Midi { time, data: [0x80, note, 0] }),
-            NoteMode::None => return,
-        }
-        if let Some(h) = self.held.get_mut(note as usize) {
-            *h = false;
-        }
+        self.push_note_off(time, 0, note, 0);
     }
 
     fn midi(&mut self, offset: usize, msg: [u8; 3]) {
-        if self.midi_in {
-            self.push(Event::Midi { time: u32::try_from(offset).unwrap_or(u32::MAX), data: msg });
+        let time = u32::try_from(offset).unwrap_or(u32::MAX);
+        let [status, key, velocity] = msg;
+        let channel = status & 0x0f;
+        let key = key & 0x7f;
+        let velocity = velocity & 0x7f;
+        match status & 0xf0 {
+            0x80 => self.push_note_off(time, channel, key, velocity),
+            0x90 => {
+                if velocity == 0 {
+                    self.push_note_off(time, channel, key, 0);
+                } else {
+                    self.push_note_on(time, channel, key, velocity);
+                }
+            }
+            _ if self.midi_in => self.push(Event::Midi { time, data: msg }),
+            _ => {}
         }
     }
 
     fn all_notes_off(&mut self) {
-        for k in 0..128u8 {
-            if self.held.get(k as usize).copied().unwrap_or(false) {
-                self.note_off(0, k);
+        for channel in 0..16u8 {
+            for key in 0..128u8 {
+                if self.held.get(usize::from(channel)).and_then(|c| c.get(usize::from(key))).copied().unwrap_or(false) {
+                    self.push_note_off(0, channel, key, 0);
+                }
             }
         }
     }

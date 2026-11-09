@@ -54,6 +54,8 @@ pub static ROOM_INFO: PluginInfo = PluginInfo {
     category: Category::Reverb,
     params: &ROOM_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -64,6 +66,8 @@ pub static PLATE_INFO: PluginInfo = PluginInfo {
     category: Category::Reverb,
     params: &PLATE_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 

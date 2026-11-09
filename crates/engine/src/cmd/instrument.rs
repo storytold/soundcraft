@@ -1,11 +1,12 @@
-//! An instrument track's instrument (`mix.instrument`): the plugin that turns the track's MIDI
-//! into audio, built in or hosted (CLAP, VST3, Audio Units). The mixer plays `Track::instrument`;
-//! the instrument is otherwise only set when the track is created (`track.new`).
+//! A MIDI or instrument track's instrument (`mix.instrument`): the plugin that turns the track's
+//! MIDI into audio (or generates new MIDI to route on), built in or hosted (CLAP, VST3, Audio
+//! Units). The mixer plays `Track::instrument`; the instrument is otherwise only set when the
+//! track is created (`track.new`).
 use super::{CommandSpec, bad, has_selection, str_param, tracks_required};
 
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
-use soundcraft_model::{Insert, TrackKind};
+use soundcraft_model::Insert;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -14,7 +15,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Instrument",
             [],
             None,
-            "{track?, plugin: id, params?: {id: value}} — an instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id; `params` sets built-in parameters (clamped into range; unknown ids and other fields are errors)",
+            "{track?, plugin: id, params?: {id: value}} — a MIDI or instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id; `params` sets built-in parameters (clamped into range; unknown ids and other fields are errors)",
             has_selection,
             set_instrument
         ),
@@ -43,12 +44,14 @@ fn set_instrument(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     let plugin = str_param(p, "plugin").ok_or_else(|| bad("mix.instrument", "`plugin` required"))?;
     let info = super::clap::plugin_info(plugin).ok_or_else(|| bad("mix.instrument", format!("unknown plugin `{plugin}`")))?;
-    if !info.is_instrument {
-        return Err(bad("mix.instrument", format!("`{plugin}` is not an instrument")));
+    if !(info.is_instrument || info.midi_out) {
+        return Err(bad("mix.instrument", format!("`{plugin}` does not work with MIDI: it is neither an instrument nor a MIDI generator")));
     }
     let t = tracks_required(e, "mix.instrument", p)?.first().copied().ok_or_else(|| bad("mix.instrument", "no track"))?;
-    if e.session().track(t).map(|tr| tr.kind) != Some(TrackKind::Instrument) {
-        return Err(bad("mix.instrument", "only instrument tracks have an instrument"));
+    // The mixer feeds MIDI to the instrument slot of both MIDI and instrument tracks, so a
+    // generator (InstaComposer and friends) is just as at home on a MIDI track as a synth.
+    if !e.session().track(t).is_some_and(|tr| tr.kind.is_midi()) {
+        return Err(bad("mix.instrument", "only MIDI and instrument tracks have an instrument"));
     }
     // Validate the parameters before touching the session.
     let mut values = Vec::new();
@@ -191,6 +194,37 @@ mod tests {
         }
         let err = e.execute("mix.instrument", &json!({"track": t.0, "plugin": "drum_synth", "cutoff": 200})).unwrap_err().to_string();
         assert!(err.contains("cutoff") && err.contains("params"), "{err}");
+    }
+
+    #[test]
+    fn a_midi_tracks_instrument_is_set_and_undone() {
+        // The mixer feeds MIDI to the instrument slot of a MIDI track too, which is where a MIDI
+        // generator (a note or chord generator such as InstaComposer) sits.
+        let mut e = Engine::default();
+        let t = track(&mut e, "midi");
+        assert_eq!(instrument_of(&e, t), None, "a plain MIDI track starts without an instrument");
+        let r = e.execute("mix.instrument", &json!({"track": t.0, "plugin": "subtractive_synth"})).unwrap();
+        assert_eq!(r["plugin"], "subtractive_synth");
+        assert_eq!(instrument_of(&e, t).as_deref(), Some("subtractive_synth"));
+        e.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(instrument_of(&e, t), None);
+    }
+
+    #[test]
+    fn a_midi_track_can_be_created_with_an_instrument() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"kind": "midi", "instrument": "drum_synth"})).unwrap();
+        let t = e.session().tracks.last().map(|t| t.id).unwrap();
+        assert_eq!(instrument_of(&e, t).as_deref(), Some("drum_synth"));
+    }
+
+    #[test]
+    fn a_midi_tracks_instrument_plays_its_clips() {
+        let mut e = Engine::default();
+        let t = track(&mut e, "midi");
+        e.execute("mix.instrument", &json!({"track": t.0, "plugin": "subtractive_synth"})).unwrap();
+        let rms = rms_of_a_note(&mut e, t, 2);
+        assert!(rms > 1.0e-4, "the instrument on a MIDI track sounds: rms {rms}");
     }
 
     #[test]

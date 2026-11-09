@@ -1208,3 +1208,389 @@ fn gain_ramp_matches_converting_both_ends_every_sample() {
         }
     }
 }
+
+// ---- real-time MIDI routing (track → track) -------------------------------------------
+
+/// A MIDI generator: it sounds nothing and hands out a fixed set of events per block.
+struct Gen {
+    inner: Box<dyn Plugin>,
+    pending: Vec<MidiOut>,
+}
+
+impl Gen {
+    fn new() -> Self {
+        Self { inner: soundcraft_dsp::create("gain").unwrap(), pending: Vec::new() }
+    }
+}
+
+impl Plugin for Gen {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+        // Note on, a control change, a pitch bend and a note off, at fixed offsets.
+        self.pending.clear();
+        self.pending.extend_from_slice(&[
+            MidiOut { offset: 10, msg: [0x92, 60, 100] },
+            MidiOut { offset: 20, msg: [0xB2, 7, 64] },
+            MidiOut { offset: 30, msg: [0xE2, 0, 64] },
+        ]);
+        if frames > 300 {
+            self.pending.push(MidiOut { offset: 300, msg: [0x82, 60, 64] });
+        }
+    }
+    fn produces_midi(&self) -> bool {
+        true
+    }
+    fn take_midi_out(&mut self, sink: &mut dyn FnMut(MidiOut)) {
+        for ev in self.pending.drain(..) {
+            sink(ev);
+        }
+    }
+}
+
+/// An instrument that writes down every MIDI message it is given, with its offset, and
+/// releases its held notes when the host asks it to silence them.
+struct Listener {
+    inner: Box<dyn Plugin>,
+    heard: Arc<std::sync::Mutex<Vec<(usize, [u8; 3])>>>,
+    held: Vec<u8>,
+}
+
+impl Plugin for Listener {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+    }
+    fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
+        self.heard.lock().unwrap().push((offset, [0x90, note, velocity]));
+        if !self.held.contains(&note) {
+            self.held.push(note);
+        }
+    }
+    fn note_off(&mut self, offset: usize, note: u8) {
+        self.heard.lock().unwrap().push((offset, [0x80, note, 0]));
+        self.held.retain(|p| *p != note);
+    }
+    fn midi(&mut self, offset: usize, msg: [u8; 3]) {
+        self.heard.lock().unwrap().push((offset, msg));
+        match msg[0] & 0xf0 {
+            0x90 if msg[2] > 0 => {
+                if !self.held.contains(&msg[1]) {
+                    self.held.push(msg[1]);
+                }
+            }
+            0x80 | 0x90 => self.held.retain(|p| *p != msg[1]),
+            _ => {}
+        }
+    }
+    fn all_notes_off(&mut self) {
+        for note in std::mem::take(&mut self.held) {
+            self.heard.lock().unwrap().push((0, [0x80, note, 0]));
+        }
+    }
+}
+
+/// Drops the controller-chase message the mix sends a fresh instrument, so the assertions
+/// below see only what the generator routed.
+fn routed(heard: &[(usize, [u8; 3])]) -> Vec<(usize, [u8; 3])> {
+    heard.iter().copied().filter(|(_, m)| !(m[0] & 0xF0 == 0xB0 && m[1] == 121)).collect()
+}
+
+/// Two instrument tracks: `src` hosts `src_plugin`, `dst` the listener. With `dst_first`
+/// the destination is the track that comes first in the session.
+fn routing_pair(dst_first: bool, src_plugin: &str) -> (Session, TrackId, TrackId) {
+    let mut s = Session::default();
+    let a = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let b = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let (src, dst) = if dst_first { (b, a) } else { (a, b) };
+    s.track_mut(src).unwrap().instrument = Some(Insert::new(src_plugin));
+    s.track_mut(dst).unwrap().instrument = Some(Insert::new("clap:test.listener"));
+    (s, src, dst)
+}
+
+#[test]
+fn routed_midi_reaches_the_other_tracks_instrument_at_its_offsets() {
+    let (mut s, src, dst) = routing_pair(false, "clap:test.gen");
+    assert!(s.connect_midi(src, dst));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![
+        PreparedInstance { track: src, slot: INSTRUMENT_SLOT, id: "clap:test.gen".into(), ch: 2, plugin: Box::new(Gen::new()) },
+        PreparedInstance {
+            track: dst,
+            slot: INSTRUMENT_SLOT,
+            id: "clap:test.listener".into(),
+            ch: 2,
+            plugin: Box::new(Listener { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard), held: Vec::new() }),
+        },
+    ]);
+    render_block(&mut eng, &s, 0);
+    let got = heard.lock().unwrap().clone();
+    // Same block, same offsets, channel and velocity intact.
+    assert_eq!(routed(&got), vec![(10, [0x92, 60, 100]), (20, [0xB2, 7, 64]), (30, [0xE2, 0, 64]), (300, [0x82, 60, 64])]);
+}
+
+#[test]
+fn routing_does_not_follow_the_sessions_track_order() {
+    // The destination is the *first* track in the session; it still hears the generator in
+    // the same block, because the mix runs strips in MIDI-depth levels, not session order.
+    let (mut s, src, dst) = routing_pair(true, "clap:test.gen");
+    assert!(s.connect_midi(src, dst));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![
+        PreparedInstance { track: src, slot: INSTRUMENT_SLOT, id: "clap:test.gen".into(), ch: 2, plugin: Box::new(Gen::new()) },
+        PreparedInstance {
+            track: dst,
+            slot: INSTRUMENT_SLOT,
+            id: "clap:test.listener".into(),
+            ch: 2,
+            plugin: Box::new(Listener { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard), held: Vec::new() }),
+        },
+    ]);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(routed(&heard.lock().unwrap()).len(), 4);
+}
+
+#[test]
+fn unplugging_a_midi_source_releases_the_notes_it_left_hanging() {
+    let (mut s, src, dst) = routing_pair(false, "clap:test.hold");
+    s.connect_midi(src, dst);
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![
+        PreparedInstance { track: src, slot: INSTRUMENT_SLOT, id: "clap:test.hold".into(), ch: 2, plugin: Box::new(Hold::new()) },
+        PreparedInstance {
+            track: dst,
+            slot: INSTRUMENT_SLOT,
+            id: "clap:test.listener".into(),
+            ch: 2,
+            plugin: Box::new(Listener { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard), held: Vec::new() }),
+        },
+    ]);
+    // A generator that only ever opens a note: the destination is left holding it.
+    render_block(&mut eng, &s, 0);
+    render_block(&mut eng, &s, 512);
+    let before = heard.lock().unwrap().len();
+    assert!(heard.lock().unwrap().contains(&(5, [0x90, 60, 100])), "the note started");
+
+    // Take the route away: the destination must be silenced, not left holding note 60.
+    s.disconnect_midi(src, dst);
+    render_block(&mut eng, &s, 1_024);
+    let got = heard.lock().unwrap().clone();
+    assert!(got[before..].contains(&(0, [0x80, 60, 0])), "the held note is released: {got:?}");
+    // And nothing more arrives from the source.
+    render_block(&mut eng, &s, 1_536);
+    let got = heard.lock().unwrap().clone();
+    assert!(!got[before..].iter().any(|(_, m)| *m == [0x90, 60, 100]), "the source is silent now");
+}
+
+#[test]
+fn deactivating_a_midi_source_releases_its_destination_notes() {
+    let (mut s, src, dst) = routing_pair(false, "clap:test.hold");
+    assert!(s.connect_midi(src, dst));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![
+        PreparedInstance { track: src, slot: INSTRUMENT_SLOT, id: "clap:test.hold".into(), ch: 2, plugin: Box::new(Hold::new()) },
+        PreparedInstance {
+            track: dst,
+            slot: INSTRUMENT_SLOT,
+            id: "clap:test.listener".into(),
+            ch: 2,
+            plugin: Box::new(Listener { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard), held: Vec::new() }),
+        },
+    ]);
+    render_block(&mut eng, &s, 0);
+    assert!(heard.lock().unwrap().contains(&(5, [0x90, 60, 100])));
+
+    s.track_mut(src).unwrap().inactive = true;
+    render_block(&mut eng, &s, 512);
+    assert!(heard.lock().unwrap().contains(&(0, [0x80, 60, 0])), "deactivation releases notes the source can no longer turn off");
+}
+
+#[test]
+fn midi_events_are_not_buffered_while_the_destination_is_inactive() {
+    let (mut s, src, dst) = routing_pair(false, "clap:test.gen");
+    assert!(s.connect_midi(src, dst));
+    s.track_mut(dst).unwrap().inactive = true;
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![
+        PreparedInstance { track: src, slot: INSTRUMENT_SLOT, id: "clap:test.gen".into(), ch: 2, plugin: Box::new(Gen::new()) },
+        PreparedInstance {
+            track: dst,
+            slot: INSTRUMENT_SLOT,
+            id: "clap:test.listener".into(),
+            ch: 2,
+            plugin: Box::new(Listener { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard), held: Vec::new() }),
+        },
+    ]);
+    render_block(&mut eng, &s, 0);
+    assert!(routed(&heard.lock().unwrap()).is_empty(), "inactive destinations do not receive or queue events");
+
+    s.track_mut(dst).unwrap().inactive = false;
+    render_block(&mut eng, &s, 512);
+    assert_eq!(routed(&heard.lock().unwrap()), vec![(10, [0x92, 60, 100]), (20, [0xB2, 7, 64]), (30, [0xE2, 0, 64]), (300, [0x82, 60, 64])]);
+}
+
+/// A generator that opens a note and never closes it.
+struct Hold {
+    inner: Box<dyn Plugin>,
+    pending: Vec<MidiOut>,
+}
+
+impl Hold {
+    fn new() -> Self {
+        Self { inner: soundcraft_dsp::create("gain").unwrap(), pending: Vec::new() }
+    }
+}
+
+impl Plugin for Hold {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+        self.pending.clear();
+        self.pending.push(MidiOut { offset: 5, msg: [0x90, 60, 100] });
+    }
+    fn produces_midi(&self) -> bool {
+        true
+    }
+    fn take_midi_out(&mut self, sink: &mut dyn FnMut(MidiOut)) {
+        for ev in self.pending.drain(..) {
+            sink(ev);
+        }
+    }
+}
+
+#[test]
+fn a_session_with_a_midi_cycle_still_renders() {
+    // The command refuses cycles, but a file can carry one: the mixer must remain bounded and
+    // finite instead of hanging or recursing indefinitely. The cyclic edges are not delivered.
+    let (mut s, src, dst) = routing_pair(false, "clap:test.gen");
+    s.connect_midi(src, dst);
+    s.track_mut(dst).unwrap().midi_out.push(src);
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![
+        PreparedInstance { track: src, slot: INSTRUMENT_SLOT, id: "clap:test.gen".into(), ch: 2, plugin: Box::new(Gen::new()) },
+        PreparedInstance {
+            track: dst,
+            slot: INSTRUMENT_SLOT,
+            id: "clap:test.listener".into(),
+            ch: 2,
+            plugin: Box::new(Listener { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard), held: Vec::new() }),
+        },
+    ]);
+    assert!(render_block(&mut eng, &s, 0).is_finite());
+    assert!(render_block(&mut eng, &s, 512).is_finite());
+    assert!(render_block(&mut eng, &s, 1_024).is_finite());
+}
+
+#[test]
+fn a_track_feeds_several_instruments_and_its_own_notes_still_play() {
+    let (mut s, src, dst) = routing_pair(false, "clap:test.gen");
+    let third = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    s.track_mut(third).unwrap().instrument = Some(Insert::new("clap:test.listener"));
+    s.connect_midi(src, dst);
+    s.connect_midi(src, third);
+    let heard_a = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let heard_b = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![
+        PreparedInstance { track: src, slot: INSTRUMENT_SLOT, id: "clap:test.gen".into(), ch: 2, plugin: Box::new(Gen::new()) },
+        PreparedInstance {
+            track: dst,
+            slot: INSTRUMENT_SLOT,
+            id: "clap:test.listener".into(),
+            ch: 2,
+            plugin: Box::new(Listener { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard_a), held: Vec::new() }),
+        },
+        PreparedInstance {
+            track: third,
+            slot: INSTRUMENT_SLOT,
+            id: "clap:test.listener".into(),
+            ch: 2,
+            plugin: Box::new(Listener { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard_b), held: Vec::new() }),
+        },
+    ]);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(routed(&heard_a.lock().unwrap()).len(), 4);
+    assert_eq!(routed(&heard_b.lock().unwrap()).len(), 4);
+}
+
+#[test]
+fn routed_notes_reach_a_builtin_instrument_through_the_default_midi_adapter() {
+    let mut s = Session::default();
+    let src = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Generator"));
+    let dst = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Synth"));
+    s.track_mut(src).unwrap().instrument = Some(Insert::new("clap:test.gen"));
+    s.track_mut(dst).unwrap().instrument = Some(Insert::new("subtractive_synth"));
+    assert!(s.connect_midi(src, dst));
+
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![
+        PreparedInstance { track: src, slot: INSTRUMENT_SLOT, id: "clap:test.gen".into(), ch: 2, plugin: Box::new(Gen::new()) },
+        PreparedInstance {
+            track: dst,
+            slot: INSTRUMENT_SLOT,
+            id: "subtractive_synth".into(),
+            ch: 2,
+            plugin: soundcraft_dsp::create("subtractive_synth").unwrap(),
+        },
+    ]);
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    let energy: f32 = out.iter().flat_map(|c| c.iter()).map(|x| x * x).sum();
+    assert!(energy > 1.0e-5, "the routed note produces instrument audio, energy {energy}");
+}

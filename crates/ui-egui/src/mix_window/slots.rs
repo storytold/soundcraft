@@ -1,5 +1,5 @@
-use super::plugin_menu::{instrument_menu, plugin_info, plugin_menu};
-use super::{Align2, Color32, Rect, Sense, SoundApp, Stroke, Tokens, Track, Ui, bold, groove, json, pos2, raised_key, shade, vec2};
+use super::plugin_menu::{instrument_menu, menu_row, plugin_info, plugin_menu};
+use super::{Align2, Color32, Rect, Sense, SoundApp, Stroke, Tokens, Track, TrackId, Ui, bold, groove, json, pos2, raised_key, shade, vec2};
 
 /// An instrument track's INSTRUMENT row: click opens a hosted instrument's plugin window,
 /// right-click (or click, when none is set) picks another instrument. A built-in's parameters
@@ -24,6 +24,66 @@ pub(crate) fn instrument_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, r:
     let popup = popup.close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
     popup.show(|ui| instrument_menu(app, ui, id));
     crate::sampler_window::drop_target(app, ui.ctx(), r, id);
+}
+
+/// The narrow button beside a MIDI-capable strip's instrument slot: where that track's MIDI goes.
+/// Its own instrument is always fed; the menu adds other tracks' instruments (real-time MIDI
+/// routing, the incumbent's "MIDI Output Path").
+pub(crate) fn midi_out_button(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
+    let t = Tokens::current();
+    let id = track.id;
+    let routed = !track.midi_out.is_empty();
+    let resp = ui.interact(r, ui.scope_id().with(("midi_out", id.0)), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("MIDI output path for {}", track.name)));
+    raised_key(ui.painter(), r, t.slot_face, resp.hovered());
+    groove(ui.painter(), r.min.x + 27.5, r.min.y + 1.0..=r.max.y - 1.0, t.slot_face[0]);
+    ui.painter().with_clip_rect(r.shrink(1.0)).text(
+        pos2(r.min.x + 13.5, r.center().y),
+        Align2::CENTER_CENTER,
+        "MIDI",
+        bold(8.0),
+        if routed { t.text } else { t.text_dim },
+    );
+    if routed {
+        ui.painter().circle_filled(pos2(r.min.x + 34.5, r.center().y), 2.5, t.accent);
+    }
+    let fed: Vec<String> = track.midi_out.iter().filter_map(|to| app.engine.session().track(*to).map(|x| x.name.clone())).collect();
+    let hover = if fed.is_empty() {
+        "MIDI output path: this track's own instrument\nClick to also feed other tracks' instruments".to_string()
+    } else {
+        format!("MIDI output path: own instrument + {}\nClick to change", fed.join(", "))
+    };
+    egui::Popup::menu(&resp.on_hover_text(hover)).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| midi_out_menu(app, ui, id));
+}
+
+/// The MIDI output path menu: every track with an instrument to feed, ticked when it is fed.
+fn midi_out_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
+    ui.set_min_width(190.0);
+    ui.strong("MIDI Output Path");
+    ui.label(egui::RichText::new("This track always feeds its own instrument.").size(8.0).color(Tokens::current().text_dim));
+    ui.separator();
+    let targets: Vec<(TrackId, String, bool)> = {
+        let s = app.engine.session();
+        let Some(src) = s.track(id) else { return };
+        s.tracks
+            .iter()
+            .filter(|t| t.id != id && t.kind.is_midi() && t.instrument.is_some())
+            .map(|t| (t.id, t.name.clone(), src.midi_out.contains(&t.id)))
+            .collect()
+    };
+    if targets.is_empty() {
+        ui.label(egui::RichText::new("No other track has an instrument.").color(Tokens::current().text_dim));
+    }
+    for (to, name, on) in targets {
+        if menu_row(ui, on, &name) {
+            let _ = app.run("mix.midi_out", json!({"track": id.0, "to": to.0, "on": !on}));
+            ui.close();
+        }
+    }
+    if app.engine.session().track(id).is_some_and(|t| !t.midi_out.is_empty()) && ui.button("Clear routes").clicked() {
+        let _ = app.run("mix.midi_out", json!({"track": id.0, "on": false}));
+        ui.close();
+    }
 }
 
 /// What a plugin slot shows at its left: a dot for inserts, the send's letter, or an arrow for

@@ -158,6 +158,12 @@ pub struct PluginInfo {
     pub category: Category,
     pub params: &'static [ParamInfo],
     pub is_instrument: bool,
+    /// The plugin is a MIDI processor/generator rather than an audio insert. This classification
+    /// is separate from whether this host can currently collect its MIDI output.
+    pub is_midi_processor: bool,
+    /// Produces MIDI output that the mixer can route to other tracks. This is separate from
+    /// [`PluginInfo::is_instrument`], which means the plugin accepts MIDI to make audio.
+    pub midi_out: bool,
     /// Usable as an offline (AudioSuite-style) process.
     pub audiosuite: bool,
 }
@@ -185,6 +191,17 @@ pub struct Transport {
     /// Start of the current bar, in quarter notes, and its number (0 for the first bar).
     pub bar_start: f64,
     pub bar: i64,
+}
+
+/// A MIDI event a plugin produced while processing a block (a MIDI generator's output).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MidiOut {
+    /// Sample offset inside the block that was just processed.
+    pub offset: u32,
+    /// A MIDI 1.0 channel voice message: the status byte with the channel in its low nibble,
+    /// then data1 and data2 — note on/off, control change, program change, channel or polyphonic
+    /// pressure, pitch bend (14-bit in data1/data2).
+    pub msg: [u8; 3],
 }
 
 /// A realtime audio processor or instrument.
@@ -223,10 +240,29 @@ pub trait Plugin: Send {
     /// Instruments: note events at sample offsets within the next block.
     fn note_on(&mut self, _offset: usize, _note: u8, _velocity: u8) {}
     fn note_off(&mut self, _offset: usize, _note: u8) {}
-    /// Instruments: any other MIDI 1.0 channel message (control change, pitch bend, pressure,
-    /// program change) at a sample offset within the next block.
-    fn midi(&mut self, _offset: usize, _msg: [u8; 3]) {}
+    /// MIDI 1.0 channel input at a sample offset within the next block. The default forwards
+    /// note on/off to the channel-agnostic instrument methods; hosts that support channels and
+    /// other channel-voice messages override this method.
+    fn midi(&mut self, offset: usize, msg: [u8; 3]) {
+        let [status, note, velocity] = msg;
+        match status & 0xf0 {
+            0x80 => self.note_off(offset, note),
+            0x90 if velocity == 0 => self.note_off(offset, note),
+            0x90 => self.note_on(offset, note, velocity),
+            _ => {}
+        }
+    }
     fn all_notes_off(&mut self) {}
+    /// True when the plugin generates MIDI (a MIDI generator in an instrument slot), so the host
+    /// may route its output to other tracks.
+    fn produces_midi(&self) -> bool {
+        false
+    }
+    /// MIDI the plugin produced while processing the block just passed to [`Plugin::process`],
+    /// oldest first, each with its offset in that block. The host calls this right after
+    /// `process` and before the next one; the events are taken, so a second call yields nothing
+    /// new. The default does nothing. Never allocates or blocks.
+    fn take_midi_out(&mut self, _sink: &mut dyn FnMut(MidiOut)) {}
     /// Sample-playing instruments (the Sampler): the recorded audio to play, `None` to clear it.
     /// `false` when the plugin does not play samples. Does not allocate; sounding voices stop.
     /// The previous sample is dropped here, so hosts keep their own reference to it (the

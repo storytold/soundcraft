@@ -99,6 +99,10 @@ pub struct UiState {
     pub track_tint: f32,
     /// Open plugin windows (track, slot).
     pub plugin_windows: Vec<(TrackId, usize)>,
+    /// Why the last attempt to open a plugin editor failed, per (track, slot): shown in the
+    /// plugin's own window, where the button was pressed.
+    #[serde(skip)]
+    pub editor_error: Option<(TrackId, usize, String)>,
     /// The send in the Send window (track, slot).
     #[serde(skip)]
     pub send_window: Option<(TrackId, usize)>,
@@ -176,6 +180,7 @@ impl Default for UiState {
             edit_views: vec!["color".into()],
             track_tint: 0.5,
             plugin_windows: Vec::new(),
+            editor_error: None,
             send_window: None,
             audiosuite: None,
             status: String::new(),

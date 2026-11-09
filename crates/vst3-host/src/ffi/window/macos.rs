@@ -60,6 +60,10 @@ impl HostWindow {
         self.get().and_then(|w| w.contentView()).map_or(std::ptr::null_mut(), |v| Retained::as_ptr(&v).cast_mut().cast())
     }
 
+    /// Nothing to focus separately: the view's own window takes the keyboard on this
+    /// platform.
+    pub fn focus(&self) {}
+
     pub fn raise(&self) {
         if let Some(w) = self.get() {
             w.makeKeyAndOrderFront(None);
@@ -69,6 +73,12 @@ impl HostWindow {
     pub fn is_visible(&self) -> bool {
         self.get().is_some_and(|w| w.isVisible())
     }
+
+    /// AppKit delivers the window events; nothing to pump.
+    pub fn pump(&mut self) {}
+
+    /// The window is shown when it is created.
+    pub fn map(&self) {}
 
     pub fn close(self) {
         if let Some(w) = self.get() {

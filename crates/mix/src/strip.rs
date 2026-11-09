@@ -1,12 +1,12 @@
 use super::automation::{GainRamp, transport_at, volume_db_at};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
-use super::midi::{chase_controllers, schedule_notes};
+use super::midi::{MIDI_ROUTE_CAP, chase_controllers, feed_routed, schedule_notes};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
 use super::routing::receives_solo;
 use super::{
-    AutoParam, BusId, ChannelFormat, MAX_CHANNELS, PanLaw, Plugin, Range, Route, Samples, Session, SourceAudio, Track, TrackId, TrackKind, Transport,
-    db_to_gain,
+    AutoParam, BusId, ChannelFormat, MAX_CHANNELS, MidiOut, PanLaw, Plugin, Range, Route, Samples, Session, SourceAudio, Track, TrackId, TrackKind,
+    Transport, db_to_gain,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,6 +41,13 @@ pub(crate) struct Strip {
     pub(crate) sample: Option<Arc<SourceAudio>>,
     /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
     pub(crate) held: Vec<u8>,
+    /// MIDI routed in from other tracks for the block being rendered (real-time MIDI routing).
+    /// Bounded by [`MIDI_ROUTE_CAP`]; filled by the level before this strip's, drained by
+    /// `process_strip`.
+    pub(crate) midi_in: Vec<MidiOut>,
+    /// Active MIDI source tracks and their instrument ids. When a source is removed, deactivated
+    /// or replaced, the destination's held notes are released first.
+    pub(crate) midi_src: Vec<(TrackId, String)>,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
     pub(crate) muted: bool,
@@ -140,6 +147,8 @@ impl Strip {
             instrument: None,
             sample: None,
             held: Vec::new(),
+            midi_in: Vec::with_capacity(MIDI_ROUTE_CAP),
+            midi_src: Vec::new(),
             chase: true,
             muted: false,
             gr: 0.0,
@@ -311,6 +320,10 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
             chase_controllers(s, t, pos, inst);
         }
         schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+        // MIDI routed in from another track's generator, at the offsets it was produced at.
+        for ev in &strip.midi_in {
+            feed_routed(inst, ev, &mut strip.held, frames);
+        }
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
         } else if let Some(c0) = strip.buf.first_mut() {
@@ -447,6 +460,8 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
     }
     apply_fader(s, t, strip, blk);
     gate_mute_automation(t, strip, blk);
+    // This block's routed events are spent: keep the buffer (no allocation next block), empty it.
+    strip.midi_in.clear();
 }
 
 /// Silences a block the plugin filled with NaN or infinity and takes the plugin out until the

@@ -126,10 +126,12 @@ where things are.
   modulator, saturator, lo-fi, rectifier, subharmonic, pitch shifter, time shift, gain, trim,
   invert, DC removal, signal generator, dither, a subtractive synth, a drum synth and a sampler
   (plays any WAV, AIFF, FLAC, MP3 or OGG across the keyboard), all original. **CLAP plugins**
-  load too. Any processor runs offline as AudioSuite, and user presets save per plugin.
+  load too. VST3 MIDI generators can route their output to instruments on other tracks in real
+  time. Any processor runs offline as AudioSuite, and user presets save per plugin.
 - **MIDI:** instrument and MIDI tracks, a piano-roll MIDI editor with a velocity lane, an event
   list, a score view, step input, quantize, transpose, real-time properties, Standard MIDI Files,
-  and Audio-to-MIDI from a sung or played melody.
+  and Audio-to-MIDI from a sung or played melody. VST3-generated notes can feed another track's
+  instrument; MIDI device input/output is not yet supported.
 - **Recording:** punch in on a selection or on the fly, pre/post-roll, loop recording with a
   playlist per take, input monitoring through the full channel strip, and autosave with recovery.
 - **Time and tempo:** Bars|Beats, Min:Secs, Timecode (every rate, drop-frame included),

@@ -300,6 +300,11 @@ pub struct Track {
     /// Instrument plugin (instrument tracks) — registry id.
     #[serde(default)]
     pub instrument: Option<crate::Insert>,
+    /// Real-time MIDI routing: the tracks this one's output is fed to (Pro Tools' "MIDI Output
+    /// Path"). A track whose instrument (or MIDI clips) drives other tracks' instruments.
+    /// Empty means the default: this track's MIDI only goes to its own instrument.
+    #[serde(default)]
+    pub midi_out: Vec<TrackId>,
     /// Ticks (musical) or samples timebase for clips.
     #[serde(default)]
     pub ticks_timebase: bool,
@@ -345,6 +350,7 @@ impl Track {
             folder: None,
             folder_open: true,
             instrument: None,
+            midi_out: Vec::new(),
             ticks_timebase: kind.is_midi(),
             elastic: None,
             pinned: false,

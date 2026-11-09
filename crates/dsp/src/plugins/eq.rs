@@ -40,6 +40,8 @@ pub static EQ7_INFO: PluginInfo = PluginInfo {
     category: Category::Eq,
     params: &EQ7_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -60,6 +62,8 @@ pub static EQ1_INFO: PluginInfo = PluginInfo {
     category: Category::Eq,
     params: &EQ1_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 

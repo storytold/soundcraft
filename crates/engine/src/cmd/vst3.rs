@@ -12,7 +12,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "List VST3 Plugins",
         [],
         None,
-        "{rescan?: bool} → [{id: \"vst3:<class id hex>\", class_id, name, vendor, version, sdk_version, sub_categories, category, is_instrument, path}]",
+        "{rescan?: bool} → [{id: \"vst3:<class id hex>\", class_id, name, vendor, version, sdk_version, sub_categories, category, is_instrument, is_midi_processor, midi_out, path}]",
         always,
         |_, p| {
             let list = if p.get("rescan").and_then(Value::as_bool).unwrap_or(false) {

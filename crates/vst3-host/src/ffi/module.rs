@@ -467,6 +467,9 @@ impl Bundle {
             // SAFETY: `ProcessContext` is plain data (numbers and small structs); all-zero is valid.
             context: unsafe { std::mem::zeroed() },
             event_in: false,
+            event_out: false,
+            event_out_buses: 0,
+            midi_out: Vec::with_capacity(EVENT_CAP),
             editor: Arc::new(EditorLink::default()),
             component,
             host,

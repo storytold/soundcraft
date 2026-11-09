@@ -68,7 +68,7 @@ pub(crate) const MAX_PORT_CHANNELS: u32 = 64;
 /// Most feature strings read from a descriptor.
 const MAX_FEATURES: usize = 64;
 /// Capacity of the per-block event list (preallocated: `process` never allocates).
-pub(crate) const EVENT_CAP: usize = 1024;
+pub(crate) const EVENT_CAP: usize = 2048;
 /// Largest plugin state we accept from `clap_plugin_state.save` (hostile-input cap).
 pub(crate) const MAX_STATE_BYTES: usize = 64 << 20;
 /// Most editor parameter edits buffered between two UI frames.

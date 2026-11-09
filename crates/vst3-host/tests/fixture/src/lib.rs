@@ -1,4 +1,4 @@
-//! Test-only VST3 plugin for soundcraft-vst3-host (six audio module classes):
+//! Test-only VST3 plugin for soundcraft-vst3-host (seven audio module classes):
 //!
 //! - "Fixture Gain" (`Fx`): stereo or mono in → out × gain, with a separate edit controller
 //!   (connected through IConnectionPoint, synced through the component state). Params: 7 "Gain"
@@ -7,6 +7,10 @@
 //!   Reports 3 samples of latency. State: the component stores the gain (one LE f64), the
 //!   controller the Freq value (one LE f64). Its controller has an editor view (`IPlugView`,
 //!   320×240, no real drawing) supporting NSView/HWND/X11.
+//! - "Fixture Note Gen" (`Fx`): no audio buses at all, one Event in and one Event out. Every
+//!   block it writes a fixed set of output events (note on/off, CC, pitch bend, program change,
+//!   channel and poly pressure, plus a marker it expects the host to drop) into the host's
+//!   `outputEvents`, only after the host activated its Event output bus.
 //! - "Fixture Synth" (`Instrument|Synth`): a single-component instrument (the component is also
 //!   its edit controller). No audio input, one stereo output, one event input; every output
 //!   sample is the velocity of the held note (sample-accurate), 0 when none. Poly pressure, and
@@ -38,6 +42,7 @@ const WIDE16_CID: TUID = uid(0x5C0A1D03, 0x11112222, 0x33334444, 0x55556666);
 const WIDE65B_CID: TUID = uid(0x5C0A1D04, 0x11112222, 0x33334444, 0x55556666);
 const WIDE65_CID: TUID = uid(0x5C0A1D05, 0x11112222, 0x33334444, 0x55556666);
 const WIDE32_CID: TUID = uid(0x5C0A1D06, 0x11112222, 0x33334444, 0x55556666);
+const GEN_CID: TUID = uid(0x5C0A1D07, 0x11112222, 0x33334444, 0x55556666);
 
 fn copy_c8(src: &str, dst: &mut [c_char]) {
     for (d, s) in dst.iter_mut().zip(src.bytes().chain(std::iter::once(0))) {
@@ -732,6 +737,214 @@ impl IAudioProcessorTrait for Wide {
     }
 }
 
+// ---- note generator ------------------------------------------------------------------------
+
+/// A MIDI generator: no audio buses at all, one Event in, one Event out. It writes a fixed set of
+/// output events into the host's `outputEvents` list, which is what the host has to convert and
+/// hand on. Its sub-categories say plain `Fx`, so only the bus layout reveals that it produces
+/// MIDI.
+struct NoteGen {
+    /// The host activated the Event output bus (only then may the plugin write events).
+    out_active: AtomicBool,
+    _live: Live,
+}
+
+impl Class for NoteGen {
+    type Interfaces = (IComponent, IAudioProcessor, IEditController);
+}
+
+impl IPluginBaseTrait for NoteGen {
+    unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
+        kResultOk
+    }
+    unsafe fn terminate(&self) -> tresult {
+        kResultOk
+    }
+}
+
+impl IComponentTrait for NoteGen {
+    unsafe fn getControllerClassId(&self, _class_id: *mut TUID) -> tresult {
+        kNotImplemented
+    }
+    unsafe fn setIoMode(&self, _mode: IoMode) -> tresult {
+        kResultOk
+    }
+    unsafe fn getBusCount(&self, media: MediaType, dir: BusDirection) -> i32 {
+        let out = dir == BusDirections_::kOutput as BusDirection;
+        if media == MediaTypes_::kEvent as MediaType {
+            1
+        } else if out {
+            0
+        } else {
+            0
+        }
+    }
+    unsafe fn getBusInfo(&self, media: MediaType, dir: BusDirection, index: i32, bus: *mut BusInfo) -> tresult {
+        if index != 0 || media != MediaTypes_::kEvent as MediaType {
+            return kInvalidArgument;
+        }
+        let b = unsafe { &mut *bus };
+        b.mediaType = media;
+        b.direction = dir;
+        b.channelCount = 16;
+        copy_c16(if dir == BusDirections_::kInput as BusDirection { "Notes" } else { "MIDI Out" }, &mut b.name);
+        b.busType = BusTypes_::kMain as BusType;
+        b.flags = BusInfo_::BusFlags_::kDefaultActive as u32;
+        kResultOk
+    }
+    unsafe fn getRoutingInfo(&self, _i: *mut RoutingInfo, _o: *mut RoutingInfo) -> tresult {
+        kNotImplemented
+    }
+    unsafe fn activateBus(&self, media: MediaType, dir: BusDirection, index: i32, state: TBool) -> tresult {
+        if media == MediaTypes_::kEvent as MediaType && dir == BusDirections_::kOutput as BusDirection && index == 0 {
+            self.out_active.store(state != 0, Ordering::Relaxed);
+        }
+        kResultOk
+    }
+    unsafe fn setActive(&self, _state: TBool) -> tresult {
+        kResultOk
+    }
+    unsafe fn setState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+    unsafe fn getState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+}
+
+impl IAudioProcessorTrait for NoteGen {
+    unsafe fn setBusArrangements(&self, _i: *mut SpeakerArrangement, n_in: i32, _o: *mut SpeakerArrangement, n_out: i32) -> tresult {
+        if n_in == 0 && n_out == 0 { kResultTrue } else { kResultFalse }
+    }
+    unsafe fn getBusArrangement(&self, _dir: BusDirection, _index: i32, _arr: *mut SpeakerArrangement) -> tresult {
+        kInvalidArgument
+    }
+    unsafe fn canProcessSampleSize(&self, size: i32) -> tresult {
+        if size == SymbolicSampleSizes_::kSample32 as i32 { kResultOk } else { kNotImplemented }
+    }
+    unsafe fn getLatencySamples(&self) -> u32 {
+        0
+    }
+    unsafe fn setupProcessing(&self, _setup: *mut ProcessSetup) -> tresult {
+        kResultOk
+    }
+    unsafe fn setProcessing(&self, _state: TBool) -> tresult {
+        kResultOk
+    }
+    unsafe fn process(&self, data: *mut ProcessData) -> tresult {
+        let d = unsafe { &*data };
+        let Some(out) = (unsafe { ComRef::from_raw(d.outputEvents) }) else { return kResultOk };
+        if !self.out_active.load(Ordering::Relaxed) {
+            return kResultOk;
+        }
+        // One of every kind the host must convert, at a known offset each, plus one it must drop.
+        let mut e: Event = unsafe { std::mem::zeroed() };
+        let put = |e: &mut Event, offset: i32, fill: &mut dyn FnMut(&mut Event)| {
+            *e = unsafe { std::mem::zeroed() };
+            e.busIndex = 0;
+            e.sampleOffset = offset;
+            fill(e);
+            let _ = unsafe { out.addEvent(e as *mut Event) };
+        };
+        let note = |e: &mut Event, kind: u16, pitch: i16, vel: f32| {
+            e.r#type = kind;
+            if kind == Event_::EventTypes_::kNoteOnEvent as u16 {
+                e.__field0.noteOn.channel = 2;
+                e.__field0.noteOn.pitch = pitch;
+                e.__field0.noteOn.velocity = vel;
+            } else {
+                e.__field0.noteOff.channel = 2;
+                e.__field0.noteOff.pitch = pitch;
+                e.__field0.noteOff.velocity = vel;
+            }
+        };
+        let cc = |e: &mut Event, number: u8, value: i8, value2: i8| {
+            e.r#type = Event_::EventTypes_::kLegacyMIDICCOutEvent as u16;
+            e.__field0.midiCCOut.channel = 2;
+            e.__field0.midiCCOut.controlNumber = number;
+            e.__field0.midiCCOut.value = value;
+            e.__field0.midiCCOut.value2 = value2;
+        };
+        put(&mut e, 0, &mut |e| note(e, Event_::EventTypes_::kNoteOnEvent as u16, 64, 100.0 / 127.0));
+        put(&mut e, 1, &mut |e| note(e, Event_::EventTypes_::kNoteOnEvent as u16, 65, 1.0));
+        put(&mut e, 2, &mut |e| note(e, Event_::EventTypes_::kNoteOffEvent as u16, 64, 0.0));
+        put(&mut e, 3, &mut |e| cc(e, 7, 64, 0));
+        put(&mut e, 4, &mut |e| cc(e, ControllerNumbers_::kPitchBend as u8, 52, 42));
+        put(&mut e, 5, &mut |e| cc(e, ControllerNumbers_::kCtrlProgramChange as u8, 42, 0));
+        put(&mut e, 6, &mut |e| cc(e, ControllerNumbers_::kAfterTouch as u8, 33, 0));
+        put(&mut e, 7, &mut |e| {
+            e.r#type = Event_::EventTypes_::kPolyPressureEvent as u16;
+            e.__field0.polyPressure.channel = 2;
+            e.__field0.polyPressure.pitch = 60;
+            e.__field0.polyPressure.pressure = 77.0 / 127.0;
+            e.__field0.polyPressure.noteId = 0;
+        });
+        put(&mut e, 8, &mut |e| {
+            // Raw data and a chord: no MIDI 1.0 equivalent, the host must drop them rather than
+            // guess (and must not follow the data pointer).
+            e.r#type = Event_::EventTypes_::kDataEvent as u16;
+            e.__field0.data.size = 0;
+            e.__field0.data.r#type = 0;
+            e.__field0.data.bytes = std::ptr::null();
+        });
+        put(&mut e, 9, &mut |e| e.r#type = Event_::EventTypes_::kChordEvent as u16);
+        // Invalid event timestamps and bus indices are ignored by the host, not clamped into a
+        // valid note at the beginning or end of the block.
+        put(&mut e, -1, &mut |e| note(e, Event_::EventTypes_::kNoteOnEvent as u16, 66, 1.0));
+        put(&mut e, d.numSamples, &mut |e| note(e, Event_::EventTypes_::kNoteOnEvent as u16, 67, 1.0));
+        put(&mut e, 11, &mut |e| {
+            e.busIndex = 1;
+            note(e, Event_::EventTypes_::kNoteOnEvent as u16, 68, 1.0);
+        });
+        kResultOk
+    }
+    unsafe fn getTailSamples(&self) -> u32 {
+        0
+    }
+}
+
+impl IEditControllerTrait for NoteGen {
+    unsafe fn setComponentState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+    unsafe fn setState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+    unsafe fn getState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+    unsafe fn getParameterCount(&self) -> i32 {
+        0
+    }
+    unsafe fn getParameterInfo(&self, _index: i32, _info: *mut ParameterInfo) -> tresult {
+        kInvalidArgument
+    }
+    unsafe fn getParamStringByValue(&self, _id: u32, _n: f64, _s: *mut String128) -> tresult {
+        kInvalidArgument
+    }
+    unsafe fn getParamValueByString(&self, _id: u32, _s: *mut TChar, _v: *mut f64) -> tresult {
+        kInvalidArgument
+    }
+    unsafe fn normalizedParamToPlain(&self, _id: u32, n: f64) -> f64 {
+        n
+    }
+    unsafe fn plainParamToNormalized(&self, _id: u32, v: f64) -> f64 {
+        v
+    }
+    unsafe fn getParamNormalized(&self, _id: u32) -> f64 {
+        0.0
+    }
+    unsafe fn setParamNormalized(&self, _id: u32, _v: f64) -> tresult {
+        kResultOk
+    }
+    unsafe fn setComponentHandler(&self, _handler: *mut IComponentHandler) -> tresult {
+        kResultOk
+    }
+    unsafe fn createView(&self, _name: FIDString) -> *mut IPlugView {
+        std::ptr::null_mut()
+    }
+}
+
 // ---- factory -------------------------------------------------------------------------------
 
 struct Factory {
@@ -742,7 +955,7 @@ impl Class for Factory {
     type Interfaces = (IPluginFactory2,);
 }
 
-const CLASSES: [(TUID, &str, &str, &str); 7] = [
+const CLASSES: [(TUID, &str, &str, &str); 8] = [
     (GAIN_CID, "Audio Module Class", "Fixture Gain", "Fx"),
     (GAIN_CTRL_CID, "Component Controller Class", "Fixture Gain", ""),
     (SYNTH_CID, "Audio Module Class", "Fixture Synth", "Instrument|Synth"),
@@ -750,6 +963,7 @@ const CLASSES: [(TUID, &str, &str, &str); 7] = [
     (WIDE32_CID, "Audio Module Class", "Fixture Wide 32 buses", "Fx"),
     (WIDE65B_CID, "Audio Module Class", "Fixture Wide 65 buses", "Fx"),
     (WIDE65_CID, "Audio Module Class", "Fixture Wide 65 channels", "Fx"),
+    (GEN_CID, "Audio Module Class", "Fixture Note Gen", "Fx"),
 ];
 
 impl IPluginFactoryTrait for Factory {
@@ -792,6 +1006,8 @@ impl IPluginFactoryTrait for Factory {
             .to_com_ptr::<FUnknown>()
         } else if cid == SYNTH_CID {
             ComWrapper::new(Synth { level: AtomicU32::new(0), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
+        } else if cid == GEN_CID {
+            ComWrapper::new(NoteGen { out_active: AtomicBool::new(false), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
         } else if let Some((buses, channels)) = [(WIDE16_CID, (16, 64)), (WIDE32_CID, (32, 2)), (WIDE65B_CID, (65, 2)), (WIDE65_CID, (1, 65))]
             .into_iter()
             .find_map(|(c, layout)| (c == cid).then_some(layout))

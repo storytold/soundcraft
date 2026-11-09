@@ -38,6 +38,11 @@ pub fn load_bundle(path: &Path) -> Result<Vec<ClapDescriptor>, ClapError> {
             id: format!("{}{}", crate::ID_PREFIX, d.id),
             category: paths::category_from_features(&d.features),
             is_instrument: paths::is_instrument(&d.features),
+            is_midi_processor: paths::is_midi_processor(&d.features),
+            // SoundCraft currently consumes CLAP output events only for parameter edits; MIDI
+            // note-effect output is not yet routed, so do not advertise those plugins as MIDI
+            // generators in the instrument picker.
+            midi_out: false,
             plugin_id: d.id,
             name: d.name,
             vendor: d.vendor,
@@ -155,6 +160,8 @@ fn build_info(d: &ClapDescriptor, inst: &Instance) -> &'static PluginInfo {
         category: d.category,
         params: Box::leak(params.into_boxed_slice()),
         is_instrument: d.is_instrument,
+        is_midi_processor: d.is_midi_processor,
+        midi_out: d.midi_out,
         audiosuite: false,
     }))
 }

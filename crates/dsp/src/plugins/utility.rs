@@ -50,6 +50,8 @@ pub static SHIFT_INFO: PluginInfo = PluginInfo {
     category: Category::Other,
     params: &SHIFT_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: false,
 };
 
@@ -150,6 +152,8 @@ pub static GAIN_INFO: PluginInfo = PluginInfo {
     category: Category::Other,
     params: &GAIN_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -206,6 +210,8 @@ pub static TRIM_INFO: PluginInfo = PluginInfo {
     category: Category::Other,
     params: &TRIM_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -254,8 +260,17 @@ impl Plugin for Trim {
 
 // ---------------------------------------------------------------------------------------------
 
-pub static INVERT_INFO: PluginInfo =
-    PluginInfo { id: "invert", name: "Invert", short_name: "Invert", category: Category::Other, params: &[], is_instrument: false, audiosuite: true };
+pub static INVERT_INFO: PluginInfo = PluginInfo {
+    id: "invert",
+    name: "Invert",
+    short_name: "Invert",
+    category: Category::Other,
+    params: &[],
+    is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
+    audiosuite: true,
+};
 
 /// Polarity inversion.
 #[derive(Default)]
@@ -300,6 +315,8 @@ pub static DC_INFO: PluginInfo = PluginInfo {
     category: Category::Other,
     params: &DC_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -367,6 +384,8 @@ pub static GEN_INFO: PluginInfo = PluginInfo {
     category: Category::Other,
     params: &GEN_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -452,6 +471,8 @@ pub static DITHER_INFO: PluginInfo = PluginInfo {
     category: Category::Dither,
     params: &DITHER_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 

@@ -21,6 +21,9 @@ pub(crate) fn structure_fingerprint(s: &Session) -> usize {
             snd.target.hash(&mut h);
         }
         t.instrument.as_ref().map(|x| x.plugin.as_str()).hash(&mut h);
+        for id in &t.midi_out {
+            id.hash(&mut h);
+        }
         let sample = t.instrument.as_ref().and_then(|x| x.sample);
         sample.hash(&mut h);
         // Which decoded audio it is, so new audio under the same id (another session) re-syncs.
@@ -32,6 +35,52 @@ pub(crate) fn structure_fingerprint(s: &Session) -> usize {
     }
     s.main_format().hash(&mut h);
     h.finish() as usize
+}
+
+/// How many tracks one track may feed, and how many sources one track may wait for.
+const MAX_MIDI_DESTS: usize = 64;
+
+/// Strips grouped into the order the real-time MIDI routing demands: a track that is fed MIDI
+/// runs in a later group than its sources, so it hears their events in the same block. With no
+/// routes there is one group, which is the plain parallel render. A cycle (only reachable from a
+/// session whose routes predate the check) is broken by running what is left in one last group.
+pub(crate) fn midi_levels(s: &Session, order: &[usize]) -> Vec<Vec<usize>> {
+    if s.tracks.iter().all(|t| t.midi_out.is_empty()) {
+        return vec![order.to_vec()];
+    }
+    // Track i waits for every track that routes MIDI to it (self-routes are ignored).
+    let mut deps = vec![Vec::new(); s.tracks.len()];
+    for (i, t) in s.tracks.iter().enumerate() {
+        if t.inactive || !t.kind.is_midi() || t.instrument.is_none() {
+            continue;
+        }
+        for &to in t.midi_out.iter().take(MAX_MIDI_DESTS) {
+            let Some(j) = s.tracks.iter().position(|x| x.id == to) else { continue };
+            if let Some(d) = deps.get_mut(j).filter(|d| i != j && d.len() < MAX_MIDI_DESTS) {
+                d.push(i);
+            }
+        }
+    }
+    let mut done = vec![false; s.tracks.len()];
+    let mut left: Vec<usize> = order.to_vec();
+    let mut levels: Vec<Vec<usize>> = Vec::new();
+    while !left.is_empty() {
+        let ready: Vec<usize> =
+            left.iter().copied().filter(|&i| deps.get(i).is_none_or(|d| d.iter().all(|&j| done.get(j).copied().unwrap_or(true)))).collect();
+        if ready.is_empty() {
+            // A cycle: run the rest together (their events then arrive one block later).
+            levels.push(std::mem::take(&mut left));
+            break;
+        }
+        for &i in &ready {
+            if let Some(x) = done.get_mut(i) {
+                *x = true;
+            }
+        }
+        left.retain(|&i| !done.get(i).copied().unwrap_or(true));
+        levels.push(ready);
+    }
+    levels
 }
 
 /// Audio/instrument tracks first, then auxes ordered so bus producers come before consumers.

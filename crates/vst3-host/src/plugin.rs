@@ -1,7 +1,7 @@
 //! `Vst3Plugin`: a loaded VST3 instance behind the safe `soundcraft_dsp::Plugin` trait.
 
 use crate::ffi::{AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND, ProcessInput};
-use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport, Unit};
+use soundcraft_dsp::{MidiOut, Plugin, PluginEditor, PluginInfo, Transport, Unit};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,12 +46,17 @@ pub struct Vst3Plugin {
     midi_map: Vec<Option<u32>>,
     /// Controller points for the next block: (time, param id, normalized value). Bounded.
     controls: Vec<(u32, u32, f64)>,
+    /// MIDI the plugin produced during the last `process`, oldest first, block relative. Bounded
+    /// (`EVENT_CAP`), never allocated on the audio thread.
+    midi_out: Vec<MidiOut>,
     inputs: BusBuffers,
     outputs: BusBuffers,
     has_input: bool,
     has_output: bool,
     event_input: bool,
-    held: [bool; 128],
+    /// The plugin's event output bus is active: its MIDI is collected into `midi_out`.
+    event_output: bool,
+    held: [[bool; 128]; 16],
     channels: usize,
     max_block: usize,
     latency: usize,
@@ -92,12 +97,14 @@ impl Vst3Plugin {
             notes: Vec::with_capacity(EVENT_CAP),
             midi_map: Vec::new(),
             controls: Vec::with_capacity(EVENT_CAP),
+            midi_out: Vec::with_capacity(EVENT_CAP),
             inputs: BusBuffers::new(&[], 0),
             outputs: BusBuffers::new(&[], 0),
             has_input: false,
             has_output: false,
             event_input: false,
-            held: [false; 128],
+            event_output: false,
+            held: [[false; 128]; 16],
             channels: 2,
             max_block: 0,
             latency: 0,
@@ -184,9 +191,12 @@ fn push_sorted(notes: &mut Vec<NoteEvent>, e: NoteEvent) {
 /// Keeps only the pending releases, one per key and moved to the start of the next block, so at
 /// most 128 remain and `all_notes_off` always has room in the queue.
 fn keep_releases(notes: &mut Vec<NoteEvent>) {
-    let mut seen = [false; 128];
+    // One release per (channel, key): notes are held per channel.
+    let mut seen = [[false; 128]; 16];
     notes.retain(|e| match *e {
-        NoteEvent::Off { key, .. } => seen.get_mut(usize::from(key)).is_some_and(|s| !std::mem::replace(s, true)),
+        NoteEvent::Off { channel, key, .. } => {
+            seen.get_mut(usize::from(channel)).and_then(|c| c.get_mut(usize::from(key))).is_some_and(|s| !std::mem::replace(s, true))
+        }
         _ => false,
     });
     for e in notes.iter_mut() {
@@ -240,6 +250,8 @@ impl Plugin for Vst3Plugin {
                 self.has_input = layout.inputs.first().is_some_and(|&c| c > 0);
                 self.has_output = layout.outputs.first().is_some_and(|&c| c > 0);
                 self.event_input = layout.event_input;
+                self.event_output = layout.event_output;
+                self.midi_out.clear();
                 self.max_block = mb;
                 self.latency = self.inst.latency() as usize;
                 self.tail = self.inst.tail() as usize;
@@ -270,7 +282,8 @@ impl Plugin for Vst3Plugin {
         keep_releases(&mut self.notes);
         self.controls.clear();
         self.all_notes_off();
-        self.held = [false; 128];
+        self.midi_out.clear();
+        self.held = [[false; 128]; 16];
     }
 
     fn set_param(&mut self, id: &str, value: f32) -> bool {
@@ -298,6 +311,9 @@ impl Plugin for Vst3Plugin {
     }
 
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        // The mixer may not drain output when no track is routed. Do not replay those events if a
+        // route is added for the next block.
+        self.midi_out.clear();
         if !self.inst.is_active() || self.max_block == 0 {
             return;
         }
@@ -343,6 +359,17 @@ impl Plugin for Vst3Plugin {
             self.pending.clear();
             self.notes.drain(..k);
             self.position = self.position.saturating_add(i64::try_from(n).unwrap_or(0));
+            if self.event_output {
+                // A MIDI generator has written its events into the plugin's event output bus:
+                // collect them, keeping the offset each one carries inside this block. Bounded:
+                // the queue is preallocated and drops what does not fit.
+                let q = &mut self.midi_out;
+                self.inst.take_midi_out(&mut |e| {
+                    if q.len() < q.capacity() {
+                        q.push(e);
+                    }
+                });
+            }
             match r {
                 Ok(()) if self.has_output => {
                     read_output(&self.outputs, 0, io, ch, (start, n));
@@ -372,8 +399,8 @@ impl Plugin for Vst3Plugin {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        self.push_note(NoteEvent::On { time, key: note, velocity: f32::from(velocity.min(127)) / 127.0 });
-        if let Some(h) = self.held.get_mut(note as usize) {
+        self.push_note(NoteEvent::On { time, channel: 0, key: note, velocity: f32::from(velocity.min(127)) / 127.0 });
+        if let Some(h) = self.held.get_mut(0).and_then(|c| c.get_mut(note as usize)) {
             *h = true;
         }
     }
@@ -383,26 +410,65 @@ impl Plugin for Vst3Plugin {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        self.push_note(NoteEvent::Off { time, key: note });
-        if let Some(h) = self.held.get_mut(note as usize) {
+        self.push_note(NoteEvent::Off { time, channel: 0, key: note, velocity: 0.0 });
+        if let Some(h) = self.held.get_mut(0).and_then(|c| c.get_mut(note as usize)) {
             *h = false;
         }
     }
 
     fn midi(&mut self, offset: usize, msg: [u8; 3]) {
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        let [_, d1, d2] = msg.map(|b| b & 0x7F);
-        let (ctrl, value) = match msg[0] & 0xF0 {
-            0xB0 => (usize::from(d1), f64::from(d2) / 127.0),
-            0xD0 => (AFTERTOUCH, f64::from(d1) / 127.0),
-            0xE0 => (PITCH_BEND, f64::from(u16::from(d2) << 7 | u16::from(d1)) / 16383.0),
-            0xA0 if self.event_input => {
-                self.push_note(NoteEvent::Pressure { time, key: d1, pressure: f32::from(d2) / 127.0 });
+        let [status, raw_d1, raw_d2] = msg;
+        let (channel, d1, d2) = (status & 0x0f, raw_d1 & 0x7f, raw_d2 & 0x7f);
+        let ch = usize::from(channel);
+        let key = usize::from(d1);
+        match status & 0xf0 {
+            0x80 => {
+                if self.event_input {
+                    self.push_note(NoteEvent::Off { time, channel, key: d1, velocity: f32::from(d2) / 127.0 });
+                }
+                if let Some(h) = self.held.get_mut(ch).and_then(|c| c.get_mut(key)) {
+                    *h = false;
+                }
                 return;
             }
-            _ => return,
+            0x90 if d2 == 0 => {
+                if self.event_input {
+                    self.push_note(NoteEvent::Off { time, channel, key: d1, velocity: 0.0 });
+                }
+                if let Some(h) = self.held.get_mut(ch).and_then(|c| c.get_mut(key)) {
+                    *h = false;
+                }
+                return;
+            }
+            0x90 => {
+                if self.event_input {
+                    self.push_note(NoteEvent::On { time, channel, key: d1, velocity: f32::from(d2) / 127.0 });
+                }
+                if let Some(h) = self.held.get_mut(ch).and_then(|c| c.get_mut(key)) {
+                    *h = true;
+                }
+                return;
+            }
+            0xa0 => {
+                if self.event_input {
+                    self.push_note(NoteEvent::Pressure { time, channel, key: d1, pressure: f32::from(d2) / 127.0 });
+                }
+                return;
+            }
+            _ => {}
+        }
+        if self.event_input && matches!(status & 0xf0, 0xb0 | 0xc0 | 0xd0 | 0xe0) && self.notes.len() < self.notes.capacity() {
+            self.push_note(NoteEvent::Midi { time, msg: [status, d1, d2] });
+        }
+        let mapping = match status & 0xf0 {
+            0xb0 => Some((usize::from(d1), f64::from(d2) / 127.0)),
+            0xd0 => Some((AFTERTOUCH, f64::from(d1) / 127.0)),
+            0xe0 => Some((PITCH_BEND, f64::from(u16::from(d2) << 7 | u16::from(d1)) / 16383.0)),
+            _ => None,
         };
-        if let Some(&Some(id)) = self.midi_map.get(ctrl)
+        if let Some((ctrl, value)) = mapping
+            && let Some(&Some(id)) = self.midi_map.get(ctrl)
             && self.controls.len() < self.controls.capacity()
         {
             self.controls.push((time, id, value));
@@ -410,10 +476,26 @@ impl Plugin for Vst3Plugin {
     }
 
     fn all_notes_off(&mut self) {
-        for k in 0..128u8 {
-            if self.held.get(k as usize).copied().unwrap_or(false) {
-                self.note_off(0, k);
+        for channel in 0..16u8 {
+            for key in 0..128u8 {
+                if self.held.get(usize::from(channel)).and_then(|c| c.get(usize::from(key))).copied().unwrap_or(false) {
+                    let time = 0;
+                    self.push_note(NoteEvent::Off { time, channel, key, velocity: 0.0 });
+                    if let Some(h) = self.held.get_mut(usize::from(channel)).and_then(|c| c.get_mut(usize::from(key))) {
+                        *h = false;
+                    }
+                }
             }
+        }
+    }
+
+    fn produces_midi(&self) -> bool {
+        self.event_output
+    }
+
+    fn take_midi_out(&mut self, sink: &mut dyn FnMut(MidiOut)) {
+        for e in self.midi_out.drain(..) {
+            sink(e);
         }
     }
 
@@ -564,11 +646,11 @@ mod tests {
     fn reset_keeps_room_to_release_every_held_key() {
         let mut notes = Vec::with_capacity(EVENT_CAP);
         for i in 0..EVENT_CAP {
-            push_sorted(&mut notes, NoteEvent::Off { time: i as u32, key: (i % 4) as u8 });
+            push_sorted(&mut notes, NoteEvent::Off { time: i as u32, channel: 0, key: (i % 4) as u8, velocity: 0.0 });
         }
         keep_releases(&mut notes);
         for key in 0..128u8 {
-            push_sorted(&mut notes, NoteEvent::Off { time: 0, key });
+            push_sorted(&mut notes, NoteEvent::Off { time: 0, channel: 0, key, velocity: 0.0 });
         }
         for key in 0..128u8 {
             assert!(notes.iter().any(|e| matches!(*e, NoteEvent::Off { key: k, .. } if k == key)), "key {key} was never released");

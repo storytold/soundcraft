@@ -51,7 +51,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use soundcraft_dsp::pan::{PanLaw, SpeakerPos, SurroundParams, gains};
-use soundcraft_dsp::{Plugin, SampleSource, Transport, db_to_gain};
+use soundcraft_dsp::{MidiOut, Plugin, SampleSource, Transport, db_to_gain};
 use soundcraft_midi::CtrlKind;
 use soundcraft_model::{
     AutoParam, BusId, ChannelFormat, Clip, ClipContent, Route, Session, SourceAudio, Speaker, SurroundPan, Track, TrackId, TrackKind,
@@ -74,13 +74,14 @@ mod threads;
 use automation::{GainRamp, pan_at, pan_segment, send_level, transport_at, volume_db_at};
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
 pub use meter::StripMeter;
+use midi::MIDI_ROUTE_CAP;
 use midi::sync_sample;
 pub use offline::{
     MAX_RENDER_SAMPLES, RangeRender, fold_down_stereo, render_bus, render_clips, render_range, render_track_pre_fader, source_channels,
 };
 pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
-use routing::{processing_order, structure_fingerprint};
+use routing::{midi_levels, processing_order, structure_fingerprint};
 use strip::{
     Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
 };
@@ -121,6 +122,11 @@ pub struct MixEngine {
     /// Snapshot key of the session the strips/order were synced to.
     synced: (usize, usize, usize),
     order: Vec<usize>,
+    /// Real-time MIDI routing: strips grouped so a track that is fed MIDI runs after its source.
+    /// One group (all of them) when nothing is routed, which is the plain parallel render.
+    midi_levels: Vec<Vec<usize>>,
+    /// Scratch for handing one strip's generated MIDI to the tracks routed to it (reused, bounded).
+    midi_xfer: Vec<MidiOut>,
     /// Current total compensation delay (samples) of the main mix: the slowest track and aux
     /// returns, and the master faders' inserts.
     pub latency: usize,
@@ -170,6 +176,8 @@ impl MixEngine {
             last_end: 0,
             synced: (0, 0, 0),
             order: Vec::new(),
+            midi_levels: Vec::new(),
+            midi_xfer: Vec::with_capacity(MIDI_ROUTE_CAP),
             latency: 0,
             track_latency: 0,
             aux_fed: Vec::new(),
@@ -256,6 +264,7 @@ impl MixEngine {
                 i.failed = false;
             }
             s.held.clear();
+            s.midi_in.clear();
             s.chase = true;
             s.align.clear();
             s.align_pre.clear();
@@ -328,6 +337,28 @@ impl MixEngine {
             }
             sync_sample(strip, want, s);
         }
+        // Real-time MIDI routing: when a strip's sources change, release the notes its instrument
+        // is holding (a source that is gone can no longer send the note-off).
+        for t in &s.tracks {
+            let Some(st) = self.strips.get_mut(&t.id) else { continue };
+            let srcs: Vec<(TrackId, String)> = if !t.inactive && t.kind.is_midi() && t.instrument.is_some() {
+                s.tracks
+                    .iter()
+                    .filter(|o| !o.inactive && o.kind.is_midi() && o.midi_out.contains(&t.id))
+                    .filter_map(|o| o.instrument.as_ref().map(|i| (o.id, i.plugin.clone())))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            if srcs != st.midi_src {
+                if let Some(inst) = st.instrument.as_mut() {
+                    inst.plugin.all_notes_off();
+                }
+                st.held.clear();
+                st.midi_in.clear();
+                st.midi_src = srcs;
+            }
+        }
         // Instances nobody claimed (the session changed again before they arrived).
         let leftovers: Vec<(TrackId, usize)> = cx.adopt.keys().copied().collect();
         for k in leftovers {
@@ -357,6 +388,7 @@ impl MixEngine {
         if key != self.synced {
             self.sync(s);
             self.order = processing_order(s);
+            self.midi_levels = midi_levels(s, &self.order);
             self.synced = key;
         }
     }
@@ -370,24 +402,61 @@ impl MixEngine {
         // Phase 1: independent strips (audio, instrument, MIDI) in parallel.
         let mut work = std::mem::take(&mut self.work);
         work.clear();
-        for &i in &order {
-            let Some(t) = s.tracks.get(i).filter(|t| is_live(t) && !is_aux(t)) else { continue };
-            if let Some(st) = self.strips.remove(&t.id) {
-                work.push((i, st));
-            }
-        }
-        for (_, st) in work.iter_mut() {
-            if st.scratch.len() < self.max_block {
-                st.scratch.resize(self.max_block, 0.0);
-            }
-        }
         let busses = std::mem::take(&mut self.busses);
         let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
-        run_strips(&mut work, |(i, st)| {
-            if let Some(t) = s.tracks.get(*i) {
-                process_strip(s, t, st, &busses, &live_in, blk);
+        // Real-time MIDI routing: strips run in levels, so a track whose instrument is fed by
+        // another one's MIDI generator is processed after it and hears the events in the same
+        // block. Without routes there is a single level: the plain parallel render.
+        let levels = std::mem::take(&mut self.midi_levels);
+        let mut xfer = std::mem::take(&mut self.midi_xfer);
+        for level in &levels {
+            let from = work.len();
+            for &i in level {
+                let Some(t) = s.tracks.get(i).filter(|t| is_live(t) && !is_aux(t)) else { continue };
+                if let Some(st) = self.strips.remove(&t.id) {
+                    work.push((i, st));
+                }
             }
-        });
+            let Some(ran) = work.get_mut(from..).filter(|w| !w.is_empty()) else { continue };
+            for (_, st) in ran.iter_mut() {
+                if st.scratch.len() < self.max_block {
+                    st.scratch.resize(self.max_block, 0.0);
+                }
+            }
+            run_strips(ran, |(i, st)| {
+                if let Some(t) = s.tracks.get(*i) {
+                    process_strip(s, t, st, &busses, &live_in, blk);
+                }
+            });
+            // Hand what this level's plugins generated to the tracks routed to them (their strips
+            // are still in `self.strips`: they run in a later level).
+            for (i, st) in ran.iter_mut() {
+                let Some(src) = s.tracks.get(*i).filter(|t| !t.midi_out.is_empty()) else { continue };
+                let Some(inst) = st.instrument.as_mut().filter(|x| !x.failed && x.plugin.produces_midi()) else { continue };
+                xfer.clear();
+                inst.plugin.take_midi_out(&mut |ev| {
+                    if xfer.len() < MIDI_ROUTE_CAP {
+                        xfer.push(ev);
+                    }
+                });
+                if xfer.is_empty() {
+                    continue;
+                }
+                for &to in &src.midi_out {
+                    if !s.track(to).is_some_and(|t| !t.inactive && t.kind.is_midi() && t.instrument.is_some()) {
+                        continue;
+                    }
+                    let Some(dst) = self.strips.get_mut(&to) else { continue };
+                    for &ev in &xfer {
+                        if dst.midi_in.len() < MIDI_ROUTE_CAP {
+                            dst.midi_in.push(ev);
+                        }
+                    }
+                }
+            }
+        }
+        self.midi_levels = levels;
+        self.midi_xfer = xfer;
         self.busses = busses;
         // Delay compensation: align every strip to the slowest. Direct-to-main outputs also wait
         // for the slowest aux return. Aux latency has to be read before those outputs are routed,

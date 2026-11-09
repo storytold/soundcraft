@@ -65,6 +65,8 @@ pub static SAMPLER_INFO: PluginInfo = PluginInfo {
     category: Category::Instrument,
     params: &SAMPLER_PARAMS,
     is_instrument: true,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: false,
 };
 

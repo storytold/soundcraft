@@ -143,6 +143,12 @@ pub fn is_instrument<S: AsRef<str>>(features: &[S]) -> bool {
     features.iter().any(|f| f.as_ref().eq_ignore_ascii_case("instrument"))
 }
 
+/// True when CLAP features identify a MIDI processor/generator. SoundCraft currently marks its
+/// MIDI output as unsupported separately, so these plugins are excluded from audio inserts.
+pub fn is_midi_processor<S: AsRef<str>>(features: &[S]) -> bool {
+    features.iter().any(|f| ["note-effect", "note-generator"].iter().any(|n| f.as_ref().eq_ignore_ascii_case(n)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +219,15 @@ mod tests {
         assert_eq!(category_from_features::<&str>(&[]), Category::Other);
         assert!(is_instrument(&["instrument"]));
         assert!(!is_instrument(&["audio-effect"]));
+    }
+
+    #[test]
+    fn note_effects_are_recognized_but_not_advertised_as_generators_until_output_is_routed() {
+        // The CLAP host accepts MIDI input but has not yet drained plugin MIDI output. A
+        // note-effect must not be exposed as a functioning generator until that is implemented.
+        assert!(is_midi_processor(&["note-effect"]));
+        assert!(!is_instrument(&["note-effect"]));
+        assert!(is_instrument(&["instrument", "synthesizer"]));
+        assert!(!is_instrument(&["audio-effect", "reverb"]));
     }
 }

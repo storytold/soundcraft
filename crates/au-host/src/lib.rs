@@ -175,6 +175,11 @@ pub struct AuDescriptor {
     pub manufacturer: String,
     pub category: Category,
     pub is_instrument: bool,
+    /// Audio Unit music-effect role. Kept separate from `midi_out`, which is currently unsupported.
+    pub is_midi_processor: bool,
+    /// True when this host can collect MIDI output from the unit. Currently false; MIDI input to
+    /// Audio Units remains supported. `is_instrument` separately marks units that accept notes.
+    pub midi_out: bool,
 }
 
 /// Why an Audio Unit operation failed.

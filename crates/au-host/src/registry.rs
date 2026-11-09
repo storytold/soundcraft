@@ -54,6 +54,9 @@ fn list() -> Vec<AuDescriptor> {
             out.push(AuDescriptor {
                 category: crate::category_for(c.ty, c.subtype, &name),
                 is_instrument: c.ty == TYPE_INSTRUMENT,
+                is_midi_processor: c.ty == TYPE_MUSIC_EFFECT,
+                // Audio Unit MIDI output is not yet collected by the host.
+                midi_out: false,
                 component_type: crate::fourcc_string(c.ty),
                 subtype: crate::fourcc_string(c.subtype),
                 manufacturer: crate::fourcc_string(c.manufacturer),
@@ -160,6 +163,8 @@ fn build_info(d: &AuDescriptor, inst: &Instance) -> &'static PluginInfo {
         category: d.category,
         params: Box::leak(params.into_boxed_slice()),
         is_instrument: d.is_instrument,
+        is_midi_processor: d.is_midi_processor,
+        midi_out: d.midi_out,
         audiosuite: false,
     }))
 }

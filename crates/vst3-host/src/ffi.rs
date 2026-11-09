@@ -41,7 +41,7 @@ pub(crate) use editor::EditorLink;
 pub(crate) use host::HostContext;
 pub(crate) use instance::{Instance, PARAM_BYPASS, PARAM_HIDDEN, PARAM_READ_ONLY, ProcessInput, RawParam};
 #[cfg(test)]
-use instance::{apply_transport, split_state};
+use instance::{apply_transport, event_to_midi, split_state};
 pub(crate) use module::{Bundle, exit_modules, hex};
 pub(crate) use process::{BusBuffers, NoteEvent};
 #[cfg(test)]
@@ -116,8 +116,17 @@ mod window;
 #[path = "ffi/window/windows.rs"]
 mod window;
 
+/// Linux and the BSDs: an X11 parent window for plugin views.
+///
+/// VST3's platform type there is `X11EmbedWindowID`: the host creates a window, hands the
+/// plugin its X11 window id, and the plugin creates its own child window inside it. `libX11` is
+/// loaded at run time through `x11-dl`, so building SoundCraft needs no X11 development files.
+#[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
+#[path = "ffi/window/x11.rs"]
+mod window;
+
 /// Other platforms: no editor windows yet (opening reports "unsupported").
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", windows, all(unix, not(target_os = "macos"), not(target_os = "android")))))]
 #[path = "ffi/window/other.rs"]
 mod window;
 
@@ -253,7 +262,7 @@ mod tests {
             assert_ne!(q.getPoint(0, std::ptr::null_mut(), &mut v), sb::kResultOk);
         }
         let el = EventList::new(1);
-        let mut e = NoteEvent::On { time: 5, key: 60, velocity: 1.0 }.to_raw(2);
+        let mut e = NoteEvent::On { time: 5, channel: 2, key: 60, velocity: 1.0 }.to_raw(2);
         // SAFETY: as above.
         unsafe {
             assert_eq!(el.addEvent(&mut e), sb::kResultOk);
@@ -262,6 +271,7 @@ mod tests {
             let mut out: sv::Event = std::mem::zeroed();
             assert_eq!(el.getEvent(0, &mut out), sb::kResultOk);
             assert_eq!(out.sampleOffset, 3);
+            assert_eq!(out.__field0.noteOn.channel, 2);
             assert_eq!(out.__field0.noteOn.pitch, 60);
             assert_ne!(el.getEvent(1, &mut out), sb::kResultOk);
         }
@@ -291,5 +301,111 @@ mod tests {
         assert_eq!(read_c16(&name), "SoundCraft");
         assert!(h.latency_changed.load(Ordering::Relaxed));
         assert_eq!(hex(&[0xAB; 16]), "AB".repeat(16));
+    }
+
+    /// An `Event` with one of the union fields filled in, the way a plugin writes it.
+    fn event(kind: u16, fill: impl FnOnce(&mut sv::Event__type0)) -> sv::Event {
+        let mut e: sv::Event = unsafe { std::mem::zeroed() };
+        e.r#type = kind;
+        // The union fields are all `Copy`, so writing one is safe; the test keeps `kind` and the
+        // field in step, the way a plugin does.
+        fill(&mut e.__field0);
+        e
+    }
+
+    const NOTE_ON: u16 = sv::Event_::EventTypes_::kNoteOnEvent as u16;
+    const NOTE_OFF: u16 = sv::Event_::EventTypes_::kNoteOffEvent as u16;
+    const POLY: u16 = sv::Event_::EventTypes_::kPolyPressureEvent as u16;
+    const CC_OUT: u16 = sv::Event_::EventTypes_::kLegacyMIDICCOutEvent as u16;
+
+    #[test]
+    fn output_events_become_midi_channel_messages() {
+        // Note on/off: channel, note number and velocity survive; the offsets travel with the
+        // event, not through the message.
+        let e = event(NOTE_ON, |f| f.noteOn = sv::NoteOnEvent { channel: 9, pitch: 64, tuning: 0.0, velocity: 1.0, length: 0, noteId: 3 });
+        assert_eq!(event_to_midi(&e), Some([0x99, 64, 127]));
+        let e = event(NOTE_OFF, |f| f.noteOff = sv::NoteOffEvent { channel: 0, pitch: 127, velocity: 0.5, noteId: 0, tuning: 0.0 });
+        assert_eq!(event_to_midi(&e), Some([0x80, 127, 64]));
+        let e = NoteEvent::Off { time: 0, channel: 3, key: 60, velocity: 0.5 }.to_raw(0);
+        // SAFETY: `to_raw` sets the event kind and matching `noteOff` union member.
+        unsafe {
+            assert_eq!(e.__field0.noteOff.channel, 3);
+            assert_eq!(e.__field0.noteOff.velocity, 0.5);
+        }
+        // Poly pressure, both as its own event and as the SDK's extra controller number.
+        let e = event(POLY, |f| f.polyPressure = sv::PolyPressureEvent { channel: 15, pitch: 60, pressure: 77.0 / 127.0, noteId: 0 });
+        assert_eq!(event_to_midi(&e), Some([0xAF, 60, 77]));
+        let e = event(CC_OUT, |f| f.midiCCOut = sv::LegacyMIDICCOutEvent { channel: 2, controlNumber: 131, value: 60, value2: 77 });
+        assert_eq!(event_to_midi(&e), Some([0xA2, 60, 77]));
+        // A plain control change keeps its number and value.
+        let e = event(CC_OUT, |f| f.midiCCOut = sv::LegacyMIDICCOutEvent { channel: 3, controlNumber: 7, value: 64, value2: 0 });
+        assert_eq!(event_to_midi(&e), Some([0xB3, 7, 64]));
+        // Pitch bend is 14-bit: value is the low 7 bits, value2 the high ones.
+        let e = event(CC_OUT, |f| f.midiCCOut = sv::LegacyMIDICCOutEvent { channel: 4, controlNumber: 129, value: 52, value2: 42 });
+        assert_eq!(event_to_midi(&e), Some([0xE4, 52, 42]));
+        // Centre is 64/0 in MIDI 1.0 terms, which is what a plugin sending 0..127 means.
+        let e = event(CC_OUT, |f| f.midiCCOut = sv::LegacyMIDICCOutEvent { channel: 4, controlNumber: 129, value: 0, value2: 64 });
+        assert_eq!(event_to_midi(&e), Some([0xE4, 0, 64]));
+        // Program change and channel pressure.
+        let e = event(CC_OUT, |f| f.midiCCOut = sv::LegacyMIDICCOutEvent { channel: 11, controlNumber: 130, value: 42, value2: 0 });
+        assert_eq!(event_to_midi(&e), Some([0xCB, 42, 0]));
+        let e = event(CC_OUT, |f| f.midiCCOut = sv::LegacyMIDICCOutEvent { channel: 1, controlNumber: 128, value: 33, value2: 0 });
+        assert_eq!(event_to_midi(&e), Some([0xD1, 33, 0]));
+    }
+
+    #[test]
+    fn hostile_or_untranslatable_output_events_are_dropped() {
+        // Raw data (a pointer into the plugin's memory) and the note-expression, chord and scale
+        // events have no MIDI 1.0 channel equivalent.
+        for kind in [sv::Event_::EventTypes_::kDataEvent as u16, 4, 5, 8, 6, 7, 16_384, 60_000] {
+            let e = event(kind, |_| {});
+            assert_eq!(event_to_midi(&e), None, "event type {kind}");
+        }
+        // System realtime / common numbers (132 and up) are not channel messages either.
+        let e = event(CC_OUT, |f| f.midiCCOut = sv::LegacyMIDICCOutEvent { channel: 0, controlNumber: 132, value: 1, value2: 0 });
+        assert_eq!(event_to_midi(&e), None);
+        // A channel outside 0..15 can't be a status nibble; a NaN velocity is not a byte.
+        let e = event(NOTE_ON, |f| f.noteOn = sv::NoteOnEvent { channel: 16, pitch: 60, tuning: 0.0, velocity: 1.0, length: 0, noteId: 0 });
+        assert_eq!(event_to_midi(&e), None);
+        let e = event(NOTE_ON, |f| f.noteOn = sv::NoteOnEvent { channel: -3, pitch: 60, tuning: 0.0, velocity: 1.0, length: 0, noteId: 0 });
+        assert_eq!(event_to_midi(&e), None);
+        let e = event(NOTE_ON, |f| f.noteOn = sv::NoteOnEvent { channel: 0, pitch: 60, tuning: 0.0, velocity: f32::NAN, length: 0, noteId: 0 });
+        assert_eq!(event_to_midi(&e), None);
+        // Invalid note numbers are dropped rather than wrapped or silently changed.
+        let e = event(NOTE_ON, |f| f.noteOn = sv::NoteOnEvent { channel: 0, pitch: -5, tuning: 0.0, velocity: 2.0, length: 0, noteId: 0 });
+        assert_eq!(event_to_midi(&e), None);
+        let e = event(NOTE_ON, |f| f.noteOn = sv::NoteOnEvent { channel: 0, pitch: 900, tuning: 0.0, velocity: 0.5, length: 0, noteId: 0 });
+        assert_eq!(event_to_midi(&e), None);
+    }
+
+    /// A bridge that runs the plugin in another process (yabridge through Wine) translates the
+    /// plugin's pointer events against the Win32 screen origin, so the editor window has to stay
+    /// an unmanaged window at (0, 0): a window manager that decorates or moves it shifts every
+    /// click away from the control under the pointer. The window is never mapped here, so this
+    /// neither flashes nor takes the focus.
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
+    #[test]
+    fn the_editor_window_is_override_redirect_at_the_screen_origin() {
+        let Ok(win) = window::HostWindow::new("SoundCraft editor test", 320.0, 240.0) else {
+            return; // No X display (headless run): there is nothing to observe.
+        };
+        let Ok(xlib) = x11_dl::xlib::Xlib::open() else {
+            win.close();
+            return;
+        };
+        // SAFETY: a null display name opens the display named by $DISPLAY; `attributes` is
+        // writable. The window id is the one this thread just created and never mapped.
+        unsafe {
+            let display = (xlib.XOpenDisplay)(std::ptr::null());
+            if !display.is_null() {
+                let mut attributes: x11_dl::xlib::XWindowAttributes = std::mem::zeroed();
+                let got = (xlib.XGetWindowAttributes)(display, win.raw() as x11_dl::xlib::Window, &mut attributes);
+                (xlib.XCloseDisplay)(display);
+                assert_ne!(got, 0, "the editor window has attributes");
+                assert_eq!(attributes.override_redirect, 1, "the window manager must not move the editor off the origin");
+                assert_eq!((attributes.x, attributes.y), (0, 0), "screen and window coordinates coincide only at the origin");
+            }
+        }
+        win.close();
     }
 }

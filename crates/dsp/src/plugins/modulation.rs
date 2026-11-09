@@ -32,6 +32,8 @@ pub static DELAY_INFO: PluginInfo = PluginInfo {
     category: Category::Delay,
     params: &DELAY_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -164,6 +166,8 @@ pub static CHORUS_INFO: PluginInfo = PluginInfo {
     category: Category::Modulation,
     params: &CHORUS_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -182,6 +186,8 @@ pub static FLANGER_INFO: PluginInfo = PluginInfo {
     category: Category::Modulation,
     params: &FLANGER_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -350,6 +356,8 @@ pub static PHASER_INFO: PluginInfo = PluginInfo {
     category: Category::Modulation,
     params: &PHASER_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -489,6 +497,8 @@ pub static RING_INFO: PluginInfo = PluginInfo {
     category: Category::Modulation,
     params: &RING_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 

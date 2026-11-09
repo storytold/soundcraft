@@ -20,6 +20,8 @@ pub static PITCH_INFO: PluginInfo = PluginInfo {
     category: Category::PitchShift,
     params: &PITCH_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 

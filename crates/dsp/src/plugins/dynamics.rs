@@ -52,6 +52,8 @@ pub static COMP_INFO: PluginInfo = PluginInfo {
     category: Category::Dynamics,
     params: &COMP_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -216,6 +218,8 @@ pub static GATE_INFO: PluginInfo = PluginInfo {
     category: Category::Dynamics,
     params: &GATE_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -346,6 +350,8 @@ pub static DEESS_INFO: PluginInfo = PluginInfo {
     category: Category::Dynamics,
     params: &DEESS_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 
@@ -489,6 +495,8 @@ pub static MAX_INFO: PluginInfo = PluginInfo {
     category: Category::Dynamics,
     params: &MAX_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 

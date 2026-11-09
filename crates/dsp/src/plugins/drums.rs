@@ -32,6 +32,8 @@ pub static DRUM_INFO: PluginInfo = PluginInfo {
     category: Category::Instrument,
     params: &DRUM_PARAMS,
     is_instrument: true,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: false,
 };
 

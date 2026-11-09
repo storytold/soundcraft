@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** trivial (delay compensation includes the master faders' inserts (#351); previously minor: bounces stream to disk) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-20 · **Last updated:** 2026-10-20 · **Change:** minor (VST3 MIDI output and persistent track-to-track routing) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a Cargo workspace of small crates with enforced layering (`cargo xtask layers`).
 Nothing below the UI knows about egui, so the interface can be replaced.
@@ -29,8 +29,9 @@ L6  ui-egui                                     (the user interface)
 `soundcraft_model::Session` is plain data (serde): tracks with playlists of clips, mixer state
 (inserts, sends, routing, automation lanes), tempo and meter maps, memory locations, groups,
 busses, and `EditState` (selection, tools, modes, view flags). Decoded audio lives in a
-`SourcePool` of `Arc`s that is not serialised; cloning a session is cheap. Sessions save as
-`.scraft` JSON plus an `Audio Files/` folder.
+`SourcePool` of `Arc`s that is not serialised; cloning a session is cheap. Track-to-track MIDI
+routes are stored on the source track and sanitised when a session loads. Sessions save as `.scraft`
+JSON plus an `Audio Files/` folder.
 
 ## Commands and undo
 
@@ -47,16 +48,21 @@ report.
 `soundcraft_mix::MixEngine::render(session, pos, frames, out)` renders one block: clips (gain,
 fades, clip effects) → trim → inserts → pre-fader sends → fader/mute (automation, VCA, trim
 automation) → post-fader sends → pan → busses → aux inputs → master faders. Independent strips
-process in parallel; plugin delay compensation aligns every path, the master faders' inserts included. The same engine renders
-bounces offline (`RangeRender`, streamed to the file block by block) and realtime playback
+process in parallel except that MIDI-routed tracks run in deterministic dependency levels: a VST3
+generator's bounded, block-relative MIDI output reaches downstream instrument slots in the same
+block, with strips at one level still parallel. MIDI feedback loops are rejected by commands;
+legacy cyclic routes render in a bounded fallback level without delivering intra-level events.
+Plugin delay compensation aligns every path, the master faders' inserts included. The same engine
+renders bounces offline (`RangeRender`, streamed to the file block by block) and realtime playback
 (`soundcraft_playback::Player`, which owns it on the audio thread and receives new session
 snapshots through a channel).
 
 Device I/O today is the system's *default* output and *default* input device, opened as two
 separate cpal streams; the mix renders 512-sample blocks and resamples to the device rate when
 they differ. There is no device or buffer-size selection, no ASIO, and no MIDI device layer yet
-(see [`hardware-parity.md`](hardware-parity.md)). Sources are decoded whole into the `SourcePool`
-and recordings are captured in memory until stop.
+(see [`hardware-parity.md`](hardware-parity.md)). Internal VST3-to-track MIDI routing does not
+provide external MIDI device I/O; CLAP and Audio Unit MIDI output are not yet collected. Sources
+are decoded whole into the `SourcePool` and recordings are captured in memory until stop.
 
 `soundcraft-video` holds our own H.264, ProRes and Motion JPEG decoders and the ISO-BMFF demuxer
 for the video track. Hosted plugins (`clap-host`, `vst3-host`, `au-host`) are scanned, created and
@@ -78,6 +84,7 @@ app as an MCP server. See `control-protocol.md` and `mcp.md`.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | VST3 MIDI output events flow through the mix engine to persistent, dependency-ordered track routes |
 | 2026-10-13 | trivial | delay compensation includes the master faders' inserts (#351) |
 | 2026-10-10 | minor | Added video, vst3-host and au-host to the layer diagram; documented device I/O limits and in-memory media |
 | 2026-10-05 | major | First architecture overview |

@@ -290,6 +290,12 @@ fn new_track_row(e: &mut Engine, p: &Value) -> Result<Vec<TrackId>> {
             }
             if kind == TrackKind::Instrument {
                 t.instrument = Some(soundcraft_model::Insert::new(instrument.clone().unwrap_or_else(|| "subtractive_synth".into())));
+            } else if kind == TrackKind::Midi {
+                // A MIDI track has the same instrument slot (a synth, or a MIDI generator whose
+                // output is routed on); only fill it when asked, so a plain MIDI track is unchanged.
+                if let Some(plugin) = instrument.clone() {
+                    t.instrument = Some(soundcraft_model::Insert::new(plugin));
+                }
             }
         }
         if kind == TrackKind::Folder {
@@ -780,6 +786,8 @@ fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     s.tracks.retain(|t| !tracks.contains(&t.id));
     s.edit.selected_tracks.retain(|t| !tracks.contains(t));
+    // MIDI routes to a track that is gone would dangle (and undo would revive them wrongly).
+    s.prune_midi_routes();
     for g in &mut s.groups {
         g.members.retain(|t| !tracks.contains(t));
     }

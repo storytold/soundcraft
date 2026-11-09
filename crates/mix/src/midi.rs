@@ -1,6 +1,6 @@
 use super::clips::Key;
 use super::strip::{PluginSlot, Strip};
-use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track};
+use super::{ClipContent, CtrlKind, MidiOut, Range, SampleSource, Samples, Session, SourceAudio, Track};
 use std::sync::Arc;
 
 /// The track's MIDI Track Offset (`midi.offset.<id>` in the edit values), in samples. Looked up
@@ -185,4 +185,35 @@ pub(crate) fn sync_sample(strip: &mut Strip, want: Option<&soundcraft_model::Ins
         inst.plugin.set_sample(shared);
     }
     strip.sample = audio.cloned();
+}
+
+/// How many MIDI messages one strip may hand to its destinations per block (bounded: a runaway
+/// generator cannot grow the audio thread's work without limit).
+pub(crate) const MIDI_ROUTE_CAP: usize = 512;
+
+/// Hands one routed MIDI message to the destination's instrument at the offset it arrived with,
+/// and tracks the notes it starts so a stop or a routing change can silence them.
+pub(crate) fn feed_routed(inst: &mut PluginSlot, ev: &MidiOut, held: &mut Vec<u8>, frames: usize) {
+    let Ok(at) = usize::try_from(ev.offset) else { return };
+    if at >= frames {
+        return;
+    }
+    let [status, d1, d2] = ev.msg;
+    if !(0x80..0xf0).contains(&status) || d1 > 127 || d2 > 127 {
+        return;
+    }
+    match status & 0xF0 {
+        0x90 if d2 > 0 => {
+            inst.plugin.midi(at, ev.msg);
+            if !held.contains(&d1) && held.len() < 128 {
+                held.push(d1);
+            }
+        }
+        0x90 | 0x80 => {
+            inst.plugin.midi(at, ev.msg);
+            held.retain(|p| *p != d1);
+        }
+        0xB0 | 0xC0 | 0xD0 | 0xE0 | 0xA0 => inst.plugin.midi(at, ev.msg),
+        _ => {}
+    }
 }

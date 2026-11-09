@@ -97,6 +97,8 @@ pub static SYNTH_INFO: PluginInfo = PluginInfo {
     category: Category::Instrument,
     params: &SYNTH_PARAMS,
     is_instrument: true,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: false,
 };
 
@@ -510,6 +512,21 @@ impl Plugin for SubtractiveSynth {
 
     fn midi(&mut self, offset: usize, msg: [u8; 3]) {
         let [status, d1, d2] = msg;
+        match status & 0xF0 {
+            0x80 => {
+                self.note_off(offset, d1);
+                return;
+            }
+            0x90 if d2 == 0 => {
+                self.note_off(offset, d1);
+                return;
+            }
+            0x90 => {
+                self.note_on(offset, d1, d2);
+                return;
+            }
+            _ => {}
+        }
         let kind = match (status & 0xF0, d1) {
             (0xB0, 64) => EventKind::Sustain(d2 >= 64),
             (0xB0, 120 | 123) => EventKind::AllOff,

@@ -44,6 +44,8 @@ pub static AUTOPAN_INFO: PluginInfo = PluginInfo {
     category: Category::Modulation,
     params: &AUTOPAN_PARAMS,
     is_instrument: false,
+    is_midi_processor: false,
+    midi_out: false,
     audiosuite: true,
 };
 

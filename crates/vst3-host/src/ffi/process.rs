@@ -164,7 +164,8 @@ impl IEventListTrait for EventList {
         // SAFETY: in-pointer from the plugin (or null, handled).
         let Some(&ev) = (unsafe { e.as_ref() }) else { return sb::kInvalidArgument };
         let cap = self.cap;
-        // Output events (e.g. MIDI out) are accepted while there is room; SoundCraft ignores them.
+        // Output events (e.g. MIDI out) are accepted while there is room; the instance converts
+        // supported channel messages after `process` and drops unsupported or malformed events.
         match self.with(|v| {
             if v.len() < cap {
                 v.push(ev);
@@ -282,20 +283,21 @@ impl IBStreamTrait for MemoryStream {
 /// A host → plugin note event, safe to build anywhere; converted inside `process`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum NoteEvent {
-    On { time: u32, key: u8, velocity: f32 },
-    Off { time: u32, key: u8 },
-    Pressure { time: u32, key: u8, pressure: f32 },
+    On { time: u32, channel: u8, key: u8, velocity: f32 },
+    Off { time: u32, channel: u8, key: u8, velocity: f32 },
+    Pressure { time: u32, channel: u8, key: u8, pressure: f32 },
+    Midi { time: u32, msg: [u8; 3] },
 }
 
 impl NoteEvent {
     pub fn time(&self) -> u32 {
         match *self {
-            NoteEvent::On { time, .. } | NoteEvent::Off { time, .. } | NoteEvent::Pressure { time, .. } => time,
+            NoteEvent::On { time, .. } | NoteEvent::Off { time, .. } | NoteEvent::Pressure { time, .. } | NoteEvent::Midi { time, .. } => time,
         }
     }
     pub fn set_time(&mut self, t: u32) {
         match self {
-            NoteEvent::On { time, .. } | NoteEvent::Off { time, .. } | NoteEvent::Pressure { time, .. } => *time = t,
+            NoteEvent::On { time, .. } | NoteEvent::Off { time, .. } | NoteEvent::Pressure { time, .. } | NoteEvent::Midi { time, .. } => *time = t,
         }
     }
 
@@ -306,17 +308,40 @@ impl NoteEvent {
         e.sampleOffset = i32::try_from(self.time().saturating_sub(offset)).unwrap_or(0);
         e.flags = sv::Event_::EventFlags_::kIsLive as u16;
         match self {
-            NoteEvent::On { key, velocity, .. } => {
+            NoteEvent::On { channel, key, velocity, .. } => {
                 e.r#type = sv::Event_::EventTypes_::kNoteOnEvent as u16;
-                e.__field0.noteOn = sv::NoteOnEvent { channel: 0, pitch: i16::from(key), tuning: 0.0, velocity, length: 0, noteId: -1 };
+                e.__field0.noteOn =
+                    sv::NoteOnEvent { channel: i16::from(channel), pitch: i16::from(key), tuning: 0.0, velocity, length: 0, noteId: -1 };
             }
-            NoteEvent::Off { key, .. } => {
+            NoteEvent::Off { channel, key, velocity, .. } => {
                 e.r#type = sv::Event_::EventTypes_::kNoteOffEvent as u16;
-                e.__field0.noteOff = sv::NoteOffEvent { channel: 0, pitch: i16::from(key), velocity: 0.0, noteId: -1, tuning: 0.0 };
+                e.__field0.noteOff = sv::NoteOffEvent { channel: i16::from(channel), pitch: i16::from(key), velocity, noteId: -1, tuning: 0.0 };
             }
-            NoteEvent::Pressure { key, pressure, .. } => {
+            NoteEvent::Pressure { channel, key, pressure, .. } => {
                 e.r#type = sv::Event_::EventTypes_::kPolyPressureEvent as u16;
-                e.__field0.polyPressure = sv::PolyPressureEvent { channel: 0, pitch: i16::from(key), pressure, noteId: -1 };
+                e.__field0.polyPressure = sv::PolyPressureEvent { channel: i16::from(channel), pitch: i16::from(key), pressure, noteId: -1 };
+            }
+            NoteEvent::Midi { msg, .. } => {
+                let [status, data1, data2] = msg;
+                let channel = i8::try_from(status & 0x0f).unwrap_or(0);
+                match status & 0xf0 {
+                    0xb0 => {
+                        e.r#type = sv::Event_::EventTypes_::kLegacyMIDICCOutEvent as u16;
+                        e.__field0.midiCCOut =
+                            sv::LegacyMIDICCOutEvent { channel, controlNumber: data1 & 0x7f, value: (data2 & 0x7f) as i8, value2: 0 };
+                    }
+                    0xc0 | 0xd0 | 0xe0 => {
+                        e.r#type = sv::Event_::EventTypes_::kLegacyMIDICCOutEvent as u16;
+                        let (control_number, value, value2) = match status & 0xf0 {
+                            0xc0 => (sv::ControllerNumbers_::kCtrlProgramChange as u8, data1 & 0x7f, 0),
+                            0xd0 => (sv::ControllerNumbers_::kAfterTouch as u8, data1 & 0x7f, 0),
+                            _ => (sv::ControllerNumbers_::kPitchBend as u8, data1 & 0x7f, data2 & 0x7f),
+                        };
+                        e.__field0.midiCCOut =
+                            sv::LegacyMIDICCOutEvent { channel, controlNumber: control_number, value: value as i8, value2: value2 as i8 };
+                    }
+                    _ => {}
+                }
             }
         }
         e

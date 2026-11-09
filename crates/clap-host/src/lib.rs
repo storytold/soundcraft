@@ -67,6 +67,13 @@ pub struct ClapDescriptor {
     pub features: Vec<String>,
     pub category: Category,
     pub is_instrument: bool,
+    /// CLAP `note-effect`/`note-generator` feature. Kept separate from `midi_out` because this
+    /// host does not yet collect generated events.
+    pub is_midi_processor: bool,
+    /// True when this host can collect MIDI output from the plugin. Currently false: CLAP MIDI
+    /// input is supported, but output events are not yet routed. `is_instrument` separately marks
+    /// CLAP plugins that accept notes to produce audio.
+    pub midi_out: bool,
     /// The `.clap` file or bundle it lives in.
     pub path: PathBuf,
 }

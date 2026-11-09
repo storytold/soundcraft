@@ -4,7 +4,7 @@ use crate::ffi::Instance;
 use soundcraft_dsp::{Plugin, PluginInfo, Transport};
 
 /// Most MIDI events queued between two blocks (extra events are dropped).
-const EVENT_CAP: usize = 1024;
+const EVENT_CAP: usize = 2048;
 /// Most channels a host strip may ask for.
 const MAX_CHANNELS: usize = 64;
 
@@ -27,7 +27,7 @@ pub struct AuPlugin {
     values: Vec<f32>,
     /// Pending MIDI, kept sorted by time. Never grows past `EVENT_CAP`.
     events: Vec<MidiEvent>,
-    held: [bool; 128],
+    held: [[bool; 128]; 16],
     /// Takes audio input (effects); instruments replace the buffer contents.
     has_input: bool,
     /// Accepts MIDI (instruments and music effects).
@@ -47,7 +47,7 @@ impl AuPlugin {
             ids,
             values,
             events: Vec::with_capacity(EVENT_CAP),
-            held: [false; 128],
+            held: [[false; 128]; 16],
             has_input,
             takes_midi,
             channels: 2,
@@ -103,7 +103,7 @@ impl Plugin for AuPlugin {
 
     fn reset(&mut self) {
         self.events.clear();
-        self.held = [false; 128];
+        self.held = [[false; 128]; 16];
         self.inst.reset();
     }
 
@@ -214,7 +214,7 @@ impl Plugin for AuPlugin {
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
         // Velocity 0 would be a note-off.
         self.push_event(MidiEvent { time, status: 0x90, data1: note, data2: velocity.clamp(1, 127) });
-        if let Some(h) = self.held.get_mut(note as usize) {
+        if let Some(h) = self.held.get_mut(0).and_then(|c| c.get_mut(note as usize)) {
             *h = true;
         }
     }
@@ -225,26 +225,40 @@ impl Plugin for AuPlugin {
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
         self.push_event(MidiEvent { time, status: 0x80, data1: note, data2: 0 });
-        if let Some(h) = self.held.get_mut(note as usize) {
+        if let Some(h) = self.held.get_mut(0).and_then(|c| c.get_mut(note as usize)) {
             *h = false;
         }
     }
 
     fn midi(&mut self, offset: usize, msg: [u8; 3]) {
         let [status, data1, data2] = msg;
-        if status & 0xF0 >= 0xA0 && status & 0xF0 < 0xF0 {
+        if status & 0xF0 >= 0x80 && status & 0xF0 < 0xF0 {
             self.push_event(MidiEvent { time: u32::try_from(offset).unwrap_or(u32::MAX), status, data1: data1 & 0x7F, data2: data2 & 0x7F });
+            if matches!(status & 0xf0, 0x80 | 0x90) {
+                let channel = usize::from(status & 0x0f);
+                if let Some(held) = self.held.get_mut(channel).and_then(|c| c.get_mut(usize::from(data1 & 0x7f))) {
+                    *held = status & 0xf0 == 0x90 && data2 & 0x7f != 0;
+                }
+            }
         }
     }
 
     fn all_notes_off(&mut self) {
-        for k in 0..128u8 {
-            if self.held.get(k as usize).copied().unwrap_or(false) {
-                self.note_off(0, k);
+        // CC 123 is the channel-wide safety net and must fit even if individual note-offs fill
+        // the bounded queue.
+        for channel in 0..16u8 {
+            self.push_event(MidiEvent { time: 0, status: 0xB0 | channel, data1: 123, data2: 0 });
+        }
+        for channel in 0..16u8 {
+            for key in 0..128u8 {
+                if self.held.get(usize::from(channel)).and_then(|c| c.get(usize::from(key))).copied().unwrap_or(false) {
+                    self.push_event(MidiEvent { time: 0, status: 0x80 | channel, data1: key, data2: 0 });
+                    if let Some(held) = self.held.get_mut(usize::from(channel)).and_then(|c| c.get_mut(usize::from(key))) {
+                        *held = false;
+                    }
+                }
             }
         }
-        // CC 123: All Notes Off (catches anything the unit still sustains).
-        self.push_event(MidiEvent { time: 0, status: 0xB0, data1: 123, data2: 0 });
     }
 
     fn load_state(&mut self, data: &[u8]) -> bool {

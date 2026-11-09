@@ -447,6 +447,75 @@ impl Session {
     pub fn master(&self) -> Option<&Track> {
         self.tracks.iter().find(|t| t.kind == TrackKind::Master)
     }
+
+    // ---- real-time MIDI routing (track -> track) -------------------------------------------
+
+    /// True when `from`'s MIDI already feeds `to`'s instrument.
+    pub fn midi_connected(&self, from: TrackId, to: TrackId) -> bool {
+        self.track(from).is_some_and(|t| t.midi_out.contains(&to))
+    }
+
+    /// Would feeding `from` to `to` close a MIDI feedback loop? A loop means events circle
+    /// forever between two blocks, so the mix refuses it.
+    pub fn midi_creates_cycle(&self, from: TrackId, to: TrackId) -> bool {
+        if from == to {
+            return true;
+        }
+        // Walk forward from `to`; if we reach `from` again, the new edge closes a cycle. This
+        // command-side check may allocate, but it visits no more than the tracks in the session;
+        // a fixed-size queue could miss a cycle in a larger session.
+        let mut queue = Vec::with_capacity(self.tracks.len());
+        queue.push(to);
+        let mut n = 1;
+        let mut head = 0;
+        while head < n {
+            let cur = queue[head];
+            head += 1;
+            let Some(t) = self.track(cur) else { continue };
+            for &next in &t.midi_out {
+                if next == from {
+                    return true;
+                }
+                if !queue[..n].contains(&next) {
+                    queue.push(next);
+                    n += 1;
+                }
+            }
+        }
+        false
+    }
+
+    /// Feeds `from`'s MIDI output to `to`'s instrument. False when the pair is not two different
+    /// tracks that exist, or when the connection would loop.
+    pub fn connect_midi(&mut self, from: TrackId, to: TrackId) -> bool {
+        if from == to || self.track(from).is_none() || self.track(to).is_none() || self.midi_creates_cycle(from, to) {
+            return false;
+        }
+        match self.track_mut(from) {
+            Some(t) if t.midi_out.contains(&to) => true,
+            Some(t) if t.midi_out.len() < MAX_MIDI_ROUTES => {
+                t.midi_out.push(to);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Stops feeding `from`'s MIDI to `to`. False when the pair is unknown or was not connected.
+    pub fn disconnect_midi(&mut self, from: TrackId, to: TrackId) -> bool {
+        let Some(t) = self.track_mut(from) else { return false };
+        let before = t.midi_out.len();
+        t.midi_out.retain(|x| *x != to);
+        t.midi_out.len() != before
+    }
+
+    /// Drops routes that point at tracks that are gone (after a delete or an undo).
+    pub fn prune_midi_routes(&mut self) {
+        let alive: Vec<TrackId> = self.tracks.iter().map(|t| t.id).collect();
+        for t in &mut self.tracks {
+            t.midi_out.retain(|to| alive.contains(to));
+        }
+    }
     pub fn source(&self, id: SourceId) -> Option<&Source> {
         self.sources.iter().find(|s| s.id == id)
     }
@@ -800,7 +869,21 @@ impl Session {
                 l.points.iter_mut().for_each(|p| bound(&mut p.at));
                 l.points.sort_by_key(|p| p.at);
             }
+            // MIDI routes: no self-loops, no duplicates, bounded.
+            // Truncate first: a hostile session must not make duplicate removal quadratic in an
+            // unbounded route list.
+            t.midi_out.truncate(MAX_MIDI_ROUTES);
+            t.midi_out.retain(|to| *to != t.id);
+            let mut seen: Vec<TrackId> = Vec::with_capacity(t.midi_out.len());
+            t.midi_out.retain(|to| {
+                !seen.contains(to) && {
+                    seen.push(*to);
+                    true
+                }
+            });
         }
+        // Routes to a track that isn't there would dangle forever.
+        self.prune_midi_routes();
         for m in &mut self.markers {
             bound(&mut m.start);
             bound(&mut m.end);
@@ -879,6 +962,9 @@ impl Session {
 pub const MAX_NAME_CHARS: usize = 256;
 /// The most characters kept of a comment read from a file.
 pub const MAX_COMMENT_CHARS: usize = 4096;
+/// How many tracks one track's MIDI may feed. A file naming more is truncated rather than
+/// growing the mixer's per-block work without bound.
+pub const MAX_MIDI_ROUTES: usize = 64;
 
 /// Cut `s` to at most `max` characters.
 pub fn truncate_chars(s: &mut String, max: usize) {
@@ -1276,6 +1362,80 @@ mod tests {
         assert_eq!(tr.active_playlist, 0);
         assert_eq!(tr.mixer.volume_db, 0.0);
         assert!(s.next_id > t.0);
+    }
+
+    #[test]
+    fn midi_routes_connect_and_refuse_loops_cycles_and_unknown_tracks() {
+        let mut s = Session::default();
+        let a = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("A"));
+        let b = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("B"));
+        let c = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("C"));
+
+        assert!(s.connect_midi(a, b));
+        assert!(s.midi_connected(a, b));
+        // Connecting twice is a no-op, not a second copy of the route.
+        assert!(s.connect_midi(a, b));
+        assert_eq!(s.track(a).unwrap().midi_out.len(), 1);
+        // A track never feeds itself.
+        assert!(!s.connect_midi(a, a));
+        // A direct loop back would make the two instruments feed each other.
+        assert!(!s.connect_midi(b, a));
+        // A→B→C is fine; closing C→A would be a cycle through B.
+        assert!(s.connect_midi(b, c));
+        assert!(!s.connect_midi(c, a));
+        assert!(s.midi_creates_cycle(c, a));
+        // Break the chain and the loop becomes legal.
+        assert!(s.disconnect_midi(b, c));
+        assert!(!s.midi_connected(b, c));
+        assert!(s.connect_midi(c, a));
+        // A route to a track that isn't there is refused, not stored.
+        assert!(!s.connect_midi(a, TrackId(9_999)));
+        assert!(s.track(a).unwrap().midi_out.contains(&b));
+    }
+
+    #[test]
+    fn midi_cycle_check_covers_sessions_with_more_than_sixty_four_tracks() {
+        let mut s = Session::default();
+        let tracks: Vec<TrackId> = (0..70).map(|i| s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some(&format!("Track {i}")))).collect();
+        for pair in tracks.windows(2) {
+            let (Some(&from), Some(&to)) = (pair.first(), pair.get(1)) else { continue };
+            assert!(s.connect_midi(from, to));
+        }
+        let (Some(&first), Some(&last)) = (tracks.first(), tracks.last()) else { return };
+        assert!(s.midi_creates_cycle(last, first), "the traversal must not truncate at 64 nodes");
+        assert!(!s.connect_midi(last, first));
+    }
+
+    #[test]
+    fn midi_routes_survive_a_save_and_a_delete() {
+        let mut s = Session::default();
+        let a = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, Some("A"));
+        let b = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("B"));
+        let c = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("C"));
+        s.connect_midi(a, b);
+        s.connect_midi(a, c);
+
+        let text = s.to_json().unwrap();
+        let back = Session::from_json(&text).unwrap();
+        assert_eq!(back.track(a).unwrap().midi_out, vec![b, c]);
+
+        // A session written before this feature has no routes and loads clean.
+        let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        v["tracks"][0].as_object_mut().unwrap().remove("midi_out");
+        let old = Session::from_json(&v.to_string()).unwrap();
+        assert!(old.track(a).unwrap().midi_out.is_empty());
+
+        // Deleting a destination drops the routes that pointed at it.
+        let mut s = back;
+        s.tracks.retain(|t| t.id != c);
+        s.prune_midi_routes();
+        assert_eq!(s.track(a).unwrap().midi_out, vec![b]);
+        // A hostile file naming a track that doesn't exist is pruned on load.
+        let mut v: serde_json::Value = serde_json::from_str(&s.to_json().unwrap()).unwrap();
+        v["tracks"][0]["midi_out"] = serde_json::json!([a.0, b.0, 42_424_242u64, b.0]);
+        let mut loaded = Session::from_json(&v.to_string()).unwrap();
+        loaded.sanitize();
+        assert_eq!(loaded.track(a).unwrap().midi_out, vec![b]);
     }
 
     #[test]

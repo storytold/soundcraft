@@ -15,7 +15,7 @@ fn id_of(name: &str) -> String {
 fn scan_lists_both_audio_modules_but_not_the_controller_class() {
     let dir = fixture_dir();
     let found = soundcraft_vst3_host::scan_paths(&[dir.to_path_buf()]);
-    assert_eq!(found.len(), 6, "{found:?}");
+    assert_eq!(found.len(), 7, "{found:?}");
     let g = found.iter().find(|d| d.name == "Fixture Gain").unwrap();
     // `uid()` lays out the first 8 bytes differently on Windows (COM GUID order).
     let want = if cfg!(windows) { "vst3:001D0A5C111122223333444455556666" } else { "vst3:5C0A1D00111122223333444455556666" };
@@ -30,8 +30,77 @@ fn scan_lists_both_audio_modules_but_not_the_controller_class() {
     let s = found.iter().find(|d| d.name == "Fixture Synth").unwrap();
     assert_eq!(s.category, Category::Instrument);
     assert!(s.is_instrument);
+    assert!(!s.midi_out, "scan labels do not claim MIDI output for an ordinary instrument");
+    // A MIDI generator that says nothing about it in its sub-categories: the scan alone cannot
+    // know it produces MIDI (its buses can), and it is not an instrument.
+    let n = found.iter().find(|d| d.name == "Fixture Note Gen").unwrap();
+    assert_eq!(n.sub_categories, vec!["Fx"]);
+    assert!(!n.is_instrument);
+    assert!(!n.midi_out);
     let global = soundcraft_vst3_host::scan();
     assert!(global.iter().any(|d| d.id == g.id) && global.iter().any(|d| d.id == s.id));
+}
+
+#[test]
+fn note_generator_events_come_out_at_their_offsets() {
+    let id = id_of("Fixture Note Gen");
+    // The scan metadata says plain "Fx"; only the plugin's buses show that it produces MIDI, and
+    // `plugin_info` asks the instance, so the capability shows up here.
+    let info = soundcraft_vst3_host::plugin_info(&id).unwrap();
+    assert!(!info.is_instrument);
+    assert!(info.midi_out, "an Event output bus makes it a MIDI source");
+
+    let mut p = soundcraft_vst3_host::create(&id).unwrap();
+    assert!(p.produces_midi());
+    // No audio buses: a 2-channel strip still processes fine.
+    p.prepare(48_000.0, 64, 2);
+    let mut io = vec![vec![0.25f32; 64], vec![0.25f32; 64]];
+    p.process(&mut io, 64);
+    let mut got: Vec<(u32, [u8; 3])> = Vec::new();
+    p.take_midi_out(&mut |e| got.push((e.offset, e.msg)));
+    assert_eq!(
+        got,
+        vec![
+            (0, [0x92, 64, 100]),
+            (1, [0x92, 65, 127]),
+            (2, [0x82, 64, 0]),
+            (3, [0xB2, 7, 64]),
+            (4, [0xE2, 52, 42]),
+            (5, [0xC2, 42, 0]),
+            (6, [0xD2, 33, 0]),
+            (7, [0xA2, 60, 77]),
+        ],
+        "note on/off, CC, 14-bit pitch bend, program change and pressure, channel and offset intact"
+    );
+    // The events were taken: a second drain yields nothing, and the raw-data and chord events
+    // were dropped rather than turned into something invented.
+    let mut again = 0;
+    p.take_midi_out(&mut |_| again += 1);
+    assert_eq!(again, 0);
+
+    // Offsets are relative to the block the host passed, even when the plugin is fed a block
+    // larger than its own processing slice.
+    p.prepare(48_000.0, 16, 2);
+    let mut io = vec![vec![0.0f32; 96], vec![0.0f32; 96]];
+    p.process(&mut io, 96);
+    let mut got: Vec<(u32, [u8; 3])> = Vec::new();
+    p.take_midi_out(&mut |e| got.push((e.offset, e.msg)));
+    assert_eq!(got.first().map(|(o, _)| *o), Some(0), "the first sub-block's events keep their offsets");
+    assert!(got.iter().any(|(o, m)| *o == 16 + 3 && *m == [0xB2, 7, 64]), "later sub-blocks are shifted: {got:?}");
+}
+
+#[test]
+fn undrained_output_events_do_not_leak_into_the_next_block() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Note Gen")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    let mut io = vec![vec![0.0f32; 64], vec![0.0f32; 64]];
+    p.process(&mut io, 64);
+    // Simulate a source with no route: the mixer does not drain output for that block.
+    p.process(&mut io, 64);
+    let mut got = Vec::new();
+    p.take_midi_out(&mut |e| got.push((e.offset, e.msg)));
+    assert_eq!(got.len(), 8, "only the second block's output remains available");
+    assert_eq!(got.first().map(|(offset, _)| *offset), Some(0));
 }
 
 #[test]
@@ -117,6 +186,7 @@ fn synth_plays_notes_at_their_offsets() {
     let id = id_of("Fixture Synth");
     let info = soundcraft_vst3_host::plugin_info(&id).unwrap();
     assert!(info.is_instrument);
+    assert!(!info.midi_out, "an audio instrument with only an event input is not a MIDI generator");
     assert!(info.params.is_empty());
     let mut p = soundcraft_vst3_host::create(&id).unwrap();
     p.prepare(48_000.0, 64, 2);
@@ -359,8 +429,9 @@ fn many_buses_like_multi_out_instruments_are_activated() {
 fn editor_view_is_probed_and_edits_come_back_as_plain_values() {
     let id = id_of("Fixture Gain");
     let mut p = soundcraft_vst3_host::instantiate_plugin(&id).unwrap();
-    // Editor windows are hosted on macOS and Windows; elsewhere the probe reports "unsupported".
-    if cfg!(any(target_os = "macos", windows)) {
+    // Editor windows are hosted on macOS, Windows and, where X11 is available, on Linux and
+    // the BSDs; elsewhere the probe reports "unsupported".
+    if soundcraft_vst3_host::editors_supported() {
         assert_eq!(p.editor_size(), Ok((320, 240)));
     } else {
         assert!(p.editor_size().is_err());
@@ -369,8 +440,17 @@ fn editor_view_is_probed_and_edits_come_back_as_plain_values() {
     // The fixture "edits" Gain to 0.9 (normalized) when it gets the component handler.
     assert_eq!(ed.idle(), vec![("7".to_string(), 1.8)]);
     assert!(ed.idle().is_empty());
-    if cfg!(any(target_os = "macos", windows)) {
-        assert!(ed.open().unwrap_err().contains("main thread"), "test threads are not the main thread");
+    if soundcraft_vst3_host::editors_supported() {
+        // macOS and Windows open the editor on the main thread only; the X11 host opens it
+        // wherever it is asked to (and closes it again right away). A headless Linux/BSD runner
+        // has no X display (or no libX11 at all), which the X11 host reports as such.
+        match ed.open() {
+            Ok(()) => ed.close(),
+            Err(e) => assert!(
+                e.contains("main thread") || e.contains("cannot open the X display") || e.contains("cannot load libX11"),
+                "unexpected error: {e}"
+            ),
+        }
     } else {
         assert!(ed.open().is_err(), "unsupported elsewhere");
     }

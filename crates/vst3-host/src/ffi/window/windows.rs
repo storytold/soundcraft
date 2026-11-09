@@ -128,6 +128,10 @@ impl HostWindow {
         self.live().unwrap_or(std::ptr::null_mut())
     }
 
+    /// Nothing to focus separately: the view's own window takes the keyboard on this
+    /// platform.
+    pub fn focus(&self) {}
+
     pub fn raise(&self) {
         if let Some(h) = self.live() {
             // SAFETY: a live window of this thread.
@@ -142,6 +146,12 @@ impl HostWindow {
         // SAFETY: a live window of this thread.
         self.live().is_some_and(|h| unsafe { IsWindowVisible(h) } != 0)
     }
+
+    /// The message loop delivers the window events; nothing to pump.
+    pub fn pump(&mut self) {}
+
+    /// The window is shown when it is created.
+    pub fn map(&self) {}
 
     pub fn close(self) {
         if let Some(h) = self.live() {

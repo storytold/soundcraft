@@ -222,8 +222,29 @@ pub fn category_from_sub_categories<S: AsRef<str>>(subs: &[S]) -> Category {
 }
 
 /// True when the sub-categories mark an instrument (`Instrument`, `Instrument|Synth`, …).
+///
+/// The VST3 spec puts the main category first, but plugins do not all follow that: some report
+/// `Synth|Instrument` or `Fx|Instrument`. Any `Instrument` (or its `Sampler`/`Drum` specialisations)
+/// anywhere in the list means the plugin takes MIDI, so it belongs in a track's instrument slot.
 pub fn is_instrument<S: AsRef<str>>(subs: &[S]) -> bool {
-    subs.first().is_some_and(|f| f.as_ref().eq_ignore_ascii_case("Instrument"))
+    subs.iter().any(|f| ["Instrument", "Sampler", "Drum"].iter().any(|n| f.as_ref().eq_ignore_ascii_case(n)))
+}
+
+/// True when VST3 sub-categories label a MIDI processor/generator. There is no standard VST3
+/// sub-category for every such plugin, so this is only a menu hint; a loaded plugin's event output
+/// bus is the runtime MIDI-output capability.
+pub fn is_midi_processor<S: AsRef<str>>(subs: &[S]) -> bool {
+    subs.iter().any(|f| {
+        ["Note Generator", "MIDI Note Generator", "Sequencer", "Arpeggiator", "Arp", "Chords", "MIDI Effect"]
+            .iter()
+            .any(|n| f.as_ref().eq_ignore_ascii_case(n))
+    })
+}
+
+/// Compatibility alias for the scan-time MIDI-processor category hint. It is not proof that the
+/// loaded plugin has an event output bus.
+pub fn midi_out<S: AsRef<str>>(subs: &[S]) -> bool {
+    is_midi_processor(subs)
 }
 
 #[cfg(test)]
@@ -319,6 +340,17 @@ mod tests {
         assert_eq!(c(""), Category::Other);
         assert_eq!(split_sub_categories(" Fx || Delay |"), vec!["Fx", "Delay"]);
         assert!(is_instrument(&split_sub_categories("Instrument|Sampler")));
-        assert!(!is_instrument(&split_sub_categories("Fx|Instrument")));
+        // A plugin that names `Instrument` anywhere takes MIDI, however it orders its labels.
+        assert!(is_instrument(&split_sub_categories("Fx|Instrument")));
+        assert!(is_instrument(&split_sub_categories("Synth|Instrument")));
+        assert!(is_instrument(&split_sub_categories("Drum")));
+        assert!(!is_instrument(&split_sub_categories("Fx|Reverb")));
+        // MIDI generators are selectable where the app feeds MIDI, even when they are not instruments.
+        assert!(!midi_out(&split_sub_categories("Instrument|Synth")), "ordinary instruments take MIDI but do not necessarily output it");
+        assert!(is_midi_processor(&split_sub_categories("Instrument|MIDI Note Generator")));
+        assert!(midi_out(&split_sub_categories("Instrument|MIDI Note Generator")));
+        assert!(midi_out(&split_sub_categories("Fx|Note Generator")));
+        assert!(midi_out(&split_sub_categories("Fx|Sequencer")));
+        assert!(!midi_out(&split_sub_categories("Fx|Reverb")));
     }
 }

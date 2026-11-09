@@ -18,10 +18,15 @@ impl HostWindow {
     pub fn parent(&self) -> *mut c_void {
         std::ptr::null_mut()
     }
+    /// Nothing to focus separately: there is no window on this platform.
+    pub fn focus(&self) {}
+
     pub fn raise(&self) {}
     pub fn is_visible(&self) -> bool {
         false
     }
+    pub fn pump(&mut self) {}
+    pub fn map(&self) {}
     pub fn close(self) {}
 }
 

@@ -34,22 +34,44 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                     if soundcraft_mix::is_third_party(&ins.plugin) {
                         let open = app.player.as_ref().is_some_and(|p| p.editor_open(tid, slot));
-                        let available = app.player.as_ref().is_some_and(|p| p.has_editor(tid, slot));
+                        // A plugin whose editor this platform cannot host says so on the button
+                        // instead of failing silently when it is pressed.
+                        let blocked = crate::mix_window::editor_blocked_reason(&ins.plugin);
+                        let available = blocked.is_none() && app.player.as_ref().is_some_and(|p| p.has_editor(tid, slot));
                         let label = if open { "Close Plugin Editor" } else { "Open Plugin Editor" };
                         let resp = ui.add_enabled(available, egui::Button::new(label));
-                        let resp =
-                            if available { resp } else { resp.on_disabled_hover_text("This plugin has no editor of its own, or it is not loaded") };
+                        let resp = match blocked {
+                            Some(why) => resp.on_disabled_hover_text(why),
+                            None if available => resp,
+                            None => resp.on_disabled_hover_text("This plugin has no editor of its own, or it is not loaded"),
+                        };
                         if resp.clicked()
                             && let Some(p) = &app.player
                         {
                             if open {
                                 p.close_editor(tid, slot);
-                            } else if let Err(e) = p.open_editor(tid, slot) {
-                                app.ui.status = format!("{}: {e}", info.name);
+                            } else {
+                                match p.open_editor(tid, slot) {
+                                    // A retry that works drops the earlier failure's text.
+                                    Ok(()) => app.ui.editor_error = None,
+                                    Err(e) => {
+                                        let msg = format!("{}: {e}", info.name);
+                                        app.ui.status = msg.clone();
+                                        app.ui.editor_error = Some((tid, slot, msg));
+                                    }
+                                }
                             }
                         }
                     }
                 });
+                if let Some((t, s, msg)) = &app.ui.editor_error
+                    && *t == tid
+                    && *s == slot
+                {
+                    // Why the editor did not open, shown in this window: the status line lives in
+                    // the Edit window, which the user may not be looking at.
+                    ui.label(egui::RichText::new(msg).color(Tokens::current().meter_red));
+                }
                 if instrument && soundcraft_mix::is_third_party(&ins.plugin) {
                     // A hosted instrument keeps its sounds and settings in its own editor.
                     ui.label(egui::RichText::new("Load and edit sounds in the plugin's own editor.").color(Tokens::current().text_dim));
@@ -132,6 +154,12 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
         }
     }
     app.ui.plugin_windows = keep;
+    // An editor error belongs to a window that is still open.
+    if let Some((t, s, _)) = &app.ui.editor_error
+        && !app.ui.plugin_windows.contains(&(*t, *s))
+    {
+        app.ui.editor_error = None;
+    }
 }
 
 fn eq_curve(ui: &mut Ui, id: &str, ins: &soundcraft_model::Insert) {
