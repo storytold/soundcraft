@@ -87,8 +87,13 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                                         reset: 0.0,
                                     },
                                 );
+                                // The strip's merge key, so a typed value joins a running automation pass.
                                 if let Some(v) = typed {
-                                    let _ = app.run("mix.pan", json!({"track": id.0, "pan": v, "index": i}));
+                                    let _ = app.engine.execute_merged(
+                                        "mix.pan",
+                                        &json!({"track": id.0, "pan": v, "index": i}),
+                                        &format!("pan:{}:{i}", id.0),
+                                    );
                                 }
                             });
                         }
@@ -117,7 +122,7 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                     },
                 );
                 if let Some(db) = typed {
-                    let _ = app.run("mix.volume", json!({"track": id.0, "db": db}));
+                    let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": db}), &format!("fader:{}", id.0));
                 }
             });
         });
