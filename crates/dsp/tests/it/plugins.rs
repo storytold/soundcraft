@@ -631,13 +631,20 @@ fn lofi_quantizes() {
     assert!(levels.len() <= 5, "{levels:?}");
 }
 
-fn ring_mod(params: &[(&str, f32)]) -> Box<dyn Plugin> {
-    let mut p = prepared("ring_mod");
-    for &(id, v) in params {
-        assert!(p.set_param(id, v), "ring_mod.{id}");
+/// A plugin prepared at 48 kHz for `channels` channels with `params` set, then reset so the
+/// smoothers start at the new values.
+fn configured(id: &str, channels: usize, params: &[(&str, f32)]) -> Box<dyn Plugin> {
+    let mut p = create(id).unwrap();
+    p.prepare(SR, BLOCK, channels);
+    for &(param, v) in params {
+        assert!(p.set_param(param, v), "{id}.{param}");
     }
     p.reset();
     p
+}
+
+fn ring_mod(params: &[(&str, f32)]) -> Box<dyn Plugin> {
+    configured("ring_mod", 2, params)
 }
 
 /// Loudest bin within two bins of `hz` in an 8192-point spectrum.
@@ -721,4 +728,228 @@ fn ring_mod_modulation_sources_move_the_frequency() {
     steps.sort_unstable();
     steps.dedup_by(|a, b| a.abs_diff(*b) <= 2);
     assert!(steps.len() >= 3, "sample and hold steps: {steps:?}");
+}
+
+/// Amplitude of the whole-hertz tone `hz` in the one second of `x` that starts at `from`, sampled
+/// at `sr` (a whole number of hertz). Every whole-hertz tone completes whole cycles in that
+/// window, so the single-bin DFT measures each one exactly, without window leakage.
+fn tone_amplitude(x: &[f32], sr: usize, from: usize, hz: f64) -> f64 {
+    let w = std::f64::consts::TAU * hz / sr as f64;
+    let (re, im) = x[from..from + sr].iter().enumerate().fold((0.0f64, 0.0f64), |(re, im), (n, &v)| {
+        let (s, c) = (w * n as f64).sin_cos();
+        (re + f64::from(v) * c, im - f64::from(v) * s)
+    });
+    2.0 / sr as f64 * re.hypot(im)
+}
+
+/// Asserts the levels of whole-hertz tones in the second second of `x` (the first lets the
+/// filters settle): each `(hz, amplitude)` within 0.001 dB, and each of `absent` at least
+/// 100 dB below `reference`.
+fn assert_tones(x: &[f32], sr: usize, tones: &[(f64, f64)], absent: &[f64], reference: f64, what: &str) {
+    assert_tones_below(x, sr, tones, absent, reference, -100.0, what);
+}
+
+/// [`assert_tones`] with the level `absent` tones must stay under, in dB relative to `reference`.
+fn assert_tones_below(x: &[f32], sr: usize, tones: &[(f64, f64)], absent: &[f64], reference: f64, limit_db: f64, what: &str) {
+    for &(hz, want) in tones {
+        let got = tone_amplitude(x, sr, sr, hz);
+        let err_db = 20.0 * (got / want).log10();
+        assert!(err_db.abs() < 0.001, "{what}: {hz} Hz at {got}, want {want} ({err_db:+.5} dB)");
+    }
+    for &hz in absent {
+        let rel = 20.0 * (tone_amplitude(x, sr, sr, hz) / reference).log10();
+        assert!(rel < limit_db, "{what}: {hz} Hz only {rel:.1} dB down, limit {limit_db} dB");
+    }
+}
+
+/// A 0.5-amplitude sine at `hz` and `sr`, with the phase computed in `f64` so that rounding of
+/// a large `f32` phase does not add jitter sidebands to the measurements.
+fn pure_sine(hz: f64, sr: usize, len: usize) -> Vec<f32> {
+    (0..len).map(|i| (0.5 * (std::f64::consts::TAU * hz * i as f64 / sr as f64).sin()) as f32).collect()
+}
+
+fn freq_shifter(channels: usize, params: &[(&str, f32)]) -> Box<dyn Plugin> {
+    configured("freq_shifter", channels, params)
+}
+
+const FS_SR: usize = SR as usize;
+
+#[test]
+fn freq_shifter_moves_a_tone_up_or_down_by_the_frequency() {
+    let x = pure_sine(1000.0, FS_SR, 2 * FS_SR);
+    let mut up = freq_shifter(1, &[("frequency", 200.0), ("mode", 0.0)]);
+    let out = run(up.as_mut(), std::slice::from_ref(&x));
+    assert_tones(&out[0], FS_SR, &[(1200.0, 0.5)], &[800.0, 1000.0, 1400.0], 0.5, "up 200 Hz");
+
+    let mut down = freq_shifter(1, &[("frequency", 200.0), ("mode", 1.0)]);
+    let out = run(down.as_mut(), std::slice::from_ref(&x));
+    assert_tones(&out[0], FS_SR, &[(800.0, 0.5)], &[600.0, 1000.0, 1200.0], 0.5, "down 200 Hz");
+
+    // A component pushed below 0 Hz comes back mirrored: 200 Hz down by 300 Hz is 100 Hz.
+    let low = pure_sine(200.0, FS_SR, 2 * FS_SR);
+    let mut p = freq_shifter(1, &[("frequency", 300.0), ("mode", 1.0)]);
+    let out = run(p.as_mut(), &[low]);
+    assert_tones(&out[0], FS_SR, &[(100.0, 0.5)], &[200.0, 500.0], 0.5, "down past 0 Hz");
+}
+
+#[test]
+fn freq_shifter_up_and_down_and_stereo_modes() {
+    let x = pure_sine(1000.0, FS_SR, 2 * FS_SR);
+    // Up & Down: both sidebands at half level, nothing left at the input frequency.
+    let mut p = freq_shifter(2, &[("frequency", 150.0), ("mode", 2.0)]);
+    let out = run(p.as_mut(), &[x.clone(), x.clone()]);
+    for c in &out {
+        assert_tones(c, FS_SR, &[(850.0, 0.25), (1150.0, 0.25)], &[1000.0], 0.25, "up & down");
+    }
+
+    // Stereo: the left channel goes down and the right channel up.
+    let mut p = freq_shifter(2, &[("frequency", 150.0), ("mode", 3.0)]);
+    let out = run(p.as_mut(), &[x.clone(), x.clone()]);
+    assert_tones(&out[0], FS_SR, &[(850.0, 0.5)], &[1000.0, 1150.0], 0.5, "stereo left");
+    assert_tones(&out[1], FS_SR, &[(1150.0, 0.5)], &[850.0, 1000.0], 0.5, "stereo right");
+
+    // A mono insert has no sides, so Stereo plays both sidebands, like Up & Down.
+    let mut p = freq_shifter(1, &[("frequency", 150.0), ("mode", 3.0)]);
+    let out = run(p.as_mut(), std::slice::from_ref(&x));
+    assert_tones(&out[0], FS_SR, &[(850.0, 0.25), (1150.0, 0.25)], &[1000.0], 0.25, "stereo on mono");
+}
+
+#[test]
+fn freq_shifter_feedback_adds_one_more_shift_per_pass() {
+    // Each pass through the loop shifts again and scales by the feedback: 1.2, 1.4, 1.6 and 1.8 kHz
+    // at 1/2, 1/4, 1/8 and 1/16.
+    let x = pure_sine(1000.0, FS_SR, 2 * FS_SR);
+    let mut p = freq_shifter(1, &[("frequency", 200.0), ("feedback", 50.0)]);
+    let out = run(p.as_mut(), &[x]);
+    let trail = [(1200.0, 0.5), (1400.0, 0.25), (1600.0, 0.125), (1800.0, 0.0625)];
+    assert_tones(&out[0], FS_SR, &trail, &[800.0, 1000.0], 0.5, "feedback 50 %");
+    // Feedback stops at 70 %, the most the loop is proven stable with.
+    assert!(p.set_param("feedback", 100.0));
+    assert_eq!(p.param("feedback"), Some(70.0));
+}
+
+#[test]
+fn freq_shifter_mix_blends_the_dry_input() {
+    let x = pure_sine(1000.0, FS_SR, 2 * FS_SR);
+    let mut p = freq_shifter(1, &[("frequency", 200.0), ("mix", 50.0)]);
+    let out = run(p.as_mut(), &[x]);
+    assert_tones(&out[0], FS_SR, &[(1000.0, 0.25), (1200.0, 0.25)], &[800.0], 0.25, "mix 50 %");
+}
+
+#[test]
+fn freq_shifter_is_accurate_near_both_band_edges() {
+    // 44.1 kHz: a 40 Hz tone up by 10 Hz, and a 20 kHz tone down by 1 kHz.
+    let sr = 44_100usize;
+    for (from, by, mode, to, image) in [(40.0f32, 10.0f32, 0.0f32, 50.0, 30.0), (20_000.0, 1_000.0, 1.0, 19_000.0, 21_000.0)] {
+        let mut p = create("freq_shifter").unwrap();
+        p.prepare(sr as f32, BLOCK, 1);
+        p.set_param("frequency", by);
+        p.set_param("mode", mode);
+        p.reset();
+        let x = pure_sine(f64::from(from), sr, 2 * sr);
+        let out = run(p.as_mut(), &[x]);
+        assert_tones(&out[0], sr, &[(to, 0.5)], &[image, f64::from(from)], 0.5, &format!("{from} Hz by {by} Hz"));
+    }
+}
+
+#[test]
+fn freq_shifter_output_does_not_depend_on_the_block_size_and_reset_restarts_it() {
+    let x = pure_sine(440.0, FS_SR, 6000);
+    let params = [("frequency", 37.0), ("mode", 3.0), ("feedback", 60.0), ("mix", 80.0)];
+    let mut p = freq_shifter(2, &params);
+    let whole = run(p.as_mut(), &[x.clone(), x.clone()]);
+    let mut one = freq_shifter(2, &params);
+    let mut by_sample = vec![Vec::new(), Vec::new()];
+    for &v in &x {
+        let mut buf = vec![vec![v], vec![v]];
+        one.process(&mut buf, 1);
+        by_sample[0].push(buf[0][0]);
+        by_sample[1].push(buf[1][0]);
+    }
+    assert_eq!(whole, by_sample);
+    p.reset();
+    assert_eq!(run(p.as_mut(), &[x.clone(), x]), whole);
+}
+
+#[test]
+fn freq_shifter_tail_covers_the_ringing() {
+    for feedback in [0.0, 70.0] {
+        let mut p = freq_shifter(1, &[("frequency", 5.0), ("feedback", feedback)]);
+        let mut x = vec![0.0f32; 4 * FS_SR];
+        x[0] = 1.0;
+        let out = run(p.as_mut(), &[x]);
+        let last = out[0].iter().rposition(|v| v.abs() > 1e-4).unwrap();
+        assert!(last < p.tail_samples(), "feedback {feedback}: ringing at {last}, tail {}", p.tail_samples());
+    }
+}
+
+/// A plugin prepared at `sr` for `channels` channels with `params` set, then reset.
+fn freq_shifter_at(sr: usize, channels: usize, params: &[(&str, f32)]) -> Box<dyn Plugin> {
+    let mut p = create("freq_shifter").unwrap();
+    p.prepare(sr as f32, BLOCK, channels);
+    for &(param, v) in params {
+        assert!(p.set_param(param, v), "freq_shifter.{param}");
+    }
+    p.reset();
+    p
+}
+
+#[test]
+fn freq_shifter_rejects_the_image_at_every_common_rate() {
+    // A 1 kHz tone shifted up and down by 200 Hz: the shifted tone at full level within 0.001 dB,
+    // and the other sideband and the input at least 100 dB down up to 96 kHz and 95 dB at 192 kHz
+    // (the 20 Hz band edge is a smaller fraction of a higher rate).
+    for (sr, limit) in [(22_050, -100.0), (44_100, -100.0), (48_000, -100.0), (88_200, -100.0), (96_000, -100.0), (192_000, -95.0)] {
+        let x = pure_sine(1000.0, sr, 2 * sr);
+        for (mode, to, image) in [(0.0, 1200.0, 800.0), (1.0, 800.0, 1200.0)] {
+            let mut p = freq_shifter_at(sr, 1, &[("frequency", 200.0), ("mode", mode)]);
+            let out = run(p.as_mut(), std::slice::from_ref(&x));
+            assert_tones_below(&out[0], sr, &[(to, 0.5)], &[image, 1000.0], 0.5, limit, &format!("{sr} Hz, mode {mode}"));
+        }
+    }
+}
+
+#[test]
+fn freq_shifter_processes_every_channel_of_a_multichannel_insert() {
+    // A 5.1-wide insert: Up shifts all six channels. Stereo needs a known left and right, which only
+    // a two-channel insert has, so on six channels it plays both sidebands everywhere.
+    let x = pure_sine(1000.0, FS_SR, 2 * FS_SR);
+    let input = vec![x; 6];
+    let mut p = freq_shifter(6, &[("frequency", 150.0), ("mode", 0.0)]);
+    for (c, out) in run(p.as_mut(), &input).iter().enumerate() {
+        assert_tones(out, FS_SR, &[(1150.0, 0.5)], &[850.0, 1000.0], 0.5, &format!("up, channel {c}"));
+    }
+    let mut p = freq_shifter(6, &[("frequency", 150.0), ("mode", 3.0)]);
+    for (c, out) in run(p.as_mut(), &input).iter().enumerate() {
+        assert_tones(out, FS_SR, &[(850.0, 0.25), (1150.0, 0.25)], &[1000.0], 0.25, &format!("stereo, channel {c}"));
+    }
+}
+
+/// The largest change between two neighbouring samples of `x`.
+fn max_step(x: &[f32]) -> f32 {
+    x.windows(2).fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()))
+}
+
+#[test]
+fn freq_shifter_parameter_changes_do_not_click() {
+    // Each change lands mid-block on a running 1 kHz sine, a quarter of a 200 Hz carrier cycle
+    // after a whole one, where its sine is at its peak and an instant sideband switch would jump
+    // the furthest. Across the change, no step between two samples may be more than 5 % larger
+    // than the largest step of the settled output before or after it.
+    const AT: usize = 24_060;
+    let x = sine(1000.0, 0.5, 48_000);
+    let changes =
+        [("mode", 0.0, 1.0), ("mode", 1.0, 3.0), ("mode", 3.0, 2.0), ("frequency", 200.0, 4000.0), ("mix", 100.0, 0.0), ("feedback", 0.0, 70.0)];
+    for (id, from, to) in changes {
+        let mut p = freq_shifter(2, &[("frequency", 200.0), (id, from)]);
+        let before = run(p.as_mut(), &[x[..AT].to_vec(), x[..AT].to_vec()]);
+        assert!(p.set_param(id, to));
+        let after = run(p.as_mut(), &[x[AT..].to_vec(), x[AT..].to_vec()]);
+        for c in 0..2 {
+            let limit = 1.05 * max_step(&before[c][12_000..]).max(max_step(&after[c][12_000..]));
+            let across: Vec<f32> = before[c][12_000..].iter().chain(&after[c][..12_000]).copied().collect();
+            let step = max_step(&across);
+            assert!(step <= limit, "{id} {from} -> {to}, channel {c}: step {step}, limit {limit}");
+        }
+    }
 }
