@@ -83,8 +83,8 @@ app as an MCP server. See `control-protocol.md` and `mcp.md`.
 ## Revision history
 
 | Date | Change | Summary |
-| 2026-10-20 | minor | VST3 MIDI output events flow through the mix engine to persistent, dependency-ordered track routes |
 |---|---|---|
+| 2026-10-20 | minor | VST3 MIDI output events flow through the mix engine to persistent, dependency-ordered track routes |
 | 2026-10-13 | trivial | delay compensation includes the master faders' inserts (#351) |
 | 2026-10-10 | minor | Added video, vst3-host and au-host to the layer diagram; documented device I/O limits and in-memory media |
 | 2026-10-05 | major | First architecture overview |

@@ -812,7 +812,9 @@ fn plugin_search(ui: &mut Ui, search: &MenuSearch, slot: SlotKind) -> Option<Str
     for d in clap.iter().flatten().filter(|d| slot.takes(d.is_instrument, d.midi_out, d.is_midi_processor)) {
         hosted.push((MenuPlugin { id: d.id.clone(), name: d.name.clone(), vendor: d.vendor.clone() }, "CLAP"));
     }
-    for d in vst3.iter().flatten().filter(|d| slot.takes(d.is_instrument, d.midi_out, d.is_midi_processor)) {
+    // A VST3 whose MIDI output is not known yet is found by search in either slot; the command
+    // that puts it there loads it and checks.
+    for d in vst3.iter().flatten().filter(|d| slot.vst3_fit(d, soundcraft_vst3_host::loaded_info(&d.id)) != Vst3Fit::Hidden) {
         hosted.push((MenuPlugin { id: d.id.clone(), name: d.name.clone(), vendor: d.vendor.clone() }, "VST3"));
     }
     for d in soundcraft_au_host::scan().into_iter().filter(|d| slot.takes(d.is_instrument, d.midi_out, d.is_midi_processor)) {
@@ -945,6 +947,37 @@ impl SlotKind {
             SlotKind::Instrument => is_instrument || midi_out,
         }
     }
+
+    /// Where a scanned VST3 plugin goes in this slot's menu. Once its type has been loaded
+    /// (`loaded`), the runtime capability decides: an event output bus makes it a MIDI generator.
+    /// Before that only the scan's sub-categories are known, and many MIDI generators declare no
+    /// more than `Fx`. Such a plain effect stays an audio insert, and the instrument slot offers it
+    /// apart, as a plugin whose MIDI output is not known yet: `mix.instrument` loads and checks it,
+    /// after which it is listed where it belongs.
+    pub fn vst3_fit(self, d: &soundcraft_vst3_host::Vst3Descriptor, loaded: Option<&soundcraft_dsp::PluginInfo>) -> Vst3Fit {
+        if let Some(i) = loaded {
+            return if self.takes(i.is_instrument, i.midi_out, i.is_midi_processor) { Vst3Fit::Listed } else { Vst3Fit::Hidden };
+        }
+        if self.takes(d.is_instrument, d.midi_out, d.is_midi_processor) {
+            Vst3Fit::Listed
+        } else if self == SlotKind::Instrument && SlotKind::Insert.takes(d.is_instrument, d.midi_out, d.is_midi_processor) {
+            Vst3Fit::Unverified
+        } else {
+            Vst3Fit::Hidden
+        }
+    }
+}
+
+/// Where a scanned VST3 plugin shows in a slot's menu (see [`SlotKind::vst3_fit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Vst3Fit {
+    /// Listed with the slot's plugins.
+    Listed,
+    /// A plain effect not loaded yet, which may still turn out to generate MIDI: offered to the
+    /// instrument slot in a submenu of its own.
+    Unverified,
+    /// Not offered.
+    Hidden,
 }
 
 /// The CLAP, VST3 and (on macOS) Audio Units submenus, of effects or of MIDI-capable plugins;
@@ -963,9 +996,28 @@ fn hosted_menus(ui: &mut Ui, slot: SlotKind) -> Option<String> {
         }
     });
     ui.menu_button("VST3", |ui| {
-        let list = soundcraft_vst3_host::scan().into_iter().filter(|d| slot.takes(d.is_instrument, d.midi_out, d.is_midi_processor));
-        if let Some(p) = vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), vst3_empty) {
+        let (mut listed, mut unverified) = (Vec::new(), Vec::new());
+        for d in soundcraft_vst3_host::scan() {
+            let fit = slot.vst3_fit(&d, soundcraft_vst3_host::loaded_info(&d.id));
+            let p = MenuPlugin { id: d.id, name: d.name, vendor: d.vendor };
+            match fit {
+                Vst3Fit::Listed => listed.push(p),
+                Vst3Fit::Unverified => unverified.push(p),
+                Vst3Fit::Hidden => {}
+            }
+        }
+        if let Some(p) = vendor_menus(ui, listed, vst3_empty) {
             picked = Some(p);
+        }
+        if !unverified.is_empty() {
+            // A MIDI generator that declares itself only as an effect is found here until it has
+            // been loaded once; picking one loads it and checks for an event output.
+            ui.separator();
+            let more = ui.menu_button("Other VST3 Effects (MIDI Output Unchecked)", |ui| vendor_menus(ui, unverified, ""));
+            if let Some(Some(p)) = more.inner {
+                picked = Some(p);
+            }
+            more.response.on_hover_text("Plugins whose categories name no instrument or MIDI generator. Picking one loads it: a plugin with a MIDI output becomes the instrument, any other is refused.");
         }
     });
     if cfg!(target_os = "macos") {
@@ -1017,11 +1069,12 @@ pub fn plugin_info(id: &str) -> Option<&'static soundcraft_dsp::PluginInfo> {
 }
 
 /// Why this plugin's own editor cannot be opened here, when it cannot. VST3 editor windows are
-/// hosted on macOS and Windows only; on Linux and the BSDs there is no window to put the plugin's
-/// view into, so the button says so instead of failing silently when it is pressed.
+/// hosted on macOS, Windows and X11 (Linux and the BSDs); on any other platform (Android, the web)
+/// there is no window to put the plugin's view into, so the button says so instead of failing
+/// silently when it is pressed.
 pub fn editor_blocked_reason(plugin: &str) -> Option<&'static str> {
     if plugin.starts_with(soundcraft_vst3_host::ID_PREFIX) && !soundcraft_vst3_host::editors_supported() {
-        Some("VST3 plugin editors are hosted on macOS and Windows only")
+        Some("VST3 plugin editors cannot be hosted on this platform (macOS, Windows and X11 only)")
     } else {
         None
     }
@@ -1501,5 +1554,57 @@ mod tests {
         assert!(!SlotKind::Insert.takes(true, false, false), "a synth is not an audio insert");
         assert!(!SlotKind::Insert.takes(false, true, false), "a MIDI generator is not an audio insert");
         assert!(!SlotKind::Insert.takes(false, false, true), "an unsupported MIDI processor is not an audio insert");
+    }
+
+    fn vst3(subs: &[&str]) -> soundcraft_vst3_host::Vst3Descriptor {
+        let subs: Vec<String> = subs.iter().map(|s| s.to_string()).collect();
+        soundcraft_vst3_host::Vst3Descriptor {
+            id: "vst3:0123456789ABCDEF0123456789ABCDEF".into(),
+            class_id: "0123456789ABCDEF0123456789ABCDEF".into(),
+            name: "Plugin".into(),
+            vendor: "Vendor".into(),
+            version: String::new(),
+            sdk_version: String::new(),
+            category: soundcraft_vst3_host::scan::category_from_sub_categories(&subs),
+            is_instrument: soundcraft_vst3_host::scan::is_instrument(&subs),
+            is_midi_processor: soundcraft_vst3_host::scan::is_midi_processor(&subs),
+            midi_out: soundcraft_vst3_host::scan::midi_out(&subs),
+            sub_categories: subs,
+            path: std::path::PathBuf::new(),
+        }
+    }
+
+    fn loaded(is_instrument: bool, midi_out: bool) -> soundcraft_dsp::PluginInfo {
+        soundcraft_dsp::PluginInfo {
+            id: "vst3:0123456789ABCDEF0123456789ABCDEF",
+            name: "Plugin",
+            short_name: "Plugin",
+            category: soundcraft_dsp::Category::Other,
+            params: &[],
+            is_instrument,
+            is_midi_processor: false,
+            midi_out,
+            audiosuite: false,
+        }
+    }
+
+    #[test]
+    fn a_vst3_generator_labelled_only_fx_can_reach_the_instrument_slot() {
+        use super::Vst3Fit::{Hidden, Listed, Unverified};
+        let fx = vst3(&["Fx"]);
+        // Not loaded yet: an effect as an insert, and offered apart to the instrument slot,
+        // because only loading it shows whether it has an event output.
+        assert_eq!(SlotKind::Insert.vst3_fit(&fx, None), Listed);
+        assert_eq!(SlotKind::Instrument.vst3_fit(&fx, None), Unverified);
+        // Loaded, with an event output: a MIDI generator, never an audio insert.
+        assert_eq!(SlotKind::Instrument.vst3_fit(&fx, Some(&loaded(false, true))), Listed);
+        assert_eq!(SlotKind::Insert.vst3_fit(&fx, Some(&loaded(false, true))), Hidden);
+        // Loaded, without one: a plain effect again.
+        assert_eq!(SlotKind::Instrument.vst3_fit(&fx, Some(&loaded(false, false))), Hidden);
+        assert_eq!(SlotKind::Insert.vst3_fit(&fx, Some(&loaded(false, false))), Listed);
+        // Declared instruments and generators are listed straight away.
+        assert_eq!(SlotKind::Instrument.vst3_fit(&vst3(&["Instrument", "Synth"]), None), Listed);
+        assert_eq!(SlotKind::Instrument.vst3_fit(&vst3(&["Fx", "Arpeggiator"]), None), Listed);
+        assert_eq!(SlotKind::Insert.vst3_fit(&vst3(&["Fx", "Arpeggiator"]), None), Hidden);
     }
 }

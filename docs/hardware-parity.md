@@ -75,8 +75,8 @@ are not yet collected. Therefore G-02 remains open for keyboards, external gear,
 ## Revision history
 
 | Date | Change | Summary |
-| 2026-10-20 | minor | Clarified internal VST3 track routing; external MIDI device I/O remains missing |
 |---|---|---|
+| 2026-10-20 | minor | Clarified internal VST3 track routing; external MIDI device I/O remains missing |
 | 2026-10-13 | trivial | bounces of a bus fed by an aux compensate its latency (#246) |
 | 2026-10-12 | minor | Audio device settings: system, output, input, sample rate and buffer size; opt-in ASIO |
 | 2026-10-10 | major | Created: audit of audio interface, MIDI, control-surface, sync and performance support against Pro Tools 2026.4.1 |

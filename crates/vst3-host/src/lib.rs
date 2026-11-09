@@ -159,6 +159,9 @@ mod api {
     pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
         registry::plugin_info(id)
     }
+    pub fn loaded_info(id: &str) -> Option<&'static PluginInfo> {
+        registry::loaded_info(id)
+    }
     pub fn shutdown() {
         ffi::exit_modules();
     }
@@ -190,6 +193,9 @@ mod api {
         Err(Vst3Error::Unsupported)
     }
     pub fn plugin_info(_id: &str) -> Option<&'static PluginInfo> {
+        None
+    }
+    pub fn loaded_info(_id: &str) -> Option<&'static PluginInfo> {
         None
     }
     pub fn shutdown() {}
@@ -266,6 +272,14 @@ pub fn create(id: &str) -> Option<Box<dyn Plugin>> {
 /// to read its parameters; the result is cached (and leaked, see the crate docs).
 pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
     api::plugin_info(id)
+}
+
+/// The description of a `vst3:<class id>` plugin type that has already been instantiated
+/// (`None` otherwise): unlike [`plugin_info`] it never loads anything, so a menu can call it every
+/// frame. Its `midi_out` is the runtime capability (an event output bus), which the scan's
+/// sub-category hint ([`Vst3Descriptor::midi_out`]) only guesses at.
+pub fn loaded_info(id: &str) -> Option<&'static PluginInfo> {
+    api::loaded_info(id)
 }
 
 #[cfg(test)]

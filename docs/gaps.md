@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-20 · **Last updated:** 2026-10-20 · **Change:** minor (G-02: internal VST3 MIDI routing done; hardware I/O still missing) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-20 · **Last updated:** 2026-11-09 · **Change:** minor (G-05: VST3 editors on Windows and Linux/X11 done) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -99,8 +99,8 @@ launch #142; Linux #45, #107.
 - **Missing:** the `com.apple.security.cs.disable-library-validation` entitlement in the signed
   build, so hardened runtime refuses third-party VST3 bundles (#153, #149). AU editor views
   (`crates/au-host/src/lib.rs` header: "Not hosted yet: Audio Unit editor views"). Embedded CLAP
-  GUIs; VST3 editors on Windows/Linux.
-- **Estimate:** ≈ 15–25 h (entitlement ≈ 1 h; AU Cocoa views and VST3 HWND/X11 views most of it).
+  GUIs. (VST3 editors are hosted on macOS, Windows and Linux/X11.)
+- **Estimate:** ≈ 10–20 h (entitlement ≈ 1 h; AU Cocoa views most of it).
 
 ### G-06. Memory-bound media
 
@@ -203,8 +203,9 @@ missing. Out of scope unless the owner decides otherwise.
 ## Revision history
 
 | Date | Change | Summary |
-| 2026-10-20 | minor | G-02 records internal VST3 MIDI routing as done while hardware MIDI I/O remains open |
 |---|---|---|
+| 2026-11-09 | minor | G-05 shrunk: VST3 editors on Windows and Linux/X11 are hosted |
+| 2026-10-20 | minor | G-02 records internal VST3 MIDI routing as done while hardware MIDI I/O remains open |
 | 2026-10-12 | minor | G-01 shrunk: audio device, rate and buffer choice; opt-in ASIO |
 | 2026-10-10 | minor | Marked the alpha blockers (G-01, G-02, G-03; parts of G-05 and G-06) from the core-workflow gate |
 | 2026-10-10 | major | Created from the full re-measure against Pro Tools Ultimate 2026.4.1: 22 ranked gaps with evidence and estimates |

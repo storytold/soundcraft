@@ -246,6 +246,11 @@ pub fn instantiate_plugin(id: &str) -> Result<Vst3Plugin, Vst3Error> {
     Ok(p)
 }
 
+/// The description of a plugin type that has already been instantiated, without instantiating it.
+pub fn loaded_info(id: &str) -> Option<&'static PluginInfo> {
+    registry().lock().unwrap_or_else(PoisonError::into_inner).infos.get(id).copied()
+}
+
 pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
     parse_id(id)?;
     {

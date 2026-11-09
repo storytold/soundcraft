@@ -359,10 +359,14 @@ fn editor_view_is_probed_and_edits_come_back_as_plain_values() {
     assert!(ed.idle().is_empty());
     if soundcraft_vst3_host::editors_supported() {
         // macOS and Windows open the editor on the main thread only; the X11 host opens it
-        // wherever it is asked to (and closes it again right away).
+        // wherever it is asked to (and closes it again right away). A headless Linux/BSD runner
+        // has no X display (or no libX11 at all), which the X11 host reports as such.
         match ed.open() {
             Ok(()) => ed.close(),
-            Err(e) => assert!(e.contains("main thread"), "unexpected error: {e}"),
+            Err(e) => assert!(
+                e.contains("main thread") || e.contains("cannot open the X display") || e.contains("cannot load libX11"),
+                "unexpected error: {e}"
+            ),
         }
     } else {
         assert!(ed.open().is_err(), "unsupported elsewhere");

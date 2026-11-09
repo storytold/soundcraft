@@ -302,7 +302,10 @@ fn insert(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     let tr = s.track_mut(t).ok_or_else(|| bad("mix.insert", "no track"))?;
     if info.is_midi_processor || (info.midi_out && !info.is_instrument) {
-        return Err(bad("mix.insert", format!("`{plugin}` is a MIDI processor and cannot run as an audio insert")));
+        return Err(bad(
+            "mix.insert",
+            format!("`{plugin}` is a MIDI processor and cannot run as an audio insert; pick it as the instrument of a MIDI or instrument track"),
+        ));
     }
     // An instrument or a MIDI generator in one of a MIDI track's inserts would never see that
     // track's MIDI: the mixer only feeds MIDI to the instrument slot.

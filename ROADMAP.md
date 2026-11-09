@@ -155,8 +155,8 @@ mutated and truncated movies. Field reports from the first public week are track
 ## Revision history
 
 | Date | Change | Summary |
-| 2026-10-20 | minor | Progress log: VST3 MIDI output and persistent track-to-track routing; G-02 hardware MIDI remains |
 |---|---|---|
+| 2026-10-20 | minor | Progress log: VST3 MIDI output and persistent track-to-track routing; G-02 hardware MIDI remains |
 | 2026-10-13 | trivial | Progress log: mix.instrument params, unknown fields refused (#265) |
 | 2026-10-13 | trivial | Progress log: bus bounce compensates aux returns (#246) |
 | 2026-10-13 | trivial | Progress log: master insert latency compensated (#351) |

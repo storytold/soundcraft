@@ -487,10 +487,16 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                         {
                             if open {
                                 p.close_editor(tid, slot);
-                            } else if let Err(e) = p.open_editor(tid, slot) {
-                                let msg = format!("{}: {e}", info.name);
-                                app.ui.status = msg.clone();
-                                app.ui.editor_error = Some((tid, slot, msg));
+                            } else {
+                                match p.open_editor(tid, slot) {
+                                    // A retry that works drops the earlier failure's text.
+                                    Ok(()) => app.ui.editor_error = None,
+                                    Err(e) => {
+                                        let msg = format!("{}: {e}", info.name);
+                                        app.ui.status = msg.clone();
+                                        app.ui.editor_error = Some((tid, slot, msg));
+                                    }
+                                }
                             }
                         }
                     }

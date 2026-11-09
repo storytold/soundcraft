@@ -2302,10 +2302,10 @@ mod window {
 /// loaded at run time through `x11-dl`, so building SoundCraft needs no X11 development files.
 #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
 mod window {
-    use std::ffi::{CString, c_char, c_void};
+    use std::ffi::{CString, c_char, c_int, c_void};
     use std::sync::{Mutex, PoisonError};
     use std::thread::ThreadId;
-    use x11_dl::xlib::{self, Display, Window as XWindow, XEvent};
+    use x11_dl::xlib::{self, Display, Window as XWindow, XErrorEvent, XEvent};
 
     /// The VST3 platform type for X11 embedding.
     pub const PLATFORM_TYPE: Option<*const c_char> = Some(vst3::Steinberg::kPlatformTypeX11EmbedWindowID);
@@ -2329,6 +2329,37 @@ mod window {
         let mut owner = OWNER.lock().unwrap_or_else(PoisonError::into_inner);
         if owner.is_none() {
             *owner = Some(std::thread::current().id());
+        }
+    }
+
+    /// An Xlib error handler, as `XSetErrorHandler` takes and returns it.
+    type ErrorHandler = Option<unsafe extern "C" fn(*mut Display, *mut XErrorEvent) -> c_int>;
+
+    /// While `HostWindow::tolerating_stale_windows` runs: the display whose stale-window errors
+    /// are swallowed (as an address) and the handler that was installed before, which gets every
+    /// other error. `(0, None)` otherwise.
+    static TRAP: Mutex<(usize, ErrorHandler)> = Mutex::new((0, None));
+
+    /// Swallows `BadWindow`/`BadMatch` on our display: the plugin (or a bridge such as yabridge)
+    /// can unmap or destroy its child window between our query and our request on it. Xlib's
+    /// default handler would `exit()` the process on such an error, which happens whenever
+    /// winit's X11 backend (whose handler only logs) is not the one running, e.g. on Wayland.
+    /// Everything else goes to the previous handler, so its behaviour is kept.
+    unsafe extern "C" fn trap_stale_window(display: *mut Display, event: *mut XErrorEvent) -> c_int {
+        let (ours, previous) = *TRAP.lock().unwrap_or_else(PoisonError::into_inner);
+        let code = if event.is_null() {
+            0
+        } else {
+            // SAFETY: Xlib passes a valid error event that lives for the duration of the call.
+            unsafe { (*event).error_code }
+        };
+        if ours != 0 && display as usize == ours && (code == xlib::BadWindow || code == xlib::BadMatch) {
+            return 0;
+        }
+        match previous {
+            // SAFETY: Xlib's own arguments, handed to the handler that was installed before ours.
+            Some(handler) => unsafe { handler(display, event) },
+            None => 0,
         }
     }
 
@@ -2460,15 +2491,34 @@ mod window {
         /// and a bridge that only grabs focus for active windows (yabridge) then leaves the
         /// plugin without keyboard input; its text fields would stay dead.
         pub fn focus(&self) {
-            let target = self.focus_target();
-            if target == self.window {
-                return;
-            }
-            // SAFETY: a valid display; `target` is a viewable child of our window.
+            self.tolerating_stale_windows(|this| {
+                let target = this.focus_target();
+                if target != this.window {
+                    // SAFETY: a valid display; `target` was a viewable child of our window (an
+                    // error from it having gone since is swallowed by the scoped handler).
+                    unsafe { (this.xlib.XSetInputFocus)(this.display, target, xlib::RevertToParent, xlib::CurrentTime) };
+                }
+            });
+        }
+
+        /// Runs `f`, whose requests name the plugin's child windows, with a scoped error handler
+        /// that ignores `BadWindow`/`BadMatch` on this display (see `trap_stale_window`). The
+        /// display is synchronized on both sides, so earlier requests' errors still reach the
+        /// previous handler and every error of `f` arrives before that handler is restored.
+        fn tolerating_stale_windows<R>(&self, f: impl FnOnce(&Self) -> R) -> R {
+            // SAFETY: a valid display, used on its owner thread.
+            unsafe { (self.xlib.XSync)(self.display, 0) };
+            // SAFETY: installs a handler that only reads the event and forwards to the previous one.
+            let previous = unsafe { (self.xlib.XSetErrorHandler)(Some(trap_stale_window)) };
+            *TRAP.lock().unwrap_or_else(PoisonError::into_inner) = (self.display as usize, previous);
+            let result = f(self);
+            // SAFETY: a valid display; `previous` is the handler Xlib returned above.
             unsafe {
-                (self.xlib.XSetInputFocus)(self.display, target, xlib::RevertToParent, xlib::CurrentTime);
-                (self.xlib.XFlush)(self.display);
+                (self.xlib.XSync)(self.display, 0);
+                (self.xlib.XSetErrorHandler)(previous);
             }
+            *TRAP.lock().unwrap_or_else(PoisonError::into_inner) = (0, None);
+            result
         }
 
         /// Keeps the editor in front and the keyboard with the plugin while the pointer rests over
@@ -2510,22 +2560,21 @@ mod window {
                 (self.xlib.XRaiseWindow)(self.display, self.window);
                 (self.xlib.XFlush)(self.display);
             }
-            let target = self.focus_target();
-            if target == self.window {
-                return;
-            }
-            let mut focused: XWindow = 0;
-            let mut revert = 0;
-            // SAFETY: a valid display; both out-parameters are writable.
-            unsafe { (self.xlib.XGetInputFocus)(self.display, &mut focused, &mut revert) };
-            if focused == target {
-                return;
-            }
-            // SAFETY: a valid display; `target` is a viewable child of our window.
-            unsafe {
-                (self.xlib.XSetInputFocus)(self.display, target, xlib::RevertToParent, xlib::CurrentTime);
-                (self.xlib.XFlush)(self.display);
-            }
+            self.tolerating_stale_windows(|this| {
+                let target = this.focus_target();
+                if target == this.window {
+                    return;
+                }
+                let mut focused: XWindow = 0;
+                let mut revert = 0;
+                // SAFETY: a valid display; both out-parameters are writable.
+                unsafe { (this.xlib.XGetInputFocus)(this.display, &mut focused, &mut revert) };
+                if focused != target {
+                    // SAFETY: a valid display; `target` was a viewable child of our window (an
+                    // error from it having gone since is swallowed by the scoped handler).
+                    unsafe { (this.xlib.XSetInputFocus)(this.display, target, xlib::RevertToParent, xlib::CurrentTime) };
+                }
+            });
         }
 
         /// The deepest viewable child of our window: the window the plugin's own widgets live in.
@@ -2647,10 +2696,6 @@ mod window {
         pub fn parent(&self) -> *mut c_void {
             std::ptr::null_mut()
         }
-        /// Gives the keyboard focus to the plugin's own X window (the deepest viewable child).
-        /// An override-redirect host window never becomes the window manager's active window,
-        /// and a bridge that only grabs focus for active windows (yabridge) then leaves the
-        /// plugin without keyboard input; its text fields would stay dead.
         /// Nothing to focus separately: there is no window on this platform.
         pub fn focus(&self) {}
 
