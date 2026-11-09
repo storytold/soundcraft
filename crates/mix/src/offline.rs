@@ -42,6 +42,9 @@ pub fn source_channels(s: &Session, bus: Option<BusId>) -> usize {
     }
 }
 
+/// How many times [`RangeRender`] renders its first block again while a plugin's latency changes.
+const FIRST_BLOCK_TRIES: usize = 4;
+
 /// [`render_range`] or [`render_bus`] of any length, a block at a time.
 pub struct RangeRender {
     eng: MixEngine,
@@ -94,9 +97,20 @@ impl RangeRender {
         // a later change (an automated lookahead) moves the alignment from that block on, as in
         // playback, since the audio before it has already gone out.
         if self.eng.idle_plugins() && self.done == 0 {
-            self.eng.reset_and_reprepare();
-            self.render(s, self.start, n);
-            self.eng.idle_plugins();
+            // A plugin may settle in more than one step: start over until none changes, a few
+            // times at most.
+            let mut settled = false;
+            for _ in 0..FIRST_BLOCK_TRIES {
+                self.eng.reset_and_reprepare();
+                self.render(s, self.start, n);
+                if !self.eng.idle_plugins() {
+                    settled = true;
+                    break;
+                }
+            }
+            if !settled {
+                log::warn!("a plugin's latency kept changing on the first block; the render may not line up with the timeline");
+            }
         }
         if self.done == 0 {
             // The first block tells the mix's latency: render that much more and drop the head.

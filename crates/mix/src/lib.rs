@@ -278,7 +278,9 @@ impl MixEngine {
     }
 
     /// Main-thread time for every plugin ([`Plugin::idle`]): offline renders give it between
-    /// blocks, the audio thread never does. True when an insert's latency changed.
+    /// blocks, the audio thread never does. True when an insert's latency changed. Instruments get
+    /// the time too, but their latency is not part of delay compensation (only inserts' is), so a
+    /// change there cannot move the mix and does not count.
     pub(crate) fn idle_plugins(&mut self) -> bool {
         let mut changed = false;
         for s in self.strips.values_mut() {

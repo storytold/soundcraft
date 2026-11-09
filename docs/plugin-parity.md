@@ -52,7 +52,7 @@ User report #152: a saved instrument level does not reach the bounce.
 | Sidechain / key input | ✅ | ❌ | All three hosts |
 | ARA 2 (pitch/time editors in the timeline) | ✅ | ❌ | Menu leaves Track/Clip/Window ▸ ARA still missing |
 | Crash isolation | in-process (DSP on HDX) | in-process | Out-of-process hosting would beat Pro Tools |
-| Plugin delay reporting changes on the fly | ✅ | 🟡 | Aux insert latency bug #103 (PR #133). Offline renders follow a latency a hosted plugin finds once it runs (CLAP restart, VST3 asked between blocks, #1287); realtime playback doesn't yet |
+| Plugin delay reporting changes on the fly | ✅ | 🟡 | Aux insert latency bug #103 (PR #133). Offline renders follow a latency a hosted plugin finds once it runs (CLAP restart, VST3 asked between blocks, #1287); realtime playback doesn't follow it yet |
 
 ## Revision history
 
