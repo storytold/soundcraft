@@ -320,10 +320,10 @@ fn fit_to_beats(s: &mut Session, t: TrackId, c: &mut Clip, room: Option<Samples>
     if target <= 0 || target == c.length {
         return Ok(());
     }
-    if let Some(room) = room {
-        if target > room {
-            return Err(bad(id, format!("fitting “{}” to the grid needs {target} samples; only {room} fit", c.name)));
-        }
+    if let Some(room) = room
+        && target > room
+    {
+        return Err(bad(id, format!("fitting “{}” to the grid needs {target} samples; only {room} fit", c.name)));
     }
     let Some(src) = render_stretched(s, id, c, target)? else { return Err(bad(id, "the clip's audio is not loaded")) };
     let ratio = target as f64 / c.length.max(1) as f64;
