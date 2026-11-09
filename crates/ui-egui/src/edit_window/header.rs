@@ -389,12 +389,18 @@ fn field_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, head_bg
                 ui.painter().line_segment([c + vec2(0.0, -3.5), c + vec2(0.0, 1.0)], Stroke::new(1.0, t.text));
                 ui.painter().add(Shape::convex_polygon(vec![c + vec2(0.0, 0.5), c + vec2(3.0, 3.5), c + vec2(-3.0, 3.5)], t.text, Stroke::NONE));
                 if let Some(alg) = &track.elastic {
-                    ui.painter().with_clip_rect(field).text(pos2(field.min.x + 14.0, field.center().y), Align2::LEFT_CENTER, alg, bold(10.0), t.text);
+                    ui.painter().with_clip_rect(field).text(
+                        pos2(field.min.x + 14.0, field.center().y),
+                        Align2::LEFT_CENTER,
+                        soundcraft_engine::feature_names::display_label(alg),
+                        bold(10.0),
+                        t.text,
+                    );
                 }
                 egui::Popup::menu(&resp.on_hover_text("Elastic Audio")).show(|ui| {
                     for alg in ["none", "polyphonic", "rhythmic", "monophonic", "varispeed", "x-form"] {
                         let current = track.elastic.as_deref().unwrap_or("none") == alg;
-                        if ui.selectable_label(current, alg).clicked() {
+                        if ui.selectable_label(current, soundcraft_engine::feature_names::display_label(alg)).clicked() {
                             let _ = app.run("track.elastic", json!({"tracks": [id.0], "algorithm": alg}));
                         }
                     }
