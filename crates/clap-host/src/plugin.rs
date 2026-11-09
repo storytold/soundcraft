@@ -91,13 +91,26 @@ impl ClapPlugin {
 
 /// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
 /// allocates on the audio thread). Only a `release` may take the last [`RELEASE_RESERVE`] slots.
-fn push_event(queue: &mut Vec<Event>, e: Event, release: bool) {
+/// Returns whether the event was queued.
+fn push_event(queue: &mut Vec<Event>, e: Event, release: bool) -> bool {
     let room = if release { queue.capacity() } else { queue.capacity().saturating_sub(RELEASE_RESERVE) };
     if queue.len() >= room {
-        return;
+        return false;
     }
     let pos = queue.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
     queue.insert(pos, e);
+    true
+}
+
+/// Queues the release of `key` at `time`. The key stays held when the queue has no room, so a
+/// later reset still releases it (#1464).
+fn queue_release(queue: &mut Vec<Event>, held: &mut [bool; 128], notes: NoteMode, time: u32, key: u8) {
+    if let Some(e) = release_event(notes, time, key)
+        && push_event(queue, e, true)
+        && let Some(h) = held.get_mut(usize::from(key))
+    {
+        *h = false;
+    }
 }
 
 /// The release of `key` in the note port's dialect (`None` without a note port).
@@ -131,7 +144,7 @@ fn release_on_reset(queue: &mut Vec<Event>, held: &mut [bool; 128], notes: NoteM
         if held.get(usize::from(key)).copied().unwrap_or(false)
             && let Some(e) = release_event(notes, 0, key)
         {
-            push_event(queue, e, true);
+            let _ = push_event(queue, e, true);
         }
     }
     *held = [false; 128];
@@ -370,11 +383,7 @@ impl Plugin for ClapPlugin {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        let Some(e) = release_event(self.notes, time, note) else { return };
-        push_event(&mut self.queue, e, true);
-        if let Some(h) = self.held.get_mut(note as usize) {
-            *h = false;
-        }
+        queue_release(&mut self.queue, &mut self.held, self.notes, time, note);
     }
 
     fn midi(&mut self, offset: usize, msg: [u8; 3]) {
@@ -507,12 +516,12 @@ mod tests {
         for notes in [NoteMode::Clap, NoteMode::Midi] {
             let mut q = Vec::with_capacity(EVENT_CAP);
             for id in 0..EVENT_CAP as u32 {
-                push_event(&mut q, Event::Param { time: 0, id, value: 0.0 }, false);
+                let _ = push_event(&mut q, Event::Param { time: 0, id, value: 0.0 }, false);
             }
             assert_eq!(q.len(), EVENT_CAP - RELEASE_RESERVE, "parameter changes leave the reserve free");
             // Keys 0..4 already have a release queued, and are held again after it.
             for key in 0..4u8 {
-                push_event(&mut q, release_event(notes, 7, key).unwrap(), true);
+                let _ = push_event(&mut q, release_event(notes, 7, key).unwrap(), true);
             }
             let mut held = [true; 128];
             release_on_reset(&mut q, &mut held, notes);
@@ -523,6 +532,35 @@ mod tests {
                 assert_eq!(q.iter().filter(|e| **e == want).count(), 1, "{notes:?}: key {key} is released once");
             }
             assert_eq!(q.len(), EVENT_CAP);
+        }
+    }
+
+    /// A release that finds the queue full (parameter changes plus duplicate releases) leaves its
+    /// key held, so the reset that follows still releases it, as the mix's `all_notes_off`
+    /// then `reset` does on Stop.
+    #[test]
+    fn a_release_the_full_queue_drops_is_sent_by_the_next_reset() {
+        for notes in [NoteMode::Clap, NoteMode::Midi] {
+            let mut q = Vec::with_capacity(EVENT_CAP);
+            let mut held = [false; 128];
+            for id in 0..EVENT_CAP as u32 {
+                let _ = push_event(&mut q, Event::Param { time: 0, id, value: 0.0 }, false);
+            }
+            // Key 0 pressed and released over and over fills the reserve with its releases.
+            for t in 0..RELEASE_RESERVE as u32 {
+                held[0] = true;
+                queue_release(&mut q, &mut held, notes, t, 0);
+            }
+            assert_eq!(q.len(), EVENT_CAP, "{notes:?}: the queue is full");
+            held[5] = true;
+            queue_release(&mut q, &mut held, notes, 0, 5);
+            assert!(held[5], "{notes:?}: a release that was not queued leaves its key held");
+            release_on_reset(&mut q, &mut held, notes);
+            for key in [0u8, 5] {
+                let want = release_event(notes, 0, key).unwrap();
+                assert_eq!(q.iter().filter(|e| **e == want).count(), 1, "{notes:?}: key {key} is released once");
+            }
+            assert_eq!(held, [false; 128]);
         }
     }
 
