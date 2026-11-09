@@ -3,7 +3,7 @@ use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::{Harness, kittest::Queryable};
 use serde_json::json;
 use soundcraft_ui_egui::dialogs::Dialog;
-use soundcraft_ui_egui::{Services, SoundApp, menus};
+use soundcraft_ui_egui::{Services, SoundApp, menus, widgets};
 
 const SLIDERS: [&str; 4] = ["Threshold dB", "Min strip duration ms", "Clip start pad ms", "Clip end pad ms"];
 
@@ -33,17 +33,17 @@ fn value(h: &Harness<'_, SoundApp>, label: &str) -> f64 {
     [threshold, min_ms, pre_ms, post_ms][i]
 }
 
-fn hold(h: &mut Harness<'_, SoundApp>, modifiers: Modifiers) {
+fn hold<S>(h: &mut Harness<'_, S>, modifiers: Modifiers) {
     h.event(Event::ModifiersChanged(modifiers));
     h.run_steps(1);
 }
 
-fn press(h: &mut Harness<'_, SoundApp>, pos: Pos2, pressed: bool, modifiers: Modifiers) {
+fn press<S>(h: &mut Harness<'_, S>, pos: Pos2, pressed: bool, modifiers: Modifiers) {
     h.event(Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers });
     h.run_steps(1);
 }
 
-fn move_to(h: &mut Harness<'_, SoundApp>, pos: Pos2) {
+fn move_to<S>(h: &mut Harness<'_, S>, pos: Pos2) {
     h.event(Event::PointerMoved(pos));
     h.run_steps(1);
 }
@@ -126,4 +126,61 @@ fn pressing_and_releasing_ctrl_during_a_drag_keeps_the_value() {
     assert_eq!(value(&h, label), held, "releasing Ctrl moved the value back to the pointer");
     press(&mut h, from + vec2(40.0, 0.0), false, Modifiers::NONE);
     assert_eq!(value(&h, label), held, "releasing the button moved the value back to the pointer");
+}
+
+#[test]
+fn pressing_ctrl_during_a_drag_on_the_value_box_keeps_the_value() {
+    let mut h = strip_silence_dialog();
+    let label = "Threshold dB";
+    let plain = drag_on(&mut h, Role::SpinButton, label, 30.0, Modifiers::NONE);
+    let held = drag_on(&mut h, Role::SpinButton, label, 30.0, Modifiers::COMMAND);
+    assert!(held < plain / 2.0, "a Ctrl-drag on the value box moved {held}, a plain drag {plain}");
+    let from = h.get_by_role_and_label(Role::SpinButton, label).rect().center();
+    move_to(&mut h, from);
+    press(&mut h, from, true, Modifiers::NONE);
+    move_to(&mut h, from + vec2(10.0, 0.0));
+    let before = value(&h, label);
+    hold(&mut h, Modifiers::COMMAND);
+    assert_eq!(value(&h, label), before, "pressing Ctrl moved the value");
+    for i in 1..=6 {
+        move_to(&mut h, from + vec2(10.0 + 5.0 * i as f32, 0.0));
+    }
+    let fine = value(&h, label) - before;
+    // The rest of the drag moves as far as a drag with Ctrl held from the start.
+    assert!((0.8..=1.2).contains(&(fine / held)), "after Ctrl, the value box moved {fine}; a Ctrl-drag moves {held}");
+    let last = value(&h, label);
+    press(&mut h, from + vec2(40.0, 0.0), false, Modifiers::COMMAND);
+    assert_eq!(value(&h, label), last, "releasing the button moved the value");
+    hold(&mut h, Modifiers::NONE);
+}
+
+#[test]
+fn the_control_key_alone_also_gives_a_fine_drag() {
+    let mut h = strip_silence_dialog();
+    let label = "Threshold dB";
+    let plain = drag(&mut h, label, 30.0, Modifiers::NONE);
+    let fine = drag(&mut h, label, 30.0, Modifiers::CTRL);
+    assert!((0.08..=0.12).contains(&(fine / plain)), "Control-drag moved {fine}, a plain drag {plain}");
+}
+
+#[test]
+fn a_ctrl_drag_reports_every_change_in_the_response() {
+    let mut h = Harness::builder().with_size(vec2(400.0, 100.0)).build_ui_state(
+        |ui, (value, changed): &mut (f64, bool)| {
+            *changed = widgets::fine_slider(ui, value, 0.0..=96.0, "Level").changed();
+        },
+        (48.0, false),
+    );
+    h.run_steps(2);
+    let from = h.get_by_role_and_label(Role::Slider, "Level").rect().center();
+    hold(&mut h, Modifiers::COMMAND);
+    move_to(&mut h, from);
+    press(&mut h, from, true, Modifiers::COMMAND);
+    for i in 1..=6 {
+        let before = h.state().0;
+        move_to(&mut h, from + vec2(5.0 * i as f32, 0.0));
+        assert_ne!(h.state().0, before, "step {i} did not move the value");
+        assert!(h.state().1, "step {i} moved the value without reporting a change");
+    }
+    press(&mut h, from + vec2(30.0, 0.0), false, Modifiers::COMMAND);
 }
