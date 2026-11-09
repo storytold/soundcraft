@@ -94,12 +94,86 @@ fn plugin_window_sliders_move_a_tenth_as_far_with_ctrl_held() {
     let mut h = harness(app);
     let rails = window_sliders(&h, Id::unique(("plugin", kick.0, 0usize)));
     let params = slider_params("eq_7band");
+    assert_eq!((params[0].id, params[2].id), ("input_gain", "hpf_freq"));
     for i in [0, 2] {
         let p = params[i];
         // Along the rail, so that a log-taper parameter compares as a linear one does.
         let read = move |h: &Harness<'_, SoundApp>| f64::from(p.to_normalized(insert_param(h, kick, 0, p) as f32));
+        let others = |h: &Harness<'_, SoundApp>| params.iter().filter(|o| o.id != p.id).map(|o| insert_param(h, kick, 0, o)).collect::<Vec<_>>();
+        let before = others(&h);
         assert_tenth(p.name, plain_and_fine(&mut h, rails[i], &read), 0.08..=0.12);
+        assert_eq!(others(&h), before, "dragging {} moved another parameter", p.name);
     }
+}
+
+#[test]
+fn the_control_key_alone_also_gives_a_fine_drag_on_a_plugin_slider() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+    app.ui.plugin_windows = vec![(kick, 0)];
+    let mut h = harness(app);
+    let rails = window_sliders(&h, Id::unique(("plugin", kick.0, 0usize)));
+    let p = slider_params("eq_7band")[0];
+    let read = move |h: &Harness<'_, SoundApp>| insert_param(h, kick, 0, p);
+    let plain = drag(&mut h, rails[0], 30.0, Modifiers::NONE, &read);
+    let fine = drag(&mut h, rails[0], 30.0, Modifiers::CTRL, &read);
+    assert_tenth(p.name, (plain, fine), 0.08..=0.12);
+}
+
+/// Presses `rail`'s middle, drags 10 points, presses Ctrl, drags 30 more, releases Ctrl and then
+/// the button. Each change of the key and the release leave `read` where it was, and the 30
+/// points move it less than `plain` moved for the same distance.
+fn toggle_ctrl_during_a_drag(h: &mut Harness<'_, SoundApp>, what: &str, rail: Rect, plain: f64, read: &dyn Fn(&Harness<'_, SoundApp>) -> f64) {
+    let from = rail.center();
+    move_to(h, from);
+    press(h, from, true, Modifiers::NONE);
+    move_to(h, from + vec2(10.0, 0.0));
+    let before = read(h);
+    hold(h, Modifiers::COMMAND);
+    assert_eq!(read(h), before, "{what}: pressing Ctrl moved the value");
+    for i in 1..=6 {
+        move_to(h, from + vec2(10.0 + 5.0 * i as f32, 0.0));
+        read(h);
+    }
+    let held = read(h);
+    assert!(held > before && held - before < plain / 2.0, "{what}: 30 points with Ctrl moved {}, a plain drag {plain}", held - before);
+    hold(h, Modifiers::NONE);
+    assert_eq!(read(h), held, "{what}: releasing Ctrl moved the value");
+    press(h, from + vec2(40.0, 0.0), false, Modifiers::NONE);
+    assert_eq!(read(h), held, "{what}: releasing the button moved the value");
+}
+
+#[test]
+fn pressing_and_releasing_ctrl_during_a_drag_keeps_the_value_of_a_logarithmic_slider() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+    app.ui.plugin_windows = vec![(kick, 0)];
+    let mut h = harness(app);
+    let rails = window_sliders(&h, Id::unique(("plugin", kick.0, 0usize)));
+    let p = slider_params("eq_7band")[2];
+    assert_eq!(p.id, "hpf_freq");
+    let read = move |h: &Harness<'_, SoundApp>| f64::from(p.to_normalized(insert_param(h, kick, 0, p) as f32));
+    let plain = drag(&mut h, rails[2], 30.0, Modifiers::NONE, &read);
+    toggle_ctrl_during_a_drag(&mut h, p.name, rails[2], plain, &read);
+}
+
+#[test]
+fn pressing_and_releasing_ctrl_during_a_drag_keeps_a_whole_number_slider_whole() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    app.run("mix.instrument", json!({"track": keys.0, "plugin": "sampler"})).unwrap();
+    app.ui.plugin_windows = vec![(keys, soundcraft_mix::INSTRUMENT_SLOT)];
+    let mut h = harness(app);
+    let rails = window_sliders(&h, Id::unique(("plugin", keys.0, soundcraft_mix::INSTRUMENT_SLOT)));
+    let root = slider_params("sampler")[0];
+    assert_eq!(root.id, "root_note");
+    let read = move |h: &Harness<'_, SoundApp>| {
+        let v = insert_param(h, keys, soundcraft_mix::INSTRUMENT_SLOT, root);
+        assert_eq!(v.fract(), 0.0, "Root Note is {v} during a drag");
+        v
+    };
+    let plain = drag(&mut h, rails[0], 30.0, Modifiers::NONE, &read);
+    toggle_ctrl_during_a_drag(&mut h, root.name, rails[0], plain, &read);
 }
 
 #[test]
@@ -121,6 +195,7 @@ fn a_small_ctrl_drag_at_the_low_end_of_a_log_slider_moves_the_value() {
     let moved = insert_param(&h, kick, 1, attack);
     press(&mut h, from + vec2(1.0, 0.0), false, Modifiers::COMMAND);
     assert!(moved > start, "a one-point Ctrl-drag left Attack at {moved}");
+    assert_eq!(insert_param(&h, kick, 1, attack), moved, "releasing the button moved the value");
 }
 
 #[test]
