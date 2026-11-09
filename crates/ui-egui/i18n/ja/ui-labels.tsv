@@ -536,3 +536,13 @@ s	秒
 %	%
 Hz	Hz
 samples	サンプル
+Remove this row	この行を削除
+Add a row below	下に行を追加
+Create up to 128 tracks at a time.	一度に作成できるトラックは最大128本です。
+Cancel Zoom Toggle	ズーム切り替えを解除
+Levels of Undo	取り消しのレベル数
+Reduce Visual Effects	視覚効果を抑える
+Reduce visual effects	視覚効果を抑える
+Never	しない
+Only During Playback	再生中のみ
+Always	常に

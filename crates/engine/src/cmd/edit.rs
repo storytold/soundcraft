@@ -1,7 +1,7 @@
 //! Edit menu commands.
 use super::{
-    CommandSpec, always, bad, bool_or, can_redo, can_undo, clip_id, clip_ids_param, f32_or, f64_or, has_clipboard, has_range, has_selection,
-    has_tracks, i64_or, position_param, range_param, str_param, track_param, tracks_param, tracks_required,
+    CommandSpec, always, bad, bool_or, can_redo, can_undo, clip_id, clip_ids_param, f32_or, has_clipboard, has_range, has_selection, has_tracks,
+    i64_or, position_param, range_param, str_param, track_param, tracks_param, tracks_required,
 };
 use soundcraft_time::Samples;
 
@@ -124,15 +124,6 @@ pub fn specs() -> Vec<CommandSpec> {
             "{threshold_db?: -48, min_length_ms?: 50, pad_before_ms?: 5, pad_after_ms?: 20, mode?: strip|extract|separate, name?, number?: 1, zeros?: 0, suffix?} (strip removes the silence; extract removes the audio and keeps the silence; separate separates the clips at the edges of the silence and does not remove any; with a name, the clips left in the selection are named name, zeros, a number counting up from number, suffix)",
             has_range,
             strip_silence
-        ),
-        cmd!(
-            query "edit.strip_silence_preview",
-            "Strip Silence Rectangles",
-            [],
-            None,
-            "{threshold_db?: -48, min_length_ms?: 50, pad_before_ms?: 5, pad_after_ms?: 20, tracks?, start?, end?} (the ranges edit.strip_silence finds with the same settings, padded, on each track: what Strip keeps and the Strip Silence window draws as rectangles; changes nothing)",
-            has_range,
-            strip_silence_preview
         ),
         cmd!(
             "edit.fades_create",
@@ -310,6 +301,7 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
             cut_track(s, *t, range, sh, follow);
         }
         s.edit.selection = soundcraft_time::Range::point(range.start);
+        cb.cut_from = Some(range.start);
     }
     let n: usize = cb.tracks.iter().map(Vec::len).sum();
     e.clipboard = cb;
@@ -337,6 +329,7 @@ pub(super) fn clipboard_for_paste(e: &mut Engine) -> Clipboard {
     cb
 }
 
+/// Pastes the clipboard at an explicit position or at the current edit insertion point.
 fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.paste", p)?;
     let given = position_param(e, "edit.paste", p, "at")?;
@@ -344,9 +337,10 @@ fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session();
     let at = match given {
         Some(at) => at,
-        None if s.edit.edit_mode == EditMode::GridRelative => {
-            s.edit.grid.line_at_or_before(s.edit.selection.start, s.sample_rate, &s.tempo, s.frame_rate).saturating_add(cb.grid_offset)
+        None if s.edit.edit_mode == EditMode::GridRelative && s.edit.selection.is_empty() && cb.cut_from == Some(s.edit.selection.start) => {
+            s.edit.selection.start
         }
+        None if s.edit.edit_mode == EditMode::GridRelative => s.grid_line_at_or_before(s.edit.selection.start).saturating_add(cb.grid_offset),
         None => s.edit.selection.start,
     };
     let sh = shuffle(s) && !cb.automation_only;
@@ -385,13 +379,7 @@ fn clear(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     let mut n = 0;
     if range.is_empty() && !ids.is_empty() {
-        for t in &mut s.tracks {
-            if let Some(pl) = t.playlist_mut() {
-                let before = pl.clips.len();
-                pl.clips.retain(|c| !ids.contains(&c.id));
-                n += before - pl.clips.len();
-            }
-        }
+        n = ops::remove_clips(s, &ids, sh);
         s.edit.selected_clips.clear();
     } else {
         for t in &tracks {
@@ -683,11 +671,16 @@ fn separate(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"separated": n}))
 }
 
+/// Separates selected clips at every active Grid boundary in the requested range.
 fn separate_on_grid(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.separate_on_grid", p)?;
     let r = range_param(e, "edit.separate_on_grid", p)?;
     let s = e.session_mut();
-    let lines = s.edit.grid.lines(r.start, r.end, s.sample_rate, &s.tempo, s.frame_rate, 10_000);
+    let max = if s.edit.grid_clips_markers { usize::MAX } else { 10_001 };
+    let lines = s.grid_lines(r.start, r.end, max);
+    if lines.len() > 10_000 {
+        return Err(bad("edit.separate_on_grid", "the range contains more than 10,000 grid boundaries"));
+    }
     let mut n = 0;
     for t in &tracks {
         for at in &lines {
@@ -821,38 +814,8 @@ fn copy_to_new_playlist(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"tracks": tracks.len()}))
 }
 
-/// Strip Silence's tracks, range, threshold, minimum strip duration and clip start and end pads.
-type StripSettings = (Vec<TrackId>, soundcraft_time::Range, f32, Samples, (Samples, Samples));
-
-/// The [`StripSettings`] in Strip Silence's params, with their defaults and limits. `cmd` names the
-/// command in errors.
-fn strip_settings(e: &Engine, cmd: &str, p: &Value) -> Result<StripSettings> {
-    let tracks = tracks_required(e, cmd, p)?;
-    let r = range_param(e, cmd, p)?;
-    let thr = f32_or(p, "threshold_db", -48.0).clamp(-96.0, 0.0);
-    let sr = e.session().sample_rate;
-    let ms = |k: &str, d: f64| sr.samples(f64_or(p, k, d).clamp(0.0, 10_000.0) / 1000.0);
-    Ok((tracks, r, thr, ms("min_length_ms", 50.0), (ms("pad_before_ms", 5.0), ms("pad_after_ms", 20.0))))
-}
-
-/// The scan `edit.strip_silence_preview` runs with params `p`, on the session as it is now. The Edit
-/// window runs it while the Strip Silence window or its Rename Selected Clips dialog is open: on a
-/// worker thread outside the web build, and on the frame thread in the web build or when no thread
-/// can be started.
-pub fn strip_silence_scan(e: &Engine, p: &Value) -> Result<crate::io::StripScan> {
-    let (tracks, range, threshold_db, min_len, pad) = strip_settings(e, "edit.strip_silence_preview", p)?;
-    Ok(crate::io::StripScan { session: e.session_arc(), tracks, range, threshold_db, min_len, pad, stop: Default::default() })
-}
-
-fn strip_silence_preview(e: &mut Engine, p: &Value) -> Result<Value> {
-    let found = strip_silence_scan(e, p)?.run()?;
-    let tracks: Vec<Value> =
-        found.iter().map(|(t, ranges)| json!({"track": t.0, "ranges": ranges.iter().map(|x| [x.start, x.end]).collect::<Vec<_>>()})).collect();
-    Ok(json!({"tracks": tracks}))
-}
-
 fn strip_silence(e: &mut Engine, p: &Value) -> Result<Value> {
-    let (tracks, r, thr, min_len, (pre, post)) = strip_settings(e, "edit.strip_silence", p)?;
+    let (tracks, r, thr, min_len, (pre, post)) = super::strip_silence::strip_settings(e, "edit.strip_silence", p)?;
     let mode = match p.get("mode") {
         None => crate::io::StripMode::Strip,
         Some(Value::String(m)) => crate::io::StripMode::from_id(m).ok_or_else(|| bad("edit.strip_silence", format!("unknown mode `{m}`")))?,
@@ -1001,6 +964,7 @@ fn nudge(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"moved": n, "by": step}))
 }
 
+/// Same-track placement at the existing start is a no-op; quantization is a separate command.
 fn move_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     if ids.is_empty() {
@@ -1023,17 +987,21 @@ fn move_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     };
     let mode = s.edit.edit_mode;
     let delta = match first {
-        Some(c) if mode.is_grid() && p.get("to").is_some() => ops::grid_delta(s, c, delta, mode == EditMode::GridRelative),
+        Some(_) if mode.is_grid() && p.get("to").is_some() && delta == 0 && dest.iter().all(|(from, to)| from == to) => 0,
+        Some(c) if mode.is_grid() && p.get("to").is_some() => ops::grid_delta(s, c, delta, mode == EditMode::GridRelative, &ids),
         _ => delta,
     };
+    let effective_delta = first.map_or(delta, |clip| delta.max(clip.start.saturating_neg()));
     let s = e.session_mut();
     let n = if mode == EditMode::Shuffle {
         ops::shuffle_clips(s, &ids, delta, &dest).map_err(|why| bad("edit.move_clips", why))?
+    } else if effective_delta == 0 && dest.iter().all(|(from, to)| from == to) {
+        0
     } else {
-        ops::move_clips(s, &ids, delta, &dest)
+        ops::move_clips(s, &ids, effective_delta, &dest)
     };
     s.edit.selected_clips = ids;
-    Ok(json!({"moved": n, "by": delta}))
+    Ok(json!({"moved": n, "by": if mode == EditMode::Shuffle { delta } else { effective_delta }}))
 }
 
 fn trim_clip(e: &mut Engine, p: &Value) -> Result<Value> {

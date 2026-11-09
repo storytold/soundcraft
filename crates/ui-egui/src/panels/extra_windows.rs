@@ -17,7 +17,6 @@ pub struct ExtraState {
     pub show_ui_customization: bool,
     pub auto_update_config: bool,
     pub ui_scale: f32,
-    pub reduce_motion: bool,
     pub tooltips: bool,
     last_auto_update: f64,
     applied: Option<(f32, bool)>,
@@ -30,7 +29,6 @@ impl Default for ExtraState {
             show_ui_customization: false,
             auto_update_config: false,
             ui_scale: 1.0,
-            reduce_motion: false,
             tooltips: true,
             last_auto_update: 0.0,
             applied: None,
@@ -60,7 +58,12 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
 }
 
 fn apply_customization(app: &mut SoundApp, ctx: &egui::Context) {
-    let want = (app.extra.ui_scale.clamp(0.75, 1.5), app.extra.reduce_motion);
+    let reduce = match app.ui.reduce_visual_effects {
+        crate::preferences::ReduceVisualEffects::Never => false,
+        crate::preferences::ReduceVisualEffects::Playback => app.is_playing(),
+        crate::preferences::ReduceVisualEffects::Always => true,
+    };
+    let want = (app.extra.ui_scale.clamp(0.75, 1.5), reduce);
     // Rescaling mid-drag would move the Interface scale slider out from under the pointer.
     if app.extra.applied == Some(want) || ctx.input(|i| i.pointer.any_down()) {
         return;
@@ -169,7 +172,20 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                     .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
                     .text(i18n::tr("Interface scale")),
             );
-            crate::widgets::checkbox(ui, &mut app.extra.reduce_motion, i18n::tr("Reduce motion"));
+            let mut chosen_effects = None;
+            craft_ui::ComboBox::from_label(i18n::tr("Reduce visual effects")).selected_text(i18n::tr(app.ui.reduce_visual_effects.label())).show_ui(
+                ui,
+                |ui| {
+                    for mode in crate::preferences::ReduceVisualEffects::ALL {
+                        if ui.selectable_label(app.ui.reduce_visual_effects == mode, i18n::tr(mode.label())).clicked() {
+                            chosen_effects = Some(mode);
+                        }
+                    }
+                },
+            );
+            if let Some(mode) = chosen_effects {
+                let _ = app.run("ui.reduce_visual_effects", json!({"mode": mode.id()}));
+            }
             let mut chosen = None;
             craft_ui::ComboBox::from_label(i18n::tr("Theme")).selected_text(i18n::tr(app.ui.theme.label())).show_ui(ui, |ui| {
                 for mode in crate::theme::ThemeMode::ALL {
@@ -196,7 +212,7 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
             ui.add_space(4.0);
             if ui.button(i18n::tr("Reset")).clicked() {
                 app.extra.ui_scale = 1.0;
-                app.extra.reduce_motion = false;
+                let _ = app.run("ui.reduce_visual_effects", json!({"mode": "never"}));
                 let _ = app.run("ui.theme", json!({"mode": crate::theme::ThemeMode::default().id()}));
             }
         });

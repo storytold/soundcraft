@@ -1,6 +1,6 @@
 use super::import::add_source;
 #[cfg(test)]
-use super::midi::{MAX_MIDI_METERS, import_midi_bytes};
+use super::midi::{MAX_MIDI_METERS, MAX_MIDI_TEMPOS, MAX_MIDI_TRACKS, import_midi_bytes};
 use super::{AudioBuffer, Clip, ClipContent, Engine, EngineError, FileFormat, Range, Result, Samples, Session, TrackId, TrackKind};
 
 /// Consolidate `r` on a track into one new clip backed by a rendered source. The clip covers the
@@ -194,6 +194,77 @@ mod name_tests {
         let smf = soundcraft_midi::Smf { tracks: vec![soundcraft_midi::SmfTrack { name: String::new(), sequence }], meters, ..Default::default() };
         let err = import_midi_bytes(&mut Engine::default(), &soundcraft_midi::write_smf(&smf).unwrap(), 0, true).unwrap_err();
         assert!(err.to_string().contains("meter changes"), "{err}");
+    }
+
+    /// A MIDI file with more tempo changes than MAX_MIDI_TEMPOS is refused without mutating the session.
+    #[test]
+    fn midi_with_more_tempo_changes_than_performances_have_is_refused() {
+        let note = soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 };
+        let sequence = soundcraft_midi::Sequence { notes: vec![note], ..Default::default() };
+        let smf = |n: usize| soundcraft_midi::Smf {
+            tracks: vec![soundcraft_midi::SmfTrack { name: String::new(), sequence: sequence.clone() }],
+            tempos: (0..n as i64).map(|beat| (beat * 960, 100.0 + (beat % 40) as f64)).collect(),
+            ..Default::default()
+        };
+        let mut e = Engine::default();
+        let err = import_midi_bytes(&mut e, &soundcraft_midi::write_smf(&smf(MAX_MIDI_TEMPOS + 1)).unwrap(), 0, true).unwrap_err();
+        assert!(err.to_string().contains("tempo changes"), "{err}");
+        assert_eq!((e.session().tempo.tempos().len(), e.session().tracks.len()), (1, 0), "nothing is imported");
+        import_midi_bytes(&mut e, &soundcraft_midi::write_smf(&smf(MAX_MIDI_TEMPOS)).unwrap(), 0, true).unwrap();
+        assert_eq!(e.session().tempo.tempos().len(), MAX_MIDI_TEMPOS);
+    }
+
+    /// A MIDI file with more tracks than MAX_MIDI_TRACKS is refused without mutating the session.
+    #[test]
+    fn midi_with_more_tracks_than_supported_is_refused() {
+        let note = soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 };
+        let sequence = soundcraft_midi::Sequence { notes: vec![note], ..Default::default() };
+        let smf = |n: usize| soundcraft_midi::Smf {
+            tracks: (0..n).map(|i| soundcraft_midi::SmfTrack { name: format!("Tr {i}"), sequence: sequence.clone() }).collect(),
+            ..Default::default()
+        };
+        let mut e = Engine::default();
+        let err = import_midi_bytes(&mut e, &soundcraft_midi::write_smf(&smf(MAX_MIDI_TRACKS + 1)).unwrap(), 0, false).unwrap_err();
+        assert!(err.to_string().contains("tracks"), "{err}");
+        assert_eq!(e.session().tracks.len(), 0, "no tracks imported");
+        import_midi_bytes(&mut e, &soundcraft_midi::write_smf(&smf(MAX_MIDI_TRACKS)).unwrap(), 0, false).unwrap();
+        assert_eq!(e.session().tracks.len(), MAX_MIDI_TRACKS);
+    }
+
+    /// Consecutive equal tempo events in a MIDI file are collapsed to actual tempo changes.
+    #[test]
+    fn midi_collapses_equal_consecutive_tempos() {
+        let note = soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 };
+        let sequence = soundcraft_midi::Sequence { notes: vec![note], ..Default::default() };
+        let smf = soundcraft_midi::Smf {
+            tracks: vec![soundcraft_midi::SmfTrack { name: String::new(), sequence }],
+            tempos: vec![(0, 120.0), (960, 120.0), (1920, 140.0), (2880, 140.0), (3840, 100.0)],
+            ..Default::default()
+        };
+        let mut e = Engine::default();
+        import_midi_bytes(&mut e, &soundcraft_midi::write_smf(&smf).unwrap(), 0, true).unwrap();
+        let tempos = e.session().tempo.tempos();
+        assert_eq!(tempos.len(), 3);
+        assert!((tempos[0].bpm - 120.0).abs() < 1e-3);
+        assert!((tempos[1].bpm - 140.0).abs() < 1e-3);
+        assert!((tempos[2].bpm - 100.0).abs() < 1e-3);
+    }
+
+    /// A MIDI file replaces an existing session tempo event even if the MIDI file has consecutive equal tempos.
+    #[test]
+    fn midi_import_replaces_differing_existing_session_tempo() {
+        let note = soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 };
+        let sequence = soundcraft_midi::Sequence { notes: vec![note], ..Default::default() };
+        let smf = soundcraft_midi::Smf {
+            tracks: vec![soundcraft_midi::SmfTrack { name: String::new(), sequence }],
+            tempos: vec![(0, 120.0), (960, 120.0)],
+            ..Default::default()
+        };
+        let mut e = Engine::default();
+        e.session_mut().tempo.set_tempo(960, 80.0).unwrap();
+        assert_eq!(e.session().tempo.tempo_at_tick(960), 80.0);
+        import_midi_bytes(&mut e, &soundcraft_midi::write_smf(&smf).unwrap(), 0, true).unwrap();
+        assert_eq!(e.session().tempo.tempo_at_tick(960), 120.0);
     }
 
     #[test]

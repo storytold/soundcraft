@@ -4,6 +4,15 @@
 //! executing commands. It can be replaced without touching anything below it.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+/// SoundCraft as craft-update knows it, with its 128 px icon and accent colour: the update
+/// prompt shows both, and an AppImage's menu entry gets the icon.
+#[cfg(not(target_arch = "wasm32"))]
+pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
+    icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.soundcraft.png")),
+    accent: Some([0x1f, 0xa5, 0xc9]),
+    ..craft_update::suite::SOUNDCRAFT
+};
+
 pub mod appearance;
 pub mod bounce;
 pub mod control;
@@ -19,6 +28,7 @@ pub mod menus;
 pub mod mix_window;
 pub mod palette;
 pub mod panels;
+pub mod preferences;
 pub mod shortcuts;
 pub mod theme;
 pub mod toolbar;
@@ -106,6 +116,13 @@ pub struct UiState {
     pub show_workspace: bool,
     pub show_configurations: bool,
     pub show_playback_engine: bool,
+    /// Setup › Preferences. The selected page is kept per machine; the search and staged values
+    /// live in [`preferences::PreferencesState`] and are discarded when the window closes.
+    pub show_preferences: bool,
+    pub preferences_page: preferences::PreferencesPage,
+    pub preferences_window_pos: Option<[f32; 2]>,
+    pub reduce_visual_effects: preferences::ReduceVisualEffects,
+    pub undo_levels: usize,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
@@ -176,6 +193,11 @@ impl Default for UiState {
             show_workspace: false,
             show_configurations: false,
             show_playback_engine: false,
+            show_preferences: false,
+            preferences_page: preferences::PreferencesPage::default(),
+            preferences_window_pos: None,
+            reduce_visual_effects: preferences::ReduceVisualEffects::default(),
+            undo_levels: 64,
             audio: soundcraft_playback::AudioConfig::default(),
             mix_separate: false,
             show_io_setup: false,
@@ -239,6 +261,7 @@ pub enum Gesture {
     FadeCurve { clip: soundcraft_model::ClipId, fade_in: bool, curvature: f32, anchor: (f32, f32), height: f32 },
     Scrub { last: Samples },
     Fader { track: TrackId, start_db: f32 },
+    SendFader { track: TrackId, slot: usize },
     ClipGain { clip: soundcraft_model::ClipId, track: TrackId, pos: f32, anchor: (f32, f32), fine: bool, fader_bottom: egui::Pos2 },
     Pencil { track: TrackId, points: Vec<(Samples, f32)> },
     Breakpoint { track: TrackId, param: soundcraft_model::AutoParam, at: Samples },
@@ -296,6 +319,7 @@ pub struct SoundApp {
     pub ops: ops_windows::OpsState,
     pub extra: extra_windows::ExtraState,
     pub palette: palette::PaletteState,
+    pub preferences: preferences::PreferencesState,
     /// Bring the separate Mix window to the front on the next frame.
     pub(crate) focus_mix: bool,
     /// Scroll Into View: the track each window brings to its top (Edit) or left (Mix) when it
@@ -388,6 +412,8 @@ pub struct SoundApp {
     pub arrange_request: bool,
     /// Tracks whose automation was touched during this pass (Touch/Latch writing).
     touched: std::collections::HashSet<TrackId>,
+    /// Sends whose level was touched during this pass (Touch/Latch writing), as (track, slot).
+    touched_sends: std::collections::HashSet<(TrackId, usize)>,
     /// The pass's last point; `i64::MIN` after a stop or a jump, so the next point erases nothing it skipped.
     last_write_at: Samples,
     /// Plugins changed in their editors whose state the session hasn't taken yet (see `editor_states_due`).

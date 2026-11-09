@@ -8,10 +8,11 @@ pub(super) fn about(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     let tab_id = egui::Id::unique("about_tab");
+    // The id is fixed so the window keeps its place when the display language changes the title.
     egui::Window::new(i18n::tr("About SoundCraft"))
         .id(egui::Id::unique("About SoundCraft"))
         .open(&mut open)
-        .default_size(vec2(640.0, 420.0))
+        .default_size(vec2(820.0, 420.0))
         .collapsible(false)
         .show(ctx, |ui| {
             let mut tab = ui.data_mut(|d| d.get_temp::<u8>(tab_id)).unwrap_or(0);

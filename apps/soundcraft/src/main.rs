@@ -108,9 +108,11 @@ impl eframe::App for App {
             logger.report_audio_thread();
         }
         // The system Quit (⌘Q) ends the process from inside the event loop, so `run_native` never
-        // returns: release the player's plugin instances and shut plugin hosting down here.
+        // returns: release the player's plugin instances and shut plugin hosting down here, and
+        // start the helper of an update that waits for the app to close.
         self.0.player = None;
         soundcraft_engine::shutdown_plugin_hosts();
+        self.0.start_pending_update();
     }
 }
 
@@ -185,7 +187,7 @@ fn app_icon() -> Option<egui::IconData> {
 fn main() -> eframe::Result {
     // Windows: the update helper is a copy of this program started with `--finish-update`.
     #[cfg(windows)]
-    if let Some(result) = craft_update::self_update::finish(&craft_update::suite::SOUNDCRAFT, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
+    if let Some(result) = craft_update::self_update::finish(&soundcraft_ui_egui::UPDATE_APP, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
         std::process::exit(i32::from(result.is_err()));
     }
     // First, so every start-up record (and the engine's panic hook, installed with the first

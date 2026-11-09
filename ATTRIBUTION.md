@@ -40,14 +40,14 @@ here. The subset uses default_fonts; the parent face uses monochrome_emoji_fonts
 
 | Path | Author | Source | License |
 |---|---|---|---|
-| `docs/brand/artcraft-logo.svg` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`) |
-| `docs/brand/artcraft-logo.png` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
-| `docs/brand/artcraft-logo-white.svg` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
-| `docs/brand/artcraft-logo-white.png` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
-| `docs/brand/artcraft-mark.svg` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
-| `docs/brand/artcraft-mark.png` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
-| `docs/brand/artcraft-mark-black.svg` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
-| `docs/brand/artcraft-mark-black.png` | ArtCraft Team | craftrules `assets/brand/` | ArtCraft brand terms |
+| `docs/brand/artcraft-logo.svg` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`) |
+| `docs/brand/artcraft-logo.png` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms |
+| `docs/brand/artcraft-logo-white.svg` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms |
+| `docs/brand/artcraft-logo-white.png` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms |
+| `docs/brand/artcraft-mark.svg` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms |
+| `docs/brand/artcraft-mark.png` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms |
+| `docs/brand/artcraft-mark-black.svg` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms |
+| `docs/brand/artcraft-mark-black.png` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms |
 | `assets/fonts/NotoSansJP-Regular.otf` | The Noto Project Authors (Google, Adobe) | https://github.com/notofonts/noto-cjk (`Sans/SubsetOTF/JP`) | SIL OFL 1.1 |
 | `assets/fonts/OFL-NotoSansJP.txt` | The Noto Project Authors | https://github.com/notofonts/noto-cjk (`Sans/LICENSE`) | SIL OFL 1.1 (license text) |
 | `assets/app-icon/icon.svg` | SoundCraft contributors | original (hand-placed SVG paths; placeholder app icon) | MIT OR Apache-2.0 |

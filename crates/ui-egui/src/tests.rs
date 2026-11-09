@@ -63,6 +63,36 @@ fn new_session_cancels_play_queued_before_the_next_frame() {
 }
 
 #[test]
+fn play_from_starts_at_from_regardless_of_the_selection() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("edit.select", json!({"tracks": ["Kick"], "start": 7_632_000, "end": 7_680_000})).unwrap();
+    app.run("transport.play", json!({"from": 4_560_000})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, 4_560_000 + 12_000);
+
+    app.run("transport.play", json!({"from": 96_000})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, 96_000 + 12_000);
+}
+
+#[test]
+fn play_from_while_looping_drops_the_selection_loop() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("options.loop_playback", json!({"value": true})).unwrap();
+    app.run("edit.select", json!({"tracks": ["Kick"], "start": 96_000, "end": 144_000})).unwrap();
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    app.run("transport.play", json!({"from": 480_000})).unwrap();
+    app.handle_transport(0.25);
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, 480_000 + 24_000);
+}
+
+#[test]
 fn record_with_nothing_armed_says_what_to_do() {
     let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
     app.run("transport.record", json!({})).unwrap();
@@ -244,6 +274,67 @@ fn a_pass_and_the_fader_ride_driving_it_are_one_undo_step() {
     assert_eq!(app.engine.undo_history().len(), steps + 1);
 }
 
+/// #1146: a send's level writes its own automation lane, by the track's mode like its fader: Touch
+/// while the send is dragged, Latch from the first drag until stop, Write throughout. The track's
+/// volume lane is left alone.
+#[test]
+fn a_dragged_send_level_writes_send_automation() {
+    use soundcraft_model::AutoParam;
+    let points = |app: &SoundApp, param: &AutoParam| app.engine.session().track_by_name("Lead").unwrap().lane(param).map_or(0, |l| l.points.len());
+    let level = |app: &SoundApp| app.engine.session().track_by_name("Lead").unwrap().lane(&AutoParam::SendLevel(0)).map(|l| l.points.clone());
+    let pass = |app: &mut SoundApp| {
+        app.handle_transport(0.1);
+        app.write_automation();
+    };
+    for mode in ["touch", "latch", "write"] {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        let lead = app.engine.session().track_by_name("Lead").unwrap().id;
+        assert!(app.engine.session().track(lead).unwrap().mixer.sends[0].is_some(), "the demo's Lead sends to the reverb");
+        let volume = points(&app, &AutoParam::Volume);
+        app.run("mix.automation_mode", json!({"tracks": ["Lead"], "mode": mode})).unwrap();
+        app.run("transport.play", json!({})).unwrap();
+        for _ in 0..3 {
+            pass(&mut app);
+        }
+        let before_drag = points(&app, &AutoParam::SendLevel(0));
+        if mode == "write" {
+            assert!(before_drag > 0, "Write writes the send without a drag");
+        } else {
+            assert_eq!(before_drag, 0, "{mode}: nothing written before the send is touched");
+        }
+        // What the send's slot and its floating window do while the level is dragged.
+        app.pointer_down = true;
+        app.gesture = Some(super::Gesture::SendFader { track: lead, slot: 0 });
+        for frame in 0..4 {
+            pass(&mut app);
+            let db = -12.0 + frame as f32;
+            app.engine.execute_merged("mix.send_level", &json!({"track": lead.0, "slot": 0, "db": db}), &format!("send:{}:0", lead.0)).unwrap();
+        }
+        let dragged = points(&app, &AutoParam::SendLevel(0));
+        assert!(dragged >= before_drag + 3, "{mode}: the drag is written ({before_drag} -> {dragged})");
+        assert!(level(&app).unwrap().iter().any(|p| (p.value - (-10.0)).abs() < 1e-6), "{mode}: the points follow the send level");
+        // Released.
+        app.pointer_down = false;
+        app.gesture = None;
+        for _ in 0..3 {
+            pass(&mut app);
+        }
+        let released = points(&app, &AutoParam::SendLevel(0));
+        if mode == "touch" {
+            assert_eq!(released, dragged, "Touch stops writing when the send is let go");
+        } else {
+            assert!(released > dragged, "{mode}: keeps writing after the release");
+        }
+        app.run("transport.stop", json!({})).unwrap();
+        app.handle_transport(0.0);
+        app.write_automation();
+        if mode != "write" {
+            assert_eq!(points(&app, &AutoParam::Volume), volume, "{mode}: the track's volume lane is left alone");
+        }
+        assert!(app.touched_sends.is_empty(), "{mode}: stop ends the pass");
+    }
+}
+
 #[test]
 fn plugin_states_read_during_a_drag_keep_it_one_undo_step() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
@@ -366,6 +457,8 @@ fn a_preset_changed_in_an_effect_editor_is_stored_once() {
 fn preferences_saved_before_the_window_was_remembered_keep_full_scale() {
     let ui: super::UiState = serde_json::from_value(json!({"show_transport": true})).unwrap();
     assert_eq!((ui.window_size, ui.window_maximized, ui.ui_scale), ([1600.0, 1000.0], false, 1.0));
+    assert_eq!(ui.reduce_visual_effects, crate::preferences::ReduceVisualEffects::Never);
+    assert_eq!(ui.undo_levels, 64);
 }
 
 #[test]
@@ -745,6 +838,78 @@ fn a_held_key_does_not_turn_a_scripted_press_into_a_repeat() {
     out.textures_delta.clear();
     assert_eq!(app.engine.undo_history().len(), held_depth - 1, "a later host auto-repeat must not undo a second time");
     assert!(ctx.input(|i| i.key_down(egui::Key::Z)), "the host still holds Z after the repeat");
+}
+
+/// Runs one input pass of `app` carrying host key `events` (no scripted input).
+fn key_pass(ctx: &egui::Context, app: &mut SoundApp, events: Vec<egui::Event>) {
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+    let mut input = egui::RawInput { screen_rect: Some(rect), events, ..Default::default() };
+    app.raw_input_hook(ctx, &mut input);
+    let mut out = ctx.run_ui(input, |ui| {
+        app.logic(ui.ctx());
+        app.ui(ui);
+    });
+    out.textures_delta.clear();
+}
+
+/// The demo app after a few idle passes, ready for keyboard input.
+fn app_for_keys() -> (egui::Context, SoundApp) {
+    let ctx = egui::Context::default();
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    for _ in 0..4 {
+        key_pass(&ctx, &mut app, Vec::new());
+    }
+    (ctx, app)
+}
+
+/// A host press of `key` and then two host auto-repeats of it, each in its own pass, as holding the key gives.
+fn hold_key(ctx: &egui::Context, app: &mut SoundApp, key: egui::Key, modifiers: egui::Modifiers) {
+    for repeat in [false, true, true] {
+        key_pass(ctx, app, vec![egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat, modifiers }]);
+    }
+    key_pass(ctx, app, vec![egui::Event::Key { key, physical_key: Some(key), pressed: false, repeat: false, modifiers }]);
+}
+
+/// #1377: holding a zoom key keeps zooming, one step per auto-repeat.
+#[test]
+fn holding_t_or_r_keeps_zooming_the_timeline() {
+    let (ctx, mut app) = app_for_keys();
+    let start = app.engine.session().edit.zoom.samples_per_px;
+    hold_key(&ctx, &mut app, egui::Key::T, egui::Modifiers::NONE);
+    assert_eq!(app.engine.session().edit.zoom.samples_per_px, start / 8.0, "T and two repeats zoom in three steps");
+    hold_key(&ctx, &mut app, egui::Key::R, egui::Modifiers::NONE);
+    assert_eq!(app.engine.session().edit.zoom.samples_per_px, start, "R and two repeats zoom back out three steps");
+}
+
+/// #1377: the registry's Cmd+[ / Cmd+] and the Cmd+Alt+[ / ] waveform zoom repeat too.
+#[test]
+fn holding_a_zoom_chord_keeps_zooming() {
+    let (ctx, mut app) = app_for_keys();
+    let cmd = egui::Modifiers { command: true, ..egui::Modifiers::NONE };
+    let start = app.engine.session().edit.zoom.samples_per_px;
+    hold_key(&ctx, &mut app, egui::Key::OpenBracket, cmd);
+    assert_eq!(app.engine.session().edit.zoom.samples_per_px, start * 8.0, "Cmd+[ and two repeats zoom out three steps");
+    hold_key(&ctx, &mut app, egui::Key::CloseBracket, cmd);
+    assert_eq!(app.engine.session().edit.zoom.samples_per_px, start, "Cmd+] and two repeats zoom in three steps");
+    let waveform = app.engine.session().edit.zoom.waveform_zoom;
+    hold_key(&ctx, &mut app, egui::Key::CloseBracket, egui::Modifiers { alt: true, ..cmd });
+    assert_eq!(app.engine.session().edit.zoom.waveform_zoom, waveform * 8.0, "Cmd+Alt+] and two repeats raise the waveform three steps");
+}
+
+/// Only the zoom commands repeat: a held registry chord (Cmd+Z) still undoes once and a held
+/// `fixed` key (Enter) still adds one marker.
+#[test]
+fn holding_cmd_z_or_enter_still_runs_once() {
+    let (ctx, mut app) = app_for_keys();
+    for _ in 0..3 {
+        app.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
+    }
+    let depth = app.engine.undo_history().len();
+    hold_key(&ctx, &mut app, egui::Key::Z, egui::Modifiers { command: true, ..egui::Modifiers::NONE });
+    assert_eq!(app.engine.undo_history().len(), depth - 1, "auto-repeats of Cmd+Z are ignored");
+    let markers = app.engine.session().markers.len();
+    hold_key(&ctx, &mut app, egui::Key::Enter, egui::Modifiers::NONE);
+    assert_eq!(app.engine.session().markers.len(), markers + 1, "auto-repeats of Enter are ignored");
 }
 
 /// A fresh physical Cmd+Z and an identical scripted Cmd+Z in one frame are distinct actions.
@@ -1515,9 +1680,15 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
 }
 
 /// The engine's revision, undo history and journal are as they were.
-fn assert_history_unchanged(app: &SoundApp, revision: u64, undo: usize, history: &[String], journal: &[(String, serde_json::Value)]) {
+fn assert_history_unchanged(
+    app: &SoundApp,
+    revision: u64,
+    undo: usize,
+    history: &[String],
+    journal: &std::collections::VecDeque<(String, serde_json::Value)>,
+) {
     assert_eq!(app.engine.revision, revision);
     assert_eq!(app.engine.undo_history().len(), undo);
     assert_eq!(app.engine.undo_history(), history);
-    assert_eq!(app.engine.journal, journal);
+    assert_eq!(&app.engine.journal, journal);
 }

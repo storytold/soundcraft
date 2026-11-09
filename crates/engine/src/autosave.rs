@@ -212,6 +212,11 @@ impl Autosave {
         let audio_dir = self.dir.join("Audio Files");
         let mut s = session.clone();
         let mut copies = BTreeMap::new();
+        // Copies made in this write, by the audio they hold: sources sharing one decoded buffer
+        // (a session may name one file under many ids) share one file.
+        let mut written: BTreeMap<*const SourceAudio, String> = BTreeMap::new();
+        // Copies still to make, written once the size is checked; their numbers are taken then too.
+        let (mut fresh, mut next) = (Vec::new(), self.next);
         for src in &mut s.sources {
             let file = if Path::new(&src.path).is_absolute() { Some(PathBuf::from(&src.path)) } else { base.as_ref().map(|b| b.join(&src.path)) };
             let audio = s.pool.get(src.id);
@@ -222,26 +227,37 @@ impl Autosave {
                 continue;
             }
             let Some(audio) = audio else { continue };
-            let name = match self.copies.remove(&src.id) {
-                Some((copy, name)) if copy.upgrade().is_some_and(|a| Arc::ptr_eq(&a, audio)) => name,
+            let name = match self.copies.get(&src.id) {
+                Some((copy, name)) if copy.upgrade().is_some_and(|a| Arc::ptr_eq(&a, audio)) => name.clone(),
+                _ if written.contains_key(&Arc::as_ptr(audio)) => written.get(&Arc::as_ptr(audio)).cloned().unwrap_or_default(),
                 _ => {
-                    let name = format!("{} {}.wav", sanitize_name(&src.name), self.next);
-                    self.next += 1;
-                    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
-                    let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
-                    create_folder(&audio_dir).and_then(|()| write_synced(&audio_dir.join(&name), &bytes)).map_err(|err| io_error(&audio_dir, err))?;
+                    let name = format!("{} {}.wav", sanitize_name(&src.name), next);
+                    next += 1;
+                    fresh.push((name.clone(), Arc::clone(audio)));
                     name
                 }
             };
             src.path = audio_dir.join(&name).to_string_lossy().into_owned();
             src.unsaved = true;
+            written.insert(Arc::as_ptr(audio), name.clone());
             copies.insert(src.id, (Arc::downgrade(audio), name));
         }
         let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
+        // An autosave too large to recover is not written, nor its new copies: the last autosave
+        // stays as it was, and the failure is reported (#892).
+        crate::io::session_size("the autosave", text.len() as u64, true)?;
+        self.next = next;
+        for (name, audio) in &fresh {
+            let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+            let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
+            create_folder(&audio_dir).and_then(|()| write_synced(&audio_dir.join(name), &bytes)).map_err(|err| io_error(&audio_dir, err))?;
+        }
         write_atomically(&self.dir.join(ORIGIN), origin.unwrap_or_default().as_bytes())?;
         write_atomically(&self.dir.join(SESSION), text.as_bytes())?;
         for (_, name) in std::mem::replace(&mut self.copies, copies).into_values() {
-            let _ = std::fs::remove_file(audio_dir.join(name));
+            if !self.copies.values().any(|(_, kept)| *kept == name) {
+                let _ = std::fs::remove_file(audio_dir.join(name));
+            }
         }
         if let Some(r) = recording {
             let plan = serde_json::to_string(r).map_err(|err| EngineError::Io(err.to_string()))?;
@@ -255,7 +271,7 @@ impl Autosave {
 
     /// Delete the folder: the session closed with nothing left to recover.
     fn discard(mut self) {
-        drop(self.lock.take());
+        self.lock = None;
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -286,12 +302,11 @@ pub fn leftovers(root: &Path) -> Vec<Leftover> {
         let origin_saved = origin.as_ref().and_then(|o| std::fs::metadata(o).and_then(|m| m.modified()).ok());
         let saved = std::fs::metadata(dir.join(SESSION)).and_then(|m| m.modified());
         let recording = dir.join(RECORDING).is_file();
+        #[cfg(not(target_arch = "wasm32"))]
         drop(lock);
         match saved {
             Ok(saved) if recording || origin_saved.is_none_or(|o| saved > o) => {
-                let text = std::fs::read_to_string(dir.join(SESSION)).unwrap_or_default();
-                let named = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v.get("name")?.as_str().map(str::to_string));
-                let name = named.unwrap_or_else(|| dir.file_name().unwrap_or_default().to_string_lossy().into_owned());
+                let name = saved_name(&dir.join(SESSION)).unwrap_or_else(|| dir.file_name().unwrap_or_default().to_string_lossy().into_owned());
                 out.push(Leftover { dir, name, origin, saved, recording });
             }
             _ => {
@@ -301,6 +316,21 @@ pub fn leftovers(root: &Path) -> Vec<Leftover> {
     }
     out.sort_by_key(|l| std::cmp::Reverse(l.saved));
     out
+}
+
+/// The name of the session saved in `file`, read without keeping the rest of it; `None` when the
+/// file is missing, not a session, or too large to open (#892).
+fn saved_name(file: &Path) -> Option<String> {
+    use std::io::Read as _;
+    #[derive(serde::Deserialize)]
+    struct Named {
+        name: String,
+    }
+    if std::fs::metadata(file).ok()?.len() > crate::io::session_limit() {
+        return None;
+    }
+    let read = std::fs::File::open(file).ok()?.take(crate::io::session_limit());
+    serde_json::from_reader::<_, Named>(std::io::BufReader::new(read)).ok().map(|n| n.name)
 }
 
 /// Open `left` as an unsaved version of the session it came from, so Save writes it back there,
@@ -450,6 +480,27 @@ mod tests {
     use soundcraft_audio_io::AudioBuffer;
     use soundcraft_model::{ChannelFormat, Clip, TrackKind};
 
+    /// Recovery loads document edits without re-enabling live inputs from an autosave.
+    #[test]
+    fn recovered_live_input_states_start_disabled() {
+        let root = folder("live-input-recovery");
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({})).unwrap();
+        let track = e.session().tracks[0].id;
+        e.execute("mix.record_arm", &json!({"tracks": [track.0], "value": true})).unwrap();
+        e.execute("mix.input_monitor", &json!({"tracks": [track.0], "value": true})).unwrap();
+        e.execute("mix.volume", &json!({"tracks": [track.0], "db": -6.0})).unwrap();
+        let mut autosave = Autosave::create(&root, "Live inputs").unwrap();
+        autosave.write(e.session(), None, None).unwrap();
+        drop(autosave);
+        let mut recovered = Engine::default();
+        recover(&mut recovered, &leftovers(&root)[0]).unwrap();
+        let mixer = &recovered.session().track(track).unwrap().mixer;
+        assert!(!mixer.record_arm && !mixer.input_monitor);
+        assert_eq!(mixer.volume_db, -6.0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn folder(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("soundcraft-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -503,6 +554,25 @@ mod tests {
         let paths: Vec<_> = r.session().sources.iter().map(|s| (s.path.starts_with("Audio Files/"), s.unsaved)).collect();
         assert_eq!(paths, [(true, false), (false, true)]);
         assert_eq!(levels(&r), [0.5, -0.25]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sources_sharing_one_buffer_share_one_copy() {
+        let dir = folder("autosave-aliases");
+        let mut e = Engine::default();
+        record(&mut e, 0.5);
+        // Nine more source ids over the same decoded audio, as a session file may declare.
+        let s = e.session_mut();
+        let (src, audio) = (s.sources[0].clone(), s.pool.get(s.sources[0].id).cloned().unwrap());
+        for _ in 0..9 {
+            let id = SourceId(s.alloc());
+            s.sources.push(soundcraft_model::Source { id, ..src.clone() });
+            s.pool.insert(id, audio.clone());
+        }
+        let mut a = Autosave::create(&dir.join("Autosave"), "Song").unwrap();
+        a.write(e.session(), None, None).unwrap();
+        assert_eq!(std::fs::read_dir(a.dir.join("Audio Files")).unwrap().count(), 1, "one file for the ten ids");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -670,6 +740,70 @@ mod tests {
             assert_eq!(&std::fs::read(path).unwrap(), bytes, "{} untouched", path.display());
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A test folder, removed when the test ends, passed or not.
+    struct Gone(PathBuf);
+
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn an_autosave_too_large_to_open_writes_nothing_and_keeps_the_last() {
+        // #892, with the limit lowered for this test: a refused autosave makes no audio copies
+        // and keeps the last autosave and its copies as they were.
+        let dir = Gone(folder("autosave-too-large"));
+        let mut e = Engine::default();
+        record(&mut e, 0.5);
+        let mut a = Autosave::create(&dir.0.join("Autosave"), "Song").unwrap();
+        a.write(e.session(), None, None).unwrap();
+        let state = |a: &Autosave| {
+            let mut files: Vec<String> =
+                std::fs::read_dir(a.dir.join("Audio Files")).unwrap().map(|f| f.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            files.sort();
+            let copies: Vec<(SourceId, String)> = a.copies.iter().map(|(id, (_, name))| (*id, name.clone())).collect();
+            (files, copies, a.next, std::fs::read_to_string(a.dir.join(SESSION)).unwrap())
+        };
+        let before = state(&a);
+        record(&mut e, 0.25);
+        {
+            let _limit = crate::io::SessionLimit::set(before.3.len() as u64);
+            for _ in 0..2 {
+                let err = a.write(e.session(), None, None).unwrap_err().to_string();
+                assert!(err.starts_with("the autosave is too large to save"), "{err}");
+                assert!(state(&a) == before);
+            }
+            // The writer thread reports it as it reports any failed autosave.
+            let failure = Arc::new(Mutex::new(None));
+            let pending = Some((e.session_arc(), None, None));
+            let mut w = Writer { root: dir.0.join("Writer"), failure: Arc::clone(&failure), folder: None, pending, last: None, written: Ok(()) };
+            w.write_pending();
+            let reported = failure.lock().unwrap().take().unwrap_or_default();
+            assert!(reported.starts_with("the autosave is too large to save"), "{reported}");
+        }
+        a.write(e.session(), None, None).unwrap();
+        let after = state(&a);
+        assert_eq!((after.0.len(), after.1.len()), (2, 2));
+        assert!(after.0.contains(&before.0[0]));
+    }
+
+    #[test]
+    fn a_leftover_is_named_from_its_session_without_reading_a_huge_one() {
+        // #892: the name is read on its own, and an autosave too large to open is not read.
+        let dir = Gone(folder("autosave-names"));
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let file = dir.0.join(SESSION);
+        let s = Session { name: "Song".into(), ..Session::default() };
+        std::fs::write(&file, s.to_json().unwrap()).unwrap();
+        assert_eq!(saved_name(&file).as_deref(), Some("Song"));
+        std::fs::write(&file, r#"{"name": 5}"#).unwrap();
+        assert_eq!(saved_name(&file), None);
+        std::fs::File::create(&file).unwrap().set_len(crate::io::MAX_SESSION_BYTES + 1).unwrap();
+        assert_eq!(saved_name(&file), None);
+        assert_eq!(saved_name(&dir.0.join("none")), None);
     }
 
     #[test]
