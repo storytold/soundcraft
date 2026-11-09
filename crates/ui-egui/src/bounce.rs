@@ -66,7 +66,7 @@ fn slice() -> impl FnMut() -> bool {
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let Some(job) = &app.bounce else { return };
     let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-    egui::Modal::new(egui::Id::new("bounce_progress")).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("bounce_progress")).show(ctx, |ui| {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
         ui.set_width(320.0);
         let name = job.path().file_name().unwrap_or_default().to_string_lossy();

@@ -1,4 +1,4 @@
-//! Test-only VST3 plugin for soundcraft-vst3-host (three audio module classes):
+//! Test-only VST3 plugin for soundcraft-vst3-host (seven audio module classes):
 //!
 //! - "Fixture Gain" (`Fx`): stereo or mono in → out × gain, with a separate edit controller
 //!   (connected through IConnectionPoint, synced through the component state). Params: 7 "Gain"
@@ -15,6 +15,12 @@
 //!   its edit controller). No audio input, one stereo output, one event input; every output
 //!   sample is the velocity of the held note (sample-accurate), 0 when none. Poly pressure, and
 //!   MIDI CC 7 through `IMidiMapping` (hidden parameter 1), set it to their value too.
+//! - "Fixture Wide 16x64", "Fixture Wide 32 buses", "Fixture Wide 65 buses", "Fixture Wide 65
+//!   channels" (`Fx`): effects advertising wide layouts (16 buses of 64 channels, 32 and 65 buses
+//!   of 2 channels, one bus of 65 channels per direction), through `getBusInfo` only. `process` writes 1.0 into every channel
+//!   of output bus 0 when the host's buffers match the advertised layout (2.0 when the host set it
+//!   up and runs it with `kOffline`), -1.0 when they do not or when `process` gets another
+//!   `processMode` than `setupProcessing` did. Report 3 samples of latency.
 //!
 //! The module checks the host's module lifecycle the way real plugins depend on it (see "module
 //! lifecycle" below) and aborts the process when it is broken.
@@ -24,7 +30,7 @@
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 use std::ffi::{c_char, c_int, c_void};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
 use vst3::{Class, ComRef, ComWrapper, uid};
@@ -32,7 +38,11 @@ use vst3::{Class, ComRef, ComWrapper, uid};
 const GAIN_CID: TUID = uid(0x5C0A1D00, 0x11112222, 0x33334444, 0x55556666);
 const GAIN_CTRL_CID: TUID = uid(0x5C0A1D01, 0x11112222, 0x33334444, 0x55556666);
 const SYNTH_CID: TUID = uid(0x5C0A1D02, 0x11112222, 0x33334444, 0x55556666);
-const GEN_CID: TUID = uid(0x5C0A1D03, 0x11112222, 0x33334444, 0x55556666);
+const WIDE16_CID: TUID = uid(0x5C0A1D03, 0x11112222, 0x33334444, 0x55556666);
+const WIDE65B_CID: TUID = uid(0x5C0A1D04, 0x11112222, 0x33334444, 0x55556666);
+const WIDE65_CID: TUID = uid(0x5C0A1D05, 0x11112222, 0x33334444, 0x55556666);
+const WIDE32_CID: TUID = uid(0x5C0A1D06, 0x11112222, 0x33334444, 0x55556666);
+const GEN_CID: TUID = uid(0x5C0A1D07, 0x11112222, 0x33334444, 0x55556666);
 
 fn copy_c8(src: &str, dst: &mut [c_char]) {
     for (d, s) in dst.iter_mut().zip(src.bytes().chain(std::iter::once(0))) {
@@ -303,12 +313,17 @@ impl IConnectionPointTrait for GainController {
     }
 }
 
-const GAIN_PARAMS: [(u32, &str, &str, i32, f64, i32); 5] = [
+const GAIN_PARAMS: [(u32, &str, &str, i32, f64, i32); 7] = [
     (7, "Gain", "dB", 0, 0.5, ParameterInfo_::ParameterFlags_::kCanAutomate),
     (9, "Secret", "", 0, 0.0, ParameterInfo_::ParameterFlags_::kIsHidden),
     (3, "Mode", "", 2, 0.0, ParameterInfo_::ParameterFlags_::kIsList),
     (11, "Bypass", "", 1, 0.0, ParameterInfo_::ParameterFlags_::kIsBypass),
     (12, "Freq", "Hz", 0, 0.5, 0),
+    // Like JUCE and the SDK's default `Parameter`: no plain mapping (identity), so the real range
+    // is only in the plugin's own text (-24..+24, the default 0.375 is -6), without the units.
+    (13, "Level", "dB", 0, 0.375, ParameterInfo_::ParameterFlags_::kCanAutomate),
+    // Identity too, but its text already carries the units (0..12 dB).
+    (14, "Drive", "dB", 0, 0.0, ParameterInfo_::ParameterFlags_::kCanAutomate),
 ];
 
 impl IEditControllerTrait for GainController {
@@ -356,6 +371,8 @@ impl IEditControllerTrait for GainController {
         let s = unsafe { &mut *string };
         let text = match id {
             3 => ["A", "B", "C"][((n * 2.0).round() as usize).min(2)].to_string(),
+            13 => format!("{:.1}", 48.0 * n - 24.0).replace('-', "\u{2212}"),
+            14 => format!("{:.1} dB", 12.0 * n),
             _ => format!("{:.2}", unsafe { self.normalizedParamToPlain(id, n) }),
         };
         copy_c16(&text, s);
@@ -624,6 +641,102 @@ impl IEditControllerTrait for Synth {
     }
 }
 
+// ---- wide layouts --------------------------------------------------------------------------
+
+struct Wide {
+    buses: i32,
+    channels: i32,
+    /// The `processMode` of the last `setupProcessing`.
+    mode: AtomicI32,
+    _live: Live,
+}
+
+impl Class for Wide {
+    type Interfaces = (IComponent, IAudioProcessor);
+}
+
+impl IPluginBaseTrait for Wide {
+    unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
+        kResultOk
+    }
+    unsafe fn terminate(&self) -> tresult {
+        kResultOk
+    }
+}
+
+impl IComponentTrait for Wide {
+    unsafe fn getControllerClassId(&self, _class_id: *mut TUID) -> tresult {
+        kNotImplemented
+    }
+    unsafe fn setIoMode(&self, _mode: IoMode) -> tresult {
+        kResultOk
+    }
+    unsafe fn getBusCount(&self, media: MediaType, _dir: BusDirection) -> i32 {
+        if media == MediaTypes_::kAudio as MediaType { self.buses } else { 0 }
+    }
+    unsafe fn getBusInfo(&self, media: MediaType, dir: BusDirection, index: i32, bus: *mut BusInfo) -> tresult {
+        if media != MediaTypes_::kAudio as MediaType || !(0..self.buses).contains(&index) {
+            return kInvalidArgument;
+        }
+        audio_bus(bus, dir, "Wide");
+        unsafe { (*bus).channelCount = self.channels };
+        kResultOk
+    }
+    unsafe fn getRoutingInfo(&self, _i: *mut RoutingInfo, _o: *mut RoutingInfo) -> tresult {
+        kNotImplemented
+    }
+    unsafe fn activateBus(&self, _m: MediaType, _d: BusDirection, _i: i32, _s: TBool) -> tresult {
+        kResultOk
+    }
+    unsafe fn setActive(&self, _state: TBool) -> tresult {
+        kResultOk
+    }
+    unsafe fn setState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+    unsafe fn getState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+}
+
+impl IAudioProcessorTrait for Wide {
+    unsafe fn setBusArrangements(&self, _i: *mut SpeakerArrangement, _n_in: i32, _o: *mut SpeakerArrangement, _n_out: i32) -> tresult {
+        kResultFalse
+    }
+    unsafe fn getBusArrangement(&self, _dir: BusDirection, _index: i32, _arr: *mut SpeakerArrangement) -> tresult {
+        kNotImplemented
+    }
+    unsafe fn canProcessSampleSize(&self, size: i32) -> tresult {
+        if size == SymbolicSampleSizes_::kSample32 as i32 { kResultOk } else { kNotImplemented }
+    }
+    unsafe fn getLatencySamples(&self) -> u32 {
+        3
+    }
+    unsafe fn setupProcessing(&self, setup: *mut ProcessSetup) -> tresult {
+        self.mode.store(unsafe { &*setup }.processMode, Ordering::Relaxed);
+        kResultOk
+    }
+    unsafe fn setProcessing(&self, _state: TBool) -> tresult {
+        kResultOk
+    }
+    unsafe fn process(&self, data: *mut ProcessData) -> tresult {
+        let d = unsafe { &*data };
+        let fits =
+            |bufs: *mut AudioBusBuffers, n: i32| n == self.buses && (0..n as usize).all(|i| unsafe { &*bufs.add(i) }.numChannels == self.channels);
+        let ok = fits(d.inputs, d.numInputs) && fits(d.outputs, d.numOutputs) && d.processMode == self.mode.load(Ordering::Relaxed);
+        let fit = if d.processMode == ProcessModes_::kOffline as i32 { 2.0 } else { 1.0 };
+        if d.numOutputs > 0 {
+            for ch in unsafe { channels(&*d.outputs, d.numSamples.max(0) as usize) } {
+                ch.fill(if ok { fit } else { -1.0 });
+            }
+        }
+        kResultOk
+    }
+    unsafe fn getTailSamples(&self) -> u32 {
+        0
+    }
+}
+
 // ---- note generator ------------------------------------------------------------------------
 
 /// A MIDI generator: no audio buses at all, one Event in, one Event out. It writes a fixed set of
@@ -842,10 +955,14 @@ impl Class for Factory {
     type Interfaces = (IPluginFactory2,);
 }
 
-const CLASSES: [(TUID, &str, &str, &str); 4] = [
+const CLASSES: [(TUID, &str, &str, &str); 8] = [
     (GAIN_CID, "Audio Module Class", "Fixture Gain", "Fx"),
     (GAIN_CTRL_CID, "Component Controller Class", "Fixture Gain", ""),
     (SYNTH_CID, "Audio Module Class", "Fixture Synth", "Instrument|Synth"),
+    (WIDE16_CID, "Audio Module Class", "Fixture Wide 16x64", "Fx"),
+    (WIDE32_CID, "Audio Module Class", "Fixture Wide 32 buses", "Fx"),
+    (WIDE65B_CID, "Audio Module Class", "Fixture Wide 65 buses", "Fx"),
+    (WIDE65_CID, "Audio Module Class", "Fixture Wide 65 channels", "Fx"),
     (GEN_CID, "Audio Module Class", "Fixture Note Gen", "Fx"),
 ];
 
@@ -891,6 +1008,11 @@ impl IPluginFactoryTrait for Factory {
             ComWrapper::new(Synth { level: AtomicU32::new(0), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
         } else if cid == GEN_CID {
             ComWrapper::new(NoteGen { out_active: AtomicBool::new(false), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
+        } else if let Some((buses, channels)) = [(WIDE16_CID, (16, 64)), (WIDE32_CID, (32, 2)), (WIDE65B_CID, (65, 2)), (WIDE65_CID, (1, 65))]
+            .into_iter()
+            .find_map(|(c, layout)| (c == cid).then_some(layout))
+        {
+            ComWrapper::new(Wide { buses, channels, mode: AtomicI32::new(-1), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
         } else {
             None
         };

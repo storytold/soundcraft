@@ -393,12 +393,13 @@ pub fn is_light() -> bool {
     LIGHT_THEME.load(Ordering::Relaxed)
 }
 
-/// Resolve each frame from the integration's current OS appearance. Unknown uses Dark.
+/// Resolve each frame from the integration's current OS appearance, or on Linux the desktop's own
+/// setting when egui reports none. Unknown uses Dark.
 pub fn wants_light(ctx: &egui::Context, mode: ThemeMode) -> bool {
     match mode {
         ThemeMode::Light => true,
         ThemeMode::Dark => false,
-        ThemeMode::System => ctx.system_theme() == Some(egui::Theme::Light),
+        ThemeMode::System => crate::appearance::resolve(ctx.system_theme(), || crate::appearance::desktop_theme(ctx)) == Some(egui::Theme::Light),
     }
 }
 

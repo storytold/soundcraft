@@ -36,7 +36,7 @@ fn shared_panels_and_controls_follow_manual_and_live_system_appearance() {
                 assert_eq!(theme::is_light(), light);
                 assert_eq!(h.state().ui.theme, mode);
                 assert_eq!(*h.state().engine.session(), session);
-                h.state().ui.docking.validate().unwrap();
+                soundcraft_ui_egui::docking::validate(&h.state().ui.docking).unwrap();
                 if let Some(directory) = std::env::var_os("CRAFT_UI_THEME_SHOTS").map(std::path::PathBuf::from) {
                     std::fs::create_dir_all(&directory).unwrap();
                     h.render().unwrap().save(directory.join(format!("sound-{name}-{width_name}-{scale}x.png"))).unwrap();

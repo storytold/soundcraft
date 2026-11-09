@@ -159,8 +159,15 @@ impl Quantizer {
             v += self.uniform() - self.uniform();
         }
         let max = scale - 1.0;
-        v.round().clamp(-scale, max) as i32
+        round_half_away(v.clamp(-scale, max)) as i32
     }
+}
+
+#[inline]
+fn round_half_away(v: f64) -> f64 {
+    let t = v as i64;
+    let f = v - t as f64;
+    (t + i64::from(f >= 0.5) - i64::from(f <= -0.5)) as f64
 }
 
 /// Bits per sample at `depth`, and whether they are float.
@@ -193,8 +200,8 @@ pub(crate) fn write_interleaved(
             for (c, q) in quantizers.iter_mut().enumerate() {
                 let s = block.get(c).and_then(|ch| ch.get(f)).copied().unwrap_or(0.0);
                 match (is_float, big_endian) {
-                    (true, false) => scratch.extend_from_slice(&clamp_float(s).to_le_bytes()),
-                    (true, true) => scratch.extend_from_slice(&clamp_float(s).to_be_bytes()),
+                    (true, false) => scratch.extend_from_slice(&sanitize_float(s).to_le_bytes()),
+                    (true, true) => scratch.extend_from_slice(&sanitize_float(s).to_be_bytes()),
                     (false, false) => scratch.extend_from_slice(q.quantize(s).to_le_bytes().get(..size).unwrap_or_default()),
                     (false, true) => scratch.extend_from_slice(q.quantize(s).to_be_bytes().get(4 - size..).unwrap_or_default()),
                 }
@@ -206,9 +213,15 @@ pub(crate) fn write_interleaved(
     Ok(())
 }
 
-/// Clamp a float sample to [-1, 1], mapping NaN to 0.
-pub(crate) fn clamp_float(x: f32) -> f32 {
-    if x.is_nan() { 0.0 } else { x.clamp(-1.0, 1.0) }
+/// Preserve finite float samples, mapping NaN to 0 and infinities to their sign (±1).
+fn sanitize_float(x: f32) -> f32 {
+    if x.is_finite() {
+        x
+    } else if x.is_nan() {
+        0.0
+    } else {
+        x.signum()
+    }
 }
 
 /// Check that a buffer is encodable: at least one channel and a non-zero sample rate.
@@ -228,4 +241,39 @@ pub(crate) fn validate_layout(channels: usize, sample_rate: u32) -> Result<()> {
         return Err(AudioError::Encode("sample rate is 0".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_half_away_matches_f64_round_on_the_quantizer_range() {
+        let edges = [
+            0.0,
+            -0.0,
+            0.5,
+            -0.5,
+            1.5,
+            -1.5,
+            2.5,
+            0.499_999_999_999_999_94,
+            -0.499_999_999_999_999_94,
+            8_388_607.5,
+            -8_388_608.0,
+            2_147_483_647.0,
+            -2_147_483_648.0,
+        ];
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let spread = (0..10_000).map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 11) as f64 / (1u64 << 53) as f64 * 4_294_967_295.0 - 2_147_483_648.0
+        });
+        for v in edges.into_iter().chain(spread) {
+            assert!(round_half_away(v) == v.round(), "{v}");
+            assert_eq!(round_half_away(v) as i32, v.round() as i32, "{v}");
+        }
+    }
 }

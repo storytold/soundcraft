@@ -1,4 +1,4 @@
-# A tiny CLAP plugin used only by soundcraft-clap-host's integration tests. Not part of the
+# A tiny CLAP plugin used only by SoundCraft's integration tests. Not part of the
 # SoundCraft workspace (the empty [workspace] table makes it its own root); the test builds it
 # with `cargo build` and loads the resulting library. Never shipped.
 [package]

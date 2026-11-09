@@ -1,0 +1,108 @@
+use super::AUDIO_THREAD;
+
+/// Mark the calling thread as the realtime audio thread (`soundcraft_playback`'s cpal callbacks
+/// do, every call: one thread-local store). Strips [`MixEngine::render`] hands to worker threads
+/// count as the audio thread while they render for it. Code that might run there asks
+/// [`on_audio_thread`] before doing anything that blocks; the desktop app's logger does, so a
+/// `log::` record from the audio thread never takes a lock or touches a file.
+pub fn mark_audio_thread() {
+    AUDIO_THREAD.set(true);
+}
+
+/// True on the thread [`mark_audio_thread`] marked, and on a worker while it renders strips for
+/// it. Lock-free and allocation-free.
+pub fn on_audio_thread() -> bool {
+    AUDIO_THREAD.get()
+}
+
+/// Run `f` on this thread as (or as not) the audio thread, then restore the thread's own mark
+/// (also when `f` unwinds): a pool worker renders for realtime playback and offline bounces alike.
+#[cfg(not(target_arch = "wasm32"))]
+fn as_audio_thread(audio: bool, f: impl FnOnce()) {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            AUDIO_THREAD.set(self.0);
+        }
+    }
+    let _restore = Restore(AUDIO_THREAD.replace(audio));
+    f();
+}
+
+/// Process strips, in parallel on native targets when there are enough of them.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn run_strips<T: Send>(work: &mut [T], f: impl Fn(&mut T) + Sync + Send) {
+    use rayon::prelude::*;
+    // The audio thread is not a rayon worker, so it would park on a latch waiting for the shared
+    // pool (also busy with offline work): it renders its strips itself.
+    if work.len() >= 4 && !on_audio_thread() {
+        work.par_iter_mut().for_each(|w| as_audio_thread(false, || f(w)));
+    } else {
+        work.iter_mut().for_each(f);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn run_strips<T: Send>(work: &mut [T], f: impl Fn(&mut T) + Sync + Send) {
+    work.iter_mut().for_each(f);
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod audio_thread_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_marked_thread_is_the_audio_thread() {
+        assert!(!on_audio_thread());
+        let marked = std::thread::spawn(|| {
+            let before = on_audio_thread();
+            mark_audio_thread();
+            (before, on_audio_thread())
+        })
+        .join()
+        .unwrap();
+        assert_eq!(marked, (false, true));
+        assert!(!on_audio_thread(), "marking another thread leaves this one alone");
+    }
+
+    /// What `on_audio_thread` says inside each strip job, for strips run from a thread that is
+    /// (or is not) the audio thread.
+    fn seen_by_strips(audio: bool) -> Result<Vec<bool>, &'static str> {
+        std::thread::spawn(move || {
+            if audio {
+                mark_audio_thread();
+            }
+            let mut work = vec![None; 64];
+            run_strips(&mut work, |w| {
+                // Long enough that the pool's workers take part.
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                *w = Some(on_audio_thread());
+            });
+            work.into_iter().collect::<Option<Vec<_>>>().ok_or("a strip did not run")
+        })
+        .join()
+        .map_err(|_| "the strip render thread panicked")?
+    }
+
+    #[test]
+    fn strips_rendered_for_the_audio_thread_count_as_the_audio_thread_and_only_then() {
+        assert_eq!(seen_by_strips(true), Ok(vec![true; 64]), "strips rendered for the audio thread are on it");
+        assert_eq!(seen_by_strips(false), Ok(vec![false; 64]), "the workers don't stay marked afterwards");
+    }
+
+    #[test]
+    fn the_audio_thread_never_hands_strips_to_the_rayon_pool() {
+        let on_pool = std::thread::spawn(|| {
+            mark_audio_thread();
+            let mut work = vec![false; 8];
+            run_strips(&mut work, |w| {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                *w = rayon::current_thread_index().is_some();
+            });
+            work.into_iter().filter(|&p| p).count()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(on_pool, 0, "the audio thread must not block on the rayon pool");
+    }
+}

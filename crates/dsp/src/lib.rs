@@ -212,6 +212,11 @@ pub struct MidiOut {
 pub trait Plugin: Send {
     fn info(&self) -> &'static PluginInfo;
     fn prepare(&mut self, sample_rate: f32, max_block: usize, channels: usize);
+    /// The plugin renders offline (a bounce: faster or slower than realtime, no deadline) rather
+    /// than in realtime. Hosted plugins pass it on (VST3 `processMode`, CLAP `clap.render`): some
+    /// use better algorithms then, or wait for what they load instead of playing on without it.
+    /// Called before `prepare`; plugins are realtime until told otherwise.
+    fn set_offline(&mut self, _offline: bool) {}
     fn reset(&mut self);
     /// Sets a parameter (clamped into range; NaN becomes the default). `false` if `id` is unknown.
     fn set_param(&mut self, id: &str, value: f32) -> bool;
@@ -308,9 +313,20 @@ pub trait PluginEditor: Send {
     /// user closed, and returns parameter edits made in the editor as `(param id, value)` in
     /// SoundCraft units (ids and ranges of [`PluginInfo::params`]).
     fn idle(&mut self) -> Vec<(String, f32)>;
+    /// True once after the plugin said its state changed in a way its parameters don't show
+    /// (CLAP `state.mark_dirty`), so the session stores the new state.
+    fn state_changed(&mut self) -> bool {
+        false
+    }
     /// Tells the editor that a parameter changed elsewhere (generic editor, automation), so the
     /// GUI shows it. Values are in SoundCraft units.
     fn set_param(&mut self, _id: &str, _value: f32) {}
+    /// The plugin's own text for a parameter value (SoundCraft units) when SoundCraft's
+    /// [`ParamInfo::format`] would be wrong for it. Main thread only; `None` means "format it
+    /// yourself".
+    fn value_text(&mut self, _id: &str, _value: f32) -> Option<String> {
+        None
+    }
 }
 
 /// Reads a plugin's state on the main (UI) thread while the instance processes on the audio
