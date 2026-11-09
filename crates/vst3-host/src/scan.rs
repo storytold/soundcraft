@@ -36,31 +36,25 @@ impl Os {
 /// The standard VST3 search locations for this OS (existing or not), followed by every entry of
 /// the `VST3_PATH` environment variable.
 pub fn default_search_paths() -> Vec<PathBuf> {
-    let mut v = os_search_paths(
-        Os::current(),
-        std::env::var_os("HOME").map(PathBuf::from),
+    default_search_paths_with(Os::current(), |name| std::env::var_os(name), std::env::current_exe().ok())
+}
+
+/// [`default_search_paths`] with the environment lookup and executable path injected, so the
+/// Windows common-files fallback, `VST3_PATH` and the application-local folders are testable.
+fn default_search_paths_with(os: Os, var: impl Fn(&str) -> Option<std::ffi::OsString>, executable: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut v = search_paths(
+        os,
+        var("HOME").map(PathBuf::from),
         // A 32-bit process on 64-bit Windows sees the x86 directory in COMMONPROGRAMFILES.
-        std::env::var_os("COMMONPROGRAMW6432").or_else(|| std::env::var_os("COMMONPROGRAMFILES")).map(PathBuf::from),
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+        var("COMMONPROGRAMW6432").or_else(|| var("COMMONPROGRAMFILES")).map(PathBuf::from),
+        var("COMMONPROGRAMFILES(X86)").map(PathBuf::from),
+        var("LOCALAPPDATA").map(PathBuf::from),
+        executable,
     );
-    if let Some(cp) = std::env::var_os("VST3_PATH") {
+    if let Some(cp) = var("VST3_PATH") {
         v.extend(std::env::split_paths(&cp).filter(|p| !p.as_os_str().is_empty()));
     }
     v
-}
-
-/// The OS-specific standard locations, given the relevant environment values.
-/// Also reads `COMMONPROGRAMFILES(X86)` on Windows and the current executable for the
-/// application-local directory, when available (macOS requires a `Contents/MacOS` bundle layout).
-fn os_search_paths(os: Os, home: Option<PathBuf>, common_program_files: Option<PathBuf>, local_app_data: Option<PathBuf>) -> Vec<PathBuf> {
-    search_paths(
-        os,
-        home,
-        common_program_files,
-        std::env::var_os("COMMONPROGRAMFILES(X86)").map(PathBuf::from),
-        local_app_data,
-        std::env::current_exe().ok(),
-    )
 }
 
 /// Builds the search list without reading process state, so every OS layout is testable anywhere.
@@ -282,6 +276,10 @@ mod tests {
         d
     }
 
+    fn env_from(pairs: Vec<(&'static str, std::ffi::OsString)>) -> impl Fn(&str) -> Option<std::ffi::OsString> {
+        move |name| pairs.iter().find(|(key, _)| *key == name).map(|(_, value)| value.clone())
+    }
+
     #[test]
     fn finds_files_and_bundles_recursively_but_not_inside_bundles() {
         let d = tmp("find");
@@ -401,19 +399,76 @@ mod tests {
     }
 
     #[test]
+    fn default_paths_prefer_the_64_bit_windows_common_directory() {
+        let paths = default_search_paths_with(
+            Os::Windows,
+            env_from(vec![
+                ("COMMONPROGRAMW6432", "C:/Program Files/Common Files".into()),
+                ("COMMONPROGRAMFILES", "C:/ignored/Common Files".into()),
+                ("COMMONPROGRAMFILES(X86)", "C:/Program Files (x86)/Common Files".into()),
+                ("LOCALAPPDATA", "C:/Users/u/AppData/Local".into()),
+            ]),
+            Some("C:/SoundCraft/soundcraft.exe".into()),
+        );
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("C:/Users/u/AppData/Local/Programs/Common/VST3"),
+                PathBuf::from("C:/Program Files/Common Files/VST3"),
+                PathBuf::from("C:/Program Files (x86)/Common Files/VST3"),
+                PathBuf::from("C:/SoundCraft/VST3"),
+            ]
+        );
+    }
+
+    #[test]
+    fn default_paths_fall_back_to_common_program_files() {
+        let paths =
+            default_search_paths_with(Os::Windows, env_from(vec![("COMMONPROGRAMFILES", "C:/Program Files (x86)/Common Files".into())]), None);
+        assert_eq!(paths, vec![PathBuf::from("C:/Program Files (x86)/Common Files/VST3")]);
+    }
+
+    #[test]
+    fn default_paths_append_vst3_path_entries() {
+        let vst3_path = std::env::join_paths(["/opt/one", "/opt/two"]).unwrap();
+        let paths = default_search_paths_with(
+            Os::Unix,
+            env_from(vec![("HOME", "/home/u".into()), ("VST3_PATH", vst3_path)]),
+            Some("/opt/SoundCraft/soundcraft".into()),
+        );
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/home/u/.vst3"),
+                PathBuf::from("/usr/lib64/vst3"),
+                PathBuf::from("/usr/lib/vst3"),
+                PathBuf::from("/usr/local/lib64/vst3"),
+                PathBuf::from("/usr/local/lib/vst3"),
+                PathBuf::from("/opt/SoundCraft/vst3"),
+                PathBuf::from("/opt/one"),
+                PathBuf::from("/opt/two"),
+            ]
+        );
+    }
+
+    #[test]
     fn unix_paths_cover_documented_locations_in_order() {
-        let exe = std::env::current_exe().unwrap();
-        let global_and_app = vec![
+        let exe = PathBuf::from("/opt/SoundCraft/soundcraft");
+        let globals = vec![
             PathBuf::from("/usr/lib64/vst3"),
             PathBuf::from("/usr/lib/vst3"),
             PathBuf::from("/usr/local/lib64/vst3"),
             PathBuf::from("/usr/local/lib/vst3"),
-            exe.parent().unwrap().join("vst3"),
         ];
+        let mut global_and_app = globals.clone();
+        global_and_app.push(PathBuf::from("/opt/SoundCraft/vst3"));
         let mut with_home = vec![PathBuf::from("/home/u/.vst3")];
         with_home.extend(global_and_app.iter().cloned());
-        assert_eq!(os_search_paths(Os::Unix, Some("/home/u".into()), None, None), with_home);
-        assert_eq!(os_search_paths(Os::Unix, None, None, None), global_and_app);
+        assert_eq!(search_paths(Os::Unix, Some("/home/u".into()), None, None, None, Some(exe.clone())), with_home);
+        assert_eq!(search_paths(Os::Unix, None, None, None, None, Some(exe)), global_and_app);
+        let mut home_and_globals = vec![PathBuf::from("/home/u/.vst3")];
+        home_and_globals.extend(globals);
+        assert_eq!(search_paths(Os::Unix, Some("/home/u".into()), None, None, None, None), home_and_globals);
     }
 
     #[test]
