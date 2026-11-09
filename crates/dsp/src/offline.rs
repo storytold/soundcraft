@@ -1,4 +1,4 @@
-//! offline whole-buffer processing on planar `f32` audio.
+//! AudioSuite-style whole-buffer processing on planar `f32` audio.
 //!
 //! These functions may allocate (they are not for the audio thread) but never panic: lengths,
 //! rates and ratios are sanitized and output sizes are capped at [`MAX_OFFLINE_SAMPLES`] per

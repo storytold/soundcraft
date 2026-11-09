@@ -397,7 +397,7 @@ fn field_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, head_bg
                         t.text,
                     );
                 }
-                egui::Popup::menu(&resp.on_hover_text("Real-Time Stretch")).show(|ui| {
+                egui::Popup::menu(&resp.on_hover_text("Elastic Audio")).show(|ui| {
                     for alg in ["none", "polyphonic", "rhythmic", "monophonic", "varispeed", "x-form"] {
                         let current = track.elastic.as_deref().unwrap_or("none") == alg;
                         if ui.selectable_label(current, soundcraft_engine::feature_names::display_label(alg)).clicked() {

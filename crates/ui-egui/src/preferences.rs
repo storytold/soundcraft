@@ -889,15 +889,15 @@ fn section_ui(ui: &mut egui::Ui, page: PreferencesPage, section: Section, search
 /// Draws a section's title and border, including search-match highlighting.
 fn section_frame(ui: &mut egui::Ui, section: Section, search: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
     let t = Tokens::current();
-    let section_hit = text_matches(soundcraft_engine::feature_names::display_label(section.title), search);
+    let section_hit = text_matches(section.title, search);
     let stroke = if !search.is_empty() && section_hit { Stroke::new(1.5, t.meter_yellow) } else { Stroke::new(1.0, t.border) };
     egui::Frame::new().fill(t.panel_bg2).stroke(stroke).corner_radius(3.0).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
         ui.set_min_width((ui.available_width() - 12.0).max(280.0));
         egui::Frame::new().fill(t.toolbar_group).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
             let title = if !search.is_empty() && section_hit {
-                RichText::new(soundcraft_engine::feature_names::display_label(section.title)).strong().color(t.meter_yellow)
+                RichText::new(section.title).strong().color(t.meter_yellow)
             } else {
-                RichText::new(soundcraft_engine::feature_names::display_label(section.title)).strong()
+                RichText::new(section.title).strong()
             };
             ui.label(title);
         });
@@ -924,9 +924,8 @@ fn section_ui_columns(ui: &mut egui::Ui, page: PreferencesPage, section: Section
 /// Draws an implemented control or a disabled placeholder for unavailable behavior.
 fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: usize, control: Control, search: &str, draft: &mut PreferencesDraft) {
     let t = Tokens::current();
-    let hit = text_matches(soundcraft_engine::feature_names::display_label(&control.search_text()), search);
+    let hit = text_matches(&control.search_text(), search);
     let label = |text: &'static str| {
-        let text = soundcraft_engine::feature_names::display_label(text);
         if !search.is_empty() && hit { RichText::new(text).color(t.meter_yellow) } else { RichText::new(text) }
     };
     let id = ("preference", page, section, index);
@@ -1018,12 +1017,7 @@ fn page_modifiers(modifiers: Modifiers, mac: bool) -> bool {
 fn page_matches(page: PreferencesPage, search: &str) -> bool {
     text_matches(page.label(), search)
         || page.sections().iter().any(|section| {
-            text_matches(soundcraft_engine::feature_names::display_label(section.title), search)
-                || section
-                    .controls
-                    .iter()
-                    .copied()
-                    .any(|control| text_matches(soundcraft_engine::feature_names::display_label(&control.search_text()), search))
+            text_matches(section.title, search) || section.controls.iter().copied().any(|control| text_matches(&control.search_text(), search))
         })
 }
 
@@ -1065,7 +1059,6 @@ mod tests {
         assert!(page_matches(PreferencesPage::Metering, "K-20"));
         assert!(page_matches(PreferencesPage::Synchronization, "linked systems"));
         assert!(!page_matches(PreferencesPage::Midi, "waveform cache"));
-        assert!(page_matches(PreferencesPage::Processing, "Real-Time Stretch"));
     }
 
     /// Implemented preferences use commands without becoming document edits.

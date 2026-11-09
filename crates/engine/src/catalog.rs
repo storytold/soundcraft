@@ -194,7 +194,7 @@ mod tests {
         assert_eq!(implemented_by("Event > Beat Detective", &ui).as_deref(), Some("window.beat_detective"));
         for (path, id, label) in [
             ("Options > QuickPunch", "options.quickpunch", "Punch Recording"),
-            ("Options > TrackPunch", "options.trackpunch", "Track Punch Recording"),
+            ("Options > TrackPunch", "options.trackpunch", "TrackPunch"),
             ("View > Transport > Ableton Link", "view.transport_ableton_link", "Tempo Sync"),
             ("Event > Beat Detective", "event.beat_detective", "Beat Analysis"),
             ("File > Export > Sibelius...", "file.export_sibelius", "MusicXML..."),

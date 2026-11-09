@@ -1,4 +1,4 @@
-//! Offline processing of selected clips.
+//! AudioSuite-style offline processing of selected clips.
 use super::{CommandSpec, bad, clip_ids_param, has_selection, range_param, str_param, tracks_param};
 use soundcraft_time::Range;
 
@@ -11,7 +11,7 @@ use soundcraft_model::{Clip, ClipContent, TrackKind};
 pub fn specs() -> Vec<CommandSpec> {
     vec![cmd!(
         "audiosuite.process",
-        "Process Clips Offline",
+        "AudioSuite Process",
         [],
         None,
         "{process: <built-in plugin id (engine.plugins)> | normalize | reverse | invert | gain | duplicate | time_stretch | pitch_shift | varispeed | speed_ramp | signal_generator, params?: {..}, clips?, tracks?, start?, end?} — signal_generator fills start..end (default: the selection) with a new clip on each audio track in `tracks` (default: the selected tracks); speed_ramp takes change (0 slow down, 1 speed up), selection (0 fit to, 1 extend) and fades (1 on, 0 off)",
@@ -56,10 +56,7 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
                 | "dc_offset_removal"
         );
     if !known && soundcraft_mix::is_third_party(&name) {
-        return Err(bad(
-            "audiosuite.process",
-            format!("`{name}` is a hosted plugin; offline processing runs built-in plugins only (engine.plugins)"),
-        ));
+        return Err(bad("audiosuite.process", format!("`{name}` is a hosted plugin; AudioSuite runs built-in plugins only (engine.plugins)")));
     }
     if !known {
         return Err(bad("audiosuite.process", format!("unknown process `{name}`")));

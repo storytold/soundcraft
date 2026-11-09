@@ -193,7 +193,9 @@ fn task_manager(app: &mut SoundApp, ctx: &egui::Context) {
                 ui.label("No background tasks are running.");
             }
         }
-        ui.label(egui::RichText::new("Renders and offline processes run to completion before returning.").small().color(Tokens::current().text_dim));
+        ui.label(
+            egui::RichText::new("Renders and AudioSuite processes run to completion before returning.").small().color(Tokens::current().text_dim),
+        );
     });
     app.ui.show_task_manager = open;
 }

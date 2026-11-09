@@ -205,8 +205,15 @@ fn insert_path(roots: &mut Vec<MenuNode>, line: &str) {
     }
 }
 
+/// Offline leaves whose name waits on RFC-0029. They keep the catalog's own text and are listed
+/// beside the processor that implements them, so no menu item disappears.
+const DEFERRED_LABELS: &[&str] = &["AudioSuite > Pitch Shift > Pitch Shift Legacy", "AudioSuite > Other > Time Compression Expansion"];
+
 /// Display names come from our processor registry; paths remain legacy automation keys.
 fn display_menu_label(path: &str, fallback: &str) -> String {
+    if DEFERRED_LABELS.contains(&path) {
+        return fallback.to_string();
+    }
     if let Some((_, process)) = AUDIOSUITE.iter().find(|(key, _)| *key == path) {
         if let Some(info) = soundcraft_dsp::plugin_info(process) {
             return info.name.to_string();
@@ -227,8 +234,11 @@ pub fn tree() -> Vec<MenuNode> {
     let mut processors = std::collections::HashSet::new();
     for line in catalog::catalog() {
         // Several legacy entries map to one processor. List it once per category,
-        // while keeping every historical path accepted by command_for_path.
-        if let Some((_, process)) = AUDIOSUITE.iter().find(|(path, _)| *path == line) {
+        // while keeping every historical path accepted by command_for_path. A deferred leaf keeps
+        // its own catalog name, so it is not folded into the processor it shares.
+        if !DEFERRED_LABELS.contains(&line)
+            && let Some((_, process)) = AUDIOSUITE.iter().find(|(path, _)| *path == line)
+        {
             let category = line.rsplit_once(" > ").map_or(line, |(category, _)| category);
             if !processors.insert((category, *process)) {
                 continue;
@@ -939,13 +949,16 @@ mod tests {
         for (path, process) in AUDIOSUITE {
             assert_eq!(command_for_path(path, &ui_aliases()).as_deref(), Some("audiosuite.process"));
             assert_eq!(params_for(path, "audiosuite.process")["process"], *process);
+            if DEFERRED_LABELS.contains(path) {
+                continue;
+            }
             if let Some(info) = soundcraft_dsp::plugin_info(process) {
                 assert_eq!(display_menu_label(path, "ignored"), info.name);
             }
         }
         let tree = tree();
         let offline = tree.iter().find(|node| node.path == "AudioSuite").unwrap();
-        assert_eq!(offline.label, "Offline Processing");
+        assert_eq!(offline.label, "AudioSuite");
         let dynamics = offline.children.iter().find(|node| node.path == "AudioSuite > Dynamics").unwrap();
         assert_eq!(dynamics.children.iter().filter(|node| node.label == "Compressor/Limiter").count(), 1);
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
@@ -962,15 +975,41 @@ mod tests {
         }
     }
 
+    /// Leaves deferred to RFC-0029 keep the catalog's own name in the menu, next to the processor
+    /// that implements them: the rename waits, and no catalog item is dropped in the meantime.
+    #[test]
+    fn deferred_leaves_keep_their_catalog_names() {
+        fn labels<'a>(nodes: &'a [MenuNode], path: &str) -> Vec<&'a str> {
+            for node in nodes {
+                if node.path == path {
+                    return node.children.iter().map(|child| child.label.as_str()).collect();
+                }
+                let found = labels(&node.children, path);
+                if !found.is_empty() {
+                    return found;
+                }
+            }
+            Vec::new()
+        }
+        let tree = tree();
+        let pitch_shift = labels(&tree, "AudioSuite > Pitch Shift");
+        assert!(pitch_shift.contains(&"Pitch Shift"), "{pitch_shift:?}");
+        assert!(pitch_shift.contains(&"Pitch Shift Legacy"), "{pitch_shift:?}");
+        assert!(pitch_shift.contains(&"Time Stretch"), "the Time Shift item keeps our processor name: {pitch_shift:?}");
+        let other = labels(&tree, "AudioSuite > Other");
+        assert!(other.contains(&"Time Compression Expansion"), "{other:?}");
+        for path in DEFERRED_LABELS {
+            assert!(AUDIOSUITE.iter().any(|(key, _)| key == path), "{path}");
+            assert_eq!(display_menu_label(path, "kept"), "kept", "{path}");
+        }
+    }
+
     fn retired_feature_label(label: &str) -> Option<&'static str> {
         let lower = label.to_lowercase();
         [
-            "audiosuite",
             "beat detective",
-            "elastic audio",
             "x-form",
             "quickpunch",
-            "trackpunch",
             "ableton link",
             "pro tools search",
             "pro tools projects",
@@ -981,7 +1020,6 @@ mod tests {
             "dyn3",
             "maxim",
             "pitch ii",
-            "pitch shift legacy",
             "vari-fi",
             "d-verb",
             "mod delay iii",
@@ -1064,12 +1102,24 @@ mod tests {
 
     #[test]
     fn display_guard_rejects_retired_labels_without_rejecting_own_processors() {
-        for label in ["AUDIOSUITE", "Beat Detective", "QuickPunch", "Activate HEAT", "BF-76", "Dyn3 De-Esser", "Lo-Fi"] {
+        for label in ["Beat Detective", "QuickPunch", "Activate HEAT", "BF-76", "Dyn3 De-Esser", "Lo-Fi"] {
             assert!(retired_feature_label(label).is_some(), "{label}");
         }
-        for label in
-            ["Offline Processing", "Beat Analysis", "Real-Time Stretch", "Rendered (High Quality)", "Maximizer", "Bit Crusher", "Room Reverb"]
-        {
+        // Deferred to RFC-0029: these keep the incumbent's label, so the guard must allow them.
+        for label in [
+            "Offline Processing",
+            "AudioSuite",
+            "Beat Analysis",
+            "Elastic Audio",
+            "Elastic Properties",
+            "TrackPunch",
+            "Pitch Shift Legacy",
+            "Time Compression Expansion",
+            "Rendered (High Quality)",
+            "Maximizer",
+            "Bit Crusher",
+            "Room Reverb",
+        ] {
             assert_eq!(retired_feature_label(label), None, "{label}");
         }
     }

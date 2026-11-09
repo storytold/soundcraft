@@ -3,7 +3,7 @@
 //!
 //! Realtime plugins (EQ, dynamics, reverb, delay, modulation, harmonic, pitch, utilities and three
 //! instruments), metering (peak, RMS, ITU-R BS.1770 loudness), spectrum analysis and offline
-//! offline whole-buffer processing.
+//! AudioSuite-style whole-buffer processing.
 //!
 //! Every algorithm here is an original implementation of textbook DSP (RBJ cookbook biquads,
 //! feed-forward log-domain dynamics, feedback-delay-network reverbs, WSOLA, windowed-sinc
@@ -158,7 +158,7 @@ pub struct PluginInfo {
     pub category: Category,
     pub params: &'static [ParamInfo],
     pub is_instrument: bool,
-    /// Usable as an offline process.
+    /// Usable as an offline (AudioSuite-style) process.
     pub audiosuite: bool,
 }
 

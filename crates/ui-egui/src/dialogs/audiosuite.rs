@@ -1,18 +1,18 @@
 use super::{SoundApp, Value, json};
 
-/// The speed ramp's choices in the Offline Processing window: param id, label, default, and (value, name) pairs.
+/// The speed ramp's choices in the AudioSuite window: param id, label, default, and (value, name) pairs.
 pub(super) const SPEED_RAMP_CHOICES: [(&str, &str, f32, &[(f32, &str)]); 3] = [
     ("change", "Change", 0.0, &[(0.0, "Slow Down"), (1.0, "Speed Up")]),
     ("selection", "Selection", 0.0, &[(0.0, "Fit To"), (1.0, "Extend")]),
     ("fades", "Fades", 1.0, &[(1.0, "On"), (0.0, "Off")]),
 ];
 
-/// Process-parameter window for the chosen offline process, with its controls and Render action.
+/// Process-parameter window for the chosen AudioSuite process, with its controls and Render action.
 pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
     let Some(process) = app.ui.audiosuite.clone() else { return };
     let mut open = true;
     let title = soundcraft_dsp::plugin_info(&process).map_or_else(|| process.replace('_', " "), |p| p.name.to_string());
-    egui::Window::new(format!("Offline Processing · {title}")).open(&mut open).default_width(360.0).show(ctx, |ui| {
+    egui::Window::new(format!("AudioSuite · {title}")).open(&mut open).default_width(360.0).show(ctx, |ui| {
         let key = egui::Id::unique(("as_params", process.clone()));
         let mut params: std::collections::BTreeMap<String, f32> = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_default();
         if let Some(info) = soundcraft_dsp::plugin_info(&process) {
