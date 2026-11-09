@@ -4,11 +4,13 @@
 use std::path::PathBuf;
 
 use egui::accesskit::Role;
-use egui::{Event, Key, Modifiers, Pos2, RawInput, Rect, vec2};
+use egui::epaint::ClippedShape;
+use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Shape, pos2, vec2};
 use egui_kittest::{Harness, kittest::Queryable};
 use serde_json::json;
 use soundcraft_audio_io::FileFormat;
-use soundcraft_ui_egui::dialogs::Dialog;
+use soundcraft_model::GroupId;
+use soundcraft_ui_egui::dialogs::{Dialog, ask_to_save};
 use soundcraft_ui_egui::{Services, SoundApp, menus};
 
 fn harness(app: SoundApp) -> Harness<'static, SoundApp> {
@@ -83,7 +85,19 @@ fn enter_on_a_focused_browse_in_bounce_mix_does_not_bounce() {
     menus::invoke_menu(&mut app, "file.bounce_mix", "File > Bounce Mix...");
     let mut h = harness(app);
     enter_on(&mut h, "Browse…");
+    assert!(h.state().bounce.is_none(), "Enter on Browse started a bounce");
     assert!(matches!(&h.state().dialogs.open, Some(Dialog::Bounce { path, format, .. }) if path == picked && *format == FileFormat::Flac));
+}
+
+#[test]
+fn enter_on_a_focused_default_button_runs_its_action_once() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let tracks = app.engine.session().tracks.len();
+    assert!(app.dialogs.open_for_command(&app.engine, "track.new"));
+    let mut h = harness(app);
+    enter_on(&mut h, "Create");
+    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(h.state().engine.session().tracks.len(), tracks + 1);
 }
 
 #[test]
@@ -144,15 +158,15 @@ fn the_enter_that_opens_a_dialog_does_not_press_its_default_button() {
     assert_eq!(app.dialogs.open_name(), None, "the next Enter presses Create");
 }
 
-/// Runs one frame of `app` with `events`.
-fn run_frame(ctx: &egui::Context, app: &mut SoundApp, events: Vec<Event>) {
+/// Runs one frame of `app` with `events` and returns what it painted.
+fn run_frame(ctx: &egui::Context, app: &mut SoundApp, events: Vec<Event>) -> Vec<ClippedShape> {
     let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), events, ..Default::default() };
-    ctx.run_ui(raw, |ui| {
+    let mut out = ctx.run_ui(raw, |ui| {
         app.logic(ui.ctx());
         app.ui(ui);
-    })
-    .textures_delta
-    .clear();
+    });
+    out.textures_delta.clear();
+    out.shapes
 }
 
 fn enter_key(repeat: bool) -> Event {
@@ -190,6 +204,70 @@ fn a_rename_dialog_that_replaces_an_open_dialog_ignores_the_enter_of_its_first_f
     app.dialogs.open_rename_track(id, "Renamed");
     run_frame(&ctx, &mut app, vec![enter_key(false), enter_up()]);
     assert_eq!(app.dialogs.open_name(), Some("rename_track"), "the first frame's Enter leaves the new dialog open");
+}
+
+/// The first Kick clip of `app`.
+fn kick_clip(app: &SoundApp) -> soundcraft_model::ClipId {
+    app.engine.session().track_by_name("Kick").unwrap().clips()[0].id
+}
+
+#[test]
+fn clear_auto_rename_modify_group_and_save_changes_replacing_a_dialog_ignore_the_enter_of_their_first_frame() {
+    type Open = fn(&mut SoundApp);
+    let cases: [(&str, Open); 4] = [
+        ("clear_clips", |app| {
+            let clip = kick_clip(app);
+            assert!(app.dialogs.open_clear(&app.engine, vec![clip], vec![]));
+        }),
+        ("auto_rename", |app| {
+            let clip = kick_clip(app);
+            assert!(app.dialogs.open_auto_rename(&app.engine, vec![clip]));
+        }),
+        ("modify_group", |app| {
+            let track = app.engine.session().tracks[0].id.0;
+            let group = app.run("track.group", json!({"tracks": [track], "name": "Drums"})).unwrap()["group"].as_u64().unwrap();
+            assert!(app.dialogs.open_modify_group(&app.engine, GroupId(group)));
+        }),
+        ("save_changes", |app| {
+            app.run("mix.mute", json!({"track": "Kick"})).unwrap();
+            assert!(ask_to_save(app, "session.close", &json!({})));
+        }),
+    ];
+    for (name, open) in cases {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        let ctx = egui::Context::default();
+        menus::invoke_menu(&mut app, "setup.session", "Setup > Session");
+        run_frame(&ctx, &mut app, vec![]);
+        run_frame(&ctx, &mut app, vec![]);
+        open(&mut app);
+        run_frame(&ctx, &mut app, vec![enter_key(false), enter_up()]);
+        assert_eq!(app.dialogs.open_name(), Some(name), "the first frame's Enter leaves the new dialog open");
+    }
+}
+
+#[test]
+fn a_tempo_change_dialog_that_replaces_an_open_dialog_ignores_the_enter_of_its_first_frame() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let ctx = egui::Context::default();
+    menus::invoke_menu(&mut app, "setup.session", "Setup > Session");
+    run_frame(&ctx, &mut app, vec![]);
+    let shapes = run_frame(&ctx, &mut app, vec![]);
+    assert_eq!(app.dialogs.open_name(), Some("session"));
+    let [left, ..] = app.edit_layout.timeline;
+    let y = shapes
+        .iter()
+        .find_map(|c| match &c.shape {
+            Shape::Text(t) if t.galley.text() == "Tempo" && t.pos.x < left => Some(t.galley.rect.translate(t.pos.to_vec2()).center().y),
+            _ => None,
+        })
+        .expect("the Tempo ruler's label");
+    let at = pos2(left + 50.0, y);
+    let button = |pressed| Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+    for pressed in [true, false, true] {
+        run_frame(&ctx, &mut app, vec![Event::PointerMoved(at), button(pressed)]);
+    }
+    run_frame(&ctx, &mut app, vec![button(false), enter_key(false), enter_up()]);
+    assert_eq!(app.dialogs.open_name(), Some("tempo_change"), "the first frame's Enter leaves the new dialog open");
 }
 
 #[test]
