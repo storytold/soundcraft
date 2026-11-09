@@ -11,11 +11,13 @@ use serde_json::json;
 use soundcraft_model::{ChannelFormat, Route, SurroundPan, Track, TrackId, TrackKind};
 use soundcraft_playback::MeterSnapshot;
 
+mod output;
 mod plugin_menu;
 mod routing;
 mod sends;
 mod slots;
 
+pub(crate) use output::{output_window, toggle_output_window};
 pub use plugin_menu::{instrument_menu, plugin_info, plugin_menu};
 pub(crate) use routing::{input_name, route_name, route_popup};
 #[cfg(test)]
@@ -88,6 +90,13 @@ fn output_format(app: &SoundApp, track: &Track) -> ChannelFormat {
         Route::Bus(b) => s.bus(*b).map_or(ChannelFormat::Stereo, |b| b.format),
         _ => ChannelFormat::Stereo,
     }
+}
+
+/// Whether the track pans with a surround panner (a multichannel, non-ambisonic output) rather
+/// than the stereo knobs.
+fn surround_out(app: &SoundApp, track: &Track) -> bool {
+    let out_fmt = output_format(app, track);
+    out_fmt.channels() > 2 && !out_fmt.is_ambisonic() && !matches!(track.kind, TrackKind::Master | TrackKind::Vca) && track.channels() <= 2
 }
 
 /// Speaker dots of a format, placed on the panner square.
@@ -470,9 +479,7 @@ fn pan_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -
     let t = Tokens::current();
     // Pan: a surround panner when the output is multichannel, else the stereo knobs.
     let out_fmt = output_format(app, track);
-    let surround_out =
-        out_fmt.channels() > 2 && !out_fmt.is_ambisonic() && !matches!(track.kind, TrackKind::Master | TrackKind::Vca) && track.channels() <= 2;
-    if surround_out {
+    if surround_out(app, track) {
         let size = (inner_w - 4.0).min(88.0);
         let sp = track.mixer.surround.unwrap_or_else(|| {
             SurroundPan::from_stereo(if track.mixer.pan.len() == 1 { track.mixer.pan.first().copied().unwrap_or(0.0) } else { 0.0 })

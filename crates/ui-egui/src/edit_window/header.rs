@@ -1,8 +1,8 @@
 use super::layout::STRIP_W;
 use super::tracks::{click_track, folder_depth, height_targets, in_edit_window, track_context_menu, view_label, view_menu};
 use super::{
-    Align2, AutoParam, Color32, Pos2, Rect, Sense, Shape, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold, groove, json,
-    level_pos, meter_pos, pos2, raised_key, regular, rgb, shade, vec2,
+    Align2, AutoParam, Color32, Pos2, Rect, Sense, Shape, SoundApp, Stroke, StrokeKind, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold,
+    groove, json, level_pos, meter_pos, pos2, raised_key, regular, rgb, shade, vec2,
 };
 
 /// Draw one track header: resize edge, selection and context menu, folder/options control, automation-lane toggle,
@@ -565,16 +565,23 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
             info
         });
         let fresp = ui.interact(fader, ui.scope_id().with(("out_fader", id.0)), Sense::click());
+        let shown = app.ui.output_window == Some(id);
+        fresp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::accesskit::Role::Button, ui.is_enabled(), shown, format!("Output window for {}", track.name))
+        });
         raised_key(ui.painter(), out, t.slot_face, resp.hovered() || fresp.hovered());
         groove(ui.painter(), fader.min.x - 0.5, out.min.y + 1.0..=out.max.y - 1.0, t.slot_face[0]);
         ui.painter().with_clip_rect(sel.shrink(1.0)).text(sel.center(), Align2::CENTER_CENTER, &output_name, bold(10.0), t.text);
         let c = fader.center() + vec2(0.5, 0.0);
         ui.painter().vline(c.x, c.y - 5.0..=c.y + 5.0, Stroke::new(1.0, t.text));
         ui.painter().rect_filled(Rect::from_center_size(c + vec2(0.0, -1.5), vec2(5.0, 2.5)), 0.5, t.text);
+        if shown {
+            ui.painter().rect_stroke(fader.shrink(0.5), 1.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
+        }
         crate::mix_window::route_popup(app, &resp.on_hover_text("Output"), id, false);
-        if fresp.on_hover_text("Show in the Mix window").clicked() {
-            let _ = app.run("edit.select", json!({"tracks": [id.0]}));
-            let _ = app.run("window.mix", json!({}));
+        // As in Pro Tools, the fader button opens the track's Output window, not the Mix window (#1392).
+        if fresp.on_hover_text("Output window").clicked() {
+            crate::mix_window::toggle_output_window(app, id);
         }
     }
     if let Some(vr) = row(45.0, 30.0).map(|vr| vr.shrink2(vec2(1.0, 0.0))) {
