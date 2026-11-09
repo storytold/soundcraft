@@ -89,7 +89,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 crate::io::import_video_bytes(e, &path, bytes, at)
             }
         ),
-        cmd!(noundo "file.bounce_mix", "Bounce Mix...", ["File"], Some("Cmd+Alt+B"), "{path, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, source?: main|bus name, normalize?: false, dither?: true, fold_down?: stereo}", always, bounce),
+        cmd!(noundo "file.bounce_mix", "Bounce Mix...", ["File"], Some("Cmd+Alt+B"), "{path, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, source?: main|bus name, normalize?: false (peak to -0.1 dBFS), target_lufs?: integrated loudness to normalize to (-70..0), true_peak_ceiling_db?: -1 (with target_lufs, -30..0; the gain is lowered to keep the true peak under it), dither?: true, fold_down?: stereo} → lufs and true_peak_db as written; with target_lufs also gain_db and a warning when the ceiling or silence kept it from the target", always, bounce),
         cmd!(noundo "file.bounce_stems", "Bounce Stems...", [], None, "{dir, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, dither?: true, fold_down?: stereo}", has_tracks, |e, p| {
             let dir = str_param(p, "dir").ok_or_else(|| bad("file.bounce_stems", "`dir` required"))?.to_string();
             let r = range_param(e, "file.bounce_stems", p)?;
@@ -295,15 +295,59 @@ fn fold_down_param(p: &Value, id: &str) -> Result<bool> {
 fn bounce(e: &mut Engine, p: &Value) -> Result<Value> {
     let job = bounce_job(e, p)?;
     let (path, seconds) = (job.path().to_string_lossy().into_owned(), e.session().sample_rate.seconds(job.range().len()));
+    let target = loudness_target(p)?;
     let done = job.run()?;
-    Ok(json!({
+    let mut out = json!({
         "path": path,
         "bytes": done.bytes,
         "seconds": seconds,
         "peak_db": done.peak_db,
         "lufs": done.lufs,
         "true_peak_db": done.true_peak_db,
-    }))
+    });
+    if let (Some(t), Some(outcome), Some(o)) = (target, done.loudness, out.as_object_mut()) {
+        o.insert("gain_db".into(), json!(done.gain_db));
+        let warning = match outcome {
+            crate::io::LoudnessOutcome::Reached => None,
+            crate::io::LoudnessOutcome::CeilingHeld => Some(format!(
+                "the {} dBTP true-peak ceiling held the gain back: {:.1} LUFS, short of the {} LUFS target",
+                t.true_peak_ceiling_db, done.lufs, t.lufs
+            )),
+            crate::io::LoudnessOutcome::Unmeasured => {
+                Some("silent, or too short to measure loudness (under 400 ms): written at unity gain".to_string())
+            }
+        };
+        if let Some(w) = warning {
+            o.insert("warning".into(), json!(w));
+        }
+    }
+    Ok(out)
+}
+
+/// `target_lufs` and `true_peak_ceiling_db` (default -1 dBTP), when a loudness was asked for.
+fn loudness_target(p: &Value) -> Result<Option<crate::io::LoudnessTarget>> {
+    let num = |k: &str| {
+        p.get(k)
+            .filter(|v| !v.is_null())
+            .map(|v| v.as_f64().filter(|x| x.is_finite()).ok_or_else(|| bad("file.bounce_mix", format!("`{k}` must be a number"))))
+    };
+    let Some(lufs) = num("target_lufs").transpose()? else {
+        if p.get("true_peak_ceiling_db").is_some_and(|v| !v.is_null()) {
+            return Err(bad("file.bounce_mix", "`true_peak_ceiling_db` goes with `target_lufs`"));
+        }
+        return Ok(None);
+    };
+    let ceiling = num("true_peak_ceiling_db").transpose()?.unwrap_or(-1.0);
+    if !(-70.0..=0.0).contains(&lufs) {
+        return Err(bad("file.bounce_mix", "`target_lufs` must be between -70 and 0"));
+    }
+    if !(-30.0..=0.0).contains(&ceiling) {
+        return Err(bad("file.bounce_mix", "`true_peak_ceiling_db` must be between -30 and 0"));
+    }
+    if bool_or(p, "normalize", false) {
+        return Err(bad("file.bounce_mix", "`normalize` (peak) and `target_lufs` (loudness) can't be used together"));
+    }
+    Ok(Some(crate::io::LoudnessTarget { lufs: lufs as f32, true_peak_ceiling_db: ceiling as f32 }))
 }
 
 /// The bounce `file.bounce_mix` runs for `p`, not rendered yet.
@@ -326,7 +370,12 @@ pub fn bounce_job(e: &Engine, p: &Value) -> Result<crate::io::Bounce> {
     let normalize = bool_or(p, "normalize", false);
     let fold = fold_down_param(p, "file.bounce_mix")?;
     let bus = bounce_bus(e, p)?;
-    crate::io::Bounce::new(e.session_arc(), std::path::Path::new(&path), r, &opts, bus, normalize, fold)
+    let target = loudness_target(p)?;
+    let job = crate::io::Bounce::new(e.session_arc(), std::path::Path::new(&path), r, &opts, bus, normalize, fold)?;
+    Ok(match target {
+        Some(t) => job.with_loudness(t),
+        None => job,
+    })
 }
 
 /// Write the score of the chosen MIDI tracks as MusicXML (or SVG when `svg`).

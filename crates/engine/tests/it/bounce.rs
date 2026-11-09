@@ -193,3 +193,102 @@ fn demo_bounce_levels_are_pinned() {
         assert!(g.iter().zip(pin).all(|(v, p)| (v - f32::from_bits(p)).abs() < 1e-3), "{got:?}");
     }
 }
+
+/// An engine whose session is one stereo track playing `samples` from 0.
+fn engine_with(samples: Vec<f32>) -> soundcraft_engine::Engine {
+    let mut e = soundcraft_engine::Engine::default();
+    let sr = e.session().sample_rate.hz();
+    let frames = samples.len();
+    let audio = soundcraft_audio_io::AudioBuffer { sample_rate: sr, channels: vec![samples.clone(), samples] };
+    let s = e.session_mut();
+    let track = s.add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Stereo, Some("Source"));
+    let source = soundcraft_engine::io::add_source(s, "source", audio, None, FileFormat::Wav);
+    let clip = soundcraft_model::Clip::audio(s.new_clip_id(), "source", source, 0, 0, frames as i64);
+    soundcraft_engine::edit::place_clip(s, track, clip);
+    e
+}
+
+fn sine(amp: f32, secs: f32) -> Vec<f32> {
+    (0..(48_000.0 * secs) as usize).map(|i| amp * (std::f32::consts::TAU * 1000.0 * i as f32 / 48_000.0).sin()).collect()
+}
+
+fn bounce_to(e: &mut soundcraft_engine::Engine, path: &std::path::Path, extra: serde_json::Value) -> serde_json::Value {
+    let mut p = serde_json::json!({"path": path, "bit_depth": "32f", "dither": false});
+    if let (Some(o), Some(x)) = (p.as_object_mut(), extra.as_object()) {
+        o.extend(x.clone());
+    }
+    e.execute("file.bounce_mix", &p).unwrap()
+}
+
+/// `target_lufs` brings the integrated loudness to the target when the true-peak ceiling allows it.
+#[test]
+fn loudness_target_is_reached_under_the_ceiling() {
+    let dir = scratch("bounce-lufs-reached");
+    let mut e = engine_with(sine(0.05, 3.0));
+    let r = bounce_to(&mut e, &dir.join("Mix.wav"), serde_json::json!({"target_lufs": -16.0, "true_peak_ceiling_db": -1.0}));
+    let lufs = r["lufs"].as_f64().unwrap();
+    assert!((lufs + 16.0).abs() < 0.1, "{r}");
+    assert!(r["true_peak_db"].as_f64().unwrap() <= -1.0, "{r}");
+    assert!(r["gain_db"].as_f64().unwrap() > 0.0 && r.get("warning").is_none(), "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// When the target would push the true peak over the ceiling, the gain stops at the ceiling and the
+/// result says how loud the file came out, with a warning.
+#[test]
+fn loudness_target_held_by_the_true_peak_ceiling_says_so() {
+    let dir = scratch("bounce-lufs-ceiling");
+    // Quiet tone with sharp spikes: a peak far above its loudness.
+    let mut samples = sine(0.02, 3.0);
+    for i in (0..samples.len()).step_by(4800) {
+        samples[i] = 0.5;
+    }
+    let mut e = engine_with(samples);
+    let r = bounce_to(&mut e, &dir.join("Mix.wav"), serde_json::json!({"target_lufs": -10.0, "true_peak_ceiling_db": -1.0}));
+    let (lufs, tp) = (r["lufs"].as_f64().unwrap(), r["true_peak_db"].as_f64().unwrap());
+    assert!(lufs < -11.0, "short of the target: {r}");
+    assert!((tp + 1.0).abs() < 0.05, "the true peak sits at the ceiling: {r}");
+    let warning = r["warning"].as_str().unwrap();
+    assert!(warning.contains("ceiling") && warning.contains(&format!("{lufs:.1} LUFS")), "{warning}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Silence, or audio shorter than one 400 ms gating block, has no loudness to move: the file is written
+/// at unity gain, with a warning.
+#[test]
+fn unmeasurable_loudness_is_written_at_unity_with_a_warning() {
+    let dir = scratch("bounce-lufs-unmeasured");
+    for (name, samples) in [("silence", vec![0.0; 48_000]), ("short", sine(0.1, 0.2))] {
+        let mut e = engine_with(samples.clone());
+        let path = dir.join(format!("{name}.wav"));
+        let r = bounce_to(&mut e, &path, serde_json::json!({"target_lufs": -16.0}));
+        assert!(r["warning"].as_str().unwrap().contains("too short"), "{name}: {r}");
+        assert_eq!(r["gain_db"].as_f64(), Some(0.0), "{name}: {r}");
+        let (_, file) = soundcraft_audio_io::decode(&std::fs::read(&path).unwrap(), None).unwrap();
+        let mix = soundcraft_mix::render_range(e.session(), Range::new(0, samples.len() as i64), 1024);
+        assert_eq!(file.channels, mix, "{name}: unity gain");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn loudness_options_are_checked() {
+    let dir = scratch("bounce-lufs-params");
+    let mut e = engine_with(sine(0.1, 1.0));
+    let p = |x: serde_json::Value| {
+        let mut p = serde_json::json!({"path": dir.join("Mix.wav")});
+        p.as_object_mut().unwrap().extend(x.as_object().unwrap().clone());
+        p
+    };
+    for (bad, why) in [
+        (serde_json::json!({"target_lufs": -16, "normalize": true}), "together"),
+        (serde_json::json!({"target_lufs": 3}), "between -70 and 0"),
+        (serde_json::json!({"target_lufs": -16, "true_peak_ceiling_db": 1}), "between -30 and 0"),
+        (serde_json::json!({"true_peak_ceiling_db": -1}), "goes with `target_lufs`"),
+        (serde_json::json!({"target_lufs": "loud"}), "must be a number"),
+    ] {
+        let err = e.execute("file.bounce_mix", &p(bad.clone())).unwrap_err().to_string();
+        assert!(err.contains(why), "{bad}: {err}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

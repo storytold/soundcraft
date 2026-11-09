@@ -274,8 +274,13 @@ pub struct Bounce {
     bus: Option<BusId>,
     fold: Option<ChannelFormat>,
     normalize: bool,
-    /// Measuring the peak to normalize to, the first of two passes.
+    /// Loudness normalization instead (see [`Bounce::with_loudness`]).
+    loudness: Option<LoudnessTarget>,
+    /// Measuring the peak or the loudness to normalize to, the first of two passes.
     measuring: bool,
+    /// The normalization gain applied (dB) and what a loudness target came to.
+    gain_db: f32,
+    outcome: Option<LoudnessOutcome>,
     render: soundcraft_mix::RangeRender,
     block: Vec<Vec<f32>>,
     done: usize,
@@ -292,13 +297,36 @@ fn time_stamp(s: &Session, at: Samples) -> soundcraft_audio_io::BwfInfo {
     soundcraft_audio_io::BwfInfo { time_reference, ..Default::default() }
 }
 
-/// A finished bounce: the size of its file and its levels.
+/// A loudness to normalize a bounce to: integrated loudness (LUFS, ITU-R BS.1770 / EBU R128) and
+/// a true-peak ceiling (dBTP) the gain may not push past.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoudnessTarget {
+    pub lufs: f32,
+    pub true_peak_ceiling_db: f32,
+}
+
+/// What a loudness-normalized bounce came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoudnessOutcome {
+    /// The gain brought it to the target.
+    Reached,
+    /// The true-peak ceiling held the gain back, so the file is quieter than the target.
+    CeilingHeld,
+    /// Silence, or too short to measure (under one 400 ms gating block): written at unity gain.
+    Unmeasured,
+}
+
+/// A finished bounce: the size of its file and its levels (`lufs` and `true_peak_db` as written).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounced {
     pub bytes: u64,
     pub peak_db: f32,
     pub lufs: f32,
     pub true_peak_db: f32,
+    /// The normalization gain applied (0 without normalization).
+    pub gain_db: f32,
+    /// Set when the bounce was normalized to a loudness.
+    pub loudness: Option<LoudnessOutcome>,
 }
 
 impl Bounce {
@@ -344,7 +372,10 @@ impl Bounce {
             bus,
             fold,
             normalize,
+            loudness: None,
             measuring: normalize,
+            gain_db: 0.0,
+            outcome: None,
             render,
             block: Vec::new(),
             done: 0,
@@ -353,6 +384,18 @@ impl Bounce {
             meter,
             enc: Some(enc),
         })
+    }
+
+    /// Normalizes to `target` instead of the peak: a first pass measures integrated loudness and
+    /// true peak, and the gain moves the loudness to the target, lowered if needed so the true peak
+    /// stays at or under the ceiling (no limiter: nothing but the level changes). Call before the
+    /// first step.
+    pub fn with_loudness(mut self, target: LoudnessTarget) -> Self {
+        if self.done == 0 && !self.normalize {
+            self.loudness = Some(target);
+            self.measuring = true;
+        }
+        self
     }
 
     pub fn path(&self) -> &Path {
@@ -366,7 +409,7 @@ impl Bounce {
     /// How far along the bounce is, from 0 to 1.
     pub fn progress(&self) -> f32 {
         let pass = (self.done as f64 / self.range.len().max(1) as f64).min(1.0) as f32;
-        match (self.normalize, self.measuring) {
+        match (self.normalize || self.loudness.is_some(), self.measuring) {
             (false, _) => pass,
             (true, true) => pass / 2.0,
             (true, false) => 0.5 + pass / 2.0,
@@ -382,15 +425,25 @@ impl Bounce {
                     fill(&mut self.block, chunk, n, self.fold, self.gain);
                     self.done += n;
                     self.peak = self.peak.max(soundcraft_dsp::offline::peak(&self.block));
-                    if !self.measuring {
+                    if !self.measuring || self.loudness.is_some() {
                         self.meter.process(&self.block, n);
-                        if let Some(enc) = &mut self.enc {
-                            enc.write(&self.block, n).map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?;
-                        }
+                    }
+                    if !self.measuring
+                        && let Some(enc) = &mut self.enc
+                    {
+                        enc.write(&self.block, n).map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?;
                     }
                 }
                 None if self.measuring => {
-                    self.gain = if self.peak > 0.0 { soundcraft_dsp::db_to_gain(-0.1) / self.peak } else { 1.0 };
+                    self.gain = match self.loudness {
+                        Some(t) => self.loudness_gain(t),
+                        None if self.peak > 0.0 => soundcraft_dsp::db_to_gain(-0.1) / self.peak,
+                        None => 1.0,
+                    };
+                    if self.normalize {
+                        self.gain_db = soundcraft_dsp::gain_to_db(self.gain);
+                    }
+                    self.meter.reset();
                     self.peak = 0.0;
                     self.done = 0;
                     self.measuring = false;
@@ -402,6 +455,23 @@ impl Bounce {
                 return Ok(None);
             }
         }
+    }
+
+    /// The gain that brings the measured loudness to `t`, held back by the true-peak ceiling.
+    fn loudness_gain(&mut self, t: LoudnessTarget) -> f32 {
+        let (lufs, true_peak) = (self.meter.integrated_lufs(), self.meter.true_peak_db());
+        if lufs <= soundcraft_dsp::MIN_DB {
+            self.outcome = Some(LoudnessOutcome::Unmeasured);
+            return 1.0;
+        }
+        let mut gain_db = t.lufs - lufs;
+        self.outcome = Some(LoudnessOutcome::Reached);
+        if true_peak + gain_db > t.true_peak_ceiling_db {
+            gain_db = t.true_peak_ceiling_db - true_peak;
+            self.outcome = Some(LoudnessOutcome::CeilingHeld);
+        }
+        self.gain_db = gain_db;
+        soundcraft_dsp::db_to_gain(gain_db)
     }
 
     /// Renders the whole bounce (see [`Bounce::step`]).
@@ -423,6 +493,8 @@ impl Bounce {
             peak_db: soundcraft_dsp::gain_to_db(self.peak),
             lufs: self.meter.integrated_lufs(),
             true_peak_db: self.meter.true_peak_db(),
+            gain_db: self.gain_db,
+            loudness: self.outcome,
         })
     }
 }
