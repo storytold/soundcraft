@@ -167,6 +167,12 @@ pub struct HelpState {
     /// egui can clear the focused widget before Help sees an Escape press.
     #[serde(skip)]
     keyboard_focus: bool,
+    /// The user last worked in Help (opened it, or pressed the pointer inside it) and has not since
+    /// pressed elsewhere or focused another widget. Clicking a list entry or Back gives no lasting
+    /// keyboard focus (Back can even disable itself), yet Alt+Left/Right and Escape must still work
+    /// once the pointer moves away.
+    #[serde(skip)]
+    active: bool,
 }
 
 impl HelpState {
@@ -510,6 +516,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         app.ui.help.was_open = false;
         app.ui.help.typing = false;
         app.ui.help.keyboard_focus = false;
+        app.ui.help.active = false;
         return;
     }
     if !std::mem::replace(&mut app.ui.help.was_open, true) {
@@ -553,11 +560,19 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         let has_focus = focused.as_ref().is_some_and(|r| r.layer_id == layer);
         let hovered = shown.response.contains_pointer();
         let had_focus = std::mem::replace(&mut app.ui.help.keyboard_focus, has_focus);
+        let pressed_at = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.interact_pos() } else { None });
+        let pressed_in = pressed_at.map(|pos| ctx.layer_id_at(pos) == Some(layer));
+        let focus_elsewhere = focused.is_some() && !has_focus;
+        let active = match pressed_in {
+            Some(inside) => inside,
+            None => (app.ui.help.active || raise || has_focus) && !focus_elsewhere,
+        };
+        app.ui.help.active = active;
         if app.dialogs.open.is_none() && !app.ui.show_preferences && !app.ui.help.typing && !ctx.text_edit_focused() {
-            if has_focus || hovered {
+            if has_focus || hovered || active {
                 handle_history_keys(&mut app.ui.help, ctx);
             }
-            if (has_focus || had_focus || hovered) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            if (has_focus || had_focus || hovered || active) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
                 open = false;
             }
         }

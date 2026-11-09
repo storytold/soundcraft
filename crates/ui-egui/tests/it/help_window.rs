@@ -444,3 +444,123 @@ fn stale_saved_help_pages_recover_to_welcome() {
         assert_eq!(app.ui.help.tab, Tab::Index);
     }
 }
+
+/// A Help kittest harness on a 1600×1000 screen with the real app frame.
+fn help_harness() -> egui_kittest::Harness<'static, SoundApp> {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("help.open", json!({})).unwrap();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        },
+        app,
+    );
+    h.ctx.set_os(OperatingSystem::Nix);
+    h.run_steps(4);
+    h
+}
+
+/// Clicking a page in any Help list with the pointer, then moving the pointer away, leaves Help's
+/// keyboard history and Escape working: the click must keep keyboard focus in Help.
+#[test]
+fn pointer_clicks_in_help_keep_its_keys_away_from_the_pointer() {
+    use egui_kittest::kittest::Queryable;
+    let away = egui::pos2(1590.0, 990.0);
+    let mut failures = Vec::new();
+    for route in ["search", "contents", "index", "back"] {
+        let mut h = help_harness();
+        match route {
+            "contents" => {
+                h.get_by_label("Welcome").click();
+                h.run_steps(2);
+                // Open a topic, then a page under it.
+                let topic = h.query_all_by_label("Transport & navigation").map(|n| n.rect()).find(|r| r.min.y > 60.0);
+                let topic = topic.expect("Transport topic");
+                h.hover_at(topic.center());
+                h.event(Event::PointerButton {
+                    pos: topic.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                });
+                h.event(Event::PointerButton {
+                    pos: topic.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Modifiers::NONE,
+                });
+                h.run_steps(2);
+                assert_eq!(h.state().ui.help.page, Page::Category("transport".into()), "{route}");
+            }
+            "search" => {
+                h.state_mut().ui.help.query = "solo".into();
+                h.state_mut().ui.help.tab = Tab::Search;
+                h.run_steps(2);
+                let area = h.ctx.memory(|m| m.area_rect(help::window_id("SoundCraft Help"))).unwrap();
+                let hit =
+                    h.query_all_by_label_contains("Solo\nPlays only").map(|n| n.rect()).find(|r| area.contains_rect(*r)).expect("the Solo result");
+                h.hover_at(hit.center());
+                h.event(Event::PointerButton { pos: hit.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+                h.event(Event::PointerButton { pos: hit.center(), button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+                h.run_steps(2);
+                assert_ne!(h.state().ui.help.page, Page::Welcome, "{route}");
+            }
+            "index" => {
+                h.get_by_label("Index").click();
+                h.state_mut().ui.help.index_filter = "solo".into();
+                h.run_steps(2);
+                let area = h.ctx.memory(|m| m.area_rect(help::window_id("SoundCraft Help"))).unwrap();
+                let solo = h.query_all_by_label("Solo").map(|n| n.rect()).find(|r| area.contains_rect(*r)).expect("Solo in the index");
+                h.hover_at(solo.center());
+                h.event(Event::PointerButton { pos: solo.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+                h.event(Event::PointerButton {
+                    pos: solo.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Modifiers::NONE,
+                });
+                h.run_steps(2);
+                assert!(matches!(h.state().ui.help.page, Page::Command(_)), "{route}");
+            }
+            _ => {
+                h.state_mut().ui.help.go(Page::Command("session.save".into()));
+                h.run_steps(2);
+                h.get_by_label("Back").click();
+                h.run_steps(2);
+                assert_eq!(h.state().ui.help.page, Page::Welcome, "{route}");
+            }
+        }
+        let before = h.state().ui.help.page.clone();
+        h.hover_at(away);
+        h.run_steps(2);
+        if route == "back" {
+            h.key_press_modifiers(Modifiers::ALT, Key::ArrowRight);
+            h.run_steps(2);
+            if h.state().ui.help.page == before {
+                failures.push(format!("{route}: Alt+Right did nothing"));
+            }
+        } else {
+            h.key_press_modifiers(Modifiers::ALT, Key::ArrowLeft);
+            h.run_steps(2);
+            if h.state().ui.help.page == before {
+                failures.push(format!("{route}: Alt+Left did nothing"));
+            }
+        }
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        if h.state().ui.show_help {
+            failures.push(format!("{route}: Escape did not close Help"));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+    // A click outside Help hands the keyboard back: Escape is no longer Help's.
+    let mut h = help_harness();
+    h.hover_at(away);
+    h.event(Event::PointerButton { pos: away, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.event(Event::PointerButton { pos: away, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().ui.show_help, "Escape after clicking outside Help closed it");
+}
