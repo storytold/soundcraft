@@ -63,7 +63,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | Interface scaling | 🟡 | Slider in PR #147 |
 | Meter types and ballistics (peak, RMS, VU, K-scales, gain reduction) | 🟡 | Peak/RMS; meter type choice and GR meters partial |
 | Clip indicators, track colours, waveform views (peak/power/rectified/outlines) | ✅ | |
-| Fader resolution, fine adjust, numeric entry | 🟡 | Ctrl/Cmd-drag moves the faders, the Strip Silence sliders and plugin parameter sliders a tenth as far |
+| Fader resolution, fine adjust, numeric entry | 🟡 | Ctrl/Cmd-drag moves the faders, the Strip Silence sliders, plugin parameter sliders, the Clip Effects sliders and the AudioSuite sliders a tenth as far |
 | macOS system menu bar | ✅ | #10 |
 
 ## Revision history

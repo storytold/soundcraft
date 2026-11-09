@@ -67,6 +67,11 @@ fn assert_tenth(what: &str, (plain, fine): (f64, f64), within: std::ops::RangeIn
     assert!(within.contains(&(fine / plain)), "{what}: Ctrl-drag moved {fine}, a plain drag {plain}");
 }
 
+/// The value box on the same row as `rail`, to the rail's right.
+fn value_box(h: &Harness<'_, SoundApp>, rail: Rect) -> Rect {
+    h.query_all_by_role(Role::SpinButton).map(|n| n.rect()).find(|r| r.left() > rail.right() && (r.center().y - rail.center().y).abs() < 4.0).unwrap()
+}
+
 /// The rails of the unlabeled sliders inside the window with id `window`, top to bottom.
 fn window_sliders(h: &Harness<'_, SoundApp>, window: Id) -> Vec<Rect> {
     let area = h.ctx.memory(|m| m.area_rect(window)).unwrap();
@@ -171,6 +176,23 @@ fn clip_effects_sliders_move_a_tenth_as_far_with_ctrl_held() {
 }
 
 #[test]
+fn clip_effects_value_boxes_move_a_tenth_as_far_with_ctrl_held() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let s = app.engine.session();
+    let clip = s.track_by_name("Kick").unwrap().clips().iter().find(|c| c.is_audio()).unwrap().id;
+    app.run("edit.select", json!({"clips": [clip.0]})).unwrap();
+    app.ui.show_clip_effects = true;
+    let mut h = harness(app);
+    for (label, key, default) in [("Input", "eq.input_gain", 0.0), ("Threshold", "comp.threshold", -20.0)] {
+        let key = format!("clip_fx.{}.{key}", clip.0);
+        let read = move |h: &Harness<'_, SoundApp>| h.state().engine.session().edit.values.get(&key).copied().unwrap_or(default);
+        let rail = h.get_by_role_and_label(Role::Slider, label).rect();
+        let boxed = value_box(&h, rail);
+        assert_tenth(label, plain_and_fine(&mut h, boxed, &read), 0.07..=0.13);
+    }
+}
+
+#[test]
 fn clip_effects_log_taper_sliders_use_a_logarithmic_rail() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let s = app.engine.session();
@@ -219,5 +241,21 @@ fn audiosuite_parameter_sliders_move_a_tenth_as_far_with_ctrl_held() {
         };
         let rail = h.get_by_role_and_label(Role::Slider, label).rect();
         assert_tenth(label, plain_and_fine(&mut h, rail, &read), 0.08..=0.12);
+    }
+}
+
+#[test]
+fn audiosuite_value_boxes_move_a_tenth_as_far_with_ctrl_held() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.ui.audiosuite = Some("compressor".into());
+    let mut h = harness(app);
+    for (label, id) in [("Threshold", "threshold"), ("Knee", "knee")] {
+        let read = move |h: &Harness<'_, SoundApp>| {
+            let params: BTreeMap<String, f32> = h.ctx.data(|d| d.get_temp(Id::unique(("as_params", "compressor".to_string())))).unwrap_or_default();
+            f64::from(params[id])
+        };
+        let rail = h.get_by_role_and_label(Role::Slider, label).rect();
+        let boxed = value_box(&h, rail);
+        assert_tenth(label, plain_and_fine(&mut h, boxed, &read), 0.07..=0.13);
     }
 }

@@ -96,6 +96,43 @@ fn ctrl_dragging_the_value_box_moves_a_tenth_as_far_too() {
 }
 
 #[test]
+fn ctrl_without_command_moves_a_tenth_as_far() {
+    let mut h = strip_silence_dialog();
+    for (role, dx, within) in [(Role::Slider, 30.0, 0.08..=0.12), (Role::SpinButton, 20.0, 0.07..=0.13)] {
+        let label = "Threshold dB";
+        let plain = drag_on(&mut h, role, label, dx, Modifiers::NONE);
+        let fine = drag_on(&mut h, role, label, dx, Modifiers::CTRL);
+        assert!(plain > 0.0, "{role:?}: a plain drag did not move the value");
+        assert!(within.contains(&(fine / plain)), "{role:?}: Ctrl-drag moved {fine}, a plain drag {plain}");
+    }
+}
+
+#[test]
+fn alt_click_and_alt_drag_do_what_a_plain_click_and_drag_do() {
+    let mut h = strip_silence_dialog();
+    let label = "Threshold dB";
+    let rail = h.get_by_role_and_label(Role::Slider, label).rect();
+    let near = rail.left_center() + vec2(3.0, 0.0);
+    let click = |h: &mut Harness<'static, SoundApp>, at: Pos2, modifiers: Modifiers| {
+        hold(h, modifiers);
+        move_to(h, at);
+        press(h, at, true, modifiers);
+        press(h, at, false, modifiers);
+        hold(h, Modifiers::NONE);
+    };
+    click(&mut h, near, Modifiers::NONE);
+    let clicked = value(&h, label);
+    click(&mut h, rail.center(), Modifiers::NONE);
+    assert_ne!(value(&h, label), clicked, "a click in the middle of the rail did not move the value");
+    click(&mut h, near, Modifiers::ALT);
+    assert_eq!(value(&h, label), clicked, "an Alt-click did not do what a plain click does");
+    let plain = drag(&mut h, label, 30.0, Modifiers::NONE);
+    let alt = drag(&mut h, label, 30.0, Modifiers::ALT);
+    assert!(plain > 0.0, "a plain drag did not move the value");
+    assert_eq!(alt, plain, "an Alt-drag did not do what a plain drag does");
+}
+
+#[test]
 fn the_value_box_shows_the_tenths_a_ctrl_drag_reaches() {
     let mut h = strip_silence_dialog();
     drag(&mut h, "Threshold dB", 7.0, Modifiers::COMMAND);
