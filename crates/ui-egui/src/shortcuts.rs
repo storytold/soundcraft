@@ -65,10 +65,15 @@ fn help_chord(key: Key, m: Modifiers, mac: bool) -> bool {
     m.command && !m.alt && !(mac && m.ctrl) && (key == Key::Questionmark || m.shift)
 }
 
+/// Modal windows and focused widgets own input in either viewport.
+fn shortcuts_blocked(app: &SoundApp, ctx: &egui::Context) -> bool {
+    ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() || app.ui.show_preferences
+}
+
 /// Handle Help in the native Mix viewport, whose key events never reach the main-window handler.
 /// Keep text entry and dialogs in control of their keys, and ignore native key repeats.
 pub(crate) fn handle_mix_help(app: &mut SoundApp, ctx: &egui::Context) {
-    if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() || app.ui.show_preferences {
+    if shortcuts_blocked(app, ctx) {
         return;
     }
     let mac = ctx.os().is_mac();
@@ -94,7 +99,7 @@ pub(crate) fn handle_mix_help(app: &mut SoundApp, ctx: &egui::Context) {
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
-    if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() || app.ui.show_preferences {
+    if shortcuts_blocked(app, ctx) {
         return;
     }
     // A scripted press is identified by its exact position in this pass's events, not by matching
@@ -556,26 +561,34 @@ mod tests {
         parse(s).map(|(m, _)| m).unwrap()
     }
 
-    /// Help from either viewport must not bypass the new modal Preferences window.
+    /// Help from either viewport leaves Preferences, dialogs and focused text edits in control.
     #[test]
     fn help_shortcuts_respect_modal_preferences() {
-        for native_mix in [false, true] {
-            let ctx = egui::Context::default();
-            ctx.set_os(egui::os::OperatingSystem::Nix);
-            let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
-            app.ui.show_preferences = true;
-            let modifiers = PC_CTRL | Modifiers::SHIFT;
-            let events = vec![egui::Event::Key { key: Key::Slash, physical_key: None, pressed: true, repeat: false, modifiers }];
-            ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
-                if native_mix {
-                    super::handle_mix_help(&mut app, ui.ctx());
-                } else {
-                    super::handle(&mut app, ui.ctx());
+        for dispatch in [super::handle, super::handle_mix_help] {
+            for owner in ["preferences", "dialog", "text"] {
+                let ctx = egui::Context::default();
+                ctx.set_os(egui::os::OperatingSystem::Nix);
+                let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+                match owner {
+                    "preferences" => app.ui.show_preferences = true,
+                    "dialog" => {
+                        crate::menus::invoke_menu(&mut app, "session.new", "File > New Session...");
+                        assert_eq!(app.dialogs.open_name(), Some("new_session"));
+                    }
+                    _ => {
+                        ctx.run_ui(egui::RawInput::default(), |ui| {
+                            ui.text_edit_singleline(&mut String::new()).request_focus();
+                        })
+                        .textures_delta
+                        .clear();
+                        assert!(ctx.text_edit_focused());
+                    }
                 }
-            })
-            .textures_delta
-            .clear();
-            assert!(!app.ui.show_help, "native_mix={native_mix}: Help bypassed modal Preferences");
+                let modifiers = PC_CTRL | Modifiers::SHIFT;
+                let events = vec![egui::Event::Key { key: Key::Slash, physical_key: None, pressed: true, repeat: false, modifiers }];
+                ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| dispatch(&mut app, ui.ctx())).textures_delta.clear();
+                assert!(!app.ui.show_help, "Help bypassed {owner}");
+            }
         }
     }
 

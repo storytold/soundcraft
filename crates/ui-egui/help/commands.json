@@ -48,7 +48,7 @@
   {
    "id": "tempo",
    "title": "Tempo, meter & time operations",
-   "summary": "Event menu: tempo, meter, time/tempo operations, Beat Detective"
+   "summary": "Event menu: tempo, meter, time/tempo operations, Beat Analysis"
   },
   {
    "id": "mixing",
@@ -660,7 +660,7 @@
   },
   "engine.commands": {
    "category": "scripting",
-   "text": "Lists every command."
+   "text": "Lists engine commands with their IDs, parameter descriptions and availability. In an engine.execute request, use command \"engine.commands\" with params {\"filter\": \"track\"} to list matches by name or ID."
   },
   "engine.history": {
    "category": "scripting",
@@ -1243,7 +1243,7 @@
   },
   "session.inspect": {
    "category": "scripting",
-   "text": "Reports the whole session (tracks, busses, tempo and settings)."
+   "text": "Returns session information including tracks, buses, tempo and settings. In an engine.execute request, use command \"session.inspect\" with params {\"detail\": \"full\"} to include detailed track data."
   },
   "session.new": {
    "category": "sessions",
@@ -1503,7 +1503,7 @@
   },
   "track.inspect": {
    "category": "scripting",
-   "text": "Reports everything about one track."
+   "text": "Returns a track's mixer settings, routing, clips and automation. In an engine.execute request, use command \"track.inspect\" with params {\"track\": \"Vocals\"}, replacing Vocals with an existing track name."
   },
   "track.load_preset": {
    "category": "tracks",
@@ -2081,7 +2081,7 @@
   },
   "view.transport_ableton_link": {
    "category": "viewing",
-   "text": "Shows the Ableton Link controls in the Transport window.",
+   "text": "Shows the Tempo Sync controls in the Transport window.",
    "limits": "Not used yet: turning it on has no visible effect."
   },
   "view.transport_counters": {
@@ -2198,7 +2198,7 @@
   },
   "window.beat_detective": {
    "category": "tempo",
-   "text": "Opens Beat Detective."
+   "text": "Opens Beat Analysis."
   },
   "window.big_counter": {
    "category": "transport",

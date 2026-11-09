@@ -94,16 +94,24 @@ fn parse() -> Result<Data, serde_json::Error> {
 /// Help never takes the app down: unreadable data (a test catches that) leaves help empty.
 fn data() -> &'static Data {
     static DATA_CELL: OnceLock<Data> = OnceLock::new();
-    DATA_CELL.get_or_init(|| parse().unwrap_or_default())
+    DATA_CELL.get_or_init(|| {
+        parse().unwrap_or_else(|error| {
+            log::error!("Could not load the bundled SoundCraft Help catalog: {error}");
+            Data::default()
+        })
+    })
 }
 
 /// A help page.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "lowercase")]
 pub enum Page {
+    /// The landing page with introductory guides and topics.
     #[default]
     Welcome,
+    /// A topic page identified by its catalog category.
     Category(String),
+    /// An engine or UI command identified by its command ID.
     Command(String),
     /// An AudioSuite process, by its SoundCraft process id.
     Process(String),
@@ -114,9 +122,12 @@ pub enum Page {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Tab {
+    /// Topics with their guides and commands.
     #[default]
     Contents,
+    /// An alphabetical list of pages.
     Index,
+    /// Ranked matches for the search query.
     Search,
 }
 
@@ -137,6 +148,9 @@ pub struct HelpState {
     /// Put the cursor in the search box on the next frame (Help › Search Help…).
     #[serde(skip)]
     pub focus_search: bool,
+    /// Give keyboard focus to Help's selected tab on an explicit open.
+    #[serde(skip)]
+    pub(crate) focus_help: bool,
     /// Open the selected page's category in Contents and scroll to it on the next frame.
     #[serde(skip)]
     reveal: bool,
@@ -150,6 +164,9 @@ pub struct HelpState {
     /// pressed, so this is how Escape that leaves a box is told from Escape that closes help.
     #[serde(skip)]
     typing: bool,
+    /// egui can clear the focused widget before Help sees an Escape press.
+    #[serde(skip)]
+    keyboard_focus: bool,
 }
 
 impl HelpState {
@@ -263,6 +280,7 @@ fn process_paths(process: &str) -> Vec<String> {
 }
 
 /// Build and cache the searchable catalog, disambiguating duplicate titles by menu location.
+/// The command registry, menu tree and bundled Help files are fixed for this build.
 fn entries() -> &'static [Entry] {
     static ENTRIES: OnceLock<Vec<Entry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
@@ -491,11 +509,25 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     if !app.ui.show_help {
         app.ui.help.was_open = false;
         app.ui.help.typing = false;
+        app.ui.help.keyboard_focus = false;
         return;
     }
     if !std::mem::replace(&mut app.ui.help.was_open, true) {
         app.ui.help.reveal = true;
     }
+    if data().categories.is_empty() {
+        app.ui.help.page = Page::Welcome;
+    } else if !page_exists(&app.ui.help.page) {
+        app.ui.help = HelpState {
+            tab: app.ui.help.tab,
+            focus_help: app.ui.help.focus_help,
+            focus_search: app.ui.help.focus_search,
+            reveal: true,
+            was_open: true,
+            ..Default::default()
+        };
+    }
+    let raise = app.ui.help.focus_help || app.ui.help.focus_search;
     let mut open = true;
     // Never wider or taller than the app's window, so nothing on a page is cut off at its edge.
     // Below the 24-point menu bar, so the title bar never covers it.
@@ -512,26 +544,62 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         .default_pos(free.min + vec2(16.0, 8.0))
         .constrain_to(free)
         .show(ctx, |ui| window_body(app, ui));
-    // Alt+Left / Alt+Right are Back and Forward while the pointer is over help.
-    if shown.is_some_and(|r| r.response.contains_pointer()) {
-        let (back, forward) = ctx.input_mut(|i| (i.consume_key(Modifiers::ALT, Key::ArrowLeft), i.consume_key(Modifiers::ALT, Key::ArrowRight)));
-        if back {
-            app.ui.help.go_back();
+    if let Some(shown) = shown {
+        let layer = shown.response.layer_id;
+        if raise {
+            ctx.move_to_top(layer);
         }
-        if forward {
-            app.ui.help.go_forward();
+        let focused = ctx.memory(|m| m.focused()).and_then(|id| ctx.read_response(id));
+        let has_focus = focused.as_ref().is_some_and(|r| r.layer_id == layer);
+        let hovered = shown.response.contains_pointer();
+        let had_focus = std::mem::replace(&mut app.ui.help.keyboard_focus, has_focus);
+        if app.dialogs.open.is_none() && !app.ui.show_preferences && !app.ui.help.typing && !ctx.text_edit_focused() {
+            if has_focus || hovered {
+                handle_history_keys(&mut app.ui.help, ctx);
+            }
+            if (has_focus || had_focus || hovered) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                open = false;
+            }
         }
-        // Dialogs run after Help and need Escape to cancel; typing in Help also keeps it open.
-        if app.dialogs.open.is_none() && !app.ui.help.typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            open = false;
+        if !open
+            && has_focus
+            && let Some(response) = focused
+        {
+            response.surrender_focus();
         }
     }
     app.ui.show_help = open;
-    app.ui.help.typing = ctx.egui_wants_keyboard_input();
+    app.ui.help.typing = ctx.text_edit_focused();
+}
+
+/// Move through Help history without handing the key presses to the editor.
+fn handle_history_keys(help: &mut HelpState, ctx: &egui::Context) {
+    let (back, forward) = ctx.input_mut(|i| (i.consume_key(Modifiers::ALT, Key::ArrowLeft), i.consume_key(Modifiers::ALT, Key::ArrowRight)));
+    if back {
+        help.go_back();
+    }
+    if forward {
+        help.go_forward();
+    }
+}
+
+/// Older preferences can point at a page that the current catalog no longer contains.
+fn page_exists(page: &Page) -> bool {
+    match page {
+        Page::Welcome => true,
+        Page::Category(id) => category(id).is_some(),
+        _ => entry_for(page).is_some(),
+    }
 }
 
 /// Lay out the toolbar, fixed-width navigation and scrolling page, then consume the reveal request.
 fn window_body(app: &mut SoundApp, ui: &mut Ui) {
+    if data().categories.is_empty() {
+        app.ui.help.focus_help = false;
+        app.ui.help.focus_search = false;
+        ui.label("SoundCraft Help could not load its bundled catalog.");
+        return;
+    }
     // The highlight is the accent blue in both themes: white text on it reads in light mode too.
     ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
     toolbar(app, ui);
@@ -562,16 +630,25 @@ fn toolbar(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     ui.horizontal(|ui| {
         let h = &mut app.ui.help;
-        if ui.add_enabled(h.can_go_back(), egui::Button::new(RichText::new("‹").font(bold(16.0)))).on_hover_text("Back (Alt+Left)").clicked() {
+        if ui
+            .add_enabled(h.can_go_back(), egui::Button::new(RichText::new("Back").font(bold(13.0))).min_size(vec2(44.0, 28.0)))
+            .on_hover_text("Back (Alt+Left)")
+            .clicked()
+        {
             h.go_back();
         }
-        if ui.add_enabled(h.can_go_forward(), egui::Button::new(RichText::new("›").font(bold(16.0)))).on_hover_text("Forward (Alt+Right)").clicked()
+        if ui
+            .add_enabled(h.can_go_forward(), egui::Button::new(RichText::new("Forward").font(bold(13.0))).min_size(vec2(64.0, 28.0)))
+            .on_hover_text("Forward (Alt+Right)")
+            .clicked()
         {
             h.go_forward();
         }
         ui.add_space(8.0);
-        let edit = egui::TextEdit::singleline(&mut h.query).hint_text("Search help").desired_width(320.0).font(regular(13.0));
-        let r = ui.add(edit);
+        let label = ui.label("Search");
+        let width = (ui.available_width() - 96.0).clamp(60.0, 320.0);
+        let edit = egui::TextEdit::singleline(&mut h.query).hint_text("Search help").desired_width(width).font(regular(13.0));
+        let r = ui.add(edit).labelled_by(label.id);
         if std::mem::take(&mut h.focus_search) {
             r.request_focus();
         }
@@ -591,7 +668,11 @@ fn toolbar(app: &mut SoundApp, ui: &mut Ui) {
 fn navigation(app: &mut SoundApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         for (tab, name) in [(Tab::Contents, "Contents"), (Tab::Index, "Index"), (Tab::Search, "Search")] {
-            if ui.selectable_label(app.ui.help.tab == tab, name).clicked() {
+            let response = ui.selectable_label(app.ui.help.tab == tab, name);
+            if app.ui.help.tab == tab && std::mem::take(&mut app.ui.help.focus_help) {
+                response.request_focus();
+            }
+            if response.clicked() {
                 app.ui.help.tab = tab;
                 if tab == Tab::Search {
                     app.ui.help.focus_search = true;
@@ -656,7 +737,8 @@ fn contents(app: &mut SoundApp, ui: &mut Ui) {
 fn index(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let h = &mut app.ui.help;
-    ui.add(egui::TextEdit::singleline(&mut h.index_filter).hint_text("Type a word to jump to it").desired_width(f32::INFINITY));
+    let label = ui.label("Filter index");
+    ui.add(egui::TextEdit::singleline(&mut h.index_filter).hint_text("Type a word to jump to it").desired_width(f32::INFINITY)).labelled_by(label.id);
     let filter = h.index_filter.trim().to_lowercase();
     let mut go = None;
     egui::ScrollArea::vertical().id_salt("help_index").auto_shrink([false, false]).show(ui, |ui| {
@@ -700,10 +782,7 @@ fn search_results(app: &mut SoundApp, ui: &mut Ui) {
             ui.label(RichText::new("No pages match. Try fewer or different words.").color(t.text_dim));
         }
         for e in hits {
-            let r = ui.selectable_label(h.page == e.page, list_title(e, h.page == e.page).font(bold(12.5)));
-            ui.label(RichText::new(first_sentence(&e.text)).small().color(t.text_dim));
-            ui.add_space(4.0);
-            if r.clicked() {
+            if result_row(ui, e, h.page == e.page) {
                 go = Some(e.page.clone());
             }
         }
@@ -730,7 +809,7 @@ fn chip(ui: &mut Ui, text: RichText) {
     let room = (ui.max_rect().max.x - ui.cursor().min.x - extra).max(40.0);
     egui::Frame::new().stroke(Stroke::new(1.0, t.border_light)).corner_radius(10).inner_margin(PAD).show(ui, |ui| {
         ui.set_max_width(room);
-        ui.add(egui::Label::new(text).truncate());
+        ui.add(egui::Label::new(text).truncate()).on_hover_text(galley.text());
     });
 }
 
@@ -822,15 +901,28 @@ fn category_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     ui.add_space(10.0);
     let mut go = None;
     for e in pages_in(id) {
-        if ui.link(list_title(e, false).font(bold(12.5))).clicked() {
+        if result_row(ui, e, app.ui.help.page == e.page) {
             go = Some(e.page.clone());
         }
-        ui.label(first_sentence(&e.text));
-        ui.add_space(6.0);
     }
     if let Some(p) = go {
         app.ui.help.go(p);
     }
+}
+
+/// The title and preview share a clickable and keyboard-focusable result row.
+fn result_row(ui: &mut Ui, entry: &Entry, selected: bool) -> bool {
+    let theme = Tokens::current();
+    let title = if is_guide(entry) { format!("Guide: {}", entry.name) } else { entry.name.clone() };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&title, 0.0, egui::TextFormat { font_id: bold(12.5), color: theme.text, ..Default::default() });
+    job.append("\n", 0.0, egui::TextFormat::default());
+    job.append(first_sentence(&entry.text), 0.0, egui::TextFormat { font_id: regular(11.5), color: theme.text, ..Default::default() });
+    let response = ui.add(egui::Button::selectable(selected, job).wrap());
+    if response.clicked() {
+        response.request_focus();
+    }
+    response.clicked()
 }
 
 /// Open the parent topic when its breadcrumb link is selected.
@@ -853,7 +945,7 @@ fn limits_note(ui: &mut Ui, limits: &str) {
     let t = Tokens::current();
     ui.add_space(8.0);
     egui::Frame::new().stroke(Stroke::new(1.0, t.meter_yellow)).corner_radius(8).inner_margin(Margin::same(10)).show(ui, |ui| {
-        ui.label(RichText::new("Current limits").font(bold(12.0)).color(t.meter_yellow));
+        ui.label(RichText::new("Current limits").font(bold(12.0)).color(t.text));
         ui.label(limits);
     });
 }
@@ -891,29 +983,24 @@ fn command_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     }
     ui.add_space(12.0);
     match e.paths.first().map(|p| p.replace(" › ", " > ")) {
+        _ if id == "app.quit" => {}
         Some(path) => {
-            let (enabled, _) = crate::menus::item_state(app, &path, Some(id));
-            let r = ui.add_enabled(enabled, egui::Button::new(RichText::new("Do it now").font(bold(13.0))).min_size(vec2(110.0, 28.0)));
-            let r = r.on_hover_text(format!("Same as choosing {} from the menu", pretty_path(&path)));
-            if let Some(why) = why_disabled(app, id).filter(|_| !enabled) {
-                ui.label(RichText::new(format!("Not available right now: {why}")).small().color(t.text_dim));
-            }
-            if r.clicked() {
+            if help_action(app, ui, id, &path, "Do it now") {
                 crate::menus::invoke_menu(app, id, &path);
             }
         }
-        // The application menu's items, except Quit: help never quits the app.
-        None if app_menu.is_some() && id != "app.quit" => {
-            let r = ui.add(egui::Button::new(RichText::new("Do it now").font(bold(13.0))).min_size(vec2(110.0, 28.0)));
-            if r.clicked() {
+        None => {
+            if let Some(path) = &app_menu
+                && help_action(app, ui, id, path, "Do it now")
+            {
                 let value = if id.starts_with("window.") { serde_json::json!({"value": true}) } else { serde_json::json!({}) };
-                let _ = app.run(id, value);
+                if let Err(error) = app.run(id, value) {
+                    app.ui.status = error;
+                }
+            } else if shortcut.is_empty() && app_menu.is_none() {
+                ui.label(RichText::new("Not in the menus. Scripts and agents can run it by its command id.").small().color(t.text_dim));
             }
         }
-        None if shortcut.is_empty() && app_menu.is_none() => {
-            ui.label(RichText::new("Not in the menus. Scripts and agents can run it by its command id.").small().color(t.text_dim));
-        }
-        None => {}
     }
     ui.add_space(16.0);
     ui.label(RichText::new(format!("Command id: {id}")).font(mono(10.5)).color(t.text_dim));
@@ -922,7 +1009,7 @@ fn command_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
 /// A page's name in lists. Guides are in the accent colour so they stand out among the commands,
 /// except when selected, where the selection is already drawn in the accent colour.
 fn list_title(e: &Entry, selected: bool) -> RichText {
-    let text = RichText::new(&e.name);
+    let text = if is_guide(e) { RichText::new(format!("Guide: {}", e.name)) } else { RichText::new(&e.name) };
     if is_guide(e) && !selected { text.color(Tokens::current().accent) } else { text }
 }
 
@@ -1042,11 +1129,11 @@ fn guide_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
 
 /// Floating windows and the help page each opens on, for Cmd+? over the window. The titles are the
 /// ones the windows are created with (egui gives a window its id from its title).
-pub const WINDOW_PAGES: [(&str, &str); 31] = [
+pub const WINDOW_PAGES: [(&str, &str); 29] = [
     ("About SoundCraft", "window.about"),
     ("Appearance", "window.ui_customization"),
     ("Automation", "window.automation"),
-    ("Beat Detective", "window.beat_detective"),
+    (crate::dialogs::ops_windows::BEAT_ANALYSIS_TITLE, "window.beat_detective"),
     ("Big Counter", "window.big_counter"),
     ("Clip Effects", "window.clip_effects"),
     ("Color Palette", "window.color_palette"),
@@ -1061,7 +1148,6 @@ pub const WINDOW_PAGES: [(&str, &str); 31] = [
     ("Playback Engine", "window.playback_engine"),
     ("Renderer", "window.renderer"),
     ("Score Editor", "window.score"),
-    ("Search", "window.search"),
     ("Session Audio Health", "window.audio_health"),
     ("Session Info", "window.session_info"),
     ("System Usage", "window.system_usage"),
@@ -1073,7 +1159,6 @@ pub const WINDOW_PAGES: [(&str, &str); 31] = [
     ("Video Universe", "window.video_universe"),
     ("Window Configurations", "window.configurations"),
     ("Workspace", "window.workspace"),
-    ("Check for Updates", "app.checkForUpdates"),
 ];
 
 /// The id egui gives a window titled `title`: `Window::new` names its area after the title's text,
@@ -1089,7 +1174,7 @@ fn page_under_pointer(app: &SoundApp, ctx: &egui::Context) -> Option<Page> {
     let pos = ctx.input(|i| i.pointer.latest_pos())?;
     let layer = ctx.layer_id_at(pos)?;
     // Backends without native child windows embed Mix using the viewport id as its window id.
-    if app.ui.mix_separate && layer.id == egui::Id::unique(egui::ViewportId::from_hash_of("soundcraft.mix")) {
+    if app.ui.mix_separate && layer.id == egui::Id::unique(crate::mix_window::viewport_id()) {
         return Some(Page::Command("window.mix".into()));
     }
     if let Some((_, id)) = WINDOW_PAGES.iter().find(|(title, _)| layer.id == window_id(title)) {
@@ -1119,8 +1204,32 @@ pub fn open_here(app: &mut SoundApp, ctx: &egui::Context) {
     }
 }
 
+/// Render a menu action with its availability and a visible explanation.
+fn help_action(app: &SoundApp, ui: &mut Ui, id: &str, path: &str, label: &str) -> bool {
+    let enabled = !app.ui.show_preferences && app.dialogs.open.is_none() && crate::menus::item_state(app, path, Some(id)).0;
+    let button = egui::Button::new(RichText::new(label).font(bold(13.0))).min_size(vec2(110.0, 28.0));
+    let clicked = ui.add_enabled(enabled, button).clicked();
+    let explanation = if enabled {
+        format!("Same as choosing {} from the menu.", pretty_path(path))
+    } else {
+        let reason = why_disabled(app, id).unwrap_or_else(|| "this action is unavailable.".into());
+        format!("Not available right now: {reason}")
+    };
+    ui.label(RichText::new(explanation).small().color(Tokens::current().text_dim));
+    clicked
+}
+
 /// Why an engine command can't run now, as the command itself explains it.
 fn why_disabled(app: &SoundApp, id: &str) -> Option<String> {
+    if app.ui.show_preferences {
+        return Some("close Preferences first.".into());
+    }
+    if app.dialogs.open.is_some() {
+        return Some("close the active dialog first.".into());
+    }
+    if id == "setup.preferences" && (app.is_playing() || app.engine.transport.recording) {
+        return Some("stop the transport first.".into());
+    }
     let c = soundcraft_engine::find_command(id)?;
     if app.engine.blocked_while_recording(id) {
         return Some("stop recording first.".into());
@@ -1150,7 +1259,7 @@ fn process_page(app: &mut SoundApp, ui: &mut Ui, process: &str) {
     ui.label(RichText::new("AudioSuite processes the selected clips offline and writes the result as new audio files.").color(t.text_dim));
     ui.add_space(12.0);
     if let Some(path) = paths.first()
-        && ui.add(egui::Button::new(RichText::new("Open it").font(bold(13.0))).min_size(vec2(110.0, 28.0))).clicked()
+        && help_action(app, ui, "audiosuite.process", path, "Open it")
     {
         crate::menus::invoke_menu(app, "audiosuite.process", path);
     }
@@ -1160,6 +1269,72 @@ fn process_page(app: &mut SoundApp, ui: &mut Ui, process: &str) {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    /// Every action route keeps an active modal in control and explains why the button is disabled.
+    #[test]
+    fn help_action_buttons_follow_modal_availability() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.ui.show_preferences = true;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(vec2(760.0, 700.0))
+            .with_context_setup(|ctx| crate::fonts::install(ctx, false))
+            .build_ui_state(|ui, app| page(app, ui), app);
+        for (page, button) in [
+            (Page::Command("session.new".into()), "Do it now"),
+            (Page::Command("window.about".into()), "Do it now"),
+            (Page::Process("gain".into()), "Open it"),
+        ] {
+            harness.state_mut().ui.help.page = page;
+            harness.run_steps(2);
+            harness.get_by_label("Not available right now: close Preferences first.");
+            harness.get_by_label(button).click();
+            harness.run_steps(2);
+            let app = harness.state();
+            assert!(app.dialogs.open.is_none());
+            assert!(!app.ui.show_about);
+            assert!(app.ui.audiosuite.is_none());
+        }
+        harness.state_mut().ui.show_preferences = false;
+        harness.run_steps(2);
+        harness.get_by_label("Open it").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().ui.audiosuite.as_deref(), Some("gain"));
+        harness.state_mut().ui.help.page = Page::Command("window.about".into());
+        harness.run_steps(2);
+        harness.get_by_label("Do it now").click();
+        harness.run_steps(2);
+        assert!(harness.state().ui.show_about);
+
+        for command in ["app.quit", "session.inspect"] {
+            harness.state_mut().ui.help.page = Page::Command(command.into());
+            harness.run_steps(2);
+            assert!(harness.query_by_label("Do it now").is_none(), "{command}");
+        }
+    }
+
+    /// A page must draw the expected heading rather than an empty or unrelated body.
+    #[test]
+    fn every_catalog_page_draws_its_title() {
+        use egui_kittest::kittest::Queryable;
+
+        let app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(vec2(760.0, 700.0))
+            .with_context_setup(|ctx| crate::fonts::install(ctx, false))
+            .build_ui_state(|ui, app| page(app, ui), app);
+        for page in pages() {
+            let expected = match &page {
+                Page::Welcome => "SoundCraft Help",
+                Page::Category(id) => &category(id).unwrap().title,
+                _ => &entry_for(&page).unwrap().title,
+            };
+            harness.state_mut().ui.help.page = page.clone();
+            harness.step();
+            assert!(harness.query_all_by_label(expected).next().is_some(), "{page:?} did not draw {expected}");
+        }
+    }
 
     /// Validate nonempty help text and unique categories before accepting the bundled catalog.
     #[test]
@@ -1286,15 +1461,13 @@ mod tests {
     /// a box on a system without extra fonts.
     #[test]
     fn bundled_fonts_draw_every_character_in_help() {
-        let mut defs = egui::FontDefinitions::default();
-        let proportional = defs.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
-        defs.families.insert(egui::FontFamily::Name("bold".into()), proportional);
         let ctx = egui::Context::default();
-        ctx.set_fonts(defs);
+        ctx.set_fonts(crate::fonts::definitions(false));
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
-        let mut text: String = DATA.chars().chain(include_str!("help.rs").chars()).collect();
+        let mut text: String = DATA.chars().chain(GUIDES.chars()).chain(include_str!("help.rs").chars()).collect();
         for e in entries() {
             text.push_str(&e.title);
+            text.push_str(&e.text);
             text.extend(e.paths.iter().map(String::as_str));
         }
         let mut chars: Vec<char> = text.chars().filter(|c| !c.is_ascii()).collect();

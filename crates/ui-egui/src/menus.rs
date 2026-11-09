@@ -406,6 +406,7 @@ pub fn item_state(app: &SoundApp, path: &str, id: Option<&str>) -> (bool, bool) 
     } else {
         match id {
             Some("setup.preferences") => preferences_menu_enabled(app),
+            Some("app.checkForUpdates") => true,
             Some(i)
                 if i.starts_with("window.")
                     || i.starts_with("help.")
@@ -653,6 +654,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         // Help opens (never closes) from the menu and Cmd+?; `{"value": false}` closes it.
         "help.open" | "help.search" | "help.index" => {
             app.ui.show_help = p.get("value").and_then(Value::as_bool).unwrap_or(true);
+            app.ui.help.focus_help = app.ui.show_help && id != "help.search";
             if id == "help.search" {
                 app.ui.help.tab = crate::help::Tab::Search;
                 app.ui.help.focus_search = true;

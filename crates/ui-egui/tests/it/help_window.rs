@@ -48,9 +48,13 @@ fn neighbouring_slash_keys_keep_their_own_commands() {
         // Shift+/ is Link Timeline and Edit Selection, Cmd+/ and Cmd+Alt+/ write automation.
         press(&ctx, &mut app, Key::Slash, Modifiers::SHIFT);
         assert_ne!(app.engine.session().edit.link_timeline_edit, linked, "{os:?}");
+        app.run("edit.select", json!({"tracks": ["Kick"], "start": 0, "end": 1000})).unwrap();
         press(&ctx, &mut app, Key::Slash, cmd);
+        assert_eq!(app.engine.undo_label(), Some("Write to Current"));
         press(&ctx, &mut app, Key::Slash, cmd | Modifiers::ALT);
+        assert_eq!(app.engine.undo_label(), Some("Write to All Enabled"));
         press(&ctx, &mut app, Key::Slash, cmd | Modifiers::ALT | Modifiers::SHIFT);
+        assert_eq!(app.engine.undo_label(), Some("Write to All Enabled"));
         assert!(!app.ui.show_help, "{os:?}");
     }
 }
@@ -139,10 +143,6 @@ fn cmd_question_mark_opens_the_page_of_the_window_under_the_pointer() {
     app_frame(&ctx, &mut app, vec![]);
     let mut checked = 0;
     for (title, id) in help::WINDOW_PAGES {
-        // Search and Check for Updates open as overlays of their own; the rest are plain windows.
-        if matches!(id, "window.search" | "app.checkForUpdates") {
-            continue;
-        }
         app.ui.show_help = false;
         app.ui.help = Default::default();
         app.run(id, json!({"value": true})).unwrap_or_else(|e| panic!("{id}: {e}"));
@@ -162,7 +162,7 @@ fn cmd_question_mark_opens_the_page_of_the_window_under_the_pointer() {
         }
         checked += 1;
     }
-    assert!(checked >= 25, "{checked} windows");
+    assert_eq!(checked, help::WINDOW_PAGES.len());
 }
 
 #[test]
@@ -233,6 +233,11 @@ fn embedded_mix_viewport_help_shortcut_opens_mix_help() {
 /// Deliver key events only to the native child callback, as eframe does for a focused Mix window.
 #[test]
 fn native_mix_viewport_help_shortcut_opens_mix_help() {
+    // egui's renderer callback is thread-local and has no restore API.
+    std::thread::spawn(check_native_mix_help).join().unwrap();
+}
+
+fn check_native_mix_help() {
     for (os, cmd) in OSES {
         for window in [soundcraft_ui_egui::MainWindow::Edit, soundcraft_ui_egui::MainWindow::Mix] {
             let (ctx, mut app) = rig(os);
@@ -312,6 +317,7 @@ fn cmd_question_mark_over_an_audiosuite_window_opens_its_process() {
 /// nothing on a page may push the help window past the edge.
 #[test]
 fn every_help_page_draws_with_real_glyphs_and_fits_a_small_screen() {
+    use egui_kittest::kittest::Queryable;
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     app.ui.show_help = true;
     let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(760.0, 700.0)).build_ui_state(
@@ -333,8 +339,9 @@ fn every_help_page_draws_with_real_glyphs_and_fits_a_small_screen() {
         h.step();
         assert!(h.state().ui.show_help);
         let page = &h.state().ui.help.page;
+        assert!(h.query_by_label("Page not found").is_none(), "{page:?} did not render");
         let window = h.ctx.memory(|m| m.area_rect(egui::Id::unique(Some("SoundCraft Help")))).unwrap();
-        assert!(window.max.x <= 760.0 && window.min.x >= 0.0, "{page:?} widens help to {window:?}");
+        assert!(window.max.x <= 760.0 && window.min.x >= 0.0 && window.max.y <= 700.0 && window.min.y >= 0.0, "{page:?} exceeds {window:?}");
     }
 }
 
@@ -389,7 +396,7 @@ fn escape_cancels_a_dialog_before_closing_help() {
     }
     assert_eq!(app.dialogs.open_name(), Some("new_session"));
     assert_eq!(ctx.layer_id_at(at).unwrap().id, help_id);
-    assert!(!ctx.egui_wants_keyboard_input(), "the test must exercise Help's Escape handler outside a text field");
+    assert!(!ctx.text_edit_focused(), "the test must exercise Help's Escape handler outside a text field");
     let esc = |pressed| Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
     app_frame(&ctx, &mut app, vec![esc(true), esc(false)]);
     assert_eq!(app.dialogs.open_name(), None, "Escape should cancel the dialog");
@@ -399,4 +406,41 @@ fn escape_cancels_a_dialog_before_closing_help() {
     app_frame(&ctx, &mut app, vec![]);
     app_frame(&ctx, &mut app, vec![esc(true), esc(false)]);
     assert!(!app.ui.show_help);
+}
+
+/// Opening Help takes keyboard focus even with the pointer outside the window.
+#[test]
+fn keyboard_focus_navigates_and_closes_help_away_from_the_pointer() {
+    let (ctx, mut app) = rig(OperatingSystem::Nix);
+    let page = Page::Command("session.save".into());
+    app.ui.help.go(page.clone());
+    app.run("help.open", json!({})).unwrap();
+    for _ in 0..3 {
+        app_frame(&ctx, &mut app, vec![Event::PointerMoved(egui::pos2(0.0, 0.0))]);
+    }
+    let press = |app: &mut SoundApp, key, modifiers| {
+        let events = [true, false].map(|pressed| Event::Key { key, physical_key: None, pressed, repeat: false, modifiers });
+        app_frame(&ctx, app, events.to_vec());
+    };
+    press(&mut app, Key::ArrowLeft, Modifiers::ALT);
+    assert_eq!(app.ui.help.page, Page::Welcome);
+    press(&mut app, Key::ArrowRight, Modifiers::ALT);
+    assert_eq!(app.ui.help.page, page);
+    press(&mut app, Key::Escape, Modifiers::NONE);
+    assert!(!app.ui.show_help);
+}
+
+/// Opening a configuration from an older catalog recovers to Welcome.
+#[test]
+fn stale_saved_help_pages_recover_to_welcome() {
+    let (ctx, mut app) = rig(OperatingSystem::Nix);
+    app_frame(&ctx, &mut app, vec![]);
+    app_frame(&ctx, &mut app, vec![]);
+    for kind in ["command", "category", "guide", "process"] {
+        app.ui.help = serde_json::from_value(json!({"page": {"kind":kind, "id":"removed"}, "tab":"index"})).unwrap();
+        app.run("help.open", json!({})).unwrap();
+        app_frame(&ctx, &mut app, vec![]);
+        assert_eq!(app.ui.help.page, Page::Welcome);
+        assert_eq!(app.ui.help.tab, Tab::Index);
+    }
 }

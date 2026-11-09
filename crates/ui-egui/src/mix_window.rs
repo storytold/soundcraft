@@ -1,5 +1,10 @@
 //! The Mix window: one channel strip per track.
 
+/// The separate Mix viewport, shared by window creation and context Help.
+pub(crate) fn viewport_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("soundcraft.mix")
+}
+
 use crate::SoundApp;
 use crate::theme::{Tokens, bold, regular, rgb};
 use crate::widgets::{
@@ -38,7 +43,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
 pub fn show_separate(app: &mut SoundApp, ctx: &egui::Context) {
     let title = format!("{}  —  Mix", app.engine.session().name);
     let builder = egui::ViewportBuilder::default().with_title(title).with_inner_size([1100.0, 720.0]).with_min_inner_size([480.0, 320.0]);
-    ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("soundcraft.mix"), builder, |ui, class| {
+    ctx.show_viewport_immediate(viewport_id(), builder, |ui, class| {
         ui.set_style(ui.ctx().global_style());
         // Embedded viewports share the main window's events, which were already dispatched there.
         if class == egui::ViewportClass::Immediate {

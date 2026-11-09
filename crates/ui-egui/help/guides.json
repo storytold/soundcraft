@@ -7,9 +7,9 @@
       "summary": "How to find a page, move around help, and get help on the window you're looking at.",
       "steps": [
         "Press {keys:Cmd+Shift+/} (the ? key with {keys:Cmd}) or choose {menu:help.open} to open help.",
-        "Point at a SoundCraft window, such as the Big Counter or Beat Detective, and press {keys:Cmd+Shift+/}: help opens on that window's page.",
-        "Contents lists every page by topic. Index lists them A to Z: type the first letters of a word to jump to it. Search finds pages by any word, menu name or shortcut, so typing Cmd+S finds Save Session.",
-        "Use the arrows at the top left, or {keys:Alt+Left} and {keys:Alt+Right} while the pointer is over help, to go back and forward.",
+        "Point at a SoundCraft window, such as the Big Counter or Beat Analysis, and press {keys:Cmd+Shift+/}: help opens on that window's page.",
+        "Contents lists every page by topic. Index lists them A to Z: type the first letters of a word to jump to it. Search finds pages by any word, menu name or shortcut, so typing {keys:Cmd+S} finds Save Session.",
+        "Use the arrows at the top left, or {keys:Alt+Left} and {keys:Alt+Right} while Help has focus or the pointer is over it, to go back and forward.",
         "On a command's page, Do it now runs the command just as its menu item would. When it's greyed out, the line under it says why."
       ],
       "related": ["help.open", "help.search", "help.index", "help.report"]
@@ -87,7 +87,7 @@
     {
       "id": "markers",
       "title": "Mark places in the song",
-      "category": "viewing",
+      "category": "transport",
       "summary": "Drop markers on verses and choruses so you can find them again.",
       "steps": [
         "Click in the timeline where the marker should go and press {keys:Enter}.",
