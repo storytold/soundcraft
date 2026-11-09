@@ -10,6 +10,10 @@ use std::sync::atomic::Ordering;
 const MAX_BLOCK: usize = 1 << 16;
 /// Most channels a host strip may ask for.
 const MAX_CHANNELS: usize = 64;
+/// Queue slots that only releases from `note_off` may take: one per key, so a queue that
+/// parameter changes, note-ons or other MIDI filled still has room to release every held key on
+/// a reset (#1464).
+const RELEASE_RESERVE: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum NoteMode {
@@ -79,15 +83,58 @@ impl ClapPlugin {
         self.queue.retain(|e| !matches!(e, Event::Param { .. }));
     }
 
-    /// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
-    /// allocates on the audio thread).
+    /// Queues an event other than a note release; see [`push_event`].
     fn push(&mut self, e: Event) {
-        if self.queue.len() >= self.queue.capacity() {
-            return;
-        }
-        let pos = self.queue.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
-        self.queue.insert(pos, e);
+        push_event(&mut self.queue, e, false);
     }
+}
+
+/// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
+/// allocates on the audio thread). Only a `release` may take the last [`RELEASE_RESERVE`] slots.
+fn push_event(queue: &mut Vec<Event>, e: Event, release: bool) {
+    let room = if release { queue.capacity() } else { queue.capacity().saturating_sub(RELEASE_RESERVE) };
+    if queue.len() >= room {
+        return;
+    }
+    let pos = queue.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
+    queue.insert(pos, e);
+}
+
+/// The release of `key` in the note port's dialect (`None` without a note port).
+fn release_event(notes: NoteMode, time: u32, key: u8) -> Option<Event> {
+    match notes {
+        NoteMode::Clap => Some(Event::NoteOff { time, key }),
+        NoteMode::Midi => Some(Event::Midi { time, data: [0x80, key, 0] }),
+        NoteMode::None => None,
+    }
+}
+
+/// The queue after a reset: [`keep_releases`], then a release at the start of the next block for
+/// every key still `held` that has none yet, so each key is released once. Clears `held`.
+///
+/// It never runs out of room: events other than `note_off` releases fill at most
+/// `capacity - RELEASE_RESERVE` slots, and the releases left are one per key.
+fn release_on_reset(queue: &mut Vec<Event>, held: &mut [bool; 128], notes: NoteMode) {
+    keep_releases(queue);
+    for e in queue.iter() {
+        let key = match *e {
+            Event::NoteOff { key, .. } => Some(key),
+            // Channel 1, where `note_off` sends them.
+            Event::Midi { data: [status, key, velocity], .. } if status & 0x0F == 0 && is_midi_note_off(status, velocity) => Some(key),
+            _ => None,
+        };
+        if let Some(h) = key.and_then(|k| held.get_mut(usize::from(k))) {
+            *h = false;
+        }
+    }
+    for key in 0..128u8 {
+        if held.get(usize::from(key)).copied().unwrap_or(false)
+            && let Some(e) = release_event(notes, 0, key)
+        {
+            push_event(queue, e, true);
+        }
+    }
+    *held = [false; 128];
 }
 
 /// What a reset keeps of the pending events: parameter changes, and the releases (CLAP note-offs
@@ -222,9 +269,7 @@ impl Plugin for ClapPlugin {
         // Keep pending releases and release whatever is still held: CLAP asks `reset` to kill
         // voices, but some plugins' doesn't (Surge XT's), and they would sound on with nothing
         // left to release them (#1464).
-        keep_releases(&mut self.queue);
-        self.all_notes_off();
-        self.held = [false; 128];
+        release_on_reset(&mut self.queue, &mut self.held, self.notes);
     }
 
     fn set_param(&mut self, id: &str, value: f32) -> bool {
@@ -325,11 +370,8 @@ impl Plugin for ClapPlugin {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        match self.notes {
-            NoteMode::Clap => self.push(Event::NoteOff { time, key: note }),
-            NoteMode::Midi => self.push(Event::Midi { time, data: [0x80, note, 0] }),
-            NoteMode::None => return,
-        }
+        let Some(e) = release_event(self.notes, time, note) else { return };
+        push_event(&mut self.queue, e, true);
         if let Some(h) = self.held.get_mut(note as usize) {
             *h = false;
         }
@@ -456,6 +498,32 @@ mod tests {
                 Event::Midi { time: 0, data: [0x91, 67, 0] },
             ]
         );
+    }
+
+    /// A queue that parameter changes filled still releases every held key on a reset, once
+    /// each, and keeps the parameter changes.
+    #[test]
+    fn a_full_queue_still_releases_every_held_key_on_reset() {
+        for notes in [NoteMode::Clap, NoteMode::Midi] {
+            let mut q = Vec::with_capacity(EVENT_CAP);
+            for id in 0..EVENT_CAP as u32 {
+                push_event(&mut q, Event::Param { time: 0, id, value: 0.0 }, false);
+            }
+            assert_eq!(q.len(), EVENT_CAP - RELEASE_RESERVE, "parameter changes leave the reserve free");
+            // Keys 0..4 already have a release queued, and are held again after it.
+            for key in 0..4u8 {
+                push_event(&mut q, release_event(notes, 7, key).unwrap(), true);
+            }
+            let mut held = [true; 128];
+            release_on_reset(&mut q, &mut held, notes);
+            assert_eq!(held, [false; 128]);
+            assert_eq!(q.iter().filter(|e| matches!(e, Event::Param { .. })).count(), EVENT_CAP - RELEASE_RESERVE, "{notes:?}");
+            for key in 0..128u8 {
+                let want = release_event(notes, 0, key).unwrap();
+                assert_eq!(q.iter().filter(|e| **e == want).count(), 1, "{notes:?}: key {key} is released once");
+            }
+            assert_eq!(q.len(), EVENT_CAP);
+        }
     }
 
     /// A queue full of releases still has room to release every held key after a reset.
