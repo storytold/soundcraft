@@ -424,8 +424,9 @@ pub fn db_text(db: f32) -> String {
     if db <= -143.9 { "-inf".into() } else { format!("{db:.1}") }
 }
 
-/// Where a [`fine_slider`] drag is anchored: the pointer's x and the value there, and the pass
-/// that last drew the slider during the drag.
+/// Where a [`fine_slider`] drag is anchored: the pointer's x and the value there, whether the key
+/// was held at the anchor, whether the drag moves the value from the anchor and not to the
+/// pointer, and the pass that last drew the slider during the drag.
 #[derive(Clone, Copy)]
 struct FineDrag {
     x: f32,
@@ -437,9 +438,9 @@ struct FineDrag {
 
 /// A horizontal slider that moves a tenth as far for the same drag while Ctrl (Command on a Mac)
 /// is held, as a [`fader`] does, on the rail and on the value box. Pressing or releasing the key
-/// during a drag on the rail leaves the value where it is, and the drag goes on from there. The
-/// value box shows the decimal places that a tenth of a point's step needs, and a drag on the
-/// rail that the key has touched rounds the value to them.
+/// during a drag on the rail or the value box leaves the value where it is, and the drag goes on
+/// from there. The value box shows the decimal places that a tenth of a point's step needs, and a
+/// drag on the rail that the key has touched rounds the value to them.
 pub fn fine_slider(ui: &mut Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: &str) -> Response {
     FineSlider::new(value, range).text(text).show(ui)
 }
@@ -505,6 +506,7 @@ impl<'a> FineSlider<'a> {
     pub fn show(self, ui: &mut Ui) -> Response {
         let Self { value, range, text, id_salt, show_value, logarithmic, integer, default } = self;
         let id = ui.scope_id().with(("fine_slider", id_salt.unwrap_or(text)));
+        let before = *value;
         let (fine, x) = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.pointer.interact_pos().map(|p| p.x)));
         let reset = default.is_some() && ui.input(|i| i.modifiers.alt);
         // A drag lasts through the pass that releases the button, where egui still sets the value
@@ -558,6 +560,10 @@ impl<'a> FineSlider<'a> {
             slider = slider.drag_value_speed(speed);
         }
         let mut resp = ui.add(slider);
+        // A drag from the anchor set the value before the slider read it.
+        if *value != before {
+            resp.mark_changed();
+        }
         // The rail senses drags only, so a click on it ends as a drag that the pointer did not
         // move far enough to count as one.
         let clicked = resp.clicked() || (resp.drag_stopped() && ui.input(|i| i.pointer.could_any_button_be_click()));
