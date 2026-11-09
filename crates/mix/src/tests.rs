@@ -1247,3 +1247,82 @@ fn master_volume_automation_follows_its_breakpoints_in_any_block_size() {
         }
     }
 }
+
+/// `scale` gives what `db_to_gain` gives sample by sample, from a ramp's first sample to its last:
+/// silence at or below -144 dB, the cap, NaN, extreme values and one- or two-sample ramps.
+#[test]
+fn stepped_fader_ramps_match_converting_every_sample() {
+    let cases: &[(&str, f32, f32, usize, f32)] = &[
+        ("down to silence", 0.0, -144.0, 480, 12.0),
+        ("up from silence", -144.0, 0.0, 480, 12.0),
+        ("across the cap", 6.0, 18.0, 300, 12.0),
+        ("below the floor and back", -200.0, -20.0, 512, 12.0),
+        ("flat", -6.0, -6.0, 1024, 12.0),
+        ("one sample", -6.0, 3.0, 1, 12.0),
+        ("two samples", -6.0, 3.0, 2, 12.0),
+        ("empty", 0.0, -6.0, 0, 12.0),
+        ("NaN start", f32::NAN, -3.0, 64, 12.0),
+        ("long ramp in one block", 0.0, -60.0, 16_384, 12.0),
+        ("no cap", -12.0, 6.0, 1000, f32::INFINITY),
+    ];
+    for &(name, d0, d1, n, max_db) in cases {
+        let mut x = vec![1.0f32; n];
+        crate::automation::scale(&mut x, d0, d1, max_db);
+        for (k, &got) in x.iter().enumerate() {
+            let at = if n < 2 { d0 } else { d0 + (d1 - d0) * (k as f32 / (n - 1) as f32) };
+            let want = if at.is_nan() { 0.0 } else { db_to_gain(at.min(max_db)) };
+            assert!((got - want).abs() <= 1e-5 * want.max(1e-6) || (got == 0.0 && want == 0.0), "{name}, sample {k} of {n}: {got} vs {want}");
+        }
+        if d0.is_nan() || d1.is_nan() {
+            assert!(x.iter().all(|&g| g == 0.0), "{name}: a NaN end is silence");
+            continue;
+        }
+        assert_eq!(x.first().copied().unwrap_or(0.0), if n == 0 { 0.0 } else { db_to_gain(d0.min(max_db)) }, "{name}: first sample exact");
+        if n > 1 {
+            assert_eq!(x[n - 1], db_to_gain(d1.min(max_db)), "{name}: last sample exact");
+        }
+    }
+}
+
+/// Volume, trim and VCA lanes with breakpoints at different samples add up at every sample, a
+/// muted track stays silent, and a render that starts inside a ramp or has breakpoints on block
+/// edges reads the same curve.
+#[test]
+fn summed_fader_lanes_are_read_at_every_sample() {
+    let (mut s, a) = session_with_dc(0.5, 12_288);
+    let muted = add_dc_track(&mut s, 0.5, 12_288);
+    let vca = s.add_track(TrackKind::Vca, ChannelFormat::Mono, None);
+    let one_track = render_range(&s, Range::new(0, 64), 64)[0][0] / 2.0;
+    s.track_mut(muted).unwrap().mixer.mute = true;
+    let vol = volume_lane(&[(0, 0.0), (1024, 0.0), (2048, -30.0), (4096, -6.0)]);
+    let mut trim = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: u8::MAX, param: "trim".into() });
+    for (at, db) in [(0, 0.0), (1500, 0.0), (3000, 6.0)] {
+        trim.set_point(at, db);
+    }
+    let vca_lane = volume_lane(&[(0, 0.0), (5120, 0.0), (7000, -12.0)]);
+    let tr = s.track_mut(a).unwrap();
+    tr.automation.push(vol.clone());
+    tr.automation.push(trim.clone());
+    tr.mixer.vca = Some(vca.0);
+    s.track_mut(vca).unwrap().automation.push(vca_lane.clone());
+    // dB at `i`, from the breakpoints themselves.
+    let lin = |pts: &[(i64, f32)], i: i64| match pts.iter().position(|p| p.0 > i) {
+        None => pts[pts.len() - 1].1,
+        Some(0) => pts[0].1,
+        Some(k) => pts[k - 1].1 + (pts[k].1 - pts[k - 1].1) * ((i - pts[k - 1].0) as f32 / (pts[k].0 - pts[k - 1].0) as f32),
+    };
+    let want = |i: i64| {
+        let db = lin(&[(0, 0.0), (1024, 0.0), (2048, -30.0), (4096, -6.0)], i)
+            + lin(&[(0, 0.0), (1500, 0.0), (3000, 6.0)], i)
+            + lin(&[(0, 0.0), (5120, 0.0), (7000, -12.0)], i);
+        one_track * db_to_gain(db.min(12.0))
+    };
+    for (start, block) in [(0i64, 1024), (0, 512), (1700, 333), (1024, 1024), (2047, 64)] {
+        let out = render_range(&s, Range::new(start, 12_288), block);
+        for (k, &x) in out[0].iter().enumerate() {
+            let i = start + k as i64;
+            let w = want(i);
+            assert!((x - w).abs() <= 1e-5 * w.max(1e-3), "start {start}, block {block}, sample {i}: {x} vs {w}");
+        }
+    }
+}

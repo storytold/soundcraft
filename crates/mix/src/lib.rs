@@ -71,7 +71,7 @@ mod routing;
 mod strip;
 mod threads;
 
-use automation::{for_each_gain, pan_at, pan_segment, send_level, transport_at, volume_level};
+use automation::{copy_with_gain, pan_at, pan_segment, send_level, transport_at, volume_level};
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
 pub use meter::StripMeter;
 use midi::sync_sample;
@@ -540,14 +540,7 @@ impl MixEngine {
                     }
                 }
                 // Read at every sample, like track faders: a breakpoint acts on its own sample.
-                let (main, src) = (&mut self.main, &strip.buf);
-                for_each_gain(&[volume_level(t)], pos, frames, f32::INFINITY, |i, g| {
-                    for (m, x) in main.iter_mut().zip(src) {
-                        if let (Some(d), Some(x)) = (m.get_mut(i), x.get(i)) {
-                            *d = x * g;
-                        }
-                    }
-                });
+                copy_with_gain(&[volume_level(t)], pos, frames, f32::INFINITY, &strip.buf, &mut self.main);
                 let m = self.meters.entry(t.id).or_default();
                 m.measure(&self.main, frames, 0.0);
                 m.plugin_failures = strip.failures;

@@ -1,4 +1,4 @@
-use super::automation::{Level, for_each_gain, transport_at, volume_level};
+use super::automation::{Level, apply_gain, transport_at, volume_level};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
 use super::midi::{chase_controllers, schedule_notes};
@@ -377,14 +377,7 @@ fn apply_fader(s: &Session, t: &Track, strip: &mut Strip, blk: Block) {
         }
     }
     let levels = if strip.muted { [Level::Fixed(-144.0), Level::Fixed(0.0), Level::Fixed(0.0)] } else { [volume_level(t), trim, vca_level] };
-    let buf = &mut strip.buf;
-    for_each_gain(&levels, pos, frames, 12.0, |i, g| {
-        for c in buf.iter_mut() {
-            if let Some(x) = c.get_mut(i) {
-                *x *= g;
-            }
-        }
-    });
+    apply_gain(&levels, pos, frames, 12.0, &mut strip.buf);
 }
 
 /// Track mute gates the audio and its pre-fader tap without splitting processor blocks.
