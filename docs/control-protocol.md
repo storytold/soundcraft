@@ -91,6 +91,14 @@ a portal answer it uses Dark. Manual Light and Dark stay fixed when the OS appea
 An offscreen render without `--system-theme` supplies no OS appearance and therefore resolves
 System to Dark, or on Linux to the desktop's portal setting when one is available.
 
+`options.pre_fader_metering` meters tracks after their inserts and before fader and VCA, in
+step with delay compensation (master faders always meter what they send out). The Mute button
+leaves pre-fader meters reading; mute automation silences them, as it does pre-fader sends.
+Aux inputs' pre-fader tap is not delay-compensated (as for their pre-fader sends), so with plugin
+latency an aux's pre-fader meter runs ahead by up to the slowest aux's latency. Turning the option on sizes every
+strip's pre-fader buffer and delay line in the audio callback that receives the change (a
+document edit, like adding tracks), not in steady state.
+
 `view.scroll_into_view {"track":"Bass"}` (a track id or name; without it, the first selected
 track) brings the track to the top of the Edit window and the left of the Mix window, the same as
 Scroll Into View in the track name menu. A window not on screen catches up when it is next shown.
