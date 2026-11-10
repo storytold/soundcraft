@@ -729,6 +729,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A take's parts after an empty one, or one that isn't a take, are not recovered: the take
+    /// ends there, as where they go depends on what it holds.
+    #[test]
+    fn recovery_stops_a_take_at_a_part_that_holds_nothing() {
+        use crate::io::Take;
+        for (case, second) in [("empty", soundcraft_audio_io::wav_float_header(1, 48_000, 0).unwrap()), ("not a take", b"not audio".repeat(8))] {
+            let dir = folder(&format!("autosave-take-stops-{}", case.replace(' ', "-")));
+            let root = dir.join("Autosave");
+            let mut e = Engine::default();
+            let track =
+                soundcraft_model::TrackId(e.execute("track.new", &json!({"name": "Vox", "format": "mono"})).unwrap()["tracks"][0].as_u64().unwrap());
+            let take = root.join(sanitize_name(&e.session().name)).join("Audio Files/Vox_01.wav");
+            std::fs::create_dir_all(take.parent().unwrap()).unwrap();
+            let audio = |n: usize| (0..n).flat_map(|i| (i as f32 / 1000.0).to_le_bytes()).collect::<Vec<u8>>();
+            std::fs::write(&take, [soundcraft_audio_io::wav_float_header(1, 48_000, 300).unwrap(), audio(300)].concat()).unwrap();
+            std::fs::write(take_part(&take, 2), &second).unwrap();
+            std::fs::write(take_part(&take, 3), [soundcraft_audio_io::wav_float_header(1, 48_000, 200).unwrap(), audio(200)].concat()).unwrap();
+            let plan = Recording { start: 0, pass: None, punch: None, rate: 48_000, takes: vec![Take { track, path: take, channels: 1 }] };
+            let w = Autosaver::new(root.clone());
+            w.write(e.session_arc(), None, Some(plan));
+            drop(w);
+            let mut r = Engine::default();
+            recover(&mut r, &leftovers(&root)[0]).unwrap();
+            let clips: Vec<_> = r.session().track(track).unwrap().clips().iter().map(|c| c.name.clone()).collect();
+            assert_eq!(clips, ["Vox_01"], "part 2 {case}: part 3 isn't placed");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     #[test]
     fn recovery_never_writes_a_file_that_isnt_a_take_in_a_take_folder() {
         use crate::io::Take;

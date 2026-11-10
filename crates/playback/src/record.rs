@@ -23,7 +23,11 @@ pub type Takes = (Vec<(TrackId, PathBuf)>, Option<String>);
 /// `n`-th (2, 3, …) after `first`.
 #[derive(Debug, Clone, Copy)]
 pub struct TakeFiles {
+    /// The most samples (frames × channels, whole frames) a file holds; at least one frame is
+    /// written to each file, whatever this says.
     pub samples: u64,
+    /// The path of the take's `n`-th file (`n` = 2, 3, …) after `first`. It has to name a file
+    /// that doesn't exist yet: one that does stops the take there, as any file it can't make.
     pub part: fn(&Path, usize) -> PathBuf,
 }
 
@@ -710,11 +714,19 @@ mod tests {
     fn a_take_whose_next_file_cannot_be_made_stops_there() {
         let dir = std::env::temp_dir().join(format!("soundcraft-take-part-taken-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut vox = TakeWriter::create(TrackId(1), vec![0], dir.join("Vox_01.wav"), 48_000, TakeFiles { samples: 100, part }).unwrap();
+        let vox = TakeWriter::create(TrackId(1), vec![0], dir.join("Vox_01.wav"), 48_000, TakeFiles { samples: 100, part }).unwrap();
         std::fs::write(dir.join("Vox_01-2.wav"), b"someone else's").unwrap();
-        vox.write(&[0.25; 150], 1);
-        vox.write(&[0.5; 10], 1);
-        assert!(vox.error.as_deref().is_some_and(|e| e.contains("Vox_01-2.wav")), "{:?}", vox.error);
+        let shared = Arc::new(Shared::new(CaptureRing::new(1 << 12)));
+        shared.armed.store(true, Ordering::Release);
+        let sh = Arc::clone(&shared);
+        let writer = std::thread::spawn(move || write_takes(&sh, vec![vox], 1));
+        [[0.25; 150].as_slice(), &[0.5; 10]].into_iter().for_each(|block| shared.capture(block, &mut 0));
+        shared.armed.store(false, Ordering::Release);
+        let (done, problem) = writer.join().unwrap();
+        // the full first file is placed, the problem names the file that couldn't be made
+        assert_eq!(done, [(TrackId(1), dir.join("Vox_01.wav"))]);
+        assert!(problem.as_deref().is_some_and(|e| e.contains("Vox_01-2.wav")), "{problem:?}");
+        assert!(shared.failed.lock().unwrap().as_deref().is_some_and(|e| e.contains("Vox_01-2.wav")), "reported while recording");
         assert_eq!(decode(&dir.join("Vox_01.wav")), [vec![0.25; 100]]);
         assert_eq!(std::fs::read(dir.join("Vox_01-2.wav")).unwrap(), b"someone else's");
         let _ = std::fs::remove_dir_all(&dir);

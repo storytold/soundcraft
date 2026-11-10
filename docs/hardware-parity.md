@@ -25,7 +25,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Latency reporting and record offset compensation | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Sample rate follows the session; resample when it can't | ✅ (switches device) | 🟡 resamples (input pitch bug fixed, #28) | 🟡 | 🟡 | 🟡 | 🟡 |
 | Avid HDX / HD Native DSP, Hybrid Engine DSP mode | ✅ | ❌ (out of reach: Avid hardware) | ❌ | ❌ | ❌ | ❌ |
-| Disk allocation / record to disk | ✅ | ✅ takes written to disk as they record (#84); a long take goes on in a new file (#888) | ✅ same recorder | 🟡 same recorder (input not yet verified) | ❌ no recording | ❌ |
+| Disk allocation / record to disk | ✅ | ✅ takes written to disk as they record (#84); a long take goes on in a new file (#888) | 🟡 same recorder (not yet verified on Windows) | 🟡 same recorder (input not yet verified) | ❌ no recording | ❌ |
 
 ## MIDI
 

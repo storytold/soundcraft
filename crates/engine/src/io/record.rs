@@ -26,7 +26,9 @@ pub struct Take {
 
 /// The `part`-th file (2, 3, …) of a take whose first file is `first`: a take recorded into
 /// `Vox_01.wav` goes on in `Vox_01-2.wav`, `Vox_01-3.wav` and so on once a file holds
-/// [`take_file_samples`].
+/// [`take_file_samples`]. The name is the first file's stem with `-part` and `.wav`, in its
+/// folder (a first file without a stem gives `-2.wav`); `part` is taken as given, the recorder
+/// asks for 2 and up.
 pub fn take_part(first: &Path, part: usize) -> PathBuf {
     let mut name = first.file_stem().unwrap_or_default().to_os_string();
     name.push(format!("-{part}.wav"));
@@ -37,7 +39,7 @@ pub fn take_part(first: &Path, part: usize) -> PathBuf {
 /// `session_rate`, so that each file can be placed and the saved session opened again: no more
 /// than an import ([`MAX_IMPORT_SAMPLES`]), and, when the take is converted to the session's rate,
 /// no more than a conversion keeps per channel. The recorder goes on in the take's next file
-/// ([`take_part`]) before one holds more.
+/// ([`take_part`]) before one holds more. A `session_rate` of 0 gives the import limit.
 pub fn take_file_samples(rate: u32, session_rate: u32) -> u64 {
     let import = MAX_IMPORT_SAMPLES as u64;
     if rate == session_rate {
@@ -53,8 +55,10 @@ pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, Pa
 }
 
 /// Turn recorded take files into clips at `start`, as one undo step ("Record"); each file is the
-/// source of its clips. A track's files, in order, are one take that went on in a new file when
-/// one was full ([`take_part`]): its clips are cut where one file ends and the next begins. With
+/// source of its clips. `takes` are grouped by track; a track's files, in the order given (the
+/// recorder's order: first file, then [`take_part`] 2, 3, …), are one take that went on in a new
+/// file when one was full, and its clips are cut where one file ends and the next begins. A file
+/// that can't be read ends its take there: where the files after it go depends on its length. With
 /// `pass` (loop recording), a take becomes one clip per pass (at most 1000), each pass after the
 /// first on a new playlist.
 pub fn add_recording(e: &mut Engine, start: Samples, takes: Vec<(TrackId, PathBuf)>, pass: Option<Samples>) -> Vec<soundcraft_model::ClipId> {
@@ -71,6 +75,7 @@ fn add_recording_in(
     punch: Option<Range>,
 ) -> Vec<soundcraft_model::ClipId> {
     let before = e.session_arc();
+    let hz = e.session().sample_rate.hz();
     let mut tracks: Vec<(TrackId, Vec<PathBuf>)> = Vec::new();
     for (tid, path) in takes {
         match tracks.iter_mut().find(|(t, _)| *t == tid) {
@@ -78,17 +83,25 @@ fn add_recording_in(
             None => tracks.push((tid, vec![path])),
         }
     }
+    // Without a loop or a punch every file is placed whole, so each is decoded once, here. With
+    // one, each file's length is parsed from its header first (the file is read, not decoded); a
+    // file is decoded once the take is laid out and it holds a kept span, one file at a time, so
+    // a punch on a take of several files decodes no more than the files it keeps.
+    let every_file_placed = pass.is_none() && punch.is_none();
     let mut out = Vec::new();
-    for (tid, files) in tracks {
-        let mut parts = Vec::new();
-        for path in files {
-            let read = read_file(&path)
-                .and_then(|b| soundcraft_audio_io::decode(&b, None).map_err(|err| EngineError::Io(format!("{}: {err}", path.display()))));
+    for (tid, paths) in tracks {
+        let mut files = Vec::new();
+        for path in paths {
+            let read = if every_file_placed { read_take_file(&path, hz) } else { measure_take_file(&path, hz) };
             // Where the files after an unreadable one go depends on its length: the take ends there.
-            let Ok((_, buf)) = read.inspect_err(|err| e.message(err.to_string())) else { break };
-            parts.push((path, buf));
+            let Ok(file) = read.inspect_err(|err| e.message(err.to_string())) else { break };
+            files.push(file);
         }
-        out.extend(place_take(e.session_mut(), tid, parts, start, pass, punch));
+        let (clips, problems) = place_take(e.session_mut(), tid, files, start, pass, punch);
+        for problem in problems {
+            e.message(problem);
+        }
+        out.extend(clips);
     }
     if !out.is_empty() {
         e.push_undo("Record", before);
@@ -96,36 +109,72 @@ fn add_recording_in(
     out
 }
 
-/// Place one track's take, read from its files in order, as [`add_recording_in`] says.
+/// One file of a take: its length at the session's rate (`hz`), whether it is recorded at
+/// another rate, and its audio at the session's rate once read.
+struct TakeFile {
+    path: PathBuf,
+    len: Samples,
+    resampled: bool,
+    audio: Option<AudioBuffer>,
+}
+
+/// A take file's audio at the session's rate `hz`, and whether it was recorded at another rate.
+fn decode_take(path: &Path, hz: u32) -> Result<(AudioBuffer, bool), EngineError> {
+    let bytes = read_file(path)?;
+    let (_, mut buf) = soundcraft_audio_io::decode(&bytes, None).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))?;
+    let resampled = buf.sample_rate != hz && buf.sample_rate > 0;
+    if resampled {
+        buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, hz);
+        buf.sample_rate = hz;
+    }
+    Ok((buf, resampled))
+}
+
+/// A take file read and decoded, at the session's rate `hz`.
+fn read_take_file(path: &Path, hz: u32) -> Result<TakeFile, EngineError> {
+    let (buf, resampled) = decode_take(path, hz)?;
+    let len = i64::try_from(buf.frames()).unwrap_or(0);
+    Ok(TakeFile { path: path.to_path_buf(), len, resampled, audio: Some(buf) })
+}
+
+/// A take file's length at the session's rate `hz`, parsed from its header, without decoding it.
+fn measure_take_file(path: &Path, hz: u32) -> Result<TakeFile, EngineError> {
+    let bytes = read_file(path)?;
+    let info = soundcraft_audio_io::probe(&bytes, None).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))?;
+    let resampled = info.sample_rate != hz && info.sample_rate > 0;
+    let frames = usize::try_from(info.frames).unwrap_or(usize::MAX);
+    let len = if resampled { soundcraft_dsp::offline::resampled_len(frames, info.sample_rate, hz) } else { frames };
+    Ok(TakeFile { path: path.to_path_buf(), len: i64::try_from(len).unwrap_or(i64::MAX), resampled, audio: None })
+}
+
+/// Place one track's take, from its files in order, as [`add_recording_in`] says. A file that
+/// holds a kept span and isn't decoded yet is decoded now; one that can't be ends the take there,
+/// as an unreadable file does, and what went wrong is returned beside the clips.
 fn place_take(
     s: &mut Session,
     tid: TrackId,
-    parts: Vec<(PathBuf, AudioBuffer)>,
+    files: Vec<TakeFile>,
     start: Samples,
     pass: Option<Samples>,
     punch: Option<Range>,
-) -> Vec<soundcraft_model::ClipId> {
+) -> (Vec<soundcraft_model::ClipId>, Vec<String>) {
+    let mut problems = Vec::new();
     if s.track(tid).is_none() {
-        return Vec::new();
+        return (Vec::new(), problems);
     }
     let hz = s.sample_rate.hz();
-    // Each file at the session's rate, with the span of the take it holds.
+    // The span of the take each file holds.
     let mut len: i64 = 0;
-    let parts: Vec<_> = parts
+    let files: Vec<_> = files
         .into_iter()
-        .map(|(path, mut buf)| {
-            let resampled = buf.sample_rate != hz;
-            if resampled && buf.sample_rate > 0 {
-                buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, hz);
-                buf.sample_rate = hz;
-            }
+        .map(|f| {
             let from = len;
-            len = len.saturating_add(i64::try_from(buf.frames()).unwrap_or(0));
-            (path, buf, resampled, Range::new(from, len))
+            len = len.saturating_add(f.len);
+            (f, Range::new(from, len))
         })
         .collect();
     let pass = pass.unwrap_or(len).max(1);
-    // Work out what each pass keeps first, so a file nothing is placed from isn't registered.
+    // Work out what each pass keeps first, so a file nothing is placed from isn't read or registered.
     let mut kept_passes = Vec::new();
     for offset in (0..len).step_by(usize::try_from(pass).unwrap_or(usize::MAX)).take(1_000) {
         let n = pass.min(len - offset);
@@ -143,14 +192,27 @@ fn place_take(
         kept_passes.push((offset, Range::new(offset.saturating_add(cut), offset.saturating_add(cut).saturating_add(clip_len)), clip_start));
     }
     let mut sources = Vec::new();
-    for (path, buf, resampled, span) in parts {
+    for (file, span) in files {
         if !kept_passes.iter().any(|(_, kept, _)| kept.intersect(&span).is_some()) {
             continue;
         }
-        let name = path.file_stem().and_then(OsStr::to_str).unwrap_or("Take").to_string();
-        let src = add_source(s, &name, buf, Some(&path.to_string_lossy()), FileFormat::Wav);
+        let read = match file.audio {
+            Some(buf) => Ok(buf),
+            None => decode_take(&file.path, hz).map(|(buf, _)| buf),
+        };
+        let buf = match read {
+            Ok(buf) => buf,
+            Err(err) => {
+                problems.push(err.to_string());
+                break;
+            }
+        };
+        // (its clips stay within what it holds, should the header have said more)
+        let span = Range::new(span.start, span.start.saturating_add(i64::try_from(buf.frames()).unwrap_or(0).min(span.len())));
+        let name = file.path.file_stem().and_then(OsStr::to_str).unwrap_or("Take").to_string();
+        let src = add_source(s, &name, buf, Some(&file.path.to_string_lossy()), FileFormat::Wav);
         if let Some(x) = s.sources.last_mut() {
-            x.unsaved = resampled;
+            x.unsaved = file.resampled;
         }
         sources.push((src, name, span));
     }
@@ -170,7 +232,7 @@ fn place_take(
             out.push(cid);
         }
     }
-    out
+    (out, problems)
 }
 
 /// Where a take recording from `start` shows while it holds `len` samples, as it will be placed:
@@ -363,6 +425,130 @@ mod record_tests {
                 vec![clip("Vox_01-3", 1_000, 100, 400)],
             ]
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A mono take file of `frames` samples that all hold `value`, so a test can tell which file a
+    /// clip plays.
+    fn write_take_of(path: &Path, frames: usize, value: f32) {
+        let mut bytes = soundcraft_audio_io::wav_float_header(1, 48_000, frames as u64).unwrap();
+        bytes.extend((0..frames).flat_map(|_| value.to_le_bytes()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// The value the first sample of each clip on `vox`'s playlists plays, pass by pass.
+    fn heard(e: &Engine, vox: TrackId) -> Vec<Vec<f32>> {
+        let s = e.session();
+        let t = s.track(vox).unwrap();
+        let first = |c: &Clip| {
+            let audio = c.source().and_then(|id| s.pool.get(id)).unwrap();
+            audio.buffer.channels[0][usize::try_from(c.source_offset()).unwrap()]
+        };
+        t.playlists.iter().map(|p| p.clips.iter().map(first).collect()).collect()
+    }
+
+    /// Each clip plays the file it was cut from, at the right place in it, with or without a
+    /// punch: three files of different lengths and contents in order.
+    #[test]
+    fn each_clip_of_a_take_plays_its_own_file() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-take-audio-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = dir.join("Audio Files/Vox_01.wav");
+        let files = [first.clone(), take_part(&first, 2), take_part(&first, 3)];
+        for (f, (frames, v)) in files.iter().zip([(1_000, 0.1), (700, 0.2), (400, 0.3)]) {
+            write_take_of(f, frames, v);
+        }
+        let mut e = Engine::default();
+        let vox = armed(&mut e, "Vox", "mono", "In 1");
+        let takes: Vec<_> = files.iter().map(|f| (vox, f.clone())).collect();
+        add_recording(&mut e, 0, takes.clone(), None);
+        assert_eq!(heard(&e, vox), [vec![0.1, 0.2, 0.3]]);
+        assert_eq!(passes(&e, vox)[0].iter().map(|c| (c.1, c.2)).collect::<Vec<_>>(), [(0, 1_000), (1_000, 700), (1_700, 400)]);
+        e.execute("edit.undo", &json!({})).unwrap();
+        // a punch over the second and third files: only they are read and placed
+        let sources = e.session().sources.len();
+        let plan = Recording { start: 0, pass: None, punch: Some(Range::new(1_500, 1_900)), rate: 48_000, takes: Vec::new() };
+        place_recording(&mut e, &plan, takes);
+        assert_eq!(heard(&e, vox), [vec![0.2, 0.3]]);
+        assert_eq!(passes(&e, vox), [vec![("Vox_01-2".into(), 1_500, 200, 500), ("Vox_01-3".into(), 1_700, 200, 0)]]);
+        assert_eq!(e.session().sources.len(), sources + 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The take ends at a file that can't be read: the files after it are not placed, since where
+    /// they go depends on its length. So with a punch, where only the files' lengths are read first.
+    #[test]
+    fn a_take_ends_at_a_file_that_cant_be_read() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-take-unreadable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = dir.join("Audio Files/Vox_01.wav");
+        let files = [first.clone(), take_part(&first, 2), take_part(&first, 3)];
+        write_take_of(&files[0], 1_000, 0.1);
+        std::fs::write(&files[1], b"not a wave file").unwrap();
+        write_take_of(&files[2], 500, 0.3);
+        let mut e = Engine::default();
+        let vox = armed(&mut e, "Vox", "mono", "In 1");
+        let takes: Vec<_> = files.iter().map(|f| (vox, f.clone())).collect();
+        add_recording(&mut e, 0, takes.clone(), None);
+        assert_eq!(heard(&e, vox), [vec![0.1]]);
+        e.execute("edit.undo", &json!({})).unwrap();
+        let plan = Recording { start: 0, pass: None, punch: Some(Range::new(500, 5_000)), rate: 48_000, takes: Vec::new() };
+        place_recording(&mut e, &plan, takes);
+        assert_eq!(passes(&e, vox), [vec![("Vox_01".into(), 500, 500, 500)]]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A loop pass longer than a file runs on across three of them: three clips butted on one
+    /// playlist.
+    #[test]
+    fn a_pass_runs_on_across_three_files() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-take-three-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = dir.join("Audio Files/Vox_01.wav");
+        let files = [first.clone(), take_part(&first, 2), take_part(&first, 3), take_part(&first, 4)];
+        for (f, v) in files.iter().zip([0.1, 0.2, 0.3, 0.4]) {
+            write_take_of(f, 300, v);
+        }
+        let mut e = Engine::default();
+        let vox = armed(&mut e, "Vox", "mono", "In 1");
+        add_recording(&mut e, 0, files.iter().map(|f| (vox, f.clone())).collect(), Some(800));
+        let clip = |n: &str, start, len, at| (n.to_string(), start, len, at);
+        assert_eq!(passes(&e, vox)[0], [clip("Vox_01", 0, 300, 0), clip("Vox_01-2", 300, 300, 0), clip("Vox_01-3", 600, 200, 0)]);
+        assert_eq!(heard(&e, vox)[0], [0.1, 0.2, 0.3]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With a punch, a file is decoded only if the punch keeps some of it: one outside it is never
+    /// read (here it no longer exists, and nothing is reported). One inside it that can't be decoded
+    /// ends the take there, as an unreadable file does, and says why.
+    #[test]
+    fn a_punch_decodes_only_the_files_it_keeps() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-take-lazy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = dir.join("Audio Files/Vox_01.wav");
+        let files = [first.clone(), take_part(&first, 2), take_part(&first, 3)];
+        for (f, v) in files.iter().zip([0.1, 0.2, 0.3]) {
+            write_take_of(f, 300, v);
+        }
+        let mut e = Engine::default();
+        let vox = armed(&mut e, "Vox", "mono", "In 1");
+        let measured = |f: &PathBuf| measure_take_file(f, 48_000).unwrap();
+        let mut take: Vec<_> = files.iter().map(measured).collect();
+        std::fs::remove_file(&files[2]).unwrap();
+        let (clips, problems) = place_take(e.session_mut(), vox, std::mem::take(&mut take), 0, None, Some(Range::new(100, 500)));
+        assert_eq!((clips.len(), problems), (2, Vec::<String>::new()), "the third file is outside the punch: never read");
+        assert_eq!(heard(&e, vox), [vec![0.1, 0.2]]);
+
+        let mut e = Engine::default();
+        let vox = armed(&mut e, "Vox", "mono", "In 1");
+        write_take_of(&files[2], 300, 0.3);
+        let take: Vec<_> = files.iter().map(measured).collect();
+        std::fs::remove_file(&files[1]).unwrap();
+        let (clips, problems) = place_take(e.session_mut(), vox, take, 0, None, Some(Range::new(100, 800)));
+        assert_eq!(clips.len(), 1, "the take ends at the file that can't be decoded");
+        assert!(problems.len() == 1 && problems[0].contains("Vox_01-2.wav"), "{problems:?}");
+        assert_eq!(heard(&e, vox), [vec![0.1]]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
