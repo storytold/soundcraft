@@ -1992,6 +1992,17 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Zoom in (Cmd+])" => "Aumentar zoom (Cmd+])",
         "Zoom out (Cmd+[)" => "Diminuir zoom (Cmd+[)",
         "Zoom Toggle (E)" => "Alternar zoom (E)",
+        "no group" => "sem grupo",
+        "nogrp" => "sgrp",
+        "aux" => "aux",
+        "master" => "master",
+        "audio" => "áudio",
+        "midi" => "midi",
+        "inst" => "inst",
+        "vca" => "vca",
+        "folder" => "pasta",
+        "video" => "vídeo",
+        "Select a MIDI clip (or a MIDI track) to edit its notes." => "Selecione um clipe MIDI (ou uma pista MIDI) para editar suas notas.",
         _ => return error_translation(source),
     })
 }

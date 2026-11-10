@@ -191,7 +191,7 @@ fn empty_state(app: &mut SoundApp, ui: &mut Ui, full: Rect, header: Rect) {
     };
     let msg = match &track {
         Some((_, name)) => crate::localized_format!("Click to add a MIDI clip to {name} at the insertion point.", name = name),
-        None => "Select a MIDI clip (or a MIDI track) to edit its notes.".into(),
+        None => crate::localization::text("Select a MIDI clip (or a MIDI track) to edit its notes.").into(),
     };
     ui.painter().text(full.center(), Align2::CENTER_CENTER, msg, regular(13.0), t.text_dim);
     let body = Rect::from_min_max(pos2(full.min.x, header.max.y), full.max);

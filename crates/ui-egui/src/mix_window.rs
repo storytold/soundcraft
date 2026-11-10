@@ -463,7 +463,13 @@ fn group_selector(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32
     let t = Tokens::current();
     // Group selector.
     let no_group = if narrow { "nogrp" } else { "no group" };
-    let gname = app.engine.session().groups.iter().find(|g| g.members.contains(&id)).map_or(no_group.to_string(), |g| g.name.clone());
+    let gname = app
+        .engine
+        .session()
+        .groups
+        .iter()
+        .find(|g| g.members.contains(&id))
+        .map_or(crate::localization::text(no_group).to_string(), |g| g.name.clone());
     let gr = Rect::from_min_size(pos2(x0 + 2.0, y), vec2(inner_w - 4.0, 16.0));
     let mut c = ui.new_child(egui::UiBuilder::new().max_rect(gr));
     let _ = selector_box_named(
@@ -653,7 +659,7 @@ fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
         TrackKind::Folder => "folder",
         TrackKind::Video => "video",
     };
-    ui.painter().text(pos2(vr.center().x, vr.max.y + 9.0), Align2::CENTER_CENTER, kind, regular(9.5), t.text_dim);
+    ui.painter().text(pos2(vr.center().x, vr.max.y + 9.0), Align2::CENTER_CENTER, crate::localization::text(kind), regular(9.5), t.text_dim);
     let nr = Rect::from_min_size(pos2(x0, r.max.y - 26.0), vec2(inner_w, 18.0));
     ui.painter().rect(
         nr,
