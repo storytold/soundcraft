@@ -5,25 +5,32 @@
 //! can't be configured and eframe returns an error. SoundCraft used to log it and exit with no
 //! window, which looks like "the app doesn't open".
 //! winget-pkgs validation starts installed programs without a desktop, so it rejected every
-//! SoundCraft version since 0.11 with `Validation-Executable-Error` and WinGet stayed on 0.10.0.
+//! SoundCraft version since 0.11 with `Validation-Executable-Error`.
 //!
 //! Now the reason also goes to an error dialog, as FilmCraft does since 0.14.0. The dialog keeps
 //! the process alive until it is dismissed; the exit code afterwards is still the error's.
 
 /// What the dialog and the log say. Any error `run_native` returns lands here. One from the app's
 /// own start-up (`AppCreation`, e.g. a `--control` file it can't write) says only that it couldn't
-/// start. Any other comes from the window or graphics, possibly after the window was up, so
-/// graphics is named as the likely cause, not the certain one.
+/// start. One from winit, the windowing layer (on Linux, for example, no display session), says
+/// the window couldn't start or stopped, without driver advice, which can't help there. Any other
+/// comes from graphics, possibly after the window was up, so graphics is named as the likely
+/// cause, not the certain one.
 pub(crate) fn message(error: &eframe::Error) -> String {
     match error {
         eframe::Error::AppCreation(_) => format!("SoundCraft could not start: {error}"),
+        eframe::Error::Winit(_) | eframe::Error::WinitEventLoop(_) => {
+            format!("SoundCraft's window could not start or stopped with an error: {error}")
+        }
         _ => format!(
             "SoundCraft's window could not start or stopped with an error: {error}\n\nIf this keeps happening, updating the graphics driver often fixes it."
         ),
     }
 }
 
-/// Logs the failure and shows it in a dialog, which stays until the user closes it.
+/// Logs the failure and shows it in a dialog, which stays until the user closes it. Where no
+/// dialog can be shown (on Linux, without zenity or a display), the log record is all there is and
+/// the process exits at once, as it did before.
 pub(crate) fn report(error: &eframe::Error) {
     let message = message(error);
     log::error!("{message}");
@@ -40,6 +47,16 @@ mod tests {
         assert!(text.starts_with("SoundCraft's window could not start or stopped"), "{text}");
         assert!(text.contains("no valid format for the surface"), "{text}");
         assert!(text.contains("graphics driver"), "{text}");
+    }
+
+    /// winit is a direct dependency only on Linux and the BSDs, so only there can a test name its
+    /// error; the match arm itself compiles everywhere.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn a_windowing_error_does_not_blame_the_graphics_driver() {
+        let text = message(&eframe::Error::WinitEventLoop(winit::error::EventLoopError::RecreationAttempt));
+        assert!(text.starts_with("SoundCraft's window could not start or stopped"), "{text}");
+        assert!(!text.contains("graphics"), "{text}");
     }
 
     #[test]
