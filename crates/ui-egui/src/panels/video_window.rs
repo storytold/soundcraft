@@ -36,15 +36,15 @@ fn draw_video_surface(app: &SoundApp, painter: &egui::Painter, img: Rect, pic: O
     } else {
         match pic {
             None => None,
-            Some((_, Err(why), ..)) => Some(why.clone()),
+            Some((_, Err(why), ..)) => Some(crate::localization::text(why).to_string()),
             Some((k, ..)) => match (app.video.current(*k), app.video.current_error(*k)) {
                 (Some(tex), _) => {
                     painter.image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                     None
                 }
-                (None, Some(e)) => Some(e.to_string()),
+                (None, Some(e)) => Some(crate::localization::text(e).to_string()),
                 (None, None) => match app.video.info(*k) {
-                    Some(Err(e)) => Some(e.clone()),
+                    Some(Err(e)) => Some(crate::localization::text(e).to_string()),
                     _ => None,
                 },
             },

@@ -383,7 +383,7 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
                             // The folder is kept as text in the preferences.
                             match crate::dialogs::unicode(&path) {
                                 Ok(p) => app.ui.workspace_dir = p.to_owned(),
-                                Err(e) => app.ui.status = crate::localization::text(&e.to_string()).to_string(),
+                                Err(e) => app.ui.status = e.to_string(),
                             }
                         } else {
                             crate::dialogs::open_path(app, &path);
@@ -439,6 +439,7 @@ pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), Str
     crate::docking::validate(&st.docking).and_then(|()| crate::docking::validate_mix(&st.mix_docking))?;
     st.configurations = app.ui.configurations.clone();
     st.theme = app.ui.theme;
+    // Language is a global preference like the theme: recalling a configuration keeps the current one.
     st.language = app.ui.language;
     st.show_preferences = app.ui.show_preferences;
     st.preferences_page = app.ui.preferences_page;
@@ -488,7 +489,7 @@ fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<Stri
             ui.selectable_value(value, Some(d.name.clone()), format!("{} ({} ch)", d.name, d.max_channels));
         }
     });
-    combo.response.accessible_name(name);
+    combo.response.accessible_name(crate::localization::text(name));
 }
 
 /// Optional-number picker with a Device default entry and a unit, labelled for accessibility.
@@ -503,7 +504,7 @@ fn number_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<u32>
             ui.selectable_value(value, Some(*v), crate::localized_format!("{v} {unit}", v = v, unit = crate::localization::text(unit)));
         }
     });
-    combo.response.accessible_name(name);
+    combo.response.accessible_name(crate::localization::text(name));
 }
 
 /// Setup › Playback Engine / Hardware: choose the audio system, devices, rate and buffer size.
@@ -618,7 +619,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         audio_systems(ctx, true);
     }
     if apply && let Err(e) = app.apply_audio_config(draft.clone()) {
-        app.ui.status = crate::localization::text(&e).to_string();
+        app.ui.status = e;
     }
     if open {
         ctx.data_mut(|d| d.insert_temp(draft_id, draft));
@@ -724,7 +725,8 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
             for (name, fmt) in busses {
                 let key = egui::Id::unique(("bus_name", name.clone()));
                 let mut edit: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| name.clone());
-                let r = crate::widgets::named_text_field(ui.text_edit_singleline(&mut edit), &format!("Bus name: {name}"));
+                let r =
+                    crate::widgets::named_text_field(ui.text_edit_singleline(&mut edit), &crate::localized_format!("Bus name: {name}", name = name));
                 ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
                 if r.lost_focus() && edit != name {
                     let _ = app.run("setup.io", json!({"action": "rename_bus", "name": name, "new_name": edit}));

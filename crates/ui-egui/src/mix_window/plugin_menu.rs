@@ -72,7 +72,7 @@ pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
                 }
             } else if ui.button(crate::localization::text("Open Plugin Editor")).clicked() {
                 if let Err(e) = p.open_editor(id, slot) {
-                    app.ui.status = format!("{}: {}", info.name, crate::localization::text(&e));
+                    app.ui.status = format!("{}: {}", info.name, e);
                 }
                 ui.close();
             }
@@ -100,7 +100,7 @@ pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
 fn pick_insert(app: &mut SoundApp, ui: &Ui, id: TrackId, slot: usize, plugin: &str) {
     match app.run("mix.insert", json!({"track": id.0, "slot": slot, "plugin": plugin})) {
         Ok(_) => app.pending_open = Some((id, slot)),
-        Err(e) => app.ui.status = crate::localization::text(&e).to_string(),
+        Err(e) => app.ui.status = e,
     }
     ui.close();
 }
@@ -108,7 +108,7 @@ fn pick_insert(app: &mut SoundApp, ui: &Ui, id: TrackId, slot: usize, plugin: &s
 /// Runs a menu's pick, shows its error in the status line and closes the menu.
 fn run_pick(app: &mut SoundApp, ui: &Ui, cmd: &str, params: serde_json::Value) {
     if let Err(e) = app.run(cmd, params) {
-        app.ui.status = crate::localization::text(&e).to_string();
+        app.ui.status = e;
     }
     ui.close();
 }

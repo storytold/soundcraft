@@ -52,7 +52,7 @@ pub fn open_path(app: &mut SoundApp, path: &std::path::Path) {
         Ok(p) => p,
         Err(e) => {
             log::warn!("{e}");
-            app.ui.status = crate::localization::text(&e.to_string()).to_string();
+            app.ui.status = e.to_string();
             return;
         }
     };

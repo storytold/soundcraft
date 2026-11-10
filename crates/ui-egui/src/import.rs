@@ -119,7 +119,7 @@ fn finish(app: &mut SoundApp) {
             }
             app.engine.drop_offered_imports();
         }
-        Err(e) => app.ui.status = crate::localization::text(&e).to_string(),
+        Err(e) => app.ui.status = e,
     }
 }
 
@@ -128,7 +128,7 @@ fn run_now(app: &mut SoundApp, params: Value) -> bool {
     match app.run("file.import_audio", params) {
         Ok(_) => true,
         Err(e) => {
-            app.ui.status = crate::localization::text(&e).to_string();
+            app.ui.status = e;
             false
         }
     }

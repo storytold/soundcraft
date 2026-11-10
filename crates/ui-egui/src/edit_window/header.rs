@@ -450,7 +450,7 @@ fn arrow(p: &egui::Painter, c: Pos2, down: bool, color: Color32) {
 pub(super) fn header_selector(ui: &Ui, r: Rect, id: egui::Id, text: &str, color: Color32, menu: bool, name: &str) -> egui::Response {
     let resp = ui.interact(r, id, Sense::click());
     resp.widget_info(|| {
-        let mut info = egui::WidgetInfo::labeled(egui::accesskit::Role::ComboBox, ui.is_enabled(), crate::localization::text(name));
+        let mut info = egui::WidgetInfo::labeled(egui::accesskit::Role::ComboBox, ui.is_enabled(), name);
         // `text` can be a user-defined route name (a bus called "File"), so show it unchanged.
         info.current_text_value = Some(text.to_string());
         info

@@ -364,7 +364,7 @@ fn comments_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 44.0));
         let mut c = track.comments.clone();
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(sec));
-        let hint = if narrow { "" } else { crate::localization::text("Comments") };
+        let hint = if narrow { "" } else { crate::localization::text("comments") };
         let field = crate::widgets::named_text_field(
             child.add(egui::TextEdit::multiline(&mut c).desired_width(inner_w).desired_rows(2).hint_text(hint).font(regular(10.0))),
             &crate::localized_format!("Comments for {}", track.name),
@@ -395,7 +395,11 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
             in_r.height(),
             &input,
             t.text,
-            SelectorLabels { name: &crate::localized_format!("Input for {}", track.name), value: &input, tooltip: "Input" },
+            SelectorLabels {
+                name: &crate::localized_format!("Input for {}", track.name),
+                value: &input,
+                tooltip: crate::localization::text("Input"),
+            },
         );
         route_popup(app, &resp, id, true);
         let mut c = ui.new_child(egui::UiBuilder::new().id_salt(("mix-output", id.0)).max_rect(out_r));
@@ -406,7 +410,11 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
             out_r.height(),
             &output,
             t.text,
-            SelectorLabels { name: &crate::localized_format!("Output for {}", track.name), value: &output, tooltip: "Output" },
+            SelectorLabels {
+                name: &crate::localized_format!("Output for {}", track.name),
+                value: &output,
+                tooltip: crate::localization::text("Output"),
+            },
         );
         route_popup(app, &resp, id, false);
         // Automation mode.
@@ -464,7 +472,7 @@ fn group_selector(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32
         gr.height(),
         &gname,
         t.text_dim,
-        SelectorLabels { name: &crate::localized_format!("Group for {}", track.name), value: &gname, tooltip: "Group" },
+        SelectorLabels { name: &crate::localized_format!("Group for {}", track.name), value: &gname, tooltip: crate::localization::text("Group") },
     );
     y += 22.0;
     y

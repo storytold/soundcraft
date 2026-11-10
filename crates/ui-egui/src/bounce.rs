@@ -15,7 +15,7 @@ pub fn start(app: &mut SoundApp, params: &Value) {
     app.capture_plugin_states();
     match soundcraft_engine::cmd::bounce_job(&app.engine, params) {
         Ok(job) => app.bounce = Some(job),
-        Err(e) => app.ui.status = crate::localization::text(&e.to_string()).to_string(),
+        Err(e) => app.ui.status = e.to_string(),
     }
 }
 
@@ -36,7 +36,7 @@ pub fn step(app: &mut SoundApp, ctx: &egui::Context) {
                 done.lufs
             )
         }
-        Err(e) => crate::localization::text(&e.to_string()).to_owned(),
+        Err(e) => e.to_string(),
     };
     app.bounce = None;
 }

@@ -273,36 +273,32 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
         ui,
         |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                let language = app.ui.language;
                 ui.menu_button(crate::localization::text("SoundCraft"), |ui| {
                     ui.add_enabled_ui(menu_entries_enabled, |ui| {
-                        if ui.button(language.text(crate::localization::text("About SoundCraft"))).clicked() {
+                        if ui.button(crate::localization::text("About SoundCraft")).clicked() {
                             app.ui.show_about = true;
                         }
-                        if ui
-                            .add_enabled(preferences_enabled, egui::Button::new(language.text(crate::localization::text("Preferences..."))))
-                            .clicked()
-                        {
+                        if ui.add_enabled(preferences_enabled, egui::Button::new(crate::localization::text("Preferences..."))).clicked() {
                             let _ = app.run("setup.preferences", json!({"value": true}));
                         }
-                        if ui.button(language.text(crate::localization::text("Check for Updates…"))).clicked() {
+                        if ui.button(crate::localization::text("Check for Updates…")).clicked() {
                             let _ = app.run("app.checkForUpdates", json!({}));
                         }
-                        if ui.button(language.text(crate::localization::text("Session Info"))).clicked() {
+                        if ui.button(crate::localization::text("Session Info")).clicked() {
                             app.ui.show_session_info = true;
                         }
-                        if ui.button(language.text(crate::localization::text("Session Audio Health"))).clicked() {
+                        if ui.button(crate::localization::text("Session Audio Health")).clicked() {
                             let _ = app.run("window.audio_health", json!({"value": true}));
                         }
                         ui.separator();
-                        if ui.button(language.text(crate::localization::text("Quit"))).clicked() {
+                        if ui.button(crate::localization::text("Quit")).clicked() {
                             let _ = crate::dialogs::run_or_ask(app, "app.quit", json!({}));
                         }
                     });
                 });
                 let extra = ui_aliases();
                 for root in tree() {
-                    ui.menu_button(language.text(&root.label), |ui| {
+                    ui.menu_button(crate::localization::text(&root.label), |ui| {
                         ui.add_enabled_ui(menu_entries_enabled, |ui| {
                             for c in &root.children {
                                 menu_node(app, ui, c, &extra);
@@ -323,8 +319,8 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                                 ui.separator();
                                 let mut separate = app.ui.mix_separate;
                                 if ui
-                                    .checkbox(&mut separate, language.text(crate::localization::text("Mix in Separate Window")))
-                                    .on_hover_text(language.text(crate::localization::text("Show Edit and Mix at once, e.g. one per monitor")))
+                                    .checkbox(&mut separate, crate::localization::text("Mix in Separate Window"))
+                                    .on_hover_text(crate::localization::text("Show Edit and Mix at once, e.g. one per monitor"))
                                     .changed()
                                 {
                                     let _ = run_ui_command(app, "window.mix_separate", &json!({"value": separate}));
@@ -372,7 +368,7 @@ fn instrument_track(s: &soundcraft_model::Session) -> Option<soundcraft_model::T
 
 fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str, &str)]) {
     if !n.children.is_empty() {
-        let label = app.ui.language.text(&n.label).to_string();
+        let label = crate::localization::text(&n.label).to_string();
         ui.menu_button(label, |ui| {
             for c in &n.children {
                 menu_node(app, ui, c, extra);
@@ -382,7 +378,7 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
     }
     let id = command_for_path(&n.path, extra);
     let (enabled, checked) = item_state(app, &n.path, id.as_deref());
-    let label = live_label(app, id.as_deref()).unwrap_or_else(|| app.ui.language.text(&n.label).to_string());
+    let label = live_label(app, id.as_deref()).unwrap_or_else(|| crate::localization::text(&n.label).to_string());
     let label = if checked { format!("✔ {label}") } else { label };
     let shortcut = id.as_deref().and_then(shortcut_for).unwrap_or("");
     let btn = egui::Button::new(label).shortcut_text(crate::shortcuts::shortcut_label(shortcut, ui.ctx().os().is_mac()));

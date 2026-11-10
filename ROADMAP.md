@@ -96,7 +96,7 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Korean | ko | none | 0 % |
 | Vietnamese | vi | none | 0 % |
 
-Other languages shipped: 0 complete. Brazilian Portuguese now covers the fixed UI strings but still needs native review. Detail: [localization-parity.md](docs/localization-parity.md).
+Other languages shipped: 0 complete. Brazilian Portuguese covers menus and catalogued UI strings but still needs native review. Detail: [localization-parity.md](docs/localization-parity.md).
 
 ## Upcoming
 

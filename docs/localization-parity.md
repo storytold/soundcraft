@@ -17,7 +17,7 @@ CJK/Devanagari/Arabic (PR #141 open), RTL layout and complex-script shaping (egu
 ≈ 25–40 h, or ship Arabic/Hindi menus-only), then ≈ 3–5 h of agent translation per language, plus
 native-speaker review (human).
 
-Open work: PR #1346 (Brazilian Portuguese, partial catalog), PR #143 (French and Spanish, a
+Open work: PR #143 (French and Spanish, a
 Language setting), PR #141 (bundled multilingual font fallbacks), issue #67 (Ukrainian).
 
 | Language | Code | UI strings translated | Dialogs / tooltips / help | Script support | Native review | Status | Est. to full (h) | In Pro Tools |
@@ -28,7 +28,7 @@ Language setting), PR #141 (bundled multilingual font fallbacks), issue #67 (Ukr
 | Hindi | hi | 0 (0 %) | ❌ | ❌ no Devanagari font or shaping | no | none | 8–15 | ❌ |
 | Arabic | ar | 0 (0 %) | ❌ | ❌ no RTL layout, no shaping | no | none | 15–25 | ❌ |
 | French | fr | 0 (0 %) — PR #143 pending | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
-| Portuguese (Brazil) | pt-BR | All fixed UI strings measured in source plus formatted messages (not independently verified) | 🟡 partial | Latin ✅ | no | partial | 2–4 | ❌ |
+| Portuguese (Brazil) | pt-BR | Menu labels and the `localization::text` / `localized_format!` strings in `crates/ui-egui/src` (checked by a test; not native-reviewed; dynamic engine errors and third-party plugin names stay English) | 🟡 partial | Latin ✅ | no | partial | 2–4 | ❌ |
 | Indonesian | id | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ❌ |
 | Japanese | ja | 0 (0 %) | ❌ | ❌ no CJK font fallback, no IME testing | no | none | 6–10 | ✅ |
 | German | de | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
@@ -39,10 +39,20 @@ Other languages shipped: **0**. (Pro Tools also ships Traditional Chinese, zh-Ha
 
 Per-language hours exclude the shared catalog and script work above.
 
+## Usage
+
+- Pick the language in Appearance ▸ Language, or run the `ui.language` command with
+  `{"language": "pt-BR"}` (or `"en"`); with no parameter it reports the current language.
+  Example: `soundcraft-cli run --demo --cmd 'ui.language={"language":"pt-BR"}'`.
+- The choice is a global preference saved with the UI state (like the theme); recalling a saved
+  window configuration does not change it.
+- Strings missing from the catalog fall back to English. Add one with a `"English" => "Português"`
+  arm in `crates/ui-egui/locales/pt-BR/mod.rs`; tests check placeholder parity, duplicates and that every
+  string passed to `text` / `localized_format!` has an entry.
+
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-05 | minor | Expanded the pt-BR catalog to command labels, menus, dialogs, plugin parameter/display names, tooltips, accessibility text and formatted messages; source audit finds no untranslated fixed UI strings |
-| 2026-11-03 | minor | Added persisted language selection, the `ui.language` command, English fallback, and initial pt-BR translations for main menus and Appearance controls |
+| 2026-11-05 | minor | Added persisted language selection, the `ui.language` command, English fallback and a pt-BR catalog (menus, dialogs, tooltips, accessibility text, formatted messages); added a Usage section and catalog tests |
 | 2026-10-10 | major | Created: English only, no catalog; the twelve key languages at 0 %; Pro Tools' 8 languages listed from its bundle |

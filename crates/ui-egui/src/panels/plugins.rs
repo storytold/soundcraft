@@ -48,7 +48,7 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                             if open {
                                 p.close_editor(tid, slot);
                             } else if let Err(e) = p.open_editor(tid, slot) {
-                                app.ui.status = format!("{}: {}", info.name, crate::localization::text(&e));
+                                app.ui.status = format!("{}: {}", info.name, e);
                             }
                         }
                     }
@@ -218,7 +218,10 @@ fn preset_menu(
     let key = egui::Id::unique(("preset_name", tid.0, slot));
     let mut name: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| format!("{} preset", info.name));
     ui.horizontal(|ui| {
-        crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut name).desired_width(140.0)), "Preset name");
+        crate::widgets::named_text_field(
+            ui.add(egui::TextEdit::singleline(&mut name).desired_width(140.0)),
+            crate::localization::text("Preset name"),
+        );
         if ui.button(crate::localization::text("Save")).clicked() {
             let clean = soundcraft_engine::io::sanitize_name(&name);
             let body = json!({"format": "soundcraft-plugin-preset", "plugin": info.id, "params": ins.params});

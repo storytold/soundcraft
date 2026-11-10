@@ -7,7 +7,7 @@ fn memory_location_row(app: &mut SoundApp, ui: &mut Ui, n: u32, name: &str, loc:
     }
     let key = egui::Id::unique(("mem_name", n));
     let mut edit: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| name.to_string());
-    let r = crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut edit).desired_width(140.0)), "Name");
+    let r = crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut edit).desired_width(140.0)), crate::localization::text("Name"));
     if r.changed() {
         ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
     }

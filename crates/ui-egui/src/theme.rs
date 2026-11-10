@@ -561,6 +561,21 @@ mod tests {
     }
 
     #[test]
+    fn language_survives_state_round_trip_and_configuration_recall() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let _ = app.run("ui.language", json!({"language": "pt-BR"}));
+        let saved = serde_json::to_value(&app.ui).unwrap_or_default();
+        assert_eq!(saved["language"], "pt-BR");
+        let restored: crate::UiState = serde_json::from_value(saved.clone()).unwrap_or_default();
+        assert_eq!(restored.language, crate::localization::Language::PortugueseBrazil);
+        // Language is a global preference like the theme: a saved configuration never changes it.
+        let mut snapshot = saved;
+        snapshot["language"] = json!("en");
+        assert_eq!(crate::panels::windows::recall_configuration(&mut app, &snapshot), Ok(()));
+        assert_eq!(app.ui.language, crate::localization::Language::PortugueseBrazil);
+    }
+
+    #[test]
     fn application_frames_follow_system_appearance_and_preserve_manual_palettes() {
         // Mixer rendering tests also change the process-wide custom-painted palette.
         let _palette = lock_test_palette();

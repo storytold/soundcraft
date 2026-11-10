@@ -290,7 +290,7 @@ fn clear_message(s: &Session, clips: &[ClipId], sources: &[SourceId]) -> Option<
 fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, format: &mut FileFormat) {
     ui.horizontal(|ui| {
         ui.label(crate::localization::text("File"));
-        crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "File");
+        crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), crate::localization::text("File"));
         if let Some(pick) = &app.services.pick_save
             && ui.button(crate::localization::text("Browse…")).clicked()
             && let Some(p) = pick("file.bounce_mix", std::path::Path::new(path.as_str()))
@@ -302,7 +302,7 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
                         *format = picked;
                     }
                 }
-                Err(e) => app.ui.status = crate::localization::text(&e.to_string()).to_string(),
+                Err(e) => app.ui.status = e.to_string(),
             }
         }
     });
@@ -310,7 +310,7 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
 
 /// The path prompt's form; the command to run once it is confirmed.
 fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut String, key: &str, enter: bool) -> Option<(String, Value)> {
-    crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "Path");
+    crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), crate::localization::text("Path"));
     let mut picked = None;
     if let Some(pick) = &app.services.pick_open
         && cmd != "session.save_as"
@@ -337,7 +337,7 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
     }
     match picked.as_deref().map(unicode) {
         Some(Ok(text)) => *path = text.to_owned(),
-        Some(Err(e)) => app.ui.status = crate::localization::text(&e.to_string()).to_string(),
+        Some(Err(e)) => app.ui.status = e.to_string(),
         None => {}
     }
     let file = soundcraft_engine::io::session_file(path);
@@ -471,7 +471,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 Dialog::NewSession { name, sample_rate, demo } => {
                     ui.horizontal(|ui| {
                         ui.label(crate::localization::text("Name"));
-                        crate::widgets::named_text_field(ui.text_edit_singleline(name), "Name");
+                        crate::widgets::named_text_field(ui.text_edit_singleline(name), crate::localization::text("Name"));
                     });
                     craft_ui::ComboBox::from_label(crate::localization::text("Sample Rate")).selected_text(format!("{sample_rate} Hz")).show_ui(ui, |ui| {
                         for r in soundcraft_time::SampleRate::COMMON {
@@ -611,7 +611,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 Dialog::Group { id, name, edit, mix, members } => {
                     ui.horizontal(|ui| {
                         ui.label(crate::localization::text("Name"));
-                        crate::widgets::named_text_field(ui.text_edit_singleline(name), "Name");
+                        crate::widgets::named_text_field(ui.text_edit_singleline(name), crate::localization::text("Name"));
                     });
                     ui.horizontal(|ui| {
                         crate::widgets::checkbox(ui, edit, crate::localization::text("Edit group"));
@@ -785,7 +785,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     app.ui.status = crate::localized_format!("Exported {} clip(s) to {}", v["written"], v["dir"].as_str().unwrap_or_default());
                 }
                 Ok(_) => {}
-                Err(e) => app.ui.status = crate::localization::text(&e).to_string(),
+                Err(e) => app.ui.status = e,
             }
         }
     }
@@ -794,7 +794,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         && !app.engine.is_dirty()
         && let Err(e) = run_then(app, &then, params)
     {
-        app.ui.status = crate::localization::text(&e).to_string();
+        app.ui.status = e;
     }
     if keep {
         app.dialogs.open = Some(d);
@@ -836,7 +836,7 @@ pub(crate) fn buttons_enabled(ui: &mut egui::Ui, ok: &str, enter: bool, ready: b
 /// A name field that takes the focus with its text selected, so typing replaces the old name.
 fn name_field(ui: &mut egui::Ui, name: &mut String) {
     let mut out = egui::TextEdit::singleline(name).show(ui);
-    let _ = crate::widgets::named_text_field(out.response.response.clone(), "Name");
+    let _ = crate::widgets::named_text_field(out.response.response.clone(), crate::localization::text("Name"));
     if !out.response.has_focus() {
         out.response.request_focus();
         let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(name.chars().count()));

@@ -159,7 +159,7 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     let language = app.ui.language;
-    egui::Window::new(egui::RichText::new(language.text(crate::localization::text("Appearance"))).font(bold(13.0)))
+    egui::Window::new(egui::RichText::new(crate::localization::text("Appearance")).font(bold(13.0)))
         .id(egui::Id::unique("Appearance"))
         .open(&mut open)
         .default_size(vec2(320.0, 210.0))
@@ -172,14 +172,14 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                 egui::Slider::new(&mut app.extra.ui_scale, 0.75..=1.5)
                     .step_by(0.05)
                     .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
-                    .text(language.text(crate::localization::text("Interface scale"))),
+                    .text(crate::localization::text("Interface scale")),
             );
             let mut chosen_effects = None;
-            craft_ui::ComboBox::from_label(language.text(crate::localization::text("Reduce visual effects")))
-                .selected_text(language.text(app.ui.reduce_visual_effects.label()))
+            craft_ui::ComboBox::from_label(crate::localization::text("Reduce visual effects"))
+                .selected_text(crate::localization::text(app.ui.reduce_visual_effects.label()))
                 .show_ui(ui, |ui| {
                     for mode in crate::preferences::ReduceVisualEffects::ALL {
-                        if ui.selectable_label(app.ui.reduce_visual_effects == mode, language.text(mode.label())).clicked() {
+                        if ui.selectable_label(app.ui.reduce_visual_effects == mode, crate::localization::text(mode.label())).clicked() {
                             chosen_effects = Some(mode);
                         }
                     }
@@ -188,25 +188,22 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                 let _ = app.run("ui.reduce_visual_effects", json!({"mode": mode.id()}));
             }
             let mut selected_language = None;
-            craft_ui::ComboBox::from_label(language.text(crate::localization::text("Language"))).selected_text(language.native_name()).show_ui(
-                ui,
-                |ui| {
-                    for choice in crate::localization::Language::ALL {
-                        if ui.selectable_label(language == choice, choice.native_name()).clicked() {
-                            selected_language = Some(choice);
-                        }
+            craft_ui::ComboBox::from_label(crate::localization::text("Language")).selected_text(language.native_name()).show_ui(ui, |ui| {
+                for choice in crate::localization::Language::ALL {
+                    if ui.selectable_label(language == choice, choice.native_name()).clicked() {
+                        selected_language = Some(choice);
                     }
-                },
-            );
+                }
+            });
             if let Some(choice) = selected_language {
                 let _ = app.run("ui.language", json!({"language": choice.id()}));
             }
             let mut chosen = None;
-            craft_ui::ComboBox::from_label(language.text(crate::localization::text("Theme")))
-                .selected_text(language.text(app.ui.theme.label()))
+            craft_ui::ComboBox::from_label(crate::localization::text("Theme"))
+                .selected_text(crate::localization::text(app.ui.theme.label()))
                 .show_ui(ui, |ui| {
                     for mode in crate::theme::ThemeMode::ALL {
-                        if ui.selectable_label(app.ui.theme == mode, language.text(mode.label())).clicked() {
+                        if ui.selectable_label(app.ui.theme == mode, crate::localization::text(mode.label())).clicked() {
                             chosen = Some(mode);
                         }
                     }
@@ -214,9 +211,9 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
             if let Some(mode) = chosen {
                 let _ = app.run("ui.theme", json!({"mode": mode.id()}));
             }
-            crate::widgets::checkbox(ui, &mut app.extra.auto_update_config, language.text(crate::localization::text("Auto-update configuration")));
+            crate::widgets::checkbox(ui, &mut app.extra.auto_update_config, crate::localization::text("Auto-update configuration"));
             ui.add_space(4.0);
-            if ui.button(language.text(crate::localization::text("Reset"))).clicked() {
+            if ui.button(crate::localization::text("Reset")).clicked() {
                 app.extra.ui_scale = 1.0;
                 let _ = app.run("ui.reduce_visual_effects", json!({"mode": "never"}));
                 let _ = app.run("ui.theme", json!({"mode": crate::theme::ThemeMode::default().id()}));

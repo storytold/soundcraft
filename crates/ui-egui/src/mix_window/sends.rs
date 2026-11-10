@@ -361,7 +361,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
                 ui.strong(crate::localized_format!("Send {which} · Choose destination", which = which));
             }
         }
-        let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), "Search buses…");
+        let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), crate::localization::text("Search buses…"));
         let visible: Vec<_> = busses.iter().filter(|bus| search.matches(&bus.name)).collect();
         (search, visible)
     };

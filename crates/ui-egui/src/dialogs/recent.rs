@@ -96,7 +96,10 @@ pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
         for (i, path) in app.ui.recent_sessions.iter().enumerate() {
             let here = exists.get(i).copied().unwrap_or(true);
             let text = if here { label(path) } else { crate::localized_format!("{}  (missing)", label(path)) };
-            let r = ui.add_enabled(here, egui::Button::new(text)).on_hover_text(path.as_str()).on_disabled_hover_text(format!("{path}\nnot found"));
+            let r = ui
+                .add_enabled(here, egui::Button::new(text))
+                .on_hover_text(path.as_str())
+                .on_disabled_hover_text(crate::localized_format!("{path}\nnot found", path = path));
             if r.clicked() {
                 open = Some(path.clone());
             }

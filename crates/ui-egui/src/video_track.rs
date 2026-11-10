@@ -73,14 +73,14 @@ impl Worker {
             Job::Frame { key, path, secs } => {
                 let r = match self.open(key, &path, &mut out) {
                     Some(m) => m.frame_at(secs).map_err(|e| e.to_string()),
-                    None => Err(crate::localization::text("movie offline").to_string()),
+                    None => Err("movie offline".to_string()),
                 };
                 out.push(Done::Frame(key, secs, r));
             }
             Job::Thumb { key, path, secs, h, tk } => {
                 let r = match self.open(key, &path, &mut out) {
                     Some(m) => m.thumbnail_at(secs, h).map_err(|e| e.to_string()),
-                    None => Err(crate::localization::text("movie offline").to_string()),
+                    None => Err("movie offline".to_string()),
                 };
                 out.push(Done::Thumb(tk, r));
             }
@@ -468,7 +468,7 @@ pub fn draw_lane(app: &mut SoundApp, painter: &Painter, s: &Session, track: &Tra
             p.text(
                 vis.center(),
                 egui::Align2::CENTER_CENTER,
-                crate::localized_format!("media offline: {why}", why = why),
+                crate::localized_format!("media offline: {why}", why = crate::localization::text(why)),
                 regular(10.0),
                 Color32::from_rgb(220, 120, 120),
             );
@@ -479,7 +479,7 @@ pub fn draw_lane(app: &mut SoundApp, painter: &Painter, s: &Session, track: &Tra
             p.text(
                 vis.center(),
                 egui::Align2::CENTER_CENTER,
-                crate::localized_format!("media offline: {e}", e = e),
+                crate::localized_format!("media offline: {e}", e = crate::localization::text(e)),
                 regular(10.0),
                 Color32::from_rgb(220, 120, 120),
             );
