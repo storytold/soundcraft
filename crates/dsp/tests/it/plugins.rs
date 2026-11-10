@@ -502,6 +502,15 @@ fn synth_noise_waves_are_appended_and_old_indexes_keep_their_waveform() {
         let out = render(wave as f32);
         let n = rises(&out[4800..]);
         assert!((390..=400).contains(&n), "wave {wave}: {n} rising crossings in 0.9 s");
+        // Each waveform's harmonic shape is its own: Saw has the only 2nd harmonic, Square and
+        // Triangle are odd-only (1/n and 1/n²), Sine is alone.
+        let (f, h2, h3) = (tone_level(&out[4800..], 440.0), tone_level(&out[4800..], 880.0), tone_level(&out[4800..], 1320.0));
+        match wave {
+            0 => assert!(h2 > f * 0.35 && h3 > f * 0.2, "saw: {f} {h2} {h3}"),
+            1 => assert!(h2 < f * 0.05 && h3 > f * 0.2, "square: {f} {h2} {h3}"),
+            2 => assert!(h2 < f * 0.05 && h3 < f * 0.05, "sine: {f} {h2} {h3}"),
+            _ => assert!(h2 < f * 0.05 && h3 > f * 0.07 && h3 < f * 0.16, "triangle: {f} {h2} {h3}"),
+        }
     }
     // The noises sound, stay bounded and finite, and are not a 440 Hz tone.
     for wave in [4.0, 5.0] {
@@ -511,6 +520,20 @@ fn synth_noise_waves_are_appended_and_old_indexes_keep_their_waveform() {
         assert!(peak(&out) <= 1.0, "wave {wave} peak {}", peak(&out));
         let n = rises(&out[4800..]);
         assert!(n > 1500, "wave {wave} looks tonal: {n} rising crossings");
+        // White is spectrally flat; pink falls -3 dB/octave. The 50-400 Hz and 4-12 kHz band means
+        // measure the slope at +1.1 and -14.9 dB here.
+        let spec = soundcraft_dsp::spectrum::magnitude_db(&out[4800..], 8192);
+        let per_hz = SR / 8192.0;
+        let mean = |lo: f32, hi: f32| {
+            let v = &spec[(lo / per_hz) as usize..=(hi / per_hz) as usize];
+            v.iter().sum::<f32>() / v.len() as f32
+        };
+        let slope = mean(4000.0, 12000.0) - mean(50.0, 400.0);
+        if wave == 4.0 {
+            assert!(slope > -4.0, "white noise slope {slope} dB");
+        } else {
+            assert!(slope < -8.0, "pink noise slope {slope} dB");
+        }
     }
 }
 
