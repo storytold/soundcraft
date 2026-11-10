@@ -145,6 +145,7 @@ struct Section {
 }
 
 impl Section {
+    /// One sample through the section: `y[n] = a (x[n] + y[n-2]) - x[n-2]`.
     #[inline]
     fn tick(&mut self, a: f64, x: f64) -> f64 {
         let y = flush64(a * (x + self.y2) - self.x2);
@@ -231,6 +232,8 @@ impl Default for FreqShifter {
 }
 
 impl FreqShifter {
+    /// A shifter with the default parameters and the network for the default rate; [`Plugin::prepare`]
+    /// designs the network for the host rate.
     pub fn new() -> Self {
         let mut s = Self {
             p: Params::new(&FS_PARAMS),
@@ -250,6 +253,8 @@ impl FreqShifter {
         s
     }
 
+    /// Designs the network for `self.sr` and deals its coefficients out: even-numbered ones to the
+    /// in-phase chain, odd-numbered ones to the quadrature chain.
     fn design(&mut self) {
         let coefs = quadrature_coefs(self.sr);
         for (i, a) in coefs.iter().enumerate() {
@@ -260,6 +265,8 @@ impl FreqShifter {
         }
     }
 
+    /// Points the smoothers at the current parameter values, each channel's sideband weight at the
+    /// current Mode, and works the tail out again. Runs on every parameter change.
     fn update(&mut self) {
         self.freq.set(self.p.v(0));
         self.feedback.set(self.p.v(2) / 100.0);
@@ -286,6 +293,8 @@ impl FreqShifter {
 impl Plugin for FreqShifter {
     param_plumbing!(FREQ_SHIFTER_INFO);
 
+    /// Designs the network for the host rate, sizes the per-channel state and starts from silence
+    /// at the current parameters.
     fn prepare(&mut self, sample_rate: f32, _max_block: usize, channels: usize) {
         self.sr = f64::from(sane_sr(sample_rate));
         self.design();
@@ -300,6 +309,8 @@ impl Plugin for FreqShifter {
         self.reset();
     }
 
+    /// Clears the filter states and the carrier phase and snaps the smoothers to their targets, so
+    /// the next block starts as a new plugin's would.
     fn reset(&mut self) {
         self.channels.iter_mut().for_each(|c| *c = Channel::default());
         self.phase = 0.0;
@@ -308,6 +319,9 @@ impl Plugin for FreqShifter {
         }
     }
 
+    /// Shifts `frames` samples of each channel in place. One carrier and one set of smoothed
+    /// parameters serve every channel; each channel has its own filters, feedback sample and
+    /// sideband weight.
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
         let ch = self.channels.len().min(io.len());
         let frames = frames_in(io, frames, ch);
