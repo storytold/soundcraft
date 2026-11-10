@@ -75,7 +75,7 @@ fn dock_tabs(app: &mut SoundApp, ui: &mut Ui) {
         ("MEMORY LOCATIONS", app.ui.show_memory_locations, "window.memory_locations"),
         ("UNDO HISTORY", app.ui.show_undo_history, "window.undo_history"),
     ] {
-        let g = ui.painter().layout_no_wrap(label.to_string(), bold(10.5), if on { Color32::WHITE } else { t.text_dim });
+        let g = ui.painter().layout_no_wrap(crate::localization::text(label).to_string(), bold(10.5), if on { Color32::WHITE } else { t.text_dim });
         let tr = Rect::from_min_size(pos2(x, r.min.y + 2.0), vec2(g.size().x + 16.0, r.height() - 4.0));
         if on {
             ui.painter().rect_filled(tr, 3.0, t.accent_dark);

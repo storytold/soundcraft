@@ -76,6 +76,12 @@ pub fn text(source: &str) -> &str {
     current_language().text(source)
 }
 
+/// Whether the Brazilian Portuguese catalog has an entry for `source`, even an identical one.
+#[cfg(test)]
+pub(crate) fn has_pt_br_entry(source: &str) -> bool {
+    pt_br::translate(source).is_some()
+}
+
 /// Guard that restores the previously active language when dropped.
 pub struct LanguageScope(Language);
 

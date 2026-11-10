@@ -481,7 +481,7 @@ pub fn show(app: &mut crate::SoundApp, ui: &mut egui::Ui, window: crate::MainWin
         ui,
         &workspace.layout,
         &style,
-        |panel| panel.label().into(),
+        |panel| crate::localization::text(panel.label()).into(),
         permissions,
         panel_limits,
         |ui, panel| match panel {

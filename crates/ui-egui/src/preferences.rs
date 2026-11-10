@@ -209,12 +209,18 @@ impl Control {
 
     /// Builds the searchable text from a control's label, value and available choices.
     fn search_text(self) -> String {
+        let both = bilingual;
         match self {
-            Self::Choice(label, value) | Self::Value(label, value) => format!("{label} {value}"),
-            Self::ChoiceOptions(label, value, values) => format!("{label} {value} {}", values.join(" ")),
-            Self::Radios(label, values) => format!("{label} {}", values.join(" ")),
-            Self::ReduceVisualEffects => format!("{} Never Only During Playback Always", self.label()),
-            _ => self.label().to_string(),
+            Self::Choice(label, value) | Self::Value(label, value) => format!("{} {}", both(label), both(value)),
+            Self::ChoiceOptions(label, value, values) => {
+                format!("{} {} {}", both(label), both(value), values.iter().map(|value| both(value)).collect::<Vec<_>>().join(" "))
+            }
+            Self::Radios(label, values) => format!("{} {}", both(label), values.iter().map(|value| both(value)).collect::<Vec<_>>().join(" ")),
+            Self::ReduceVisualEffects => {
+                let modes = ReduceVisualEffects::ALL.map(|mode| both(mode.label())).join(" ");
+                format!("{} {modes}", both(self.label()))
+            }
+            _ => both(self.label()),
         }
     }
 }
@@ -836,8 +842,11 @@ fn tabs(ui: &mut egui::Ui, page: &mut PreferencesPage, search: &str) {
         ui.horizontal(|ui| {
             for candidate in PreferencesPage::ALL {
                 let hit = page_matches(candidate, search);
-                let text =
-                    if !search.is_empty() && hit { RichText::new(candidate.label()).color(t.meter_yellow) } else { RichText::new(candidate.label()) };
+                let text = if !search.is_empty() && hit {
+                    RichText::new(crate::localization::text(candidate.label())).color(t.meter_yellow)
+                } else {
+                    RichText::new(crate::localization::text(candidate.label()))
+                };
                 if ui.selectable_label(*page == candidate, text).clicked() {
                     *page = candidate;
                 }
@@ -889,15 +898,15 @@ fn section_ui(ui: &mut egui::Ui, page: PreferencesPage, section: Section, search
 /// Draws a section's title and border, including search-match highlighting.
 fn section_frame(ui: &mut egui::Ui, section: Section, search: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
     let t = Tokens::current();
-    let section_hit = text_matches(section.title, search);
+    let section_hit = text_matches(&bilingual(section.title), search);
     let stroke = if !search.is_empty() && section_hit { Stroke::new(1.5, t.meter_yellow) } else { Stroke::new(1.0, t.border) };
     egui::Frame::new().fill(t.panel_bg2).stroke(stroke).corner_radius(3.0).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
         ui.set_min_width((ui.available_width() - 12.0).max(280.0));
         egui::Frame::new().fill(t.toolbar_group).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
             let title = if !search.is_empty() && section_hit {
-                RichText::new(section.title).strong().color(t.meter_yellow)
+                RichText::new(crate::localization::text(section.title)).strong().color(t.meter_yellow)
             } else {
-                RichText::new(section.title).strong()
+                RichText::new(crate::localization::text(section.title)).strong()
             };
             ui.label(title);
         });
@@ -926,23 +935,26 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
     let t = Tokens::current();
     let hit = text_matches(&control.search_text(), search);
     let label = |text: &'static str| {
+        let text = crate::localization::text(text);
         if !search.is_empty() && hit { RichText::new(text).color(t.meter_yellow) } else { RichText::new(text) }
     };
     let id = ("preference", page, section, index);
     match control {
         Control::Theme => {
-            craft_ui::ComboBox::new(id, label("UI Theme")).selected_text(draft.theme.label()).show_ui(ui, |ui| {
+            craft_ui::ComboBox::new(id, label("UI Theme")).selected_text(crate::localization::text(draft.theme.label())).show_ui(ui, |ui| {
                 for mode in ThemeMode::ALL {
-                    ui.selectable_value(&mut draft.theme, mode, mode.label());
+                    ui.selectable_value(&mut draft.theme, mode, crate::localization::text(mode.label()));
                 }
             });
         }
         Control::ReduceVisualEffects => {
-            craft_ui::ComboBox::new(id, label("Reduce Visual Effects")).selected_text(draft.reduce_visual_effects.label()).show_ui(ui, |ui| {
-                for mode in ReduceVisualEffects::ALL {
-                    ui.selectable_value(&mut draft.reduce_visual_effects, mode, mode.label());
-                }
-            });
+            craft_ui::ComboBox::new(id, label("Reduce Visual Effects"))
+                .selected_text(crate::localization::text(draft.reduce_visual_effects.label()))
+                .show_ui(ui, |ui| {
+                    for mode in ReduceVisualEffects::ALL {
+                        ui.selectable_value(&mut draft.reduce_visual_effects, mode, crate::localization::text(mode.label()));
+                    }
+                });
         }
         Control::UndoLevels => {
             ui.horizontal(|ui| {
@@ -957,7 +969,7 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
         }
         Control::Choice(text, value) | Control::ChoiceOptions(text, value, _) => {
             ui.add_enabled_ui(false, |ui| {
-                craft_ui::ComboBox::new(id, label(text)).selected_text(value).show_ui(ui, |_| {});
+                craft_ui::ComboBox::new(id, label(text)).selected_text(crate::localization::text(value)).show_ui(ui, |_| {});
             })
             .response
             .on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
@@ -966,7 +978,7 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
             ui.add_enabled_ui(false, |ui| {
                 ui.horizontal(|ui| {
                     let caption = ui.label(label(text));
-                    let mut shown = value.to_string();
+                    let mut shown = crate::localization::text(value).to_string();
                     ui.add(egui::TextEdit::singleline(&mut shown).desired_width(96.0)).labelled_by(caption.id);
                 });
             })
@@ -983,7 +995,7 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
                 let mut selected = 0usize;
                 ui.indent(id, |ui| {
                     for (value_index, value) in values.iter().enumerate() {
-                        ui.radio_value(&mut selected, value_index, *value);
+                        ui.radio_value(&mut selected, value_index, crate::localization::text(value));
                     }
                 });
             })
@@ -1017,10 +1029,17 @@ fn page_modifiers(modifiers: Modifiers, mac: bool) -> bool {
 
 /// Reports whether a page title, section or control matches the search terms.
 fn page_matches(page: PreferencesPage, search: &str) -> bool {
-    text_matches(page.label(), search)
+    text_matches(&bilingual(page.label()), search)
         || page.sections().iter().any(|section| {
-            text_matches(section.title, search) || section.controls.iter().copied().any(|control| text_matches(&control.search_text(), search))
+            text_matches(&bilingual(section.title), search)
+                || section.controls.iter().copied().any(|control| text_matches(&control.search_text(), search))
         })
+}
+
+/// A source string followed by its translation, so a search finds either language.
+fn bilingual(source: &str) -> String {
+    let translated = crate::localization::text(source);
+    if translated == source { source.to_owned() } else { format!("{source} {translated}") }
 }
 
 /// Performs a case-insensitive AND match over whitespace-separated search terms.
@@ -1039,6 +1058,50 @@ mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
     use soundcraft_engine::Engine;
+
+    /// Whether a preference value is a plain number or unit amount that needs no translation.
+    fn is_numeric(value: &str) -> bool {
+        value.chars().next().is_none_or(|c| c.is_ascii_digit() || matches!(c, '−' | '-' | '—' | '.' | ' ' | '|'))
+    }
+
+    #[test]
+    fn every_preference_text_has_a_portuguese_translation() {
+        let mut missing = Vec::new();
+        let mut check = |text: &str| {
+            if !is_numeric(text) && !crate::localization::has_pt_br_entry(text) {
+                missing.push(text.to_owned());
+            }
+        };
+        for page in PreferencesPage::ALL {
+            check(page.label());
+            for section in page.sections() {
+                check(section.title);
+                for control in section.controls {
+                    check(control.label());
+                    match *control {
+                        Control::Choice(_, value) | Control::Value(_, value) => check(value),
+                        Control::ChoiceOptions(_, value, values) => {
+                            check(value);
+                            values.iter().for_each(|v| check(v));
+                        }
+                        Control::Radios(_, values) => values.iter().for_each(|v| check(v)),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // Names that are the same in both languages are listed by the catalog as identity entries.
+        assert!(missing.is_empty(), "preference texts without a pt-BR entry: {missing:?}");
+    }
+
+    #[test]
+    fn preference_search_matches_both_languages() {
+        let _scope = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
+        let control = Control::Check("Auto Backup");
+        assert!(text_matches(&control.search_text(), "backup automático"));
+        assert!(text_matches(&control.search_text(), "auto backup"));
+        assert!(!text_matches(&control.search_text(), "mixagem"));
+    }
 
     /// Creates a complete application harness with Preferences already open.
     fn preferences_harness(size: egui::Vec2) -> Harness<'static, SoundApp> {
