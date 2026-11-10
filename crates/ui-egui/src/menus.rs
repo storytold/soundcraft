@@ -752,8 +752,12 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             json!({"levels": app.ui.undo_levels})
         }
         "ui.sends_default" => {
-            let Some(level) = p.get("level").and_then(Value::as_str) else {
-                return Some(Ok(json!({"level": app.ui.sends_default.id()})));
+            // No `level` reads the value back; a `level` that is not a string is an error, so
+            // `{"level": 0}` cannot look like it set 0 dB while changing nothing.
+            let level = match p.get("level") {
+                None => return Some(Ok(json!({"level": app.ui.sends_default.id()}))),
+                Some(Value::String(level)) => level.as_str(),
+                Some(other) => return Some(Err(format!("send default must be the string \"-inf\" or \"0\", not {other}"))),
             };
             let Some(level) = crate::preferences::SendsDefault::parse(level) else {
                 return Some(Err(format!("unknown send default `{level}` (-inf or 0)")));
@@ -858,6 +862,18 @@ mod tests {
         assert!(app.run("ui.sends_default", json!({"level": "-6"})).is_err());
         assert_eq!(app.ui.sends_default, SendsDefault::Unity, "a rejected level changes nothing");
         assert!(!app.engine.is_dirty(), "a preference is not a document edit");
+    }
+
+    /// A `level` that is present but not a string is an error, not a read-back: `{"level": 0}` must
+    /// not look like it set 0 dB while changing nothing.
+    #[test]
+    fn sends_default_rejects_a_non_string_level() {
+        use crate::preferences::SendsDefault;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        for bad in [json!(0), json!(null), json!(false), json!(["0"])] {
+            assert!(app.run("ui.sends_default", json!({"level": bad})).is_err(), "{bad} accepted");
+            assert_eq!(app.ui.sends_default, SendsDefault::NegativeInfinity, "{bad} changed the setting");
+        }
     }
 
     /// `ui.set` takes the same `-inf` and `0` as `ui.sends_default`, and a bad value changes nothing.
