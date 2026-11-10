@@ -44,6 +44,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Auto-update configuration" => "Atualizar configuração automaticamente",
         "bar(s)" => "compasso(s)",
         "Bars per system" => "Compassos por sistema",
+        "Beat Analysis" => "Análise de batidas",
         "Beat Detective" => "Detecção de batidas",
         "BED" => "CAMADA BASE",
         "Big Counter" => "Contador grande",

@@ -1,4 +1,4 @@
-//! Event-menu operation windows: Beat Detective, Tempo Operations, Time Operations, MIDI
+//! Event-menu operation windows: Beat Analysis, Tempo Operations, Time Operations, MIDI
 //! Operations and MIDI Real-Time Properties. Each is a small form over engine commands.
 
 use crate::SoundApp;
@@ -88,50 +88,45 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     rtp(app, ctx);
 }
 
-/// Beat Detective window: sensitivity, separate and set-tempo options, Analyze and Apply results, and Identify Beat.
+/// Beat Analysis window: sensitivity, separate and set-tempo options, Analyze and Apply results, and Identify Beat.
 fn beat_detective(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_beat_detective;
     if !open {
         return;
     }
-    egui::Window::new(crate::localization::text("Beat Detective"))
-        .id(egui::Id::unique("Beat Detective"))
-        .open(&mut open)
-        .default_size(vec2(360.0, 220.0))
-        .show(ctx, |ui| {
-            ui.label(crate::localization::text("Analyses the edit selection on the selected tracks."));
-            ui.add(egui::Slider::new(&mut app.ops.beat_sensitivity, 0.0..=1.0).text(crate::localization::text("Sensitivity")));
-            crate::widgets::checkbox(ui, &mut app.ops.beat_separate, crate::localization::text("Separate clips at detected beats"));
-            crate::widgets::checkbox(ui, &mut app.ops.beat_set_tempo, crate::localization::text("Set the session tempo from the beats"));
-            ui.horizontal(|ui| {
-                if ui.button(crate::localization::text("Analyze")).clicked() {
-                    let r = app.run("event.beat_detective", json!({"sensitivity": app.ops.beat_sensitivity, "separate": false, "set_tempo": false}));
-                    app.ops.beat_result = r.map_or_else(|e| e, |v| v.to_string());
-                }
-                if ui.button(egui::RichText::new(crate::localization::text("Apply")).strong()).clicked() {
-                    let r = app.run(
-                        "event.beat_detective",
-                        json!({"sensitivity": app.ops.beat_sensitivity, "separate": app.ops.beat_separate, "set_tempo": app.ops.beat_set_tempo}),
-                    );
-                    app.ops.beat_result = r.map_or_else(|e| e, |v| v.to_string());
-                }
-            });
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(crate::localization::text("Identify Beat: selection is"));
-                ui.add(egui::DragValue::new(&mut app.ops.identify_bars).range(1..=64))
-                    .accessible_name(crate::localization::text("Identify beat bars"));
-                ui.label(crate::localization::text("bar(s)"));
-                if ui.button(crate::localization::text("Set Tempo")).clicked() {
-                    let r = app.run("event.identify_beat", json!({"bars": app.ops.identify_bars}));
-                    app.ops.beat_result = r.map_or_else(|e| e, |v| v.to_string());
-                }
-            });
-            if !app.ops.beat_result.is_empty() {
-                let s = app.ops.beat_result.clone();
-                ui.label(egui::RichText::new(if s.len() > 300 { format!("{}…", &s[..300]) } else { s }).small());
+    egui::Window::new(crate::localization::text("Beat Analysis")).id(egui::Id::new("Beat Analysis")).open(&mut open).default_size(vec2(360.0, 220.0)).show(ctx, |ui| {
+        ui.label(crate::localization::text("Analyses the edit selection on the selected tracks."));
+        ui.add(egui::Slider::new(&mut app.ops.beat_sensitivity, 0.0..=1.0).text(crate::localization::text("Sensitivity")));
+        crate::widgets::checkbox(ui, &mut app.ops.beat_separate, crate::localization::text("Separate clips at detected beats"));
+        crate::widgets::checkbox(ui, &mut app.ops.beat_set_tempo, crate::localization::text("Set the session tempo from the beats"));
+        ui.horizontal(|ui| {
+            if ui.button(crate::localization::text("Analyze")).clicked() {
+                let r = app.run("event.beat_detective", json!({"sensitivity": app.ops.beat_sensitivity, "separate": false, "set_tempo": false}));
+                app.ops.beat_result = r.map_or_else(|e| e, |v| v.to_string());
+            }
+            if ui.button(egui::RichText::new(crate::localization::text("Apply")).strong()).clicked() {
+                let r = app.run(
+                    "event.beat_detective",
+                    json!({"sensitivity": app.ops.beat_sensitivity, "separate": app.ops.beat_separate, "set_tempo": app.ops.beat_set_tempo}),
+                );
+                app.ops.beat_result = r.map_or_else(|e| e, |v| v.to_string());
             }
         });
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(crate::localization::text("Identify Beat: selection is"));
+            ui.add(egui::DragValue::new(&mut app.ops.identify_bars).range(1..=64)).accessible_name(crate::localization::text("Identify beat bars"));
+            ui.label(crate::localization::text("bar(s)"));
+            if ui.button(crate::localization::text("Set Tempo")).clicked() {
+                let r = app.run("event.identify_beat", json!({"bars": app.ops.identify_bars}));
+                app.ops.beat_result = r.map_or_else(|e| e, |v| v.to_string());
+            }
+        });
+        if !app.ops.beat_result.is_empty() {
+            let s = app.ops.beat_result.clone();
+            ui.label(egui::RichText::new(if s.len() > 300 { format!("{}…", &s[..300]) } else { s }).small());
+        }
+    });
     app.ui.show_beat_detective = open;
 }
 
@@ -157,34 +152,26 @@ fn tempo_ops(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new(crate::localization::text("Tempo Operations"))
-        .id(egui::Id::unique("Tempo Operations"))
-        .open(&mut open)
-        .default_size(vec2(360.0, 200.0))
-        .show(ctx, |ui| {
-            craft_ui::ComboBox::from_label(crate::localization::text("Curve"))
-                .selected_text(crate::localization::text(&app.ops.tempo_curve))
-                .show_ui(ui, |ui| {
-                    for c in ["constant", "linear", "parabolic", "s-curve", "scale", "stretch"] {
-                        ui.selectable_value(&mut app.ops.tempo_curve, c.to_string(), crate::localization::text(c));
-                    }
-                });
-            ui.add(egui::DragValue::new(&mut app.ops.tempo_start).range(5.0..=999.0).prefix(crate::localization::text("start bpm ")))
-                .accessible_name(crate::localization::text("Start tempo (BPM)"));
-            ui.add(egui::DragValue::new(&mut app.ops.tempo_end).range(5.0..=999.0).prefix(crate::localization::text("end bpm ")))
-                .accessible_name(crate::localization::text("End tempo (BPM)"));
-            ui.label(
-            egui::RichText::new(crate::localization::text(
-                "Applies across the edit selection (constant: at the insertion point; scale: factor = end / start; stretch: factor = start / end).",
-            ))
-            .small(),
-        );
-            if ui.button(egui::RichText::new(crate::localization::text("Apply")).strong()).clicked() {
-                let (id, p) = tempo_ops_apply(&app.ops.tempo_curve, app.ops.tempo_start, app.ops.tempo_end);
-                let r = app.run(id, p);
-                result_line(ui, &r);
+    egui::Window::new("Tempo Operations").open(&mut open).default_size(vec2(360.0, 200.0)).show(ctx, |ui| {
+        craft_ui::ComboBox::from_label("Curve").selected_text(app.ops.tempo_curve.clone()).show_ui(ui, |ui| {
+            for c in ["constant", "linear", "parabolic", "s-curve", "scale", "stretch"] {
+                ui.selectable_value(&mut app.ops.tempo_curve, c.to_string(), c);
             }
         });
+        ui.add(egui::DragValue::new(&mut app.ops.tempo_start).range(5.0..=999.0).prefix("start bpm ")).accessible_name("Start tempo (BPM)");
+        ui.add(egui::DragValue::new(&mut app.ops.tempo_end).range(5.0..=999.0).prefix("end bpm ")).accessible_name("End tempo (BPM)");
+        ui.label(
+            egui::RichText::new(
+                "Applies across the edit selection (constant: at the insertion point; scale: factor = end / start; stretch: factor = start / end).",
+            )
+            .small(),
+        );
+        if ui.button(egui::RichText::new("Apply").strong()).clicked() {
+            let (id, p) = tempo_ops_apply(&app.ops.tempo_curve, app.ops.tempo_start, app.ops.tempo_end);
+            let r = app.run(id, p);
+            result_line(ui, &r);
+        }
+    });
     app.ui.show_tempo_ops = open;
 }
 
@@ -195,51 +182,43 @@ fn time_ops(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new(crate::localization::text("Time Operations"))
-        .id(egui::Id::unique("Time Operations"))
-        .open(&mut open)
-        .default_size(vec2(360.0, 200.0))
-        .show(ctx, |ui| {
-            craft_ui::ComboBox::from_label(crate::localization::text("Operation"))
-                .selected_text(crate::localization::text(&app.ops.time_op))
-                .show_ui(ui, |ui| {
-                    for c in ["insert", "cut", "change meter", "move song start"] {
-                        ui.selectable_value(&mut app.ops.time_op, c.to_string(), crate::localization::text(c));
-                    }
-                });
-            match app.ops.time_op.as_str() {
-                "change meter" => {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut app.ops.meter_num).range(1..=64))
-                            .accessible_name(crate::localization::text("Meter numerator"));
-                        ui.label(crate::localization::text("/"));
-                        let den = craft_ui::ComboBox::from_id_salt("den").selected_text(app.ops.meter_den.to_string()).show_ui(ui, |ui| {
-                            for d in [2u32, 4, 8, 16] {
-                                ui.selectable_value(&mut app.ops.meter_den, d, d.to_string());
-                            }
-                        });
-                        den.response.accessible_name(crate::localization::text("Meter denominator"));
-                    });
-                }
-                "insert" => {
-                    ui.add(egui::DragValue::new(&mut app.ops.time_seconds).range(0.0..=3600.0).suffix(" s"))
-                        .accessible_name(crate::localization::text("Time (seconds)"));
-                }
-                _ => {
-                    ui.label(egui::RichText::new(crate::localization::text("Uses the edit selection.")).small());
-                }
-            }
-            if ui.button(egui::RichText::new(crate::localization::text("Apply")).strong()).clicked() {
-                let at = app.engine.session().edit.selection.start;
-                let r = match app.ops.time_op.as_str() {
-                    "insert" => app.run("event.insert_time", json!({"start": at, "length": {"seconds": app.ops.time_seconds}})),
-                    "cut" => app.run("event.cut_time", json!({})),
-                    "change meter" => app.run("event.meter", json!({"numerator": app.ops.meter_num, "denominator": app.ops.meter_den, "at": at})),
-                    _ => app.run("event.move_song_start", json!({"to": at})),
-                };
-                result_line(ui, &r);
+    egui::Window::new("Time Operations").open(&mut open).default_size(vec2(360.0, 200.0)).show(ctx, |ui| {
+        craft_ui::ComboBox::from_label("Operation").selected_text(app.ops.time_op.clone()).show_ui(ui, |ui| {
+            for c in ["insert", "cut", "change meter", "move song start"] {
+                ui.selectable_value(&mut app.ops.time_op, c.to_string(), c);
             }
         });
+        match app.ops.time_op.as_str() {
+            "change meter" => {
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut app.ops.meter_num).range(1..=64)).accessible_name("Meter numerator");
+                    ui.label("/");
+                    let den = craft_ui::ComboBox::from_id_salt("den").selected_text(app.ops.meter_den.to_string()).show_ui(ui, |ui| {
+                        for d in [2u32, 4, 8, 16] {
+                            ui.selectable_value(&mut app.ops.meter_den, d, d.to_string());
+                        }
+                    });
+                    den.response.accessible_name("Meter denominator");
+                });
+            }
+            "insert" => {
+                ui.add(egui::DragValue::new(&mut app.ops.time_seconds).range(0.0..=3600.0).suffix(" s")).accessible_name("Time (seconds)");
+            }
+            _ => {
+                ui.label(egui::RichText::new("Uses the edit selection.").small());
+            }
+        }
+        if ui.button(egui::RichText::new("Apply").strong()).clicked() {
+            let at = app.engine.session().edit.selection.start;
+            let r = match app.ops.time_op.as_str() {
+                "insert" => app.run("event.insert_time", json!({"start": at, "length": {"seconds": app.ops.time_seconds}})),
+                "cut" => app.run("event.cut_time", json!({})),
+                "change meter" => app.run("event.meter", json!({"numerator": app.ops.meter_num, "denominator": app.ops.meter_den, "at": at})),
+                _ => app.run("event.move_song_start", json!({"to": at})),
+            };
+            result_line(ui, &r);
+        }
+    });
     app.ui.show_time_ops = open;
 }
 
@@ -248,49 +227,44 @@ fn midi_ops(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new(crate::localization::text("MIDI Operations"))
-        .id(egui::Id::unique("MIDI Operations"))
-        .open(&mut open)
-        .default_size(vec2(360.0, 220.0))
-        .show(ctx, |ui| {
-            craft_ui::ComboBox::from_label(crate::localization::text("Operation"))
-                .selected_text(crate::localization::text(&app.ops.midi_op))
-                .show_ui(ui, |ui| {
-                    for c in ["quantize", "transpose", "change velocity", "flatten performance", "restore performance"] {
-                        ui.selectable_value(&mut app.ops.midi_op, c.to_string(), crate::localization::text(c));
-                    }
-                });
-            match app.ops.midi_op.as_str() {
-                "quantize" => {
-                    craft_ui::ComboBox::from_label(crate::localization::text("Grid")).selected_text(app.ops.quant_grid.clone()).show_ui(ui, |ui| {
-                        for g in ["1/4", "1/8", "1/8t", "1/16", "1/16t", "1/32"] {
-                            ui.selectable_value(&mut app.ops.quant_grid, g.to_string(), g);
-                        }
-                    });
-                    ui.add(egui::Slider::new(&mut app.ops.quant_strength, 0.0..=100.0).text(crate::localization::text("Strength %")));
-                    ui.add(egui::Slider::new(&mut app.ops.quant_swing, 0.0..=100.0).text(crate::localization::text("Swing %")));
-                }
-                "transpose" => {
-                    ui.add(egui::Slider::new(&mut app.ops.transpose, -48..=48).text(crate::localization::text("Semitones")));
-                }
-                "change velocity" => {
-                    ui.add(egui::Slider::new(&mut app.ops.velocity_add, -127..=127).text(crate::localization::text("Add")));
-                }
-                _ => {}
-            }
-            ui.label(egui::RichText::new(crate::localization::text("Applies to the selected MIDI clips (or those under the selection).")).small());
-            if ui.button(egui::RichText::new(crate::localization::text("Apply")).strong()).clicked() {
-                let r = match app.ops.midi_op.as_str() {
-                    "quantize" => app
-                        .run("event.quantize", json!({"grid": app.ops.quant_grid, "strength": app.ops.quant_strength, "swing": app.ops.quant_swing})),
-                    "transpose" => app.run("event.transpose", json!({"semitones": app.ops.transpose})),
-                    "change velocity" => app.run("event.change_velocity", json!({"add": app.ops.velocity_add})),
-                    "flatten performance" => app.run("event.flatten_performance", json!({})),
-                    _ => app.run("event.restore_performance", json!({})),
-                };
-                result_line(ui, &r);
+    egui::Window::new("MIDI Operations").open(&mut open).default_size(vec2(360.0, 220.0)).show(ctx, |ui| {
+        craft_ui::ComboBox::from_label("Operation").selected_text(app.ops.midi_op.clone()).show_ui(ui, |ui| {
+            for c in ["quantize", "transpose", "change velocity", "flatten performance", "restore performance"] {
+                ui.selectable_value(&mut app.ops.midi_op, c.to_string(), c);
             }
         });
+        match app.ops.midi_op.as_str() {
+            "quantize" => {
+                craft_ui::ComboBox::from_label("Grid").selected_text(app.ops.quant_grid.clone()).show_ui(ui, |ui| {
+                    for g in ["1/4", "1/8", "1/8t", "1/16", "1/16t", "1/32"] {
+                        ui.selectable_value(&mut app.ops.quant_grid, g.to_string(), g);
+                    }
+                });
+                ui.add(egui::Slider::new(&mut app.ops.quant_strength, 0.0..=100.0).text("Strength %"));
+                ui.add(egui::Slider::new(&mut app.ops.quant_swing, 0.0..=100.0).text("Swing %"));
+            }
+            "transpose" => {
+                ui.add(egui::Slider::new(&mut app.ops.transpose, -48..=48).text("Semitones"));
+            }
+            "change velocity" => {
+                ui.add(egui::Slider::new(&mut app.ops.velocity_add, -127..=127).text("Add"));
+            }
+            _ => {}
+        }
+        ui.label(egui::RichText::new("Applies to the selected MIDI clips (or those under the selection).").small());
+        if ui.button(egui::RichText::new("Apply").strong()).clicked() {
+            let r = match app.ops.midi_op.as_str() {
+                "quantize" => {
+                    app.run("event.quantize", json!({"grid": app.ops.quant_grid, "strength": app.ops.quant_strength, "swing": app.ops.quant_swing}))
+                }
+                "transpose" => app.run("event.transpose", json!({"semitones": app.ops.transpose})),
+                "change velocity" => app.run("event.change_velocity", json!({"add": app.ops.velocity_add})),
+                "flatten performance" => app.run("event.flatten_performance", json!({})),
+                _ => app.run("event.restore_performance", json!({})),
+            };
+            result_line(ui, &r);
+        }
+    });
     app.ui.show_midi_ops = open;
 }
 
@@ -301,36 +275,29 @@ fn rtp(app: &mut SoundApp, ctx: &egui::Context) {
     }
     let targets = app.engine.target_tracks();
     sync_rtp_form(&mut app.ops, app.engine.session(), targets, ctx.dragged_id().is_some());
-    egui::Window::new(crate::localization::text("MIDI Real-Time Properties"))
-        .id(egui::Id::unique("MIDI Real-Time Properties"))
-        .open(&mut open)
-        .default_size(vec2(340.0, 200.0))
-        .show(ctx, |ui| {
-            ui.label(crate::localization::text("Non-destructive, applied at playback to the selected MIDI tracks."));
-            let mut changed = RtpChanged::default();
-            changed.velocity =
-                ui.add(egui::Slider::new(&mut app.ops.rtp_velocity, -127..=127).text(crate::localization::text("Velocity +"))).changed();
-            changed.transpose =
-                ui.add(egui::Slider::new(&mut app.ops.rtp_transpose, -48..=48).text(crate::localization::text("Transpose"))).changed();
-            changed.duration =
-                ui.add(egui::Slider::new(&mut app.ops.rtp_duration, 1.0..=400.0).text(crate::localization::text("Duration %"))).changed();
-            changed.delay = ui.add(egui::Slider::new(&mut app.ops.rtp_delay, -960..=960).text(crate::localization::text("Delay (ticks)"))).changed();
-            if let Some(p) = rtp_params(changed, &app.ops) {
-                let _ = app.engine.execute_merged("event.midi_rtp", &p, "rtp");
+    egui::Window::new("MIDI Real-Time Properties").open(&mut open).default_size(vec2(340.0, 200.0)).show(ctx, |ui| {
+        ui.label("Non-destructive, applied at playback to the selected MIDI tracks.");
+        let mut changed = RtpChanged::default();
+        changed.velocity = ui.add(egui::Slider::new(&mut app.ops.rtp_velocity, -127..=127).text("Velocity +")).changed();
+        changed.transpose = ui.add(egui::Slider::new(&mut app.ops.rtp_transpose, -48..=48).text("Transpose")).changed();
+        changed.duration = ui.add(egui::Slider::new(&mut app.ops.rtp_duration, 1.0..=400.0).text("Duration %")).changed();
+        changed.delay = ui.add(egui::Slider::new(&mut app.ops.rtp_delay, -960..=960).text("Delay (ticks)")).changed();
+        if let Some(p) = rtp_params(changed, &app.ops) {
+            let _ = app.engine.execute_merged("event.midi_rtp", &p, "rtp");
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Write to Notes").clicked() {
+                let _ = app.run("track.write_midi_rtp", json!({}));
             }
-            ui.horizontal(|ui| {
-                if ui.button(crate::localization::text("Write to Notes")).clicked() {
-                    let _ = app.run("track.write_midi_rtp", json!({}));
-                }
-                if ui.button(crate::localization::text("Clear")).clicked() {
-                    let _ = app.run("event.midi_rtp", json!({"clear": true}));
-                    app.ops.rtp_velocity = 0;
-                    app.ops.rtp_transpose = 0;
-                    app.ops.rtp_duration = 100.0;
-                    app.ops.rtp_delay = 0;
-                }
-            });
+            if ui.button("Clear").clicked() {
+                let _ = app.run("event.midi_rtp", json!({"clear": true}));
+                app.ops.rtp_velocity = 0;
+                app.ops.rtp_transpose = 0;
+                app.ops.rtp_duration = 100.0;
+                app.ops.rtp_delay = 0;
+            }
         });
+    });
     app.ui.show_rtp = open;
 }
 
