@@ -29,15 +29,21 @@ pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
             match process.as_str() {
                 "normalize" => {
                     let v = params.entry("target_db".into()).or_insert(-0.1);
-                    ui.add(egui::Slider::new(v, -24.0..=0.0).text("Peak dB"));
+                    let mut wide = f64::from(*v);
+                    crate::widgets::FineSlider::new(&mut wide, -24.0..=0.0).text("Peak dB").default_value(-0.1).show(ui);
+                    *v = wide as f32;
                 }
                 "time_stretch" => {
                     let v = params.entry("ratio".into()).or_insert(1.0);
-                    ui.add(egui::Slider::new(v, 0.25..=4.0).text("Length ratio"));
+                    let mut wide = f64::from(*v);
+                    crate::widgets::FineSlider::new(&mut wide, 0.25..=4.0).text("Length ratio").default_value(1.0).show(ui);
+                    *v = wide as f32;
                 }
                 "pitch_shift" => {
                     let v = params.entry("semitones".into()).or_insert(0.0);
-                    ui.add(egui::Slider::new(v, -24.0..=24.0).text("Semitones"));
+                    let mut wide = f64::from(*v);
+                    crate::widgets::FineSlider::new(&mut wide, -24.0..=24.0).text("Semitones").default_value(0.0).show(ui);
+                    *v = wide as f32;
                 }
                 "speed_ramp" => {
                     for (id, label, default, choices) in SPEED_RAMP_CHOICES {

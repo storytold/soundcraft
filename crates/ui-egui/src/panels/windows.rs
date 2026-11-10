@@ -793,6 +793,7 @@ pub fn clip_effects(app: &mut SoundApp, ctx: &egui::Context) {
                         let mut wide = f64::from(v);
                         crate::widgets::FineSlider::new(&mut wide, f64::from(p.min)..=f64::from(p.max))
                             .text(p.name)
+                            .logarithmic(p.taper == soundcraft_dsp::Taper::Log && p.min > 0.0)
                             .default_value(f64::from(p.default))
                             .show(col);
                         v = wide as f32;
@@ -814,10 +815,16 @@ pub fn clip_effects(app: &mut SoundApp, ctx: &egui::Context) {
             });
             let mut g = get(app, "gain", 0.0);
             let before = g;
-            ui.add(egui::Slider::new(&mut g, -36.0..=24.0).text("Clip effects gain (dB)"));
+            let mut wide = f64::from(g);
+            crate::widgets::FineSlider::new(&mut wide, -36.0..=24.0).text("Clip effects gain (dB)").default_value(0.0).show(ui);
+            g = wide as f32;
             if (g - before).abs() > f32::EPSILON {
-                let _ =
-                    app.engine.execute_merged("clip.effects_set", &json!({"clips": [cid.0], "params": {"gain": g}}), &format!("cfx:{}:gain", cid.0));
+                let gesture = format!("cfx:{}:gain", cid.0);
+                // An Alt-click that resets the gain is its own undo step, as on the parameters above.
+                if ui.input(|i| i.modifiers.alt && i.pointer.any_released()) && app.engine.merge_key() == Some(gesture.as_str()) {
+                    app.engine.end_merge();
+                }
+                let _ = app.engine.execute_merged("clip.effects_set", &json!({"clips": [cid.0], "params": {"gain": g}}), &gesture);
             }
         });
     });

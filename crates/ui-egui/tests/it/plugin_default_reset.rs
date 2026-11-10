@@ -70,8 +70,25 @@ fn param(plugin: &str, id: &str) -> &'static ParamInfo {
 }
 
 fn insert_param(h: &Harness<'_, SoundApp>, track: TrackId, slot: usize, p: &ParamInfo) -> f32 {
-    let ins = h.state().engine.session().track(track).unwrap().mixer.inserts[slot].as_ref();
+    let tr = h.state().engine.session().track(track).unwrap();
+    let ins = if slot == soundcraft_mix::INSTRUMENT_SLOT { tr.instrument.as_ref() } else { tr.mixer.inserts[slot].as_ref() };
     ins.unwrap().params.get(p.id).copied().unwrap_or(p.default)
+}
+
+/// The center of the value box on the same row as `rail`, to the rail's right.
+fn value_box(h: &Harness<'_, SoundApp>, rail: Rect) -> Pos2 {
+    h.query_all_by_role(Role::SpinButton)
+        .map(|n| n.rect())
+        .find(|r| r.left() > rail.right() && (r.center().y - rail.center().y).abs() < 4.0)
+        .unwrap()
+        .center()
+}
+
+/// A plain click at `at`, which sets a value from the pointer.
+fn plain_click(h: &mut Harness<'_, SoundApp>, at: Pos2) {
+    move_to(h, at);
+    press(h, at, true, Modifiers::NONE);
+    press(h, at, false, Modifiers::NONE);
 }
 
 fn undo_steps(h: &Harness<'_, SoundApp>) -> usize {
@@ -122,9 +139,99 @@ fn alt_click_returns_a_plugin_window_choice_to_its_default_without_opening_the_l
     assert_ne!(slope.default, slope.max);
     let row = h.get_by_label("HPF Slope").rect();
     let combo = h.query_all_by_role(Role::ComboBox).map(|n| n.rect()).find(|r| (r.center().y - row.center().y).abs() < 4.0).unwrap();
+    let steps = undo_steps(&h);
     alt_press(&mut h, combo.center(), 0.0);
     assert_eq!(insert_param(&h, kick, 0, slope), slope.default, "Alt-click did not return HPF Slope to its default");
     assert!(!egui::Popup::is_any_open(&h.ctx), "Alt-click opened the list");
+    assert_eq!(undo_steps(&h), steps + 1, "Alt-click is not one undo step");
+    h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(insert_param(&h, kick, 0, slope), slope.max, "Undo did not bring HPF Slope back");
+}
+
+#[test]
+fn alt_pressed_during_a_drag_holds_the_value_and_the_drag_goes_on_from_there() {
+    let (mut h, kick) = kick_eq();
+    let input = param("eq_7band", "input_gain");
+    let from = window_sliders(&h, Id::unique(("plugin", kick.0, 0usize)))[0].center();
+    move_to(&mut h, from);
+    press(&mut h, from, true, Modifiers::NONE);
+    let pressed = insert_param(&h, kick, 0, input);
+    move_to(&mut h, from + vec2(10.0, 0.0));
+    let before = insert_param(&h, kick, 0, input);
+    assert!(before > pressed, "a plain drag did not move Input");
+    hold(&mut h, Modifiers::ALT);
+    assert_eq!(insert_param(&h, kick, 0, input), before, "pressing Alt moved Input");
+    for i in 1..=6 {
+        move_to(&mut h, from + vec2(10.0 + 5.0 * i as f32, 0.0));
+    }
+    assert_eq!(insert_param(&h, kick, 0, input), before, "a drag with Alt held moved Input");
+    hold(&mut h, Modifiers::NONE);
+    assert_eq!(insert_param(&h, kick, 0, input), before, "releasing Alt moved Input to the pointer");
+    move_to(&mut h, from + vec2(50.0, 0.0));
+    let moved = insert_param(&h, kick, 0, input) - before;
+    press(&mut h, from + vec2(50.0, 0.0), false, Modifiers::NONE);
+    let ratio = moved / (before - pressed);
+    assert!((0.8..=1.2).contains(&ratio), "10 points after Alt moved Input {moved}, 10 points before it {}", before - pressed);
+}
+
+/// Kick's compressor window, with Attack away from its default.
+fn kick_compressor_attack() -> (Harness<'static, SoundApp>, TrackId, f32) {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+    let attack = param("compressor", "attack");
+    let away = (attack.default * 2.0).min(attack.max);
+    assert_ne!(away, attack.default);
+    assert!(attack.taper == soundcraft_dsp::Taper::Log, "Attack is no longer a log-taper parameter");
+    app.run("mix.insert_param", json!({"track": kick.0, "slot": 1, "param": "attack", "value": away})).unwrap();
+    app.engine.end_merge();
+    app.ui.plugin_windows = vec![(kick, 1)];
+    (harness(app), kick, away)
+}
+
+fn compressor_attack_rail(h: &Harness<'_, SoundApp>, kick: TrackId) -> Rect {
+    let params = soundcraft_dsp::plugin_info("compressor").unwrap().params;
+    let index = params.iter().filter(|p| p.choices.is_empty()).position(|p| p.id == "attack").unwrap();
+    window_sliders(h, Id::unique(("plugin", kick.0, 1usize)))[index]
+}
+
+#[test]
+fn alt_click_returns_a_log_taper_slider_to_its_default() {
+    let (mut h, kick, _) = kick_compressor_attack();
+    let attack = param("compressor", "attack");
+    let rail = compressor_attack_rail(&h, kick);
+    alt_press(&mut h, near_left(rail), 0.0);
+    assert_eq!(insert_param(&h, kick, 1, attack), attack.default, "Alt-click did not return Attack to its default");
+}
+
+#[test]
+fn alt_drag_leaves_a_log_taper_slider_where_it_is() {
+    let (mut h, kick, away) = kick_compressor_attack();
+    let attack = param("compressor", "attack");
+    let rail = compressor_attack_rail(&h, kick);
+    let steps = undo_steps(&h);
+    alt_press(&mut h, near_left(rail), 40.0);
+    assert_eq!(insert_param(&h, kick, 1, attack), away, "an Alt-drag moved Attack");
+    assert_eq!(undo_steps(&h), steps, "an Alt-drag added an undo step");
+}
+
+#[test]
+fn alt_click_returns_a_whole_number_slider_to_its_default() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    app.run("mix.instrument", json!({"track": keys.0, "plugin": "sampler"})).unwrap();
+    app.run("mix.instrument_param", json!({"track": keys.0, "param": "root_note", "value": 72.0})).unwrap();
+    app.engine.end_merge();
+    app.ui.plugin_windows = vec![(keys, soundcraft_mix::INSTRUMENT_SLOT)];
+    let mut h = harness(app);
+    let root = param("sampler", "root_note");
+    assert_ne!(root.default, 72.0);
+    let rail = window_sliders(&h, Id::unique(("plugin", keys.0, soundcraft_mix::INSTRUMENT_SLOT)))[0];
+    let steps = undo_steps(&h);
+    alt_press(&mut h, near_left(rail), 0.0);
+    let v = insert_param(&h, keys, soundcraft_mix::INSTRUMENT_SLOT, root);
+    assert_eq!(v, root.default, "Alt-click did not return Root Note to its default");
+    assert_eq!(v.fract(), 0.0, "Root Note is not a whole number after an Alt-click");
+    assert_eq!(undo_steps(&h), steps + 1, "Alt-click is not one undo step");
 }
 
 #[test]
@@ -144,15 +251,7 @@ fn alt_click_returns_clip_effects_sliders_and_value_boxes_to_their_defaults() {
         let read = |h: &Harness<'_, SoundApp>| h.state().engine.session().edit.values.get(&key).copied();
         assert_ne!(read(&h), Some(f64::from(p.default)));
         let rail = h.get_by_role_and_label(Role::Slider, label).rect();
-        let at = if on_box {
-            h.query_all_by_role(Role::SpinButton)
-                .map(|n| n.rect())
-                .find(|r| r.left() > rail.right() && (r.center().y - rail.center().y).abs() < 4.0)
-                .unwrap()
-                .center()
-        } else {
-            near_left(rail)
-        };
+        let at = if on_box { value_box(&h, rail) } else { near_left(rail) };
         // A plain click on the value box gives it the keyboard focus for typing.
         let focus = h.ctx.memory(|m| m.focused());
         let steps = undo_steps(&h);
@@ -202,6 +301,53 @@ fn alt_click_after_typing_in_a_clip_effects_value_box_is_its_own_undo_step() {
     assert_eq!(read(&h), Some(-12.0), "Undo did not bring back the typed value");
 }
 
+/// The gain's value box behaves as the parameters' value boxes do: one undo after an Alt-click
+/// brings back the typed gain.
+#[test]
+fn alt_click_after_typing_in_the_clip_effects_gain_box_is_its_own_undo_step() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let clip = app.engine.session().track_by_name("Kick").unwrap().clips().iter().find(|c| c.is_audio()).unwrap().id;
+    app.run("edit.select", json!({"clips": [clip.0]})).unwrap();
+    app.run("clip.effects_set", json!({"clips": [clip.0], "params": {"gain": 6.0}})).unwrap();
+    app.engine.end_merge();
+    app.ui.show_clip_effects = true;
+    let mut h = harness(app);
+    let key = format!("clip_fx.{}.gain", clip.0);
+    let read = |h: &Harness<'_, SoundApp>| h.state().engine.session().edit.values.get(&key).copied();
+    let input = h.get_by_role_and_label(Role::Slider, "Input").rect();
+    move_to(&mut h, input.center());
+    h.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -2000.0),
+        modifiers: Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Unknown,
+    });
+    h.run_steps(30);
+    let rail = h.get_by_role_and_label(Role::Slider, "Clip effects gain (dB)").rect();
+    let at = h
+        .query_all_by_role(Role::SpinButton)
+        .map(|n| n.rect())
+        .find(|r| r.left() > rail.right() && (r.center().y - rail.center().y).abs() < 4.0)
+        .unwrap()
+        .center();
+    move_to(&mut h, at);
+    press(&mut h, at, true, Modifiers::NONE);
+    press(&mut h, at, false, Modifiers::NONE);
+    h.run_steps(2);
+    assert!(h.ctx.egui_wants_keyboard_input(), "a plain click did not open the gain's value box for typing");
+    let steps = undo_steps(&h);
+    h.event(Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::COMMAND });
+    h.event(Event::Text("-12".into()));
+    h.run_steps(2);
+    assert_eq!(read(&h), Some(-12.0), "typing did not set the gain");
+    alt_press(&mut h, at, 0.0);
+    assert_eq!(read(&h), Some(0.0), "Alt-click did not return the gain to 0 dB");
+    assert_eq!(undo_steps(&h), steps + 2, "the typed value and the Alt-click are not two undo steps");
+    h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(read(&h), Some(-12.0), "Undo did not bring back the typed gain");
+}
+
 /// An Alt-click on a clip effects slider during an automation pass joins the pass's undo step:
 /// the automation written before and after the reset, and the reset, undo together.
 #[test]
@@ -231,6 +377,36 @@ fn alt_click_on_a_clip_effects_slider_during_an_automation_pass_keeps_the_pass_o
 }
 
 #[test]
+fn fallback_audiosuite_sliders_reset_with_alt_click() {
+    for (process, label, id, default) in [
+        ("normalize", "Peak dB", "target_db", -0.1f32),
+        ("time_stretch", "Length ratio", "ratio", 1.0),
+        ("pitch_shift", "Semitones", "semitones", 0.0),
+    ] {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        app.ui.audiosuite = Some(process.into());
+        let mut h = harness(app);
+        let read = |h: &Harness<'_, SoundApp>| -> BTreeMap<String, f32> {
+            h.ctx.data(|d| d.get_temp(Id::unique(("as_params", process.to_string())))).unwrap_or_default()
+        };
+        let rail = h.get_by_role_and_label(Role::Slider, label).rect();
+        move_to(&mut h, near_left(rail));
+        press(&mut h, near_left(rail), true, Modifiers::NONE);
+        press(&mut h, near_left(rail), false, Modifiers::NONE);
+        assert_ne!(read(&h)[id], default, "{process}: plain click did not move the value");
+        alt_press(&mut h, near_left(rail), 0.0);
+        assert_eq!(read(&h)[id], default, "{process}: Alt-click did not restore the default");
+        plain_click(&mut h, near_left(rail));
+        assert_ne!(read(&h)[id], default, "{process}: plain click did not move the value");
+        let focus = h.ctx.memory(|m| m.focused());
+        let at = value_box(&h, rail);
+        alt_press(&mut h, at, 0.0);
+        assert_eq!(read(&h)[id], default, "{process}: Alt-click on the value box did not restore the default");
+        assert_eq!(h.ctx.memory(|m| m.focused()), focus, "{process}: Alt-click opened the value box for typing");
+    }
+}
+
+#[test]
 fn alt_click_returns_audiosuite_parameter_sliders_to_their_defaults() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     app.ui.audiosuite = Some("compressor".into());
@@ -246,4 +422,40 @@ fn alt_click_returns_audiosuite_parameter_sliders_to_their_defaults() {
     assert_ne!(read(&h)["threshold"], threshold.default, "a plain click did not move Threshold");
     alt_press(&mut h, near_left(rail), 0.0);
     assert_eq!(read(&h)["threshold"], threshold.default, "Alt-click did not return Threshold to its default");
+    plain_click(&mut h, near_left(rail));
+    assert_ne!(read(&h)["threshold"], threshold.default, "a plain click did not move Threshold");
+    let focus = h.ctx.memory(|m| m.focused());
+    let at = value_box(&h, rail);
+    alt_press(&mut h, at, 0.0);
+    assert_eq!(read(&h)["threshold"], threshold.default, "Alt-click on the value box did not return Threshold to its default");
+    assert_eq!(h.ctx.memory(|m| m.focused()), focus, "Alt-click opened Threshold's value box for typing");
+}
+
+#[test]
+fn clip_effects_gain_resets_with_alt_click_and_undo_restores_the_value() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let clip = app.engine.session().track_by_name("Kick").unwrap().clips().iter().find(|c| c.is_audio()).unwrap().id;
+    app.run("edit.select", json!({"clips": [clip.0]})).unwrap();
+    app.run("clip.effects_set", json!({"clips": [clip.0], "params": {"gain": 6.0}})).unwrap();
+    app.engine.end_merge();
+    app.ui.show_clip_effects = true;
+    let mut h = harness(app);
+    let key = format!("clip_fx.{}.gain", clip.0);
+    let input = h.get_by_role_and_label(Role::Slider, "Input").rect();
+    move_to(&mut h, input.center());
+    h.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -2000.0),
+        modifiers: Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Unknown,
+    });
+    h.run_steps(30);
+    let rail = h.get_by_role_and_label(Role::Slider, "Clip effects gain (dB)").rect();
+    let steps = undo_steps(&h);
+    alt_press(&mut h, near_left(rail), 0.0);
+    assert_eq!(h.state().engine.session().edit.values.get(&key), Some(&0.0));
+    assert_eq!(undo_steps(&h), steps + 1);
+    h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().engine.session().edit.values.get(&key), Some(&6.0));
 }
