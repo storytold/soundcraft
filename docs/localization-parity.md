@@ -28,7 +28,7 @@ Language setting), PR #141 (bundled multilingual font fallbacks), issue #67 (Ukr
 | Hindi | hi | 0 (0 %) | ❌ | ❌ no Devanagari font or shaping | no | none | 8–15 | ❌ |
 | Arabic | ar | 0 (0 %) | ❌ | ❌ no RTL layout, no shaping | no | none | 15–25 | ❌ |
 | French | fr | 0 (0 %) — PR #143 pending | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
-| Portuguese (Brazil) | pt-BR | Menu labels and the `localization::text` / `localized_format!` strings in `crates/ui-egui/src` (checked by a test; not native-reviewed; dynamic engine errors and third-party plugin names stay English) | 🟡 partial | Latin ✅ | no | partial | 2–4 | ❌ |
+| Portuguese (Brazil) | pt-BR | Menu labels and the `localization::text` / `localized_format!` strings in `crates/ui-egui/src` (checked by a test; not native-reviewed; engine errors are translated at display time by `localization::error_text` from templates in the catalog, while low-level library errors and third-party plugin names stay English) | 🟡 partial | Latin ✅ | no | partial | 2–4 | ❌ |
 | Indonesian | id | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ❌ |
 | Japanese | ja | 0 (0 %) | ❌ | ❌ no CJK font fallback, no IME testing | no | none | 6–10 | ✅ |
 | German | de | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ✅ |

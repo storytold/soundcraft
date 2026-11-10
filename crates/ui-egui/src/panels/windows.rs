@@ -72,7 +72,7 @@ fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
                 ui.label(crate::localization::text("Checks loaded media only, not files on disk, signal levels, plugins or routing."));
             }
             Err(error) => {
-                ui.label(error.to_string());
+                ui.label(crate::localization::error_text(&error.to_string()));
             }
         }
     });
@@ -383,7 +383,7 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
                             // The folder is kept as text in the preferences.
                             match crate::dialogs::unicode(&path) {
                                 Ok(p) => app.ui.workspace_dir = p.to_owned(),
-                                Err(e) => app.ui.status = e.to_string(),
+                                Err(e) => app.ui.status = crate::localization::error_text(&e.to_string()),
                             }
                         } else {
                             crate::dialogs::open_path(app, &path);
@@ -777,7 +777,7 @@ pub fn shortcuts_window(app: &mut SoundApp, ctx: &egui::Context) {
                 let windows = crate::menus::UI_COMMANDS.iter().map(|c| (c.3, c.1, c.2.replace(" > ", " › ")));
                 for (shortcut, label, menu) in engine.chain(windows) {
                     let Some(shortcut) = shortcut else { continue };
-                    ui.label(egui::RichText::new(crate::shortcuts::shortcut_label(shortcut, mac)).font(mono(11.0)));
+                    ui.label(egui::RichText::new(crate::shortcuts::display_shortcut(shortcut, mac)).font(mono(11.0)));
                     ui.label(crate::localization::text(label));
                     let menu = menu.split(" › ").map(crate::localization::text).collect::<Vec<_>>().join(" › ");
                     ui.label(egui::RichText::new(menu).small());

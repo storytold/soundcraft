@@ -52,7 +52,7 @@ pub fn open_path(app: &mut SoundApp, path: &std::path::Path) {
         Ok(p) => p,
         Err(e) => {
             log::warn!("{e}");
-            app.ui.status = e.to_string();
+            app.ui.status = crate::localization::error_text(&e.to_string());
             return;
         }
     };
@@ -104,7 +104,7 @@ pub(super) fn open_pending_session(app: &mut SoundApp) {
                 crate::localized_format!("Opened {name} ({missing} missing media)", name = name, missing = missing.len())
             }
         }
-        Err(e) => e.to_string(),
+        Err(e) => crate::localization::error_text(&e.to_string()),
     };
 }
 

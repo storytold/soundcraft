@@ -51,10 +51,13 @@ struct ModeCellState {
 
 fn edit_mode_tooltip(m: EditMode, locked: bool, cmd: &str, fkey: &str) -> String {
     match m {
-        EditMode::Shuffle if locked => format!("Shuffle is locked ({cmd}-click to unlock)"),
-        EditMode::Shuffle => format!("Shuffle mode ({fkey}); {cmd}-click locks it out"),
-        EditMode::Grid => format!("Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes"),
-        _ => format!("{} mode ({fkey}); Shift-click adds Snap to Grid", if m == EditMode::Slip { "Slip" } else { "Spot" }),
+        EditMode::Shuffle if locked => crate::localized_format!("Shuffle is locked ({cmd}-click to unlock)", cmd = cmd),
+        EditMode::Shuffle => crate::localized_format!("Shuffle mode ({fkey}); {cmd}-click locks it out", fkey = fkey, cmd = cmd),
+        EditMode::Grid => {
+            crate::localized_format!("Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes", fkey = fkey)
+        }
+        EditMode::Slip => crate::localized_format!("Slip mode ({fkey}); Shift-click adds Snap to Grid", fkey = fkey),
+        _ => crate::localized_format!("Spot mode ({fkey}); Shift-click adds Snap to Grid", fkey = fkey),
     }
 }
 
@@ -69,7 +72,7 @@ fn draw_mode_cell(p: &egui::Painter, cell: Rect, resp: &egui::Response, t: &Toke
         icons::draw(p, Rect::from_center_size(cell.center(), vec2(15.0, 15.0)), "lock", fg);
     } else {
         let txt = if m == EditMode::Grid && state.cur == EditMode::GridRelative { "REL GRID" } else { label };
-        p.text(cell.center(), Align2::CENTER_CENTER, txt, bold(10.5), fg);
+        p.text(cell.center(), Align2::CENTER_CENTER, crate::localization::text(txt), bold(10.5), fg);
     }
 }
 
@@ -85,8 +88,12 @@ fn edit_modes(app: &mut SoundApp, ui: &mut Ui) {
         (EditMode::Slip, 0, 1, "SLIP", "F2"),
         (EditMode::Grid, 1, 1, "GRID", "F4"),
     ];
-    let widest =
-        modes.iter().map(|m| m.3).chain(["REL GRID"]).map(|l| ui.painter().layout_no_wrap(l.into(), bold(10.5), t.text).size().x).fold(0.0, f32::max);
+    let widest = modes
+        .iter()
+        .map(|m| m.3)
+        .chain(["REL GRID"])
+        .map(|l| ui.painter().layout_no_wrap(crate::localization::text(l).into(), bold(10.5), t.text).size().x)
+        .fold(0.0, f32::max);
     group(ui, 2.0 * widest + 44.0, 52.0, |ui, r| {
         let inner = r.shrink(6.0);
         let cw = inner.width() / 2.0;

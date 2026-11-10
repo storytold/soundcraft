@@ -42,7 +42,7 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
     let header = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 22.0));
     panel_header(ui, "TRACKS");
     let plus = Rect::from_center_size(pos2(header.max.x - 13.0, header.center().y), vec2(18.0, 18.0));
-    let tip = format!("New Tracks… ({})", crate::shortcuts::shortcut_label("Cmd+Shift+N", ui.ctx().os().is_mac()));
+    let tip = crate::localized_format!("New Tracks… ({})", crate::shortcuts::display_shortcut("Cmd+Shift+N", ui.ctx().os().is_mac()));
     if crate::widgets::icon_button(&mut ui.new_child(egui::UiBuilder::new().max_rect(plus)), plus.size(), "plus", false, &tip).clicked() {
         let _ = app.dialogs.open_for_command(&app.engine, "track.new");
     }

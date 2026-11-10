@@ -76,6 +76,139 @@ pub fn text(source: &str) -> &str {
     current_language().text(source)
 }
 
+/// Translates an engine error message for display. Messages are matched against the catalog's
+/// error templates and their embedded values are carried over; text that matches no template is
+/// returned unchanged, so low-level library errors stay in English.
+pub fn error_text(message: &str) -> String {
+    error_text_in(current_language(), message, 0)
+}
+
+const MAX_ERROR_DEPTH: usize = 4;
+
+fn error_text_in(language: Language, message: &str, depth: usize) -> String {
+    let templates: &[(&str, &str)] = match language {
+        Language::English => &[],
+        Language::PortugueseBrazil => pt_br::ERROR_TEMPLATES,
+    };
+    let mut best: Option<(usize, &str, Vec<(String, String)>)> = None;
+    for (template, translation) in templates {
+        if let Some((weight, captures)) = match_template(template, message)
+            && best.as_ref().is_none_or(|(w, ..)| weight > *w)
+        {
+            best = Some((weight, translation, captures));
+        }
+    }
+    let Some((_, translation, captures)) = best else { return message.to_owned() };
+    let captures: Vec<(String, String)> = captures
+        .into_iter()
+        .map(|(name, value)| {
+            let value = if depth < MAX_ERROR_DEPTH { error_text_in(language, &value, depth + 1) } else { value };
+            (name, value)
+        })
+        .collect();
+    fill_captures(language, translation, &captures)
+}
+
+enum Piece<'a> {
+    Literal(String),
+    Field(&'a str),
+}
+
+fn split_template(template: &str) -> Vec<Piece<'_>> {
+    let mut pieces = Vec::new();
+    let mut literal = String::new();
+    let mut rest = template;
+    while let Some(ch) = rest.chars().next() {
+        if let Some(after) = rest.strip_prefix("{{") {
+            literal.push('{');
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix("}}") {
+            literal.push('}');
+            rest = after;
+        } else if ch == '{'
+            && let Some(end) = rest.find('}')
+        {
+            if !literal.is_empty() {
+                pieces.push(Piece::Literal(std::mem::take(&mut literal)));
+            }
+            pieces.push(Piece::Field(rest.get(1..end).unwrap_or_default()));
+            rest = rest.get(end + 1..).unwrap_or_default();
+        } else {
+            literal.push(ch);
+            rest = rest.get(ch.len_utf8()..).unwrap_or_default();
+        }
+    }
+    if !literal.is_empty() {
+        pieces.push(Piece::Literal(literal));
+    }
+    pieces
+}
+
+/// Matches `message` against `template`. Returns the template's literal length, used to prefer
+/// the most specific template, and the captured values by placeholder name.
+fn match_template(template: &str, message: &str) -> Option<(usize, Vec<(String, String)>)> {
+    let pieces = split_template(template);
+    let mut captures = Vec::new();
+    let mut pos = 0usize;
+    let mut weight = 0usize;
+    let mut index = 0usize;
+    while let Some(piece) = pieces.get(index) {
+        match piece {
+            Piece::Literal(text) => {
+                if !message.get(pos..)?.starts_with(text.as_str()) {
+                    return None;
+                }
+                pos += text.len();
+                weight += text.len();
+            }
+            Piece::Field(name) => {
+                let rest = message.get(pos..)?;
+                let end = match pieces.get(index + 1) {
+                    None => rest.len(),
+                    Some(Piece::Literal(next)) if pieces.len() == index + 2 => {
+                        if rest.len() < next.len() || !rest.ends_with(next.as_str()) {
+                            return None;
+                        }
+                        rest.len() - next.len()
+                    }
+                    Some(Piece::Literal(next)) => rest.find(next.as_str())?,
+                    Some(Piece::Field(_)) => return None,
+                };
+                if end == 0 {
+                    return None;
+                }
+                let name = name.split(':').next().unwrap_or_default();
+                captures.push((name.to_owned(), rest.get(..end)?.to_owned()));
+                pos += end;
+            }
+        }
+        index += 1;
+    }
+    (pos == message.len() && weight > 0).then_some((weight, captures))
+}
+
+fn fill_captures(language: Language, translation: &str, captures: &[(String, String)]) -> String {
+    let mut out = String::with_capacity(translation.len());
+    for piece in split_template(translation) {
+        match piece {
+            Piece::Literal(text) => out.push_str(&text),
+            Piece::Field(field) => {
+                let name = field.split(':').next().unwrap_or_default();
+                match captures.iter().find(|(captured, _)| captured == name) {
+                    Some((_, value)) if value.parse::<f64>().is_ok() => out.push_str(&language.localize_decimal(value)),
+                    Some((_, value)) => out.push_str(value),
+                    None => {
+                        out.push('{');
+                        out.push_str(field);
+                        out.push('}');
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Whether the Brazilian Portuguese catalog has an entry for `source`, even an identical one.
 #[cfg(test)]
 pub(crate) fn has_pt_br_entry(source: &str) -> bool {
@@ -210,7 +343,7 @@ macro_rules! localized_format {
 
 #[cfg(test)]
 mod tests {
-    use super::{Arg, Language, enter, format_named, format_positional, text};
+    use super::{Arg, Language, enter, error_text, format_named, format_positional, text};
 
     #[test]
     fn language_tags_are_stable_and_round_trip() {
@@ -253,6 +386,20 @@ mod tests {
                 assert!(super::pt_br::translate(label).is_some(), "missing pt-BR menu label: {label}");
             }
         }
+    }
+
+    #[test]
+    fn engine_errors_are_translated_with_their_values() {
+        assert_eq!(error_text("select a clip"), "select a clip");
+        let _scope = enter(Language::PortugueseBrazil);
+        assert_ne!(error_text("select a clip"), "select a clip");
+        assert_ne!(error_text("no track"), "no track");
+        let wrapped = error_text("bad parameters for `track.new`: `name` required");
+        assert!(wrapped.contains("`track.new`") && wrapped.contains("`name`"), "{wrapped}");
+        assert!(!wrapped.contains("bad parameters") && !wrapped.contains("required"), "{wrapped}");
+        let ratio = error_text("stretch ratio 12.500 is outside 0.1..10");
+        assert!(ratio.contains("12,500"), "{ratio}");
+        assert_eq!(error_text("some unknown library failure"), "some unknown library failure");
     }
 
     #[test]
