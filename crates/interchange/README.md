@@ -22,6 +22,7 @@ size, collection counts, source-chain depth) and the locator rules (local paths 
 than aborting) are listed in the `aaf` module documentation and covered by tests in
 `crates/engine/tests/aaf_import.rs`.
 
-The reader was written from the published AAF Object Specification and Low-Level Container
-Specification. No code from the AAF SDK or from any GPL/LGPL/MPL project was used; the
-fixture was generated with pyaaf2 (MIT) as a file writer only.
+The storage layout, class and property identifiers and MobID text form were learned by
+reading pyaaf2 (MIT, Mark Reid); no pyaaf2 code was copied, and pyaaf2 also wrote the
+synthetic test fixture. No code from the AAF SDK or from any GPL/LGPL/MPL project was read or
+used.

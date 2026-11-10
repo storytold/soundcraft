@@ -10,10 +10,12 @@
 //! that turns a decoded locator path into checked media properties.
 //!
 //! # Provenance
-//! Written for SoundCraft from the published AAF Object Specification and Low-Level
-//! Container Specification, and checked against the synthetic fixture and its variants
-//! (written with the MIT-licensed pyaaf2 library) and real session exports. No code from the
-//! AAF SDK (AAF SDK Public Source License) or any GPL/LGPL/MPL project was read or copied.
+//! Written for SoundCraft. The storage layout (properties streams, reference indexes, the
+//! referenced-properties table), the class and property identifiers and the MobID text form
+//! were learned by reading pyaaf2 (MIT, Mark Reid); no pyaaf2 code was copied. The reader was
+//! checked against plans from a pyaaf2 prototype on the synthetic fixture, edited variants of
+//! it and a real session export. No code from the AAF SDK (AAF SDK Public Source License) or
+//! any GPL/LGPL/MPL project was read or copied.
 //!
 //! # Untrusted input
 //! The AAF is hostile input. Every walk is bounded:
