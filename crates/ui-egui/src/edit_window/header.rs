@@ -483,8 +483,8 @@ fn header_toggle(ui: &Ui, r: Rect, track: TrackId, track_name: &str, key: Header
         HeaderKey::Mute => ("Mute", t.mute),
     };
     let label = crate::localization::text(source_label);
-    // Fixed badges, independent of the translated label: in Portuguese both "Solo" and
-    // "Silenciar" would otherwise start with "S".
+    // Fixed badges, independent of the translated label: in some languages the translated
+    // labels for two different buttons would otherwise start with the same letter.
     let badge = match key {
         HeaderKey::Rec => "",
         HeaderKey::Input => "I",

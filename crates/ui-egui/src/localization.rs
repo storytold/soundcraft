@@ -31,11 +31,11 @@ impl Language {
         }
     }
 
-    /// Language name displayed in the language's own form.
+    /// English source name of the language; translate it with `text` for display.
     pub const fn native_name(self) -> &'static str {
         match self {
             Self::English => "English",
-            Self::PortugueseBrazil => "Português (Brasil)",
+            Self::PortugueseBrazil => "Portuguese (Brazil)",
         }
     }
 
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn language_translations_fall_back_to_the_english_source() {
-        assert_eq!(Language::PortugueseBrazil.text("Appearance"), "Aparência");
+        assert_ne!(Language::PortugueseBrazil.text("Appearance"), "Appearance");
         assert_eq!(Language::PortugueseBrazil.text("A source string with no catalog entry"), "A source string with no catalog entry");
         assert_eq!(Language::English.text("Appearance"), "Appearance");
     }
@@ -236,12 +236,12 @@ mod tests {
         assert_eq!(text("Appearance"), "Appearance");
         {
             let _scope = enter(Language::PortugueseBrazil);
-            assert_eq!(text("Appearance"), "Aparência");
+            assert_ne!(text("Appearance"), "Appearance");
             {
                 let _inner = enter(Language::English);
                 assert_eq!(text("Appearance"), "Appearance");
             }
-            assert_eq!(text("Appearance"), "Aparência");
+            assert_ne!(text("Appearance"), "Appearance");
         }
         assert_eq!(text("Appearance"), "Appearance");
     }

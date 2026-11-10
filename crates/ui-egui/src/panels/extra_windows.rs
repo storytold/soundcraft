@@ -188,13 +188,15 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                 let _ = app.run("ui.reduce_visual_effects", json!({"mode": mode.id()}));
             }
             let mut selected_language = None;
-            craft_ui::ComboBox::from_label(crate::localization::text("Language")).selected_text(language.native_name()).show_ui(ui, |ui| {
-                for choice in crate::localization::Language::ALL {
-                    if ui.selectable_label(language == choice, choice.native_name()).clicked() {
-                        selected_language = Some(choice);
+            craft_ui::ComboBox::from_label(crate::localization::text("Language"))
+                .selected_text(crate::localization::text(language.native_name()))
+                .show_ui(ui, |ui| {
+                    for choice in crate::localization::Language::ALL {
+                        if ui.selectable_label(language == choice, crate::localization::text(choice.native_name())).clicked() {
+                            selected_language = Some(choice);
+                        }
                     }
-                }
-            });
+                });
             if let Some(choice) = selected_language {
                 let _ = app.run("ui.language", json!({"language": choice.id()}));
             }

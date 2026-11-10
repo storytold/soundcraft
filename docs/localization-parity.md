@@ -46,7 +46,7 @@ Per-language hours exclude the shared catalog and script work above.
   Example: `soundcraft-cli run --demo --cmd 'ui.language={"language":"pt-BR"}'`.
 - The choice is a global preference saved with the UI state (like the theme); recalling a saved
   window configuration does not change it.
-- Strings missing from the catalog fall back to English. Add one with a `"English" => "Português"`
+- Strings missing from the catalog fall back to English. Add one with a `"English text" => "translated text"`
   arm in `crates/ui-egui/locales/pt-BR/mod.rs`; tests check placeholder parity, duplicates and that every
   string passed to `text` / `localized_format!` has an entry.
 

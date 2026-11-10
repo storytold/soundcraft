@@ -3,6 +3,8 @@
 use soundcraft_audio_io::FileFormat;
 use soundcraft_engine::{Engine, io};
 use soundcraft_ui_egui::dialogs::Dialog;
+use soundcraft_ui_egui::localization::{self, Language};
+use soundcraft_ui_egui::localized_format;
 use soundcraft_ui_egui::sampler_window::SampleRead;
 use soundcraft_ui_egui::{Services, SoundApp};
 use std::cell::RefCell;
@@ -13,10 +15,19 @@ use wasm_bindgen::JsCast as _;
 const CANVAS_ID: &str = "soundcraft_canvas";
 const LOADING_ID: &str = "soundcraft_loading";
 
+/// The language the browser asks for, for text shown before or outside a running app.
+fn browser_language() -> Language {
+    web_sys::window().and_then(|w| w.navigator().language()).and_then(|tag| Language::parse(&tag)).unwrap_or_default()
+}
+
 pub fn start() {
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
     io::set_deliver(download);
     wasm_bindgen_futures::spawn_local(async {
+        let _language = localization::enter(browser_language());
+        if let Some(el) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id(LOADING_ID)) {
+            el.set_text_content(Some(localization::text("Loading SoundCraft…")));
+        }
         let Some(document) = web_sys::window().and_then(|w| w.document()) else {
             log::error!("no document");
             return;
@@ -49,7 +60,11 @@ pub fn start() {
         if let Some(el) = document.get_element_by_id(LOADING_ID) {
             match result {
                 Ok(()) => el.remove(),
-                Err(e) => el.set_inner_html(&format!("<p>SoundCraft failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>")),
+                Err(e) => el.set_text_content(Some(&format!(
+                    "{} {}",
+                    localized_format!("SoundCraft failed to start: {}", format!("{e:?}")),
+                    localization::text("A browser with WebGPU or WebGL2 is required.")
+                ))),
             }
         }
     });
@@ -93,11 +108,11 @@ impl Purpose {
         }
     }
 
-    fn filter(self) -> (&'static str, Vec<&'static str>) {
+    fn filter(self) -> (String, Vec<&'static str>) {
         match self {
-            Self::Session => ("SoundCraft Session", SESSION_EXTS.to_vec()),
-            Self::Audio => ("Audio", FileFormat::readable_extensions()),
-            Self::Midi => ("MIDI", MIDI_EXTS.to_vec()),
+            Self::Session => (localization::text("SoundCraft Session").to_owned(), SESSION_EXTS.to_vec()),
+            Self::Audio => (localization::text("Audio").to_owned(), FileFormat::readable_extensions()),
+            Self::Midi => (localization::text("MIDI").to_owned(), MIDI_EXTS.to_vec()),
         }
     }
 }
@@ -127,9 +142,12 @@ impl WebShell {
         let Some(purpose) = purpose else { return };
         self.app.dialogs.open = None;
         let (inbox, ctx) = (self.inbox.clone(), ctx.clone());
+        let (label, exts) = {
+            let _language = localization::enter(self.app.ui.language);
+            purpose.filter()
+        };
         wasm_bindgen_futures::spawn_local(async move {
-            let (label, exts) = purpose.filter();
-            let Some(file) = rfd::AsyncFileDialog::new().add_filter(label, &exts).pick_file().await else { return };
+            let Some(file) = rfd::AsyncFileDialog::new().add_filter(&label, &exts).pick_file().await else { return };
             let bytes = file.read().await;
             inbox.borrow_mut().push((purpose, file.file_name(), bytes));
             ctx.request_repaint();
@@ -166,6 +184,7 @@ impl WebShell {
     }
 
     fn handle(&mut self, purpose: Purpose, name: String, bytes: Vec<u8>) {
+        let _language = localization::enter(self.app.ui.language);
         let e = &mut self.app.engine;
         let at = e.session().edit.selection.start.max(0);
         let result = match purpose {
@@ -175,15 +194,15 @@ impl WebShell {
             Purpose::Audio => {
                 let before = e.session_arc();
                 io::import_audio_bytes(e, &name, &bytes, None, None, at).map(|_| {
-                    e.push_undo("Import Audio", before);
-                    format!("Imported {name}")
+                    e.push_undo(localization::text("Import Audio"), before);
+                    localized_format!("Imported {name}", name = name)
                 })
             }
             Purpose::Midi => {
                 let before = e.session_arc();
                 io::import_midi_bytes(e, &bytes, at, true).map(|_| {
-                    e.push_undo("Import MIDI", before);
-                    format!("Imported {name}")
+                    e.push_undo(localization::text("Import MIDI"), before);
+                    localized_format!("Imported {name}", name = name)
                 })
             }
         };
@@ -222,7 +241,8 @@ impl eframe::App for WebShell {
 /// Hand a saved or exported file to the person as a download named `name` (the engine's delivery
 /// hook on the web).
 fn download(name: &str, bytes: &[u8]) -> Result<(), String> {
-    let js = |e: wasm_bindgen::JsValue| format!("download failed: {e:?}");
+    let _language = localization::enter(browser_language());
+    let js = |e: wasm_bindgen::JsValue| localized_format!("Download failed: {}", format!("{e:?}"));
     let window = web_sys::window().ok_or("no window")?;
     let document = window.document().ok_or("no document")?;
     let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));

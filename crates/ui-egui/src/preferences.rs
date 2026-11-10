@@ -1098,7 +1098,7 @@ mod tests {
     fn preference_search_matches_both_languages() {
         let _scope = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
         let control = Control::Check("Auto Backup");
-        assert!(text_matches(&control.search_text(), "backup automático"));
+        assert!(text_matches(&control.search_text(), crate::localization::Language::PortugueseBrazil.text("Auto Backup")));
         assert!(text_matches(&control.search_text(), "auto backup"));
         assert!(!text_matches(&control.search_text(), "mixagem"));
     }
