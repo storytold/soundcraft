@@ -1,4 +1,4 @@
-use super::automation::{GainRamp, transport_at, volume_db_at};
+use super::automation::{Level, apply_gain, transport_at, volume_level};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
 use super::midi::{chase_controllers, schedule_notes};
@@ -356,41 +356,28 @@ fn run_inserts(t: &Track, strip: &mut Strip, blk: Block, transport: &Transport) 
     strip.latency = latency.min(MAX_LATENCY);
 }
 
-/// Fader gain (volume, trim and VCA automation), ramped across the block.
+/// Fader gain (volume, trim and VCA automation), read at every sample of the block.
 fn apply_fader(s: &Session, t: &Track, strip: &mut Strip, blk: Block) {
     let Block { pos, frames, .. } = blk;
-    // Endpoints are the first and last sample of this block. The next block starts on its own
-    // first sample, so a breakpoint there does not ramp the block before it.
-    let last = pos.saturating_add(frames.saturating_sub(1) as i64);
-    let mut v0 = volume_db_at(t, pos);
-    let mut v1 = volume_db_at(t, last);
     // Trim automation (an offset on top of the volume curve).
-    if let Some(l) = t
+    let trim = t
         .automation
         .iter()
         .find(|l| matches!(&l.param, AutoParam::Plugin { slot: u8::MAX, param } if param == "trim"))
         .filter(|l| !l.points.is_empty())
-    {
-        v0 += l.value_at(pos, 0.0);
-        v1 += l.value_at(last, 0.0);
-    }
+        .map_or(Level::Fixed(0.0), |l| Level::Lane(l, 0.0));
     // VCA master: its fader offsets the member's, and its mute mutes the member.
+    let mut vca_level = Level::Fixed(0.0);
     if let Some(vid) = t.mixer.vca
         && let Some(vca) = s.tracks.iter().find(|x| x.id.0 == vid && x.kind == TrackKind::Vca)
     {
-        v0 += volume_db_at(vca, pos);
-        v1 += volume_db_at(vca, last);
+        vca_level = volume_level(vca);
         if vca.mixer.mute {
             strip.muted = true;
         }
     }
-    let (g0, g1) = if strip.muted { (-144.0, -144.0) } else { (v0.min(12.0), v1.min(12.0)) };
-    let ramp = GainRamp::new(g0, g1, frames.saturating_sub(1));
-    for c in strip.buf.iter_mut() {
-        for (i, x) in c.iter_mut().enumerate().take(frames) {
-            *x *= ramp.at(i);
-        }
-    }
+    let levels = if strip.muted { [Level::Fixed(-144.0), Level::Fixed(0.0), Level::Fixed(0.0)] } else { [volume_level(t), trim, vca_level] };
+    apply_gain(&levels, pos, frames, 12.0, &mut strip.buf);
 }
 
 /// Track mute gates the audio and its pre-fader tap without splitting processor blocks.

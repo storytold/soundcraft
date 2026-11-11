@@ -25,6 +25,9 @@ log.workspace = true
 zip.workspace = true
 craft-docpath.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+winsafe = { version = "0.0.29", features = ["kernel"] }
+
 [dev-dependencies]
 proptest.workspace = true
 
