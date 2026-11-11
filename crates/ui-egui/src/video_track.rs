@@ -498,3 +498,24 @@ pub fn draw_lane(app: &mut SoundApp, painter: &Painter, s: &Session, track: &Tra
         }
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::open_movie;
+
+    #[test]
+    fn only_a_regular_movie_file_is_opened() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-open-movie-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (folder, missing, junk, movie) = (dir.to_string_lossy().to_string(), dir.join("none.mp4"), dir.join("junk.mp4"), dir.join("a.mp4"));
+        assert!(open_movie(&folder).err().unwrap_or_default().contains("not a regular file"));
+        assert!(open_movie(&missing.to_string_lossy()).is_err());
+        std::fs::write(&junk, b"not a movie").unwrap();
+        let err = open_movie(&junk.to_string_lossy()).err().unwrap_or_default();
+        assert!(!err.is_empty() && !err.contains("not a regular file"), "{err}");
+        std::fs::write(&movie, soundcraft_video::synth::h264_mp4(2, 2).unwrap()).unwrap();
+        assert!(open_movie(&movie.to_string_lossy()).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

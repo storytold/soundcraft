@@ -474,3 +474,18 @@ impl SoundApp {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_fallback_take_folder_is_made_once_under_the_temporary_folder() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let a = app.fallback_take_dir().unwrap();
+        assert_eq!(a.parent(), Some(std::env::temp_dir().as_path()));
+        assert!(a.is_dir());
+        assert_eq!(app.fallback_take_dir().unwrap(), a, "the same folder for the rest of the run");
+        let _ = std::fs::remove_dir_all(&a);
+    }
+}
