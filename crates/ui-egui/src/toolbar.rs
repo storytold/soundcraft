@@ -58,12 +58,24 @@ fn edit_mode_tooltip(m: EditMode, locked: bool, cmd: &str, fkey: &str) -> String
     }
 }
 
+/// The key colour of the active edit mode `m`, so the mode reads at a glance.
+fn mode_on_fill(t: &Tokens, m: EditMode) -> Color32 {
+    let i = match m {
+        EditMode::Shuffle => 0,
+        EditMode::Slip => 1,
+        EditMode::Spot => 2,
+        EditMode::Grid => 3,
+        EditMode::GridRelative => 4,
+    };
+    t.edit_mode_on[i]
+}
+
 fn draw_mode_cell(p: &egui::Painter, cell: Rect, resp: &egui::Response, t: &Tokens, m: EditMode, state: &ModeCellState, label: &str) {
     let on = state.cur == m || (m == EditMode::Grid && state.cur == EditMode::GridRelative);
-    key(p, cell, resp, if on { t.mode_on } else { t.mode_off });
+    key(p, cell, resp, if on { mode_on_fill(t, state.cur) } else { t.mode_off });
     let fg = if on { t.mode_on_text } else { t.mode_off_text };
     if m == EditMode::Grid && state.snap {
-        p.rect_stroke(cell, 1.0, Stroke::new(1.5, t.mode_on), StrokeKind::Inside);
+        p.rect_stroke(cell, 1.0, Stroke::new(1.5, mode_on_fill(t, EditMode::Grid)), StrokeKind::Inside);
     }
     if m == EditMode::Shuffle && state.locked {
         icons::draw(p, Rect::from_center_size(cell.center(), vec2(15.0, 15.0)), "lock", fg);
@@ -682,6 +694,36 @@ mod tests {
     use super::*;
     use crate::Services;
     use egui_kittest::{Harness, kittest::Queryable};
+
+    /// The fill `draw_mode_cell` paints for the Shuffle/Slip/Spot/Grid cell that is on while `cur` is the mode.
+    fn active_cell_fill(t: &Tokens, cur: EditMode) -> Option<Color32> {
+        let ctx = egui::Context::default();
+        let cell = Rect::from_min_size(pos2(10.0, 10.0), vec2(60.0, 20.0));
+        let m = if cur == EditMode::GridRelative { EditMode::Grid } else { cur };
+        let state = ModeCellState { cur, snap: false, locked: false };
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let resp = ui.interact(cell, ui.scope_id().with("cell"), Sense::hover());
+            draw_mode_cell(ui.painter(), cell, &resp, t, m, &state, "MODE");
+        });
+        out.textures_delta.clear();
+        out.shapes.into_iter().find_map(|c| match c.shape {
+            egui::Shape::Rect(r) if r.rect == cell.shrink(1.0) => Some(r.fill),
+            _ => None,
+        })
+    }
+
+    /// #1386: each active edit mode has its own colour, in both themes, so the mode reads at a glance.
+    #[test]
+    fn each_active_edit_mode_has_its_own_colour() {
+        use EditMode::{Grid, GridRelative, Shuffle, Slip, Spot};
+        for t in [Tokens::DARK, Tokens::LIGHT] {
+            let fills: Vec<Color32> = [Shuffle, Slip, Spot, Grid, GridRelative].iter().map(|m| active_cell_fill(&t, *m).unwrap()).collect();
+            for (i, a) in fills.iter().enumerate() {
+                assert!(fills[i + 1..].iter().all(|b| b != a), "every mode's colour differs: {fills:?}");
+                assert_ne!(*a, t.mode_off, "an active mode doesn't look inactive");
+            }
+        }
+    }
 
     /// Builds a compact Grid/Nudge toolbar test harness.
     fn harness() -> Harness<'static, SoundApp> {
