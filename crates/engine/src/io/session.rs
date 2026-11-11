@@ -72,7 +72,7 @@ pub(crate) fn open_session_linked(e: &mut Engine, path: &Path, links: &Path) -> 
 /// Decode one source's audio file at the session rate.
 pub(super) fn decode_source(bytes: &[u8], ext: Option<&str>, rate: u32) -> std::result::Result<Arc<SourceAudio>, String> {
     let (_, buf) = soundcraft_audio_io::decode(bytes, ext).map_err(|err| err.to_string())?;
-    let buf = at_rate(buf, rate, MAX_IMPORT_SAMPLES).ok_or("too large to load")?;
+    let buf = at_rate(buf, rate, MAX_IMPORT_SAMPLES).map_err(|e| e.message("too large to load"))?;
     Ok(Arc::new(SourceAudio::new(buf)))
 }
 

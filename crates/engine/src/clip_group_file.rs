@@ -87,23 +87,30 @@ fn decode_group_audio(
     cmd_id: &str,
 ) -> Result<(Vec<(String, soundcraft_audio_io::AudioBuffer)>, BTreeMap<u64, usize>)> {
     let (mut decoded, mut index, mut file_of) = (Vec::new(), BTreeMap::new(), BTreeMap::new());
+    // The folder as the file system knows it, so a link among the group's files can't lead out.
+    let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+    let root = crate::io::canonical_path(dir)?;
     for (old, rel) in audio_entries {
         let full = dir.join(rel);
+        let escapes = |rel: &str| EngineError::BadParams(cmd_id.into(), format!("audio path escapes the group folder: {rel}"));
         if !full.starts_with(dir)
             || Path::new(rel)
                 .components()
                 .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_)))
         {
-            return Err(EngineError::BadParams(cmd_id.into(), format!("audio path escapes the group folder: {rel}")));
+            return Err(escapes(rel));
         }
-        let key = crate::io::file_key(&full);
+        let key = crate::io::canonical_path(&full)?;
+        if !key.starts_with(&root) {
+            return Err(escapes(rel));
+        }
         let n = match index.get(&key) {
             Some(n) => *n,
             None => {
-                let bytes = crate::io::read_file(&full)?;
+                let bytes = crate::io::read_file_inside(&full, &root)?;
                 let (_, buf) = soundcraft_audio_io::decode(&bytes, Some("wav")).map_err(|err| EngineError::Io(format!("{rel}: {err}")))?;
                 let buf = crate::io::at_rate(buf, rate, crate::io::MAX_IMPORT_SAMPLES)
-                    .ok_or_else(|| EngineError::Io(format!("{rel}: too large to import")))?;
+                    .map_err(|r| EngineError::Io(format!("{rel}: {}", r.message("too large to import"))))?;
                 decoded.push((rel.clone(), buf));
                 index.insert(key, decoded.len() - 1);
                 decoded.len() - 1
@@ -268,7 +275,57 @@ mod tests {
         std::fs::write(&path, file.to_string()).unwrap();
         let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}));
         assert!(matches!(r, Err(crate::EngineError::BadParams(..))), "absolute paths are refused: {r:?}");
+        // A link inside the folder that leads out of it is refused once resolved.
+        #[cfg(unix)]
+        {
+            let outside = std::env::temp_dir().join(format!("sc-grp-outside-{}.wav", std::process::id()));
+            std::fs::copy(dir.join("Wait... what_0.wav"), &outside).unwrap();
+            std::os::unix::fs::symlink(&outside, dir.join("link.wav")).unwrap();
+            for rel in file["audio"].as_object_mut().unwrap().values_mut() {
+                *rel = json!("link.wav");
+            }
+            std::fs::write(&path, file.to_string()).unwrap();
+            let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}));
+            assert!(matches!(r, Err(crate::EngineError::BadParams(..))), "links out of the folder are refused: {r:?}");
+            let _ = std::fs::remove_file(&outside);
+        }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Under a read root, a link in the group folder to a folder outside the root is refused the same way
+    /// whether or not the file asked for exists there, so the group cannot be used to probe for names.
+    #[cfg(unix)]
+    #[test]
+    fn links_out_of_the_read_root_are_refused_alike_for_existing_and_missing_files() {
+        let base = std::env::temp_dir().join(format!("sc-grp-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (dir, outside) = (base.join("group"), base.join("outside"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let path = dir.join("drums.scgrp").to_string_lossy().to_string();
+        let mut e = crate::demo::demo_engine();
+        let kick = e.session().tracks.iter().find(|t| t.name == "Kick").map(|t| t.id).unwrap();
+        let ids: Vec<_> = e.session().track(kick).unwrap().clips().iter().take(1).map(|c| c.id.0).collect();
+        e.execute("file.export_clip_groups", &json!({"path": path, "clips": ids})).unwrap();
+        let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let exported = file["audio"].as_object().unwrap().values().next().unwrap().as_str().unwrap().to_string();
+        std::fs::copy(dir.join(&exported), outside.join("real.wav")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("out")).unwrap();
+        let roots = crate::file_access::AutomationRoots::new(&[&dir], &[]).unwrap().unwrap();
+        let mut refusals = Vec::new();
+        for target in ["out/real.wav", "out/missing.wav"] {
+            for rel in file["audio"].as_object_mut().unwrap().values_mut() {
+                *rel = json!(target);
+            }
+            std::fs::write(&path, file.to_string()).unwrap();
+            let r = crate::file_access::confine(Some(&roots), || {
+                e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}))
+            });
+            refusals.push(r.unwrap_err().to_string());
+        }
+        assert!(refusals[0].contains("outside the read root"), "{}", refusals[0]);
+        assert_eq!(refusals[0].replace("real.wav", "X"), refusals[1].replace("missing.wav", "X"), "existing and missing names are refused alike");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
