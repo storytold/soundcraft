@@ -963,6 +963,31 @@ fn input_monitoring_replaces_clips() {
 }
 
 #[test]
+fn a_punch_plays_the_clips_in_the_pre_and_post_roll() {
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.25; 512]];
+    eng.recording = true;
+    eng.punch = Some(Range::new(1024, 2048));
+    let mut out = vec![vec![0.0; 512]; 2];
+    let pan = std::f32::consts::FRAC_1_SQRT_2;
+    for (pos, want, what) in [(0, 0.5, "pre-roll: the clip"), (1024, 0.25, "punched in: the input"), (2048, 0.5, "post-roll: the clip")] {
+        eng.render(&s, pos, 512, &mut out);
+        assert!((out[0][100] - want * pan).abs() < 1e-3, "{what}: {}", out[0][100]);
+    }
+    // No punch range: the input for the whole recording, as before.
+    eng.punch = None;
+    eng.render(&s, 0, 512, &mut out);
+    assert!((out[0][100] - 0.25 * pan).abs() < 1e-3, "{}", out[0][100]);
+    // Input monitoring hears the input outside the range too.
+    eng.punch = Some(Range::new(1024, 2048));
+    s.track_mut(t).unwrap().mixer.input_monitor = true;
+    eng.render(&s, 0, 512, &mut out);
+    assert!((out[0][100] - 0.25 * pan).abs() < 1e-3, "{}", out[0][100]);
+}
+
+#[test]
 fn empty_session_is_silent() {
     let s = Session::default();
     let out = render_range(&s, Range::new(0, 1000), 128);

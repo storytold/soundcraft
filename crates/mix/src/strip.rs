@@ -207,6 +207,8 @@ pub(crate) struct LiveInput<'a> {
     pub(crate) input: &'a [Vec<f32>],
     pub(crate) monitor_only: bool,
     pub(crate) recording: bool,
+    /// Recording, and inside the punch range if there is one: record-armed tracks hear their input.
+    pub(crate) auto_input: bool,
 }
 
 /// The block being rendered: where it starts, its length, and whether any track is soloed.
@@ -419,7 +421,7 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
     zero_buf(&mut strip.buf, frames);
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
     match t.kind {
-        TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording))) => {
+        TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.auto_input))) => {
             monitor_input(t, strip, live, frames);
         }
         TrackKind::Audio if live.monitor_only => {}

@@ -136,6 +136,10 @@ impl SoundApp {
             self.record_start = from;
             self.punch = (!sel.is_empty()).then_some(sel);
             let end = (!sel.is_empty()).then_some(sel.end + post);
+            // Armed tracks play their clips through the pre- and post-roll.
+            if let Some(p) = &self.player {
+                p.set_punch(self.punch);
+            }
             self.start_play(from, end, None);
             self.plan_recording(takes, None);
         }
