@@ -100,26 +100,28 @@ const AUDIO_FORMATS: [&[u8; 4]; 18] = [
 ];
 
 /// Whether the `stbl` atom whose children lie in `pos..end` describes audio: its `stsd` may come before
-/// or after the timing tables, so the children are walked once more for it.
+/// or after the timing tables, so the children are walked once more for it. Symphonia keeps the last
+/// `stsd` it reads, so the last one decides.
 fn entry_is_audio(b: &[u8], mut pos: usize, end: usize) -> bool {
+    let mut audio = false;
     while pos < end {
-        let (Some(size), Some(kind)) = (be_u32(b, pos), b.get(pos + 4..pos + 8)) else { return false };
+        let (Some(size), Some(kind)) = (be_u32(b, pos), b.get(pos + 4..pos + 8)) else { return audio };
         let head = if size == 1 { 16 } else { 8 };
         if kind == b"stsd" {
             // Version and flags, the entry count, then the first entry's size and format.
-            return b.get(pos + head + 12..pos + head + 16).is_some_and(|f| AUDIO_FORMATS.iter().any(|a| a.as_slice() == f));
+            audio = b.get(pos + head + 12..pos + head + 16).is_some_and(|f| AUDIO_FORMATS.iter().any(|a| a.as_slice() == f));
         }
         let len = match size {
-            0 => return false,
+            0 => return audio,
             1 => be_u64(b, pos + 8).unwrap_or(0),
             n => u64::from(n),
         };
         match usize::try_from(len).ok().filter(|&n| n >= head).and_then(|n| pos.checked_add(n)) {
             Some(next) => pos = next,
-            None => return false,
+            None => return audio,
         }
     }
-    false
+    audio
 }
 
 /// A sample table's entries, counted at `count`, must fit in the file: symphonia reserves room for
