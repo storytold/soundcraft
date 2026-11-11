@@ -672,8 +672,7 @@ fn make_stereo(h: &mut Harness<'static, SoundApp>, tid: soundcraft_model::TrackI
     let audio = h.state().engine.session().pool.get(source).unwrap().clone();
     let left = audio.buffer.channels[0].clone();
     let right = left.iter().map(|sample| sample * 0.5).collect();
-    let audio =
-        soundcraft_model::SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: audio.buffer.sample_rate, channels: vec![left, right] });
+    let audio = soundcraft_model::SourceAudio::new(craft_audio::AudioBuffer { sample_rate: audio.buffer.sample_rate, channels: vec![left, right] });
     let s = h.state_mut().engine.session_mut();
     s.pool.insert(source, std::sync::Arc::new(audio));
     s.track_mut(tid).unwrap().format = soundcraft_model::ChannelFormat::Stereo;

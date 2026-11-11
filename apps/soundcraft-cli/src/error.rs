@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use soundcraft_audio_io::AudioError;
+use craft_audio::AudioError;
 use soundcraft_automation::RemoteError;
 use soundcraft_engine::EngineError;
 use soundcraft_engine::file_access::RootError;
@@ -46,6 +46,6 @@ pub(crate) fn unicode(path: &Path) -> Result<&str, CliError> {
 /// A `convert` option or output the tool refuses.
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub(crate) enum ConvertError {
-    #[error("{}: cannot write `.{ext}` files (supported: {})", output.display(), soundcraft_audio_io::FileFormat::writable_extensions().join(", "))]
+    #[error("{}: cannot write `.{ext}` files (supported: {})", output.display(), craft_audio::ENCODE_EXTENSIONS.join(", "))]
     OutputFormat { output: PathBuf, ext: String },
 }
