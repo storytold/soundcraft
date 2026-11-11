@@ -942,6 +942,84 @@ fn a_plugins_bogus_latency_is_capped() {
 }
 
 #[test]
+fn a_hosted_instruments_latency_is_compensated() {
+    // #1474: a synth that reports latency plays late. Its delay must count toward the mix
+    // latency and align, the way an insert's does.
+    struct LatentSynth {
+        inner: Box<dyn Plugin>,
+        n: usize,
+        t: usize,
+        pending: Option<usize>,
+    }
+    impl Plugin for LatentSynth {
+        fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+            self.inner.info()
+        }
+        fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+            self.inner.prepare(sr, mb, ch);
+        }
+        fn reset(&mut self) {
+            self.inner.reset();
+        }
+        fn set_param(&mut self, id: &str, v: f32) -> bool {
+            self.inner.set_param(id, v)
+        }
+        fn param(&self, id: &str) -> Option<f32> {
+            self.inner.param(id)
+        }
+        fn note_on(&mut self, offset: usize, _: u8, _: u8) {
+            self.pending = Some(self.t + offset + self.n);
+        }
+        fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+            for c in io.iter_mut() {
+                for (i, x) in c.iter_mut().take(frames).enumerate() {
+                    *x = if Some(self.t + i) == self.pending { 0.25 } else { 0.0 };
+                }
+            }
+            self.t += frames;
+        }
+        fn latency(&self) -> usize {
+            self.n
+        }
+    }
+    use soundcraft_midi::{Note, Sequence};
+    let n = 500;
+    let mut s = Session::default();
+    s.edit.delay_compensation = true;
+    let audio = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let mut click = vec![0.0f32; 48_000];
+    click[24_000] = 0.25;
+    s.pool.insert(SourceId(1474), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![click.clone(), click] })));
+    let cid = s.new_clip_id();
+    s.track_mut(audio).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "click", SourceId(1474), 0, 0, 48_000));
+    let inst = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let mut seq = Sequence::default();
+    seq.notes.push(Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 960, length: 240 });
+    let mcid = s.new_clip_id();
+    s.track_mut(inst).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(mcid, "note", 0, 48_000, seq));
+    s.track_mut(inst).unwrap().instrument = Some(Insert::new("clap:test.latent"));
+    let mut eng = MixEngine::new(48_000.0, 1024);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: inst,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.latent".into(),
+        ch: 2,
+        plugin: Box::new(LatentSynth { inner: soundcraft_dsp::create("gain").unwrap(), n, t: 0, pending: None }),
+    }]);
+    let mut out = vec![vec![0.0; 1024]; 2];
+    let mut rendered = Vec::new();
+    for b in 0..48 {
+        eng.render(&s, b * 1024, 1024, &mut out);
+        rendered.extend_from_slice(&out[0]);
+    }
+    assert_eq!(eng.latency, n, "the hosted instrument's latency is part of the mix latency");
+    let impulses: Vec<_> = rendered.iter().enumerate().filter(|(_, v)| v.abs() > 1e-6).map(|(i, _)| i).collect();
+    assert_eq!(impulses, vec![24_000 + n], "both the audio click and instrument impulse align");
+    assert!((rendered[24_000 + n] - 0.5).abs() < 1e-6, "the aligned impulses add, neither is missing");
+}
+
+#[test]
 fn input_monitoring_replaces_clips() {
     let (mut s, t) = session_with_dc(0.5, 4800);
     let mut eng = MixEngine::new(48_000.0, 512);

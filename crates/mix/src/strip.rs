@@ -334,7 +334,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
 fn run_inserts(t: &Track, strip: &mut Strip, blk: Block, transport: &Transport) {
     let Block { pos, frames, .. } = blk;
     let mut gr = 0.0f32;
-    let mut latency = 0usize;
+    let mut latency = strip.instrument.as_ref().filter(|i| !i.failed).map_or(0, |i| i.plugin.latency());
     for (i, ins) in t.mixer.inserts.iter().enumerate() {
         let (Some(ins), Some(Some(slot))) = (ins, strip.plugins.get_mut(i)) else { continue };
         if !ins.active || ins.bypass || slot.failed {
