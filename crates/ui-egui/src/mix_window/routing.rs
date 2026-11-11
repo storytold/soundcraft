@@ -25,34 +25,45 @@ pub(crate) fn route_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId
     egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| route_menu(app, ui, id, input));
 }
 
-/// Input or output menu: no route and buses on both, plus the main output (outputs) or inputs 1-8 (inputs).
+/// Input or output menu: no route and buses on both, plus the main output (outputs) or inputs 1-8
+/// (inputs). Its search field takes typing at once and finds any of them, not just the buses.
 fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
     let key = if input { "input" } else { "output" };
     let cmd = if input { "track.input" } else { "track.output" };
-    if ui.button(crate::localization::text(if input { "no input" } else { "no output" })).clicked() {
-        let _ = app.run(cmd, json!({"track": id.0, key: "none"}));
-        ui.close();
-    }
+    let hint = crate::localization::text(if input { "Search inputs…" } else { "Search outputs…" });
+    let search = MenuSearch::show(ui, egui::Id::unique(("route-search", id.0, input)), hint);
+    let busses: Vec<String> = app.engine.session().busses.iter().map(|b| b.name.clone()).collect();
     let main_name = app.engine.session().outputs.first().map_or_else(|| "Out 1-2".to_string(), |o| o.name.clone());
-    if !input && ui.button(main_name).clicked() {
-        let _ = app.run(cmd, json!({"track": id.0, key: "main"}));
-        ui.close();
-    }
+    // (label, the route the command is given)
+    let mut fixed = vec![(crate::localization::text(if input { "no input" } else { "no output" }).to_string(), "none".to_string())];
     if input {
-        for i in 1..=8 {
-            if ui.button(crate::localized_format!("In {}", i)).clicked() {
-                let _ = app.run(cmd, json!({"track": id.0, key: format!("In {i}")}));
-                ui.close();
-            }
+        fixed.extend((1..=8).map(|i| (crate::localized_format!("In {}", i), format!("In {i}"))));
+    } else {
+        fixed.push((main_name, "main".to_string()));
+    }
+    if search.typing() {
+        let visible: Vec<(&String, &String)> =
+            fixed.iter().map(|(l, v)| (l, v)).chain(busses.iter().map(|b| (b, b))).filter(|(l, _)| search.matches(l)).collect();
+        let picked = search.rows(ui, visible.len(), 420.0, |ui, i, highlighted| visible.get(i).is_some_and(|(l, _)| menu_row(ui, highlighted, l)));
+        if let Some((_, value)) = picked.and_then(|i| visible.get(i)) {
+            let _ = app.run(cmd, json!({"track": id.0, key: value}));
+            ui.close();
+        }
+        return;
+    }
+    for (label, value) in &fixed {
+        if ui.button(label).clicked() {
+            let _ = app.run(cmd, json!({"track": id.0, key: value}));
+            ui.close();
         }
     }
     ui.separator();
-    let busses: Vec<String> = app.engine.session().busses.iter().map(|b| b.name.clone()).collect();
     ui.strong(crate::localization::text("Bus"));
-    let search = MenuSearch::show(ui, egui::Id::unique(("route-bus-search", id.0, input)), crate::localization::text("Search buses…"));
-    let visible: Vec<&String> = busses.iter().filter(|b| search.matches(b)).collect();
-    if let Some(i) = search.rows(ui, visible.len(), 420.0, |ui, i, highlighted| menu_row(ui, highlighted, visible[i])) {
-        let _ = app.run(cmd, json!({"track": id.0, key: visible[i]}));
+    if let Some(bus) = search
+        .rows(ui, busses.len(), 420.0, |ui, i, highlighted| busses.get(i).is_some_and(|b| menu_row(ui, highlighted, b)))
+        .and_then(|i| busses.get(i))
+    {
+        let _ = app.run(cmd, json!({"track": id.0, key: bus}));
         ui.close();
     }
     if ui.button(crate::localization::text("new bus...")).clicked() {

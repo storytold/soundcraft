@@ -1,6 +1,5 @@
 //! The browser shell: the eframe web runner around [`SoundApp`].
 
-use soundcraft_audio_io::FileFormat;
 use soundcraft_engine::{Engine, io};
 use soundcraft_ui_egui::dialogs::Dialog;
 use soundcraft_ui_egui::localization::{self, Language};
@@ -111,7 +110,7 @@ impl Purpose {
     fn filter(self) -> (String, Vec<&'static str>) {
         match self {
             Self::Session => (localization::text("SoundCraft Session").to_owned(), SESSION_EXTS.to_vec()),
-            Self::Audio => (localization::text("Audio").to_owned(), FileFormat::readable_extensions()),
+            Self::Audio => (localization::text("Audio").to_owned(), craft_audio::DECODE_EXTENSIONS.to_vec()),
             Self::Midi => (localization::text("MIDI").to_owned(), MIDI_EXTS.to_vec()),
         }
     }
@@ -255,7 +254,7 @@ fn download(name: &str, bytes: &[u8]) -> Result<(), String> {
         Some("txt") => "text/plain",
         Some("json" | "scraft") => "application/json",
         Some("musicxml") => "application/vnd.recordare.musicxml+xml",
-        ext => ext.and_then(FileFormat::from_extension).map_or("application/octet-stream", FileFormat::mime_type),
+        ext => ext.and_then(craft_audio::encode_format_for).map_or("application/octet-stream", craft_audio::EncodeFormat::mime_type),
     });
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).map_err(js)?;
     let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js)?;

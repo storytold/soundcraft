@@ -7,7 +7,6 @@ use crate::SoundApp;
 use crate::theme::{Tokens, mono, regular};
 use egui::{Align2, Color32, CursorIcon, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
-use soundcraft_audio_io::FileFormat;
 use soundcraft_model::{Insert, TrackId};
 
 /// The built-in Sampler's plugin id.
@@ -18,7 +17,8 @@ const MARKERS: [(&str, bool); 3] = [("start", false), ("loop_start", true), ("lo
 
 /// Whether a file name looks like audio the sampler can load.
 pub fn is_audio_name(name: impl AsRef<std::path::Path>) -> bool {
-    FileFormat::from_path(name).is_some()
+    let ext = name.as_ref().extension().and_then(std::ffi::OsStr::to_str).map(str::to_ascii_lowercase);
+    ext.is_some_and(|ext| craft_audio::DECODE_EXTENSIONS.contains(&ext.as_str()))
 }
 
 /// Sampler parameters that are MIDI notes.
@@ -141,7 +141,7 @@ pub fn sample_strip(app: &mut SoundApp, ui: &mut Ui, tid: TrackId, ins: &Insert)
         let load = if can_pick { load } else { load.on_disabled_hover_text(crate::localization::text("Drop an audio file on this window")) };
         if load.clicked()
             && let Some(pick) = &app.services.pick_open
-            && let Some(path) = pick("mix.sampler_load", &FileFormat::readable_extensions())
+            && let Some(path) = pick("mix.sampler_load", craft_audio::DECODE_EXTENSIONS)
         {
             match crate::dialogs::unicode(&path) {
                 Ok(path) => {

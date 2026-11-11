@@ -47,7 +47,7 @@ fn audio_as_midi(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soundcraft_audio_io::AudioBuffer;
+    use craft_audio::AudioBuffer;
     use soundcraft_model::{ChannelFormat, TrackKind};
 
     #[test]
@@ -59,7 +59,7 @@ mod tests {
         a.extend(tone(330.0));
         let frames = a.len() as i64;
         let s = e.session_mut();
-        let src = crate::io::add_source(s, "mel", AudioBuffer { sample_rate: 48_000, channels: vec![a] }, None, soundcraft_audio_io::FileFormat::Wav);
+        let src = crate::io::add_source(s, "mel", AudioBuffer { sample_rate: 48_000, channels: vec![a] }, None, soundcraft_model::FileFormat::Wav);
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
         let cid = s.new_clip_id();
         crate::edit::place_clip(s, t, Clip::audio(cid, "mel", src, 0, 0, frames));

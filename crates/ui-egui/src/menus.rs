@@ -299,34 +299,34 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                 let extra = ui_aliases();
                 for root in tree() {
                     ui.menu_button(crate::localization::text(&root.label), |ui| {
-                        ui.add_enabled_ui(menu_entries_enabled, |ui| {
-                            for c in &root.children {
-                                menu_node(app, ui, c, &extra);
-                                if c.path == "File > Open" {
-                                    crate::recent::menu(app, ui);
+                        scrolling(ui, |ui| {
+                            ui.add_enabled_ui(menu_entries_enabled, |ui| {
+                                for c in &root.children {
+                                    menu_node(app, ui, c, &extra);
+                                    if c.path == "File > Open" {
+                                        crate::recent::menu(app, ui);
+                                    }
+                                    if c.path == "Track > New..." {
+                                        instrument_menu(app, ui);
+                                    }
                                 }
-                                if c.path == "Track > New..." {
-                                    instrument_menu(app, ui);
+                                if root.path == "AudioSuite" {
+                                    ui.separator();
+                                    ui.label(egui::RichText::new(crate::localization::text("Processes selected clips offline")).small().color(t.text_dim));
                                 }
-                            }
-                            if root.path == "AudioSuite" {
-                                ui.separator();
-                                ui.label(
-                                    egui::RichText::new(crate::localization::text("Processes selected clips offline")).small().color(t.text_dim),
-                                );
-                            }
-                            if root.path == "Window" {
-                                ui.separator();
-                                let mut separate = app.ui.mix_separate;
-                                if ui
-                                    .checkbox(&mut separate, crate::localization::text("Mix in Separate Window"))
-                                    .on_hover_text(crate::localization::text("Show Edit and Mix at once, e.g. one per monitor"))
-                                    .changed()
-                                {
-                                    let _ = run_ui_command(app, "window.mix_separate", &json!({"value": separate}));
-                                    ui.close();
+                                if root.path == "Window" {
+                                    ui.separator();
+                                    let mut separate = app.ui.mix_separate;
+                                    if ui
+                                        .checkbox(&mut separate, crate::localization::text("Mix in Separate Window"))
+                                        .on_hover_text(crate::localization::text("Show Edit and Mix at once, e.g. one per monitor"))
+                                        .changed()
+                                    {
+                                        let _ = run_ui_command(app, "window.mix_separate", &json!({"value": separate}));
+                                        ui.close();
+                                    }
                                 }
-                            }
+                            })
                         });
                     });
                 }
@@ -346,6 +346,12 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
             });
         },
     );
+}
+
+/// A menu taller than the window scrolls instead of running off its bottom edge (#1482).
+fn scrolling<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let max_h = (ui.ctx().content_rect().height() - 40.0).max(120.0);
+    egui::ScrollArea::vertical().max_height(max_h).show(ui, add).inner
 }
 
 /// Track › Instrument: the instrument picker for the selected instrument track (#374).
@@ -368,11 +374,12 @@ fn instrument_track(s: &soundcraft_model::Session) -> Option<soundcraft_model::T
 
 fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str, &str)]) {
     if !n.children.is_empty() {
-        let label = crate::localization::text(&n.label).to_string();
-        ui.menu_button(label, |ui| {
-            for c in &n.children {
-                menu_node(app, ui, c, extra);
-            }
+        ui.menu_button(crate::localization::text(&n.label).to_string(), |ui| {
+            scrolling(ui, |ui| {
+                for c in &n.children {
+                    menu_node(app, ui, c, extra);
+                }
+            });
         });
         return;
     }

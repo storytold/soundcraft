@@ -51,7 +51,7 @@ fn tracks(mode: &str, tool: &str, lanes: &[&[(i64, i64)]]) -> (SoundApp, egui::C
         channels: 1,
         frames: 20 * SEC as u64,
         sample_rate: 48_000,
-        format: soundcraft_audio_io::FileFormat::Wav,
+        format: soundcraft_model::FileFormat::Wav,
         time_reference: 0,
         unsaved: false,
     });
