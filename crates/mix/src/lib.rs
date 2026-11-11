@@ -5,6 +5,9 @@
 //! mute (with automation) → pan → post-fader sends → busses → aux inputs → main → master faders.
 //! The same code drives realtime playback and offline bounces, so what you hear is what you get.
 //! Steady-state rendering does not allocate.
+//! A realtime host can also enable physical outputs with [`MixEngine::set_hardware_channels`]
+//! and read [`MixEngine::hardware_output`] after each render. Canonical `Out N` and `Out N-M`
+//! paths bypass the main master and keep their physical channel indices.
 //!
 //! ## Surround
 //! The main mix has the format of the session's main output path ([`Session::main_format`]:
@@ -79,7 +82,7 @@ pub use offline::{
     MAX_RENDER_SAMPLES, RangeRender, fold_down_stereo, render_bus, render_clips, render_range, render_track_pre_fader, source_channels,
 };
 pub use pan::itu_stereo_fold;
-use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
+use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix, identity_matrix};
 use routing::{processing_order, structure_fingerprint};
 use strip::{
     Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
@@ -100,6 +103,10 @@ pub const MAIN_CHANNELS: usize = 2;
 /// Widest strip, bus or main mix (9.1.6 / 3rd-order Ambisonics). Wider formats are truncated.
 pub const MAX_CHANNELS: usize = 16;
 
+/// Physical device channels are independent of a strip's speaker layout. Bound their storage
+/// separately so a malformed device count cannot allocate unbounded realtime buffers.
+pub const MAX_HARDWARE_CHANNELS: usize = 1024;
+
 /// Number of channels of a session's main mix.
 pub fn main_channels(s: &Session) -> usize {
     s.main_format().channels().clamp(MAIN_CHANNELS, MAX_CHANNELS)
@@ -113,6 +120,8 @@ pub struct MixEngine {
     busses: HashMap<BusId, BusBuf>,
     main: Vec<Vec<f32>>,
     main_fmt: ChannelFormat,
+    /// Direct hardware paths, kept separate from the main mix and its master processing.
+    hardware: Vec<Vec<f32>>,
     pub meters: HashMap<TrackId, StripMeter>,
     pub main_meter: StripMeter,
     pub pan_law: PanLaw,
@@ -164,6 +173,7 @@ impl MixEngine {
             busses: HashMap::new(),
             main: vec![vec![0.0; max_block]; MAIN_CHANNELS],
             main_fmt: ChannelFormat::Stereo,
+            hardware: Vec::new(),
             meters: HashMap::new(),
             main_meter: StripMeter::default(),
             pan_law: PanLaw::Minus3,
@@ -241,6 +251,29 @@ impl MixEngine {
     /// Channels of the main mix as of the last sync.
     pub fn main_channels(&self) -> usize {
         self.main.len()
+    }
+
+    /// Set the physical device width before starting playback. Offline renders leave it zero.
+    /// Calling again with the same width keeps the existing storage.
+    pub fn set_hardware_channels(&mut self, channels: usize) {
+        let channels = channels.min(MAX_HARDWARE_CHANNELS);
+        if self.hardware.len() != channels {
+            self.hardware = vec![vec![0.0; self.max_block]; channels];
+        }
+    }
+
+    /// Direct hardware samples from the last rendered block, in device channel order.
+    /// They bypass the main master and must not be folded into a narrower device.
+    pub fn hardware_output(&self) -> &[Vec<f32>] {
+        &self.hardware
+    }
+
+    /// Silence the retained hardware block without changing its storage. A playback host uses
+    /// this when it emits a silent block without calling `render`, for example at a selection end.
+    pub fn clear_hardware_output(&mut self) {
+        for channel in &mut self.hardware {
+            channel.fill(0.0);
+        }
     }
 
     /// Reset all plugin state (on stop / seek).
@@ -420,6 +453,9 @@ impl MixEngine {
             }
         }
         for c in &mut self.main {
+            c.iter_mut().take(frames).for_each(|x| *x = 0.0);
+        }
+        for c in &mut self.hardware {
             c.iter_mut().take(frames).for_each(|x| *x = 0.0);
         }
     }
@@ -654,6 +690,21 @@ impl MixEngine {
                 Some(d) => (&mut d.buf, d.fmt),
                 None => return,
             },
+            Route::Hardware(name) => {
+                let Some(range) = hardware_span(name, src.len(), self.hardware.len()) else { return };
+                let Some(dst) = self.hardware.get_mut(range) else { return };
+                // Physical paths retain the strip's channel order, including mono at unity.
+                // The mono bus matrix deliberately folds stereo and would attenuate this path.
+                let mut start = 0;
+                while start < frames {
+                    let (at, end) = pan_segment(t, pos, start, frames);
+                    let spec = PanSpec { stereo: [pan_at(t, 0, at), pan_at(t, 1, at)], surround: t.mixer.surround.as_ref() };
+                    let matrix = if src.len() == 1 { identity_matrix(1) } else { build_matrix(src_fmt, src.len(), src_fmt, dst.len(), &spec, law) };
+                    apply_matrix_span(src, start..end, dst, &matrix, 1.0);
+                    start = end;
+                }
+                return;
+            }
             _ => return,
         };
         let mut start = 0;
@@ -665,6 +716,26 @@ impl MixEngine {
             start = end;
         }
     }
+}
+
+/// Canonical device paths use one-based channel numbers. A whole path must fit: wrapping a
+/// stereo path at the device edge would send its right side to an unrelated physical output.
+fn hardware_span(name: &str, channels: usize, available: usize) -> Option<std::ops::Range<usize>> {
+    if !name.get(..4)?.eq_ignore_ascii_case("Out ") || channels == 0 {
+        return None;
+    }
+    let label = name.get(4..)?.trim();
+    let (first, last) = label.split_once('-').map_or((label, None), |(first, last)| (first.trim(), Some(last.trim())));
+    let first = first.parse::<usize>().ok()?;
+    let start = first.checked_sub(1)?;
+    if let Some(last) = last {
+        let width = last.parse::<usize>().ok()?.checked_sub(first)?.checked_add(1)?;
+        if width != channels {
+            return None;
+        }
+    }
+    let end = start.checked_add(channels)?;
+    (end <= available).then_some(start..end)
 }
 
 std::thread_local! {

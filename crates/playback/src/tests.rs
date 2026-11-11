@@ -169,6 +169,61 @@ fn a_spike_in_one_block_among_quiet_ones_reaches_the_ui() {
 }
 
 #[test]
+fn physical_output_48_survives_the_interleaved_device_callback() {
+    use soundcraft_model::Route;
+    let (_shared, mut state, tx, track) = spike_session(0);
+    let mut session = (*state.session).clone();
+    session.track_mut(track).unwrap().mixer.output = Route::Hardware("Out 48".into());
+    state.mix.set_hardware_channels(48);
+    tx.send(Cmd::Session(Arc::new(session), Vec::new())).unwrap();
+    let mut samples = vec![0.0; 48 * 64];
+
+    state.fill(&mut samples, 48);
+
+    for frame in samples.as_chunks::<48>().0.iter().take(32) {
+        assert!((frame[47] - 0.9).abs() < 1e-6, "last physical channel: {}", frame[47]);
+        assert!(frame[..47].iter().all(|sample| *sample == 0.0), "no fold-down or output spill");
+    }
+}
+
+#[test]
+fn physical_output_outside_the_device_does_not_fold_into_stereo() {
+    use soundcraft_model::Route;
+    let (_shared, mut state, tx, track) = spike_session(0);
+    let mut session = (*state.session).clone();
+    session.track_mut(track).unwrap().mixer.output = Route::Hardware("Out 48".into());
+    state.mix.set_hardware_channels(2);
+    tx.send(Cmd::Session(Arc::new(session), Vec::new())).unwrap();
+    let mut samples = vec![0.0; 2 * 64];
+
+    state.fill(&mut samples, 2);
+
+    assert!(samples.iter().all(|sample| *sample == 0.0));
+}
+
+#[test]
+fn ending_a_selection_clears_direct_outputs_while_input_monitoring_continues() {
+    use soundcraft_model::{ChannelFormat, Route, TrackKind};
+    let (_shared, mut state, tx, track) = spike_session(0);
+    let mut session = (*state.session).clone();
+    session.track_mut(track).unwrap().mixer.output = Route::Hardware("Out 48".into());
+    let monitored = session.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    session.track_mut(monitored).unwrap().mixer.input_monitor = true;
+    let ring = record::InputRing::new(1, 48_000);
+    ring.push(&[0.0; 1024]);
+    state.mix.set_hardware_channels(48);
+    tx.send(Cmd::Session(Arc::new(session), Vec::new())).unwrap();
+    tx.send(Cmd::Input(ring)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: Some(64), looped: None }).unwrap();
+    let mut samples = vec![0.0; 48 * 192];
+
+    state.fill(&mut samples, 48);
+
+    assert!(samples.as_chunks::<48>().0.iter().take(32).all(|frame| frame[47] > 0.85));
+    assert!(samples[48 * 64..].iter().all(|sample| *sample == 0.0), "the stopped clip must not repeat through a direct hardware path");
+}
+
+#[test]
 fn a_spike_rendered_while_the_ui_holds_the_meters_arrives_later() {
     let (shared, mut st, _tx, t) = spike_session(100);
     let mut out = vec![0.0f32; 2 * 512];

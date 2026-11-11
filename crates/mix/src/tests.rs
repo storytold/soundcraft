@@ -90,6 +90,98 @@ fn add_dc_track(s: &mut Session, level: f32, frames: usize) -> TrackId {
 }
 
 #[test]
+fn hardware_outputs_preserve_all_48_channel_positions() {
+    let mut s = Session::default();
+    for channel in 1..=48 {
+        let id = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let track = s.track_mut(id).unwrap();
+        track.mixer.input_monitor = true;
+        track.mixer.input = Route::Hardware(format!("In {channel}"));
+        track.mixer.output = Route::Hardware(format!("Out {channel}"));
+    }
+    let mut engine = MixEngine::new(48_000.0, 64);
+    engine.set_hardware_channels(48);
+    engine.monitor_only = true;
+    engine.input = (1..=48).map(|channel| vec![channel as f32 / 100.0; 64]).collect();
+    let mut main = vec![vec![0.0; 64]; 2];
+
+    engine.render(&s, 0, 64, &mut main);
+
+    assert!(main.iter().flatten().all(|sample| *sample == 0.0), "direct outputs bypass the main mix");
+    assert_eq!(engine.hardware_output().len(), 48);
+    for (channel, samples) in engine.hardware_output().iter().enumerate() {
+        let expected = (channel + 1) as f32 / 100.0;
+        assert!(samples.iter().all(|sample| (*sample - expected).abs() < 1e-6), "hardware channel {}", channel + 1);
+    }
+}
+
+#[test]
+fn hardware_output_pairs_keep_the_last_channels_and_do_not_wrap() {
+    let mut s = Session::default();
+    let id = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let track = s.track_mut(id).unwrap();
+    track.mixer.input_monitor = true;
+    track.mixer.input = Route::Hardware("In 47-48".into());
+    track.mixer.output = Route::Hardware("Out 47-48".into());
+    let mut engine = MixEngine::new(48_000.0, 64);
+    engine.set_hardware_channels(48);
+    engine.monitor_only = true;
+    engine.input = vec![vec![0.0; 64]; 48];
+    engine.input[46].fill(0.25);
+    engine.input[47].fill(-0.5);
+    let mut main = vec![vec![0.0; 64]; 2];
+
+    engine.render(&s, 0, 64, &mut main);
+    assert_eq!(engine.hardware_output()[46], vec![0.25; 64]);
+    assert_eq!(engine.hardware_output()[47], vec![-0.5; 64]);
+    assert!(engine.hardware_output()[..46].iter().flatten().all(|sample| *sample == 0.0));
+    let storage: Vec<_> = engine.hardware_output().iter().map(|channel| channel.as_ptr()).collect();
+
+    s.track_mut(id).unwrap().mixer.output = Route::Hardware("Out 48".into());
+    engine.render(&s, 64, 64, &mut main);
+    assert!(engine.hardware_output().iter().flatten().all(|sample| *sample == 0.0), "an out-of-range stereo path is silent, never wrapped");
+    assert_eq!(storage, engine.hardware_output().iter().map(|channel| channel.as_ptr()).collect::<Vec<_>>());
+}
+
+#[test]
+fn direct_hardware_and_main_outputs_coexist_without_changing_the_main_width() {
+    let mut s = Session::default();
+    let main = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let direct = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    for (id, input, output) in [(main, "In 1", Route::Main), (direct, "In 2", Route::Hardware("Out 48".into()))] {
+        let track = s.track_mut(id).unwrap();
+        track.mixer.input_monitor = true;
+        track.mixer.input = Route::Hardware(input.into());
+        track.mixer.output = output;
+    }
+    let mut engine = MixEngine::new(48_000.0, 64);
+    engine.set_hardware_channels(48);
+    engine.monitor_only = true;
+    engine.input = vec![vec![0.1; 64], vec![0.2; 64]];
+    let mut out = vec![vec![0.0; 64]; 2];
+
+    engine.render(&s, 0, 64, &mut out);
+
+    assert_eq!(engine.main_channels(), 2);
+    let expected_main = 0.1 * db_to_gain(-3.0);
+    assert!(out.iter().flatten().all(|sample| (*sample - expected_main).abs() < 1e-6));
+    assert_eq!(engine.hardware_output()[47], vec![0.2; 64]);
+    assert!(engine.hardware_output()[..47].iter().flatten().all(|sample| *sample == 0.0));
+}
+
+#[test]
+fn invalid_hardware_paths_never_wrap_or_overflow() {
+    for name in ["Out 0", "Out -1", "Out 49", "Out 1-48", "Out 48-47", "Out 184467440737095516160", "Out unknown", "Bus 48"] {
+        assert_eq!(hardware_span(name, 1, 48), None, "{name}");
+    }
+    assert_eq!(hardware_span("Out 48", 1, 48), Some(47..48));
+    assert_eq!(hardware_span("Out 47-48", 2, 48), Some(46..48));
+    assert_eq!(hardware_span("Out 48", 2, 48), None);
+    assert_eq!(hardware_span("Out 1", 1, 0), None);
+    assert_eq!(hardware_span("Out 1", 0, 48), None);
+}
+
+#[test]
 fn mono_center_pan_is_minus_3db() {
     let (s, _) = session_with_dc(0.5, 4800);
     let out = render_range(&s, Range::new(0, 4800), 512);

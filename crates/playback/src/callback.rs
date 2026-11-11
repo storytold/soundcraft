@@ -90,9 +90,10 @@ pub(crate) struct AudioState {
     forget_shared: Vec<TrackId>,
 }
 
-fn new_engine(sr: f32) -> MixEngine {
+fn new_engine(sr: f32, hardware_channels: usize) -> MixEngine {
     let mut m = MixEngine::new(sr, BLOCK);
     m.set_external_instances(true);
+    m.set_hardware_channels(hardware_channels);
     m.metronome = true;
     m
 }
@@ -113,7 +114,7 @@ impl AudioState {
             fold: fold_gains(&session),
             rx,
             shared,
-            mix: new_engine(sr),
+            mix: new_engine(sr, 2),
             session,
             pos: 0,
             playing: false,
@@ -148,7 +149,8 @@ impl AudioState {
                 Cmd::Session(s, instances) => {
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
-                        let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
+                        let next = new_engine(s.sample_rate.as_f64() as f32, self.mix.hardware_output().len());
+                        let mut old = std::mem::replace(&mut self.mix, next);
                         let _ = self.garbage.send(old.drain_plugins());
                     }
                     self.mix.adopt(instances);
@@ -229,6 +231,9 @@ impl AudioState {
             for c in &mut self.pending {
                 c.iter_mut().for_each(|x| *x = 0.0);
             }
+            // Input monitoring can keep the device active after the selection stops. Silence
+            // direct paths too, instead of replaying their last rendered block alongside it.
+            self.mix.clear_hardware_output();
             self.pending_len = BLOCK;
             return;
         }
@@ -312,7 +317,13 @@ impl AudioState {
                 let b = if i0 + 1 < self.pending_len { ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a) } else { a };
                 a * (1.0 - fr) + b * fr
             };
-            write_frame(frame, channels, nch, sounding, &self.fold, sample);
+            let hardware = |c: usize| {
+                let ch = self.mix.hardware_output().get(c);
+                let a = ch.and_then(|v| v.get(i0)).copied().unwrap_or(0.0);
+                let b = if i0 + 1 < self.pending_len { ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a) } else { a };
+                a * (1.0 - fr) + b * fr
+            };
+            write_frame(frame, channels, nch, sounding, &self.fold, sample, hardware);
             self.read += step;
         }
     }
@@ -320,7 +331,15 @@ impl AudioState {
 
 /// Write one device frame from `nch` rendered channels: fold surround to stereo (a mono device
 /// averages the two sides), or copy the channels straight through. `sample(c)` is channel `c`.
-fn write_frame(frame: &mut [f32], channels: usize, nch: usize, sounding: bool, fold: &[(f32, f32)], sample: impl Fn(usize) -> f32) {
+fn write_frame(
+    frame: &mut [f32],
+    channels: usize,
+    nch: usize,
+    sounding: bool,
+    fold: &[(f32, f32)],
+    sample: impl Fn(usize) -> f32,
+    hardware: impl Fn(usize) -> f32,
+) {
     if channels < nch {
         // Fold surround to stereo first; a mono device averages the two sides.
         let (mut l, mut r) = (0.0f32, 0.0f32);
@@ -336,16 +355,18 @@ fn write_frame(frame: &mut [f32], channels: usize, nch: usize, sounding: bool, f
             }
         }
         for (c, o) in frame.iter_mut().enumerate() {
-            *o = match c {
-                0 if channels == 1 => out_sample(0.5 * l + 0.5 * r),
-                0 => out_sample(l),
-                1 => out_sample(r),
+            let main = match c {
+                0 if channels == 1 => 0.5 * l + 0.5 * r,
+                0 => l,
+                1 => r,
                 _ => 0.0,
             };
+            *o = if sounding { out_sample(main + hardware(c)) } else { 0.0 };
         }
     } else {
         for (c, o) in frame.iter_mut().enumerate() {
-            *o = if c < nch.max(1) && sounding { out_sample(sample(c)) } else { 0.0 };
+            let main = if c < nch.max(1) { sample(c) } else { 0.0 };
+            *o = if sounding { out_sample(main + hardware(c)) } else { 0.0 };
         }
     }
 }

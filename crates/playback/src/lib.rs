@@ -173,6 +173,12 @@ pub struct Player {
 }
 
 impl Player {
+    /// Physical outputs available to track routing. The actual device may be wider than the
+    /// bounded hardware buffers; callers must not offer paths the renderer cannot address.
+    pub fn routable_output_channels(&self) -> usize {
+        usize::from(self.device_channels).min(soundcraft_mix::MAX_HARDWARE_CHANNELS)
+    }
+
     /// Open the default output device. Never fails: without a device it runs a silent clock.
     pub fn new(session: Arc<Session>) -> Player {
         Player::with_config(session, &AudioConfig::default())
@@ -237,7 +243,8 @@ impl Player {
                         let channels = usize::from(config.channels);
                         let (tx, rx) = channel();
                         let (gtx, grx) = channel();
-                        let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
+                        let mut state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
+                        state.mix.set_hardware_channels(channels);
                         let fault = Arc::new(Fault::default());
                         let stream = match format {
                             cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, channels, &fault, &shared),
