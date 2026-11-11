@@ -58,6 +58,14 @@ pub enum Dialog {
     SaveChanges { then: (String, Value) },
 }
 
+impl Dialog {
+    /// A floating window: it can be moved, stays open after its actions, and leaves the keyboard
+    /// shortcuts working (Pro Tools' Strip Silence). Every other dialog is modal and centred.
+    pub fn floats(&self) -> bool {
+        matches!(self, Dialog::StripSilence { .. })
+    }
+}
+
 /// The Clip Looping dialog's choice of how far a clip is looped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopBy {
@@ -451,11 +459,13 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     .to_string();
     let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
     let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-    egui::Window::new(egui::RichText::new(&title).font(bold(13.0)))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, vec2(0.0, -80.0))
-        .show(ctx, |ui| {
+    let window = egui::Window::new(egui::RichText::new(&title).font(bold(13.0))).collapsible(false).resizable(false);
+    let window = if d.floats() {
+        window.pivot(Align2::CENTER_CENTER).default_pos(ctx.content_rect().center() + vec2(0.0, -80.0))
+    } else {
+        window.anchor(Align2::CENTER_CENTER, vec2(0.0, -80.0))
+    };
+    window.show(ctx, |ui| {
             // Escape owns the whole frame: no focused button or other control may act first.
             if esc {
                 return;
@@ -774,7 +784,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     }
     let saving = action.as_ref().is_some_and(|(cmd, _)| cmd.starts_with("session.save"));
     if let Some((cmd, params)) = action {
-        keep = false;
+        keep = d.floats();
         if cmd == "file.import_audio" {
             // Decoded in the background so a long file doesn't freeze the app (#597).
             crate::import::start(app, params);
@@ -1231,6 +1241,74 @@ mod tests {
         assert_eq!(covered(&separate), covered(&before), "Separate keeps all the audio");
         assert!(!strip.is_empty() && !extract.is_empty());
         assert_eq!(covered(&strip) + covered(&extract), covered(&before), "Strip and Extract keep opposite parts");
+    }
+
+    /// Opens Strip Silence over the demo's Kick, selected end to end.
+    fn strip_silence_dialog() -> (egui::Context, SoundApp, TrackId) {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let mut e = soundcraft_engine::demo::demo_engine();
+        let kick = e.session().track_by_name("Kick").unwrap().id;
+        let end = e.session().content_end();
+        e.execute("edit.select", &json!({"tracks": [kick.0], "start": 0, "end": end})).unwrap();
+        let mut app = SoundApp::new(e, None, crate::Services::default());
+        assert!(app.dialogs.open_for_command(&app.engine, "edit.strip_silence"));
+        for _ in 0..3 {
+            dialog_frame(&ctx, &mut app, vec![]);
+        }
+        (ctx, app, kick)
+    }
+
+    fn strip_silence_open(app: &SoundApp) -> bool {
+        matches!(app.dialogs.open, Some(Dialog::StripSilence { .. }))
+    }
+
+    /// Strip Silence stays open after its action, ready for the next selection, until Escape (#1381).
+    #[test]
+    fn strip_silence_stays_open_after_its_action() {
+        let (ctx, mut app, kick) = strip_silence_dialog();
+        let clips = |app: &SoundApp| app.engine.session().track(kick).unwrap().clips().iter().map(|c| (c.start, c.end())).collect::<Vec<_>>();
+        let before = clips(&app);
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        assert_ne!(clips(&app), before, "Enter presses Strip");
+        assert!(strip_silence_open(&app), "the window stays open after Strip");
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
+        assert!(app.dialogs.open.is_none(), "Escape still closes it");
+    }
+
+    /// The zoom keys keep working while Strip Silence is open (#1380).
+    #[test]
+    fn zoom_keys_work_while_strip_silence_is_open() {
+        let (ctx, mut app, _) = strip_silence_dialog();
+        let spp = |app: &SoundApp| app.engine.session().edit.zoom.samples_per_px;
+        let before = spp(&app);
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::T, egui::Modifiers::NONE)]);
+        let zoomed_in = spp(&app);
+        assert!(zoomed_in < before, "T zooms in: {before} -> {zoomed_in}");
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::R, egui::Modifiers::NONE)]);
+        assert!(spp(&app) > zoomed_in, "R zooms out");
+        assert!(strip_silence_open(&app));
+    }
+
+    /// Strip Silence's title bar drags the window (#1378).
+    #[test]
+    fn strip_silence_window_can_be_moved() {
+        let (ctx, mut app, _) = strip_silence_dialog();
+        let rect = |ctx: &egui::Context| ctx.memory(|m| m.areas().top_layer_id(egui::Order::Middle).and_then(|l| m.area_rect(l.id))).unwrap();
+        let start = rect(&ctx);
+        let grab = start.left_top() + vec2(start.width() / 2.0, 10.0);
+        let drop = grab + vec2(-200.0, 150.0);
+        let button =
+            |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        dialog_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(grab)]);
+        dialog_frame(&ctx, &mut app, vec![button(grab, true)]);
+        dialog_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(grab + vec2(-100.0, 75.0))]);
+        dialog_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(drop)]);
+        dialog_frame(&ctx, &mut app, vec![button(drop, false)]);
+        dialog_frame(&ctx, &mut app, vec![]);
+        let moved = rect(&ctx).left_top() - start.left_top();
+        assert!((moved - vec2(-200.0, 150.0)).length() < 1.0, "the window moved by {moved:?}");
+        assert!(strip_silence_open(&app));
     }
 
     #[test]

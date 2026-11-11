@@ -49,7 +49,7 @@ fn strip_silence_extract_keeps_what_strip_removes() {
     let (mut h, track, before) = strip_silence_dialog();
     h.get_by_role_and_label(Role::Button, "Extract").click();
     h.run_steps(2);
-    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "Strip Silence stays open after its action");
     let extracted = clips(&h, track);
     let strip = stripped(track);
     assert!(!extracted.is_empty() && !strip.is_empty());
@@ -61,7 +61,7 @@ fn strip_silence_separate_cuts_the_clips_and_removes_nothing() {
     let (mut h, track, before) = strip_silence_dialog();
     h.get_by_role_and_label(Role::Button, "Separate").click();
     h.run_steps(2);
-    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "Strip Silence stays open after its action");
     let separated = clips(&h, track);
     assert!(separated.len() > before.len());
     assert_eq!(covered(&separated), covered(&before));
@@ -74,7 +74,7 @@ fn enter_on_a_focused_separate_separates_and_does_not_strip() {
     h.run_steps(2);
     h.event(Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
     h.run_steps(2);
-    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "Strip Silence stays open after its action");
     let separated = clips(&h, track);
     assert!(separated.len() > before.len());
     assert_eq!(covered(&separated), covered(&before), "Enter on Separate keeps all the audio");
@@ -85,7 +85,7 @@ fn strip_silence_strip_removes_the_silence() {
     let (mut h, track, before) = strip_silence_dialog();
     h.get_by_role_and_label(Role::Button, "Strip").click();
     h.run_steps(2);
-    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "Strip Silence stays open after its action");
     let strip = clips(&h, track);
     assert_eq!(strip, stripped(track));
     assert!(covered(&strip) < covered(&before));
@@ -128,6 +128,8 @@ fn strip_silence_opens_with_the_values_strip_used() {
     let (mut h, _, _) = strip_silence_dialog();
     set_values(&mut h, CHANGED);
     h.get_by_role_and_label(Role::Button, "Strip").click();
+    h.run_steps(2);
+    h.event(Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
     h.run_steps(2);
     assert_eq!(reopen(&mut h), CHANGED);
 }
