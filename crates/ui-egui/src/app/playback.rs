@@ -159,6 +159,8 @@ impl SoundApp {
         // run's own that nobody else could have made first.
         let unsaved_dir = match &self.autosave_dir {
             Some(d) => d.join(name),
+            // A saved session records beside its file: `plan_takes` never uses this folder.
+            None if self.engine.path.is_some() => std::path::PathBuf::new(),
             None => self.fallback_take_dir()?,
         };
         let Some(r) = &mut self.recorder else { return Err("no audio input device".into()) };

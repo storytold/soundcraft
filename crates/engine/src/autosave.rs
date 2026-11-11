@@ -431,6 +431,11 @@ pub fn create_folder(dir: &Path) -> std::io::Result<()> {
 /// (`0o700`); on other systems it has the mode `parent` gives it.
 pub fn create_unique_folder(parent: &Path, prefix: &str) -> std::io::Result<PathBuf> {
     use std::hash::{BuildHasher, Hasher};
+    // One plain name: a prefix like `../x` would make a sibling of `parent`, not a child.
+    let mut parts = Path::new(prefix).components();
+    if !matches!((parts.next(), parts.next()), (Some(std::path::Component::Normal(_)), None)) || prefix.contains(['/', '\\']) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the folder prefix must be a single name"));
+    }
     for _ in 0..16 {
         let random = |_| std::collections::hash_map::RandomState::new().build_hasher().finish();
         let dir = parent.join(format!("{prefix}-{:016x}{:016x}", random(0), random(1)));
@@ -481,6 +486,9 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&a).unwrap().permissions()) & 0o777, 0o700);
         assert!(create_unique_folder(&parent.join("missing"), "T").is_err(), "no parents are made");
+        for bad in ["../outside", "a/b", "a\\b", "..", ".", "", "/abs"] {
+            assert!(create_unique_folder(&parent, bad).is_err(), "{bad:?} is not a single name");
+        }
         let _ = std::fs::remove_dir_all(&parent);
     }
 
