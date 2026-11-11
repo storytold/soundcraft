@@ -76,7 +76,7 @@ fn a_processed_clip_that_grows_away_from_the_crossfade_keeps_it() {
     assert_eq!(layout(&e, t), vec![(0, 1200, 0, 200), (1000, 5000, 200, 0)], "Elastic x2 on B");
     let (mut e, t, _, b) = crossfade();
     run(&mut e, "edit.tce_to_timeline", b, json!({"start": 1000, "end": 5000}));
-    assert_eq!(layout(&e, t)[0], (0, 1200, 0, 200), "TCE of B to 1000..5000");
+    assert_eq!(layout(&e, t), vec![(0, 1200, 0, 200), (1000, 5000, 400, 0)], "TCE of B to 1000..5000");
 }
 
 #[test]
@@ -84,6 +84,30 @@ fn a_processed_clip_still_overwrites_past_its_old_edges() {
     // TCE of B to 900..2900 starts it inside A: A is cut back to 900, as before.
     let (mut e, t, _, b) = crossfade();
     run(&mut e, "edit.tce_to_timeline", b, json!({"start": 900, "end": 2900}));
-    assert_eq!(layout(&e, t)[0].1, 900, "A ends where B now starts");
-    assert_eq!(layout(&e, t)[1].0, 900);
+    assert_eq!(layout(&e, t), vec![(0, 900, 0, 0), (900, 2900, 200, 0)], "A ends where B now starts");
+}
+
+/// Both replacement orders preserve the audible overlap when one call processes both clips.
+#[test]
+fn processing_both_crossfade_clips_preserves_rendered_overlap() {
+    for reverse_order in [false, true] {
+        for (process, sign) in [("reverse", 1.0f32), ("invert", -1.0f32)] {
+            let (mut e, t, a, b) = crossfade();
+            let range = soundcraft_time::Range::new(1000, 1200);
+            let before = soundcraft_mix::render_clips(e.session(), t, range);
+            assert!(before.iter().flatten().all(|sample| sample.abs() > 0.1));
+            let ids = if reverse_order { vec![b.0, a.0] } else { vec![a.0, b.0] };
+            let result = e.execute("audiosuite.process", &json!({"process": process, "clips": ids})).unwrap();
+            assert_eq!(result["processed"], 2);
+            assert_eq!(layout(&e, t), vec![(0, 1200, 0, 200), (1000, 3000, 200, 0)]);
+            let after = soundcraft_mix::render_clips(e.session(), t, range);
+            assert_eq!(after.len(), before.len());
+            for (actual, expected) in after.iter().zip(&before) {
+                assert_eq!(actual.len(), expected.len());
+                for (frame, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+                    assert!((actual - sign * expected).abs() < 1e-5, "{process} reversed={reverse_order} frame={frame}: {actual} vs {expected}");
+                }
+            }
+        }
+    }
 }
