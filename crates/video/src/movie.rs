@@ -514,9 +514,17 @@ impl Movie {
                 }
                 let data = match self.read(s) {
                     Ok(d) => d,
-                    // an unreadable sample is skipped, as before; the request's byte and no-picture budgets bound the walk
+                    // an unreadable sample is skipped, as before, and counts as a sample without a picture: the
+                    // request's byte and no-picture budgets bound the walk
                     Err(e) => {
                         last_err = Some(e.to_string());
+                        without_picture += 1;
+                        if without_picture > Self::MAX_SAMPLES_WITHOUT_PICTURE {
+                            return Err(VideoError::Decode(format!(
+                                "no picture in {} samples before frame {index}",
+                                Self::MAX_SAMPLES_WITHOUT_PICTURE
+                            )));
+                        }
                         continue;
                     }
                 };

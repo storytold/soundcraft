@@ -186,6 +186,37 @@ fn one_frame_request_reads_a_bounded_amount_of_samples() {
     assert!(matches!(&again, Err(VideoError::Decode(e)) if e.contains("needs more than 2048 MiB of samples")), "{again:?}");
 }
 
+/// A source that, once `failing` is set, cannot be read at all.
+struct UnreadableSamples {
+    bytes: Vec<u8>,
+    failing: std::sync::atomic::AtomicBool,
+}
+
+impl ByteSource for UnreadableSamples {
+    fn len(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        if self.failing.load(Ordering::Relaxed) || start.saturating_add(buf.len()) > self.bytes.len() {
+            return Err(std::io::Error::other("unreadable"));
+        }
+        buf.copy_from_slice(&self.bytes[start..start + buf.len()]);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_request_over_unreadable_samples_stops_at_the_no_picture_budget() {
+    // 400 frames of one GOP, none of whose samples can be read once the movie is open: the walk gives up after 256 skipped samples
+    let bytes = h264_mp4(400, 400).unwrap();
+    let src = Arc::new(UnreadableSamples { bytes, failing: false.into() });
+    let mut m = Movie::open_source(src.clone()).unwrap();
+    src.failing.store(true, Ordering::Relaxed);
+    let r = m.frame(399);
+    assert!(matches!(&r, Err(VideoError::Decode(e)) if e.contains("no picture in 256 samples")), "{r:?}");
+}
+
 #[test]
 fn mjpeg_frame_size_is_capped_from_its_header_but_may_differ_from_the_track() {
     // A frame whose header differs from the track's size still decodes (within the dimension cap, as before)...
