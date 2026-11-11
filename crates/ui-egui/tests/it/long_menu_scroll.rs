@@ -30,8 +30,8 @@ fn a_long_main_menu_scrolls_to_its_last_item() {
         step(&mut h);
     }
     let options = menus::tree().into_iter().find(|r| r.path == "Options").unwrap();
-    // A submenu's button is labelled by its name alone (leaf items also carry their shortcut).
-    let last = options.children.iter().rev().find(|c| !c.children.is_empty()).unwrap().label.clone();
+    // The menu must scroll all the way to its last entry, a leaf like "Low Latency Monitoring".
+    let last = options.children.last().unwrap().label.clone();
 
     let at = h.get_by_label("Options").rect().center();
     let s = &mut h.state_mut().synthetic;
@@ -41,7 +41,7 @@ fn a_long_main_menu_scrolls_to_its_last_item() {
     for _ in 0..6 {
         step(&mut h);
     }
-    let bottom = |h: &Harness<'_, SoundApp>| h.get_by_label(&last).rect().bottom();
+    let bottom = |h: &Harness<'_, SoundApp>| h.get_by_label_contains(&last).rect().bottom();
     assert!(bottom(&h) > SIZE.y, "the Options menu is taller than the window, so `{last}` starts out of view");
 
     // Over the top of the open menu, which drops down below its title.
