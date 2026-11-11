@@ -420,13 +420,12 @@ impl Movie {
                 Ok(Frame { width: f.width, height: f.height, rgba, index, time })
             }
             Codec::Jpeg => {
-                // The frame's own size, from its header, before a pixel is decoded: the track's
-                // size was checked against `MAX_PIXELS` when the movie opened, and a frame that
-                // differs from it is refused, as a ProRes frame is.
+                // The frame's own size, from its header, before a pixel is decoded: a frame may differ from
+                // the track's size (as before), but not exceed `MAX_PIXELS`.
                 let reader = image::ImageReader::with_format(std::io::Cursor::new(&data), image::ImageFormat::Jpeg);
                 let (w, h) = reader.into_dimensions().map_err(|e| VideoError::Decode(e.to_string()))?;
-                if (w, h) != (self.info.width, self.info.height) {
-                    return Err(VideoError::Decode(format!("{w}x{h} frame in a {}x{} track", self.info.width, self.info.height)));
+                if u64::from(w) * u64::from(h) > MAX_PIXELS {
+                    return Err(VideoError::Decode("picture too large".into()));
                 }
                 let img = image::load_from_memory_with_format(&data, image::ImageFormat::Jpeg).map_err(|e| VideoError::Decode(e.to_string()))?;
                 let rgba = img.to_rgba8();
@@ -470,10 +469,10 @@ impl Movie {
         Ok(self.h264_to_frame(p, index))
     }
 
-    /// Most sample bytes one frame request feeds the decoder (two samples at the 256 MiB cap):
+    /// Most sample bytes one frame request feeds the decoder (eight samples at the 256 MiB cap):
     /// a request decodes from the previous keyframe, and a sample table whose entries all name
     /// one large payload would otherwise read and parse it once per sample.
-    const MAX_REQUEST_BYTES: usize = 512 << 20;
+    const MAX_REQUEST_BYTES: usize = 2 << 30;
     /// Most samples one frame request feeds without a picture coming out: the reorder depth is
     /// at most 16, so a stream that produces nothing for this long will produce nothing.
     const MAX_SAMPLES_WITHOUT_PICTURE: usize = 256;
@@ -515,10 +514,10 @@ impl Movie {
                 }
                 let data = match self.read(s) {
                     Ok(d) => d,
+                    // an unreadable sample is skipped, as before; the request's byte and no-picture budgets bound the walk
                     Err(e) => {
-                        // a failing source is not probed sample after sample (each probe may allocate a whole sample)
-                        self.h264 = None;
-                        return Err(e);
+                        last_err = Some(e.to_string());
+                        continue;
                     }
                 };
                 fed = fed.saturating_add(data.len());

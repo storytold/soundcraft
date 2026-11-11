@@ -163,13 +163,13 @@ fn h264_sample_reads_are_capped() {
 
 #[test]
 fn one_frame_request_reads_a_bounded_amount_of_samples() {
-    // 17 frames whose `stsz` entries each claim 32 MiB: under the per-sample cap, but together
-    // past what one request may feed the decoder.
-    let mut bytes = h264_mp4(17, 17).unwrap();
+    // 65 frames whose `stsz` entries each claim 32 MiB: under the per-sample cap, but together
+    // past the 2 GiB one request may feed the decoder.
+    let mut bytes = h264_mp4(65, 65).unwrap();
     let at = bytes.windows(4).position(|w| w == b"stsz").unwrap();
     if bytes[at + 8..at + 12] == [0; 4] {
         // one size per sample
-        for i in 0..17 {
+        for i in 0..65 {
             let field = at + 16 + 4 * i;
             bytes[field..field + 4].copy_from_slice(&(32u32 << 20).to_be_bytes());
         }
@@ -177,24 +177,30 @@ fn one_frame_request_reads_a_bounded_amount_of_samples() {
         // the writer stored one size for all the (equally large) samples
         bytes[at + 8..at + 12].copy_from_slice(&(32u32 << 20).to_be_bytes());
     }
-    let src = Arc::new(PaddedSource { bytes, len: 1 << 30, largest: AtomicUsize::new(0) });
+    let src = Arc::new(PaddedSource { bytes, len: 3 << 30, largest: AtomicUsize::new(0) });
     let mut m = Movie::open_source(src).unwrap();
-    let r = m.frame(16);
-    assert!(matches!(&r, Err(VideoError::Decode(e)) if e.contains("needs more than 512 MiB of samples")), "{r:?}");
+    let r = m.frame(64);
+    assert!(matches!(&r, Err(VideoError::Decode(e)) if e.contains("needs more than 2048 MiB of samples")), "{r:?}");
     // the sample that was refused is not skipped: asking again fails the same way instead of decoding past it
-    let again = m.frame(16);
-    assert!(matches!(&again, Err(VideoError::Decode(e)) if e.contains("needs more than 512 MiB of samples")), "{again:?}");
+    let again = m.frame(64);
+    assert!(matches!(&again, Err(VideoError::Decode(e)) if e.contains("needs more than 2048 MiB of samples")), "{again:?}");
 }
 
 #[test]
-fn mjpeg_frame_size_is_checked_before_decoding() {
-    // The first frame's SOF0 header claims 16 000 x 16 000: refused from the header, not decoded.
+fn mjpeg_frame_size_is_capped_from_its_header_but_may_differ_from_the_track() {
+    // A frame whose header differs from the track's size still decodes (within the dimension cap, as before)...
+    let mut bytes = mjpeg_mov(2).unwrap();
+    let sof = bytes.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+    bytes[sof + 5..sof + 9].copy_from_slice(&[0, 8, 0, 8]);
+    let mut m = Movie::open(bytes).unwrap();
+    assert!(m.frame(0).is_ok());
+    // ...but one claiming 16 000 x 16 000 is refused from the header, not decoded.
     let mut bytes = mjpeg_mov(2).unwrap();
     let sof = bytes.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
     bytes[sof + 5..sof + 9].copy_from_slice(&[0x3E, 0x80, 0x3E, 0x80]);
     let mut m = Movie::open(bytes).unwrap();
     let r = m.frame(0);
-    assert!(matches!(&r, Err(VideoError::Decode(e)) if e.contains("16000x16000 frame in a 32x24 track")), "{r:?}");
+    assert!(matches!(&r, Err(VideoError::Decode(e)) if e.contains("picture too large")), "{r:?}");
     assert!(m.frame(1).is_ok(), "the untouched frame still decodes");
 }
 
