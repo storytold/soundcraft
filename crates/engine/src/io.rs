@@ -8,7 +8,7 @@ use soundcraft_time::{Range, Samples};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod bundle;
 mod import;
@@ -891,8 +891,7 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
         return deliver(name, bytes).map_err(EngineError::Io);
     }
     crate::file_access::check_write(path).map_err(EngineError::Io)?;
-    // Replacing a link itself would leave its intended target unchanged. Follow an existing
-    // link, but refuse a dangling one even without automation roots rather than destroying it.
+    // Follow existing symlinks, and refuse dangling links even without automation roots.
     let named = Path::new(path);
     let path = match std::fs::symlink_metadata(named) {
         Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(named).map_err(|err| EngineError::Io(format!("{path}: {err}")))?,
@@ -907,41 +906,84 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
         Err(err) => return Err(EngineError::Io(format!("{}: {err}", path.display()))),
     };
-    #[cfg(unix)]
-    let permissions = metadata.map(|m| m.permissions());
-    #[cfg(not(unix))]
-    let _ = metadata;
-    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-    let dir = path.parent().unwrap_or(Path::new("."));
-    for _ in 0..100 {
-        let tmp = dir.join(format!(".soundcraft-{}-{}.tmp", std::process::id(), NEXT_TEMP.fetch_add(1, Ordering::Relaxed)));
-        crate::file_access::check_write(&tmp).map_err(EngineError::Io)?;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        // Keep incomplete exports private, independently of the process umask.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let mut file = match options.open(&tmp) {
-            Ok(file) => file,
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(EngineError::Io(format!("{}: {err}", path.display()))),
-        };
-        use std::io::Write as _;
-        let written = (|| {
-            file.write_all(bytes)?;
-            #[cfg(unix)]
-            if let Some(mode) = permissions.as_ref() {
-                file.set_permissions(mode.clone())?;
-            }
-            file.sync_all()
-        })();
-        drop(file);
-        return replace_with(&tmp, &path, written);
+    let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
+    if metadata.as_ref().is_some_and(|m| m.permissions().readonly()) {
+        return Err(err(std::io::ErrorKind::PermissionDenied.into()));
     }
-    Err(EngineError::Io(format!("{}: no free temporary file name", path.display())))
+    write_export_checked(&path, bytes).map_err(err)
+}
+
+/// Keep the original file and its security metadata. Refuse hard links before truncation: a
+/// link inside an automation root can name a file outside it (#1359).
+#[cfg(unix)]
+fn write_export_checked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600).open(path)?;
+    let opened = file.metadata()?;
+    if !opened.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    if opened.nlink() > 1 {
+        return Err(hard_link_export_error());
+    }
+    file.set_len(0)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+#[cfg(any(unix, windows))]
+fn hard_link_export_error() -> std::io::Error {
+    std::io::Error::other("refusing to overwrite a hard-linked file; choose a new export path")
+}
+
+#[cfg(not(any(unix, windows)))]
+fn write_export_checked(_path: &Path, _bytes: &[u8]) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
+/// Windows' stable std metadata API does not expose the link count. Use a safe kernel wrapper
+/// and the same handle for the check and write; no replacement means the destination DACL stays.
+#[cfg(windows)]
+fn write_export_checked(path: &Path, mut bytes: &[u8]) -> std::io::Result<()> {
+    use winsafe::{HFILE, co};
+    // Let std retain its Windows filename normalization and create missing destinations without
+    // truncation. Canonicalization then supplies a verbatim path, including long and UNC paths,
+    // to the raw Win32 wrapper. The handle below is checked before any existing bytes change.
+    let _opened = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(path)?;
+    let absolute = std::fs::canonicalize(path)?;
+    let path = absolute.to_str().filter(|p| !p.contains('\0')).ok_or(std::io::ErrorKind::InvalidInput)?;
+    let io_error = |err: winsafe::co::ERROR| std::io::Error::other(err.to_string());
+    let (file, _) = HFILE::CreateFile(
+        path,
+        co::GENERIC::WRITE,
+        Some(co::FILE_SHARE::READ | co::FILE_SHARE::WRITE | co::FILE_SHARE::DELETE),
+        None,
+        co::DISPOSITION::OPEN_EXISTING,
+        co::FILE_ATTRIBUTE::NORMAL,
+        Some(co::FILE_FLAG::WRITE_THROUGH),
+        None,
+        None,
+    )
+    .map_err(io_error)?;
+    if file.GetFileType().map_err(io_error)? != co::FILE_TYPE::DISK {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    match file.GetFileInformationByHandle().map_err(io_error)?.nNumberOfLinks {
+        1 => {}
+        0 => return Err(std::io::ErrorKind::Unsupported.into()),
+        _ => return Err(hard_link_export_error()),
+    }
+    file.SetEndOfFile().map_err(io_error)?;
+    while !bytes.is_empty() {
+        // Win32 takes a DWORD length. Small bounded writes also handle short writes correctly.
+        let count = file.WriteFile(&bytes[..bytes.len().min(64 * 1024)]).map_err(io_error)? as usize;
+        if count == 0 {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        bytes = &bytes[count..];
+    }
+    Ok(())
 }
 
 /// Unpack a bundle: the one `.scraft` at its top level and the files beside it, by relative path.
@@ -1081,21 +1123,108 @@ mod export_replacement_tests {
         dir
     }
     #[test]
-    fn export_replacement_detaches_hard_links_and_refuses_nonfiles() {
+    fn export_refuses_hard_links_before_truncating_and_refuses_nonfiles() {
         let dir = scratch("hard-links");
         let original = dir.join("original.mid");
-        let destination = dir.join("export.mid");
+        let write_root = dir.join("write");
+        std::fs::create_dir(&write_root).unwrap();
+        let destination = write_root.join("export.mid");
         std::fs::write(&original, b"old").unwrap();
         std::fs::hard_link(&original, &destination).unwrap();
-        write_file(destination.to_str().unwrap(), b"new").unwrap();
+        for confined in [false, true] {
+            let roots = if confined { crate::file_access::AutomationRoots::new(&[], &[&write_root]).unwrap() } else { None };
+            let result = crate::file_access::confine(roots.as_ref(), || write_file(destination.to_str().unwrap(), b"new"));
+            assert!(result.unwrap_err().to_string().contains("hard-linked"));
+        }
         assert_eq!(std::fs::read(&original).unwrap(), b"old");
-        assert_eq!(std::fs::read(&destination).unwrap(), b"new");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"old");
         let folder = dir.join("folder");
         std::fs::create_dir(&folder).unwrap();
         assert!(write_file(folder.to_str().unwrap(), b"new").is_err());
         assert!(folder.is_dir());
         assert!(!std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with(".soundcraft-")));
         let _ = std::fs::remove_dir_all(dir);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn export_supports_paths_longer_than_max_path() {
+        let root = scratch("long-path");
+        let mut dir = root.clone();
+        while dir.as_os_str().len() < 280 {
+            dir.push("long-folder-component");
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("export.mid");
+        write_file(path.to_str().unwrap(), b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        write_file(path.to_str().unwrap(), b"replacement").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn export_writes_all_chunks_and_truncates_an_existing_file() {
+        let dir = scratch("chunks");
+        let path = dir.join("export.mid");
+        let bytes = vec![0x5a; 128 * 1024 + 17];
+        write_file(path.to_str().unwrap(), &bytes).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        write_file(path.to_str().unwrap(), b"").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn export_refuses_readonly_files_without_changing_their_bytes() {
+        let dir = scratch("readonly");
+        let path = dir.join("readonly.mid");
+        std::fs::write(&path, b"old contents").unwrap();
+        let original = std::fs::metadata(&path).unwrap().permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&path, readonly).unwrap();
+        let result = write_file(path.to_str().unwrap(), b"new");
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::set_permissions(&path, original).unwrap();
+        assert!(result.is_err());
+        assert_eq!(bytes, b"old contents");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn export_preserves_the_existing_file_identity_and_security_metadata() {
+        let dir = scratch("identity");
+        let path = dir.join("existing.mid");
+        std::fs::write(&path, b"long old contents").unwrap();
+        #[cfg(unix)]
+        let identity = |p: &Path| {
+            use std::os::unix::fs::MetadataExt as _;
+            let m = std::fs::metadata(p).unwrap();
+            (m.dev(), m.ino(), m.uid(), m.gid())
+        };
+        #[cfg(windows)]
+        let identity = |p: &Path| {
+            use winsafe::{HFILE, co};
+            let (file, _) = HFILE::CreateFile(
+                p.to_str().unwrap(),
+                co::GENERIC::READ,
+                None,
+                None,
+                co::DISPOSITION::OPEN_EXISTING,
+                co::FILE_ATTRIBUTE::NORMAL,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let i = file.GetFileInformationByHandle().unwrap();
+            (i.dwVolumeSerialNumber, i.nFileIndex())
+        };
+        let before = identity(&path);
+        write_file(path.to_str().unwrap(), b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        // No inode/file-record replacement: owner, group and access-control lists stay attached
+        // to the same file rather than being inherited anew from the parent directory.
+        assert_eq!(identity(&path), before);
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[cfg(unix)]
     #[test]
