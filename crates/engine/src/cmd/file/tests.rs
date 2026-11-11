@@ -119,6 +119,71 @@ fn import_audio_honours_new_tracks() {
 }
 
 #[test]
+fn bounce_stems_rejects_unsupported_formats_before_writing() {
+    let dir = std::env::temp_dir().join(format!("sc-stems-unsupported-format-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let stems = dir.join("stems");
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 1, "name": "Tone", "format": "mono"})).unwrap();
+    let result = e.execute("file.bounce_stems", &json!({"dir": stems, "format": "not-a-format", "start": 0, "end": 1}));
+    let created_output = stems.exists();
+    // Own this directory exclusively; remove any baseline output before the assertion can fail.
+    std::fs::remove_dir_all(&dir).unwrap();
+    let err = result.map(|_| ()).unwrap_err();
+    assert!(err.to_string().contains("cannot write `not-a-format`"), "{err}");
+    assert!(err.to_string().contains("supported: wav"), "{err}");
+    assert!(!created_output, "an unsupported format must not create the output directory");
+}
+
+#[test]
+fn bounce_stems_rejects_non_string_formats_before_writing() {
+    let dir = std::env::temp_dir().join(format!("sc-stems-format-type-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 1, "name": "Tone", "format": "mono"})).unwrap();
+    let results: Vec<_> = [json!(null), json!(123), json!(false), json!([]), json!({})]
+        .into_iter()
+        .enumerate()
+        .map(|(index, format)| {
+            let stems = dir.join(index.to_string());
+            let result = e.execute("file.bounce_stems", &json!({"dir": stems, "format": format, "start": 0, "end": 1}));
+            (result, stems.exists())
+        })
+        .collect();
+    std::fs::remove_dir_all(&dir).unwrap();
+    for (result, created_output) in results {
+        let err = result.map(|_| ()).unwrap_err();
+        assert!(err.to_string().contains("`format` must be a string"), "{err}");
+        assert!(!created_output, "a non-string format must not create the output directory");
+    }
+}
+
+#[test]
+fn bounce_stems_accepts_explicit_wav_format() {
+    let dir = std::env::temp_dir().join(format!("sc-stems-explicit-wav-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let mut e = Engine::default();
+    let wav = tone_wav(&dir, "tone.wav");
+    e.execute("file.import_audio", &json!({"path": wav})).unwrap();
+    let stems = dir.join("stems");
+    let result = e.execute("file.bounce_stems", &json!({"dir": stems, "format": "wav", "start": 0, "end": 32, "dither": false})).unwrap();
+    let files = result["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    let path = std::path::Path::new(files[0].as_str().unwrap());
+    assert_eq!(path.parent(), Some(stems.as_path()));
+    assert_eq!(path.extension().and_then(|extension| extension.to_str()), Some("wav"));
+    let (info, audio) = soundcraft_audio_io::decode(&std::fs::read(path).unwrap(), None).unwrap();
+    assert_eq!(info.format, soundcraft_audio_io::FileFormat::Wav);
+    assert_eq!(audio.frames(), 32);
+    assert_eq!(audio.num_channels(), e.session().main_format().channels());
+    assert!(audio.channels.iter().flatten().any(|sample| sample.abs() > 0.01));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn bounce_refuses_formats_it_cannot_write() {
     let mut e = Engine::default();
     let dir = std::env::temp_dir().join(format!("sc-bounce-ext-{}", std::process::id()));

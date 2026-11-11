@@ -724,13 +724,36 @@ impl Session {
     }
 
     /// Parse a session; decoded audio must be attached separately (`pool`).
+    ///
+    /// The text is parsed straight into the document, never into a `serde_json::Value` tree
+    /// first (which takes many times the file's size). Only the version is read before that.
+    /// A field of the document given twice in one object is refused (`duplicate field`), as no
+    /// writer repeats one. Keys of maps (plugin params, edit values, Auto Rename schemes, MIDI
+    /// originals) and unknown keys keep the last value given, as before.
     pub fn from_json(text: &str) -> Result<Session, SessionError> {
-        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| SessionError::Format(e.to_string()))?;
-        let ver = v.get("format_version").and_then(serde_json::Value::as_u64).ok_or_else(|| SessionError::Format("missing format_version".into()))?;
+        /// The version alone: every other field is skipped, not kept.
+        #[derive(serde::Deserialize)]
+        struct Head {
+            format_version: Option<serde_json::Number>,
+        }
+        // `Head` would also take a JSON array as its fields in order: only an object has a version.
+        let object = text.trim_start_matches([' ', '\t', '\n', '\r']).starts_with('{');
+        let version = match object.then(|| serde_json::from_str::<Head>(text)) {
+            Some(Ok(head)) => head.format_version,
+            // A version given twice is that error, not a missing version.
+            Some(Err(e)) if e.to_string().starts_with("duplicate field") => return Err(SessionError::Format(e.to_string())),
+            // Valid JSON of another shape (not an object, or a version that is not a number)
+            // has no version; anything else is not JSON.
+            _ => {
+                serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|e| SessionError::Format(e.to_string()))?;
+                None
+            }
+        };
+        let ver = version.and_then(|v| v.as_u64()).ok_or_else(|| SessionError::Format("missing format_version".into()))?;
         if ver > u64::from(Self::FORMAT_VERSION) {
             return Err(SessionError::Version(u32::try_from(ver).unwrap_or(u32::MAX)));
         }
-        let mut s: Session = serde_json::from_value(v).map_err(|e| SessionError::Format(e.to_string()))?;
+        let mut s: Session = serde_json::from_str(text).map_err(|e| SessionError::Format(e.to_string()))?;
         s.sanitize();
         s.validate()?;
         Ok(s)
@@ -1051,6 +1074,31 @@ mod tests {
         assert_eq!(back.track(t).map(|tr| tr.height), Some(crate::TrackHeight::Medium));
     }
 
+    /// Session JSON omits live flags and ignores their values in legacy documents.
+    #[test]
+    fn live_input_states_are_never_saved_or_restored() {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let track = s.track_mut(t).unwrap();
+        track.mixer.mute = true;
+        track.mixer.record_arm = true;
+        track.mixer.input_monitor = true;
+
+        let mut value = serde_json::to_value(&s).unwrap();
+        let mixer = value["tracks"][0]["mixer"].as_object_mut().unwrap();
+        assert!(!mixer.contains_key("record_arm"));
+        assert!(!mixer.contains_key("input_monitor"));
+
+        // Files written by older versions may still contain these keys; ignore them on input.
+        mixer.insert("record_arm".into(), serde_json::Value::Bool(true));
+        mixer.insert("input_monitor".into(), serde_json::Value::Bool(true));
+        let loaded = Session::from_json(&value.to_string()).unwrap();
+        let track = loaded.track(t).unwrap();
+        assert!(track.mixer.mute, "persistent mixer state still loads");
+        assert!(!track.mixer.record_arm);
+        assert!(!track.mixer.input_monitor);
+    }
+
     #[test]
     fn video_clip_round_trips_and_old_sessions_load() {
         let mut s = Session::default();
@@ -1138,6 +1186,53 @@ mod tests {
         let mut v = serde_json::to_value(Session::default()).unwrap();
         v["format_version"] = serde_json::json!(999);
         assert!(matches!(Session::from_json(&v.to_string()), Err(SessionError::Version(999))));
+    }
+
+    #[test]
+    fn the_version_is_checked_as_before() {
+        // #892: the version is read without building the whole document as a tree; the errors
+        // stay what they were.
+        let format = |t: &str| match Session::from_json(t) {
+            Err(SessionError::Format(m)) => m,
+            other => panic!("{t}: {other:?}"),
+        };
+        for t in [
+            "{}",
+            "[]",
+            "[5]",
+            " \n[1, {}]",
+            "\"x\"",
+            "5",
+            "null",
+            r#"{"format_version":"1"}"#,
+            r#"{"format_version":-1}"#,
+            r#"{"format_version":1.5}"#,
+            r#"{"format_version":null}"#,
+            r#"{"format_version":[0,0,0]}"#,
+            r#"{"name":"x","other":{"format_version":1}}"#,
+        ] {
+            assert_eq!(format(t), "missing format_version", "{t}");
+        }
+        for t in ["not json", r#"{"format_version":1"#, r#"{"format_version":1} x"#, r#"{"format_version":"1", ]"#] {
+            let want = serde_json::from_str::<serde_json::Value>(t).unwrap_err().to_string();
+            assert_eq!(format(t), want, "{t}");
+        }
+        let mut v = serde_json::to_value(Session::default()).unwrap();
+        for (ver, want) in [(serde_json::json!(2), 2), (serde_json::json!(1u64 << 40), u32::MAX)] {
+            v["format_version"] = ver;
+            assert_eq!(Session::from_json(&v.to_string()), Err(SessionError::Version(want)));
+        }
+        // A field given twice is refused by name, the version too.
+        let twice = |key: &str| format(&format!(r#"{{"format_version":1,"{key}":"a","{key}":"b"}}"#));
+        assert!(twice("name").starts_with("duplicate field `name` at line 1 column "), "{}", twice("name"));
+        assert!(twice("format_version").starts_with("duplicate field `format_version` at line 1 column "), "{}", twice("format_version"));
+        // A newer version is refused even when the rest would not parse.
+        assert_eq!(Session::from_json(r#"{"format_version":7,"tracks":5}"#), Err(SessionError::Version(7)));
+        // An older or the current version loads as it did.
+        for ver in [0, 1] {
+            v["format_version"] = serde_json::json!(ver);
+            assert_eq!(Session::from_json(&v.to_string()).map(|s| s.format_version), Ok(ver));
+        }
     }
 
     #[test]

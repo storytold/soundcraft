@@ -42,19 +42,122 @@ pub use strip::{StripMode, StripNames, StripScan, bounded_to_track, name_strippe
 /// one. Only a regular file qualifies: a device or a pipe named by a session or a command would
 /// never end or never answer. Errors name the file.
 pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
-    let path = path.as_ref();
+    read_file_within(path.as_ref(), false)
+}
+
+/// [`read_file`]; a `session` file is refused ([`session_size`]) past [`session_limit`].
+fn read_file_within(path: &Path, session: bool) -> Result<Vec<u8>> {
+    use std::io::Read as _;
     crate::file_access::check_read(path).map_err(EngineError::Io)?;
     let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
-    if !std::fs::metadata(path).map_err(err)?.is_file() {
+    let meta = std::fs::metadata(path).map_err(err)?;
+    if !meta.is_file() {
         return Err(EngineError::Io(format!("{}: not a regular file", path.display())));
     }
-    std::fs::read(path).map_err(err)
+    if !session {
+        return std::fs::read(path).map_err(err);
+    }
+    session_size(path.display(), meta.len(), false)?;
+    // The file may have grown since: never read more than one byte past the limit.
+    let mut data = Vec::new();
+    std::fs::File::open(path).map_err(err)?.take(session_limit().saturating_add(1)).read_to_end(&mut data).map_err(err)?;
+    session_size(path.display(), data.len() as u64, false)?;
+    Ok(data)
 }
 
 /// [`read_file`] as UTF-8 text.
 pub fn read_text(path: impl AsRef<Path>) -> Result<String> {
     let path = path.as_ref();
-    String::from_utf8(read_file(path)?).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))
+    utf8(path, read_file(path)?)
+}
+
+fn utf8(path: &Path, bytes: Vec<u8>) -> Result<String> {
+    String::from_utf8(bytes).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))
+}
+
+/// The largest session (`.scraft`) SoundCraft opens or saves. A session is read whole and parsed
+/// in one go, so a larger one is refused by its size before it is read, and never written (it
+/// could not be opened again); real sessions are far smaller.
+pub const MAX_SESSION_BYTES: u64 = 256 << 20;
+
+#[cfg(test)]
+thread_local! {
+    /// A smaller limit than [`MAX_SESSION_BYTES`] for the tests on this thread ([`SessionLimit`]).
+    static TEST_SESSION_LIMIT: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// [`MAX_SESSION_BYTES`] (in tests, the limit a [`SessionLimit`] set on this thread).
+pub(crate) fn session_limit() -> u64 {
+    #[cfg(test)]
+    if let Some(limit) = TEST_SESSION_LIMIT.with(std::cell::Cell::get) {
+        return limit;
+    }
+    MAX_SESSION_BYTES
+}
+
+/// While it lives, sessions on this thread are opened and saved up to the limit given to
+/// [`SessionLimit::set`] instead of [`MAX_SESSION_BYTES`], so tests reach it with small sessions.
+#[cfg(test)]
+pub(crate) struct SessionLimit;
+
+#[cfg(test)]
+impl SessionLimit {
+    pub(crate) fn set(limit: u64) -> SessionLimit {
+        TEST_SESSION_LIMIT.with(|l| l.set(Some(limit)));
+        SessionLimit
+    }
+}
+
+#[cfg(test)]
+impl Drop for SessionLimit {
+    fn drop(&mut self) {
+        TEST_SESSION_LIMIT.with(|l| l.set(None));
+    }
+}
+
+/// Refuses the session `name` of `len` bytes when it is larger than [`session_limit`]: too large
+/// to open, or, when `saving`, to save.
+pub(crate) fn session_size(name: impl std::fmt::Display, len: u64, saving: bool) -> Result<()> {
+    let limit = session_limit();
+    if len <= limit {
+        return Ok(());
+    }
+    let most = if limit >= 1 << 20 { format!("{} MiB", limit >> 20) } else { format!("{limit} bytes") };
+    Err(EngineError::Io(if saving {
+        format!("{name} is too large to save: over {most}, more than SoundCraft opens")
+    } else {
+        format!("{name} is too large to open (over {most})")
+    }))
+}
+
+/// [`read_text`] for a session file: refused, unread, past [`session_limit`].
+pub(crate) fn read_session_text(path: impl AsRef<Path>) -> Result<String> {
+    let path = path.as_ref();
+    utf8(path, read_file_within(path, true)?)
+}
+
+/// A bare `.scraft` handed over as bytes (the browser) as text: refused, uncopied, past
+/// [`session_limit`].
+pub(crate) fn session_bytes_text(name: &str, bytes: &[u8]) -> Result<String> {
+    session_size(name, bytes.len() as u64, false)?;
+    String::from_utf8(bytes.to_vec()).map_err(|_| EngineError::Io(format!("{name}: not a SoundCraft session")))
+}
+
+/// How many bytes [`Session::to_json`] makes of `s`, counted without keeping them.
+fn json_len(s: &Session) -> u64 {
+    struct Count(u64);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(buf.len() as u64);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut n = Count(0);
+    // A session that cannot be written counts as nothing here: `to_json` reports that error.
+    serde_json::to_writer_pretty(&mut n, s).map_or(0, |()| n.0)
 }
 
 /// Is there a file at `path` the automation read root lets us see? A path outside the root is
@@ -75,8 +178,12 @@ pub fn stored_path(stored: &str, session: &Path) -> std::result::Result<PathBuf,
     craft_docpath::resolve_absolute(stored, Some(&session)).map_err(|why| format!("not opened: {why}"))
 }
 
-/// Create `dir` and its parents, inside the automation write root when there is one.
+/// Create `dir` and its parents, inside the automation write root when there is one. The browser
+/// has no folders: there each file is delivered by its name ([`write_file`]) and this does nothing.
 pub(crate) fn make_dir(dir: impl AsRef<Path>) -> Result<()> {
+    if cfg!(target_arch = "wasm32") {
+        return Ok(());
+    }
     let dir = dir.as_ref();
     // The empty folder of a bare file name ("t.scraft") is the working directory, which the root
     // check would refuse as an empty path.
@@ -460,29 +567,48 @@ impl From<StripNames> for soundcraft_model::AutoName {
     }
 }
 
+/// Write each clip as a WAV file named after it into `dir` (in the browser, delivered by name
+/// through [`write_file`]). Returns how many were written.
 pub fn export_clips(e: &Engine, ids: &[soundcraft_model::ClipId], dir: &str) -> Result<usize> {
     let s = e.session();
     make_dir(dir)?;
-    let mut n = 0;
+    let mut names = ClipNames::default();
     for id in ids {
         let Some((t, c)) = s.find_clip(*id) else { continue };
         let audio = soundcraft_mix::render_clips(s, t, c.range());
         let buf = AudioBuffer { sample_rate: s.sample_rate.hz(), channels: audio };
         let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).map_err(|err| EngineError::Io(err.to_string()))?;
-        let stem = sanitize_name(&c.name);
-        let mut path = Path::new(dir).join(format!("{stem}.wav"));
-        let mut k = 2u32;
-        while path.exists() {
-            path = Path::new(dir).join(format!("{stem}-{k}.wav"));
-            k = k.saturating_add(1);
-            if k > 10_000 {
-                return Err(EngineError::Io(format!("{dir}: too many files named {stem}")));
-            }
-        }
-        write_path(&path, bytes)?;
-        n += 1;
+        let path = clip_file(dir, &sanitize_name(&c.name), &mut names, Path::exists)?;
+        write_file(&path.to_string_lossy(), &bytes)?;
     }
-    Ok(n)
+    Ok(names.taken.len())
+}
+
+/// The files an export has named so far, and for each name the suffix to try next, so a run of
+/// same-named clips doesn't count up from 2 again for every clip.
+#[derive(Default)]
+struct ClipNames {
+    taken: std::collections::HashSet<PathBuf>,
+    next: std::collections::HashMap<String, u32>,
+}
+
+/// The first of `<stem>.wav`, `<stem>-2.wav`, … in `dir` that is neither `on_disk` nor already
+/// named by this export, recorded in `names`: the browser has no disk to look at, so same-named
+/// clips are kept apart by `names`.
+fn clip_file(dir: &str, stem: &str, names: &mut ClipNames, on_disk: impl Fn(&Path) -> bool) -> Result<PathBuf> {
+    let file = |k: u32| Path::new(dir).join(if k < 2 { format!("{stem}.wav") } else { format!("{stem}-{k}.wav") });
+    let mut k = names.next.get(stem).copied().unwrap_or(1);
+    let mut path = file(k);
+    while on_disk(&path) || names.taken.contains(&path) {
+        k = k.saturating_add(1);
+        if k > 10_000 {
+            return Err(EngineError::Io(format!("{dir}: too many files named {stem}")));
+        }
+        path = file(k);
+    }
+    names.next.insert(stem.to_owned(), k.saturating_add(1));
+    names.taken.insert(path.clone());
+    Ok(path)
 }
 
 /// Write `session` to `path`; returns the session with updated media paths, the number of audio
@@ -497,7 +623,6 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
     let mut s = session.clone();
     let from = s.folder.clone();
     let same_dir = from.as_deref().is_some_and(|f| same_path(f, &dir));
-    let mut written = 0;
     // A file can stay put for all the sources that name it, unless their audio differs.
     let shared_paths: Vec<bool> = {
         let mut audio_by_path: HashMap<&str, HashSet<Option<*const SourceAudio>>> = HashMap::new();
@@ -506,8 +631,11 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
         }
         s.sources.iter().map(|src| audio_by_path.get(src.path.as_str()).is_some_and(|a| a.len() > 1)).collect()
     };
-    // Files written for audio during this save: sources playing the same audio share one.
+    // Files for audio in this save: sources playing the same audio share one. The files still to
+    // write (their stem, audio and the sources naming them) are written once the size is checked.
     let mut files: HashMap<*const SourceAudio, String> = HashMap::new();
+    let mut queued: HashMap<*const SourceAudio, usize> = HashMap::new();
+    let mut pending: Vec<(String, Arc<SourceAudio>, Vec<usize>)> = Vec::new();
     for (i, src) in s.sources.iter_mut().enumerate() {
         if !same_dir
             && s.pool.get(src.id).is_none()
@@ -533,7 +661,14 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
             src.format = FileFormat::Wav;
             continue;
         }
-        make_dir(&audio_dir)?;
+        if let Some((stem, _, sources)) = queued.get(&Arc::as_ptr(audio)).and_then(|&k| pending.get_mut(k)) {
+            // As long as any name the file can get, so the size checked is an upper bound.
+            src.path = format!("Audio Files/{stem}_9999.wav");
+            src.unsaved = false;
+            src.format = FileFormat::Wav;
+            sources.push(i);
+            continue;
+        }
         let mut stem = sanitize_name(&src.name);
         if overwrite {
             // One file per source id so autosaves never collide or pile up.
@@ -545,23 +680,46 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
                 continue;
             }
         }
-        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
-        let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
-        let (name, new) = store_wav(&audio_dir, &stem, &bytes)?;
-        src.path = format!("Audio Files/{name}");
+        src.path = format!("Audio Files/{stem}_9999.wav");
         src.unsaved = false;
         src.format = FileFormat::Wav;
-        files.insert(Arc::as_ptr(audio), src.path.clone());
-        written += usize::from(new);
-    }
-    if written > 0 {
-        sync_dir(&audio_dir);
+        queued.insert(Arc::as_ptr(audio), pending.len());
+        pending.push((stem, Arc::clone(audio), vec![i]));
     }
     s.folder = Some(dir.clone());
     if !overwrite && let Some(stem) = p.file_stem().and_then(OsStr::to_str) {
         s.name = stem.to_string();
     }
-    let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
+    // Before any audio is written: a session too large to open again is not saved (#892). With no
+    // audio to write, the text checked is the text saved.
+    let checked = if pending.is_empty() {
+        let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
+        session_size(p.display(), text.len() as u64, true)?;
+        Some(text)
+    } else {
+        session_size(p.display(), json_len(&s), true)?;
+        None
+    };
+    let mut written = 0;
+    for (stem, audio, sources) in &pending {
+        make_dir(&audio_dir)?;
+        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
+        let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
+        let (name, new) = store_wav(&audio_dir, stem, &bytes)?;
+        for &i in sources {
+            if let Some(src) = s.sources.get_mut(i) {
+                src.path = format!("Audio Files/{name}");
+            }
+        }
+        written += usize::from(new);
+    }
+    if written > 0 {
+        sync_dir(&audio_dir);
+    }
+    let text = match checked {
+        Some(text) => text,
+        None => s.to_json().map_err(|err| EngineError::Io(err.to_string()))?,
+    };
     make_dir(&dir)?;
     // Atomic-ish write: temp file then rename.
     let tmp = p.with_extension("scraft.tmp");
@@ -733,7 +891,99 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
         return deliver(name, bytes).map_err(EngineError::Io);
     }
     crate::file_access::check_write(path).map_err(EngineError::Io)?;
-    std::fs::write(path, bytes).map_err(|err| EngineError::Io(format!("{path}: {err}")))
+    // Follow existing symlinks, and refuse dangling links even without automation roots.
+    let named = Path::new(path);
+    let path = match std::fs::symlink_metadata(named) {
+        Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(named).map_err(|err| EngineError::Io(format!("{path}: {err}")))?,
+        Ok(_) => named.to_path_buf(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => named.to_path_buf(),
+        Err(err) => return Err(EngineError::Io(format!("{path}: {err}"))),
+    };
+    crate::file_access::check_write(&path).map_err(EngineError::Io)?;
+    let metadata = match std::fs::metadata(&path) {
+        Ok(m) if m.is_file() => Some(m),
+        Ok(_) => return Err(EngineError::Io(format!("{}: not a regular file", path.display()))),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(EngineError::Io(format!("{}: {err}", path.display()))),
+    };
+    let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
+    if metadata.as_ref().is_some_and(|m| m.permissions().readonly()) {
+        return Err(err(std::io::ErrorKind::PermissionDenied.into()));
+    }
+    write_export_checked(&path, bytes).map_err(err)
+}
+
+/// Keep the original file and its security metadata. Refuse hard links before truncation: a
+/// link inside an automation root can name a file outside it (#1359).
+#[cfg(unix)]
+fn write_export_checked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600).open(path)?;
+    let opened = file.metadata()?;
+    if !opened.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    if opened.nlink() > 1 {
+        return Err(hard_link_export_error());
+    }
+    file.set_len(0)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+#[cfg(any(unix, windows))]
+fn hard_link_export_error() -> std::io::Error {
+    std::io::Error::other("refusing to overwrite a hard-linked file; choose a new export path")
+}
+
+#[cfg(not(any(unix, windows)))]
+fn write_export_checked(_path: &Path, _bytes: &[u8]) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
+/// Windows' stable std metadata API does not expose the link count. Use a safe kernel wrapper
+/// and the same handle for the check and write; no replacement means the destination DACL stays.
+#[cfg(windows)]
+fn write_export_checked(path: &Path, mut bytes: &[u8]) -> std::io::Result<()> {
+    use winsafe::{HFILE, co};
+    // Let std retain its Windows filename normalization and create missing destinations without
+    // truncation. Canonicalization then supplies a verbatim path, including long and UNC paths,
+    // to the raw Win32 wrapper. The handle below is checked before any existing bytes change.
+    let _opened = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(path)?;
+    let absolute = std::fs::canonicalize(path)?;
+    let path = absolute.to_str().filter(|p| !p.contains('\0')).ok_or(std::io::ErrorKind::InvalidInput)?;
+    let io_error = |err: winsafe::co::ERROR| std::io::Error::other(err.to_string());
+    let (file, _) = HFILE::CreateFile(
+        path,
+        co::GENERIC::WRITE,
+        Some(co::FILE_SHARE::READ | co::FILE_SHARE::WRITE | co::FILE_SHARE::DELETE),
+        None,
+        co::DISPOSITION::OPEN_EXISTING,
+        co::FILE_ATTRIBUTE::NORMAL,
+        Some(co::FILE_FLAG::WRITE_THROUGH),
+        None,
+        None,
+    )
+    .map_err(io_error)?;
+    if file.GetFileType().map_err(io_error)? != co::FILE_TYPE::DISK {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    match file.GetFileInformationByHandle().map_err(io_error)?.nNumberOfLinks {
+        1 => {}
+        0 => return Err(std::io::ErrorKind::Unsupported.into()),
+        _ => return Err(hard_link_export_error()),
+    }
+    file.SetEndOfFile().map_err(io_error)?;
+    while !bytes.is_empty() {
+        // Win32 takes a DWORD length. Small bounded writes also handle short writes correctly.
+        let count = file.WriteFile(&bytes[..bytes.len().min(64 * 1024)]).map_err(io_error)? as usize;
+        if count == 0 {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        bytes = &bytes[count..];
+    }
+    Ok(())
 }
 
 /// Unpack a bundle: the one `.scraft` at its top level and the files beside it, by relative path.
@@ -762,10 +1012,13 @@ fn read_bundle(bytes: &[u8], limits: BundleLimits) -> Result<(String, std::colle
         if total > limits.bytes {
             return Err(EngineError::Io("bundle: too large".into()));
         }
+        let is_session = !rel.contains('/') && Path::new(&rel).extension().and_then(OsStr::to_str) == Some(soundcraft_model::SESSION_EXTENSION);
+        if is_session && text.is_none() {
+            session_size(format_args!("bundle: {rel}"), size, false)?;
+        }
         let mut data = Vec::new();
         // The declared size is hostile too: never read past it.
         f.by_ref().take(size).read_to_end(&mut data).map_err(|err| EngineError::Io(format!("bundle: {rel}: {err}")))?;
-        let is_session = !rel.contains('/') && Path::new(&rel).extension().and_then(OsStr::to_str) == Some(soundcraft_model::SESSION_EXTENSION);
         if is_session && text.is_none() {
             text = Some(String::from_utf8(data).map_err(|_| EngineError::Io(format!("bundle: {rel} is not text")))?);
         } else {
@@ -856,5 +1109,204 @@ mod stem_tests {
         assert!(plain_error <= 0.5 + 1e-3, "{plain_error}");
         assert!(dithered_error > 0.6, "{dithered_error}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+#[cfg(test)]
+mod export_replacement_tests {
+    use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("soundcraft-export-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+    #[test]
+    fn export_refuses_hard_links_before_truncating_and_refuses_nonfiles() {
+        let dir = scratch("hard-links");
+        let original = dir.join("original.mid");
+        let write_root = dir.join("write");
+        std::fs::create_dir(&write_root).unwrap();
+        let destination = write_root.join("export.mid");
+        std::fs::write(&original, b"old").unwrap();
+        std::fs::hard_link(&original, &destination).unwrap();
+        for confined in [false, true] {
+            let roots = if confined { crate::file_access::AutomationRoots::new(&[], &[&write_root]).unwrap() } else { None };
+            let result = crate::file_access::confine(roots.as_ref(), || write_file(destination.to_str().unwrap(), b"new"));
+            assert!(result.unwrap_err().to_string().contains("hard-linked"));
+        }
+        assert_eq!(std::fs::read(&original).unwrap(), b"old");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"old");
+        let folder = dir.join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        assert!(write_file(folder.to_str().unwrap(), b"new").is_err());
+        assert!(folder.is_dir());
+        assert!(!std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with(".soundcraft-")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn export_supports_paths_longer_than_max_path() {
+        let root = scratch("long-path");
+        let mut dir = root.clone();
+        while dir.as_os_str().len() < 280 {
+            dir.push("long-folder-component");
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("export.mid");
+        write_file(path.to_str().unwrap(), b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        write_file(path.to_str().unwrap(), b"replacement").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn export_writes_all_chunks_and_truncates_an_existing_file() {
+        let dir = scratch("chunks");
+        let path = dir.join("export.mid");
+        let bytes = vec![0x5a; 128 * 1024 + 17];
+        write_file(path.to_str().unwrap(), &bytes).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        write_file(path.to_str().unwrap(), b"").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn export_refuses_readonly_files_without_changing_their_bytes() {
+        let dir = scratch("readonly");
+        let path = dir.join("readonly.mid");
+        std::fs::write(&path, b"old contents").unwrap();
+        let original = std::fs::metadata(&path).unwrap().permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&path, readonly).unwrap();
+        let result = write_file(path.to_str().unwrap(), b"new");
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::set_permissions(&path, original).unwrap();
+        assert!(result.is_err());
+        assert_eq!(bytes, b"old contents");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn export_preserves_the_existing_file_identity_and_security_metadata() {
+        let dir = scratch("identity");
+        let path = dir.join("existing.mid");
+        std::fs::write(&path, b"long old contents").unwrap();
+        #[cfg(unix)]
+        let identity = |p: &Path| {
+            use std::os::unix::fs::MetadataExt as _;
+            let m = std::fs::metadata(p).unwrap();
+            (m.dev(), m.ino(), m.uid(), m.gid())
+        };
+        #[cfg(windows)]
+        let identity = |p: &Path| {
+            use winsafe::{HFILE, co};
+            let (file, _) = HFILE::CreateFile(
+                p.to_str().unwrap(),
+                co::GENERIC::READ,
+                None,
+                None,
+                co::DISPOSITION::OPEN_EXISTING,
+                co::FILE_ATTRIBUTE::NORMAL,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let i = file.GetFileInformationByHandle().unwrap();
+            (i.dwVolumeSerialNumber, i.nFileIndex())
+        };
+        let before = identity(&path);
+        write_file(path.to_str().unwrap(), b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        // No inode/file-record replacement: owner, group and access-control lists stay attached
+        // to the same file rather than being inherited anew from the parent directory.
+        assert_eq!(identity(&path), before);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn export_replacement_preserves_existing_permissions_and_new_files_are_private() {
+        let dir = scratch("permissions");
+        for mode in [0o600, 0o640] {
+            let path = dir.join(format!("{mode:o}.mid"));
+            std::fs::write(&path, b"old").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            write_file(path.to_str().unwrap(), b"new").unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"new");
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, mode);
+        }
+        let path = dir.join("new.mid");
+        write_file(path.to_str().unwrap(), b"new").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn export_replacement_preserves_a_symlink_and_refuses_a_dangling_one() {
+        let dir = scratch("symlinks");
+        let target = dir.join("target.mid");
+        let link = dir.join("link.mid");
+        std::fs::write(&target, b"old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        symlink("target.mid", &link).unwrap();
+        for confined in [false, true] {
+            let roots = if confined { crate::file_access::AutomationRoots::new(&[], &[&dir]).unwrap() } else { None };
+            crate::file_access::confine(roots.as_ref(), || write_file(link.to_str().unwrap(), b"new")).unwrap();
+            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::read(&target).unwrap(), b"new");
+            assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let missing = dir.join("missing.mid");
+        let dangling = dir.join("dangling.mid");
+        symlink(&missing, &dangling).unwrap();
+        assert!(write_file(dangling.to_str().unwrap(), b"new").is_err());
+        assert!(std::fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
+        assert!(!missing.exists());
+        assert!(!std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with(".soundcraft-")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod clip_tests {
+    /// The browser has no disk to find earlier files on: same-named clips get their own names
+    /// from the export itself, as they do from the folder natively (#1409).
+    #[test]
+    fn same_named_clips_get_their_own_names_with_nothing_on_disk() {
+        let dir = std::env::temp_dir().join(format!("sc-clip-names-{}", std::process::id()));
+        let mut names = super::ClipNames::default();
+        for want in ["Take.wav", "Take-2.wav", "Take-3.wav"] {
+            let path = super::clip_file(&dir.to_string_lossy(), "Take", &mut names, std::path::Path::exists).unwrap();
+            assert_eq!(path, dir.join(want));
+        }
+        assert!(!dir.exists());
+    }
+
+    /// A file already in the folder is still skipped, and a run of same-named clips picks up where
+    /// the last one left off instead of looking at every earlier name again for each clip.
+    #[test]
+    fn same_named_clips_skip_files_on_disk_and_do_not_count_up_from_the_start_each_time() {
+        let dir = std::env::temp_dir().join(format!("sc-clip-disk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Take-2.wav"), b"").unwrap();
+        let looked = std::cell::Cell::new(0usize);
+        let on_disk = |p: &std::path::Path| {
+            looked.set(looked.get() + 1);
+            p.exists()
+        };
+        let mut names = super::ClipNames::default();
+        for want in ["Take.wav", "Take-3.wav", "Take-4.wav"] {
+            let path = super::clip_file(&dir.to_string_lossy(), "Take", &mut names, on_disk).unwrap();
+            assert_eq!(path, dir.join(want));
+        }
+        let before = looked.get();
+        for _ in 0..1_000 {
+            super::clip_file(&dir.to_string_lossy(), "Take", &mut names, on_disk).unwrap();
+        }
+        assert_eq!(looked.get() - before, 1_000);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

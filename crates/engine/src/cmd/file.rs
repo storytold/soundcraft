@@ -45,6 +45,8 @@ pub fn specs() -> Vec<CommandSpec> {
             s.sources.clear();
             s.videos.clear();
             let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
+            // A template too large to open is not saved (#892).
+            crate::io::session_size(file.display(), text.len() as u64, true)?;
             if cfg!(target_arch = "wasm32") {
                 crate::io::write_file(&file.to_string_lossy(), text.as_bytes())?;
             } else {
@@ -92,9 +94,14 @@ pub fn specs() -> Vec<CommandSpec> {
             let dir = str_param(p, "dir").ok_or_else(|| bad("file.bounce_stems", "`dir` required"))?.to_string();
             let r = range_param(e, "file.bounce_stems", p)?;
             let r = if r.is_empty() { soundcraft_time::Range::new(0, e.session().content_end().max(1)) } else { r };
-            let format = str_param(p, "format")
-                .and_then(soundcraft_audio_io::FileFormat::from_write_extension)
-                .unwrap_or(soundcraft_audio_io::FileFormat::Wav);
+            let format_name = match p.get("format") {
+                None => "wav",
+                Some(value) => value.as_str().ok_or_else(|| bad("file.bounce_stems", "`format` must be a string"))?,
+            };
+            let format = soundcraft_audio_io::FileFormat::from_write_extension(format_name).ok_or_else(|| {
+                let supported = soundcraft_audio_io::FileFormat::writable_extensions().join(", ");
+                bad("file.bounce_stems", format!("cannot write `{format_name}` files (supported: {supported})"))
+            })?;
             let bit_depth = match p.get("bit_depth").map(|b| b.to_string().trim_matches('"').to_string()).as_deref() {
                 Some("16") => soundcraft_audio_io::BitDepth::Int16,
                 Some("32") | Some("32f") => soundcraft_audio_io::BitDepth::Float32,
@@ -142,10 +149,10 @@ pub fn specs() -> Vec<CommandSpec> {
             crate::io::save_session(&mut tmp, &path)?;
             Ok(json!({"path": path}))
         }),
-        cmd!(noundo "file.export_sibelius", "Sibelius...", ["File", "Export"], None, "{path, tracks?} — MIDI tracks as MusicXML (.musicxml)", always, |e, p| {
+        cmd!(noundo "file.export_sibelius", "MusicXML...", ["File", "Export"], None, "{path, tracks?} — MIDI tracks as MusicXML (.musicxml)", always, |e, p| {
             write_score(e, p, "file.export_sibelius", false)
         }),
-        cmd!(noundo "file.send_to_sibelius", "Sibelius", ["File", "Send To..."], None, "{path?, tracks?} — writes MusicXML for a notation program (to the temp folder when no `path`)", always, |e, p| {
+        cmd!(noundo "file.send_to_sibelius", "MusicXML", ["File", "Send To..."], None, "{path?, tracks?} — writes MusicXML for a notation program (to the temp folder when no `path`)", always, |e, p| {
             write_score(e, p, "file.send_to_sibelius", false)
         }),
         cmd!(noundo "file.print_score", "Print Score...", ["File"], Some("Cmd+P"), "{path?, tracks?} — engraves the MIDI tracks as a printable SVG page", always, |e, p| {

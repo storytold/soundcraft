@@ -134,8 +134,8 @@ where things are.
   playlist per take, input monitoring through the full channel strip, and autosave with recovery.
 - **Time and tempo:** Bars|Beats, Min:Secs, Timecode (every rate, drop-frame included),
   Feet+Frames and Samples; tempo and meter maps with a tempo editor; linear, parabolic and
-  S-curve tempo ramps; key signatures and detected chords; Beat Detective and Identify Beat;
-  pitch-preserving Elastic warping.
+  S-curve tempo ramps; key signatures and detected chords; Beat Analysis and Identify Beat;
+  pitch-preserving Elastic Audio warping.
 - **Audio files:** WAV/BWF/RF64, AIFF/AIFC and FLAC in and out; MP3, Ogg Vorbis, AAC, ALAC, CAF
   and the audio of MP4/MOV movies in. Any sample rate and bit depth.
 - **Bounce:** mix or stems to WAV, AIFF or FLAC at 16/24/32-bit float with optional dither and
@@ -228,7 +228,8 @@ soundcraft-cli mcp --automation-read-root DIR --automation-write-root DIR
 
 See [`docs/cli.md`](docs/cli.md) for the command-line tool (subcommands, exit codes, environment
 variables, man pages and completions), [`docs/control-protocol.md`](docs/control-protocol.md) and
-[`docs/mcp.md`](docs/mcp.md). `soundcraft-cli commands` lists every command.
+[`docs/mcp.md`](docs/mcp.md). `soundcraft-cli commands` lists every command (`--json` for each
+one's parameters and details, as JSON).
 
 Open **SoundCraft › Session Audio Health** to check loaded audio availability, sample-rate
 mismatches and clip source bounds across all playlists, including alternate takes. The report

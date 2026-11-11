@@ -3,7 +3,7 @@ use super::bundle::save_session_bundle;
 use super::import::add_source;
 use super::import::{MAX_IMPORT_SAMPLES, at_rate, relink_videos};
 use super::{
-    Arc, Engine, EngineError, OsStr, Path, PathBuf, Result, Session, SourceAudio, file_key, read_file, read_text, stored_path, write_session,
+    Arc, Engine, EngineError, OsStr, Path, PathBuf, Result, Session, SourceAudio, file_key, read_file, read_session_text, stored_path, write_session,
 };
 
 /// Save the session to `path` (a `.scraft` file). Audio that only exists in memory is written
@@ -44,7 +44,7 @@ pub fn open_session(e: &mut Engine, path: impl AsRef<Path>) -> Result<Vec<String
 /// [`open_session`], following the media paths in it as if they were stored in the session file
 /// `links` (crash recovery: the session written beside the autosave, its paths from the original).
 pub(crate) fn open_session_linked(e: &mut Engine, path: &Path, links: &Path) -> Result<Vec<String>> {
-    let text = read_text(path)?;
+    let text = read_session_text(path)?;
     let mut s = Session::from_json(&text).map_err(|err| EngineError::Io(err.to_string()))?;
     let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
     let mut missing = Vec::new();
@@ -72,7 +72,7 @@ pub(crate) fn open_session_linked(e: &mut Engine, path: &Path, links: &Path) -> 
 /// Decode one source's audio file at the session rate.
 pub(super) fn decode_source(bytes: &[u8], ext: Option<&str>, rate: u32) -> std::result::Result<Arc<SourceAudio>, String> {
     let (_, buf) = soundcraft_audio_io::decode(bytes, ext).map_err(|err| err.to_string())?;
-    let buf = at_rate(buf, rate, MAX_IMPORT_SAMPLES).ok_or("too large to load")?;
+    let buf = at_rate(buf, rate, MAX_IMPORT_SAMPLES).map_err(|e| e.message("too large to load"))?;
     Ok(Arc::new(SourceAudio::new(buf)))
 }
 
@@ -97,6 +97,96 @@ mod save_tests {
     use super::super::{AudioBuffer, ChannelFormat, Clip, Engine, FileFormat, Range, TrackKind, back_up, copy_new};
     use super::*;
     use serde_json::json;
+
+    /// A new, empty scratch folder, removed again when the test ends, passed or not.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Scratch {
+            let dir = std::env::temp_dir().join(format!("soundcraft-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_session_file_too_large_to_parse_is_refused_unread() {
+        // #892: a session file is read whole and parsed; past the cap it is refused by its size.
+        // The file's length is set, not written, so it takes no time or space to make.
+        let dir = Scratch::new("huge-session");
+        let path = dir.0.join("Huge.scraft");
+        std::fs::File::create(&path).unwrap().set_len(crate::io::MAX_SESSION_BYTES + 1).unwrap();
+        let mut e = crate::demo::demo_engine();
+        let err = open_session(&mut e, &path).unwrap_err().to_string();
+        assert_eq!(err, format!("{} is too large to open (over 256 MiB)", path.display()));
+        assert_eq!(e.session().tracks.len(), crate::demo::demo_engine().session().tracks.len());
+        let err = e.execute("file.import_session_data", &json!({"path": path.to_string_lossy()})).unwrap_err().to_string();
+        assert!(err.contains("too large to open"), "{err}");
+    }
+
+    #[test]
+    fn a_session_too_large_to_open_is_not_saved_and_leaves_nothing_behind() {
+        // #892: what SoundCraft saves, it opens again. A refused save writes no audio and no
+        // session; the limit is lowered for this test so a small session reaches it.
+        let dir = Scratch::new("refused-save");
+        let path = |p: &str| dir.0.join(p).to_string_lossy().into_owned();
+        save_session(&mut with_take(0.5), &path("A/Song.scraft")).unwrap();
+        let saved = std::fs::metadata(path("A/Song.scraft")).unwrap().len();
+        let untouched = |sub: &str| assert!(!dir.0.join(sub).exists(), "{sub} was written");
+        {
+            let _limit = crate::io::SessionLimit::set(saved - 1);
+            let mut e = with_take(0.5);
+            let err = save_session(&mut e, &path("B/Song.scraft")).unwrap_err().to_string();
+            assert_eq!(err, format!("{} is too large to save: over {} bytes, more than SoundCraft opens", path("B/Song.scraft"), saved - 1));
+            assert!(e.is_dirty() && e.path.is_none());
+            let err = e.execute("session.save_copy", &json!({"path": path("C/Song.scraft")})).unwrap_err().to_string();
+            assert!(err.contains("too large to save"), "{err}");
+            for sub in ["B", "C"] {
+                untouched(sub);
+            }
+            // An open refuses the session saved before, now over the limit.
+            let err = open_session(&mut Engine::default(), path("A/Song.scraft")).unwrap_err().to_string();
+            assert!(err.contains("too large to open"), "{err}");
+        }
+        {
+            // A template holds no audio or clips: a smaller limit refuses it.
+            let _limit = crate::io::SessionLimit::set(100);
+            std::fs::create_dir_all(dir.0.join("D")).unwrap();
+            let err = with_take(0.5).execute("session.save_template", &json!({"path": path("D/Song.scraft")})).unwrap_err().to_string();
+            assert!(err.contains("too large to save"), "{err}");
+            untouched("D/Song.scraft");
+        }
+        // Checked before the audio file is named, against the longest name it can get: a
+        // session at the limit plus that margin is saved, and is the same size as before.
+        let _limit = crate::io::SessionLimit::set(saved + 5);
+        save_session(&mut with_take(0.5), &path("B/Song.scraft")).unwrap();
+        assert_eq!(std::fs::metadata(path("B/Song.scraft")).unwrap().len(), saved);
+        assert_eq!(reopen(&path("B/Song.scraft")).session().sources.len(), 1);
+    }
+
+    #[test]
+    fn a_saved_session_parses_as_it_did_through_a_tree() {
+        // #892: parsing the text directly gives the document the `Value` round trip gave.
+        let mut e = crate::demo::demo_engine();
+        e.execute("mix.volume", &json!({"track": "Kick", "db": -7.0})).unwrap();
+        let text = e.session().to_json().unwrap();
+        let mut old: Session = serde_json::from_value(serde_json::from_str(&text).unwrap()).unwrap();
+        old.sanitize();
+        assert_eq!(Session::from_json(&text).unwrap(), old);
+        let mut r = Engine::default();
+        let dir = Scratch::new("reparse");
+        let path = dir.0.join("Song.scraft").to_string_lossy().into_owned();
+        save_session(&mut e, &path).unwrap();
+        assert_eq!(open_session(&mut r, &path).unwrap(), Vec::<String>::new());
+        assert_eq!(r.session().tracks, e.session().tracks);
+    }
 
     #[test]
     fn autosave_copy_leaves_document_untouched_and_reuses_audio() {
