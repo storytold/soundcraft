@@ -327,6 +327,37 @@ mod strip_tests {
     }
 
     #[test]
+    fn cutting_stretched_audio_at_ascending_points_matches_cutting_at_each() {
+        let pieces = |e: &Engine, t: TrackId| {
+            let mut v: Vec<_> = e
+                .session()
+                .track(t)
+                .unwrap()
+                .clips()
+                .iter()
+                .map(|c| (c.start, c.end(), if let soundcraft_model::ClipContent::Audio { offset, .. } = c.content { offset } else { -1 }))
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        let stretched = || {
+            let (mut e, t) = tones(&[0], 40_000);
+            for c in &mut e.session_mut().track_mut(t).unwrap().playlist_mut().unwrap().clips {
+                c.stretch = 2.0;
+            }
+            (e, t)
+        };
+        let points = [1, 2, 3_001, 12_345];
+        let ((mut one, t), (mut each, _)) = (stretched(), stretched());
+        crate::edit::separate_at_points(one.session_mut(), t, &points);
+        for p in points {
+            crate::edit::separate_at_if(each.session_mut(), t, p, |_| false);
+        }
+        assert_eq!(pieces(&one, t), pieces(&each, t));
+        assert_eq!(pieces(&one, t).len(), points.len() + 1);
+    }
+
+    #[test]
     fn strip_keeps_the_audio_and_removes_the_silence() {
         let (r, clips) = strip_mode("strip");
         assert_eq!(r["clips"], 2);

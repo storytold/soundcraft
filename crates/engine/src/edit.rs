@@ -128,6 +128,8 @@ pub fn separate_at_if(s: &mut Session, track: TrackId, at: Samples, auto_name: i
 /// Split every clip on a track's active playlist at each of `points`, in one pass over the
 /// playlist: [`separate_at_if`] once per point with `|_| false` (no piece takes an Auto Rename
 /// name here), without rebuilding the playlist per point. Returns the number of splits.
+/// `points` are sorted and deduplicated first, so the source offsets of stretched audio can differ
+/// from per-point calls given in another order (each trim rounds its own adjustment).
 pub fn separate_at_points(s: &mut Session, track: TrackId, points: &[Samples]) -> usize {
     let mut pts = points.to_vec();
     pts.sort_unstable();
