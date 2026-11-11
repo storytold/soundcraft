@@ -136,6 +136,45 @@ fn split_at(s: &mut Session, track: TrackId, at: Samples, auto_name: impl Fn(&Cl
     count
 }
 
+/// Split every clip on a track's active playlist at each of `points`, in one pass over the
+/// playlist: [`separate_at_if`] once per point with `|_| false` (no piece takes an Auto Rename
+/// name here), without rebuilding the playlist per point. Returns the number of splits.
+/// `points` are sorted and deduplicated first, so the source offsets of stretched audio can differ
+/// from per-point calls given in another order (each trim rounds its own adjustment).
+pub fn separate_at_points(s: &mut Session, track: TrackId, points: &[Samples]) -> usize {
+    let mut pts = points.to_vec();
+    pts.sort_unstable();
+    pts.dedup();
+    let tc_tempo = s.tempo.clone();
+    let t = TimeCtx { tempo: &tc_tempo, sr: s.sample_rate };
+    // The points strictly inside a clip.
+    let within = |c: &Clip| {
+        let (lo, hi) = (pts.partition_point(|p| *p <= c.start), pts.partition_point(|p| *p < c.end()));
+        lo..hi.max(lo)
+    };
+    let n_split: usize = s.track(track).map_or(0, |tr| tr.clips().iter().map(|c| within(c).len()).sum());
+    let mut ids: Vec<ClipId> = (0..n_split).map(|_| s.new_clip_id()).collect();
+    let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return 0 };
+    let mut out = Vec::with_capacity(pl.clips.len() + n_split);
+    for c in pl.clips.drain(..) {
+        let mut rest = c;
+        for p in &pts[within(&rest)] {
+            let Some(id) = ids.pop() else { break };
+            match split_clip(&rest, *p, id, t) {
+                Some((l, r)) => {
+                    out.push(l);
+                    rest = r;
+                }
+                None => break,
+            }
+        }
+        out.push(rest);
+    }
+    pl.clips = out;
+    pl.sort();
+    n_split
+}
+
 /// Gives `c` the next name of its Auto Rename scheme, when it has one, and counts the scheme up.
 fn take_auto_name(schemes: &mut std::collections::BTreeMap<u64, soundcraft_model::AutoName>, c: &mut Clip) {
     if let Some(scheme) = c.auto_name.and_then(|k| schemes.get_mut(&k)) {
