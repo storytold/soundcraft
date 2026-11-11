@@ -11,6 +11,7 @@ repository.workspace = true
 serde.workspace = true
 log.workspace = true
 rustfft.workspace = true
+soundcraft-accelerate.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
