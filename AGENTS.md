@@ -103,8 +103,8 @@ User-visible behaviour = a command in `crates/engine/src/cmd/*` (id, label, menu
 Parity is measured, not guessed: `crates/engine/catalog/menus.txt` lists the incumbent's menu leaves (names only). `cargo xtask parity` writes `docs/parity-checklist.md` (generated; the hand-written assessment is `docs/target-app-parity.md`); a test enforces a floor that only rises.
 
 ## Running and looking at the app
-- `cargo run --release -p soundcraft -- --demo --control 0` (demo session + control channel on a free port; the port is printed).
-- Drive it: JSON lines over TCP, e.g. `{"id":1,"method":"engine.execute","params":{"command":"track.new","params":{"count":2,"format":"stereo"}}}`, then `{"id":2,"method":"ui.screenshot","params":{"path":"/tmp/shot.png"}}`. Methods: `crates/ui-egui/src/control.rs`, docs: `docs/control-protocol.md`.
+- `cargo run --release -p soundcraft -- --demo --control 0` (demo session + control channel on a free port; the port and the launch's `SOUNDCRAFT_CONTROL_TOKEN` are printed, or export the token first so both sides share it).
+- Drive it: JSON lines over TCP, e.g. `{"id":1,"method":"engine.execute","params":{"command":"track.new","params":{"count":2,"format":"stereo"}},"token":"…"}`, then `{"id":2,"method":"ui.screenshot","params":{"path":"/tmp/shot.png"},"token":"…"}`. Methods: `crates/ui-egui/src/control.rs`, docs: `docs/control-protocol.md`.
 - Offscreen UI render (no window, no focus stealing): `cargo run -p soundcraft-ui-egui --example ui_shot -- out.png [script.jsonl]`.
 - Headless: `soundcraft-cli run --demo --cmd 'mix.volume={"track":"Kick","db":-6}' --bounce out.wav`; MCP: `soundcraft-cli mcp [--connect PORT]`.
 - **For UI work, look at the result** (render, read the PNG) and compare with `plan/protools/screenshots/`.

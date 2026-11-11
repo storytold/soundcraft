@@ -151,18 +151,31 @@ impl RemoteError {
 
 type Connection = (TcpStream, BufReader<TcpStream>);
 
+/// The variable carrying the control channel's secret: the app refuses every request whose
+/// `token` differs from it, so another local account can't drive the app through the loopback
+/// port. The app makes one per launch when the variable is unset (printed after the port line).
+pub const CONTROL_TOKEN_VAR: &str = "SOUNDCRAFT_CONTROL_TOKEN";
+
+/// [`CONTROL_TOKEN_VAR`] from the environment; a blank value counts as unset.
+pub fn control_token() -> Option<String> {
+    std::env::var(CONTROL_TOKEN_VAR).ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty())
+}
+
 /// A TCP client for a running app's control channel.
 pub struct Remote {
     /// The target as `host:port`, for connecting and for messages.
     addr: String,
+    /// Sent with every request; without one the app refuses, naming the variable.
+    token: Option<String>,
     conn: Option<Connection>,
     next_id: u64,
 }
 
 impl Remote {
-    /// A client for the app at `target`; it connects on the first request.
+    /// A client for the app at `target`, authenticating with [`control_token`]; it connects on the
+    /// first request.
     pub fn new(target: &ControlTarget) -> Self {
-        Remote { addr: target.to_string(), conn: None, next_id: 1 }
+        Remote { addr: target.to_string(), token: control_token(), conn: None, next_id: 1 }
     }
 
     /// The open connection, connecting first when there is none.
@@ -178,7 +191,7 @@ impl Remote {
     fn roundtrip(&mut self, method: &str, params: &Value) -> Result<Value, (RemoteError, bool)> {
         let id = self.next_id;
         self.next_id += 1;
-        let line = json!({"id": id, "method": method, "params": params}).to_string();
+        let line = json!({"id": id, "method": method, "params": params, "token": self.token}).to_string();
         let (w, r) = self.connection().map_err(|e| (e, false))?;
         writeln!(w, "{line}").map_err(|e| (e.into(), false))?;
         let mut buf = String::new();

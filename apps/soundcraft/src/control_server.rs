@@ -3,8 +3,13 @@
 //!
 //! Lines are bounded ([`MAX_LINE`]): a longer one is refused and the connection closed, without
 //! buffering the rest. So is the number of connections served at once ([`MAX_CONNECTIONS`]).
+//!
+//! Every request carries the launch's secret as `"token"` (`SOUNDCRAFT_CONTROL_TOKEN`, or one made
+//! here and printed after the port): the port is loopback, which any local account can reach, and
+//! a request acts with this process's authority.
 
 use serde_json::{Value, json};
+use soundcraft_automation::CONTROL_TOKEN_VAR;
 use soundcraft_ui_egui::ControlRequest;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -28,9 +33,20 @@ const MAX_CONNECTIONS: usize = 16;
 const MAX_QUEUED_REQUESTS: usize = MAX_CONNECTIONS;
 
 /// Bind the loopback control listener and return the request receiver. Port 0 picks a free one and the actual port is
-/// printed; bind or spawn failures are logged instead of panicking.
-pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
+/// printed; bind or spawn failures are logged instead of panicking. Requests must carry `token`; with `None` one is
+/// made for this launch and printed after the port, so only the launching process learns it.
+pub fn start(port: u16, token: Option<String>, ctx: egui::Context) -> Receiver<ControlRequest> {
     let (tx, rx) = sync_channel::<ControlRequest>(MAX_QUEUED_REQUESTS);
+    let (token, made) = match token {
+        Some(t) => (t, false),
+        None => match new_token() {
+            Ok(t) => (t, true),
+            Err(e) => {
+                log::error!("control server not started: no {CONTROL_TOKEN_VAR} and no random token: {e}");
+                return rx;
+            }
+        },
+    };
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
@@ -41,11 +57,27 @@ pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
     let actual = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     log::info!("control server listening on 127.0.0.1:{actual}");
     println!("SOUNDCRAFT_CONTROL_PORT={actual}");
-    let spawned = std::thread::Builder::new().name("soundcraft-control".into()).spawn(move || accept_loop(listener, tx, ctx));
+    if made {
+        println!("{CONTROL_TOKEN_VAR}={token}");
+    }
+    let spawned = std::thread::Builder::new().name("soundcraft-control".into()).spawn(move || accept_loop(listener, tx, ctx, Arc::from(token)));
     if let Err(e) = spawned {
         log::error!("control thread failed: {e}");
     }
     rx
+}
+
+/// 32 random bytes as hex, from the OS.
+fn new_token() -> Result<String, getrandom::Error> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes)?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// `token` equals `expected`, compared in time that doesn't depend on where they differ.
+fn token_matches(token: Option<&str>, expected: &str) -> bool {
+    let Some(token) = token else { return false };
+    token.len() == expected.len() && token.bytes().zip(expected.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
 /// A connection's place among [`MAX_CONNECTIONS`], given back when the connection ends (also when
@@ -60,7 +92,7 @@ impl Drop for Slot {
 
 /// Accept until the listener closes, admitting at most [`MAX_CONNECTIONS`] peers; excess peers get one error line.
 /// Each admitted connection is served on its own thread, releasing its slot on exit.
-fn accept_loop(listener: TcpListener, tx: SyncSender<ControlRequest>, ctx: egui::Context) {
+fn accept_loop(listener: TcpListener, tx: SyncSender<ControlRequest>, ctx: egui::Context, token: Arc<str>) {
     let open = Arc::new(AtomicUsize::new(0));
     for mut stream in listener.incoming().flatten() {
         if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
@@ -71,9 +103,10 @@ fn accept_loop(listener: TcpListener, tx: SyncSender<ControlRequest>, ctx: egui:
         let slot = Slot(Arc::clone(&open));
         let tx = tx.clone();
         let ctx = ctx.clone();
+        let token = Arc::clone(&token);
         let _ = std::thread::Builder::new().name("soundcraft-control-conn".into()).spawn(move || {
             let _slot = slot;
-            serve(stream, tx, ctx);
+            serve(stream, tx, ctx, &token);
         });
     }
 }
@@ -103,8 +136,9 @@ fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -
 }
 
 /// Answer newline-delimited JSON requests for one connection: bound each line, forward it to the UI thread with a 90
-/// s reply deadline, and stop at EOF, invalid UTF-8 or a closed request queue. Bad JSON still gets an error reply.
-fn serve(stream: TcpStream, tx: SyncSender<ControlRequest>, ctx: egui::Context) {
+/// s reply deadline, and stop at EOF, invalid UTF-8, a closed request queue or a wrong `token`. Bad JSON still gets
+/// an error reply.
+fn serve(stream: TcpStream, tx: SyncSender<ControlRequest>, ctx: egui::Context, token: &str) {
     let Ok(read) = stream.try_clone() else { return };
     let mut out = stream;
     let mut reader = BufReader::new(read);
@@ -126,6 +160,11 @@ fn serve(stream: TcpStream, tx: SyncSender<ControlRequest>, ctx: egui::Context) 
         let reply = match serde_json::from_str::<Value>(line) {
             Ok(msg) => {
                 let id = msg.get("id").cloned().unwrap_or(Value::Null);
+                if !token_matches(msg.get("token").and_then(Value::as_str), token) {
+                    let error = format!("unauthorized: the request's `token` is not this app's {CONTROL_TOKEN_VAR}");
+                    let _ = writeln!(out, "{}", json!({"ok": false, "id": id, "error": error}));
+                    break;
+                }
                 let method = msg.get("method").and_then(Value::as_str).unwrap_or("").to_string();
                 let params = msg.get("params").cloned().unwrap_or(json!({}));
                 let (req, rrx) = ControlRequest::new(method, params);
@@ -185,12 +224,14 @@ mod tests {
         assert!(state + request.to_string().len() <= MAX_LINE);
     }
 
+    const TOKEN: &str = "s3cret";
+
     /// The control server on a loopback port, with a stand-in UI that echoes each method.
     fn serve_echo() -> std::net::SocketAddr {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = sync_channel::<ControlRequest>(MAX_QUEUED_REQUESTS);
-        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default()));
+        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), Arc::from(TOKEN)));
         std::thread::spawn(move || {
             for req in rx {
                 let _ = req.reply.send(json!({"ok": true, "method": req.method}));
@@ -204,7 +245,7 @@ mod tests {
         let addr = serve_echo();
         let mut c = TcpStream::connect(addr).unwrap();
         c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        c.write_all(b"{\"id\":3,\"method\":\"ping\"}\r\n\n{\"id\":4,\"method\":\"pong\"}\n").unwrap();
+        c.write_all(b"{\"id\":3,\"method\":\"ping\",\"token\":\"s3cret\"}\r\n\n{\"id\":4,\"method\":\"pong\",\"token\":\"s3cret\"}\n").unwrap();
         let mut r = BufReader::new(c);
         for (id, method) in [(3, "ping"), (4, "pong")] {
             let mut line = String::new();
@@ -212,6 +253,29 @@ mod tests {
             let v: Value = serde_json::from_str(&line).unwrap();
             assert_eq!((v["id"].as_i64(), v["method"].as_str()), (Some(id), Some(method)), "{line}");
         }
+    }
+
+    #[test]
+    fn a_request_without_the_token_is_refused_and_the_connection_closed() {
+        let addr = serve_echo();
+        for request in [r#"{"id":1,"method":"ping"}"#, r#"{"id":1,"method":"ping","token":"s3cre"}"#, r#"{"id":1,"method":"ping","token":"S3CRET"}"#]
+        {
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            writeln!(c, "{request}").unwrap();
+            let mut r = BufReader::new(c);
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            let v: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!((v["id"].as_i64(), v["ok"].as_bool()), (Some(1), Some(false)), "{line}");
+            assert!(v["error"].as_str().unwrap_or("").starts_with("unauthorized"), "{line}");
+            assert!(v.get("method").is_none(), "the request was not forwarded: {line}");
+            line.clear();
+            assert_eq!(r.read_line(&mut line).unwrap(), 0, "the connection is closed after a refusal");
+        }
+        assert!(token_matches(Some(TOKEN), TOKEN));
+        assert!(!token_matches(None, TOKEN));
+        assert_eq!(new_token().unwrap().len(), 64);
     }
 
     #[test]

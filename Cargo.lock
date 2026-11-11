@@ -4337,6 +4337,7 @@ dependencies = [
  "craft-update",
  "eframe",
  "egui",
+ "getrandom 0.3.4",
  "log",
  "muda",
  "objc2 0.6.5",
