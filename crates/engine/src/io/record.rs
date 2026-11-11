@@ -161,6 +161,7 @@ mod record_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Recording plans preserve one-based hardware labels as distinct zero-based capture indices.
     #[test]
     fn takes_keep_distinct_hardware_inputs_on_a_48_channel_device() {
         let dir = std::env::temp_dir().join(format!("soundcraft-48-input-takes-{}", std::process::id()));

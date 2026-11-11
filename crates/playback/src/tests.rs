@@ -168,6 +168,7 @@ fn a_spike_in_one_block_among_quiet_ones_reaches_the_ui() {
     assert!(ui.tracks[&t].peak[0] > 0.005);
 }
 
+/// The final interleaved device frame retains physical output 48 at its exact index.
 #[test]
 fn physical_output_48_survives_the_interleaved_device_callback() {
     use soundcraft_model::Route;
@@ -186,6 +187,7 @@ fn physical_output_48_survives_the_interleaved_device_callback() {
     }
 }
 
+/// An unavailable physical destination must never be folded into unrelated stereo outputs.
 #[test]
 fn physical_output_outside_the_device_does_not_fold_into_stereo() {
     use soundcraft_model::Route;
@@ -201,6 +203,7 @@ fn physical_output_outside_the_device_does_not_fold_into_stereo() {
     assert!(samples.iter().all(|sample| *sample == 0.0));
 }
 
+/// Ending a selection cannot replay stale physical samples during continued input monitoring.
 #[test]
 fn ending_a_selection_clears_direct_outputs_while_input_monitoring_continues() {
     use soundcraft_model::{ChannelFormat, Route, TrackKind};

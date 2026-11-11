@@ -1104,6 +1104,7 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
 mod tests {
     use super::*;
 
+    /// Explicit physical choices remain distinct from buses and the Main output alias.
     #[test]
     fn explicit_hardware_routes_bypass_colliding_bus_names_and_main_aliases() {
         for (command, key, name) in [("track.input", "input", "In 48"), ("track.output", "output", "Out 48"), ("track.output", "output", "Out 1-2")] {
@@ -1122,6 +1123,7 @@ mod tests {
         }
     }
 
+    /// Reject malformed, reversed, overflowing and directionally incorrect physical routes.
     #[test]
     fn explicit_hardware_routes_reject_invalid_labels_and_flags() {
         let mut e = Engine::default();
@@ -1146,6 +1148,7 @@ mod tests {
         assert!(e.session().busses.is_empty());
     }
 
+    /// Keep complete physical ranges while preserving legacy automatic route resolution.
     #[test]
     fn explicit_hardware_routes_keep_valid_ranges_and_legacy_false_semantics() {
         let mut e = Engine::default();

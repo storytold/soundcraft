@@ -84,11 +84,12 @@ pub use offline::{
 pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix, identity_matrix};
 use routing::{processing_order, structure_fingerprint};
-use strip::{
-    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
-};
 #[cfg(test)]
-use strip::{DelayLine, MAX_LATENCY};
+use strip::MAX_LATENCY;
+use strip::{
+    Block, BusBuf, DelayLine, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels,
+    strip_format,
+};
 use threads::run_strips;
 pub use threads::{mark_audio_thread, on_audio_thread};
 
@@ -142,6 +143,10 @@ pub struct MixEngine {
     /// such a bus waits for it, so a bounce of the bus drops it as well.
     aux_fed: Vec<BusId>,
     aux_latency: usize,
+    /// Master stages are serial; retain their individually bounded delays for physical paths.
+    master_latencies: Vec<usize>,
+    /// Delay the summed shared hardware channels once per master, avoiding per-strip copies.
+    hardware_master_align: Vec<DelayLine>,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
     pub input: Vec<Vec<f32>>,
     /// Transport stopped: only monitored inputs sound (no clips).
@@ -184,6 +189,8 @@ impl MixEngine {
             track_latency: 0,
             aux_fed: Vec::new(),
             aux_latency: 0,
+            master_latencies: Vec::new(),
+            hardware_master_align: Vec::new(),
             input: Vec::new(),
             monitor_only: false,
             recording: false,
@@ -274,6 +281,12 @@ impl MixEngine {
         for channel in &mut self.hardware {
             channel.fill(0.0);
         }
+        for strip in self.strips.values_mut() {
+            strip.hardware_align.clear();
+        }
+        for delay in &mut self.hardware_master_align {
+            delay.clear();
+        }
     }
 
     /// Reset all plugin state (on stop / seek).
@@ -293,9 +306,13 @@ impl MixEngine {
             s.align.clear();
             s.align_pre.clear();
             s.out_extra.clear();
+            s.hardware_align.clear();
             for fx in s.clip_fx.values_mut() {
                 fx.reset();
             }
+        }
+        for delay in &mut self.hardware_master_align {
+            delay.clear();
         }
         // Zeroed in place: rebuilding the entries would allocate on the audio thread at every
         // play, stop and locate.
@@ -430,6 +447,7 @@ impl MixEngine {
         self.render_auxes(s, &order, blk);
         self.order = order;
         self.render_masters(s, blk);
+        self.align_hardware_masters(frames);
         self.write_output(s, blk, out);
     }
 
@@ -474,11 +492,15 @@ impl MixEngine {
         // The master faders' inserts delay the whole main mix, so their latency is part of the
         // mix's too (the faders run one after the other: it adds up).
         let mut lmax_m = 0usize;
+        self.master_latencies.clear();
         if pdc {
             for t in s.tracks.iter().filter(|t| t.kind == TrackKind::Master && !t.inactive) {
                 if let Some(st) = self.strips.get_mut(&t.id) {
                     note_insert_latency(t, st, pos);
                     lmax_m = lmax_m.saturating_add(st.latency);
+                    if st.latency > 0 {
+                        self.master_latencies.push(st.latency);
+                    }
                 }
             }
         }
@@ -597,6 +619,30 @@ impl MixEngine {
         }
     }
 
+    /// After aux alignment, every shared hardware contribution has the same arrival time.
+    /// Apply the serial master delays once to their sum, preserving per-stage bounds and
+    /// avoiding storage proportional to both the number of strips and master faders.
+    fn align_hardware_masters(&mut self, frames: usize) {
+        let shared = self.main.len().min(self.hardware.len());
+        let needed = if shared == 0 { 0 } else { self.master_latencies.len() };
+        if self.hardware_master_align.len() < needed {
+            self.hardware_master_align.resize_with(needed, DelayLine::default);
+        }
+        for (i, delay) in self.hardware_master_align.iter_mut().enumerate() {
+            if i >= needed {
+                if delay.len > 0 {
+                    delay.clear();
+                }
+                delay.len = 0;
+                continue;
+            }
+            delay.set(self.master_latencies.get(i).copied().unwrap_or(0), shared);
+            if let Some(channels) = self.hardware.get_mut(..shared) {
+                delay.process(channels, frames);
+            }
+        }
+    }
+
     /// Add the metronome and copy the main mix to `out`.
     fn write_output(&mut self, s: &Session, blk: Block, out: &mut [Vec<f32>]) {
         let Block { pos, frames, .. } = blk;
@@ -670,6 +716,47 @@ impl MixEngine {
             let m = build_matrix(src_fmt, src.len(), dst.fmt, dst.buf.len(), &PanSpec { stereo, surround }, law);
             apply_matrix(src, frames, &mut dst.buf, &m, gain);
         }
+        if let Route::Hardware(name) = &t.mixer.output {
+            let Some(range) = hardware_span(name, strip.buf.len(), self.hardware.len()) else {
+                strip.align_hardware(0, 0, 0);
+                return;
+            };
+            let shared = self.main.len().min(range.end).saturating_sub(range.start);
+            if strip.outbuf.len() != strip.buf.len() {
+                strip.outbuf.resize_with(strip.buf.len(), Vec::new);
+            }
+            for channel in &mut strip.outbuf {
+                channel.resize(self.max_block, 0.0);
+                channel.iter_mut().take(frames).for_each(|sample| *sample = 0.0);
+            }
+            // Pan first: a span may overlap Main on only one side, and either source channel
+            // can feed that side. Sends above remain at their original compensated time.
+            let mut start = 0;
+            while start < frames {
+                let (at, end) = pan_segment(t, pos, start, frames);
+                let spec = PanSpec { stereo: [pan_at(t, 0, at), pan_at(t, 1, at)], surround: t.mixer.surround.as_ref() };
+                let matrix = if strip.buf.len() == 1 {
+                    identity_matrix(1)
+                } else {
+                    build_matrix(src_fmt, strip.buf.len(), src_fmt, strip.outbuf.len(), &spec, law)
+                };
+                apply_matrix_span(&strip.buf, start..end, &mut strip.outbuf, &matrix, 1.0);
+                start = end;
+            }
+            let aux = if is_aux(t) { 0 } else { self.aux_latency };
+            strip.align_hardware(shared, aux, frames);
+            if let Some(dst) = self.hardware.get_mut(range) {
+                for (dst, src) in dst.iter_mut().zip(&strip.outbuf) {
+                    for (dst, src) in dst.iter_mut().zip(src).take(frames) {
+                        *dst += src;
+                    }
+                }
+            }
+            return;
+        }
+        // An output-route change must not retain samples that could reappear if the strip
+        // is later assigned to a shared hardware channel again.
+        strip.align_hardware(0, 0, 0);
         let src: &[Vec<f32>] = match &t.mixer.output {
             Route::Main | Route::Bus(_) if strip.out_extra.len > 0 => {
                 if strip.outbuf.len() != strip.buf.len() {
@@ -690,21 +777,6 @@ impl MixEngine {
                 Some(d) => (&mut d.buf, d.fmt),
                 None => return,
             },
-            Route::Hardware(name) => {
-                let Some(range) = hardware_span(name, src.len(), self.hardware.len()) else { return };
-                let Some(dst) = self.hardware.get_mut(range) else { return };
-                // Physical paths retain the strip's channel order, including mono at unity.
-                // The mono bus matrix deliberately folds stereo and would attenuate this path.
-                let mut start = 0;
-                while start < frames {
-                    let (at, end) = pan_segment(t, pos, start, frames);
-                    let spec = PanSpec { stereo: [pan_at(t, 0, at), pan_at(t, 1, at)], surround: t.mixer.surround.as_ref() };
-                    let matrix = if src.len() == 1 { identity_matrix(1) } else { build_matrix(src_fmt, src.len(), src_fmt, dst.len(), &spec, law) };
-                    apply_matrix_span(src, start..end, dst, &matrix, 1.0);
-                    start = end;
-                }
-                return;
-            }
             _ => return,
         };
         let mut start = 0;
