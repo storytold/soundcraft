@@ -1,6 +1,7 @@
 //! Modal dialogs opened by menu-style invocations.
 
 use crate::SoundApp;
+use crate::services::Pick;
 use crate::theme::{Tokens, bold};
 use egui::{Align2, vec2};
 use serde_json::{Value, json};
@@ -291,10 +292,11 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
     ui.horizontal(|ui| {
         ui.label("File");
         crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "File");
-        if let Some(pick) = &app.services.pick_save
-            && ui.button("Browse…").clicked()
-            && let Some(p) = pick("file.bounce_mix", std::path::Path::new(path.as_str()))
-        {
+        if app.services.pick_save.is_some() && ui.button("Browse…").clicked() {
+            let start = std::path::PathBuf::from(path.as_str());
+            app.services.ask("bounce", Pick::Save("file.bounce_mix".into(), start));
+        }
+        if let Some(p) = app.services.take("bounce") {
             match unicode(&p) {
                 Ok(text) => {
                     *path = text.to_owned();
@@ -311,30 +313,18 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
 /// The path prompt's form; the command to run once it is confirmed.
 fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut String, key: &str, enter: bool) -> Option<(String, Value)> {
     crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "Path");
-    let mut picked = None;
-    if let Some(pick) = &app.services.pick_open
-        && cmd != "session.save_as"
-        && cmd != "session.save_copy"
-        && key != "dir"
-        && ui.button("Browse…").clicked()
-        && let Some(p) = pick(cmd, &[])
+    let start = std::path::PathBuf::from(path.as_str());
+    if app.services.pick_open.is_some() && cmd != "session.save_as" && cmd != "session.save_copy" && key != "dir" && ui.button("Browse…").clicked()
     {
-        picked = Some(p);
+        app.services.ask("prompt", Pick::Open(cmd.to_string()));
     }
-    if let Some(pick) = &app.services.pick_folder
-        && key == "dir"
-        && ui.button("Browse…").clicked()
-        && let Some(p) = pick(std::path::Path::new(path.as_str()))
-    {
-        picked = Some(p);
+    if app.services.pick_folder.is_some() && key == "dir" && ui.button("Browse…").clicked() {
+        app.services.ask("prompt", Pick::Folder(start.clone()));
     }
-    if let Some(pick) = &app.services.pick_save
-        && (cmd == "session.save_as" || cmd == "session.save_copy")
-        && ui.button("Browse…").clicked()
-        && let Some(p) = pick(cmd, std::path::Path::new(path.as_str()))
-    {
-        picked = Some(p);
+    if app.services.pick_save.is_some() && (cmd == "session.save_as" || cmd == "session.save_copy") && ui.button("Browse…").clicked() {
+        app.services.ask("prompt", Pick::Save(cmd.to_string(), start));
     }
+    let picked = app.services.take("prompt");
     match picked.as_deref().map(unicode) {
         Some(Ok(text)) => *path = text.to_owned(),
         Some(Err(e)) => app.ui.status = e.to_string(),

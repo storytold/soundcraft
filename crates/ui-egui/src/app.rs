@@ -138,6 +138,14 @@ impl SoundApp {
     /// Each host iteration starts with `raw_input_hook`; its editor-poll admission prevents an
     /// empty queue on a discarded pass from ending a still-active plugin gesture.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        self.services.poll();
+        if let Some(e) = self.services.error.take() {
+            self.ui.status = e;
+        }
+        // An answer for a path prompt that has closed must not fill the next one
+        if !matches!(self.dialogs.open, Some(crate::dialogs::Dialog::PathPrompt { .. })) {
+            self.services.discard("prompt");
+        }
         self.ui.undo_levels = self.ui.undo_levels.clamp(1, 64);
         self.engine.set_history_limit(self.ui.undo_levels);
         // Fonts set now take effect next frame, so draw only from the frame after.
