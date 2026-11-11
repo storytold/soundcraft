@@ -151,19 +151,19 @@ fn the_views_menu_stays_open_until_a_click_elsewhere() {
 }
 
 #[test]
-fn the_io_columns_route_menus_stay_open_while_searching_buses() {
+fn the_io_columns_route_menus_stay_open_while_searching() {
     let (mut h, _, row) = harness("Kick", "medium", "view.edit_io");
     click(&mut h, pos2(row[0] + HEADER_W + 40.0, row[1] + 29.5));
-    let bus = h.get_by_label("Bus").rect();
+    let first = h.get_by_label("no output").rect();
     let search = h
         .query_all_by_role(egui::accesskit::Role::TextInput)
         .map(|node| node.rect())
-        .filter(|r| r.min.y >= bus.max.y)
-        .min_by(|a, b| a.min.y.total_cmp(&b.min.y))
+        .filter(|r| r.max.y <= first.min.y && r.x_range().contains(first.center().x))
+        .max_by(|a, b| a.min.y.total_cmp(&b.min.y))
         .unwrap()
         .center();
     click(&mut h, search);
-    assert!(h.query_by_label("no output").is_some(), "a click in the bus search closed the Output menu");
+    assert!(h.query_by_label("no output").is_some(), "a click in the menu's search closed the Output menu");
 }
 
 #[test]

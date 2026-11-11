@@ -78,9 +78,9 @@ fn rebase_midi_start(clip: &mut Clip, old_start: Samples, t: TimeCtx<'_>) {
     }
 }
 
-/// Split every clip on a track's active playlist that spans `at`. The piece before `at` keeps the
-/// clip's name. The piece after it is a new clip, and takes the next name of the clip's Auto Rename
-/// scheme when it has one.
+/// Split every clip on a track's active playlist that spans `at`, except time- or edit-locked ones.
+/// The piece before `at` keeps the clip's name. The piece after it is a new clip, and takes the next
+/// name of the clip's Auto Rename scheme when it has one.
 pub fn separate_at(s: &mut Session, track: TrackId, at: Samples) -> usize {
     separate_at_if(s, track, at, |_| true)
 }
@@ -88,11 +88,21 @@ pub fn separate_at(s: &mut Session, track: TrackId, at: Samples) -> usize {
 /// [`separate_at`], giving the piece after `at` the next Auto Rename name only when `auto_name`
 /// returns true for it. Any other piece keeps the clip's name, and its scheme does not count up.
 pub fn separate_at_if(s: &mut Session, track: TrackId, at: Samples, auto_name: impl Fn(&Clip) -> bool) -> usize {
+    split_at(s, track, at, auto_name, true)
+}
+
+/// [`separate_at`], splitting time- and edit-locked clips too. For the Event time operations, which
+/// move the whole timeline, locked clips included.
+pub fn separate_all_at(s: &mut Session, track: TrackId, at: Samples) -> usize {
+    split_at(s, track, at, |_| true, false)
+}
+
+fn split_at(s: &mut Session, track: TrackId, at: Samples, auto_name: impl Fn(&Clip) -> bool, skip_locked: bool) -> usize {
     let tc_tempo = s.tempo.clone();
     let sr = s.sample_rate;
     let t = TimeCtx { tempo: &tc_tempo, sr };
     let mut ids = Vec::new();
-    let n_split = s.track(track).map_or(0, |tr| tr.clips().iter().filter(|c| at > c.start && at < c.end()).count());
+    let n_split = s.track(track).map_or(0, |tr| tr.clips().iter().filter(|c| at > c.start && at < c.end() && !(skip_locked && locked(c))).count());
     for _ in 0..n_split {
         ids.push(s.new_clip_id());
     }
@@ -106,6 +116,7 @@ pub fn separate_at_if(s: &mut Session, track: TrackId, at: Samples, auto_name: i
     for c in pl.clips.drain(..) {
         if at > c.start
             && at < c.end()
+            && !(skip_locked && locked(&c))
             && let Some(id) = ids.pop()
             && let Some((l, mut r)) = split_clip(&c, at, id, t)
         {
