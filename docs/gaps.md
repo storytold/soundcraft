@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-09 · **Change:** trivial (G-08: Frequency Shifter, 28 processors; previously trivial: G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-09 · **Change:** trivial (G-08: Frequency Shifter, 28 processors; previously trivial: G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -92,7 +92,9 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 **Fixed (2026-10-16):** Aux, folder and master latency calculations now skip inserts already
 render block, matching track faders. A breakpoint at the next block no longer ramps the preceding
 block, and ramps reach their last-sample value. Regression tests cover nonzero render starts,
-one-sample callbacks and several block sizes. Interior automation breakpoints remain block-dependent.
+one-sample callbacks and several block sizes. Since #1354, track and master volume automation is read at
+every sample, so its interior breakpoints no longer depend on the block; send levels and plugin parameters
+are still read once per block.
 
 disabled for producing NaN or infinity. Subsequent blocks compensate only for healthy inserts;
 regression tests verify rendered impulse timing, retained healthy latency and reset/retry at
@@ -231,6 +233,7 @@ missing. Out of scope unless the owner decides otherwise.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-11-09 | trivial | G-08: 28 processors + 3 instruments with the Frequency Shifter |
+| 2026-11-04 | trivial | G-04: track and master volume automation read at every sample, so breakpoints act on their own sample in any block size (#1354); estimates unchanged |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-25 | trivial | G-01: `setup.playback_engine` and `setup.hardware` apply the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |
