@@ -203,6 +203,40 @@ fn physical_output_outside_the_device_does_not_fold_into_stereo() {
     assert!(samples.iter().all(|sample| *sample == 0.0));
 }
 
+/// Six-channel Main folds into outputs 1–2 on a four-channel device. Direct output 3 must
+/// retain its original timing through the real interleaved callback, despite Main's latency.
+#[test]
+fn folded_main_does_not_delay_the_remaining_physical_device_outputs() {
+    use soundcraft_model::{ChannelFormat, Clip, Insert, Route, SourceId, TrackKind};
+    let (_shared, mut state, tx, direct) = spike_session(0);
+    let mut session = (*state.session).clone();
+    session.outputs[0].format = ChannelFormat::Surround51;
+    session.edit.delay_compensation = true;
+    session.track_mut(direct).unwrap().mixer.output = Route::Hardware("Out 3".into());
+    let main = session.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let clip = session.new_clip_id();
+    session.track_mut(main).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(clip, "Main spike", SourceId(5), 0, 0, 48_000));
+    for (kind, milliseconds) in [(TrackKind::Aux, 5.0), (TrackKind::Master, 7.0)] {
+        let id = session.add_track(kind, ChannelFormat::Stereo, None);
+        let mut insert = Insert::new("compressor");
+        insert.params.insert("lookahead".into(), milliseconds);
+        insert.params.insert("ratio".into(), 1.0);
+        session.track_mut(id).unwrap().mixer.inserts[0] = Some(insert);
+    }
+    state.mix.set_hardware_channels(4);
+    tx.send(Cmd::Session(Arc::new(session), Vec::new())).unwrap();
+    let mut samples = vec![0.0; 4 * 1024];
+    state.fill(&mut samples, 4);
+    let frames = samples.as_chunks::<4>().0;
+    assert!(frames[..32].iter().all(|frame| (frame[2] - 0.9).abs() < 1e-6), "output 3 is disjoint from folded Main");
+    assert!(frames.iter().all(|frame| frame[3] == 0.0));
+    assert_eq!(
+        frames.iter().position(|frame| frame[0].abs() > 0.1 || frame[1].abs() > 0.1),
+        Some(576),
+        "Main still waits for aux and master latency"
+    );
+}
+
 /// Ending a selection cannot replay stale physical samples during continued input monitoring.
 #[test]
 fn ending_a_selection_clears_direct_outputs_while_input_monitoring_continues() {

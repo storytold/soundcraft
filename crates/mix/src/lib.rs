@@ -344,6 +344,11 @@ impl MixEngine {
         for t in &s.tracks {
             let ch = strip_channels(t, main_ch);
             let strip = self.strips.entry(t.id).or_insert_with(Strip::new);
+            // Non-rendering strips skip route_strip, so discard their private physical queue
+            // here instead of letting old samples resume when the strip becomes live again.
+            if !is_live(t) {
+                strip.align_hardware(None, 0, 0, 0);
+            }
             if strip.buf.len() != ch || strip.buf.first().map_or(0, Vec::len) != mb {
                 strip.buf = vec![vec![0.0; mb]; ch];
             }
@@ -619,11 +624,18 @@ impl MixEngine {
         }
     }
 
+    /// Physical prefix to which playback writes Main. A device narrower than the speaker
+    /// layout receives a stereo fold (or mono average), leaving any further outputs disjoint.
+    fn main_device_channels(&self) -> usize {
+        let device = self.hardware.len();
+        if device < self.main.len() { device.min(MAIN_CHANNELS) } else { self.main.len() }
+    }
+
     /// After aux alignment, every shared hardware contribution has the same arrival time.
     /// Apply the serial master delays once to their sum, preserving per-stage bounds and
     /// avoiding storage proportional to both the number of strips and master faders.
     fn align_hardware_masters(&mut self, frames: usize) {
-        let shared = self.main.len().min(self.hardware.len());
+        let shared = self.main_device_channels();
         let needed = if shared == 0 { 0 } else { self.master_latencies.len() };
         if self.hardware_master_align.len() < needed {
             self.hardware_master_align.resize_with(needed, DelayLine::default);
@@ -718,10 +730,10 @@ impl MixEngine {
         }
         if let Route::Hardware(name) = &t.mixer.output {
             let Some(range) = hardware_span(name, strip.buf.len(), self.hardware.len()) else {
-                strip.align_hardware(0, 0, 0);
+                strip.align_hardware(None, 0, 0, 0);
                 return;
             };
-            let shared = self.main.len().min(range.end).saturating_sub(range.start);
+            let shared = self.main_device_channels().min(range.end).saturating_sub(range.start);
             if strip.outbuf.len() != strip.buf.len() {
                 strip.outbuf.resize_with(strip.buf.len(), Vec::new);
             }
@@ -744,7 +756,7 @@ impl MixEngine {
                 start = end;
             }
             let aux = if is_aux(t) { 0 } else { self.aux_latency };
-            strip.align_hardware(shared, aux, frames);
+            strip.align_hardware(Some(range.clone()), shared, aux, frames);
             if let Some(dst) = self.hardware.get_mut(range) {
                 for (dst, src) in dst.iter_mut().zip(&strip.outbuf) {
                     for (dst, src) in dst.iter_mut().zip(src).take(frames) {
@@ -756,7 +768,7 @@ impl MixEngine {
         }
         // An output-route change must not retain samples that could reappear if the strip
         // is later assigned to a shared hardware channel again.
-        strip.align_hardware(0, 0, 0);
+        strip.align_hardware(None, 0, 0, 0);
         let src: &[Vec<f32>] = match &t.mixer.output {
             Route::Main | Route::Bus(_) if strip.out_extra.len > 0 => {
                 if strip.outbuf.len() != strip.buf.len() {

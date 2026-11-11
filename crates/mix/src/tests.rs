@@ -7,6 +7,8 @@ use soundcraft_audio_io::AudioBuffer;
 use soundcraft_model::{Insert, SourceAudio, SourceId};
 use std::sync::Arc;
 
+mod hardware_reroute;
+
 fn synth_session(level_db: f32) -> Session {
     use soundcraft_midi::{Note, Sequence};
     let mut s = Session::default();
@@ -304,6 +306,67 @@ fn hardware_alignment_keeps_each_master_delay_stage_and_reuses_storage() {
     engine.master_latencies.clear();
     engine.align_hardware_masters(64);
     assert!(engine.hardware_master_align.iter().all(|delay| delay.len == 0 && delay.bufs.iter().flatten().all(|sample| *sample == 0.0)));
+}
+
+/// A narrower device folds Main onto only its first two physical channels, even when the
+/// device itself has three or four outputs. Aux and master alignment must use that same map.
+#[test]
+fn hardware_alignment_matches_the_playback_main_fold() {
+    for (format, device, shared) in [
+        (ChannelFormat::Stereo, 1, 1),
+        (ChannelFormat::Stereo, 48, 2),
+        (ChannelFormat::Surround51, 1, 1),
+        (ChannelFormat::Surround51, 3, 2),
+        (ChannelFormat::Surround51, 4, 2),
+        (ChannelFormat::Surround51, 6, 6),
+    ] {
+        for (aux_ms, master_ms) in [(5.0, 0.0), (0.0, 7.0), (5.0, 7.0)] {
+            let mut s = Session::default();
+            s.edit.delay_compensation = true;
+            s.outputs[0].format = format;
+            for channel in 1..=device {
+                let id = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+                let track = s.track_mut(id).unwrap();
+                track.mixer.input_monitor = true;
+                track.mixer.input = Route::Hardware("In 1".into());
+                track.mixer.output = Route::Hardware(format!("Out {channel}"));
+            }
+            for (kind, milliseconds) in [(TrackKind::Aux, aux_ms), (TrackKind::Master, master_ms)] {
+                if milliseconds == 0.0 {
+                    continue;
+                }
+                let id = s.add_track(kind, ChannelFormat::Stereo, None);
+                let mut insert = Insert::new("compressor");
+                insert.params.insert("lookahead".into(), milliseconds);
+                insert.params.insert("ratio".into(), 1.0);
+                s.track_mut(id).unwrap().mixer.inserts[0] = Some(insert);
+            }
+            let mut engine = MixEngine::new(48_000.0, 64);
+            engine.set_hardware_channels(device);
+            engine.monitor_only = true;
+            engine.input = vec![vec![0.0; 64]];
+            engine.input[0][0] = 0.25;
+            let mut out = vec![vec![0.0; 64]; format.channels()];
+            let mut samples = vec![Vec::new(); device];
+            for block in 0..16 {
+                engine.render(&s, block * 64, 64, &mut out);
+                for (samples, channel) in samples.iter_mut().zip(engine.hardware_output()) {
+                    samples.extend_from_slice(channel);
+                }
+                engine.input[0].fill(0.0);
+            }
+            assert!(engine.latency > 0);
+            for (channel, samples) in samples.iter().enumerate() {
+                let expected = if channel < shared { engine.latency } else { 0 };
+                assert_eq!(
+                    impulse_at(samples),
+                    vec![expected],
+                    "{format:?}, device {device}, output {}, aux {aux_ms}, master {master_ms}",
+                    channel + 1
+                );
+            }
+        }
+    }
 }
 
 #[test]
