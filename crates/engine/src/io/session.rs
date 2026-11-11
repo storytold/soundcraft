@@ -71,7 +71,7 @@ pub(crate) fn open_session_linked(e: &mut Engine, path: &Path, links: &Path) -> 
 
 /// Decode one source's audio file at the session rate.
 pub(super) fn decode_source(bytes: &[u8], ext: Option<&str>, rate: u32) -> std::result::Result<Arc<SourceAudio>, String> {
-    let (_, buf) = soundcraft_audio_io::decode(bytes, ext).map_err(|err| err.to_string())?;
+    let (_, buf) = craft_audio::decode(bytes, ext).map_err(|err| err.to_string())?;
     let buf = at_rate(buf, rate, MAX_IMPORT_SAMPLES).map_err(|e| e.message("too large to load"))?;
     Ok(Arc::new(SourceAudio::new(buf)))
 }
@@ -419,7 +419,7 @@ mod open_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let audio = AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 480]] };
-        std::fs::write(dir.join("k.wav"), soundcraft_audio_io::encode(&audio, &EncodeOptions::default()).unwrap()).unwrap();
+        std::fs::write(dir.join("k.wav"), craft_audio::encode(&audio, &EncodeOptions::default()).unwrap()).unwrap();
         let mut s = Session::default();
         for _ in 0..3 {
             add_source(&mut s, "k", audio.clone(), Some("k.wav"), FileFormat::Wav);
@@ -440,7 +440,7 @@ mod open_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("Audio Files")).unwrap();
         let audio = AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 480]] };
-        std::fs::write(dir.join("Audio Files/k.wav"), soundcraft_audio_io::encode(&audio, &EncodeOptions::default()).unwrap()).unwrap();
+        std::fs::write(dir.join("Audio Files/k.wav"), craft_audio::encode(&audio, &EncodeOptions::default()).unwrap()).unwrap();
         let mut s = Session::default();
         for _ in 0..3 {
             add_source(&mut s, "k", audio.clone(), Some("Audio Files/k.wav"), FileFormat::Wav);
@@ -472,7 +472,7 @@ mod open_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let audio = AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 480]] };
-        std::fs::write(dir.join("k.wav"), soundcraft_audio_io::encode(&audio, &EncodeOptions::default()).unwrap()).unwrap();
+        std::fs::write(dir.join("k.wav"), craft_audio::encode(&audio, &EncodeOptions::default()).unwrap()).unwrap();
         let mut saved = Session::default();
         let t = saved.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
         let src = add_source(&mut saved, "k", audio, Some("../k.wav"), FileFormat::Wav);

@@ -13,7 +13,6 @@ repository = "https://github.com/storytold/soundcraft"
 [workspace.dependencies]
 # internal
 soundcraft-time = { path = "crates/time" }
-soundcraft-audio-io = { path = "crates/audio-io" }
 soundcraft-midi = { path = "crates/midi" }
 soundcraft-video = { path = "crates/video" }
 soundcraft-dsp = { path = "crates/dsp" }
@@ -43,7 +42,6 @@ same-file = "1"
 proptest = "1"
 
 # audio
-symphonia = { version = "0.6", default-features = false, features = ["mp1", "mp2", "mp3", "flac", "vorbis", "ogg", "wav", "pcm", "aiff", "isomp4", "aac", "alac", "adpcm", "caf", "mkv"] }
 rustfft = "6"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
@@ -53,7 +51,10 @@ cpal = "0.18"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6e03f65bf45181db77ba6229716e6624db9eb25b" }
 
 # Video containers and bitstreams, shared with the other craft apps.
-craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6e03f65bf45181db77ba6229716e6624db9eb25b" }
+craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "75895c0321d8cb6e175a42466cba050352b117c5" }
+# Audio file formats, codecs and waveform overviews, shared with the other craft apps. It shares
+# types with craft-media, so both stay on one rev.
+craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "75895c0321d8cb6e175a42466cba050352b117c5", features = ["decode", "lossless-encode", "peaks", "serde"] }
 # craft-update: app-specific pretend versions apply to startup and manual checks.
 craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6e03f65bf45181db77ba6229716e6624db9eb25b", features = ["egui"] }
 
@@ -87,6 +88,11 @@ debug = false
 [profile.dev]
 opt-level = 1
 debug = "line-tables-only"
+
+# symphonia's FLAC decoder overflows an i32 add on 32-bit LPC FLAC; the wrapped value is correct
+# (craft-audio README, "symphonia").
+[profile.dev.package.symphonia-bundle-flac]
+overflow-checks = false
 
 [profile.release]
 opt-level = 3

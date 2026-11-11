@@ -161,8 +161,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sc-ui-import-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let tone: Vec<f32> = (0..9_600).map(|i| (i as f32 * 0.05).sin() * 0.2).collect();
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![tone.clone(), tone] };
-        let bytes = soundcraft_audio_io::encode(&buf, &soundcraft_audio_io::EncodeOptions::default()).unwrap();
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![tone.clone(), tone] };
+        let bytes = craft_audio::encode(&buf, &craft_audio::EncodeOptions::default()).unwrap();
         let path = dir.join(name);
         std::fs::write(&path, bytes).unwrap();
         path.to_string_lossy().into_owned()
