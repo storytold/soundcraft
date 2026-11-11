@@ -1263,13 +1263,16 @@ fn stepped_fader_ramps_match_converting_every_sample() {
         ("empty", 0.0, -6.0, 0, 12.0),
         ("NaN start", f32::NAN, -3.0, 64, 12.0),
         ("long ramp in one block", 0.0, -60.0, 16_384, 12.0),
+        ("recover from deep silence", -10_000.0, 0.0, 1024, 12.0),
+        ("descend from extreme trim", 10_000.0, -100.0, 1024, 12.0),
         ("no cap", -12.0, 6.0, 1000, f32::INFINITY),
+        ("gain helper ceiling", 300.0, 0.0, 1024, f32::INFINITY),
     ];
     for &(name, d0, d1, n, max_db) in cases {
         let mut x = vec![1.0f32; n];
         crate::automation::scale(&mut x, d0, d1, max_db);
         for (k, &got) in x.iter().enumerate() {
-            let at = if n < 2 { d0 } else { d0 + (d1 - d0) * (k as f32 / (n - 1) as f32) };
+            let at = if n < 2 { d0 } else { (f64::from(d0) + (f64::from(d1) - f64::from(d0)) * (k as f64 / (n - 1) as f64)) as f32 };
             let want = if at.is_nan() { 0.0 } else { db_to_gain(at.min(max_db)) };
             assert!((got - want).abs() <= 1e-5 * want.max(1e-6) || (got == 0.0 && want == 0.0), "{name}, sample {k} of {n}: {got} vs {want}");
         }

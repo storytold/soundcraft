@@ -84,6 +84,8 @@ fn for_each_segment(levels: &[Level<'_>], pos: Samples, frames: usize, mut f: im
 /// instead of converting every sample; the ends are converted exactly.
 pub(crate) fn scale(x: &mut [f32], d0: f32, d1: f32, max_db: f32) {
     let Some(n) = x.len().checked_sub(1) else { return };
+    // Match db_to_gain's ceiling even when the caller requests no fader cap.
+    let max_db = max_db.min(200.0);
     if d0.is_nan() || d1.is_nan() {
         x.fill(0.0);
         return;
@@ -91,6 +93,15 @@ pub(crate) fn scale(x: &mut [f32], d0: f32, d1: f32, max_db: f32) {
     if d0 == d1 || n == 0 {
         let g = gain(d0, max_db);
         x.iter_mut().for_each(|v| *v *= g);
+        return;
+    }
+    // Extreme finite trim values can underflow or overflow the geometric recurrence.
+    // Convert those rare ramps directly so an inaudible prefix can recover normally.
+    if !(-1000.0..=1000.0).contains(&d0) || !(-1000.0..=1000.0).contains(&d1) {
+        for (i, v) in x.iter_mut().enumerate() {
+            let db = f64::from(d0) + (f64::from(d1) - f64::from(d0)) * (i as f64 / n as f64);
+            *v *= gain(db as f32, max_db);
+        }
         return;
     }
     let step = (f64::from(d1) - f64::from(d0)) / n as f64;
