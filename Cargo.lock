@@ -1062,6 +1062,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-audio"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=9479d7f020ec475dc3ed9acc9e1262e0ddbb2a98#9479d7f020ec475dc3ed9acc9e1262e0ddbb2a98"
+dependencies = [
+ "craft-media",
+ "log",
+ "serde",
+ "symphonia",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-docpath"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=1b34eba41e62138fc2438d2734523b302840b45d#1b34eba41e62138fc2438d2734523b302840b45d"
@@ -1097,8 +1109,9 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=1b34eba41e62138fc2438d2734523b302840b45d#1b34eba41e62138fc2438d2734523b302840b45d"
+source = "git+https://github.com/storytold/craft-libs?rev=9479d7f020ec475dc3ed9acc9e1262e0ddbb2a98#9479d7f020ec475dc3ed9acc9e1262e0ddbb2a98"
 dependencies = [
+ "serde",
  "thiserror 2.0.21",
 ]
 
@@ -4334,6 +4347,7 @@ version = "0.17.0"
 dependencies = [
  "chrono",
  "clap",
+ "craft-audio",
  "craft-update",
  "eframe",
  "egui",
@@ -4343,7 +4357,6 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "rfd",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-automation",
  "soundcraft-engine",
  "soundcraft-playback",
@@ -4363,25 +4376,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "soundcraft-audio-io"
-version = "0.17.0"
-dependencies = [
- "log",
- "proptest",
- "serde",
- "serde_json",
- "symphonia",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "soundcraft-automation"
 version = "0.17.0"
 dependencies = [
  "clap",
+ "craft-audio",
  "log",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-engine",
  "soundcraft-time",
  "thiserror 2.0.21",
@@ -4407,11 +4408,11 @@ dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
+ "craft-audio",
  "log",
  "same-file",
  "serde",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-automation",
  "soundcraft-dsp",
  "soundcraft-engine",
@@ -4433,13 +4434,13 @@ dependencies = [
 name = "soundcraft-engine"
 version = "0.17.0"
 dependencies = [
+ "craft-audio",
  "craft-docpath",
  "log",
  "proptest",
  "serde",
  "serde_json",
  "soundcraft-au-host",
- "soundcraft-audio-io",
  "soundcraft-clap-host",
  "soundcraft-dsp",
  "soundcraft-midi",
@@ -4466,10 +4467,10 @@ dependencies = [
 name = "soundcraft-mix"
 version = "0.17.0"
 dependencies = [
+ "craft-audio",
  "log",
  "rayon",
  "soundcraft-au-host",
- "soundcraft-audio-io",
  "soundcraft-clap-host",
  "soundcraft-dsp",
  "soundcraft-midi",
@@ -4482,10 +4483,10 @@ dependencies = [
 name = "soundcraft-model"
 version = "0.17.0"
 dependencies = [
+ "craft-audio",
  "proptest",
  "serde",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-midi",
  "soundcraft-time",
  "thiserror 2.0.21",
@@ -4496,10 +4497,10 @@ name = "soundcraft-playback"
 version = "0.17.0"
 dependencies = [
  "cpal",
+ "craft-audio",
  "log",
  "serde",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-dsp",
  "soundcraft-mix",
  "soundcraft-model",
@@ -4520,6 +4521,7 @@ dependencies = [
 name = "soundcraft-ui-egui"
 version = "0.17.0"
 dependencies = [
+ "craft-audio",
  "craft-ui",
  "craft-update",
  "egui",
@@ -4530,7 +4532,6 @@ dependencies = [
  "serde",
  "serde_json",
  "soundcraft-au-host",
- "soundcraft-audio-io",
  "soundcraft-clap-host",
  "soundcraft-dsp",
  "soundcraft-engine",
@@ -4578,13 +4579,13 @@ dependencies = [
 name = "soundcraft-web"
 version = "0.17.0"
 dependencies = [
+ "craft-audio",
  "eframe",
  "egui",
  "js-sys",
  "log",
  "rfd",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-engine",
  "soundcraft-model",
  "soundcraft-playback",

@@ -1,12 +1,12 @@
 use super::*;
 use crate::Engine;
-use soundcraft_audio_io::{AudioBuffer, EncodeOptions};
+use craft_audio::{AudioBuffer, EncodeOptions};
 use soundcraft_model::ChannelFormat;
 
 fn tone_wav(dir: &std::path::Path, name: &str) -> String {
     let tone: Vec<f32> = (0..4_800).map(|i| (i as f32 * 0.1).sin() * 0.2).collect();
     let buf = AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
-    let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).unwrap();
+    let bytes = craft_audio::encode(&buf, &EncodeOptions::default()).unwrap();
     let path = dir.join(name);
     std::fs::write(&path, bytes).unwrap();
     path.to_string_lossy().into_owned()
@@ -175,10 +175,10 @@ fn bounce_stems_accepts_explicit_wav_format() {
     let path = std::path::Path::new(files[0].as_str().unwrap());
     assert_eq!(path.parent(), Some(stems.as_path()));
     assert_eq!(path.extension().and_then(|extension| extension.to_str()), Some("wav"));
-    let (info, audio) = soundcraft_audio_io::decode(&std::fs::read(path).unwrap(), None).unwrap();
-    assert_eq!(info.format, soundcraft_audio_io::FileFormat::Wav);
+    let (info, audio) = craft_audio::decode(&std::fs::read(path).unwrap(), None).unwrap();
+    assert_eq!(info.container, craft_audio::Container::Wav);
     assert_eq!(audio.frames(), 32);
-    assert_eq!(audio.num_channels(), e.session().main_format().channels());
+    assert_eq!(audio.channels.len(), e.session().main_format().channels());
     assert!(audio.channels.iter().flatten().any(|sample| sample.abs() > 0.01));
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -289,7 +289,7 @@ fn tone_engine() -> (Engine, u64) {
     let track = e.session().tracks[0].id;
     let tone: Vec<f32> = (0..4_800).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
     let buf = AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
-    let src = crate::io::add_source(e.session_mut(), "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+    let src = crate::io::add_source(e.session_mut(), "tone", buf, None, soundcraft_model::FileFormat::Wav);
     let id = e.session_mut().new_clip_id();
     crate::edit::place_clip(e.session_mut(), track, soundcraft_model::Clip::audio(id, "tone", src, 0, 0, 4_800));
     e.session_mut().edit.selected_tracks = vec![track];
@@ -392,7 +392,7 @@ fn midi_export_keeps_controllers_and_honours_tracks() {
 fn import_surround_creates_a_matching_track() {
     let channels: Vec<Vec<f32>> = (0..6).map(|ch| vec![0.1 * (ch as f32 + 1.0); 32]).collect();
     let buf = AudioBuffer { sample_rate: 48_000, channels };
-    let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).unwrap();
+    let bytes = craft_audio::encode(&buf, &EncodeOptions::default()).unwrap();
     let mut e = Engine::default();
     let v = crate::io::import_audio_bytes(&mut e, "bed.wav", &bytes, None, None, 0).unwrap();
     assert_eq!(v["channels"], 6);

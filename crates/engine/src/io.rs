@@ -1,8 +1,9 @@
 //! Import, export, save/load, rendering helpers (bounce, consolidate, commit) and analysis.
 
 use crate::{Engine, EngineError, Result};
+use craft_audio::{AudioBuffer, EncodeOptions};
 use serde_json::{Value, json};
-use soundcraft_audio_io::{AudioBuffer, EncodeOptions, FileFormat};
+use soundcraft_model::FileFormat;
 use soundcraft_model::{BusId, ChannelFormat, Clip, ClipContent, Session, Source, SourceAudio, SourceId, TrackId, TrackKind};
 use soundcraft_time::{Range, Samples};
 use std::ffi::OsStr;
@@ -282,14 +283,14 @@ pub struct Bounce {
     gain: f32,
     peak: f32,
     meter: soundcraft_dsp::meter::LoudnessMeter,
-    enc: Option<soundcraft_audio_io::FileEncoder<Out>>,
+    enc: Option<craft_audio::FileEncoder<Out>>,
 }
 
 /// The Broadcast Wave stamp of timeline position `at`: the session's timecode start plus `at`, in
 /// samples since midnight (`bext` TimeReference; 0 before midnight).
-fn time_stamp(s: &Session, at: Samples) -> soundcraft_audio_io::BwfInfo {
+fn time_stamp(s: &Session, at: Samples) -> craft_audio::BwfInfo {
     let time_reference = u64::try_from(s.timecode_start.saturating_add(at)).unwrap_or(0);
-    soundcraft_audio_io::BwfInfo { time_reference, ..Default::default() }
+    craft_audio::BwfInfo::default().with_time_reference(time_reference)
 }
 
 /// A finished bounce: the size of its file and its levels.
@@ -324,9 +325,13 @@ impl Bounce {
         crate::file_access::check_write(&part).map_err(EngineError::Io)?;
         // A WAV bounce says where it starts on the session's timecode, as other DAWs' bounces do,
         // so post and broadcast tools can place it (only WAV has a `bext` chunk to say it in).
-        let opts = &EncodeOptions { bwf: opts.bwf.clone().or_else(|| Some(time_stamp(&s, r.start))), ..opts.clone() };
-        let enc = (|| -> std::result::Result<_, soundcraft_audio_io::AudioError> {
-            let enc = soundcraft_audio_io::FileEncoder::new(Out::create(&part)?, opts, channels, s.sample_rate.hz(), Some(fmt.channel_mask()))?;
+        let mut opts = opts.clone();
+        opts.bwf.get_or_insert_with(|| time_stamp(&s, r.start));
+        // The speakers of the format's channels (none for Ambisonics), for the WAV speaker mask.
+        let wide = u16::try_from(channels).unwrap_or(u16::MAX);
+        let opts = &opts.with_layout(craft_audio::ChannelLayout::from_mask_and_channels(fmt.channel_mask(), wide));
+        let enc = (|| -> std::result::Result<_, craft_audio::AudioError> {
+            let enc = craft_audio::FileEncoder::new(Out::create(&part)?, opts, s.sample_rate.hz(), wide)?;
             enc.check_room(u64::try_from(r.len()).unwrap_or(0))?;
             Ok(enc)
         })()
@@ -541,7 +546,7 @@ pub fn bounce_stems_with(e: &Engine, dir: &str, r: Range, opts: &EncodeOptions, 
         return Err(EngineError::BadParams("file.bounce_stems".into(), "bounces are limited to 4 hours".into()));
     }
     make_dir(dir)?;
-    let ext = opts.format.default_extension();
+    let ext = opts.format.extension();
     let mut out = Vec::new();
     let stems: Vec<(TrackId, String)> = s
         .tracks
@@ -577,7 +582,7 @@ pub fn export_clips(e: &Engine, ids: &[soundcraft_model::ClipId], dir: &str) -> 
         let Some((t, c)) = s.find_clip(*id) else { continue };
         let audio = soundcraft_mix::render_clips(s, t, c.range());
         let buf = AudioBuffer { sample_rate: s.sample_rate.hz(), channels: audio };
-        let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).map_err(|err| EngineError::Io(err.to_string()))?;
+        let bytes = craft_audio::encode(&buf, &EncodeOptions::default()).map_err(|err| EngineError::Io(err.to_string()))?;
         let path = clip_file(dir, &sanitize_name(&c.name), &mut names, Path::exists)?;
         write_file(&path.to_string_lossy(), &bytes)?;
     }
@@ -703,8 +708,8 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
     let mut written = 0;
     for (stem, audio, sources) in &pending {
         make_dir(&audio_dir)?;
-        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
-        let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
+        let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(craft_audio::BitDepth::Float32);
+        let bytes = craft_audio::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
         let (name, new) = store_wav(&audio_dir, stem, &bytes)?;
         for &i in sources {
             if let Some(src) = s.sources.get_mut(i) {
@@ -983,8 +988,8 @@ mod stem_tests {
         names.sort();
         assert!(!names.is_empty());
         for name in names {
-            let (_, float) = soundcraft_audio_io::decode(&std::fs::read(dir32.join(&name)).unwrap(), None).unwrap();
-            let (_, int) = soundcraft_audio_io::decode(&std::fs::read(dir16.join(&name)).unwrap(), None).unwrap();
+            let (_, float) = craft_audio::decode(&std::fs::read(dir32.join(&name)).unwrap(), None).unwrap();
+            let (_, int) = craft_audio::decode(&std::fs::read(dir16.join(&name)).unwrap(), None).unwrap();
             for (f, i) in float.channels.iter().zip(&int.channels) {
                 for (a, b) in f.iter().zip(i) {
                     worst = worst.max((f64::from(a.clamp(-1.0, 1.0)) - f64::from(*b)).abs() * 32768.0);

@@ -5,8 +5,9 @@
 //! as 32-bit float WAVs in a `<name> Audio/` folder next to it.
 
 use crate::{Engine, EngineError, Result};
+use craft_audio::EncodeOptions;
 use serde::{Deserialize, Serialize};
-use soundcraft_audio_io::{EncodeOptions, FileFormat};
+use soundcraft_model::FileFormat;
 use soundcraft_model::{Clip, ClipContent, ClipId, SourceId, TrackId};
 use soundcraft_time::Samples;
 use std::collections::BTreeMap;
@@ -65,8 +66,8 @@ pub fn export(e: &Engine, ids: &[ClipId], path: &str) -> Result<usize> {
             {
                 let rel = format!("{audio_dir_name}/{}_{}.wav", crate::io::sanitize_name(&src.name), source.0);
                 crate::io::make_dir(dir.join(&audio_dir_name))?;
-                let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
-                let bytes = soundcraft_audio_io::encode(&buf.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
+                let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(craft_audio::BitDepth::Float32);
+                let bytes = craft_audio::encode(&buf.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
                 crate::io::write_path(dir.join(&rel), bytes)?;
                 slot.insert(rel);
             }
@@ -85,7 +86,7 @@ fn decode_group_audio(
     dir: &Path,
     rate: u32,
     cmd_id: &str,
-) -> Result<(Vec<(String, soundcraft_audio_io::AudioBuffer)>, BTreeMap<u64, usize>)> {
+) -> Result<(Vec<(String, craft_audio::AudioBuffer)>, BTreeMap<u64, usize>)> {
     let (mut decoded, mut index, mut file_of) = (Vec::new(), BTreeMap::new(), BTreeMap::new());
     for (old, rel) in audio_entries {
         let full = dir.join(rel);
@@ -101,7 +102,7 @@ fn decode_group_audio(
             Some(n) => *n,
             None => {
                 let bytes = crate::io::read_file(&full)?;
-                let (_, buf) = soundcraft_audio_io::decode(&bytes, Some("wav")).map_err(|err| EngineError::Io(format!("{rel}: {err}")))?;
+                let (_, buf) = craft_audio::decode(&bytes, Some("wav")).map_err(|err| EngineError::Io(format!("{rel}: {err}")))?;
                 let buf = crate::io::at_rate(buf, rate, crate::io::MAX_IMPORT_SAMPLES)
                     .map_err(|r| EngineError::Io(format!("{rel}: {}", r.message("too large to import"))))?;
                 decoded.push((rel.clone(), buf));
@@ -357,8 +358,8 @@ mod tests {
     fn a_file_named_by_many_ids_becomes_one_source() {
         let dir = std::env::temp_dir().join(format!("sc-grp-shared-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let audio = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 480]] };
-        std::fs::write(dir.join("k.wav"), soundcraft_audio_io::encode(&audio, &soundcraft_audio_io::EncodeOptions::default()).unwrap()).unwrap();
+        let audio = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 480]] };
+        std::fs::write(dir.join("k.wav"), craft_audio::encode(&audio, &craft_audio::EncodeOptions::default()).unwrap()).unwrap();
         let clip = |id: u64| json!({"id": id, "name": "k", "start": id * 1000, "length": 480, "content": {"Audio": {"source": id, "offset": 0}}});
         let audio_paths = json!({"1": "k.wav", "2": "./k.wav", "3": "k.wav"});
         let file = json!({"format": "soundcraft.clipgroup", "version": 1, "sample_rate": 48000, "length": 4000, "lanes": [[clip(1), clip(2), clip(3)]], "audio": audio_paths});

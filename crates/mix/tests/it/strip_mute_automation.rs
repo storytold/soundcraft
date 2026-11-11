@@ -1,5 +1,5 @@
 //! Ordinary strip mute changes sample gates without splitting processor blocks.
-use soundcraft_audio_io::AudioBuffer;
+use craft_audio::AudioBuffer;
 use soundcraft_dsp::Plugin;
 use soundcraft_mix::{MixEngine, PreparedInstance, render_range};
 use soundcraft_model::{
