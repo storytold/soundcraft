@@ -56,6 +56,11 @@ pub(crate) struct Strip {
     pub(crate) align_pre: DelayLine,
     pub(crate) out_extra: DelayLine,
     pub(crate) outbuf: Vec<Vec<f32>>,
+    /// Shared physical channels wait for aux returns after panning, before master alignment.
+    pub(crate) hardware_align: DelayLine,
+    /// The physical span owns the queued aux-alignment samples. Equivalent route names keep
+    /// their history, while moving or resizing a span must not carry it to another destination.
+    hardware_destination: Option<std::ops::Range<usize>>,
     pub(crate) failures: PluginFailures,
 }
 
@@ -150,7 +155,30 @@ impl Strip {
             align_pre: DelayLine::default(),
             out_extra: DelayLine::default(),
             outbuf: Vec::new(),
+            hardware_align: DelayLine::default(),
+            hardware_destination: None,
             failures: PluginFailures::default(),
+        }
+    }
+
+    /// Delay the shared prefix of the panned hardware buffer, leaving disjoint outputs alone.
+    /// A queued sample belongs to its exact physical span, never to a later route assignment.
+    pub(crate) fn align_hardware(&mut self, destination: Option<std::ops::Range<usize>>, shared: usize, aux: usize, frames: usize) {
+        if self.hardware_destination != destination {
+            self.hardware_align.clear();
+            self.hardware_destination = destination;
+        }
+        let delay = &mut self.hardware_align;
+        if shared == 0 || aux == 0 {
+            if delay.len > 0 {
+                delay.clear();
+            }
+            delay.len = 0;
+            return;
+        }
+        delay.set(aux, shared);
+        if let Some(channels) = self.outbuf.get_mut(..shared) {
+            delay.process(channels, frames);
         }
     }
 }

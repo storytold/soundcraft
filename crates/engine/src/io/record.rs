@@ -161,6 +161,21 @@ mod record_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Recording plans preserve one-based hardware labels as distinct zero-based capture indices.
+    #[test]
+    fn takes_keep_distinct_hardware_inputs_on_a_48_channel_device() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-48-input-takes-{}", std::process::id()));
+        let mut e = Engine::default();
+        let eighth = armed(&mut e, "Input 8", "mono", "In 8");
+        let ninth = armed(&mut e, "Input 9", "mono", "In 9");
+        let last = armed(&mut e, "Input 48", "mono", "In 48");
+        let pair = armed(&mut e, "Inputs 47-48", "stereo", "In 47-48");
+
+        let inputs: Vec<_> = plan_takes(&e, &dir, 48).into_iter().map(|(track, channels, _)| (track, channels)).collect();
+
+        assert_eq!(inputs, vec![(eighth, vec![7]), (ninth, vec![8]), (last, vec![47]), (pair, vec![46, 47])]);
+    }
+
     #[test]
     fn a_loop_take_becomes_one_clip_per_pass_and_autosaves_in_place() {
         let dir = std::env::temp_dir().join(format!("soundcraft-loop-take-{}", std::process::id()));

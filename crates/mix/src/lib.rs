@@ -5,6 +5,9 @@
 //! mute (with automation) → pan → post-fader sends → busses → aux inputs → main → master faders.
 //! The same code drives realtime playback and offline bounces, so what you hear is what you get.
 //! Steady-state rendering does not allocate.
+//! A realtime host can also enable physical outputs with [`MixEngine::set_hardware_channels`]
+//! and read [`MixEngine::hardware_output`] after each render. Canonical `Out N` and `Out N-M`
+//! paths bypass the main master and keep their physical channel indices.
 //!
 //! ## Surround
 //! The main mix has the format of the session's main output path ([`Session::main_format`]:
@@ -79,13 +82,14 @@ pub use offline::{
     MAX_RENDER_SAMPLES, RangeRender, fold_down_stereo, render_bus, render_clips, render_range, render_track_pre_fader, source_channels,
 };
 pub use pan::itu_stereo_fold;
-use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
+use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix, identity_matrix};
 use routing::{processing_order, structure_fingerprint};
-use strip::{
-    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
-};
 #[cfg(test)]
-use strip::{DelayLine, MAX_LATENCY};
+use strip::MAX_LATENCY;
+use strip::{
+    Block, BusBuf, DelayLine, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels,
+    strip_format,
+};
 use threads::run_strips;
 pub use threads::{mark_audio_thread, on_audio_thread};
 
@@ -100,6 +104,10 @@ pub const MAIN_CHANNELS: usize = 2;
 /// Widest strip, bus or main mix (9.1.6 / 3rd-order Ambisonics). Wider formats are truncated.
 pub const MAX_CHANNELS: usize = 16;
 
+/// Physical device channels are independent of a strip's speaker layout. Bound their storage
+/// separately so a malformed device count cannot allocate unbounded realtime buffers.
+pub const MAX_HARDWARE_CHANNELS: usize = 1024;
+
 /// Number of channels of a session's main mix.
 pub fn main_channels(s: &Session) -> usize {
     s.main_format().channels().clamp(MAIN_CHANNELS, MAX_CHANNELS)
@@ -113,6 +121,8 @@ pub struct MixEngine {
     busses: HashMap<BusId, BusBuf>,
     main: Vec<Vec<f32>>,
     main_fmt: ChannelFormat,
+    /// Direct hardware paths, kept separate from the main mix and its master processing.
+    hardware: Vec<Vec<f32>>,
     pub meters: HashMap<TrackId, StripMeter>,
     pub main_meter: StripMeter,
     pub pan_law: PanLaw,
@@ -133,6 +143,10 @@ pub struct MixEngine {
     /// such a bus waits for it, so a bounce of the bus drops it as well.
     aux_fed: Vec<BusId>,
     aux_latency: usize,
+    /// Master stages are serial; retain their individually bounded delays for physical paths.
+    master_latencies: Vec<usize>,
+    /// Delay the summed shared hardware channels once per master, avoiding per-strip copies.
+    hardware_master_align: Vec<DelayLine>,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
     pub input: Vec<Vec<f32>>,
     /// Transport stopped: only monitored inputs sound (no clips).
@@ -164,6 +178,7 @@ impl MixEngine {
             busses: HashMap::new(),
             main: vec![vec![0.0; max_block]; MAIN_CHANNELS],
             main_fmt: ChannelFormat::Stereo,
+            hardware: Vec::new(),
             meters: HashMap::new(),
             main_meter: StripMeter::default(),
             pan_law: PanLaw::Minus3,
@@ -174,6 +189,8 @@ impl MixEngine {
             track_latency: 0,
             aux_fed: Vec::new(),
             aux_latency: 0,
+            master_latencies: Vec::new(),
+            hardware_master_align: Vec::new(),
             input: Vec::new(),
             monitor_only: false,
             recording: false,
@@ -243,6 +260,35 @@ impl MixEngine {
         self.main.len()
     }
 
+    /// Set the physical device width before starting playback. Offline renders leave it zero.
+    /// Calling again with the same width keeps the existing storage.
+    pub fn set_hardware_channels(&mut self, channels: usize) {
+        let channels = channels.min(MAX_HARDWARE_CHANNELS);
+        if self.hardware.len() != channels {
+            self.hardware = vec![vec![0.0; self.max_block]; channels];
+        }
+    }
+
+    /// Direct hardware samples from the last rendered block, in device channel order.
+    /// They bypass the main master and must not be folded into a narrower device.
+    pub fn hardware_output(&self) -> &[Vec<f32>] {
+        &self.hardware
+    }
+
+    /// Silence the retained hardware block without changing its storage. A playback host uses
+    /// this when it emits a silent block without calling `render`, for example at a selection end.
+    pub fn clear_hardware_output(&mut self) {
+        for channel in &mut self.hardware {
+            channel.fill(0.0);
+        }
+        for strip in self.strips.values_mut() {
+            strip.hardware_align.clear();
+        }
+        for delay in &mut self.hardware_master_align {
+            delay.clear();
+        }
+    }
+
     /// Reset all plugin state (on stop / seek).
     pub fn reset(&mut self) {
         for s in self.strips.values_mut() {
@@ -260,9 +306,13 @@ impl MixEngine {
             s.align.clear();
             s.align_pre.clear();
             s.out_extra.clear();
+            s.hardware_align.clear();
             for fx in s.clip_fx.values_mut() {
                 fx.reset();
             }
+        }
+        for delay in &mut self.hardware_master_align {
+            delay.clear();
         }
         // Zeroed in place: rebuilding the entries would allocate on the audio thread at every
         // play, stop and locate.
@@ -294,6 +344,11 @@ impl MixEngine {
         for t in &s.tracks {
             let ch = strip_channels(t, main_ch);
             let strip = self.strips.entry(t.id).or_insert_with(Strip::new);
+            // Non-rendering strips skip route_strip, so discard their private physical queue
+            // here instead of letting old samples resume when the strip becomes live again.
+            if !is_live(t) {
+                strip.align_hardware(None, 0, 0, 0);
+            }
             if strip.buf.len() != ch || strip.buf.first().map_or(0, Vec::len) != mb {
                 strip.buf = vec![vec![0.0; mb]; ch];
             }
@@ -397,6 +452,7 @@ impl MixEngine {
         self.render_auxes(s, &order, blk);
         self.order = order;
         self.render_masters(s, blk);
+        self.align_hardware_masters(frames);
         self.write_output(s, blk, out);
     }
 
@@ -422,6 +478,9 @@ impl MixEngine {
         for c in &mut self.main {
             c.iter_mut().take(frames).for_each(|x| *x = 0.0);
         }
+        for c in &mut self.hardware {
+            c.iter_mut().take(frames).for_each(|x| *x = 0.0);
+        }
     }
 
     /// Delay compensation for the independent strips (`work`), then route them back into the engine.
@@ -438,11 +497,15 @@ impl MixEngine {
         // The master faders' inserts delay the whole main mix, so their latency is part of the
         // mix's too (the faders run one after the other: it adds up).
         let mut lmax_m = 0usize;
+        self.master_latencies.clear();
         if pdc {
             for t in s.tracks.iter().filter(|t| t.kind == TrackKind::Master && !t.inactive) {
                 if let Some(st) = self.strips.get_mut(&t.id) {
                     note_insert_latency(t, st, pos);
                     lmax_m = lmax_m.saturating_add(st.latency);
+                    if st.latency > 0 {
+                        self.master_latencies.push(st.latency);
+                    }
                 }
             }
         }
@@ -548,6 +611,37 @@ impl MixEngine {
         }
     }
 
+    /// Physical prefix to which playback writes Main. A device narrower than the speaker
+    /// layout receives a stereo fold (or mono average), leaving any further outputs disjoint.
+    fn main_device_channels(&self) -> usize {
+        let device = self.hardware.len();
+        if device < self.main.len() { device.min(MAIN_CHANNELS) } else { self.main.len() }
+    }
+
+    /// After aux alignment, every shared hardware contribution has the same arrival time.
+    /// Apply the serial master delays once to their sum, preserving per-stage bounds and
+    /// avoiding storage proportional to both the number of strips and master faders.
+    fn align_hardware_masters(&mut self, frames: usize) {
+        let shared = self.main_device_channels();
+        let needed = if shared == 0 { 0 } else { self.master_latencies.len() };
+        if self.hardware_master_align.len() < needed {
+            self.hardware_master_align.resize_with(needed, DelayLine::default);
+        }
+        for (i, delay) in self.hardware_master_align.iter_mut().enumerate() {
+            if i >= needed {
+                if delay.len > 0 {
+                    delay.clear();
+                }
+                delay.len = 0;
+                continue;
+            }
+            delay.set(self.master_latencies.get(i).copied().unwrap_or(0), shared);
+            if let Some(channels) = self.hardware.get_mut(..shared) {
+                delay.process(channels, frames);
+            }
+        }
+    }
+
     /// Add the metronome and copy the main mix to `out`.
     fn write_output(&mut self, s: &Session, blk: Block, out: &mut [Vec<f32>]) {
         let Block { pos, frames, .. } = blk;
@@ -621,6 +715,47 @@ impl MixEngine {
             let m = build_matrix(src_fmt, src.len(), dst.fmt, dst.buf.len(), &PanSpec { stereo, surround }, law);
             apply_matrix(src, frames, &mut dst.buf, &m, gain);
         }
+        if let Route::Hardware(name) = &t.mixer.output {
+            let Some(range) = hardware_span(name, strip.buf.len(), self.hardware.len()) else {
+                strip.align_hardware(None, 0, 0, 0);
+                return;
+            };
+            let shared = self.main_device_channels().min(range.end).saturating_sub(range.start);
+            if strip.outbuf.len() != strip.buf.len() {
+                strip.outbuf.resize_with(strip.buf.len(), Vec::new);
+            }
+            for channel in &mut strip.outbuf {
+                channel.resize(self.max_block, 0.0);
+                channel.iter_mut().take(frames).for_each(|sample| *sample = 0.0);
+            }
+            // Pan first: a span may overlap Main on only one side, and either source channel
+            // can feed that side. Sends above remain at their original compensated time.
+            let mut start = 0;
+            while start < frames {
+                let (at, end) = pan_segment(t, pos, start, frames);
+                let spec = PanSpec { stereo: [pan_at(t, 0, at), pan_at(t, 1, at)], surround: t.mixer.surround.as_ref() };
+                let matrix = if strip.buf.len() == 1 {
+                    identity_matrix(1)
+                } else {
+                    build_matrix(src_fmt, strip.buf.len(), src_fmt, strip.outbuf.len(), &spec, law)
+                };
+                apply_matrix_span(&strip.buf, start..end, &mut strip.outbuf, &matrix, 1.0);
+                start = end;
+            }
+            let aux = if is_aux(t) { 0 } else { self.aux_latency };
+            strip.align_hardware(Some(range.clone()), shared, aux, frames);
+            if let Some(dst) = self.hardware.get_mut(range) {
+                for (dst, src) in dst.iter_mut().zip(&strip.outbuf) {
+                    for (dst, src) in dst.iter_mut().zip(src).take(frames) {
+                        *dst += src;
+                    }
+                }
+            }
+            return;
+        }
+        // An output-route change must not retain samples that could reappear if the strip
+        // is later assigned to a shared hardware channel again.
+        strip.align_hardware(None, 0, 0, 0);
         let src: &[Vec<f32>] = match &t.mixer.output {
             Route::Main | Route::Bus(_) if strip.out_extra.len > 0 => {
                 if strip.outbuf.len() != strip.buf.len() {
@@ -652,6 +787,26 @@ impl MixEngine {
             start = end;
         }
     }
+}
+
+/// Canonical device paths use one-based channel numbers. A whole path must fit: wrapping a
+/// stereo path at the device edge would send its right side to an unrelated physical output.
+fn hardware_span(name: &str, channels: usize, available: usize) -> Option<std::ops::Range<usize>> {
+    if !name.get(..4)?.eq_ignore_ascii_case("Out ") || channels == 0 {
+        return None;
+    }
+    let label = name.get(4..)?.trim();
+    let (first, last) = label.split_once('-').map_or((label, None), |(first, last)| (first.trim(), Some(last.trim())));
+    let first = first.parse::<usize>().ok()?;
+    let start = first.checked_sub(1)?;
+    if let Some(last) = last {
+        let width = last.parse::<usize>().ok()?.checked_sub(first)?.checked_add(1)?;
+        if width != channels {
+            return None;
+        }
+    }
+    let end = start.checked_add(channels)?;
+    (end <= available).then_some(start..end)
 }
 
 std::thread_local! {

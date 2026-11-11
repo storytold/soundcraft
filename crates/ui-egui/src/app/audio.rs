@@ -33,7 +33,7 @@ impl SoundApp {
     }
 
     /// Open the input device once (for recording and input monitoring) and feed the player.
-    pub(super) fn ensure_input(&mut self) {
+    pub(crate) fn ensure_input(&mut self) {
         if self.recorder.is_some() || self.recorder_failed || self.player.is_none() {
             return;
         }

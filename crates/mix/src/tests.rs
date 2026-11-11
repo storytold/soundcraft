@@ -7,6 +7,8 @@ use soundcraft_audio_io::AudioBuffer;
 use soundcraft_model::{Insert, SourceAudio, SourceId};
 use std::sync::Arc;
 
+mod hardware_reroute;
+
 fn synth_session(level_db: f32) -> Session {
     use soundcraft_midi::{Note, Sequence};
     let mut s = Session::default();
@@ -87,6 +89,284 @@ fn add_dc_track(s: &mut Session, level: f32, frames: usize) -> TrackId {
         pl.clips.push(Clip::audio(id, "dc", SourceId(900), 0, 0, frames as i64));
     }
     t
+}
+
+/// Each monitored input reaches exactly its corresponding physical output, including channel 48.
+#[test]
+fn hardware_outputs_preserve_all_48_channel_positions() {
+    let mut s = Session::default();
+    for channel in 1..=48 {
+        let id = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let track = s.track_mut(id).unwrap();
+        track.mixer.input_monitor = true;
+        track.mixer.input = Route::Hardware(format!("In {channel}"));
+        track.mixer.output = Route::Hardware(format!("Out {channel}"));
+    }
+    let mut engine = MixEngine::new(48_000.0, 64);
+    engine.set_hardware_channels(48);
+    engine.monitor_only = true;
+    engine.input = (1..=48).map(|channel| vec![channel as f32 / 100.0; 64]).collect();
+    let mut main = vec![vec![0.0; 64]; 2];
+
+    engine.render(&s, 0, 64, &mut main);
+
+    assert!(main.iter().flatten().all(|sample| *sample == 0.0), "direct outputs bypass the main mix");
+    assert_eq!(engine.hardware_output().len(), 48);
+    for (channel, samples) in engine.hardware_output().iter().enumerate() {
+        let expected = (channel + 1) as f32 / 100.0;
+        assert!(samples.iter().all(|sample| (*sample - expected).abs() < 1e-6), "hardware channel {}", channel + 1);
+    }
+}
+
+/// The final complete stereo span is routed without wrapping or replacing output storage.
+#[test]
+fn hardware_output_pairs_keep_the_last_channels_and_do_not_wrap() {
+    let mut s = Session::default();
+    let id = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let track = s.track_mut(id).unwrap();
+    track.mixer.input_monitor = true;
+    track.mixer.input = Route::Hardware("In 47-48".into());
+    track.mixer.output = Route::Hardware("Out 47-48".into());
+    let mut engine = MixEngine::new(48_000.0, 64);
+    engine.set_hardware_channels(48);
+    engine.monitor_only = true;
+    engine.input = vec![vec![0.0; 64]; 48];
+    engine.input[46].fill(0.25);
+    engine.input[47].fill(-0.5);
+    let mut main = vec![vec![0.0; 64]; 2];
+
+    engine.render(&s, 0, 64, &mut main);
+    assert_eq!(engine.hardware_output()[46], vec![0.25; 64]);
+    assert_eq!(engine.hardware_output()[47], vec![-0.5; 64]);
+    assert!(engine.hardware_output()[..46].iter().flatten().all(|sample| *sample == 0.0));
+    let storage: Vec<_> = engine.hardware_output().iter().map(|channel| channel.as_ptr()).collect();
+
+    s.track_mut(id).unwrap().mixer.output = Route::Hardware("Out 48".into());
+    engine.render(&s, 64, 64, &mut main);
+    assert!(engine.hardware_output().iter().flatten().all(|sample| *sample == 0.0), "an out-of-range stereo path is silent, never wrapped");
+    assert_eq!(storage, engine.hardware_output().iter().map(|channel| channel.as_ptr()).collect::<Vec<_>>());
+}
+
+/// Physical outputs coexist with the stereo Main mix without expanding its speaker layout.
+#[test]
+fn direct_hardware_and_main_outputs_coexist_without_changing_the_main_width() {
+    let mut s = Session::default();
+    let main = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let direct = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    for (id, input, output) in [(main, "In 1", Route::Main), (direct, "In 2", Route::Hardware("Out 48".into()))] {
+        let track = s.track_mut(id).unwrap();
+        track.mixer.input_monitor = true;
+        track.mixer.input = Route::Hardware(input.into());
+        track.mixer.output = output;
+    }
+    let mut engine = MixEngine::new(48_000.0, 64);
+    engine.set_hardware_channels(48);
+    engine.monitor_only = true;
+    engine.input = vec![vec![0.1; 64], vec![0.2; 64]];
+    let mut out = vec![vec![0.0; 64]; 2];
+
+    engine.render(&s, 0, 64, &mut out);
+
+    assert_eq!(engine.main_channels(), 2);
+    let expected_main = 0.1 * db_to_gain(-3.0);
+    assert!(out.iter().flatten().all(|sample| (*sample - expected_main).abs() < 1e-6));
+    assert_eq!(engine.hardware_output()[47], vec![0.2; 64]);
+    assert!(engine.hardware_output()[..47].iter().flatten().all(|sample| *sample == 0.0));
+}
+
+/// Invalid labels and incomplete spans cannot wrap into a different physical destination.
+#[test]
+fn invalid_hardware_paths_never_wrap_or_overflow() {
+    for name in ["Out 0", "Out -1", "Out 49", "Out 1-48", "Out 48-47", "Out 184467440737095516160", "Out unknown", "Bus 48"] {
+        assert_eq!(hardware_span(name, 1, 48), None, "{name}");
+    }
+    assert_eq!(hardware_span("Out 48", 1, 48), Some(47..48));
+    assert_eq!(hardware_span("Out 47-48", 2, 48), Some(46..48));
+    assert_eq!(hardware_span("Out 48", 2, 48), None);
+    assert_eq!(hardware_span("Out 1", 1, 0), None);
+    assert_eq!(hardware_span("Out 1", 0, 48), None);
+}
+
+/// Compare the actual impulse positions before the playback host adds Main and hardware.
+#[test]
+fn shared_hardware_channels_align_with_aux_and_master_latency() {
+    for aux_output in [false, true] {
+        for pdc in [false, true] {
+            let (mut s, direct) = session_with_dc(0.0, 4096);
+            s.edit.click = false;
+            s.edit.delay_compensation = pdc;
+            let mut impulse = vec![0.0; 4096];
+            impulse[0] = 0.25;
+            let main = add_dc_track(&mut s, 0.0, 4096);
+            s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![impulse] })));
+            s.track_mut(main).unwrap().mixer.pan = vec![-1.0];
+            let bus = s.add_bus("latency return", ChannelFormat::Mono);
+            let aux = s.add_track(TrackKind::Aux, ChannelFormat::Mono, None);
+            s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
+            let mut lookahead = Insert::new("compressor");
+            lookahead.params.insert("lookahead".into(), 5.0);
+            lookahead.params.insert("ratio".into(), 1.0);
+            s.track_mut(aux).unwrap().mixer.inserts[0] = Some(lookahead.clone());
+            if aux_output {
+                s.track_mut(direct).unwrap().mixer.output = Route::Bus(bus);
+                s.track_mut(aux).unwrap().mixer.output = Route::Hardware("Out 1".into());
+            } else {
+                s.track_mut(direct).unwrap().mixer.output = Route::Hardware("Out 1".into());
+            }
+            let master = s.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+            lookahead.params.insert("lookahead".into(), 7.0);
+            s.track_mut(master).unwrap().mixer.inserts[0] = Some(lookahead);
+            let mut engine = MixEngine::new(48_000.0, 64);
+            engine.set_hardware_channels(48);
+            let mut main_samples = Vec::new();
+            let mut hardware_samples = Vec::new();
+            let mut out = vec![vec![0.0; 64]; 2];
+            for block in 0..32 {
+                engine.render(&s, block * 64, 64, &mut out);
+                main_samples.extend_from_slice(&out[0]);
+                hardware_samples.extend_from_slice(&engine.hardware_output()[0]);
+            }
+            assert_eq!(impulse_at(&hardware_samples).len(), 1, "one hardware impulse, aux={aux_output}, pdc={pdc}");
+            if pdc {
+                assert_eq!(impulse_at(&hardware_samples), impulse_at(&main_samples), "shared physical channel, aux={aux_output}");
+            } else {
+                assert_ne!(impulse_at(&hardware_samples), impulse_at(&main_samples), "PDC off preserves uncompensated timing");
+            }
+        }
+    }
+}
+
+/// A stereo route may straddle Main's last physical channel; pan before delaying only its
+/// shared output, so cross-panned samples on the other channel keep their original timing.
+#[test]
+fn hardware_alignment_preserves_disjoint_channels_and_clears_history() {
+    let mut s = Session::default();
+    s.edit.delay_compensation = true;
+    let direct = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let track = s.track_mut(direct).unwrap();
+    track.mixer.input_monitor = true;
+    track.mixer.input = Route::Hardware("In 1".into());
+    track.mixer.output = Route::Hardware("Out 2".into());
+    track.mixer.pan = vec![0.0, 0.0];
+    let master = s.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+    let mut insert = Insert::new("compressor");
+    insert.params.insert("lookahead".into(), 5.0);
+    insert.params.insert("ratio".into(), 1.0);
+    s.track_mut(master).unwrap().mixer.inserts[0] = Some(insert);
+    s.track_mut(master).unwrap().mixer.volume_db = -60.0;
+    let mut engine = MixEngine::new(48_000.0, 64);
+    engine.set_hardware_channels(48);
+    engine.monitor_only = true;
+    engine.input = vec![vec![0.0; 64]; 2];
+    engine.input[0][0] = 0.25;
+    let mut out = vec![vec![0.0; 64]; 2];
+    let mut shared = Vec::new();
+    let mut disjoint = Vec::new();
+    for block in 0..8 {
+        engine.render(&s, block * 64, 64, &mut out);
+        shared.extend_from_slice(&engine.hardware_output()[1]);
+        disjoint.extend_from_slice(&engine.hardware_output()[2]);
+        engine.input[0].fill(0.0);
+    }
+    assert_eq!(impulse_at(&shared), vec![engine.latency]);
+    assert_eq!(impulse_at(&disjoint), vec![0]);
+    assert!(shared[engine.latency] > 0.1, "hardware still bypasses the master fader");
+
+    for flush in [false, true] {
+        engine.input[0][0] = 0.25;
+        engine.render(&s, 512, 64, &mut out);
+        engine.input[0].fill(0.0);
+        if flush {
+            engine.clear_hardware_output();
+        } else {
+            engine.reset();
+        }
+        for block in 0..8 {
+            engine.render(&s, 576 + block * 64, 64, &mut out);
+            assert!(engine.hardware_output().iter().flatten().all(|sample| *sample == 0.0), "queued audio survived flush={flush}");
+        }
+    }
+}
+
+/// Main applies serial master inserts independently. The physical bypass must likewise retain
+/// every bounded stage instead of silently shortening a sum above MAX_LATENCY.
+#[test]
+fn hardware_alignment_keeps_each_master_delay_stage_and_reuses_storage() {
+    let mut engine = MixEngine::new(48_000.0, 64);
+    engine.set_hardware_channels(3);
+    engine.hardware.iter_mut().for_each(|channel| channel.fill(0.25));
+    engine.master_latencies = vec![MAX_LATENCY, MAX_LATENCY, 48];
+    engine.align_hardware_masters(64);
+    assert_eq!(engine.hardware_master_align.iter().map(|delay| delay.len).sum::<usize>(), 2 * MAX_LATENCY + 48);
+    assert!(engine.hardware[0].iter().all(|sample| *sample == 0.0));
+    assert_eq!(engine.hardware[2], vec![0.25; 64], "disjoint channel is never delayed");
+    let storage: Vec<_> = engine.hardware_master_align.iter().flat_map(|delay| delay.bufs.iter().map(|ring| ring.as_ptr())).collect();
+    engine.align_hardware_masters(64);
+    assert_eq!(storage, engine.hardware_master_align.iter().flat_map(|delay| delay.bufs.iter().map(|ring| ring.as_ptr())).collect::<Vec<_>>());
+    engine.master_latencies.clear();
+    engine.align_hardware_masters(64);
+    assert!(engine.hardware_master_align.iter().all(|delay| delay.len == 0 && delay.bufs.iter().flatten().all(|sample| *sample == 0.0)));
+}
+
+/// A narrower device folds Main onto only its first two physical channels, even when the
+/// device itself has three or four outputs. Aux and master alignment must use that same map.
+#[test]
+fn hardware_alignment_matches_the_playback_main_fold() {
+    for (format, device, shared) in [
+        (ChannelFormat::Stereo, 1, 1),
+        (ChannelFormat::Stereo, 48, 2),
+        (ChannelFormat::Surround51, 1, 1),
+        (ChannelFormat::Surround51, 3, 2),
+        (ChannelFormat::Surround51, 4, 2),
+        (ChannelFormat::Surround51, 6, 6),
+    ] {
+        for (aux_ms, master_ms) in [(5.0, 0.0), (0.0, 7.0), (5.0, 7.0)] {
+            let mut s = Session::default();
+            s.edit.delay_compensation = true;
+            s.outputs[0].format = format;
+            for channel in 1..=device {
+                let id = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+                let track = s.track_mut(id).unwrap();
+                track.mixer.input_monitor = true;
+                track.mixer.input = Route::Hardware("In 1".into());
+                track.mixer.output = Route::Hardware(format!("Out {channel}"));
+            }
+            for (kind, milliseconds) in [(TrackKind::Aux, aux_ms), (TrackKind::Master, master_ms)] {
+                if milliseconds == 0.0 {
+                    continue;
+                }
+                let id = s.add_track(kind, ChannelFormat::Stereo, None);
+                let mut insert = Insert::new("compressor");
+                insert.params.insert("lookahead".into(), milliseconds);
+                insert.params.insert("ratio".into(), 1.0);
+                s.track_mut(id).unwrap().mixer.inserts[0] = Some(insert);
+            }
+            let mut engine = MixEngine::new(48_000.0, 64);
+            engine.set_hardware_channels(device);
+            engine.monitor_only = true;
+            engine.input = vec![vec![0.0; 64]];
+            engine.input[0][0] = 0.25;
+            let mut out = vec![vec![0.0; 64]; format.channels()];
+            let mut samples = vec![Vec::new(); device];
+            for block in 0..16 {
+                engine.render(&s, block * 64, 64, &mut out);
+                for (samples, channel) in samples.iter_mut().zip(engine.hardware_output()) {
+                    samples.extend_from_slice(channel);
+                }
+                engine.input[0].fill(0.0);
+            }
+            assert!(engine.latency > 0);
+            for (channel, samples) in samples.iter().enumerate() {
+                let expected = if channel < shared { engine.latency } else { 0 };
+                assert_eq!(
+                    impulse_at(samples),
+                    vec![expected],
+                    "{format:?}, device {device}, output {}, aux {aux_ms}, master {master_ms}",
+                    channel + 1
+                );
+            }
+        }
+    }
 }
 
 #[test]

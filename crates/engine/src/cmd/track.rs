@@ -201,8 +201,24 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"clips": ids}))
             }
         ),
-        cmd!("track.input", "Track Input", [], None, "{tracks?, input: none|bus name|hardware name}", has_selection, |e, p| route(e, p, true)),
-        cmd!("track.output", "Track Output", [], None, "{tracks?, output: main|none|bus name}", has_selection, |e, p| route(e, p, false)),
+        cmd!(
+            "track.input",
+            "Track Input",
+            [],
+            None,
+            "{tracks?, input: none|bus name|hardware name, hardware?: bool (force In N or In N-M), create_bus?: true}",
+            has_selection,
+            |e, p| route(e, p, true)
+        ),
+        cmd!(
+            "track.output",
+            "Track Output",
+            [],
+            None,
+            "{tracks?, output: main|none|bus name|hardware name, hardware?: bool (force Out N or Out N-M), create_bus?: true}",
+            has_selection,
+            |e, p| route(e, p, false)
+        ),
         cmd!("track.timebase", "Track Timebase", [], None, "{tracks?, ticks: bool}", has_selection, |e, p| flag(
             e,
             p,
@@ -1014,14 +1030,55 @@ pub(crate) fn parse_route(s: &soundcraft_model::Session, v: &str) -> Route {
     }
 }
 
+/// A forced hardware path cannot be mistaken for a bus with the same name or a main-output
+/// alias. Keep channel labels directional and bounded; device-specific limits are checked by
+/// the renderer because the session commands do not own the audio device.
+fn explicit_hardware_route(v: &str, input: bool) -> Option<Route> {
+    let prefix = if input { "In " } else { "Out " };
+    let label = v.strip_prefix(prefix)?;
+    let number = |text: &str| {
+        if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        text.parse::<u16>().ok().filter(|channel| *channel > 0)
+    };
+    let (first, last) = label.split_once('-').map_or((label, None), |(first, last)| (first, Some(last)));
+    let first = number(first)?;
+    let name = match last {
+        Some(last) => {
+            let last = number(last)?;
+            if last < first {
+                return None;
+            }
+            format!("{prefix}{first}-{last}")
+        }
+        None => format!("{prefix}{first}"),
+    };
+    Some(Route::Hardware(name))
+}
+
 fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     let key = if input { "input" } else { "output" };
     let tracks = tracks_required(e, "track.route", p)?;
     let v = str_param(p, key).ok_or_else(|| bad("track.route", format!("`{key}` required")))?.to_string();
     let create_bus = bool_or(p, "create_bus", true);
+    let hardware = match p.get("hardware") {
+        None => false,
+        Some(Value::Bool(hardware)) => *hardware,
+        Some(_) => return Err(bad("track.route", "`hardware` must be a boolean")),
+    };
+    let direct = if hardware {
+        Some(explicit_hardware_route(&v, input).ok_or_else(|| {
+            let prefix = if input { "In" } else { "Out" };
+            bad("track.route", format!("hardware route must be `{prefix} N` or `{prefix} N-M` with positive channels in ascending order"))
+        })?)
+    } else {
+        None
+    };
     let s = e.session_mut();
-    let mut r = parse_route(s, &v);
+    let mut r = direct.unwrap_or_else(|| parse_route(s, &v));
     if let Route::Hardware(name) = &r
+        && !hardware
         && create_bus
         && !name.to_ascii_lowercase().starts_with("in ")
     {
@@ -1046,6 +1103,64 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Explicit physical choices remain distinct from buses and the Main output alias.
+    #[test]
+    fn explicit_hardware_routes_bypass_colliding_bus_names_and_main_aliases() {
+        for (command, key, name) in [("track.input", "input", "In 48"), ("track.output", "output", "Out 48"), ("track.output", "output", "Out 1-2")] {
+            let mut e = Engine::default();
+            let track = e.session_mut().add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+            let bus = e.session_mut().add_bus(name, ChannelFormat::Stereo);
+            let params = json!({"track": track.0, key: name, "create_bus": false});
+            e.execute(command, &params).unwrap();
+            let route = if key == "input" { &e.session().track(track).unwrap().mixer.input } else { &e.session().track(track).unwrap().mixer.output };
+            assert_eq!(*route, if name == "Out 1-2" { Route::Main } else { Route::Bus(bus) });
+
+            e.execute(command, &json!({"track": track.0, key: name, "hardware": true})).unwrap();
+            let route = if key == "input" { &e.session().track(track).unwrap().mixer.input } else { &e.session().track(track).unwrap().mixer.output };
+            assert_eq!(*route, Route::Hardware(name.into()));
+            assert_eq!(e.session().busses.len(), 1);
+        }
+    }
+
+    /// Reject malformed, reversed, overflowing and directionally incorrect physical routes.
+    #[test]
+    fn explicit_hardware_routes_reject_invalid_labels_and_flags() {
+        let mut e = Engine::default();
+        let track = e.session_mut().add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        for (command, key, name) in [
+            ("track.input", "input", "Out 1"),
+            ("track.output", "output", "In 1"),
+            ("track.output", "output", "main"),
+            ("track.output", "output", "none"),
+            ("track.output", "output", "Out 0"),
+            ("track.output", "output", "Out +1"),
+            ("track.output", "output", "Out 65536"),
+            ("track.output", "output", "Out 2-1"),
+            ("track.output", "output", "Out 1-2-3"),
+            ("track.output", "output", "Bus 48"),
+        ] {
+            assert!(e.execute(command, &json!({"track": track.0, key: name, "hardware": true})).is_err(), "{command}: {name}");
+        }
+        for hardware in [json!("true"), json!(1), Value::Null] {
+            assert!(e.execute("track.output", &json!({"track": track.0, "output": "Out 1", "hardware": hardware})).is_err());
+        }
+        assert!(e.session().busses.is_empty());
+    }
+
+    /// Keep complete physical ranges while preserving legacy automatic route resolution.
+    #[test]
+    fn explicit_hardware_routes_keep_valid_ranges_and_legacy_false_semantics() {
+        let mut e = Engine::default();
+        let track = e.session_mut().add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+        e.execute("track.input", &json!({"track": track.0, "input": "In 47-48", "hardware": true})).unwrap();
+        assert_eq!(e.session().track(track).unwrap().mixer.input, Route::Hardware("In 47-48".into()));
+        e.execute("track.output", &json!({"track": track.0, "output": "Out 47-48", "hardware": true})).unwrap();
+        assert_eq!(e.session().track(track).unwrap().mixer.output, Route::Hardware("Out 47-48".into()));
+        e.execute("track.output", &json!({"track": track.0, "output": "Out 1-2", "hardware": false})).unwrap();
+        assert_eq!(e.session().track(track).unwrap().mixer.output, Route::Main);
+    }
+
     #[test]
     fn comp_from_alternate_playlist() {
         let mut e = crate::demo::demo_engine();
