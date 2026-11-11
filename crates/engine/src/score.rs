@@ -5,12 +5,12 @@
 //! a chord, overlapping notes are cut at the next onset, and anything crossing a bar line is split
 //! and tied.
 
-use soundcraft_model::{ClipContent, Session, TrackId, TrackKind};
+use soundcraft_model::{ClipContent, Session, Track, TrackId, TrackKind};
 use soundcraft_time::TICKS_PER_QUARTER;
 use std::fmt::Write as _;
 
 /// Ticks per score unit (a sixteenth).
-const UNIT: i64 = TICKS_PER_QUARTER / 4;
+pub const UNIT: i64 = TICKS_PER_QUARTER / 4;
 /// Upper bound on engraved measures, so a hostile session cannot make a huge document.
 const MAX_MEASURES: usize = 2000;
 /// Upper bound on output size, so a hostile session cannot make a huge document.
@@ -93,36 +93,51 @@ pub struct Part {
     pub measures: Vec<Measure>,
 }
 
+/// A note on the sixteenth grid: onset and end in sixteenths from the session start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridNote {
+    pub start: i64,
+    pub end: i64,
+    pub pitch: u8,
+    /// MIDI channel 0..=15.
+    pub channel: u8,
+}
+
+/// The unmuted notes of `track`'s MIDI clips, quantized to sixteenths and cut at clip ends.
+pub fn grid_notes(s: &Session, track: &Track) -> Vec<GridNote> {
+    let sr = s.sample_rate;
+    let mut notes = Vec::new();
+    for c in track.clips() {
+        let ClipContent::Midi { sequence } = &c.content else { continue };
+        if c.muted {
+            continue;
+        }
+        let base = s.tempo.samples_to_ticks(c.start, sr);
+        let end = s.tempo.samples_to_ticks(c.start.saturating_add(c.length), sr);
+        for n in &sequence.notes {
+            if notes.len() >= MAX_NOTES_PER_PART {
+                break;
+            }
+            let st = base.saturating_add(n.start);
+            if st < base || st >= end || n.length <= 0 {
+                continue;
+            }
+            let a = quantize(st);
+            let b = quantize(st.saturating_add(n.length).min(end)).max(a + 1);
+            notes.push(GridNote { start: a, end: b, pitch: n.pitch, channel: n.channel });
+        }
+    }
+    notes
+}
+
 /// Lay out the MIDI (and instrument) tracks `tracks` (all of them when empty).
 pub fn layout(s: &Session, tracks: &[TrackId]) -> Vec<Part> {
-    let sr = s.sample_rate;
     let mut raw: Vec<(String, Vec<(i64, i64, u8)>)> = Vec::new();
     for t in &s.tracks {
         if !matches!(t.kind, TrackKind::Midi | TrackKind::Instrument) || (!tracks.is_empty() && !tracks.contains(&t.id)) {
             continue;
         }
-        let mut notes = Vec::new();
-        for c in t.clips() {
-            let ClipContent::Midi { sequence } = &c.content else { continue };
-            if c.muted {
-                continue;
-            }
-            let base = s.tempo.samples_to_ticks(c.start, sr);
-            let end = s.tempo.samples_to_ticks(c.start.saturating_add(c.length), sr);
-            for n in &sequence.notes {
-                if notes.len() >= MAX_NOTES_PER_PART {
-                    break;
-                }
-                let st = base.saturating_add(n.start);
-                if st < base || st >= end || n.length <= 0 {
-                    continue;
-                }
-                let a = quantize(st);
-                let b = quantize(st.saturating_add(n.length).min(end)).max(a + 1);
-                notes.push((a, b, n.pitch));
-            }
-        }
-        raw.push((t.name.clone(), notes));
+        raw.push((t.name.clone(), grid_notes(s, t).into_iter().map(|n| (n.start, n.end, n.pitch)).collect()));
     }
     let last = raw.iter().flat_map(|(_, n)| n.iter().map(|x| x.1)).max().unwrap_or(0);
     let bars = measure_grid(s, last);
@@ -134,12 +149,12 @@ pub fn layout(s: &Session, tracks: &[TrackId]) -> Vec<Part> {
         .collect()
 }
 
-fn quantize(tick: i64) -> i64 {
+pub(crate) fn quantize(tick: i64) -> i64 {
     (tick.max(0) + UNIT / 2) / UNIT
 }
 
 /// (start unit, length in units, numerator, denominator) per measure, covering `end_unit`.
-fn measure_grid(s: &Session, end_unit: i64) -> Vec<(i64, i64, u32, u32)> {
+pub fn measure_grid(s: &Session, end_unit: i64) -> Vec<(i64, i64, u32, u32)> {
     let mut v = Vec::new();
     let mut bar = 1;
     loop {

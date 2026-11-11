@@ -8,6 +8,7 @@ use soundcraft_model::{ClipId, SourceId};
 
 mod about;
 mod clips;
+mod guitar_tab;
 mod history;
 mod memory;
 mod plugins;
@@ -16,6 +17,7 @@ mod transport;
 
 use about::{about, session_info};
 pub use clips::clip_list;
+pub(crate) use guitar_tab::guitar_tab_panel;
 pub(crate) use history::undo_history;
 pub(crate) use memory::memory_locations;
 use plugins::plugin_windows;

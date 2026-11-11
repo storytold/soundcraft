@@ -19,6 +19,7 @@ mod edit_menu;
 mod edit_modes;
 mod edit_window_headers;
 mod group_dialog;
+mod guitar_tab;
 mod hide_floating;
 mod idle;
 mod key_families;
