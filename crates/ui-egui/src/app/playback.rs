@@ -197,6 +197,8 @@ impl SoundApp {
         Ok(dir)
     }
 
+    /// Ends recording, clears the punch state and places the recorded takes
+    /// (from the recorder or the take plan when the recorder is already gone).
     fn finish_recording(&mut self) {
         self.engine.transport.recording = false;
         if let Some(p) = &self.player {
@@ -551,6 +553,5 @@ mod tests {
         assert!(!app.engine.transport.recording);
         assert!(!app.is_playing());
         assert_eq!(app.engine.transport.position, 96_000, "the playhead stays where it stopped");
-    }
     }
 }
