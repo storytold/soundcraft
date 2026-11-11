@@ -65,6 +65,34 @@ fn read_file_within(path: &Path, session: bool) -> Result<Vec<u8>> {
     Ok(data)
 }
 
+/// `O_NONBLOCK` of the platforms that have a FIFO to wait on (std has no name for it, and this crate has no unsafe
+/// code or libc); 0 elsewhere, where a FIFO open still waits for a writer.
+#[cfg(unix)]
+const O_NONBLOCK: i32 = if cfg!(all(
+    any(target_os = "linux", target_os = "android"),
+    not(any(
+        target_arch = "mips",
+        target_arch = "mips32r6",
+        target_arch = "mips64",
+        target_arch = "mips64r6",
+        target_arch = "sparc",
+        target_arch = "sparc64"
+    ))
+)) {
+    0x800
+} else if cfg!(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+)) {
+    0x4
+} else {
+    0
+};
+
 /// [`read_file`] for a file that must lie inside `root` (a canonical folder): the file is opened
 /// once, and the bytes come from that handle only after the handle is shown to be the file the
 /// path resolves to inside `root`. A file swapped in for the path after a check by name is
@@ -74,7 +102,12 @@ pub(crate) fn read_file_inside(path: &Path, root: &Path) -> Result<Vec<u8>> {
     use std::io::Read;
     crate::file_access::check_read(path).map_err(EngineError::Io)?;
     let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
-    let mut file = std::fs::File::open(path).map_err(err)?;
+    // opened without waiting for a FIFO's writer (the type is checked on the opened handle, below)
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, O_NONBLOCK);
+    let mut file = options.open(path).map_err(err)?;
     if !file.metadata().map_err(err)?.is_file() {
         return Err(EngineError::Io(format!("{}: not a regular file", path.display())));
     }
@@ -1082,6 +1115,12 @@ mod exclusive_tests {
         let root = canonical_path(&inside).unwrap();
         assert_eq!(read_file_inside(&inside.join("a.wav"), &root).unwrap(), b"a");
         assert!(read_file_inside(&inside.join("link.wav"), &root).is_err());
+        // a FIFO with no writer is refused, not waited on (Linux: the coreutils tool makes it)
+        #[cfg(target_os = "linux")]
+        if std::process::Command::new("mkfifo").arg(inside.join("pipe.wav")).status().is_ok_and(|s| s.success()) {
+            let err = read_file_inside(&inside.join("pipe.wav"), &root).unwrap_err().to_string();
+            assert!(err.contains("not a regular file"), "{err}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
