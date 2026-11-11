@@ -1267,13 +1267,24 @@ fn stepped_fader_ramps_match_converting_every_sample() {
         ("descend from extreme trim", 10_000.0, -100.0, 1024, 12.0),
         ("no cap", -12.0, 6.0, 1000, f32::INFINITY),
         ("gain helper ceiling", 300.0, 0.0, 1024, f32::INFINITY),
+        ("extreme exact endpoint", -1e20, -20.0, 64, 12.0),
+        ("negative infinite start", f32::NEG_INFINITY, -20.0, 64, 12.0),
+        ("positive infinite end", -20.0, f32::INFINITY, 64, 12.0),
+        ("opposite infinities", f32::NEG_INFINITY, f32::INFINITY, 64, 12.0),
     ];
     for &(name, d0, d1, n, max_db) in cases {
         let mut x = vec![1.0f32; n];
         crate::automation::scale(&mut x, d0, d1, max_db);
         for (k, &got) in x.iter().enumerate() {
-            let at = if n < 2 { d0 } else { (f64::from(d0) + (f64::from(d1) - f64::from(d0)) * (k as f64 / (n - 1) as f64)) as f32 };
-            let want = if at.is_nan() { 0.0 } else { db_to_gain(at.min(max_db)) };
+            let at = if k == 0 {
+                d0
+            } else if k + 1 == n {
+                d1
+            } else {
+                let t = k as f64 / (n - 1) as f64;
+                (f64::from(d0) * (1.0 - t) + f64::from(d1) * t) as f32
+            };
+            let want = if d0.is_nan() || d1.is_nan() || at.is_nan() { 0.0 } else { db_to_gain(at.min(max_db)) };
             assert!((got - want).abs() <= 1e-5 * want.max(1e-6) || (got == 0.0 && want == 0.0), "{name}, sample {k} of {n}: {got} vs {want}");
         }
         if d0.is_nan() || d1.is_nan() {

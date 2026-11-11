@@ -99,7 +99,14 @@ pub(crate) fn scale(x: &mut [f32], d0: f32, d1: f32, max_db: f32) {
     // Convert those rare ramps directly so an inaudible prefix can recover normally.
     if !(-1000.0..=1000.0).contains(&d0) || !(-1000.0..=1000.0).contains(&d1) {
         for (i, v) in x.iter_mut().enumerate() {
-            let db = f64::from(d0) + (f64::from(d1) - f64::from(d0)) * (i as f64 / n as f64);
+            let t = i as f64 / n as f64;
+            let db = if i == 0 {
+                f64::from(d0)
+            } else if i == n {
+                f64::from(d1)
+            } else {
+                f64::from(d0) * (1.0 - t) + f64::from(d1) * t
+            };
             *v *= gain(db as f32, max_db);
         }
         return;
@@ -131,7 +138,7 @@ pub(crate) fn scale(x: &mut [f32], d0: f32, d1: f32, max_db: f32) {
 
 /// The gain of `db`, at most `max_db`.
 fn gain(db: f32, max_db: f32) -> f32 {
-    db_to_gain(db.min(max_db))
+    if db.is_nan() { 0.0 } else { db_to_gain(db.min(max_db)) }
 }
 
 /// Fader gain over the block at `pos`, read at every frame: multiplies `buf`'s channels by the
