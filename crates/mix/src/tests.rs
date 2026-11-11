@@ -1208,3 +1208,95 @@ fn gain_ramp_matches_converting_both_ends_every_sample() {
         }
     }
 }
+
+/// Consolidate's clip-effect pass, processing every clip's effects across the whole selection
+/// (what `render_clips` did before it limited them to the clip and its tail).
+fn render_clips_full_span(s: &Session, track: TrackId, range: Range) -> Vec<Vec<f32>> {
+    let t = s.track(track).unwrap();
+    let len = range.len() as usize;
+    let mut out = vec![vec![0.0f32; len]; t.channels().max(1)];
+    let mut scratch = Vec::new();
+    for c in t.clips().iter().filter(|c| !c.muted && c.range().overlaps(&range)) {
+        let params = crate::clips::clip_fx_params(s, c.id.0).unwrap();
+        let mut tmp = vec![vec![0.0f32; len]; out.len()];
+        crate::clips::render_clip(s, c, range.start, len, &mut tmp, &mut scratch);
+        let mut fx = crate::clips::ClipFx::new(48_000.0, tmp.len());
+        fx.configure(params);
+        for done in (0..len).step_by(4096) {
+            let n = (len - done).min(4096);
+            let mut block: Vec<Vec<f32>> = tmp.iter().map(|ch| ch[done..done + n].to_vec()).collect();
+            fx.process(&mut block, n);
+            for (o, b) in out.iter_mut().zip(&block) {
+                o[done..done + n].iter_mut().zip(b).for_each(|(x, y)| *x += y);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn consolidate_clip_effects_cover_the_clip_and_its_tail() {
+    let fx_sets: [&[(&str, f64)]; 3] =
+        [&[("comp.lookahead", 5.0), ("comp.threshold", -20.0), ("gain", -6.0)], &[("eq.hpf_on", 1.0), ("gain", 3.0)], &[("eq.low_shelf_gain", 12.0)]];
+    for (k, params) in fx_sets.iter().enumerate() {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4800]] })));
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "dc", SourceId(900), 0, 20_000, 4800));
+        for (param, value) in params.iter() {
+            s.edit.values.insert(format!("clip_fx.{}.{param}", cid.0), *value);
+        }
+        let range = Range::new(5_000, 100_000);
+        let got = render_clips(&s, t, range);
+        let want = render_clips_full_span(&s, t, range);
+        assert_eq!(got.len(), want.len());
+        assert!(want[0].iter().any(|x| x.abs() > 0.05), "the fixture should sound");
+        if k == 0 {
+            // The compressor's lookahead output after the clip's end is kept.
+            assert!(got[0][20_000 + 4800 - 5_000 + 10].abs() > 1e-3);
+        }
+        for (i, (a, b)) in got[0].iter().zip(&want[0]).enumerate() {
+            assert!((a - b).abs() < 1e-5, "set {k}, sample {i}: {a} vs {b}");
+        }
+    }
+}
+
+/// A clip that starts a few frames into the selection, while the EQ's smoothers are still settling: the
+/// effect's 32-frame chunks must line up with the full-span render's.
+#[test]
+fn consolidate_clip_effects_keep_the_reference_chunk_grid() {
+    for offset in [1i64, 31, 32, 33, 1000] {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4800]] })));
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "dc", SourceId(900), 0, offset, 4800));
+        s.edit.values.insert(format!("clip_fx.{}.eq.low_shelf_gain", cid.0), 12.0);
+        let range = Range::new(0, 20_000);
+        let got = render_clips(&s, t, range);
+        let want = render_clips_full_span(&s, t, range);
+        for (i, (a, b)) in got[0].iter().zip(&want[0]).enumerate() {
+            assert!((a - b).abs() < 1e-5, "clip at {offset}, sample {i}: {a} vs {b}");
+        }
+    }
+}
+
+#[test]
+fn consolidate_many_tiny_effect_clips_stays_fast() {
+    // Thousands of one-sample clips with effects across a long selection: each one is processed
+    // over its own span, not the whole selection.
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 1]] })));
+    for i in 0..2000i64 {
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "x", SourceId(900), 0, i * 1000, 1));
+        s.edit.values.insert(format!("clip_fx.{}.gain", cid.0), -6.0);
+    }
+    let start = std::time::Instant::now();
+    let out = render_clips(&s, t, Range::new(0, 4_000_000));
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+    assert!((out[0][1000] - 0.5 * db_to_gain(-6.0)).abs() < 1e-6);
+    assert_eq!(out[0][1001], 0.0);
+}
