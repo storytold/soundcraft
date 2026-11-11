@@ -581,6 +581,9 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
         let mut stem = sanitize_name(&src.name);
         if overwrite {
             // One file per source id so autosaves never collide or pile up.
+            // (With only an automation write root, `file_found` cannot read an existing file, so each save
+            // writes a new numbered WAV: reuse never reads a file the roots do not allow, which keeps a save
+            // from revealing whether an unreadable file matches the audio.)
             stem = format!("{stem}_{}", src.id.0);
             if file_found(audio_dir.join(format!("{stem}.wav"))) {
                 src.path = format!("Audio Files/{stem}.wav");
