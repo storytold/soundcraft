@@ -66,7 +66,11 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
     let floating = app.dialogs.open.as_ref().is_some_and(Dialog::floats);
-    if ctx.egui_wants_keyboard_input() || (app.dialogs.open.is_some() && !floating) || app.ui.show_preferences {
+    // A floating window's controls surrender focus to any key but Enter, Escape and Tab (below), so only a
+    // text field in one blocks the shortcuts. Elsewhere any focused widget does: a click or arrow key would
+    // reach both the widget and its shortcut.
+    let wants_keys = if floating { ctx.text_edit_focused() } else { ctx.egui_wants_keyboard_input() };
+    if wants_keys || (app.dialogs.open.is_some() && !floating) || app.ui.show_preferences {
         return;
     }
     // A scripted press is identified by its exact position in this pass's events, not by matching

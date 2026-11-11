@@ -147,3 +147,22 @@ fn strip_silence_keeps_its_values_through_rename_and_cancel() {
     h.run_steps(2);
     assert_eq!(reopen(&mut h), CHANGED);
 }
+
+/// A focused slider rail yields to the zoom keys instead of blocking them, as Pro Tools' do (#1380).
+#[test]
+fn zoom_keys_work_while_a_strip_silence_slider_has_focus() {
+    let (mut h, _, _) = strip_silence_dialog();
+    let spp = |h: &Harness<'_, SoundApp>| h.state().engine.session().edit.zoom.samples_per_px;
+    let before = spp(&h);
+    {
+        let sliders: Vec<_> = h.get_all_by_role(Role::Slider).collect();
+        assert!(!sliders.is_empty(), "Strip Silence shows its sliders");
+        sliders[0].focus();
+    }
+    h.run_steps(2);
+    assert!(h.get_all_by_role(Role::Slider).any(|s| s.is_focused()), "a slider rail has focus");
+    h.key_press(Key::T);
+    h.run_steps(2);
+    assert!(spp(&h) < before, "T zooms in while a slider rail has focus");
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "Strip Silence stays open");
+}
