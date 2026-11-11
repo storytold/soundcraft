@@ -2,6 +2,25 @@ use super::*;
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable};
 
+/// A trim cannot snap to the clip's own old boundary in Clips/Markers mode.
+#[test]
+fn clips_markers_trim_ignores_the_trimmed_clip() {
+    let mut s = Session::default();
+    let track = s.add_track(TrackKind::Midi, soundcraft_model::ChannelFormat::Mono, None);
+    let clip = Clip::midi(s.new_clip_id(), "Notes", 1_000, 1_000, soundcraft_midi::Sequence::default());
+    let clip_id = clip.id;
+    s.track_mut(track).and_then(Track::playlist_mut).unwrap().clips.push(clip);
+    s.add_marker("Inside", soundcraft_model::MarkerKind::Marker, 1_500, 1_500);
+    s.add_marker("Target", soundcraft_model::MarkerKind::Marker, 2_500, 2_500);
+    s.edit.edit_mode = soundcraft_model::EditMode::Grid;
+    s.edit.grid_clips_markers = true;
+
+    assert_eq!(super::drag::drag_snap(&s, 2_100, false), 2_000);
+    assert_eq!(super::drag::drag_snap_excluding(&s, 2_100, false, &[clip_id]), 2_500);
+    assert_eq!(super::drag::trim_drag_snap(&s, clip_id, 1_000, true, false), 1_000);
+    assert_eq!(super::drag::trim_drag_snap(&s, clip_id, 2_000, false, false), 2_000);
+}
+
 /// The painted header selectors are interactive controls; their accessible name is the field
 /// they edit, not the short value text ("Read", "Waveform") painted inside them.
 #[test]
@@ -513,6 +532,53 @@ fn shift_and_cmd_click_on_track_names_extend_the_selection() {
         let want: Vec<TrackId> = want.into_iter().map(|k| ids[k]).collect();
         assert_eq!(h.state().engine.session().edit.selected_tracks, want, "row {i} clicked with {mods:?}");
     }
+}
+
+/// #1254: double-clicking a track's colour strip selects the track and opens the Color Palette;
+/// a single click only selects it.
+#[test]
+fn double_clicking_the_color_strip_opens_the_color_palette() {
+    let mut h = harness(3);
+    let ids = row_ids(&h);
+    let strip = |h: &Harness<SoundApp>, i: usize| pos2(row(h, i).min.x + layout::STRIP_W / 2.0, row(h, i).center().y);
+    h.state_mut().engine.execute("edit.select", &json!({"tracks": [ids[0].0]})).unwrap();
+    h.run_steps(2);
+    let at = strip(&h, 1);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[1]]);
+    assert!(!h.state().ui.show_color_palette, "a single click on the strip doesn't open the palette");
+    h.run_steps(30);
+    let at = strip(&h, 2);
+    click(&mut h, at);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[2]]);
+    assert!(h.state().ui.show_color_palette, "a double click on the strip opens the palette");
+}
+
+/// #1254: a double click on the strip of one of several selected tracks keeps them all selected,
+/// so the palette colours every one; with Cmd held the double-clicked track ends selected too.
+#[test]
+fn double_clicking_a_selected_tracks_strip_keeps_the_selection() {
+    let mut h = harness(3);
+    let ids = row_ids(&h);
+    let strip = |h: &Harness<SoundApp>, i: usize| pos2(row(h, i).min.x + layout::STRIP_W / 2.0, row(h, i).center().y);
+    h.state_mut().engine.execute("edit.select", &json!({"tracks": [ids[0].0, ids[2].0]})).unwrap();
+    h.run_steps(2);
+    let at = strip(&h, 2);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[0], ids[2]], "a plain click on a selected strip keeps the selection");
+    assert!(!h.state().ui.show_color_palette);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[0], ids[2]], "both tracks stay selected");
+    assert!(h.state().ui.show_color_palette, "a double click on the strip opens the palette");
+
+    h.state_mut().ui.show_color_palette = false;
+    h.run_steps(30);
+    let at = strip(&h, 0);
+    click_with(&mut h, at, egui::Modifiers::COMMAND);
+    click_with(&mut h, at, egui::Modifiers::COMMAND);
+    assert!(h.state().engine.session().edit.selected_tracks.contains(&ids[0]), "a Cmd double click leaves its track selected");
+    assert!(h.state().ui.show_color_palette, "a Cmd double click on the strip opens the palette");
 }
 
 #[test]

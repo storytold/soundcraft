@@ -528,9 +528,15 @@ fn join_gain_env(l: &mut Clip, r: &Clip) {
 }
 
 /// Move clips by `delta`, overwriting what they land on; `dest` sends whole tracks of them
-/// elsewhere (see [`destinations`]).
+/// elsewhere (see [`destinations`]). Same-track moves clamped to zero leave all material intact.
 pub fn move_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(TrackId, TrackId)]) -> usize {
     let ids: HashSet<ClipId> = ids.iter().copied().collect();
+    // Limit the shift before removing any clips, so a stationary edit cannot overwrite overlaps.
+    let limit = s.tracks.iter().flat_map(|t| t.clips()).filter(|c| ids.contains(&c.id) && !locked(c)).map(|c| c.start.saturating_neg()).max();
+    let delta = delta.max(limit.unwrap_or(0));
+    if delta == 0 && dest.iter().all(|(from, to)| from == to) {
+        return 0;
+    }
     let mut moving: Vec<(TrackId, Clip)> = Vec::new();
     for t in &mut s.tracks {
         let tid = t.id;
@@ -546,8 +552,6 @@ pub fn move_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(Trac
         }
     }
     let n = moving.len();
-    // Limit the shift once, so the group stops at zero together and keeps its spacing.
-    let delta = delta.max(moving.iter().map(|(_, c)| c.start.saturating_neg()).max().unwrap_or(0));
     let placed = moving.into_iter().map(|(tid, mut c)| {
         c.start = c.start.saturating_add(delta);
         (lands(dest, tid), c)
@@ -572,20 +576,7 @@ fn put_clips(s: &mut Session, placed: Vec<(TrackId, Clip)>) {
 
 /// Whether the Edit window shows track `t`: not hidden, and not inside a closed folder at any level.
 pub fn shown(s: &Session, t: &Track) -> bool {
-    !t.hidden && !folder_collapsed(s, t)
-}
-
-/// Hidden because a folder at any level above this track is closed.
-fn folder_collapsed(s: &Session, track: &Track) -> bool {
-    let mut current = track.folder;
-    for _ in 0..64 {
-        let Some(folder) = current.and_then(|folder| s.track(folder)) else { return false };
-        if !folder.folder_open {
-            return true;
-        }
-        current = folder.folder;
-    }
-    false
+    s.track_shown(t)
 }
 
 /// Where the tracks of clips `ids` go when track `from` goes to `to`: each keeps its distance
@@ -790,12 +781,11 @@ pub fn shuffle_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(T
 /// How far a Grabber drag by `raw` moves `clip` in Grid mode: Absolute puts its sync point (its
 /// start when it has none inside the clip) on the nearest grid line; Relative moves it by whole
 /// grid steps, keeping its offset from the grid.
-pub fn grid_delta(s: &Session, clip: &Clip, raw: Samples, relative: bool) -> Samples {
-    let (g, sr, map, rate) = (&s.edit.grid, s.sample_rate, &s.tempo, s.frame_rate);
+pub fn grid_delta(s: &Session, clip: &Clip, raw: Samples, relative: bool, moving: &[ClipId]) -> Samples {
     let sync = if (0..clip.length).contains(&clip.sync_point) { clip.sync_point } else { 0 };
     let anchor = clip.start.saturating_add(sync);
-    let from = if relative { g.line_at_or_before(anchor, sr, map, rate) } else { anchor };
-    g.snap(from.saturating_add(raw), sr, map, rate).saturating_sub(from)
+    let from = if relative { s.grid_line_at_or_before_excluding(anchor, moving) } else { anchor };
+    s.snap_to_grid_excluding(from.saturating_add(raw), moving).saturating_sub(from)
 }
 
 /// Trim a clip's edges to `start` and/or `end` like the Trim tool, never past its file. In

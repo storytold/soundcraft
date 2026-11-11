@@ -502,9 +502,11 @@ pub struct Mixer {
     pub solo: bool,
     #[serde(default)]
     pub solo_safe: bool,
-    #[serde(default)]
+    /// Live record-enable state. Runtime-only: opening a session must never arm an input.
+    #[serde(skip)]
     pub record_arm: bool,
-    #[serde(default)]
+    /// Live input-monitor state. Runtime-only: opening a session must never enable monitoring.
+    #[serde(skip)]
     pub input_monitor: bool,
     #[serde(default)]
     pub phase_invert: bool,

@@ -42,19 +42,122 @@ pub use strip::{StripMode, StripNames, StripScan, bounded_to_track, name_strippe
 /// one. Only a regular file qualifies: a device or a pipe named by a session or a command would
 /// never end or never answer. Errors name the file.
 pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
-    let path = path.as_ref();
+    read_file_within(path.as_ref(), false)
+}
+
+/// [`read_file`]; a `session` file is refused ([`session_size`]) past [`session_limit`].
+fn read_file_within(path: &Path, session: bool) -> Result<Vec<u8>> {
+    use std::io::Read as _;
     crate::file_access::check_read(path).map_err(EngineError::Io)?;
     let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
-    if !std::fs::metadata(path).map_err(err)?.is_file() {
+    let meta = std::fs::metadata(path).map_err(err)?;
+    if !meta.is_file() {
         return Err(EngineError::Io(format!("{}: not a regular file", path.display())));
     }
-    std::fs::read(path).map_err(err)
+    if !session {
+        return std::fs::read(path).map_err(err);
+    }
+    session_size(path.display(), meta.len(), false)?;
+    // The file may have grown since: never read more than one byte past the limit.
+    let mut data = Vec::new();
+    std::fs::File::open(path).map_err(err)?.take(session_limit().saturating_add(1)).read_to_end(&mut data).map_err(err)?;
+    session_size(path.display(), data.len() as u64, false)?;
+    Ok(data)
 }
 
 /// [`read_file`] as UTF-8 text.
 pub fn read_text(path: impl AsRef<Path>) -> Result<String> {
     let path = path.as_ref();
-    String::from_utf8(read_file(path)?).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))
+    utf8(path, read_file(path)?)
+}
+
+fn utf8(path: &Path, bytes: Vec<u8>) -> Result<String> {
+    String::from_utf8(bytes).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))
+}
+
+/// The largest session (`.scraft`) SoundCraft opens or saves. A session is read whole and parsed
+/// in one go, so a larger one is refused by its size before it is read, and never written (it
+/// could not be opened again); real sessions are far smaller.
+pub const MAX_SESSION_BYTES: u64 = 256 << 20;
+
+#[cfg(test)]
+thread_local! {
+    /// A smaller limit than [`MAX_SESSION_BYTES`] for the tests on this thread ([`SessionLimit`]).
+    static TEST_SESSION_LIMIT: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// [`MAX_SESSION_BYTES`] (in tests, the limit a [`SessionLimit`] set on this thread).
+pub(crate) fn session_limit() -> u64 {
+    #[cfg(test)]
+    if let Some(limit) = TEST_SESSION_LIMIT.with(std::cell::Cell::get) {
+        return limit;
+    }
+    MAX_SESSION_BYTES
+}
+
+/// While it lives, sessions on this thread are opened and saved up to the limit given to
+/// [`SessionLimit::set`] instead of [`MAX_SESSION_BYTES`], so tests reach it with small sessions.
+#[cfg(test)]
+pub(crate) struct SessionLimit;
+
+#[cfg(test)]
+impl SessionLimit {
+    pub(crate) fn set(limit: u64) -> SessionLimit {
+        TEST_SESSION_LIMIT.with(|l| l.set(Some(limit)));
+        SessionLimit
+    }
+}
+
+#[cfg(test)]
+impl Drop for SessionLimit {
+    fn drop(&mut self) {
+        TEST_SESSION_LIMIT.with(|l| l.set(None));
+    }
+}
+
+/// Refuses the session `name` of `len` bytes when it is larger than [`session_limit`]: too large
+/// to open, or, when `saving`, to save.
+pub(crate) fn session_size(name: impl std::fmt::Display, len: u64, saving: bool) -> Result<()> {
+    let limit = session_limit();
+    if len <= limit {
+        return Ok(());
+    }
+    let most = if limit >= 1 << 20 { format!("{} MiB", limit >> 20) } else { format!("{limit} bytes") };
+    Err(EngineError::Io(if saving {
+        format!("{name} is too large to save: over {most}, more than SoundCraft opens")
+    } else {
+        format!("{name} is too large to open (over {most})")
+    }))
+}
+
+/// [`read_text`] for a session file: refused, unread, past [`session_limit`].
+pub(crate) fn read_session_text(path: impl AsRef<Path>) -> Result<String> {
+    let path = path.as_ref();
+    utf8(path, read_file_within(path, true)?)
+}
+
+/// A bare `.scraft` handed over as bytes (the browser) as text: refused, uncopied, past
+/// [`session_limit`].
+pub(crate) fn session_bytes_text(name: &str, bytes: &[u8]) -> Result<String> {
+    session_size(name, bytes.len() as u64, false)?;
+    String::from_utf8(bytes.to_vec()).map_err(|_| EngineError::Io(format!("{name}: not a SoundCraft session")))
+}
+
+/// How many bytes [`Session::to_json`] makes of `s`, counted without keeping them.
+fn json_len(s: &Session) -> u64 {
+    struct Count(u64);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(buf.len() as u64);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut n = Count(0);
+    // A session that cannot be written counts as nothing here: `to_json` reports that error.
+    serde_json::to_writer_pretty(&mut n, s).map_or(0, |()| n.0)
 }
 
 /// Is there a file at `path` the automation read root lets us see? A path outside the root is
@@ -75,8 +178,12 @@ pub fn stored_path(stored: &str, session: &Path) -> std::result::Result<PathBuf,
     craft_docpath::resolve_absolute(stored, Some(&session)).map_err(|why| format!("not opened: {why}"))
 }
 
-/// Create `dir` and its parents, inside the automation write root when there is one.
+/// Create `dir` and its parents, inside the automation write root when there is one. The browser
+/// has no folders: there each file is delivered by its name ([`write_file`]) and this does nothing.
 pub(crate) fn make_dir(dir: impl AsRef<Path>) -> Result<()> {
+    if cfg!(target_arch = "wasm32") {
+        return Ok(());
+    }
     let dir = dir.as_ref();
     // The empty folder of a bare file name ("t.scraft") is the working directory, which the root
     // check would refuse as an empty path.
@@ -460,29 +567,48 @@ impl From<StripNames> for soundcraft_model::AutoName {
     }
 }
 
+/// Write each clip as a WAV file named after it into `dir` (in the browser, delivered by name
+/// through [`write_file`]). Returns how many were written.
 pub fn export_clips(e: &Engine, ids: &[soundcraft_model::ClipId], dir: &str) -> Result<usize> {
     let s = e.session();
     make_dir(dir)?;
-    let mut n = 0;
+    let mut names = ClipNames::default();
     for id in ids {
         let Some((t, c)) = s.find_clip(*id) else { continue };
         let audio = soundcraft_mix::render_clips(s, t, c.range());
         let buf = AudioBuffer { sample_rate: s.sample_rate.hz(), channels: audio };
         let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).map_err(|err| EngineError::Io(err.to_string()))?;
-        let stem = sanitize_name(&c.name);
-        let mut path = Path::new(dir).join(format!("{stem}.wav"));
-        let mut k = 2u32;
-        while path.exists() {
-            path = Path::new(dir).join(format!("{stem}-{k}.wav"));
-            k = k.saturating_add(1);
-            if k > 10_000 {
-                return Err(EngineError::Io(format!("{dir}: too many files named {stem}")));
-            }
-        }
-        write_path(&path, bytes)?;
-        n += 1;
+        let path = clip_file(dir, &sanitize_name(&c.name), &mut names, Path::exists)?;
+        write_file(&path.to_string_lossy(), &bytes)?;
     }
-    Ok(n)
+    Ok(names.taken.len())
+}
+
+/// The files an export has named so far, and for each name the suffix to try next, so a run of
+/// same-named clips doesn't count up from 2 again for every clip.
+#[derive(Default)]
+struct ClipNames {
+    taken: std::collections::HashSet<PathBuf>,
+    next: std::collections::HashMap<String, u32>,
+}
+
+/// The first of `<stem>.wav`, `<stem>-2.wav`, … in `dir` that is neither `on_disk` nor already
+/// named by this export, recorded in `names`: the browser has no disk to look at, so same-named
+/// clips are kept apart by `names`.
+fn clip_file(dir: &str, stem: &str, names: &mut ClipNames, on_disk: impl Fn(&Path) -> bool) -> Result<PathBuf> {
+    let file = |k: u32| Path::new(dir).join(if k < 2 { format!("{stem}.wav") } else { format!("{stem}-{k}.wav") });
+    let mut k = names.next.get(stem).copied().unwrap_or(1);
+    let mut path = file(k);
+    while on_disk(&path) || names.taken.contains(&path) {
+        k = k.saturating_add(1);
+        if k > 10_000 {
+            return Err(EngineError::Io(format!("{dir}: too many files named {stem}")));
+        }
+        path = file(k);
+    }
+    names.next.insert(stem.to_owned(), k.saturating_add(1));
+    names.taken.insert(path.clone());
+    Ok(path)
 }
 
 /// Write `session` to `path`; returns the session with updated media paths, the number of audio
@@ -497,7 +623,6 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
     let mut s = session.clone();
     let from = s.folder.clone();
     let same_dir = from.as_deref().is_some_and(|f| same_path(f, &dir));
-    let mut written = 0;
     // A file can stay put for all the sources that name it, unless their audio differs.
     let shared_paths: Vec<bool> = {
         let mut audio_by_path: HashMap<&str, HashSet<Option<*const SourceAudio>>> = HashMap::new();
@@ -506,8 +631,11 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
         }
         s.sources.iter().map(|src| audio_by_path.get(src.path.as_str()).is_some_and(|a| a.len() > 1)).collect()
     };
-    // Files written for audio during this save: sources playing the same audio share one.
+    // Files for audio in this save: sources playing the same audio share one. The files still to
+    // write (their stem, audio and the sources naming them) are written once the size is checked.
     let mut files: HashMap<*const SourceAudio, String> = HashMap::new();
+    let mut queued: HashMap<*const SourceAudio, usize> = HashMap::new();
+    let mut pending: Vec<(String, Arc<SourceAudio>, Vec<usize>)> = Vec::new();
     for (i, src) in s.sources.iter_mut().enumerate() {
         if !same_dir
             && s.pool.get(src.id).is_none()
@@ -533,7 +661,14 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
             src.format = FileFormat::Wav;
             continue;
         }
-        make_dir(&audio_dir)?;
+        if let Some((stem, _, sources)) = queued.get(&Arc::as_ptr(audio)).and_then(|&k| pending.get_mut(k)) {
+            // As long as any name the file can get, so the size checked is an upper bound.
+            src.path = format!("Audio Files/{stem}_9999.wav");
+            src.unsaved = false;
+            src.format = FileFormat::Wav;
+            sources.push(i);
+            continue;
+        }
         let mut stem = sanitize_name(&src.name);
         if overwrite {
             // One file per source id so autosaves never collide or pile up.
@@ -545,23 +680,46 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
                 continue;
             }
         }
-        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
-        let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
-        let (name, new) = store_wav(&audio_dir, &stem, &bytes)?;
-        src.path = format!("Audio Files/{name}");
+        src.path = format!("Audio Files/{stem}_9999.wav");
         src.unsaved = false;
         src.format = FileFormat::Wav;
-        files.insert(Arc::as_ptr(audio), src.path.clone());
-        written += usize::from(new);
-    }
-    if written > 0 {
-        sync_dir(&audio_dir);
+        queued.insert(Arc::as_ptr(audio), pending.len());
+        pending.push((stem, Arc::clone(audio), vec![i]));
     }
     s.folder = Some(dir.clone());
     if !overwrite && let Some(stem) = p.file_stem().and_then(OsStr::to_str) {
         s.name = stem.to_string();
     }
-    let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
+    // Before any audio is written: a session too large to open again is not saved (#892). With no
+    // audio to write, the text checked is the text saved.
+    let checked = if pending.is_empty() {
+        let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
+        session_size(p.display(), text.len() as u64, true)?;
+        Some(text)
+    } else {
+        session_size(p.display(), json_len(&s), true)?;
+        None
+    };
+    let mut written = 0;
+    for (stem, audio, sources) in &pending {
+        make_dir(&audio_dir)?;
+        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
+        let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
+        let (name, new) = store_wav(&audio_dir, stem, &bytes)?;
+        for &i in sources {
+            if let Some(src) = s.sources.get_mut(i) {
+                src.path = format!("Audio Files/{name}");
+            }
+        }
+        written += usize::from(new);
+    }
+    if written > 0 {
+        sync_dir(&audio_dir);
+    }
+    let text = match checked {
+        Some(text) => text,
+        None => s.to_json().map_err(|err| EngineError::Io(err.to_string()))?,
+    };
     make_dir(&dir)?;
     // Atomic-ish write: temp file then rename.
     let tmp = p.with_extension("scraft.tmp");
@@ -812,10 +970,13 @@ fn read_bundle(bytes: &[u8], limits: BundleLimits) -> Result<(String, std::colle
         if total > limits.bytes {
             return Err(EngineError::Io("bundle: too large".into()));
         }
+        let is_session = !rel.contains('/') && Path::new(&rel).extension().and_then(OsStr::to_str) == Some(soundcraft_model::SESSION_EXTENSION);
+        if is_session && text.is_none() {
+            session_size(format_args!("bundle: {rel}"), size, false)?;
+        }
         let mut data = Vec::new();
         // The declared size is hostile too: never read past it.
         f.by_ref().take(size).read_to_end(&mut data).map_err(|err| EngineError::Io(format!("bundle: {rel}: {err}")))?;
-        let is_session = !rel.contains('/') && Path::new(&rel).extension().and_then(OsStr::to_str) == Some(soundcraft_model::SESSION_EXTENSION);
         if is_session && text.is_none() {
             text = Some(String::from_utf8(data).map_err(|_| EngineError::Io(format!("bundle: {rel} is not text")))?);
         } else {
@@ -977,5 +1138,46 @@ mod export_replacement_tests {
         assert!(!missing.exists());
         assert!(!std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with(".soundcraft-")));
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod clip_tests {
+    /// The browser has no disk to find earlier files on: same-named clips get their own names
+    /// from the export itself, as they do from the folder natively (#1409).
+    #[test]
+    fn same_named_clips_get_their_own_names_with_nothing_on_disk() {
+        let dir = std::env::temp_dir().join(format!("sc-clip-names-{}", std::process::id()));
+        let mut names = super::ClipNames::default();
+        for want in ["Take.wav", "Take-2.wav", "Take-3.wav"] {
+            let path = super::clip_file(&dir.to_string_lossy(), "Take", &mut names, std::path::Path::exists).unwrap();
+            assert_eq!(path, dir.join(want));
+        }
+        assert!(!dir.exists());
+    }
+
+    /// A file already in the folder is still skipped, and a run of same-named clips picks up where
+    /// the last one left off instead of looking at every earlier name again for each clip.
+    #[test]
+    fn same_named_clips_skip_files_on_disk_and_do_not_count_up_from_the_start_each_time() {
+        let dir = std::env::temp_dir().join(format!("sc-clip-disk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Take-2.wav"), b"").unwrap();
+        let looked = std::cell::Cell::new(0usize);
+        let on_disk = |p: &std::path::Path| {
+            looked.set(looked.get() + 1);
+            p.exists()
+        };
+        let mut names = super::ClipNames::default();
+        for want in ["Take.wav", "Take-3.wav", "Take-4.wav"] {
+            let path = super::clip_file(&dir.to_string_lossy(), "Take", &mut names, on_disk).unwrap();
+            assert_eq!(path, dir.join(want));
+        }
+        let before = looked.get();
+        for _ in 0..1_000 {
+            super::clip_file(&dir.to_string_lossy(), "Take", &mut names, on_disk).unwrap();
+        }
+        assert_eq!(looked.get() - before, 1_000);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
