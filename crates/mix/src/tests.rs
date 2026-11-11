@@ -1008,10 +1008,15 @@ fn a_hosted_instruments_latency_is_compensated() {
         plugin: Box::new(LatentSynth { inner: soundcraft_dsp::create("gain").unwrap(), n, t: 0, pending: None }),
     }]);
     let mut out = vec![vec![0.0; 1024]; 2];
+    let mut rendered = Vec::new();
     for b in 0..48 {
         eng.render(&s, b * 1024, 1024, &mut out);
+        rendered.extend_from_slice(&out[0]);
     }
     assert_eq!(eng.latency, n, "the hosted instrument's latency is part of the mix latency");
+    let impulses: Vec<_> = rendered.iter().enumerate().filter(|(_, v)| v.abs() > 1e-6).map(|(i, _)| i).collect();
+    assert_eq!(impulses, vec![24_000 + n], "both the audio click and instrument impulse align");
+    assert!((rendered[24_000 + n] - 0.5).abs() < 1e-6, "the aligned impulses add, neither is missing");
 }
 
 #[test]
