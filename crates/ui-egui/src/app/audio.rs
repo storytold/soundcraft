@@ -26,6 +26,9 @@ impl SoundApp {
         // The input reopens on the next record or monitor with the new choice.
         self.recorder = None;
         self.recorder_failed = false;
+        // Close the old device before opening the new one: an ASIO driver is process-wide, and
+        // dropping the old stream after the new one opened unloaded the driver from under it.
+        self.player = None;
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
         player.locate(at);
         self.player = Some(player);
@@ -121,6 +124,8 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
+        // The old device closes first (see `apply_audio_config`: an ASIO driver is process-wide).
+        self.player = None;
         self.player = Some(Player::with_config(self.engine.session_arc(), &self.ui.audio));
     }
 }

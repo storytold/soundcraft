@@ -26,6 +26,16 @@ fn the_audio_device_choice_is_kept_only_when_it_is_applied() {
     assert!(r["device"].is_object(), "{r}");
 }
 
+#[test]
+fn the_asio_control_panel_stays_shut_while_recording() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    // The control channel reaches this branch without the disabled button, so the rule is here too:
+    // a change in the driver's panel can end the take.
+    app.engine.transport.recording = true;
+    let err = app.run("ui.audio_device", json!({"control_panel": true})).unwrap_err();
+    assert!(err.contains("while recording"), "{err}");
+}
+
 fn new_app() -> SoundApp {
     SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default())
 }

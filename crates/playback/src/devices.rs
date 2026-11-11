@@ -4,6 +4,7 @@
 //! is unplugged, a rate or buffer size the device does not offer.
 
 use cpal::traits::{DeviceTrait, HostTrait};
+use std::sync::{Mutex, PoisonError};
 
 /// Rates offered when a device supports them (any rate inside a supported range is possible, but
 /// these are the ones interfaces actually run at).
@@ -92,6 +93,18 @@ fn describe(d: &cpal::Device, default_name: Option<&str>, output: bool) -> Optio
     Some(DeviceInfo { is_default: default_name == Some(name.as_str()), name, max_channels, sample_rates, buffer_min, buffer_max })
 }
 
+/// cpal's name for its ASIO host (Windows builds with the `asio` feature).
+pub const ASIO_SYSTEM: &str = "ASIO";
+/// Whether this build can open an ASIO driver's control panel.
+pub const ASIO_CONTROL_PANEL: bool = soundcraft_asio_panel::AVAILABLE;
+
+/// Opens the control panel of the ASIO driver that is open (ASIO4ALL's device choice, an
+/// interface's buffer size and clock...). Drivers do not reliably report what changed there:
+/// reopen the device afterwards.
+pub fn asio_control_panel() -> Result<(), String> {
+    soundcraft_asio_panel::open_control_panel()
+}
+
 /// Every audio system on this machine with its devices. Enumerating can take a moment (some
 /// systems probe each device): call it when the settings window opens, not every frame.
 pub fn audio_systems() -> Vec<AudioSystem> {
@@ -99,14 +112,58 @@ pub fn audio_systems() -> Vec<AudioSystem> {
     cpal::available_hosts()
         .into_iter()
         .filter_map(|id| {
-            let host = cpal::host_from_id(id).ok()?;
+            let host = shared_host(id)?;
             let def_out = host.default_output_device().as_ref().and_then(device_name);
             let def_in = host.default_input_device().as_ref().and_then(device_name);
-            let outputs = host.output_devices().map(|ds| ds.filter_map(|d| describe(&d, def_out.as_deref(), true)).collect()).unwrap_or_default();
-            let inputs = host.input_devices().map(|ds| ds.filter_map(|d| describe(&d, def_in.as_deref(), false)).collect()).unwrap_or_default();
+            let mut outputs: Vec<DeviceInfo> =
+                host.output_devices().map(|ds| ds.filter_map(|d| describe(&d, def_out.as_deref(), true)).collect()).unwrap_or_default();
+            let mut inputs: Vec<DeviceInfo> =
+                host.input_devices().map(|ds| ds.filter_map(|d| describe(&d, def_in.as_deref(), false)).collect()).unwrap_or_default();
+            if id.name() == ASIO_SYSTEM {
+                let installed = soundcraft_asio_panel::driver_names();
+                add_unlisted(&mut outputs, &installed);
+                add_unlisted(&mut inputs, &installed);
+            }
             Some(AudioSystem { name: id.name().to_string(), is_default: id == default_id, outputs, inputs })
         })
         .collect()
+}
+
+/// Adds the installed ASIO drivers cpal could not list. cpal loads each driver to describe it, and
+/// the SDK cannot load one while another is open: without this, only the open driver showed and
+/// switching to another meant going through a different audio system first. Like REAPER, every
+/// installed driver is offered; one that turns out to be absent falls back to the default.
+fn add_unlisted(list: &mut Vec<DeviceInfo>, installed: &[String]) {
+    for name in installed {
+        if !list.iter().any(|d| &d.name == name) {
+            list.push(DeviceInfo {
+                name: name.clone(),
+                is_default: false,
+                max_channels: 0,
+                // Not known until the driver is open: offer the standard choices.
+                sample_rates: STANDARD_RATES.to_vec(),
+                buffer_min: None,
+                buffer_max: None,
+            });
+        }
+    }
+}
+
+/// One cpal host per audio system for the whole process, created on first use (a handful at most,
+/// kept for good). ASIO needs this: the SDK holds a single global driver and loading any driver
+/// first unloads it, while each cpal ASIO host only knows the drivers it loaded itself. With a
+/// fresh host per call, listing devices or opening a new stream unloaded the driver a running
+/// stream used (its control panel then reported no driver). One host returns the open driver
+/// instead, and refuses to load another while it is in use.
+fn shared_host(id: cpal::HostId) -> Option<&'static cpal::Host> {
+    static HOSTS: Mutex<Vec<&'static cpal::Host>> = Mutex::new(Vec::new());
+    let mut hosts = HOSTS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(h) = hosts.iter().find(|h| h.id() == id) {
+        return Some(h);
+    }
+    let host: &'static cpal::Host = Box::leak(Box::new(cpal::host_from_id(id).ok()?));
+    hosts.push(host);
+    Some(host)
 }
 
 /// True when a cpal error means the stream is dead and only a rebuild can restore audio. cpal 0.18
@@ -149,21 +206,61 @@ pub(crate) fn supported_format_config(
 }
 
 /// The chosen audio system, else the default one.
-pub(crate) fn host(cfg: &AudioConfig) -> cpal::Host {
-    cfg.system
+pub(crate) fn host(cfg: &AudioConfig) -> Option<&'static cpal::Host> {
+    let chosen = cfg
+        .system
         .as_deref()
         .and_then(|want| cpal::available_hosts().into_iter().find(|id| id.name().eq_ignore_ascii_case(want)))
-        .and_then(|id| cpal::host_from_id(id).ok())
-        .unwrap_or_else(|| {
-            if let Some(s) = &cfg.system {
-                log::warn!("audio system `{s}` is not available; using the default");
-            }
-            cpal::default_host()
-        })
+        .and_then(shared_host);
+    chosen.or_else(|| {
+        if let Some(s) = &cfg.system {
+            log::warn!("audio system `{s}` is not available; using the default");
+        }
+        shared_host(cpal::default_host().id())
+    })
 }
 
 /// The named output (or input) device of `host`, else its default device.
+///
+/// On ASIO the input of the open driver is taken from the output's own `cpal::Device`. cpal keeps
+/// the driver's buffers per `Device` value, and the SDK makes one set of buffers for the whole
+/// driver: an input opened from a freshly listed `Device` did not know about the running output,
+/// so it remade the buffers for the input alone and the output went silent (arming a track
+/// silenced the SSL 2+). From the same `Device`, cpal makes the buffers for both.
 pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
+    static ASIO_OUTPUT: Mutex<Option<cpal::Device>> = Mutex::new(None);
+    if host.id().name() != ASIO_SYSTEM {
+        return find_device(host, name, output);
+    }
+    let mut open = ASIO_OUTPUT.lock().unwrap_or_else(PoisonError::into_inner);
+    if output {
+        // A new output starts from fresh buffers (the previous player is closed first). The cache
+        // must be cleared *before* the lookup: it holds the driver the old stream opened, and
+        // `asio-sys` refuses to load a different driver while one is loaded, so looking up the new
+        // driver first would fall back to the old one and changing it in the settings would
+        // silently do nothing.
+        *open = None;
+        let d = find_device(host, name, true);
+        open.clone_from(&d);
+        return d;
+    }
+    // No name: the open driver is the only one ASIO can use anyway. A named input that is not the
+    // open driver is ignored instead of looked up: a freshly listed `cpal::Device` carries its own
+    // ASIO stream state, so opening input from it rebuilds the driver's buffers without the output
+    // ones and playback goes silent — the failure this cache exists to prevent.
+    match open.as_ref() {
+        Some(d) if name.is_none() || device_name(d).as_deref() == name => Some(d.clone()),
+        Some(d) => {
+            if let Some(want) = name {
+                log::warn!("ASIO drives one device: input `{want}` is ignored, using the open one");
+            }
+            Some(d.clone())
+        }
+        None => find_device(host, name, false),
+    }
+}
+
+fn find_device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
     if let Some(want) = name {
         let found = if output { host.output_devices().ok() } else { host.input_devices().ok() }
             .and_then(|mut ds| ds.find(|d| device_name(d).as_deref() == Some(want)));
@@ -285,9 +382,28 @@ mod tests {
     }
 
     #[test]
+    fn installed_asio_drivers_cpal_could_not_list_are_offered() {
+        let open = DeviceInfo {
+            name: "Open Driver".into(),
+            is_default: false,
+            max_channels: 2,
+            sample_rates: vec![48_000],
+            buffer_min: Some(64),
+            buffer_max: Some(1024),
+        };
+        let mut list = vec![open.clone()];
+        add_unlisted(&mut list, &["Open Driver".into(), "Other Driver".into()]);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0], open, "a described device keeps what cpal reported");
+        assert_eq!(list[1].name, "Other Driver");
+        assert_eq!(list[1].sample_rates, STANDARD_RATES);
+        assert_eq!(list[1].buffer_sizes().len(), STANDARD_BUFFERS.len());
+    }
+
+    #[test]
     fn unknown_systems_and_devices_fall_back_to_the_defaults() {
         let cfg = AudioConfig { system: Some("No Such System".into()), ..Default::default() };
-        assert_eq!(host(&cfg).id(), cpal::default_host().id());
+        assert_eq!(host(&cfg).map(|h| h.id()), Some(cpal::default_host().id()));
         // No device with this name exists: the default (or none, on a machine without audio).
         let h = cpal::default_host();
         let fallback = device(&h, Some("No Such Device 1234"), true).as_ref().and_then(device_name);

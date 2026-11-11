@@ -1,0 +1,29 @@
+[package]
+name = "soundcraft-asio-panel"
+description = "SoundCraft: ASIO driver helpers cpal lacks (installed driver names, the loaded driver's control panel); Windows, opt-in `asio` feature; an isolated unsafe helper crate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[features]
+# Links the ASIO SDK through asio-sys, the same crate (and so the same loaded driver) cpal's
+# `asio` feature uses. Off by default, like soundcraft-playback's `asio`.
+asio = ["dep:asio-sys"]
+
+[target.'cfg(windows)'.dependencies]
+# Must resolve to the asio-sys cpal uses: the panel acts on that copy's loaded driver.
+asio-sys = { version = "0.2", optional = true }
+
+# The isolated unsafe helper crate (craftrules never-crash): this crate opts out of the workspace
+# `unsafe_code = "forbid"` for itself only. It denies unsafe everywhere and allows it solely on the
+# FFI module (`src/ffi.rs`). The rest mirrors `[workspace.lints]`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"
