@@ -454,18 +454,47 @@ pub fn create_folder(dir: &Path) -> std::io::Result<()> {
     builder.create(dir)
 }
 
-/// [`create_folder`] for a folder at a predictable place in a shared folder (the system's temporary
-/// folder): refused when it already exists with any access for group or other, as another account
-/// could have made it first and read, or replace, what is written into it.
+/// A folder at a predictable place in a shared folder (the system's temporary folder), for work only
+/// this account may see. It is created exclusively, owner-only; one that already exists must be a
+/// real folder (not a link) owned by this account and open to no one else, since another account
+/// could have made it first and could read, or swap, what is written into it.
 pub fn create_private_folder(dir: &Path) -> std::io::Result<()> {
-    create_folder(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if std::fs::metadata(dir)?.mode() & 0o077 != 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the folder already exists and is open to other accounts"));
-        }
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)?;
     }
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    match builder.create(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => check_own_private_folder(dir),
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(unix)]
+fn check_own_private_folder(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let refuse = |why: &str| Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, why.to_string()));
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.is_dir() {
+        return refuse("it exists and is not a folder");
+    }
+    if meta.mode() & 0o077 != 0 {
+        return refuse("it exists and is open to other accounts");
+    }
+    // This account's id, from a file it creates (std has no direct call for it).
+    let probe = dir.parent().unwrap_or(dir).join(format!(".soundcraft-owner-{}", std::process::id()));
+    let own = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe).and_then(|f| f.metadata());
+    let _ = std::fs::remove_file(&probe);
+    if own?.uid() != meta.uid() {
+        return refuse("it exists and belongs to another account");
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_own_private_folder(_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -686,8 +715,13 @@ mod tests {
         let dir = base.join("soundcraft-recordings-1");
         create_private_folder(&dir).unwrap();
         create_private_folder(&dir).unwrap();
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(create_private_folder(&dir).is_err());
+        assert!(create_private_folder(&dir).is_err(), "open to others");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let link = base.join("soundcraft-recordings-2");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert!(create_private_folder(&link).is_err(), "a link is not our folder");
         let _ = std::fs::remove_dir_all(&base);
     }
 
