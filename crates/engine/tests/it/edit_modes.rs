@@ -606,3 +606,21 @@ fn separate_and_range_edits_leave_locked_clips_whole() {
         }
     }
 }
+
+/// Event time edits move the entire timeline, including clips protected from ordinary edits.
+#[test]
+fn event_time_edits_split_and_move_locked_clips() {
+    for lock in ["clip.edit_lock", "clip.time_lock"] {
+        for (command, expected) in [
+            ("event.insert_time", vec![(0, 12_000, 0), (36_000, 36_000, 12_000)]),
+            ("event.cut_time", vec![(0, 12_000, 0), (12_000, 12_000, 36_000)]),
+        ] {
+            let (mut e, t, ids) = long("slip", &[(0, 48_000, 0)]);
+            run(&mut e, lock, json!({"clips": [ids[0].0]}));
+            run(&mut e, command, json!({"start": 12_000, "end": 36_000}));
+            let actual: Vec<_> = e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.length, c.source_offset())).collect();
+            assert_eq!(actual, expected, "{lock} {command}");
+            assert!(e.session().track(t).unwrap().clips().iter().all(soundcraft_engine::edit::locked));
+        }
+    }
+}
