@@ -64,7 +64,8 @@ fn max_scroll(h: &Harness<'_, SoundApp>) -> f32 {
 /// the strip (the galley's box, not the glyphs, so "T01" and "T08" line up alike).
 fn plate(h: &Harness<'_, SoundApp>, name: &str) -> Option<Pos2> {
     h.output().shapes.iter().find_map(|shape| match &shape.shape {
-        Shape::Text(text) if text.galley.job.text == name && text.pos.y > SIZE.1 - 40.0 => Some(text.pos + text.galley.size() / 2.0),
+        // The Mix keeps its scroll bar always visible, so the strip names sit a little higher.
+        Shape::Text(text) if text.galley.job.text == name && text.pos.y > SIZE.1 - 60.0 => Some(text.pos + text.galley.size() / 2.0),
         _ => None,
     })
 }

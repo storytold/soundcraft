@@ -66,18 +66,38 @@ pub(crate) fn content(app: &mut SoundApp, ui: &mut Ui) {
     // Taken for this frame only: a strip that isn't drawn (hidden track) must not scroll the Mix
     // whenever it comes back. A request made during this frame (the strip's menu) waits for the next.
     let scroll_to = app.mix_scroll_into_view.take();
-    egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 1.0;
-            for id in ids {
-                strip(app, ui, id, snap.as_ref(), scroll_to == Some(id));
+    // A solid, always-visible bar: with many tracks the strips run past the window, and a bar
+    // that only appears on hover hid that they scroll. The wheel scrolls them sideways too (no
+    // mixer control takes the wheel), as in Pro Tools' Mix window.
+    ui.spacing_mut().scroll = egui::style::ScrollStyle {
+        bar_width: 12.0,
+        foreground_color: true,
+        dormant_handle_opacity: 0.55,
+        active_handle_opacity: 0.75,
+        interact_handle_opacity: 0.9,
+        ..egui::style::ScrollStyle::solid()
+    };
+    egui::ScrollArea::horizontal()
+        .id_salt("mix_strips")
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+        .show(ui, |ui| {
+            let wheel = ui.input(|i| i.smooth_scroll_delta);
+            let over_mix = ui.ui_contains_pointer() && ui.ctx().pointer_hover_pos().and_then(|p| ui.ctx().layer_id_at(p)) == Some(ui.layer_id());
+            if wheel.x == 0.0 && wheel.y != 0.0 && over_mix {
+                ui.scroll_with_delta(egui::vec2(wheel.y, 0.0));
             }
-            let rest = Rect::from_min_max(pos2(ui.cursor().min.x, ui.clip_rect().min.y), ui.clip_rect().max);
-            if rest.width() > 4.0 && ui.interact(rest, ui.scope_id().with("past_strips"), Sense::click()).double_clicked() {
-                let _ = app.dialogs.open_for_command(&app.engine, "track.new");
-            }
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 1.0;
+                for id in ids {
+                    strip(app, ui, id, snap.as_ref(), scroll_to == Some(id));
+                }
+                let rest = Rect::from_min_max(pos2(ui.cursor().min.x, ui.clip_rect().min.y), ui.clip_rect().max);
+                if rest.width() > 4.0 && ui.interact(rest, ui.scope_id().with("past_strips"), Sense::click()).double_clicked() {
+                    let _ = app.dialogs.open_for_command(&app.engine, "track.new");
+                }
+            });
         });
-    });
 }
 
 /// Format of the destination a track's output feeds (the main mix, a bus, or stereo).

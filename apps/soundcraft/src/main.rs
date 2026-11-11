@@ -69,6 +69,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         soundcraft_ui_egui::fit_window_to_screen(ctx);
+        soundcraft_ui_egui::keep_window_drawable(ctx);
         let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized.unwrap_or(false)));
         self.0.ui.window_maximized = maximized;
         if let Some(r) = inner.filter(|_| !maximized) {
@@ -251,6 +252,12 @@ fn main() -> eframe::Result {
         "SoundCraft",
         options,
         Box::new(move |cc| {
+            // wgpu treats any uncaught error as fatal. A window resized beyond the GPU's texture
+            // limit (seen with a tiling window manager: a 29423-pixel-wide surface) then closed
+            // the app at launch; log it instead, and the windows are brought back within the limit.
+            if let Some(rs) = &cc.wgpu_render_state {
+                rs.device.on_uncaptured_error(Arc::new(|e: eframe::wgpu::Error| log::error!("graphics error (not fatal): {e}")));
+            }
             let player =
                 if no_audio { None } else { Some(soundcraft_playback::Player::with_config(Arc::new(engine.session().clone()), &prefs.audio)) };
             let mut app = SoundApp::new(engine, player, services());
@@ -292,13 +299,34 @@ fn main() -> eframe::Result {
 }
 
 /// A saved window size, or the default when the prefs file holds nonsense (NaN, negative, tiny).
+/// Largest startup side, in logical points. `with_inner_size` takes points, not pixels, and the
+/// scale factor is unknown until the native window exists, so the cap assumes 2x: at 2.0 a side of
+/// this many points is exactly [`soundcraft_ui_egui::MAX_WINDOW_SIDE`] physical pixels. A bigger
+/// window than this is larger than any display anyway.
+const STARTUP_SIDE: f32 = soundcraft_ui_egui::MAX_WINDOW_SIDE / 2.0;
+
 fn sane_window_size([w, h]: [f32; 2]) -> [f32; 2] {
-    if w.is_finite() && h.is_finite() && w >= 960.0 && h >= 600.0 { [w.min(16_384.0), h.min(16_384.0)] } else { [1600.0, 1000.0] }
+    // Capped here as well as per frame: eframe makes the first surface before the app exists, so a
+    // restored window wider than the GPU can draw failed at launch, before the guard could shrink it.
+    let max = STARTUP_SIDE;
+    if w.is_finite() && h.is_finite() && w >= 960.0 && h >= 600.0 { [w.min(max), h.min(max)] } else { [1600.0, 1000.0] }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::set_title;
+    use super::{STARTUP_SIDE, sane_window_size, set_title};
+
+    #[test]
+    fn a_restored_window_never_starts_wider_than_the_gpu_can_draw() {
+        let max = STARTUP_SIDE;
+        assert_eq!(sane_window_size([29_423.0, 1200.0]), [max, 1200.0], "a saved size past the limit is cut at launch");
+        assert_eq!(sane_window_size([1200.0, 29_423.0]), [1200.0, max]);
+        assert_eq!(sane_window_size([1600.0, 1000.0]), [1600.0, 1000.0], "a sane size is left alone");
+        assert_eq!(sane_window_size([f32::NAN, 1000.0]), [1600.0, 1000.0], "a broken value falls back");
+        // The size arrives in points: at 2x the largest startup window is exactly what wgpu can draw.
+        assert_eq!(max * 2.0, soundcraft_ui_egui::MAX_WINDOW_SIDE, "a 2.0-scale display stays inside the pixel limit");
+        assert!(max * 2.0 * 1.5 > soundcraft_ui_egui::MAX_WINDOW_SIDE, "so is a 3.0-scale one, where the screen is the limit");
+    }
 
     #[test]
     fn the_title_is_sent_only_when_it_changes() {

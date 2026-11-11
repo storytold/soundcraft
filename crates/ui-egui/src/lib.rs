@@ -234,6 +234,24 @@ pub fn fit_window_to_screen(ctx: &egui::Context) {
     }
 }
 
+/// Largest window side, in physical pixels, that every GPU backend can draw (wgpu's default
+/// `max_texture_dimension_2d`).
+pub const MAX_WINDOW_SIDE: f32 = 8192.0;
+
+/// Brings the current viewport back within [`MAX_WINDOW_SIDE`] when something (a tiling window
+/// manager, a monitor change) made it larger than the GPU can draw. Call every frame, for each
+/// native window.
+pub fn keep_window_drawable(ctx: &egui::Context) {
+    let (inner, ppp) = ctx.input(|i| (i.viewport().inner_rect, i.pixels_per_point));
+    // Without a window position (Wayland) there is no `inner_rect`; the drawn area has the size.
+    let r = inner.unwrap_or_else(|| ctx.content_rect());
+    let max = MAX_WINDOW_SIDE / ppp.max(0.1);
+    if r.width() > max || r.height() > max {
+        log::warn!("window of {:.0}x{:.0} points is larger than the GPU can draw; shrinking it", r.width(), r.height());
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(r.width().min(max), r.height().min(max))));
+    }
+}
+
 /// Ballistic meter display state per strip.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MeterDisplay {
