@@ -454,6 +454,21 @@ pub fn create_folder(dir: &Path) -> std::io::Result<()> {
     builder.create(dir)
 }
 
+/// [`create_folder`] for a folder at a predictable place in a shared folder (the system's temporary
+/// folder): refused when it already exists with any access for group or other, as another account
+/// could have made it first and read, or replace, what is written into it.
+pub fn create_private_folder(dir: &Path) -> std::io::Result<()> {
+    create_folder(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if std::fs::metadata(dir)?.mode() & 0o077 != 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the folder already exists and is open to other accounts"));
+        }
+    }
+    Ok(())
+}
+
 fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut f = std::fs::File::create(path)?;
     f.write_all(bytes)?;
@@ -660,6 +675,19 @@ mod tests {
         assert_eq!((mode(&earlier), mode(&earlier.join("Audio Files"))), (0o755, 0o700));
         w.close(false);
         w.flush().unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_private_folder_is_refused_when_it_already_exists_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = folder("private-folder");
+        let dir = base.join("soundcraft-recordings-1");
+        create_private_folder(&dir).unwrap();
+        create_private_folder(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(create_private_folder(&dir).is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
 

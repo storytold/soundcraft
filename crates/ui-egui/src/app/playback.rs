@@ -155,7 +155,13 @@ impl SoundApp {
     /// autosave folder. Returns the takes it records.
     fn arm_recorder(&mut self) -> Result<Vec<soundcraft_engine::io::Take>, String> {
         let name = soundcraft_engine::io::sanitize_name(&self.engine.session().name);
-        let unsaved_dir = self.autosave_dir.as_ref().map_or_else(std::env::temp_dir, |d| d.join(name));
+        // Without autosave storage the takes of a session never saved go to a folder of their own under
+        // the shared temporary folder, made private below, not into the shared folder itself.
+        let shared_temp = self.autosave_dir.is_none();
+        let unsaved_dir = self
+            .autosave_dir
+            .as_ref()
+            .map_or_else(|| std::env::temp_dir().join(format!("soundcraft-recordings-{}", std::process::id())), |d| d.join(name));
         let Some(r) = &mut self.recorder else { return Err("no audio input device".into()) };
         let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels);
         if plan.is_empty() {
@@ -163,9 +169,17 @@ impl SoundApp {
         }
         // The takes are unsaved work: the folder they go into under the autosave root is
         // owner-only, like the autosaves, before the recorder makes anything in it.
-        if self.engine.path.is_none() && self.autosave_dir.is_some() {
+        if self.engine.path.is_none() {
+            if shared_temp {
+                soundcraft_engine::autosave::create_private_folder(&unsaved_dir).map_err(|e| format!("{}: {e}", unsaved_dir.display()))?;
+            }
             for dir in plan.iter().filter_map(|(_, _, path)| path.parent()) {
-                soundcraft_engine::autosave::create_folder(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                let made = if shared_temp {
+                    soundcraft_engine::autosave::create_private_folder(dir)
+                } else {
+                    soundcraft_engine::autosave::create_folder(dir)
+                };
+                made.map_err(|e| format!("{}: {e}", dir.display()))?;
             }
         }
         let takes = plan
