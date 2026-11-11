@@ -733,21 +733,55 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
         return deliver(name, bytes).map_err(EngineError::Io);
     }
     crate::file_access::check_write(path).map_err(EngineError::Io)?;
+    // Replacing a link itself would leave its intended target unchanged. Follow an existing
+    // link, but refuse a dangling one even without automation roots rather than destroying it.
+    let named = Path::new(path);
+    let path = match std::fs::symlink_metadata(named) {
+        Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(named).map_err(|err| EngineError::Io(format!("{path}: {err}")))?,
+        Ok(_) => named.to_path_buf(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => named.to_path_buf(),
+        Err(err) => return Err(EngineError::Io(format!("{path}: {err}"))),
+    };
+    crate::file_access::check_write(&path).map_err(EngineError::Io)?;
+    let metadata = match std::fs::metadata(&path) {
+        Ok(m) if m.is_file() => Some(m),
+        Ok(_) => return Err(EngineError::Io(format!("{}: not a regular file", path.display()))),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(EngineError::Io(format!("{}: {err}", path.display()))),
+    };
+    #[cfg(unix)]
+    let permissions = metadata.map(|m| m.permissions());
+    #[cfg(not(unix))]
+    let _ = metadata;
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-    let path = Path::new(path);
     let dir = path.parent().unwrap_or(Path::new("."));
     for _ in 0..100 {
         let tmp = dir.join(format!(".soundcraft-{}-{}.tmp", std::process::id(), NEXT_TEMP.fetch_add(1, Ordering::Relaxed)));
         crate::file_access::check_write(&tmp).map_err(EngineError::Io)?;
-        let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // Keep incomplete exports private, independently of the process umask.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&tmp) {
             Ok(file) => file,
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(EngineError::Io(format!("{}: {err}", path.display()))),
         };
         use std::io::Write as _;
-        let written = file.write_all(bytes).and_then(|()| file.sync_all());
+        let written = (|| {
+            file.write_all(bytes)?;
+            #[cfg(unix)]
+            if let Some(mode) = permissions.as_ref() {
+                file.set_permissions(mode.clone())?;
+            }
+            file.sync_all()
+        })();
         drop(file);
-        return replace_with(&tmp, path, written);
+        return replace_with(&tmp, &path, written);
     }
     Err(EngineError::Io(format!("{}: no free temporary file name", path.display())))
 }
@@ -872,5 +906,76 @@ mod stem_tests {
         assert!(plain_error <= 0.5 + 1e-3, "{plain_error}");
         assert!(dithered_error > 0.6, "{dithered_error}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+#[cfg(test)]
+mod export_replacement_tests {
+    use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("soundcraft-export-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+    #[test]
+    fn export_replacement_detaches_hard_links_and_refuses_nonfiles() {
+        let dir = scratch("hard-links");
+        let original = dir.join("original.mid");
+        let destination = dir.join("export.mid");
+        std::fs::write(&original, b"old").unwrap();
+        std::fs::hard_link(&original, &destination).unwrap();
+        write_file(destination.to_str().unwrap(), b"new").unwrap();
+        assert_eq!(std::fs::read(&original).unwrap(), b"old");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new");
+        let folder = dir.join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        assert!(write_file(folder.to_str().unwrap(), b"new").is_err());
+        assert!(folder.is_dir());
+        assert!(!std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with(".soundcraft-")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn export_replacement_preserves_existing_permissions_and_new_files_are_private() {
+        let dir = scratch("permissions");
+        for mode in [0o600, 0o640] {
+            let path = dir.join(format!("{mode:o}.mid"));
+            std::fs::write(&path, b"old").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            write_file(path.to_str().unwrap(), b"new").unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"new");
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, mode);
+        }
+        let path = dir.join("new.mid");
+        write_file(path.to_str().unwrap(), b"new").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn export_replacement_preserves_a_symlink_and_refuses_a_dangling_one() {
+        let dir = scratch("symlinks");
+        let target = dir.join("target.mid");
+        let link = dir.join("link.mid");
+        std::fs::write(&target, b"old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        symlink("target.mid", &link).unwrap();
+        for confined in [false, true] {
+            let roots = if confined { crate::file_access::AutomationRoots::new(&[], &[&dir]).unwrap() } else { None };
+            crate::file_access::confine(roots.as_ref(), || write_file(link.to_str().unwrap(), b"new")).unwrap();
+            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::read(&target).unwrap(), b"new");
+            assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let missing = dir.join("missing.mid");
+        let dangling = dir.join("dangling.mid");
+        symlink(&missing, &dangling).unwrap();
+        assert!(write_file(dangling.to_str().unwrap(), b"new").is_err());
+        assert!(std::fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
+        assert!(!missing.exists());
+        assert!(!std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with(".soundcraft-")));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
