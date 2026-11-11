@@ -51,6 +51,36 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     std::fs::read(path).map_err(err)
 }
 
+/// [`read_file`] for a file that must lie inside `root` (a canonical folder): the file is opened
+/// once, and the bytes come from that handle only after the handle is shown to be the file the
+/// path resolves to inside `root`. A file swapped in for the path after a check by name is
+/// refused instead of read. Where the handle's identity can't be read (non-Unix targets) the
+/// resolved path is checked against `root` alone.
+pub(crate) fn read_file_within(path: &Path, root: &Path) -> Result<Vec<u8>> {
+    use std::io::Read;
+    crate::file_access::check_read(path).map_err(EngineError::Io)?;
+    let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
+    let mut file = std::fs::File::open(path).map_err(err)?;
+    if !file.metadata().map_err(err)?.is_file() {
+        return Err(EngineError::Io(format!("{}: not a regular file", path.display())));
+    }
+    let key = canonical_path(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (a, b) = (file.metadata().map_err(err)?, std::fs::metadata(&key).map_err(err)?);
+        if (a.dev(), a.ino()) != (b.dev(), b.ino()) {
+            return Err(EngineError::Io(format!("{}: changed while it was opened", path.display())));
+        }
+    }
+    if !key.starts_with(root) {
+        return Err(EngineError::Io(format!("{}: outside the folder it must stay in", path.display())));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(err)?;
+    Ok(bytes)
+}
+
 /// [`read_file`] as UTF-8 text.
 pub fn read_text(path: impl AsRef<Path>) -> Result<String> {
     let path = path.as_ref();
@@ -848,6 +878,22 @@ mod exclusive_tests {
         // A leftover regular part file is still replaced.
         write_synced(&part, b"newer").unwrap();
         assert_eq!(std::fs::read(&part).unwrap(), b"newer");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_read_within_a_root_must_resolve_inside_it() {
+        let dir = scratch("within");
+        let (inside, outside) = (dir.join("group"), dir.join("elsewhere"));
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(inside.join("a.wav"), b"a").unwrap();
+        std::fs::write(outside.join("b.wav"), b"b").unwrap();
+        std::os::unix::fs::symlink(outside.join("b.wav"), inside.join("link.wav")).unwrap();
+        let root = canonical_path(&inside).unwrap();
+        assert_eq!(read_file_within(&inside.join("a.wav"), &root).unwrap(), b"a");
+        assert!(read_file_within(&inside.join("link.wav"), &root).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
