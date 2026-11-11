@@ -124,8 +124,10 @@ const MAX_UNIVERSE_THUMBS: usize = 1 << 12;
 /// the origin (a clip starting a billion points left) cannot step by a thumbnail's width.
 fn thumb_xs(clip_x: f32, shown_min: f32, shown_max: f32, tw: f32) -> impl Iterator<Item = f32> {
     let (origin, tw) = (f64::from(clip_x), f64::from(tw));
+    // Nothing of the clip is in view when the shown span is empty (or inverted).
+    let empty = shown_max <= shown_min;
     let first = ((f64::from(shown_min) - origin) / tw).floor().max(0.0);
-    let count = ((f64::from(shown_max) - origin) / tw - first).ceil().max(0.0) as usize;
+    let count = if empty { 0 } else { ((f64::from(shown_max) - origin) / tw - first).ceil().max(0.0) as usize };
     (0..count.min(MAX_UNIVERSE_THUMBS)).map(move |i| (origin + (first + i as f64) * tw) as f32)
 }
 
@@ -208,6 +210,9 @@ mod tests {
         assert_eq!(xs[0], 0.0);
         // a clip inside the strip starts at its own edge
         assert_eq!(thumb_xs(10.0, 10.0, 34.0, 8.0).collect::<Vec<_>>(), vec![10.0, 18.0, 26.0]);
+        // a clip ending left of the strip (the shown span is empty or inverted) draws none
+        assert_eq!(thumb_xs(-10.0, 0.0, -1.0, 8.0).count(), 0);
+        assert_eq!(thumb_xs(-10.0, 0.0, 0.0, 8.0).count(), 0);
     }
 
     // A 1024 px strip over 1_024_000 samples: 1000 samples per point, exact in f32.
