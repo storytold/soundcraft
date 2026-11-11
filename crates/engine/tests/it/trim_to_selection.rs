@@ -59,3 +59,27 @@ fn edit_trim_skips_locked_clips() {
         "only unlocked clips trim; the edit-locked and time-locked ones keep their extent"
     );
 }
+
+/// A lock on one clip must not suppress eligible unlocked clips on the same track.
+#[test]
+fn insertion_trims_still_trim_unlocked_clips_beside_both_lock_kinds() {
+    for (command, expected_start) in [("edit.trim_start_to_insertion", 50), ("edit.trim_end_to_insertion", 0)] {
+        let (mut session, track, ids) = three_clip_session();
+        for clip in &mut session.track_mut(track).unwrap().playlist_mut().unwrap().clips {
+            clip.start = 0;
+        }
+        let before = session.clone();
+        let mut engine = Engine::new(session);
+        let result = engine.execute(command, &json!({"tracks": [track.0], "at": 50})).unwrap();
+        assert_eq!(result["trimmed"], json!(1), "{command}");
+        let clips = engine.session().track(track).unwrap().clips();
+        let free = clips.iter().find(|c| c.id == ids[0]).unwrap();
+        assert_eq!((free.start, free.length), (expected_start, 50), "{command}");
+        for id in &ids[1..] {
+            let locked = clips.iter().find(|c| c.id == *id).unwrap();
+            assert_eq!((locked.start, locked.length), (0, 100), "{command}");
+        }
+        assert!(engine.undo());
+        assert_eq!(engine.session(), &before, "{command} undo");
+    }
+}
