@@ -1062,6 +1062,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-audio"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=75895c0321d8cb6e175a42466cba050352b117c5#75895c0321d8cb6e175a42466cba050352b117c5"
+dependencies = [
+ "craft-media",
+ "log",
+ "serde",
+ "symphonia",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-docpath"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=6e03f65bf45181db77ba6229716e6624db9eb25b#6e03f65bf45181db77ba6229716e6624db9eb25b"
@@ -1097,8 +1109,9 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=6e03f65bf45181db77ba6229716e6624db9eb25b#6e03f65bf45181db77ba6229716e6624db9eb25b"
+source = "git+https://github.com/storytold/craft-libs?rev=75895c0321d8cb6e175a42466cba050352b117c5#75895c0321d8cb6e175a42466cba050352b117c5"
 dependencies = [
+ "serde",
  "thiserror 2.0.21",
 ]
 
@@ -4342,10 +4355,11 @@ dependencies = [
 
 [[package]]
 name = "soundcraft"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "chrono",
  "clap",
+ "craft-audio",
  "craft-quit",
  "craft-update",
  "eframe",
@@ -4356,7 +4370,6 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "rfd",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-automation",
  "soundcraft-engine",
  "soundcraft-playback",
@@ -4367,7 +4380,7 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-au-host"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "log",
  "serde",
@@ -4376,25 +4389,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "soundcraft-audio-io"
-version = "0.19.1"
-dependencies = [
- "log",
- "proptest",
- "serde",
- "serde_json",
- "symphonia",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "soundcraft-automation"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "clap",
+ "craft-audio",
  "log",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-engine",
  "soundcraft-time",
  "thiserror 2.0.21",
@@ -4402,7 +4403,7 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-clap-host"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "clap-sys",
  "libloading 0.9.0",
@@ -4415,16 +4416,16 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-cli"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
+ "craft-audio",
  "log",
  "same-file",
  "serde",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-automation",
  "soundcraft-dsp",
  "soundcraft-engine",
@@ -4433,7 +4434,7 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-dsp"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "log",
  "proptest",
@@ -4444,15 +4445,15 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-engine"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
+ "craft-audio",
  "craft-docpath",
  "log",
  "proptest",
  "serde",
  "serde_json",
  "soundcraft-au-host",
- "soundcraft-audio-io",
  "soundcraft-clap-host",
  "soundcraft-dsp",
  "soundcraft-midi",
@@ -4468,7 +4469,7 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-midi"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "proptest",
  "serde",
@@ -4478,12 +4479,12 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-mix"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
+ "craft-audio",
  "log",
  "rayon",
  "soundcraft-au-host",
- "soundcraft-audio-io",
  "soundcraft-clap-host",
  "soundcraft-dsp",
  "soundcraft-midi",
@@ -4494,12 +4495,12 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-model"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
+ "craft-audio",
  "proptest",
  "serde",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-midi",
  "soundcraft-time",
  "thiserror 2.0.21",
@@ -4507,13 +4508,13 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-playback"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "cpal",
+ "craft-audio",
  "log",
  "serde",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-dsp",
  "soundcraft-mix",
  "soundcraft-model",
@@ -4522,7 +4523,7 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-time"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "proptest",
  "serde",
@@ -4532,8 +4533,9 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-ui-egui"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
+ "craft-audio",
  "craft-ui",
  "craft-update",
  "egui",
@@ -4544,7 +4546,6 @@ dependencies = [
  "serde",
  "serde_json",
  "soundcraft-au-host",
- "soundcraft-audio-io",
  "soundcraft-clap-host",
  "soundcraft-dsp",
  "soundcraft-engine",
@@ -4562,7 +4563,7 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-video"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "craft-media",
  "image",
@@ -4574,7 +4575,7 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-vst3-host"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "libloading 0.9.0",
  "log",
@@ -4590,15 +4591,15 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-web"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
+ "craft-audio",
  "eframe",
  "egui",
  "js-sys",
  "log",
  "rfd",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-engine",
  "soundcraft-model",
  "soundcraft-playback",
@@ -6238,7 +6239,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "serde_json",
 ]

@@ -11,7 +11,7 @@ fn source(id: u64, frames: u64) -> Source {
         channels: 1,
         frames,
         sample_rate: 48_000,
-        format: soundcraft_audio_io::FileFormat::Wav,
+        format: soundcraft_model::FileFormat::Wav,
         time_reference: 0,
         unsaved: false,
     }
@@ -467,11 +467,10 @@ fn start_trims_keep_the_sync_point_on_its_audio() {
 
 #[test]
 fn imported_time_stamps_count_at_the_session_rate() {
-    use soundcraft_audio_io::{AudioBuffer, BwfInfo, EncodeOptions, FileFormat};
+    use craft_audio::{AudioBuffer, BwfInfo, EncodeOptions};
     let mut e = Engine::default();
-    let bwf = BwfInfo { time_reference: 1_587_600_000, ..BwfInfo::default() };
-    let opts = EncodeOptions { format: FileFormat::Wav, bwf: Some(bwf), ..EncodeOptions::default() };
-    let bytes = soundcraft_audio_io::encode(&AudioBuffer::new(44_100, 1, 441), &opts).unwrap();
+    let opts = EncodeOptions::default().with_bwf(BwfInfo::default().with_time_reference(1_587_600_000));
+    let bytes = craft_audio::encode(&AudioBuffer::new(44_100, 1, 441), &opts).unwrap();
     soundcraft_engine::io::import_audio_bytes(&mut e, "stamped.wav", &bytes, None, None, 0).unwrap();
     assert_eq!(e.session().sources[0].time_reference, 1_728_000_000);
 }
