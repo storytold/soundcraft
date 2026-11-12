@@ -48,4 +48,6 @@ pub(crate) fn unicode(path: &Path) -> Result<&str, CliError> {
 pub(crate) enum ConvertError {
     #[error("{}: cannot write `.{ext}` files (supported: {})", output.display(), craft_audio::ENCODE_EXTENSIONS.join(", "))]
     OutputFormat { output: PathBuf, ext: String },
+    #[error("{}: {packets} damaged packet(s) would be written as silence; not replacing the file (convert to another file to keep what decodes)", input.display())]
+    Damaged { input: PathBuf, packets: u64 },
 }

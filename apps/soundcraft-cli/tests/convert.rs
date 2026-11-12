@@ -118,3 +118,55 @@ fn convert_keeps_the_bwf_time_stamp() {
     assert_eq!(bext(&out), Some(bwf.with_time_reference(158_760_000)));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Twelve MPEG-1 Layer I frames (mono, 32 kHz, 48 bytes each) of silence. The seventh has the
+/// forbidden bit allocation 15 in every subband: the decoder writes silence for it and counts it.
+fn mp1_with_a_damaged_frame() -> Vec<u8> {
+    let header = [0xFF, 0xFF, 0x18, 0xC0];
+    let good = [&header[..], &[0; 44]].concat();
+    let bad = [&header[..], &[0xFF; 16], &[0; 28]].concat();
+    (0..12).flat_map(|i| if i == 6 { bad.clone() } else { good.clone() }).collect()
+}
+
+#[test]
+fn convert_warns_about_damaged_packets_and_never_replaces_the_source_with_them() {
+    let dir = tmpdir("damaged");
+    let src = dir.join("take.mp1");
+    let bytes = mp1_with_a_damaged_frame();
+    std::fs::write(&src, &bytes).unwrap();
+    let run = |args: &[&std::ffi::OsStr]| {
+        Command::new(env!("CARGO_BIN_EXE_soundcraft-cli")).env("SOUNDCRAFT_NO_PREFS", "1").arg("convert").args(args).output().unwrap()
+    };
+    // To another file: written, with a warning that says how much was lost.
+    let out = dir.join("take.wav");
+    let o = run(&[src.as_os_str(), out.as_os_str()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let warning = format!("warning: {}: 1 damaged packet(s) decoded as silence\n", src.display());
+    assert_eq!(String::from_utf8_lossy(&o.stderr), warning);
+    assert_eq!(steps16(&out).len(), 12 * 384);
+    // Over the source: refused, and the source is untouched.
+    let o = run(&[src.as_os_str(), src.as_os_str(), "--in-place".as_ref()]);
+    assert_eq!(o.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(stderr.starts_with(&format!("error: {}: 1 damaged packet(s) would be written as silence", src.display())), "{stderr}");
+    assert_eq!(std::fs::read(&src).unwrap(), bytes);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn convert_keeps_the_speaker_layout() {
+    use craft_audio::ChannelLayout;
+    let dir = tmpdir("layout");
+    let (src, out) = (dir.join("side.wav"), dir.join("out.wav"));
+    // 5.1 with side surrounds: not the layout a reader assumes for six channels.
+    let opts = EncodeOptions::default().with_layout(ChannelLayout::SURROUND_5_1_SIDE);
+    std::fs::write(&src, craft_audio::encode(&AudioBuffer::new(48_000, 6, 480), &opts).unwrap()).unwrap();
+    let layout = |p: &Path| craft_audio::probe(&std::fs::read(p).unwrap(), None).unwrap().layout;
+    assert_eq!(layout(&src), ChannelLayout::SURROUND_5_1_SIDE);
+    convert(&src, &out, &[]);
+    assert_eq!(layout(&out), ChannelLayout::SURROUND_5_1_SIDE);
+    let flac = dir.join("out.flac");
+    convert(&src, &flac, &[]);
+    assert_eq!(layout(&flac), ChannelLayout::SURROUND_5_1_SIDE);
+    let _ = std::fs::remove_dir_all(&dir);
+}
