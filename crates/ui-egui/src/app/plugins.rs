@@ -260,6 +260,12 @@ impl SoundApp {
 
     pub(crate) fn store_editor_changes(&mut self, edits: Vec<soundcraft_playback::EditorEdit>, states: soundcraft_playback::PluginStates) {
         for (t, slot, param, value) in edits {
+            // A plugin can report NaN or infinity. JSON has no such number, so the value would be
+            // sent as null: an insert command fails, and a queued instrument value would fail on
+            // every store and stay queued for good. Drop it here; the state blob still holds it.
+            if !value.is_finite() {
+                continue;
+            }
             if slot == soundcraft_mix::INSTRUMENT_SLOT {
                 // The instrument's state carries its edits. A value the session holds as well (set
                 // by command) follows the editor when the state is stored, or it would undo the edit
