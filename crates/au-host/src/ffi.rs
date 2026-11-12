@@ -548,6 +548,13 @@ pub struct Instance {
 // it (the host time is all atomics).
 unsafe impl Send for Instance {}
 
+/// Whether parameter text may go to the unit: not empty, no embedded NUL (as CLAP and VST3
+/// refuse), and at most 256 Unicode scalars, counted only as far as the 257th so a huge string
+/// is not scanned to the end.
+fn param_text_fits(text: &str) -> bool {
+    !text.is_empty() && !text.contains('\0') && text.chars().nth(256).is_none()
+}
+
 impl Instance {
     /// Creates (but does not initialize) the component `(ty, subtype, manufacturer)`.
     pub fn new(ty: u32, subtype: u32, manufacturer: u32, has_input: bool) -> Result<Instance, String> {
@@ -820,7 +827,7 @@ impl Instance {
     }
 
     pub fn value_from_text(&self, id: u32, text: &str) -> Option<f32> {
-        if text.is_empty() || text.chars().count() > 256 {
+        if !param_text_fits(text) {
             return None;
         }
         // SAFETY: CoreFoundation copies the live UTF-8 byte slice into a new CFString.
@@ -1029,6 +1036,15 @@ impl Drop for Instance {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parameter_text_is_refused_when_empty_with_a_nul_or_past_256_scalars() {
+        assert!(param_text_fits("12.5 ms"));
+        assert!(param_text_fits(&"é".repeat(256)), "256 scalars still fit, whatever their byte length");
+        assert!(!param_text_fits(&"é".repeat(257)));
+        assert!(!param_text_fits(""));
+        assert!(!param_text_fits("1\0"));
+    }
+
     use super::*;
 
     #[test]
