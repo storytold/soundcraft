@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Store Plugin State",
         menu: &[],
         shortcut: None,
-        params: "{track, slot (required, no default): 0..9 | \"a\"..\"j\" | \"instrument\", state: base64 | null, params?: {id: number}} → {bytes}. `params` keys are parameter ids as strings (a numeric hosted id is written as its decimal text); unknown ids and non-finite values are errors, values are clamped and rounded like mix.insert_params. The state is not undoable and not journaled (states can be large). `params`, when a value changes, is stored in that same edit as one undo step and is not journaled.",
+        params: "{track, slot (required, no default): 0..9 | \"a\"..\"j\" | \"instrument\", state: base64 | null, params?: {id: number}} → {bytes}. `params` keys are parameter ids as strings (a numeric hosted id is written as its decimal text); unknown ids and non-finite values are errors, values are clamped and rounded like mix.insert_params. Unlike mix.insert_params, a key is only the exact id and a value only a number, never a name or text: this is the app's capture path, which has both; names and text go through mix.insert_params. The state is not undoable and not journaled (states can be large). `params`, when a value changes, is stored in that same edit as one undo step and is not journaled.",
         enabled: has_tracks,
         run: insert_state,
         journal: false,
@@ -60,8 +60,10 @@ fn state_matches(ins: &soundcraft_model::Insert, state: Option<&[u8]>) -> bool {
     ins.state_bytes().as_deref() == state.filter(|b| !b.is_empty())
 }
 
-/// Optional `params` on `mix.insert_state`. Absent or empty stores nothing. Keys are parameter
-/// ids; values are finite numbers, clamped the same way as `mix.insert_params`.
+/// Optional `params` on `mix.insert_state`. Absent or empty stores nothing. Keys are exact
+/// parameter ids; values are finite numbers, clamped the same way as `mix.insert_params`. Names
+/// and text are deliberately not resolved here: the app's editor capture always has the id and
+/// the number, and a name match could store a different parameter than the editor moved.
 fn param_writes(e: &Engine, track: soundcraft_model::TrackId, slot: Option<usize>, p: &Value) -> Result<Vec<(String, f32)>> {
     let Some(raw) = p.get("params") else { return Ok(Vec::new()) };
     let obj = raw.as_object().ok_or_else(|| bad(CMD, "`params` must be an object"))?;
@@ -374,6 +376,23 @@ mod tests {
         ] {
             assert!(e.execute("mix.insert_state", &p).is_err(), "{p}");
         }
+    }
+
+    #[test]
+    fn params_take_exact_ids_and_numbers_not_names_or_text() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({})).unwrap();
+        let t = e.session().tracks[0].id.0;
+        e.execute("mix.insert", &json!({"track": t, "plugin": "gain", "slot": 0})).unwrap();
+        let gain = |e: &Engine| e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().params.get("gain").copied();
+        let before = gain(&e);
+        let err = e.execute("mix.insert_state", &json!({"track": t, "slot": 0, "state": null, "params": {"Gain": -6.0}})).unwrap_err();
+        assert!(err.to_string().contains("has no parameter(s): Gain"), "a name, or an id in another case, is not a key here: {err}");
+        let err = e.execute("mix.insert_state", &json!({"track": t, "slot": 0, "state": null, "params": {"gain": "-6 dB"}})).unwrap_err();
+        assert!(err.to_string().contains("need a numeric value: gain"), "text is not a value here: {err}");
+        assert_eq!(gain(&e), before, "a refused call stores nothing");
+        e.execute("mix.insert_state", &json!({"track": t, "slot": 0, "state": null, "params": {"gain": -6.0}})).unwrap();
+        assert_eq!(gain(&e), Some(-6.0));
     }
 
     /// `slot` has no default here: the instrument and insert 0 are both plausible targets for a
