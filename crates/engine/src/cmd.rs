@@ -26,6 +26,7 @@ mod more_util;
 mod options;
 mod plugin_state;
 mod query;
+mod room_tone;
 pub(crate) mod sampler;
 mod setup_more;
 mod strip_silence;
@@ -162,6 +163,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(video::specs());
         v.extend(zoom_toggle::specs());
         v.extend(strip_silence::specs());
+        v.extend(room_tone::specs());
         #[cfg(test)]
         v.extend(panic_probe::specs());
         v
