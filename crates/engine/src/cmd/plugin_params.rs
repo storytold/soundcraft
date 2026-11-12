@@ -464,9 +464,7 @@ mod tests {
         let track = e.session().tracks[0].id.0;
         let result = e.execute(CMD, &json!({"track": track, "slot": "instrument", "limit": 1000})).unwrap();
         let params = listed_params(&result);
-        if params.is_empty() {
-            return; // no parameters reported on this system
-        }
+        assert!(!params.is_empty(), "Apple DLS ships with macOS and reports parameters");
         assert!(params.iter().all(|param| param.get("id").and_then(Value::as_str).and_then(|id| id.parse::<u32>().ok()).is_some()));
         assert!(params.iter().all(|param| param.get("display") == Some(&Value::Null)));
 

@@ -669,25 +669,21 @@ fn insert_params_applies_nothing_when_one_text_value_is_bad() {
 
 /// Apple's Delay unit ships with macOS. A parameter is set from the text that unit itself
 /// produces, and the stored number round-trips.
+/// Ignored, not skipped: a green run must not claim AU text conversion was exercised.
 #[cfg(target_os = "macos")]
 #[test]
+#[ignore = "no Apple Audio Unit converts parameter text (all 26 checked); run with --ignored against a unit that does"]
 fn apple_au_parameter_text_round_trips() {
     let id = "au:aufx:dely:appl";
-    if super::super::clap::plugin_info(id).is_none() {
-        eprintln!("{id} not installed; skipping");
-        return;
-    }
+    assert!(super::super::clap::plugin_info(id).is_some(), "{id} ships with macOS");
     let mut e = Engine::default();
     e.execute("track.new", &json!({})).unwrap();
     let t = e.session().tracks[0].id.0;
     e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": id})).unwrap();
     let rate = e.session().sample_rate.as_f64() as f32;
-    let Some(insert) = e.session().tracks[0].mixer.inserts[0].clone() else { return };
+    let insert = e.session().tracks[0].mixer.inserts[0].clone().expect("inserted");
     let state = insert.state_bytes();
-    let Some(mut probe) = soundcraft_mix::create_instance(id, state.as_deref(), rate, 512, 2) else {
-        eprintln!("{id} did not instantiate; skipping");
-        return;
-    };
+    let mut probe = soundcraft_mix::create_instance(id, state.as_deref(), rate, 512, 2).expect("Apple Delay instantiates");
     for (pid, value) in &insert.params {
         probe.plugin.set_param(pid, *value);
     }
@@ -723,8 +719,7 @@ fn apple_au_parameter_text_round_trips() {
         }
     }
     let Some((pid, candidate, text, tolerance)) = chosen.or(fallback) else {
-        eprintln!("{id} exposes no parameter string conversion; skipping");
-        return;
+        panic!("{id} exposes no parameter string conversion");
     };
     let result = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": pid, "value": text})).unwrap();
     let stored = insert_param_value(&e, t, pid);
@@ -964,7 +959,8 @@ fn a_built_in_reads_back_the_text_its_display_shows() {
     assert_eq!(resolver.resolve(gain, &json!("-3 db")).unwrap(), -3.0, "units ignore case");
     let err = resolver.resolve(gain, &json!("-3 ms")).unwrap_err().to_string();
     assert!(err.contains("not a value of Gain (gain)"), "another unit's suffix is refused: {err}");
-    let hz = soundcraft_dsp::plugins().iter().flat_map(|info| info.params.iter()).find(|p| p.unit == soundcraft_dsp::Unit::Hz && p.max >= 2000.0).unwrap();
+    let hz =
+        soundcraft_dsp::plugins().iter().flat_map(|info| info.params.iter()).find(|p| p.unit == soundcraft_dsp::Unit::Hz && p.max >= 2000.0).unwrap();
     assert_eq!(resolver.resolve(hz, &json!("1.2 kHz")).unwrap(), 1200.0, "kHz is scaled, not read as 1.2 Hz");
 }
 
@@ -973,14 +969,12 @@ fn a_built_in_reads_back_the_text_its_display_shows() {
 #[test]
 fn apple_au_garbage_parameter_text_is_rejected() {
     let id = "au:aufx:dely:appl";
-    let Some(info) = super::super::clap::plugin_info(id) else {
-        eprintln!("{id} not installed; skipping");
-        return;
-    };
-    let Some(param) = info.params.iter().find(|param| !matches!(param.unit, soundcraft_dsp::Unit::Toggle | soundcraft_dsp::Unit::Choice)) else {
-        eprintln!("{id} exposes no continuous parameter; skipping");
-        return;
-    };
+    let info = super::super::clap::plugin_info(id).expect("Apple Delay ships with macOS");
+    let param = info
+        .params
+        .iter()
+        .find(|param| !matches!(param.unit, soundcraft_dsp::Unit::Toggle | soundcraft_dsp::Unit::Choice))
+        .expect("Apple Delay has continuous parameters");
     let mut e = Engine::default();
     e.execute("track.new", &json!({})).unwrap();
     let t = e.session().tracks[0].id.0;
@@ -1000,9 +994,9 @@ fn apple_au_garbage_parameter_text_is_rejected() {
 #[test]
 fn a_hosted_instruments_parameters_are_set_by_numeric_id() {
     let id = "au:aumu:dls :appl";
-    let Some(pi) = super::super::clap::plugin_info(id).and_then(|i| i.params.iter().find(|p| p.unit != soundcraft_dsp::Unit::Choice)) else {
-        return; // no parameters reported on this system
-    };
+    let pi = super::super::clap::plugin_info(id)
+        .and_then(|i| i.params.iter().find(|p| p.unit != soundcraft_dsp::Unit::Choice))
+        .expect("Apple DLS ships with macOS and reports parameters");
     let n: u32 = pi.id.parse().unwrap();
     let mut e = Engine::default();
     e.execute("track.new", &json!({"kind": "instrument", "instrument": id})).unwrap();
@@ -1150,23 +1144,20 @@ fn automation_names_resolve_per_track_before_anything_is_stored() {
 #[test]
 fn apple_au_parameter_is_set_by_name() {
     let id = "au:aufx:dely:appl";
-    let Some(info) = super::super::clap::plugin_info(id) else {
-        eprintln!("{id} not installed; skipping");
-        return;
-    };
+    let info = super::super::clap::plugin_info(id).expect("Apple Delay ships with macOS");
     let norm = super::super::param_key::normalize_key;
-    let Some(param) = info.params.iter().find(|param| {
-        let name = norm(param.name);
-        !name.is_empty() && name != norm(param.id) && info.params.iter().filter(|other| norm(other.name) == name).count() == 1
-    }) else {
-        eprintln!("{id} exposes no uniquely named parameter; skipping");
-        return;
-    };
-    let target = [param.max, param.min].into_iter().find(|value| value.is_finite() && (*value - param.default).abs() > 1e-4);
-    let Some(target) = target else {
-        eprintln!("{id} parameter {} has no distinct finite value; skipping", param.id);
-        return;
-    };
+    let param = info
+        .params
+        .iter()
+        .find(|param| {
+            let name = norm(param.name);
+            !name.is_empty() && name != norm(param.id) && info.params.iter().filter(|other| norm(other.name) == name).count() == 1
+        })
+        .expect("Apple Delay has a uniquely named parameter");
+    let target = [param.max, param.min]
+        .into_iter()
+        .find(|value| value.is_finite() && (*value - param.default).abs() > 1e-4)
+        .expect("the parameter has a finite value other than its default");
     let expected = param.clamp(target);
     let mut e = Engine::default();
     e.execute("track.new", &json!({})).unwrap();

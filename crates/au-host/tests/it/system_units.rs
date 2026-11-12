@@ -99,7 +99,9 @@ fn lowpass_attenuates_highs() {
     assert!(run_tone(p.as_mut(), 100.0).is_finite());
 }
 
+/// Ignored, not skipped: a green run must not claim AU text conversion was exercised.
 #[test]
+#[ignore = "no Apple Audio Unit converts parameter text (all 26 checked); run with --ignored against a unit that does"]
 fn parameter_text_round_trips_through_an_apple_unit() {
     if !available(DELAY) {
         return;
@@ -109,8 +111,7 @@ fn parameter_text_round_trips_through_an_apple_unit() {
     let Some((id, value, min, max, text)) =
         candidates.into_iter().find_map(|(id, value, min, max)| p.value_text(id, value).map(|text| (id, value, min, max, text)))
     else {
-        eprintln!("{DELAY} exposes no parameter string conversion; skipping");
-        return;
+        panic!("{DELAY} exposes no parameter string conversion");
     };
     assert!(!text.is_empty());
     let parsed = p.value_from_text(id, &text).expect("value text parses");
