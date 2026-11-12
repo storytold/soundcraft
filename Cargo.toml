@@ -7,7 +7,7 @@ default-members = ["crates/*", "apps/*", "xtask"]
 version = "0.20.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.90"
+rust-version = "1.95"
 repository = "https://github.com/storytold/soundcraft"
 
 [workspace.dependencies]
@@ -51,10 +51,10 @@ cpal = "0.18"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6e03f65bf45181db77ba6229716e6624db9eb25b" }
 
 # Video containers and bitstreams, shared with the other craft apps.
-craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "75895c0321d8cb6e175a42466cba050352b117c5" }
+craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7db4645d1f1673df3b064de32faa3335bcdd7aed" }
 # Audio file formats, codecs and waveform overviews, shared with the other craft apps. It shares
 # types with craft-media, so both stay on one rev.
-craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "75895c0321d8cb6e175a42466cba050352b117c5", features = ["decode", "lossless-encode", "peaks", "serde"] }
+craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7db4645d1f1673df3b064de32faa3335bcdd7aed", features = ["decode", "lossless-encode", "peaks", "serde"] }
 # craft-update: app-specific pretend versions apply to startup and manual checks.
 craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6e03f65bf45181db77ba6229716e6624db9eb25b", features = ["egui"] }
 

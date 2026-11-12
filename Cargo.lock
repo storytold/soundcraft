@@ -1064,7 +1064,7 @@ dependencies = [
 [[package]]
 name = "craft-audio"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=75895c0321d8cb6e175a42466cba050352b117c5#75895c0321d8cb6e175a42466cba050352b117c5"
+source = "git+https://github.com/storytold/craft-libs?rev=7db4645d1f1673df3b064de32faa3335bcdd7aed#7db4645d1f1673df3b064de32faa3335bcdd7aed"
 dependencies = [
  "craft-media",
  "log",
@@ -1109,7 +1109,16 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=75895c0321d8cb6e175a42466cba050352b117c5#75895c0321d8cb6e175a42466cba050352b117c5"
+source = "git+https://github.com/storytold/craft-libs?rev=7db4645d1f1673df3b064de32faa3335bcdd7aed#7db4645d1f1673df3b064de32faa3335bcdd7aed"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-midi"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=7db4645d1f1673df3b064de32faa3335bcdd7aed#7db4645d1f1673df3b064de32faa3335bcdd7aed"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -4459,10 +4468,8 @@ dependencies = [
 name = "soundcraft-midi"
 version = "0.20.0"
 dependencies = [
+ "craft-midi",
  "proptest",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
 ]
 
 [[package]]
