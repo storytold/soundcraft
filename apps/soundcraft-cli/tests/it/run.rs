@@ -100,9 +100,8 @@ fn help_subcommand_shows_that_subcommands_help() {
 
 #[test]
 fn help_names_every_format_the_command_reads_and_writes() {
-    use soundcraft_audio_io::FileFormat;
-    let read = format!("({})", FileFormat::readable_extensions().join(", "));
-    let write = format!("its extension picks the format ({})", FileFormat::writable_extensions().join(", "));
+    let read = format!("({})", craft_audio::DECODE_EXTENSIONS.join(", "));
+    let write = format!("its extension picks the format ({})", craft_audio::ENCODE_EXTENSIONS.join(", "));
     let convert = invoke(&["convert", "--help"]);
     let convert = assert_help(&convert);
     assert!(convert.contains(&read) && convert.contains(&write), "{convert}");
@@ -151,7 +150,7 @@ fn every_subcommand_has_help_listing_its_arguments() {
         ),
         ("run", "run [OPTIONS]", &["--cmd <ID[=JSON]>"]),
         ("script", "script [OPTIONS] <FILE>", &["<FILE>", "--keep-going"]),
-        ("commands", "commands [FILTER]", &["[FILTER]"]),
+        ("commands", "commands [OPTIONS] [FILTER]", &["[FILTER]", "--json", "--compact"]),
         ("describe", "describe [OPTIONS] <ID>", &["<ID>", "--compact"]),
         (
             "app",

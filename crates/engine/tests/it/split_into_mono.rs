@@ -1,8 +1,9 @@
 //! Split tracks into mono without replacing the right/surround channels with channel zero.
 
+use craft_audio::AudioBuffer;
 use serde_json::json;
-use soundcraft_audio_io::{AudioBuffer, FileFormat};
 use soundcraft_engine::{Engine, io};
+use soundcraft_model::FileFormat;
 use soundcraft_model::{ChannelFormat, Clip, Session, SourceAudio, SourceId, TrackId, TrackKind};
 use soundcraft_time::Range;
 use std::sync::Arc;

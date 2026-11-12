@@ -55,7 +55,7 @@ fn a_bounce_renders_across_frames_with_progress_until_its_file_is_written() {
     h.run();
     assert!(h.state().bounce.is_none());
     assert!(h.state().ui.status.starts_with("Bounced Mix.wav (peak"), "{}", h.state().ui.status);
-    let (_, file) = soundcraft_audio_io::decode(&std::fs::read(dir.join("Mix.wav")).unwrap(), None).unwrap();
+    let (_, file) = craft_audio::decode(&std::fs::read(dir.join("Mix.wav")).unwrap(), None).unwrap();
     assert_eq!(file.frames() as i64, frames);
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
@@ -117,8 +117,8 @@ fn cancel_or_escape_stops_a_bounce_and_leaves_no_file() {
 
 /// The largest gap between `int` and `float` in 16-bit LSBs.
 fn max_error_lsb(int: &Path, float: &Path) -> f64 {
-    let (_, a) = soundcraft_audio_io::decode(&std::fs::read(int).unwrap(), None).unwrap();
-    let (_, b) = soundcraft_audio_io::decode(&std::fs::read(float).unwrap(), None).unwrap();
+    let (_, a) = craft_audio::decode(&std::fs::read(int).unwrap(), None).unwrap();
+    let (_, b) = craft_audio::decode(&std::fs::read(float).unwrap(), None).unwrap();
     let mut worst = 0.0f64;
     for (i, f) in a.channels.iter().zip(&b.channels) {
         for (x, y) in i.iter().zip(f) {
