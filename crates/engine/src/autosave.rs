@@ -3,7 +3,7 @@
 
 use crate::io::{Recording, open_session_linked, sanitize_name};
 use crate::{Engine, EngineError, Result};
-use soundcraft_audio_io::{BitDepth, EncodeOptions, FileFormat};
+use craft_audio::{BitDepth, EncodeOptions};
 use soundcraft_model::{Session, SourceAudio, SourceId};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -248,8 +248,8 @@ impl Autosave {
         crate::io::session_size("the autosave", text.len() as u64, true)?;
         self.next = next;
         for (name, audio) in &fresh {
-            let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
-            let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
+            let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Float32);
+            let bytes = craft_audio::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
             create_folder(&audio_dir).and_then(|()| write_synced(&audio_dir.join(name), &bytes)).map_err(|err| io_error(&audio_dir, err))?;
         }
         write_atomically(&self.dir.join(ORIGIN), origin.unwrap_or_default().as_bytes())?;
@@ -404,7 +404,7 @@ fn repair_take(path: &Path, folders: &[PathBuf], channels: usize, rate: u32) -> 
     if !folder.is_some_and(|d| folders.contains(&d)) {
         return Err(refuse("not in a folder SoundCraft records into"));
     }
-    let header = |frames| soundcraft_audio_io::wav_float_header(channels, rate, frames).map_err(std::io::Error::other);
+    let header = |frames| craft_audio::wav_float_header(rate, u16::try_from(channels).unwrap_or(u16::MAX), frames).map_err(std::io::Error::other);
     let expected = header(0)?;
     let mut f = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
     let mut head = vec![0u8; expected.len()];
@@ -454,6 +454,32 @@ pub fn create_folder(dir: &Path) -> std::io::Result<()> {
     builder.create(dir)
 }
 
+/// A new folder directly in `parent`, named `{prefix}-` and 32 random hex digits. It is made
+/// exclusively (it is created by this call or the call fails), so a folder or link another account
+/// put there first is never used, and the name cannot be guessed ahead. On Unix it is owner-only
+/// (`0o700`); on other systems it has the mode `parent` gives it.
+pub fn create_unique_folder(parent: &Path, prefix: &str) -> std::io::Result<PathBuf> {
+    use std::hash::{BuildHasher, Hasher};
+    // One plain name: a prefix like `../x` would make a sibling of `parent`, not a child.
+    let mut parts = Path::new(prefix).components();
+    if !matches!((parts.next(), parts.next()), (Some(std::path::Component::Normal(_)), None)) || prefix.contains(['/', '\\']) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the folder prefix must be a single name"));
+    }
+    for _ in 0..16 {
+        let random = |_| std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let dir = parent.join(format!("{prefix}-{:016x}{:016x}", random(0), random(1)));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no unused folder name"))
+}
+
 fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut f = std::fs::File::create(path)?;
     f.write_all(bytes)?;
@@ -476,9 +502,49 @@ fn io_error(path: &Path, err: std::io::Error) -> EngineError {
 mod tests {
     use super::*;
     use crate::io::open_session;
+    use craft_audio::AudioBuffer;
+
+    #[test]
+    fn unique_folders_are_new_and_owner_only() {
+        let parent = std::env::temp_dir().join(format!("soundcraft-unique-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        let (a, b) = (create_unique_folder(&parent, "T").unwrap(), create_unique_folder(&parent, "T").unwrap());
+        assert_ne!(a, b);
+        assert!(a.is_dir() && a.parent() == Some(parent.as_path()));
+        assert_eq!(a.file_name().unwrap().len(), "T-".len() + 32);
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&a).unwrap().permissions()) & 0o777, 0o700);
+        assert!(create_unique_folder(&parent.join("missing"), "T").is_err(), "no parents are made");
+        for bad in ["../outside", "a/b", "a\\b", "..", ".", "", "/abs"] {
+            assert!(create_unique_folder(&parent, bad).is_err(), "{bad:?} is not a single name");
+        }
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
     use serde_json::json;
-    use soundcraft_audio_io::AudioBuffer;
-    use soundcraft_model::{ChannelFormat, Clip, TrackKind};
+    use soundcraft_model::{ChannelFormat, Clip, FileFormat, TrackKind};
+
+    /// Recovery loads document edits without re-enabling live inputs from an autosave.
+    #[test]
+    fn recovered_live_input_states_start_disabled() {
+        let root = folder("live-input-recovery");
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({})).unwrap();
+        let track = e.session().tracks[0].id;
+        e.execute("mix.record_arm", &json!({"tracks": [track.0], "value": true})).unwrap();
+        e.execute("mix.input_monitor", &json!({"tracks": [track.0], "value": true})).unwrap();
+        e.execute("mix.volume", &json!({"tracks": [track.0], "db": -6.0})).unwrap();
+        let mut autosave = Autosave::create(&root, "Live inputs").unwrap();
+        autosave.write(e.session(), None, None).unwrap();
+        drop(autosave);
+        let mut recovered = Engine::default();
+        recover(&mut recovered, &leftovers(&root)[0]).unwrap();
+        let mixer = &recovered.session().track(track).unwrap().mixer;
+        assert!(!mixer.record_arm && !mixer.input_monitor);
+        assert_eq!(mixer.volume_db, -6.0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn folder(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("soundcraft-{name}-{}", std::process::id()));
@@ -653,7 +719,7 @@ mod tests {
         let take = root.join(sanitize_name(&e.session().name)).join("Audio Files/Vox_01.wav");
         std::fs::create_dir_all(take.parent().unwrap()).unwrap();
         let audio: Vec<u8> = (0..480).flat_map(|i| (i as f32 / 1000.0).to_le_bytes()).collect();
-        std::fs::write(&take, [soundcraft_audio_io::wav_float_header(1, 48_000, 100).unwrap(), audio].concat()).unwrap();
+        std::fs::write(&take, [craft_audio::wav_float_header(48_000, 1, 100).unwrap(), audio].concat()).unwrap();
         let plan = Recording { start: 48_000, pass: None, punch: None, rate: 48_000, takes: vec![Take { track, path: take, channels: 1 }] };
         let clips = |e: &Engine| e.session().track(track).unwrap().clips().iter().map(|c| (c.start, c.length)).collect::<Vec<_>>();
         let w = Autosaver::new(root.clone());
@@ -684,7 +750,7 @@ mod tests {
             soundcraft_model::TrackId(e.execute("track.new", &json!({"name": "Vox", "format": "mono"})).unwrap()["tracks"][0].as_u64().unwrap());
         let takes = root.join(sanitize_name(&e.session().name)).join("Audio Files");
         std::fs::create_dir_all(&takes).unwrap();
-        let wav = [soundcraft_audio_io::wav_float_header(1, 48_000, 0).unwrap(), vec![0; 4_000]].concat();
+        let wav = [craft_audio::wav_float_header(48_000, 1, 0).unwrap(), vec![0; 4_000]].concat();
         let text = b"not audio at all, but long enough to be mistaken for a header if nobody looked at it ......".repeat(4);
         let files =
             [(takes.join("notes.wav"), text.clone()), (dir.join("Elsewhere/Vox_01.wav"), wav.clone()), (takes.join("../Vox_02.wav"), wav.clone())];

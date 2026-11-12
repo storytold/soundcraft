@@ -15,7 +15,7 @@ fn source(id: u64, name: &str) -> Source {
         channels: 1,
         frames: 20_000,
         sample_rate: 48_000,
-        format: soundcraft_audio_io::FileFormat::Wav,
+        format: soundcraft_model::FileFormat::Wav,
         time_reference: 0,
         unsaved: false,
     }
@@ -28,7 +28,7 @@ fn crossfade() -> (Engine, TrackId, ClipId, ClipId) {
     let s = e.session_mut();
     for (id, name) in [(1, "a"), (2, "b")] {
         s.sources.push(source(id, name));
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 20_000]] };
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 20_000]] };
         s.pool.insert(SourceId(id), Arc::new(SourceAudio::new(buf)));
     }
     let (a, b) = (s.new_clip_id(), s.new_clip_id());

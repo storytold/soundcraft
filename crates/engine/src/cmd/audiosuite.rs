@@ -3,9 +3,10 @@ use super::{CommandSpec, bad, clip_ids_param, has_selection, range_param, str_pa
 use soundcraft_time::Range;
 
 use crate::{Engine, Result, cmd};
+use craft_audio::AudioBuffer;
 use serde_json::{Value, json};
-use soundcraft_audio_io::{AudioBuffer, FileFormat};
 use soundcraft_dsp::offline::{SpeedRampChange, SpeedRampSelection};
+use soundcraft_model::FileFormat;
 use soundcraft_model::{Clip, ClipContent, TrackKind};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -211,7 +212,7 @@ fn short(n: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soundcraft_audio_io::AudioBuffer;
+    use craft_audio::AudioBuffer;
     use soundcraft_model::{ChannelFormat, Session, TrackKind};
 
     fn gained_clip() -> (crate::Engine, soundcraft_model::ClipId) {

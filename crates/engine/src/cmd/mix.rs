@@ -7,6 +7,7 @@ use crate::{Engine, EngineError, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_model::{AutoParam, AutomationMode, INSERT_SLOTS, Insert, SEND_SLOTS, SendSlot, Session, TrackId};
 
+/// Commands for mixer controls, with live input toggles kept outside document history.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("mix.volume", "Set Volume", [], None, "{tracks?, db: -144..12 | delta_db}", has_selection, volume),
@@ -42,7 +43,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({}))
         }),
-        cmd!("mix.record_arm", "Record Enable", [], Some("Shift+R"), "{tracks?, value?: bool}", has_selection, |e, p| toggle(
+        cmd!(noundo "mix.record_arm", "Record Enable", [], Some("Shift+R"), "{tracks?, value?: bool}", has_selection, |e, p| toggle_runtime(
             e,
             p,
             "mix.record_arm",
@@ -51,7 +52,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }),
             |tr| tr.mixer.record_arm
         )),
-        cmd!("mix.input_monitor", "Input Monitoring", [], Some("Shift+I"), "{tracks?, value?: bool}", has_selection, |e, p| toggle(
+        cmd!(noundo "mix.input_monitor", "Input Monitoring", [], Some("Shift+I"), "{tracks?, value?: bool}", has_selection, |e, p| toggle_runtime(
             e,
             p,
             "mix.input_monitor",
@@ -211,6 +212,23 @@ fn set_grouped(s: &mut Session, t: TrackId, attr: &str, f: impl Fn(&mut soundcra
 fn toggle(e: &mut Engine, p: &Value, cmd: &str, set: fn(&mut Session, TrackId, bool), get: fn(&soundcraft_model::Track) -> bool) -> Result<Value> {
     let tracks = tracks_required(e, cmd, p)?;
     let s = e.session_mut();
+    let v = p.get("value").and_then(Value::as_bool).unwrap_or_else(|| !tracks.iter().all(|t| s.track(*t).is_some_and(get)));
+    for t in &tracks {
+        set(s, *t, v);
+    }
+    Ok(json!({"value": v}))
+}
+
+/// Toggle live input flags without marking the saved document as changed.
+fn toggle_runtime(
+    e: &mut Engine,
+    p: &Value,
+    cmd: &str,
+    set: fn(&mut Session, TrackId, bool),
+    get: fn(&soundcraft_model::Track) -> bool,
+) -> Result<Value> {
+    let tracks = tracks_required(e, cmd, p)?;
+    let s = e.runtime_session_mut();
     let v = p.get("value").and_then(Value::as_bool).unwrap_or_else(|| !tracks.iter().all(|t| s.track(*t).is_some_and(get)));
     for t in &tracks {
         set(s, *t, v);
