@@ -23,6 +23,11 @@ mod tests {
         fn answer(&self, track: TrackId, slot: usize) -> Option<&Answer> {
             self.answers.iter().find(|a| a.track == track && a.slot == slot)
         }
+
+        /// As the player: an answer only when the slot holds the plugin the caller expects.
+        fn answer_for(&self, at: crate::LiveSlot<'_>) -> Option<&Answer> {
+            self.answer(at.track, at.slot).filter(|a| a.plugin == at.plugin)
+        }
     }
 
     impl LivePlugins for Fake {
@@ -30,16 +35,16 @@ mod tests {
             self.answer(track, slot).map(|a| a.plugin.to_string())
         }
 
-        fn value_text(&mut self, track: TrackId, slot: usize, _id: &str, _value: f32) -> Option<String> {
-            self.answer(track, slot).map(|a| a.display.to_string())
+        fn value_text(&mut self, at: crate::LiveSlot<'_>, _id: &str, _value: f32) -> Option<String> {
+            self.answer_for(at).map(|a| a.display.to_string())
         }
 
-        fn value_from_text(&mut self, track: TrackId, slot: usize, _id: &str, _text: &str) -> Option<f32> {
-            self.answer(track, slot).and_then(|a| a.from_text)
+        fn value_from_text(&mut self, at: crate::LiveSlot<'_>, _id: &str, _text: &str) -> Option<f32> {
+            self.answer_for(at).and_then(|a| a.from_text)
         }
 
-        fn value(&mut self, track: TrackId, slot: usize, _id: &str) -> Option<f32> {
-            self.answer(track, slot).and_then(|a| a.value)
+        fn value(&mut self, at: crate::LiveSlot<'_>, _id: &str) -> Option<f32> {
+            self.answer_for(at).and_then(|a| a.value)
         }
     }
 
@@ -231,15 +236,15 @@ mod tests {
             Some("eq_7band".into())
         }
 
-        fn value_text(&mut self, _track: TrackId, _slot: usize, id: &str, value: f32) -> Option<String> {
+        fn value_text(&mut self, _at: crate::LiveSlot<'_>, id: &str, value: f32) -> Option<String> {
             Some(format!("{id}={value}"))
         }
 
-        fn value_from_text(&mut self, _track: TrackId, _slot: usize, _id: &str, _text: &str) -> Option<f32> {
+        fn value_from_text(&mut self, _at: crate::LiveSlot<'_>, _id: &str, _text: &str) -> Option<f32> {
             None
         }
 
-        fn value(&mut self, _track: TrackId, _slot: usize, id: &str) -> Option<f32> {
+        fn value(&mut self, _at: crate::LiveSlot<'_>, id: &str) -> Option<f32> {
             match id {
                 // Stale: the session already holds -3.
                 "mid_gain" => Some(0.0),

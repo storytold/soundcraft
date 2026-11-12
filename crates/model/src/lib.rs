@@ -10,5 +10,5 @@ mod midi_input;
 
 pub use craft_scraft_format::*;
 pub use instrument::{INSTRUMENT_AUTO_SLOT, TrackPlugins, auto_param_label, parse_auto_param};
-pub use live::LivePlugins;
+pub use live::{LivePlugins, LiveSlot};
 pub use midi_input::MidiInput;
