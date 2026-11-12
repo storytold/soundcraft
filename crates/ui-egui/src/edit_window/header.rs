@@ -1,3 +1,4 @@
+use super::layout::STRIP_W;
 use super::tracks::{click_track, folder_depth, height_targets, in_edit_window, track_context_menu, view_label, view_menu};
 use super::{
     Align2, AutoParam, Color32, Pos2, Rect, Sense, Shape, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold, groove, json,
@@ -14,6 +15,7 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
         click_track(app, id, ui.input(|i| i.modifiers), in_edit_window);
     }
     bg.context_menu(|ui| track_context_menu(app, ui, id));
+    color_strip(app, ui, id, head);
     resize_edge(app, ui, track, head);
     strip_buttons(app, ui, track, head);
     name_plate(app, ui, track, head, selected);
@@ -24,6 +26,28 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
     field_row(app, ui, track, head, head_bg);
     let md = app.meters.get(&id).copied().unwrap_or_default();
     header_meter(ui, Rect::from_min_max(pos2(head.max.x - 8.0, head.min.y + 1.0), pos2(head.max.x, head.max.y - 1.5)), &md, track.channels() >= 2);
+}
+
+/// The colour strip: a click selects the track as the header does, a double click opens the Color
+/// Palette for the selected tracks. A plain click on a track that is already selected keeps the
+/// selection, so double-clicking one of several selected tracks colours them all. Registered after
+/// the header background, so it sits on top of it, and before the strip's own buttons and the
+/// resize edge, which stay on top of it.
+fn color_strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, head: Rect) {
+    let strip = Rect::from_min_size(head.min, vec2(STRIP_W, head.height()));
+    let resp = ui.interact(strip, ui.scope_id().with(("color_strip", id.0)), Sense::click());
+    let mods = ui.input(|i| i.modifiers);
+    let selected = app.engine.session().edit.selected_tracks.contains(&id);
+    if resp.double_clicked() {
+        // A Cmd click toggles, so a Cmd double click's first click deselected the track: add it back.
+        if !selected {
+            click_track(app, id, mods, in_edit_window);
+        }
+        app.ui.show_color_palette = true;
+    } else if resp.clicked() && !(selected && mods.is_none()) {
+        click_track(app, id, mods, in_edit_window);
+    }
+    resp.context_menu(|ui| track_context_menu(app, ui, id));
 }
 
 /// Drag the bottom edge of the header to resize the track (snaps to the height presets).
@@ -365,12 +389,18 @@ fn field_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, head_bg
                 ui.painter().line_segment([c + vec2(0.0, -3.5), c + vec2(0.0, 1.0)], Stroke::new(1.0, t.text));
                 ui.painter().add(Shape::convex_polygon(vec![c + vec2(0.0, 0.5), c + vec2(3.0, 3.5), c + vec2(-3.0, 3.5)], t.text, Stroke::NONE));
                 if let Some(alg) = &track.elastic {
-                    ui.painter().with_clip_rect(field).text(pos2(field.min.x + 14.0, field.center().y), Align2::LEFT_CENTER, alg, bold(10.0), t.text);
+                    ui.painter().with_clip_rect(field).text(
+                        pos2(field.min.x + 14.0, field.center().y),
+                        Align2::LEFT_CENTER,
+                        soundcraft_engine::feature_names::display_label(alg),
+                        bold(10.0),
+                        t.text,
+                    );
                 }
                 egui::Popup::menu(&resp.on_hover_text("Elastic Audio")).show(|ui| {
                     for alg in ["none", "polyphonic", "rhythmic", "monophonic", "varispeed", "x-form"] {
                         let current = track.elastic.as_deref().unwrap_or("none") == alg;
-                        if ui.selectable_label(current, alg).clicked() {
+                        if ui.selectable_label(current, soundcraft_engine::feature_names::display_label(alg)).clicked() {
                             let _ = app.run("track.elastic", json!({"tracks": [id.0], "algorithm": alg}));
                         }
                     }

@@ -86,7 +86,7 @@ People trust SoundCraft with their recordings; a crash loses takes. **This outra
 ## Architecture (layers enforced by `cargo xtask layers`)
 | Layer | Crate | Role |
 |---|---|---|
-| L0 | `soundcraft-time`, `soundcraft-audio-io`, `soundcraft-midi` | Timebases/tempo/grid; audio file formats + peaks; Standard MIDI Files + MIDI ops |
+| L0 | `soundcraft-time`, `soundcraft-midi` | Timebases/tempo/grid; Standard MIDI Files + MIDI ops |
 | L1 | `soundcraft-dsp` | Plugins (EQ, dynamics, reverb, delay, modulation, harmonic, pitch, utility, instruments), offline processing, meters, FFT |
 | L2 | `soundcraft-model` | The session document (tracks, playlists, clips, mixer, routing, automation, markers, groups) |
 | L3 | `soundcraft-mix` | Mix engine shared by realtime playback and offline bounce |
@@ -94,6 +94,8 @@ People trust SoundCraft with their recordings; a crash loses takes. **This outra
 | L5 | `soundcraft-automation` | MCP server + control-channel client |
 | L6 | `soundcraft-ui-egui` | The swappable UI (egui) |
 | apps | `soundcraft`, `soundcraft-cli`, `soundcraft-web` | Entry points |
+
+Audio file formats, codecs and waveform peaks are not a SoundCraft crate: they come from `craft-audio` in `storytold/craft-libs`, which every Craft app shares. Fix or extend a format there, never in a local copy; SoundCraft keeps only the mapping onto its session model (`soundcraft_model::FileFormat`).
 
 Nothing below L6 depends on egui/eframe/winit/rfd. The UI is thin: panels read engine state and act through `engine.execute(id, params)`.
 

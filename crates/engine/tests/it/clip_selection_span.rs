@@ -16,7 +16,7 @@ fn source(id: u64) -> Source {
         channels: 1,
         frames: 50_000,
         sample_rate: 48_000,
-        format: soundcraft_audio_io::FileFormat::Wav,
+        format: soundcraft_model::FileFormat::Wav,
         time_reference: 0,
         unsaved: false,
     }

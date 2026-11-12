@@ -57,7 +57,7 @@ fn crossfade(tool: &str, after: i64) -> (SoundApp, egui::Context, TrackId, ClipI
             channels: 1,
             frames: u64::try_from(frames).unwrap(),
             sample_rate: 48_000,
-            format: soundcraft_audio_io::FileFormat::Wav,
+            format: soundcraft_model::FileFormat::Wav,
             time_reference: 0,
             unsaved: false,
         });

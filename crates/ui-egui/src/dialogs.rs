@@ -2,9 +2,9 @@
 
 use crate::SoundApp;
 use crate::theme::{Tokens, bold};
+use craft_audio::EncodeFormat;
 use egui::{Align2, vec2};
 use serde_json::{Value, json};
-use soundcraft_audio_io::FileFormat;
 use soundcraft_engine::Engine;
 use soundcraft_engine::io::StripNames;
 use soundcraft_model::{ClipId, GroupId, Session, SourceId, TrackId};
@@ -33,7 +33,7 @@ pub mod spot;
 pub enum Dialog {
     NewTracks(new_tracks::NewTracks),
     NewSession { name: String, sample_rate: u32, demo: bool },
-    Bounce { path: String, format: FileFormat, bit_depth: String, normalize: bool, dither: bool },
+    Bounce { path: String, format: EncodeFormat, bit_depth: String, normalize: bool, dither: bool },
     RenameTrack { id: TrackId, name: String },
     RenameClip { id: ClipId, name: String },
     RenameMarker { id: soundcraft_model::MarkerId, name: String },
@@ -181,7 +181,7 @@ impl Dialogs {
                     .map_or(home.clone(), |d| d.display().to_string());
                 Dialog::Bounce {
                     path: format!("{dir}/{name} Bounce.wav"),
-                    format: FileFormat::Wav,
+                    format: EncodeFormat::Wav,
                     bit_depth: "24".into(),
                     normalize: false,
                     dither: false,
@@ -286,8 +286,17 @@ fn clear_message(s: &Session, clips: &[ClipId], sources: &[SourceId]) -> Option<
     Some(text)
 }
 
+/// The file a bounce in `format` writes for the path in the form: the path itself when its
+/// extension already names the format (`Mix.aifc` and `Mix.AIFF` stay as picked, so the file
+/// the save dialog confirmed is the one written), otherwise the path with the format's extension.
+pub fn bounce_path(path: &str, format: EncodeFormat) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    let named = p.extension().and_then(std::ffi::OsStr::to_str).and_then(craft_audio::encode_format_for);
+    if named == Some(format) { p.to_path_buf() } else { p.with_extension(format.extension()) }
+}
+
 /// The Bounce form's file row: a path field and a Browse button that also picks the format.
-fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, format: &mut FileFormat) {
+fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, format: &mut EncodeFormat) {
     ui.horizontal(|ui| {
         ui.label("File");
         crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "File");
@@ -298,7 +307,7 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
             match unicode(&p) {
                 Ok(text) => {
                     *path = text.to_owned();
-                    if let Some(picked) = p.extension().and_then(std::ffi::OsStr::to_str).and_then(FileFormat::from_write_extension) {
+                    if let Some(picked) = p.extension().and_then(std::ffi::OsStr::to_str).and_then(craft_audio::encode_format_for) {
                         *format = picked;
                     }
                 }
@@ -488,9 +497,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 Dialog::Bounce { path, format, bit_depth, normalize, dither } => {
                     bounce_file_row(app, ui, path, format);
                     ui.horizontal(|ui| {
-                        craft_ui::ComboBox::from_label("Format").selected_text(format.name()).show_ui(ui, |ui| {
-                            for &f in FileFormat::WRITE {
-                                ui.selectable_value(format, f, f.name());
+                        craft_ui::ComboBox::from_label("Format").selected_text(format.container().name()).show_ui(ui, |ui| {
+                            for &f in EncodeFormat::ALL {
+                                ui.selectable_value(format, f, f.container().name());
                             }
                         });
                         craft_ui::ComboBox::from_label("Bit Depth").selected_text(format!("{bit_depth}-bit")).show_ui(ui, |ui| {
@@ -511,9 +520,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                             .color(Tokens::current().text_dim),
                     );
                     if buttons(ui, "Bounce", enter) {
-                        let p = std::path::Path::new(path.as_str()).with_extension(format.default_extension());
+                        let p = bounce_path(path, *format);
                         bounce_params = Some(
-                            json!({"path": p.to_string_lossy(), "format": format.default_extension(), "bit_depth": bit_depth, "normalize": normalize, "dither": *dither && bit_depth.as_str() != "32f"}),
+                            json!({"path": p.to_string_lossy(), "format": format.extension(), "bit_depth": bit_depth, "normalize": normalize, "dither": *dither && bit_depth.as_str() != "32f"}),
                         );
                     }
                 }
