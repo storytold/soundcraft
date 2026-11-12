@@ -95,7 +95,9 @@ fn set(e: &mut Engine, p: &Value) -> Result<Value> {
         sel.intersect(&clip.range()).ok_or_else(|| bad(SET, "the edit selection is outside the clip"))?
     };
     let offset = clip.source_offset().saturating_add(window.start - clip.start);
-    let frames = s.source(source).map(|f| f.frames).ok_or_else(|| bad(SET, format!("the audio file of “{}” is missing", clip.name)))?;
+    let stored = s.source(source).map(|f| f.frames).ok_or_else(|| bad(SET, format!("the audio file of “{}” is missing", clip.name)))?;
+    // The stored count isn't refreshed when a session reopens; the decoded audio is what plays.
+    let frames = s.pool.get(source).map_or(stored, |a| a.frames() as u64);
     let tone = RoomTone { source, offset, length: window.len(), gain_db: clip.gain_db }
         .sanitized(frames)
         .ok_or_else(|| bad(SET, format!("“{}” plays no audio from its file", clip.name)))?;
@@ -175,10 +177,16 @@ fn fill(e: &mut Engine, p: &Value) -> Result<Value> {
         return Err(bad(FILL, "select a range to fill"));
     }
     let s = e.session();
-    if s.pool.get(tone.source).is_none() {
-        let name = s.source(tone.source).map_or_else(|| "the room tone's audio file".to_string(), |f| format!("`{}`", f.name));
+    let name = s.source(tone.source).map_or_else(|| "the room tone's audio file".to_string(), |f| format!("`{}`", f.name));
+    let Some(audio) = s.pool.get(tone.source) else {
         return Err(bad(FILL, format!("{name} is not loaded; relink it before filling")));
-    }
+    };
+    // The window was checked against the session file's frame count, which can be stale when the
+    // file was replaced by a shorter one: tile only audio that decoded.
+    let tone = tone
+        .sanitized(audio.frames() as u64)
+        .filter(|t| t.length >= s.sample_rate.samples(MIN_TONE_SECONDS))
+        .ok_or_else(|| bad(FILL, format!("{name} is now shorter than the room tone; set the room tone again")))?;
     let ms = |k: &str, d: f64| s.sample_rate.samples(f64_or(p, k, d).clamp(0.0, 10_000.0) / 1000.0);
     let (fade, edge, min_gap) = (ms("fade_ms", 10.0), ms("edge_fade_ms", 2.0), ms("min_gap_ms", 0.0));
     // Plan every track first, so a fill that would be too big changes nothing.
@@ -392,6 +400,43 @@ mod tests {
         let tone = e.session().room_tone.unwrap();
         e.session_mut().pool.remove(tone.source);
         assert!(e.execute(FILL, &json!({"start": 0, "end": 3 * RATE})).is_err(), "unloaded audio is not filled with");
+    }
+
+    /// Replaces the tone's pooled audio with `frames` frames of silence, as when its file was
+    /// swapped for a shorter one: the stored `Source.frames` keeps the old length.
+    fn shorten_audio(e: &mut Engine, frames: usize) {
+        let src = e.session().sources.first().map(|f| f.id).unwrap();
+        let buffer = AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0; frames]] };
+        e.session_mut().pool.insert(src, Arc::new(SourceAudio::new(buffer)));
+    }
+
+    #[test]
+    fn fill_reads_only_the_audio_that_decoded() {
+        // Tone 0..1 s; the file now decodes to 0.5 s.
+        let (mut e, t, ids) = engine(&[(0, RATE)]);
+        e.execute(SET, &json!({"clip": ids[0].0})).unwrap();
+        shorten_audio(&mut e, (RATE / 2) as usize);
+        e.execute(FILL, &json!({"start": 0, "end": 3 * RATE})).unwrap();
+        let fills: Vec<Clip> = clips(&e, t).into_iter().filter(|c| !ids.contains(&c.id)).collect();
+        assert!(!fills.is_empty());
+        for c in &fills {
+            assert!(c.source_offset() + c.length <= RATE / 2, "a fill clip reads past the decoded audio: {c:?}");
+        }
+        // Less than the minimum left: refused, nothing placed.
+        shorten_audio(&mut e, (RATE / 20) as usize);
+        let before = clips(&e, t).len();
+        assert!(e.execute(FILL, &json!({"start": 0, "end": 6 * RATE})).is_err());
+        assert_eq!(clips(&e, t).len(), before);
+    }
+
+    #[test]
+    fn set_measures_the_window_against_the_decoded_audio() {
+        let (mut e, _, ids) = engine(&[(0, RATE)]);
+        shorten_audio(&mut e, (RATE / 2) as usize);
+        let r = e.execute(SET, &json!({"clip": ids[0].0})).unwrap();
+        assert_eq!(r["length"].as_i64(), Some(RATE / 2));
+        shorten_audio(&mut e, (RATE / 20) as usize);
+        assert!(e.execute(SET, &json!({"clip": ids[0].0})).is_err(), "only 50 ms decoded");
     }
 
     #[test]
