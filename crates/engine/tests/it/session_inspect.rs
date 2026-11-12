@@ -40,7 +40,8 @@ fn assert_reports_session_state(v: &Value) {
         assert!(m["end"].is_u64(), "end in {m}");
     }
     for key in ["undo", "redo"] {
-        assert!(v[key].is_string() || v[key].is_null(), "{key} in {v}");
+        let label = v.get(key).unwrap_or_else(|| panic!("{key} missing from {v}"));
+        assert!(label.is_string() || label.is_null(), "{key} in {v}");
     }
 }
 
@@ -104,8 +105,8 @@ fn full_detail_reports_the_same_state_with_insert_params() {
 fn a_fresh_session_has_no_undo_or_redo_step() {
     let mut e = Engine::default();
     let v = inspect(&mut e);
-    assert_eq!(v["undo"], Value::Null, "{v}");
-    assert_eq!(v["redo"], Value::Null, "{v}");
+    assert_eq!(v.get("undo"), Some(&Value::Null), "{v}");
+    assert_eq!(v.get("redo"), Some(&Value::Null), "{v}");
 }
 
 /// The undo label is the label of the command that ran last.
