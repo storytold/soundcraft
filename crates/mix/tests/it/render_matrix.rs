@@ -10,9 +10,7 @@
 
 use soundcraft_audio_io::AudioBuffer;
 use soundcraft_mix::{fold_down_stereo, render_range};
-use soundcraft_model::{
-    AutoParam, ChannelFormat, Clip, Fade, FadeShape, Insert, Route, SendSlot, Session, SourceAudio, SourceId, TrackId, TrackKind,
-};
+use soundcraft_model::{AutoParam, ChannelFormat, Clip, Fade, FadeShape, Insert, Route, SendSlot, Session, SourceAudio, SourceId, TrackId, TrackKind};
 use soundcraft_time::Range;
 use std::sync::Arc;
 
@@ -167,7 +165,7 @@ const FADED: [Scenario; 2] = [
     Scenario { name: "crossfade across a block edge", build: crossfade, fold: None },
 ];
 
-/// Renders `LEN` samples from `start` at `block`, folded down to stereo if the scenario asks.
+/// Renders `start..LEN` at `block`, folded down to stereo if the scenario asks.
 fn render(sc: &Scenario, s: &Session, start: i64, block: usize) -> Vec<Vec<f32>> {
     let out = render_range(s, Range::new(start, LEN as i64), block);
     match sc.fold {
