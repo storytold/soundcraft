@@ -479,6 +479,7 @@ impl ParameterValueResolver {
         let max_text = self.rendered_text(param, param.max)?;
         if text_outside_display_range(text, &min_text, &max_text) {
             let shown = shown_text(text);
+            let (min_text, max_text) = (shown_text(&min_text), shown_text(&max_text));
             return Err(bad(self.cmd, format!("`{shown}` is out of range for `{}` ({min_text} … {max_text})", param.id)));
         }
         if !plugin_text_matches(text, &rendered) {
@@ -504,9 +505,9 @@ impl ParameterValueResolver {
         if ((allow_instance && self.uses_plugin_text()) || self.instance.is_some())
             && let Ok(plugin) = self.instance()
         {
-            let min = plugin.value_text(param.id, min).unwrap_or_else(|| param.format(min));
-            let default = plugin.value_text(param.id, default).unwrap_or_else(|| param.format(default));
-            let max = plugin.value_text(param.id, max).unwrap_or_else(|| param.format(max));
+            let min = plugin.value_text(param.id, min).map_or_else(|| param.format(min), |text| shown_text(&text));
+            let default = plugin.value_text(param.id, default).map_or_else(|| param.format(default), |text| shown_text(&text));
+            let max = plugin.value_text(param.id, max).map_or_else(|| param.format(max), |text| shown_text(&text));
             return format!("{min}, {default}, {max}");
         }
         format!("{}, {}, {}", param.format(min), param.format(default), param.format(max))
@@ -540,7 +541,10 @@ fn text_too_long(text: &str) -> bool {
     text.chars().nth(MAX_PARAM_TEXT_CHARS).is_some()
 }
 
-fn shown_text(text: &str) -> String {
+/// Text as it may appear in an error or a response: typed input or a plugin's own display.
+/// At most [`MAX_PARAM_TEXT_CHARS`] characters (then `...`), and control characters such as
+/// newlines and escapes become U+FFFD so one string cannot fake extra log lines or terminal output.
+pub(super) fn shown_text(text: &str) -> String {
     let mut shown = String::new();
     let mut truncated = false;
     for (i, ch) in text.chars().enumerate() {
@@ -548,7 +552,7 @@ fn shown_text(text: &str) -> String {
             truncated = true;
             break;
         }
-        shown.push(ch);
+        shown.push(if ch.is_control() { char::REPLACEMENT_CHARACTER } else { ch });
     }
     if truncated {
         shown.push_str("...");

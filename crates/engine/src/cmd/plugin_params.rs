@@ -76,9 +76,10 @@ fn parameter_json(param: &ParamInfo, insert: &Insert, hosted: bool, plugin: Opti
         "display": if plugin.is_some() || !hosted { Some(param.format(value)) } else { None },
     });
     if let Some(plugin) = plugin {
-        let display = plugin.value_text(param.id, value).unwrap_or_else(|| param.format(value));
-        let display_min = plugin.value_text(param.id, param.min).unwrap_or_else(|| param.format(param.min));
-        let display_max = plugin.value_text(param.id, param.max).unwrap_or_else(|| param.format(param.max));
+        let shown = |text: Option<String>, value: f32| text.map_or_else(|| param.format(value), |text| super::mix::shown_text(&text));
+        let display = shown(plugin.value_text(param.id, value), value);
+        let display_min = shown(plugin.value_text(param.id, param.min), param.min);
+        let display_max = shown(plugin.value_text(param.id, param.max), param.max);
         if let Some(object) = result.as_object_mut() {
             object.insert("display".into(), json!(display));
             object.insert("display_min".into(), json!(display_min));

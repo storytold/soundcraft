@@ -870,6 +870,37 @@ fn a_plugin_that_parses_garbage_as_zero_is_rejected() {
     assert!((just_inside - 1.0).abs() < 1e-5, "{just_inside}");
 }
 
+/// A plugin whose display text is long and carries control characters. It parses nothing.
+struct NoisyDisplay;
+
+impl Plugin for NoisyDisplay {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        &soundcraft_dsp::plugins::utility::GAIN_INFO
+    }
+    fn prepare(&mut self, _sample_rate: f32, _max_block: usize, _channels: usize) {}
+    fn reset(&mut self) {}
+    fn set_param(&mut self, _id: &str, _value: f32) -> bool {
+        true
+    }
+    fn param(&self, _id: &str) -> Option<f32> {
+        None
+    }
+    fn process(&mut self, _io: &mut [Vec<f32>], _frames: usize) {}
+    fn value_text(&mut self, _id: &str, _value: f32) -> Option<String> {
+        Some(format!("dB\nERROR forged line\u{1b}[2J{}", "x".repeat(500)))
+    }
+}
+
+#[test]
+fn plugin_display_text_in_an_error_is_bounded_and_has_no_control_characters() {
+    let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
+    let mut resolver = ParameterValueResolver::with_instance("mix.insert_param", &Insert::new("gain"), 48_000.0, Box::new(NoisyDisplay));
+    let err = resolver.resolve(gain, &json!("loud")).unwrap_err().to_string();
+    assert!(err.contains("examples"), "{err}");
+    assert!(!err.chars().any(char::is_control), "{err:?}");
+    assert!(err.chars().count() < 3 * (MAX_PARAM_TEXT_CHARS + 4) + 200, "three capped examples: {}", err.chars().count());
+}
+
 #[test]
 fn text_for_a_built_in_never_loads_a_temporary_instance() {
     let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
