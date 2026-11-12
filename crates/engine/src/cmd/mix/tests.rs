@@ -942,6 +942,32 @@ fn text_for_a_built_in_never_loads_a_temporary_instance() {
     assert!(!resolver.tried_instance, "a built-in parses and formats its own numbers");
 }
 
+#[test]
+fn a_built_in_reads_back_the_text_its_display_shows() {
+    // Every built-in parameter: the text `display` shows for min, default and max resolves to
+    // that value again, within the display's precision. So text means the displayed units for
+    // built-ins as it does for hosted plugins, and error examples are valid input.
+    for info in soundcraft_dsp::plugins() {
+        let mut resolver = ParameterValueResolver::new("mix.insert_param", &Insert::new(info.id), 48_000.0, TrackId(0), 0, None);
+        for param in info.params {
+            for value in [param.min, param.default, param.max] {
+                let shown = param.format(value);
+                let back = resolver.resolve(param, &json!(shown)).unwrap_or_else(|err| panic!("{}.{}: `{shown}`: {err}", info.id, param.id));
+                assert_eq!(param.format(back), shown, "{}.{}: `{shown}` read back as {back}", info.id, param.id);
+            }
+        }
+        assert!(!resolver.tried_instance, "{}: a built-in reads its own display", info.id);
+    }
+    let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
+    let mut resolver = ParameterValueResolver::new("mix.insert_param", &Insert::new("gain"), 48_000.0, TrackId(0), 0, None);
+    assert_eq!(resolver.resolve(gain, &json!("-3 dB")).unwrap(), -3.0);
+    assert_eq!(resolver.resolve(gain, &json!("-3 db")).unwrap(), -3.0, "units ignore case");
+    let err = resolver.resolve(gain, &json!("-3 ms")).unwrap_err().to_string();
+    assert!(err.contains("not a value of Gain (gain)"), "another unit's suffix is refused: {err}");
+    let hz = soundcraft_dsp::plugins().iter().flat_map(|info| info.params.iter()).find(|p| p.unit == soundcraft_dsp::Unit::Hz && p.max >= 2000.0).unwrap();
+    assert_eq!(resolver.resolve(hz, &json!("1.2 kHz")).unwrap(), 1200.0, "kHz is scaled, not read as 1.2 Hz");
+}
+
 /// The same Apple Delay unit rejects a string that is not one of its parameter values.
 #[cfg(target_os = "macos")]
 #[test]

@@ -101,7 +101,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Plugin",
             [],
             None,
-            "{track?, slot?: 0..9 | a..j, plugin: id, params?: {param: id, number, or name (case-insensitive; ids win): value}}. value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Unknown keys and invalid values are errors; two keys that resolve to the same id are an error and nothing is stored.",
+            "{track?, slot?: 0..9 | a..j, plugin: id, params?: {param: id, number, or name (case-insensitive; ids win): value}}. value: number (the stored value, as `value` in mix.plugin_params), or text in the units `display` shows: a Toggle/Choice label, a hosted plugin's own text (e.g. \"29\" for 29 ms where the stored value is 0.028), or a built-in's display (e.g. \"-3 dB\", \"1.2 kHz\"); text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Unknown keys and invalid values are errors; two keys that resolve to the same id are an error and nothing is stored.",
             has_selection,
             insert
         ),
@@ -112,7 +112,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Plugin Parameter",
             [],
             None,
-            "{track?, slot: 0..9 | a..j | \"instrument\", param: id, number, or name (case-insensitive; ids win), value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily}. The session stores the id.",
+            "{track?, slot: 0..9 | a..j | \"instrument\", param: id, number, or name (case-insensitive; ids win), value: number (the stored value, as `value` in mix.plugin_params), or text in the units `display` shows: a Toggle/Choice label, a hosted plugin's own text (e.g. \"29\" for 29 ms where the stored value is 0.028), or a built-in's display (e.g. \"-3 dB\", \"1.2 kHz\"); text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily}. The session stores the id.",
             has_selection,
             insert_param
         ),
@@ -121,7 +121,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Plugin Parameters",
             [],
             None,
-            "{track?, slot: 0..9 | a..j | \"instrument\", params: {param: id, number, or name (case-insensitive; ids win): value}, preset?: name}. value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Every key is resolved before anything is stored. Unknown keys, invalid values and two keys that resolve to the same id are errors; nothing is stored if any key fails.",
+            "{track?, slot: 0..9 | a..j | \"instrument\", params: {param: id, number, or name (case-insensitive; ids win): value}, preset?: name}. value: number (the stored value, as `value` in mix.plugin_params), or text in the units `display` shows: a Toggle/Choice label, a hosted plugin's own text (e.g. \"29\" for 29 ms where the stored value is 0.028), or a built-in's display (e.g. \"-3 dB\", \"1.2 kHz\"); text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Every key is resolved before anything is stored. Unknown keys, invalid values and two keys that resolve to the same id are errors; nothing is stored if any key fails.",
             has_selection,
             insert_params
         ),
@@ -533,8 +533,7 @@ impl<'a> ParameterValueResolver<'a> {
             }
         }
         if !soundcraft_mix::is_third_party(&self.insert.plugin)
-            && let Ok(parsed) = trimmed.parse::<f32>()
-            && parsed.is_finite()
+            && let Some(parsed) = built_in_display_value(param, trimmed)
         {
             return Ok(self.store(param, parsed));
         }
@@ -628,6 +627,28 @@ fn labelled_value(param: &soundcraft_dsp::ParamInfo, text: &str) -> Option<f32> 
         soundcraft_dsp::Unit::Choice => param.choices.iter().position(|choice| text.eq_ignore_ascii_case(choice)).map(|index| index as f32),
         _ => None,
     }
+}
+
+/// A built-in's value read from the text its `display` shows ([`soundcraft_dsp::ParamInfo::format`]):
+/// a number, optionally followed by that unit's suffix (`-3 dB`, `1.2 kHz`, `50%`, `2.0:1`).
+/// So a string means the same thing for every plugin: the value in the units `display` shows.
+/// A built-in's display units are its stored units, except kHz.
+fn built_in_display_value(param: &soundcraft_dsp::ParamInfo, text: &str) -> Option<f32> {
+    use soundcraft_dsp::Unit;
+    let lower = text.to_lowercase();
+    if param.unit == Unit::Db && matches!(lower.as_str(), "-inf" | "-inf db" | "\u{2212}inf db") {
+        return Some(param.min);
+    }
+    let lead = leading_float(text)?;
+    let suffix = text.get(lead.end..)?.trim().to_lowercase();
+    let scale = match (param.unit, suffix.as_str()) {
+        (_, "") => 1.0,
+        (Unit::Db, "db") | (Unit::Hz, "hz") | (Unit::Ms, "ms") | (Unit::Percent, "%") | (Unit::Ratio, ":1") => 1.0,
+        (Unit::Semitones, "st") | (Unit::Cents, "ct") | (Unit::Seconds, "s") => 1.0,
+        (Unit::Hz, "khz") => 1000.0,
+        _ => return None,
+    };
+    Some((lead.value * scale) as f32).filter(|value| value.is_finite())
 }
 
 fn text_too_long(text: &str) -> bool {
