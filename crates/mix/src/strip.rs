@@ -56,12 +56,29 @@ pub(crate) struct PluginSlot {
     /// Unstored parameters currently under automation, looked up by parameter index. Reserved for [`UNSTORED_HOLD_CAP`] at creation; it grows only
     /// when a new hold is pushed.
     pub(crate) holds: Vec<LaneHold>,
+    /// The plugin's parameter indexes sorted by id, built with the slot. The audio thread finds a
+    /// lane's parameter by binary search instead of scanning every parameter on every block,
+    /// including a lane that names a parameter the plugin does not have.
+    by_id: Box<[usize]>,
     pub(crate) failed: bool,
 }
 
 impl PluginSlot {
     pub(crate) fn new(id: String, ch: usize, plugin: Box<dyn Plugin>) -> Self {
-        PluginSlot { id, ch, plugin, applied: Vec::new(), lanes: Vec::new(), holds: Vec::with_capacity(UNSTORED_HOLD_CAP), failed: false }
+        let params = &plugin.info().params;
+        let id_at = |i: usize| params.get(i).map_or("", |p| p.id);
+        let mut by_id: Vec<usize> = (0..params.len()).collect();
+        by_id.sort_by(|&a, &b| id_at(a).cmp(id_at(b)));
+        PluginSlot {
+            id,
+            ch,
+            plugin,
+            applied: Vec::new(),
+            lanes: Vec::new(),
+            holds: Vec::with_capacity(UNSTORED_HOLD_CAP),
+            by_id: by_id.into_boxed_slice(),
+            failed: false,
+        }
     }
 }
 
@@ -578,8 +595,13 @@ pub(crate) fn apply_params(slot: &mut PluginSlot, ins: &soundcraft_model::Insert
     slot.lanes = order;
 }
 
-fn plugin_param_index(slot: &PluginSlot, id: &str) -> Option<usize> {
-    slot.plugin.info().params.iter().position(|p| p.id == id)
+/// The parameter with this id, in O(log params). With duplicate ids the lowest index wins, as a
+/// scan from the start would find.
+pub(crate) fn plugin_param_index(slot: &PluginSlot, id: &str) -> Option<usize> {
+    let params = &slot.plugin.info().params;
+    let id_at = |i: usize| params.get(i).map_or("", |p| p.id);
+    let k = slot.by_id.partition_point(|&i| id_at(i) < id);
+    slot.by_id.get(k).copied().filter(|&i| id_at(i) == id)
 }
 
 fn plugin_param_id(slot: &PluginSlot, index: usize) -> Option<&'static str> {

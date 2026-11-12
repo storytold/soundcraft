@@ -1760,3 +1760,69 @@ fn consolidate_many_tiny_effect_clips_stays_fast() {
     assert!((out[0][1000] - 0.5 * db_to_gain(-6.0)).abs() < 1e-6);
     assert_eq!(out[0][1001], 0.0);
 }
+
+const fn unsorted_param(id: &'static str) -> soundcraft_dsp::ParamInfo {
+    soundcraft_dsp::ParamInfo {
+        id,
+        name: id,
+        min: 0.0,
+        max: 1.0,
+        default: 0.5,
+        unit: soundcraft_dsp::Unit::None,
+        taper: soundcraft_dsp::Taper::Linear,
+        choices: &[],
+    }
+}
+
+/// Ids out of order, with a duplicate: the slot's id index must not depend on the plugin's order.
+static UNSORTED_PARAMS: [soundcraft_dsp::ParamInfo; 5] =
+    [unsorted_param("zeta"), unsorted_param("alpha"), unsorted_param("mid"), unsorted_param("alpha"), unsorted_param("Beta")];
+
+static UNSORTED_INFO: soundcraft_dsp::PluginInfo = soundcraft_dsp::PluginInfo {
+    id: "unsorted",
+    name: "Unsorted",
+    short_name: "Unsorted",
+    category: soundcraft_dsp::Category::Other,
+    params: &UNSORTED_PARAMS,
+    is_instrument: false,
+    audiosuite: false,
+};
+
+struct Unsorted(Box<dyn Plugin>);
+
+impl Plugin for Unsorted {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        &UNSORTED_INFO
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.0.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+    fn set_param(&mut self, _: &str, _: f32) -> bool {
+        false
+    }
+    fn param(&self, _: &str) -> Option<f32> {
+        None
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.0.process(io, frames);
+    }
+}
+
+#[test]
+fn a_slot_finds_each_parameter_by_id_as_a_scan_would() {
+    for id in ["gain", "subtractive_synth", "eq_7band"] {
+        let Some(plugin) = super::instances::create_plugin(id) else { continue };
+        let slot = super::strip::PluginSlot::new(id.into(), 2, plugin);
+        for (i, p) in slot.plugin.info().params.iter().enumerate() {
+            assert_eq!(super::strip::plugin_param_index(&slot, p.id), Some(i), "{id}: {}", p.id);
+        }
+        assert_eq!(super::strip::plugin_param_index(&slot, "no such parameter"), None);
+    }
+    let Some(inner) = super::instances::create_plugin("gain") else { return };
+    let slot = super::strip::PluginSlot::new("unsorted".into(), 1, Box::new(Unsorted(inner)));
+    let found: Vec<_> = ["zeta", "alpha", "mid", "Beta", "beta", "", "zz"].iter().map(|id| super::strip::plugin_param_index(&slot, id)).collect();
+    assert_eq!(found, [Some(0), Some(1), Some(2), Some(4), None, None, None], "the first of two equal ids wins");
+}
