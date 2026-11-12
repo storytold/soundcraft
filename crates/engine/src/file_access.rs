@@ -475,7 +475,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
-    /// On Windows the root matches in any case, and `NUL`, `com1` and `COM¹` are refused.
+    /// On Windows the root matches in any case, and a reserved device name is refused, including
+    /// `NUL:`, `NUL:x` and `COM1:`.
     #[cfg(windows)]
     #[test]
     fn windows_ignores_case_and_refuses_devices() {
@@ -488,6 +489,11 @@ mod tests {
         assert!(roots.check(s(base.join("out/com1.txt")), Access::Write).is_err());
         let e = roots.check(s(base.join("out/COM¹.txt")), Access::Write).unwrap_err();
         assert!(e.contains("reserved device names"), "{e}");
+        // The colon is part of the path `roots.check` sees, not only of the bare name.
+        for name in ["out/NUL:", "out/NUL:x", "out/COM1:"] {
+            let e = roots.check(s(base.join(name)), Access::Write).unwrap_err();
+            assert!(e.contains("reserved device names"), "{name}: {e}");
+        }
         assert_eq!(roots.check(s(base.join("out/console.txt")), Access::Write), Ok(()));
         let _ = std::fs::remove_dir_all(base);
     }
@@ -514,11 +520,18 @@ mod tests {
     }
 
     /// Reserved device names are `CON`, `NUL`, `COM`/`LPT` plus `1` to `9` or `¹` to `³`, with an
-    /// extension or a colon. A longer or different name is a file name.
+    /// extension or a colon. `⁰` and `⁴` to `⁹`, and a longer or different name, are file names.
     #[test]
     fn device_names() {
-        for d in ["CON", "nul", "Com1", "LPT9.txt", "aux.scraft", "NUL ", "COM¹", "Lpt²", "lpt³.txt", "COM1:", "nul:x", "COM¹:"] {
+        for d in
+            ["CON", "nul", "Com1", "LPT9.txt", "aux.scraft", "NUL ", "COM1:", "nul:x", "COM¹", "COM²", "COM³", "COM¹:", "LPT¹", "Lpt²", "lpt³.txt"]
+        {
             assert!(is_device_name(d), "{d}");
+        }
+        // `¹` `²` `³` are the superscripts Windows reserves. `⁰` and `⁴` to `⁹` are ordinary.
+        for n in ["⁰", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"] {
+            assert!(!is_device_name(&format!("COM{n}")), "COM{n}");
+            assert!(!is_device_name(&format!("LPT{n}")), "LPT{n}");
         }
         for f in ["console", "com10", "COM0", "lpt", "a.scraft", "nul-x", "COM⁴", "com¹0", "lpt¹x", "console:x"] {
             assert!(!is_device_name(f), "{f}");
