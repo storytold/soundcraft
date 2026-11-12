@@ -838,17 +838,22 @@ impl Plugin for GarbageParsesAsZero {
     }
 }
 
-/// A live instance that renders text but refuses every string.
-struct RefusingLive;
+/// A live instance that renders text for its plugin's parameters but refuses every string. It
+/// records what it was asked to parse, and its display names the parameter and the value.
+#[derive(Default)]
+struct RefusingLive {
+    parsed: Vec<(String, String)>,
+}
 
 impl crate::LivePlugins for RefusingLive {
     fn plugin_id(&mut self, _track: TrackId, _slot: usize) -> Option<String> {
         Some("clap:not.installed".to_string())
     }
-    fn value_text(&mut self, _at: crate::LiveSlot<'_>, _id: &str, value: f32) -> Option<String> {
-        Some(format!("{value:.1} live"))
+    fn value_text(&mut self, at: crate::LiveSlot<'_>, id: &str, value: f32) -> Option<String> {
+        (at.plugin == "clap:not.installed").then(|| format!("{id} {value:.1} live"))
     }
-    fn value_from_text(&mut self, _at: crate::LiveSlot<'_>, _id: &str, _text: &str) -> Option<f32> {
+    fn value_from_text(&mut self, _at: crate::LiveSlot<'_>, id: &str, text: &str) -> Option<f32> {
+        self.parsed.push((id.to_string(), text.to_string()));
         None
     }
     fn value(&mut self, _at: crate::LiveSlot<'_>, _id: &str) -> Option<f32> {
@@ -859,13 +864,18 @@ impl crate::LivePlugins for RefusingLive {
 #[test]
 fn text_the_live_instance_refuses_does_not_load_a_temporary_plugin() {
     let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
-    let mut live = RefusingLive;
+    let mut live = RefusingLive::default();
     let insert = Insert::new("clap:not.installed");
     let mut resolver = ParameterValueResolver::new("mix.insert_param", &insert, 48_000.0, TrackId(0), 0, Some(&mut live));
     let err = resolver.resolve(gain, &json!("loud")).unwrap_err().to_string();
-    assert!(err.contains("`loud` is not a value of"), "{err}");
-    assert!(err.contains("live"), "examples come from the live instance: {err}");
     assert!(!resolver.tried_instance, "no temporary instance for refused text");
+    drop(resolver);
+    let examples = format!("gain {:.1} live, gain {:.1} live, gain {:.1} live", gain.min, gain.default, gain.max);
+    assert!(
+        err.contains(&format!("`loud` is not a value of Gain (gain); examples: {examples}")),
+        "examples are the live text at min, default, max: {err}"
+    );
+    assert_eq!(live.parsed, [("gain".to_string(), "loud".to_string())], "the live instance was asked once, for this parameter and text");
 }
 
 #[test]

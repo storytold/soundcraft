@@ -6,13 +6,17 @@ mod tests {
     use serde_json::json;
     use soundcraft_model::{Insert, LivePlugins, TrackId};
 
+    /// One live slot. It knows one parameter, `param`: other ids get no answer. Its display
+    /// for a value is `LIVE <value>`, so the text depends on the value it was asked to render, and
+    /// when `parses` it reads that text back. A resolver passing the wrong id, the wrong value or
+    /// the wrong text gets a different answer, or none.
     struct Answer {
         plugin: &'static str,
         track: TrackId,
         slot: usize,
-        from_text: Option<f32>,
+        param: &'static str,
+        parses: bool,
         value: Option<f32>,
-        display: &'static str,
     }
 
     struct Fake {
@@ -35,16 +39,17 @@ mod tests {
             self.answer(track, slot).map(|a| a.plugin.to_string())
         }
 
-        fn value_text(&mut self, at: crate::LiveSlot<'_>, _id: &str, _value: f32) -> Option<String> {
-            self.answer_for(at).map(|a| a.display.to_string())
+        fn value_text(&mut self, at: crate::LiveSlot<'_>, id: &str, value: f32) -> Option<String> {
+            self.answer_for(at).filter(|a| a.param == id).map(|_| format!("LIVE {value}"))
         }
 
-        fn value_from_text(&mut self, at: crate::LiveSlot<'_>, _id: &str, _text: &str) -> Option<f32> {
-            self.answer_for(at).and_then(|a| a.from_text)
+        fn value_from_text(&mut self, at: crate::LiveSlot<'_>, id: &str, text: &str) -> Option<f32> {
+            self.answer_for(at).filter(|a| a.param == id && a.parses)?;
+            text.strip_prefix("LIVE ")?.parse().ok()
         }
 
-        fn value(&mut self, at: crate::LiveSlot<'_>, _id: &str) -> Option<f32> {
-            self.answer_for(at).and_then(|a| a.value)
+        fn value(&mut self, at: crate::LiveSlot<'_>, id: &str) -> Option<f32> {
+            self.answer_for(at).filter(|a| a.param == id).and_then(|a| a.value)
         }
     }
 
@@ -77,40 +82,43 @@ mod tests {
         let instrument = track(&mut e, Some("instrument"));
         e.set_live_plugins(Some(Box::new(Fake {
             answers: vec![
-                Answer { plugin: "eq_7band", track: audio, slot: 0, from_text: Some(-3.0), value: Some(-3.0), display: "LIVE-29" },
+                Answer { plugin: "eq_7band", track: audio, slot: 0, param: "mid_gain", parses: true, value: Some(-3.0) },
                 Answer {
                     plugin: "subtractive_synth",
                     track: instrument,
                     slot: soundcraft_mix::INSTRUMENT_SLOT,
-                    from_text: Some(440.0),
+                    param: "cutoff",
+                    parses: true,
                     value: Some(440.0),
-                    display: "LIVE-29",
                 },
             ],
         })));
 
-        // "LIVE-29" is not text a built-in parses. Storing it means the live instance answered
-        // and no temporary instance was created.
-        let set = e.execute("mix.insert_param", &json!({"track": audio.0, "slot": 0, "param": "mid_gain", "value": "LIVE-29"})).unwrap();
+        // "LIVE -3" is not text a built-in parses. Storing it means the live instance answered
+        // for this parameter and no temporary instance was created.
+        let set = e.execute("mix.insert_param", &json!({"track": audio.0, "slot": 0, "param": "mid_gain", "value": "LIVE -3"})).unwrap();
         assert_eq!(set["value"], -3.0);
         assert_eq!(stored_insert(&e, audio, "mid_gain"), Some(-3.0));
+        // The live instance knows only mid_gain: asked about another parameter, it has no answer.
+        let err = e.execute("mix.insert_param", &json!({"track": audio.0, "slot": 0, "param": "low_shelf_gain", "value": "LIVE -3"})).unwrap_err();
+        assert!(err.to_string().contains("is not a value of"), "{err}");
 
         let probed = e.execute("mix.plugin_params", &json!({"track": audio.0, "slot": 0, "filter": "mid_gain", "probe": true})).unwrap();
         let mid = param_row(&probed, "mid_gain");
         assert_eq!(mid["value"], -3.0);
         assert_eq!(mid["value_source"], "session");
-        assert_eq!(mid["display"], "LIVE-29");
+        assert_eq!(mid["display"], "LIVE -3", "the live text for the stored value");
         assert_eq!(mid["name"], "MF Gain");
         assert!(mid["min"].is_number());
 
-        let set = e.execute("mix.instrument_param", &json!({"track": instrument.0, "param": "cutoff", "value": "LIVE-29"})).unwrap();
+        let set = e.execute("mix.instrument_param", &json!({"track": instrument.0, "param": "cutoff", "value": "LIVE 440"})).unwrap();
         assert_eq!(set["value"], 440.0);
         let probed =
             e.execute("mix.plugin_params", &json!({"track": instrument.0, "slot": "instrument", "filter": "cutoff", "probe": true})).unwrap();
         let cutoff = param_row(&probed, "cutoff");
         assert_eq!(cutoff["value_source"], "session");
         assert_eq!(cutoff["value"], 440.0);
-        assert_eq!(cutoff["display"], "LIVE-29");
+        assert_eq!(cutoff["display"], "LIVE 440");
         assert_eq!(cutoff["name"], "Cutoff");
     }
 
@@ -127,14 +135,14 @@ mod tests {
         }
         e.set_live_plugins(Some(Box::new(Fake {
             answers: vec![
-                Answer { plugin: "clap:does.not.exist", track: audio, slot: 0, from_text: Some(0.5), value: Some(0.5), display: "LIVE-29" },
+                Answer { plugin: "clap:does.not.exist", track: audio, slot: 0, param: "gain", parses: true, value: Some(0.5) },
                 Answer {
                     plugin: "clap:does.not.exist",
                     track: instrument,
                     slot: soundcraft_mix::INSTRUMENT_SLOT,
-                    from_text: Some(0.25),
+                    param: "tone",
+                    parses: true,
                     value: Some(0.25),
-                    display: "LIVE-29",
                 },
             ],
         })));
@@ -160,15 +168,15 @@ mod tests {
     }
 
     #[test]
-    fn live_none_falls_back_to_a_temporary_instance_for_text_but_not_for_a_probe() {
+    fn text_the_live_instance_refuses_falls_back_to_the_built_in_parse_but_a_probe_keeps_live_display() {
         let mut e = Engine::default();
         let track = track(&mut e, None);
         e.execute("mix.insert", &json!({"track": track.0, "slot": 0, "plugin": "eq_7band"})).unwrap();
         e.set_live_plugins(Some(Box::new(Fake {
-            answers: vec![Answer { plugin: "eq_7band", track, slot: 0, from_text: None, value: None, display: "LIVE" }],
+            answers: vec![Answer { plugin: "eq_7band", track, slot: 0, param: "mid_gain", parses: false, value: None }],
         })));
-        // "-3" is not a label. The live parser declines, so the temporary built-in parses it.
-        // That parse runs only after the temporary instance is created.
+        // "-3" is not a label. The live instance renders mid_gain but refuses the text, and a
+        // built-in reads its own display without a temporary instance: "-3" is -3 dB.
         let set = e.execute("mix.insert_param", &json!({"track": track.0, "slot": 0, "param": "mid_gain", "value": "-3"})).unwrap();
         assert_eq!(set["value"], -3.0);
         assert_eq!(stored_insert(&e, track, "mid_gain"), Some(-3.0));
@@ -176,11 +184,11 @@ mod tests {
         e.execute("mix.insert_param", &json!({"track": track.0, "slot": 0, "param": "mid_gain", "value": 7.5})).unwrap();
         let probed = e.execute("mix.plugin_params", &json!({"track": track.0, "slot": 0, "filter": "mid_gain", "probe": true})).unwrap();
         let row = param_row(&probed, "mid_gain");
-        // mid_gain is stored, so the probe keeps 7.5. Display "LIVE" is the live text for that
-        // stored value, which a temporary instance of the built-in would not produce.
+        // mid_gain is stored, so the probe keeps 7.5. Its display is the live text for that
+        // stored value, which the built-in's own formatting would not produce.
         assert_eq!(row["value"], 7.5);
         assert_eq!(row["value_source"], "session");
-        assert_eq!(row["display"], "LIVE");
+        assert_eq!(row["display"], "LIVE 7.5");
     }
 
     #[test]
@@ -189,7 +197,7 @@ mod tests {
         let track = track(&mut e, None);
         e.execute("mix.insert", &json!({"track": track.0, "slot": 0, "plugin": "eq_7band"})).unwrap();
         e.set_live_plugins(Some(Box::new(Fake {
-            answers: vec![Answer { plugin: "clap:wrong", track, slot: 0, from_text: Some(99.0), value: Some(99.0), display: "WRONG" }],
+            answers: vec![Answer { plugin: "clap:wrong", track, slot: 0, param: "mid_gain", parses: true, value: Some(99.0) }],
         })));
         let set = e.execute("mix.insert_param", &json!({"track": track.0, "slot": 0, "param": "mid_gain", "value": "-3"})).unwrap();
         assert_eq!(set["value"], -3.0);
@@ -200,7 +208,7 @@ mod tests {
         let row = param_row(&probed, "mid_gain");
         assert_eq!(row["value"], 7.5);
         assert_eq!(row["value_source"], "session");
-        assert_ne!(row["display"], "WRONG");
+        assert_ne!(row["display"], "LIVE 7.5", "not the other plugin's display");
     }
 
     #[test]
@@ -211,9 +219,7 @@ mod tests {
         e.execute("mix.insert_param", &json!({"track": track.0, "slot": 0, "param": "mid_gain", "value": 7.5})).unwrap();
         // Every string parses as 0, and the display is always "0.0 dB". "twintig" does not
         // round-trip, so it is not stored. "0.0 dB" does.
-        e.set_live_plugins(Some(Box::new(Fake {
-            answers: vec![Answer { plugin: "eq_7band", track, slot: 0, from_text: Some(0.0), value: Some(0.0), display: "0.0 dB" }],
-        })));
+        e.set_live_plugins(Some(Box::new(ZeroLive)));
         let err =
             e.execute("mix.insert_param", &json!({"track": track.0, "slot": 0, "param": "mid_gain", "value": "twintig"})).unwrap_err().to_string();
         assert!(err.contains("`twintig` is not a value of MF Gain (mid_gain)"), "{err}");
@@ -224,6 +230,28 @@ mod tests {
         let set = e.execute("mix.insert_param", &json!({"track": track.0, "slot": 0, "param": "mid_gain", "value": "0.0 dB"})).unwrap();
         assert_eq!(set["value"], 0.0);
         assert_eq!(stored_insert(&e, track, "mid_gain"), Some(0.0));
+    }
+
+    /// A live eq_7band whose parser answers 0 for any text and whose display is always "0.0 dB",
+    /// like units that report success for garbage.
+    struct ZeroLive;
+
+    impl LivePlugins for ZeroLive {
+        fn plugin_id(&mut self, _track: TrackId, _slot: usize) -> Option<String> {
+            Some("eq_7band".into())
+        }
+
+        fn value_text(&mut self, at: crate::LiveSlot<'_>, _id: &str, _value: f32) -> Option<String> {
+            (at.plugin == "eq_7band").then(|| "0.0 dB".to_string())
+        }
+
+        fn value_from_text(&mut self, at: crate::LiveSlot<'_>, _id: &str, _text: &str) -> Option<f32> {
+            (at.plugin == "eq_7band").then_some(0.0)
+        }
+
+        fn value(&mut self, at: crate::LiveSlot<'_>, _id: &str) -> Option<f32> {
+            (at.plugin == "eq_7band").then_some(0.0)
+        }
     }
 
     /// The live instance still holds the previous block after `mix.insert_param`. A stored
