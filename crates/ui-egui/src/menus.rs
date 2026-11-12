@@ -861,6 +861,8 @@ mod tests {
         assert_eq!(app.ui.sends_default, SendsDefault::Unity);
         assert!(app.run("ui.sends_default", json!({"level": "-6"})).is_err());
         assert_eq!(app.ui.sends_default, SendsDefault::Unity, "a rejected level changes nothing");
+        assert_eq!(app.run("ui.sends_default", json!({"level": "-inf"})).unwrap(), json!({"level": "-inf"}));
+        assert_eq!(app.ui.sends_default, SendsDefault::NegativeInfinity, "switching back to −∞ dB works");
         assert!(!app.engine.is_dirty(), "a preference is not a document edit");
     }
 
