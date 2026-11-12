@@ -335,7 +335,7 @@ mod tests {
         // The ordinary resolver does not fold ids: "gain" is the other parameter's name.
         assert_eq!(resolve_param(&info, "gain").unwrap().id, "other");
         assert_eq!(resolve_param(&info, "Gain").unwrap().id, "Gain");
-        // The lane key was lowercased by AutoParam::parse, so the id "Gain" still wins.
+        // Automation folds id case (a lane key may be typed in any case), so the id "Gain" still wins.
         assert_eq!(resolve_automation_param(&info, "gain").unwrap().id, "Gain");
     }
 

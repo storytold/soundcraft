@@ -101,7 +101,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Plugin",
             [],
             None,
-            "{track?, slot?: 0..9 | a..j, plugin: id, params?: {param: id, number, or name (case-insensitive; ids win): value}}. value: number (the stored value, as `value` in mix.plugin_params), or text in the units `display` shows: a Toggle/Choice label, a hosted plugin's own text (e.g. \"29\" for 29 ms where the stored value is 0.028), or a built-in's display (e.g. \"-3 dB\", \"1.2 kHz\"); text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Unknown keys and invalid values are errors; two keys that resolve to the same id are an error and nothing is stored.",
+            "{track?, slot?: 0..9 | a..j, plugin: id, params?: {key: id (a numeric id as its decimal string, e.g. \"1575\": JSON keys are strings), or name (case-insensitive; ids win): value}}. value: number (the stored value, as `value` in mix.plugin_params), or text in the units `display` shows: a Toggle/Choice label, a hosted plugin's own text (e.g. \"29\" for 29 ms where the stored value is 0.028), or a built-in's display (e.g. \"-3 dB\", \"1.2 kHz\"); text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Unknown keys and invalid values are errors; two keys that resolve to the same id are an error and nothing is stored.",
             has_selection,
             insert
         ),
@@ -121,7 +121,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Plugin Parameters",
             [],
             None,
-            "{track?, slot: 0..9 | a..j | \"instrument\", params: {param: id, number, or name (case-insensitive; ids win): value}, preset?: name}. value: number (the stored value, as `value` in mix.plugin_params), or text in the units `display` shows: a Toggle/Choice label, a hosted plugin's own text (e.g. \"29\" for 29 ms where the stored value is 0.028), or a built-in's display (e.g. \"-3 dB\", \"1.2 kHz\"); text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Every key is resolved before anything is stored. Unknown keys, invalid values and two keys that resolve to the same id are errors; nothing is stored if any key fails.",
+            "{track?, slot: 0..9 | a..j | \"instrument\", params: {key: id (a numeric id as its decimal string, e.g. \"1575\": JSON keys are strings), or name (case-insensitive; ids win): value}, preset?: name}. value: number (the stored value, as `value` in mix.plugin_params), or text in the units `display` shows: a Toggle/Choice label, a hosted plugin's own text (e.g. \"29\" for 29 ms where the stored value is 0.028), or a built-in's display (e.g. \"-3 dB\", \"1.2 kHz\"); text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Every key is resolved before anything is stored. Unknown keys, invalid values and two keys that resolve to the same id are errors; nothing is stored if any key fails.",
             has_selection,
             insert_params
         ),
@@ -156,7 +156,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Automation Breakpoint",
             [],
             None,
-            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, at, value, from?}. Plugin keys: id, number, or name (case-insensitive; ids win), at most 200 characters. A known plugin stores the id. An empty slot keeps the key as parsed (lowercased). An occupied slot with no parameter list is an error.",
+            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, at, value, from?}. Plugin keys: id, number, or name (case-insensitive; ids win), at most 200 characters. A known plugin stores the id. An empty slot keeps the key as given (case and inner spacing kept). An occupied slot with no parameter list is an error.",
             has_selection,
             set_point
         ),
@@ -165,7 +165,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Write Automation",
             [],
             None,
-            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, start?, end?, value}. Plugin keys: id, number, or name (case-insensitive; ids win), at most 200 characters. A known plugin stores the id. An empty slot keeps the key as parsed (lowercased). An occupied slot with no parameter list is an error.",
+            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, start?, end?, value}. Plugin keys: id, number, or name (case-insensitive; ids win), at most 200 characters. A known plugin stores the id. An empty slot keeps the key as given (case and inner spacing kept). An occupied slot with no parameter list is an error.",
             has_selection,
             write_range
         ),
@@ -174,7 +174,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Clear Automation",
             [],
             None,
-            "{track?, param?: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, start?, end?}. Plugin keys: id, number, or name (case-insensitive; ids win), at most 200 characters. A known plugin stores the id. An empty slot keeps the key as parsed (lowercased). An occupied slot with no parameter list is cleared only when the key is the lane's exact stored id.",
+            "{track?, param?: volume|pan|mute|send_a_level|plugin:a:<id or name>|plugin:instrument:<id or name>, start?, end?}. Plugin keys: id, number, or name (case-insensitive; ids win), at most 200 characters. A known plugin stores the id. An empty slot keeps the key as given (case and inner spacing kept). An occupied slot with no parameter list is cleared only when the key is the lane's exact stored id.",
             has_selection,
             clear_lane
         ),
