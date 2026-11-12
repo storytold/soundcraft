@@ -422,6 +422,13 @@ impl ParameterValueResolver {
         self.instance.as_deref_mut().ok_or_else(move || bad(cmd, format!("could not instantiate plugin `{plugin}` to parse parameter text")))
     }
 
+    /// Built-in processors have no text of their own (they keep the trait's `None`), so a
+    /// temporary instance of one would only cost time: their strings go to the plain-number
+    /// fallback. Hosted plugins, and an instance already at hand, are asked.
+    fn uses_plugin_text(&self) -> bool {
+        self.instance.is_some() || soundcraft_mix::is_third_party(&self.insert.plugin)
+    }
+
     /// Every command stores values the same way: clamped, toggles and choices rounded.
     fn store(&self, param: &soundcraft_dsp::ParamInfo, value: f32) -> f32 {
         param.clamp(value)
@@ -443,7 +450,9 @@ impl ParameterValueResolver {
         // The plugin's parser is not a guarantee: some units report success and return 0 for
         // any string. Keep the value only when the plugin's own text for it agrees with what
         // was typed, and refuse a number outside the displayed range instead of clamping it.
-        if let Some(parsed) = self.instance()?.value_from_text(param.id, text).filter(|parsed| parsed.is_finite()) {
+        if self.uses_plugin_text()
+            && let Some(parsed) = self.instance()?.value_from_text(param.id, text).filter(|parsed| parsed.is_finite())
+        {
             return self.accept_plugin_text(param, text, parsed);
         }
         if !soundcraft_mix::is_third_party(&self.insert.plugin)
@@ -492,7 +501,7 @@ impl ParameterValueResolver {
         let min = param.min;
         let default = param.default;
         let max = param.max;
-        if (allow_instance || self.instance.is_some())
+        if ((allow_instance && self.uses_plugin_text()) || self.instance.is_some())
             && let Ok(plugin) = self.instance()
         {
             let min = plugin.value_text(param.id, min).unwrap_or_else(|| param.format(min));

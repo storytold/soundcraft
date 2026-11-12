@@ -870,6 +870,17 @@ fn a_plugin_that_parses_garbage_as_zero_is_rejected() {
     assert!((just_inside - 1.0).abs() < 1e-5, "{just_inside}");
 }
 
+#[test]
+fn text_for_a_built_in_never_loads_a_temporary_instance() {
+    let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
+    let mut resolver = ParameterValueResolver::new("mix.insert_param", &Insert::new("gain"), 48_000.0);
+
+    assert_eq!(resolver.resolve(gain, &json!(" -3 ")).unwrap(), -3.0);
+    let err = resolver.resolve(gain, &json!("loud")).unwrap_err().to_string();
+    assert!(err.contains("`loud` is not a value of `gain`") && err.contains("examples"), "{err}");
+    assert!(!resolver.tried_instance, "a built-in parses and formats its own numbers");
+}
+
 /// The same Apple Delay unit rejects a string that is not one of its parameter values.
 #[cfg(target_os = "macos")]
 #[test]
