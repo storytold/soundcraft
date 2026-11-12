@@ -11,7 +11,7 @@ fn source(id: u64, frames: u64) -> Source {
         channels: 1,
         frames,
         sample_rate: 48_000,
-        format: soundcraft_audio_io::FileFormat::Wav,
+        format: soundcraft_model::FileFormat::Wav,
         time_reference: 0,
         unsaved: false,
     }
@@ -467,11 +467,10 @@ fn start_trims_keep_the_sync_point_on_its_audio() {
 
 #[test]
 fn imported_time_stamps_count_at_the_session_rate() {
-    use soundcraft_audio_io::{AudioBuffer, BwfInfo, EncodeOptions, FileFormat};
+    use craft_audio::{AudioBuffer, BwfInfo, EncodeOptions};
     let mut e = Engine::default();
-    let bwf = BwfInfo { time_reference: 1_587_600_000, ..BwfInfo::default() };
-    let opts = EncodeOptions { format: FileFormat::Wav, bwf: Some(bwf), ..EncodeOptions::default() };
-    let bytes = soundcraft_audio_io::encode(&AudioBuffer::new(44_100, 1, 441), &opts).unwrap();
+    let opts = EncodeOptions::default().with_bwf(BwfInfo::default().with_time_reference(1_587_600_000));
+    let bytes = craft_audio::encode(&AudioBuffer::new(44_100, 1, 441), &opts).unwrap();
     soundcraft_engine::io::import_audio_bytes(&mut e, "stamped.wav", &bytes, None, None, 0).unwrap();
     assert_eq!(e.session().sources[0].time_reference, 1_728_000_000);
 }
@@ -578,4 +577,49 @@ fn moving_a_group_left_past_zero_keeps_its_spacing() {
     let (mut e, t, ids) = long("slip", &[(500, 100, 0), (2000, 100, 0)]);
     run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "by": -1000}));
     assert_eq!(clips(&e, t), [(0, 100), (1500, 100)]);
+}
+
+#[test]
+fn separate_and_range_edits_leave_locked_clips_whole() {
+    let edits = [
+        ("edit.separate", json!({"at": 24_000})),
+        ("edit.separate", json!({"start": 12_000, "end": 36_000})),
+        ("edit.separate_on_grid", json!({"start": 12_000, "end": 36_000})),
+        ("edit.clear", json!({"start": 12_000, "end": 36_000})),
+        ("edit.insert_silence", json!({"start": 24_000, "end": 25_000})),
+    ];
+    for lock in [None, Some("clip.edit_lock"), Some("clip.time_lock")] {
+        for (cmd, p) in &edits {
+            let (mut e, t, ids) = long("slip", &[(0, 48_000, 0)]);
+            if let Some(lock) = lock {
+                run(&mut e, lock, json!({"clips": [ids[0].0]}));
+            }
+            let mut p = p.clone();
+            p["tracks"] = json!([t.0]);
+            run(&mut e, cmd, p);
+            if lock.is_some() {
+                assert_eq!(clips(&e, t), vec![(0, 48_000)], "{lock:?} {cmd}");
+            } else {
+                assert_ne!(clips(&e, t), vec![(0, 48_000)], "unlocked control {cmd}");
+            }
+        }
+    }
+}
+
+/// Event time edits move the entire timeline, including clips protected from ordinary edits.
+#[test]
+fn event_time_edits_split_and_move_locked_clips() {
+    for lock in ["clip.edit_lock", "clip.time_lock"] {
+        for (command, expected) in [
+            ("event.insert_time", vec![(0, 12_000, 0), (36_000, 36_000, 12_000)]),
+            ("event.cut_time", vec![(0, 12_000, 0), (12_000, 12_000, 36_000)]),
+        ] {
+            let (mut e, t, ids) = long("slip", &[(0, 48_000, 0)]);
+            run(&mut e, lock, json!({"clips": [ids[0].0]}));
+            run(&mut e, command, json!({"start": 12_000, "end": 36_000}));
+            let actual: Vec<_> = e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.length, c.source_offset())).collect();
+            assert_eq!(actual, expected, "{lock} {command}");
+            assert!(e.session().track(t).unwrap().clips().iter().all(soundcraft_engine::edit::locked));
+        }
+    }
 }
