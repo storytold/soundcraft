@@ -131,7 +131,7 @@ fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
         None => None,
         Some(value) => {
             let value = value.as_str().ok_or_else(|| bad(CMD, "`filter` must be a string"))?;
-            if value.chars().count() > 200 {
+            if value.chars().nth(200).is_some() {
                 return Err(bad(CMD, "`filter` must be at most 200 characters"));
             }
             Some(value.to_lowercase())

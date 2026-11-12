@@ -230,7 +230,7 @@ impl Instance {
 
     pub fn value_from_text(&self, id: u32, text: &str) -> Option<f64> {
         // `text_to_value` is [main-thread].
-        if !super::gui::on_main_thread() || text.chars().count() > 256 {
+        if !super::gui::on_main_thread() || text.chars().nth(256).is_some() {
             return None;
         }
         // SAFETY: see `params`.
