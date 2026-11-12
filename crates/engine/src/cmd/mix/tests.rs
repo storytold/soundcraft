@@ -850,13 +850,13 @@ impl crate::LivePlugins for RefusingLive {
     fn plugin_id(&mut self, _track: TrackId, _slot: usize) -> Option<String> {
         Some("clap:not.installed".to_string())
     }
-    fn value_text(&mut self, _track: TrackId, _slot: usize, _id: &str, value: f32) -> Option<String> {
+    fn value_text(&mut self, _at: crate::LiveSlot<'_>, _id: &str, value: f32) -> Option<String> {
         Some(format!("{value:.1} live"))
     }
-    fn value_from_text(&mut self, _track: TrackId, _slot: usize, _id: &str, _text: &str) -> Option<f32> {
+    fn value_from_text(&mut self, _at: crate::LiveSlot<'_>, _id: &str, _text: &str) -> Option<f32> {
         None
     }
-    fn value(&mut self, _track: TrackId, _slot: usize, _id: &str) -> Option<f32> {
+    fn value(&mut self, _at: crate::LiveSlot<'_>, _id: &str) -> Option<f32> {
         None
     }
 }

@@ -29,7 +29,7 @@ pub use devices::AudioConfig;
 
 use soundcraft_dsp::{Plugin, PluginEditor, PluginStateReader};
 use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
-use soundcraft_model::{LivePlugins, Session, TrackId};
+use soundcraft_model::{LivePlugins, LiveSlot, Session, TrackId};
 use soundcraft_time::{Range, Samples};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
@@ -545,6 +545,19 @@ impl PlayerLive {
     }
 }
 
+impl Side {
+    /// The editor handle of `at`, only when that slot's created instance is `at.plugin`. The
+    /// caller holds the lock for the check and the call that follows, so they see the same slot.
+    fn live_editor(&mut self, at: LiveSlot<'_>) -> Option<&mut (dyn PluginEditor + 'static)> {
+        let key = (at.track, at.slot);
+        let (id, _, created) = self.shadow.get(&key)?;
+        if !created || id != at.plugin {
+            return None;
+        }
+        self.editors.get_mut(&key).map(|editor| &mut **editor)
+    }
+}
+
 impl LivePlugins for PlayerLive {
     fn plugin_id(&mut self, track: TrackId, slot: usize) -> Option<String> {
         let side = self.side();
@@ -555,16 +568,16 @@ impl LivePlugins for PlayerLive {
         Some(id.clone())
     }
 
-    fn value_text(&mut self, track: TrackId, slot: usize, id: &str, value: f32) -> Option<String> {
-        self.side().editors.get_mut(&(track, slot))?.value_text(id, value)
+    fn value_text(&mut self, at: LiveSlot<'_>, id: &str, value: f32) -> Option<String> {
+        self.side().live_editor(at)?.value_text(id, value)
     }
 
-    fn value_from_text(&mut self, track: TrackId, slot: usize, id: &str, text: &str) -> Option<f32> {
-        self.side().editors.get_mut(&(track, slot))?.value_from_text(id, text)
+    fn value_from_text(&mut self, at: LiveSlot<'_>, id: &str, text: &str) -> Option<f32> {
+        self.side().live_editor(at)?.value_from_text(id, text)
     }
 
-    fn value(&mut self, track: TrackId, slot: usize, id: &str) -> Option<f32> {
-        self.side().editors.get(&(track, slot))?.param(id)
+    fn value(&mut self, at: LiveSlot<'_>, id: &str) -> Option<f32> {
+        self.side().live_editor(at)?.param(id)
     }
 }
 

@@ -441,21 +441,19 @@ impl<'a> ParameterValueResolver<'a> {
         if !self.live_matches() {
             return LiveParse::Unavailable;
         }
-        let (track, slot) = (self.track, self.slot);
+        let at = crate::LiveSlot { track: self.track, slot: self.slot, plugin: &self.insert.plugin };
         let Some(live) = self.live.as_mut() else { return LiveParse::Unavailable };
-        if let Some(parsed) = live.value_from_text(track, slot, param.id, text).filter(|parsed| parsed.is_finite()) {
+        if let Some(parsed) = live.value_from_text(at, param.id, text).filter(|parsed| parsed.is_finite()) {
             return LiveParse::Parsed(parsed);
         }
         // The hosts answer `None` both for text they refuse and when they cannot be asked (not on
         // the main thread). An instance that still renders this parameter's text was asked.
-        if live.value_text(track, slot, param.id, param.default).is_some() { LiveParse::Rejected } else { LiveParse::Unavailable }
+        if live.value_text(at, param.id, param.default).is_some() { LiveParse::Rejected } else { LiveParse::Unavailable }
     }
 
     fn live_display(&mut self, param: &soundcraft_dsp::ParamInfo, value: f32) -> String {
-        self.live
-            .as_mut()
-            .and_then(|live| live.value_text(self.track, self.slot, param.id, value))
-            .map_or_else(|| param.format(value), |text| shown_text(&text))
+        let at = crate::LiveSlot { track: self.track, slot: self.slot, plugin: &self.insert.plugin };
+        self.live.as_mut().and_then(|live| live.value_text(at, param.id, value)).map_or_else(|| param.format(value), |text| shown_text(&text))
     }
 
     /// One temporary instance per resolver. Created only when a string needs the plugin's parser,
