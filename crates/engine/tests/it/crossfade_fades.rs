@@ -18,7 +18,7 @@ fn crossfade() -> (Engine, TrackId, ClipId, ClipId) {
         channels: 1,
         frames: 100_000,
         sample_rate: 48_000,
-        format: soundcraft_audio_io::FileFormat::Wav,
+        format: soundcraft_model::FileFormat::Wav,
         time_reference: 0,
         unsaved: false,
     });

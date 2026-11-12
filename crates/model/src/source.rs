@@ -2,9 +2,48 @@
 //! movies video clips reference.
 
 use crate::SourceId;
-use soundcraft_audio_io::{AudioBuffer, FileFormat, peaks::Peaks};
+use craft_audio::{AudioBuffer, AudioInfo, CodecId, Container, peaks::Peaks};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+/// The kind of file a source came from, as session files store it in [`Source::format`]. The
+/// variant names are part of the session format: craft-audio's `Container` and `CodecId` name
+/// more formats under other names, so this stays here and maps from them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FileFormat {
+    Wav,
+    Aiff,
+    Flac,
+    Mp3,
+    Ogg,
+    Aac,
+    Alac,
+    Caf,
+    /// Anything else that decodes: Matroska, WebM, raw AC-3.
+    Other,
+}
+
+impl FileFormat {
+    /// The kind of the file `info` describes.
+    pub fn of(info: &AudioInfo) -> FileFormat {
+        match info.container {
+            Container::Wav => FileFormat::Wav,
+            Container::Aiff => FileFormat::Aiff,
+            Container::Flac => FileFormat::Flac,
+            Container::MpegAudio => FileFormat::Mp3,
+            Container::Ogg => FileFormat::Ogg,
+            Container::Caf => FileFormat::Caf,
+            Container::Adts => FileFormat::Aac,
+            // MP4 and QuickTime hold many codecs: the codec names the kind.
+            Container::Mp4 | Container::QuickTime => match info.codec {
+                CodecId::Alac => FileFormat::Alac,
+                CodecId::Aac | CodecId::HeAac => FileFormat::Aac,
+                _ => FileFormat::Other,
+            },
+            _ => FileFormat::Other,
+        }
+    }
+}
 
 /// Metadata for an audio file used by the session (serialised).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -111,5 +150,55 @@ impl SourcePool {
 impl PartialEq for SourcePool {
     fn eq(&self, other: &Self) -> bool {
         self.map.len() == other.map.len() && self.map.iter().zip(other.map.iter()).all(|((a, x), (b, y))| a == b && Arc::ptr_eq(x, y))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileFormat;
+    use craft_audio::{AudioBuffer, EncodeFormat, EncodeOptions, encode, probe};
+
+    /// Sessions written before the format code moved to craft-audio name a source's format with
+    /// these words; they must keep reading, and new sessions must keep writing them.
+    #[test]
+    fn the_format_names_in_session_files_do_not_change() {
+        use FileFormat::{Aac, Aiff, Alac, Caf, Flac, Mp3, Ogg, Other, Wav};
+        let names = ["Wav", "Aiff", "Flac", "Mp3", "Ogg", "Aac", "Alac", "Caf", "Other"];
+        for (format, name) in [Wav, Aiff, Flac, Mp3, Ogg, Aac, Alac, Caf, Other].into_iter().zip(names) {
+            assert_eq!(serde_json::to_string(&format).unwrap(), format!("\"{name}\""));
+            assert_eq!(serde_json::from_str::<FileFormat>(&format!("\"{name}\"")).unwrap(), format);
+        }
+    }
+
+    /// An MP4 is AAC only when its audio is: Opus, AC-3 or PCM in MP4 is not.
+    #[test]
+    fn an_mp4_is_named_by_its_codec() {
+        let wav = encode(&AudioBuffer::new(48_000, 1, 480), &EncodeOptions::default()).unwrap();
+        let mut info = serde_json::to_value(probe(&wav, None).unwrap()).unwrap();
+        for (container, codec, format) in [
+            ("Mp4", "Aac", FileFormat::Aac),
+            ("Mp4", "HeAac", FileFormat::Aac),
+            ("QuickTime", "Alac", FileFormat::Alac),
+            ("Mp4", "Opus", FileFormat::Other),
+            ("Mp4", "Ac3", FileFormat::Other),
+            ("QuickTime", "Pcm", FileFormat::Other),
+            ("Adts", "Aac", FileFormat::Aac),
+        ] {
+            info["container"] = container.into();
+            info["codec"] = codec.into();
+            let info: craft_audio::AudioInfo = serde_json::from_value(info.clone()).unwrap();
+            assert_eq!(FileFormat::of(&info), format, "{codec} in {container}");
+        }
+    }
+
+    #[test]
+    fn a_probed_file_maps_to_its_format() {
+        let buf = AudioBuffer::new(48_000, 1, 480);
+        for (written, format) in
+            [(EncodeFormat::Wav, FileFormat::Wav), (EncodeFormat::Aiff, FileFormat::Aiff), (EncodeFormat::Flac, FileFormat::Flac)]
+        {
+            let info = probe(&encode(&buf, &EncodeOptions::new(written)).unwrap(), None).unwrap();
+            assert_eq!(FileFormat::of(&info), format);
+        }
     }
 }

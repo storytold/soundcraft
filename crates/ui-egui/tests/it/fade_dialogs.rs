@@ -35,7 +35,7 @@ impl Rig {
             channels: 1,
             frames: u64::try_from(30 * SEC).unwrap(),
             sample_rate: 48_000,
-            format: soundcraft_audio_io::FileFormat::Wav,
+            format: soundcraft_model::FileFormat::Wav,
             time_reference: 0,
             unsaved: false,
         });

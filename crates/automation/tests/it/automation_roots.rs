@@ -310,6 +310,36 @@ fn links_out_of_the_roots_are_refused() {
     ok(&mut via_alias, "file.import_audio", json!({"path": s(f.read.join("tone.wav"))}));
 }
 
+#[cfg(any(unix, windows))]
+#[test]
+fn exports_refuse_hard_links_without_changing_either_name() {
+    let f = fixture("hard-links");
+    let midi = f.write.join("linked.mid");
+    let preset = f.write.join("linked.json");
+    std::fs::hard_link(f.outside.join("secret.mid"), &midi).unwrap();
+    std::fs::hard_link(f.outside.join("secret.json"), &preset).unwrap();
+    let mut srv = demo_server(Some(&f.read), Some(&f.write));
+    let before = listing(&f.write);
+
+    // Refusal is the safe alternative allowed by #1359: neither the outside inode nor its
+    // in-root alias may be truncated, and no replacement or temporary file may be left behind.
+    refused(&mut srv, "file.export_midi", json!({"path": s(&midi)}), "hard-linked");
+    refused(&mut srv, "track.save_preset", json!({"path": s(&preset), "tracks": ["Kick"]}), "hard-linked");
+    for path in [&midi, &preset, &f.outside.join("secret.mid"), &f.outside.join("secret.json")] {
+        assert_eq!(std::fs::read(path).unwrap(), SECRET.as_bytes());
+    }
+    assert_eq!(listing(&f.write), before);
+
+    // The error offers a new export path; both commands must still work at ordinary paths.
+    let fresh_midi = f.write.join("fresh.mid");
+    ok(&mut srv, "file.export_midi", json!({"path": s(&fresh_midi)}));
+    assert!(std::fs::read(fresh_midi).unwrap().starts_with(b"MThd"));
+    let fresh_preset = f.write.join("fresh.json");
+    ok(&mut srv, "track.save_preset", json!({"path": s(&fresh_preset), "tracks": ["Kick"]}));
+    let preset_json: Value = serde_json::from_slice(&std::fs::read(fresh_preset).unwrap()).unwrap();
+    assert_eq!(preset_json["name"], "Kick");
+}
+
 /// A session file is hostile input too: media it names outside the read root is not loaded,
 /// and the refusal is listed with the other missing media.
 #[test]
