@@ -428,6 +428,25 @@ fn an_instrument_parameter_the_session_holds_follows_its_editor_with_the_state()
     assert_eq!(instrument_state(&app, keys), Some(vec![50, 1]));
 }
 
+#[test]
+fn a_non_finite_editor_value_is_neither_queued_nor_stored() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+    app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 1000})).unwrap();
+    app.run("mix.insert", json!({"track": kick.0, "plugin": "gain", "slot": 0})).unwrap();
+    let steps = app.engine.undo_history().len();
+    let slot = soundcraft_mix::INSTRUMENT_SLOT;
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        app.store_editor_changes(vec![(keys, slot, "cutoff".to_string(), bad), (kick, 0, "gain".to_string(), bad)], Vec::new());
+    }
+    assert!(app.editor_instrument_params.is_empty(), "nothing to store later");
+    assert_eq!(instrument_param(&app, keys, "cutoff"), Some(1000.0));
+    assert_eq!(app.engine.undo_history().len(), steps, "no insert command was sent");
+    app.store_editor_changes(vec![(keys, slot, "cutoff".to_string(), 44.0)], Vec::new());
+    assert_eq!(app.editor_instrument_params.len(), 1, "a finite value still queues");
+}
+
 /// `SoundApp::logic` drains control commands before it polls editor edits. A command that
 /// changes a queued parameter before the gesture flushes owns that parameter.
 #[test]
