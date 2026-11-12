@@ -140,20 +140,24 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
     }
     fonts.families.insert(FontFamily::Name("bold".into()), bold_family);
     if let Some(h) = load(HANGUL, "sans-serif:lang=ko", Some("ko"), system_fonts) {
-        fonts.font_data.insert("system-hangul".into(), Arc::new(h));
-        for family in fonts.families.values_mut() {
-            family.push("system-hangul".into());
-        }
+        append_fallback(&mut fonts, "system-hangul", h);
     }
     if let Some(t) = load(THAI, "sans-serif:lang=th", Some("th"), system_fonts) {
-        fonts.font_data.insert("system-thai".into(), Arc::new(t));
-        for family in fonts.families.values_mut() {
-            family.push("system-thai".into());
-        }
+        append_fallback(&mut fonts, "system-thai", t);
     }
     fonts
 }
 
+/// Registers `face` as `name` and appends it to the end of every family, so it is only used for
+/// glyphs the faces before it lack.
+fn append_fallback(fonts: &mut FontDefinitions, name: &str, face: FontData) {
+    fonts.font_data.insert(name.into(), Arc::new(face));
+    for family in fonts.families.values_mut() {
+        family.push(name.into());
+    }
+}
+
+/// Installs [`definitions`] on `ctx`.
 pub fn install(ctx: &egui::Context, system_fonts: bool) {
     ctx.set_fonts(definitions(system_fonts));
 }
@@ -213,15 +217,50 @@ mod tests {
         }
     }
 
+    /// Every desktop platform has at least one Thai candidate, and each candidate is a font file
+    /// egui can read.
     #[test]
     fn thai_candidates_cover_every_desktop_platform() {
         for prefix in ["/System/Library/Fonts/", "C:\\Windows\\Fonts\\", "/usr/share/fonts/"] {
             assert!(THAI.iter().any(|(p, _)| p.starts_with(prefix)), "no Thai candidate under {prefix}");
         }
+        for (path, _) in THAI {
+            let ext = path.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+            assert!(["ttf", "ttc", "otf"].contains(&ext.as_str()), "{path} is not a TrueType/OpenType file");
+        }
     }
 
-    /// Thai names draw in every family, not as boxes (#1458); skipped when the system has no Thai
-    /// font.
+    /// `system-thai` is registered and is the last entry of every family, after `system-hangul`,
+    /// whatever fonts the machine has: bundled egui faces stand in for the system ones.
+    #[test]
+    fn thai_fallback_is_the_last_entry_of_every_family() {
+        let mut fonts = FontDefinitions::default();
+        let base = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+        fonts.families.insert(FontFamily::Name("bold".into()), base);
+        let stand_in = fonts.font_data.values().next().map(|f| (**f).clone()).expect("egui bundles a face");
+        append_fallback(&mut fonts, "system-hangul", stand_in.clone());
+        append_fallback(&mut fonts, "system-thai", stand_in);
+        assert!(fonts.font_data.contains_key("system-thai"));
+        assert_eq!(fonts.families.len(), 3);
+        for (family, names) in &fonts.families {
+            assert_eq!(names.last().map(String::as_str), Some("system-thai"), "{family:?}: {names:?}");
+            let hangul = names.iter().position(|n| n == "system-hangul");
+            assert_eq!(hangul, Some(names.len() - 2), "{family:?}: {names:?}");
+        }
+    }
+
+    /// With system fonts off, no Thai face is loaded or referenced by any family.
+    #[test]
+    fn no_thai_fallback_without_system_fonts() {
+        let defs = definitions(false);
+        assert!(!defs.font_data.contains_key("system-thai"));
+        for (family, names) in &defs.families {
+            assert!(!names.iter().any(|n| n == "system-thai"), "{family:?}: {names:?}");
+        }
+    }
+
+    /// Thai names, including stacked vowel and tone marks, draw in every family, not as boxes
+    /// (#1458); skipped when the system has no Thai font, as font files are not committed.
     #[test]
     fn every_family_draws_thai_with_a_system_thai_font() {
         if load(THAI, "sans-serif:lang=th", Some("th"), true).is_none() {
@@ -236,7 +275,8 @@ mod tests {
         output.textures_delta.clear();
         for family in families {
             let font = egui::FontId::new(13.0, family.clone());
-            assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "สวัสดีเซสชัน")), "{family:?} has no Thai");
+            let text = "สวัสดีเซสชัน บุญฤทธิ์ ปั้นจั่น น้ำ กี่ปี่ ผู้ใหญ่";
+            assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, text)), "{family:?} has no Thai");
         }
     }
 }
