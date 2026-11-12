@@ -78,7 +78,7 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                                 let (_, typed) = editable_readout(
                                     ui,
                                     pr,
-                                    ui.scope_id().with(("output_pan_value", i)),
+                                    ui.scope_id().with(("output_pan_value", id.0, i)),
                                     Readout {
                                         name: &format!("{name} output pan {} value", i + 1),
                                         display: &pan_text(v),
@@ -112,7 +112,7 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                 let (_, typed) = editable_readout(
                     ui,
                     rr,
-                    ui.scope_id().with("output_volume_value"),
+                    ui.scope_id().with(("output_volume_value", id.0)),
                     Readout {
                         name: &format!("{name} output volume"),
                         display: &db_text(track.mixer.volume_db),
@@ -223,5 +223,53 @@ mod tests {
         h.state_mut().run("track.delete", json!({"tracks": [kick.0]})).unwrap();
         h.run_steps(2);
         assert_eq!(h.state().ui.output_window, None, "the window closes with its track");
+    }
+
+    /// A value being typed into Kick's volume readout stays with Kick: switching the window to
+    /// Snare does not carry the draft over, and Enter there does not set Snare's volume.
+    #[test]
+    fn a_typed_readout_value_does_not_follow_the_window_to_another_track() {
+        let _palette = crate::theme::lock_test_palette();
+        let (mut h, _) = edit_window_with_io();
+        h.state_mut().run("track.height", json!({"tracks": ["Snare"], "height": "medium"})).unwrap();
+        h.run_steps(2);
+        let snare = h.state().engine.session().track_by_name("Snare").unwrap().id;
+        let snare_db = |h: &Harness<'_, SoundApp>| h.state().engine.session().track(snare).unwrap().mixer.volume_db;
+        let snare_before = snare_db(&h);
+
+        h.get_by_label("Output window for Kick").click();
+        h.run_steps(2);
+        let fader = h.get_by_label("Kick output level").rect();
+        // The volume readout sits just below the fader.
+        let readout = egui::pos2(fader.center().x, fader.bottom() + 10.0);
+        h.input_mut().events.push(egui::Event::PointerMoved(readout));
+        h.step();
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos: readout,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos: readout,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(2);
+        assert!(h.query_by_label("Kick output volume").is_some(), "clicking the readout starts editing");
+        // Replace the initial text, as a user typing a new value does.
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text("-20".into()));
+        h.run_steps(2);
+
+        // The window now shows Snare (as when Snare's Output button is clicked), with Kick's draft open.
+        h.state_mut().ui.output_window = Some(snare);
+        h.run_steps(3);
+        assert!(h.query_by_label("Snare output volume").is_none(), "Snare's readout is not being edited");
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert_eq!(snare_db(&h), snare_before, "Kick's draft did not reach Snare");
     }
 }
