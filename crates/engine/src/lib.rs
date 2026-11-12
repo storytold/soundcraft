@@ -31,7 +31,7 @@ use dirty::same_document;
 
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
 pub use soundcraft_model as model;
-pub use soundcraft_model::LivePlugins;
+pub use soundcraft_model::{LivePlugins, LiveSlot};
 
 /// Upper bound on journaled commands, so a long session cannot grow memory without limit.
 const MAX_JOURNAL_ENTRIES: usize = 10_000;

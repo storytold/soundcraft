@@ -5,7 +5,7 @@ use super::{CommandSpec, bad, has_selection};
 use crate::{Engine, LivePlugins, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_dsp::{ParamInfo, Plugin, PluginInfo, Unit};
-use soundcraft_model::{Insert, TrackId};
+use soundcraft_model::Insert;
 
 const CMD: &str = "mix.plugin_params";
 const DEFAULT_LIMIT: usize = 200;
@@ -70,17 +70,16 @@ impl Probe for PluginProbe<'_> {
 
 struct LiveProbe<'a> {
     live: &'a mut dyn LivePlugins,
-    track: TrackId,
-    slot: usize,
+    at: crate::LiveSlot<'a>,
 }
 
 impl Probe for LiveProbe<'_> {
     fn value(&mut self, id: &str) -> Option<f32> {
-        self.live.value(self.track, self.slot, id).filter(|value| value.is_finite())
+        self.live.value(self.at, id).filter(|value| value.is_finite())
     }
 
     fn value_text(&mut self, id: &str, value: f32) -> Option<String> {
-        self.live.value_text(self.track, self.slot, id, value)
+        self.live.value_text(self.at, id, value)
     }
 }
 
@@ -191,7 +190,7 @@ fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
         && let Some(live) = e.live_plugins_mut()
         && live.plugin_id(track, index).as_deref() == Some(insert.plugin.as_str())
     {
-        let mut source = LiveProbe { live, track, slot: index };
+        let mut source = LiveProbe { live, at: crate::LiveSlot { track, slot: index, plugin: &insert.plugin } };
         return Ok(response(info, &insert, filter.as_deref(), offset, limit, Some(&mut source)));
     }
     let mut instance = if probe && page_has_params(info, filter.as_deref(), offset) {
