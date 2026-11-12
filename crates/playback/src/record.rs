@@ -441,7 +441,7 @@ impl TakeWriter {
     }
 
     fn write_header(&mut self) {
-        let header = match soundcraft_audio_io::wav_float_header(self.inputs.len(), self.rate, self.frames) {
+        let header = match craft_audio::wav_float_header(self.rate, u16::try_from(self.inputs.len()).unwrap_or(u16::MAX), self.frames) {
             Ok(h) => h,
             Err(e) => return self.fail(e),
         };
@@ -461,7 +461,7 @@ mod tests {
     use super::*;
 
     fn decode(path: &PathBuf) -> Vec<Vec<f32>> {
-        soundcraft_audio_io::decode(&std::fs::read(path).unwrap(), None).unwrap().1.channels
+        craft_audio::decode(&std::fs::read(path).unwrap(), None).unwrap().1.channels
     }
 
     #[test]

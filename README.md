@@ -245,7 +245,6 @@ about egui, so the interface could be swapped for another one.
 | Crate | What it does |
 |---|---|
 | `soundcraft-time` | Timebases, tempo and meter maps, timecode, grid |
-| `soundcraft-audio-io` | Audio file formats and waveform overviews |
 | `soundcraft-midi` | Standard MIDI Files and MIDI operations |
 | `soundcraft-dsp` | Plugins, offline processing, meters, loudness, FFT |
 | `soundcraft-model` | The session document |

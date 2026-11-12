@@ -3,7 +3,7 @@
 
 use crate::io::{Recording, open_session_linked, sanitize_name};
 use crate::{Engine, EngineError, Result};
-use soundcraft_audio_io::{BitDepth, EncodeOptions, FileFormat};
+use craft_audio::{BitDepth, EncodeOptions};
 use soundcraft_model::{Session, SourceAudio, SourceId};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -248,8 +248,8 @@ impl Autosave {
         crate::io::session_size("the autosave", text.len() as u64, true)?;
         self.next = next;
         for (name, audio) in &fresh {
-            let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
-            let bytes = soundcraft_audio_io::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
+            let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Float32);
+            let bytes = craft_audio::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
             create_folder(&audio_dir).and_then(|()| write_synced(&audio_dir.join(name), &bytes)).map_err(|err| io_error(&audio_dir, err))?;
         }
         write_atomically(&self.dir.join(ORIGIN), origin.unwrap_or_default().as_bytes())?;
@@ -404,7 +404,7 @@ fn repair_take(path: &Path, folders: &[PathBuf], channels: usize, rate: u32) -> 
     if !folder.is_some_and(|d| folders.contains(&d)) {
         return Err(refuse("not in a folder SoundCraft records into"));
     }
-    let header = |frames| soundcraft_audio_io::wav_float_header(channels, rate, frames).map_err(std::io::Error::other);
+    let header = |frames| craft_audio::wav_float_header(rate, u16::try_from(channels).unwrap_or(u16::MAX), frames).map_err(std::io::Error::other);
     let expected = header(0)?;
     let mut f = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
     let mut head = vec![0u8; expected.len()];
@@ -502,6 +502,7 @@ fn io_error(path: &Path, err: std::io::Error) -> EngineError {
 mod tests {
     use super::*;
     use crate::io::open_session;
+    use craft_audio::AudioBuffer;
 
     #[test]
     fn unique_folders_are_new_and_owner_only() {
@@ -522,8 +523,7 @@ mod tests {
     }
 
     use serde_json::json;
-    use soundcraft_audio_io::AudioBuffer;
-    use soundcraft_model::{ChannelFormat, Clip, TrackKind};
+    use soundcraft_model::{ChannelFormat, Clip, FileFormat, TrackKind};
 
     /// Recovery loads document edits without re-enabling live inputs from an autosave.
     #[test]
@@ -719,7 +719,7 @@ mod tests {
         let take = root.join(sanitize_name(&e.session().name)).join("Audio Files/Vox_01.wav");
         std::fs::create_dir_all(take.parent().unwrap()).unwrap();
         let audio: Vec<u8> = (0..480).flat_map(|i| (i as f32 / 1000.0).to_le_bytes()).collect();
-        std::fs::write(&take, [soundcraft_audio_io::wav_float_header(1, 48_000, 100).unwrap(), audio].concat()).unwrap();
+        std::fs::write(&take, [craft_audio::wav_float_header(48_000, 1, 100).unwrap(), audio].concat()).unwrap();
         let plan = Recording { start: 48_000, pass: None, punch: None, rate: 48_000, takes: vec![Take { track, path: take, channels: 1 }] };
         let clips = |e: &Engine| e.session().track(track).unwrap().clips().iter().map(|c| (c.start, c.length)).collect::<Vec<_>>();
         let w = Autosaver::new(root.clone());
@@ -750,7 +750,7 @@ mod tests {
             soundcraft_model::TrackId(e.execute("track.new", &json!({"name": "Vox", "format": "mono"})).unwrap()["tracks"][0].as_u64().unwrap());
         let takes = root.join(sanitize_name(&e.session().name)).join("Audio Files");
         std::fs::create_dir_all(&takes).unwrap();
-        let wav = [soundcraft_audio_io::wav_float_header(1, 48_000, 0).unwrap(), vec![0; 4_000]].concat();
+        let wav = [craft_audio::wav_float_header(48_000, 1, 0).unwrap(), vec![0; 4_000]].concat();
         let text = b"not audio at all, but long enough to be mistaken for a header if nobody looked at it ......".repeat(4);
         let files =
             [(takes.join("notes.wav"), text.clone()), (dir.join("Elsewhere/Vox_01.wav"), wav.clone()), (takes.join("../Vox_02.wav"), wav.clone())];
