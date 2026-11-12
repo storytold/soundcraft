@@ -17,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Instrument",
             [],
             None,
-            "{track?, plugin: id, params?: {param: id, number, or name (case-insensitive; ids win): value}} — an instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id. value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Values are clamped; unknown keys, invalid values, two keys that resolve to the same id, and other fields are errors. Nothing is stored if any key fails.",
+            "{track?, plugin: id, params?: {param: id, number, or name (case-insensitive; ids win): value}} — an instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id. value: number (the stored value, as `value` in mix.plugin_params), or text in the units `display` shows: a Toggle/Choice label, a hosted plugin's own text (e.g. \"29\" for 29 ms where the stored value is 0.028), or a built-in's display (e.g. \"-3 dB\", \"1.2 kHz\"); text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Values are clamped; unknown keys, invalid values, two keys that resolve to the same id, and other fields are errors. Nothing is stored if any key fails.",
             has_selection,
             set_instrument
         ),
@@ -26,7 +26,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Instrument Parameter",
             [],
             None,
-            "{track?, param: id, number, or name (case-insensitive; ids win), value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily}. One parameter of an instrument track's instrument, built in or hosted (clamped into range). The session stores the id. The same as mix.insert_param with slot \"instrument\".",
+            "{track?, param: id, number, or name (case-insensitive; ids win), value: number (the stored value, as `value` in mix.plugin_params), or text in the units `display` shows: a Toggle/Choice label, a hosted plugin's own text (e.g. \"29\" for 29 ms where the stored value is 0.028), or a built-in's display (e.g. \"-3 dB\", \"1.2 kHz\"); text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily}. One parameter of an instrument track's instrument, built in or hosted (clamped into range). The session stores the id. The same as mix.insert_param with slot \"instrument\".",
             has_selection,
             set_instrument_param
         ),
