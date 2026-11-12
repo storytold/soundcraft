@@ -33,8 +33,13 @@ impl FileFormat {
             Container::MpegAudio => FileFormat::Mp3,
             Container::Ogg => FileFormat::Ogg,
             Container::Caf => FileFormat::Caf,
-            Container::Mp4 | Container::QuickTime if info.codec == CodecId::Alac => FileFormat::Alac,
-            Container::Mp4 | Container::QuickTime | Container::Adts => FileFormat::Aac,
+            Container::Adts => FileFormat::Aac,
+            // MP4 and QuickTime hold many codecs: the codec names the kind.
+            Container::Mp4 | Container::QuickTime => match info.codec {
+                CodecId::Alac => FileFormat::Alac,
+                CodecId::Aac | CodecId::HeAac => FileFormat::Aac,
+                _ => FileFormat::Other,
+            },
             _ => FileFormat::Other,
         }
     }
@@ -162,6 +167,27 @@ mod tests {
         for (format, name) in [Wav, Aiff, Flac, Mp3, Ogg, Aac, Alac, Caf, Other].into_iter().zip(names) {
             assert_eq!(serde_json::to_string(&format).unwrap(), format!("\"{name}\""));
             assert_eq!(serde_json::from_str::<FileFormat>(&format!("\"{name}\"")).unwrap(), format);
+        }
+    }
+
+    /// An MP4 is AAC only when its audio is: Opus, AC-3 or PCM in MP4 is not.
+    #[test]
+    fn an_mp4_is_named_by_its_codec() {
+        let wav = encode(&AudioBuffer::new(48_000, 1, 480), &EncodeOptions::default()).unwrap();
+        let mut info = serde_json::to_value(probe(&wav, None).unwrap()).unwrap();
+        for (container, codec, format) in [
+            ("Mp4", "Aac", FileFormat::Aac),
+            ("Mp4", "HeAac", FileFormat::Aac),
+            ("QuickTime", "Alac", FileFormat::Alac),
+            ("Mp4", "Opus", FileFormat::Other),
+            ("Mp4", "Ac3", FileFormat::Other),
+            ("QuickTime", "Pcm", FileFormat::Other),
+            ("Adts", "Aac", FileFormat::Aac),
+        ] {
+            info["container"] = container.into();
+            info["codec"] = codec.into();
+            let info: craft_audio::AudioInfo = serde_json::from_value(info.clone()).unwrap();
+            assert_eq!(FileFormat::of(&info), format, "{codec} in {container}");
         }
     }
 
