@@ -118,6 +118,12 @@ fn response(
     })
 }
 
+/// Whether the requested page lists any parameter. A probe of an empty page (a filter that
+/// matches nothing, or an offset past the end) has nothing to read, so it loads no plugin.
+fn page_has_params(info: &PluginInfo, filter: Option<&str>, offset: usize) -> bool {
+    info.params.iter().filter(|param| filter.is_none_or(|needle| matches_filter(param, needle))).nth(offset).is_some()
+}
+
 fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
     let (track, slot) = track_plugin_slot(e, p, CMD)?;
     let tr = e.session().track(track).ok_or_else(|| bad(CMD, "no track"))?;
@@ -142,7 +148,7 @@ fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
         None => false,
         Some(value) => value.as_bool().ok_or_else(|| bad(CMD, "`probe` must be a boolean"))?,
     };
-    let mut instance = if probe {
+    let mut instance = if probe && page_has_params(info, filter.as_deref(), offset) {
         let state = insert.state_bytes();
         let sample_rate = e.session().sample_rate.as_f64() as f32;
         let mut instance = soundcraft_mix::create_instance(&insert.plugin, state.as_deref(), sample_rate, 512, 2)
@@ -160,7 +166,7 @@ fn plugin_params(e: &mut Engine, p: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CMD, DEFAULT_LIMIT, matches_filter, pagination, parameter_json, response};
+    use super::{CMD, DEFAULT_LIMIT, matches_filter, page_has_params, pagination, parameter_json, response};
     use crate::Engine;
     use serde_json::{Value, json};
     use soundcraft_dsp::{Category, ParamInfo, PluginInfo, Taper, Unit};
@@ -233,6 +239,22 @@ mod tests {
         assert_eq!(param.get("display"), Some(&json!(info.format(7.5))));
         assert_eq!(param.get("display_min"), Some(&json!(info.format(info.min))));
         assert_eq!(param.get("display_max"), Some(&json!(info.format(info.max))));
+    }
+
+    #[test]
+    fn a_probe_of_an_empty_page_loads_nothing() {
+        let info = soundcraft_dsp::plugin_info("eq_7band").unwrap();
+        let count = info.params.len();
+        assert!(page_has_params(info, None, 0));
+        assert!(page_has_params(info, None, count - 1));
+        assert!(!page_has_params(info, None, count), "an offset past the end");
+        assert!(page_has_params(info, Some("mid_gain"), 0));
+        assert!(!page_has_params(info, Some("no such parameter"), 0), "a filter that matches nothing");
+        let mut e = Engine::default();
+        let track = insert_eq(&mut e);
+        let past = e.execute(CMD, &json!({"track": track, "slot": 0, "offset": count, "probe": true})).unwrap();
+        assert!(listed_params(&past).is_empty());
+        assert_eq!(past.get("total"), Some(&json!(count)));
     }
 
     #[test]
