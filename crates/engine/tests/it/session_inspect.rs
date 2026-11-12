@@ -9,6 +9,47 @@ fn inspect(e: &mut Engine) -> Value {
     e.execute("session.inspect", &json!({})).expect("session.inspect")
 }
 
+/// The engine's current `session.inspect` reply with `{"detail": "full"}`.
+fn inspect_full(e: &mut Engine) -> Value {
+    e.execute("session.inspect", &json!({"detail": "full"})).expect("session.inspect full")
+}
+
+/// Asserts the README's promise on one reply: typed mixer fields and clips on every track, typed
+/// markers, and history labels that are each a string or null.
+fn assert_reports_session_state(v: &Value) {
+    let tracks = v["tracks"].as_array().expect("tracks");
+    assert!(!tracks.is_empty());
+    for t in tracks {
+        assert!(t["clips"].is_array(), "{t}");
+        assert!(t["volume_db"].is_number(), "volume_db in {t}");
+        let pan = t["pan"].as_array().expect("pan is one value per channel");
+        assert!(!pan.is_empty() && pan.iter().all(Value::is_number), "pan in {t}");
+        assert!(t["mute"].is_boolean(), "mute in {t}");
+        assert!(t["solo"].is_boolean(), "solo in {t}");
+        assert!(t["inserts"].is_array(), "inserts in {t}");
+        assert!(t["sends"].is_array(), "sends in {t}");
+    }
+    assert!(tracks.iter().any(|t| !t["clips"].as_array().unwrap().is_empty()), "the demo has clips");
+    let markers = v["markers"].as_array().expect("markers");
+    assert!(!markers.is_empty(), "the demo has markers");
+    for m in markers {
+        assert!(m["id"].is_u64(), "id in {m}");
+        assert!(m["number"].is_u64(), "number in {m}");
+        assert!(m["name"].is_string(), "name in {m}");
+        assert!(m["start"].is_u64(), "start in {m}");
+        assert!(m["end"].is_u64(), "end in {m}");
+    }
+    for key in ["undo", "redo"] {
+        assert!(v[key].is_string() || v[key].is_null(), "{key} in {v}");
+    }
+}
+
+/// The README text with line breaks and indentation folded to single spaces.
+fn readme() -> String {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md");
+    std::fs::read_to_string(path).expect("README.md").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Adds one track with default parameters and returns its id.
 fn new_track(e: &mut Engine) -> Value {
     e.execute("track.new", &json!({})).expect("track.new")["tracks"][0].clone()
@@ -19,21 +60,43 @@ fn track<'a>(v: &'a Value, id: &Value) -> &'a Value {
     v["tracks"].as_array().and_then(|ts| ts.iter().find(|t| &t["id"] == id)).unwrap_or_else(|| panic!("track {id} in {v}"))
 }
 
+/// The README describes `session.inspect` as current state plus history labels, not a change report.
+#[test]
+fn readme_describes_inspect_as_current_state() {
+    let text = readme();
+    let sentence = [
+        "`session.inspect` returns the session's current state (tracks, clips, mixer, markers)",
+        "and the last undo and redo step labels",
+    ];
+    assert!(text.contains(&sentence.join(" ")), "README sentence about session.inspect");
+    assert!(!text.contains("reports exactly what changed"), "the old change-report wording is back");
+}
+
 /// Every track carries its clips and mixer fields, and the session lists its markers.
 #[test]
 fn inspect_reports_tracks_clips_mixer_and_markers() {
     let mut e = soundcraft_engine::demo::demo_engine();
-    let v = inspect(&mut e);
-    let tracks = v["tracks"].as_array().expect("tracks");
-    assert!(!tracks.is_empty());
-    for t in tracks {
-        assert!(t["clips"].is_array(), "{t}");
-        for key in ["volume_db", "pan", "mute", "solo", "inserts", "sends"] {
-            assert!(t.get(key).is_some(), "mixer field {key} missing from {t}");
-        }
-    }
-    assert!(tracks.iter().any(|t| !t["clips"].as_array().unwrap().is_empty()), "the demo has clips");
-    assert!(v["markers"].is_array(), "{v}");
+    assert_reports_session_state(&inspect(&mut e));
+}
+
+/// Full detail reports the same state, and adds each insert's parameters.
+#[test]
+fn full_detail_reports_the_same_state_with_insert_params() {
+    let mut e = soundcraft_engine::demo::demo_engine();
+    e.execute("mix.volume", &json!({"track": "Kick", "db": -6.0})).unwrap();
+    let summary = inspect(&mut e);
+    let full = inspect_full(&mut e);
+    assert_reports_session_state(&full);
+    assert_eq!(full["undo"], json!("Set Volume"), "{full}");
+    assert_eq!(full["undo"], summary["undo"]);
+    assert_eq!(full["redo"], summary["redo"]);
+    assert_eq!(full["markers"], summary["markers"]);
+    let inserts = |v: &Value| v["tracks"].as_array().unwrap().iter().flat_map(|t| t["inserts"].as_array().unwrap().clone()).collect::<Vec<_>>();
+    let (s, f) = (inserts(&summary), inserts(&full));
+    assert!(!f.is_empty(), "the demo has inserts");
+    assert_eq!(s.len(), f.len());
+    assert!(s.iter().all(|i| i["params"].is_null()), "summary leaves params out");
+    assert!(f.iter().all(|i| !i["params"].is_null()), "full includes params");
 }
 
 /// With no edits yet, both history labels are null.
