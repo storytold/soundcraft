@@ -8,7 +8,7 @@ use crate::widgets::{
 };
 use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
-use soundcraft_model::{ChannelFormat, Route, SurroundPan, Track, TrackId, TrackKind};
+use soundcraft_model::{AutoParam, ChannelFormat, Route, SurroundPan, Track, TrackId, TrackKind};
 use soundcraft_playback::MeterSnapshot;
 
 mod plugin_menu;
@@ -576,7 +576,8 @@ fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, s
     let fh = (r.max.y - STRIP_FOOT_H - y).max(120.0);
     let wide_meter = (if track.kind == TrackKind::Master { app.engine.session().main_format() } else { track.format }).channels() > 2;
     let fr = Rect::from_min_size(pos2(x0, y), vec2(inner_w * if wide_meter { 0.45 } else { 0.6 }, fh));
-    if let Some(db) = fader(ui, fr, track.mixer.volume_db, ui.scope_id().with(("fader", id.0)), &format!("{} level", track.name)) {
+    let display_db = displayed_volume_db(track, app.engine.transport.position, fader_is_grabbed(app, id));
+    if let Some(db) = fader(ui, fr, display_db, ui.scope_id().with(("fader", id.0)), &format!("{} level", track.name)) {
         app.gesture = Some(crate::Gesture::Fader { track: id, start_db: track.mixer.volume_db });
         let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": db}), &format!("fader:{}", id.0));
     }
@@ -607,6 +608,25 @@ fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, s
     }
 }
 
+/// The level shown by a Mix fader. Playback reads the volume lane in every automation mode
+/// except Off and Write; mirror that evaluated value here without changing the stored fader.
+/// A grabbed fader keeps showing its manual position so Touch/Latch rides remain controllable.
+fn displayed_volume_db(track: &Track, position: i64, grabbed: bool) -> f32 {
+    if !grabbed
+        && track.mixer.automation_mode.reads()
+        && track.mixer.automation_mode != soundcraft_model::AutomationMode::Write
+        && let Some(lane) = track.lane(&AutoParam::Volume)
+        && !lane.points.is_empty()
+    {
+        return lane.value_at(position, track.mixer.volume_db);
+    }
+    track.mixer.volume_db
+}
+
+fn fader_is_grabbed(app: &SoundApp, id: TrackId) -> bool {
+    matches!(app.gesture, Some(crate::Gesture::Fader { track, .. }) if track == id)
+}
+
 /// Volume readout, kind label and name plate.
 fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
     let StripCtx { track, id, x0, inner_w, r, w, selected, .. } = *cx;
@@ -620,7 +640,7 @@ fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
         ui.scope_id().with(("volume-value", id.0)),
         Readout {
             name: &format!("{} volume", track.name),
-            display: &db_text(track.mixer.volume_db),
+            display: &db_text(displayed_volume_db(track, app.engine.transport.position, fader_is_grabbed(app, id))),
             edit_initial: &format!("{:.1}", track.mixer.volume_db),
             parse: parse_db,
             reset: 0.0,
@@ -665,8 +685,25 @@ fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Readout, dragged_send_db, editable_readout, parse_db, parse_pan};
+    use super::{Readout, displayed_volume_db, dragged_send_db, editable_readout, parse_db, parse_pan};
     use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
+    use soundcraft_model::{AutoParam, AutomationMode, ChannelFormat, Track, TrackId, TrackKind};
+
+    #[test]
+    fn read_automation_moves_the_displayed_fader_but_not_a_grabbed_one() {
+        let mut track = Track::new(TrackId(1), "Vocal", TrackKind::Audio, ChannelFormat::Mono, [0, 0, 0]);
+        track.mixer.volume_db = -3.0;
+        track.mixer.automation_mode = AutomationMode::Read;
+        let lane = track.lane_mut(&AutoParam::Volume);
+        lane.set_point(0, -12.0);
+        lane.set_point(480, 0.0);
+
+        assert_eq!(displayed_volume_db(&track, 240, false), -6.0, "the cap follows the interpolated playback value");
+        assert_eq!(displayed_volume_db(&track, 240, true), -3.0, "a grabbed fader keeps its manual position");
+
+        track.mixer.automation_mode = AutomationMode::Write;
+        assert_eq!(displayed_volume_db(&track, 240, false), -3.0, "Write displays the value being written");
+    }
 
     #[test]
     fn typed_db_accepts_console_notation_and_clamps() {
