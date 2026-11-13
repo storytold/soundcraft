@@ -155,6 +155,9 @@ fn prepare_dpe(e: &mut Engine, p: &Value) -> Result<Value> {
         return Err(bad(id, "there is no audio to prepare"));
     }
     let r = soundcraft_time::Range::new(0, end);
+    if tracks.iter().any(|&t| crate::edit::holds_locked(e.session(), t, crate::io::bounded_to_track(e.session(), t, r))) {
+        return Err(bad(id, crate::edit::LOCKED_IN_RANGE));
+    }
     let mut n = 0;
     for t in tracks {
         // Each track keeps its own length (its material plus a second), as before.

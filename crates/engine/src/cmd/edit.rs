@@ -1022,6 +1022,9 @@ fn consolidate(e: &mut Engine, p: &Value) -> Result<Value> {
     if r.is_empty() {
         return Err(bad("edit.consolidate", "selection is empty"));
     }
+    if tracks.iter().any(|&t| ops::holds_locked(e.session(), t, r)) {
+        return Err(bad("edit.consolidate", ops::LOCKED_IN_RANGE));
+    }
     let midi = tracks.iter().filter(|&&t| crate::edit::consolidate_midi(e.session_mut(), t, r)).count();
     let mut n = 0;
     for t in tracks {
