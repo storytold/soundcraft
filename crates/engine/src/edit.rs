@@ -78,9 +78,9 @@ fn rebase_midi_start(clip: &mut Clip, old_start: Samples, t: TimeCtx<'_>) {
     }
 }
 
-/// Split every clip on a track's active playlist that spans `at`. The piece before `at` keeps the
-/// clip's name. The piece after it is a new clip, and takes the next name of the clip's Auto Rename
-/// scheme when it has one.
+/// Split every clip on a track's active playlist that spans `at`, except time- or edit-locked ones.
+/// The piece before `at` keeps the clip's name. The piece after it is a new clip, and takes the next
+/// name of the clip's Auto Rename scheme when it has one.
 pub fn separate_at(s: &mut Session, track: TrackId, at: Samples) -> usize {
     separate_at_if(s, track, at, |_| true)
 }
@@ -88,11 +88,21 @@ pub fn separate_at(s: &mut Session, track: TrackId, at: Samples) -> usize {
 /// [`separate_at`], giving the piece after `at` the next Auto Rename name only when `auto_name`
 /// returns true for it. Any other piece keeps the clip's name, and its scheme does not count up.
 pub fn separate_at_if(s: &mut Session, track: TrackId, at: Samples, auto_name: impl Fn(&Clip) -> bool) -> usize {
+    split_at(s, track, at, auto_name, true)
+}
+
+/// [`separate_at`], splitting time- and edit-locked clips too. For the Event time operations, which
+/// move the whole timeline, locked clips included.
+pub fn separate_all_at(s: &mut Session, track: TrackId, at: Samples) -> usize {
+    split_at(s, track, at, |_| true, false)
+}
+
+fn split_at(s: &mut Session, track: TrackId, at: Samples, auto_name: impl Fn(&Clip) -> bool, skip_locked: bool) -> usize {
     let tc_tempo = s.tempo.clone();
     let sr = s.sample_rate;
     let t = TimeCtx { tempo: &tc_tempo, sr };
     let mut ids = Vec::new();
-    let n_split = s.track(track).map_or(0, |tr| tr.clips().iter().filter(|c| at > c.start && at < c.end()).count());
+    let n_split = s.track(track).map_or(0, |tr| tr.clips().iter().filter(|c| at > c.start && at < c.end() && !(skip_locked && locked(c))).count());
     for _ in 0..n_split {
         ids.push(s.new_clip_id());
     }
@@ -106,6 +116,7 @@ pub fn separate_at_if(s: &mut Session, track: TrackId, at: Samples, auto_name: i
     for c in pl.clips.drain(..) {
         if at > c.start
             && at < c.end()
+            && !(skip_locked && locked(&c))
             && let Some(id) = ids.pop()
             && let Some((l, mut r)) = split_clip(&c, at, id, t)
         {
@@ -123,6 +134,45 @@ pub fn separate_at_if(s: &mut Session, track: TrackId, at: Samples, auto_name: i
     pl.sort();
     s.auto_names = schemes;
     count
+}
+
+/// Split every clip on a track's active playlist at each of `points`, in one pass over the
+/// playlist: [`separate_at_if`] once per point with `|_| false` (no piece takes an Auto Rename
+/// name here), without rebuilding the playlist per point. Returns the number of splits.
+/// `points` are sorted and deduplicated first, so the source offsets of stretched audio can differ
+/// from per-point calls given in another order (each trim rounds its own adjustment).
+pub fn separate_at_points(s: &mut Session, track: TrackId, points: &[Samples]) -> usize {
+    let mut pts = points.to_vec();
+    pts.sort_unstable();
+    pts.dedup();
+    let tc_tempo = s.tempo.clone();
+    let t = TimeCtx { tempo: &tc_tempo, sr: s.sample_rate };
+    // The points strictly inside a clip.
+    let within = |c: &Clip| {
+        let (lo, hi) = (pts.partition_point(|p| *p <= c.start), pts.partition_point(|p| *p < c.end()));
+        lo..hi.max(lo)
+    };
+    let n_split: usize = s.track(track).map_or(0, |tr| tr.clips().iter().map(|c| within(c).len()).sum());
+    let mut ids: Vec<ClipId> = (0..n_split).map(|_| s.new_clip_id()).collect();
+    let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return 0 };
+    let mut out = Vec::with_capacity(pl.clips.len() + n_split);
+    for c in pl.clips.drain(..) {
+        let mut rest = c;
+        for p in &pts[within(&rest)] {
+            let Some(id) = ids.pop() else { break };
+            match split_clip(&rest, *p, id, t) {
+                Some((l, r)) => {
+                    out.push(l);
+                    rest = r;
+                }
+                None => break,
+            }
+        }
+        out.push(rest);
+    }
+    pl.clips = out;
+    pl.sort();
+    n_split
 }
 
 /// Gives `c` the next name of its Auto Rename scheme, when it has one, and counts the scheme up.
@@ -427,6 +477,10 @@ pub fn trim_to(s: &mut Session, track: TrackId, range: Range) -> usize {
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return 0 };
     let mut n = 0;
     for c in &mut pl.clips {
+        // Locked clips keep their extent, like they don't move for nudge.
+        if locked(c) {
+            continue;
+        }
         if let Some(i) = c.range().intersect(&range)
             && i != c.range()
         {
@@ -448,6 +502,9 @@ pub fn trim_start_to(s: &mut Session, track: TrackId, at: Samples) -> usize {
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return 0 };
     let mut n = 0;
     for c in &mut pl.clips {
+        if locked(c) {
+            continue;
+        }
         if c.range().contains(at) && at > c.start {
             let old = c.start;
             c.trim_start_to(at);
@@ -458,10 +515,14 @@ pub fn trim_start_to(s: &mut Session, track: TrackId, at: Samples) -> usize {
     n
 }
 
+/// Trim the end of clips after `at` to `at` (Trim End to Insertion).
 pub fn trim_end_to(s: &mut Session, track: TrackId, at: Samples) -> usize {
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return 0 };
     let mut n = 0;
     for c in &mut pl.clips {
+        if locked(c) {
+            continue;
+        }
         if at > c.start && at < c.end() {
             c.trim_end_to(at);
             n += 1;
@@ -528,9 +589,15 @@ fn join_gain_env(l: &mut Clip, r: &Clip) {
 }
 
 /// Move clips by `delta`, overwriting what they land on; `dest` sends whole tracks of them
-/// elsewhere (see [`destinations`]).
+/// elsewhere (see [`destinations`]). Same-track moves clamped to zero leave all material intact.
 pub fn move_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(TrackId, TrackId)]) -> usize {
     let ids: HashSet<ClipId> = ids.iter().copied().collect();
+    // Limit the shift before removing any clips, so a stationary edit cannot overwrite overlaps.
+    let limit = s.tracks.iter().flat_map(|t| t.clips()).filter(|c| ids.contains(&c.id) && !locked(c)).map(|c| c.start.saturating_neg()).max();
+    let delta = delta.max(limit.unwrap_or(0));
+    if delta == 0 && dest.iter().all(|(from, to)| from == to) {
+        return 0;
+    }
     let mut moving: Vec<(TrackId, Clip)> = Vec::new();
     for t in &mut s.tracks {
         let tid = t.id;
@@ -546,8 +613,6 @@ pub fn move_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(Trac
         }
     }
     let n = moving.len();
-    // Limit the shift once, so the group stops at zero together and keeps its spacing.
-    let delta = delta.max(moving.iter().map(|(_, c)| c.start.saturating_neg()).max().unwrap_or(0));
     let placed = moving.into_iter().map(|(tid, mut c)| {
         c.start = c.start.saturating_add(delta);
         (lands(dest, tid), c)
@@ -572,20 +637,7 @@ fn put_clips(s: &mut Session, placed: Vec<(TrackId, Clip)>) {
 
 /// Whether the Edit window shows track `t`: not hidden, and not inside a closed folder at any level.
 pub fn shown(s: &Session, t: &Track) -> bool {
-    !t.hidden && !folder_collapsed(s, t)
-}
-
-/// Hidden because a folder at any level above this track is closed.
-fn folder_collapsed(s: &Session, track: &Track) -> bool {
-    let mut current = track.folder;
-    for _ in 0..64 {
-        let Some(folder) = current.and_then(|folder| s.track(folder)) else { return false };
-        if !folder.folder_open {
-            return true;
-        }
-        current = folder.folder;
-    }
-    false
+    s.track_shown(t)
 }
 
 /// Where the tracks of clips `ids` go when track `from` goes to `to`: each keeps its distance
@@ -790,12 +842,11 @@ pub fn shuffle_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(T
 /// How far a Grabber drag by `raw` moves `clip` in Grid mode: Absolute puts its sync point (its
 /// start when it has none inside the clip) on the nearest grid line; Relative moves it by whole
 /// grid steps, keeping its offset from the grid.
-pub fn grid_delta(s: &Session, clip: &Clip, raw: Samples, relative: bool) -> Samples {
-    let (g, sr, map, rate) = (&s.edit.grid, s.sample_rate, &s.tempo, s.frame_rate);
+pub fn grid_delta(s: &Session, clip: &Clip, raw: Samples, relative: bool, moving: &[ClipId]) -> Samples {
     let sync = if (0..clip.length).contains(&clip.sync_point) { clip.sync_point } else { 0 };
     let anchor = clip.start.saturating_add(sync);
-    let from = if relative { g.line_at_or_before(anchor, sr, map, rate) } else { anchor };
-    g.snap(from.saturating_add(raw), sr, map, rate).saturating_sub(from)
+    let from = if relative { s.grid_line_at_or_before_excluding(anchor, moving) } else { anchor };
+    s.snap_to_grid_excluding(from.saturating_add(raw), moving).saturating_sub(from)
 }
 
 /// Trim a clip's edges to `start` and/or `end` like the Trim tool, never past its file. In

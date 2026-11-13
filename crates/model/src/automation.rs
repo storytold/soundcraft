@@ -164,7 +164,10 @@ impl AutomationLane {
                 // Widen so far-apart breakpoints cannot overflow i64.
                 let span = i128::from(b.at) - i128::from(a.at);
                 let off = i128::from(at) - i128::from(a.at);
-                a.value + (b.value - a.value) * (off as f64 / span as f64) as f32
+                // Interpolate in f64: the f32 difference overflows for
+                // opposite-sign values near f32::MAX.
+                let (av, bv) = (f64::from(a.value), f64::from(b.value));
+                (av + (bv - av) * (off as f64 / span as f64)) as f32
             }
             (Some(a), _) => a.value,
             _ => default,
@@ -279,6 +282,17 @@ mod tests {
         assert!(v.is_finite() && (-10.0..=0.0).contains(&v));
         let w = l.value_at(i64::MAX - 1, 0.0);
         assert!(w.is_finite() && (-10.0..=0.0).contains(&w));
+    }
+
+    #[test]
+    fn value_at_opposite_sign_extremes_stays_finite() {
+        let mut l = AutomationLane::new(AutoParam::Plugin { slot: 0, param: "Cutoff".into() });
+        l.set_point(0, -3.0e38);
+        l.set_point(1000, 3.0e38);
+        let v = l.value_at(500, 0.0);
+        assert!(v.is_finite() && v.abs() < 1.0e32, "mid value {v}");
+        let w = l.value_at(1, 0.0);
+        assert!(w.is_finite() && w < -2.9e38, "early value {w}");
     }
 
     #[test]
