@@ -102,7 +102,7 @@ files it was given rather than guarding against other software on the computer.
 | `inspect_session` | Verify work: tracks, clips, mixer, plugins, sends, automation, markers, selection; each `sources[]` entry includes `loaded` (decoded audio in the pool). |
 | `new_session`, `open_session`, `save_session` | Session files (`.scraft`, audio in `Audio Files/`). `open_session` returns `missing`: the media files that could not be loaded (empty when all are found). `save_session` won't save over another existing file unless `replace` is true. |
 | `import_audio` | WAV, AIFF, FLAC, MP3, OGG, AAC/M4A, ALAC, CAF onto a new or existing track. |
-| `bounce_mix` | Render to WAV/AIFF/FLAC; returns peak dBFS and integrated LUFS. `normalize` peaks at -0.1 dBFS; `target_lufs` (with `true_peak_ceiling_db`, default -1) normalizes the loudness instead, and says when the ceiling kept it short of the target. |
+| `bounce_mix` | Render to WAV/AIFF/FLAC; returns peak dBFS and integrated LUFS. `normalize` peaks at -0.1 dBFS; `target_lufs` (with `true_peak_ceiling_db`, default -1) normalizes the loudness instead, and gives a `warning` when the ceiling kept it short of the target, when the written file still measures off target, or when the audio is silent, too short or too quiet to measure. |
 | `parity` | Feature-parity report. |
 | `screenshot`, `ui_inspect`, `ui_set`, `menu_invoke`, `click`, `drag`, `key` | App only (with `--connect`). |
 
