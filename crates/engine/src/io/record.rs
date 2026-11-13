@@ -121,7 +121,7 @@ struct TakeFile {
 /// A take file's audio at the session's rate `hz`, and whether it was recorded at another rate.
 fn decode_take(path: &Path, hz: u32) -> Result<(AudioBuffer, bool), EngineError> {
     let bytes = read_file(path)?;
-    let (_, mut buf) = soundcraft_audio_io::decode(&bytes, None).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))?;
+    let (_, mut buf) = craft_audio::decode(&bytes, None).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))?;
     let resampled = buf.sample_rate != hz && buf.sample_rate > 0;
     if resampled {
         buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, hz);
@@ -140,7 +140,7 @@ fn read_take_file(path: &Path, hz: u32) -> Result<TakeFile, EngineError> {
 /// A take file's length at the session's rate `hz`, parsed from its header, without decoding it.
 fn measure_take_file(path: &Path, hz: u32) -> Result<TakeFile, EngineError> {
     let bytes = read_file(path)?;
-    let info = soundcraft_audio_io::probe(&bytes, None).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))?;
+    let info = craft_audio::probe(&bytes, None).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))?;
     let resampled = info.sample_rate != hz && info.sample_rate > 0;
     let frames = usize::try_from(info.frames).unwrap_or(usize::MAX);
     let len = if resampled { soundcraft_dsp::offline::resampled_len(frames, info.sample_rate, hz) } else { frames };
@@ -258,7 +258,7 @@ mod record_tests {
     }
 
     fn write_take(path: &Path, frames: usize) {
-        let mut bytes = soundcraft_audio_io::wav_float_header(1, 48_000, frames as u64).unwrap();
+        let mut bytes = craft_audio::wav_float_header(48_000, 1, frames as u64).unwrap();
         bytes.extend((0..frames).flat_map(|i| (i as f32 / frames as f32 - 0.5).to_le_bytes()));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
@@ -431,7 +431,7 @@ mod record_tests {
     /// A mono take file of `frames` samples that all hold `value`, so a test can tell which file a
     /// clip plays.
     fn write_take_of(path: &Path, frames: usize, value: f32) {
-        let mut bytes = soundcraft_audio_io::wav_float_header(1, 48_000, frames as u64).unwrap();
+        let mut bytes = craft_audio::wav_float_header(48_000, 1, frames as u64).unwrap();
         bytes.extend((0..frames).flat_map(|_| value.to_le_bytes()));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
