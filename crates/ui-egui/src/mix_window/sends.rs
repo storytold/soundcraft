@@ -208,22 +208,22 @@ pub(super) fn dragged_send_db(db: f32, dy: f32, fine: bool) -> f32 {
 }
 
 /// What an [`editable_readout`] shows and how a typed value is parsed.
-pub(super) struct Readout<'a> {
+pub(crate) struct Readout<'a> {
     /// Accessible name of the text field shown while editing.
-    pub(super) name: &'a str,
+    pub(crate) name: &'a str,
     /// The value painted while not editing.
-    pub(super) display: &'a str,
+    pub(crate) display: &'a str,
     /// The editor's initial text.
-    pub(super) edit_initial: &'a str,
-    pub(super) parse: fn(&str) -> Option<f32>,
+    pub(crate) edit_initial: &'a str,
+    pub(crate) parse: fn(&str) -> Option<f32>,
     /// The value an Alt-click sets.
-    pub(super) reset: f32,
+    pub(crate) reset: f32,
 }
 
 /// Paint a value until clicked, then replace it with a focused text field. Enter or clicking away
 /// commits a valid value; Escape cancels, and so does the field losing focus while hidden.
 /// Alt-click returns `reset`. The interaction response remains available for dragging.
-pub(super) fn editable_readout(ui: &mut Ui, r: Rect, id: egui::Id, readout: Readout<'_>) -> (Option<egui::Response>, Option<f32>) {
+pub(crate) fn editable_readout(ui: &mut Ui, r: Rect, id: egui::Id, readout: Readout<'_>) -> (Option<egui::Response>, Option<f32>) {
     let Readout { name, display, edit_initial, parse, reset } = readout;
     let t = Tokens::current();
     let active_id = id.with("active");
@@ -280,7 +280,7 @@ pub(super) fn editable_readout(ui: &mut Ui, r: Rect, id: egui::Id, readout: Read
     (response, value)
 }
 
-pub(super) fn parse_db(text: &str) -> Option<f32> {
+pub(crate) fn parse_db(text: &str) -> Option<f32> {
     let cleaned = text.trim().to_ascii_lowercase().replace("db", "").replace(',', ".");
     if matches!(cleaned.trim(), "-inf" | "-infinity" | "off") {
         return Some(-144.0);
@@ -288,7 +288,7 @@ pub(super) fn parse_db(text: &str) -> Option<f32> {
     cleaned.trim().parse::<f32>().ok().filter(|v| v.is_finite()).map(|v| v.clamp(-144.0, 12.0))
 }
 
-pub(super) fn parse_pan(text: &str) -> Option<f32> {
+pub(crate) fn parse_pan(text: &str) -> Option<f32> {
     let cleaned = text.trim().to_ascii_lowercase().replace(',', ".");
     let (sign, number) = if let Some(v) = cleaned.strip_prefix('<').or_else(|| cleaned.strip_prefix('l')) {
         (-1.0, v)
@@ -335,7 +335,6 @@ enum SendFooter {
 /// that scrolls, "new bus..." (and "Remove send" for an existing send) fixed under it.
 /// `current` is the send's destination and its name, if the slot has a send.
 fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: TrackId, slot: usize, current: Option<(Route, String)>) {
-    let busses = app.engine.session().busses.clone();
     let which = (b'A' + slot as u8) as char;
     let has_send = current.is_some();
     let header = |ui: &mut Ui| {
@@ -355,6 +354,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
             }
         }
         let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), "Search buses…");
+        let busses = &app.engine.session().busses;
         let visible: Vec<_> = busses.iter().filter(|bus| search.matches(&bus.name)).collect();
         (search, visible)
     };
@@ -402,6 +402,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
     }
     match footer {
         Some(SendFooter::NewBus) => {
+            let busses = &app.engine.session().busses;
             let mut n = busses.len() + 1;
             while busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(&format!("Bus {n}")))
                 || app.engine.session().track_by_name(&format!("Bus {n}")).is_some()

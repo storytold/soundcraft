@@ -3,7 +3,7 @@
 
 use super::routing::route_name;
 use super::sends::{Readout, editable_readout, parse_db, parse_pan};
-use super::{SoundApp, Tokens, TrackId, TrackKind, db_text, fader, json, pan_knob, pan_text, pos2, surround_out, text_toggle, vec2};
+use super::{SoundApp, Tokens, TrackId, TrackKind, db_text, fader, json, pan_knob, pan_text, pos2, surround_panned, text_toggle, vec2};
 
 /// Open the Output window on `track`, or close it when it already shows that track.
 pub(crate) fn toggle_output_window(app: &mut SoundApp, track: TrackId) {
@@ -60,7 +60,7 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                     });
                 }
                 // The stereo knobs, as on the track's strip; a surround panner stays in the Mix window.
-                if !track.mixer.pan.is_empty() && track.kind != TrackKind::Vca && !surround_out(app, &track) {
+                if !track.mixer.pan.is_empty() && track.kind != TrackKind::Vca && !surround_panned(app, &track) {
                     ui.horizontal(|ui| {
                         let n = track.mixer.pan.len().min(2);
                         ui.add_space(((ui.available_width() - 36.0 * n as f32) / 2.0).max(0.0));

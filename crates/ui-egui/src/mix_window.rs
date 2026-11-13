@@ -22,7 +22,7 @@ pub use plugin_menu::{instrument_menu, plugin_info, plugin_menu};
 pub(crate) use routing::{input_name, route_name, route_popup};
 #[cfg(test)]
 use sends::dragged_send_db;
-use sends::{Readout, editable_readout, parse_db, parse_pan};
+pub(crate) use sends::{Readout, editable_readout, parse_db, parse_pan};
 pub(crate) use sends::{send_slot, send_window};
 pub(crate) use slots::{insert_slot, instrument_slot};
 
@@ -92,9 +92,8 @@ fn output_format(app: &SoundApp, track: &Track) -> ChannelFormat {
     }
 }
 
-/// Whether the track pans with a surround panner (a multichannel, non-ambisonic output) rather
-/// than the stereo knobs.
-fn surround_out(app: &SoundApp, track: &Track) -> bool {
+/// Whether the strip pans a track with the surround panner, because its output is multichannel, instead of the stereo pans.
+pub(crate) fn surround_panned(app: &SoundApp, track: &Track) -> bool {
     let out_fmt = output_format(app, track);
     out_fmt.channels() > 2 && !out_fmt.is_ambisonic() && !matches!(track.kind, TrackKind::Master | TrackKind::Vca) && track.channels() <= 2
 }
@@ -380,27 +379,36 @@ fn comments_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f
     y
 }
 
-/// Input, output and automation mode selectors.
+/// Whether a track shows an input selector. A master fader has no input of its own:
+/// it only shows the output of the path it controls.
+pub(crate) fn has_input_selector(kind: TrackKind) -> bool {
+    kind != TrackKind::Master
+}
+
+/// Input (except on master faders), output and automation mode selectors.
 fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
     let StripCtx { track, id, narrow, x0, inner_w, .. } = *cx;
     let t = Tokens::current();
     if cx.shows("io") {
+        let has_input = has_input_selector(track.kind);
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 16.0 + 2.0 * 18.0 + 30.0));
         inset(ui.painter(), sec, t.strip_section);
         section_label(ui, sec, "I / O", narrow);
         let in_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0), vec2(inner_w - 4.0, 16.0));
-        let out_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 33.0), vec2(inner_w - 4.0, 16.0));
-        let mut c = ui.new_child(egui::UiBuilder::new().id_salt(("mix-input", id.0)).max_rect(in_r));
-        let input = input_name(app, track);
-        let resp = selector_box_named(
-            &mut c,
-            in_r.width(),
-            in_r.height(),
-            &input,
-            t.text,
-            SelectorLabels { name: &format!("Input for {}", track.name), value: &input, tooltip: "Input" },
-        );
-        route_popup(app, &resp, id, true);
+        let out_r = if has_input { Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 33.0), vec2(inner_w - 4.0, 16.0)) } else { in_r };
+        if has_input {
+            let mut c = ui.new_child(egui::UiBuilder::new().id_salt(("mix-input", id.0)).max_rect(in_r));
+            let input = input_name(app, track);
+            let resp = selector_box_named(
+                &mut c,
+                in_r.width(),
+                in_r.height(),
+                &input,
+                t.text,
+                SelectorLabels { name: &format!("Input for {}", track.name), value: &input, tooltip: "Input" },
+            );
+            route_popup(app, &resp, id, true);
+        }
         let mut c = ui.new_child(egui::UiBuilder::new().id_salt(("mix-output", id.0)).max_rect(out_r));
         let output = route_name(app, &track.mixer.output);
         let resp = selector_box_named(
@@ -413,7 +421,7 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
         );
         route_popup(app, &resp, id, false);
         // Automation mode.
-        let am_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 51.0), vec2(inner_w - 4.0, 16.0));
+        let am_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0 + 2.0 * 18.0), vec2(inner_w - 4.0, 16.0));
         ui.painter().text(pos2(am_r.center().x, am_r.min.y - 1.0), Align2::CENTER_BOTTOM, "", regular(9.0), t.text_dim);
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(am_r));
         let mode = track.mixer.automation_mode;
@@ -479,7 +487,7 @@ fn pan_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -
     let t = Tokens::current();
     // Pan: a surround panner when the output is multichannel, else the stereo knobs.
     let out_fmt = output_format(app, track);
-    if surround_out(app, track) {
+    if surround_panned(app, track) {
         let size = (inner_w - 4.0).min(88.0);
         let sp = track.mixer.surround.unwrap_or_else(|| {
             SurroundPan::from_stereo(if track.mixer.pan.len() == 1 { track.mixer.pan.first().copied().unwrap_or(0.0) } else { 0.0 })
@@ -674,6 +682,14 @@ fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
 mod tests {
     use super::{Readout, dragged_send_db, editable_readout, parse_db, parse_pan};
     use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
+    use soundcraft_model::TrackKind;
+
+    #[test]
+    fn master_strip_has_no_input_selector() {
+        assert!(!super::has_input_selector(TrackKind::Master));
+        assert!(super::has_input_selector(TrackKind::Audio));
+        assert!(super::has_input_selector(TrackKind::Aux));
+    }
 
     #[test]
     fn typed_db_accepts_console_notation_and_clamps() {
