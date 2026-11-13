@@ -10,7 +10,7 @@ repository.workspace = true
 [dependencies]
 craft-ui.workspace = true
 soundcraft-time.workspace = true
-soundcraft-audio-io.workspace = true
+craft-audio.workspace = true
 soundcraft-midi.workspace = true
 soundcraft-dsp.workspace = true
 soundcraft-clap-host.workspace = true
@@ -24,6 +24,7 @@ soundcraft-video.workspace = true
 # 0.37 makes the bundled faces opt-in; the app's own font loader starts from
 # `FontDefinitions::default()`, and kittest never supplies fonts to this root.
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
+egui_extras = { workspace = true }
 web-time.workspace = true
 serde.workspace = true
 serde_json.workspace = true

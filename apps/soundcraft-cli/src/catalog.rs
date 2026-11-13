@@ -7,11 +7,15 @@ use std::io::Write;
 pub(crate) fn commands(args: &CommandsArgs, out: &mut dyn Write) {
     let filter = args.filter.clone().unwrap_or_default();
     let e = Engine::default();
-    for c in soundcraft_engine::command_specs() {
-        if !filter.is_empty() && !c.id.contains(&filter) && !c.label.to_ascii_lowercase().contains(&filter.to_ascii_lowercase()) {
-            continue;
-        }
-        let i = c.info(&e);
+    let infos = soundcraft_engine::command_specs()
+        .iter()
+        .filter(|c| filter.is_empty() || c.id.contains(&filter) || c.label.to_ascii_lowercase().contains(&filter.to_ascii_lowercase()))
+        .map(|c| c.info(&e));
+    if args.json {
+        print_json(out, &infos.collect::<Vec<_>>(), args.compact);
+        return;
+    }
+    for i in infos {
         outln!(out, "{:<36} {:<34} {}", i.id, i.label, i.menu.join(" > "));
     }
 }
