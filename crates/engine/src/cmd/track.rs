@@ -262,7 +262,7 @@ fn new_track(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 /// All rows run inside one command, so failures roll back and Undo covers the whole creation.
-fn new_track_row(e: &mut Engine, p: &Value) -> Result<Vec<TrackId>> {
+pub(super) fn new_track_row(e: &mut Engine, p: &Value) -> Result<Vec<TrackId>> {
     let count = i64_or(p, "count", 1).clamp(1, 128);
     let kind = match str_param(p, "kind") {
         Some(k) => TrackKind::from_id(k).ok_or_else(|| bad("track.new", format!("unknown kind `{k}`")))?,

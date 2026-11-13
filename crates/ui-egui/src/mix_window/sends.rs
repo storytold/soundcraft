@@ -328,11 +328,13 @@ fn send_level_scale(ui: &mut Ui, db: f32) {
 /// What the send menu's footer was used for.
 enum SendFooter {
     NewBus,
+    /// Opens the New Track dialog for a track the send feeds through a new bus.
+    NewTrack,
     RemoveSend,
 }
 
 /// The send's destination menu: a title and the bus search on top, the matching buses in a list
-/// that scrolls, "new bus..." (and "Remove send" for an existing send) fixed under it.
+/// that scrolls, "new bus...", "new track..." (and "Remove send" for an existing send) fixed under it.
 /// `current` is the send's destination and its name, if the slot has a send.
 fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: TrackId, slot: usize, current: Option<(Route, String)>) {
     let which = (b'A' + slot as u8) as char;
@@ -380,6 +382,10 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
                 ui.close();
                 return Some(SendFooter::NewBus);
             }
+            if ui.button("new track...").clicked() {
+                ui.close();
+                return Some(SendFooter::NewTrack);
+            }
             if has_send && ui.button("Remove send").clicked() {
                 ui.close();
                 return Some(SendFooter::RemoveSend);
@@ -414,6 +420,9 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
             {
                 show_new_send(app);
             }
+        }
+        Some(SendFooter::NewTrack) => {
+            app.dialogs.set(crate::dialogs::Dialog::SendToNewTrack(crate::dialogs::send_new_track::SendToNewTrack::new(id, slot, !has_send)));
         }
         Some(SendFooter::RemoveSend) => {
             let _ = app.run("mix.send_remove", json!({"track": id.0, "slot": slot}));
@@ -534,6 +543,26 @@ mod tests {
         let (app, _) = h.state();
         assert!(app.engine.session().track(kick).and_then(|t| t.mixer.sends.first().cloned().flatten()).is_some(), "the send was created");
         assert_eq!(app.ui.send_window, Some((kick, 0)), "the new send's window is open");
+    }
+
+    /// "new track..." opens the New Track dialog for this send, and only the dialog's Create makes
+    /// anything. Whether the slot had a send decides if Create opens the Send window.
+    #[test]
+    fn new_track_opens_the_new_track_dialog_for_the_send() {
+        let _palette = crate::theme::lock_test_palette();
+        for existing_send in [false, true] {
+            let (mut h, kick) = kick_send_harness(existing_send);
+            h.run();
+            let tracks = h.state().0.engine.session().tracks.len();
+            h.get_by_label("Send A for Kick").click();
+            h.run();
+            h.get_by_label("new track...").click();
+            h.run();
+            let (app, _) = h.state();
+            let Some(crate::dialogs::Dialog::SendToNewTrack(d)) = &app.dialogs.open else { panic!("no New Track dialog") };
+            assert_eq!((d.track, d.slot, d.new_send), (kick, 0, !existing_send));
+            assert_eq!(app.engine.session().tracks.len(), tracks, "nothing is made before Create");
+        }
     }
 
     /// Moving an existing send to another bus keeps the Send window as it was.

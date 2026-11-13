@@ -27,11 +27,14 @@ pub mod new_tracks;
 pub mod ops_windows;
 pub(super) mod recent;
 pub mod recovery;
+pub mod send_new_track;
 pub mod spot;
 
 #[derive(Debug, Clone)]
 pub enum Dialog {
     NewTracks(new_tracks::NewTracks),
+    /// A send's "new track...": the track the send will feed.
+    SendToNewTrack(send_new_track::SendToNewTrack),
     NewSession { name: String, sample_rate: u32, demo: bool },
     Bounce { path: String, format: EncodeFormat, bit_depth: String, normalize: bool, dither: bool },
     RenameTrack { id: TrackId, name: String },
@@ -91,6 +94,7 @@ impl Dialogs {
     pub fn open_name(&self) -> Option<&'static str> {
         self.open.as_ref().map(|d| match d {
             Dialog::NewTracks(_) => "new_tracks",
+            Dialog::SendToNewTrack(_) => "send_new_track",
             Dialog::NewSession { .. } => "new_session",
             Dialog::Bounce { .. } => "bounce",
             Dialog::RenameTrack { .. } => "rename_track",
@@ -474,6 +478,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let strip_names = app.dialogs.strip_names.clone();
     let title = match &d {
         Dialog::NewTracks(_) => "New Tracks",
+        Dialog::SendToNewTrack(_) => "New Track",
         Dialog::NewSession { .. } => "New Session",
         Dialog::Bounce { .. } => "Bounce Mix",
         Dialog::RenameTrack { .. } => "Rename Track",
@@ -515,6 +520,11 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 Dialog::NewTracks(tracks) => {
                     if let Some(params) = tracks.show(ui, enter) {
                         action = Some(("track.new".into(), params));
+                    }
+                }
+                Dialog::SendToNewTrack(d) => {
+                    if let Some(params) = d.show(ui, enter) {
+                        action = Some(("mix.send_new_track".into(), params));
                     }
                 }
                 Dialog::NewSession { name, sample_rate, demo } => {
@@ -832,6 +842,14 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             match run_then(app, &cmd, params) {
                 Ok(v) if cmd == "file.export_clips" => {
                     app.ui.status = format!("Exported {} clip(s) to {}", v["written"], v["dir"].as_str().unwrap_or_default());
+                }
+                // As with "new bus...", a new send opens its Send window, so its fader is on screen.
+                Ok(_) if cmd == "mix.send_new_track" => {
+                    if let Dialog::SendToNewTrack(d) = &d
+                        && d.new_send
+                    {
+                        app.ui.send_window = Some((d.track, d.slot));
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => app.ui.status = e,
