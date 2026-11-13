@@ -33,6 +33,9 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
     };
     let t = Tokens::current();
     let name = track.name.clone();
+    // The readouts' ids name the document too: a value typed for a track of the old session
+    // never reaches a track of the new one with the same id.
+    let doc = app.doc_epoch;
     let mut open = true;
     egui::Window::new(format!("{name} · Output"))
         .id(egui::Id::unique("output_window"))
@@ -78,7 +81,7 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                                 let (_, typed) = editable_readout(
                                     ui,
                                     pr,
-                                    ui.scope_id().with(("output_pan_value", id.0, i)),
+                                    ui.scope_id().with(("output_pan_value", doc, id.0, i)),
                                     Readout {
                                         name: &format!("{name} output pan {} value", i + 1),
                                         display: &pan_text(v),
@@ -112,7 +115,7 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                 let (_, typed) = editable_readout(
                     ui,
                     rr,
-                    ui.scope_id().with(("output_volume_value", id.0)),
+                    ui.scope_id().with(("output_volume_value", doc, id.0)),
                     Readout {
                         name: &format!("{name} output volume"),
                         display: &db_text(track.mixer.volume_db),
@@ -173,6 +176,33 @@ mod tests {
         let to = from + egui::vec2(0.0, dy);
         h.input_mut().events.push(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
         h.step();
+    }
+
+    /// Opens Kick's Output window, clicks its volume readout and replaces the text with `text`,
+    /// leaving the draft open (not committed).
+    fn open_kick_and_type_volume(h: &mut Harness<'_, SoundApp>, text: &str) {
+        h.get_by_label("Output window for Kick").click();
+        h.run_steps(2);
+        let fader = h.get_by_label("Kick output level").rect();
+        // The volume readout sits just below the fader.
+        let readout = egui::pos2(fader.center().x, fader.bottom() + 10.0);
+        h.input_mut().events.push(egui::Event::PointerMoved(readout));
+        h.step();
+        for pressed in [true, false] {
+            h.input_mut().events.push(egui::Event::PointerButton {
+                pos: readout,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.step();
+        }
+        h.run_steps(1);
+        assert!(h.query_by_label("Kick output volume").is_some(), "clicking the readout starts editing");
+        // Replace the initial text, as a user typing a new value does.
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text(text.into()));
+        h.run_steps(2);
     }
 
     /// #1392: the fader button beside Kick's Output selector opens Kick's Output window, whose
@@ -237,32 +267,7 @@ mod tests {
         let snare_db = |h: &Harness<'_, SoundApp>| h.state().engine.session().track(snare).unwrap().mixer.volume_db;
         let snare_before = snare_db(&h);
 
-        h.get_by_label("Output window for Kick").click();
-        h.run_steps(2);
-        let fader = h.get_by_label("Kick output level").rect();
-        // The volume readout sits just below the fader.
-        let readout = egui::pos2(fader.center().x, fader.bottom() + 10.0);
-        h.input_mut().events.push(egui::Event::PointerMoved(readout));
-        h.step();
-        h.input_mut().events.push(egui::Event::PointerButton {
-            pos: readout,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: egui::Modifiers::NONE,
-        });
-        h.step();
-        h.input_mut().events.push(egui::Event::PointerButton {
-            pos: readout,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: egui::Modifiers::NONE,
-        });
-        h.run_steps(2);
-        assert!(h.query_by_label("Kick output volume").is_some(), "clicking the readout starts editing");
-        // Replace the initial text, as a user typing a new value does.
-        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
-        h.event(egui::Event::Text("-20".into()));
-        h.run_steps(2);
+        open_kick_and_type_volume(&mut h, "-20");
 
         // The window now shows Snare (as when Snare's Output button is clicked), with Kick's draft open.
         h.state_mut().ui.output_window = Some(snare);
@@ -271,5 +276,33 @@ mod tests {
         h.key_press(egui::Key::Enter);
         h.run_steps(2);
         assert_eq!(snare_db(&h), snare_before, "Kick's draft did not reach Snare");
+    }
+
+    /// Opening another session retires the Output window and its draft, also when the new
+    /// session has a track with the same id: here a fresh demo session, whose Kick has the old
+    /// Kick's id. Enter does not commit the old draft to the new Kick, and reopening the window
+    /// on the new Kick does not bring the draft back.
+    #[test]
+    fn opening_another_session_retires_the_output_window_and_its_draft() {
+        let _palette = crate::theme::lock_test_palette();
+        let (mut h, kick) = edit_window_with_io();
+        open_kick_and_type_volume(&mut h, "-20");
+
+        h.state_mut().run("session.new", json!({"template": "demo"})).unwrap();
+        assert_eq!(h.state().engine.session().track_by_name("Kick").unwrap().id, kick, "the new Kick reuses the id");
+        let new_kick_db = kick_mixer(&h, kick).volume_db;
+        h.run_steps(2);
+        assert_eq!(h.state().ui.output_window, None, "the window closes with its session");
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert_eq!(kick_mixer(&h, kick).volume_db, new_kick_db, "the old draft did not reach the new Kick");
+
+        h.state_mut().ui.output_window = Some(kick);
+        h.step();
+        assert!(h.query_by_label("Kick output level").is_some(), "the window is open on the new Kick");
+        assert!(h.query_by_label("Kick output volume").is_none(), "the new Kick's readout is not being edited");
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert_eq!(kick_mixer(&h, kick).volume_db, new_kick_db);
     }
 }
