@@ -732,6 +732,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.preferences.discard_draft();
             app.ui.show_automation = false;
             app.ui.plugin_windows.clear();
+            app.ui.output_window = None;
             app.ui.audiosuite = None;
             json!({})
         }

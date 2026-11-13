@@ -305,4 +305,21 @@ mod tests {
         h.run_steps(2);
         assert_eq!(kick_mixer(&h, kick).volume_db, new_kick_db);
     }
+
+    /// Window > Close Window and Hide All Floating Windows close the Output window, as they close
+    /// the other floating windows.
+    #[test]
+    fn close_window_and_hide_all_floating_windows_close_the_output_window() {
+        let _palette = crate::theme::lock_test_palette();
+        let (mut h, kick) = edit_window_with_io();
+        for command in ["window.close", "window.hide_floating"] {
+            h.get_by_label("Output window for Kick").click();
+            h.run_steps(2);
+            assert_eq!(h.state().ui.output_window, Some(kick), "{command}");
+            h.state_mut().run(command, json!({})).unwrap();
+            h.run_steps(2);
+            assert_eq!(h.state().ui.output_window, None, "{command} closes it");
+            assert!(h.query_by_label("Kick output level").is_none(), "{command}: the window is gone");
+        }
+    }
 }
