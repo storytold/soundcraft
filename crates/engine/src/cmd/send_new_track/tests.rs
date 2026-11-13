@@ -29,9 +29,8 @@ fn send_target(e: &Engine, name: &str, slot: usize) -> Option<Route> {
 fn the_new_track_takes_the_name_of_its_bus_and_listens_to_it() {
     let mut e = engine();
     let history = e.undo_history().len();
-    let out = e
-        .execute(CMD, &json!({"track": "Gtr", "slot": 1, "kind": "aux", "format": "stereo", "timebase": "ticks", "name": "Drum Sub"}))
-        .unwrap();
+    let out =
+        e.execute(CMD, &json!({"track": "Gtr", "slot": 1, "kind": "aux", "format": "stereo", "timebase": "ticks", "name": "Drum Sub"})).unwrap();
     assert_eq!(order(&e), ["Gtr", "Drum Sub", "Bass", "Main Out"], "created next to the track with the send");
     let sub = track(&e, "Drum Sub");
     assert_eq!((sub.kind, sub.format, sub.ticks_timebase), (TrackKind::Aux, ChannelFormat::Stereo, true));
