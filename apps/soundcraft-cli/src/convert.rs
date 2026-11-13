@@ -15,6 +15,15 @@ pub(crate) fn convert(args: &ConvertArgs, out: &mut dyn Write) -> Result<(), Cli
     let bytes = std::fs::read(input).map_err(|source| CliError::File { path: input.clone(), source })?;
     let ext = input.extension().and_then(std::ffi::OsStr::to_str);
     let (info, mut buf) = craft_audio::decode(&bytes, ext).map_err(|source| CliError::Audio { path: input.clone(), source })?;
+    // The decoder replaces packets it cannot decode with silence of their length and counts them.
+    // Such a file is not a copy of what was recorded: never let it replace its source, and say so
+    // when it is written elsewhere.
+    if info.damaged > 0 {
+        if args.in_place {
+            return Err(ConvertError::Damaged { input: input.clone(), packets: info.damaged }.into());
+        }
+        log::warn!("{}: {} damaged packet(s) decoded as silence", input.display(), info.damaged);
+    }
     let source_rate = buf.sample_rate;
     if let Some(rate) = rate {
         buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, rate);
@@ -34,6 +43,11 @@ pub(crate) fn convert(args: &ConvertArgs, out: &mut dyn Write) -> Result<(), Cli
     // A BWF source keeps its `bext` (written for WAV output only). The time reference counts
     // samples, so it moves to the output rate.
     let mut opts = craft_audio::EncodeOptions::new(format).with_bit_depth(bit_depth).with_dither(dither);
+    // The source's speakers, not the usual ones for its channel count (5.1 with side surrounds
+    // stays that). Channels with no speaker assignment get the format's default.
+    if info.layout.is_ordered() {
+        opts = opts.with_layout(info.layout);
+    }
     opts.bwf = info.bwf.map(|mut b| {
         b.time_reference = at_rate(b.time_reference, source_rate, buf.sample_rate);
         b
