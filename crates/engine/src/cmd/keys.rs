@@ -45,8 +45,9 @@ const UNPAIRED: [(&str, &[&str]); 5] = [
             "video.offset",
         ],
     ),
-    // Its `tracks` are names in the other session.
-    ("track", &["file.import_session_data"]),
+    // `file.import_session_data`'s `tracks` are names in the other session; `track.group_modify`
+    // changes membership only when `tracks` is given.
+    ("track", &["file.import_session_data", "track.group_modify"]),
     ("clip", &["clip.auto_rename", "clip.clear", "edit.select"]),
     (
         "clips",

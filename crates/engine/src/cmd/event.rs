@@ -83,7 +83,15 @@ pub fn specs() -> Vec<CommandSpec> {
             e.transport_requests.push(crate::TransportRequest::AllNotesOff);
             Ok(json!({}))
         }),
-        cmd!("event.midi_note", "Add MIDI Note", [], None, "{clip, pitch, start_ticks, length_ticks, velocity?: 100}", has_selection, add_note),
+        cmd!(
+            "event.midi_note",
+            "Add MIDI Note",
+            [],
+            None,
+            "{clip, pitch, start_ticks, length_ticks, velocity?: 100, channel?: 0}",
+            has_selection,
+            add_note
+        ),
         cmd!(
             "markers.add",
             "New Memory Location",

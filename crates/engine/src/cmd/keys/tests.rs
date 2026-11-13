@@ -155,6 +155,29 @@ fn documented_and_paired_keys_still_work() {
 }
 
 #[test]
+fn keys_read_through_shared_handlers_are_taken() {
+    let mut e = vox_and_rev();
+    // `event.midi_note` sets the note's channel.
+    e.execute("track.new", &json!({"count": 1, "name": "Keys", "kind": "midi"})).unwrap();
+    let clip = e.execute("midi.new_clip", &json!({"track": "Keys", "start": 0, "end": 48_000})).unwrap()["clip"].clone();
+    e.execute("event.midi_note", &json!({"clip": clip, "pitch": 60, "start_ticks": 0, "length_ticks": 240, "channel": 9})).unwrap();
+    assert_eq!(e.execute("midi.notes", &json!({"clip": clip})).unwrap()["notes"][0]["channel"], 9);
+    // The track flags take an explicit `value`: twice `true` stays on, where a toggle would turn it off.
+    let flags: [(&str, fn(&soundcraft_model::Track) -> bool); 4] =
+        [("track.pin", |t| t.pinned), ("track.freeze", |t| t.frozen), ("track.hide", |t| t.hidden), ("track.make_inactive", |t| t.inactive)];
+    for (id, get) in flags {
+        for value in [true, true, false] {
+            e.execute(id, &json!({"track": "Vox", "value": value})).unwrap();
+            assert_eq!(get(&e.session().tracks[0]), value, "{id}");
+        }
+    }
+    // `track.group_modify` reads members only from `tracks`, so `track` is refused, not ignored.
+    e.execute("track.group", &json!({"name": "Band", "tracks": ["Vox"]})).unwrap();
+    let msg = bad_params(e.execute("track.group_modify", &json!({"group": "Band", "track": "Keys"})), "track.group_modify");
+    assert!(msg.starts_with("unknown parameter `track` (did you mean `tracks`?)"), "{msg}");
+}
+
+#[test]
 fn many_or_long_unknown_keys_keep_the_error_short() {
     let mut e = Engine::default();
     let mut params = serde_json::Map::new();

@@ -33,7 +33,7 @@ pub fn specs() -> Vec<CommandSpec> {
             duplicate
         ),
         cmd!("track.split_into_mono", "Split into Mono", ["Track"], None, "{tracks?}", has_selection, split_mono),
-        cmd!("track.make_inactive", "Make Inactive", ["Track"], None, "{tracks?, inactive?: bool}", has_selection, |e, p| flag(
+        cmd!("track.make_inactive", "Make Inactive", ["Track"], None, "{tracks?, inactive? | value?: bool}", has_selection, |e, p| flag(
             e,
             p,
             "track.make_inactive",
@@ -80,16 +80,22 @@ pub fn specs() -> Vec<CommandSpec> {
             height_step(e, p, false)
         }),
         cmd!("track.view", "Track View", [], None, "{tracks?, view: waveform|blocks|notes|volume|pan|mute|<automation id>}", has_selection, view),
-        cmd!("track.hide", "Hide Track", [], None, "{tracks?, hidden?: bool}", has_selection, |e, p| flag(
+        cmd!("track.hide", "Hide Track", [], None, "{tracks?, hidden? | value?: bool}", has_selection, |e, p| flag(
             e,
             p,
             "track.hide",
             |t, v| t.hidden = v,
             |t| t.hidden
         )),
-        cmd!("track.pin", "Pin Track", [], None, "{tracks?}", has_selection, |e, p| flag(e, p, "track.pin", |t, v| t.pinned = v, |t| t.pinned)),
+        cmd!("track.pin", "Pin Track", [], None, "{tracks?, value?: bool}", has_selection, |e, p| flag(
+            e,
+            p,
+            "track.pin",
+            |t, v| t.pinned = v,
+            |t| t.pinned
+        )),
         cmd!("track.move", "Move Track", [], None, "{track, to: index}", has_tracks, move_track),
-        cmd!("track.freeze", "Freeze", ["Track"], None, "{tracks?}", has_selection, |e, p| flag(
+        cmd!("track.freeze", "Freeze", ["Track"], None, "{tracks?, value?: bool}", has_selection, |e, p| flag(
             e,
             p,
             "track.freeze",
@@ -213,7 +219,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("track.output", "Track Output", [], None, "{tracks?, output: main|none|bus name, create_bus?: true}", has_selection, |e, p| route(
             e, p, false
         )),
-        cmd!("track.timebase", "Track Timebase", [], None, "{tracks?, ticks: bool}", has_selection, |e, p| flag(
+        cmd!("track.timebase", "Track Timebase", [], None, "{tracks?, ticks | value: bool}", has_selection, |e, p| flag(
             e,
             p,
             "track.timebase",
