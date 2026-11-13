@@ -13,15 +13,25 @@ pub(super) const MAX_MIDI_TRACKS: usize = 512;
 /// meter changes or tracks, a track longer than a day) leaves the session as it was: callers that
 /// keep their own undo step, like the web shell, never see a half-applied import.
 ///
-/// The file is read leniently, as other MIDI readers do: with stray bytes after the last track
-/// (#1528), a track length its End of Track contradicts or a track cut short, what can be read is
-/// imported and what could not is logged. Something that is not a Standard MIDI File is refused.
+/// A sound file is read strictly. A damaged one is read leniently, as other MIDI readers do: with
+/// stray bytes after the last track (#1528), a track length its End of Track contradicts or a
+/// track cut short, what can be read is imported and what could not is logged. A file past the
+/// reader's event or track limit is still refused: read leniently it would lose the rest without
+/// saying so. Something that is not a Standard MIDI File is refused.
 pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: bool) -> Result<Vec<TrackId>> {
-    let read = soundcraft_midi::read_smf_lenient(bytes).map_err(|err| EngineError::Io(err.to_string()))?;
-    for warning in &read.warnings {
-        log::warn!("MIDI import: {warning}");
-    }
-    let smf = read.smf;
+    let smf = match soundcraft_midi::read_smf(bytes) {
+        Ok(smf) => smf,
+        Err(err @ (soundcraft_midi::MidiError::TooManyEvents(_) | soundcraft_midi::MidiError::TooManyTracks(_))) => {
+            return Err(EngineError::Io(err.to_string()));
+        }
+        Err(_) => {
+            let read = soundcraft_midi::read_smf_lenient(bytes).map_err(|err| EngineError::Io(err.to_string()))?;
+            for warning in &read.warnings {
+                log::warn!("MIDI import: {warning}");
+            }
+            read.smf
+        }
+    };
     if tempo_map {
         // Each meter is placed by walking the ones before it.
         if smf.meters.len() > MAX_MIDI_METERS {

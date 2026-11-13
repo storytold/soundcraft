@@ -199,6 +199,26 @@ mod name_tests {
     }
 
     #[test]
+    fn a_midi_file_past_the_track_limit_is_refused_even_with_stray_bytes() {
+        // Read leniently, the tracks past the limit would be left out without a word: the note in
+        // the last one would be lost. The file stays refused, and the session as it was.
+        let tracks = soundcraft_midi::MAX_TRACKS + 1;
+        let mut bytes = b"MThd\0\0\0\x06\0\x01".to_vec();
+        bytes.extend_from_slice(&u16::try_from(tracks).unwrap().to_be_bytes());
+        bytes.extend_from_slice(&960u16.to_be_bytes());
+        for _ in 1..tracks {
+            bytes.extend_from_slice(b"MTrk\0\0\0\x04\0\xFF\x2F\0");
+        }
+        // A note on, a quarter note later its note off, then End of Track.
+        bytes.extend_from_slice(b"MTrk\0\0\0\x0D\0\x90\x3C\x64\x87\x40\x80\x3C\x40\0\xFF\x2F\0");
+        bytes.extend_from_slice(b"\n\n");
+        let mut e = Engine::default();
+        let err = import_midi_bytes(&mut e, &bytes, 0, true).unwrap_err();
+        assert!(err.to_string().contains("too many tracks"), "{err}");
+        assert!(e.session().tracks.is_empty());
+    }
+
+    #[test]
     fn midi_longer_than_a_day_is_refused() {
         let held = soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: (1 << 28) - 1 };
         let sequence = soundcraft_midi::Sequence { notes: vec![held], ..Default::default() };
