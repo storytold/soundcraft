@@ -46,7 +46,13 @@ fn info_exposes_visible_params_with_plain_ranges() {
     assert_eq!((g.name, g.min, g.max, g.default, g.unit, g.taper), ("Gain", 0.0, 2.0, 1.0, Unit::Db, Taper::Linear));
     let mode = info.param("3").unwrap();
     assert_eq!((mode.unit, mode.min, mode.max), (Unit::Choice, 0.0, 2.0));
-    assert_eq!(mode.choices, &["A", "B", "C"]);
+    // Choice labels come from the controller's text, which is main-thread only (see
+    // `editor_main_thread`). Elsewhere the host's check is a stub and the labels are real.
+    if cfg!(any(target_os = "macos", windows)) {
+        assert_eq!(mode.choices, &["0", "1", "2"], "test threads are not the main thread");
+    } else {
+        assert_eq!(mode.choices, &["A", "B", "C"]);
+    }
     let f = info.param("12").unwrap();
     assert_eq!((f.unit, f.taper), (Unit::Hz, Taper::Log));
     assert!((f.min - 20.0).abs() < 1e-3 && (f.max - 20_000.0).abs() < 1e-1, "{f:?}");
@@ -66,9 +72,15 @@ fn identity_mapped_param_text_is_read_on_the_main_thread_only() {
     let mut ed = soundcraft_dsp::Plugin::editor(&mut p).expect("editor handle");
     if cfg!(any(target_os = "macos", windows)) {
         assert_eq!(ed.value_text("13", 0.375), None, "test threads are not the main thread");
+        assert_eq!(soundcraft_dsp::Plugin::value_text(&mut p, "13", 0.375), None, "the engine path too");
+        assert_eq!(soundcraft_dsp::Plugin::value_from_text(&mut p, "13", "\u{2212}6.0 dB"), None);
     } else {
         assert_eq!(ed.value_text("13", 0.375).as_deref(), Some("\u{2212}6.0 dB"));
+        let shown = soundcraft_dsp::Plugin::value_text(&mut p, "13", 0.375).expect("level text");
+        let back = soundcraft_dsp::Plugin::value_from_text(&mut p, "13", &shown).expect("round trip");
+        assert!((back - 0.375).abs() < 1e-6, "{shown} -> {back}");
     }
+    assert_eq!(soundcraft_dsp::Plugin::value_from_text(&mut p, "13", &"x".repeat(257)), None, "over 256 scalars is refused before the plugin parse");
 }
 
 #[test]

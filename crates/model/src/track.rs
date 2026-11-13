@@ -1,6 +1,6 @@
 //! Tracks and playlists.
 
-use crate::{AutoParam, AutomationLane, ChannelFormat, Clip, ClipId, Mixer, TrackId};
+use crate::{AutoParam, AutomationLane, ChannelFormat, Clip, ClipId, INSTRUMENT_AUTO_SLOT, Insert, Mixer, TrackId};
 use soundcraft_time::{Range, Samples};
 
 /// Track types (Track › New).
@@ -365,6 +365,12 @@ impl Track {
 
     pub fn clips(&self) -> &[Clip] {
         self.playlist().map_or(&[], |p| p.clips.as_slice())
+    }
+
+    /// The plugin an [`AutoParam::Plugin`] slot addresses: an insert, or the instrument
+    /// ([`INSTRUMENT_AUTO_SLOT`]).
+    pub fn plugin_at(&self, slot: u8) -> Option<&Insert> {
+        if slot == INSTRUMENT_AUTO_SLOT { self.instrument.as_ref() } else { self.mixer.inserts.get(usize::from(slot)).and_then(Option::as_ref) }
     }
 
     pub fn lane(&self, p: &AutoParam) -> Option<&AutomationLane> {

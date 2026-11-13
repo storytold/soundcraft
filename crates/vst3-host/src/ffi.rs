@@ -83,7 +83,7 @@ fn read_c16(buf: &[u16]) -> String {
 }
 
 /// Writes `s` into a UTF-16 buffer, truncated and always NUL-terminated.
-fn write_c16(s: &str, dst: &mut [u16]) {
+pub(crate) fn write_c16(s: &str, dst: &mut [u16]) {
     let Some(room) = dst.len().checked_sub(1) else { return };
     let mut n = 0;
     for (d, u) in dst.iter_mut().zip(s.encode_utf16().take(room)) {
@@ -93,6 +93,13 @@ fn write_c16(s: &str, dst: &mut [u16]) {
     if let Some(z) = dst.get_mut(n) {
         *z = 0;
     }
+}
+
+/// Whether `text` fits a VST3 `String128`: no embedded NUL, and at most 127 UTF-16 units so the
+/// 128th can be the terminator. A string that does not fit is refused whole. [`write_c16`] would
+/// otherwise pass a truncated prefix to the plugin.
+pub(crate) fn param_text_fits(text: &str) -> bool {
+    !text.contains('\0') && text.encode_utf16().take(128).count() <= 127
 }
 
 fn ok(r: sb::tresult) -> bool {
@@ -231,6 +238,21 @@ mod tests {
         let c: Vec<c_char> = b"Fx|EQ\0junk".iter().map(|&x| x as c_char).collect();
         assert_eq!(read_c8(&c), "Fx|EQ");
         write_c16("x", &mut []);
+    }
+
+    /// `getParamValueByString` takes a `String128`. Anything that would be cut, or hide a tail
+    /// behind an embedded NUL, is refused rather than passed on.
+    #[test]
+    fn param_text_is_refused_whole_when_it_does_not_fit_a_string128() {
+        assert!(param_text_fits(""));
+        assert!(param_text_fits(&"a".repeat(127)));
+        assert!(!param_text_fits(&"a".repeat(128)), "128 units would drop the last character");
+        assert!(!param_text_fits("cut\0here"), "an embedded NUL would end the string early");
+        assert!(!param_text_fits("\0"));
+        // U+1F600 encodes as two UTF-16 units: 63 fit (126), 64 do not (128, no room for the NUL).
+        assert!(param_text_fits(&"😀".repeat(63)));
+        assert!(!param_text_fits(&"😀".repeat(64)));
+        assert!(param_text_fits(&format!("{}a", "😀".repeat(63))), "126 units plus one BMP character is 127");
     }
 
     #[test]

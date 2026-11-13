@@ -265,6 +265,21 @@ pub enum Gesture {
     ZoomBox { start: f32 },
 }
 
+/// One instrument parameter edited in the plugin's own editor, held until the gesture ends.
+///
+/// `session_at_queue` is the value in the instrument's `params` map when this parameter was
+/// first queued (`None` when the map did not hold it). [`SoundApp::logic`] drains control
+/// commands before it polls editor edits, so a command can change that stored value before the
+/// flush. The flush drops the entry when the stored value no longer matches: the command owns
+/// the parameter. Queueing the same parameter again replaces `value` and keeps this first snapshot.
+#[derive(Debug, Clone)]
+pub(crate) struct QueuedInstrumentParam {
+    pub(crate) track: TrackId,
+    pub(crate) param: String,
+    pub(crate) value: f32,
+    pub(crate) session_at_queue: Option<f32>,
+}
+
 pub struct SoundApp {
     pub engine: Engine,
     /// The session path as of the last frame, and whether the recent list changed since the host
@@ -422,6 +437,12 @@ pub struct SoundApp {
     /// Tests supply drained editor reports at the native polling boundary without an audio device.
     #[cfg(test)]
     editor_poll_fixture: Option<EditorPollFixture>,
+    /// Instrument parameters changed in their editors that the session also holds (set by
+    /// command): stored with the instrument's state (see `store_plugin_states`), or by
+    /// `mix.insert_params` when a due capture returns no state. Each entry remembers the
+    /// session value at queue time so a later command is not overwritten (see
+    /// [`QueuedInstrumentParam`]).
+    editor_instrument_params: Vec<QueuedInstrumentParam>,
     pub frame_ms: f32,
     last_frame: Option<f64>,
     last_meter_poll: f64,
@@ -441,7 +462,8 @@ pub struct SoundApp {
 }
 
 #[cfg(test)]
-type EditorPollFixture = Box<dyn FnMut(&mut Vec<(TrackId, usize)>) -> (Vec<soundcraft_playback::EditorEdit>, soundcraft_playback::PluginStates)>;
+type EditorPollFixture =
+    Box<dyn FnMut(&mut Vec<(TrackId, usize)>) -> (Vec<soundcraft_playback::EditorEdit>, soundcraft_playback::PluginStates, Vec<TrackId>)>;
 
 #[cfg(test)]
 mod tests;
