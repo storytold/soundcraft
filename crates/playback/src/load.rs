@@ -76,10 +76,10 @@ impl LoadMeter {
         }
         // Read-modify-write in one atomic step, so a reset in between is not undone by writing
         // back a count or worst load read before it.
-        let bump = |n: u64| Some(n.saturating_add(1));
-        let _ = self.callbacks.fetch_update(Relaxed, Relaxed, bump);
+        // A u64 counting callbacks would take far longer than any session to wrap.
+        self.callbacks.fetch_add(1, Relaxed);
         if load > 1.0 {
-            let _ = self.late.fetch_update(Relaxed, Relaxed, bump);
+            self.late.fetch_add(1, Relaxed);
         }
         // `load_f` is finite and not negative, where f32 bit patterns order as the values do.
         self.worst.fetch_max(load_f.to_bits(), Relaxed);
