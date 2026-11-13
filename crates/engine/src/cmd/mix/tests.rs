@@ -518,3 +518,111 @@ fn live_input_states_of_restored_tracks_start_disabled() {
     assert!(!mixer.record_arm && !mixer.input_monitor);
     assert!(e.session().track(b).unwrap().mixer.input_monitor);
 }
+
+fn instrument_params(e: &Engine, t: TrackId) -> std::collections::BTreeMap<String, f32> {
+    e.session().track(t).and_then(|tr| tr.instrument.as_ref()).map(|i| i.params.clone()).unwrap_or_default()
+}
+
+#[test]
+fn the_instrument_slot_takes_parameters_like_an_insert() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let t = e.session().tracks[0].id;
+    let r = e.execute("mix.insert_param", &json!({"track": t.0, "slot": "Instrument", "param": "cutoff", "value": 5000})).unwrap();
+    assert_eq!(r["value"], 5000.0);
+    assert_eq!(instrument_params(&e, t).get("cutoff"), Some(&5000.0));
+    let r = e.execute("mix.insert_params", &json!({"track": t.0, "slot": "instrument", "params": {"cutoff": 1.0e9, "level": -12}})).unwrap();
+    assert_eq!(r["set"], 2);
+    assert_eq!(instrument_params(&e, t).get("cutoff"), Some(&20_000.0), "clamped");
+    assert_eq!(instrument_params(&e, t).get("level"), Some(&-12.0));
+    e.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(instrument_params(&e, t).get("cutoff"), Some(&5000.0));
+
+    // Same checks as on an insert: unknown ids and bad values change nothing.
+    for bad in [
+        json!({"track": t.0, "slot": "instrument", "param": "nope", "value": 1}),
+        json!({"track": t.0, "slot": "instrument", "param": "cutoff", "value": "open"}),
+        json!({"track": t.0, "slot": "instrument", "param": -3, "value": 1}),
+        json!({"track": t.0, "slot": "instrument", "param": 1.5, "value": 1}),
+        json!({"track": t.0, "slot": "instruments", "param": "cutoff", "value": 1}),
+    ] {
+        assert!(e.execute("mix.insert_param", &bad).is_err(), "{bad}");
+    }
+    assert!(e.execute("mix.insert_params", &json!({"track": t.0, "slot": "instrument", "params": {"nope": 1}})).is_err());
+    assert_eq!(instrument_params(&e, t).get("cutoff"), Some(&5000.0));
+
+    // An audio track has no instrument; other insert commands keep refusing the name.
+    e.execute("track.new", &json!({})).unwrap();
+    let audio = e.session().tracks[1].id.0;
+    let err = e.execute("mix.insert_param", &json!({"track": audio, "slot": "instrument", "param": "cutoff", "value": 1})).unwrap_err();
+    assert!(err.to_string().contains("no instrument"), "{err}");
+    assert!(e.execute("mix.insert_remove", &json!({"track": t.0, "slot": "instrument"})).is_err());
+    assert!(e.execute("mix.insert_bypass", &json!({"track": t.0, "slot": "instrument"})).is_err());
+}
+
+#[test]
+fn instrument_automation_lanes_take_the_stored_value() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let t = e.session().tracks[0].id;
+    e.execute("mix.instrument_param", &json!({"track": t.0, "param": "cutoff", "value": 800})).unwrap();
+    let param = AutoParam::parse("plugin:instrument:cutoff").unwrap();
+    let tr = e.session().track(t).unwrap();
+    assert_eq!(current_value(tr, &param), 800.0);
+    e.execute("automation.set_point", &json!({"tracks": [t.0], "param": "plugin:instrument:cutoff", "at": 0, "value": 300})).unwrap();
+    let lane = e.session().track(t).and_then(|tr| tr.lane(&param)).map(|l| l.value_at(0, 0.0));
+    assert_eq!(lane, Some(300.0));
+}
+
+#[test]
+fn toggles_and_choices_are_rounded_like_instrument_param() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id;
+    e.execute("mix.insert", &json!({"track": t.0, "slot": 0, "plugin": "eq_7band", "params": {"hpf_on": 0.7}})).unwrap();
+    let stored = |e: &Engine, k: &str| e.session().track(t).and_then(|tr| tr.mixer.inserts[0].as_ref()).and_then(|i| i.params.get(k).copied());
+    assert_eq!(stored(&e, "hpf_on"), Some(1.0), "mix.insert");
+    e.execute("mix.insert_param", &json!({"track": t.0, "slot": 0, "param": "hpf_on", "value": 0.3})).unwrap();
+    assert_eq!(stored(&e, "hpf_on"), Some(0.0), "mix.insert_param");
+    e.execute("mix.insert_params", &json!({"track": t.0, "slot": 0, "params": {"hpf_slope": 1.6}})).unwrap();
+    assert_eq!(stored(&e, "hpf_slope"), Some(2.0), "mix.insert_params");
+}
+
+#[test]
+fn a_lane_written_on_an_unstored_instrument_parameter_starts_from_its_default() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let t = e.session().tracks[0].id;
+    if let Some(ins) = e.session_mut().track_mut(t).and_then(|tr| tr.instrument.as_mut()) {
+        ins.params.clear();
+    }
+    let default = soundcraft_dsp::plugin_info("subtractive_synth").and_then(|i| i.param("cutoff")).map(|p| p.default).unwrap();
+    e.execute("automation.write_range", &json!({"tracks": [t.0], "param": "plugin:instrument:cutoff", "start": 48_000, "end": 96_000, "value": 300}))
+        .unwrap();
+    let param = AutoParam::parse("plugin:instrument:cutoff").unwrap();
+    let lane = e.session().track(t).and_then(|tr| tr.lane(&param)).cloned().unwrap();
+    assert_eq!(lane.value_at(0, f32::NAN), default, "before the range: the default, not 0");
+    assert_eq!(lane.value_at(72_000, f32::NAN), 300.0);
+}
+
+/// Apple's DLS synth ships with every Mac: a hosted instrument's parameters can be set by
+/// numeric id on its slot, which used to answer "not a built-in instrument".
+#[cfg(target_os = "macos")]
+#[test]
+fn a_hosted_instruments_parameters_are_set_by_numeric_id() {
+    let id = "au:aumu:dls :appl";
+    let Some(pi) = super::super::clap::plugin_info(id).and_then(|i| i.params.iter().find(|p| p.unit != soundcraft_dsp::Unit::Choice)) else {
+        return; // no parameters reported on this system
+    };
+    let n: u32 = pi.id.parse().unwrap();
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument", "instrument": id})).unwrap();
+    let t = e.session().tracks[0].id;
+    let v = (pi.min + pi.max) / 2.0;
+    e.execute("mix.instrument_param", &json!({"track": t.0, "param": n, "value": v})).unwrap();
+    assert_eq!(instrument_params(&e, t).get(pi.id), Some(&v));
+    e.execute("mix.insert_param", &json!({"track": t.0, "slot": "instrument", "param": n, "value": pi.max})).unwrap();
+    assert_eq!(instrument_params(&e, t).get(pi.id), Some(&pi.max));
+    let auto = format!("plugin:instrument:{n}");
+    e.execute("automation.set_point", &json!({"tracks": [t.0], "param": auto, "at": 0, "value": pi.min})).unwrap();
+}

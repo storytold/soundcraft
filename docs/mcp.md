@@ -113,6 +113,7 @@ Resources: `soundcraft://session` (full session JSON), `soundcraft://commands`.
 - Programmatic calls never open dialogs; empty params act on the current selection.
 - Positions: samples, `{"seconds": x}`, or `"bars_beats:5|1|000"`-style strings.
 - Tracks by name or id; clips by id.
+- Use `mix.plugin_params` through `execute` to discover parameter ids and metadata for an insert or instrument, including hosted plugins without an editor.
 - Every command is undoable through `edit.undo` unless it is a query or a view setting.
 
 The acceptance test `crates/automation/tests/it/agent_tasks.rs` drives a realistic session end to end

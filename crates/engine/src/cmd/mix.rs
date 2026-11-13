@@ -1,6 +1,7 @@
 //! Mixer, insert, send and automation commands.
 use super::{
-    CommandSpec, always, bad, bool_or, f32_or, has_range, has_selection, has_tracks, i64_or, position_param, range_param, str_param, tracks_required,
+    CommandSpec, always, bad, bool_or, f32_or, has_range, has_selection, has_tracks, i64_or, param_id, position_param, range_param, str_param,
+    tracks_required,
 };
 
 use crate::{Engine, EngineError, Result, cmd};
@@ -98,13 +99,21 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("mix.insert", "Insert Plugin", [], None, "{track?, slot?: 0..9 | a..j, plugin: id, params?: {id: value}}", has_selection, insert),
         cmd!("mix.insert_remove", "Remove Insert", [], None, "{track?, slot}", has_selection, insert_remove),
         cmd!("mix.insert_bypass", "Bypass Insert", [], None, "{track?, slot, value?: bool}", has_selection, insert_bypass),
-        cmd!("mix.insert_param", "Set Plugin Parameter", [], None, "{track?, slot, param, value}", has_selection, insert_param),
+        cmd!(
+            "mix.insert_param",
+            "Set Plugin Parameter",
+            [],
+            None,
+            "{track?, slot: 0..9 | a..j | \"instrument\", param: id (string or number), value}",
+            has_selection,
+            insert_param
+        ),
         cmd!(
             "mix.insert_params",
             "Set Plugin Parameters",
             [],
             None,
-            "{track?, slot, params: {id: value}, preset?: name} (unknown ids and non-numeric values are errors)",
+            "{track?, slot: 0..9 | a..j | \"instrument\", params: {id: value}, preset?: name} (unknown ids and non-numeric values are errors)",
             has_selection,
             insert_params
         ),
@@ -139,7 +148,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Automation Breakpoint",
             [],
             None,
-            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id>, at, value, from?}",
+            "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id>|plugin:instrument:<id>, at, value, from?}",
             has_selection,
             set_point
         ),
@@ -342,6 +351,30 @@ fn track_slot(e: &Engine, p: &Value, cmd: &str, max: usize) -> Result<(TrackId, 
     Ok((t, slot))
 }
 
+/// The plugin a parameter command addresses: an insert slot, or the instrument of an
+/// instrument or MIDI track (`slot: "instrument"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PluginSlot {
+    Insert(usize),
+    Instrument,
+}
+
+pub(super) fn track_plugin_slot(e: &Engine, p: &Value, cmd: &str) -> Result<(TrackId, PluginSlot)> {
+    if p.get("slot").and_then(Value::as_str).is_some_and(|s| s.trim().eq_ignore_ascii_case("instrument")) {
+        let t = tracks_required(e, cmd, p)?.first().copied().ok_or_else(|| bad(cmd, "no track"))?;
+        return Ok((t, PluginSlot::Instrument));
+    }
+    track_slot(e, p, cmd, INSERT_SLOTS).map(|(t, i)| (t, PluginSlot::Insert(i)))
+}
+
+fn plugin_mut<'a>(s: &'a mut Session, t: TrackId, slot: PluginSlot, cmd: &str) -> Result<&'a mut Insert> {
+    let tr = s.track_mut(t).ok_or_else(|| bad(cmd, "no track"))?;
+    match slot {
+        PluginSlot::Insert(i) => tr.mixer.inserts.get_mut(i).and_then(Option::as_mut).ok_or_else(|| bad(cmd, "empty slot")),
+        PluginSlot::Instrument => tr.instrument.as_mut().ok_or_else(|| bad(cmd, "the track has no instrument")),
+    }
+}
+
 /// An optional `slot`: absent (or null) means "first free"; a present but invalid value is
 /// an error, never silently treated as absent.
 fn optional_slot(p: &Value, cmd: &str, max: usize) -> Result<Option<usize>> {
@@ -369,7 +402,7 @@ fn insert(e: &mut Engine, p: &Value) -> Result<Value> {
             let Some(pi) = info.params.iter().find(|x| x.id == k) else {
                 return Err(bad("mix.insert", format!("`{plugin}` has no parameter `{k}`")));
             };
-            let val = v.as_f64().map_or(pi.default, |f| (f as f32).clamp(pi.min, pi.max));
+            let val = v.as_f64().map_or(pi.default, |f| pi.clamp(f as f32));
             ins.params.insert(k.clone(), val);
         }
     }
@@ -403,17 +436,15 @@ fn insert_bypass(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn insert_param(e: &mut Engine, p: &Value) -> Result<Value> {
-    let (t, slot) = track_slot(e, p, "mix.insert_param", INSERT_SLOTS)?;
-    let param = str_param(p, "param").ok_or_else(|| bad("mix.insert_param", "`param` required"))?.to_string();
+    let (t, slot) = track_plugin_slot(e, p, "mix.insert_param")?;
+    let param = param_id("mix.insert_param", p, "param")?;
     let value =
         p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad("mix.insert_param", "`value` must be a number"))? as f32;
-    let s = e.session_mut();
-    let ins =
-        s.track_mut(t).and_then(|tr| tr.mixer.inserts.get_mut(slot)).and_then(Option::as_mut).ok_or_else(|| bad("mix.insert_param", "empty slot"))?;
-    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad("mix.insert_param", "unknown plugin"))?;
+    let ins = plugin_mut(e.session_mut(), t, slot, "mix.insert_param")?;
+    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad("mix.insert_param", format!("unknown plugin `{}`", ins.plugin)))?;
     let pi =
         info.params.iter().find(|x| x.id == param).ok_or_else(|| bad("mix.insert_param", format!("`{}` has no parameter `{param}`", info.id)))?;
-    let v = value.clamp(pi.min, pi.max);
+    let v = pi.clamp(value);
     ins.params.insert(param, v);
     Ok(json!({"value": v}))
 }
@@ -421,16 +452,11 @@ fn insert_param(e: &mut Engine, p: &Value) -> Result<Value> {
 /// Apply many parameters at once (preset recall); values are clamped. Unknown ids and
 /// non-numeric values are errors, not silent no-ops: a typo must not look like success.
 fn insert_params(e: &mut Engine, p: &Value) -> Result<Value> {
-    let (t, slot) = track_slot(e, p, "mix.insert_params", INSERT_SLOTS)?;
+    let (t, slot) = track_plugin_slot(e, p, "mix.insert_params")?;
     let obj = p.get("params").and_then(Value::as_object).cloned().ok_or_else(|| bad("mix.insert_params", "`params` must be an object"))?;
     let preset = str_param(p, "preset").map(str::to_string);
-    let s = e.session_mut();
-    let ins = s
-        .track_mut(t)
-        .and_then(|tr| tr.mixer.inserts.get_mut(slot))
-        .and_then(Option::as_mut)
-        .ok_or_else(|| bad("mix.insert_params", "empty slot"))?;
-    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad("mix.insert_params", "unknown plugin"))?;
+    let ins = plugin_mut(e.session_mut(), t, slot, "mix.insert_params")?;
+    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad("mix.insert_params", format!("unknown plugin `{}`", ins.plugin)))?;
     let mut unknown: Vec<&str> = Vec::new();
     let mut non_numeric: Vec<&str> = Vec::new();
     for (k, v) in &obj {
@@ -451,7 +477,7 @@ fn insert_params(e: &mut Engine, p: &Value) -> Result<Value> {
     let mut n = 0;
     for (k, v) in obj {
         if let (Some(pi), Some(f)) = (info.params.iter().find(|x| x.id == k), v.as_f64().filter(|f| f.is_finite())) {
-            ins.params.insert(k, (f as f32).clamp(pi.min, pi.max));
+            ins.params.insert(k, pi.clamp(f as f32));
             n += 1;
         }
     }
@@ -563,9 +589,15 @@ pub(crate) fn current_value(tr: &soundcraft_model::Track, param: &AutoParam) -> 
         AutoParam::SendLevel(i) => tr.mixer.sends.get(usize::from(*i)).and_then(Option::as_ref).map_or(-144.0, |s| s.level_db),
         AutoParam::SendPan(i) => tr.mixer.sends.get(usize::from(*i)).and_then(Option::as_ref).map_or(0.0, |s| s.pan),
         AutoParam::SendMute(i) => tr.mixer.sends.get(usize::from(*i)).and_then(Option::as_ref).map_or(0.0, |s| f32::from(u8::from(s.mute))),
-        AutoParam::Plugin { slot, param } => {
-            tr.mixer.inserts.get(usize::from(*slot)).and_then(Option::as_ref).and_then(|i| i.params.get(param).copied()).unwrap_or(0.0)
-        }
+        // A parameter the session holds no value for (a hosted instrument made by `track.new`)
+        // starts from the plugin's default, not 0.
+        AutoParam::Plugin { slot, param } => tr.plugin_at(*slot).map_or(0.0, |i| {
+            i.params
+                .get(param)
+                .copied()
+                .or_else(|| super::clap::plugin_info(&i.plugin).and_then(|info| info.param(param)).map(|pi| pi.default))
+                .unwrap_or(0.0)
+        }),
     }
 }
 
