@@ -129,7 +129,7 @@ fn suggestion<'a>(keys: &[&'a str], key: &str) -> Option<&'a str> {
         return None;
     }
     if let Some(k) = keys.iter().find(|k| k.contains(key) || (k.len() >= 2 && key.contains(**k))) {
-        return Some(k);
+        return Some(*k);
     }
     keys.iter().map(|k| (edit_distance(k, key), *k)).filter(|(d, _)| *d <= 2).min_by_key(|(d, _)| *d).map(|(_, k)| k)
 }
