@@ -19,7 +19,7 @@ fn invoke(dir: &Path, args: &[&str]) -> Invoke {
 }
 
 fn invoke_env(dir: &Path, args: &[&str], control_port: Option<&str>) -> Invoke {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soundcraft-cli"));
+    let mut cmd = Command::new(crate::common::soundcraft_cli_binary());
     cmd.env("SOUNDCRAFT_NO_PREFS", "1").env_remove("SOUNDCRAFT_CONTROL_PORT");
     if let Some(port) = control_port {
         cmd.env("SOUNDCRAFT_CONTROL_PORT", port);
