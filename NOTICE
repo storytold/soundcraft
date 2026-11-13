@@ -12,12 +12,12 @@ Third-party material
 This product bundles third-party material under its own licenses, listed below. The per-file
 list (author, source, license) is in ATTRIBUTION.md.
 
-Droid Sans Mono 1.00, the first face of the monospace family (counters and readouts):
+Builds made with CRAFT_FONTS_DIR set to a craft-fonts checkout that has it embed Droid Sans Mono 1.00,
+the first face of the monospace family (counters and readouts):
   Digitized data copyright (c) 2007, Google Corporation. Designed by Ascender Corporation.
   Copyright (c) 2005-2008, The Android Open Source Project.
   Licensed under the Apache License, Version 2.0 (LICENSE-APACHE is a copy of it).
-  File: assets/fonts/droid-sans-mono/DroidSansMono.ttf, unmodified, from the Android Open Source
-  Project; its license notice is assets/fonts/droid-sans-mono/LICENSE.txt.
+  The face is unmodified; craft-fonts' ATTRIBUTION.md gives its source.
 
 ATTRIBUTION.md gives the origin of every other bundled asset.
 Original SoundCraft material: icons are drawn in code; demo audio is synthesised in code.

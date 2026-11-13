@@ -1,6 +1,7 @@
 //! Fonts: egui's bundled defaults, plus the operating system's own UI fonts loaded at runtime when
 //! present (never redistributed). A "bold" family is always defined so the UI can use it.
 
+use craft_fonts_build::EmbeddedFace;
 use egui::{FontData, FontDefinitions, FontFamily};
 use std::sync::Arc;
 
@@ -111,7 +112,7 @@ fn load(_: &[(&str, u32)], _: &str, _: Option<&str>, _: bool) -> Option<FontData
 /// The font set: the bundled faces, plus the system ones when `system_fonts` is true.
 pub fn definitions(system_fonts: bool) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
-    plain_zero_mono(&mut fonts);
+    plain_zero_mono(&mut fonts, CRAFT_FONTS);
     let base: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let mut bold_family = base.clone();
     if let Some(reg) = load(REGULAR, "sans-serif", None, system_fonts) {
@@ -140,19 +141,25 @@ pub fn install(ctx: &egui::Context, system_fonts: bool) {
     ctx.set_fonts(definitions(system_fonts));
 }
 
-/// Name of the embedded monospace face in [`FontDefinitions::font_data`].
-const MONO: &str = "droid-sans-mono";
-/// Droid Sans Mono 1.00 (Apache-2.0, see `ATTRIBUTION.md`): counters and readouts need a zero
-/// that is not slashed or dotted. egui cannot switch OpenType features such as `zero`, so the face
-/// itself has to differ. ponytail: the whole 108 KB file is embedded, also on the web build;
-/// subsetting it to the glyphs the UI draws (pyftsubset) would shrink that if size ever matters.
-const MONO_TTF: &[u8] = include_bytes!("../../../assets/fonts/droid-sans-mono/DroidSansMono.ttf");
+/// The optional craft-fonts faces `build.rs` embedded from `CRAFT_FONTS_DIR`; empty without it.
+static CRAFT_FONTS: &[EmbeddedFace] = include!(concat!(env!("OUT_DIR"), "/craft_fonts.rs"));
 
-/// Puts Droid Sans Mono first in the monospace family. egui's Hack stays behind it as the fallback
-/// for glyphs Droid Sans Mono lacks (arrows, geometric shapes), and the system and Hangul faces
-/// after that.
-fn plain_zero_mono(fonts: &mut FontDefinitions) {
-    fonts.font_data.insert(MONO.into(), Arc::new(FontData::from_static(MONO_TTF)));
+/// Name of the craft-fonts monospace face in [`FontDefinitions::font_data`].
+const MONO: &str = "droid-sans-mono";
+/// The craft-fonts family with a plain zero (Droid Sans Mono, Apache-2.0): counters and readouts
+/// need a zero that is not slashed or dotted. egui cannot switch OpenType features such as `zero`,
+/// so the face itself has to differ. The font file lives in `storytold/craft-fonts`, not here.
+const MONO_FAMILY: &str = "Droid Sans Mono";
+
+/// Puts the plain-zero face first in the monospace family, when craft-fonts supplied it. egui's
+/// Hack stays behind it as the fallback for glyphs it lacks (arrows, geometric shapes), and the
+/// system and Hangul faces after that. Without craft-fonts, nothing changes: the monospace family
+/// is egui's own, with Hack's zero.
+fn plain_zero_mono(fonts: &mut FontDefinitions, faces: &[EmbeddedFace]) {
+    let Some(face) = faces.iter().find(|f| f.family == MONO_FAMILY && f.style == "Regular") else {
+        return;
+    };
+    fonts.font_data.insert(MONO.into(), Arc::new(FontData::from_static(face.bytes)));
     if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
         family.insert(0, MONO.into());
     }
@@ -171,20 +178,48 @@ mod plain_zero_tests {
         ctx.fonts_mut(|f| f.glyph_width(&egui::FontId::new(1000.0, family), '0'))
     }
 
+    /// The craft-fonts face of this build, `None` when it has none (`CRAFT_FONTS_DIR` unset, the
+    /// default). A build that asked for craft-fonts (`CRAFT_FONTS_REQUIRED=1`) must have it: the
+    /// test then fails instead of skipping.
+    fn embedded_face() -> Option<&'static EmbeddedFace> {
+        let face = CRAFT_FONTS.iter().find(|f| f.family == MONO_FAMILY && f.style == "Regular");
+        assert!(
+            face.is_some() || std::env::var("CRAFT_FONTS_REQUIRED").as_deref() != Ok("1"),
+            "CRAFT_FONTS_REQUIRED=1, but {MONO_FAMILY} is not embedded"
+        );
+        if face.is_none() {
+            eprintln!("skipped: this build has no {MONO_FAMILY} (build with CRAFT_FONTS_DIR=<craft-fonts checkout>)");
+        }
+        face
+    }
+
+    /// Without craft-fonts nothing changes: the monospace family is egui's own, Hack's zero and all.
+    #[test]
+    fn without_the_face_the_monospace_family_is_eguis_own() {
+        let mut defs = FontDefinitions::default();
+        let before = defs.families[&FontFamily::Monospace].clone();
+        plain_zero_mono(&mut defs, &[]);
+        assert_eq!(defs.families[&FontFamily::Monospace], before);
+        assert!(!defs.font_data.contains_key(MONO));
+    }
+
     /// Counters and readouts must show a plain zero: Droid Sans Mono leads the monospace family
     /// (egui's Hack, which slashes its zero, only backs it up) and its digits are the ones drawn.
-    /// The bundled face is told apart from Hack by the advance of its "0" (0.600 em against
-    /// Hack's 0.602 em, 1 000 px apart at this size).
+    /// The face is told apart from Hack by the advance of its "0" (0.600 em against Hack's
+    /// 0.602 em, 1 000 px apart at this size). Runs only in a build with craft-fonts
+    /// (`CRAFT_FONTS_DIR=<checkout> cargo test -p soundcraft-ui-egui`); the glyph shape itself is
+    /// asserted in craft-fonts' own tests.
     #[test]
     fn monospace_starts_with_the_plain_zero_font() {
+        let Some(face) = embedded_face() else { return };
         let defs = definitions(false);
         let mono = &defs.families[&FontFamily::Monospace];
         assert_eq!(mono.first().map(String::as_str), Some(MONO), "Droid Sans Mono must come first: {mono:?}");
         assert!(mono.iter().any(|n| n == "Hack"), "Hack must stay as the fallback: {mono:?}");
 
-        // The bundled file draws the digits by itself, with no fallback to lean on.
+        // The craft-fonts file draws the digits by itself, with no fallback to lean on.
         let mut only_droid = FontDefinitions::empty();
-        only_droid.font_data.insert(MONO.into(), Arc::new(FontData::from_static(MONO_TTF)));
+        only_droid.font_data.insert(MONO.into(), Arc::new(FontData::from_static(face.bytes)));
         only_droid.families.insert(FontFamily::Monospace, vec![MONO.into()]);
         let droid = zero_width(only_droid, FontFamily::Monospace);
         let hack = zero_width(FontDefinitions::default(), FontFamily::Monospace);
