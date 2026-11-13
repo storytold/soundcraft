@@ -273,6 +273,43 @@ fn unmeasurable_loudness_is_written_at_unity_with_a_warning() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Sound longer than a gating block whose every 400 ms block is under the -70 LUFS absolute gate has
+/// no integrated loudness either: written at unity gain, with a warning that says it is too quiet
+/// rather than silent or short.
+#[test]
+fn loudness_too_quiet_to_measure_is_written_at_unity_and_says_so() {
+    let dir = scratch("bounce-lufs-too-quiet");
+    // About -74 LUFS, for 2 s.
+    let samples = sine(0.0002, 2.0);
+    let mut e = engine_with(samples.clone());
+    let path = dir.join("Mix.wav");
+    let r = bounce_to(&mut e, &path, serde_json::json!({"target_lufs": -16.0}));
+    let warning = r["warning"].as_str().unwrap();
+    assert!(warning.contains("too quiet") && warning.contains("-70 LUFS gate"), "{r}");
+    assert_eq!(r["gain_db"].as_f64(), Some(0.0), "{r}");
+    let (_, file) = craft_audio::decode(&std::fs::read(&path).unwrap(), None).unwrap();
+    let mix = soundcraft_mix::render_range(e.session(), Range::new(0, samples.len() as i64), 1024);
+    assert_eq!(file.channels, mix, "unity gain");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A target near the -70 LUFS gate can take the quieter blocks under it: the written file then
+/// measures louder than the target, and the result says so instead of calling the target reached.
+#[test]
+fn a_target_at_the_gate_that_the_file_misses_says_so() {
+    let dir = scratch("bounce-lufs-at-gate");
+    // 2 s at about -26 LUFS, then 2 s 6 dB quieter: both halves count before the gain.
+    let mut samples = sine(0.05, 2.0);
+    samples.extend(sine(0.025, 2.0));
+    let mut e = engine_with(samples);
+    let r = bounce_to(&mut e, &dir.join("Mix.wav"), serde_json::json!({"target_lufs": -69.0}));
+    let lufs = r["lufs"].as_f64().unwrap();
+    assert!(lufs > -68.5, "the quieter half fell under the gate: {r}");
+    let warning = r["warning"].as_str().map(str::to_string).unwrap_or_default();
+    assert!(warning.contains(&format!("{lufs:.1} LUFS, not the -69 LUFS target")), "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn loudness_options_are_checked() {
     let dir = scratch("bounce-lufs-params");

@@ -389,7 +389,16 @@ pub enum LoudnessOutcome {
     CeilingHeld,
     /// Silence, or too short to measure (under one 400 ms gating block): written at unity gain.
     Unmeasured,
+    /// Sound, but every 400 ms block is under the -70 LUFS absolute gate, so it has no
+    /// integrated loudness to move: written at unity gain.
+    TooQuiet,
+    /// The gain was applied, but the written file measures more than [`LOUDNESS_TOLERANCE_LU`]
+    /// away from the target: blocks it pushed under the -70 LUFS gate no longer count.
+    Missed,
 }
+
+/// How far from the target a loudness-normalized bounce may measure and still count as reached.
+pub const LOUDNESS_TOLERANCE_LU: f32 = 0.5;
 
 /// A finished bounce: the size of its file and its levels (`lufs` and `true_peak_db` as written).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -540,7 +549,10 @@ impl Bounce {
     fn loudness_gain(&mut self, t: LoudnessTarget) -> f32 {
         let (lufs, true_peak) = (self.meter.integrated_lufs(), self.meter.true_peak_db());
         if lufs <= soundcraft_dsp::MIN_DB {
-            self.outcome = Some(LoudnessOutcome::Unmeasured);
+            // Gating blocks are 400 ms long: a longer range with any sound had blocks to measure,
+            // and all of them were under the absolute gate.
+            let quiet = self.peak > 0.0 && i64::try_from(self.done).unwrap_or(i64::MAX) >= self.session.sample_rate.samples(0.4);
+            self.outcome = Some(if quiet { LoudnessOutcome::TooQuiet } else { LoudnessOutcome::Unmeasured });
             return 1.0;
         }
         let mut gain_db = t.lufs - lufs;
@@ -563,6 +575,13 @@ impl Bounce {
     }
 
     fn finish(&mut self) -> Result<Bounced> {
+        // The second pass measures what was written: check it before calling the target reached.
+        let lufs = self.meter.integrated_lufs();
+        if let (Some(t), Some(LoudnessOutcome::Reached)) = (self.loudness, self.outcome)
+            && (lufs <= soundcraft_dsp::MIN_DB || (lufs - t.lufs).abs() > LOUDNESS_TOLERANCE_LU)
+        {
+            self.outcome = Some(LoudnessOutcome::Missed);
+        }
         let bytes = match self.enc.take() {
             Some(enc) => enc.finish().map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?.complete(&self.part, &self.path)?,
             None => 0,
@@ -570,7 +589,7 @@ impl Bounce {
         Ok(Bounced {
             bytes,
             peak_db: soundcraft_dsp::gain_to_db(self.peak),
-            lufs: self.meter.integrated_lufs(),
+            lufs,
             true_peak_db: self.meter.true_peak_db(),
             gain_db: self.gain_db,
             loudness: self.outcome,

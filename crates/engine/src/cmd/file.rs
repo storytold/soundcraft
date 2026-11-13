@@ -321,6 +321,17 @@ fn bounce(e: &mut Engine, p: &Value) -> Result<Value> {
             crate::io::LoudnessOutcome::Unmeasured => {
                 Some("silent, or too short to measure loudness (under 400 ms): written at unity gain".to_string())
             }
+            crate::io::LoudnessOutcome::TooQuiet => {
+                Some("too quiet to measure loudness (every 400 ms block is under the -70 LUFS gate): written at unity gain".to_string())
+            }
+            crate::io::LoudnessOutcome::Missed if done.lufs <= soundcraft_dsp::MIN_DB => Some(format!(
+                "the gain took every 400 ms block under the -70 LUFS gate, so the file's loudness cannot be measured (target {} LUFS)",
+                t.lufs
+            )),
+            crate::io::LoudnessOutcome::Missed => Some(format!(
+                "{:.1} LUFS, not the {} LUFS target: the gain took the quieter parts under the -70 LUFS gate, so they no longer count",
+                done.lufs, t.lufs
+            )),
         };
         if let Some(w) = warning {
             o.insert("warning".into(), json!(w));
