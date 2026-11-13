@@ -70,7 +70,8 @@ fn clear(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soundcraft_audio_io::{AudioBuffer, FileFormat};
+    use craft_audio::AudioBuffer;
+    use soundcraft_model::FileFormat;
 
     fn kick(e: &Engine) -> (SourceId, Vec<ClipId>) {
         let s = e.session();

@@ -94,7 +94,7 @@ fn add_source_audio(s: &mut Session, name: &str, audio: Arc<SourceAudio>, path: 
         id,
         name: stem.clone(),
         path: stored,
-        channels: u16::try_from(audio.buffer.num_channels()).unwrap_or(u16::MAX),
+        channels: audio.buffer.num_channels(),
         frames: audio.frames() as u64,
         sample_rate: s.sample_rate.hz(),
         format,
@@ -122,7 +122,7 @@ fn stamp_at_rate(stamp: u64, file_rate: u32, session_rate: u32) -> u64 {
 pub struct DecodedImport {
     pub(crate) key: PathBuf,
     pub(crate) rate: u32,
-    info: soundcraft_audio_io::AudioInfo,
+    info: craft_audio::AudioInfo,
     audio: Arc<SourceAudio>,
 }
 
@@ -142,9 +142,9 @@ pub fn decode_import(path: &str, rate: u32) -> Result<DecodedImport> {
     Ok(DecodedImport { key: file_key(Path::new(path)), rate, info, audio })
 }
 
-fn decode_import_bytes(name: &str, bytes: &[u8], rate: u32) -> Result<(soundcraft_audio_io::AudioInfo, Arc<SourceAudio>)> {
+fn decode_import_bytes(name: &str, bytes: &[u8], rate: u32) -> Result<(craft_audio::AudioInfo, Arc<SourceAudio>)> {
     let ext = Path::new(name).extension().and_then(OsStr::to_str).map(str::to_ascii_lowercase);
-    let (info, buf) = soundcraft_audio_io::decode(bytes, ext.as_deref()).map_err(|err| EngineError::Io(format!("{name}: {err}")))?;
+    let (info, buf) = craft_audio::decode(bytes, ext.as_deref()).map_err(|err| EngineError::Io(format!("{name}: {err}")))?;
     let buf = at_rate(buf, rate, MAX_IMPORT_SAMPLES).map_err(|e| EngineError::Io(format!("{name}: {}", e.message("file is too large to import"))))?;
     if buf.frames() == 0 {
         return Err(EngineError::Io(format!("{name}: no audio")));
@@ -166,17 +166,17 @@ pub(crate) fn place_decoded(e: &mut Engine, name: &str, d: DecodedImport, path: 
 fn place_import(
     e: &mut Engine,
     name: &str,
-    info: &soundcraft_audio_io::AudioInfo,
+    info: &craft_audio::AudioInfo,
     audio: Arc<SourceAudio>,
     path: Option<&str>,
     target: Option<TrackId>,
     at: Samples,
 ) -> Result<Value> {
-    let channels = audio.buffer.num_channels();
+    let channels = audio.buffer.channels.len();
     let file_rate = info.sample_rate;
     let s = e.session_mut();
     let session_rate = s.sample_rate.hz();
-    let src = add_source_audio(s, name, audio, path, info.format);
+    let src = add_source_audio(s, name, audio, path, FileFormat::of(info));
     if let (Some(bwf), Some(sx)) = (info.bwf.as_ref(), s.sources.last_mut()) {
         sx.time_reference = stamp_at_rate(bwf.time_reference, file_rate, session_rate);
     }
@@ -206,8 +206,8 @@ pub fn load_sampler_bytes(e: &mut Engine, track: TrackId, name: &str, bytes: &[u
 
 /// Resolve each movie referenced by the session file `session` ([`stored_path`]): keep the
 /// resolved path when its file exists, else look for a file of the same name next to the session
-/// (moved projects) and relink. A movie whose stored path is refused and has no such copy is
-/// marked offline. Returns the movies still missing.
+/// (moved projects) and relink. A movie whose stored path is refused, or resolves to a file that
+/// is not there, and has no such copy is marked offline. Returns the movies still missing.
 pub fn relink_videos(s: &mut Session, session: &Path) -> Vec<String> {
     let session_dir = session.parent().unwrap_or(Path::new(""));
     let mut missing = Vec::new();
@@ -228,7 +228,13 @@ pub fn relink_videos(s: &mut Session, session: &Path) -> Vec<String> {
             .find(|c| !name.as_os_str().is_empty() && file_found(c));
         match (near, p) {
             (Some(c), _) => v.path = c.to_string_lossy().into_owned(),
-            (None, Ok(p)) => missing.push(format!("{} (video)", p.display())),
+            // The movie is gone: mark it offline, so the Video track never opens the stored
+            // string (which the working directory would resolve). The string itself is kept as
+            // stored, so saving does not swap a path relative to the session for this folder's.
+            (None, Ok(p)) => {
+                missing.push(format!("{} (video)", p.display()));
+                v.offline = Some("file not found".into());
+            }
             (None, Err(why)) => {
                 missing.push(format!("{} (video): {why}", v.path));
                 v.offline = Some(why);

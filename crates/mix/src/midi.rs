@@ -161,7 +161,7 @@ impl SampleSource for PoolSample {
         self.0.buffer.sample_rate as f32
     }
     fn num_channels(&self) -> usize {
-        self.0.buffer.num_channels()
+        self.0.buffer.channels.len()
     }
     fn channel(&self, ch: usize) -> Option<&[f32]> {
         self.0.channel(ch)

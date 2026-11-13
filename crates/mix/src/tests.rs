@@ -3,7 +3,7 @@
 //! adopts a fake under a clap:test.* id via MixEngine::adopt.
 
 use super::*;
-use soundcraft_audio_io::AudioBuffer;
+use craft_audio::AudioBuffer;
 use soundcraft_model::{Insert, SourceAudio, SourceId};
 use std::sync::Arc;
 

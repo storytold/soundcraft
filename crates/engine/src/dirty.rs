@@ -314,8 +314,7 @@ mod tests {
         let track = saved.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
         let clip = Clip::audio(saved.new_clip_id(), "Clip", SourceId(900), 0, 0, 100);
         saved.track_mut(track).unwrap().playlist_mut().unwrap().clips.push(clip);
-        let audio =
-            Arc::new(soundcraft_model::SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 100]] }));
+        let audio = Arc::new(soundcraft_model::SourceAudio::new(craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 100]] }));
         saved.pool.insert(SourceId(900), audio);
         check(&saved, &saved.clone(), true, "shared decoded audio");
         let mut doc = saved.clone();

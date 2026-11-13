@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use soundcraft_audio_io::{AudioBuffer, BitDepth, EncodeOptions, FileFormat};
+use craft_audio::{AudioBuffer, BitDepth, EncodeOptions};
 
 /// What one run of the binary produced.
 struct Invoke {
@@ -37,20 +37,20 @@ fn sandbox(tag: &str) -> PathBuf {
     for (i, d) in buf.channels[0].iter_mut().enumerate() {
         *d = i as f32 / 400.0;
     }
-    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None };
-    std::fs::write(dir.join("in.wav"), soundcraft_audio_io::encode(&buf, &opts).unwrap()).unwrap();
+    let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Int16);
+    std::fs::write(dir.join("in.wav"), craft_audio::encode(&buf, &opts).unwrap()).unwrap();
     std::fs::write(dir.join("s.txt"), "track.new {}\n").unwrap();
     dir
 }
 
 /// The sample rate of the WAV `name` in `dir`.
 fn rate_of(dir: &Path, name: &str) -> u32 {
-    soundcraft_audio_io::probe(&std::fs::read(dir.join(name)).unwrap(), None).unwrap().sample_rate
+    craft_audio::probe(&std::fs::read(dir.join(name)).unwrap(), None).unwrap().sample_rate
 }
 
 /// Bit depth of the WAV `name` in `dir`, as the probe reports the sample format.
 fn format_of(dir: &Path, name: &str) -> String {
-    format!("{:?}", soundcraft_audio_io::probe(&std::fs::read(dir.join(name)).unwrap(), None).unwrap().sample_format)
+    format!("{:?}", craft_audio::probe(&std::fs::read(dir.join(name)).unwrap(), None).unwrap().sample_format)
 }
 
 /// Exit 1, nothing on stdout, and exactly `error: {message}` on stderr.
@@ -80,12 +80,16 @@ fn not_found() -> std::io::Error {
     std::io::Error::from_raw_os_error(2)
 }
 
-/// Exit 1 with the refused-connection message for `port`; the OS's text for the refusal differs by platform.
+/// Exit 1 with the unreachable message for `port`. The reason is either the OS's refusal, whose text
+/// differs by platform, or the client's connect timeout, which on Windows can expire before a
+/// closed loopback port is refused.
 #[track_caller]
 fn assert_refused(got: &Invoke, port: u16) {
     assert_eq!((got.code, got.stdout.as_str()), (1, ""));
     let prefix = format!("error: cannot reach SoundCraft at 127.0.0.1:{port}: ");
-    assert!(got.stderr.starts_with(&prefix) && got.stderr.contains(" (os error ") && got.stderr.ends_with(")\n"), "{}", got.stderr);
+    let reason = got.stderr.strip_prefix(&prefix).unwrap_or_else(|| panic!("{}", got.stderr));
+    let refused = reason.contains(" (os error ") && reason.ends_with(")\n");
+    assert!(refused || reason == "connection timed out\n", "{}", got.stderr);
 }
 
 // ---- logging ----
@@ -186,7 +190,10 @@ fn repeated_flags_are_usage_errors_in_either_spelling() {
 fn convert_input_and_output_errors() {
     let dir = sandbox("convert-io");
     assert_fails(&invoke(&dir, &["convert", "nope.wav", "o.wav"]), &format!("nope.wav: {}", not_found()));
-    assert_fails(&invoke(&dir, &["convert", "in.wav", "o.xyz"]), "o.xyz: cannot write `.xyz` files (supported: wav, wave, bwf, aif, aiff, flac)");
+    assert_fails(
+        &invoke(&dir, &["convert", "in.wav", "o.xyz"]),
+        "o.xyz: cannot write `.xyz` files (supported: wav, wave, bwf, aif, aiff, aifc, flac)",
+    );
 }
 
 #[test]
