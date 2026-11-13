@@ -158,7 +158,7 @@ fn services() -> Services {
             d.pick_file()
         })),
         pick_open_many: Some(Box::new(|_purpose: &str| {
-            rfd::FileDialog::new().add_filter(tr("Audio"), &FileFormat::readable_extensions()).pick_files().unwrap_or_default()
+            rfd::FileDialog::new().add_filter(tr("Audio"), craft_audio::DECODE_EXTENSIONS).pick_files().unwrap_or_default()
         })),
         pick_save: Some(Box::new(|purpose: &str, path: &std::path::Path| {
             let mut d = match purpose {
