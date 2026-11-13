@@ -288,27 +288,59 @@ fn an_unstored_lane_restores_when_reading_stops_and_again_after_reenable() {
     assert_eq!(slot.plugin.param("level"), original, "a second stop restores again");
 }
 
+/// Lanes on these synth parameters, all unstored (the insert stores none), each at `value`.
+fn synth_lanes(ids: &[&str], value: f32) -> Vec<soundcraft_model::AutomationLane> {
+    ids.iter()
+        .map(|id| {
+            let mut l =
+                soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: soundcraft_model::INSTRUMENT_AUTO_SLOT, param: (*id).into() });
+            l.set_point(0, value);
+            l
+        })
+        .collect()
+}
+
 #[test]
-fn unstored_holds_do_not_grow_across_identical_blocks() {
+fn unstored_holds_never_grow_on_the_audio_thread() {
+    // Every parameter of the synth under automation at once, more than any small fixed reserve,
+    // then lanes switched, removed and added back: the holds keep the storage the slot was made with.
     let Some((mut slot, ins, mut session, track)) = unstored_synth() else { return };
+    let ids: Vec<&str> = slot.plugin.info().params.iter().map(|p| p.id).collect();
+    assert!(ids.len() > 8, "the test needs more parameters than a small fixed reserve");
     let cap = slot.holds.capacity();
-    assert!(cap >= super::strip::UNSTORED_HOLD_CAP, "a new slot reserves room for a few unstored holds");
-    {
-        let tr = session.track_mut(track).unwrap();
-        tr.automation = vec![level_lane(-30.0)];
-        super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
-    }
-    assert_eq!(slot.holds.capacity(), cap, "the first hold fit in the reserved capacity");
-    assert_eq!(slot.holds.len(), 1);
+    assert!(cap >= ids.len(), "a new slot reserves a hold for every parameter");
     let ptr = slot.holds.as_ptr();
-    for _ in 0..100 {
-        let tr = session.track_mut(track).unwrap();
-        super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    let (first, second) = ids.split_at(ids.len() / 2);
+    let steps: [Vec<&str>; 6] = [ids.clone(), first.to_vec(), second.to_vec(), Vec::new(), ids.clone(), ids.iter().rev().copied().collect()];
+    for (n, step) in steps.iter().enumerate() {
+        for _ in 0..3 {
+            let tr = session.track_mut(track).unwrap();
+            tr.automation = synth_lanes(step, 0.0);
+            super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+        }
+        assert_eq!(slot.holds.len(), step.len(), "step {n}: one hold per driven parameter");
+        assert_eq!(slot.holds.capacity(), cap, "step {n}: holds grew on the audio thread");
+        assert_eq!(slot.holds.as_ptr(), ptr, "step {n}: holds reallocated on the audio thread");
     }
-    assert_eq!(slot.holds.capacity(), cap, "holds reallocated across identical blocks");
-    assert_eq!(slot.holds.as_ptr(), ptr);
-    assert_eq!(slot.holds.len(), 1);
-    assert_eq!(slot.plugin.param("level"), Some(-30.0));
+    assert_eq!(slot.plugin.param("level"), Some(0.0));
+}
+
+#[test]
+fn a_full_hold_store_leaves_a_further_lane_undriven_without_allocating() {
+    // The overflow policy, should a slot ever have fewer holds reserved than lanes: the extra lane
+    // is not driven, and the plugin keeps its own value.
+    let Some((mut slot, ins, mut session, track)) = unstored_synth() else { return };
+    slot.holds = Vec::with_capacity(1);
+    let cap = slot.holds.capacity();
+    let ptr = slot.holds.as_ptr();
+    let cutoff = slot.plugin.param("cutoff");
+    let tr = session.track_mut(track).unwrap();
+    tr.automation = synth_lanes(&["level", "cutoff"], -30.0);
+    super::strip::apply_params(&mut slot, &ins, tr, INSTRUMENT_SLOT, 0);
+    assert_eq!(slot.holds.len(), cap);
+    assert_eq!(slot.holds.as_ptr(), ptr, "a full hold store reallocated");
+    let driven = [slot.plugin.param("level") == Some(-30.0), slot.plugin.param("cutoff") != cutoff];
+    assert_eq!(driven.iter().filter(|d| **d).count(), cap, "only the lanes with a hold are driven");
 }
 
 #[test]

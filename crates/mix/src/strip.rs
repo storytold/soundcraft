@@ -35,10 +35,6 @@ pub(crate) struct LaneHold {
     original: f32,
 }
 
-/// Unstored automated parameters a new slot can take before the holds vector has to grow.
-/// Growing past this happens once, on the block a further parameter comes under automation.
-pub(crate) const UNSTORED_HOLD_CAP: usize = 8;
-
 /// Absolute and relative tolerance for "the plugin already has the lane's value". A plugin that
 /// quantizes can sit a hair off what automation sent; an editor move is far larger.
 const PARAM_MATCH_TOLERANCE: f32 = 1.0e-6;
@@ -53,8 +49,9 @@ pub(crate) struct PluginSlot {
     /// Scratch for `apply_params`: indexes of the track's automation lanes for this slot, kept
     /// so the audio thread reuses its allocation.
     lanes: Vec<usize>,
-    /// Unstored parameters currently under automation, looked up by parameter index. Reserved for [`UNSTORED_HOLD_CAP`] at creation; it grows only
-    /// when a new hold is pushed.
+    /// Unstored parameters currently under automation, at most one per parameter. Reserved for
+    /// every parameter when the slot is made, so the audio thread never grows it: a hold is
+    /// pushed only for a parameter that has none, so the length never passes the parameter count.
     pub(crate) holds: Vec<LaneHold>,
     /// The plugin's parameter indexes sorted by id, built with the slot. The audio thread finds a
     /// lane's parameter by binary search instead of scanning every parameter on every block,
@@ -75,7 +72,7 @@ impl PluginSlot {
             plugin,
             applied: Vec::new(),
             lanes: Vec::new(),
-            holds: Vec::with_capacity(UNSTORED_HOLD_CAP),
+            holds: Vec::with_capacity(params.len()),
             by_id: by_id.into_boxed_slice(),
             failed: false,
         }
@@ -660,6 +657,11 @@ fn drive_unstored_lane(slot: &mut PluginSlot, name: &str, lane: &AutomationLane,
     } else if let Some(param) = plugin_param_index(slot, name) {
         // Read the plugin before the first write, so the lane can give the parameter back.
         let original = read_original(slot, name, param);
+        // Never past the capacity reserved in `PluginSlot::new`: one hold per parameter at most.
+        // Should that ever not hold, the lane goes undriven rather than allocate on this thread.
+        if slot.holds.len() == slot.holds.capacity() {
+            return;
+        }
         slot.holds.push(LaneHold { param, last: f32::NAN, settled: f32::NAN, original });
         match slot.holds.len().checked_sub(1) {
             Some(i) => i,
