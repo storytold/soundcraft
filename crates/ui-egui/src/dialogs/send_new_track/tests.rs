@@ -57,7 +57,7 @@ fn create_makes_the_track_the_dialog_shows_and_opens_the_send_window() {
     let app = h.state();
     assert_eq!(app.dialogs.open_name(), None, "the dialog closed");
     let s = app.engine.session();
-    let print = s.track_by_name("Print").cloned().unwrap();
+    let print = s.track_by_name("Print").cloned().unwrap_or_else(|| panic!("no track Print; status: {:?}", app.ui.status));
     let bus = s.bus_by_name("Print").cloned().unwrap();
     assert_eq!((print.kind, print.format, bus.format), (TrackKind::Audio, ChannelFormat::Stereo, ChannelFormat::Stereo));
     assert_eq!(print.mixer.input, Route::Bus(bus.id));
@@ -80,6 +80,7 @@ fn an_existing_send_moves_to_a_new_aux_next_to_its_track() {
     let (send, names) = routing(app, kick);
     let kick_at = names.iter().position(|n| n == "Kick").unwrap();
     let aux = s.tracks.get(kick_at + 1).cloned().unwrap();
+    assert_eq!(app.ui.status, "", "the command ran without an error");
     assert_eq!((aux.kind, aux.format), (TrackKind::Aux, ChannelFormat::Stereo));
     let bus = s.bus_by_name(&aux.name).map(|b| b.id).unwrap();
     assert_eq!(aux.mixer.input, Route::Bus(bus));
