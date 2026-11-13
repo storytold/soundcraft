@@ -2,9 +2,9 @@
 
 use crate::SoundApp;
 use crate::theme::{Tokens, bold};
+use craft_audio::EncodeFormat;
 use egui::{Align2, vec2};
 use serde_json::{Value, json};
-use soundcraft_audio_io::FileFormat;
 use soundcraft_engine::Engine;
 use soundcraft_engine::io::StripNames;
 use soundcraft_model::{ClipId, GroupId, Session, SourceId, TrackId};
@@ -33,7 +33,7 @@ pub mod spot;
 pub enum Dialog {
     NewTracks(new_tracks::NewTracks),
     NewSession { name: String, sample_rate: u32, demo: bool },
-    Bounce { path: String, format: FileFormat, bit_depth: String, normalize: bool, dither: bool },
+    Bounce { path: String, format: EncodeFormat, bit_depth: String, normalize: bool, dither: bool },
     RenameTrack { id: TrackId, name: String },
     RenameClip { id: ClipId, name: String },
     RenameMarker { id: soundcraft_model::MarkerId, name: String },
@@ -82,6 +82,8 @@ pub struct Dialogs {
     strip_values: StripValues,
     /// The Strip Silence rectangles the Edit window draws while Strip Silence is open.
     strip_rectangles: StripRectangles,
+    /// True while a dialog was drawn on the previous frame.
+    shown: bool,
 }
 
 impl Dialogs {
@@ -115,22 +117,25 @@ impl Dialogs {
     /// Whether a worker thread is finding Strip Silence rectangles.
     pub fn strip_scan_running(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
-        if self.strip_rectangles.running.is_some() {
-            return true;
+        {
+            self.strip_rectangles.running.is_some()
         }
-        false
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
     }
 
     pub fn open_rename_track(&mut self, id: TrackId, name: &str) {
-        self.open = Some(Dialog::RenameTrack { id, name: name.to_string() });
+        self.set(Dialog::RenameTrack { id, name: name.to_string() });
     }
 
     pub fn open_rename_clip(&mut self, id: ClipId, name: &str) {
-        self.open = Some(Dialog::RenameClip { id, name: name.to_string() });
+        self.set(Dialog::RenameClip { id, name: name.to_string() });
     }
 
     pub fn open_rename_marker(&mut self, id: soundcraft_model::MarkerId, name: &str) {
-        self.open = Some(Dialog::RenameMarker { id, name: name.to_string() });
+        self.set(Dialog::RenameMarker { id, name: name.to_string() });
     }
 
     /// Groups list › Modify Group…: the creation dialog, pre-filled from an existing group. False
@@ -139,15 +144,22 @@ impl Dialogs {
         let s = e.session();
         let Some(g) = s.group(id) else { return false };
         let members = s.tracks.iter().map(|t| (t.id.0, t.name.clone(), g.members.contains(&t.id))).collect();
-        self.open = Some(Dialog::Group { id: Some(id), name: g.name.clone(), edit: g.edit, mix: g.mix, members });
+        self.set(Dialog::Group { id: Some(id), name: g.name.clone(), edit: g.edit, mix: g.mix, members });
         true
     }
 
     /// Clip List › Clear: confirm before clips and files leave the session. False when there is nothing to clear.
     pub fn open_clear(&mut self, e: &Engine, clips: Vec<ClipId>, sources: Vec<SourceId>) -> bool {
         let Some(message) = clear_message(e.session(), &clips, &sources) else { return false };
-        self.open = Some(Dialog::ClearClips { clips, sources, message });
+        self.set(Dialog::ClearClips { clips, sources, message });
         true
+    }
+
+    /// Opens `d` in place of any open dialog. Its first frame clears the keyboard focus and ignores Enter, as for a
+    /// dialog opened when none was open.
+    pub(crate) fn set(&mut self, d: Dialog) {
+        self.open = Some(d);
+        self.shown = false;
     }
 
     /// Clip List › Auto Rename: the clips' naming scheme, filled in from the first clip's. False
@@ -156,7 +168,7 @@ impl Dialogs {
         let s = e.session();
         let Some((_, first)) = clips.iter().find_map(|id| s.find_clip(*id)) else { return false };
         let names = first.auto_name.and_then(|k| s.auto_names.get(&k)).map_or_else(StripNames::default, StripNames::from);
-        self.open = Some(Dialog::AutoRename { clips, names });
+        self.set(Dialog::AutoRename { clips, names });
         true
     }
 
@@ -165,7 +177,7 @@ impl Dialogs {
         self.after_save = None;
         let home = default_dir();
         let name = e.session().name.clone();
-        self.open = Some(match id {
+        let d = match id {
             "clip.clear" => {
                 let ed = &e.session().edit;
                 return self.open_clear(e, ed.selected_clips.clone(), ed.selected_sources.clone());
@@ -181,7 +193,7 @@ impl Dialogs {
                     .map_or(home.clone(), |d| d.display().to_string());
                 Dialog::Bounce {
                     path: format!("{dir}/{name} Bounce.wav"),
-                    format: FileFormat::Wav,
+                    format: EncodeFormat::Wav,
                     bit_depth: "24".into(),
                     normalize: false,
                     dither: false,
@@ -246,7 +258,8 @@ impl Dialogs {
                 Some(d) => d,
                 None => return false,
             },
-        });
+        };
+        self.set(d);
         true
     }
 }
@@ -286,8 +299,17 @@ fn clear_message(s: &Session, clips: &[ClipId], sources: &[SourceId]) -> Option<
     Some(text)
 }
 
+/// The file a bounce in `format` writes for the path in the form: the path itself when its
+/// extension already names the format (`Mix.aifc` and `Mix.AIFF` stay as picked, so the file
+/// the save dialog confirmed is the one written), otherwise the path with the format's extension.
+pub fn bounce_path(path: &str, format: EncodeFormat) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    let named = p.extension().and_then(std::ffi::OsStr::to_str).and_then(craft_audio::encode_format_for);
+    if named == Some(format) { p.to_path_buf() } else { p.with_extension(format.extension()) }
+}
+
 /// The Bounce form's file row: a path field and a Browse button that also picks the format.
-fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, format: &mut FileFormat) {
+fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, format: &mut EncodeFormat) {
     ui.horizontal(|ui| {
         ui.label("File");
         crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "File");
@@ -298,7 +320,7 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
             match unicode(&p) {
                 Ok(text) => {
                     *path = text.to_owned();
-                    if let Some(picked) = p.extension().and_then(std::ffi::OsStr::to_str).and_then(FileFormat::from_write_extension) {
+                    if let Some(picked) = p.extension().and_then(std::ffi::OsStr::to_str).and_then(craft_audio::encode_format_for) {
                         *format = picked;
                     }
                 }
@@ -312,7 +334,25 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
 fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut String, key: &str, enter: bool) -> Option<(String, Value)> {
     crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "Path");
     let mut picked = None;
+    // Import Audio picks several files at once; every other open dialog takes one.
+    let multi = cmd == "file.import_audio" && app.services.pick_open_many.is_some();
+    if multi
+        && let Some(pick) = &app.services.pick_open_many
+        && ui.button("Browse…").clicked()
+    {
+        let mut files = pick(cmd);
+        if files.len() > 1 {
+            let texts: Result<Vec<&str>, _> = files.iter().map(|f| unicode(f)).collect();
+            match texts {
+                Ok(texts) => return Some((cmd.to_string(), json!({"paths": texts}))),
+                Err(e) => app.ui.status = e.to_string(),
+            }
+        } else {
+            picked = files.pop();
+        }
+    }
     if let Some(pick) = &app.services.pick_open
+        && !multi
         && cmd != "session.save_as"
         && cmd != "session.save_copy"
         && key != "dir"
@@ -367,10 +407,10 @@ fn strip_silence_form(
     let mut rename_from = None;
     let [threshold, min_ms, pre_ms, post_ms] = values;
     let before = [*threshold, *min_ms, *pre_ms, *post_ms];
-    ui.add(egui::Slider::new(threshold, -96.0..=0.0).text("Threshold dB"));
-    ui.add(egui::Slider::new(min_ms, 0.0..=4000.0).text("Min strip duration ms"));
-    ui.add(egui::Slider::new(pre_ms, 0.0..=500.0).text("Clip start pad ms"));
-    ui.add(egui::Slider::new(post_ms, 0.0..=2000.0).text("Clip end pad ms"));
+    crate::widgets::fine_slider(ui, threshold, -96.0..=0.0, "Threshold dB");
+    crate::widgets::fine_slider(ui, min_ms, 0.0..=4000.0, "Min strip duration ms");
+    crate::widgets::fine_slider(ui, pre_ms, 0.0..=500.0, "Clip start pad ms");
+    crate::widgets::fine_slider(ui, post_ms, 0.0..=2000.0, "Clip end pad ms");
     let values = [*threshold, *min_ms, *pre_ms, *post_ms];
     // The Edit window is drawn before this window, so it draws the rectangles for new values in the next frame.
     if values != before {
@@ -416,7 +456,16 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     if !matches!(app.dialogs.open, Some(Dialog::StripSilence { .. } | Dialog::StripSilenceRename { .. })) {
         app.dialogs.strip_rectangles = StripRectangles::default();
     }
-    let Some(mut d) = app.dialogs.open.take() else { return };
+    let Some(mut d) = app.dialogs.open.take() else {
+        app.dialogs.shown = false;
+        return;
+    };
+    // On the first frame a dialog is drawn, clear the keyboard focus a widget outside it may still hold, and ignore Enter:
+    // an Enter in that frame is the one that opened the dialog from a menu item or the command palette.
+    let first_frame = !std::mem::replace(&mut app.dialogs.shown, true);
+    if first_frame {
+        ctx.memory_mut(|m| m.stop_text_input());
+    }
     let mut keep = true;
     let mut action: Option<(String, Value)> = None;
     let mut bounce_params: Option<Value> = None;
@@ -449,7 +498,11 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::SaveChanges { .. } => "Unsaved Changes",
     }
     .to_string();
-    let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+    // egui treats Enter on a focused button, checkbox, radio button or combo box as a click, so Enter presses the default
+    // button only when no widget has the keyboard focus or a text field has it. A held Enter's repeats do not press it.
+    let fresh_enter =
+        |i: &egui::InputState| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, .. }));
+    let enter = !first_frame && ctx.input(fresh_enter) && (ctx.memory(|m| m.focused().is_none()) || ctx.text_edit_focused());
     let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     egui::Window::new(egui::RichText::new(&title).font(bold(13.0)))
         .collapsible(false)
@@ -488,9 +541,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 Dialog::Bounce { path, format, bit_depth, normalize, dither } => {
                     bounce_file_row(app, ui, path, format);
                     ui.horizontal(|ui| {
-                        craft_ui::ComboBox::from_label("Format").selected_text(format.name()).show_ui(ui, |ui| {
-                            for &f in FileFormat::WRITE {
-                                ui.selectable_value(format, f, f.name());
+                        craft_ui::ComboBox::from_label("Format").selected_text(format.container().name()).show_ui(ui, |ui| {
+                            for &f in EncodeFormat::ALL {
+                                ui.selectable_value(format, f, f.container().name());
                             }
                         });
                         craft_ui::ComboBox::from_label("Bit Depth").selected_text(format!("{bit_depth}-bit")).show_ui(ui, |ui| {
@@ -511,9 +564,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                             .color(Tokens::current().text_dim),
                     );
                     if buttons(ui, "Bounce", enter) {
-                        let p = std::path::Path::new(path.as_str()).with_extension(format.default_extension());
+                        let p = bounce_path(path, *format);
                         bounce_params = Some(
-                            json!({"path": p.to_string_lossy(), "format": format.default_extension(), "bit_depth": bit_depth, "normalize": normalize, "dither": *dither && bit_depth.as_str() != "32f"}),
+                            json!({"path": p.to_string_lossy(), "format": format.extension(), "bit_depth": bit_depth, "normalize": normalize, "dither": *dither && bit_depth.as_str() != "32f"}),
                         );
                     }
                 }

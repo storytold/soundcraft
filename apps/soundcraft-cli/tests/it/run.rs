@@ -53,12 +53,16 @@ fn not_found() -> std::io::Error {
     std::io::Error::from_raw_os_error(2)
 }
 
-/// Exit 1 with the refused-connection message for `port`; the OS's text for the refusal differs by platform.
+/// Exit 1 with the unreachable message for `port`. The reason is either the OS's refusal, whose text
+/// differs by platform, or the client's connect timeout, which on Windows can expire before a
+/// closed loopback port is refused.
 #[track_caller]
 fn assert_refused(got: &Invoke, port: u16) {
     assert_eq!((got.code, got.stdout.as_str()), (1, ""));
     let prefix = format!("error: cannot reach SoundCraft at 127.0.0.1:{port}: ");
-    assert!(got.stderr.starts_with(&prefix) && got.stderr.contains(" (os error ") && got.stderr.ends_with(")\n"), "{}", got.stderr);
+    let reason = got.stderr.strip_prefix(&prefix).unwrap_or_else(|| panic!("{}", got.stderr));
+    let refused = reason.contains(" (os error ") && reason.ends_with(")\n");
+    assert!(refused || reason == "connection timed out\n", "{}", got.stderr);
 }
 
 #[test]
@@ -100,9 +104,8 @@ fn help_subcommand_shows_that_subcommands_help() {
 
 #[test]
 fn help_names_every_format_the_command_reads_and_writes() {
-    use soundcraft_audio_io::FileFormat;
-    let read = format!("({})", FileFormat::readable_extensions().join(", "));
-    let write = format!("its extension picks the format ({})", FileFormat::writable_extensions().join(", "));
+    let read = format!("({})", craft_audio::DECODE_EXTENSIONS.join(", "));
+    let write = format!("its extension picks the format ({})", craft_audio::ENCODE_EXTENSIONS.join(", "));
     let convert = invoke(&["convert", "--help"]);
     let convert = assert_help(&convert);
     assert!(convert.contains(&read) && convert.contains(&write), "{convert}");
