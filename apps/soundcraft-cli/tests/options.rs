@@ -5,8 +5,10 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+mod common;
+
 fn bin() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soundcraft-cli"));
+    let mut cmd = Command::new(common::soundcraft_cli_binary());
     cmd.env("SOUNDCRAFT_NO_PREFS", "1");
     cmd
 }
