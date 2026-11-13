@@ -346,11 +346,9 @@ impl FadeEditor {
     }
 
     /// A preset slot recalled into this dialog. Over a selection OK makes the fades with the range form, which has no
-    /// bend to give, and a crossfade's command has one bend for both sides, never a recalled one; so a bend the slot
-    /// holds is dropped here rather than shown and then not applied.
+    /// bend to give, so a bend the slot holds is dropped there rather than shown and then not applied.
     fn recall(&mut self, kind: Kind, stored: Settings) {
-        let unbent = self.selection.is_some() || self.kind() == Kind::Crossfade;
-        self.now = self.now.with(kind, if unbent { stored.unbent() } else { stored });
+        self.now = self.now.with(kind, if self.selection.is_some() { stored.unbent() } else { stored });
     }
 
     /// The command OK runs, or None when there is nothing to change.
@@ -391,12 +389,12 @@ impl FadeEditor {
                     return None;
                 }
                 let mut params = json!({"clip": later.0, "side": "crossfade", "in_shape": name(input), "out_shape": name(output)});
-                // ponytail: the command takes one bend for both fades, and a fade whose shape stays keeps its own bend unless
-                // one is given. So a bend is given only to take it off a fade that keeps its shape; a bent fade left alone next
-                // to it loses its bend too. Per-side curvature in the command is the way out.
-                let unbend = |old: Fade, new: Fade| old.shape == new.shape && old.curvature != new.curvature;
-                if unbend(b.fade_in, input) || unbend(a.fade_out, output) {
-                    params["curvature"] = json!(0.0);
+                // Each fade the dialog changes says its own bend; a fade left as it was gets none, so the command leaves it alone.
+                if !same(b.fade_in, input) {
+                    params["in_curvature"] = json!(input.curvature);
+                }
+                if !same(a.fade_out, output) {
+                    params["out_curvature"] = json!(output.curvature);
                 }
                 params
             }
@@ -720,13 +718,14 @@ mod tests {
         assert_eq!(ed.now.input, Side { shape: Shape::Preset(FadeShape::Exponential), slope: Slope::EqualPower, bend: 0.0 });
         ed.recall(Kind::In, slot(Shape::SCurve, Slope::EqualGain, f32::NAN));
         assert_eq!(ed.now.input, Side { shape: Shape::SCurve, slope: Slope::EqualGain, bend: 0.0 });
-        // A crossfade's command has one bend for both sides and never a recalled one: it comes back unbent there too.
+        // A crossfade's command bends each side on its own, so there a recalled bend is kept and applied.
         let mut ed = FadeEditor::for_target(&s, FadeTarget::Crossfade { later: b }).unwrap();
         let bent = Side { shape: Shape::Preset(FadeShape::Linear), slope: Slope::EqualGain, bend: -0.4 };
-        ed.recall(Kind::Crossfade, Settings { input: bent, output: bent, link: Link::None });
-        let plain = Side { shape: Shape::Standard, slope: Slope::EqualGain, bend: 0.0 };
-        assert_eq!((ed.now.input, ed.now.output, ed.now.link), (plain, plain, Link::None));
-        assert_eq!(ed.command(&s), None, "the crossfade is two plain Linear fades already: the bend is not something to apply");
+        ed.recall(Kind::Crossfade, Settings { input: bent, output: Side { bend: 0.2, ..bent }, link: Link::None });
+        assert_eq!((ed.now.input.bend, ed.now.output.bend, ed.now.link), (-0.4, 0.2, Link::None));
+        let (_, p) = ed.command(&s).unwrap();
+        assert_eq!((&p["in_shape"], &p["out_shape"]), (&json!("Linear"), &json!("Linear")));
+        assert_eq!((p["in_curvature"].as_f64().map(|v| v as f32), p["out_curvature"].as_f64().map(|v| v as f32)), (Some(-0.4), Some(0.2)));
     }
 
     /// Clip A on 0..1200 and clip B on 1000..3000: a crossfade over 1000..1200, both fades Linear and 200 long.
@@ -757,7 +756,10 @@ mod tests {
         ed.now = ed.now.linked();
         let (cmd, p) = ed.command(&s).unwrap();
         assert_eq!(cmd, "edit.fades_create");
-        assert_eq!(p, json!({"clip": b.0, "side": "crossfade", "in_shape": "S-Curve", "out_shape": "S-Curve"}));
+        assert_eq!(
+            p,
+            json!({"clip": b.0, "side": "crossfade", "in_shape": "S-Curve", "out_shape": "S-Curve", "in_curvature": 0.0, "out_curvature": 0.0})
+        );
         ed.now.link = Link::EqualPower;
         ed.now = ed.now.linked();
         let (_, p) = ed.command(&s).unwrap();
@@ -767,23 +769,31 @@ mod tests {
         ed.now.output = Side { shape: Shape::Preset(FadeShape::Exponential), ..Side::FACTORY };
         let (_, p) = ed.command(&s).unwrap();
         assert_eq!((&p["in_shape"], &p["out_shape"]), (&json!("S-Curve Equal Power"), &json!("Exponential")));
-        assert_eq!(p.get("curvature"), None, "no bend to take off");
+        assert_eq!(p.get("curvature"), None, "no shared bend");
     }
 
     #[test]
     fn a_bent_crossfade_keeps_its_bend_until_a_side_asks_for_none() {
-        let (mut s, _, b) = crossfade_session();
+        let (mut s, a, b) = crossfade_session();
         if let Some(c) = s.find_clip_mut(b) {
             c.fade_in.curvature = 0.4;
         }
-        let mut ed = FadeEditor::for_target(&s, FadeTarget::Crossfade { later: b }).unwrap();
+        if let Some(c) = s.find_clip_mut(a) {
+            c.fade_out.curvature = -0.3;
+        }
+        let ed = FadeEditor::for_target(&s, FadeTarget::Crossfade { later: b }).unwrap();
         assert_eq!(ed.settings().link, Link::None, "a bent fade has no linked partner");
-        assert_eq!(ed.settings().input.shape, Shape::Preset(FadeShape::Linear));
+        assert_eq!((ed.settings().input.shape, ed.settings().output.shape), (Shape::Preset(FadeShape::Linear), Shape::Preset(FadeShape::Linear)));
         assert_eq!(ed.command(&s), None);
-        // Standard on the bent side: same Linear shape, bend off, which the command must say.
-        ed.now.input = Side { shape: Shape::Standard, slope: Slope::EqualGain, bend: 0.0 };
-        let (_, p) = ed.command(&s).unwrap();
-        assert_eq!((&p["in_shape"], p.get("curvature")), (&json!("Linear"), Some(&json!(0.0))));
+        // Standard on one bent side: same Linear shape, bend off, which the command says for that side alone.
+        let standard = Side { shape: Shape::Standard, slope: Slope::EqualGain, bend: 0.0 };
+        for fade_in in [true, false] {
+            let mut ed = ed.clone();
+            *(if fade_in { &mut ed.now.input } else { &mut ed.now.output }) = standard;
+            let (_, p) = ed.command(&s).unwrap();
+            let (key, other) = if fade_in { ("in_curvature", "out_curvature") } else { ("out_curvature", "in_curvature") };
+            assert_eq!((p.get(key), p.get(other), p.get("curvature")), (Some(&json!(0.0)), None, None), "{fade_in}");
+        }
     }
 
     #[test]

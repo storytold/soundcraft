@@ -130,7 +130,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create...",
             ["Edit", "Fades"],
             Some("Cmd+F"),
-            "{shape?: linear|equal power|s-curve|exponential|logarithmic|s-curve equal power, in_shape?, out_shape?, tracks?, start?, end?} or {clip: id, side: in|out, length: samples, shape?, in_shape?, out_shape?, curvature?: -1..1} or {clip: id of the later clip of a crossfade, side: crossfade, shape?, in_shape?, out_shape?, curvature?} (both fades, keeping their length); in_shape / out_shape override shape for fade-ins (the later clip of a crossfade) / fade-outs (the earlier clip)",
+            "{shape?: linear|equal power|s-curve|exponential|logarithmic|s-curve equal power, in_shape?, out_shape?, tracks?, start?, end?} or {clip: id, side: in|out, length: samples, shape?, in_shape?, out_shape?, curvature?: -1..1} or {clip: id of the later clip of a crossfade, side: crossfade, shape?, in_shape?, out_shape?, curvature?, in_curvature?, out_curvature?} (both fades, keeping their length; in_curvature / out_curvature bend one fade only); in_shape / out_shape override shape for fade-ins (the later clip of a crossfade) / fade-outs (the earlier clip)",
             has_range,
             fades_create
         ),
@@ -933,19 +933,34 @@ fn fades_create(e: &mut Engine, p: &Value) -> Result<Value> {
 /// `edit.fades_create` aimed at the crossfade leading into `later`: its fade-in (on `later`) takes the
 /// first shape, its fade-out (on the earlier clip) the second, and both keep their length (a missing one
 /// takes the overlap). A fade that already has its shape is left as it is, bend included, unless a
-/// `curvature` is given.
+/// curvature is given for it: `in_curvature` or `out_curvature` for that fade alone, else `curvature`
+/// for both.
 fn crossfade_fades(e: &mut Engine, later: ClipId, p: &Value, (in_shape, out_shape): (FadeShape, FadeShape), curvature: f32) -> Result<Value> {
+    let both = p.get("curvature").is_some().then_some(curvature);
+    let bend_of = |key: &str| match p.get(key) {
+        None => Ok(both),
+        Some(value) => value
+            .as_f64()
+            .filter(|v| v.is_finite() && (-1.0..=1.0).contains(v))
+            .map(|v| Some(v as f32))
+            .ok_or_else(|| bad("edit.fades_create", format!("{key} must be a finite number from -1 to 1"))),
+    };
+    let (in_bend, out_bend) = (bend_of("in_curvature")?, bend_of("out_curvature")?);
     let s = e.session();
     let (track, b) = s.find_clip(later).ok_or_else(|| bad("edit.fades_create", "clip not found"))?;
     let earlier = s
         .track(track)
         .and_then(|t| t.clips().iter().filter(|c| c.start < b.start && c.end() > b.start && c.end() <= b.end()).max_by_key(|c| c.start));
     let earlier = earlier.ok_or_else(|| bad("edit.fades_create", "clip must be the later clip of a crossfade"))?;
-    let (overlap, bent) = (earlier.end().saturating_sub(b.start), p.get("curvature").is_some());
-    let changed = |old: Fade, shape: FadeShape| {
-        (bent || old.len <= 0 || old.shape != shape).then_some(Fade { len: if old.len > 0 { old.len } else { overlap }, shape, curvature })
+    let overlap = earlier.end().saturating_sub(b.start);
+    let changed = |old: Fade, shape: FadeShape, bend: Option<f32>| {
+        (bend.is_some() || old.len <= 0 || old.shape != shape).then_some(Fade {
+            len: if old.len > 0 { old.len } else { overlap },
+            shape,
+            curvature: bend.unwrap_or(0.0),
+        })
     };
-    let (out, fade_in, earlier) = (changed(earlier.fade_out, out_shape), changed(b.fade_in, in_shape), earlier.id);
+    let (out, fade_in, earlier) = (changed(earlier.fade_out, out_shape, out_bend), changed(b.fade_in, in_shape, in_bend), earlier.id);
     // Nothing to change leaves the document, and the undo history, alone.
     if out.is_some() || fade_in.is_some() {
         let s = e.session_mut();
