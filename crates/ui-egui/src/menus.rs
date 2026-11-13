@@ -818,6 +818,8 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                         app.ui = ns;
                         app.ui.undo_levels = app.ui.undo_levels.clamp(1, 64);
                         app.engine.set_history_limit(app.ui.undo_levels);
+                        // The list is newest first, so this keeps the newest, as `recent::note` does.
+                        app.ui.recent_sessions.truncate(crate::dialogs::recent::MAX_RECENT);
                         if closed_preferences {
                             app.preferences.discard_draft();
                         }
@@ -885,6 +887,60 @@ mod tests {
         let result = app.run("ui.set", json!({"undo_levels": 100})).unwrap();
         assert_eq!(result["ui"]["undo_levels"], 64);
         assert_eq!((app.ui.undo_levels, app.engine.history_limit), (64, 64));
+    }
+
+    fn recent_paths(count: usize) -> Vec<String> {
+        (0..count).map(|i| format!("{i}.scraft")).collect()
+    }
+
+    /// `ui.set` keeps the newest `MAX_RECENT` recent sessions, in order, and answers with that list.
+    #[test]
+    fn ui_set_keeps_at_most_ten_recent_sessions() {
+        use crate::dialogs::recent::MAX_RECENT;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        for count in [MAX_RECENT + 1, 1000] {
+            let result = app.run("ui.set", json!({"recent_sessions": recent_paths(count)})).unwrap();
+            assert_eq!(app.ui.recent_sessions, recent_paths(MAX_RECENT), "{count} entries: the first ten, in order");
+            assert_eq!(result["ui"]["recent_sessions"], json!(recent_paths(MAX_RECENT)), "{count} entries: the answer shows the kept list");
+        }
+    }
+
+    /// A list within the limit, an empty one included, is stored as given.
+    #[test]
+    fn ui_set_leaves_a_recent_list_within_the_limit_alone() {
+        use crate::dialogs::recent::MAX_RECENT;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        for count in [MAX_RECENT, MAX_RECENT - 1, 1, 0] {
+            let result = app.run("ui.set", json!({"recent_sessions": recent_paths(count)})).unwrap();
+            assert_eq!(app.ui.recent_sessions, recent_paths(count), "{count} entries");
+            assert_eq!(result["ui"]["recent_sessions"], json!(recent_paths(count)), "{count} entries");
+        }
+    }
+
+    /// Capping the list does not drop the other fields of the same call.
+    #[test]
+    fn ui_set_applies_other_fields_beside_a_capped_recent_list() {
+        use crate::dialogs::recent::MAX_RECENT;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let result = app.run("ui.set", json!({"recent_sessions": recent_paths(25), "undo_levels": 7})).unwrap();
+        assert_eq!((app.ui.recent_sessions.len(), app.ui.undo_levels, app.engine.history_limit), (MAX_RECENT, 7, 7));
+        assert_eq!(result["ui"]["undo_levels"], 7);
+        // A call that does not name the list leaves it as it was.
+        app.run("ui.set", json!({"undo_levels": 9})).unwrap();
+        assert_eq!(app.ui.recent_sessions, recent_paths(MAX_RECENT));
+    }
+
+    /// A list that is not an array of strings is refused, however long, and nothing changes.
+    #[test]
+    fn ui_set_refuses_a_recent_list_of_the_wrong_type() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        app.run("ui.set", json!({"recent_sessions": recent_paths(3), "undo_levels": 7})).unwrap();
+        let numbers: Vec<u32> = (0..25).collect();
+        for bad in [json!("a.scraft"), json!(5), json!(null), json!({"0": "a.scraft"}), json!(["a.scraft", 5]), json!(numbers)] {
+            let error = app.run("ui.set", json!({"recent_sessions": bad, "undo_levels": 20})).unwrap_err();
+            assert!(error.starts_with("bad ui state"), "{bad}: {error}");
+            assert_eq!((app.ui.recent_sessions.clone(), app.ui.undo_levels), (recent_paths(3), 7), "{bad} changed the state");
+        }
     }
 
     #[test]
