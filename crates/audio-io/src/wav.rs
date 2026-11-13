@@ -154,34 +154,48 @@ pub(crate) fn is_wav(b: &[u8]) -> bool {
     matches!(tag(b, 0), Some(t) if &t == b"RIFF" || &t == b"RF64" || &t == b"BW64") && tag(b, 8).is_some_and(|t| &t == b"WAVE")
 }
 
-/// True when everything from `from` to the end of the file is whole RIFF chunks (four printable
+/// What follows a zero-sized `data` chunk, for [`data_chunk_len`].
+#[derive(Debug, PartialEq, Eq)]
+enum Tail {
+    /// Whole RIFF chunks up to the end of the file: the metadata of a finished file, not samples.
+    Chunks,
+    /// Something that is not a well-formed chunk sequence: audio.
+    Audio,
+    /// The scan hit its chunk cap while every chunk so far was well formed; undecided.
+    Unknown,
+}
+
+/// Classifies everything from `from` to the end of the file: whole RIFF chunks (four printable
 /// ASCII id bytes, a size that fits, the pad byte after an odd size; the last chunk's pad may be
-/// missing): the metadata of a finished file, not samples.
-fn only_chunks_follow(b: &[u8], from: usize) -> bool {
+/// missing) are [`Tail::Chunks`].
+fn only_chunks_follow(b: &[u8], from: usize) -> Tail {
     let mut pos = from;
     let mut chunks = 0usize;
     while pos < b.len() {
         chunks += 1;
-        if chunks > 100_000 {
-            return false;
+        if chunks > MAX_TAIL_CHUNKS {
+            return Tail::Unknown;
         }
-        let (Some(id), Some(size)) = (tag(b, pos), le_u32(b, pos + 4)) else { return false };
+        let (Some(id), Some(size)) = (tag(b, pos), le_u32(b, pos + 4)) else { return Tail::Audio };
         if !id.iter().all(|c| (0x20..0x7f).contains(c)) {
-            return false;
+            return Tail::Audio;
         }
         let size = size as usize;
-        let Some(end) = pos.checked_add(8).and_then(|body| body.checked_add(size)) else { return false };
+        let Some(end) = pos.checked_add(8).and_then(|body| body.checked_add(size)) else { return Tail::Audio };
         if end > b.len() {
-            return false;
+            return Tail::Audio;
         }
         let next = end + (size & 1);
         if end == b.len() || next == b.len() {
-            return true;
+            return Tail::Chunks;
         }
         pos = next;
     }
-    false
+    Tail::Audio
 }
+
+/// Most chunks [`only_chunks_follow`] looks at.
+const MAX_TAIL_CHUNKS: usize = 100_000;
 
 /// A `data` chunk header as found in the file, for [`data_chunk_len`].
 struct DataChunk {
@@ -196,8 +210,18 @@ struct DataChunk {
 /// the recording was never finalised.
 fn data_chunk_len(b: &[u8], c: DataChunk) -> usize {
     let finished = u64::from(le_u32(b, 4).unwrap_or(0)) + 8 == b.len() as u64;
-    let empty = c.size32 == 0 && !c.is_rf64 && finished && only_chunks_follow(b, c.body);
-    if c.size32 == 0 && !c.is_rf64 && !empty { c.remaining } else { c.declared.min(c.remaining) }
+    if c.size32 != 0 || c.is_rf64 {
+        return c.declared.min(c.remaining);
+    }
+    if !finished {
+        return c.remaining;
+    }
+    // A finalised file whose scan was cut off by the cap is never read as samples: the chunk
+    // headers after the empty chunk are not audio.
+    match only_chunks_follow(b, c.body) {
+        Tail::Audio => c.remaining,
+        Tail::Chunks | Tail::Unknown => 0,
+    }
 }
 
 /// The sample layout of a `fmt` chunk, `None` for a format we do not read natively.
@@ -592,7 +616,30 @@ mod tests {
         let n = u32::try_from(b.len() - 8).unwrap();
         b[4..8].copy_from_slice(&n.to_le_bytes());
         let t = std::time::Instant::now();
-        let _ = parse(&b);
+        let parsed = parse(&b);
+        assert!(parsed.is_ok(), "parse failed");
         assert!(t.elapsed() < std::time::Duration::from_secs(1), "{:?}", t.elapsed());
+    }
+
+    fn empty_data_then_junk(n: usize) -> Vec<u8> {
+        let mut b = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0".to_vec();
+        b.extend_from_slice(&[1, 0, 1, 0, 0x80, 0xBB, 0, 0, 0, 0x77, 1, 0, 2, 0, 16, 0]);
+        b.extend_from_slice(b"data\0\0\0\0");
+        for _ in 0..n {
+            b.extend_from_slice(b"junk\0\0\0\0");
+        }
+        let len = u32::try_from(b.len() - 8).unwrap();
+        b[4..8].copy_from_slice(&len.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn empty_data_chunk_stays_empty_at_the_tail_scan_cap() {
+        for n in [99_999, 100_000, 100_001, 150_000] {
+            let b = empty_data_then_junk(n);
+            let Ok(super::WavParse::Native(layout)) = parse(&b) else { panic!("no native layout for {n} tail chunks") };
+            assert_eq!(layout.data_len, 0, "{n} tail chunks");
+            assert_eq!(layout.info.frames, 0, "{n} tail chunks");
+        }
     }
 }
