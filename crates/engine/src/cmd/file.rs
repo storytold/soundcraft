@@ -318,11 +318,9 @@ fn bounce(e: &mut Engine, p: &Value) -> Result<Value> {
                 "the {} dBTP true-peak ceiling held the gain back: {:.1} LUFS, short of the {} LUFS target",
                 t.true_peak_ceiling_db, done.lufs, t.lufs
             )),
-            crate::io::LoudnessOutcome::Unmeasured => {
-                Some("silent, or too short to measure loudness (under 400 ms): written at unity gain".to_string())
-            }
+            crate::io::LoudnessOutcome::Unmeasured => Some(unmeasured("silent, or too short to measure loudness (under 400 ms)", done.gain_db, t)),
             crate::io::LoudnessOutcome::TooQuiet => {
-                Some("too quiet to measure loudness (every 400 ms block is under the -70 LUFS gate): written at unity gain".to_string())
+                Some(unmeasured("too quiet to measure loudness (every 400 ms block is under the -70 LUFS gate)", done.gain_db, t))
             }
             crate::io::LoudnessOutcome::Missed if done.lufs <= soundcraft_dsp::MIN_DB => Some(format!(
                 "the gain took every 400 ms block under the -70 LUFS gate, so the file's loudness cannot be measured (target {} LUFS)",
@@ -338,6 +336,16 @@ fn bounce(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     Ok(out)
+}
+
+/// The warning for a bounce whose loudness could not be measured: not normalized, but lowered to the
+/// true-peak ceiling when it was over it.
+fn unmeasured(why: &str, gain_db: f32, t: crate::io::LoudnessTarget) -> String {
+    if gain_db < 0.0 {
+        format!("{why}: not normalized, but lowered {:.1} dB to the {} dBTP true-peak ceiling", -gain_db, t.true_peak_ceiling_db)
+    } else {
+        format!("{why}: written at unity gain")
+    }
 }
 
 /// `target_lufs` and `true_peak_ceiling_db` (default -1 dBTP), when a loudness was asked for.

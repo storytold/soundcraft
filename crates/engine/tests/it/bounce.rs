@@ -273,6 +273,31 @@ fn unmeasurable_loudness_is_written_at_unity_with_a_warning() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The true-peak ceiling is hard: a loud clip too short to measure is not normalized, but it is
+/// lowered to the ceiling (never raised), and the warning says so.
+#[test]
+fn a_short_loud_clip_is_lowered_to_the_true_peak_ceiling() {
+    let dir = scratch("bounce-lufs-short-loud");
+    // 0.3 s near full scale: under one gating block, true peak far over -1 dBTP.
+    let samples = sine(0.99, 0.3);
+    let mut e = engine_with(samples.clone());
+    let path = dir.join("Mix.wav");
+    let r = bounce_to(&mut e, &path, serde_json::json!({"target_lufs": -16.0, "true_peak_ceiling_db": -1.0}));
+    let tp = r["true_peak_db"].as_f64().unwrap();
+    assert!(tp <= -1.0 + 1e-3, "the written true peak stays under the ceiling: {r}");
+    assert!(r["gain_db"].as_f64().unwrap() < 0.0, "{r}");
+    let warning = r["warning"].as_str().unwrap();
+    assert!(warning.contains("too short") && warning.contains("-1 dBTP true-peak ceiling"), "{r}");
+    // The file holds what was measured: it decodes to the mix lowered by that gain.
+    let (_, file) = craft_audio::decode(&std::fs::read(&path).unwrap(), None).unwrap();
+    let gain = 10f32.powf(r["gain_db"].as_f64().unwrap() as f32 / 20.0);
+    let mix = soundcraft_mix::render_range(e.session(), Range::new(0, samples.len() as i64), 1024);
+    for (f, m) in file.channels.iter().flatten().zip(mix.iter().flatten()) {
+        assert!((f - m * gain).abs() < 1e-6, "{f} vs {}", m * gain);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Sound longer than a gating block whose every 400 ms block is under the -70 LUFS absolute gate has
 /// no integrated loudness either: written at unity gain, with a warning that says it is too quiet
 /// rather than silent or short.

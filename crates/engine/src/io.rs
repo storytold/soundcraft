@@ -373,7 +373,9 @@ fn time_stamp(s: &Session, at: Samples) -> craft_audio::BwfInfo {
 }
 
 /// A loudness to normalize a bounce to: integrated loudness (LUFS, ITU-R BS.1770 / EBU R128) and
-/// a true-peak ceiling (dBTP) the gain may not push past.
+/// a true-peak ceiling (dBTP). The ceiling is hard: the written samples' true peak stays at or under
+/// it, even when the loudness cannot be measured (the bounce is then lowered to it, never raised).
+/// Every format a bounce writes is PCM or lossless, so the file holds those samples.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LoudnessTarget {
     pub lufs: f32,
@@ -387,10 +389,12 @@ pub enum LoudnessOutcome {
     Reached,
     /// The true-peak ceiling held the gain back, so the file is quieter than the target.
     CeilingHeld,
-    /// Silence, or too short to measure (under one 400 ms gating block): written at unity gain.
+    /// Silence, or too short to measure (under one 400 ms gating block): written at unity gain,
+    /// or lowered to the true-peak ceiling when its true peak is over it.
     Unmeasured,
     /// Sound, but every 400 ms block is under the -70 LUFS absolute gate, so it has no
-    /// integrated loudness to move: written at unity gain.
+    /// integrated loudness to move: written at unity gain, or lowered to the true-peak ceiling
+    /// when its true peak is over it.
     TooQuiet,
     /// The gain was applied, but the written file measures more than [`LOUDNESS_TOLERANCE_LU`]
     /// away from the target: blocks it pushed under the -70 LUFS gate no longer count.
@@ -553,7 +557,9 @@ impl Bounce {
             // and all of them were under the absolute gate.
             let quiet = self.peak > 0.0 && i64::try_from(self.done).unwrap_or(i64::MAX) >= self.session.sample_rate.samples(0.4);
             self.outcome = Some(if quiet { LoudnessOutcome::TooQuiet } else { LoudnessOutcome::Unmeasured });
-            return 1.0;
+            // Nothing to normalize, but the ceiling still holds: lower to it, never raise.
+            self.gain_db = (t.true_peak_ceiling_db - true_peak).min(0.0);
+            return soundcraft_dsp::db_to_gain(self.gain_db);
         }
         let mut gain_db = t.lufs - lufs;
         self.outcome = Some(LoudnessOutcome::Reached);
