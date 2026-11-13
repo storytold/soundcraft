@@ -240,6 +240,7 @@ fn grid_ticks(p: &Value) -> i64 {
             "1/1" | "1" | "bar" => TICKS_PER_QUARTER * 4,
             "1/2" => TICKS_PER_QUARTER * 2,
             "1/4" => TICKS_PER_QUARTER,
+            "1/4t" => TICKS_PER_QUARTER * 2 / 3,
             "1/8" => TICKS_PER_QUARTER / 2,
             "1/8t" => TICKS_PER_QUARTER / 3,
             "1/16t" => TICKS_PER_QUARTER / 6,
@@ -431,6 +432,12 @@ fn step_marker(e: &mut Engine, dir: i64) -> Result<Value> {
 mod tests {
     use crate::demo::demo_engine;
     use serde_json::json;
+
+    #[test]
+    fn grid_ticks_accepts_the_quarter_triplet() {
+        use super::{TICKS_PER_QUARTER, grid_ticks};
+        assert_eq!(grid_ticks(&json!({"grid": "1/4t"})), TICKS_PER_QUARTER * 2 / 3);
+    }
 
     #[test]
     fn tempo_constant_with_an_empty_range_sets_the_tempo_at_its_start() {
