@@ -93,7 +93,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Step Input...",
             ["Event", "MIDI Operations"],
             None,
-            "{track?, pitch?: 60 | pitches?: [..], duration?: '1/8'|ticks, velocity?: 100, rest?: bool, advance?: true}",
+            "{track?, pitch?: 60, pitches?: [..] (a chord, instead of pitch), duration?: '1/8'|ticks, velocity?: 100, rest?: bool, advance?: true}",
             has_tracks,
             step_input
         ),

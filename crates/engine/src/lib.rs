@@ -434,6 +434,8 @@ impl Engine {
     /// document is restored.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        // A key the command does not read would be dropped while the call reports success.
+        cmd::keys::check(spec, params)?;
         if self.blocked_while_recording(id) {
             return Err(EngineError::Disabled(id.to_string(), "stop recording first".into()));
         }

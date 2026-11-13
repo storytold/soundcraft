@@ -10,7 +10,7 @@ use soundcraft_model::{AutoParam, AutomationMode, INSERT_SLOTS, Insert, SEND_SLO
 /// Commands for mixer controls, with live input toggles kept outside document history.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!("mix.volume", "Set Volume", [], None, "{tracks?, db: -144..12 | delta_db}", has_selection, volume),
+        cmd!("mix.volume", "Set Volume", [], None, "{tracks?, db | delta_db: -144..12 (or a change in dB)}", has_selection, volume),
         cmd!("mix.pan", "Set Pan", [], None, "{tracks?, pan: -1..1, index?: 0|1}", has_selection, pan),
         cmd!("mix.mute", "Mute", [], Some("Shift+M"), "{tracks?, value?: bool}", has_selection, |e, p| toggle(
             e,
@@ -149,10 +149,10 @@ pub fn specs() -> Vec<CommandSpec> {
             e, p, false
         )),
         cmd!("automation.thin_all", "Thin All", ["Edit", "Automation"], None, "{tolerance?: 0.1}", has_tracks, |e, p| thin(e, p, true)),
-        cmd!("automation.write_to_current", "Write to Current", ["Edit", "Automation"], Some("Cmd+/"), "{tracks?}", has_range, |e, p| write_current(
+        cmd!("automation.write_to_current", "Write to Current", ["Edit", "Automation"], Some("Cmd+/"), "{tracks?, start?, end?}", has_range, |e, p| write_current(
             e, p, false
         )),
-        cmd!("automation.write_to_all", "Write to All Enabled", ["Edit", "Automation"], Some("Cmd+Alt+/"), "{tracks?}", has_range, |e, p| {
+        cmd!("automation.write_to_all", "Write to All Enabled", ["Edit", "Automation"], Some("Cmd+Alt+/"), "{tracks?, start?, end?}", has_range, |e, p| {
             write_current(e, p, true)
         }),
         cmd!(
@@ -160,7 +160,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Convert Volume Automation to Clip Gain",
             ["Edit", "Automation"],
             None,
-            "{tracks?}",
+            "{tracks?, start?, end?}",
             has_range,
             vol_to_clip_gain
         ),
@@ -169,7 +169,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Convert Clip Gain to Volume Automation",
             ["Edit", "Automation"],
             None,
-            "{tracks?}",
+            "{tracks?, start?, end?}",
             has_range,
             clip_gain_to_vol
         ),
