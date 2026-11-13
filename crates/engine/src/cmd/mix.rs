@@ -149,12 +149,24 @@ pub fn specs() -> Vec<CommandSpec> {
             e, p, false
         )),
         cmd!("automation.thin_all", "Thin All", ["Edit", "Automation"], None, "{tolerance?: 0.1}", has_tracks, |e, p| thin(e, p, true)),
-        cmd!("automation.write_to_current", "Write to Current", ["Edit", "Automation"], Some("Cmd+/"), "{tracks?, start?, end?}", has_range, |e, p| write_current(
-            e, p, false
-        )),
-        cmd!("automation.write_to_all", "Write to All Enabled", ["Edit", "Automation"], Some("Cmd+Alt+/"), "{tracks?, start?, end?}", has_range, |e, p| {
-            write_current(e, p, true)
-        }),
+        cmd!(
+            "automation.write_to_current",
+            "Write to Current",
+            ["Edit", "Automation"],
+            Some("Cmd+/"),
+            "{tracks?, start?, end?}",
+            has_range,
+            |e, p| write_current(e, p, false)
+        ),
+        cmd!(
+            "automation.write_to_all",
+            "Write to All Enabled",
+            ["Edit", "Automation"],
+            Some("Cmd+Alt+/"),
+            "{tracks?, start?, end?}",
+            has_range,
+            |e, p| { write_current(e, p, true) }
+        ),
         cmd!(
             "automation.volume_to_clip_gain",
             "Convert Volume Automation to Clip Gain",

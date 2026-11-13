@@ -164,7 +164,7 @@ fn many_or_long_unknown_keys_keep_the_error_short() {
     let msg = bad_params(e.execute("mix.clear_solos", &Value::Object(params)), "mix.clear_solos");
     assert_eq!(msg, "unknown parameters `k00`, `k01`, `k02`, `k03`, `k04`, `k05`, `k06`, `k07` and 12 more; it takes no parameters");
     let long = "level_db".repeat(1000);
-    let msg = bad_params(e.execute("mix.send", &json!({ long: 1 })), "mix.send");
+    let msg = bad_params(e.execute("mix.send", &json!({ long.clone(): 1 })), "mix.send");
     assert_eq!(msg, format!("unknown parameter `{}…`; it takes track, slot, bus, level_db, pre_fader", &long[..64]));
 }
 

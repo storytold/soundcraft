@@ -201,8 +201,18 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"clips": ids}))
             }
         ),
-        cmd!("track.input", "Track Input", [], None, "{tracks?, input: none|bus name|hardware name, create_bus?: true}", has_selection, |e, p| route(e, p, true)),
-        cmd!("track.output", "Track Output", [], None, "{tracks?, output: main|none|bus name, create_bus?: true}", has_selection, |e, p| route(e, p, false)),
+        cmd!(
+            "track.input",
+            "Track Input",
+            [],
+            None,
+            "{tracks?, input: none|bus name|hardware name, create_bus?: true}",
+            has_selection,
+            |e, p| route(e, p, true)
+        ),
+        cmd!("track.output", "Track Output", [], None, "{tracks?, output: main|none|bus name, create_bus?: true}", has_selection, |e, p| route(
+            e, p, false
+        )),
         cmd!("track.timebase", "Track Timebase", [], None, "{tracks?, ticks: bool}", has_selection, |e, p| flag(
             e,
             p,

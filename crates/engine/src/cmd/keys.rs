@@ -48,7 +48,19 @@ const UNPAIRED: [(&str, &[&str]); 5] = [
     // Its `tracks` are names in the other session.
     ("track", &["file.import_session_data"]),
     ("clip", &["clip.auto_rename", "clip.clear", "edit.select"]),
-    ("clips", &["clip.inspect", "edit.fades_create", "edit.trim_clip", "midi.note_add", "midi.note_delete", "midi.note_edit", "midi.notes", "midi.notes_move"]),
+    (
+        "clips",
+        &[
+            "clip.inspect",
+            "edit.fades_create",
+            "edit.trim_clip",
+            "midi.note_add",
+            "midi.note_delete",
+            "midi.note_edit",
+            "midi.notes",
+            "midi.notes_move",
+        ],
+    ),
     ("length", &["edit.select", "edit.tce_to_timeline", "edit.trim_clip", "markers.add"]),
 ];
 
@@ -102,7 +114,8 @@ pub fn check(spec: &CommandSpec, params: &Value) -> Result<()> {
     let unknown: Vec<&str> = obj.keys().map(String::as_str).filter(|k| !accepted(spec.id, &keys, k)).collect();
     let Some(first) = unknown.first() else { return Ok(()) };
     let named: Vec<String> = unknown.iter().take(MAX_NAMED).map(|k| format!("`{}`", shown(k))).collect();
-    let mut msg = if unknown.len() == 1 { format!("unknown parameter {}", named.join(", ")) } else { format!("unknown parameters {}", named.join(", ")) };
+    let mut msg =
+        if unknown.len() == 1 { format!("unknown parameter {}", named.join(", ")) } else { format!("unknown parameters {}", named.join(", ")) };
     if unknown.len() > MAX_NAMED {
         msg.push_str(&format!(" and {} more", unknown.len() - MAX_NAMED));
     }
@@ -154,7 +167,8 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 /// A key name: lower-case ASCII letters, digits and `_`, not starting with a digit.
 fn is_key(s: &str) -> bool {
-    s.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_') && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    s.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// The byte index in `s` of the `}` that closes a `{` just before `s`, skipping nested brackets.

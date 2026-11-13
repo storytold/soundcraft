@@ -32,17 +32,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.cut_all_automation", "All Automation", ["Edit", "Cut Special"], None, "{tracks?, start?, end?}", has_range, |e, p| {
             super::edit_more::cut_all_automation(e, p)
         }),
-        cmd!("edit.clear_all_automation", "All Automation", ["Edit", "Clear Special"], None, "{tracks?, start?, end?}", has_range, |e, p| clear_automation(e, p, None)),
-        cmd!("edit.clear_pan_automation", "Pan Automation", ["Edit", "Clear Special"], None, "{tracks?, start?, end?}", has_range, |e, p| clear_automation(
-            e,
-            p,
-            Some("pan")
-        )),
-        cmd!("edit.clear_plugin_automation", "Plugin Automation", ["Edit", "Clear Special"], None, "{tracks?, start?, end?}", has_range, |e, p| clear_automation(
-            e,
-            p,
-            Some("plugin")
-        )),
+        cmd!("edit.clear_all_automation", "All Automation", ["Edit", "Clear Special"], None, "{tracks?, start?, end?}", has_range, |e, p| {
+            clear_automation(e, p, None)
+        }),
+        cmd!("edit.clear_pan_automation", "Pan Automation", ["Edit", "Clear Special"], None, "{tracks?, start?, end?}", has_range, |e, p| {
+            clear_automation(e, p, Some("pan"))
+        }),
+        cmd!("edit.clear_plugin_automation", "Plugin Automation", ["Edit", "Clear Special"], None, "{tracks?, start?, end?}", has_range, |e, p| {
+            clear_automation(e, p, Some("plugin"))
+        }),
         cmd!(
             "edit.paste_repeat_to_fill",
             "Repeat to Fill Selection",
@@ -95,7 +93,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.insert_silence", "Insert Silence", ["Edit"], Some("Cmd+Shift+E"), "{tracks?, start?, end?}", has_range, insert_silence),
         cmd!("edit.separate", "At Selection", ["Edit", "Separate"], Some("Cmd+E"), "{tracks?, at?|start/end}", has_selection, separate),
         cmd!("edit.separate_on_grid", "On Grid", ["Edit", "Separate"], None, "{tracks?, start?, end?}", has_range, separate_on_grid),
-        cmd!("edit.separate_at_transients", "At Transients", ["Edit", "Separate"], None, "{sensitivity?: 0..1, tracks?, start?, end?}", has_range, separate_at_transients),
+        cmd!(
+            "edit.separate_at_transients",
+            "At Transients",
+            ["Edit", "Separate"],
+            None,
+            "{sensitivity?: 0..1, tracks?, start?, end?}",
+            has_range,
+            separate_at_transients
+        ),
         cmd!("edit.heal", "Heal Separation", ["Edit"], Some("Cmd+H"), "{tracks?, start?, end?}", has_selection, heal),
         cmd!("edit.trim_to_selection", "To Selection", ["Edit", "Trim"], Some("Cmd+T"), "{tracks?, start?, end?}", has_range, trim_to_selection),
         cmd!("edit.trim_start_to_insertion", "Start to Insertion", ["Edit", "Trim"], Some("Alt+Shift+7"), "{tracks?, at?}", has_selection, |e, p| {
@@ -137,7 +143,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.fades_delete", "Delete", ["Edit", "Fades"], None, "{tracks?, start?, end?}", has_selection, fades_delete),
         cmd!("edit.fade_to_start", "Fade to Start", ["Edit", "Fades"], Some("Cmd+Ctrl+D"), "{tracks?}", has_selection, |e, p| fade_to(e, p, true)),
         cmd!("edit.fade_to_end", "Fade to End", ["Edit", "Fades"], Some("Cmd+Ctrl+G"), "{tracks?}", has_selection, |e, p| fade_to(e, p, false)),
-        cmd!("edit.nudge", "Nudge", [], Some("Plus/Minus"), "{direction: 1|-1, count?: n, next?: bool (next larger value), clips?}", has_selection, nudge),
+        cmd!(
+            "edit.nudge",
+            "Nudge",
+            [],
+            Some("Plus/Minus"),
+            "{direction: 1|-1, count?: n, next?: bool (next larger value), clips?}",
+            has_selection,
+            nudge
+        ),
         cmd!(
             noundo "edit.mode",
             "Edit Mode",

@@ -94,7 +94,15 @@ pub fn specs() -> Vec<CommandSpec> {
             add_marker
         ),
         cmd!("markers.delete", "Delete Memory Location", [], None, "{number | id | name}", always, delete_marker),
-        cmd!("markers.edit", "Edit Memory Location", [], None, "{number | id | name, name?, rename?: new name (when `name` picks the location), comments?, at?, color?: [r,g,b] | null}", always, edit_marker),
+        cmd!(
+            "markers.edit",
+            "Edit Memory Location",
+            [],
+            None,
+            "{number | id | name, name?, rename?: new name (when `name` picks the location), comments?, at?, color?: [r,g,b] | null}",
+            always,
+            edit_marker
+        ),
         cmd!(noundo "markers.recall", "Recall Memory Location", [], Some("Period + n + Period"), "{number | id | name}", always, recall_marker),
         cmd!(noundo "markers.next", "Go to Next Marker", [], None, "{}", always, |e, _| step_marker(e, 1)),
         cmd!(noundo "markers.previous", "Go to Previous Marker", [], None, "{}", always, |e, _| step_marker(e, -1)),
