@@ -82,3 +82,32 @@ fn the_midi_editor_keeps_the_key_for_its_selected_notes() {
     assert!(h.state().midi.selected.is_empty(), "the notes were deleted");
     assert_eq!(clips(h.state(), "Keys"), clips_before, "and the clip was not cleared with them");
 }
+
+#[test]
+fn delete_and_backspace_clear_after_midi_notes_then_an_audio_range_is_selected() {
+    for key in [Key::Delete, Key::Backspace] {
+        let (ctx, mut app) = rig(OperatingSystem::Nix);
+        app.ui.show_midi_editor = true;
+        let end: i64 = 48_000 * 600;
+        app.run("edit.select", json!({"tracks": ["Keys"], "start": 0, "end": end})).unwrap();
+        app.midi.selected = vec![0, 1];
+        app.run("edit.select", json!({"tracks": ["Kick"], "start": 0, "end": end})).unwrap();
+        assert!(clips(&app, "Kick") > 0);
+        press(&ctx, &mut app, key, Modifiers::NONE);
+        assert_eq!(clips(&app, "Kick"), 0, "{key:?}");
+        assert!(app.midi.selected.is_empty(), "{key:?} drops the stale note selection");
+    }
+}
+
+#[test]
+fn delete_and_backspace_clear_in_the_edit_window_drawn_beside_a_separate_mix_window() {
+    for key in [Key::Delete, Key::Backspace] {
+        let (ctx, mut app) = rig(OperatingSystem::Nix);
+        app.ui.mix_separate = true;
+        app.ui.window = soundcraft_ui_egui::MainWindow::Mix;
+        let end: i64 = 48_000 * 600;
+        app.run("edit.select", json!({"tracks": ["Kick"], "start": 0, "end": end})).unwrap();
+        press(&ctx, &mut app, key, Modifiers::NONE);
+        assert_eq!(clips(&app, "Kick"), 0, "{key:?}");
+    }
+}
