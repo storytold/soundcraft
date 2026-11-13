@@ -550,7 +550,7 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
     ui.painter().rect_filled(r, 0.0, t.slot_well);
     let ui = column_ui(ui, "io", r);
     let row = |y: f32, h: f32| (r.height() >= y + h + 1.0).then_some(Rect::from_min_size(r.min + vec2(7.0, y), vec2(r.width() - 14.0, h)));
-    if let Some(input) = row(4.0, 15.0) {
+    if let Some(input) = row(4.0, 15.0).filter(|_| crate::mix_window::has_input_selector(track.kind)) {
         let input_name = crate::mix_window::input_name(app, track);
         let resp = header_selector(&ui, input, ui.scope_id().with(("in", id.0)), &input_name, t.text, true, &format!("Input for {}", track.name));
         crate::mix_window::route_popup(app, &resp.on_hover_text("Input"), id, true);
