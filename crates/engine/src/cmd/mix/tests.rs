@@ -263,6 +263,18 @@ fn retargeting_a_send_keeps_its_settings() {
     assert_eq!((sl.level_db, sl.pan, sl.mute, sl.pre_fader), (-9.0, 0.5, true, true));
 }
 
+#[test]
+fn a_new_send_starts_at_the_documented_level() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 1, "name": "Vox", "format": "mono"})).unwrap();
+    e.execute("mix.new_bus", &json!({"name": "Rev"})).unwrap();
+    e.execute("mix.send", &json!({"track": "Vox", "bus": "Rev"})).unwrap();
+    let level = e.session().tracks[0].mixer.sends[0].as_ref().unwrap().level_db;
+    assert_eq!(level, -144.0);
+    let doc = crate::cmd::command_specs().iter().find(|c| c.id == "mix.send").unwrap().params;
+    assert!(doc.contains("level_db?: -144..12, default -144 (silent;"), "{doc}");
+}
+
 fn grouped_demo() -> Engine {
     let mut e = crate::demo::demo_engine();
     e.execute("mix.volume", &json!({"tracks": [3], "db": 0.0})).unwrap();
