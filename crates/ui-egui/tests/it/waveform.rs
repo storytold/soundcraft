@@ -101,5 +101,6 @@ fn overlapped_crossfades_show_the_outgoing_clip_too() {
     let ctx = egui::Context::default();
     let plain = waveforms(&ctx, &mut app, "Bass", 0.0);
     app.engine.execute("view.waveform_overlapped_crossfades", &json!({"value": true})).unwrap();
-    assert_eq!(waveforms(&ctx, &mut app, "Bass", 0.0), plain + 1);
+    // Both clips of the crossfade also show under the zone: the outgoing one right of the cut, the incoming one left of it.
+    assert_eq!(waveforms(&ctx, &mut app, "Bass", 0.0), plain + 2);
 }
