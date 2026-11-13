@@ -7,6 +7,7 @@ use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_model::{ChannelFormat, ClipContent, Group, GroupId, Playlist, Route, Session, Track, TrackHeight, TrackId, TrackKind};
 
+/// Returns the track command specifications exposed to UI and automation clients.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -14,7 +15,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New...",
             ["Track"],
             Some("Cmd+Shift+N"),
-            "{count?: 1, format?: mono|stereo|5.1…, kind?: audio|aux|master|midi|instrument|vca|folder, name?, timebase?: samples|ticks, instrument?: plugin id}",
+            "{count?: 1, format?: mono|stereo|5.1…, kind?: audio|aux|master|midi|instrument|vca|folder, name?, timebase?: samples|ticks, instrument?: plugin id, rows?: [objects with the same fields] (1–128 tracks total)}",
             always,
             new_track
         ),
@@ -99,8 +100,8 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("track.bounce", "Bounce...", ["Track"], Some("Cmd+Alt+Shift+B"), "{tracks?}", has_selection, commit),
         cmd!("track.bypass_inserts", "All", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, bypass_inserts),
         cmd!("track.mute_sends", "All", ["Track", "Mute Sends"], None, "{tracks?, mute?: bool}", has_selection, mute_sends),
-        cmd!("track.set_record_to_input_only", "Set Record Tracks to Input Only", ["Track"], Some("Alt+K"), "{}", always, |e, _| {
-            let s = e.session_mut();
+        cmd!(noundo "track.set_record_to_input_only", "Set Record Tracks to Input Only", ["Track"], Some("Alt+K"), "{}", always, |e, _| {
+            let s = e.runtime_session_mut();
             let mut n = 0;
             for t in &mut s.tracks {
                 if t.mixer.record_arm {
@@ -231,7 +232,37 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+/// Creates either one legacy row or several validated rows as one command.
 fn new_track(e: &mut Engine, p: &Value) -> Result<Value> {
+    let ids = if let Some(rows) = p.get("rows") {
+        let rows = rows.as_array().ok_or_else(|| bad("track.new", "`rows` must be an array"))?;
+        if rows.is_empty() || rows.len() > 128 {
+            return Err(bad("track.new", "`rows` must contain 1–128 rows"));
+        }
+        let mut total = 0_i64;
+        for row in rows {
+            if !row.is_object() || row.get("rows").is_some() {
+                return Err(bad("track.new", "each row must be an object without nested rows"));
+            }
+            total = total.saturating_add(i64_or(row, "count", 1).clamp(1, 128));
+        }
+        if total > 128 {
+            return Err(bad("track.new", "a single creation is limited to 128 tracks"));
+        }
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.extend(new_track_row(e, row)?);
+        }
+        ids
+    } else {
+        new_track_row(e, p)?
+    };
+    e.session_mut().edit.selected_tracks = ids.clone();
+    Ok(json!({"tracks": ids}))
+}
+
+/// All rows run inside one command, so failures roll back and Undo covers the whole creation.
+fn new_track_row(e: &mut Engine, p: &Value) -> Result<Vec<TrackId>> {
     let count = i64_or(p, "count", 1).clamp(1, 128);
     let kind = match str_param(p, "kind") {
         Some(k) => TrackKind::from_id(k).ok_or_else(|| bad("track.new", format!("unknown kind `{k}`")))?,
@@ -271,8 +302,7 @@ fn new_track(e: &mut Engine, p: &Value) -> Result<Value> {
         }
         ids.push(id);
     }
-    s.edit.selected_tracks = ids.clone();
-    Ok(json!({"tracks": ids}))
+    Ok(ids)
 }
 
 fn group(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -453,11 +483,11 @@ fn split_mono(e: &mut Engine, p: &Value) -> Result<Value> {
                                 .ok_or_else(|| bad("track.split_into_mono", "split would copy too much audio"))?;
                             // Keep the full channel: the cloned clips retain their offsets, stretch,
                             // gain and fades, and every reader sees genuine mono media (including saves).
-                            let buf = soundcraft_audio_io::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![samples.clone()] };
+                            let buf = craft_audio::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![samples.clone()] };
                             let original = s.source(*source);
                             let name = format!("{}.{suffix}.wav", original.map_or(c.name.as_str(), |source| source.name.as_str()));
                             let time_reference = original.map_or(0, |source| source.time_reference);
-                            let id = crate::io::add_source(s, &name, buf, None, soundcraft_audio_io::FileFormat::Wav);
+                            let id = crate::io::add_source(s, &name, buf, None, soundcraft_model::FileFormat::Wav);
                             if let Some(source) = s.sources.iter_mut().find(|source| source.id == id) {
                                 source.time_reference = time_reference;
                             }

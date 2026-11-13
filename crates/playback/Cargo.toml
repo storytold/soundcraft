@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 soundcraft-time.workspace = true
-soundcraft-audio-io.workspace = true
+craft-audio.workspace = true
 soundcraft-model.workspace = true
 soundcraft-mix.workspace = true
 soundcraft-dsp.workspace = true
