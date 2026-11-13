@@ -6,8 +6,9 @@
 // The site folder is a built copy of the web app: `trunk build --release` in apps/soundcraft-web
 // (dist/web), or the unpacked `packaging/web/package.sh` zip. Exits non-zero on the first failed check.
 //
-// Not repeated here: the 30 s request timeout and the 64-call queue limit belong to craft-web-api and are
-// covered by that crate's own tests.
+// Not repeated here: the 30 s request timeout belongs to craft-web-api and is covered by that crate's own
+// tests. The limit on calls waiting for the app (64) is exercised below: it needs a craft-web-api that has it
+// (craft-libs#733) and the app's own bounded queue.
 import { createRequire } from 'node:module'
 import http from 'node:http'
 import { readFile } from 'node:fs/promises'
@@ -85,6 +86,20 @@ try {
   // Several calls at once all settle.
   const settled = await page.evaluate(() => Promise.all([1, 2, 3, 4, 5].map(() => window.soundcraft.uiInspect())).then((r) => r.length))
   assert.equal(settled, 5, 'five concurrent calls all settle')
+
+  // Overload: far more calls than may wait at once. The ones over the limit are refused at once as busy, the
+  // ones within it are answered, and the page can call again afterwards (the slots came back).
+  const burst = await page.evaluate(() => Promise.all(
+    Array.from({ length: 300 }, () => window.soundcraft.uiInspect().then(() => 'ok', (e) => String((e && e.message) || e))),
+  ))
+  const refused = burst.filter((r) => r !== 'ok')
+  console.log(`burst of ${burst.length}: ${burst.length - refused.length} answered, ${refused.length} refused (${refused[0]})`)
+  assert(refused.length > 0, 'calls beyond the limit are refused')
+  assert(refused.every((r) => /busy/i.test(r)), `every refusal says busy: ${refused.find((r) => !/busy/i.test(r))}`)
+  assert(burst.includes('ok'), 'the calls within the limit are answered')
+  assert.equal(burst.length, 300, 'every call settled, none was left waiting')
+  const afterBurst = await call('uiInspect')
+  assert(afterBurst.ok, `a call after the burst is accepted again: ${JSON.stringify(afterBurst).slice(0, 200)}`)
 
   assert.deepEqual(errors, [], 'no uncaught page errors')
   console.log('PASS window.soundcraft: all six functions, the failure paths and concurrent calls work against the real app')
