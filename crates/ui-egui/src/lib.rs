@@ -27,6 +27,7 @@ pub mod menus;
 pub mod mix_window;
 pub mod palette;
 pub mod panels;
+pub mod preferences;
 pub mod shortcuts;
 pub mod theme;
 pub mod toolbar;
@@ -114,6 +115,13 @@ pub struct UiState {
     pub show_workspace: bool,
     pub show_configurations: bool,
     pub show_playback_engine: bool,
+    /// Setup › Preferences. The selected page is kept per machine; the search and staged values
+    /// live in [`preferences::PreferencesState`] and are discarded when the window closes.
+    pub show_preferences: bool,
+    pub preferences_page: preferences::PreferencesPage,
+    pub preferences_window_pos: Option<[f32; 2]>,
+    pub reduce_visual_effects: preferences::ReduceVisualEffects,
+    pub undo_levels: usize,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
@@ -182,6 +190,11 @@ impl Default for UiState {
             show_workspace: false,
             show_configurations: false,
             show_playback_engine: false,
+            show_preferences: false,
+            preferences_page: preferences::PreferencesPage::default(),
+            preferences_window_pos: None,
+            reduce_visual_effects: preferences::ReduceVisualEffects::default(),
+            undo_levels: 64,
             audio: soundcraft_playback::AudioConfig::default(),
             mix_separate: false,
             show_io_setup: false,
@@ -278,6 +291,8 @@ pub struct SoundApp {
     pub native_menu_bar: bool,
     /// Folder for crash-recovery autosaves (native apps set it).
     pub autosave_dir: Option<std::path::PathBuf>,
+    /// Where the takes of a session never saved go without an autosave folder: made once per run, under the temporary folder.
+    fallback_take_dir: Option<std::path::PathBuf>,
     /// Writes the open session's autosaves in the background, once there is something to write.
     autosaver: Option<soundcraft_engine::autosave::Autosaver>,
     /// The document revision last handed to the autosaver (0 once that autosave is stale).
@@ -302,6 +317,7 @@ pub struct SoundApp {
     pub ops: ops_windows::OpsState,
     pub extra: extra_windows::ExtraState,
     pub palette: palette::PaletteState,
+    pub preferences: preferences::PreferencesState,
     /// Bring the separate Mix window to the front on the next frame.
     pub(crate) focus_mix: bool,
     /// Scroll Into View: the track each window brings to its top (Edit) or left (Mix) when it

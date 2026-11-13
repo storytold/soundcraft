@@ -472,7 +472,7 @@ fn midi_inputs(e: &mut Engine, p: &Value) -> Result<Value> {
 fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "file.import_session_data";
     let path = str_param(p, "path").filter(|x| !x.trim().is_empty()).ok_or_else(|| bad(id, "`path` required"))?.to_string();
-    let text_v = crate::io::read_text(&path)?;
+    let text_v = crate::io::read_session_text(&path)?;
     let other = Session::from_json(&text_v).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
     let names: Option<Vec<String>> =
         p.get("tracks").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect());
@@ -761,8 +761,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let wav = dir.join("hit.wav");
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4_800]] };
-        std::fs::write(&wav, soundcraft_audio_io::encode(&buf, &soundcraft_audio_io::EncodeOptions::default()).unwrap()).unwrap();
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4_800]] };
+        std::fs::write(&wav, craft_audio::encode(&buf, &craft_audio::EncodeOptions::default()).unwrap()).unwrap();
         let mut donor = Engine::default();
         donor.execute("track.new", &json!({"count": 1, "name": "Pads", "kind": "instrument"})).unwrap();
         donor.execute("mix.sampler_load", &json!({"track": "Pads", "path": wav.to_string_lossy()})).unwrap();

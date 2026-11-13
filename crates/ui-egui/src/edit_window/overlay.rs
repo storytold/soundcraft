@@ -4,6 +4,12 @@ use super::layout::x_of;
 use super::scroll::{FollowFrame, follow_update};
 use super::{Color32, Gesture, Rect, Samples, SoundApp, Stroke, StrokeKind, Tokens, TrackId, Ui, json, ops, pos2, rgb};
 
+/// The playback cursor is red only while recording; plain playback draws it in its own neutral
+/// grey, apart from the insertion colour of the edit cursor that stands beside it.
+pub(super) fn playhead_colour(t: &Tokens, recording: bool) -> Color32 {
+    if recording { t.playhead } else { t.playback }
+}
+
 /// Selection overlay, insertion point and playhead across rulers and tracks.
 /// The insertion point stays drawn while playing, beside the moving playhead.
 /// While playing, auto-scroll keeps the playhead in view for the follow
@@ -55,7 +61,7 @@ pub(super) fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
     }
     if app.is_playing() {
         let x = x_of(s, tl, app.position());
-        painter.line_segment([pos2(x, area.min.y), pos2(x, area.max.y)], Stroke::new(1.5, t.playhead));
+        painter.line_segment([pos2(x, area.min.y), pos2(x, area.max.y)], Stroke::new(1.5, playhead_colour(&t, app.engine.transport.recording)));
         // Session reads first (owned copies), then the layout mutation: the
         // two borrow disjoint fields.
         let pos = app.position();
