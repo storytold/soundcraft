@@ -143,6 +143,9 @@ pub struct Tokens {
     pub selection: Color32,
     pub playhead: Color32,
     pub insertion: Color32,
+    /// The playback line while the transport runs without recording: a mid grey, set well apart
+    /// from `insertion` (the edit cursor stands beside it while playing) in both themes.
+    pub playback: Color32,
     pub solo: Color32,
     pub mute: Color32,
     pub rec: Color32,
@@ -253,6 +256,7 @@ impl Tokens {
         selection: Color32::from_rgba_premultiplied(40, 70, 110, 110),
         playhead: Color32::from_rgb(232, 60, 50),
         insertion: Color32::from_rgb(230, 230, 230),
+        playback: Color32::from_rgb(140, 140, 142),
         solo: Color32::from_rgb(222, 196, 52),
         mute: Color32::from_rgb(232, 148, 40),
         rec: Color32::from_rgb(214, 52, 46),
@@ -338,6 +342,7 @@ impl Tokens {
         selection: Color32::from_rgba_premultiplied(100, 145, 205, 90),
         playhead: Color32::from_rgb(210, 48, 42),
         insertion: Color32::from_rgb(35, 36, 40),
+        playback: Color32::from_rgb(110, 113, 119),
         solo: Color32::from_rgb(178, 145, 20),
         mute: Color32::from_rgb(194, 106, 22),
         rec: Color32::from_rgb(190, 42, 38),
