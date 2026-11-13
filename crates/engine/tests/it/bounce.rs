@@ -85,7 +85,7 @@ fn an_integer_bounce_reports_the_levels_of_the_clipped_file() {
     let r = e.execute("file.bounce_mix", &serde_json::json!({"path": path, "bit_depth": 16, "dither": false, "start": 0, "end": frames})).unwrap();
     let (_, file) = craft_audio::decode(&std::fs::read(&path).unwrap(), None).unwrap();
     assert!(file.peak() <= 1.0);
-    let mut meter = soundcraft_dsp::meter::LoudnessMeter::new(sr as f32, file.num_channels());
+    let mut meter = soundcraft_dsp::meter::LoudnessMeter::new(sr as f32, file.channels.len());
     meter.process(&file.channels, file.frames());
     for (key, value, tolerance) in [
         ("peak_db", soundcraft_dsp::offline::peak_db(&file.channels), 0.01),
