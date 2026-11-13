@@ -5,14 +5,20 @@ use serde_json::json;
 use soundcraft_model::TrackId;
 use soundcraft_ui_egui::{Services, SoundApp, menus};
 
-/// Loops the Snare clip three times, selects it and opens Clip > Unloop... from the menu.
-fn unloop_app() -> (SoundApp, TrackId, usize) {
+/// Loops the Snare clip three times and selects it.
+fn looped_app() -> (SoundApp, TrackId, usize) {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let track = app.engine.session().track_by_name("Snare").unwrap().id;
     let clip = app.engine.session().track(track).unwrap().clips()[0].id;
     app.run("clip.loop", json!({"clip": clip.0, "count": 3})).unwrap();
     app.run("edit.select", json!({"clips": [clip.0]})).unwrap();
     let looped = app.engine.session().track(track).unwrap().clips().len();
+    (app, track, looped)
+}
+
+/// Loops the Snare clip three times, selects it and opens Clip > Unloop... from the menu.
+fn unloop_app() -> (SoundApp, TrackId, usize) {
+    let (mut app, track, looped) = looped_app();
     menus::invoke_menu(&mut app, "clip.unloop", "Clip > Unloop...");
     assert_eq!(app.dialogs.open_name(), Some("unloop"));
     (app, track, looped)
@@ -34,7 +40,12 @@ fn unloop_dialog() -> (Harness<'static, SoundApp>, TrackId, usize) {
 }
 
 fn clips(h: &Harness<'_, SoundApp>, track: TrackId) -> Vec<Option<u64>> {
-    h.state().engine.session().track(track).map(|t| t.clips().iter().map(|c| c.loop_id).collect()).unwrap_or_default()
+    loop_ids(h.state(), track)
+}
+
+/// The loop id of each clip on `track`.
+fn loop_ids(app: &SoundApp, track: TrackId) -> Vec<Option<u64>> {
+    app.engine.session().track(track).map(|t| t.clips().iter().map(|c| c.loop_id).collect()).unwrap_or_default()
 }
 
 #[test]
@@ -86,26 +97,70 @@ fn a_flatten_click_with_enter_in_the_same_frame_flattens() {
     // The harness sends a pointer release and a key press in separate frames, so the frames are run by hand.
     let (mut app, track, looped) = unloop_app();
     let ctx = egui::Context::default();
-    let frame = |app: &mut SoundApp, events: Vec<Event>| {
-        let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), events, ..Default::default() };
-        ctx.run_ui(raw, |ui| {
-            app.logic(ui.ctx());
-            app.ui(ui);
-        })
-        .textures_delta
-        .clear();
-    };
     let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
     for _ in 0..3 {
-        frame(&mut app, vec![]);
+        run_frame(&ctx, &mut app, vec![]);
     }
-    frame(&mut app, vec![Event::PointerMoved(pos)]);
-    frame(&mut app, vec![button(true)]);
-    let enter = Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
-    frame(&mut app, vec![button(false), enter]);
+    run_frame(&ctx, &mut app, vec![Event::PointerMoved(pos)]);
+    run_frame(&ctx, &mut app, vec![button(true)]);
+    run_frame(&ctx, &mut app, vec![button(false), enter_key(false)]);
     assert_eq!(app.dialogs.open_name(), None);
-    let loops: Vec<_> = app.engine.session().track(track).unwrap().clips().iter().map(|c| c.loop_id).collect();
-    assert_eq!(loops, vec![None; looped]);
+    assert_eq!(loop_ids(&app, track), vec![None; looped]);
+}
+
+/// Runs one frame of `app` with `events`.
+fn run_frame(ctx: &egui::Context, app: &mut SoundApp, events: Vec<Event>) {
+    let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), events, ..Default::default() };
+    ctx.run_ui(raw, |ui| {
+        app.logic(ui.ctx());
+        app.ui(ui);
+    })
+    .textures_delta
+    .clear();
+}
+
+fn enter_key(repeat: bool) -> Event {
+    Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat, modifiers: Modifiers::NONE }
+}
+
+fn enter_up() -> Event {
+    Event::Key { key: Key::Enter, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE }
+}
+
+#[test]
+fn an_unloop_dialog_that_replaces_an_open_dialog_ignores_the_enter_of_its_first_frame() {
+    let (mut app, track, looped) = looped_app();
+    let before = loop_ids(&app, track);
+    let ctx = egui::Context::default();
+    menus::invoke_menu(&mut app, "setup.session", "Setup > Session");
+    run_frame(&ctx, &mut app, vec![]);
+    run_frame(&ctx, &mut app, vec![]);
+    assert_eq!(app.dialogs.open_name(), Some("session"));
+    menus::invoke_menu(&mut app, "clip.unloop", "Clip > Unloop...");
+    run_frame(&ctx, &mut app, vec![enter_key(false), enter_up()]);
+    assert_eq!(app.dialogs.open_name(), Some("unloop"), "the opening Enter leaves the Unloop dialog open");
+    assert_eq!(loop_ids(&app, track), before, "the opening Enter does not unloop");
+    run_frame(&ctx, &mut app, vec![enter_key(false)]);
+    assert_eq!(app.dialogs.open_name(), None);
+    assert_eq!(loop_ids(&app, track).len(), looped - 2, "the next Enter presses Remove");
+}
+
+#[test]
+fn a_held_enter_does_not_press_remove_until_it_is_pressed_again() {
+    let (mut app, track, looped) = looped_app();
+    let before = loop_ids(&app, track);
+    let ctx = egui::Context::default();
+    run_frame(&ctx, &mut app, vec![]);
+    menus::invoke_menu(&mut app, "clip.unloop", "Clip > Unloop...");
+    run_frame(&ctx, &mut app, vec![enter_key(false)]);
+    run_frame(&ctx, &mut app, vec![enter_key(true)]);
+    run_frame(&ctx, &mut app, vec![enter_key(true)]);
+    assert_eq!(app.dialogs.open_name(), Some("unloop"), "the held Enter's repeats leave the dialog open");
+    assert_eq!(loop_ids(&app, track), before, "the held Enter's repeats do not unloop");
+    run_frame(&ctx, &mut app, vec![enter_up()]);
+    run_frame(&ctx, &mut app, vec![enter_key(false)]);
+    assert_eq!(app.dialogs.open_name(), None);
+    assert_eq!(loop_ids(&app, track).len(), looped - 2, "a new press of Enter presses Remove");
 }
 
 #[test]
