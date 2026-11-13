@@ -5,6 +5,10 @@
 //! rules in `shortcuts::handle` (text fields keep their keys, dialogs take none, Commands Focus).
 //! So a key equivalent goes back to egui as the input its key-down would have been
 //! ([`NativeMenu::raw_input`]), and only a click runs the item like an in-window menu click.
+//!
+//! AppKit also takes the key equivalent of a disabled item, so while a text field has the keyboard
+//! the Edit items a text field handles ([`TEXT_EDIT`]) stay enabled, and choosing one, by key or by
+//! click, gives the field its input rather than running the session's command.
 use muda::accelerator::Accelerator;
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use objc2::MainThreadMarker;
@@ -40,18 +44,26 @@ pub struct NativeMenu {
     keys: Vec<(egui::Key, egui::Modifiers)>,
     /// When `sync` last walked the entries; see `SYNC_EVERY`.
     last_sync: Option<std::time::Instant>,
+    /// Whether a text field had the keyboard at the last `sync`.
+    text_focused: bool,
+    ctx: egui::Context,
 }
 
 /// `sync` walks every menu leaf (~500), so it runs a few times a second rather than every frame,
-/// and right after a menu click.
+/// and right after a menu click or a change of keyboard focus.
 const SYNC_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The Edit commands a focused text field handles itself: undo and redo of its text, the clipboard
+/// and selecting all of it.
+const TEXT_EDIT: [&str; 6] = ["edit.undo", "edit.redo", "edit.cut", "edit.copy", "edit.paste", "edit.select_all"];
 
 impl NativeMenu {
     /// Called on the UI thread after eframe has created NSApplication.
     pub fn new(app: &SoundApp, ctx: &egui::Context) -> muda::Result<Self> {
         let menu = Menu::new();
         let (tx, events) = channel();
-        let mut native = Self { menu, entries: Vec::new(), events, clicks: Vec::new(), keys: Vec::new(), last_sync: None };
+        let mut native =
+            Self { menu, entries: Vec::new(), events, clicks: Vec::new(), keys: Vec::new(), last_sync: None, text_focused: false, ctx: ctx.clone() };
         let app_menu = Submenu::new("SoundCraft", true);
         native.add_item(app, &app_menu, "About SoundCraft", "", Some("window.about".into()))?;
         native.add_item(app, &app_menu, "Preferences...", "", Some("setup.preferences".into()))?;
@@ -125,15 +137,23 @@ impl NativeMenu {
         while let Ok(chosen) = self.events.try_recv() {
             // A choice changes state (and Cocoa flips the item's check mark): sync on the next pass.
             self.last_sync = None;
-            let key = self.entries.iter().find(|e| e.item.id() == &chosen.id).and_then(|e| e.key);
-            match (chosen.key_down, key) {
+            let entry = self.entries.iter().find(|e| e.item.id() == &chosen.id);
+            let key = entry.and_then(|e| e.key);
+            // A click on one of a focused text field's Edit items is its key for the field.
+            let text_key = entry
+                .and_then(|e| e.command.as_deref())
+                .filter(|c| TEXT_EDIT.contains(c) && self.ctx.text_edit_focused())
+                .and_then(menus::shortcut_for)
+                .and_then(shortcuts::menu_key_equivalent);
+            match (chosen.key_down, key, text_key) {
                 // Every key equivalent has ⌘ or ⌃; a key-down without them is Return or Space in
                 // the open menu, which is a click. `shortcuts::handle` ignores auto-repeats.
-                (Some((modifiers, repeat)), Some(key)) if modifiers.command || modifiers.ctrl => {
+                (Some((modifiers, repeat)), Some(key), _) if modifiers.command || modifiers.ctrl => {
                     if !repeat {
                         self.keys.push((key, modifiers));
                     }
                 }
+                (_, _, Some((modifiers, key))) => self.keys.push((key, modifiers)),
                 _ => self.clicks.push(chosen.id),
             }
         }
@@ -178,13 +198,23 @@ impl NativeMenu {
     /// Refresh after engine/control changes; avoid touching Cocoa items with unchanged state.
     pub fn sync(&mut self, app: &SoundApp) {
         let now = std::time::Instant::now();
-        if self.last_sync.is_some_and(|t| now.duration_since(t) < SYNC_EVERY) {
+        let text_focused = self.ctx.text_edit_focused();
+        if text_focused == self.text_focused && self.last_sync.is_some_and(|t| now.duration_since(t) < SYNC_EVERY) {
             return;
         }
         self.last_sync = Some(now);
+        self.text_focused = text_focused;
         for entry in &mut self.entries {
-            let (enabled, checked) = menus::item_state(app, &entry.path, entry.command.as_deref());
-            if let Some(label) = menus::live_label(app, entry.command.as_deref())
+            let (mut enabled, checked) = menus::item_state(app, &entry.path, entry.command.as_deref());
+            // A focused text field undoes, cuts, copies, pastes and selects its own text.
+            enabled |= text_focused && entry.command.as_deref().is_some_and(|c| TEXT_EDIT.contains(&c));
+            // A focused text field's Undo and Redo are its own, not the session's last edit.
+            let label = match entry.command.as_deref() {
+                Some("edit.undo") if text_focused => Some("Undo".to_owned()),
+                Some("edit.redo") if text_focused => Some("Redo".to_owned()),
+                command => menus::live_label(app, command),
+            };
+            if let Some(label) = label
                 && entry.item.text() != label
             {
                 entry.item.set_text(label);

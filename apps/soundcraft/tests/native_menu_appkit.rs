@@ -176,7 +176,7 @@ fn main() {
                 app.logic(ui.ctx());
                 app.ui(ui);
                 egui::Area::new(egui::Id::unique("native_menu_appkit text field area")).show(ui.ctx(), |ui| {
-                    ui.add(egui::TextEdit::singleline(text).id(field)).request_focus();
+                    ui.add(egui::TextEdit::singleline(text).id(field));
                 });
                 menu.sync(app);
             });
@@ -185,59 +185,108 @@ fn main() {
             (out.platform_output.commands, commands)
         };
         // Frames, each with the field (one without it would take its focus), until the menu has
-        // refreshed `item` to enabled, for at most five seconds.
-        let ready = |app: &mut SoundApp, menu: &mut NativeMenu, text: &mut String, item: &objc2_app_kit::NSMenuItem| {
+        // refreshed `item` to `enabled`, for at most five seconds.
+        let settle = |app: &mut SoundApp, menu: &mut NativeMenu, text: &mut String, item: &objc2_app_kit::NSMenuItem, enabled: bool| {
             let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
             typing(app, menu, text);
-            while !item.isEnabled() {
-                assert!(std::time::Instant::now() < until, "{} never became enabled", item.title());
+            while item.isEnabled() != enabled {
+                assert!(std::time::Instant::now() < until, "{} never became {}", item.title(), if enabled { "enabled" } else { "disabled" });
                 std::thread::sleep(std::time::Duration::from_millis(20));
                 typing(app, menu, text);
             }
         };
 
-        // A session edit, so Edit › Undo is enabled and would undo something. Its title follows
-        // the last edit ("Undo …"), so find it by its key equivalent.
+        // Nothing selected in the session, so Edit › Copy and Cut are disabled for the session and
+        // only the focused field enables them; an edit, so Edit › Undo would undo something. Undo's
+        // title follows the last edit ("Undo …"), so find it by its key equivalent.
         app.engine.execute("track.new", &json!({"name": "Undo me", "format": "mono"})).expect("a new track");
-        let session_undo = app.engine.undo_label().map(str::to_owned);
-        assert!(session_undo.is_some(), "the session has something to undo");
+        app.engine.execute("edit.select_none", &json!({})).expect("nothing selected");
+        assert!(soundcraft_engine::cmd::has_range(&app.engine).is_err(), "no session selection to copy");
+        let session_undo = Some(app.engine.undo_label().expect("the session has something to undo").to_owned());
         let undo = items()
             .find(|it| it.keyEquivalent().to_string() == "z" && it.keyEquivalentModifierMask() == NSEventModifierFlags::Command)
             .expect("Edit › Undo is ⌘Z");
         let tracks = app.engine.session().tracks.len();
 
         let mut text = String::from("hello world");
-        for _ in 0..3 {
+        typing(app, menu, &mut text);
+        // AppKit takes a disabled item's key equivalent too, and the window never sees the key:
+        // without the focused field's own Edit items, ⌘C would be lost.
+        settle(app, menu, &mut text, &copy, false);
+        assert!(press("c", 8), "AppKit takes a disabled item's key equivalent");
+        ctx.memory_mut(|m| m.request_focus(field));
+        for _ in 0..2 {
             typing(app, menu, &mut text);
         }
-        assert!(ctx.egui_wants_keyboard_input(), "the field has the keyboard");
+        let focused = || ctx.memory(|m| m.has_focus(field));
+        assert!(focused(), "the field has the keyboard");
+        assert!(copy.isEnabled(), "a focus change re-syncs the menu at once");
+        assert_eq!(undo.title().to_string(), "Undo", "Undo is the field's, not the session's last edit");
+        settle(app, menu, &mut text, &copy, true);
+        assert!(cut.isEnabled() && paste.isEnabled(), "the field enables Cut and Paste too");
         // Select "world", as a drag over it would.
         let mut state = egui::text_edit::TextEditState::load(ctx, field).expect("the field has been shown");
         state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(6), egui::text::CCursor::new(11))));
         state.store(ctx, field);
 
-        ready(app, menu, &mut text, &copy);
+        settle(app, menu, &mut text, &copy, true);
+        assert!(focused(), "the field still has the keyboard");
         assert!(press("c", 8), "⌘C in the field");
         let (output, _) = typing(app, menu, &mut text);
         assert!(output.contains(&egui::OutputCommand::CopyText("world".into())), "⌘C copies the field's selection: {output:?}");
 
-        ready(app, menu, &mut text, &cut);
+        settle(app, menu, &mut text, &cut, true);
+        assert!(focused(), "the field still has the keyboard");
         assert!(press("x", 7), "⌘X in the field");
         let (output, _) = typing(app, menu, &mut text);
         assert_eq!(text, "hello ", "⌘X cut the field's selection");
         assert!(output.contains(&egui::OutputCommand::CopyText("world".into())), "the cut text goes to the clipboard: {output:?}");
 
-        ready(app, menu, &mut text, &paste);
+        settle(app, menu, &mut text, &paste, true);
+        assert!(focused(), "the field still has the keyboard");
         assert!(press("v", 9), "⌘V in the field");
         let (_, commands) = typing(app, menu, &mut text);
         assert!(commands.contains(&egui::ViewportCommand::RequestPaste), "⌘V asks the window for the clipboard: {commands:?}");
 
-        ready(app, menu, &mut text, &undo);
+        settle(app, menu, &mut text, &undo, true);
+        assert!(focused(), "the field still has the keyboard");
         assert!(press("z", 6), "⌘Z is Edit › Undo's key equivalent");
         typing(app, menu, &mut text);
         assert_eq!(text, "hello world", "⌘Z undid the cut in the field");
         assert_eq!(app.engine.undo_label().map(str::to_owned), session_undo, "the session's Undo didn't run");
         assert_eq!(app.engine.session().tracks.len(), tracks, "the new track is still there");
+
+        // A click (Return in the open menu) on Cut and then Undo edits the field too.
+        let select_world = || {
+            let mut state = egui::text_edit::TextEditState::load(ctx, field).expect("the field has been shown");
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(6), egui::text::CCursor::new(11))));
+            state.store(ctx, field);
+        };
+        let click = |title: &str| {
+            let at = (0..edit.numberOfItems()).find(|&i| edit.itemAtIndex(i).is_some_and(|it| it.title().to_string() == title)).expect(title);
+            dequeue(nsapp, &key_down("\r", 36, NSEventModifierFlags::empty(), false));
+            edit.performActionForItemAtIndex(at);
+        };
+        select_world();
+        typing(app, menu, &mut text);
+        click("Cut");
+        typing(app, menu, &mut text);
+        assert_eq!(text, "hello ", "a click on Cut cut the field's selection");
+        click("Undo");
+        typing(app, menu, &mut text);
+        assert_eq!(text, "hello world", "a click on Undo undid the cut in the field");
+        assert_eq!(app.engine.session().tracks.len(), tracks, "the session's Undo didn't run");
+
+        // With no field focused, the same ⌘Z is the session's Undo: the new track goes.
+        ctx.memory_mut(|m| m.surrender_focus(field));
+        typing(app, menu, &mut text);
+        assert!(!focused(), "the field gave up the keyboard");
+        settle(app, menu, &mut text, &copy, false);
+        settle(app, menu, &mut text, &undo, true);
+        assert!(press("z", 6), "⌘Z with no field focused");
+        typing(app, menu, &mut text);
+        assert_eq!(text, "hello world", "the field is untouched");
+        assert_eq!(app.engine.session().tracks.len(), tracks - 1, "⌘Z undid the new track");
     }
 
     let aliases = menus::ui_aliases();
@@ -363,7 +412,7 @@ fn main() {
     };
 
     // A disabled item's key equivalent queues nothing: with nothing selected, Copy is disabled and
-    // ⌘C doesn't run it (in the app, the window then gets the key as without the menu bar).
+    // ⌘C doesn't run it.
     assert!(!copy.isEnabled(), "nothing selected yet");
     bar.performKeyEquivalent(&dequeue(&key_down("c", 8, NSEventModifierFlags::Command, false)));
     let (events, _) = frame(&mut app, &mut menu);
