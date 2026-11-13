@@ -159,14 +159,16 @@ mod tests {
 
     /// A saved state with more entries than the menu keeps (a hand-edited `ui.json`) is cut to
     /// the newest [`MAX_RECENT`] on the first frame, and a list within the limit is left alone.
+    /// Cutting it tells the host to save, so the file is corrected without waiting for a clean exit.
     #[test]
     fn an_oversized_saved_list_is_capped_on_the_first_frame() {
         let paths = |count: usize| (0..count).map(|i| format!("{i}.scraft")).collect::<Vec<_>>();
         for (saved, kept) in [(1000, MAX_RECENT), (MAX_RECENT + 1, MAX_RECENT), (MAX_RECENT, MAX_RECENT), (3, 3), (0, 0)] {
             let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
             app.ui = serde_json::from_value(json!({"recent_sessions": paths(saved)})).unwrap();
-            let harness = egui_kittest::Harness::builder().build_ui_state(|ui, app: &mut SoundApp| app.logic(&ui.ctx().clone()), app);
+            let mut harness = egui_kittest::Harness::builder().build_ui_state(|ui, app: &mut SoundApp| app.logic(&ui.ctx().clone()), app);
             assert_eq!(harness.state().ui.recent_sessions, paths(kept), "{saved} saved entries");
+            assert_eq!(harness.state_mut().take_recent_changed(), saved > kept, "{saved} saved entries: save only when entries were cut");
         }
     }
 }

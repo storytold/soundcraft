@@ -141,8 +141,12 @@ impl SoundApp {
     pub fn logic(&mut self, ctx: &egui::Context) {
         self.ui.undo_levels = self.ui.undo_levels.clamp(1, 64);
         self.engine.set_history_limit(self.ui.undo_levels);
-        // A saved state (a hand-edited `ui.json`) can hold more than the menu keeps: newest first.
-        self.ui.recent_sessions.truncate(crate::dialogs::recent::MAX_RECENT);
+        // A saved state (a hand-edited `ui.json`) can hold more than the menu keeps: keep the newest
+        // (the list is newest first) and have the host save the corrected list.
+        if self.ui.recent_sessions.len() > crate::dialogs::recent::MAX_RECENT {
+            self.ui.recent_sessions.truncate(crate::dialogs::recent::MAX_RECENT);
+            self.recent_changed = true;
+        }
         // Fonts set now take effect next frame, so draw only from the frame after.
         if !self.fonts_ready {
             if self.fonts_installed {
