@@ -406,10 +406,8 @@ impl Movie {
                     return Err(VideoError::Decode(format!("{w}x{h} frame in a {}x{} track", self.info.width, self.info.height)));
                 }
                 let opts = crate::prores::DecodeOptions { bit_depth: Some(8), threads: false };
-                let f = crate::prores::decode_frame_with(&data, &opts).map_err(|e| VideoError::Decode(e.to_string()))?;
-                if u64::from(f.width) * u64::from(f.height) > MAX_PIXELS {
-                    return Err(VideoError::Decode("picture too large".into()));
-                }
+                let limits = crate::prores::DecodeLimits { max_pixels: MAX_PIXELS, max_frame_bytes: 512 * 1024 * 1024 };
+                let f = crate::prores::decode_frame_with_limits(&data, &opts, &limits).map_err(|e| VideoError::Decode(e.to_string()))?;
                 let (w, h) = (f.width as usize, f.height as usize);
                 let cw = f.chroma_width() as usize;
                 let narrow = |p: &[u16]| p.iter().map(|&v| v.min(255) as u8).collect::<Vec<u8>>();
@@ -461,6 +459,7 @@ impl Movie {
     /// Decode one sample with a fresh decoder (keyframe thumbnails).
     fn decode_h264_single(&mut self, avcc: &[u8], sample: usize, index: usize) -> Result<Frame> {
         let mut dec = crate::h264::Decoder::from_avcc(avcc).map_err(|e| VideoError::Decode(e.to_string()))?;
+        dec.set_max_picture_luma_samples(MAX_PIXELS);
         let data = self.read(sample)?;
         let mut pics = dec.decode(&data, index as i64).map_err(|e| VideoError::Decode(e.to_string()))?;
         pics.extend(dec.flush());
@@ -486,7 +485,8 @@ impl Movie {
             .as_ref()
             .is_some_and(|st| st.ready.contains_key(&index) || (key < st.next && st.next != usize::MAX && st.last_out.is_none_or(|lo| lo < index)));
         if !resume {
-            let dec = crate::h264::Decoder::from_avcc(avcc).map_err(|e| VideoError::Decode(e.to_string()))?;
+            let mut dec = crate::h264::Decoder::from_avcc(avcc).map_err(|e| VideoError::Decode(e.to_string()))?;
+            dec.set_max_picture_luma_samples(MAX_PIXELS);
             self.h264 = Some(H264State { dec, next: key, last_out: None, ready: std::collections::BTreeMap::new() });
         }
         let total = self.order.len();
