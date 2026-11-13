@@ -120,7 +120,6 @@ impl Dialogs {
         {
             self.strip_rectangles.running.is_some()
         }
-        // `running` exists only outside the web build.
         #[cfg(target_arch = "wasm32")]
         {
             false
