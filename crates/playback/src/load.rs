@@ -1,6 +1,8 @@
 //! The audio callback's load: how long each device callback takes to render, against how long its
 //! buffer lasts. `record` runs on the audio thread; `reset` (UI) clears the published atomics.
-//! Both are lock-free and allocation-free.
+//! Both are lock-free and allocation-free. The values are separate atomics, not one snapshot: a
+//! reader can see them from different callbacks, and a callback already running when a reset
+//! lands can still publish its own load and count itself (but not the counts from before).
 //!
 //! A callback that takes longer than its buffer lasts is *late*: the device ran out of audio
 //! before the callback returned, which is heard as a dropout. cpal doesn't report the device's
@@ -42,8 +44,9 @@ pub(crate) struct LoadMeter {
     late: AtomicU64,
     callbacks: AtomicU64,
     buffer_ms: AtomicU32,
-    /// Asked by the UI; published values are cleared immediately, and the audio thread drops the
-    /// in-progress window at its next callback.
+    /// Asked by the UI; published values are cleared at once, and the audio thread drops the
+    /// in-progress window at its next callback. A callback already past that check finishes
+    /// publishing its own values.
     reset: AtomicBool,
 }
 
@@ -71,13 +74,15 @@ impl LoadMeter {
             *w = LoadWindow::default();
             self.clear_published();
         }
-        self.callbacks.store(self.callbacks.load(Relaxed).saturating_add(1), Relaxed);
+        // Read-modify-write in one atomic step, so a reset in between is not undone by writing
+        // back a count or worst load read before it.
+        let bump = |n: u64| Some(n.saturating_add(1));
+        let _ = self.callbacks.fetch_update(Relaxed, Relaxed, bump);
         if load > 1.0 {
-            self.late.store(self.late.load(Relaxed).saturating_add(1), Relaxed);
+            let _ = self.late.fetch_update(Relaxed, Relaxed, bump);
         }
-        if load_f > f32::from_bits(self.worst.load(Relaxed)) {
-            self.worst.store(load_f.to_bits(), Relaxed);
-        }
+        // `load_f` is finite and not negative, where f32 bit patterns order as the values do.
+        self.worst.fetch_max(load_f.to_bits(), Relaxed);
         self.buffer_ms.store(buffer_ms_f.to_bits(), Relaxed);
         self.measured.store(true, Relaxed);
         w.busy += busy;
@@ -108,7 +113,8 @@ impl LoadMeter {
     }
 
     /// Clears the published load and the counts. The in-progress window is dropped on the next
-    /// callback. Lock-free; the audio thread is still the only writer of a closing window.
+    /// callback. Lock-free, and not one atomic step with `record`: a callback already running
+    /// can still publish its own load and count itself after the clear.
     pub(crate) fn reset(&self) {
         self.reset.store(true, Relaxed);
         self.clear_published();
