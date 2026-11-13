@@ -1125,6 +1125,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-quit"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=ea24422ae9859dc5da398d0462bc87f8e02e0d10#ea24422ae9859dc5da398d0462bc87f8e02e0d10"
+dependencies = [
+ "dispatch2",
+ "egui",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+]
+
+[[package]]
 name = "craft-scraft-format"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=6a86adb58a6e8e1929484a4514600ed54bca36dc#6a86adb58a6e8e1929484a4514600ed54bca36dc"
@@ -1145,17 +1156,6 @@ source = "git+https://github.com/storytold/craft-libs?rev=6a86adb58a6e8e1929484a
 dependencies = [
  "serde",
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "craft-quit"
-version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ea24422ae9859dc5da398d0462bc87f8e02e0d10#ea24422ae9859dc5da398d0462bc87f8e02e0d10"
-dependencies = [
- "dispatch2",
- "egui",
- "objc2 0.6.5",
- "objc2-app-kit 0.3.2",
 ]
 
 [[package]]
