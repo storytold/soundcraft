@@ -191,11 +191,7 @@ fn system_usage(app: &mut SoundApp, ctx: &egui::Context) {
                 p.reset_audio_load();
             }
         } else {
-            let why = match app.player.as_ref() {
-                None => "no playback engine running",
-                Some(p) if p.silent => "no audio device",
-                Some(_) => "waiting for the first device callback",
-            };
+            let why = unmeasured_why(app.player.as_ref().map(|p| p.silent), cfg!(target_arch = "wasm32"));
             ui.label(format!("Audio load: not measured ({why})"));
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
@@ -206,6 +202,17 @@ fn system_usage(app: &mut SoundApp, ctx: &egui::Context) {
         ui.label(format!("Undo steps: {}", app.engine.undo_history().len()));
     });
     app.ui.show_system_usage = open;
+}
+
+/// Why System Usage has no audio load to show. `player` is the running player's silent flag, if
+/// any. On the web the callback is never timed, so waiting for one would never end.
+fn unmeasured_why(player: Option<bool>, web: bool) -> &'static str {
+    match player {
+        None => "no playback engine running",
+        Some(true) => "no audio device",
+        Some(false) if web => "not measured in the browser",
+        Some(false) => "waiting for the first device callback",
+    }
 }
 
 /// One decimal place below 10%, so a healthy 0.4% load is not rounded to 0%.
@@ -864,6 +871,22 @@ pub fn clip_effects(app: &mut SoundApp, ctx: &egui::Context) {
         });
     });
     app.ui.show_clip_effects = open;
+}
+
+#[cfg(test)]
+mod audio_load_tests {
+    use super::unmeasured_why;
+
+    #[test]
+    fn an_unmeasured_load_says_why_on_desktop_and_web() {
+        for web in [false, true] {
+            assert_eq!(unmeasured_why(None, web), "no playback engine running");
+            assert_eq!(unmeasured_why(Some(true), web), "no audio device");
+        }
+        assert_eq!(unmeasured_why(Some(false), false), "waiting for the first device callback");
+        // The web never times a callback: a device-backed player there must not wait forever.
+        assert_eq!(unmeasured_why(Some(false), true), "not measured in the browser");
+    }
 }
 
 #[cfg(test)]
