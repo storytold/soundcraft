@@ -23,7 +23,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 | OMF | import/export | ❌ | ❌ | Legacy, still delivered by some editors |
 | Media Composer–compatible session | export | ❌ | ❌ | AAF variant |
 | ADM BWF (Dolby Atmos master) | import/export | ❌ | ❌ | G-12 |
-| SoundCraft session `.scraft` + `Audio Files/` | — | ✅ | ✅ | JSON (serde); mutated-file property test loads or fails cleanly; plugin state embedded. Fades save optional `curvature` (-1..1); missing values default to 0 and preserve legacy envelopes |
+| SoundCraft session `.scraft` + `Audio Files/` | — | ✅ | ✅ | JSON (serde); mutated-file property test loads or fails cleanly; plugin state embedded. Fades save optional `curvature` (-1..1); missing values default to 0 and preserve legacy envelopes. A fade shape may be `SCurvePower` (S-Curve with the Equal Power law); older sessions load unchanged, but older versions cannot open a session that uses it |
 | Import Session Data (from another session) | Pro Tools sessions | 🟡 | — | From `.scraft` only |
 | Session info as text | export | — | ✅ | `file.export_session_text` |
 | Clip groups `.rgrp` / ours `.scgrp` | read/write | 🟡 | 🟡 | Our own `.scgrp` format; Pro Tools' clip-group files not read |
@@ -83,6 +83,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 |---|---|---|
 | 2026-11-11 | minor | Audio formats come from `craft-audio` (craft-libs); `crates/audio-io` is gone. New on import: Opus, AC-3/E-AC-3, `.mov`/`.mka` audio; AAC, ALAC and MP2 no longer go through symphonia; `.aifc` is a writable name |
 | 2026-11-02 | trivial | WAV bounces (mix and stems) write a `bext` TimeReference: session timecode start plus bounce start (#1296) |
+| 2026-10-22 | trivial | Fade shape `SCurvePower` (S-Curve with the Equal Power law). Format version and readiness estimate unchanged |
 | 2026-10-19 | trivial | WAV and AIFF-C Float32 encoders retain finite headroom (#791); whole-file, streaming and bounce regression tests |
 | 2026-10-13 | trivial | WAV: empty data chunk with trailing metadata (#466) |
 | 2026-10-13 | minor | Fade curvature round-trips in sessions with a zero default for older files. Format version and readiness estimate unchanged |

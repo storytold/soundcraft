@@ -613,7 +613,7 @@ pub(super) fn clip_cuts(clips: &[Clip]) -> impl Fn(&Clip) -> ClipCut + '_ {
 }
 
 /// The earlier clip of a crossfade pair: the one before `clip` in its playlist, overlapping its start.
-fn crossfade_partner<'a>(track: &'a Track, clip: &Clip) -> Option<&'a Clip> {
+pub(crate) fn crossfade_partner<'a>(track: &'a Track, clip: &Clip) -> Option<&'a Clip> {
     let (p, i) = track.playlists.iter().find_map(|p| {
         let i = p.clips.partition_point(|c| c.start < clip.start);
         p.clips.get(i).is_some_and(|c| c.id == clip.id).then_some((p, i))

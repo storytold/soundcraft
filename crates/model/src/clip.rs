@@ -13,10 +13,13 @@ pub enum FadeShape {
     SCurve,
     Exponential,
     Logarithmic,
+    /// The S-Curve run through the Equal Power law: with a fade-out that mirrors it, in² + out² = 1.
+    SCurvePower,
 }
 
 impl FadeShape {
-    pub const ALL: [FadeShape; 5] = [FadeShape::Linear, FadeShape::EqualPower, FadeShape::SCurve, FadeShape::Exponential, FadeShape::Logarithmic];
+    pub const ALL: [FadeShape; 6] =
+        [FadeShape::Linear, FadeShape::EqualPower, FadeShape::SCurve, FadeShape::Exponential, FadeShape::Logarithmic, FadeShape::SCurvePower];
 
     /// Fade-in gain at `t` ∈ [0,1] (fade-outs use `gain(1 - t)`).
     pub fn gain(self, t: f32) -> f32 {
@@ -27,6 +30,7 @@ impl FadeShape {
             FadeShape::SCurve => 0.5 - 0.5 * (t * std::f32::consts::PI).cos(),
             FadeShape::Exponential => t * t * t,
             FadeShape::Logarithmic => 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t),
+            FadeShape::SCurvePower => ((0.5 - 0.5 * (t * std::f32::consts::PI).cos()) * std::f32::consts::FRAC_PI_2).sin(),
         }
     }
 
@@ -37,12 +41,16 @@ impl FadeShape {
             FadeShape::SCurve => "S-Curve",
             FadeShape::Exponential => "Exponential",
             FadeShape::Logarithmic => "Logarithmic",
+            FadeShape::SCurvePower => "S-Curve Equal Power",
         }
     }
 
+    /// The shape a label ("S-Curve", "equal power") or a variant name ("SCurve", "EqualPower", as sessions and logs
+    /// spell them) stands for, ignoring case, spaces, hyphens and underscores.
     pub fn from_id(s: &str) -> Option<FadeShape> {
-        let s = s.to_ascii_lowercase().replace(['-', '_', ' '], "");
-        FadeShape::ALL.into_iter().find(|f| f.label().to_ascii_lowercase().replace(['-', ' '], "") == s)
+        let plain = |s: &str| s.to_ascii_lowercase().replace(['-', '_', ' '], "");
+        let s = plain(s);
+        FadeShape::ALL.into_iter().find(|f| plain(f.label()) == s || plain(&format!("{f:?}")) == s)
     }
 }
 
@@ -380,6 +388,34 @@ mod tests {
             assert_eq!(s.gain(f32::NAN), 0.0);
             assert_eq!(FadeShape::from_id(s.label()), Some(s));
         }
+    }
+
+    #[test]
+    fn s_curve_equal_power_keeps_power_constant_when_mirrored() {
+        for i in 0..=64 {
+            let t = i as f32 / 64.0;
+            let (fade_in, fade_out) = (FadeShape::SCurvePower.gain(t), FadeShape::SCurvePower.gain(1.0 - t));
+            assert!((fade_in * fade_in + fade_out * fade_out - 1.0).abs() < 1e-5, "t = {t}");
+            // The plain S-Curve keeps the gain constant instead.
+            assert!((FadeShape::SCurve.gain(t) + FadeShape::SCurve.gain(1.0 - t) - 1.0).abs() < 1e-5, "t = {t}");
+        }
+        // Old sessions name their shapes as before; the new one round-trips by name and through serde.
+        assert_eq!(FadeShape::from_id("s-curve"), Some(FadeShape::SCurve));
+        assert_eq!(FadeShape::from_id("S-Curve Equal Power"), Some(FadeShape::SCurvePower));
+        // Every shape answers to its label and to its variant name, as the older ones always did.
+        for shape in FadeShape::ALL {
+            assert_eq!(FadeShape::from_id(shape.label()), Some(shape));
+            assert_eq!(FadeShape::from_id(&format!("{shape:?}")), Some(shape));
+        }
+        assert_eq!(FadeShape::from_id("SCurvePower"), Some(FadeShape::SCurvePower));
+        assert_eq!(FadeShape::from_id("s_curve_power"), Some(FadeShape::SCurvePower));
+        assert_eq!(FadeShape::from_id("S-Curve Power"), Some(FadeShape::SCurvePower));
+        assert_eq!(FadeShape::from_id("nonsense"), None);
+        let fade: Fade =
+            serde_json::from_str(&serde_json::to_string(&Fade { len: 9, shape: FadeShape::SCurvePower, curvature: 0.0 }).unwrap()).unwrap();
+        assert_eq!(fade.shape, FadeShape::SCurvePower);
+        let old: Fade = serde_json::from_str(r#"{"len":9,"shape":"EqualPower"}"#).unwrap();
+        assert_eq!(old.shape, FadeShape::EqualPower);
     }
 
     #[test]
