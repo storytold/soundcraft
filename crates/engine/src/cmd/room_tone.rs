@@ -104,7 +104,12 @@ fn set(e: &mut Engine, p: &Value) -> Result<Value> {
     if tone.length < s.sample_rate.samples(MIN_TONE_SECONDS) {
         return Err(bad(SET, format!("room tone must be at least {MIN_TONE_SECONDS} s long")));
     }
-    e.session_mut().room_tone = Some(tone);
+    let s = e.session_mut();
+    // A session reopens with the room tone cut to the stored count, so record the decoded one.
+    if let Some(f) = s.sources.iter_mut().find(|f| f.id == source && f.frames < frames) {
+        f.frames = frames;
+    }
+    s.room_tone = Some(tone);
     Ok(describe(e.session(), tone))
 }
 
@@ -294,6 +299,24 @@ mod tests {
         assert_eq!((r["offset"].as_i64(), r["length"].as_i64()), (Some(RATE / 4), Some(RATE / 4)));
         e.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(e.session().room_tone.map(|t| t.length), Some(RATE), "undo restores the previous tone");
+    }
+
+    #[test]
+    fn a_tone_past_a_stale_stored_length_survives_a_reload() {
+        // The session file says 3 s, but 10 s decoded: the tone at 4..5 s plays.
+        let (mut e, t, _) = engine(&[]);
+        let s = e.session_mut();
+        let src = s.sources.first().map(|f| f.id).unwrap();
+        s.sources.iter_mut().for_each(|f| f.frames = 3 * RATE as u64);
+        let id = s.new_clip_id();
+        if let Some(pl) = s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
+            pl.clips.push(Clip::audio(id, "Late", src, 4 * RATE, 0, RATE));
+        }
+        e.execute(SET, &json!({"clip": id.0})).unwrap();
+        let tone = e.session().room_tone;
+        assert_eq!(tone.map(|t| (t.offset, t.length)), Some((4 * RATE, RATE)));
+        let loaded = Session::from_json(&e.session().to_json().unwrap()).unwrap();
+        assert_eq!(loaded.room_tone, tone, "reopening keeps the tone that was set");
     }
 
     #[test]
