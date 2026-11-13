@@ -203,6 +203,87 @@ impl SoundApp {
         }
     }
 
+    /// Punch-out while playing: stop the capture now and decode the takes off the UI thread, so a
+    /// large or multitrack take cannot lock up Stop or Record while the transport keeps rolling
+    /// (#1265). The clips are placed on this thread — as one "Record" undo step, exactly as
+    /// [`Self::finish_recording`] places them — by [`Self::poll_placement`] once the decode hands
+    /// its buffers back. Everything before the decode matches [`Self::finish_recording`].
+    #[cfg(not(target_arch = "wasm32"))]
+    fn finish_recording_async(&mut self) {
+        self.engine.transport.recording = false;
+        if let Some(p) = &self.player {
+            p.set_recording(false);
+        }
+        let plan = self.take_plan.take();
+        let Some(r) = &mut self.recorder else { return };
+        let (takes, problem) = r.finish();
+        let tracks = takes.len().max(1);
+        let plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
+            start: self.record_start,
+            pass: None,
+            punch: self.punch,
+            rate: 0,
+            takes: Vec::new(),
+        });
+        self.punch = None;
+        self.autosaved_rev = 0;
+        let rate = self.engine.session().sample_rate.hz();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let work = takes.clone();
+        let spawned = std::thread::Builder::new()
+            .name("take-decode".into())
+            .spawn(move || {
+                let _ = tx.send(decode_all(work, rate));
+            })
+            .is_ok();
+        if spawned {
+            self.placing.push(crate::PlacingTake { plan, tracks, problem, rx });
+        } else {
+            // No thread to spare: decode on this one, as when the transport has already stopped.
+            self.place_decoded_takes(&plan, tracks, problem, decode_all(takes, rate));
+        }
+    }
+
+    /// Place the takes whose off-thread decodes have finished. Called from transport handling every
+    /// frame: the transport answered Stop and Record throughout the decode, and each take lands,
+    /// as one "Record" undo step, the moment its buffers are back.
+    fn poll_placement(&mut self) {
+        let mut done = Vec::new();
+        for i in (0..self.placing.len()).rev() {
+            let takes = match self.placing[i].rx.try_recv() {
+                Ok(takes) => Some(takes),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                // The decode thread ended without an answer: place nothing for this take.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Vec::new()),
+            };
+            if let Some(takes) = takes {
+                let p = self.placing.swap_remove(i);
+                done.push((p, takes));
+            }
+        }
+        for (p, takes) in done {
+            self.place_decoded_takes(&p.plan, p.tracks, p.problem, takes);
+        }
+    }
+
+    /// Places a finished take's decoded buffers, as one "Record" undo step, reporting on the
+    /// status line exactly as the stop-time path does.
+    fn place_decoded_takes(
+        &mut self,
+        plan: &soundcraft_engine::io::Recording,
+        tracks: usize,
+        problem: Option<String>,
+        takes: Vec<soundcraft_engine::io::DecodedTake>,
+    ) {
+        let ids = soundcraft_engine::io::place_recording_decoded(&mut self.engine, plan, takes);
+        self.ui.status =
+            if plan.pass.is_some() { format!("Loop-recorded {} take(s)", ids.len() / tracks) } else { format!("Recorded {} clip(s)", ids.len()) };
+        if let Some(p) = problem {
+            log::warn!("recording: {p}");
+            self.ui.status = format!("{} ({p})", self.ui.status);
+        }
+    }
+
     /// While playing, record volume automation from fader positions for tracks in Write mode, and
     /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved. Send levels follow the
     /// same rules, per send, from its slot or its floating send window. Each point replaces the
@@ -315,6 +396,7 @@ impl SoundApp {
     /// Apply engine transport requests to the player and recorder, read back the position and refresh meters. A reset
     /// request also clears per-document capture, edit-gesture and meter state.
     pub(crate) fn handle_transport(&mut self, dt: f32) {
+        self.poll_placement();
         let reqs: Vec<TransportRequest> = std::mem::take(&mut self.engine.transport_requests);
         for r in reqs {
             match r {
@@ -328,6 +410,8 @@ impl SoundApp {
                     self.sim = None;
                     // The old capture belongs to the replaced document, never to the new one.
                     self.recorder = None;
+                    // A pending take's placement belongs to the replaced document too.
+                    self.placing.clear();
                     self.recorder_failed = false;
                     self.punch = None;
                     self.gesture = None;
@@ -374,7 +458,17 @@ impl SoundApp {
                             // pass's merge first, so automation written after the punch-out gets
                             // its own undo step instead of joining the step before the take.
                             self.engine.end_merge();
-                            self.finish_recording();
+                            // Reading, decoding and resampling the takes is slow and the transport
+                            // is still rolling: decode off the UI thread, so Stop and a new Record
+                            // stay answerable, and place the clips here once the buffers are back.
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                self.finish_recording_async();
+                            }
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                self.finish_recording();
+                            }
                         } else {
                             self.stop_play();
                         }
@@ -461,4 +555,11 @@ impl SoundApp {
             feed_meter(&mut self.main_meter, [0.0, 0.0], 0.0, dt);
         }
     }
+}
+
+/// Decodes a punch-out's takes for a session at `rate`: the decode thread's whole job, shared with
+/// the no-thread fallback.
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_all(takes: Vec<(TrackId, std::path::PathBuf)>, rate: u32) -> Vec<soundcraft_engine::io::DecodedTake> {
+    takes.into_iter().map(|(track, path)| soundcraft_engine::io::decode_take(track, path, rate)).collect()
 }

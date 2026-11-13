@@ -29,6 +29,52 @@ pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, Pa
     add_recording_in(e, plan.start, takes, plan.pass, plan.punch)
 }
 
+/// A recorded take, decoded off the UI thread (see [`decode_take`]) and waiting to be placed by
+/// [`place_recording_decoded`].
+#[derive(Debug)]
+pub struct DecodedTake {
+    pub track: TrackId,
+    pub path: PathBuf,
+    /// The take's audio, resampled to the session rate it was decoded for — and whether it was
+    /// resampled, which marks the placed source unsaved — or the error that stopped the decode.
+    pub audio: Result<(soundcraft_audio_io::AudioBuffer, bool), String>,
+}
+
+/// Reads, decodes and resamples one recorded take for a session at `rate`. Thread-safe and slow:
+/// run it off the UI thread — a punch-out keeps the transport rolling while the audio loads — and
+/// hand the result to [`place_recording_decoded`], which places it on the UI thread.
+pub fn decode_take(track: TrackId, path: PathBuf, rate: u32) -> DecodedTake {
+    let audio = (|| {
+        let bytes = read_file(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+        let (_, buf) = soundcraft_audio_io::decode(&bytes, None).map_err(|err| format!("{}: {err}", path.display()))?;
+        let mut buf = buf;
+        let resampled = buf.sample_rate != rate;
+        if resampled && buf.sample_rate > 0 {
+            buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, rate);
+            buf.sample_rate = rate;
+        }
+        Ok((buf, resampled))
+    })();
+    DecodedTake { track, path, audio }
+}
+
+/// Place take files decoded off the UI thread by [`decode_take`], as one undo step ("Record"):
+/// the placement twin of [`place_recording`] for takes the app could not afford to decode while
+/// the transport kept rolling. A take whose decode failed reports its error and is skipped,
+/// like the synchronous path.
+pub fn place_recording_decoded(e: &mut Engine, plan: &Recording, takes: Vec<DecodedTake>) -> Vec<soundcraft_model::ClipId> {
+    let before = e.session_arc();
+    let mut out = Vec::new();
+    for take in takes {
+        let Ok((buf, resampled)) = take.audio.inspect_err(|err| e.message(err.clone())) else { continue };
+        out.extend(place_take(e, take.track, &take.path, buf, resampled, plan.start, plan.pass, plan.punch));
+    }
+    if !out.is_empty() {
+        e.push_undo("Record", before);
+    }
+    out
+}
+
 /// Turn recorded take files into clips at `start`, as one undo step ("Record"); each file is the
 /// source of its clips. With `pass` (loop recording), a take becomes one clip per pass (at most
 /// 1000), each pass after the first on a new playlist.
@@ -51,57 +97,75 @@ fn add_recording_in(
         let read =
             read_file(&path).and_then(|b| soundcraft_audio_io::decode(&b, None).map_err(|err| EngineError::Io(format!("{}: {err}", path.display()))));
         let Ok((_, buf)) = read.inspect_err(|err| e.message(err.to_string())) else { continue };
-        let s = e.session_mut();
-        if s.track(tid).is_none() {
-            continue;
-        }
-        let hz = s.sample_rate.hz();
+        let hz = e.session().sample_rate.hz();
         let resampled = buf.sample_rate != hz;
         let mut buf = buf;
         if resampled && buf.sample_rate > 0 {
             buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, hz);
             buf.sample_rate = hz;
         }
-        let name = path.file_stem().and_then(OsStr::to_str).unwrap_or("Take");
-        let len = i64::try_from(buf.frames()).unwrap_or(0);
-        let pass = pass.unwrap_or(len).max(1);
-        // Work out what each pass keeps first, so a take nothing is placed from isn't registered.
-        let mut kept_passes = Vec::new();
-        for offset in (0..len).step_by(usize::try_from(pass).unwrap_or(usize::MAX)).take(1_000) {
-            let n = pass.min(len - offset);
-            if offset > 0 && n < pass / 8 {
-                break;
-            }
-            let (clip_start, cut, clip_len) = match punch {
-                Some(p) => {
-                    let Some(kept) = Range::new(start, start.saturating_add(n)).intersect(&p) else { continue };
-                    (kept.start, kept.start.saturating_sub(start), kept.len())
-                }
-                None => (start, 0, n),
-            };
-            kept_passes.push((offset, clip_start, cut, clip_len));
-        }
-        if kept_passes.is_empty() {
-            continue;
-        }
-        let src = add_source(s, name, buf, Some(&path.to_string_lossy()), FileFormat::Wav);
-        if let Some(x) = s.sources.last_mut() {
-            x.unsaved = resampled;
-        }
-        for (offset, clip_start, cut, clip_len) in kept_passes {
-            if offset > 0
-                && let Some(t) = s.track_mut(tid)
-            {
-                t.playlists.push(soundcraft_model::Playlist::new(format!("{}.{:02}", t.name, t.playlists.len() + 1)));
-                t.active_playlist = t.playlists.len() - 1;
-            }
-            let cid = s.new_clip_id();
-            crate::edit::place_clip(s, tid, Clip::audio(cid, name, src, offset.saturating_add(cut), clip_start, clip_len));
-            out.push(cid);
-        }
+        out.extend(place_take(e, tid, &path, buf, resampled, start, pass, punch));
     }
     if !out.is_empty() {
         e.push_undo("Record", before);
+    }
+    out
+}
+
+/// Turns one decoded take into clips on its track: at `start`, split into passes of `pass`, cut
+/// to `punch`, each pass after the first on a new playlist. The caller owns the undo step and
+/// the error reporting, so the synchronous and the off-UI-thread paths share this.
+fn place_take(
+    e: &mut Engine,
+    tid: TrackId,
+    path: &PathBuf,
+    buf: soundcraft_audio_io::AudioBuffer,
+    resampled: bool,
+    start: Samples,
+    pass: Option<Samples>,
+    punch: Option<Range>,
+) -> Vec<soundcraft_model::ClipId> {
+    let mut out = Vec::new();
+    let s = e.session_mut();
+    if s.track(tid).is_none() {
+        return out;
+    }
+    let name = path.file_stem().and_then(OsStr::to_str).unwrap_or("Take");
+    let len = i64::try_from(buf.frames()).unwrap_or(0);
+    let pass = pass.unwrap_or(len).max(1);
+    // Work out what each pass keeps first, so a take nothing is placed from isn't registered.
+    let mut kept_passes = Vec::new();
+    for offset in (0..len).step_by(usize::try_from(pass).unwrap_or(usize::MAX)).take(1_000) {
+        let n = pass.min(len - offset);
+        if offset > 0 && n < pass / 8 {
+            break;
+        }
+        let (clip_start, cut, clip_len) = match punch {
+            Some(p) => {
+                let Some(kept) = Range::new(start, start.saturating_add(n)).intersect(&p) else { continue };
+                (kept.start, kept.start.saturating_sub(start), kept.len())
+            }
+            None => (start, 0, n),
+        };
+        kept_passes.push((offset, clip_start, cut, clip_len));
+    }
+    if kept_passes.is_empty() {
+        return out;
+    }
+    let src = add_source(s, name, buf, Some(&path.to_string_lossy()), FileFormat::Wav);
+    if let Some(x) = s.sources.last_mut() {
+        x.unsaved = resampled;
+    }
+    for (offset, clip_start, cut, clip_len) in kept_passes {
+        if offset > 0
+            && let Some(t) = s.track_mut(tid)
+        {
+            t.playlists.push(soundcraft_model::Playlist::new(format!("{}.{:02}", t.name, t.playlists.len() + 1)));
+            t.active_playlist = t.playlists.len() - 1;
+        }
+        let cid = s.new_clip_id();
+        crate::edit::place_clip(s, tid, Clip::audio(cid, name, src, offset.saturating_add(cut), clip_start, clip_len));
+        out.push(cid);
     }
     out
 }
