@@ -233,11 +233,17 @@ mod tests {
     }
 
     /// Chinese names and the translated interface draw in every family, not as boxes; skipped
-    /// when the system has no Simplified Chinese font.
+    /// when the system has no Simplified Chinese font. An acceptance run sets
+    /// `SOUNDCRAFT_REQUIRE_CJK_FONT=1` so a machine without the font fails instead of skipping —
+    /// a green run must then have drawn the glyphs, not skipped the check.
     #[test]
     fn every_family_draws_chinese_with_a_system_cjk_font() {
         let defs = definitions(true);
         if !defs.font_data.contains_key("system-cjk") {
+            assert!(
+                std::env::var_os("SOUNDCRAFT_REQUIRE_CJK_FONT").is_none(),
+                "SOUNDCRAFT_REQUIRE_CJK_FONT is set but no Simplified Chinese system font is installed"
+            );
             eprintln!("skipping: no Simplified Chinese system font");
             return;
         }
