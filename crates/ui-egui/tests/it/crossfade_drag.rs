@@ -598,21 +598,24 @@ fn a_crossfade_is_a_box_over_the_whole_clip_with_no_line_at_the_cut_and_the_late
         let (box_at, bx) = zone_box(&shapes, zone_start, zone_end, 1.0).unwrap_or_else(|| panic!("{view}: no zone box"));
         assert!(bx.min.y <= top + 0.5 && bx.max.y >= top + height - 0.5, "{view}: box {bx:?} in a lane {top}..{}", top + height);
 
-        // A's name bar ends where the zone starts, B's starts where it ends: not at the cut.
+        // A's name pill stays left of the zone, B's starts where it ends (2 points in, as on any clip): not at the cut.
         let mut bars: Vec<(usize, Rect)> = rects(&shapes)
             .into_iter()
-            .filter(|(_, r)| near(r.rect.height(), 13.0) && near(r.rect.min.y, top + 1.0))
+            .filter(|(_, r)| near(r.rect.height(), 13.0) && near(r.rect.min.y, top + 3.0))
             .map(|(i, r)| (i, r.rect))
             .collect();
         bars.sort_by(|p, q| p.1.min.x.total_cmp(&q.1.min.x));
-        assert_eq!(bars.len(), 2, "{view}: a name bar per clip: {bars:?}");
+        assert_eq!(bars.len(), 2, "{view}: a name pill per clip: {bars:?}");
         let (a_bar, b_bar) = (bars[0].1, bars[1].1);
-        assert!(near(a_bar.min.x, x_at(&app, t, 0)) && near(a_bar.max.x, zone_start), "{view}: A's bar {a_bar:?}, the zone starts at {zone_start}");
         assert!(
-            near(b_bar.min.x, zone_end) && near(b_bar.max.x, x_at(&app, t, B_START + 2 * SEC)),
-            "{view}: B's bar {b_bar:?}, the zone ends at {zone_end}"
+            near(a_bar.min.x, x_at(&app, t, 0) + 2.0) && a_bar.max.x <= zone_start + 0.5,
+            "{view}: A's pill {a_bar:?}, the zone starts at {zone_start}"
         );
-        // The names sit at the start of their bars. Only text over the clips counts: the docked Clips list lists them too.
+        assert!(
+            near(b_bar.min.x, zone_end + 2.0) && b_bar.max.x <= x_at(&app, t, B_START + 2 * SEC) + 0.5,
+            "{view}: B's pill {b_bar:?}, the zone ends at {zone_end}"
+        );
+        // The names sit at the start of their pills. Only text over the clips counts: the docked Clips list lists them too.
         let label = |name: &str| {
             shapes.iter().enumerate().find_map(|(i, c)| match &c.shape {
                 Shape::Text(tx)
@@ -624,9 +627,9 @@ fn a_crossfade_is_a_box_over_the_whole_clip_with_no_line_at_the_cut_and_the_late
             })
         };
         let ((a_at, a_x), (b_at, b_x)) = (label("a").expect("A's name"), label("b").expect("B's name"));
-        assert!(near(a_x, a_bar.min.x + 4.0), "{view}: A's name at {a_x}");
-        assert!(near(b_x, zone_end + 4.0), "{view}: B's name starts where the zone ends ({zone_end}), not at the cut ({cut_x}): {b_x}");
-        // The box is drawn over the names and the bars.
+        assert!(near(a_x, a_bar.min.x + 3.0), "{view}: A's name at {a_x}");
+        assert!(near(b_x, zone_end + 5.0), "{view}: B's name starts where the zone ends ({zone_end}), not at the cut ({cut_x}): {b_x}");
+        // The box is drawn over the names and the pills.
         assert!([a_at, b_at, bars[0].0, bars[1].0].iter().all(|&i| box_at > i), "{view}: the box is painted last");
 
         // Nor do the clips' outlines: they stop at the cut instead of drawing a dark line across the zone where the clips
@@ -638,7 +641,20 @@ fn a_crossfade_is_a_box_over_the_whole_clip_with_no_line_at_the_cut_and_the_late
 
         // Nothing marks the cut across the lane. The control: B's sync point is a line on the cut, shorter than the lane.
         assert!(!verticals(&shapes, cut_x, height * 0.4).is_empty(), "{view}: the search sees a line on the cut");
-        assert!(verticals(&shapes, cut_x, height - 2.0).is_empty(), "{view}: a line across the lane at the cut");
+        // B's sync point is a clip-high line (the clip's name is a pill now, not a band that shortens it): the only line
+        // across the lane on the cut is that mark, nothing the cut itself draws, whether a stroke or a thin fill.
+        let sync = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 90);
+        let full_lines = shapes
+            .iter()
+            .filter(|c| match &c.shape {
+                Shape::LineSegment { points, stroke } => {
+                    near(points[0].x, cut_x) && near(points[1].x, cut_x) && (points[0].y - points[1].y).abs() >= height - 2.0 && stroke.color != sync
+                }
+                Shape::Rect(r) => near(r.rect.center().x, cut_x) && r.rect.width() <= 1.5 && r.rect.height() >= height - 2.0,
+                _ => false,
+            })
+            .count();
+        assert_eq!(full_lines, 0, "{view}: a line across the lane at the cut");
     }
 }
 
