@@ -101,3 +101,5 @@ const { data } = await soundcraft.screenshot();                      // the wind
 ```
 
 The API is installed in every session. Playback still needs a user gesture before the browser starts audio.
+
+The repository holds a real-browser check of this API, `apps/soundcraft-web/tests/page-api.mjs`. It serves a built copy of the site (`trunk build --release` in `apps/soundcraft-web`, or the unpacked zip), loads it in headless Chromium with Playwright, and drives all six functions, a command that changes the session, the rejection of an unknown method and of an unknown command, the screenshot, and several calls at once. Run it with `node apps/soundcraft-web/tests/page-api.mjs <site folder>` from a folder where `playwright` is installed. It is not part of `cargo xtask ci`.
