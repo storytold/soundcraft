@@ -482,7 +482,7 @@ pub(super) fn clip_marks(clip: &Clip, show_rating: bool) -> String {
 
 /// Gap between a pill and the clip outline's inner edge (so the pill sits 1 pt inside the outline).
 pub(super) const PILL_INSET: f32 = 2.0;
-pub(super) const PILL_HEIGHT: f32 = 13.0;
+pub(super) const PILL_HEIGHT: f32 = 14.0;
 /// Horizontal padding between a pill's edge and its text.
 pub(super) const PILL_PAD: f32 = 3.0;
 /// The narrowest name pill worth drawing: its padding plus about one letter.
