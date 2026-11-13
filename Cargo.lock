@@ -4511,7 +4511,7 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-l10n"
-version = "0.12.1"
+version = "0.20.1"
 dependencies = [
  "serde_json",
 ]
