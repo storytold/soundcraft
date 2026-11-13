@@ -1131,7 +1131,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=7c108201239d2504bb61e9
 dependencies = [
  "craft-audio",
  "craft-midi",
- "craft-time",
+ "craft-time 0.1.0 (git+https://github.com/storytold/craft-libs?rev=7c108201239d2504bb61e941828dc9f388187a94)",
  "craft-zip",
  "serde",
  "serde_json",
@@ -1142,6 +1142,15 @@ dependencies = [
 name = "craft-time"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=7c108201239d2504bb61e941828dc9f388187a94#7c108201239d2504bb61e941828dc9f388187a94"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-time"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=f16d99f71c417d1f9247ae17ec53f4a66f6bfb82#f16d99f71c417d1f9247ae17ec53f4a66f6bfb82"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -4548,7 +4557,7 @@ dependencies = [
 name = "soundcraft-time"
 version = "0.20.1"
 dependencies = [
- "craft-time",
+ "craft-time 0.1.0 (git+https://github.com/storytold/craft-libs?rev=f16d99f71c417d1f9247ae17ec53f4a66f6bfb82)",
 ]
 
 [[package]]

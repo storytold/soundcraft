@@ -57,7 +57,7 @@ craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-lib
 # Standard MIDI Files and the note/controller model, shared with the other craft apps.
 craft-midi = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7c108201239d2504bb61e941828dc9f388187a94", features = ["serde"] }
 craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7c108201239d2504bb61e941828dc9f388187a94", features = ["decode", "lossless-encode", "peaks", "serde"] }
-craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7c108201239d2504bb61e941828dc9f388187a94" }
+craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "f16d99f71c417d1f9247ae17ec53f4a66f6bfb82" }
 craft-scraft-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7c108201239d2504bb61e941828dc9f388187a94" }
 # craft-update: app-specific pretend versions apply to startup and manual checks.
 craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6e03f65bf45181db77ba6229716e6624db9eb25b", features = ["egui"] }
