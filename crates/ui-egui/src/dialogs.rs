@@ -385,7 +385,9 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
     let file = soundcraft_engine::io::session_file(path);
     let replaces = soundcraft_engine::io::replaces(&app.engine, cmd, &file);
     if replaces {
-        ui.label(tf("“{file}” already exists. Do you want to replace it?", &[("file", &file.file_name().unwrap_or_default().to_string_lossy())]).as_ref());
+        ui.label(
+            tf("“{file}” already exists. Do you want to replace it?", &[("file", &file.file_name().unwrap_or_default().to_string_lossy())]).as_ref(),
+        );
     }
     if buttons(ui, if replaces { tr("Replace") } else { tr("OK") }, enter && !replaces) {
         let mut v = json!({});
