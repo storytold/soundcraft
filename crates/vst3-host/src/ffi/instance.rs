@@ -233,10 +233,12 @@ impl Instance {
     }
 
     pub fn value_text(&self, id: u32, normalized: f64) -> Option<String> {
-        let c = self.controller.as_ref()?;
-        let mut s: sv::String128 = [0; 128];
-        // SAFETY: valid controller; `s` is a writable String128.
-        ok(unsafe { c.getParamStringByValue(id, normalized.clamp(0.0, 1.0), &mut s) }).then(|| read_c16(&s)).filter(|t| !t.is_empty())
+        // The edit controller is shared with the editor and is main-thread only.
+        self.editor.value_text(id, normalized)
+    }
+
+    pub fn value_from_text(&self, id: u32, text: &str) -> Option<f64> {
+        self.editor.value_from_text(id, text)
     }
 
     pub fn latency(&self) -> u32 {

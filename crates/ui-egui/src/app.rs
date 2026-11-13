@@ -29,12 +29,12 @@ impl SoundApp {
     /// Build an app around an engine and optional player, initialising UI, recording, autosave, control and
     /// synthetic-input state.
     pub fn new(engine: Engine, player: Option<Player>, services: Services) -> Self {
-        SoundApp {
+        let mut app = SoundApp {
             recent_seen: engine.path.clone(),
             recent_changed: false,
             recent_checked: None,
             engine,
-            player,
+            player: None,
             recorder: None,
             record_start: 0,
             punch: None,
@@ -113,6 +113,7 @@ impl SoundApp {
             editor_poll_due: true,
             #[cfg(test)]
             editor_poll_fixture: None,
+            editor_instrument_params: Vec::new(),
             frame_ms: 0.0,
             last_frame: None,
             last_meter_poll: f64::NEG_INFINITY,
@@ -123,6 +124,30 @@ impl SoundApp {
             _palette_lock: theme::lock_test_palette(),
             #[cfg(test)]
             synthetic_applied_batches: 0,
+        };
+        app.set_player(player);
+        app
+    }
+
+    /// The open audio player.
+    pub fn player(&self) -> Option<&Player> {
+        self.player.as_ref()
+    }
+
+    /// Replace the audio player. The previous live source is cleared before the old player is
+    /// dropped, and the new source is installed before the new player is stored. `None` leaves
+    /// the engine with no live source.
+    pub fn set_player(&mut self, player: Option<Player>) {
+        self.engine.set_live_plugins(None);
+        if let Some(old) = self.player.take() {
+            old.stop();
+            // Editor windows close on the main thread. The instances may otherwise be dropped
+            // where that is not allowed.
+            old.close_editors();
+        }
+        if let Some(player) = player {
+            audio::install_live_plugins(&mut self.engine, &player);
+            self.player = Some(player);
         }
     }
 

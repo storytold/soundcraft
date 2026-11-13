@@ -60,7 +60,7 @@ pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
             }
             ui.close();
         }
-        if let Some(p) = &app.player
+        if let Some(p) = app.player()
             && p.has_editor(id, slot)
         {
             if p.editor_open(id, slot) {
