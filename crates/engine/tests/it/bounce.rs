@@ -211,6 +211,16 @@ fn stems_whose_suffixed_name_is_another_tracks_name_do_not_overwrite_each_other(
     stems_collide(["Kick?", "Kick*", "Kick_-2"], "bounce-stem-suffix");
 }
 
+#[test]
+fn stems_whose_names_differ_only_in_unicode_normalization_do_not_overwrite_each_other() {
+    stems_collide(["\u{AC00}", "\u{1100}\u{1161}"], "bounce-stem-hangul");
+}
+
+#[test]
+fn stems_whose_names_differ_only_in_sigma_case_forms_do_not_overwrite_each_other() {
+    stems_collide(["\u{3A3}", "\u{3C3}", "\u{3C2}"], "bounce-stem-sigma");
+}
+
 fn stems_collide<const N: usize>(new_names: [&str; N], scratch_name: &str) {
     let mut e = soundcraft_engine::demo::demo_engine();
     let ids: Vec<_> = e
@@ -226,13 +236,16 @@ fn stems_collide<const N: usize>(new_names: [&str; N], scratch_name: &str) {
         e.execute("track.rename", &serde_json::json!({"track": id.0, "name": name})).unwrap();
     }
     let dir = scratch(scratch_name);
-    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+    let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Float32);
     let paths = bounce_stems(&e, &dir.to_string_lossy(), Range::new(0, e.session().sample_rate.samples(1.0)), &opts).unwrap();
     let mut unique = paths.clone();
     unique.sort();
     unique.dedup();
+    let eligible = e.session().tracks.iter().filter(|t| soundcraft_engine::io::is_stem_track(t)).count();
+    assert_eq!(paths.len(), eligible, "{paths:?}");
+    assert!(paths.iter().all(|p| std::path::Path::new(p).is_file()), "{paths:?}");
     assert_eq!(unique.len(), paths.len(), "{paths:?}");
-    let mut folded: Vec<String> = paths.iter().map(|p| p.to_lowercase()).collect();
+    let mut folded: Vec<String> = paths.iter().map(|p| soundcraft_engine::io::collision_key(std::path::Path::new(p))).collect();
     folded.sort();
     folded.dedup();
     assert_eq!(folded.len(), paths.len(), "{paths:?}");

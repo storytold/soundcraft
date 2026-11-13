@@ -597,12 +597,7 @@ pub fn bounce_stems_with(e: &Engine, dir: &str, r: Range, opts: &EncodeOptions, 
     let ext = opts.format.extension();
     let mut out = Vec::new();
     let mut taken = std::collections::HashSet::new();
-    let stems: Vec<(TrackId, String)> = s
-        .tracks
-        .iter()
-        .filter(|t| matches!(t.kind, TrackKind::Audio | TrackKind::Instrument | TrackKind::Midi) && !t.inactive && !t.mixer.mute)
-        .map(|t| (t.id, t.name.clone()))
-        .collect();
+    let stems: Vec<(TrackId, String)> = s.tracks.iter().filter(|t| is_stem_track(t)).map(|t| (t.id, t.name.clone())).collect();
     for (id, name) in stems {
         let mut solo = s.clone();
         for t in &mut solo.tracks {
@@ -611,16 +606,30 @@ pub fn bounce_stems_with(e: &Engine, dir: &str, r: Range, opts: &EncodeOptions, 
         let stem = format!("{} - {}", sanitize_name(&s.name), sanitize_name(&name));
         let mut path = Path::new(dir).join(format!("{stem}.{ext}"));
         let mut k = 2u32;
-        // Compare case-folded: default macOS/Windows file systems are case-insensitive.
-        while taken.contains(&path.to_string_lossy().to_lowercase()) {
+        // Compare normalized and case-folded: default macOS/Windows file systems are case-insensitive
+        // and macOS ones also treat canonically equivalent names as the same file.
+        while taken.contains(&collision_key(&path)) {
             path = Path::new(dir).join(format!("{stem}-{k}.{ext}"));
             k = k.saturating_add(1);
         }
-        taken.insert(path.to_string_lossy().to_lowercase());
+        taken.insert(collision_key(&path));
         Bounce::new(Arc::new(solo), &path, r, opts, None, false, fold_stereo)?.run()?;
         out.push(path.to_string_lossy().into_owned());
     }
     Ok(out)
+}
+
+/// Whether `bounce_stems` writes a stem for this track.
+pub fn is_stem_track(t: &soundcraft_model::Track) -> bool {
+    matches!(t.kind, TrackKind::Audio | TrackKind::Instrument | TrackKind::Midi) && !t.inactive && !t.mixer.mute
+}
+
+/// Key under which two file paths name the same file on a case- and normalization-insensitive
+/// file system: NFD, full case folding, NFD again (canonical caseless matching).
+pub fn collision_key(path: &Path) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let nfd: String = path.to_string_lossy().nfd().collect();
+    caseless::default_case_fold_str(&nfd).nfd().collect()
 }
 
 impl From<StripNames> for soundcraft_model::AutoName {
