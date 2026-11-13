@@ -718,7 +718,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         let length_label = ui.radio_value(by, LoopBy::Length, tr("Loop Length"));
                         ui.add_enabled(*by == LoopBy::Length, egui::TextEdit::singleline(length).desired_width(140.0)).labelled_by(length_label.id);
-                        ui.label(td(&format.label()).as_ref());
+                        ui.label(tr(format.label()));
                     });
                     ui.radio_value(by, LoopBy::Fill, tr("Loop Until End of Session or Next Clip"));
                     let params = loop_params(s, *by, *count, length, *format, *start, filled);

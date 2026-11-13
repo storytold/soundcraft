@@ -319,8 +319,7 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
         let _ = app.run("view.grid_lines", json!({}));
     }
     let gr = Rect::from_min_max(pos2(r.min.x + 60.0, r.min.y + 6.0), pos2(r.max.x - 4.0, r.min.y + 26.0));
-    let grid_label =
-        if clips_markers { td(&GridScale::ClipsMarkers.label().to_string()).into_owned() } else { compact_grid_label(app.engine.session(), grid) };
+    let grid_label = if clips_markers { tr(GridScale::ClipsMarkers.label()).to_string() } else { compact_grid_label(app.engine.session(), grid) };
     if !clips_markers {
         draw_compact_note_icon(ui.painter(), gr, grid, t.counter_text);
     }
@@ -517,12 +516,12 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str, current: Gri
         ui.separator();
         for scale in GridScale::TIME {
             let selected = !clips_markers && current.scale() == scale;
-            if ui.selectable_label(selected, td(&scale.label().to_string()).as_ref()).clicked() {
+            if ui.selectable_label(selected, tr(scale.label())).clicked() {
                 let _ = app.run(cmd, json!({"format": scale.id(), "follow_main": false}));
                 ui.close();
             }
         }
-        if allow_clips && ui.selectable_label(clips_markers, td(&GridScale::ClipsMarkers.label().to_string()).as_ref()).clicked() {
+        if allow_clips && ui.selectable_label(clips_markers, tr(GridScale::ClipsMarkers.label())).clicked() {
             let _ = app.run(cmd, json!({"format": GridScale::ClipsMarkers.id(), "follow_main": false}));
             ui.close();
         }
