@@ -385,7 +385,7 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
     let file = soundcraft_engine::io::session_file(path);
     let replaces = soundcraft_engine::io::replaces(&app.engine, cmd, &file);
     if replaces {
-        ui.label(tf("“{file}” already exists. Do you want to replace it?", &[("file", &file.file_name().unwrap_or_default().to_string_lossy())]));
+        ui.label(tf("“{file}” already exists. Do you want to replace it?", &[("file", &file.file_name().unwrap_or_default().to_string_lossy())]).as_ref());
     }
     if buttons(ui, if replaces { tr("Replace") } else { tr("OK") }, enter && !replaces) {
         let mut v = json!({});
@@ -606,7 +606,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 Dialog::Number { cmd, key, value, suffix, .. } => {
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(value).speed(0.1)).accessible_name(format!("Value in {suffix}"));
-                        ui.label(td(suffix));
+                        ui.label(td(suffix).as_ref());
                     });
                     if buttons(ui, tr("OK"), enter) {
                         let v = if key == "by_seconds" { json!({"by": {"seconds": value}}) } else { json!({key.as_str(): value}) };
@@ -716,7 +716,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         let length_label = ui.radio_value(by, LoopBy::Length, tr("Loop Length"));
                         ui.add_enabled(*by == LoopBy::Length, egui::TextEdit::singleline(length).desired_width(140.0)).labelled_by(length_label.id);
-                        ui.label(td(&format.label()));
+                        ui.label(td(&format.label()).as_ref());
                     });
                     ui.radio_value(by, LoopBy::Fill, tr("Loop Until End of Session or Next Clip"));
                     let params = loop_params(s, *by, *count, length, *format, *start, filled);
@@ -759,7 +759,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                             action = Some(then.clone());
                         }
                     } else {
-                        ui.label(tf("Save changes to “{name}” before closing?", &[("name", name.as_str())]));
+                        ui.label(tf("Save changes to “{name}” before closing?", &[("name", name.as_str())]).as_ref());
                         ui.separator();
                         ui.horizontal(|ui| {
                             if ui.button(tr("Don't Save")).clicked() {

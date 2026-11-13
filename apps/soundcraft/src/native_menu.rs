@@ -80,7 +80,7 @@ impl NativeMenu {
             } else if let Some(entry) = self.entries.iter().find(|e| e.item.id() == &event.id)
                 && let Some(command) = &entry.command
             {
-if command == "ui.language" {
+                if command == "ui.language" {
                     let _ = app.run(command, serde_json::json!({"language": entry.path}));
                 } else if menus::item_state(app, &entry.path, Some(command)).0 {
                     if entry.path.is_empty() && (command.starts_with("window.") || command == "setup.preferences") {

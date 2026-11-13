@@ -183,7 +183,8 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             ui.spacing_mut().item_spacing = vec2(2.0, 3.0);
             let row = ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if icon_button(ui, vec2(36.0, 26.0), "zoom_toggle", app.engine.session().edit.zoom_toggle.is_some(), tr("Zoom Toggle (E)")).clicked() {
+                if icon_button(ui, vec2(36.0, 26.0), "zoom_toggle", app.engine.session().edit.zoom_toggle.is_some(), tr("Zoom Toggle (E)")).clicked()
+                {
                     crate::edit_window::zoom_toggle(app);
                 }
                 for (tool, icon) in [
@@ -220,7 +221,8 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
                     }
                 }
                 let focus = e.keyboard_focus == "commands";
-                if crate::widgets::text_toggle(ui, vec2(36.0, 18.0), "a-z", focus, t.accent, tr("Commands Keyboard Focus (single-key editing)")).clicked()
+                if crate::widgets::text_toggle(ui, vec2(36.0, 18.0), "a-z", focus, t.accent, tr("Commands Keyboard Focus (single-key editing)"))
+                    .clicked()
                 {
                     let _ = app.run("options.keyboard_focus", json!({}));
                 }
@@ -317,7 +319,8 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
         let _ = app.run("view.grid_lines", json!({}));
     }
     let gr = Rect::from_min_max(pos2(r.min.x + 60.0, r.min.y + 6.0), pos2(r.max.x - 4.0, r.min.y + 26.0));
-    let grid_label = if clips_markers { td(&GridScale::ClipsMarkers.label().to_string()).into_owned() } else { compact_grid_label(app.engine.session(), grid) };
+    let grid_label =
+        if clips_markers { td(&GridScale::ClipsMarkers.label().to_string()).into_owned() } else { compact_grid_label(app.engine.session(), grid) };
     if !clips_markers {
         draw_compact_note_icon(ui.painter(), gr, grid, t.counter_text);
     }
@@ -514,12 +517,12 @@ fn value_menu(app: &mut SoundApp, resp: &egui::Response, cmd: &str, current: Gri
         ui.separator();
         for scale in GridScale::TIME {
             let selected = !clips_markers && current.scale() == scale;
-            if ui.selectable_label(selected, tr(scale.label())).clicked() {
+            if ui.selectable_label(selected, td(&scale.label().to_string()).as_ref()).clicked() {
                 let _ = app.run(cmd, json!({"format": scale.id(), "follow_main": false}));
                 ui.close();
             }
         }
-        if allow_clips && ui.selectable_label(clips_markers, tr(GridScale::ClipsMarkers.label())).clicked() {
+        if allow_clips && ui.selectable_label(clips_markers, td(&GridScale::ClipsMarkers.label().to_string()).as_ref()).clicked() {
             let _ = app.run(cmd, json!({"format": GridScale::ClipsMarkers.id(), "follow_main": false}));
             ui.close();
         }

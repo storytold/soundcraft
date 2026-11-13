@@ -311,7 +311,7 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                 });
                 let extra = ui_aliases();
                 for root in tree() {
-                    ui.menu_button(td(&root.label), |ui| {
+                    ui.menu_button(td(&root.label).as_ref(), |ui| {
                         scrolling(ui, |ui| {
                             ui.add_enabled_ui(menu_entries_enabled, |ui| {
                                 for c in &root.children {
@@ -384,7 +384,7 @@ fn instrument_track(s: &soundcraft_model::Session) -> Option<soundcraft_model::T
 /// path and show the translated label.
 fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str, &str)]) {
     if !n.children.is_empty() {
-        ui.menu_button(td(&n.label), |ui| {
+        ui.menu_button(td(&n.label).as_ref(), |ui| {
             scrolling(ui, |ui| {
                 for c in &n.children {
                     menu_node(app, ui, c, extra);
