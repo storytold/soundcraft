@@ -40,6 +40,27 @@ fn bounce_from_dialog(h: &mut Harness<'_, SoundApp>, file: &Path) {
 }
 
 #[test]
+fn enter_on_a_focused_cancel_closes_the_dialog_and_starts_no_bounce() {
+    let dir = scratch("bounce-enter-cancel");
+    let file = dir.join("Mix.wav");
+    let mut h = harness();
+    let app = h.state_mut();
+    assert!(app.dialogs.open_for_command(&app.engine, "file.bounce_mix"));
+    if let Some(Dialog::Bounce { path, .. }) = &mut app.dialogs.open {
+        *path = file.to_string_lossy().into_owned();
+    }
+    h.run_steps(2);
+    h.get_by_label("Cancel").focus();
+    h.run_steps(2);
+    h.event(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    h.run_steps(3);
+    assert!(h.state().dialogs.open.is_none());
+    assert!(h.state().bounce.is_none(), "Cancel started a bounce");
+    assert!(!file.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_bounce_renders_across_frames_with_progress_until_its_file_is_written() {
     let dir = scratch("bounce-frames");
     let mut h = harness();
