@@ -106,9 +106,12 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
             (tr.name.clone(), sp.x, sp.y, sp.z)
         })
         .collect();
-    egui::Window::new(egui::RichText::new(tr("Renderer")).font(bold(13.0))).open(&mut open).default_size(vec2(380.0, 440.0)).resizable(true).show(
-        ctx,
-        |ui| {
+    egui::Window::new(egui::RichText::new(tr("Renderer")).font(bold(13.0)))
+        .id(crate::i18n::window_id("Renderer"))
+        .open(&mut open)
+        .default_size(vec2(380.0, 440.0))
+        .resizable(true)
+        .show(ctx, |ui| {
             ui.label(egui::RichText::new(crate::i18n::trf("Main output: {}", &[&tr(fmt.label())])).font(regular(11.0)).color(t.text));
             let side = ui.available_width().min(360.0);
             let (r, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
@@ -144,8 +147,7 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
             } else {
                 ui.label(egui::RichText::new(crate::i18n::trf("{} object track(s)", &[&objects.len()])).small().color(t.text_dim));
             }
-        },
-    );
+        });
     app.extra.show_renderer = open;
 }
 
@@ -155,9 +157,12 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new(egui::RichText::new(tr("Appearance")).font(bold(13.0))).open(&mut open).default_size(vec2(320.0, 180.0)).resizable(false).show(
-        ctx,
-        |ui| {
+    egui::Window::new(egui::RichText::new(tr("Appearance")).font(bold(13.0)))
+        .id(crate::i18n::window_id("Appearance"))
+        .open(&mut open)
+        .default_size(vec2(320.0, 180.0))
+        .resizable(false)
+        .show(ctx, |ui| {
             // Each control carries its own visible label, which is also its accessible name. A
             // label in a neighbouring grid cell is only painted text: a screen reader (and the
             // kittest accessibility check) would see an unnamed slider, checkbox or combo box.
@@ -207,7 +212,6 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                 let _ = app.run("ui.reduce_visual_effects", json!({"mode": "never"}));
                 let _ = app.run("ui.theme", json!({"mode": crate::theme::ThemeMode::default().id()}));
             }
-        },
-    );
+        });
     app.extra.show_ui_customization = open;
 }

@@ -73,7 +73,7 @@ fn video(app: &mut SoundApp, ctx: &egui::Context) {
         .clamp(0.2, 5.0);
     let mut open = true;
     let mut burn = app.ui.video_burn_in;
-    egui::Window::new(tr("Video")).open(&mut open).default_size(vec2(480.0, 480.0 / aspect + 28.0)).resizable(true).show(ctx, |ui| {
+    crate::i18n::window("Video").open(&mut open).default_size(vec2(480.0, 480.0 / aspect + 28.0)).resizable(true).show(ctx, |ui| {
         ui.horizontal(|ui| {
             crate::widgets::checkbox(ui, &mut burn, tr("Timecode burn-in"));
             let text = video_status_text(app, pic.as_ref());
@@ -138,7 +138,7 @@ fn universe(app: &mut SoundApp, ctx: &egui::Context) {
     let pos = app.position();
     let mut open = true;
     let mut locate = None;
-    egui::Window::new(tr("Video Universe")).open(&mut open).default_size(vec2(640.0, 90.0)).resizable(true).show(ctx, |ui| {
+    crate::i18n::window("Video Universe").open(&mut open).default_size(vec2(640.0, 90.0)).resizable(true).show(ctx, |ui| {
         let avail = ui.available_rect_before_wrap();
         let (r, resp) = ui.allocate_exact_size(vec2(avail.width().max(120.0), 64.0), Sense::click_and_drag());
         let painter = ui.painter_at(r);

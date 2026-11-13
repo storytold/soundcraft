@@ -30,7 +30,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
 
 fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_audio_health;
-    win(ctx, &mut open, tr("Session Audio Health"), vec2(620.0, 360.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("Session Audio Health"), vec2(620.0, 360.0), |ui| {
         let refresh = ui.button(tr("Refresh Report")).clicked();
         if app.audio_health_report.is_none() || refresh {
             app.audio_health_report = Some(app.engine.execute("session.audio_health", &json!({})).map_err(|error| error.to_string()));
@@ -82,16 +82,16 @@ fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
     }
 }
 
-fn win(ctx: &egui::Context, open: &mut bool, title: &str, size: egui::Vec2, body: impl FnOnce(&mut egui::Ui)) {
+fn win(ctx: &egui::Context, open: &mut bool, window: egui::Window<'_>, size: egui::Vec2, body: impl FnOnce(&mut egui::Ui)) {
     if !*open {
         return;
     }
-    egui::Window::new(title).open(open).default_size(size).show(ctx, body);
+    window.open(open).default_size(size).show(ctx, body);
 }
 
 fn automation(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_automation;
-    win(ctx, &mut open, tr("Automation"), vec2(260.0, 260.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("Automation"), vec2(260.0, 260.0), |ui| {
         ui.label(tr("Write automation for the selected tracks:"));
         let tracks = app.engine.session().edit.selected_tracks.clone();
         ui.horizontal_wrapped(|ui| {
@@ -132,7 +132,7 @@ fn automation(app: &mut SoundApp, ctx: &egui::Context) {
 
 fn color_palette(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_color_palette;
-    win(ctx, &mut open, tr("Color Palette"), vec2(300.0, 140.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("Color Palette"), vec2(300.0, 140.0), |ui| {
         ui.label(tr("Apply to selected tracks (Shift: selected clips)"));
         ui.horizontal_wrapped(|ui| {
             for (i, c) in soundcraft_model::TRACK_COLORS.iter().enumerate() {
@@ -155,7 +155,7 @@ fn color_palette(app: &mut SoundApp, ctx: &egui::Context) {
 
 fn disk_usage(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_disk_usage;
-    win(ctx, &mut open, tr("Disk Usage"), vec2(360.0, 160.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("Disk Usage"), vec2(360.0, 160.0), |ui| {
         let s = app.engine.session();
         let bytes: u64 = s.sources.iter().map(|x| x.frames * u64::from(x.channels) * 4).sum();
         ui.label(trf("Session media: {} files, {} MB in memory (32-bit float)", &[&s.sources.len(), &format!("{:.1}", bytes as f64 / 1_048_576.0)]));
@@ -170,7 +170,7 @@ fn disk_usage(app: &mut SoundApp, ctx: &egui::Context) {
 
 fn system_usage(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_system_usage;
-    win(ctx, &mut open, tr("System Usage"), vec2(320.0, 140.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("System Usage"), vec2(320.0, 140.0), |ui| {
         ui.label(trf("UI frame time: {} ms", &[&format!("{:.1}", app.frame_ms)]));
         ui.label(trf(
             "Audio: {}",
@@ -186,7 +186,7 @@ fn system_usage(app: &mut SoundApp, ctx: &egui::Context) {
 
 fn task_manager(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_task_manager;
-    win(ctx, &mut open, tr("Task Manager"), vec2(320.0, 120.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("Task Manager"), vec2(320.0, 120.0), |ui| {
         match &app.bounce {
             Some(b) => {
                 ui.label(trf("Bouncing {} ({}%)", &[&b.path().display(), &format!("{:.0}", b.progress() * 100.0)]));
@@ -205,7 +205,7 @@ fn task_manager(app: &mut SoundApp, ctx: &egui::Context) {
 
 fn metadata(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_metadata;
-    win(ctx, &mut open, tr("Metadata Inspector"), vec2(380.0, 260.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("Metadata Inspector"), vec2(380.0, 260.0), |ui| {
         let s = app.engine.session();
         ui.label(egui::RichText::new(&s.name).strong());
         egui::Grid::new("meta").num_columns(2).striped(true).show(ui, |ui| {
@@ -238,7 +238,7 @@ fn metadata(app: &mut SoundApp, ctx: &egui::Context) {
 /// deleted.
 fn event_list(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_event_list;
-    win(ctx, &mut open, tr("MIDI Event List"), vec2(420.0, 360.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("MIDI Event List"), vec2(420.0, 360.0), |ui| {
         let Some(cid) = crate::midi_editor::target_clip(app) else {
             ui.label(tr("Select a MIDI clip."));
             return;
@@ -274,7 +274,7 @@ fn event_list(app: &mut SoundApp, ctx: &egui::Context) {
 
 fn midi_keyboard(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_midi_keyboard;
-    win(ctx, &mut open, tr("MIDI Keyboard"), vec2(640.0, 110.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("MIDI Keyboard"), vec2(640.0, 110.0), |ui| {
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(400.0), 80.0), Sense::click());
         let whites = 28;
         let w = r.width() / whites as f32;
@@ -327,7 +327,7 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new(tr("Workspace")).open(&mut open).default_size(vec2(460.0, 420.0)).show(ctx, |ui| {
+    crate::i18n::window("Workspace").open(&mut open).default_size(vec2(460.0, 420.0)).show(ctx, |ui| {
         let dir = if app.ui.workspace_dir.is_empty() { std::env::var("HOME").unwrap_or_else(|_| ".".into()) } else { app.ui.workspace_dir.clone() };
         ui.horizontal(|ui| {
             if ui.button("⬆").on_hover_text(tr("Parent folder")).clicked()
@@ -385,7 +385,7 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
 /// dock layouts.
 fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_configurations;
-    win(ctx, &mut open, tr("Window Configurations"), vec2(320.0, 240.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("Window Configurations"), vec2(320.0, 240.0), |ui| {
         if ui.button(tr("New Configuration…")).clicked() {
             let n = app.ui.configurations.len() + 1;
             let mut snap = app.ui.clone();
@@ -497,7 +497,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     let mut refresh = false;
     let mut apply = false;
     let systems = audio_systems(ctx, false);
-    win(ctx, &mut open, tr("Playback Engine"), vec2(460.0, 360.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("Playback Engine"), vec2(460.0, 360.0), |ui| {
         let t = Tokens::current();
         egui::Grid::new("pe").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
             let system_label = ui.label(tr("Audio system"));
@@ -689,7 +689,7 @@ pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) 
 /// Setup › I/O: busses and output paths.
 pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_io_setup;
-    win(ctx, &mut open, tr("I/O Setup"), vec2(420.0, 300.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("I/O Setup"), vec2(420.0, 300.0), |ui| {
         ui.label(egui::RichText::new(tr("Busses")).strong());
         let busses: Vec<(String, String)> = app.engine.session().busses.iter().map(|b| (b.name.clone(), tr(b.format.label()).to_string())).collect();
         egui::Grid::new("busses").num_columns(3).striped(true).show(ui, |ui| {
@@ -739,7 +739,7 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
 pub fn shortcuts_window(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_shortcuts;
     let mac = ctx.os().is_mac();
-    win(ctx, &mut open, tr("Keyboard Shortcuts"), vec2(520.0, 480.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("Keyboard Shortcuts"), vec2(520.0, 480.0), |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("sc").num_columns(3).striped(true).show(ui, |ui| {
                 let engine = soundcraft_engine::command_specs()
@@ -762,7 +762,7 @@ pub fn shortcuts_window(app: &mut SoundApp, ctx: &egui::Context) {
 /// Clip Effects: per-clip EQ, dynamics and gain (stored as `clip_fx.<clip>.*` values).
 pub fn clip_effects(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_clip_effects;
-    win(ctx, &mut open, tr("Clip Effects"), vec2(560.0, 420.0), |ui| {
+    win(ctx, &mut open, crate::i18n::window("Clip Effects"), vec2(560.0, 420.0), |ui| {
         let clip = app.engine.session().edit.selected_clips.first().copied().or_else(|| {
             let s = app.engine.session();
             s.tracks

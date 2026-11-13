@@ -147,9 +147,9 @@ const INDIRECT: &[&str] = &[
     "Check the audio device, then use Reconnect audio device in Setup › Playback Engine.",
 ];
 
-/// Every `tr("…")` / `trf("…")` literal in `src`.
+/// Every `tr("…")` / `trf("…")` / `window("…")` literal in `src`.
 fn literals(src: &str, out: &mut BTreeSet<String>) {
-    for call in ["tr(", "trf("] {
+    for call in ["tr(", "trf(", "window("] {
         let mut rest = src;
         while let Some(i) = rest.find(call) {
             let before = rest[..i].chars().next_back();

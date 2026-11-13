@@ -8,7 +8,7 @@ pub(super) fn about(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     let tab_id = egui::Id::unique("about_tab");
-    egui::Window::new(tr("About SoundCraft")).open(&mut open).default_size(vec2(820.0, 420.0)).collapsible(false).show(ctx, |ui| {
+    crate::i18n::window("About SoundCraft").open(&mut open).default_size(vec2(820.0, 420.0)).collapsible(false).show(ctx, |ui| {
         let mut tab = ui.data_mut(|d| d.get_temp::<u8>(tab_id)).unwrap_or(0);
         ui.horizontal(|ui| {
             for (i, l) in (0u8..).zip(["About", "Contributors", "Models"]) {
@@ -40,7 +40,7 @@ pub(super) fn session_info(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new(tr("Session Info")).open(&mut open).default_size(vec2(480.0, 360.0)).show(ctx, |ui| {
+    crate::i18n::window("Session Info").open(&mut open).default_size(vec2(480.0, 360.0)).show(ctx, |ui| {
         let text = soundcraft_engine::inspect::session_text(&app.engine);
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.label(egui::RichText::new(text).font(mono(11.0)));

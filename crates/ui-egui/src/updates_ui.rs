@@ -117,7 +117,7 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
     #[cfg(target_arch = "wasm32")]
     if app.updates_rt.manual_window_open {
         let mut open = true;
-        egui::Window::new(tr("Check for Updates"))
+        crate::i18n::window("Check for Updates")
             .open(&mut open)
             .resizable(false)
             .collapsible(false)

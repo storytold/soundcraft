@@ -67,6 +67,7 @@ mod track_preset_state;
 mod trackpad;
 mod tracks_scroll_bar;
 mod waveform;
+mod window_language;
 mod window_shortcuts;
 mod zoom_toggle;
 

@@ -460,6 +460,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     if !matches!(app.dialogs.open, Some(Dialog::StripSilence { .. } | Dialog::StripSilenceRename { .. })) {
         app.dialogs.strip_rectangles = StripRectangles::default();
     }
+    // The dialog window's id stays the language-neutral dialog name (Dialogs::open_name): a
+    // translated title must not move the dialog to a new egui id when the language changes,
+    // which would drop its scroll position and in-window state mid-form.
+    let dialog_key = app.dialogs.open_name().unwrap_or("");
     let Some(mut d) = app.dialogs.open.take() else {
         app.dialogs.shown = false;
         return;
@@ -509,6 +513,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let enter = !first_frame && ctx.input(fresh_enter) && (ctx.memory(|m| m.focused().is_none()) || ctx.text_edit_focused());
     let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     egui::Window::new(egui::RichText::new(&title).font(bold(13.0)))
+        .id(egui::Id::unique(dialog_key))
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, -80.0))

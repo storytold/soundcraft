@@ -92,6 +92,21 @@ pub fn trf(template: &str, args: &[&dyn Display]) -> String {
     fill(tr(template), args)
 }
 
+/// A window titled `en` in the current language, with [`window_id`] as its egui id.
+pub fn window(en: &str) -> egui::Window<'static> {
+    egui::Window::new(tr(en)).id(window_id(en))
+}
+
+/// The egui id [`window`] gives a window titled `en`: `en` itself.
+///
+/// egui derives a window's id from its title, so a translated title would give the window a new id
+/// on every language change, losing its remembered placement, size and state. Passing this keeps
+/// the id (and the remembered layout) of the English title the window had before translations
+/// existed. Windows titled with styled or computed text pass the same English key here.
+pub fn window_id(en: &str) -> egui::Id {
+    egui::Id::unique(en)
+}
+
 fn fill(template: &str, args: &[&dyn Display]) -> String {
     use std::fmt::Write;
     let mut out = String::with_capacity(template.len() + 8 * args.len());

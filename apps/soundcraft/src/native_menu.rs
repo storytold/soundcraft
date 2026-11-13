@@ -21,6 +21,9 @@ pub struct NativeMenu {
     entries: Vec<Entry>,
     /// Submenus with their English labels, retitled when the language changes.
     submenus: Vec<(Submenu, String)>,
+    /// The app menu's two Hide items with their English labels, retitled when the language changes.
+    hide: (MenuItem, &'static str),
+    hide_others: (MenuItem, &'static str),
     /// The language the labels are currently shown in.
     language: Language,
     events: Receiver<MenuEvent>,
@@ -38,7 +41,16 @@ impl NativeMenu {
         let menu = Menu::new();
         let (tx, events) = channel();
         i18n::set(app.ui.language);
-        let mut native = Self { menu, entries: Vec::new(), submenus: Vec::new(), language: app.ui.language, events, last_sync: None };
+        let mut native = Self {
+            menu,
+            entries: Vec::new(),
+            submenus: Vec::new(),
+            hide: (MenuItem::with_id("hide", tr("Hide SoundCraft"), true, None)?, "Hide SoundCraft"),
+            hide_others: (MenuItem::with_id("hide_others", tr("Hide Others"), true, None)?, "Hide Others"),
+            language: app.ui.language,
+            events,
+            last_sync: None,
+        };
         let app_menu = Submenu::new("SoundCraft", true);
         native.add_item(app, &app_menu, "About SoundCraft", "", Some("window.about".into()))?;
         native.add_item(app, &app_menu, "Preferences...", "", Some("setup.preferences".into()))?;
@@ -48,8 +60,8 @@ impl NativeMenu {
         app_menu.append(&PredefinedMenuItem::services(None))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
         // muda's own Hide items take ⌘H and ⌥⌘H, which are Heal Separation and Copy to Send.
-        app_menu.append(&MenuItem::with_id("hide", tr("Hide SoundCraft"), true, None))?;
-        app_menu.append(&MenuItem::with_id("hide_others", tr("Hide Others"), true, None))?;
+        app_menu.append(&native.hide.0)?;
+        app_menu.append(&native.hide_others.0)?;
         app_menu.append(&PredefinedMenuItem::show_all(None))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
         native.add_item(app, &app_menu, "Quit SoundCraft", "", Some("app.quit".into()))?;
@@ -130,6 +142,8 @@ impl NativeMenu {
             for entry in &self.entries {
                 entry.item.set_text(tr(&entry.label));
             }
+            self.hide.0.set_text(tr(self.hide.1));
+            self.hide_others.0.set_text(tr(self.hide_others.1));
         }
         for entry in &mut self.entries {
             let (enabled, checked) = menus::item_state(app, &entry.path, entry.command.as_deref());
