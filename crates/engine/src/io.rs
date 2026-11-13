@@ -182,46 +182,20 @@ impl Drop for SessionLimit {
 /// Refuses the session `name` of `len` bytes when it is larger than [`session_limit`]: too large
 /// to open, or, when `saving`, to save.
 pub(crate) fn session_size(name: impl std::fmt::Display, len: u64, saving: bool) -> Result<()> {
-    let limit = session_limit();
-    if len <= limit {
-        return Ok(());
-    }
-    let most = if limit >= 1 << 20 { format!("{} MiB", limit >> 20) } else { format!("{limit} bytes") };
-    Err(EngineError::Io(if saving {
-        format!("{name} is too large to save: over {most}, more than SoundCraft opens")
-    } else {
-        format!("{name} is too large to open (over {most})")
-    }))
+    craft_scraft_format::check_session_size(&name.to_string(), len, session_limit(), saving).map_err(|error| EngineError::Io(error.to_string()))
 }
 
 /// [`read_text`] for a session file: refused, unread, past [`session_limit`].
 pub(crate) fn read_session_text(path: impl AsRef<Path>) -> Result<String> {
     let path = path.as_ref();
-    utf8(path, read_file_within(path, true)?)
+    craft_scraft_format::read_session_data(&path.display().to_string(), read_file_within(path, true)?, session_limit())
+        .map_err(|error| EngineError::Io(error.to_string()))
 }
 
 /// A bare `.scraft` handed over as bytes (the browser) as text: refused, uncopied, past
 /// [`session_limit`].
 pub(crate) fn session_bytes_text(name: &str, bytes: &[u8]) -> Result<String> {
-    session_size(name, bytes.len() as u64, false)?;
-    String::from_utf8(bytes.to_vec()).map_err(|_| EngineError::Io(format!("{name}: not a SoundCraft session")))
-}
-
-/// How many bytes [`Session::to_json`] makes of `s`, counted without keeping them.
-fn json_len(s: &Session) -> u64 {
-    struct Count(u64);
-    impl std::io::Write for Count {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0 = self.0.saturating_add(buf.len() as u64);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut n = Count(0);
-    // A session that cannot be written counts as nothing here: `to_json` reports that error.
-    serde_json::to_writer_pretty(&mut n, s).map_or(0, |()| n.0)
+    craft_scraft_format::read_session_bytes(name, bytes, session_limit()).map_err(|error| EngineError::Io(error.to_string()))
 }
 
 /// Is there a file at `path` the automation read root lets us see? A path outside the root is
@@ -795,11 +769,12 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
     // Before any audio is written: a session too large to open again is not saved (#892). With no
     // audio to write, the text checked is the text saved.
     let checked = if pending.is_empty() {
-        let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
-        session_size(p.display(), text.len() as u64, true)?;
+        let label = p.display().to_string();
+        let text = craft_scraft_format::write_session_named(&s, &label, session_limit()).map_err(|error| EngineError::Io(error.to_string()))?;
         Some(text)
     } else {
-        session_size(p.display(), json_len(&s), true)?;
+        let size = craft_scraft_format::session_json_len(&s).map_err(|error| EngineError::Io(error.to_string()))?;
+        session_size(p.display(), size, true)?;
         None
     };
     let mut written = 0;
@@ -820,7 +795,10 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
     }
     let text = match checked {
         Some(text) => text,
-        None => s.to_json().map_err(|err| EngineError::Io(err.to_string()))?,
+        None => {
+            let label = p.display().to_string();
+            craft_scraft_format::write_session_named(&s, &label, session_limit()).map_err(|error| EngineError::Io(error.to_string()))?
+        }
     };
     make_dir(&dir)?;
     // Atomic-ish write: temp file then rename.
@@ -1107,45 +1085,11 @@ fn write_export_checked(path: &Path, mut bytes: &[u8]) -> std::io::Result<()> {
 
 /// Unpack a bundle: the one `.scraft` at its top level and the files beside it, by relative path.
 fn read_bundle(bytes: &[u8], limits: BundleLimits) -> Result<(String, std::collections::HashMap<String, Vec<u8>>)> {
-    use std::io::Read as _;
-    let zerr = |err: zip::result::ZipError| EngineError::Io(format!("bundle: {err}"));
-    let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(zerr)?;
-    if z.len() > limits.entries {
-        return Err(EngineError::Io("bundle: too many files".into()));
-    }
-    // Entries are stored, so the files we keep can only outgrow the bundle when several entries
-    // point at the same bytes: a small bundle naming one payload thousands of times would be
-    // copied out once per name.
-    if z.has_overlapping_files().map_err(zerr)? {
-        return Err(EngineError::Io("bundle: files share data".into()));
-    }
-    let (mut text, mut files, mut total) = (None, std::collections::HashMap::new(), 0u64);
-    for i in 0..z.len() {
-        let mut f = z.by_index(i).map_err(zerr)?;
-        if f.is_dir() {
-            continue;
-        }
-        let rel = f.name().map_err(zerr)?.to_string();
-        let size = f.size();
-        total = total.saturating_add(size);
-        if total > limits.bytes {
-            return Err(EngineError::Io("bundle: too large".into()));
-        }
-        let is_session = !rel.contains('/') && Path::new(&rel).extension().and_then(OsStr::to_str) == Some(soundcraft_model::SESSION_EXTENSION);
-        if is_session && text.is_none() {
-            session_size(format_args!("bundle: {rel}"), size, false)?;
-        }
-        let mut data = Vec::new();
-        // The declared size is hostile too: never read past it.
-        f.by_ref().take(size).read_to_end(&mut data).map_err(|err| EngineError::Io(format!("bundle: {rel}: {err}")))?;
-        if is_session && text.is_none() {
-            text = Some(String::from_utf8(data).map_err(|_| EngineError::Io(format!("bundle: {rel} is not text")))?);
-        } else {
-            files.insert(rel, data);
-        }
-    }
-    let text = text.ok_or_else(|| EngineError::Io("bundle: no .scraft session inside".into()))?;
-    Ok((text, files))
+    craft_scraft_format::read_bundle(
+        bytes,
+        craft_scraft_format::BundleLimits { entries: limits.entries, bytes: limits.bytes, session_bytes: session_limit() },
+    )
+    .map_err(|error| EngineError::Io(error.to_string()))
 }
 
 /// The record-enabled audio tracks, each with the input channels it records (those its input

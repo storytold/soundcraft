@@ -1064,7 +1064,7 @@ dependencies = [
 [[package]]
 name = "craft-audio"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=7db4645d1f1673df3b064de32faa3335bcdd7aed#7db4645d1f1673df3b064de32faa3335bcdd7aed"
+source = "git+https://github.com/storytold/craft-libs?rev=7c108201239d2504bb61e941828dc9f388187a94#7c108201239d2504bb61e941828dc9f388187a94"
 dependencies = [
  "craft-media",
  "log",
@@ -1109,7 +1109,7 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=7db4645d1f1673df3b064de32faa3335bcdd7aed#7db4645d1f1673df3b064de32faa3335bcdd7aed"
+source = "git+https://github.com/storytold/craft-libs?rev=7c108201239d2504bb61e941828dc9f388187a94#7c108201239d2504bb61e941828dc9f388187a94"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1118,7 +1118,30 @@ dependencies = [
 [[package]]
 name = "craft-midi"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=7db4645d1f1673df3b064de32faa3335bcdd7aed#7db4645d1f1673df3b064de32faa3335bcdd7aed"
+source = "git+https://github.com/storytold/craft-libs?rev=7c108201239d2504bb61e941828dc9f388187a94#7c108201239d2504bb61e941828dc9f388187a94"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-scraft-format"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=7c108201239d2504bb61e941828dc9f388187a94#7c108201239d2504bb61e941828dc9f388187a94"
+dependencies = [
+ "craft-audio",
+ "craft-midi",
+ "craft-time",
+ "craft-zip",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-time"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=7c108201239d2504bb61e941828dc9f388187a94#7c108201239d2504bb61e941828dc9f388187a94"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1169,6 +1192,16 @@ dependencies = [
  "verifysign",
  "winreg",
  "winsafe",
+ "zip",
+]
+
+[[package]]
+name = "craft-zip"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=7c108201239d2504bb61e941828dc9f388187a94#7c108201239d2504bb61e941828dc9f388187a94"
+dependencies = [
+ "flate2",
+ "thiserror 2.0.21",
  "zip",
 ]
 
@@ -4446,6 +4479,7 @@ version = "0.20.1"
 dependencies = [
  "craft-audio",
  "craft-docpath",
+ "craft-scraft-format",
  "log",
  "proptest",
  "serde",
@@ -4492,13 +4526,7 @@ dependencies = [
 name = "soundcraft-model"
 version = "0.20.1"
 dependencies = [
- "craft-audio",
- "proptest",
- "serde",
- "serde_json",
- "soundcraft-midi",
- "soundcraft-time",
- "thiserror 2.0.21",
+ "craft-scraft-format",
 ]
 
 [[package]]
@@ -4520,10 +4548,7 @@ dependencies = [
 name = "soundcraft-time"
 version = "0.20.1"
 dependencies = [
- "proptest",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
+ "craft-time",
 ]
 
 [[package]]
