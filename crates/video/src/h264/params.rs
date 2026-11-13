@@ -397,6 +397,10 @@ impl Sps {
         let pic_height_in_map_units = plus(r.read_ue()?, 1, "picture too large")?;
         ensure!(pic_width_in_mbs <= 1024 && pic_height_in_map_units <= 1024, "picture too large");
         let frame_mbs_only = r.read_flag()?;
+        // Picture state is allocated from these before any macroblock is read: the movie's pixel
+        // budget applies here too, so a 16 384-square SPS can't claim its planes.
+        let coded_mbs = u64::from(pic_width_in_mbs) * u64::from(pic_height_in_map_units) * if frame_mbs_only { 1 } else { 2 };
+        ensure!(coded_mbs * 256 <= crate::movie::MAX_PIXELS, "picture too large");
         let mb_adaptive_frame_field = if !frame_mbs_only { r.read_flag()? } else { false };
         let direct_8x8_inference = r.read_flag()?;
         let frame_crop = if r.read_flag()? { Some((r.read_ue()?, r.read_ue()?, r.read_ue()?, r.read_ue()?)) } else { None };
@@ -697,6 +701,37 @@ mod tests {
         let mut r = BitReader::new(&b);
         let l = parse_scaling_list::<16>(&mut r).unwrap().unwrap();
         assert_eq!(l, [10; 16]);
+    }
+
+    #[test]
+    fn an_sps_past_the_pixel_budget_is_refused_before_allocation() {
+        // As `parse_minimal_baseline_sps`, with `mbs` × `mbs` macroblocks.
+        let sps = |mbs: u32, frame_mbs_only: bool| {
+            let mut w = BitWriter::new();
+            w.write_bits(66, 8);
+            w.write_bits(0xC0, 8);
+            w.write_bits(30, 8);
+            w.write_ue(0);
+            w.write_ue(0);
+            w.write_ue(2);
+            w.write_ue(1);
+            w.write_bit(false);
+            w.write_ue(mbs - 1);
+            w.write_ue(mbs - 1);
+            w.write_bit(frame_mbs_only);
+            if !frame_mbs_only {
+                w.write_bit(false); // mb_adaptive_frame_field
+            }
+            w.write_bit(true);
+            w.write_bit(false);
+            w.write_bit(false);
+            w.rbsp_trailing();
+            Sps::parse(&w.finish())
+        };
+        assert!(sps(512, true).is_ok(), "8192 × 8192 is the budget");
+        assert!(sps(513, true).is_err(), "one macroblock column more is past it");
+        assert!(sps(512, false).is_err(), "field pictures double the map units");
+        assert!(sps(362, false).is_ok());
     }
 
     #[test]

@@ -345,6 +345,18 @@ fn layouts_beyond_the_host_limits_are_rejected_not_truncated() {
 }
 
 #[test]
+fn offline_renders_set_up_and_process_in_offline_mode() {
+    for (offline, want) in [(false, 1.0), (true, 2.0)] {
+        let mut p = soundcraft_vst3_host::create(&id_of("Fixture Wide 16x64")).unwrap();
+        p.set_offline(offline);
+        p.prepare(44_100.0, 64, 2);
+        let mut io = vec![vec![0.5f32; 64]; 2];
+        p.process(&mut io, 64);
+        assert!(io.iter().flatten().all(|&x| x == want), "offline {offline}: {:?}", &io[0][..4]);
+    }
+}
+
+#[test]
 fn many_buses_like_multi_out_instruments_are_activated() {
     // Multi-out instruments declare dozens of buses (SSD Sampler 5: 32); only the main one is
     // active, but the plugin must still load, get buffers for every bus and play (#1247).

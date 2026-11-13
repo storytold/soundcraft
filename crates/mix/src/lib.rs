@@ -71,7 +71,7 @@ mod routing;
 mod strip;
 mod threads;
 
-use automation::{GainRamp, pan_at, pan_segment, send_level, transport_at, volume_db_at};
+use automation::{copy_with_gain, pan_at, pan_segment, send_level, transport_at, volume_level};
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
 pub use meter::StripMeter;
 use midi::sync_sample;
@@ -144,6 +144,8 @@ pub struct MixEngine {
     pub metronome: bool,
     /// Third-party instances come from [`MixEngine::adopt`] instead of being created in `sync`.
     external: bool,
+    /// An offline render: the plugins `sync` creates are told so ([`Plugin::set_offline`]).
+    offline: bool,
     /// Instances handed over by the host, waiting for `sync` to place them.
     adopt: HashMap<(TrackId, usize), PreparedInstance>,
     /// Instances `sync` took out of service, for the host to drop (see [`MixEngine::take_retired`]).
@@ -177,6 +179,7 @@ impl MixEngine {
             recording: false,
             metronome: false,
             external: false,
+            offline: false,
             adopt: HashMap::new(),
             retired: Vec::new(),
             work: Vec::new(),
@@ -187,6 +190,11 @@ impl MixEngine {
     /// [`MixEngine::adopt`] instead of being created in `sync` (see the crate docs).
     pub fn set_external_instances(&mut self, on: bool) {
         self.external = on;
+    }
+
+    /// Offline render (a bounce): plugins created from now on are told they render offline.
+    pub fn set_offline(&mut self, on: bool) {
+        self.offline = on;
     }
 
     /// Takes instances created off the audio thread; the next render's `sync` places them.
@@ -278,19 +286,15 @@ impl MixEngine {
     }
 
     /// Main-thread time for every plugin ([`Plugin::idle`]): offline renders give it between
-    /// blocks, the audio thread never does. True when an insert's latency changed. Instruments get
-    /// the time too, but their latency is not part of delay compensation (only inserts' is), so a
-    /// change there cannot move the mix and does not count.
+    /// blocks, the audio thread never does. True when an insert's or an instrument's latency
+    /// changed (both are delay-compensated).
     pub(crate) fn idle_plugins(&mut self) -> bool {
         let mut changed = false;
         for s in self.strips.values_mut() {
-            for p in s.plugins.iter_mut().flatten() {
+            for p in s.plugins.iter_mut().flatten().chain(s.instrument.as_mut()) {
                 let before = p.plugin.latency();
                 p.plugin.idle();
                 changed |= p.plugin.latency() != before;
-            }
-            if let Some(i) = &mut s.instrument {
-                i.plugin.idle();
             }
         }
         changed
@@ -305,7 +309,8 @@ impl MixEngine {
         if self.main.len() != main_ch {
             self.main = vec![vec![0.0; mb]; main_ch];
         }
-        let mut cx = SlotCtx { sr: self.sample_rate, mb, external: self.external, adopt: &mut self.adopt, retired: &mut self.retired };
+        let mut cx =
+            SlotCtx { sr: self.sample_rate, mb, external: self.external, offline: self.offline, adopt: &mut self.adopt, retired: &mut self.retired };
         let gone: Vec<TrackId> = self.strips.keys().filter(|id| s.track(**id).is_none()).copied().collect();
         for id in gone {
             self.meters.remove(&id);
@@ -564,21 +569,8 @@ impl MixEngine {
                         }
                     }
                 }
-                // Match track faders: the next block's first sample must not ramp this one.
-                let last = pos.saturating_add(frames.saturating_sub(1) as i64);
-                let v0 = volume_db_at(t, pos);
-                let v1 = volume_db_at(t, last);
-                let ramp = GainRamp::new(v0, v1, frames.saturating_sub(1));
-                for (ch, src) in strip.buf.iter().enumerate().take(self.main.len()) {
-                    if let Some(m) = self.main.get_mut(ch) {
-                        for i in 0..frames {
-                            let g = ramp.at(i);
-                            if let (Some(d), Some(x)) = (m.get_mut(i), src.get(i)) {
-                                *d = x * g;
-                            }
-                        }
-                    }
-                }
+                // Read at every sample, like track faders: a breakpoint acts on its own sample.
+                copy_with_gain(&[volume_level(t)], pos, frames, f32::INFINITY, &strip.buf, &mut self.main);
                 let m = self.meters.entry(t.id).or_default();
                 m.measure(&self.main, frames, 0.0);
                 m.plugin_failures = strip.failures;

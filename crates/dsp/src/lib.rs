@@ -195,6 +195,11 @@ pub struct Transport {
 pub trait Plugin: Send {
     fn info(&self) -> &'static PluginInfo;
     fn prepare(&mut self, sample_rate: f32, max_block: usize, channels: usize);
+    /// The plugin renders offline (a bounce: faster or slower than realtime, no deadline) rather
+    /// than in realtime. Hosted plugins pass it on (VST3 `processMode`, CLAP `clap.render`): some
+    /// use better algorithms then, or wait for what they load instead of playing on without it.
+    /// Called before `prepare`; plugins are realtime until told otherwise.
+    fn set_offline(&mut self, _offline: bool) {}
     fn reset(&mut self);
     /// Sets a parameter (clamped into range; NaN becomes the default). `false` if `id` is unknown.
     fn set_param(&mut self, id: &str, value: f32) -> bool;

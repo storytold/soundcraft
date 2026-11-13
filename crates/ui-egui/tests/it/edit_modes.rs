@@ -51,7 +51,7 @@ fn tracks(mode: &str, tool: &str, lanes: &[&[(i64, i64)]]) -> (SoundApp, egui::C
         channels: 1,
         frames: 20 * SEC as u64,
         sample_rate: 48_000,
-        format: soundcraft_audio_io::FileFormat::Wav,
+        format: soundcraft_model::FileFormat::Wav,
         time_reference: 0,
         unsaved: false,
     });
@@ -279,6 +279,24 @@ fn shuffle_drags_leave_locked_clips_in_the_selection_out_of_it() {
     app.engine.execute("edit.select", &json!({"clips": [ids[0].0, ids[1].0]})).unwrap();
     drag(&ctx, &mut app, t, 7 * SEC / 2, 2 * SEC);
     assert_eq!(starts(&app, &ids), vec![0, SEC]);
+}
+
+#[test]
+fn f6_f7_and_f7_f8_in_either_order_choose_the_smart_tool() {
+    let (mut app, ctx, _, _) = app("slip", "grabber", &[]);
+    let tool = |app: &SoundApp| app.engine.session().edit.tool.id();
+    for (first, second) in [(Key::F6, Key::F7), (Key::F7, Key::F6), (Key::F7, Key::F8), (Key::F8, Key::F7)] {
+        frame(&ctx, &mut app, key(Key::F5));
+        frame(&ctx, &mut app, vec![key_event(first, true, Modifiers::NONE)]);
+        frame(&ctx, &mut app, key(second));
+        frame(&ctx, &mut app, vec![key_event(first, false, Modifiers::NONE)]);
+        assert_eq!(tool(&app), "smart", "{first:?}+{second:?}");
+    }
+    let alone = [(Key::F5, "zoom"), (Key::F6, "trim"), (Key::F7, "selector"), (Key::F8, "grabber"), (Key::F9, "scrubber"), (Key::F10, "pencil")];
+    for (k, want) in alone {
+        frame(&ctx, &mut app, key(k));
+        assert_eq!(tool(&app), want, "{k:?} alone");
+    }
 }
 
 #[test]

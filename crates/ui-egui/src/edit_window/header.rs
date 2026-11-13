@@ -1,3 +1,4 @@
+use super::layout::STRIP_W;
 use super::tracks::{click_track, folder_depth, height_targets, in_edit_window, track_context_menu, view_label, view_menu};
 use super::{
     Align2, AutoParam, Color32, Pos2, Rect, Sense, Shape, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold, groove, json,
@@ -14,6 +15,7 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
         click_track(app, id, ui.input(|i| i.modifiers), in_edit_window);
     }
     bg.context_menu(|ui| track_context_menu(app, ui, id));
+    color_strip(app, ui, id, head);
     resize_edge(app, ui, track, head);
     strip_buttons(app, ui, track, head);
     name_plate(app, ui, track, head, selected);
@@ -24,6 +26,28 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
     field_row(app, ui, track, head, head_bg);
     let md = app.meters.get(&id).copied().unwrap_or_default();
     header_meter(ui, Rect::from_min_max(pos2(head.max.x - 8.0, head.min.y + 1.0), pos2(head.max.x, head.max.y - 1.5)), &md, track.channels() >= 2);
+}
+
+/// The colour strip: a click selects the track as the header does, a double click opens the Color
+/// Palette for the selected tracks. A plain click on a track that is already selected keeps the
+/// selection, so double-clicking one of several selected tracks colours them all. Registered after
+/// the header background, so it sits on top of it, and before the strip's own buttons and the
+/// resize edge, which stay on top of it.
+fn color_strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, head: Rect) {
+    let strip = Rect::from_min_size(head.min, vec2(STRIP_W, head.height()));
+    let resp = ui.interact(strip, ui.scope_id().with(("color_strip", id.0)), Sense::click());
+    let mods = ui.input(|i| i.modifiers);
+    let selected = app.engine.session().edit.selected_tracks.contains(&id);
+    if resp.double_clicked() {
+        // A Cmd click toggles, so a Cmd double click's first click deselected the track: add it back.
+        if !selected {
+            click_track(app, id, mods, in_edit_window);
+        }
+        app.ui.show_color_palette = true;
+    } else if resp.clicked() && !(selected && mods.is_none()) {
+        click_track(app, id, mods, in_edit_window);
+    }
+    resp.context_menu(|ui| track_context_menu(app, ui, id));
 }
 
 /// Drag the bottom edge of the header to resize the track (snaps to the height presets).
@@ -115,8 +139,18 @@ fn name_plate(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, select
         track.name.clone()
     };
     let name_color = if selected { t.text_dark } else { t.text.lerp_to_gamma(t.text_dim, 0.4) };
-    ui.painter().with_clip_rect(name_r).text(pos2(name_r.min.x + 1.5, name_r.center().y), Align2::LEFT_CENTER, &shown_name, bold(12.5), name_color);
-    let nresp = ui.interact(name_r, ui.scope_id().with(("name", id.0)), Sense::click_and_drag());
+    let font = bold(12.5);
+    let galley = ui.painter().layout_no_wrap(shown_name.clone(), font.clone(), name_color);
+    let overflows = galley.size().x > name_r.width() - 3.0;
+    let (text_pos, align) =
+        if overflows { (pos2(name_r.min.x + 1.5, name_r.center().y), Align2::LEFT_CENTER) } else { (name_r.center(), Align2::CENTER_CENTER) };
+    ui.painter().with_clip_rect(name_r).text(text_pos, align, &shown_name, font, name_color);
+    let mut nresp = ui.interact(name_r, ui.scope_id().with(("name", id.0)), Sense::click_and_drag());
+    if overflows {
+        nresp = nresp.on_hover_ui(|ui| {
+            ui.label(&shown_name);
+        });
+    }
     if nresp.double_clicked() {
         app.dialogs.open_rename_track(id, &track.name);
     } else if nresp.clicked() {
@@ -190,8 +224,9 @@ fn toggle_keys(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
     let h = head.height();
     let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
     let m = &track.mixer;
-    if h >= 37.0 {
-        let (records, mixes) = (track.kind.has_playlist(), track.kind != TrackKind::Master);
+    let is_master = track.kind == TrackKind::Master;
+    if h >= 37.0 && !is_master {
+        let (records, mixes) = (track.kind.has_playlist(), true);
         let implied = !m.solo && app.engine.session().tracks.iter().any(|t| t.mixer.solo);
         let keys = [
             (HeaderKey::Rec, m.record_arm, false, "mix.record_arm", records),
@@ -213,10 +248,13 @@ fn view_selector(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
     let id = track.id;
     let h = head.height();
     let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
-    if h >= 58.0 {
+    let is_master = track.kind == TrackKind::Master;
+    let view_y = if is_master { 20.0 } else { 39.0 };
+    let view_min_h = if is_master { 37.0 } else { 58.0 };
+    if h >= view_min_h {
         let vresp = header_selector(
             ui,
-            at(17.0, 39.0, 105.0, 17.0),
+            at(17.0, view_y, 105.0, 17.0),
             ui.scope_id().with(("view", id.0)),
             &view_label(&track.view),
             t.text,
@@ -225,10 +263,32 @@ fn view_selector(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
         );
         egui::Popup::menu(&vresp).show(|ui| view_menu(app, ui, track));
     }
+    if is_master && h >= 58.0 {
+        let mode = track.mixer.automation_mode;
+        let col = match mode {
+            soundcraft_model::AutomationMode::Read => t.auto_read,
+            soundcraft_model::AutomationMode::Write => t.auto_write,
+            soundcraft_model::AutomationMode::Touch | soundcraft_model::AutomationMode::TouchLatch => t.auto_touch,
+            soundcraft_model::AutomationMode::Latch => t.auto_latch,
+            _ => t.text_dim,
+        };
+        let mode_name = format!("Automation mode for {}", track.name);
+        let aresp = header_selector(ui, at(17.0, 39.0, 105.0, 17.0), ui.scope_id().with(("auto_mode", id.0)), mode.label(), col, true, &mode_name);
+        egui::Popup::menu(&aresp).show(|ui| {
+            for m in soundcraft_model::AutomationMode::ALL {
+                if ui.selectable_label(m == mode, m.label()).clicked() {
+                    let _ = app.run("mix.automation_mode", json!({"track": id.0, "mode": m.label()}));
+                }
+            }
+        });
+    }
 }
 
 /// Freeze, voice and automation mode.
 fn voice_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
+    if track.kind == TrackKind::Master {
+        return;
+    }
     let t = Tokens::current();
     let id = track.id;
     let h = head.height();
@@ -329,12 +389,18 @@ fn field_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, head_bg
                 ui.painter().line_segment([c + vec2(0.0, -3.5), c + vec2(0.0, 1.0)], Stroke::new(1.0, t.text));
                 ui.painter().add(Shape::convex_polygon(vec![c + vec2(0.0, 0.5), c + vec2(3.0, 3.5), c + vec2(-3.0, 3.5)], t.text, Stroke::NONE));
                 if let Some(alg) = &track.elastic {
-                    ui.painter().with_clip_rect(field).text(pos2(field.min.x + 14.0, field.center().y), Align2::LEFT_CENTER, alg, bold(10.0), t.text);
+                    ui.painter().with_clip_rect(field).text(
+                        pos2(field.min.x + 14.0, field.center().y),
+                        Align2::LEFT_CENTER,
+                        soundcraft_engine::feature_names::display_label(alg),
+                        bold(10.0),
+                        t.text,
+                    );
                 }
                 egui::Popup::menu(&resp.on_hover_text("Elastic Audio")).show(|ui| {
                     for alg in ["none", "polyphonic", "rhythmic", "monophonic", "varispeed", "x-form"] {
                         let current = track.elastic.as_deref().unwrap_or("none") == alg;
-                        if ui.selectable_label(current, alg).clicked() {
+                        if ui.selectable_label(current, soundcraft_engine::feature_names::display_label(alg)).clicked() {
                             let _ = app.run("track.elastic", json!({"tracks": [id.0], "algorithm": alg}));
                         }
                     }
