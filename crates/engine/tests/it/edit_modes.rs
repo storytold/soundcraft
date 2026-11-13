@@ -634,9 +634,10 @@ fn a_longer_or_shorter_range_replaces_the_crossfade_around_the_same_cut() {
 
 #[test]
 fn a_replaced_crossfade_keeps_the_gain_and_sync_points_of_the_audio_it_keeps() {
-    // B starts at 800 (crossfade 800..1050, cut 1000). Its clip gain moves at 900, 950 and 1000, its sync
-    // point is at 1020, and A's at 1040, past the cut. Where the new crossfade still plays that audio,
-    // longer or shorter, the gain there and the sync points are as they were. One undo restores both clips.
+    // B starts at 800 (crossfade 800..1050, cut 1000). Its clip gain moves at 900, 950 and 1000 and its sync
+    // point is at 920, before the cut; A's is at 1040, past it. Where the new crossfade still plays that
+    // audio, longer or shorter, the gain there and the sync points are as they were, and a sync point goes
+    // only with its audio. One undo restores both clips.
     let get = |e: &Engine, id: ClipId| -> Clip { e.session().find_clip(id).unwrap().1.clone() };
     let gain = |c: &Clip, x: i64| c.env_db_at(x - c.start);
     for (start, end) in [(700, 1500), (900, 1050), (950, 1100), (990, 1030)] {
@@ -644,16 +645,17 @@ fn a_replaced_crossfade_keeps_the_gain_and_sync_points_of_the_audio_it_keeps() {
         let s = e.session_mut();
         let b = s.find_clip_mut(ids[1]).unwrap();
         b.gain_env = vec![(100, -6.0), (150, 3.0), (200, -12.0)];
-        b.sync_point = 220;
+        b.sync_point = 120;
         s.find_clip_mut(ids[0]).unwrap().sync_point = 1040;
         let (before, b0) = (e.session().clone(), get(&e, ids[1]));
         run(&mut e, "edit.fades_create", json!({"tracks": [t.0], "start": start, "end": end}));
         let (a1, b1) = (get(&e, ids[0]), get(&e, ids[1]));
         assert_eq!((b1.start, a1.end(), cuts(&e, t)), (start, end, vec![1000]), "{start}..{end}");
-        for x in [900, 925, 950, 975, 1000, 1020].into_iter().filter(|x| *x >= b1.start) {
+        // 750 is audio B gains when it grows: its gain there holds the first value, as it did before B started.
+        for x in [750, 900, 925, 950, 975, 1000, 1020].into_iter().filter(|x| *x >= b1.start) {
             assert!((gain(&b1, x) - gain(&b0, x)).abs() < 1e-4, "{start}..{end}: B's gain at {x} is {} not {}", gain(&b1, x), gain(&b0, x));
         }
-        assert_eq!(b1.start + b1.sync_point, 1020, "{start}..{end}: B's sync point");
+        assert_eq!(b1.sync_point, if b1.start < 920 { 920 - b1.start } else { 0 }, "{start}..{end}: B's sync point, gone with its audio only");
         assert_eq!(a1.sync_point, if a1.end() > 1040 { 1040 } else { 0 }, "{start}..{end}: A's sync point, gone with its audio only");
         assert!(e.undo());
         assert_eq!(e.session(), &before, "{start}..{end} undone");
