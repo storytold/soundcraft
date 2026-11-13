@@ -187,17 +187,21 @@ pub fn render_stretched(s: &mut Session, cmd: &str, c: &Clip, out_len: Samples) 
 }
 
 /// Replace clip `old` on track `t` with `new`, overwriting whatever `new` covers, except a clip that
-/// overlapped `old` on a side `new` does not reach past: the other half of a crossfade keeps its
-/// overlap and its fade, so processing a clip in place does not turn the crossfade into a dip.
+/// overlapped `old` across one edge that `new` does not reach past: the other half of a crossfade keeps
+/// its overlap and its fade, so processing a clip in place does not turn the crossfade into a dip.
 pub fn replace_clip(s: &mut Session, t: TrackId, old: soundcraft_model::ClipId, new: Clip) {
     let kept: Vec<Clip> = match s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
         Some(pl) => {
             let was = pl.clips.iter().find(|c| c.id == old).map(Clip::range);
             let to = new.range();
-            // Overlaps `old`, and on each side where it sticks out of `old`, `new` does not reach further than `old` did.
+            // The other half of a crossfade: it overlaps `old` across one edge only, starting before `old` and ending
+            // inside it, or starting inside it and ending after it, and `new` does not reach past that edge. A clip
+            // inside `old`, or covering all of it, shares no crossfade with it and is overwritten as usual.
             let keep = |c: &Clip| {
                 was.is_some_and(|w| {
-                    c.range().intersect(&w).is_some() && (c.start >= w.start || to.start >= w.start) && (c.end() <= w.end || to.end <= w.end)
+                    let earlier = c.start < w.start && c.end() < w.end && to.start >= w.start;
+                    let later = c.start > w.start && c.end() > w.end && to.end <= w.end;
+                    c.range().intersect(&w).is_some() && (earlier || later)
                 })
             };
             let (kept, rest) = std::mem::take(&mut pl.clips).into_iter().filter(|c| c.id != old).partition(keep);
