@@ -58,12 +58,17 @@ pub enum AutoParam {
     SendLevel(u8),
     SendPan(u8),
     SendMute(u8),
-    /// Insert slot + parameter id.
+    /// Insert slot + parameter id. Slot [`INSTRUMENT_AUTO_SLOT`] is the track's instrument;
+    /// `u8::MAX` holds trim.
     Plugin {
         slot: u8,
         param: String,
     },
 }
+
+/// The [`AutoParam::Plugin`] slot of a track's instrument (`plugin:instrument:<id>`), past the
+/// insert slots and next to trim's `u8::MAX`.
+pub const INSTRUMENT_AUTO_SLOT: u8 = u8::MAX - 1;
 
 impl AutoParam {
     pub fn label(&self) -> String {
@@ -75,10 +80,12 @@ impl AutoParam {
             AutoParam::SendLevel(i) => format!("send {} level", slot_letter(*i)),
             AutoParam::SendPan(i) => format!("send {} pan", slot_letter(*i)),
             AutoParam::SendMute(i) => format!("send {} mute", slot_letter(*i)),
+            AutoParam::Plugin { slot: INSTRUMENT_AUTO_SLOT, param } => format!("instrument {param}"),
             AutoParam::Plugin { slot, param } => format!("insert {} {param}", slot_letter(*slot)),
         }
     }
-    /// Parse ids like `volume`, `pan`, `pan2`, `mute`, `send_a_level`, `plugin:a:threshold`.
+    /// Parse ids like `volume`, `pan`, `pan2`, `mute`, `send_a_level`, `plugin:a:threshold`,
+    /// `plugin:instrument:1575`.
     pub fn parse(s: &str) -> Option<AutoParam> {
         let orig = s.trim();
         let s = orig.to_ascii_lowercase();
@@ -103,7 +110,8 @@ impl AutoParam {
             let (slot, param) = rest.split_once(':')?;
             // ASCII lowercasing keeps byte offsets, so take the param from the original.
             let param = orig.get(orig.len() - param.len()..)?;
-            return Some(AutoParam::Plugin { slot: letter_slot(slot)?, param: param.to_string() });
+            let slot = if slot == "instrument" { INSTRUMENT_AUTO_SLOT } else { letter_slot(slot)? };
+            return Some(AutoParam::Plugin { slot, param: param.to_string() });
         }
         None
     }
@@ -379,6 +387,10 @@ mod tests {
     fn param_ids() {
         assert_eq!(AutoParam::parse("send_b_level"), Some(AutoParam::SendLevel(1)));
         assert_eq!(AutoParam::parse("plugin:a:threshold"), Some(AutoParam::Plugin { slot: 0, param: "threshold".into() }));
+        let strum = AutoParam::parse("plugin:Instrument:1575");
+        assert_eq!(strum, Some(AutoParam::Plugin { slot: INSTRUMENT_AUTO_SLOT, param: "1575".into() }));
+        assert_eq!(strum.map(|p| p.label()).as_deref(), Some("instrument 1575"));
+        assert_eq!(AutoParam::parse("plugin:instrument"), None);
         assert_eq!(AutoParam::parse("nope"), None);
         assert_eq!(AutomationMode::from_id("touch/latch"), Some(AutomationMode::TouchLatch));
     }
