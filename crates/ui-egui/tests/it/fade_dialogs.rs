@@ -314,6 +314,32 @@ impl Rig {
 }
 
 #[test]
+fn standard_on_one_bent_side_of_an_unlinked_crossfade_leaves_the_other_side_bent() {
+    for fade_in in [true, false] {
+        let (mut r, a, b, b_start) = crossfade_rig("grabber");
+        r.app_mut_bend(b, 0.4);
+        r.h.state_mut().engine.session_mut().find_clip_mut(a).unwrap().fade_out.curvature = -0.3;
+        r.frames(2);
+        r.double_click(r.point(b_start + FADE / 2, 0.75));
+        assert_eq!(r.settings().link, Link::None, "bent fades open unlinked");
+        let (before, steps) = (r.app().engine.session().clone(), r.steps());
+        // In Shape is the first group, Out Shape the second.
+        r.radio("Standard", if fade_in { 0 } else { 1 });
+        r.ok();
+        let (fade_in_now, fade_out_now) = (r.clip(b).fade_in, r.clip(a).fade_out);
+        let (in_before, out_before) = (before.find_clip(b).unwrap().1.fade_in, before.find_clip(a).unwrap().1.fade_out);
+        if fade_in {
+            assert_eq!((fade_in_now, fade_out_now), (shaped(FadeShape::Linear), out_before), "editing In leaves Out as it was");
+        } else {
+            assert_eq!((fade_in_now, fade_out_now), (in_before, shaped(FadeShape::Linear)), "editing Out leaves In as it was");
+        }
+        assert_eq!(r.steps(), steps + 1);
+        assert!(r.h.state_mut().engine.undo());
+        assert_eq!(r.app().engine.session(), &before, "one undo restores both fades");
+    }
+}
+
+#[test]
 fn an_open_menu_has_enter_and_esc_before_the_dialog() {
     let (mut r, ids) = Rig::new("grabber", &[(0, 2 * SEC, Some(FadeShape::EqualPower), None)]);
     r.open(FadeTarget::Single { clip: ids[0], fade_in: true });

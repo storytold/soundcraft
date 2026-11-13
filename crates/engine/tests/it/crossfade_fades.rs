@@ -155,3 +155,40 @@ fn a_crossfade_rejects_a_bad_in_shape_or_out_shape_without_an_edit() {
         assert_eq!((e.session(), e.undo_history()), (&before, history), "{params}");
     }
 }
+
+#[test]
+fn in_curvature_and_out_curvature_bend_one_fade_and_leave_the_other_alone() {
+    // Both fades are Linear, bent 0.4. Taking the bend off one leaves the other's, in one undo step.
+    for fade_in in [true, false] {
+        let (mut e, _, a, b) = crossfade();
+        let before = e.session().clone();
+        let steps = e.undo_history().len();
+        let key = if fade_in { "in_curvature" } else { "out_curvature" };
+        let p = json!({"clip": b.0, "side": "crossfade", "shape": "linear", key: 0.0});
+        assert_eq!(e.execute("edit.fades_create", &p).unwrap(), json!({"fades": 1}), "{p}");
+        let unbent = Fade { len: 200, shape: FadeShape::Linear, curvature: 0.0 };
+        let bent = Fade { curvature: 0.4, ..unbent };
+        let expected = if fade_in { (unbent, bent) } else { (bent, unbent) };
+        assert_eq!((clip(&e, b).fade_in, clip(&e, a).fade_out), expected, "{p}");
+        assert_eq!(e.undo_history().len(), steps + 1);
+        assert!(e.undo());
+        assert_eq!(e.session(), &before);
+    }
+    // A side's own bend wins over the one for both.
+    let (mut e, _, a, b) = crossfade();
+    let p = json!({"clip": b.0, "side": "crossfade", "shape": "s-curve", "curvature": 0.1, "in_curvature": -0.5});
+    e.execute("edit.fades_create", &p).unwrap();
+    assert_eq!((clip(&e, b).fade_in.curvature, clip(&e, a).fade_out.curvature), (-0.5, 0.1));
+}
+
+#[test]
+fn a_crossfade_rejects_a_bad_in_curvature_or_out_curvature_without_an_edit() {
+    let (mut e, _, _, b) = crossfade();
+    for extra in [json!({"in_curvature": 2.0}), json!({"out_curvature": -1.5}), json!({"in_curvature": "bent"}), json!({"out_curvature": null})] {
+        let mut params = json!({"clip": b.0, "side": "crossfade", "shape": "s-curve"});
+        params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let (before, history) = (e.session().clone(), e.undo_history());
+        assert!(e.execute("edit.fades_create", &params).is_err(), "{params}");
+        assert_eq!((e.session(), e.undo_history()), (&before, history), "{params}");
+    }
+}
