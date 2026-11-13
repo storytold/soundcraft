@@ -239,6 +239,8 @@ fn gain_reduction_keeps_its_maximum_until_taken() {
     assert_eq!((acc.gain_reduction_db, acc.peak, acc.peaks.len()), (0.0, [0.0; 2], 1));
 }
 
+/// A block that panics silences it and every later block, stops the transport, and reports the bug
+/// once; every block, failed or not, still counts as a beat.
 #[test]
 fn a_block_that_panics_goes_silent_and_is_reported_once() {
     let shared = Shared {
