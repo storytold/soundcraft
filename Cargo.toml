@@ -51,6 +51,9 @@ rustfft = "6"
 cfb = "0.15"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
+# Collision-safe file names: canonical normalization plus full Unicode case folding.
+caseless = "0.2"
+unicode-normalization = "0.1"
 cpal = "0.18"
 # MIDI input devices. Pinned: it talks to the system's MIDI service and runs on its threads.
 # Only soundcraft-playback depends on it, and only on Linux, macOS and Windows; there it builds
