@@ -700,7 +700,8 @@ fn placing_over_a_locked_clip_overlaps_it() {
                     run(&mut e, "edit.paste", json!({"tracks": [t.0], "at": 12_000}));
                 }
             }
-            let want = if lock.is_some() { vec![(12_000, 24_000), (16_000, 16_000), (200_000, 24_000)] } else { vec![(12_000, 24_000), (200_000, 24_000)] };
+            let want =
+                if lock.is_some() { vec![(12_000, 24_000), (16_000, 16_000), (200_000, 24_000)] } else { vec![(12_000, 24_000), (200_000, 24_000)] };
             assert_eq!(clips(&e, t), want, "{lock:?} {path}");
             if lock.is_some() {
                 assert_eq!(start(&e, ids[0]), 16_000, "{lock:?} {path}: the locked clip keeps its id");
