@@ -3,10 +3,10 @@ use super::events::{Event, RawEvent, ReadCursor, in_events_get, in_events_size, 
 use super::gui::GuiLink;
 use super::host::HostState;
 use super::{
-    Arc, CLAP_AUDIO_PORT_IS_MAIN, CLAP_PROCESS_ERROR, CStr, ClapError, MAX_PARAMS, MAX_PORT_CHANNELS, MAX_PORTS, Ordering, Transport, c_char, c_void,
-    clap_audio_buffer, clap_audio_port_info, clap_host, clap_input_events, clap_istream, clap_note_port_info, clap_output_events, clap_param_info,
-    clap_plugin, clap_plugin_audio_ports, clap_plugin_latency, clap_plugin_note_ports, clap_plugin_params, clap_plugin_state, clap_process,
-    read_name,
+    Arc, CLAP_AUDIO_PORT_IS_MAIN, CLAP_PROCESS_ERROR, CStr, CString, ClapError, MAX_PARAMS, MAX_PORT_CHANNELS, MAX_PORTS, Ordering, Transport,
+    c_char, c_void, clap_audio_buffer, clap_audio_port_info, clap_host, clap_input_events, clap_istream, clap_note_port_info, clap_output_events,
+    clap_param_info, clap_plugin, clap_plugin_audio_ports, clap_plugin_latency, clap_plugin_note_ports, clap_plugin_params, clap_plugin_state,
+    clap_process, read_name,
 };
 use super::{CLAP_RENDER_OFFLINE, CLAP_RENDER_REALTIME, clap_plugin_render};
 
@@ -215,13 +215,32 @@ impl Instance {
     }
 
     pub fn value_text(&self, id: u32, value: f64) -> Option<String> {
+        // `value_to_text` is [main-thread].
+        if !super::gui::on_main_thread() {
+            return None;
+        }
         // SAFETY: see `params`.
         let p = unsafe { self.params.as_ref() }?;
         let f = p.value_to_text?;
         let mut buf = [0 as c_char; 128];
-        // SAFETY: valid instance; we pass the buffer's true capacity.
+        // SAFETY: valid instance on the main thread; we pass the buffer's true capacity.
         let ok = unsafe { f(self.plugin, id, value, buf.as_mut_ptr(), buf.len() as u32) };
         ok.then(|| read_name(&buf)).filter(|s| !s.is_empty())
+    }
+
+    pub fn value_from_text(&self, id: u32, text: &str) -> Option<f64> {
+        // `text_to_value` is [main-thread].
+        if !super::gui::on_main_thread() || text.chars().nth(256).is_some() {
+            return None;
+        }
+        // SAFETY: see `params`.
+        let p = unsafe { self.params.as_ref() }?;
+        let f = p.text_to_value?;
+        let text = CString::new(text).ok()?;
+        let mut value = 0.0;
+        // SAFETY: valid instance on the main thread; `text` is NUL-terminated and `value` is writable.
+        let ok = unsafe { f(self.plugin, id, text.as_ptr(), &mut value) };
+        (ok && value.is_finite()).then_some(value)
     }
 
     /// The plugin's audio ports in one direction. A layout beyond `MAX_PORTS` ports or

@@ -275,7 +275,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     icons::draw(ui.painter(), Rect::from_center_size(pos2(r.min.x + 158.0, y), vec2(8.0, 8.0)), "triangle_down", t.text_dim);
     format_menu(app, &sub_resp, sub_fmt, "view.sub_counter");
     let st = if app.engine.is_dirty() { "modified" } else { "saved" };
-    let dev = app.player.as_ref().map_or("no audio engine", |p| if p.silent { "silent clock" } else { "audio on" });
+    let dev = app.player().map_or("no audio engine", |p| if p.silent { "silent clock" } else { "audio on" });
     ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, format!("{st} · {dev}"), regular(10.0), t.text_dim);
 }
 

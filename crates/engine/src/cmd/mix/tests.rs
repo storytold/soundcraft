@@ -1,6 +1,7 @@
 use super::*;
 use craft_audio::AudioBuffer;
-use soundcraft_model::{ChannelFormat, Clip, SourceAudio, SourceId, TrackKind};
+use soundcraft_dsp::Plugin;
+use soundcraft_model::{ChannelFormat, Clip, INSTRUMENT_AUTO_SLOT, SourceAudio, SourceId, TrackKind};
 use soundcraft_time::Range;
 use std::sync::Arc;
 
@@ -517,4 +518,813 @@ fn live_input_states_of_restored_tracks_start_disabled() {
     let mixer = &e.session().track(c).unwrap().mixer;
     assert!(!mixer.record_arm && !mixer.input_monitor);
     assert!(e.session().track(b).unwrap().mixer.input_monitor);
+}
+
+fn instrument_params(e: &Engine, t: TrackId) -> std::collections::BTreeMap<String, f32> {
+    e.session().track(t).and_then(|tr| tr.instrument.as_ref()).map(|i| i.params.clone()).unwrap_or_default()
+}
+
+#[test]
+fn the_instrument_slot_takes_parameters_like_an_insert() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let t = e.session().tracks[0].id;
+    let r = e.execute("mix.insert_param", &json!({"track": t.0, "slot": "Instrument", "param": "cutoff", "value": 5000})).unwrap();
+    assert_eq!(r["value"], 5000.0);
+    assert_eq!(instrument_params(&e, t).get("cutoff"), Some(&5000.0));
+    let r = e.execute("mix.insert_params", &json!({"track": t.0, "slot": "instrument", "params": {"cutoff": 1.0e9, "level": -12}})).unwrap();
+    assert_eq!(r["set"], 2);
+    assert_eq!(instrument_params(&e, t).get("cutoff"), Some(&20_000.0), "clamped");
+    assert_eq!(instrument_params(&e, t).get("level"), Some(&-12.0));
+    e.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(instrument_params(&e, t).get("cutoff"), Some(&5000.0));
+
+    // Same checks as on an insert: unknown ids and bad values change nothing.
+    for bad in [
+        json!({"track": t.0, "slot": "instrument", "param": "nope", "value": 1}),
+        json!({"track": t.0, "slot": "instrument", "param": "cutoff", "value": "open"}),
+        json!({"track": t.0, "slot": "instrument", "param": -3, "value": 1}),
+        json!({"track": t.0, "slot": "instrument", "param": 1.5, "value": 1}),
+        json!({"track": t.0, "slot": "instruments", "param": "cutoff", "value": 1}),
+    ] {
+        assert!(e.execute("mix.insert_param", &bad).is_err(), "{bad}");
+    }
+    assert!(e.execute("mix.insert_params", &json!({"track": t.0, "slot": "instrument", "params": {"nope": 1}})).is_err());
+    assert_eq!(instrument_params(&e, t).get("cutoff"), Some(&5000.0));
+
+    // An audio track has no instrument; other insert commands keep refusing the name.
+    e.execute("track.new", &json!({})).unwrap();
+    let audio = e.session().tracks[1].id.0;
+    let err = e.execute("mix.insert_param", &json!({"track": audio, "slot": "instrument", "param": "cutoff", "value": 1})).unwrap_err();
+    assert!(err.to_string().contains("no instrument"), "{err}");
+    assert!(e.execute("mix.insert_remove", &json!({"track": t.0, "slot": "instrument"})).is_err());
+    assert!(e.execute("mix.insert_bypass", &json!({"track": t.0, "slot": "instrument"})).is_err());
+}
+
+#[test]
+fn instrument_automation_lanes_take_the_stored_value() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let t = e.session().tracks[0].id;
+    e.execute("mix.instrument_param", &json!({"track": t.0, "param": "cutoff", "value": 800})).unwrap();
+    let param = AutoParam::parse("plugin:instrument:cutoff").unwrap();
+    let tr = e.session().track(t).unwrap();
+    assert_eq!(current_value(tr, &param), 800.0);
+    e.execute("automation.set_point", &json!({"tracks": [t.0], "param": "plugin:instrument:cutoff", "at": 0, "value": 300})).unwrap();
+    let lane = e.session().track(t).and_then(|tr| tr.lane(&param)).map(|l| l.value_at(0, 0.0));
+    assert_eq!(lane, Some(300.0));
+}
+
+#[test]
+fn toggles_and_choices_are_rounded_like_instrument_param() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id;
+    e.execute("mix.insert", &json!({"track": t.0, "slot": 0, "plugin": "eq_7band", "params": {"hpf_on": 0.7}})).unwrap();
+    let stored = |e: &Engine, k: &str| e.session().track(t).and_then(|tr| tr.mixer.inserts[0].as_ref()).and_then(|i| i.params.get(k).copied());
+    assert_eq!(stored(&e, "hpf_on"), Some(1.0), "mix.insert");
+    e.execute("mix.insert_param", &json!({"track": t.0, "slot": 0, "param": "hpf_on", "value": 0.3})).unwrap();
+    assert_eq!(stored(&e, "hpf_on"), Some(0.0), "mix.insert_param");
+    e.execute("mix.insert_params", &json!({"track": t.0, "slot": 0, "params": {"hpf_slope": 1.6}})).unwrap();
+    assert_eq!(stored(&e, "hpf_slope"), Some(2.0), "mix.insert_params");
+}
+
+#[test]
+fn a_lane_written_on_an_unstored_instrument_parameter_starts_from_its_default() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let t = e.session().tracks[0].id;
+    if let Some(ins) = e.session_mut().track_mut(t).and_then(|tr| tr.instrument.as_mut()) {
+        ins.params.clear();
+    }
+    let default = soundcraft_dsp::plugin_info("subtractive_synth").and_then(|i| i.param("cutoff")).map(|p| p.default).unwrap();
+    e.execute("automation.write_range", &json!({"tracks": [t.0], "param": "plugin:instrument:cutoff", "start": 48_000, "end": 96_000, "value": 300}))
+        .unwrap();
+    let param = AutoParam::parse("plugin:instrument:cutoff").unwrap();
+    let lane = e.session().track(t).and_then(|tr| tr.lane(&param)).cloned().unwrap();
+    assert_eq!(lane.value_at(0, f32::NAN), default, "before the range: the default, not 0");
+    assert_eq!(lane.value_at(72_000, f32::NAN), 300.0);
+}
+
+fn insert_param_value(e: &Engine, track: u64, id: &str) -> f32 {
+    e.session()
+        .track(TrackId(track))
+        .and_then(|tr| tr.mixer.inserts.first())
+        .and_then(|slot| slot.as_ref())
+        .and_then(|ins| ins.params.get(id).copied())
+        .unwrap_or(f32::NAN)
+}
+
+#[test]
+fn text_sets_toggle_and_choice_parameters() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    // mix.insert accepts both kinds of label in one call.
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": "eq_7band", "params": {"hpf_on": "On", "hpf_slope": "24 dB/oct"}})).unwrap();
+    assert_eq!(insert_param_value(&e, t, "hpf_on"), 1.0);
+    assert_eq!(insert_param_value(&e, t, "hpf_slope"), 3.0);
+
+    for (text, expected) in [("off", 0.0), ("true", 1.0), ("FALSE", 0.0), ("On", 1.0)] {
+        let r = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "hpf_on", "value": text})).unwrap();
+        assert_eq!(r["value"], expected, "{text}");
+        assert_eq!(insert_param_value(&e, t, "hpf_on"), expected, "{text}");
+    }
+    let r = e.execute("mix.insert_params", &json!({"track": t, "slot": 0, "params": {"hpf_slope": "18 db/oct"}})).unwrap();
+    assert_eq!(r["set"], 1);
+    assert_eq!(insert_param_value(&e, t, "hpf_slope"), 2.0, "choice labels are matched case-insensitively");
+}
+
+#[test]
+fn instrument_slot_accepts_cutoff_as_text() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let t = e.session().tracks[0].id;
+    let r = e.execute("mix.insert_param", &json!({"track": t.0, "slot": "instrument", "param": "cutoff", "value": "5000"})).unwrap();
+    assert_eq!(r["value"], 5000.0);
+    assert_eq!(instrument_params(&e, t).get("cutoff"), Some(&5000.0));
+}
+
+#[test]
+fn bad_parameter_text_includes_examples() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": "gain"})).unwrap();
+    let gain = soundcraft_dsp::plugin_info("gain").unwrap().param("gain").unwrap();
+    let examples = format!("{}, {}, {}", gain.format(gain.min), gain.format(gain.default), gain.format(gain.max));
+
+    let err = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "gain", "value": "loud"})).unwrap_err().to_string();
+    assert!(err.contains("examples"), "{err}");
+    assert!(err.contains("loud") && err.contains("Gain (gain)"), "{err}");
+    assert!(err.contains(&examples), "{err}");
+    assert_eq!(insert_param_value(&e, t, "gain"), 0.0);
+
+    let huge = "x".repeat(257);
+    let err = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "gain", "value": huge})).unwrap_err().to_string();
+    assert!(err.contains("examples") && err.contains(&examples), "{err}");
+    assert_eq!(insert_param_value(&e, t, "gain"), 0.0);
+
+    // A bad string on mix.insert stores nothing: the slot stays empty.
+    let depth = e.revision;
+    let err = e.execute("mix.insert", &json!({"track": t, "slot": 1, "plugin": "gain", "params": {"gain": "loud"}})).unwrap_err().to_string();
+    assert!(err.contains("examples"), "{err}");
+    assert!(e.session().tracks[0].mixer.inserts[1].is_none());
+    assert_eq!(e.revision, depth);
+}
+
+#[test]
+fn insert_params_applies_nothing_when_one_text_value_is_bad() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": "trim"})).unwrap();
+    e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "gain", "value": -6.0})).unwrap();
+    let depth = e.revision;
+    let preset = e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().preset.clone();
+
+    // "gain" parses; "invert" does not. Neither value, nor the preset name, is stored.
+    let err = e
+        .execute("mix.insert_params", &json!({"track": t, "slot": 0, "preset": "Broken", "params": {"gain": "-3", "invert": "maybe"}}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("examples"), "{err}");
+    assert!(err.contains("maybe"), "{err}");
+    assert_eq!(insert_param_value(&e, t, "gain"), -6.0);
+    assert_eq!(insert_param_value(&e, t, "invert"), 0.0);
+    assert_eq!(e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().preset, preset);
+    assert_eq!(e.revision, depth);
+
+    let r = e.execute("mix.insert_params", &json!({"track": t, "slot": 0, "params": {"gain": "-3", "invert": "On"}})).unwrap();
+    assert_eq!(r["set"], 2);
+    assert_eq!(insert_param_value(&e, t, "gain"), -3.0);
+    assert_eq!(insert_param_value(&e, t, "invert"), 1.0);
+}
+
+/// Apple's Delay unit ships with macOS. A parameter is set from the text that unit itself
+/// produces, and the stored number round-trips.
+/// Ignored, not skipped: a green run must not claim AU text conversion was exercised.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "no Apple Audio Unit converts parameter text (all 26 checked); run with --ignored against a unit that does"]
+fn apple_au_parameter_text_round_trips() {
+    let id = "au:aufx:dely:appl";
+    assert!(super::super::clap::plugin_info(id).is_some(), "{id} ships with macOS");
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": id})).unwrap();
+    let rate = e.session().sample_rate.as_f64() as f32;
+    let insert = e.session().tracks[0].mixer.inserts[0].clone().expect("inserted");
+    let state = insert.state_bytes();
+    let mut probe = soundcraft_mix::create_instance(id, state.as_deref(), rate, 512, 2).expect("Apple Delay instantiates");
+    for (pid, value) in &insert.params {
+        probe.plugin.set_param(pid, *value);
+    }
+    let info = probe.plugin.info();
+    let mut fallback = None;
+    let mut chosen = None;
+    for param in info.params.iter().filter(|param| !matches!(param.unit, soundcraft_dsp::Unit::Toggle | soundcraft_dsp::Unit::Choice)) {
+        let current = insert.params.get(param.id).copied().unwrap_or(param.default);
+        let span = (param.max - param.min).abs();
+        let mid = param.min + span / 2.0;
+        for candidate in [param.max, param.min, mid, param.default] {
+            if !candidate.is_finite() {
+                continue;
+            }
+            let Some(text) = probe.plugin.value_text(param.id, candidate) else { continue };
+            if text.is_empty() || text.chars().nth(256).is_some() {
+                continue;
+            }
+            let Some(parsed) = probe.plugin.value_from_text(param.id, &text) else { continue };
+            let tolerance = span.max(1.0) * 1e-4;
+            if !parsed.is_finite() || (parsed - candidate).abs() > tolerance {
+                continue;
+            }
+            let hit = (param.id, candidate, text, tolerance);
+            if (candidate - current).abs() > tolerance {
+                chosen = Some(hit);
+                break;
+            }
+            fallback = Some(hit);
+        }
+        if chosen.is_some() {
+            break;
+        }
+    }
+    let Some((pid, candidate, text, tolerance)) = chosen.or(fallback) else {
+        panic!("{id} exposes no parameter string conversion");
+    };
+    let result = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": pid, "value": text})).unwrap();
+    let stored = insert_param_value(&e, t, pid);
+    assert!((stored - candidate).abs() <= tolerance, "{candidate} -> {text:?} -> {stored}");
+    let reported = result["value"].as_f64().unwrap_or(f64::NAN) as f32;
+    assert!((reported - candidate).abs() <= tolerance, "{result}");
+}
+
+#[test]
+fn parameter_text_matches_the_plugins_display() {
+    // Equal after trim, Unicode case fold and collapsed whitespace.
+    assert!(plugin_text_matches("29", "29"));
+    assert!(plugin_text_matches("  29  ", "29"));
+    assert!(plugin_text_matches("29 MS", "29 ms"));
+    assert!(plugin_text_matches("29   ms", "29 ms"));
+    // One trailing unit or label on the display, including a glued one.
+    assert!(plugin_text_matches("29", "29 ms"));
+    assert!(plugin_text_matches("50", "50%"));
+    // A suffix may not continue the number, and two display tokens are not one unit.
+    // "29" vs "29 ms extra" still agrees on the leading number, which is rule (b).
+    assert!(!plugin_text_matches("29", "290"));
+    assert!(!plugin_text_matches("1", "10 ms"));
+    assert!(plugin_text_matches("29", "29 ms extra"));
+    // The display's last digit sets the slack: no decimals → half of 1; one decimal → half of 0.1.
+    assert!(plugin_text_matches("29.0", "29"));
+    assert!(plugin_text_matches("30.4", "30"));
+    assert!(!plugin_text_matches("30.6", "30"));
+    assert!(plugin_text_matches("-6.04", "−6.0 dB"));
+    assert!(!plugin_text_matches("-6.06", "−6.0 dB"));
+    // 0.5% of the displayed 1000.00 is 5, which is wider than half of 0.01.
+    assert!(plugin_text_matches("1003", "1000.00"));
+    assert!(!plugin_text_matches("1006", "1000.00"));
+    // ASCII hyphen and Unicode minus U+2212 are the same number.
+    assert!(plugin_text_matches("-6", "−6.0 dB"));
+    assert!(plugin_text_matches("−6", "-6.0 dB"));
+    assert!(plugin_text_matches("−6.0", "−6.0 dB"));
+    // Garbage has no reading that lands on the displayed number.
+    assert!(!plugin_text_matches("twintig", "0"));
+    assert!(!plugin_text_matches("twintig", "0.0 dB"));
+    assert!(!plugin_text_matches("loud", "0.0 dB"));
+}
+
+#[test]
+fn parameter_text_outside_the_displayed_range_is_flagged() {
+    assert!(!text_outside_display_range("29", "0", "100"));
+    assert!(!text_outside_display_range("  29  ", "0 ms", "100 ms"));
+    assert!(!text_outside_display_range("30.4", "0", "30"), "half of a no-decimal step still counts as 30");
+    assert!(text_outside_display_range("30.6", "0", "30"));
+    assert!(!text_outside_display_range("100.4", "0", "100"));
+    assert!(text_outside_display_range("100.6", "0", "100"));
+    assert!(text_outside_display_range("500", "0", "100"));
+    assert!(text_outside_display_range("-30", "-24.0 dB", "12.0 dB"));
+    assert!(!text_outside_display_range("-6", "−24.0 dB", "12.0 dB"));
+    assert!(!text_outside_display_range("−6", "-24.0 dB", "12.0 dB"));
+    // Not a bare number, or an endpoint that is not numeric: no range error.
+    assert!(!text_outside_display_range("twintig", "0", "100"));
+    assert!(!text_outside_display_range("29 ms", "0", "100"));
+    assert!(!text_outside_display_range("500", "-inf dB", "24.0 dB"));
+    assert!(!text_outside_display_range("1", "Off", "On"));
+    // Endpoints are an interval even when the plugin lists the larger one first.
+    assert!(!text_outside_display_range("-3", "12.0 dB", "-24.0 dB"));
+    assert!(text_outside_display_range("30", "12.0 dB", "-24.0 dB"));
+}
+
+/// A parser that answers 0 for every unknown string, the Ample Guitar failure mode.
+struct GarbageParsesAsZero;
+
+impl Plugin for GarbageParsesAsZero {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        &soundcraft_dsp::plugins::utility::GAIN_INFO
+    }
+    fn prepare(&mut self, _sample_rate: f32, _max_block: usize, _channels: usize) {}
+    fn reset(&mut self) {}
+    fn set_param(&mut self, _id: &str, _value: f32) -> bool {
+        true
+    }
+    fn param(&self, _id: &str) -> Option<f32> {
+        None
+    }
+    fn process(&mut self, _io: &mut [Vec<f32>], _frames: usize) {}
+
+    fn value_from_text(&mut self, id: &str, text: &str) -> Option<f32> {
+        if id != "gain" {
+            return None;
+        }
+        // Display numbers become a plain value; 29 is the scaled control from the report.
+        // Everything else, including words, is reported as success with 0.
+        if let Some(n) = entire_number(text) {
+            if (n - 29.0).abs() <= 1e-9 {
+                return Some(0.028);
+            }
+            let clamped = n.clamp(0.0, 100.0);
+            return Some((clamped / 100.0) as f32);
+        }
+        Some(0.0)
+    }
+
+    fn value_text(&mut self, id: &str, value: f32) -> Option<String> {
+        if id != "gain" {
+            return None;
+        }
+        let param = self.info().params.iter().find(|param| param.id == id)?;
+        if (value - 0.028).abs() <= 1e-5 {
+            return Some("29 ms".to_string());
+        }
+        if (value - param.min).abs() <= 1e-3 {
+            return Some("0".to_string());
+        }
+        if (value - param.max).abs() <= 1e-3 {
+            return Some("100".to_string());
+        }
+        if value.abs() <= 1e-6 {
+            return Some("0".to_string());
+        }
+        Some(format!("{:.0}", f64::from(value) * 100.0))
+    }
+}
+
+/// A live instance that renders text for its plugin's parameters but refuses every string. It
+/// records what it was asked to parse, and its display names the parameter and the value.
+#[derive(Default)]
+struct RefusingLive {
+    parsed: Vec<(String, String)>,
+}
+
+impl crate::LivePlugins for RefusingLive {
+    fn plugin_id(&mut self, _track: TrackId, _slot: usize) -> Option<String> {
+        Some("clap:not.installed".to_string())
+    }
+    fn value_text(&mut self, at: crate::LiveSlot<'_>, id: &str, value: f32) -> Option<String> {
+        (at.plugin == "clap:not.installed").then(|| format!("{id} {value:.1} live"))
+    }
+    fn value_from_text(&mut self, _at: crate::LiveSlot<'_>, id: &str, text: &str) -> Option<f32> {
+        self.parsed.push((id.to_string(), text.to_string()));
+        None
+    }
+    fn value(&mut self, _at: crate::LiveSlot<'_>, _id: &str) -> Option<f32> {
+        None
+    }
+}
+
+#[test]
+fn text_the_live_instance_refuses_does_not_load_a_temporary_plugin() {
+    let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
+    let mut live = RefusingLive::default();
+    let insert = Insert::new("clap:not.installed");
+    let mut resolver = ParameterValueResolver::new("mix.insert_param", &insert, 48_000.0, TrackId(0), 0, Some(&mut live));
+    let err = resolver.resolve(gain, &json!("loud")).unwrap_err().to_string();
+    assert!(!resolver.tried_instance, "no temporary instance for refused text");
+    drop(resolver);
+    let examples = format!("gain {:.1} live, gain {:.1} live, gain {:.1} live", gain.min, gain.default, gain.max);
+    assert!(
+        err.contains(&format!("`loud` is not a value of Gain (gain); examples: {examples}")),
+        "examples are the live text at min, default, max: {err}"
+    );
+    assert_eq!(live.parsed, [("gain".to_string(), "loud".to_string())], "the live instance was asked once, for this parameter and text");
+}
+
+#[test]
+fn a_plugin_that_parses_garbage_as_zero_is_rejected() {
+    let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
+    let mut resolver = ParameterValueResolver::with_instance("mix.insert_param", &Insert::new("gain"), 48_000.0, Box::new(GarbageParsesAsZero));
+
+    let zero = resolver.resolve(gain, &json!("0")).unwrap();
+    assert_eq!(zero, 0.0, "a displayed zero is a real value");
+    let twenty_nine = resolver.resolve(gain, &json!("29")).unwrap();
+    assert!((twenty_nine - 0.028).abs() < 1e-6, "{twenty_nine}");
+    let rounded = resolver.resolve(gain, &json!("30.4")).unwrap();
+    assert!((rounded - 0.304).abs() < 1e-4, "30.4 displays as 30, {rounded}");
+
+    let garbage = resolver.resolve(gain, &json!("twintig")).unwrap_err().to_string();
+    assert!(garbage.contains("`twintig` is not a value of Gain (gain); examples:"), "{garbage}");
+    assert!(garbage.contains("examples"), "{garbage}");
+    assert!(!garbage.contains("out of range"), "{garbage}");
+
+    let high = resolver.resolve(gain, &json!("500")).unwrap_err().to_string();
+    assert!(high.contains("`500` is out of range for Gain (gain) (0 … 100)"), "{high}");
+    let low = resolver.resolve(gain, &json!("-1")).unwrap_err().to_string();
+    assert!(low.contains("out of range") && low.contains("(0 … 100)"), "{low}");
+    let edge = resolver.resolve(gain, &json!("100.6")).unwrap_err().to_string();
+    assert!(edge.contains("out of range"), "{edge}");
+    let just_inside = resolver.resolve(gain, &json!("100.4")).unwrap();
+    assert!((just_inside - 1.0).abs() < 1e-5, "{just_inside}");
+}
+
+/// A plugin whose display text is long and carries control characters. It parses nothing.
+struct NoisyDisplay;
+
+impl Plugin for NoisyDisplay {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        &soundcraft_dsp::plugins::utility::GAIN_INFO
+    }
+    fn prepare(&mut self, _sample_rate: f32, _max_block: usize, _channels: usize) {}
+    fn reset(&mut self) {}
+    fn set_param(&mut self, _id: &str, _value: f32) -> bool {
+        true
+    }
+    fn param(&self, _id: &str) -> Option<f32> {
+        None
+    }
+    fn process(&mut self, _io: &mut [Vec<f32>], _frames: usize) {}
+    fn value_text(&mut self, _id: &str, _value: f32) -> Option<String> {
+        Some(format!("dB\nERROR forged line\u{1b}[2J{}", "x".repeat(500)))
+    }
+}
+
+#[test]
+fn plugin_display_text_in_an_error_is_bounded_and_has_no_control_characters() {
+    let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
+    let mut resolver = ParameterValueResolver::with_instance("mix.insert_param", &Insert::new("gain"), 48_000.0, Box::new(NoisyDisplay));
+    let err = resolver.resolve(gain, &json!("loud")).unwrap_err().to_string();
+    assert!(err.contains("examples"), "{err}");
+    assert!(!err.chars().any(char::is_control), "{err:?}");
+    assert!(err.chars().count() < 3 * (MAX_PARAM_TEXT_CHARS + 4) + 200, "three capped examples: {}", err.chars().count());
+}
+
+#[test]
+fn text_for_a_built_in_never_loads_a_temporary_instance() {
+    let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
+    let mut resolver = ParameterValueResolver::new("mix.insert_param", &Insert::new("gain"), 48_000.0, TrackId(0), 0, None);
+
+    assert_eq!(resolver.resolve(gain, &json!(" -3 ")).unwrap(), -3.0);
+    let err = resolver.resolve(gain, &json!("loud")).unwrap_err().to_string();
+    assert!(err.contains("`loud` is not a value of Gain (gain)") && err.contains("examples"), "{err}");
+    assert!(!resolver.tried_instance, "a built-in parses and formats its own numbers");
+}
+
+#[test]
+fn a_built_in_reads_back_the_text_its_display_shows() {
+    // Every built-in parameter: the text `display` shows for min, default and max resolves to
+    // that value again, within the display's precision. So text means the displayed units for
+    // built-ins as it does for hosted plugins, and error examples are valid input.
+    for info in soundcraft_dsp::plugins() {
+        let mut resolver = ParameterValueResolver::new("mix.insert_param", &Insert::new(info.id), 48_000.0, TrackId(0), 0, None);
+        for param in info.params {
+            for value in [param.min, param.default, param.max] {
+                let shown = param.format(value);
+                let back = resolver.resolve(param, &json!(shown)).unwrap_or_else(|err| panic!("{}.{}: `{shown}`: {err}", info.id, param.id));
+                assert_eq!(param.format(back), shown, "{}.{}: `{shown}` read back as {back}", info.id, param.id);
+            }
+        }
+        assert!(!resolver.tried_instance, "{}: a built-in reads its own display", info.id);
+    }
+    let gain = soundcraft_dsp::plugin_info("gain").and_then(|info| info.param("gain")).unwrap();
+    let mut resolver = ParameterValueResolver::new("mix.insert_param", &Insert::new("gain"), 48_000.0, TrackId(0), 0, None);
+    assert_eq!(resolver.resolve(gain, &json!("-3 dB")).unwrap(), -3.0);
+    assert_eq!(resolver.resolve(gain, &json!("-3 db")).unwrap(), -3.0, "units ignore case");
+    let err = resolver.resolve(gain, &json!("-3 ms")).unwrap_err().to_string();
+    assert!(err.contains("not a value of Gain (gain)"), "another unit's suffix is refused: {err}");
+    let hz =
+        soundcraft_dsp::plugins().iter().flat_map(|info| info.params.iter()).find(|p| p.unit == soundcraft_dsp::Unit::Hz && p.max >= 2000.0).unwrap();
+    assert_eq!(resolver.resolve(hz, &json!("1.2 kHz")).unwrap(), 1200.0, "kHz is scaled, not read as 1.2 Hz");
+}
+
+/// The same Apple Delay unit rejects a string that is not one of its parameter values.
+#[cfg(target_os = "macos")]
+#[test]
+fn apple_au_garbage_parameter_text_is_rejected() {
+    let id = "au:aufx:dely:appl";
+    let info = super::super::clap::plugin_info(id).expect("Apple Delay ships with macOS");
+    let param = info
+        .params
+        .iter()
+        .find(|param| !matches!(param.unit, soundcraft_dsp::Unit::Toggle | soundcraft_dsp::Unit::Choice))
+        .expect("Apple Delay has continuous parameters");
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": id})).unwrap();
+    let marker = [param.max, param.min, param.default].into_iter().find(|value| value.is_finite() && *value != 0.0).unwrap_or(param.default);
+    e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": param.id, "value": marker})).unwrap();
+    let before = insert_param_value(&e, t, param.id);
+    let err = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": param.id, "value": "twintig"})).unwrap_err().to_string();
+    assert!(err.contains("twintig") && err.contains(&format!("{} ({})", param.name, param.id)), "{err}");
+    assert!(err.contains("is not a value of") || err.contains("out of range"), "{err}");
+    assert_eq!(insert_param_value(&e, t, param.id), before, "garbage must not be stored as 0");
+}
+
+/// Apple's DLS synth ships with every Mac: a hosted instrument's parameters can be set by
+/// numeric id on its slot, which used to answer "not a built-in instrument".
+#[cfg(target_os = "macos")]
+#[test]
+fn a_hosted_instruments_parameters_are_set_by_numeric_id() {
+    let id = "au:aumu:dls :appl";
+    let pi = super::super::clap::plugin_info(id)
+        .and_then(|i| i.params.iter().find(|p| p.unit != soundcraft_dsp::Unit::Choice))
+        .expect("Apple DLS ships with macOS and reports parameters");
+    let n: u32 = pi.id.parse().unwrap();
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument", "instrument": id})).unwrap();
+    let t = e.session().tracks[0].id;
+    let v = (pi.min + pi.max) / 2.0;
+    e.execute("mix.instrument_param", &json!({"track": t.0, "param": n, "value": v})).unwrap();
+    assert_eq!(instrument_params(&e, t).get(pi.id), Some(&v));
+    e.execute("mix.insert_param", &json!({"track": t.0, "slot": "instrument", "param": n, "value": pi.max})).unwrap();
+    assert_eq!(instrument_params(&e, t).get(pi.id), Some(&pi.max));
+    let auto = format!("plugin:instrument:{n}");
+    e.execute("automation.set_point", &json!({"tracks": [t.0], "param": auto, "at": 0, "value": pi.min})).unwrap();
+}
+
+fn plugin_lanes(e: &Engine, t: TrackId) -> Vec<(u8, String)> {
+    e.session()
+        .track(t)
+        .map(|tr| {
+            tr.automation
+                .iter()
+                .filter_map(|lane| match &lane.param {
+                    AutoParam::Plugin { slot, param } => Some((*slot, param.clone())),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `MF Gain` is eq_7band's name for `mid_gain`. Ids, numbers and that name all store the id.
+#[test]
+fn insert_parameters_are_set_by_name() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": "eq_7band", "params": {"MF Gain": -3.0, "mid_freq": 2500.0}})).unwrap();
+    assert_eq!(insert_param_value(&e, t, "mid_gain"), -3.0);
+    assert_eq!(insert_param_value(&e, t, "mid_freq"), 2500.0);
+    assert!(!e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().params.contains_key("MF Gain"));
+
+    let r = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "  mf   gain ", "value": -6.0})).unwrap();
+    assert_eq!(r["value"], -6.0);
+    assert_eq!(r["param"], "mid_gain");
+    assert_eq!(r["id"], "mid_gain");
+    assert_eq!(r["name"], "MF Gain");
+    assert_eq!(insert_param_value(&e, t, "mid_gain"), -6.0);
+
+    // The id still addresses the same parameter.
+    e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "mid_gain", "value": -1.5})).unwrap();
+    assert_eq!(insert_param_value(&e, t, "mid_gain"), -1.5);
+
+    let r = e.execute("mix.insert_params", &json!({"track": t, "slot": 0, "params": {"MF Gain": -4.0, "mid_freq": 1500.0}})).unwrap();
+    assert_eq!(r["set"], 2);
+    assert_eq!(insert_param_value(&e, t, "mid_gain"), -4.0);
+    assert_eq!(insert_param_value(&e, t, "mid_freq"), 1500.0);
+
+    // Two keys, one parameter: nothing is stored.
+    let depth = e.revision;
+    let err = e.execute("mix.insert_params", &json!({"track": t, "slot": 0, "params": {"mid_gain": 1.0, "MF Gain": 2.0}})).unwrap_err().to_string();
+    assert!(err.contains("both set") && err.contains("MF Gain (mid_gain)"), "{err}");
+    assert_eq!(insert_param_value(&e, t, "mid_gain"), -4.0);
+    assert_eq!(e.revision, depth);
+
+    // A later unknown key does not keep the earlier name.
+    let err = e.execute("mix.insert_params", &json!({"track": t, "slot": 0, "params": {"MF Gain": -9.0, "nope": 1.0}})).unwrap_err().to_string();
+    assert!(err.contains("nope is not a parameter of EQ 7-Band"), "{err}");
+    assert_eq!(insert_param_value(&e, t, "mid_gain"), -4.0);
+    assert_eq!(e.revision, depth);
+
+    // mix.insert resolves every key before it writes the slot.
+    let err = e
+        .execute("mix.insert", &json!({"track": t, "slot": 1, "plugin": "eq_7band", "params": {"MF Gain": -3.0, "nope": 1.0}}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("nope"), "{err}");
+    assert!(e.session().tracks[0].mixer.inserts[1].is_none());
+    assert_eq!(e.revision, depth);
+}
+
+#[test]
+fn automation_lanes_store_the_parameter_id_for_a_name() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let t = e.session().tracks[0].id;
+    // "Cutoff" lowercases to the id. "Filter Env" does not, so it has to match the name.
+    e.execute("automation.set_point", &json!({"track": t.0, "param": "plugin:instrument:Cutoff", "at": 0, "value": 400.0})).unwrap();
+    e.execute("automation.set_point", &json!({"track": t.0, "param": "plugin:instrument:Filter Env", "at": 100, "value": -10.0})).unwrap();
+    assert!(plugin_lanes(&e, t).contains(&(INSTRUMENT_AUTO_SLOT, "cutoff".to_string())));
+    assert!(plugin_lanes(&e, t).contains(&(INSTRUMENT_AUTO_SLOT, "filter_env_amount".to_string())));
+    assert!(!plugin_lanes(&e, t).iter().any(|(_, param)| param == "filter env" || param == "Cutoff"));
+
+    e.execute("track.new", &json!({})).unwrap();
+    let audio = e.session().tracks[1].id;
+    e.execute("mix.insert", &json!({"track": audio.0, "slot": 0, "plugin": "eq_7band"})).unwrap();
+    e.execute("automation.set_point", &json!({"track": audio.0, "param": "plugin:a:MF Gain", "at": 10, "value": -4.0})).unwrap();
+    e.execute("automation.write_range", &json!({"track": audio.0, "param": "plugin:a:MF   Gain", "start": 0, "end": 48_000, "value": -6.0})).unwrap();
+    let lane = AutoParam::Plugin { slot: 0, param: "mid_gain".into() };
+    let written = e.session().track(audio).and_then(|tr| tr.lane(&lane)).unwrap();
+    assert_eq!(written.value_at(1000, f32::NAN), -6.0);
+    assert!(!plugin_lanes(&e, audio).iter().any(|(_, param)| param.to_ascii_lowercase().contains("mf")));
+    let cleared = e.execute("automation.clear", &json!({"track": audio.0, "param": "plugin:a:mf gain", "start": 0, "end": 48_000})).unwrap();
+    assert!(cleared["removed"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(plugin_lanes(&e, audio), vec![(0, "mid_gain".to_string())]);
+
+    // Slot B is empty, so the parsed key is stored as AutoParam::parse left it.
+    e.execute("automation.set_point", &json!({"track": audio.0, "param": "plugin:b:MF   Gain", "at": 20, "value": 1.0})).unwrap();
+    assert!(plugin_lanes(&e, audio).contains(&(0, "mid_gain".to_string())));
+    assert!(plugin_lanes(&e, audio).contains(&(1, "MF   Gain".to_string())));
+
+    let depth = e.revision;
+    let before = plugin_lanes(&e, audio);
+    let err =
+        e.execute("automation.set_point", &json!({"track": audio.0, "param": "plugin:a:not-a-real-param", "at": 30, "value": 1.0})).unwrap_err();
+    assert!(err.to_string().contains("not-a-real-param is not a parameter of EQ 7-Band"), "{err}");
+    assert_eq!(plugin_lanes(&e, audio), before);
+    assert_eq!(e.revision, depth);
+}
+
+#[test]
+fn automation_names_resolve_per_track_before_anything_is_stored() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    e.execute("track.new", &json!({})).unwrap();
+    let (eq, empty) = (e.session().tracks[0].id, e.session().tracks[1].id);
+    e.execute("mix.insert", &json!({"track": eq.0, "slot": 0, "plugin": "eq_7band"})).unwrap();
+    e.execute("automation.set_point", &json!({"tracks": [eq.0, empty.0], "param": "plugin:a:MF Gain", "at": 10, "value": -4.0})).unwrap();
+    assert_eq!(plugin_lanes(&e, eq), vec![(0, "mid_gain".to_string())]);
+    assert_eq!(plugin_lanes(&e, empty), vec![(0, "MF Gain".to_string())]);
+
+    e.execute("track.new", &json!({})).unwrap();
+    e.execute("track.new", &json!({})).unwrap();
+    let (eq, gain) = (e.session().tracks[2].id, e.session().tracks[3].id);
+    e.execute("mix.insert", &json!({"track": eq.0, "slot": 0, "plugin": "eq_7band"})).unwrap();
+    e.execute("mix.insert", &json!({"track": gain.0, "slot": 0, "plugin": "gain"})).unwrap();
+    let depth = e.revision;
+    let err =
+        e.execute("automation.set_point", &json!({"tracks": [eq.0, gain.0], "param": "plugin:a:MF Gain", "at": 10, "value": -4.0})).unwrap_err();
+    assert!(err.to_string().contains("is not a parameter of Gain"), "{err}");
+    assert!(plugin_lanes(&e, eq).is_empty());
+    assert!(plugin_lanes(&e, gain).is_empty());
+    assert_eq!(e.revision, depth);
+}
+
+/// Apple's Delay unit: a parameter is set by the name `plugin_info` reports.
+#[cfg(target_os = "macos")]
+#[test]
+fn apple_au_parameter_is_set_by_name() {
+    let id = "au:aufx:dely:appl";
+    let info = super::super::clap::plugin_info(id).expect("Apple Delay ships with macOS");
+    let norm = super::super::param_key::normalize_key;
+    let param = info
+        .params
+        .iter()
+        .find(|param| {
+            let name = norm(param.name);
+            !name.is_empty() && name != norm(param.id) && info.params.iter().filter(|other| norm(other.name) == name).count() == 1
+        })
+        .expect("Apple Delay has a uniquely named parameter");
+    let target = [param.max, param.min]
+        .into_iter()
+        .find(|value| value.is_finite() && (*value - param.default).abs() > 1e-4)
+        .expect("the parameter has a finite value other than its default");
+    let expected = param.clamp(target);
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert", &json!({"track": t, "slot": 0, "plugin": id})).unwrap();
+    let result = e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": param.name, "value": target})).unwrap();
+    assert_eq!(result["id"], param.id);
+    assert_eq!(result["param"], param.id);
+    assert_eq!(result["name"], param.name);
+    assert_eq!(insert_param_value(&e, t, param.id), expected);
+    assert!(!e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().params.contains_key(param.name));
+}
+
+#[test]
+fn an_empty_slot_rejects_an_oversized_automation_key() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id;
+    let key = "x".repeat(201);
+    let depth = e.revision;
+    let err =
+        e.execute("automation.set_point", &json!({"track": t.0, "param": format!("plugin:b:{key}"), "at": 0, "value": 1.0})).unwrap_err().to_string();
+    assert!(err.contains("at most 200"), "{err}");
+    assert!(!err.contains(&key), "{err}");
+    assert!(plugin_lanes(&e, t).is_empty());
+    assert_eq!(e.revision, depth);
+}
+
+#[test]
+fn an_occupied_slot_without_metadata_keeps_only_an_exact_clear() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id;
+    let stored = AutoParam::Plugin { slot: 0, param: "7".into() };
+    {
+        let tr = e.session_mut().track_mut(t).unwrap();
+        tr.mixer.inserts[0] = Some(Insert::new("clap:vendor.missing"));
+        tr.lane_mut(&stored).set_point(0, 0.5);
+    }
+    let depth = e.revision;
+    let err = e.execute("automation.set_point", &json!({"track": t.0, "param": "plugin:a:Gain", "at": 10, "value": 1.0})).unwrap_err().to_string();
+    assert!(err.contains("unknown plugin clap:vendor.missing in slot A; use the parameter id"), "{err}");
+    assert_eq!(plugin_lanes(&e, t), vec![(0, "7".to_string())]);
+    let points = e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len());
+    assert_eq!(points, Some(1));
+    assert_eq!(e.revision, depth);
+
+    // A name is not resolved without metadata, so it does not clear the id lane.
+    let missed = e.execute("automation.clear", &json!({"track": t.0, "param": "plugin:a:Gain"})).unwrap();
+    assert_eq!(missed["removed"], 0);
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len()), Some(1));
+
+    let cleared = e.execute("automation.clear", &json!({"track": t.0, "param": "plugin:a:7"})).unwrap();
+    assert!(cleared["removed"].as_u64().unwrap_or(0) > 0, "{cleared}");
+    let points = e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len());
+    assert_eq!(points, Some(0));
+    assert!(!plugin_lanes(&e, t).iter().any(|(_, param)| param == "gain"));
+}
+
+#[test]
+fn clear_keeps_an_uppercase_id_when_the_plugin_has_no_metadata() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id;
+    let stored = AutoParam::Plugin { slot: 0, param: "Gain".into() };
+    {
+        let tr = e.session_mut().track_mut(t).unwrap();
+        tr.mixer.inserts[0] = Some(Insert::new("clap:vendor.missing"));
+        tr.lane_mut(&stored).set_point(0, 0.25);
+    }
+    // The lowercased id is a different parameter. It clears nothing.
+    let missed = e.execute("automation.clear", &json!({"track": t.0, "param": "plugin:a:gain"})).unwrap();
+    assert_eq!(missed["removed"], 0);
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len()), Some(1));
+
+    // The prefix may be any case. The id text is the caller's.
+    let cleared = e.execute("automation.clear", &json!({"track": t.0, "param": "PLUGIN:A:Gain"})).unwrap();
+    assert!(cleared["removed"].as_u64().unwrap_or(0) > 0, "{cleared}");
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len()), Some(0));
+
+    let depth = e.revision;
+    // Set and write still refuse a slot with no parameter list.
+    let err = e.execute("automation.set_point", &json!({"track": t.0, "param": "plugin:a:Gain", "at": 0, "value": 1.0})).unwrap_err().to_string();
+    assert!(err.contains("unknown plugin clap:vendor.missing in slot A; use the parameter id"), "{err}");
+    let err = e
+        .execute("automation.write_range", &json!({"track": t.0, "param": "plugin:a:Gain", "start": 0, "end": 10, "value": 1.0}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown plugin"), "{err}");
+    assert_eq!(e.revision, depth);
+
+    // The 200-character cap still applies to an exact clear.
+    let key = "G".repeat(201);
+    let err = e.execute("automation.clear", &json!({"track": t.0, "param": format!("plugin:a:{key}")})).unwrap_err().to_string();
+    assert!(err.contains("at most 200"), "{err}");
+    assert!(!err.contains(&key), "{err}");
+}
+
+#[test]
+fn clear_removes_a_lane_left_behind_by_a_replaced_plugin() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id;
+    e.execute("mix.insert", &json!({"track": t.0, "slot": 0, "plugin": "eq_7band"})).unwrap();
+    let stored = AutoParam::Plugin { slot: 0, param: "LegacyParam".into() };
+    e.session_mut().track_mut(t).unwrap().lane_mut(&stored).set_point(10, 0.5);
+    let depth = e.revision;
+
+    // A different case is not that stored id, and the new plugin does not know the name.
+    let err = e.execute("automation.clear", &json!({"track": t.0, "param": "plugin:a:legacyparam"})).unwrap_err().to_string();
+    assert!(err.contains("not a parameter of EQ 7-Band"), "{err}");
+    assert_eq!(e.revision, depth);
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len()), Some(1));
+
+    let cleared = e.execute("automation.clear", &json!({"track": t.0, "param": "Plugin:a:LegacyParam"})).unwrap();
+    assert!(cleared["removed"].as_u64().unwrap_or(0) > 0, "{cleared}");
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len()), Some(0));
+
+    // A key the current plugin does know still resolves, so clear removes that lane.
+    e.execute("automation.set_point", &json!({"track": t.0, "param": "plugin:a:MF Gain", "at": 0, "value": -3.0})).unwrap();
+    let cleared = e.execute("automation.clear", &json!({"track": t.0, "param": "plugin:a:mf gain"})).unwrap();
+    assert!(cleared["removed"].as_u64().unwrap_or(0) > 0, "{cleared}");
+    let mid = AutoParam::Plugin { slot: 0, param: "mid_gain".into() };
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&mid)).map(|lane| lane.points.len()), Some(0));
+    assert_eq!(e.session().track(t).and_then(|tr| tr.lane(&stored)).map(|lane| lane.points.len()), Some(0));
 }

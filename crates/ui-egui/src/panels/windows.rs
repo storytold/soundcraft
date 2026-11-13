@@ -171,7 +171,7 @@ fn system_usage(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_system_usage;
     win(ctx, &mut open, "System Usage", vec2(320.0, 140.0), |ui| {
         ui.label(format!("UI frame time: {:.1} ms", app.frame_ms));
-        ui.label(format!("Audio: {}", app.player.as_ref().map_or("no engine".to_string(), |p| format!("{} @ {} Hz", p.device_name, p.device_rate))));
+        ui.label(format!("Audio: {}", app.player().map_or("no engine".to_string(), |p| format!("{} @ {} Hz", p.device_name, p.device_rate))));
         let plugins: usize = app.engine.session().tracks.iter().map(|t| t.mixer.inserts.iter().flatten().count()).sum();
         ui.label(format!("Active plugin instances: {plugins}"));
         ui.label(format!("Tracks: {}", app.engine.session().tracks.len()));
@@ -546,7 +546,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         ui.separator();
         egui::Grid::new("pe-state").num_columns(2).show(ui, |ui| {
             ui.label("Output");
-            ui.label(app.player.as_ref().map_or("none".to_string(), |p| {
+            ui.label(app.player().map_or("none".to_string(), |p| {
                 if p.silent {
                     "no device (silent clock)".to_string()
                 } else {
@@ -562,11 +562,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             ui.end_row();
             ui.label("Session rate");
             let sr = app.engine.session().sample_rate.hz();
-            let note = app
-                .player
-                .as_ref()
-                .filter(|p| !p.silent && p.device_rate != sr)
-                .map_or(String::new(), |_| " (resampled to the device rate)".to_string());
+            let note =
+                app.player().filter(|p| !p.silent && p.device_rate != sr).map_or(String::new(), |_| " (resampled to the device rate)".to_string());
             ui.label(format!("{sr} Hz{note}"));
             ui.end_row();
         });
@@ -622,7 +619,7 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     if changed {
         app.apply_audio_config(cfg)?;
     }
-    let device = app.player.as_ref().map(|pl| {
+    let device = app.player().map(|pl| {
         json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
     });
     let mut out = json!({"config": app.ui.audio, "device": device});

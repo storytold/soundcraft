@@ -1,7 +1,7 @@
 use super::instance::Instance;
 use super::{
     Class, ComPtr, ComWrapper, IComponentTrait, IEditControllerTrait, IPlugFrameTrait, IPlugViewTrait, Mutex, Ordering, PoisonError, STATE_MAGIC,
-    c_void, ok, read_c16, sb, sv, window,
+    c_void, ok, param_text_fits, read_c16, sb, sv, window, write_c16,
 };
 
 // ---- editor (IPlugView) --------------------------------------------------------------------
@@ -239,6 +239,20 @@ impl EditorLink {
         v.is_finite().then(|| v.clamp(0.0, 1.0))
     }
 
+    /// The controller's current normalized value. Main thread only (`None` elsewhere, and once the
+    /// instance is gone).
+    pub fn normalized_value(&self, id: u32) -> Option<f64> {
+        if !window::on_main_thread() {
+            return None;
+        }
+        let g = self.lock();
+        let c = g.controller.as_ref()?;
+        // SAFETY: valid controller (the instance clears it under this lock before it terminates),
+        // main thread.
+        let v = unsafe { c.getParamNormalized(id) };
+        v.is_finite().then(|| v.clamp(0.0, 1.0))
+    }
+
     /// The plugin's own text for a normalized value (`getParamStringByValue`). Main thread only
     /// (`None` elsewhere, and once the instance is gone).
     pub fn value_text(&self, id: u32, n: f64) -> Option<String> {
@@ -251,6 +265,24 @@ impl EditorLink {
         // SAFETY: valid controller (the instance clears it under this lock before it terminates),
         // main thread; `s` is a writable String128.
         ok(unsafe { c.getParamStringByValue(id, n.clamp(0.0, 1.0), &mut s) }).then(|| read_c16(&s)).filter(|t| !t.is_empty())
+    }
+
+    /// Normalized value for the plugin's own text (`getParamValueByString`). Main thread only
+    /// (`None` elsewhere, once the instance is gone, or when `text` does not fit a `String128`).
+    pub fn value_from_text(&self, id: u32, text: &str) -> Option<f64> {
+        if !window::on_main_thread() || !param_text_fits(text) {
+            return None;
+        }
+        let g = self.lock();
+        let c = g.controller.as_ref()?;
+        let mut s: sv::String128 = [0; 128];
+        // `param_text_fits` already rejected a NUL and anything [`write_c16`] would truncate.
+        write_c16(text, &mut s);
+        let mut value = 0.0;
+        // SAFETY: valid controller (the instance clears it under this lock before it terminates),
+        // main thread; `s` holds all of `text` plus its terminating NUL, and `value` is writable.
+        let result = unsafe { c.getParamValueByString(id, s.as_mut_ptr(), &mut value) };
+        (ok(result) && value.is_finite()).then(|| value.clamp(0.0, 1.0))
     }
 
     /// Shows a value change in the editor (`setParamNormalized`, main thread).

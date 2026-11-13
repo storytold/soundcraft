@@ -93,7 +93,7 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
     }
     let t = Tokens::current();
     let fmt = app.engine.session().main_format();
-    let peaks: Vec<f32> = if app.player.is_some() { app.meter_snapshot.main.peaks.clone() } else { Vec::new() };
+    let peaks: Vec<f32> = if app.player().is_some() { app.meter_snapshot.main.peaks.clone() } else { Vec::new() };
     let objects: Vec<(String, f32, f32, f32)> = app
         .engine
         .session()

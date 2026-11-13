@@ -1,4 +1,8 @@
-use super::{MeterDisplay, OutputTrouble, Player, SoundApp, Trouble};
+use super::{Engine, MeterDisplay, OutputTrouble, Player, SoundApp, Trouble};
+
+pub(super) fn install_live_plugins(engine: &mut Engine, player: &Player) {
+    engine.set_live_plugins(Some(player.live_plugins()));
+}
 
 impl SoundApp {
     /// Whether the meters are live: while playing, and while armed or input-monitored tracks are heard.
@@ -17,18 +21,12 @@ impl SoundApp {
         }
         self.ui.audio = cfg;
         let at = self.position();
-        if let Some(p) = &self.player {
-            p.stop();
-            // The old player's plugin instances go away with it; their editor windows must be
-            // closed here, on the main thread, or they would stay on screen orphaned.
-            p.close_editors();
-        }
         // The input reopens on the next record or monitor with the new choice.
         self.recorder = None;
         self.recorder_failed = false;
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
         player.locate(at);
-        self.player = Some(player);
+        self.set_player(Some(player));
         Ok(())
     }
 
@@ -115,13 +113,10 @@ impl SoundApp {
         if self.is_playing() || self.engine.transport.recording {
             self.stop_play();
         }
-        if let Some(p) = &self.player {
-            // Its plugin editors go with it; closed here, on the main thread (see `apply_audio_config`).
-            p.close_editors();
-        }
         self.recorder = None;
         self.recorder_failed = false;
-        self.player = Some(Player::with_config(self.engine.session_arc(), &self.ui.audio));
+        let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        self.set_player(Some(player));
     }
 }
 

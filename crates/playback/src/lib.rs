@@ -29,7 +29,7 @@ pub use devices::AudioConfig;
 
 use soundcraft_dsp::{Plugin, PluginEditor, PluginStateReader};
 use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
-use soundcraft_model::{Session, TrackId};
+use soundcraft_model::{LivePlugins, LiveSlot, Session, TrackId};
 use soundcraft_time::{Range, Samples};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
@@ -157,7 +157,7 @@ pub struct Player {
     #[cfg(not(target_arch = "wasm32"))]
     watch: Mutex<Option<(u64, std::time::Instant)>>,
     tx: Sender<Cmd>,
-    side: Mutex<Side>,
+    side: Arc<Mutex<Side>>,
     #[cfg(not(target_arch = "wasm32"))]
     _stream: Option<cpal::Stream>,
     #[cfg(target_arch = "wasm32")]
@@ -221,7 +221,7 @@ impl Player {
         let new_side = |garbage: Receiver<Vec<Box<dyn Plugin>>>| {
             let mut side = Side::new(side_rate, garbage);
             side.gone_tracks(&session);
-            Mutex::new(side)
+            Arc::new(Mutex::new(side))
         };
         match open_device(want, want_ch, cfg) {
             Ok((device, config, format, name)) => {
@@ -297,7 +297,7 @@ impl Player {
         tx: Sender<Cmd>,
         rx: Receiver<Cmd>,
         rate: u32,
-        side: Mutex<Side>,
+        side: Arc<Mutex<Side>>,
         gtx: Sender<Vec<Box<dyn Plugin>>>,
     ) -> Player {
         let s = Arc::new(Session::new("Untitled", soundcraft_time::SampleRate::new(rate).unwrap_or_default()));
@@ -310,7 +310,7 @@ impl Player {
         tx: Sender<Cmd>,
         rx: Receiver<Cmd>,
         session: Arc<Session>,
-        side: Mutex<Side>,
+        side: Arc<Mutex<Side>>,
         gtx: Sender<Vec<Box<dyn Plugin>>>,
     ) -> Player {
         let rate = session.sample_rate.hz();
@@ -359,7 +359,7 @@ impl Player {
         tx: Sender<Cmd>,
         _rx: Receiver<Cmd>,
         session: Arc<Session>,
-        side: Mutex<Side>,
+        side: Arc<Mutex<Side>>,
         _gtx: Sender<Vec<Box<dyn Plugin>>>,
     ) -> Player {
         Player {
@@ -419,9 +419,10 @@ impl Player {
         out
     }
 
-    /// True when the plugin in this slot has its own editor.
+    /// True when the plugin in this slot has an editor window. Parameter-only handles (Audio Units)
+    /// stay in the map so text can be read, and do not count.
     pub fn has_editor(&self, track: TrackId, slot: usize) -> bool {
-        self.side().editors.contains_key(&(track, slot))
+        self.side().editors.get(&(track, slot)).is_some_and(|editor| editor.has_window())
     }
 
     /// Opens the plugin's own editor window. Main thread only.
@@ -524,6 +525,59 @@ impl Player {
     pub fn take_meters(&self, out: &mut MeterSnapshot) {
         let mut source = self.shared.meters.lock().unwrap_or_else(PoisonError::into_inner);
         take_meter_snapshot(&mut source, out);
+    }
+
+    /// Live parameter text and values for the engine. The handle shares this player's UI-thread
+    /// bookkeeping; each call locks it only for that call.
+    pub fn live_plugins(&self) -> Box<dyn LivePlugins> {
+        Box::new(PlayerLive { side: Arc::clone(&self.side) })
+    }
+}
+
+/// Forwards [`LivePlugins`] to the editor handles in [`Side`].
+struct PlayerLive {
+    side: Arc<Mutex<Side>>,
+}
+
+impl PlayerLive {
+    fn side(&self) -> std::sync::MutexGuard<'_, Side> {
+        self.side.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl Side {
+    /// The editor handle of `at`, only when that slot's created instance is `at.plugin`. The
+    /// caller holds the lock for the check and the call that follows, so they see the same slot.
+    fn live_editor(&mut self, at: LiveSlot<'_>) -> Option<&mut (dyn PluginEditor + 'static)> {
+        let key = (at.track, at.slot);
+        let (id, _, created) = self.shadow.get(&key)?;
+        if !created || id != at.plugin {
+            return None;
+        }
+        self.editors.get_mut(&key).map(|editor| &mut **editor)
+    }
+}
+
+impl LivePlugins for PlayerLive {
+    fn plugin_id(&mut self, track: TrackId, slot: usize) -> Option<String> {
+        let side = self.side();
+        let (id, _, created) = side.shadow.get(&(track, slot))?;
+        if !created || !side.editors.contains_key(&(track, slot)) {
+            return None;
+        }
+        Some(id.clone())
+    }
+
+    fn value_text(&mut self, at: LiveSlot<'_>, id: &str, value: f32) -> Option<String> {
+        self.side().live_editor(at)?.value_text(id, value)
+    }
+
+    fn value_from_text(&mut self, at: LiveSlot<'_>, id: &str, text: &str) -> Option<f32> {
+        self.side().live_editor(at)?.value_from_text(id, text)
+    }
+
+    fn value(&mut self, at: LiveSlot<'_>, id: &str) -> Option<f32> {
+        self.side().live_editor(at)?.param(id)
     }
 }
 

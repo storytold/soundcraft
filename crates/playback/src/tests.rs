@@ -510,6 +510,98 @@ fn plugin_states_are_read_without_the_audio_thread() {
     assert_eq!(side.capture_states(), want[1..]);
 }
 
+/// Answers parameter text. `window` is false for a parameter-only handle.
+struct Answer {
+    window: bool,
+    text: &'static str,
+    from_text: Option<f32>,
+    value: Option<f32>,
+}
+
+impl PluginEditor for Answer {
+    fn open(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    fn close(&mut self) {}
+    fn is_open(&self) -> bool {
+        false
+    }
+    fn idle(&mut self) -> Vec<(String, f32)> {
+        Vec::new()
+    }
+    fn has_window(&self) -> bool {
+        self.window
+    }
+    fn value_text(&mut self, _id: &str, _value: f32) -> Option<String> {
+        Some(self.text.to_string())
+    }
+    fn value_from_text(&mut self, _id: &str, _text: &str) -> Option<f32> {
+        self.from_text
+    }
+    fn param(&self, _id: &str) -> Option<f32> {
+        self.value
+    }
+}
+
+#[test]
+fn live_plugins_follow_a_created_editor_and_a_window_is_optional() {
+    let player = Player::new(Arc::new(Session::default()));
+    let track = TrackId(7);
+    {
+        let mut side = player.side();
+        side.shadow.insert((track, 0), ("clap:live".into(), 2, true));
+        side.editors.insert((track, 0), Box::new(Answer { window: true, text: "LIVE", from_text: Some(0.5), value: Some(0.42) }));
+        side.shadow.insert((track, 1), ("clap:does.not.exist".into(), 2, false));
+        side.shadow.insert((track, 2), ("clap:no-editor".into(), 2, true));
+        side.shadow.insert((track, 3), ("au:param-only".into(), 2, true));
+        side.editors.insert((track, 3), Box::new(Answer { window: false, text: "AU", from_text: Some(1.0), value: Some(2.0) }));
+    }
+    assert!(player.has_editor(track, 0));
+    assert!(!player.has_editor(track, 1));
+    assert!(!player.has_editor(track, 2));
+    assert!(!player.has_editor(track, 3), "a parameter-only handle is not an editor window");
+
+    let mut live = player.live_plugins();
+    let at = |slot, plugin| LiveSlot { track, slot, plugin };
+    assert_eq!(live.plugin_id(track, 0).as_deref(), Some("clap:live"));
+    assert_eq!(live.value(at(0, "clap:live"), "gain"), Some(0.42));
+    assert_eq!(live.value_text(at(0, "clap:live"), "gain", 0.42).as_deref(), Some("LIVE"));
+    assert_eq!(live.value_from_text(at(0, "clap:live"), "gain", "x"), Some(0.5));
+    assert_eq!(live.plugin_id(track, 1), None, "a failed create is not a live source");
+    assert_eq!(live.value(at(1, "clap:does.not.exist"), "gain"), None);
+    assert_eq!(live.plugin_id(track, 2), None, "no editor handle, so text cannot be read");
+    assert_eq!(live.plugin_id(track, 3).as_deref(), Some("au:param-only"));
+    assert_eq!(live.value(at(3, "au:param-only"), "p"), Some(2.0));
+    assert_eq!(live.value_from_text(at(3, "au:param-only"), "p", "1"), Some(1.0));
+}
+
+#[test]
+fn a_live_answer_is_for_the_plugin_the_caller_expects_even_after_the_slot_changes() {
+    let player = Player::new(Arc::new(Session::default()));
+    let track = TrackId(7);
+    let at = LiveSlot { track, slot: 0, plugin: "clap:before" };
+    {
+        let mut side = player.side();
+        side.shadow.insert((track, 0), ("clap:before".into(), 2, true));
+        side.editors.insert((track, 0), Box::new(Answer { window: false, text: "BEFORE", from_text: Some(0.5), value: Some(0.25) }));
+    }
+    let mut live = player.live_plugins();
+    assert_eq!(live.plugin_id(track, 0).as_deref(), Some("clap:before"));
+    assert_eq!(live.value_text(at, "gain", 0.5).as_deref(), Some("BEFORE"));
+
+    // The slot is replaced between the caller's id check and its next call.
+    {
+        let mut side = player.side();
+        side.shadow.insert((track, 0), ("clap:after".into(), 2, true));
+        side.editors.insert((track, 0), Box::new(Answer { window: false, text: "AFTER", from_text: Some(0.9), value: Some(0.75) }));
+    }
+    assert_eq!(live.value_text(at, "gain", 0.5), None, "the new plugin does not answer for the old one");
+    assert_eq!(live.value_from_text(at, "gain", "x"), None);
+    assert_eq!(live.value(at, "gain"), None);
+    let after = LiveSlot { plugin: "clap:after", ..at };
+    assert_eq!(live.value_text(after, "gain", 0.5).as_deref(), Some("AFTER"));
+}
+
 struct Window;
 
 impl PluginEditor for Window {

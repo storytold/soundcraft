@@ -220,7 +220,16 @@ impl Bundle {
         inst.render = inst.extension::<clap_plugin_render>(CLAP_EXT_RENDER);
         let gui = inst.extension::<clap_plugin_gui>(CLAP_EXT_GUI);
         inst.gui = Arc::new(GuiLink {
-            inner: Mutex::new(GuiInner { plugin, gui, state: inst.state_ext, alive: true, created: false, visible: false, window: None }),
+            inner: Mutex::new(GuiInner {
+                plugin,
+                gui,
+                params: inst.params,
+                state: inst.state_ext,
+                alive: true,
+                created: false,
+                visible: false,
+                window: None,
+            }),
             host: Arc::clone(&inst.state),
         });
         Ok(inst)
