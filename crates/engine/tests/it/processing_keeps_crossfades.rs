@@ -87,6 +87,26 @@ fn a_processed_clip_still_overwrites_past_its_old_edges() {
     assert_eq!(layout(&e, t), vec![(0, 900, 0, 0), (900, 2900, 200, 0)], "A ends where B now starts");
 }
 
+#[test]
+fn a_clip_inside_or_around_the_processed_clip_is_still_overwritten() {
+    // Neither shares a crossfade with B: one lies inside it (1500..2000), the other spans past both its
+    // edges (900..3200). What replaces B still overwrites them where it lands.
+    let cases = [
+        ((1500, 500), "edit.tce_to_timeline", json!({"start": 900, "end": 3100})),
+        ((900, 2300), "audiosuite.process", json!({"plugin": "reverse"})),
+    ];
+    for ((start, len), cmd, params) in cases {
+        let (mut e, t, _, b) = crossfade();
+        let s = e.session_mut();
+        let other = s.new_clip_id();
+        s.track_mut(t).and_then(|t| t.playlist_mut()).unwrap().clips.push(Clip::audio(other, "other", SourceId(1), 5000, start, len));
+        run(&mut e, cmd, b, params.clone());
+        let over_b: Vec<ClipId> = e.session().track(t).unwrap().clips().iter().filter(|c| c.start <= 1750 && 1750 < c.end()).map(|c| c.id).collect();
+        assert_eq!(over_b.len(), 1, "{cmd} {params} with a clip at {start}+{len}: {over_b:?} cover the middle of B");
+        assert_ne!(over_b[0], other, "{cmd} {params}: the clip at {start}+{len} survived over B");
+    }
+}
+
 /// Both replacement orders preserve the audible overlap when one call processes both clips.
 #[test]
 fn processing_both_crossfade_clips_preserves_rendered_overlap() {
