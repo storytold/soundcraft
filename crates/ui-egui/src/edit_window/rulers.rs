@@ -110,7 +110,7 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
                 {
                     let at = snap(&s, sample_at(&s, tl, p.x).max(0));
                     let bpm = s.tempo.tempo_at_tick(s.tempo.samples_to_ticks(at, sr));
-                    app.dialogs.open = Some(crate::dialogs::Dialog::TempoChange { at, bpm });
+                    app.dialogs.set(crate::dialogs::Dialog::TempoChange { at, bpm });
                 }
                 let mut last_label = f32::MIN;
                 for ev in s.tempo.tempos() {

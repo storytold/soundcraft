@@ -7,6 +7,7 @@ use crate::{Engine, EngineError, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_model::{AutoParam, AutomationMode, INSERT_SLOTS, Insert, SEND_SLOTS, SendSlot, Session, TrackId};
 
+/// Commands for mixer controls, with live input toggles kept outside document history.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("mix.volume", "Set Volume", [], None, "{tracks?, db: -144..12 | delta_db}", has_selection, volume),
@@ -42,7 +43,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({}))
         }),
-        cmd!("mix.record_arm", "Record Enable", [], Some("Shift+R"), "{tracks?, value?: bool}", has_selection, |e, p| toggle(
+        cmd!(noundo "mix.record_arm", "Record Enable", [], Some("Shift+R"), "{tracks?, value?: bool}", has_selection, |e, p| toggle_runtime(
             e,
             p,
             "mix.record_arm",
@@ -51,7 +52,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }),
             |tr| tr.mixer.record_arm
         )),
-        cmd!("mix.input_monitor", "Input Monitoring", [], Some("Shift+I"), "{tracks?, value?: bool}", has_selection, |e, p| toggle(
+        cmd!(noundo "mix.input_monitor", "Input Monitoring", [], Some("Shift+I"), "{tracks?, value?: bool}", has_selection, |e, p| toggle_runtime(
             e,
             p,
             "mix.input_monitor",
@@ -113,7 +114,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Assign Send",
             [],
             None,
-            "{track?, slot?: 0..9|a..j, bus: name, level_db?: 0 (kept when re-targeting), pre_fader?: false}",
+            "{track?, slot?: 0..9|a..j, bus: name, level_db?: -144..12, default -144 (silent; kept when re-targeting), pre_fader?: false}",
             has_selection,
             send
         ),
@@ -218,6 +219,23 @@ fn toggle(e: &mut Engine, p: &Value, cmd: &str, set: fn(&mut Session, TrackId, b
     Ok(json!({"value": v}))
 }
 
+/// Toggle live input flags without marking the saved document as changed.
+fn toggle_runtime(
+    e: &mut Engine,
+    p: &Value,
+    cmd: &str,
+    set: fn(&mut Session, TrackId, bool),
+    get: fn(&soundcraft_model::Track) -> bool,
+) -> Result<Value> {
+    let tracks = tracks_required(e, cmd, p)?;
+    let s = e.runtime_session_mut();
+    let v = p.get("value").and_then(Value::as_bool).unwrap_or_else(|| !tracks.iter().all(|t| s.track(*t).is_some_and(get)));
+    for t in &tracks {
+        set(s, *t, v);
+    }
+    Ok(json!({"value": v}))
+}
+
 fn volume(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "mix.volume", p)?;
     let abs = p.get("db").and_then(Value::as_f64);
@@ -226,6 +244,15 @@ fn volume(e: &mut Engine, p: &Value) -> Result<Value> {
         return Err(bad("mix.volume", "`db` or `delta_db` required"));
     }
     let s = e.session_mut();
+    // The fader stops at -144 and +12 dB. The reply says when a value was held there: +15 dB used
+    // to play at +12 with nothing to show it.
+    let clamped = std::cell::Cell::new(false);
+    let fader = |db: f32| {
+        if !(-144.0..=12.0).contains(&db) {
+            clamped.set(true);
+        }
+        db.clamp(-144.0, 12.0)
+    };
     // Tracks already moved as a group sibling of an earlier target must not move again.
     let mut done: Vec<TrackId> = Vec::new();
     for t in &tracks {
@@ -239,11 +266,14 @@ fn volume(e: &mut Engine, p: &Value) -> Result<Value> {
             (None, Some(d)) => cur + d as f32,
             _ => cur,
         };
-        let new = if new.is_finite() { new.clamp(-144.0, 12.0) } else { cur };
+        let new = if new.is_finite() { fader(new) } else { cur };
         let d = new - cur;
-        set_grouped(s, *t, "volume", |tr| tr.mixer.volume_db = if tr.id == *t { new } else { (tr.mixer.volume_db + d).clamp(-144.0, 12.0) });
+        set_grouped(s, *t, "volume", |tr| tr.mixer.volume_db = if tr.id == *t { new } else { fader(tr.mixer.volume_db + d) });
     }
-    Ok(json!({"tracks": tracks.len()}))
+    // Every requested track at its final volume, also one that moved as a group sibling of an
+    // earlier target and was skipped above.
+    let volumes: Vec<Value> = tracks.iter().filter_map(|t| s.track(*t)).map(|tr| json!({"track": tr.id.0, "db": tr.mixer.volume_db})).collect();
+    Ok(json!({"tracks": tracks.len(), "volumes": volumes, "clamped": clamped.get()}))
 }
 
 fn pan(e: &mut Engine, p: &Value) -> Result<Value> {

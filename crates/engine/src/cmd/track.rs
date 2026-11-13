@@ -100,8 +100,8 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("track.bounce", "Bounce...", ["Track"], Some("Cmd+Alt+Shift+B"), "{tracks?}", has_selection, commit),
         cmd!("track.bypass_inserts", "All", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, bypass_inserts),
         cmd!("track.mute_sends", "All", ["Track", "Mute Sends"], None, "{tracks?, mute?: bool}", has_selection, mute_sends),
-        cmd!("track.set_record_to_input_only", "Set Record Tracks to Input Only", ["Track"], Some("Alt+K"), "{}", always, |e, _| {
-            let s = e.session_mut();
+        cmd!(noundo "track.set_record_to_input_only", "Set Record Tracks to Input Only", ["Track"], Some("Alt+K"), "{}", always, |e, _| {
+            let s = e.runtime_session_mut();
             let mut n = 0;
             for t in &mut s.tracks {
                 if t.mixer.record_arm {
@@ -483,11 +483,11 @@ fn split_mono(e: &mut Engine, p: &Value) -> Result<Value> {
                                 .ok_or_else(|| bad("track.split_into_mono", "split would copy too much audio"))?;
                             // Keep the full channel: the cloned clips retain their offsets, stretch,
                             // gain and fades, and every reader sees genuine mono media (including saves).
-                            let buf = soundcraft_audio_io::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![samples.clone()] };
+                            let buf = craft_audio::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![samples.clone()] };
                             let original = s.source(*source);
                             let name = format!("{}.{suffix}.wav", original.map_or(c.name.as_str(), |source| source.name.as_str()));
                             let time_reference = original.map_or(0, |source| source.time_reference);
-                            let id = crate::io::add_source(s, &name, buf, None, soundcraft_audio_io::FileFormat::Wav);
+                            let id = crate::io::add_source(s, &name, buf, None, soundcraft_model::FileFormat::Wav);
                             if let Some(source) = s.sources.iter_mut().find(|source| source.id == id) {
                                 source.time_reference = time_reference;
                             }
