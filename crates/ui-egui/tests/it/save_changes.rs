@@ -96,6 +96,22 @@ fn save_in_the_question_saves_before_closing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn enter_on_a_focused_cancel_neither_saves_nor_closes() {
+    let mut h = harness();
+    let tracks = h.state().engine.session().tracks.len();
+    mute_kick(&mut h);
+    close_session(&mut h);
+    assert_eq!(h.state().dialogs.open_name(), Some("save_changes"));
+    h.get_by_label("Cancel").focus();
+    steps(&mut h);
+    h.event(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    steps(&mut h);
+    assert!(h.state().dialogs.open.is_none(), "no Save As dialog follows");
+    assert_eq!(h.state().engine.session().tracks.len(), tracks);
+    assert!(h.state().engine.is_dirty());
+}
+
 /// A session the browser read: an empty one, so opening it is easy to see.
 fn session_bytes() -> Vec<u8> {
     soundcraft_engine::Engine::default().session().to_json().unwrap().into_bytes()

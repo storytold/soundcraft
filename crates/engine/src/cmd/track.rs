@@ -483,11 +483,11 @@ fn split_mono(e: &mut Engine, p: &Value) -> Result<Value> {
                                 .ok_or_else(|| bad("track.split_into_mono", "split would copy too much audio"))?;
                             // Keep the full channel: the cloned clips retain their offsets, stretch,
                             // gain and fades, and every reader sees genuine mono media (including saves).
-                            let buf = soundcraft_audio_io::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![samples.clone()] };
+                            let buf = craft_audio::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![samples.clone()] };
                             let original = s.source(*source);
                             let name = format!("{}.{suffix}.wav", original.map_or(c.name.as_str(), |source| source.name.as_str()));
                             let time_reference = original.map_or(0, |source| source.time_reference);
-                            let id = crate::io::add_source(s, &name, buf, None, soundcraft_audio_io::FileFormat::Wav);
+                            let id = crate::io::add_source(s, &name, buf, None, soundcraft_model::FileFormat::Wav);
                             if let Some(source) = s.sources.iter_mut().find(|source| source.id == id) {
                                 source.time_reference = time_reference;
                             }

@@ -69,11 +69,15 @@ pub fn key_fill(resp: &Response) -> Color32 {
     if resp.hovered() { t.button_hi } else { t.button }
 }
 
+/// The [`shade`] of a pressed key's face, top and bottom of its gradient.
+pub const PRESSED_SHADE: [f32; 2] = [-0.14, 0.02];
+
 /// A key in `fill`, softly lit from above; it sinks while pressed.
 pub fn key(p: &Painter, r: Rect, resp: &Response, fill: Color32) {
     let face = r.shrink(1.0);
     if resp.is_pointer_button_down_on() {
-        vgradient(p, face, shade(fill, -0.14), shade(fill, 0.02));
+        let [top, bottom] = PRESSED_SHADE;
+        vgradient(p, face, shade(fill, top), shade(fill, bottom));
     } else {
         p.rect_filled(face, 0.0, fill);
         key_light(p, face);

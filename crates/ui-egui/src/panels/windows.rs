@@ -4,7 +4,6 @@ use crate::SoundApp;
 use crate::theme::{Tokens, mono, rgb};
 use egui::{Color32, Sense, vec2};
 use serde_json::{Value, json};
-use soundcraft_audio_io::FileFormat;
 use soundcraft_model::{AutomationMode, ClipContent, SESSION_EXTENSION};
 use soundcraft_playback::AudioConfig;
 use soundcraft_playback::devices::{AudioSystem, DeviceInfo};
@@ -347,8 +346,10 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
                         }
                         let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
                         let ext = path.extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase();
-                        (is_dir || FileFormat::from_extension(&ext).is_some() || ["mid", "midi", SESSION_EXTENSION].contains(&ext.as_str()))
-                            .then_some((path, name, is_dir))
+                        (is_dir
+                            || craft_audio::DECODE_EXTENSIONS.contains(&ext.as_str())
+                            || ["mid", "midi", SESSION_EXTENSION].contains(&ext.as_str()))
+                        .then_some((path, name, is_dir))
                     })
                     .collect()
             })
