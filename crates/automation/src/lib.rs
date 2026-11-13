@@ -155,6 +155,8 @@ impl RemoteError {
                     // A read that timed out: `TimedOut` on Windows, `WouldBlock` on Unix.
                     | io::ErrorKind::TimedOut
                     | io::ErrorKind::WouldBlock
+                    // A reply that isn't UTF-8: `read_line` fails before there is JSON to parse.
+                    | io::ErrorKind::InvalidData
             ),
             _ => false,
         }
@@ -502,6 +504,38 @@ mod tests {
         assert!(error.contains("may or may not have been executed"), "{error}");
         assert!(remote.conn.is_none());
         assert_eq!(remote.call("session.inspect", json!({})), Ok(json!({"call": "own"})));
+    }
+
+    /// A reply that is not UTF-8 fails the read itself (`InvalidData`), before any JSON parsing. It
+    /// is as unreadable as one that is not JSON: the connection is dropped, a call that changes
+    /// state is unconfirmed, and a read is asked once more on a new connection.
+    #[test]
+    fn a_reply_that_is_not_text_ends_the_connection() {
+        for (method, params) in [("engine.execute", json!({"command": "track.new"})), ("session.inspect", json!({}))] {
+            let (listener, mut remote) = listener_and_client();
+            let seen = Arc::new(AtomicUsize::new(0));
+            let counter = seen.clone();
+            std::thread::spawn(move || {
+                let Some((mut sock, mut reader)) = accept(&listener) else { return };
+                if next_request(&mut reader).is_some() {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let _ = sock.write_all(b"\xff\n");
+                }
+                serve_own_answers(&listener, &counter);
+                drop((sock, reader));
+            });
+            let result = remote.call(method, params);
+            if is_read_only(method) {
+                assert_eq!(result, Ok(json!({"call": "own"})), "{method}: asked once more on a new connection");
+                assert_eq!(seen.load(Ordering::SeqCst), 2, "{method}");
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.contains("may or may not have been executed"), "{method}: {error}");
+                assert_eq!(seen.load(Ordering::SeqCst), 1, "{method}: not sent again");
+                assert!(remote.conn.is_none(), "{method}");
+                assert_eq!(remote.call("session.inspect", json!({})), Ok(json!({"call": "own"})), "{method}: the next call uses a new connection");
+            }
+        }
     }
 
     /// Fake app that reads the request on each of its first `silent` connections and never
