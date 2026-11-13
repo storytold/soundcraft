@@ -225,24 +225,28 @@ impl Remote {
     }
 
     /// Calls `method`. A request lost with its connection is sent once more on a fresh one when
-    /// it only reads state. A connection that is lost or out of step is never used again, so a
-    /// reply that arrives late on it is not read as the answer to a later call.
+    /// it only reads state, or when it never went out. A connection that is lost or out of step
+    /// is never used again, so a reply that arrives late on it is not read as the answer to a
+    /// later call.
     pub fn request(&mut self, method: &str, params: Value) -> Result<Value, RemoteError> {
-        match self.roundtrip(method, &params) {
-            Ok(v) => Ok(v),
-            Err((e, sent)) if e.is_lost_connection() => {
-                self.conn = None;
-                if sent && !is_read_only(method) {
-                    return Err(RemoteError::Unconfirmed { method: method.to_owned(), source: Box::new(e) });
-                }
-                let again = self.roundtrip(method, &params).map_err(|(e, _)| e);
-                if again.as_ref().is_err_and(RemoteError::is_lost_connection) {
-                    self.conn = None;
-                }
-                again
-            }
-            Err((e, _)) => Err(e),
+        // A call that changes state and went out before its connection was lost may have run.
+        let may_have_run = |e: &RemoteError, sent: bool| sent && e.is_lost_connection() && !is_read_only(method);
+        let report = |(e, sent): (RemoteError, bool)| {
+            if may_have_run(&e, sent) { RemoteError::Unconfirmed { method: method.to_owned(), source: Box::new(e) } } else { e }
+        };
+        match self.attempt(method, &params) {
+            Err((e, sent)) if e.is_lost_connection() && !may_have_run(&e, sent) => self.attempt(method, &params).map_err(report),
+            first => first.map_err(report),
         }
+    }
+
+    /// One [`Self::roundtrip`]; a failure that loses the connection drops it.
+    fn attempt(&mut self, method: &str, params: &Value) -> Result<Value, (RemoteError, bool)> {
+        let result = self.roundtrip(method, params);
+        if result.as_ref().is_err_and(|(e, _)| e.is_lost_connection()) {
+            self.conn = None;
+        }
+        result
     }
 }
 
@@ -549,6 +553,44 @@ mod tests {
         assert!(remote.conn.is_none());
         assert_eq!(seen.load(Ordering::SeqCst), 2);
         assert_eq!(remote.call("session.inspect", json!({})), Ok(json!({"call": "own"})), "the next call starts clean");
+    }
+
+    /// A call that changes state and could not be written to a dead connection is sent on a new
+    /// one. When that attempt goes out and its reply is lost, the call may have run: the error
+    /// says so, as it does when the first attempt is the one that went out.
+    #[test]
+    fn a_mutation_sent_on_the_second_attempt_and_not_answered_is_unconfirmed() {
+        use std::io::Read;
+        let (listener, mut remote) = listener_and_client();
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = seen.clone();
+        std::thread::spawn(move || {
+            // Closing a connection with bytes still unread resets it, so the client's next write
+            // on it fails.
+            let Some((sock, reader)) = accept(&listener) else { return };
+            std::thread::sleep(Duration::from_millis(50));
+            drop((sock, reader));
+            // The second attempt arrives on a new connection: read it and close without a reply.
+            let Some((sock, mut reader)) = accept(&listener) else { return };
+            if next_request(&mut reader).is_some() {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+            drop((sock, reader));
+        });
+        let (stream, _) = remote.connection().unwrap();
+        writeln!(stream, "bytes the app never reads").unwrap();
+        // Wait until the reset has arrived (the read stops timing out).
+        let mut byte = [0u8; 1];
+        for _ in 0..20 {
+            match stream.read(&mut byte) {
+                Err(e) if matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) => {}
+                _ => break,
+            }
+        }
+        let error = remote.call("engine.execute", json!({"command": "track.new"})).unwrap_err();
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "the call went out once, on the second connection: {error}");
+        assert!(error.contains("may or may not have been executed"), "{error}");
+        assert!(remote.conn.is_none());
     }
 
     /// Calls that are answered in turn share one connection, and each gets its own answer.
