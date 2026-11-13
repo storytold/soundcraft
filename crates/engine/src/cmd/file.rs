@@ -94,16 +94,21 @@ pub fn specs() -> Vec<CommandSpec> {
             let dir = str_param(p, "dir").ok_or_else(|| bad("file.bounce_stems", "`dir` required"))?.to_string();
             let r = range_param(e, "file.bounce_stems", p)?;
             let r = if r.is_empty() { soundcraft_time::Range::new(0, e.session().content_end().max(1)) } else { r };
-            let format = str_param(p, "format")
-                .and_then(soundcraft_audio_io::FileFormat::from_write_extension)
-                .unwrap_or(soundcraft_audio_io::FileFormat::Wav);
+            let format_name = match p.get("format") {
+                None => "wav",
+                Some(value) => value.as_str().ok_or_else(|| bad("file.bounce_stems", "`format` must be a string"))?,
+            };
+            let format = craft_audio::encode_format_for(format_name).ok_or_else(|| {
+                let supported = craft_audio::ENCODE_EXTENSIONS.join(", ");
+                bad("file.bounce_stems", format!("cannot write `{format_name}` files (supported: {supported})"))
+            })?;
             let bit_depth = match p.get("bit_depth").map(|b| b.to_string().trim_matches('"').to_string()).as_deref() {
-                Some("16") => soundcraft_audio_io::BitDepth::Int16,
-                Some("32") | Some("32f") => soundcraft_audio_io::BitDepth::Float32,
-                _ => soundcraft_audio_io::BitDepth::Int24,
+                Some("16") => craft_audio::BitDepth::Int16,
+                Some("32") | Some("32f") => craft_audio::BitDepth::Float32,
+                _ => craft_audio::BitDepth::Int24,
             };
             let fold = fold_down_param(p, "file.bounce_stems")?;
-            let files = crate::io::bounce_stems_with(e, &dir, r, &soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: bool_or(p, "dither", true), bwf: None }, fold)?;
+            let files = crate::io::bounce_stems_with(e, &dir, r, &craft_audio::EncodeOptions::new(format).with_bit_depth(bit_depth).with_dither(bool_or(p, "dither", true)), fold)?;
             Ok(json!({"files": files}))
         }),
         cmd!(noundo "file.export_midi", "MIDI...", ["File", "Export"], None, "{path, tracks?}", always, |e, p| {
@@ -357,16 +362,16 @@ pub fn bounce_job(e: &Engine, p: &Value) -> Result<crate::io::Bounce> {
     let r = if r.is_empty() { soundcraft_time::Range::new(0, e.session().content_end().max(1)) } else { r };
     let ext = std::path::Path::new(&path).extension().and_then(std::ffi::OsStr::to_str).unwrap_or("wav").to_ascii_lowercase();
     let format_name = str_param(p, "format").unwrap_or(ext.as_str());
-    let format = soundcraft_audio_io::FileFormat::from_write_extension(format_name).ok_or_else(|| {
-        let supported = soundcraft_audio_io::FileFormat::writable_extensions().join(", ");
+    let format = craft_audio::encode_format_for(format_name).ok_or_else(|| {
+        let supported = craft_audio::ENCODE_EXTENSIONS.join(", ");
         bad("file.bounce_mix", format!("cannot write `{format_name}` files (supported: {supported})"))
     })?;
     let bit_depth = match p.get("bit_depth").map(|b| b.to_string().trim_matches('"').to_string()).as_deref() {
-        Some("16") => soundcraft_audio_io::BitDepth::Int16,
-        Some("32") | Some("32f") => soundcraft_audio_io::BitDepth::Float32,
-        _ => soundcraft_audio_io::BitDepth::Int24,
+        Some("16") => craft_audio::BitDepth::Int16,
+        Some("32") | Some("32f") => craft_audio::BitDepth::Float32,
+        _ => craft_audio::BitDepth::Int24,
     };
-    let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither: bool_or(p, "dither", true), bwf: None };
+    let opts = craft_audio::EncodeOptions::new(format).with_bit_depth(bit_depth).with_dither(bool_or(p, "dither", true));
     let normalize = bool_or(p, "normalize", false);
     let fold = fold_down_param(p, "file.bounce_mix")?;
     let bus = bounce_bus(e, p)?;
