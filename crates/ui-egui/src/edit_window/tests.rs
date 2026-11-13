@@ -1797,11 +1797,11 @@ fn the_insertion_point_stays_drawn_while_playing_beside_the_playhead() {
     assert_eq!(insertion_rows(&h), [2], "only on the selected track");
     let x = x_of(s, tl, at);
     assert!(matches!(insertion_xs(&h)[..], [i] if (i - x).abs() < 0.01), "{:?} is not on {x}", insertion_xs(&h));
-    // The playhead has its own colour and is already further along.
-    assert_ne!(Tokens::current().insertion, Tokens::current().playhead);
+    // The playback line has its own colour and is already further along.
+    assert_ne!(Tokens::current().insertion, Tokens::current().playback);
     // (The overview paints a small playhead of its own: keep the line that crosses all four tracks.)
     let span = row(&h, 3).max.y - row(&h, 0).min.y;
-    let playhead: Vec<f32> = lines(&h, Tokens::current().playhead).iter().filter(|l| l[1].y - l[0].y >= span).map(|l| l[0].x).collect();
+    let playhead: Vec<f32> = lines(&h, Tokens::current().playback).iter().filter(|l| l[1].y - l[0].y >= span).map(|l| l[0].x).collect();
     assert!(matches!(playhead[..], [p] if p > x), "{playhead:?} is not past the insertion point {x}");
 }
 
