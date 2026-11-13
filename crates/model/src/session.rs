@@ -1295,7 +1295,7 @@ mod tests {
             channels: 1,
             frames: 1000,
             sample_rate: 48_000,
-            format: soundcraft_audio_io::FileFormat::Wav,
+            format: crate::FileFormat::Wav,
             time_reference: 0,
             unsaved: false,
         });

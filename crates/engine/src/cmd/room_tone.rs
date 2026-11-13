@@ -227,8 +227,8 @@ fn fill(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soundcraft_audio_io::{AudioBuffer, FileFormat};
-    use soundcraft_model::{ChannelFormat, ClipId, SourceAudio, SourceId};
+    use craft_audio::AudioBuffer;
+    use soundcraft_model::{ChannelFormat, ClipId, FileFormat, SourceAudio, SourceId};
     use std::sync::Arc;
 
     const RATE: Samples = 48_000;
