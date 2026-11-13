@@ -237,7 +237,7 @@ impl Tokens {
         mode_on_text: Color32::from_rgb(10, 30, 12),
         mode_off_text: Color32::from_rgb(98, 196, 112),
         edit_mode_on: [
-            Color32::from_rgb(214, 84, 76),
+            Color32::from_rgb(222, 94, 86),
             Color32::from_rgb(92, 196, 108),
             Color32::from_rgb(226, 150, 62),
             Color32::from_rgb(98, 176, 226),
@@ -330,9 +330,9 @@ impl Tokens {
         mode_off_text: Color32::from_rgb(38, 106, 52),
         edit_mode_on: [
             Color32::from_rgb(186, 60, 54),
-            Color32::from_rgb(75, 158, 88),
-            Color32::from_rgb(194, 114, 28),
-            Color32::from_rgb(46, 130, 190),
+            Color32::from_rgb(54, 128, 68),
+            Color32::from_rgb(168, 92, 14),
+            Color32::from_rgb(36, 110, 168),
             Color32::from_rgb(126, 84, 186),
         ],
         button: Color32::from_rgb(214, 216, 220),
