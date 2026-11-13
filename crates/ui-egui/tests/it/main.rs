@@ -22,6 +22,7 @@ mod focused_dialog_buttons;
 mod group_dialog;
 mod hide_floating;
 mod idle;
+mod import_browse;
 mod key_families;
 mod long_menu_scroll;
 mod marker_rename;
