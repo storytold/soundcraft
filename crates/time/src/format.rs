@@ -75,10 +75,29 @@ pub fn format_length(start: Samples, len: Samples, fmt: TimeFormat, sr: SampleRa
         TimeFormat::BarsBeats => {
             let t0 = map.samples_to_ticks(start, sr);
             let t1 = map.samples_to_ticks(start.saturating_add(len), sr);
-            let m = map.meter_at_tick(t0);
-            let d = (t1 - t0).max(0);
-            let bars = d / m.ticks_per_bar().max(1);
-            let rem = d % m.ticks_per_bar().max(1);
+            // Count whole bars through the meter segments the range crosses.
+            let mut pos = t0;
+            let mut bars = 0i64;
+            let mut m = map.meter_at_tick(t0);
+            for (i, seg) in map.meters().iter().enumerate() {
+                if seg.tick > t0 && seg.tick <= pos {
+                    m = *seg;
+                }
+                let Some(end) = map.meters().get(i + 1).map(|n| n.tick) else { break };
+                if end <= pos || end > t1 || end <= t0 {
+                    continue;
+                }
+                let tpb = m.ticks_per_bar().max(1);
+                // A trailing partial bar is consumed only up to the boundary and counts as one bar.
+                let n = (end - pos).saturating_add(tpb - 1) / tpb;
+                bars = bars.saturating_add(n);
+                pos = end;
+                m = map.meter_at_tick(pos);
+            }
+            let tpb = m.ticks_per_bar().max(1);
+            let d = (t1 - pos).max(0);
+            let rem = d % tpb;
+            bars = bars.saturating_add(d / tpb);
             format!("{bars}| {}| {:03}", rem / m.ticks_per_beat().max(1), rem % m.ticks_per_beat().max(1))
         }
         TimeFormat::Timecode => Timecode::from_samples(len, rate, sr).format(rate),
@@ -153,6 +172,38 @@ mod tests {
 
     fn ctx() -> (SampleRate, TempoMap, FrameRate) {
         (SampleRate::HZ_48000, TempoMap::default(), FrameRate::Fps30)
+    }
+
+    #[test]
+    fn bars_beats_length_counts_through_meter_changes() {
+        let (sr, mut map, rate) = ctx();
+        map.set_meter(3840, 3, 4).unwrap();
+        let f = |start, len| format_length(start, len, TimeFormat::BarsBeats, sr, &map, rate);
+        assert_eq!(f(0, 168_000), "2| 0| 000");
+        assert_eq!(f(96_000, 72_000), "1| 0| 000");
+        assert_eq!(f(0, 48_000), "0| 2| 000");
+        assert_eq!(f(0, 120_000), "1| 1| 000");
+    }
+
+    #[test]
+    fn bars_beats_length_starting_inside_bar_before_meter_change() {
+        let (sr, mut map, rate) = ctx();
+        map.set_meter(3840, 3, 4).unwrap();
+        let f = |start, len| format_length(start, len, TimeFormat::BarsBeats, sr, &map, rate);
+        // Ticks 960..4320: the partial 4/4 bar counts as one bar, then 480 ticks of 3/4.
+        assert_eq!(f(24_000, 84_000), "1| 0| 480");
+        // Ticks 960..3840 end exactly at the boundary.
+        assert_eq!(f(24_000, 72_000), "1| 0| 000");
+    }
+
+    #[test]
+    fn bars_beats_length_crossing_multiple_meter_changes() {
+        let (sr, mut map, rate) = ctx();
+        map.set_meter(3840, 3, 4).unwrap();
+        map.set_meter(6720, 2, 4).unwrap();
+        let f = |start, len| format_length(start, len, TimeFormat::BarsBeats, sr, &map, rate);
+        // Ticks 960..8000: a partial 4/4 bar, one 3/4 bar, then 1280 ticks of 2/4.
+        assert_eq!(f(24_000, 176_000), "2| 1| 320");
     }
 
     #[test]
