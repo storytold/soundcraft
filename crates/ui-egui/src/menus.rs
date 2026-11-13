@@ -312,7 +312,9 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                                 }
                                 if root.path == "AudioSuite" {
                                     ui.separator();
-                                    ui.label(egui::RichText::new(crate::localization::text("Processes selected clips offline")).small().color(t.text_dim));
+                                    ui.label(
+                                        egui::RichText::new(crate::localization::text("Processes selected clips offline")).small().color(t.text_dim),
+                                    );
                                 }
                                 if root.path == "Window" {
                                     ui.separator();

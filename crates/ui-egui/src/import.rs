@@ -46,8 +46,30 @@ impl Imports {
 }
 
 /// Imports the audio file `params["path"]` names (the `file.import_audio` params) in the
-/// background. Anything else (several `paths`, no path, the browser) runs the command now.
+/// background; several `paths` queue one import each. Anything else (no path, the browser) runs the command now.
 pub fn start(app: &mut SoundApp, params: Value) {
+    // Several picked files: one queue entry each, so they decode one at a time and the app stays responsive.
+    if !cfg!(target_arch = "wasm32")
+        && params.get("path").is_none()
+        && let Some(paths) = params.get("paths").and_then(Value::as_array)
+    {
+        let singles: Vec<Value> = paths
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|p| {
+                let mut one = params.clone();
+                if let Some(o) = one.as_object_mut() {
+                    o.remove("paths");
+                    o.insert("path".into(), Value::from(p));
+                }
+                one
+            })
+            .collect();
+        if !singles.is_empty() {
+            app.imports.queue.extend(singles);
+            return;
+        }
+    }
     if cfg!(target_arch = "wasm32") || params.get("path").and_then(Value::as_str).is_none() {
         run_now(app, params);
         return;
@@ -211,6 +233,20 @@ mod tests {
         assert_eq!(app.imports.label().map(|l| l.1), Some(1), "the second waits for the first");
         settle(&mut app, &ctx);
         assert_eq!(app.engine.session().tracks.len(), 1, "the good file still imports");
+    }
+
+    /// Issue #1089: several files picked in one Browse go to the queue, one entry each.
+    #[test]
+    fn several_paths_import_one_after_another() {
+        let ctx = egui::Context::default();
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let (a, b, c) = (tone_wav("many-a.wav"), tone_wav("many-b.wav"), tone_wav("many-c.wav"));
+        start(&mut app, json!({"paths": [a, b, c]}));
+        assert_eq!(app.imports.queue.len(), 3);
+        step(&mut app, &ctx);
+        assert_eq!(app.imports.label().map(|l| l.1), Some(2), "the other two wait for the first");
+        settle(&mut app, &ctx);
+        assert_eq!(app.engine.session().tracks.len(), 3);
     }
 
     #[test]
