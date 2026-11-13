@@ -8,6 +8,10 @@ pub(super) const MAX_MIDI_TEMPOS: usize = 10_000;
 pub(super) const MAX_MIDI_TRACKS: usize = 512;
 
 /// Import a Standard MIDI File as MIDI tracks (one per SMF track).
+///
+/// The file is checked in full before the session changes, so a refused file (too many tempo or
+/// meter changes or tracks, a track longer than a day) leaves the session as it was: callers that
+/// keep their own undo step, like the web shell, never see a half-applied import.
 pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: bool) -> Result<Vec<TrackId>> {
     let smf = soundcraft_midi::read_smf(bytes).map_err(|err| EngineError::Io(err.to_string()))?;
     if tempo_map {
@@ -23,37 +27,49 @@ pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: b
     if tracks_to_import > MAX_MIDI_TRACKS {
         return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_TRACKS} tracks")));
     }
-    let s = e.session_mut();
+    // Phase 1, read only: the tempo map the clips will be placed with, built apart from the
+    // session. `session_mut` would already count as an edit (revision, unsaved mark).
+    let s = e.session();
+    let mut tempo = s.tempo.clone();
     if tempo_map {
         for (tick, bpm) in &smf.tempos {
-            if s.tempo.tempo_at_tick(*tick) == *bpm {
+            if tempo.tempo_at_tick(*tick) == *bpm {
                 continue;
             }
-            let _ = s.tempo.set_tempo(*tick, *bpm);
+            let _ = tempo.set_tempo(*tick, *bpm);
         }
         for (tick, n, d) in &smf.meters {
-            let _ = s.tempo.set_meter(*tick, u32::from(*n), u32::from(*d));
+            let _ = tempo.set_meter(*tick, u32::from(*n), u32::from(*d));
         }
     }
-    let base_tick = s.tempo.samples_to_ticks(at, s.sample_rate);
-    let mut out = Vec::new();
+    let base_tick = tempo.samples_to_ticks(at, s.sample_rate);
+    let mut clips = Vec::new();
     for (i, tr) in smf.tracks.iter().enumerate() {
         if tr.sequence.notes.is_empty() && tr.sequence.ctrls.is_empty() {
             continue;
         }
+        // A controller on the clip's last tick would not play, so the clip runs one tick past the last one.
+        let past_ctrls = tr.sequence.ctrls.iter().map(|c| c.tick.saturating_add(1)).max().unwrap_or(0);
+        let end_tick = base_tick.saturating_add(tr.sequence.end_tick().max(past_ctrls).max(1));
+        let len = tempo.tick_to_samples(end_tick, s.sample_rate).saturating_sub(at);
+        if len > s.sample_rate.samples(86_400.0) {
+            return Err(EngineError::Io(format!("MIDI track {}: longer than 24 hours", i + 1)));
+        }
+        clips.push((i, tr, len));
+    }
+    // Phase 2: nothing can fail from here on.
+    let s = e.session_mut();
+    if tempo_map {
+        s.tempo = tempo;
+    }
+    let mut out = Vec::new();
+    for (i, tr, len) in clips {
         let mut name = if tr.name.trim().is_empty() { format!("MIDI {}", i + 1) } else { tr.name.clone() };
         soundcraft_model::truncate_chars(&mut name, soundcraft_model::MAX_NAME_CHARS);
         let id = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some(&name));
         let drums = !tr.sequence.notes.is_empty() && tr.sequence.notes.iter().all(|n| n.channel == 9);
         if let Some(t) = s.track_mut(id) {
             t.instrument = Some(soundcraft_model::Insert::new(if drums { "drum_synth" } else { "subtractive_synth" }));
-        }
-        // A controller on the clip's last tick would not play, so the clip runs one tick past the last one.
-        let past_ctrls = tr.sequence.ctrls.iter().map(|c| c.tick.saturating_add(1)).max().unwrap_or(0);
-        let end_tick = base_tick.saturating_add(tr.sequence.end_tick().max(past_ctrls).max(1));
-        let len = s.tempo.tick_to_samples(end_tick, s.sample_rate).saturating_sub(at);
-        if len > s.sample_rate.samples(86_400.0) {
-            return Err(EngineError::Io(format!("MIDI track {}: longer than 24 hours", i + 1)));
         }
         let cid = s.new_clip_id();
         crate::edit::place_clip(s, id, Clip::midi(cid, name, at, len.max(1), tr.sequence.clone()));
