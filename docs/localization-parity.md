@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-11-01 · **Last updated:** 2026-11-01 · **Change:** major (language setting, zh-Hans catalog, CJK font fallback) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-13 · **Last updated:** 2026-11-13 · **Change:** major (language setting, zh-Hans catalog, CJK font fallback) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft's strings live in code (`crates/engine/src/cmd/*`, `crates/ui-egui/src/*`). A catalog
 (`soundcraft-l10n`, L0) now translates them at display time: keys are the English source strings,
@@ -50,5 +50,5 @@ Per-language hours exclude the shared catalog and script work above.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-24 | major | Language setting (`ui.language`, Language menu, persisted), `soundcraft-l10n` catalog keyed by the English source, zh-Hans covering the full menu tree + toolbar/transport + common dialogs, Simplified-Chinese system-font fallback |
+| 2026-11-13 | major | Language setting (`ui.language`, Language menu, persisted), `soundcraft-l10n` catalog keyed by the English source, zh-Hans covering the full menu tree + toolbar/transport + common dialogs, Simplified-Chinese system-font fallback |
 | 2026-10-10 | major | Created: English only, no catalog; the twelve key languages at 0 %; Pro Tools' 8 languages listed from its bundle |
