@@ -2,15 +2,12 @@
 
 use crate::convert::{Matrix, Planes, planar_to_rgba, scale_rgba};
 use crate::isobmff::{self, ByteSource, CodecConfig, Mp4File, TrackKind};
-use crate::{Result, VideoError};
+use crate::{MAX_PIXELS, Result, VideoError};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// A random-access byte source a [`Movie`] can read from (in-memory bytes, or a file on native).
 pub type SharedSource = Arc<dyn ByteSource + Send + Sync>;
-
-/// Largest picture we decode (bounds every allocation derived from the file).
-pub(crate) const MAX_PIXELS: u64 = 8192 * 8192;
 
 /// A decoded picture, packed RGBA (8 bits per channel, `width * height * 4` bytes).
 #[derive(Debug, Clone, PartialEq)]

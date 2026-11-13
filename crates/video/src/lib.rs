@@ -36,6 +36,12 @@ pub use craft_media::{bitstream, isobmff};
 pub use isobmff::ByteSource;
 pub use movie::{Frame, Movie, MovieInfo, SharedSource, fit_size};
 
+/// Largest picture the crate decodes, in pixels (8192x8192). Bounds every allocation derived from
+/// a file's geometry. The codecs check their own coded geometry against it before anything is
+/// allocated: a container's dimensions are not the coded ones, and a frame decoded before the
+/// check would already have sized its planes from the file.
+pub(crate) const MAX_PIXELS: u64 = 8192 * 8192;
+
 /// Errors from opening or decoding a movie.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum VideoError {
