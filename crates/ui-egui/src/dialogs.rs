@@ -33,7 +33,7 @@ pub mod spot;
 #[derive(Debug, Clone)]
 pub enum Dialog {
     NewTracks(new_tracks::NewTracks),
-    /// A send's "new track...": the track the send will feed.
+    // A send's "new track...": the track the send will feed.
     SendToNewTrack(send_new_track::SendToNewTrack),
     NewSession { name: String, sample_rate: u32, demo: bool },
     Bounce { path: String, format: EncodeFormat, bit_depth: String, normalize: bool, dither: bool },
