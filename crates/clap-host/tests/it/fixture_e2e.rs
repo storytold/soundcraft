@@ -90,6 +90,7 @@ fn a_new_latency_counts_after_the_restart_the_plugin_asks_for() {
     let mut io = vec![vec![0.5f32; 64]; 2];
     p.process(&mut io, 64);
     assert_eq!(p.latency(), 3, "so far the plugin only asked for on_main_thread");
+    // One idle runs both callbacks the plugin asks for (the second one asks for the restart).
     p.idle();
     assert_eq!(p.latency(), 16, "restarted with its new latency");
     assert_eq!(p.param("3"), Some(2.0));

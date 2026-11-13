@@ -2,8 +2,8 @@
 //!
 //! - `org.soundcraft.test.gain`: stereo in/out, param 7 "Gain" (0..2, default 1), param 3 "Mode"
 //!   (stepped enum A/B/C), hidden param 9, latency 3 samples. Mode C needs 16: like LSP, the
-//!   plugin finds that out in `process`, asks for `on_main_thread` and from there for a restart,
-//!   and reports 16 once activated again.
+//!   plugin finds that out in `process`, asks for `on_main_thread`, from there for a second
+//!   `on_main_thread`, and from that one for a restart; it reports 16 once activated again.
 //! - `org.soundcraft.test.synth`: instrument, stereo out, CLAP note port; outputs a constant equal
 //!   to the velocity of the held note (0 when none), switching at the event's sample offset. A
 //!   MIDI CC 7 (volume) sets the constant to its value / 127. `reset` leaves the note sounding.
@@ -104,6 +104,8 @@ struct Fx {
     /// The latency the plugin was activated with, and whether it asked for a restart to change it.
     latency: u32,
     restart_wanted: bool,
+    /// The first `on_main_thread` after a latency change only asks for another one.
+    second_callback_asked: bool,
     active: bool,
     processing: bool,
     gui_created: bool,
@@ -603,9 +605,16 @@ unsafe extern "C" fn get_extension(p: *const clap_plugin, id: *const c_char) -> 
 
 unsafe extern "C" fn on_main_thread(p: *const clap_plugin) {
     let f = unsafe { fx(p) };
-    if std::mem::take(&mut f.restart_wanted) {
-        let host = unsafe { &*f.host };
+    if !f.restart_wanted {
+        return;
+    }
+    let host = unsafe { &*f.host };
+    if std::mem::replace(&mut f.second_callback_asked, true) {
+        f.restart_wanted = false;
+        f.second_callback_asked = false;
         unsafe { (host.request_restart.unwrap())(f.host) };
+    } else {
+        unsafe { (host.request_callback.unwrap())(f.host) };
     }
 }
 
@@ -664,6 +673,7 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         level: 0.0,
         latency: 3,
         restart_wanted: false,
+        second_callback_asked: false,
         active: false,
         processing: false,
         gui_created: false,

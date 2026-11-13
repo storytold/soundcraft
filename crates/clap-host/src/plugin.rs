@@ -8,6 +8,8 @@ use std::sync::atomic::Ordering;
 
 /// Largest block we activate a plugin for.
 const MAX_BLOCK: usize = 1 << 16;
+/// Most `on_main_thread` calls one `idle` runs for a plugin that keeps asking for more.
+const MAX_CALLBACKS_PER_IDLE: usize = 8;
 /// Most channels a host strip may ask for.
 const MAX_CHANNELS: usize = 64;
 /// Queue slots that only releases from `note_off` may take: one per key, so a queue that
@@ -364,8 +366,14 @@ impl Plugin for ClapPlugin {
 
     fn idle(&mut self) {
         // A plugin that finds a new latency while processing asks for `on_main_thread`, and from
-        // there for a restart: the new value only counts once it is activated again.
-        self.inst.service_callback();
+        // there for a restart (maybe after more callbacks): the new value only counts once it is
+        // activated again. Run every callback it asks for here, a bounded number of them.
+        for _ in 0..MAX_CALLBACKS_PER_IDLE {
+            if !self.inst.state().callback.load(Ordering::Relaxed) {
+                break;
+            }
+            self.inst.service_callback();
+        }
         if self.inst.state().restart.swap(false, Ordering::Relaxed) {
             if let Some((sr, mb, ch)) = self.prepared {
                 self.prepare(sr, mb, ch);
