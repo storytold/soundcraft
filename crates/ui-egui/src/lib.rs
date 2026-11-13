@@ -295,6 +295,8 @@ pub struct SoundApp {
     pub native_menu_bar: bool,
     /// Folder for crash-recovery autosaves (native apps set it).
     pub autosave_dir: Option<std::path::PathBuf>,
+    /// Where the takes of a session never saved go without an autosave folder: made once per run, under the temporary folder.
+    fallback_take_dir: Option<std::path::PathBuf>,
     /// Writes the open session's autosaves in the background, once there is something to write.
     autosaver: Option<soundcraft_engine::autosave::Autosaver>,
     /// The document revision last handed to the autosaver (0 once that autosave is stale).

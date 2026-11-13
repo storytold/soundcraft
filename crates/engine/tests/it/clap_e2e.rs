@@ -2,8 +2,8 @@
 //! `clap:` id and the mix engine renders through it. Uses the test plugin built from
 //! `crates/clap-host/tests/fixture` (a gain whose param "7" is linear gain).
 
+use craft_audio::AudioBuffer;
 use serde_json::json;
-use soundcraft_audio_io::AudioBuffer;
 use soundcraft_engine::Engine;
 use soundcraft_model::{ChannelFormat, Clip, SourceAudio, SourceId, TrackKind};
 use soundcraft_time::Range;

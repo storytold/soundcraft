@@ -175,9 +175,10 @@ fn analysed(s: &Session, t: TrackId, around: Range) -> Vec<Samples> {
 #[cfg(test)]
 mod tests {
     use crate::Engine;
+    use craft_audio::AudioBuffer;
     use serde_json::json;
-    use soundcraft_audio_io::{AudioBuffer, FileFormat};
     use soundcraft_midi::{Note, Sequence};
+    use soundcraft_model::FileFormat;
     use soundcraft_model::{ChannelFormat, Clip, Session, TrackId, TrackKind};
     use soundcraft_time::{SampleRate, TICKS_PER_QUARTER};
 
