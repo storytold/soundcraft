@@ -213,18 +213,52 @@ impl TempoMap {
         }
     }
 
-    /// Remove the meters after `tick`, returning each with the bar it starts.
+    /// Remove the meters after `tick`, returning each with the bar it starts: the bar
+    /// [`Self::bar_beat_at_tick`] gives its tick, counted in one pass over the map rather than one
+    /// walk per meter, so a session with many meter changes edits in linear time.
     fn take_meters_after(&mut self, tick: i64) -> Vec<(i64, MeterEvent)> {
-        let later: Vec<_> = self.meters.iter().filter(|e| e.tick > tick).map(|e| (self.bar_beat_at_tick(e.tick).bar, *e)).collect();
+        let mut later = Vec::new();
+        let (mut bar, mut seg_tick) = (1i64, 0i64);
+        for (i, m) in self.meters.iter().enumerate() {
+            let tpb = m.ticks_per_bar();
+            if m.tick > tick {
+                later.push((bar.saturating_add(m.tick.saturating_sub(seg_tick) / tpb), *m));
+            }
+            if let Some(n) = self.meters.get(i + 1) {
+                bar = bar.saturating_add(ceil_div(n.tick.saturating_sub(seg_tick), tpb));
+                seg_tick = n.tick;
+            }
+        }
         self.meters.retain(|e| e.tick <= tick);
         later
     }
 
+    /// The bar and tick of the last meter's segment, where [`Self::bar_start_tick`]'s walk ends.
+    fn last_segment(&self) -> (i64, i64) {
+        let (mut cur_bar, mut cur_tick) = (1i64, 0i64);
+        for (i, m) in self.meters.iter().enumerate() {
+            if let Some(n) = self.meters.get(i + 1) {
+                cur_bar = cur_bar.saturating_add(ceil_div(n.tick.saturating_sub(cur_tick), m.ticks_per_bar()));
+                cur_tick = n.tick;
+            }
+        }
+        (cur_bar, cur_tick)
+    }
+
     /// Put meters back at the start of their bars under the current earlier meters, in bar order.
+    /// Each lands at or past the last meter, so the walk to its bar resumes from there; a bar
+    /// before it (meters off their bar lines) takes the full walk.
     fn restore_meters_at_bars(&mut self, later: Vec<(i64, MeterEvent)>) {
+        let (mut cur_bar, mut cur_tick) = self.last_segment();
         for (bar, ev) in later {
-            let tick = self.bar_start_tick(bar);
+            let tick = if bar >= cur_bar {
+                let tpb = self.meters.last().map_or(MeterEvent { tick: 0, numerator: 4, denominator: 4 }, |m| *m).ticks_per_bar();
+                cur_tick.saturating_add(bar.saturating_sub(cur_bar).saturating_mul(tpb))
+            } else {
+                self.bar_start_tick(bar)
+            };
             self.put_meter(MeterEvent { tick, ..ev });
+            (cur_bar, cur_tick) = if bar >= cur_bar { (bar, tick) } else { self.last_segment() };
         }
     }
 
@@ -439,6 +473,36 @@ mod tests {
         assert_eq!(m.bar_start_tick(4), TICKS_PER_QUARTER * 11);
         let bb = BarBeat { bar: 4, beat: 2, tick: 10 };
         assert_eq!(m.bar_beat_at_tick(m.tick_at_bar_beat(bb)), bb);
+    }
+
+    #[test]
+    fn editing_an_early_meter_keeps_later_bars_and_scales_linearly() {
+        // 200 000 meter changes, one per bar, built directly: a walk per meter would take
+        // minutes to edit here, and even to build through `set_meter`.
+        let mut m = TempoMap::new(120.0, 4, 4).unwrap();
+        let mut tick = 0;
+        for bar in 1..200_000i64 {
+            let numerator = 3 + (bar % 2) as u32;
+            tick += m.meters.last().map_or(0, MeterEvent::ticks_per_bar);
+            m.meters.push(MeterEvent { tick, numerator, denominator: 4 });
+        }
+        let sample = [1usize, 1_000, 199_998];
+        let bars = |m: &TempoMap| sample.map(|i| m.bar_beat_at_tick(m.meters[i].tick).bar);
+        assert_eq!(bars(&m), [2, 1_001, 199_999]);
+        m.set_meter(0, 7, 8).unwrap();
+        assert_eq!(bars(&m), [2, 1_001, 199_999], "later meters keep their bar numbers");
+        assert_eq!(m.meters.len(), 200_000);
+        assert!(m.meters.windows(2).all(|w| w[0].tick < w[1].tick));
+        assert!(m.remove_meter(m.meters[1].tick));
+        assert_eq!([1usize, 999, 199_997].map(|i| m.bar_beat_at_tick(m.meters[i].tick).bar), [3, 1_001, 199_999]);
+        // Meters off their bar lines (counted as bars 2 and 4) land where they always did: on
+        // bar 2 of the new meter, then two bars of their own later.
+        let mut off = TempoMap::new(120.0, 4, 4).unwrap();
+        off.meters.push(MeterEvent { tick: 100, numerator: 3, denominator: 4 });
+        off.meters.push(MeterEvent { tick: 5_000, numerator: 5, denominator: 4 });
+        off.set_meter(0, 2, 4).unwrap();
+        let placed: Vec<(i64, u32)> = off.meters.iter().map(|e| (e.tick, e.numerator)).collect();
+        assert_eq!(placed, vec![(0, 2), (2 * TICKS_PER_QUARTER, 3), (8 * TICKS_PER_QUARTER, 5)]);
     }
 
     #[test]

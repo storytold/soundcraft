@@ -9,9 +9,10 @@ use super::{
 
 // ---- interaction -----------------------------------------------------------------------------
 
+/// Apply snapping when the current edit mode or Snap to Grid option enables it.
 pub(super) fn snap(s: &Session, at: Samples) -> Samples {
     let on = s.edit.edit_mode.is_grid() || s.edit.flag(ops::SNAP_TO_GRID);
-    if on { s.edit.grid.snap(at, s.sample_rate, &s.tempo, s.frame_rate) } else { at }
+    if on { s.snap_to_grid(at) } else { at }
 }
 
 pub(super) fn clip_at(track: &Track, at: Samples) -> Option<&Clip> {
@@ -355,14 +356,20 @@ fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Res
                     ids.push(c.id.0);
                     let _ = app.run("edit.select", json!({"clips": ids}));
                     if s.edit.edit_mode == EditMode::Spot {
-                        app.dialogs.open = Spot::clips(s, vec![c.id], None, 0).map(Dialog::Spot);
+                        match Spot::clips(s, vec![c.id], None, 0) {
+                            Some(spot) => app.dialogs.set(Dialog::Spot(spot)),
+                            None => app.dialogs.open = None,
+                        }
                     }
                 }
             }
             Tool::Trim if s.edit.edit_mode == EditMode::Spot && hit.is_some() => {
                 if let Some(c) = &hit {
                     let start = at - c.start < c.end() - at;
-                    app.dialogs.open = Spot::trim(s, c.id, start, if start { c.start } else { c.end() }).map(Dialog::Spot);
+                    match Spot::trim(s, c.id, start, if start { c.start } else { c.end() }) {
+                        Some(spot) => app.dialogs.set(Dialog::Spot(spot)),
+                        None => app.dialogs.open = None,
+                    }
                 }
             }
             Tool::Zoom => {

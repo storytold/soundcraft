@@ -43,6 +43,8 @@ use layout::COLUMN_TITLES_H;
 use layout::lane_rect;
 pub use layout::{COLUMN_W, EditLayout, HEADER_W, LANE_H, RULER_H, edit_columns, header_width, rect, sample_at, track_height, x_of};
 use overlay::overlay;
+#[cfg(test)]
+use overlay::playhead_colour;
 pub use rulers::ruler_height;
 use rulers::{column_titles, draw_rulers, views_button};
 pub use scroll::zoom_toggle;
@@ -167,13 +169,19 @@ fn main_area_content(app: &mut SoundApp, ui: &mut Ui) {
     }
     app.edit_layout.content_h = content_h;
     let clip_rect = Rect::from_min_max(pos2(full.min.x, tl.min.y), pos2(full.max.x, tl.max.y));
+    let grid = clips::GridLines::new(app.engine.session(), tl);
+    let grid_revision = app.engine.revision;
     for (id, r) in app.edit_layout.rows.clone() {
         let row = rect(r);
         if row.max.y >= clip_rect.min.y && row.min.y <= clip_rect.max.y {
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(row));
             child.set_clip_rect(clip_rect);
-            track_row(app, &mut child, TrackId(id), row, tl, &cols);
+            track_row(app, &mut child, TrackId(id), row, tl, &cols, &grid);
         }
+    }
+    // Keep one consistent grid snapshot during this pass, then refresh after a row edits it.
+    if app.engine.revision != grid_revision {
+        ui.ctx().request_repaint();
     }
     // Below the tracks a click clears the selection and a double-click opens New Tracks.
     let empty = Rect::from_min_max(pos2(full.min.x, y.max(tl.min.y)), tl.max);
