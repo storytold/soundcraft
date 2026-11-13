@@ -720,6 +720,15 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("Beat Analysis", "节拍分析"),
     ("Levels of Undo", "撤销层级"),
     ("Reduce Visual Effects", "减少视觉效果"),
+    // ── Display names from `feature_names::display_label` (menu nodes) ──
+    ("Punch Recording", "穿插录音"),
+    ("Tempo Sync", "速度同步"),
+    ("Shared Projects", "共享项目"),
+    ("No ARA plug-ins", "无 ARA 插件"),
+    ("Analog Saturation", "模拟饱和"),
+    ("Activate Analog Saturation", "启用模拟饱和"),
+    ("MusicXML", "MusicXML"),
+    ("MusicXML...", "MusicXML..."),
     // ── Templates ({name} placeholders, filled by `tf`) ──
     ("Group {n}", "编组 {n}"),
     ("Shuffle is locked ({cmd}-click to unlock)", "Shuffle 已锁定（{cmd}+点击解锁）"),
