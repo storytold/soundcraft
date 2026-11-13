@@ -178,6 +178,27 @@ mod name_tests {
     }
 
     #[test]
+    fn a_midi_file_with_stray_bytes_after_its_last_track_is_imported() {
+        // #1528: a complete format-0 file followed by two line feeds, too short to be a chunk.
+        let note = soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 };
+        let sequence = soundcraft_midi::Sequence { notes: vec![note], ..Default::default() };
+        let smf = soundcraft_midi::Smf { format: 0, tracks: vec![soundcraft_midi::SmfTrack { name: String::new(), sequence }], ..Default::default() };
+        let mut bytes = soundcraft_midi::write_smf(&smf).unwrap();
+        bytes.extend_from_slice(b"\n\n");
+        let mut e = Engine::default();
+        let ids = import_midi_bytes(&mut e, &bytes, 0, true).unwrap();
+        assert_eq!(ids.len(), 1);
+        match &e.session().track(ids[0]).unwrap().clips()[0].content {
+            ClipContent::Midi { sequence } => assert_eq!(sequence.notes, vec![note]),
+            _ => panic!("expected a MIDI clip"),
+        }
+        // Something that is no MIDI file is still refused, and leaves the session as it was.
+        let mut e = Engine::default();
+        assert!(import_midi_bytes(&mut e, b"RIFF\0\0\0\0WAVE", 0, true).is_err());
+        assert!(e.session().tracks.is_empty());
+    }
+
+    #[test]
     fn midi_longer_than_a_day_is_refused() {
         let held = soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: (1 << 28) - 1 };
         let sequence = soundcraft_midi::Sequence { notes: vec![held], ..Default::default() };

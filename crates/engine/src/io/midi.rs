@@ -12,8 +12,16 @@ pub(super) const MAX_MIDI_TRACKS: usize = 512;
 /// The file is checked in full before the session changes, so a refused file (too many tempo or
 /// meter changes or tracks, a track longer than a day) leaves the session as it was: callers that
 /// keep their own undo step, like the web shell, never see a half-applied import.
+///
+/// The file is read leniently, as other MIDI readers do: with stray bytes after the last track
+/// (#1528), a track length its End of Track contradicts or a track cut short, what can be read is
+/// imported and what could not is logged. Something that is not a Standard MIDI File is refused.
 pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: bool) -> Result<Vec<TrackId>> {
-    let smf = soundcraft_midi::read_smf(bytes).map_err(|err| EngineError::Io(err.to_string()))?;
+    let read = soundcraft_midi::read_smf_lenient(bytes).map_err(|err| EngineError::Io(err.to_string()))?;
+    for warning in &read.warnings {
+        log::warn!("MIDI import: {warning}");
+    }
+    let smf = read.smf;
     if tempo_map {
         // Each meter is placed by walking the ones before it.
         if smf.meters.len() > MAX_MIDI_METERS {
