@@ -313,7 +313,8 @@ mod save_tests {
         let track = second.session().tracks[0].id.0;
         for id in ["session.save", "session.save_as", "session.save_copy", "session.save_template", "file.export_selected_tracks_as_session"] {
             // Only the export takes `tracks`; the others refuse it as an unknown key.
-            let params = if id == "file.export_selected_tracks_as_session" { json!({"path": path, "tracks": [track]}) } else { json!({"path": path}) };
+            let params =
+                if id == "file.export_selected_tracks_as_session" { json!({"path": path, "tracks": [track]}) } else { json!({"path": path}) };
             let err = second.execute(id, &params).unwrap_err();
             assert!(err.to_string().contains("`replace: true`"), "{id}: {err}");
         }
