@@ -231,6 +231,41 @@ fn crossfade_on_stretched_clips_stays_inside_the_file() {
     assert!(ca.fade_out.len >= ca.end() - cb.start && cb.fade_in.len >= ca.end() - cb.start);
 }
 
+#[test]
+fn crossfade_on_stretched_video_clips_keeps_unscaled_source_handles() {
+    // Video offsets are not stretched (`Clip::trim_start_to` moves them by the timeline delta), so the
+    // handles are plain source samples whatever the stretch.
+    for stretch in [2.0, 0.5] {
+        let (mut s, t) = session_with_clip();
+        let vid = SourceId(600);
+        let frames = 2000;
+        s.videos.push(soundcraft_model::VideoSource {
+            id: vid,
+            name: "v".into(),
+            path: "v.mov".into(),
+            width: 0,
+            height: 0,
+            frame_rate: 24.0,
+            duration: frames as f64 / f64::from(s.sample_rate.hz()),
+            codec: String::new(),
+            offline: None,
+        });
+        let (a, b) = (s.new_clip_id(), s.new_clip_id());
+        if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+            let mut ca = Clip::video(a, "a", vid, 500, 0, 1000);
+            ca.stretch = stretch;
+            let mut cb = Clip::video(b, "b", vid, 100, 1000, 1500);
+            cb.stretch = stretch;
+            pl.clips = vec![ca, cb];
+        }
+        assert_eq!(create_fades(&mut s, t, Range::new(500, 2000), FadeShape::Linear), 1);
+        let c = s.track(t).unwrap().clips();
+        // A has 500 source samples left (2000 - 500 - 1000), B has 100 before its start.
+        assert_eq!(c[0].length, 1500, "stretch {stretch}: outgoing handle");
+        assert_eq!((c[1].start, c[1].source_offset()), (900, 0), "stretch {stretch}: incoming handle");
+    }
+}
+
 fn three_clips() -> (Session, TrackId, [ClipId; 3]) {
     let (mut s, t) = session_with_clip();
     let ids = [s.new_clip_id(), s.new_clip_id(), s.new_clip_id()];
