@@ -125,6 +125,66 @@ fn soloing_an_empty_vca_mutes_nothing() {
     assert_eq!(shaded(&s), [false, false], "track, VCA");
 }
 
+/// A member of a VCA that is not soloed itself, reaching an aux through its output or through a send, next to a
+/// track the solo mutes. Tracks: member, other, aux, VCA. The solo goes on the member, or on its VCA.
+fn member_through_aux(by_send: bool, solo_vca: bool) -> Session {
+    let (mut s, member) = session_with_dc(0.5, 4800);
+    add_dc_track(&mut s, 0.5, 4800);
+    let bus = s.add_bus("Verb", ChannelFormat::Stereo);
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, Some("Verb"));
+    s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
+    let vca = s.add_track(TrackKind::Vca, ChannelFormat::Mono, Some("VCA"));
+    let tr = s.track_mut(member).unwrap();
+    tr.mixer.vca = Some(vca.0);
+    if by_send {
+        tr.mixer.output = Route::None;
+        let mut send = soundcraft_model::SendSlot::new(Route::Bus(bus));
+        send.level_db = 0.0; // a new send sits at -144 dB
+        tr.mixer.sends[0] = Some(send);
+    } else {
+        tr.mixer.output = Route::Bus(bus);
+    }
+    if solo_vca {
+        s.track_mut(vca).unwrap().mixer.solo = true;
+    } else {
+        s.track_mut(member).unwrap().mixer.solo = true;
+    }
+    s
+}
+
+#[test]
+fn a_soloed_vcas_member_feeds_its_aux_through_the_output() {
+    let (vca, own) = (member_through_aux(false, true), member_through_aux(false, false));
+    let out = render_range(&vca, Range::new(0, 4800), 512);
+    assert!(out[0][2000].abs() > 0.1, "the aux carries the member: {}", out[0][2000]);
+    // Soloing the VCA sounds as soloing the member itself.
+    assert_eq!(out, render_range(&own, Range::new(0, 4800), 512));
+    assert_eq!(shaded(&vca), [false, true, false, false], "member, other, aux, VCA");
+    assert_eq!(shaded(&own), shaded(&vca));
+}
+
+#[test]
+fn a_soloed_vcas_member_feeds_its_send_return() {
+    let (vca, own) = (member_through_aux(true, true), member_through_aux(true, false));
+    let out = render_range(&vca, Range::new(0, 4800), 512);
+    assert!(out[0][2000].abs() > 0.1, "the send return carries the member: {}", out[0][2000]);
+    assert_eq!(out, render_range(&own, Range::new(0, 4800), 512));
+    assert_eq!(shaded(&vca), [false, true, false, false], "member, other, aux, VCA");
+    assert_eq!(shaded(&own), shaded(&vca));
+}
+
+#[test]
+fn an_inactive_track_does_not_solo_its_aux() {
+    // An inactive track plays nothing, so it is no solo source for an aux, whether soloed itself or through its VCA.
+    // `other` keeps the solo on.
+    for solo_vca in [false, true] {
+        let mut s = member_through_aux(false, solo_vca);
+        s.tracks[1].mixer.solo = true;
+        s.tracks[0].inactive = true;
+        assert_eq!(shaded(&s), [false, false, true, false], "solo_vca {solo_vca}: member, other, aux, VCA");
+    }
+}
+
 #[test]
 fn mono_center_pan_is_minus_3db() {
     let (s, _) = session_with_dc(0.5, 4800);
