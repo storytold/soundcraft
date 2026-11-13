@@ -1117,7 +1117,8 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
         .collect()
 }
 
-#[cfg(test)]
+// Every test here plants a link, so the module and its helper are Unix-only.
+#[cfg(all(test, unix))]
 mod exclusive_tests {
     use super::*;
 
