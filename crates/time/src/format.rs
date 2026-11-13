@@ -88,13 +88,10 @@ pub fn format_length(start: Samples, len: Samples, fmt: TimeFormat, sr: SampleRa
                     continue;
                 }
                 let tpb = m.ticks_per_bar().max(1);
+                // A trailing partial bar is consumed only up to the boundary and counts as one bar.
                 let n = (end - pos).saturating_add(tpb - 1) / tpb;
-                let next = pos.saturating_add(n.saturating_mul(tpb));
-                if next > t1 {
-                    break;
-                }
                 bars = bars.saturating_add(n);
-                pos = next;
+                pos = end;
                 m = map.meter_at_tick(pos);
             }
             let tpb = m.ticks_per_bar().max(1);
@@ -174,6 +171,27 @@ mod tests {
         assert_eq!(f(96_000, 72_000), "1| 0| 000");
         assert_eq!(f(0, 48_000), "0| 2| 000");
         assert_eq!(f(0, 120_000), "1| 1| 000");
+    }
+
+    #[test]
+    fn bars_beats_length_starting_inside_bar_before_meter_change() {
+        let (sr, mut map, rate) = ctx();
+        map.set_meter(3840, 3, 4).unwrap();
+        let f = |start, len| format_length(start, len, TimeFormat::BarsBeats, sr, &map, rate);
+        // Ticks 960..4320: the partial 4/4 bar counts as one bar, then 480 ticks of 3/4.
+        assert_eq!(f(24_000, 84_000), "1| 0| 480");
+        // Ticks 960..3840 end exactly at the boundary.
+        assert_eq!(f(24_000, 72_000), "1| 0| 000");
+    }
+
+    #[test]
+    fn bars_beats_length_crossing_multiple_meter_changes() {
+        let (sr, mut map, rate) = ctx();
+        map.set_meter(3840, 3, 4).unwrap();
+        map.set_meter(6720, 2, 4).unwrap();
+        let f = |start, len| format_length(start, len, TimeFormat::BarsBeats, sr, &map, rate);
+        // Ticks 960..8000: a partial 4/4 bar, one 3/4 bar, then 1280 ticks of 2/4.
+        assert_eq!(f(24_000, 176_000), "2| 1| 320");
     }
 
     #[test]
