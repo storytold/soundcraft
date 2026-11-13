@@ -1,5 +1,5 @@
 use super::*;
-use soundcraft_audio_io::AudioBuffer;
+use craft_audio::AudioBuffer;
 use soundcraft_model::{ChannelFormat, Clip, SourceAudio, SourceId, TrackKind};
 use soundcraft_time::Range;
 use std::sync::Arc;
@@ -263,6 +263,18 @@ fn retargeting_a_send_keeps_its_settings() {
     assert_eq!((sl.level_db, sl.pan, sl.mute, sl.pre_fader), (-9.0, 0.5, true, true));
 }
 
+#[test]
+fn a_new_send_starts_at_the_documented_level() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 1, "name": "Vox", "format": "mono"})).unwrap();
+    e.execute("mix.new_bus", &json!({"name": "Rev"})).unwrap();
+    e.execute("mix.send", &json!({"track": "Vox", "bus": "Rev"})).unwrap();
+    let level = e.session().tracks[0].mixer.sends[0].as_ref().unwrap().level_db;
+    assert_eq!(level, -144.0);
+    let doc = crate::cmd::command_specs().iter().find(|c| c.id == "mix.send").unwrap().params;
+    assert!(doc.contains("level_db?: -144..12, default -144 (silent;"), "{doc}");
+}
+
 fn grouped_demo() -> Engine {
     let mut e = crate::demo::demo_engine();
     e.execute("mix.volume", &json!({"tracks": [3], "db": 0.0})).unwrap();
@@ -292,6 +304,28 @@ fn volume_absolute_on_a_whole_group_keeps_offsets() {
     e.session_mut().track_mut(TrackId(6)).unwrap().mixer.volume_db = -2.0;
     e.execute("mix.volume", &json!({"tracks": [3, 6], "db": -10.0})).unwrap();
     assert_eq!(volumes(&e), [-10.0, -12.0]);
+}
+
+/// The fader stops at +12 dB; the reply says what each track got, and when a value was held at a stop.
+#[test]
+fn volume_held_at_the_fader_stop_is_reported() {
+    let mut e = grouped_demo();
+    let r = e.execute("mix.volume", &json!({"tracks": [3], "db": -6.0})).unwrap();
+    assert_eq!((r["volumes"].clone(), r["clamped"].clone()), (json!([{"track": 3, "db": -6.0}]), json!(false)));
+    let r = e.execute("mix.volume", &json!({"tracks": [3], "db": 15.0})).unwrap();
+    assert_eq!((r["volumes"].clone(), r["clamped"].clone()), (json!([{"track": 3, "db": 12.0}]), json!(true)));
+    assert_eq!(volumes(&e), [12.0, 12.0]);
+    // A group member held at the stop counts too.
+    let mut e = grouped_demo();
+    e.session_mut().track_mut(TrackId(6)).unwrap().mixer.volume_db = 6.0;
+    let r = e.execute("mix.volume", &json!({"tracks": [3], "db": 10.0})).unwrap();
+    assert_eq!(r["clamped"], json!(true));
+    assert_eq!(volumes(&e), [10.0, 12.0]);
+    // Both grouped targets are listed, each at the value it ended with.
+    let mut e = grouped_demo();
+    e.session_mut().track_mut(TrackId(6)).unwrap().mixer.volume_db = -2.0;
+    let r = e.execute("mix.volume", &json!({"tracks": [3, 6], "db": -10.0})).unwrap();
+    assert_eq!(r["volumes"], json!([{"track": 3, "db": -10.0}, {"track": 6, "db": -12.0}]));
 }
 
 #[test]
@@ -344,4 +378,143 @@ fn insert_and_send_reject_invalid_slot() {
     assert_eq!(r["slot"], 0);
     let r = e.execute("mix.send", &json!({"track": "Gtr", "bus": "Verb"})).unwrap();
     assert_eq!(r["slot"], 0);
+}
+
+#[test]
+fn indexed_envelope_lookup_matches_the_walk() {
+    let envs: [Vec<(i64, f32)>; 5] = [
+        Vec::new(),
+        vec![(100, -3.0)],
+        vec![(0, 0.0), (100, -6.0), (100, 3.0), (250, -12.0), (900, 1.0)],
+        // Out of order, as a hand-edited session file may hold.
+        vec![(500, -1.0), (100, -6.0), (700, 4.0), (300, 2.0), (700, -9.0), (50, 0.5)],
+        (0..200).map(|i| ((i * 37) % 1000, (i as f32 * 0.7).sin() * 12.0)).collect(),
+    ];
+    for env in &envs {
+        let lookup = EnvLookup::new(env);
+        for at in -20..1100 {
+            assert_eq!(lookup.db(at).to_bits(), env_db(env, at).to_bits(), "{env:?} at {at}");
+        }
+    }
+}
+
+#[test]
+fn clip_gain_to_volume_with_a_large_envelope_stays_fast() {
+    let (mut e, t) = tone_session(&[]);
+    let clip = e.session().track(t).unwrap().clips()[0].id;
+    let n = 200_000i64;
+    let c = e.session_mut().find_clip_mut(clip).unwrap();
+    c.length = n * 5 + 10;
+    c.gain_env = (0..n).map(|i| (i * 5, if i % 2 == 0 { -6.0 } else { 0.0 })).collect();
+    let start = std::time::Instant::now();
+    e.execute("automation.clip_gain_to_volume", &json!({"track": t.0, "start": 0, "end": n * 5 + 10})).unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+    let lane = e.session().track(t).unwrap().lane(&AutoParam::Volume).unwrap();
+    assert!(lane.points.len() as i64 >= n);
+}
+
+/// Live input toggles stay outside document history in both enabled and disabled states.
+#[test]
+fn live_input_states_are_transient_and_survive_document_history() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let track = e.session().tracks[0].id;
+    e.mark_clean();
+    let history = e.undo_history();
+
+    e.execute("mix.record_arm", &json!({"tracks": [track.0], "value": true})).unwrap();
+    e.execute("track.set_record_to_input_only", &json!({})).unwrap();
+    let mixer = &e.session().track(track).unwrap().mixer;
+    assert!(mixer.record_arm && mixer.input_monitor);
+    assert!(!e.is_dirty(), "live input state is not a document change");
+    assert_eq!(e.undo_history(), history, "live input state has no Undo entry");
+
+    // A later document edit captures a full Session snapshot. Undoing or redoing it must not
+    // resurrect the live state that happened to be present when that snapshot was taken.
+    e.execute("mix.volume", &json!({"tracks": [track.0], "db": -6.0})).unwrap();
+    e.execute("mix.record_arm", &json!({"tracks": [track.0], "value": false})).unwrap();
+    e.execute("mix.input_monitor", &json!({"tracks": [track.0], "value": false})).unwrap();
+    assert!(e.is_dirty());
+
+    assert!(e.undo());
+    let mixer = &e.session().track(track).unwrap().mixer;
+    assert!(!mixer.record_arm && !mixer.input_monitor);
+    assert!(!e.is_dirty(), "undo returned to the saved document");
+
+    assert!(e.redo());
+    let mixer = &e.session().track(track).unwrap().mixer;
+    assert!(!mixer.record_arm && !mixer.input_monitor);
+    assert!(e.is_dirty());
+
+    // Live states that are enabled after another document edit survive both directions too.
+    e.execute("mix.volume", &json!({"tracks": [track.0], "db": -12.0})).unwrap();
+    e.execute("mix.record_arm", &json!({"tracks": [track.0], "value": true})).unwrap();
+    e.execute("mix.input_monitor", &json!({"tracks": [track.0], "value": true})).unwrap();
+
+    assert!(e.undo());
+    let mixer = &e.session().track(track).unwrap().mixer;
+    assert!(mixer.record_arm && mixer.input_monitor);
+
+    assert!(e.redo());
+    let mixer = &e.session().track(track).unwrap().mixer;
+    assert!(mixer.record_arm && mixer.input_monitor);
+}
+
+/// Returning to a saved point stays clean with independently enabled live flags on each track.
+#[test]
+fn live_input_states_keep_saved_history_points_clean() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 2})).unwrap();
+    let (a, b) = (e.session().tracks[0].id, e.session().tracks[1].id);
+    e.mark_clean();
+    e.execute("mix.volume", &json!({"tracks": [a.0], "db": -6.0})).unwrap();
+    e.execute("mix.record_arm", &json!({"tracks": [a.0], "value": true})).unwrap();
+    e.execute("mix.input_monitor", &json!({"tracks": [b.0], "value": true})).unwrap();
+    assert!(e.undo());
+    assert!(!e.is_dirty(), "live flags cannot dirty the saved point reached by Undo");
+    for redo in [true, false, true] {
+        assert!(if redo { e.redo() } else { e.undo() });
+        let a = &e.session().track(a).unwrap().mixer;
+        let b = &e.session().track(b).unwrap().mixer;
+        assert!(a.record_arm && !a.input_monitor);
+        assert!(!b.record_arm && b.input_monitor);
+        assert_eq!(e.is_dirty(), redo);
+    }
+    e.mark_clean();
+    e.execute("mix.record_arm", &json!({"tracks": [a.0], "value": false})).unwrap();
+    e.execute("mix.input_monitor", &json!({"tracks": [b.0], "value": false})).unwrap();
+    assert!(!e.is_dirty());
+    assert!(e.undo());
+    assert!(e.is_dirty());
+    assert!(e.redo());
+    assert!(!e.is_dirty(), "Redo to a saved armed snapshot stays clean after disarming");
+}
+
+/// Restoring a missing track never resurrects its historical arm or monitoring flags.
+#[test]
+fn live_input_states_of_restored_tracks_start_disabled() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 2})).unwrap();
+    let (a, b) = (e.session().tracks[0].id, e.session().tracks[1].id);
+    e.execute("mix.record_arm", &json!({"tracks": [a.0], "value": true})).unwrap();
+    e.execute("mix.input_monitor", &json!({"tracks": [b.0], "value": true})).unwrap();
+    e.execute("track.delete", &json!({"tracks": [a.0]})).unwrap();
+    assert!(e.undo());
+    let mixer = &e.session().track(a).unwrap().mixer;
+    assert!(!mixer.record_arm && !mixer.input_monitor);
+    assert!(e.session().track(b).unwrap().mixer.input_monitor);
+    assert!(e.redo());
+    assert!(e.undo());
+    assert!(!e.session().track(a).unwrap().mixer.record_arm);
+
+    e.execute("track.new", &json!({})).unwrap();
+    let c = e.session().tracks.last().unwrap().id;
+    e.execute("mix.record_arm", &json!({"tracks": [c.0], "value": true})).unwrap();
+    e.execute("mix.input_monitor", &json!({"tracks": [c.0], "value": true})).unwrap();
+    assert!(e.undo());
+    assert!(e.session().track(c).is_none());
+    assert!(e.redo());
+    let mixer = &e.session().track(c).unwrap().mixer;
+    assert!(!mixer.record_arm && !mixer.input_monitor);
+    assert!(e.session().track(b).unwrap().mixer.input_monitor);
 }

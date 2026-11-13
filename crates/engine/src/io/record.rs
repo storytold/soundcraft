@@ -37,7 +37,7 @@ pub struct DecodedTake {
     pub path: PathBuf,
     /// The take's audio, resampled to the session rate it was decoded for — and whether it was
     /// resampled, which marks the placed source unsaved — or the error that stopped the decode.
-    pub audio: Result<(soundcraft_audio_io::AudioBuffer, bool), String>,
+    pub audio: Result<(craft_audio::AudioBuffer, bool), String>,
 }
 
 /// Reads, decodes and resamples one recorded take for a session at `rate`. Thread-safe and slow:
@@ -46,7 +46,7 @@ pub struct DecodedTake {
 pub fn decode_take(track: TrackId, path: PathBuf, rate: u32) -> DecodedTake {
     let audio = (|| {
         let bytes = read_file(&path).map_err(|err| format!("{}: {err}", path.display()))?;
-        let (_, buf) = soundcraft_audio_io::decode(&bytes, None).map_err(|err| format!("{}: {err}", path.display()))?;
+        let (_, buf) = craft_audio::decode(&bytes, None).map_err(|err| format!("{}: {err}", path.display()))?;
         let mut buf = buf;
         let resampled = buf.sample_rate != rate;
         if resampled && buf.sample_rate > 0 {
@@ -94,8 +94,7 @@ fn add_recording_in(
     let before = e.session_arc();
     let mut out = Vec::new();
     for (tid, path) in takes {
-        let read =
-            read_file(&path).and_then(|b| soundcraft_audio_io::decode(&b, None).map_err(|err| EngineError::Io(format!("{}: {err}", path.display()))));
+        let read = read_file(&path).and_then(|b| craft_audio::decode(&b, None).map_err(|err| EngineError::Io(format!("{}: {err}", path.display()))));
         let Ok((_, buf)) = read.inspect_err(|err| e.message(err.to_string())) else { continue };
         let hz = e.session().sample_rate.hz();
         let resampled = buf.sample_rate != hz;
@@ -119,7 +118,7 @@ fn place_take(
     e: &mut Engine,
     tid: TrackId,
     path: &PathBuf,
-    buf: soundcraft_audio_io::AudioBuffer,
+    buf: craft_audio::AudioBuffer,
     resampled: bool,
     start: Samples,
     pass: Option<Samples>,
@@ -193,7 +192,7 @@ mod record_tests {
     }
 
     fn write_take(path: &Path, frames: usize) {
-        let mut bytes = soundcraft_audio_io::wav_float_header(1, 48_000, frames as u64).unwrap();
+        let mut bytes = craft_audio::wav_float_header(48_000, 1, frames as u64).unwrap();
         bytes.extend((0..frames).flat_map(|i| (i as f32 / frames as f32 - 0.5).to_le_bytes()));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
