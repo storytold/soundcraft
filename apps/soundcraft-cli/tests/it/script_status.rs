@@ -23,7 +23,7 @@ impl Drop for Scratch {
 }
 
 fn invoke(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_soundcraft-cli")).current_dir(dir).env("SOUNDCRAFT_NO_PREFS", "1").args(args).output().unwrap()
+    Command::new(crate::common::soundcraft_cli_binary()).current_dir(dir).env("SOUNDCRAFT_NO_PREFS", "1").args(args).output().unwrap()
 }
 
 #[test]
