@@ -62,11 +62,13 @@ try {
   assert(ui.ok && typeof ui.value === 'object', `uiInspect() resolves with an object: ${JSON.stringify(ui).slice(0, 200)}`)
 
   // execute changes the session, and docInspect shows it.
-  const before = JSON.stringify((await call('docInspect')).value)
+  const docBefore = await call('docInspect')
+  assert(docBefore.ok, `docInspect() resolves before execute: ${JSON.stringify(docBefore).slice(0, 200)}`)
   const ran = await call('execute', 'track.new', {})
   assert(ran.ok, `execute('track.new') resolves: ${JSON.stringify(ran).slice(0, 300)}`)
-  const after = JSON.stringify((await call('docInspect')).value)
-  assert.notEqual(before, after, 'docInspect() changes after execute(track.new)')
+  const docAfter = await call('docInspect')
+  assert(docAfter.ok, `docInspect() resolves after execute: ${JSON.stringify(docAfter).slice(0, 200)}`)
+  assert.notEqual(JSON.stringify(docBefore.value), JSON.stringify(docAfter.value), 'docInspect() changes after execute(track.new)')
 
   // Failures reject with an Error that names what went wrong.
   const unknownCommand = await call('execute', 'no.such.command', {})
