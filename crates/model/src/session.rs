@@ -377,6 +377,9 @@ pub struct Session {
     /// Performance). Independent of undo so a restore survives later edits.
     #[serde(default)]
     pub midi_originals: std::collections::BTreeMap<u64, soundcraft_midi::Sequence>,
+    /// The recorded silence that `edit.room_tone_fill` fills gaps with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_tone: Option<crate::RoomTone>,
     #[serde(skip)]
     pub pool: SourcePool,
     /// The folder relative source paths point into: where the session was opened or last saved.
@@ -415,6 +418,7 @@ impl Session {
             next_id: 1,
             comments: String::new(),
             midi_originals: std::collections::BTreeMap::new(),
+            room_tone: None,
             pool: SourcePool::default(),
             folder: None,
         };
@@ -839,6 +843,8 @@ impl Session {
         self.outputs.iter_mut().for_each(|o| truncate_chars(&mut o.name, MAX_NAME_CHARS));
         self.groups.iter_mut().for_each(|g| truncate_chars(&mut g.name, MAX_NAME_CHARS));
         self.sources.iter_mut().for_each(|s| truncate_chars(&mut s.name, MAX_NAME_CHARS));
+        // A room tone must play part of a source the session still lists.
+        self.room_tone = self.room_tone.and_then(|t| self.sources.iter().find(|s| s.id == t.source).and_then(|s| t.sanitized(s.frames)));
         // Drop performances whose clip no longer exists anywhere (any playlist).
         let clip_ids: std::collections::BTreeSet<u64> =
             self.tracks.iter().flat_map(|t| t.playlists.iter().flat_map(|p| p.clips.iter().map(|c| c.id.0))).collect();
@@ -1276,6 +1282,30 @@ mod tests {
         assert_eq!(tr.active_playlist, 0);
         assert_eq!(tr.mixer.volume_db, 0.0);
         assert!(s.next_id > t.0);
+    }
+
+    #[test]
+    fn a_loaded_room_tone_must_play_a_listed_source() {
+        let mut s = Session::default();
+        let id = SourceId(s.alloc());
+        s.sources.push(crate::Source {
+            id,
+            name: "Tone".into(),
+            path: "Tone.wav".into(),
+            channels: 1,
+            frames: 1000,
+            sample_rate: 48_000,
+            format: crate::FileFormat::Wav,
+            time_reference: 0,
+            unsaved: false,
+        });
+        s.room_tone = Some(crate::RoomTone { source: id, offset: 400, length: 5000, gain_db: -3.0 });
+        let loaded = Session::from_json(&s.to_json().unwrap()).unwrap();
+        assert_eq!(loaded.room_tone, Some(crate::RoomTone { source: id, offset: 400, length: 600, gain_db: -3.0 }), "cut to the source");
+        s.room_tone = Some(crate::RoomTone { source: SourceId(999), offset: 0, length: 10, gain_db: 0.0 });
+        assert_eq!(Session::from_json(&s.to_json().unwrap()).unwrap().room_tone, None, "an unknown source is dropped");
+        s.room_tone = None;
+        assert!(!s.to_json().unwrap().contains("room_tone"), "sessions without one are written as before");
     }
 
     #[test]

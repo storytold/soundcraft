@@ -252,6 +252,14 @@ pub fn tree() -> Vec<MenuNode> {
         let at = clip.children.iter().position(|n| n.path == "Clip > Identify Sync Point").map_or(clip.children.len(), |i| i + 1);
         clip.children.insert(at, MenuNode { label: "Remove Sync Point".into(), path: "Clip > Remove Sync Point".into(), children: Vec::new() });
     }
+    // Not in the incumbent catalog: room tone fills gaps left by edits (and by Strip Silence) with
+    // recorded silence, so it sits right under Strip Silence.
+    if let Some(edit) = roots.iter_mut().find(|n| n.path == "Edit") {
+        let at = edit.children.iter().position(|n| n.path == "Edit > Strip Silence").map_or(edit.children.len(), |i| i + 1);
+        let leaf = |label: &str| MenuNode { label: label.into(), path: format!("Edit > Room Tone > {label}"), children: Vec::new() };
+        let children = vec![leaf("Set Room Tone"), leaf("Fill Gaps with Room Tone"), leaf("Clear Room Tone")];
+        edit.children.insert(at, MenuNode { label: "Room Tone".into(), path: "Edit > Room Tone".into(), children });
+    }
     // Not in the incumbent catalog, but the only UI path to an empty MIDI clip (#282).
     // It creates a clip rather than acting on the selected ones, so it leads the Clip menu.
     insert_path(&mut roots, "Clip > New MIDI Clip");
