@@ -4,7 +4,8 @@
 //! a key equivalent (a real key-down through `-[NSMenu performKeyEquivalent:]`) must reach egui
 //! as the input its key-down would have been, and a click (`-[NSMenu
 //! performActionForItemAtIndex:]`) must run as a click, also when the click is Return inside the
-//! open menu.
+//! open menu. In a focused text field, ⌘C, ⌘X, ⌘V and ⌘Z edit the text, and the session's own
+//! Undo doesn't run.
 
 // The app's own module, built into this test.
 #[cfg(target_os = "macos")]
@@ -127,6 +128,118 @@ fn main() {
             }
         }
     }
+    /// Make `event` AppKit's current event, as the run loop does before dispatching it.
+    fn dequeue(nsapp: &NSApplication, event: &NSEvent) -> Retained<NSEvent> {
+        nsapp.postEvent_atStart(event, true);
+        let mode = NSString::from_str("kCFRunLoopDefaultMode");
+        let got = nsapp.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, None, &mode, true).expect("the posted event");
+        assert_eq!(got.r#type(), event.r#type());
+        got
+    }
+    /// A key-down of `chars` (virtual key `code`) with `flags`.
+    fn key_down(chars: &str, code: u16, flags: NSEventModifierFlags, repeat: bool) -> Retained<NSEvent> {
+        let s = NSString::from_str(chars);
+        NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown,
+            NSPoint::new(0.0, 0.0),
+            flags,
+            0.0,
+            0,
+            None,
+            &s,
+            &s,
+            repeat,
+            code,
+        )
+        .expect("a key event")
+    }
+
+    /// In a focused text field the menu's keys edit the text, as they do without the menu bar:
+    /// ⌘C copies the selection, ⌘X cuts it, ⌘V asks for the clipboard and ⌘Z undoes the cut in
+    /// the field, while the session's own Undo stays where it was (shortcuts stand aside while a
+    /// text field has the keyboard).
+    fn text_field_keys(nsapp: &NSApplication, ctx: &egui::Context, app: &mut SoundApp, menu: &mut NativeMenu, edit: &NSMenu) {
+        let items = || (0..edit.numberOfItems()).filter_map(|i| edit.itemAtIndex(i));
+        let item = |title: &str| items().find(|it| it.title().to_string() == title).unwrap_or_else(|| panic!("no Edit › {title}"));
+        let (copy, cut, paste) = (item("Copy"), item("Cut"), item("Paste"));
+        let bar = nsapp.mainMenu().expect("a main menu");
+        let press = |chars: &str, code: u16| bar.performKeyEquivalent(&dequeue(nsapp, &key_down(chars, code, NSEventModifierFlags::Command, false)));
+        let field = egui::Id::unique("native_menu_appkit text field");
+        // One frame as `main.rs` runs it, with a focused text field over the app.
+        let typing = |app: &mut SoundApp, menu: &mut NativeMenu, text: &mut String| {
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+            let mut raw = egui::RawInput { screen_rect: Some(rect), ..Default::default() };
+            menu.raw_input(ctx, &mut raw);
+            app.raw_input_hook(ctx, &mut raw);
+            let mut out = ctx.run_ui(raw, |ui| {
+                menu.process(app);
+                app.logic(ui.ctx());
+                app.ui(ui);
+                egui::Area::new(egui::Id::unique("native_menu_appkit text field area")).show(ui.ctx(), |ui| {
+                    ui.add(egui::TextEdit::singleline(text).id(field)).request_focus();
+                });
+                menu.sync(app);
+            });
+            out.textures_delta.clear();
+            let commands = out.viewport_output.remove(&egui::ViewportId::ROOT).map(|v| v.commands).unwrap_or_default();
+            (out.platform_output.commands, commands)
+        };
+        // Frames, each with the field (one without it would take its focus), until the menu has
+        // refreshed `item` to enabled, for at most five seconds.
+        let ready = |app: &mut SoundApp, menu: &mut NativeMenu, text: &mut String, item: &objc2_app_kit::NSMenuItem| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            typing(app, menu, text);
+            while !item.isEnabled() {
+                assert!(std::time::Instant::now() < until, "{} never became enabled", item.title());
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                typing(app, menu, text);
+            }
+        };
+
+        // A session edit, so Edit › Undo is enabled and would undo something. Its title follows
+        // the last edit ("Undo …"), so find it by its key equivalent.
+        app.engine.execute("track.new", &json!({"name": "Undo me", "format": "mono"})).expect("a new track");
+        let session_undo = app.engine.undo_label().map(str::to_owned);
+        assert!(session_undo.is_some(), "the session has something to undo");
+        let undo = items()
+            .find(|it| it.keyEquivalent().to_string() == "z" && it.keyEquivalentModifierMask() == NSEventModifierFlags::Command)
+            .expect("Edit › Undo is ⌘Z");
+        let tracks = app.engine.session().tracks.len();
+
+        let mut text = String::from("hello world");
+        for _ in 0..3 {
+            typing(app, menu, &mut text);
+        }
+        assert!(ctx.egui_wants_keyboard_input(), "the field has the keyboard");
+        // Select "world", as a drag over it would.
+        let mut state = egui::text_edit::TextEditState::load(ctx, field).expect("the field has been shown");
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(6), egui::text::CCursor::new(11))));
+        state.store(ctx, field);
+
+        ready(app, menu, &mut text, &copy);
+        assert!(press("c", 8), "⌘C in the field");
+        let (output, _) = typing(app, menu, &mut text);
+        assert!(output.contains(&egui::OutputCommand::CopyText("world".into())), "⌘C copies the field's selection: {output:?}");
+
+        ready(app, menu, &mut text, &cut);
+        assert!(press("x", 7), "⌘X in the field");
+        let (output, _) = typing(app, menu, &mut text);
+        assert_eq!(text, "hello ", "⌘X cut the field's selection");
+        assert!(output.contains(&egui::OutputCommand::CopyText("world".into())), "the cut text goes to the clipboard: {output:?}");
+
+        ready(app, menu, &mut text, &paste);
+        assert!(press("v", 9), "⌘V in the field");
+        let (_, commands) = typing(app, menu, &mut text);
+        assert!(commands.contains(&egui::ViewportCommand::RequestPaste), "⌘V asks the window for the clipboard: {commands:?}");
+
+        ready(app, menu, &mut text, &undo);
+        assert!(press("z", 6), "⌘Z is Edit › Undo's key equivalent");
+        typing(app, menu, &mut text);
+        assert_eq!(text, "hello world", "⌘Z undid the cut in the field");
+        assert_eq!(app.engine.undo_label().map(str::to_owned), session_undo, "the session's Undo didn't run");
+        assert_eq!(app.engine.session().tracks.len(), tracks, "the new track is still there");
+    }
+
     let aliases = menus::ui_aliases();
     let mut shown = 0;
     for (i, root) in menus::tree().iter().enumerate() {
@@ -158,30 +271,7 @@ fn main() {
     let hide = app_menu.itemAtIndex(index(&app_menu, "Hide SoundCraft")).expect("Hide");
     assert!(hide.keyEquivalent().to_string().is_empty(), "⌘H stays Heal Separation");
 
-    // Make `event` AppKit's current event, as the run loop does before dispatching it.
-    let dequeue = |event: &NSEvent| {
-        nsapp.postEvent_atStart(event, true);
-        let mode = NSString::from_str("kCFRunLoopDefaultMode");
-        let got = nsapp.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, None, &mode, true).expect("the posted event");
-        assert_eq!(got.r#type(), event.r#type());
-        got
-    };
-    let key_down = |chars: &str, code: u16, flags: NSEventModifierFlags, repeat: bool| {
-        let s = NSString::from_str(chars);
-        NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-            NSEventType::KeyDown,
-            NSPoint::new(0.0, 0.0),
-            flags,
-            0.0,
-            0,
-            None,
-            &s,
-            &s,
-            repeat,
-            code,
-        )
-        .expect("a key event")
-    };
+    let dequeue = |event: &NSEvent| dequeue(&nsapp, event);
     let other = || {
         NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
             NSEventType::ApplicationDefined,
@@ -296,6 +386,8 @@ fn main() {
     assert!(bar.performKeyEquivalent(&dequeue(&key_down("x", 7, NSEventModifierFlags::Command, false))), "⌘X is Edit › Cut's key equivalent");
     let (events, _) = frame(&mut app, &mut menu);
     assert_eq!(events, [egui::Event::Cut], "⌘X is a Cut event");
+
+    text_field_keys(&nsapp, &ctx, &mut app, &mut menu, &edit);
 
     println!("native_menu_appkit: ok");
 }
