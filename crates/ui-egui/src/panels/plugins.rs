@@ -51,11 +51,9 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 });
                 if instrument && soundcraft_mix::is_third_party(&ins.plugin) {
-                    // A hosted instrument keeps its sounds and settings in its own editor.
-                    ui.label(egui::RichText::new("Load and edit sounds in the plugin's own editor.").color(Tokens::current().text_dim));
-                    return;
-                }
-                if instrument && ins.plugin == crate::sampler_window::SAMPLER {
+                    // On Linux, VST3 editors may be hosted via X11; still show parameter UI as fallback.
+                    ui.label(egui::RichText::new("Some parameters below; use the plugin editor if available.").color(Tokens::current().text_dim));
+                } else if instrument && ins.plugin == crate::sampler_window::SAMPLER {
                     crate::sampler_window::sample_strip(app, ui, tid, &ins);
                     ui.add_space(4.0);
                 }

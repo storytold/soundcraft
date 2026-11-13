@@ -146,13 +146,24 @@ fn plugin_search(ui: &mut Ui, search: &MenuSearch, instruments: bool) -> Option<
     if clap.is_none() || vst3.is_none() {
         ui.separator();
         ui.horizontal(|ui| {
-            if clap.is_none() && ui.small_button("Scan CLAP").clicked() {
-                soundcraft_clap_host::scan();
+            if ui.small_button("Scan plugins").clicked() {
+                if clap.is_none() {
+                    soundcraft_clap_host::scan();
+                }
+                if vst3.is_none() {
+                    soundcraft_vst3_host::scan();
+                }
             }
-            if vst3.is_none() && ui.small_button("Scan VST3").clicked() {
-                soundcraft_vst3_host::scan();
+            if vst3.is_none() {
+                // Keep compatibility text
             }
         });
+    } else if clap.is_some() || vst3.is_some() {
+        ui.separator();
+        if ui.small_button("Rescan plugins").clicked() {
+            soundcraft_clap_host::rescan();
+            soundcraft_vst3_host::rescan();
+        }
     }
     picked.map(|i| built_in.get(i).map_or_else(|| hosted[i - built_in.len()].0.id.clone(), |p| p.id.to_string()))
 }
