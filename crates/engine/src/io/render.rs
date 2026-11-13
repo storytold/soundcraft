@@ -187,6 +187,33 @@ mod name_tests {
     }
 
     #[test]
+    fn a_refused_midi_file_leaves_the_session_untouched() {
+        // Track 1 fits; track 2 is longer than a day. Before the import is refused, nothing of
+        // track 1, nor the file's tempo and meter changes, may have reached the session.
+        let note = |length| soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length };
+        let short = soundcraft_midi::Sequence { notes: vec![note(960)], ..Default::default() };
+        let held = soundcraft_midi::Sequence { notes: vec![note((1 << 28) - 1)], ..Default::default() };
+        let smf = soundcraft_midi::Smf {
+            tracks: vec![
+                soundcraft_midi::SmfTrack { name: "fits".into(), sequence: short },
+                soundcraft_midi::SmfTrack { name: "too long".into(), sequence: held },
+            ],
+            tempos: vec![(0, 91.0)],
+            meters: vec![(0, 7, 8)],
+            ..Default::default()
+        };
+        let mut e = Engine::default();
+        let before = e.session().clone();
+        let (revision, dirty) = (e.revision, e.is_dirty());
+        let err = import_midi_bytes(&mut e, &soundcraft_midi::write_smf(&smf).unwrap(), 0, true).unwrap_err();
+        assert!(err.to_string().contains("MIDI track 2: longer than 24 hours"), "{err}");
+        assert_eq!(e.session().tracks.len(), before.tracks.len());
+        assert_eq!(e.session().tempo, before.tempo);
+        assert_eq!(*e.session(), before);
+        assert_eq!((e.revision, e.is_dirty()), (revision, dirty), "a refused file is not an edit");
+    }
+
+    #[test]
     fn midi_with_more_meter_changes_than_scores_have_is_refused() {
         let note = soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 };
         let sequence = soundcraft_midi::Sequence { notes: vec![note], ..Default::default() };
