@@ -324,11 +324,15 @@ fn position_param_raw(e: &Engine, cmd: &str, p: &Value, key: &str) -> Result<Opt
     Err(bad(cmd, format!("`{key}` must be samples, {{seconds}}, or a time string")))
 }
 
-/// Range from `start`/`end` params, else the edit selection.
+/// Range from `start`/`end`/`length` params. A missing `start` defaults to the edit selection start;
+/// with neither `end` nor `length` either, the whole edit selection is used.
 pub fn range_param(e: &Engine, cmd: &str, p: &Value) -> Result<Range> {
-    let st = position_param(e, cmd, p, "start")?;
+    let mut st = if p.get("start").is_some_and(Value::is_null) { None } else { position_param(e, cmd, p, "start")? };
     let en = position_param(e, cmd, p, "end")?;
     let len = position_param(e, cmd, p, "length")?;
+    if st.is_none() && (en.is_some() || len.is_some()) {
+        st = Some(e.session().edit.selection.start);
+    }
     match (st, en, len) {
         (Some(a), Some(b), _) => Ok(Range::new(a, b)),
         (Some(a), None, Some(l)) => Ok(Range::new(a, a.saturating_add(l))),
@@ -343,7 +347,10 @@ pub fn clip_id(p: &Value, cmd: &str) -> Result<ClipId> {
 
 pub fn clip_ids_param(e: &Engine, p: &Value) -> Vec<ClipId> {
     if let Some(arr) = p.get("clips").and_then(Value::as_array) {
-        return arr.iter().filter_map(Value::as_u64).map(ClipId).collect();
+        // Each clip once, in the order given: a repeated id would otherwise be processed (and,
+        // for a render, re-rendered into another source) once per repeat.
+        let mut seen = std::collections::HashSet::new();
+        return arr.iter().filter_map(Value::as_u64).map(ClipId).filter(|id| seen.insert(*id)).collect();
     }
     if let Some(n) = p.get("clip").and_then(Value::as_u64) {
         return vec![ClipId(n)];

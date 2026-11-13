@@ -11,7 +11,7 @@ fn source(id: u64, frames: u64) -> Source {
         channels: 1,
         frames,
         sample_rate: 48_000,
-        format: soundcraft_audio_io::FileFormat::Wav,
+        format: soundcraft_model::FileFormat::Wav,
         time_reference: 0,
         unsaved: false,
     }
@@ -220,6 +220,129 @@ fn relative_grid_pastes_keep_the_offset_from_the_grid() {
     assert_eq!(clips(&e, t).last(), Some(&(5 * step, 1000)));
 }
 
+/// A relative paste restores the insertion point even when Cut creates a new boundary there.
+#[test]
+fn relative_grid_cut_pastes_back_at_its_insertion_boundary() {
+    let (mut e, t, _) = long("relative_grid", &[(1_000, 2_000, 0)]);
+    run(&mut e, "view.grid", json!({"format": "clips_markers", "follow_main": false}));
+    run(&mut e, "edit.cut", json!({"tracks": [t.0], "start": 1_500, "end": 2_000}));
+    run(&mut e, "edit.paste", json!({"tracks": [t.0]}));
+    assert_eq!(e.session().edit.selection.start, 1_500);
+    assert!(clips(&e, t).contains(&(1_500, 500)), "{:?}", clips(&e, t));
+}
+
+/// Moving a group excludes all its clips from Clips/Markers snap candidates.
+#[test]
+fn clips_markers_grid_ignores_every_clip_being_moved() {
+    let (mut e, _, ids) = long("grid", &[(1_000, 1_000, 0), (4_000, 500, 2_000)]);
+    e.session_mut().add_marker("Target", soundcraft_model::MarkerKind::Marker, 2_500, 2_500);
+    run(&mut e, "view.grid", json!({"format": "clips_markers", "follow_main": false}));
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "to": 1_000}));
+    assert_eq!([start(&e, ids[0]), start(&e, ids[1])], [1_000, 4_000]);
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "to": 2_200}));
+    assert_eq!(start(&e, ids[0]), 2_500);
+    assert_eq!(start(&e, ids[1]), 5_500);
+}
+
+/// Zero and clamped moves preserve overlaps while off-grid quantization still changes position.
+#[test]
+fn zero_distance_move_keeps_overlapping_material_and_quantize_still_moves() {
+    let (mut e, t, ids) = long("slip", &[(1_000, 1_000, 0), (1_500, 1_000, 2_000)]);
+    let before = material(&e, t);
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0], "by": 0}));
+    assert_eq!(material(&e, t), before);
+
+    run(&mut e, "edit.select", json!({"clips": [ids[0].0]}));
+    run(&mut e, "clip.quantize_to_grid", json!({}));
+    assert_eq!(start(&e, ids[0]), 0);
+
+    let (mut e, t, ids) = long("slip", &[(0, 1_000, 0), (500, 1_000, 2_000)]);
+    let before = material(&e, t);
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0], "by": -1_000}));
+    assert_eq!(material(&e, t), before);
+}
+
+/// A vertical move remains a real edit and snaps its off-grid start on the destination track.
+#[test]
+fn zero_horizontal_grid_move_to_another_track_still_snaps() {
+    let (mut e, _, [_, clip]) = engine("grid");
+    let destination = new_track(&mut e);
+    run(&mut e, "edit.move_clips", json!({"clips": [clip.0], "to": 2_000, "track": destination.0}));
+    let (track, moved) = e.session().find_clip(clip).unwrap();
+    assert_eq!(track, destination);
+    assert_eq!(moved.start, 0);
+}
+
+/// Nudge and quantization must preserve overlapping material when the clip cannot move.
+#[test]
+fn stationary_nudges_and_quantization_preserve_overlaps() {
+    for (command, params) in [("edit.nudge", json!({"direction": -1})), ("clip.quantize_to_grid", json!({}))] {
+        let (mut e, t, ids) = long("slip", &[(0, 1_000, 0), (500, 1_000, 2_000)]);
+        run(&mut e, "edit.select", json!({"clips": [ids[0].0]}));
+        let before = e.session().track(t).unwrap().clips().to_vec();
+        let result = e.execute(command, &params).unwrap();
+        assert_eq!(e.session().track(t).unwrap().clips(), before, "{command}");
+        if command == "edit.nudge" {
+            assert_eq!(result["moved"], 0);
+        }
+    }
+}
+
+/// Every Nudge scale shifts clips and insertion across a tempo change and drop-frame rates.
+#[test]
+fn every_nudge_scale_moves_by_its_selected_increment() {
+    use soundcraft_time::{FrameRate, SampleRate, TICKS_PER_QUARTER};
+    for rate in [FrameRate::Fps30, FrameRate::Fps29_97Drop, FrameRate::Fps59_94Drop] {
+        for at in [48_000, 144_000] {
+            let cases = [
+                (json!("1/4"), if at < 96_000 { 24_000 } else { 32_000 }),
+                (json!({"seconds": 0.5}), 24_000),
+                (json!({"timecode": "5_frames"}), rate.samples_at_frame(5, SampleRate::HZ_48000)),
+                (json!({"feet_frames": "foot"}), rate.samples_at_frame(16, SampleRate::HZ_48000)),
+                (json!({"samples": 100}), 100),
+            ];
+            for (value, expected) in cases {
+                let (mut e, track, ids) = long("slip", &[(at, 1_000, 0)]);
+                e.session_mut().frame_rate = rate;
+                e.session_mut().tempo.set_tempo(TICKS_PER_QUARTER * 4, 90.0).unwrap();
+                run(&mut e, "edit.select", json!({"tracks": [track.0], "clips": [ids[0].0], "start": at, "end": at}));
+                run(&mut e, "view.nudge", json!({"value": value, "follow_main": false}));
+                let result = e.execute("edit.nudge", &json!({"direction": 1})).unwrap();
+                assert_eq!(result["by"], expected, "{rate:?} at {at}");
+                assert_eq!(result["moved"], 1);
+                assert_eq!(start(&e, ids[0]), at + expected);
+                assert_eq!(e.session().edit.selection.start, at + expected);
+            }
+        }
+    }
+}
+
+/// Separation refuses oversized numeric grids before splitting any material.
+#[test]
+fn separate_on_grid_refuses_a_truncated_boundary_set() {
+    let (mut e, t, _) = long("grid", &[(0, 20_000, 0)]);
+    run(&mut e, "view.grid", json!({"value": {"samples": 1}, "follow_main": false}));
+    assert!(e.execute("edit.separate_on_grid", &json!({"tracks": [t.0], "start": 0, "end": 10_002})).is_err());
+    assert_eq!(clips(&e, t), [(0, 20_000)]);
+}
+
+/// Display thinning must never hide an oversized Clips/Markers separation request.
+#[test]
+fn separate_on_grid_refuses_dense_markers_before_changing_clips() {
+    let (mut e, track, _) = long("grid", &[(0, 100_000, 0)]);
+    let s = e.session_mut();
+    for at in 1..=10_001 {
+        s.add_marker("Boundary", soundcraft_model::MarkerKind::Marker, at, at);
+    }
+    run(&mut e, "view.grid", json!({"format": "clips_markers", "follow_main": false}));
+    let before = e.session().clone();
+    let undo_len = e.undo_history().len();
+    let error = e.execute("edit.separate_on_grid", &json!({"tracks": [track.0], "start": 0, "end": 100_000})).unwrap_err();
+    assert!(error.to_string().contains("10,000"), "{error}");
+    assert_eq!(e.session(), &before);
+    assert_eq!(e.undo_history().len(), undo_len);
+}
+
 #[test]
 fn shuffle_moves_keep_crossfade_partners_whole() {
     let (mut e, t, ids) = long("slip", &[(0, 1000, 10_000), (1000, 1000, 20_000), (2000, 1000, 30_000)]);
@@ -299,6 +422,22 @@ fn shuffle_clear_moves_automation_with_the_clips() {
     assert_eq!(points(&e, t), [0, 7_000, 18_000, 27_000]);
 }
 
+/// Clearing selected clips by id closes their gaps in Shuffle, as clearing their ranges does, and moves the
+/// automation with the clips.
+#[test]
+fn shuffle_clear_by_clip_id_closes_each_gap() {
+    for (mode, want, want_points) in [
+        ("shuffle", [(0, 10_000), (20_000, 10_000)], [0, 9_000, 20_000, 29_000]),
+        ("slip", [(0, 10_000), (40_000, 10_000)], [0, 9_000, 40_000, 49_000]),
+    ] {
+        let (mut e, t, ids) = long(mode, &[(0, 10_000, 0), (20_000, 10_000, 0), (30_000, 10_000, 0), (40_000, 10_000, 0)]);
+        set_points(&mut e, t, &[0, 9_000, 40_000, 49_000]);
+        run(&mut e, "edit.clear", json!({"clips": [ids[1].0, ids[2].0], "tracks": [t.0], "start": 0}));
+        assert_eq!(clips(&e, t), want, "{mode}");
+        assert_eq!(points(&e, t), want_points, "{mode}");
+    }
+}
+
 #[test]
 fn relative_grid_pastes_land_on_grid_lines_at_any_tempo() {
     let (mut e, t, [a, _]) = engine("relative_grid");
@@ -328,11 +467,10 @@ fn start_trims_keep_the_sync_point_on_its_audio() {
 
 #[test]
 fn imported_time_stamps_count_at_the_session_rate() {
-    use soundcraft_audio_io::{AudioBuffer, BwfInfo, EncodeOptions, FileFormat};
+    use craft_audio::{AudioBuffer, BwfInfo, EncodeOptions};
     let mut e = Engine::default();
-    let bwf = BwfInfo { time_reference: 1_587_600_000, ..BwfInfo::default() };
-    let opts = EncodeOptions { format: FileFormat::Wav, bwf: Some(bwf), ..EncodeOptions::default() };
-    let bytes = soundcraft_audio_io::encode(&AudioBuffer::new(44_100, 1, 441), &opts).unwrap();
+    let opts = EncodeOptions::default().with_bwf(BwfInfo::default().with_time_reference(1_587_600_000));
+    let bytes = craft_audio::encode(&AudioBuffer::new(44_100, 1, 441), &opts).unwrap();
     soundcraft_engine::io::import_audio_bytes(&mut e, "stamped.wav", &bytes, None, None, 0).unwrap();
     assert_eq!(e.session().sources[0].time_reference, 1_728_000_000);
 }
@@ -439,4 +577,49 @@ fn moving_a_group_left_past_zero_keeps_its_spacing() {
     let (mut e, t, ids) = long("slip", &[(500, 100, 0), (2000, 100, 0)]);
     run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "by": -1000}));
     assert_eq!(clips(&e, t), [(0, 100), (1500, 100)]);
+}
+
+#[test]
+fn separate_and_range_edits_leave_locked_clips_whole() {
+    let edits = [
+        ("edit.separate", json!({"at": 24_000})),
+        ("edit.separate", json!({"start": 12_000, "end": 36_000})),
+        ("edit.separate_on_grid", json!({"start": 12_000, "end": 36_000})),
+        ("edit.clear", json!({"start": 12_000, "end": 36_000})),
+        ("edit.insert_silence", json!({"start": 24_000, "end": 25_000})),
+    ];
+    for lock in [None, Some("clip.edit_lock"), Some("clip.time_lock")] {
+        for (cmd, p) in &edits {
+            let (mut e, t, ids) = long("slip", &[(0, 48_000, 0)]);
+            if let Some(lock) = lock {
+                run(&mut e, lock, json!({"clips": [ids[0].0]}));
+            }
+            let mut p = p.clone();
+            p["tracks"] = json!([t.0]);
+            run(&mut e, cmd, p);
+            if lock.is_some() {
+                assert_eq!(clips(&e, t), vec![(0, 48_000)], "{lock:?} {cmd}");
+            } else {
+                assert_ne!(clips(&e, t), vec![(0, 48_000)], "unlocked control {cmd}");
+            }
+        }
+    }
+}
+
+/// Event time edits move the entire timeline, including clips protected from ordinary edits.
+#[test]
+fn event_time_edits_split_and_move_locked_clips() {
+    for lock in ["clip.edit_lock", "clip.time_lock"] {
+        for (command, expected) in [
+            ("event.insert_time", vec![(0, 12_000, 0), (36_000, 36_000, 12_000)]),
+            ("event.cut_time", vec![(0, 12_000, 0), (12_000, 12_000, 36_000)]),
+        ] {
+            let (mut e, t, ids) = long("slip", &[(0, 48_000, 0)]);
+            run(&mut e, lock, json!({"clips": [ids[0].0]}));
+            run(&mut e, command, json!({"start": 12_000, "end": 36_000}));
+            let actual: Vec<_> = e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.length, c.source_offset())).collect();
+            assert_eq!(actual, expected, "{lock} {command}");
+            assert!(e.session().track(t).unwrap().clips().iter().all(soundcraft_engine::edit::locked));
+        }
+    }
 }

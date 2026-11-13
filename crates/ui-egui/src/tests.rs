@@ -63,6 +63,36 @@ fn new_session_cancels_play_queued_before_the_next_frame() {
 }
 
 #[test]
+fn play_from_starts_at_from_regardless_of_the_selection() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("edit.select", json!({"tracks": ["Kick"], "start": 7_632_000, "end": 7_680_000})).unwrap();
+    app.run("transport.play", json!({"from": 4_560_000})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, 4_560_000 + 12_000);
+
+    app.run("transport.play", json!({"from": 96_000})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, 96_000 + 12_000);
+}
+
+#[test]
+fn play_from_while_looping_drops_the_selection_loop() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("options.loop_playback", json!({"value": true})).unwrap();
+    app.run("edit.select", json!({"tracks": ["Kick"], "start": 96_000, "end": 144_000})).unwrap();
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    app.run("transport.play", json!({"from": 480_000})).unwrap();
+    app.handle_transport(0.25);
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    assert_eq!(app.engine.transport.position, 480_000 + 24_000);
+}
+
+#[test]
 fn record_with_nothing_armed_says_what_to_do() {
     let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
     app.run("transport.record", json!({})).unwrap();
@@ -427,6 +457,8 @@ fn a_preset_changed_in_an_effect_editor_is_stored_once() {
 fn preferences_saved_before_the_window_was_remembered_keep_full_scale() {
     let ui: super::UiState = serde_json::from_value(json!({"show_transport": true})).unwrap();
     assert_eq!((ui.window_size, ui.window_maximized, ui.ui_scale), ([1600.0, 1000.0], false, 1.0));
+    assert_eq!(ui.reduce_visual_effects, crate::preferences::ReduceVisualEffects::Never);
+    assert_eq!(ui.undo_levels, 64);
 }
 
 #[test]
@@ -806,6 +838,78 @@ fn a_held_key_does_not_turn_a_scripted_press_into_a_repeat() {
     out.textures_delta.clear();
     assert_eq!(app.engine.undo_history().len(), held_depth - 1, "a later host auto-repeat must not undo a second time");
     assert!(ctx.input(|i| i.key_down(egui::Key::Z)), "the host still holds Z after the repeat");
+}
+
+/// Runs one input pass of `app` carrying host key `events` (no scripted input).
+fn key_pass(ctx: &egui::Context, app: &mut SoundApp, events: Vec<egui::Event>) {
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+    let mut input = egui::RawInput { screen_rect: Some(rect), events, ..Default::default() };
+    app.raw_input_hook(ctx, &mut input);
+    let mut out = ctx.run_ui(input, |ui| {
+        app.logic(ui.ctx());
+        app.ui(ui);
+    });
+    out.textures_delta.clear();
+}
+
+/// The demo app after a few idle passes, ready for keyboard input.
+fn app_for_keys() -> (egui::Context, SoundApp) {
+    let ctx = egui::Context::default();
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    for _ in 0..4 {
+        key_pass(&ctx, &mut app, Vec::new());
+    }
+    (ctx, app)
+}
+
+/// A host press of `key` and then two host auto-repeats of it, each in its own pass, as holding the key gives.
+fn hold_key(ctx: &egui::Context, app: &mut SoundApp, key: egui::Key, modifiers: egui::Modifiers) {
+    for repeat in [false, true, true] {
+        key_pass(ctx, app, vec![egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat, modifiers }]);
+    }
+    key_pass(ctx, app, vec![egui::Event::Key { key, physical_key: Some(key), pressed: false, repeat: false, modifiers }]);
+}
+
+/// #1377: holding a zoom key keeps zooming, one step per auto-repeat.
+#[test]
+fn holding_t_or_r_keeps_zooming_the_timeline() {
+    let (ctx, mut app) = app_for_keys();
+    let start = app.engine.session().edit.zoom.samples_per_px;
+    hold_key(&ctx, &mut app, egui::Key::T, egui::Modifiers::NONE);
+    assert_eq!(app.engine.session().edit.zoom.samples_per_px, start / 8.0, "T and two repeats zoom in three steps");
+    hold_key(&ctx, &mut app, egui::Key::R, egui::Modifiers::NONE);
+    assert_eq!(app.engine.session().edit.zoom.samples_per_px, start, "R and two repeats zoom back out three steps");
+}
+
+/// #1377: the registry's Cmd+[ / Cmd+] and the Cmd+Alt+[ / ] waveform zoom repeat too.
+#[test]
+fn holding_a_zoom_chord_keeps_zooming() {
+    let (ctx, mut app) = app_for_keys();
+    let cmd = egui::Modifiers { command: true, ..egui::Modifiers::NONE };
+    let start = app.engine.session().edit.zoom.samples_per_px;
+    hold_key(&ctx, &mut app, egui::Key::OpenBracket, cmd);
+    assert_eq!(app.engine.session().edit.zoom.samples_per_px, start * 8.0, "Cmd+[ and two repeats zoom out three steps");
+    hold_key(&ctx, &mut app, egui::Key::CloseBracket, cmd);
+    assert_eq!(app.engine.session().edit.zoom.samples_per_px, start, "Cmd+] and two repeats zoom in three steps");
+    let waveform = app.engine.session().edit.zoom.waveform_zoom;
+    hold_key(&ctx, &mut app, egui::Key::CloseBracket, egui::Modifiers { alt: true, ..cmd });
+    assert_eq!(app.engine.session().edit.zoom.waveform_zoom, waveform * 8.0, "Cmd+Alt+] and two repeats raise the waveform three steps");
+}
+
+/// Only the zoom commands repeat: a held registry chord (Cmd+Z) still undoes once and a held
+/// `fixed` key (Enter) still adds one marker.
+#[test]
+fn holding_cmd_z_or_enter_still_runs_once() {
+    let (ctx, mut app) = app_for_keys();
+    for _ in 0..3 {
+        app.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
+    }
+    let depth = app.engine.undo_history().len();
+    hold_key(&ctx, &mut app, egui::Key::Z, egui::Modifiers { command: true, ..egui::Modifiers::NONE });
+    assert_eq!(app.engine.undo_history().len(), depth - 1, "auto-repeats of Cmd+Z are ignored");
+    let markers = app.engine.session().markers.len();
+    hold_key(&ctx, &mut app, egui::Key::Enter, egui::Modifiers::NONE);
+    assert_eq!(app.engine.session().markers.len(), markers + 1, "auto-repeats of Enter are ignored");
 }
 
 /// A fresh physical Cmd+Z and an identical scripted Cmd+Z in one frame are distinct actions.

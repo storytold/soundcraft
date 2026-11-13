@@ -155,15 +155,23 @@ impl SoundApp {
     /// autosave folder. Returns the takes it records.
     fn arm_recorder(&mut self) -> Result<Vec<soundcraft_engine::io::Take>, String> {
         let name = soundcraft_engine::io::sanitize_name(&self.engine.session().name);
-        let unsaved_dir = self.autosave_dir.as_ref().map_or_else(std::env::temp_dir, |d| d.join(name));
+        // Without a settings folder the takes go under the temporary folder, in a folder of this
+        // run's own that nobody else could have made first.
+        let unsaved_dir = match &self.autosave_dir {
+            Some(d) => d.join(name),
+            // A saved session records beside its file: `plan_takes` never uses this folder.
+            None if self.engine.path.is_some() => std::path::PathBuf::new(),
+            None => self.fallback_take_dir()?,
+        };
         let Some(r) = &mut self.recorder else { return Err("no audio input device".into()) };
         let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels);
         if plan.is_empty() {
             return Err("no audio track is record-enabled".into());
         }
-        // The takes are unsaved work: the folder they go into under the autosave root is
-        // owner-only, like the autosaves, before the recorder makes anything in it.
-        if self.engine.path.is_none() && self.autosave_dir.is_some() {
+        // The takes are unsaved work: on Unix the folder they go into is owner-only, like the
+        // autosaves, before the recorder makes anything in it (other systems get the folder's
+        // inherited access: no ACLs are set, so the temporary folder's own per-user access applies).
+        if self.engine.path.is_none() {
             for dir in plan.iter().filter_map(|(_, _, path)| path.parent()) {
                 soundcraft_engine::autosave::create_folder(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
             }
@@ -174,6 +182,19 @@ impl SoundApp {
             .collect();
         r.arm(plan)?;
         Ok(takes)
+    }
+
+    /// The folder for the takes of a session never saved when there is no autosave folder, made on
+    /// first use: exclusively and under a name nobody can guess, so another account cannot have
+    /// made it first, with open permissions or as a link.
+    fn fallback_take_dir(&mut self) -> Result<std::path::PathBuf, String> {
+        if let Some(dir) = &self.fallback_take_dir {
+            return Ok(dir.clone());
+        }
+        let dir = soundcraft_engine::autosave::create_unique_folder(&std::env::temp_dir(), "SoundCraft")
+            .map_err(|e| format!("temporary take folder: {e}"))?;
+        self.fallback_take_dir = Some(dir.clone());
+        Ok(dir)
     }
 
     fn finish_recording(&mut self) {
@@ -343,6 +364,21 @@ impl SoundApp {
                         self.play_from_selection();
                     }
                 }
+                TransportRequest::PlayFrom(at) => {
+                    if self.is_playing() {
+                        // Playing on from `at` drops the end and loop of the earlier selection.
+                        if let Some(p) = &self.player {
+                            p.play(at, None, None);
+                        }
+                        if let Some(sim) = &mut self.sim {
+                            *sim = (at, None, None);
+                        }
+                        self.last_write_at = i64::MIN;
+                        self.engine.transport.position = at;
+                    } else {
+                        self.start_play(at, None, None);
+                    }
+                }
                 TransportRequest::Stop | TransportRequest::Pause => self.stop_play(),
                 TransportRequest::TogglePlay => {
                     if self.is_playing() {
@@ -436,5 +472,20 @@ impl SoundApp {
             }
             feed_meter(&mut self.main_meter, [0.0, 0.0], 0.0, dt);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_fallback_take_folder_is_made_once_under_the_temporary_folder() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let a = app.fallback_take_dir().unwrap();
+        assert_eq!(a.parent(), Some(std::env::temp_dir().as_path()));
+        assert!(a.is_dir());
+        assert_eq!(app.fallback_take_dir().unwrap(), a, "the same folder for the rest of the run");
+        let _ = std::fs::remove_dir_all(&a);
     }
 }

@@ -101,9 +101,13 @@ impl ClipFx {
                     c.set_param(p, v);
                 }
             } else if k == "gain" {
-                self.gain_db = v;
+                self.gain_db = if v.is_nan() { 0.0 } else { v.clamp(soundcraft_dsp::MIN_DB, crate::CLIP_FX_MAX_GAIN_DB) };
             }
         }
+    }
+    /// Whether the EQ or compressor is on: only they carry parameters that settle (a gain does not).
+    pub(crate) fn has_smoothed_modules(&self) -> bool {
+        self.eq.is_some() || self.comp.is_some()
     }
     pub(crate) fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
         if let Some(eq) = &mut self.eq {

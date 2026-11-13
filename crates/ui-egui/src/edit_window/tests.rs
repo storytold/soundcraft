@@ -2,6 +2,25 @@ use super::*;
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable};
 
+/// A trim cannot snap to the clip's own old boundary in Clips/Markers mode.
+#[test]
+fn clips_markers_trim_ignores_the_trimmed_clip() {
+    let mut s = Session::default();
+    let track = s.add_track(TrackKind::Midi, soundcraft_model::ChannelFormat::Mono, None);
+    let clip = Clip::midi(s.new_clip_id(), "Notes", 1_000, 1_000, soundcraft_midi::Sequence::default());
+    let clip_id = clip.id;
+    s.track_mut(track).and_then(Track::playlist_mut).unwrap().clips.push(clip);
+    s.add_marker("Inside", soundcraft_model::MarkerKind::Marker, 1_500, 1_500);
+    s.add_marker("Target", soundcraft_model::MarkerKind::Marker, 2_500, 2_500);
+    s.edit.edit_mode = soundcraft_model::EditMode::Grid;
+    s.edit.grid_clips_markers = true;
+
+    assert_eq!(super::drag::drag_snap(&s, 2_100, false), 2_000);
+    assert_eq!(super::drag::drag_snap_excluding(&s, 2_100, false, &[clip_id]), 2_500);
+    assert_eq!(super::drag::trim_drag_snap(&s, clip_id, 1_000, true, false), 1_000);
+    assert_eq!(super::drag::trim_drag_snap(&s, clip_id, 2_000, false, false), 2_000);
+}
+
 /// The painted header selectors are interactive controls; their accessible name is the field
 /// they edit, not the short value text ("Read", "Waveform") painted inside them.
 #[test]
@@ -244,6 +263,16 @@ fn hold_clears_when_playhead_returns_or_transport_stops() {
         }),
         (false, None)
     );
+}
+
+/// Cancel Zoom Toggle with Zoom Toggle already off keeps the scroll position a pending toggle-off restores.
+#[test]
+fn a_cancel_with_zoom_toggle_off_keeps_the_scroll_to_restore() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+    app.edit_layout.zoom_back = Some(120.0);
+    let v = app.run("view.zoom_toggle_cancel", json!({})).unwrap();
+    assert_eq!(v["canceled"], json!(false));
+    assert_eq!(app.edit_layout.zoom_back, Some(120.0));
 }
 
 fn harness(n: usize) -> Harness<'static, SoundApp> {
@@ -505,6 +534,53 @@ fn shift_and_cmd_click_on_track_names_extend_the_selection() {
     }
 }
 
+/// #1254: double-clicking a track's colour strip selects the track and opens the Color Palette;
+/// a single click only selects it.
+#[test]
+fn double_clicking_the_color_strip_opens_the_color_palette() {
+    let mut h = harness(3);
+    let ids = row_ids(&h);
+    let strip = |h: &Harness<SoundApp>, i: usize| pos2(row(h, i).min.x + layout::STRIP_W / 2.0, row(h, i).center().y);
+    h.state_mut().engine.execute("edit.select", &json!({"tracks": [ids[0].0]})).unwrap();
+    h.run_steps(2);
+    let at = strip(&h, 1);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[1]]);
+    assert!(!h.state().ui.show_color_palette, "a single click on the strip doesn't open the palette");
+    h.run_steps(30);
+    let at = strip(&h, 2);
+    click(&mut h, at);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[2]]);
+    assert!(h.state().ui.show_color_palette, "a double click on the strip opens the palette");
+}
+
+/// #1254: a double click on the strip of one of several selected tracks keeps them all selected,
+/// so the palette colours every one; with Cmd held the double-clicked track ends selected too.
+#[test]
+fn double_clicking_a_selected_tracks_strip_keeps_the_selection() {
+    let mut h = harness(3);
+    let ids = row_ids(&h);
+    let strip = |h: &Harness<SoundApp>, i: usize| pos2(row(h, i).min.x + layout::STRIP_W / 2.0, row(h, i).center().y);
+    h.state_mut().engine.execute("edit.select", &json!({"tracks": [ids[0].0, ids[2].0]})).unwrap();
+    h.run_steps(2);
+    let at = strip(&h, 2);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[0], ids[2]], "a plain click on a selected strip keeps the selection");
+    assert!(!h.state().ui.show_color_palette);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[0], ids[2]], "both tracks stay selected");
+    assert!(h.state().ui.show_color_palette, "a double click on the strip opens the palette");
+
+    h.state_mut().ui.show_color_palette = false;
+    h.run_steps(30);
+    let at = strip(&h, 0);
+    click_with(&mut h, at, egui::Modifiers::COMMAND);
+    click_with(&mut h, at, egui::Modifiers::COMMAND);
+    assert!(h.state().engine.session().edit.selected_tracks.contains(&ids[0]), "a Cmd double click leaves its track selected");
+    assert!(h.state().ui.show_color_palette, "a Cmd double click on the strip opens the palette");
+}
+
 #[test]
 fn a_quick_drag_from_a_clip_edge_trims_it() {
     let mut h = smart_demo();
@@ -596,8 +672,7 @@ fn make_stereo(h: &mut Harness<'static, SoundApp>, tid: soundcraft_model::TrackI
     let audio = h.state().engine.session().pool.get(source).unwrap().clone();
     let left = audio.buffer.channels[0].clone();
     let right = left.iter().map(|sample| sample * 0.5).collect();
-    let audio =
-        soundcraft_model::SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: audio.buffer.sample_rate, channels: vec![left, right] });
+    let audio = soundcraft_model::SourceAudio::new(craft_audio::AudioBuffer { sample_rate: audio.buffer.sample_rate, channels: vec![left, right] });
     let s = h.state_mut().engine.session_mut();
     s.pool.insert(source, std::sync::Arc::new(audio));
     s.track_mut(tid).unwrap().format = soundcraft_model::ChannelFormat::Stereo;
@@ -1497,4 +1572,113 @@ fn alt_click_on_a_breakpoint_deletes_it() {
         assert_eq!(volume_points(&h, track), before[..1], "{tool}");
         assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}");
     }
+}
+
+#[test]
+fn playhead_is_red_only_while_recording() {
+    for t in [Tokens::DARK, Tokens::LIGHT] {
+        assert_eq!(playhead_colour(&t, true), t.playhead);
+        assert_eq!(playhead_colour(&t, false), t.playback);
+        assert_ne!(t.playback, t.playhead, "plain playback must not read as the record line");
+    }
+}
+
+/// WCAG contrast ratio between two colours (1 = identical, 21 = black on white).
+fn contrast(a: Color32, b: Color32) -> f32 {
+    let lum = |c: Color32| {
+        let lin = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    };
+    let (hi, lo) = (lum(a).max(lum(b)), lum(a).min(lum(b)));
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// The edit cursor stands still beside the moving playback line while playing: in both themes
+/// they must be two clearly different greys, and the line must still read on the lanes.
+#[test]
+fn the_playback_line_is_set_apart_from_the_insertion_point_in_both_themes() {
+    for (name, t) in [("dark", Tokens::DARK), ("light", Tokens::LIGHT)] {
+        let apart = contrast(t.playback, t.insertion);
+        assert!(apart >= 2.5, "{name}: playback {:?} and insertion {:?} are only {apart:.2}:1 apart", t.playback, t.insertion);
+        let reads = contrast(t.playback, t.playlist_bg);
+        assert!(reads >= 3.0, "{name}: the playback line is only {reads:.2}:1 on the lanes");
+    }
+}
+
+/// The colour `overlay` gives the full-height playback line (width 1.5) in this transport state.
+fn playback_line_colour(recording: bool) -> Option<Color32> {
+    use egui::{Rect, pos2};
+    let _palette = crate::theme::lock_test_palette();
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+    app.engine.session_mut().edit.zoom.samples_per_px = 1_000.0;
+    app.engine.transport.playing = true;
+    app.engine.transport.recording = recording;
+    app.engine.transport.position = 80_000;
+    let tl = Rect::from_min_max(pos2(100.0, 100.0), pos2(900.0, 500.0));
+    let area = Rect::from_min_max(pos2(100.0, 50.0), tl.max);
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| overlay(&mut app, ui, tl, area));
+    output.textures_delta.clear();
+    output.shapes.iter().find_map(|s| match &s.shape {
+        Shape::LineSegment { points, stroke } if points[0].x == 180.0 && stroke.width == 1.5 => Some(stroke.color),
+        _ => None,
+    })
+}
+
+#[test]
+fn overlay_draws_the_playback_line_neutral_and_the_record_line_red() {
+    let _palette = crate::theme::lock_test_palette();
+    let t = Tokens::current();
+    assert_eq!(playback_line_colour(false), Some(t.playback));
+    assert_eq!(playback_line_colour(true), Some(t.playhead));
+}
+
+#[test]
+fn alt_click_on_a_marker_deletes_it() {
+    let mut engine = soundcraft_engine::demo::demo_engine();
+    engine.session_mut().edit.rulers = vec!["markers".into()];
+    engine.execute("markers.add", &json!({"at": 48_000, "name": "Alt-delete me"})).unwrap();
+    let mut h = harness_with(engine);
+    let s = h.state().engine.session_arc();
+    let marker = s.markers.iter().find(|m| m.name == "Alt-delete me").unwrap();
+    let at = pos2(x_of(&s, timeline(&h), marker.start), timeline(&h).min.y - 11.5);
+    let before = s.markers.len();
+
+    click_with(&mut h, at, egui::Modifiers::ALT);
+
+    assert_eq!(h.state().engine.session().markers.len(), before - 1);
+    assert!(!h.state().engine.session().markers.iter().any(|m| m.name == "Alt-delete me"));
+}
+
+#[test]
+fn short_track_name_is_centered_and_long_name_is_left_aligned() {
+    let mut h = harness(2);
+    let s = h.state().engine.session_arc();
+    let first = s.tracks[0].id.0;
+    let second = s.tracks[1].id.0;
+    h.state_mut().run("track.rename", json!({"track": first, "name": "Vocal"})).unwrap();
+    h.state_mut().run("track.rename", json!({"track": second, "name": "A Very Long Track Name That Exceeds Header Width"})).unwrap();
+    h.step();
+
+    let r0 = row(&h, 0);
+    let r1 = row(&h, 1);
+
+    let first_text = h.output().shapes.iter().find_map(|s| match &s.shape {
+        Shape::Text(t) if t.galley.text() == "Vocal" && s.clip_rect.intersects(r0) => Some((t.pos, t.galley.size())),
+        _ => None,
+    });
+    let long_text = h.output().shapes.iter().find_map(|s| match &s.shape {
+        Shape::Text(t) if t.galley.text() == "A Very Long Track Name That Exceeds Header Width" && s.clip_rect.intersects(r1) => Some(t.pos),
+        _ => None,
+    });
+
+    let (first_pos, first_size) = first_text.expect("short track name should be rendered in edit header");
+    let long_pos = long_text.expect("long track name should be rendered in edit header");
+
+    assert_eq!(long_pos.x, r1.min.x + 17.5);
+    let first_center_x = first_pos.x + first_size.x * 0.5;
+    assert!((first_center_x - (r0.min.x + 64.5)).abs() <= 0.1, "short name should be centered (center was at {first_center_x})");
 }

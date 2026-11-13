@@ -3,7 +3,7 @@
 //! adopts a fake under a clap:test.* id via MixEngine::adopt.
 
 use super::*;
-use soundcraft_audio_io::AudioBuffer;
+use craft_audio::AudioBuffer;
 use soundcraft_model::{Insert, SourceAudio, SourceId};
 use std::sync::Arc;
 
@@ -222,6 +222,15 @@ fn sends_feed_aux_via_bus() {
     }
     let out = render_range(&s, Range::new(0, 4800), 512);
     assert!(out[0][1000] > 0.1, "aux should carry the send: {}", out[0][1000]);
+}
+
+#[test]
+fn send_level_automation_is_capped_at_the_fader_top() {
+    // #884: a send lane point past +12 dB (pushed without `set_point`'s clamp) reads as +12.
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    let tr = s.track_mut(t).unwrap();
+    tr.lane_mut(&AutoParam::SendLevel(0)).points.push(soundcraft_model::AutomationPoint { at: 0, value: 500.0 });
+    assert_eq!(send_level(s.track(t).unwrap(), 0, 0.0, 100), SEND_LEVEL_MAX_DB);
 }
 
 #[test]
@@ -933,6 +942,84 @@ fn a_plugins_bogus_latency_is_capped() {
 }
 
 #[test]
+fn a_hosted_instruments_latency_is_compensated() {
+    // #1474: a synth that reports latency plays late. Its delay must count toward the mix
+    // latency and align, the way an insert's does.
+    struct LatentSynth {
+        inner: Box<dyn Plugin>,
+        n: usize,
+        t: usize,
+        pending: Option<usize>,
+    }
+    impl Plugin for LatentSynth {
+        fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+            self.inner.info()
+        }
+        fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+            self.inner.prepare(sr, mb, ch);
+        }
+        fn reset(&mut self) {
+            self.inner.reset();
+        }
+        fn set_param(&mut self, id: &str, v: f32) -> bool {
+            self.inner.set_param(id, v)
+        }
+        fn param(&self, id: &str) -> Option<f32> {
+            self.inner.param(id)
+        }
+        fn note_on(&mut self, offset: usize, _: u8, _: u8) {
+            self.pending = Some(self.t + offset + self.n);
+        }
+        fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+            for c in io.iter_mut() {
+                for (i, x) in c.iter_mut().take(frames).enumerate() {
+                    *x = if Some(self.t + i) == self.pending { 0.25 } else { 0.0 };
+                }
+            }
+            self.t += frames;
+        }
+        fn latency(&self) -> usize {
+            self.n
+        }
+    }
+    use soundcraft_midi::{Note, Sequence};
+    let n = 500;
+    let mut s = Session::default();
+    s.edit.delay_compensation = true;
+    let audio = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let mut click = vec![0.0f32; 48_000];
+    click[24_000] = 0.25;
+    s.pool.insert(SourceId(1474), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![click.clone(), click] })));
+    let cid = s.new_clip_id();
+    s.track_mut(audio).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "click", SourceId(1474), 0, 0, 48_000));
+    let inst = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let mut seq = Sequence::default();
+    seq.notes.push(Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 960, length: 240 });
+    let mcid = s.new_clip_id();
+    s.track_mut(inst).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(mcid, "note", 0, 48_000, seq));
+    s.track_mut(inst).unwrap().instrument = Some(Insert::new("clap:test.latent"));
+    let mut eng = MixEngine::new(48_000.0, 1024);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: inst,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.latent".into(),
+        ch: 2,
+        plugin: Box::new(LatentSynth { inner: soundcraft_dsp::create("gain").unwrap(), n, t: 0, pending: None }),
+    }]);
+    let mut out = vec![vec![0.0; 1024]; 2];
+    let mut rendered = Vec::new();
+    for b in 0..48 {
+        eng.render(&s, b * 1024, 1024, &mut out);
+        rendered.extend_from_slice(&out[0]);
+    }
+    assert_eq!(eng.latency, n, "the hosted instrument's latency is part of the mix latency");
+    let impulses: Vec<_> = rendered.iter().enumerate().filter(|(_, v)| v.abs() > 1e-6).map(|(i, _)| i).collect();
+    assert_eq!(impulses, vec![24_000 + n], "both the audio click and instrument impulse align");
+    assert!((rendered[24_000 + n] - 0.5).abs() < 1e-6, "the aligned impulses add, neither is missing");
+}
+
+#[test]
 fn input_monitoring_replaces_clips() {
     let (mut s, t) = session_with_dc(0.5, 4800);
     let mut eng = MixEngine::new(48_000.0, 512);
@@ -1188,14 +1275,238 @@ fn apply_matrix_span_matches_the_plain_per_sample_sum() {
     }
 }
 
+/// A volume lane through `points` (sample, dB).
+fn volume_lane(points: &[(i64, f32)]) -> soundcraft_model::AutomationLane {
+    let mut l = soundcraft_model::AutomationLane::new(AutoParam::Volume);
+    for &(at, db) in points {
+        l.set_point(at, db);
+    }
+    l
+}
+
+/// Volume automation is read at every sample: a breakpoint acts on its own sample, and between
+/// breakpoints the gain follows the lane (linear in dB), whatever size the render blocks are. A
+/// 480-sample crossfade used to be resolved once per block, so it moved by up to a block and left
+/// a hole or not depending on where the block edge fell.
 #[test]
-fn gain_ramp_matches_converting_both_ends_every_sample() {
-    for (db0, db1, n) in [(-6.0f32, 3.0f32, 512usize), (0.0, 0.0, 1), (-144.0, 0.0, 300), (2.5, -60.0, 0), (f32::NAN, -3.0, 64), (-200.0, 12.0, 7)] {
-        let ramp = crate::automation::GainRamp::new(db0, db1, n);
-        let (g0, g1) = (db_to_gain(db0), db_to_gain(db1));
-        for i in 0..=n {
-            let want = if n == 0 { g0 } else { g0 + (g1 - g0) * (i as f32 / n as f32) };
-            assert_eq!(ramp.at(i).to_bits(), want.to_bits(), "{db0} -> {db1} dB, sample {i} of {n}");
+fn volume_automation_follows_its_breakpoints_in_any_block_size() {
+    let (mut s, a) = session_with_dc(0.5, 8192);
+    let b = add_dc_track(&mut s, 0.5, 8192);
+    // A falls from 0 to -144 dB across 2760..3240 while B rises, and back across 5760..6240.
+    let fall = volume_lane(&[(0, 0.0), (2760, 0.0), (3240, -144.0), (5760, -144.0), (6240, 0.0)]);
+    let rise = volume_lane(&[(0, -144.0), (2760, -144.0), (3240, 0.0), (5760, 0.0), (6240, -144.0)]);
+    // One track's level at 0 dB, through the pan law.
+    let per_track = render_range(&s, Range::new(0, 64), 64)[0][0] / 2.0;
+    s.track_mut(a).unwrap().automation.push(fall.clone());
+    s.track_mut(b).unwrap().automation.push(rise.clone());
+    let want = |i: i64| per_track * (db_to_gain(fall.value_at(i, 0.0)) + db_to_gain(rise.value_at(i, 0.0)));
+    for block in [1024, 512, 333, 64] {
+        let out = render_range(&s, Range::new(0, 8192), block);
+        for (i, &x) in out[0].iter().enumerate() {
+            let w = want(i as i64);
+            assert!((x - w).abs() <= 1e-5 * w.max(1e-3), "block {block}, sample {i}: {x} vs {w}");
         }
     }
+}
+
+/// A master fader's breakpoint acts on its own sample too.
+#[test]
+fn master_volume_automation_follows_its_breakpoints_in_any_block_size() {
+    let (mut s, _) = session_with_dc(0.5, 4096);
+    let dry = render_range(&s, Range::new(0, 64), 64)[0][0];
+    let m = s.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+    let lane = volume_lane(&[(0, 0.0), (1500, 0.0), (1501, -144.0), (2600, -144.0), (2700, -6.0)]);
+    s.track_mut(m).unwrap().automation.push(lane.clone());
+    for block in [1024, 256, 100] {
+        let out = render_range(&s, Range::new(0, 4096), block);
+        for (i, &x) in out[0].iter().enumerate() {
+            let w = dry * db_to_gain(lane.value_at(i as i64, 0.0));
+            assert!((x - w).abs() <= 1e-5 * w.max(1e-3), "block {block}, sample {i}: {x} vs {w}");
+        }
+    }
+}
+
+/// `scale` gives what `db_to_gain` gives sample by sample, from a ramp's first sample to its last:
+/// silence at or below -144 dB, the cap, NaN, extreme values and one- or two-sample ramps.
+#[test]
+fn stepped_fader_ramps_match_converting_every_sample() {
+    let cases: &[(&str, f32, f32, usize, f32)] = &[
+        ("down to silence", 0.0, -144.0, 480, 12.0),
+        ("up from silence", -144.0, 0.0, 480, 12.0),
+        ("across the cap", 6.0, 18.0, 300, 12.0),
+        ("below the floor and back", -200.0, -20.0, 512, 12.0),
+        ("flat", -6.0, -6.0, 1024, 12.0),
+        ("one sample", -6.0, 3.0, 1, 12.0),
+        ("two samples", -6.0, 3.0, 2, 12.0),
+        ("empty", 0.0, -6.0, 0, 12.0),
+        ("NaN start", f32::NAN, -3.0, 64, 12.0),
+        ("long ramp in one block", 0.0, -60.0, 16_384, 12.0),
+        ("recover from deep silence", -10_000.0, 0.0, 1024, 12.0),
+        ("descend from extreme trim", 10_000.0, -100.0, 1024, 12.0),
+        ("no cap", -12.0, 6.0, 1000, f32::INFINITY),
+        ("gain helper ceiling", 300.0, 0.0, 1024, f32::INFINITY),
+        ("extreme exact endpoint", -1e20, -20.0, 64, 12.0),
+        ("negative infinite start", f32::NEG_INFINITY, -20.0, 64, 12.0),
+        ("positive infinite end", -20.0, f32::INFINITY, 64, 12.0),
+        ("opposite infinities", f32::NEG_INFINITY, f32::INFINITY, 64, 12.0),
+    ];
+    for &(name, d0, d1, n, max_db) in cases {
+        let mut x = vec![1.0f32; n];
+        crate::automation::scale(&mut x, d0, d1, max_db);
+        for (k, &got) in x.iter().enumerate() {
+            let at = if k == 0 {
+                d0
+            } else if k + 1 == n {
+                d1
+            } else {
+                let t = k as f64 / (n - 1) as f64;
+                (f64::from(d0) * (1.0 - t) + f64::from(d1) * t) as f32
+            };
+            let want = if d0.is_nan() || d1.is_nan() || at.is_nan() { 0.0 } else { db_to_gain(at.min(max_db)) };
+            assert!((got - want).abs() <= 1e-5 * want.max(1e-6) || (got == 0.0 && want == 0.0), "{name}, sample {k} of {n}: {got} vs {want}");
+        }
+        if d0.is_nan() || d1.is_nan() {
+            assert!(x.iter().all(|&g| g == 0.0), "{name}: a NaN end is silence");
+            continue;
+        }
+        assert_eq!(x.first().copied().unwrap_or(0.0), if n == 0 { 0.0 } else { db_to_gain(d0.min(max_db)) }, "{name}: first sample exact");
+        if n > 1 {
+            assert_eq!(x[n - 1], db_to_gain(d1.min(max_db)), "{name}: last sample exact");
+        }
+    }
+}
+
+/// Volume, trim and VCA lanes with breakpoints at different samples add up at every sample, a
+/// muted track stays silent, and a render that starts inside a ramp or has breakpoints on block
+/// edges reads the same curve.
+#[test]
+fn summed_fader_lanes_are_read_at_every_sample() {
+    let (mut s, a) = session_with_dc(0.5, 12_288);
+    let muted = add_dc_track(&mut s, 0.5, 12_288);
+    let vca = s.add_track(TrackKind::Vca, ChannelFormat::Mono, None);
+    let one_track = render_range(&s, Range::new(0, 64), 64)[0][0] / 2.0;
+    s.track_mut(muted).unwrap().mixer.mute = true;
+    let vol = volume_lane(&[(0, 0.0), (1024, 0.0), (2048, -30.0), (4096, -6.0)]);
+    let mut trim = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: u8::MAX, param: "trim".into() });
+    for (at, db) in [(0, 0.0), (1500, 0.0), (3000, 6.0)] {
+        trim.set_point(at, db);
+    }
+    let vca_lane = volume_lane(&[(0, 0.0), (5120, 0.0), (7000, -12.0)]);
+    let tr = s.track_mut(a).unwrap();
+    tr.automation.push(vol.clone());
+    tr.automation.push(trim.clone());
+    tr.mixer.vca = Some(vca.0);
+    s.track_mut(vca).unwrap().automation.push(vca_lane.clone());
+    // dB at `i`, from the breakpoints themselves.
+    let lin = |pts: &[(i64, f32)], i: i64| match pts.iter().position(|p| p.0 > i) {
+        None => pts[pts.len() - 1].1,
+        Some(0) => pts[0].1,
+        Some(k) => pts[k - 1].1 + (pts[k].1 - pts[k - 1].1) * ((i - pts[k - 1].0) as f32 / (pts[k].0 - pts[k - 1].0) as f32),
+    };
+    let want = |i: i64| {
+        let db = lin(&[(0, 0.0), (1024, 0.0), (2048, -30.0), (4096, -6.0)], i)
+            + lin(&[(0, 0.0), (1500, 0.0), (3000, 6.0)], i)
+            + lin(&[(0, 0.0), (5120, 0.0), (7000, -12.0)], i);
+        one_track * db_to_gain(db.min(12.0))
+    };
+    for (start, block) in [(0i64, 1024), (0, 512), (1700, 333), (1024, 1024), (2047, 64)] {
+        let out = render_range(&s, Range::new(start, 12_288), block);
+        for (k, &x) in out[0].iter().enumerate() {
+            let i = start + k as i64;
+            let w = want(i);
+            assert!((x - w).abs() <= 1e-5 * w.max(1e-3), "start {start}, block {block}, sample {i}: {x} vs {w}");
+        }
+    }
+}
+
+/// Consolidate's clip-effect pass, processing every clip's effects across the whole selection
+/// (what `render_clips` did before it limited them to the clip and its tail).
+fn render_clips_full_span(s: &Session, track: TrackId, range: Range) -> Vec<Vec<f32>> {
+    let t = s.track(track).unwrap();
+    let len = range.len() as usize;
+    let mut out = vec![vec![0.0f32; len]; t.channels().max(1)];
+    let mut scratch = Vec::new();
+    for c in t.clips().iter().filter(|c| !c.muted && c.range().overlaps(&range)) {
+        let params = crate::clips::clip_fx_params(s, c.id.0).unwrap();
+        let mut tmp = vec![vec![0.0f32; len]; out.len()];
+        crate::clips::render_clip(s, c, range.start, len, &mut tmp, &mut scratch);
+        let mut fx = crate::clips::ClipFx::new(48_000.0, tmp.len());
+        fx.configure(params);
+        for done in (0..len).step_by(4096) {
+            let n = (len - done).min(4096);
+            let mut block: Vec<Vec<f32>> = tmp.iter().map(|ch| ch[done..done + n].to_vec()).collect();
+            fx.process(&mut block, n);
+            for (o, b) in out.iter_mut().zip(&block) {
+                o[done..done + n].iter_mut().zip(b).for_each(|(x, y)| *x += y);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn consolidate_clip_effects_cover_the_clip_and_its_tail() {
+    let fx_sets: [&[(&str, f64)]; 3] =
+        [&[("comp.lookahead", 5.0), ("comp.threshold", -20.0), ("gain", -6.0)], &[("eq.hpf_on", 1.0), ("gain", 3.0)], &[("eq.low_shelf_gain", 12.0)]];
+    for (k, params) in fx_sets.iter().enumerate() {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4800]] })));
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "dc", SourceId(900), 0, 20_000, 4800));
+        for (param, value) in params.iter() {
+            s.edit.values.insert(format!("clip_fx.{}.{param}", cid.0), *value);
+        }
+        let range = Range::new(5_000, 100_000);
+        let got = render_clips(&s, t, range);
+        let want = render_clips_full_span(&s, t, range);
+        assert_eq!(got.len(), want.len());
+        assert!(want[0].iter().any(|x| x.abs() > 0.05), "the fixture should sound");
+        if k == 0 {
+            // The compressor's lookahead output after the clip's end is kept.
+            assert!(got[0][20_000 + 4800 - 5_000 + 10].abs() > 1e-3);
+        }
+        for (i, (a, b)) in got[0].iter().zip(&want[0]).enumerate() {
+            assert!((a - b).abs() < 1e-5, "set {k}, sample {i}: {a} vs {b}");
+        }
+    }
+}
+
+/// A clip that starts a few frames into the selection, while the EQ's smoothers are still settling: the
+/// effect's 32-frame chunks must line up with the full-span render's.
+#[test]
+fn consolidate_clip_effects_keep_the_reference_chunk_grid() {
+    for offset in [1i64, 31, 32, 33, 1000] {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4800]] })));
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "dc", SourceId(900), 0, offset, 4800));
+        s.edit.values.insert(format!("clip_fx.{}.eq.low_shelf_gain", cid.0), 12.0);
+        let range = Range::new(0, 20_000);
+        let got = render_clips(&s, t, range);
+        let want = render_clips_full_span(&s, t, range);
+        for (i, (a, b)) in got[0].iter().zip(&want[0]).enumerate() {
+            assert!((a - b).abs() < 1e-5, "clip at {offset}, sample {i}: {a} vs {b}");
+        }
+    }
+}
+
+#[test]
+fn consolidate_many_tiny_effect_clips_stays_fast() {
+    // Thousands of one-sample clips with effects across a long selection: each one is processed
+    // over its own span, not the whole selection.
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 1]] })));
+    for i in 0..2000i64 {
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "x", SourceId(900), 0, i * 1000, 1));
+        s.edit.values.insert(format!("clip_fx.{}.gain", cid.0), -6.0);
+    }
+    let start = std::time::Instant::now();
+    let out = render_clips(&s, t, Range::new(0, 4_000_000));
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+    assert!((out[0][1000] - 0.5 * db_to_gain(-6.0)).abs() < 1e-6);
+    assert_eq!(out[0][1001], 0.0);
 }

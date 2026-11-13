@@ -1,12 +1,12 @@
 use super::*;
 use crate::Engine;
-use soundcraft_audio_io::{AudioBuffer, EncodeOptions};
+use craft_audio::{AudioBuffer, EncodeOptions};
 use soundcraft_model::ChannelFormat;
 
 fn tone_wav(dir: &std::path::Path, name: &str) -> String {
     let tone: Vec<f32> = (0..4_800).map(|i| (i as f32 * 0.1).sin() * 0.2).collect();
     let buf = AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
-    let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).unwrap();
+    let bytes = craft_audio::encode(&buf, &EncodeOptions::default()).unwrap();
     let path = dir.join(name);
     std::fs::write(&path, bytes).unwrap();
     path.to_string_lossy().into_owned()
@@ -119,6 +119,71 @@ fn import_audio_honours_new_tracks() {
 }
 
 #[test]
+fn bounce_stems_rejects_unsupported_formats_before_writing() {
+    let dir = std::env::temp_dir().join(format!("sc-stems-unsupported-format-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let stems = dir.join("stems");
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 1, "name": "Tone", "format": "mono"})).unwrap();
+    let result = e.execute("file.bounce_stems", &json!({"dir": stems, "format": "not-a-format", "start": 0, "end": 1}));
+    let created_output = stems.exists();
+    // Own this directory exclusively; remove any baseline output before the assertion can fail.
+    std::fs::remove_dir_all(&dir).unwrap();
+    let err = result.map(|_| ()).unwrap_err();
+    assert!(err.to_string().contains("cannot write `not-a-format`"), "{err}");
+    assert!(err.to_string().contains("supported: wav"), "{err}");
+    assert!(!created_output, "an unsupported format must not create the output directory");
+}
+
+#[test]
+fn bounce_stems_rejects_non_string_formats_before_writing() {
+    let dir = std::env::temp_dir().join(format!("sc-stems-format-type-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 1, "name": "Tone", "format": "mono"})).unwrap();
+    let results: Vec<_> = [json!(null), json!(123), json!(false), json!([]), json!({})]
+        .into_iter()
+        .enumerate()
+        .map(|(index, format)| {
+            let stems = dir.join(index.to_string());
+            let result = e.execute("file.bounce_stems", &json!({"dir": stems, "format": format, "start": 0, "end": 1}));
+            (result, stems.exists())
+        })
+        .collect();
+    std::fs::remove_dir_all(&dir).unwrap();
+    for (result, created_output) in results {
+        let err = result.map(|_| ()).unwrap_err();
+        assert!(err.to_string().contains("`format` must be a string"), "{err}");
+        assert!(!created_output, "a non-string format must not create the output directory");
+    }
+}
+
+#[test]
+fn bounce_stems_accepts_explicit_wav_format() {
+    let dir = std::env::temp_dir().join(format!("sc-stems-explicit-wav-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let mut e = Engine::default();
+    let wav = tone_wav(&dir, "tone.wav");
+    e.execute("file.import_audio", &json!({"path": wav})).unwrap();
+    let stems = dir.join("stems");
+    let result = e.execute("file.bounce_stems", &json!({"dir": stems, "format": "wav", "start": 0, "end": 32, "dither": false})).unwrap();
+    let files = result["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    let path = std::path::Path::new(files[0].as_str().unwrap());
+    assert_eq!(path.parent(), Some(stems.as_path()));
+    assert_eq!(path.extension().and_then(|extension| extension.to_str()), Some("wav"));
+    let (info, audio) = craft_audio::decode(&std::fs::read(path).unwrap(), None).unwrap();
+    assert_eq!(info.container, craft_audio::Container::Wav);
+    assert_eq!(audio.frames(), 32);
+    assert_eq!(audio.channels.len(), e.session().main_format().channels());
+    assert!(audio.channels.iter().flatten().any(|sample| sample.abs() > 0.01));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn bounce_refuses_formats_it_cannot_write() {
     let mut e = Engine::default();
     let dir = std::env::temp_dir().join(format!("sc-bounce-ext-{}", std::process::id()));
@@ -224,7 +289,7 @@ fn tone_engine() -> (Engine, u64) {
     let track = e.session().tracks[0].id;
     let tone: Vec<f32> = (0..4_800).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
     let buf = AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
-    let src = crate::io::add_source(e.session_mut(), "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+    let src = crate::io::add_source(e.session_mut(), "tone", buf, None, soundcraft_model::FileFormat::Wav);
     let id = e.session_mut().new_clip_id();
     crate::edit::place_clip(e.session_mut(), track, soundcraft_model::Clip::audio(id, "tone", src, 0, 0, 4_800));
     e.session_mut().edit.selected_tracks = vec![track];
@@ -327,7 +392,7 @@ fn midi_export_keeps_controllers_and_honours_tracks() {
 fn import_surround_creates_a_matching_track() {
     let channels: Vec<Vec<f32>> = (0..6).map(|ch| vec![0.1 * (ch as f32 + 1.0); 32]).collect();
     let buf = AudioBuffer { sample_rate: 48_000, channels };
-    let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions::default()).unwrap();
+    let bytes = craft_audio::encode(&buf, &EncodeOptions::default()).unwrap();
     let mut e = Engine::default();
     let v = crate::io::import_audio_bytes(&mut e, "bed.wav", &bytes, None, None, 0).unwrap();
     assert_eq!(v["channels"], 6);

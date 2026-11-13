@@ -2,42 +2,74 @@ use super::{ChannelFormat, Clip, ClipContent, Engine, EngineError, Result, Sampl
 
 /// Most meter changes a MIDI file may bring into the tempo map; scores have a handful.
 pub(super) const MAX_MIDI_METERS: usize = 10_000;
+/// Most tempo changes a MIDI file may bring into the tempo map: conversions walk the tempo events.
+pub(super) const MAX_MIDI_TEMPOS: usize = 10_000;
+/// Most synth tracks a MIDI file may create in the session.
+pub(super) const MAX_MIDI_TRACKS: usize = 512;
 
 /// Import a Standard MIDI File as MIDI tracks (one per SMF track).
+///
+/// The file is checked in full before the session changes, so a refused file (too many tempo or
+/// meter changes or tracks, a track longer than a day) leaves the session as it was: callers that
+/// keep their own undo step, like the web shell, never see a half-applied import.
 pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: bool) -> Result<Vec<TrackId>> {
     let smf = soundcraft_midi::read_smf(bytes).map_err(|err| EngineError::Io(err.to_string()))?;
-    let s = e.session_mut();
     if tempo_map {
         // Each meter is placed by walking the ones before it.
         if smf.meters.len() > MAX_MIDI_METERS {
             return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_METERS} meter changes")));
         }
-        for (tick, bpm) in &smf.tempos {
-            let _ = s.tempo.set_tempo(*tick, *bpm);
-        }
-        for (tick, n, d) in &smf.meters {
-            let _ = s.tempo.set_meter(*tick, u32::from(*n), u32::from(*d));
+        if smf.tempos.len() > MAX_MIDI_TEMPOS {
+            return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_TEMPOS} tempo changes")));
         }
     }
-    let base_tick = s.tempo.samples_to_ticks(at, s.sample_rate);
-    let mut out = Vec::new();
+    let tracks_to_import = smf.tracks.iter().filter(|tr| !tr.sequence.notes.is_empty() || !tr.sequence.ctrls.is_empty()).count();
+    if tracks_to_import > MAX_MIDI_TRACKS {
+        return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_TRACKS} tracks")));
+    }
+    // Phase 1, read only: the tempo map the clips will be placed with, built apart from the
+    // session. `session_mut` would already count as an edit (revision, unsaved mark).
+    let s = e.session();
+    let mut tempo = s.tempo.clone();
+    if tempo_map {
+        for (tick, bpm) in &smf.tempos {
+            if tempo.tempo_at_tick(*tick) == *bpm {
+                continue;
+            }
+            let _ = tempo.set_tempo(*tick, *bpm);
+        }
+        for (tick, n, d) in &smf.meters {
+            let _ = tempo.set_meter(*tick, u32::from(*n), u32::from(*d));
+        }
+    }
+    let base_tick = tempo.samples_to_ticks(at, s.sample_rate);
+    let mut clips = Vec::new();
     for (i, tr) in smf.tracks.iter().enumerate() {
         if tr.sequence.notes.is_empty() && tr.sequence.ctrls.is_empty() {
             continue;
         }
+        // A controller on the clip's last tick would not play, so the clip runs one tick past the last one.
+        let past_ctrls = tr.sequence.ctrls.iter().map(|c| c.tick.saturating_add(1)).max().unwrap_or(0);
+        let end_tick = base_tick.saturating_add(tr.sequence.end_tick().max(past_ctrls).max(1));
+        let len = tempo.tick_to_samples(end_tick, s.sample_rate).saturating_sub(at);
+        if len > s.sample_rate.samples(86_400.0) {
+            return Err(EngineError::Io(format!("MIDI track {}: longer than 24 hours", i + 1)));
+        }
+        clips.push((i, tr, len));
+    }
+    // Phase 2: nothing can fail from here on.
+    let s = e.session_mut();
+    if tempo_map {
+        s.tempo = tempo;
+    }
+    let mut out = Vec::new();
+    for (i, tr, len) in clips {
         let mut name = if tr.name.trim().is_empty() { format!("MIDI {}", i + 1) } else { tr.name.clone() };
         soundcraft_model::truncate_chars(&mut name, soundcraft_model::MAX_NAME_CHARS);
         let id = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some(&name));
         let drums = !tr.sequence.notes.is_empty() && tr.sequence.notes.iter().all(|n| n.channel == 9);
         if let Some(t) = s.track_mut(id) {
             t.instrument = Some(soundcraft_model::Insert::new(if drums { "drum_synth" } else { "subtractive_synth" }));
-        }
-        // A controller on the clip's last tick would not play, so the clip runs one tick past the last one.
-        let past_ctrls = tr.sequence.ctrls.iter().map(|c| c.tick.saturating_add(1)).max().unwrap_or(0);
-        let end_tick = base_tick.saturating_add(tr.sequence.end_tick().max(past_ctrls).max(1));
-        let len = s.tempo.tick_to_samples(end_tick, s.sample_rate).saturating_sub(at);
-        if len > s.sample_rate.samples(86_400.0) {
-            return Err(EngineError::Io(format!("MIDI track {}: longer than 24 hours", i + 1)));
         }
         let cid = s.new_clip_id();
         crate::edit::place_clip(s, id, Clip::midi(cid, name, at, len.max(1), tr.sequence.clone()));
@@ -66,15 +98,37 @@ pub fn export_midi(e: &Engine, only: Option<&[TrackId]>) -> Result<Vec<u8>> {
         for c in t.clips() {
             if let ClipContent::Midi { sequence } = &c.content {
                 let base = s.tempo.samples_to_ticks(c.start, s.sample_rate);
-                for n in &sequence.notes {
+                // Only what plays: notes starting inside the clip, cut at its end.
+                let clip_end = s.tempo.samples_to_ticks(c.end(), s.sample_rate);
+                for n in sequence.notes.iter().filter(|n| n.start.saturating_add(base) < clip_end) {
                     let mut n = *n;
                     n.start = n.start.saturating_add(base);
+                    n.length = n.length.min(clip_end - n.start).max(1);
                     seq.notes.push(n);
                 }
-                for ev in &sequence.ctrls {
+                let mut kept: Vec<soundcraft_midi::CtrlEvent> = Vec::new();
+                for ev in sequence.ctrls.iter().filter(|ev| ev.tick.saturating_add(base) < clip_end) {
                     let mut ev = *ev;
                     ev.tick = ev.tick.saturating_add(base);
-                    seq.ctrls.push(ev);
+                    kept.push(ev);
+                }
+                // A sustain still held at the clip end is released there.
+                let mut release: Vec<soundcraft_midi::CtrlEvent> = Vec::new();
+                for ev in &kept {
+                    if ev.kind != soundcraft_midi::CtrlKind::Cc(64) {
+                        continue;
+                    }
+                    match release.iter_mut().find(|r| r.channel == ev.channel) {
+                        Some(r) if ev.tick >= r.tick => *r = *ev,
+                        Some(_) => {}
+                        None => release.push(*ev),
+                    }
+                }
+                seq.ctrls.append(&mut kept);
+                for mut r in release.into_iter().filter(|r| r.value >= 64) {
+                    r.tick = clip_end;
+                    r.value = 0;
+                    seq.ctrls.push(r);
                 }
             }
         }

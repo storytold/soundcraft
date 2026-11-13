@@ -1,7 +1,7 @@
 //! Bounce Mix starts in the session's folder and has a Browse button for the file (#186).
+use craft_audio::EncodeFormat;
 use egui::vec2;
 use egui_kittest::{Harness, kittest::Queryable};
-use soundcraft_audio_io::FileFormat;
 use soundcraft_ui_egui::{Services, SoundApp, dialogs::Dialog};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -32,7 +32,7 @@ fn bounce_starts_in_the_session_folder_and_browse_picks_the_file_and_format() {
     let default = PathBuf::from("/Songs/Midnight Groove/Midnight Groove Bounce.wav");
     assert_eq!(*asked.borrow(), vec![("file.bounce_mix".to_string(), default)]);
     match &h.state().dialogs.open {
-        Some(Dialog::Bounce { path, format, .. }) => assert_eq!((path.as_str(), *format), ("/Mixes/Final Mix.FLAC", FileFormat::Flac)),
+        Some(Dialog::Bounce { path, format, .. }) => assert_eq!((path.as_str(), *format), ("/Mixes/Final Mix.FLAC", EncodeFormat::Flac)),
         other => panic!("{other:?}"),
     }
 }
@@ -52,5 +52,22 @@ fn bounce_of_a_session_with_a_relative_path_starts_in_the_default_folder() {
             assert_eq!(path, unsaved, "the same folder as a session never saved");
         }
         other => panic!("{other:?}"),
+    }
+}
+
+/// A picked name that already says the format is written as picked: `Mix.aifc` is not turned
+/// into `Mix.aif`, a file the save dialog never asked about.
+#[test]
+fn bounce_keeps_an_extension_that_names_the_format() {
+    use soundcraft_ui_egui::dialogs::bounce_path;
+    for (path, format, written) in [
+        ("/Mixes/Mix.aifc", EncodeFormat::Aiff, "/Mixes/Mix.aifc"),
+        ("/Mixes/Mix.AIFF", EncodeFormat::Aiff, "/Mixes/Mix.AIFF"),
+        ("/Mixes/Mix.bwf", EncodeFormat::Wav, "/Mixes/Mix.bwf"),
+        ("/Mixes/Mix.aifc", EncodeFormat::Flac, "/Mixes/Mix.flac"),
+        ("/Mixes/Mix.wav", EncodeFormat::Aiff, "/Mixes/Mix.aif"),
+        ("/Mixes/Mix", EncodeFormat::Wav, "/Mixes/Mix.wav"),
+    ] {
+        assert_eq!(bounce_path(path, format), PathBuf::from(written), "{path} as {format:?}");
     }
 }
