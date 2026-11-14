@@ -262,8 +262,11 @@ mod tests {
     #[test]
     fn only_a_dead_stream_is_reported() {
         let error = |kind| cpal::Error::with_message(kind, "test");
+        let mobile = cfg!(any(target_os = "ios", target_os = "android"));
         assert!(stream_lost(&error(cpal::ErrorKind::DeviceNotAvailable)));
-        assert!(stream_lost(&error(cpal::ErrorKind::StreamInvalidated)), "the stream must be rebuilt");
+        // The desktop rule (rebuild required) does not hold on mobile, where the
+        // same kind also reports app-caused route changes the stream survives.
+        assert_eq!(stream_lost(&error(cpal::ErrorKind::StreamInvalidated)), !mobile, "the stream must be rebuilt on desktop");
         for kind in [
             cpal::ErrorKind::DeviceChanged,
             cpal::ErrorKind::DeviceBusy,
