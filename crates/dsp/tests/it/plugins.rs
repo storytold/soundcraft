@@ -48,19 +48,6 @@ fn is_source(id: &str) -> bool {
     plugin_info(id).unwrap().is_instrument || is_generator(id)
 }
 
-#[test]
-fn registry_ids_unique_and_creatable() {
-    let mut ids = HashSet::new();
-    for info in plugins() {
-        assert!(ids.insert(info.id), "duplicate id {}", info.id);
-        assert!(info.short_name.chars().count() <= 8, "{} short name too long", info.id);
-        let p = create(info.id).unwrap_or_else(|| panic!("cannot create {}", info.id));
-        assert_eq!(p.info().id, info.id);
-        assert_eq!(plugin_info(info.id).unwrap().id, info.id);
-    }
-    assert!(create("nope").is_none());
-    assert!(plugins().len() >= 25);
-}
 
 #[test]
 fn params_well_formed() {
@@ -651,6 +638,21 @@ fn zero_crossings(x: &[f32]) -> usize {
 }
 
 #[test]
+fn registry_ids_unique_and_creatable() {
+    let mut ids = HashSet::new();
+    for info in plugins() {
+        assert!(ids.insert(info.id), "duplicate id {}", info.id);
+        assert!(info.short_name.chars().count() <= 8, "{} short name too long", info.id);
+        let p = create(info.id).unwrap_or_else(|| panic!("cannot create {}", info.id));
+        assert_eq!(p.info().id, info.id);
+        assert_eq!(plugin_info(info.id).unwrap().id, info.id);
+    }
+    assert!(create("nope").is_none());
+    assert!(plugins().len() >= 25);
+}
+
+
+#[test]
 fn ring_mod_makes_sum_and_difference_tones() {
     let mut p = ring_mod(&[("effect", 0.0), ("frequency", 300.0), ("mod_depth", 0.0), ("mix", 100.0)]);
     let out = run(p.as_mut(), &[sine(1000.0, 0.5, 48_000)]);
@@ -721,4 +723,39 @@ fn ring_mod_modulation_sources_move_the_frequency() {
     steps.sort_unstable();
     steps.dedup_by(|a, b| a.abs_diff(*b) <= 2);
     assert!(steps.len() >= 3, "sample and hold steps: {steps:?}");
+}
+
+#[test]
+fn synth_retriggering_a_sounding_note_at_a_new_velocity_does_not_click() {
+    // A pure sine at full sustain, fully velocity sensitive. The re-strike is
+    // tried at every point of one 440 Hz cycle (about 109 samples), so it also
+    // lands near a peak, where a level jump is largest.
+    let step = |x: &[f32]| x.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0_f32, f32::max);
+    let mut worst = 0.0_f32;
+    let mut steady = 0.0_f32;
+    for offset in 0..110 {
+        let mut p = prepared("subtractive_synth");
+        for (id, v) in [
+            ("osc1_wave", 2.0),
+            ("osc_mix", 0.0),
+            ("cutoff", 20_000.0),
+            ("filter_env_amount", 0.0),
+            ("resonance", 0.0),
+            ("amp_sustain", 100.0),
+            ("velocity", 100.0),
+        ] {
+            p.set_param(id, v);
+        }
+        p.note_on(0, 69, 127);
+        let before = run(p.as_mut(), &[vec![0.0; 9600 + offset]]);
+        // Re-strike the ringing string softly, as a strum's next stroke does:
+        // the note-off and the new note-on land on the same sample.
+        p.note_off(0, 69);
+        p.note_on(0, 69, 20);
+        let after = run(p.as_mut(), &[vec![0.0; 960]]);
+        steady = steady.max(step(&before[0][4800..]));
+        let joined = [&before[0][9000..], &after[0][..]].concat();
+        worst = worst.max(step(&joined));
+    }
+    assert!(worst <= steady * 1.2, "velocity step: {worst} vs {steady}");
 }
