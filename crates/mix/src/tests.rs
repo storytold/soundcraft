@@ -90,6 +90,68 @@ fn add_dc_track(s: &mut Session, level: f32, frames: usize) -> TrackId {
 }
 
 #[test]
+fn sustained_midi_notes_sound_after_start_seek_and_reset() {
+    use soundcraft_midi::{Note, Sequence};
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(t).unwrap().instrument = Some(Insert::new("subtractive_synth"));
+    let end = s.tempo.tick_to_samples(960, s.sample_rate);
+    let clip = Clip::midi(
+        s.new_clip_id(),
+        "Held",
+        0,
+        end,
+        Sequence { notes: vec![Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 }], ..Sequence::default() },
+    );
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(clip);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    let mut out = vec![vec![0.0; 512]; 2];
+    let mut reference = soundcraft_dsp::create("subtractive_synth").unwrap();
+    reference.prepare(48_000.0, 512, 2);
+    reference.note_on(0, 60, 100);
+    let mut expected = vec![vec![0.0; 512]; 2];
+    let start = end / 2;
+    for (block, pos) in [start, start + 512, start + 2048].into_iter().enumerate() {
+        eng.render(&s, pos, 512, &mut out);
+        if block < 2 {
+            expected.iter_mut().for_each(|c| c.fill(0.0));
+            reference.process(&mut expected, 512);
+            assert!(out.iter().flatten().zip(expected.iter().flatten()).all(|(a, b)| (a - b).abs() < 1e-5), "continuous note was retriggered");
+        }
+        assert!(out.iter().flatten().any(|v| v.abs() > 1e-4), "silent at {pos}");
+        assert_eq!(eng.strips[&t].held, vec![60]);
+        assert!(!eng.strips[&t].chase_notes);
+    }
+    eng.reset();
+    eng.render(&s, start + 2560, 512, &mut out);
+    assert!(out.iter().flatten().any(|v| v.abs() > 1e-4));
+    eng.render(&s, end - 512, 512, &mut out);
+    assert_eq!(eng.strips[&t].held, vec![60]);
+    eng.render(&s, end, 512, &mut out);
+    assert!(eng.strips[&t].held.is_empty());
+    eng.reset();
+    eng.render(&s, end, 512, &mut out);
+    assert!(out.iter().flatten().all(|v| v.abs() < 1e-6), "ended note must not be chased");
+}
+
+#[test]
+fn input_monitoring_does_not_wrap_unavailable_channels() {
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let track = s.track_mut(t).unwrap();
+    track.mixer.input_monitor = true;
+    track.mixer.input = Route::Hardware("In 3".into());
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.25; 512], vec![0.5; 512]];
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    assert!(out.iter().flatten().all(|v| *v == 0.0));
+    s.track_mut(t).unwrap().mixer.input = Route::Hardware("In 2".into());
+    eng.render(&s, 512, 512, &mut out);
+    assert!((out[0][500] - 0.5 * db_to_gain(-3.0)).abs() < 1e-5);
+}
+
+#[test]
 fn mono_center_pan_is_minus_3db() {
     let (s, _) = session_with_dc(0.5, 4800);
     let out = render_range(&s, Range::new(0, 4800), 512);

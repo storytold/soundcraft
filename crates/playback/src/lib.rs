@@ -115,6 +115,8 @@ pub type EditorEdit = (TrackId, usize, String, f32);
 enum Cmd {
     /// A new snapshot plus the third-party instances it needs (created on the UI thread).
     Session(Arc<Session>, Vec<PreparedInstance>),
+    /// Replace a document, restoring plugin states even when slot identities match.
+    ReplaceSession(Arc<Session>, Vec<PreparedInstance>),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
@@ -387,6 +389,17 @@ impl Player {
         if !gone.is_empty() {
             let _ = self.tx.send(Cmd::Forget(gone));
         }
+    }
+
+    /// Replace a document, restoring its plugin states even when slot identities match.
+    pub fn replace_session(&self, s: Arc<Session>) {
+        let mut side = self.side();
+        let keys: Vec<_> = side.shadow.keys().copied().collect();
+        for key in keys {
+            side.forget(key);
+        }
+        let instances = side.prepare(&s);
+        let _ = self.tx.send(Cmd::ReplaceSession(s, instances));
     }
 
     /// Reads the state of every live third-party plugin, for saving the session.

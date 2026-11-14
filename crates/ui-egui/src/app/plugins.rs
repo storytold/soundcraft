@@ -41,6 +41,7 @@ impl SoundApp {
     /// Reads every live third-party plugin's state and stores it on its insert
     /// (`mix.insert_state`), so saves and bounces include it.
     pub fn capture_plugin_states(&mut self) {
+        self.sync_player_session();
         let Some(p) = &self.player else { return };
         let states = p.capture_states();
         self.store_plugin_states(states);
@@ -89,6 +90,9 @@ impl SoundApp {
     /// modified, so it is autosaved and asks to be saved. The state is read once per gesture (see
     /// `editor_states_due`).
     pub(super) fn apply_editor_edits(&mut self) {
+        if self.engine.session_generation() != self.last_session_generation {
+            self.sync_player_session();
+        }
         if !std::mem::take(&mut self.editor_poll_due) {
             return;
         }

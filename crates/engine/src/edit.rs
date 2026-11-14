@@ -47,34 +47,46 @@ pub fn split_clip(clip: &Clip, at: Samples, new_id: ClipId, t: TimeCtx<'_>) -> O
     if let (ClipContent::Midi { sequence: ls }, ClipContent::Midi { sequence: rs }) = (&mut left.content, &mut right.content) {
         let boundary = t.ticks(at) - t.ticks(clip.start);
         ls.notes.retain(|n| n.start < boundary);
+        for n in &mut ls.notes {
+            n.length = n.length.min(boundary.saturating_sub(n.start));
+        }
         ls.ctrls.retain(|c| c.tick < boundary);
-        rs.notes.retain(|n| n.start >= boundary);
+        rs.notes.retain(|n| n.end() > boundary);
         rs.ctrls.retain(|c| c.tick >= boundary);
         for n in &mut rs.notes {
-            n.start -= boundary;
+            let end = n.end();
+            n.start = n.start.max(boundary);
+            n.length = end.saturating_sub(n.start).max(1);
+            n.start = n.start.saturating_sub(boundary);
         }
         for c in &mut rs.ctrls {
             c.tick -= boundary;
         }
+        ls.sort();
+        rs.sort();
     }
     Some((left, right))
 }
 
-/// Trim a MIDI clip's start: drop notes before the new start and re-anchor the rest.
+/// Trim a MIDI clip's start, preserving notes that continue across the new edge.
 fn rebase_midi_start(clip: &mut Clip, old_start: Samples, t: TimeCtx<'_>) {
     let delta = t.ticks(clip.start) - t.ticks(old_start);
     if let ClipContent::Midi { sequence } = &mut clip.content {
         if delta == 0 {
             return;
         }
-        sequence.notes.retain(|n| n.start >= delta);
+        sequence.notes.retain(|n| n.end() > delta);
         sequence.ctrls.retain(|c| c.tick >= delta);
         for n in &mut sequence.notes {
-            n.start -= delta;
+            let end = n.end();
+            n.start = n.start.max(delta);
+            n.length = end.saturating_sub(n.start).max(1);
+            n.start = n.start.saturating_sub(delta);
         }
         for c in &mut sequence.ctrls {
             c.tick -= delta;
         }
+        sequence.sort();
     }
 }
 
