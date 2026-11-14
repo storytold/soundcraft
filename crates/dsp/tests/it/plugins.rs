@@ -638,6 +638,21 @@ fn zero_crossings(x: &[f32]) -> usize {
 }
 
 #[test]
+fn registry_ids_unique_and_creatable() {
+    let mut ids = HashSet::new();
+    for info in plugins() {
+        assert!(ids.insert(info.id), "duplicate id {}", info.id);
+        assert!(info.short_name.chars().count() <= 8, "{} short name too long", info.id);
+        let p = create(info.id).unwrap_or_else(|| panic!("cannot create {}", info.id));
+        assert_eq!(p.info().id, info.id);
+        assert_eq!(plugin_info(info.id).unwrap().id, info.id);
+    }
+    assert!(create("nope").is_none());
+    assert!(plugins().len() >= 25);
+}
+
+
+#[test]
 fn ring_mod_makes_sum_and_difference_tones() {
     let mut p = ring_mod(&[("effect", 0.0), ("frequency", 300.0), ("mod_depth", 0.0), ("mix", 100.0)]);
     let out = run(p.as_mut(), &[sine(1000.0, 0.5, 48_000)]);
