@@ -474,6 +474,28 @@ impl Side {
         Ok(())
     }
 
+    /// Forgets the slots (and closes the editors) whose plugin `s` removed or replaced by another,
+    /// without creating anything: for a player whose output is gone, so its editor handles stay
+    /// current. A width change keeps the slot: the instance is still that plugin, and its state
+    /// reader still holds edits the session may not have yet.
+    pub(crate) fn forget_removed(&mut self, s: &Session) {
+        self.forget_stale(&soundcraft_mix::instance_specs(s), false);
+    }
+
+    /// Forgets every slot whose plugin is no longer the one in `specs` (also when only its channel
+    /// count changed, with `by_width`: it is recreated for the new width).
+    fn forget_stale(&mut self, specs: &[soundcraft_mix::InstanceSpec], by_width: bool) {
+        let stale: Vec<(TrackId, usize)> = self
+            .shadow
+            .iter()
+            .filter(|(k, (id, ch, _))| !specs.iter().any(|x| (x.track, x.slot) == **k && x.id == *id && (!by_width || x.ch == *ch)))
+            .map(|(k, _)| *k)
+            .collect();
+        for k in stale {
+            self.forget(k);
+        }
+    }
+
     /// Creates the third-party instances `s` needs that the audio thread does not have yet.
     pub(crate) fn prepare(&mut self, s: &Session) -> Vec<PreparedInstance> {
         self.collect_garbage();
@@ -487,10 +509,7 @@ impl Side {
             self.rate = sr;
         }
         let specs = soundcraft_mix::instance_specs(s);
-        let stale: Vec<(TrackId, usize)> = self.shadow.keys().filter(|k| !specs.iter().any(|x| (x.track, x.slot) == **k)).copied().collect();
-        for k in stale {
-            self.forget(k);
-        }
+        self.forget_stale(&specs, true);
         let mut out = Vec::new();
         for spec in specs {
             let key = (spec.track, spec.slot);
