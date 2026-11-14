@@ -47,11 +47,19 @@ impl NativeMenu {
         native.add_item(app, &app_menu, "Quit SoundCraft", "", Some("app.quit".into()))?;
         native.menu.append(&app_menu)?;
         let aliases = menus::ui_aliases();
+        let mut help_menu = None;
         for root in menus::tree() {
             let submenu = native.add_branch(app, &root, &aliases)?;
             native.menu.append(&submenu)?;
+            if root.path == "Help" {
+                help_menu = Some(submenu);
+            }
         }
         native.menu.init_for_nsapp();
+        // Register the shared Help submenu explicitly instead of relying on AppKit's localized title lookup.
+        if let Some(help_menu) = help_menu {
+            help_menu.set_as_help_menu_for_nsapp();
+        }
         let ctx = ctx.clone();
         MenuEvent::set_event_handler(Some(move |event| {
             if tx.send(event).is_ok() {

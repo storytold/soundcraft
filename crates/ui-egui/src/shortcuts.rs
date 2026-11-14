@@ -59,12 +59,85 @@ fn search_chord(m: Modifiers, mac: bool) -> bool {
 /// resolves to, not by its keys.
 const REPEATING: [&str; 3] = ["view.zoom_in", "view.zoom_out", "view.waveform_zoom"];
 
+/// The current shortcut, using the registered default when there is no valid override.
+pub(crate) fn binding<'a>(state: &'a crate::UiState, id: &str) -> Option<&'a str> {
+    override_binding(state, id).or_else(|| crate::menus::shortcut_for(id))
+}
+
+fn override_binding<'a>(state: &'a crate::UiState, id: &str) -> Option<&'a str> {
+    if !customizable(id) {
+        return None;
+    }
+    state.shortcut_overrides.get(id).map(String::as_str).filter(|chord| available(chord))
+}
+
+/// Commands whose dispatch supports a shortcut override.
+pub(crate) fn customizable(id: &str) -> bool {
+    id == "help.open"
+}
+
+/// Custom shortcuts use the primary modifier, Shift or Alt, and a letter. These combinations
+/// avoid the hard-coded non-letter shortcuts and leave single-key editing and transport alone.
+pub(crate) fn available(chord: &str) -> bool {
+    let Some((mods, key)) = parse(chord) else { return false };
+    // Keep saved choices portable. macOS reserves these for logout or window/Dock actions.
+    if (key == Key::Q && mods.shift) || (matches!(key, Key::D | Key::H | Key::M) && mods.alt && !mods.shift) {
+        return false;
+    }
+    mods.command
+        && !mods.ctrl
+        && (mods.shift || mods.alt)
+        && key.name().len() == 1
+        && key.name().as_bytes().iter().all(u8::is_ascii_uppercase)
+        && command_for(None, key, mods, true).is_none()
+        && !crate::menus::UI_COMMANDS.iter().any(|c| c.3.and_then(parse) == Some((mods, key)))
+}
+
+/// The customizable Help command retains both question-mark spellings for its default binding.
+/// Cmd+? opens Help: Cmd (Ctrl off macOS) with `?`, or with Shift and `/`; not with Alt or the Mac
+/// Control key, which belong to other chords.
+fn help_chord(app: &SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
+    if let Some((want, bound_key)) = override_binding(&app.ui, "help.open").and_then(parse) {
+        return key == bound_key && mods_match(want, m, mac);
+    }
+    m.command && !m.alt && !(mac && m.ctrl) && (key == Key::Questionmark || (key == Key::Slash && m.shift))
+}
+
+/// Modal windows and focused widgets own input in either viewport.
+fn shortcuts_blocked(app: &SoundApp, ctx: &egui::Context) -> bool {
+    ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() || app.ui.show_preferences
+}
+
+/// Handle Help in the native Mix viewport, whose key events never reach the main-window handler.
+/// Keep text entry and dialogs in control of their keys, and ignore native key repeats.
+pub(crate) fn handle_mix_help(app: &mut SoundApp, ctx: &egui::Context) {
+    if shortcuts_blocked(app, ctx) {
+        return;
+    }
+    let mac = ctx.os().is_mac();
+    let pressed = ctx.input(|i| {
+        i.events.iter().any(|event| {
+            matches!(event,
+                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
+                    if help_chord(app, *key, *modifiers, mac)
+            )
+        })
+    });
+    if pressed {
+        let _ = app.run("help.open", json!({}));
+        app.ui.help.go(crate::help::Page::Command("window.mix".into()));
+        // Help belongs to the main viewport: bring it in front of the native Mix window.
+        // Sending the focus command also requests a repaint of that viewport.
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+    }
+}
+
 /// Dispatch global keyboard shortcuts once no text field or dialog wants input, ignoring non-scripted auto-repeats
 /// (except the [`REPEATING`] zoom commands) while still running a host press alongside a scripted one.
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
-    if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() || app.ui.show_preferences {
+    if shortcuts_blocked(app, ctx) {
         return;
     }
     // A scripted press is identified by its exact position in this pass's events, not by matching
@@ -87,22 +160,26 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     for (key, mods, repeat) in events {
         if repeat {
-            if let Some((id, params)) = repeating_command(key, mods, mac) {
+            if let Some((id, params)) = repeating_command(&app.ui, key, mods, mac) {
                 let _ = app.run(id, params);
             }
+            continue;
+        }
+        if help_chord(app, key, mods, mac) {
+            crate::help::open_here(app, ctx);
             continue;
         }
         if fixed(app, key, mods, mac) {
             continue;
         }
-        if let Some(id) = command_for(key, mods, mac) {
+        if let Some(id) = command_for(Some(&app.ui), key, mods, mac) {
             if crate::menus::invoke_shortcut_dialog(app, id) {
                 continue;
             }
             let _ = app.run(id, json!({}));
-        } else if let Some(c) =
-            crate::menus::UI_COMMANDS.iter().find(|c| c.3.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
-        {
+        } else if let Some(c) = crate::menus::UI_COMMANDS.iter().find(|c| {
+            c.0 != "help.open" && override_binding(&app.ui, c.0).or(c.3).and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac))
+        }) {
             let _ = app.run(c.0, json!({}));
         }
     }
@@ -114,14 +191,21 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
 /// resolves its chord the way a press falls through to these zooms ([`zoom_key`], then the
 /// registry) without the earlier [`fixed`] / [`fixed_more`] arms, so an arm added there for one of
 /// these chords must keep the two paths in agreement.
-fn repeating_command(key: Key, mods: Modifiers, mac: bool) -> Option<(&'static str, serde_json::Value)> {
-    zoom_key(key, mods, mac).or_else(|| command_for(key, mods, mac).map(|id| (id, json!({})))).filter(|(id, _)| REPEATING.contains(id))
+fn repeating_command(state: &crate::UiState, key: Key, mods: Modifiers, mac: bool) -> Option<(&'static str, serde_json::Value)> {
+    zoom_key(key, mods, mac).or_else(|| command_for(Some(state), key, mods, mac).map(|id| (id, json!({})))).filter(|(id, _)| REPEATING.contains(id))
 }
 
-fn command_for(key: Key, mods: Modifiers, mac: bool) -> Option<&'static str> {
+/// Resolves engine shortcuts. With no UI state, only defaults are checked for conflicts.
+fn command_for(state: Option<&crate::UiState>, key: Key, mods: Modifiers, mac: bool) -> Option<&'static str> {
     soundcraft_engine::command_specs()
         .iter()
-        .find(|c| c.shortcut.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
+        .find(|c| {
+            state
+                .and_then(|state| override_binding(state, c.id))
+                .or(c.shortcut)
+                .and_then(parse)
+                .is_some_and(|(m, k)| k == key && mods_match(m, mods, mac))
+        })
         .map(|c| c.id)
 }
 
@@ -520,6 +604,73 @@ mod tests {
     }
 
     #[test]
+    fn custom_shortcuts_exclude_reserved_or_unsafe_chords() {
+        assert!(super::available("Cmd+Shift+A"));
+        for chord in ["A", "Cmd+A", "Cmd+Shift+N", "Cmd+Shift+Q", "Cmd+Alt+Shift+Q", "Cmd+Alt+D", "Cmd+Shift+/", "invalid"] {
+            assert!(!super::available(chord), "{chord}");
+        }
+    }
+
+    /// A custom binding needs an exact chord and only opens Help on the initial press.
+    #[test]
+    fn rebound_help_shortcut_ignores_repeat_and_extra_modifiers() {
+        for dispatch in [super::handle, super::handle_mix_help] {
+            let ctx = egui::Context::default();
+            ctx.set_os(egui::os::OperatingSystem::Nix);
+            let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+            app.ui.shortcut_overrides.insert("help.open".into(), "Cmd+Shift+A".into());
+            let chord = PC_CTRL | Modifiers::SHIFT;
+            let press = |app: &mut crate::SoundApp, pressed, modifiers| {
+                let events = vec![egui::Event::Key { key: Key::A, physical_key: None, pressed, repeat: false, modifiers }];
+                ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| dispatch(app, ui.ctx())).textures_delta.clear();
+            };
+            press(&mut app, true, chord | Modifiers::ALT);
+            assert!(!app.ui.show_help);
+            press(&mut app, false, chord);
+            press(&mut app, true, chord);
+            assert!(app.ui.show_help);
+            app.ui.show_help = false;
+            press(&mut app, true, chord); // egui marks the held key as a repeat.
+            assert!(!app.ui.show_help);
+            press(&mut app, false, chord);
+            app.ui.show_preferences = true;
+            press(&mut app, true, chord);
+            assert!(!app.ui.show_help);
+        }
+    }
+
+    /// Help from either viewport leaves Preferences, dialogs and focused text edits in control.
+    #[test]
+    fn help_shortcuts_respect_modal_preferences() {
+        for dispatch in [super::handle, super::handle_mix_help] {
+            for owner in ["preferences", "dialog", "text"] {
+                let ctx = egui::Context::default();
+                ctx.set_os(egui::os::OperatingSystem::Nix);
+                let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+                match owner {
+                    "preferences" => app.ui.show_preferences = true,
+                    "dialog" => {
+                        crate::menus::invoke_menu(&mut app, "session.new", "File > New Session...");
+                        assert_eq!(app.dialogs.open_name(), Some("new_session"));
+                    }
+                    _ => {
+                        ctx.run_ui(egui::RawInput::default(), |ui| {
+                            ui.text_edit_singleline(&mut String::new()).request_focus();
+                        })
+                        .textures_delta
+                        .clear();
+                        assert!(ctx.text_edit_focused());
+                    }
+                }
+                let modifiers = PC_CTRL | Modifiers::SHIFT;
+                let events = vec![egui::Event::Key { key: Key::Slash, physical_key: None, pressed: true, repeat: false, modifiers }];
+                ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| dispatch(&mut app, ui.ctx())).textures_delta.clear();
+                assert!(!app.ui.show_help, "Help bypassed {owner}");
+            }
+        }
+    }
+
+    #[test]
     fn ctrl_is_cmd_off_macos() {
         assert!(mods_match(want("Cmd+S"), PC_CTRL, false));
         assert!(mods_match(want("Cmd+Shift+N"), Modifiers { shift: true, ..PC_CTRL }, false));
@@ -541,8 +692,8 @@ mod tests {
 
     #[test]
     fn shift_cmd_k_prompts_for_a_folder_to_export_clips() {
-        assert_eq!(command_for(Key::K, Modifiers { shift: true, ..MAC_CMD }, true), Some("file.export_clips"));
-        assert_eq!(command_for(Key::K, Modifiers { shift: true, ..PC_CTRL }, false), Some("file.export_clips"));
+        assert_eq!(command_for(None, Key::K, Modifiers { shift: true, ..MAC_CMD }, true), Some("file.export_clips"));
+        assert_eq!(command_for(None, Key::K, Modifiers { shift: true, ..PC_CTRL }, false), Some("file.export_clips"));
         assert!(crate::dialogs::takes_path("file.export_clips"));
     }
 

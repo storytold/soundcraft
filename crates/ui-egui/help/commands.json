@@ -1,0 +1,2528 @@
+{
+ "categories": [
+  {
+   "id": "workspace",
+   "title": "Getting started & the workspace",
+   "summary": "Windows, panels, workspaces, appearance, audio device and I/O setup, preferences"
+  },
+  {
+   "id": "sessions",
+   "title": "Sessions, import & export",
+   "summary": "New/open/save, templates, importing audio/MIDI/video/session data, exporting, bouncing mixes and stems"
+  },
+  {
+   "id": "transport",
+   "title": "Transport & navigation",
+   "summary": "Play, stop, record, locate, counters, memory locations and markers"
+  },
+  {
+   "id": "viewing",
+   "title": "Viewing & zooming",
+   "summary": "Zoom, scroll, rulers, track heights, Edit/Mix window views"
+  },
+  {
+   "id": "recording",
+   "title": "Recording",
+   "summary": "Record-enable, input monitoring, pre/post-roll, punch, loop and destructive record"
+  },
+  {
+   "id": "tracks",
+   "title": "Tracks",
+   "summary": "Creating, naming, grouping, folders, playlists, track I/O, timebase, hiding and pinning"
+  },
+  {
+   "id": "editing",
+   "title": "Editing",
+   "summary": "Edit modes, tools, selections, cut/copy/paste, separate, heal, trim, nudge, fades"
+  },
+  {
+   "id": "clips",
+   "title": "Clips",
+   "summary": "Clip gain, clip effects, colour, rating, looping, grouping, Clip List"
+  },
+  {
+   "id": "midi",
+   "title": "MIDI, instruments & notation",
+   "summary": "MIDI editor, notes, quantize, instruments, sampler, Score Editor"
+  },
+  {
+   "id": "tempo",
+   "title": "Tempo, meter & time operations",
+   "summary": "Event menu: tempo, meter, time/tempo operations, Beat Analysis"
+  },
+  {
+   "id": "mixing",
+   "title": "Mixing",
+   "summary": "Mix window, volume/pan, mute/solo, inserts, sends, busses, VCAs, solo modes"
+  },
+  {
+   "id": "automation",
+   "title": "Automation",
+   "summary": "Automation modes, breakpoints, writing and clearing automation"
+  },
+  {
+   "id": "processing",
+   "title": "Processing (AudioSuite & clip effects)",
+   "summary": "Offline processing, Strip Silence, AudioSuite plugins"
+  },
+  {
+   "id": "plugins",
+   "title": "Plugins",
+   "summary": "CLAP, VST3 and Audio Unit hosting and plugin state"
+  },
+  {
+   "id": "video",
+   "title": "Video",
+   "summary": "Video track, Video window, sync offset"
+  },
+  {
+   "id": "surround",
+   "title": "Surround & immersive",
+   "summary": "Main/bus formats, surround panner, objects and beds, Renderer"
+  },
+  {
+   "id": "options",
+   "title": "Options & preferences",
+   "summary": "Options menu toggles and global settings"
+  },
+  {
+   "id": "scripting",
+   "title": "Scripting, inspection & diagnostics",
+   "summary": "Query commands for scripts/agents, session health, history"
+  }
+ ],
+ "commands": {
+  "app.checkForUpdates": {
+   "category": "workspace",
+   "text": "Checks whether a newer version of SoundCraft is available."
+  },
+  "app.quit": {
+   "category": "sessions",
+   "text": "Quits SoundCraft."
+  },
+  "audiosuite.process": {
+   "category": "processing",
+   "text": "Applies an effect to the selected audio permanently and writes a new file, instead of running it live on the track. Options include normalize, reverse, gain, time stretch, pitch shift and varispeed (tape-style speed change)."
+  },
+  "automation.clear": {
+   "category": "automation",
+   "text": "Deletes automation for a control."
+  },
+  "automation.clip_gain_to_volume": {
+   "category": "automation",
+   "text": "Converts the selected clip gain into volume automation."
+  },
+  "automation.copy_to_send": {
+   "category": "automation",
+   "text": "Copies the track's volume automation onto one of its sends' level (Send A unless you choose), so the send follows the same fader moves."
+  },
+  "automation.set_point": {
+   "category": "automation",
+   "text": "Adds an automation point."
+  },
+  "automation.thin": {
+   "category": "automation",
+   "text": "Removes unnecessary automation points without changing the shape, making the lines easier to edit."
+  },
+  "automation.thin_all": {
+   "category": "automation",
+   "text": "Thins automation on every track."
+  },
+  "automation.volume_to_clip_gain": {
+   "category": "automation",
+   "text": "Converts the selected volume automation into clip gain."
+  },
+  "automation.write_range": {
+   "category": "automation",
+   "text": "Writes one value, or a ramp to the current value, over the selection."
+  },
+  "automation.write_to_all": {
+   "category": "automation",
+   "text": "Writes the current control values to every enabled automation lane over the selection."
+  },
+  "automation.write_to_current": {
+   "category": "automation",
+   "text": "Writes the current control value to the shown automation lane over the selection."
+  },
+  "clip.auto_rename": {
+   "category": "clips",
+   "text": "Sets how new clips are named when you split these clips: name, starting number, leading zeros and suffix."
+  },
+  "clip.bring_to_front": {
+   "category": "clips",
+   "text": "Puts an overlapping clip on top, so it's the one you hear."
+  },
+  "clip.capture": {
+   "category": "clips",
+   "text": "Renames the selected clips (to 'Captured' unless you give a name).",
+   "limits": "Differs from Pro Tools: it only renames the selected clips and does not add a new clip to the Clip List."
+  },
+  "clip.clear": {
+   "category": "clips",
+   "text": "Removes clips and audio files from the session. The files stay on disk."
+  },
+  "clip.color": {
+   "category": "clips",
+   "text": "Sets a clip's colour."
+  },
+  "clip.conform_to_tempo": {
+   "category": "clips",
+   "text": "Stretches audio clips to fit the session tempo. The first time, it records the clip's original tempo; run it again after a tempo change to re-fit."
+  },
+  "clip.edit_lock": {
+   "category": "clips",
+   "text": "Locks clips so they can't be edited or moved by accident. Run again to unlock."
+  },
+  "clip.effects_bypass": {
+   "category": "clips",
+   "text": "Turns clip effects off or on for the selected clips."
+  },
+  "clip.effects_render": {
+   "category": "clips",
+   "text": "Makes clip gain and fades permanent by writing new audio, then clears the clip effects."
+  },
+  "clip.effects_set": {
+   "category": "clips",
+   "text": "Sets EQ, dynamics and gain on individual clips, separate from track plugins."
+  },
+  "clip.elastic_properties": {
+   "category": "clips",
+   "text": "Time-stretches the selected clips by a ratio. On an Elastic Audio track the pitch stays the same; on other tracks speed and pitch change together like tape (varispeed)."
+  },
+  "clip.gain": {
+   "category": "clips",
+   "text": "Sets the clip's own volume (in dB), separate from the track fader. Use it to even out loud and quiet clips before mixing."
+  },
+  "clip.gain_bypass": {
+   "category": "clips",
+   "text": "Ignores the clip gain settings for the selected clips, without deleting them."
+  },
+  "clip.gain_nudge_down": {
+   "category": "clips",
+   "text": "Lowers clip gain on the selected clips by 1 dB."
+  },
+  "clip.gain_nudge_up": {
+   "category": "clips",
+   "text": "Raises clip gain on the selected clips by 1 dB."
+  },
+  "clip.gain_render": {
+   "category": "clips",
+   "text": "Makes the clip gain permanent by writing it into new audio, then resets clip gain to 0 dB."
+  },
+  "clip.group": {
+   "category": "clips",
+   "text": "Combines two or more selected clips into one clip group."
+  },
+  "clip.identify_sync_point": {
+   "category": "clips",
+   "text": "Sets a clip's sync point: the moment that should line up when you place or spot the clip, e.g. a door slam."
+  },
+  "clip.inspect": {
+   "category": "scripting",
+   "text": "Reports everything about one clip."
+  },
+  "clip.loop": {
+   "category": "clips",
+   "text": "Repeats a clip end to end a set number of times or for a set length. Changing the original changes every repeat.",
+   "limits": "Its listed shortcut (Cmd+Alt+L) runs Move Edit Left instead, so use the menu."
+  },
+  "clip.place_source": {
+   "category": "clips",
+   "text": "Places an audio file from the Clip List onto a track."
+  },
+  "clip.quantize_to_grid": {
+   "category": "clips",
+   "text": "Moves clips so their start (or sync point) lands on the nearest grid line."
+  },
+  "clip.rating": {
+   "category": "clips",
+   "text": "Rates a clip 0 to 5 stars, e.g. to mark the best takes."
+  },
+  "clip.regroup": {
+   "category": "clips",
+   "text": "Puts two or more clips back into one clip group, reusing the group most of them belonged to."
+  },
+  "clip.remove_pitch_shift": {
+   "category": "clips",
+   "text": "Re-renders clips that were sped up or slowed down like tape, so they keep their new length but go back to the original pitch."
+  },
+  "clip.remove_sync_point": {
+   "category": "clips",
+   "text": "Removes a clip's sync point."
+  },
+  "clip.remove_warp": {
+   "category": "clips",
+   "text": "Undoes a stretch made with Elastic Properties, putting the clip back to its original audio and length."
+  },
+  "clip.rename": {
+   "category": "clips",
+   "text": "Renames a clip."
+  },
+  "clip.send_to_back": {
+   "category": "clips",
+   "text": "Puts an overlapping clip underneath, so the other clip is heard."
+  },
+  "clip.time_lock": {
+   "category": "clips",
+   "text": "Locks a clip to its current time so it can't be moved. Run again to unlock."
+  },
+  "clip.ungroup": {
+   "category": "clips",
+   "text": "Breaks a clip group back into its separate clips."
+  },
+  "clip.ungroup_all": {
+   "category": "clips",
+   "text": "Breaks every clip group in the session back into separate clips."
+  },
+  "clip.unloop": {
+   "category": "clips",
+   "text": "Removes a clip's loops. Remove keeps only the original clip; Flatten turns each repeat into its own ordinary clip."
+  },
+  "edit.automation_coalesce_clip_gain_to_volume": {
+   "category": "automation",
+   "text": "Moves all clip gain into the track's volume automation and resets clip gain. It sounds the same."
+  },
+  "edit.automation_coalesce_volume_to_clip_gain": {
+   "category": "automation",
+   "text": "Moves the whole volume automation curve into clip gain and puts the fader back at 0 dB. It sounds the same."
+  },
+  "edit.automation_glide_pan": {
+   "category": "automation",
+   "text": "Ramps pan smoothly across the selection from its value at the start to the current value."
+  },
+  "edit.automation_glide_to_all": {
+   "category": "automation",
+   "text": "Ramps every enabled automation lane smoothly across the selection, from its value at the start to the current control value."
+  },
+  "edit.automation_trim_to_all": {
+   "category": "automation",
+   "text": "Raises or lowers every enabled automation lane in the selection by the same amount, keeping its shape."
+  },
+  "edit.clear": {
+   "category": "editing",
+   "text": "Removes the selected audio without copying it. In Slip, Spot or Grid mode it leaves a gap; in Shuffle mode later clips slide over to close it."
+  },
+  "edit.clear_all_automation": {
+   "category": "automation",
+   "text": "Deletes all automation in the selection."
+  },
+  "edit.clear_clip_effects": {
+   "category": "processing",
+   "text": "Removes clip effects from the selected clips."
+  },
+  "edit.clear_clip_gain": {
+   "category": "clips",
+   "text": "Resets clip gain in the selection back to 0 dB."
+  },
+  "edit.clear_pan_automation": {
+   "category": "automation",
+   "text": "Deletes pan automation in the selection."
+  },
+  "edit.clear_plugin_automation": {
+   "category": "automation",
+   "text": "Deletes plugin automation in the selection."
+  },
+  "edit.consolidate": {
+   "category": "editing",
+   "text": "Joins everything in the selection on each track into one continuous new clip, filling gaps with silence."
+  },
+  "edit.copy": {
+   "category": "editing",
+   "text": "Copies the selection to the clipboard."
+  },
+  "edit.copy_all_automation": {
+   "category": "automation",
+   "text": "Copies only the automation in the selection, not the clips."
+  },
+  "edit.copy_audio_as_midi": {
+   "category": "editing",
+   "text": "Detects the pitch of a single-note melody in the selected audio and copies it as MIDI notes you can paste onto a MIDI track."
+  },
+  "edit.copy_clip_effects": {
+   "category": "processing",
+   "text": "Copies a clip's clip-effect settings."
+  },
+  "edit.copy_clip_gain": {
+   "category": "clips",
+   "text": "Copies just the clip gain line from the selection, so you can paste it onto other clips."
+  },
+  "edit.copy_pan_automation": {
+   "category": "automation",
+   "text": "Copies only the pan automation in the selection."
+  },
+  "edit.copy_plugin_automation": {
+   "category": "automation",
+   "text": "Copies only the plugin automation in the selection."
+  },
+  "edit.copy_to_duplicate_playlist": {
+   "category": "editing",
+   "text": "Copies the selection into a new playlist that starts as a copy of the main one."
+  },
+  "edit.copy_to_new_playlist": {
+   "category": "editing",
+   "text": "Copies the selection into a new, otherwise empty playlist."
+  },
+  "edit.copy_to_target_playlist": {
+   "category": "editing",
+   "text": "Copies the selection into each track's target playlist."
+  },
+  "edit.cut": {
+   "category": "editing",
+   "text": "Removes the selection and puts it on the clipboard."
+  },
+  "edit.cut_all_automation": {
+   "category": "automation",
+   "text": "Cuts only the automation in the selection, leaving the clips."
+  },
+  "edit.cut_clip_effects": {
+   "category": "processing",
+   "text": "Copies, then removes, clip-effect settings."
+  },
+  "edit.cut_clip_gain": {
+   "category": "clips",
+   "text": "Copies the clip gain line, then resets it to 0 dB."
+  },
+  "edit.cut_pan_automation": {
+   "category": "automation",
+   "text": "Cuts only the pan automation in the selection."
+  },
+  "edit.cut_plugin_automation": {
+   "category": "automation",
+   "text": "Cuts only the plugin automation in the selection."
+  },
+  "edit.double_selection": {
+   "category": "editing",
+   "text": "Doubles the length of the selection."
+  },
+  "edit.duplicate": {
+   "category": "editing",
+   "text": "Places a copy of the selection right after it."
+  },
+  "edit.duplicate_extend": {
+   "category": "editing",
+   "text": "Duplicates the selection and extends the selection to include the copy, so pressing again keeps doubling."
+  },
+  "edit.extend_down_to_members": {
+   "category": "editing",
+   "text": "Extends the selection from a folder track to all the tracks inside it."
+  },
+  "edit.extend_selection_down": {
+   "category": "editing",
+   "text": "Extends the selection onto the next track down."
+  },
+  "edit.extend_selection_up": {
+   "category": "editing",
+   "text": "Extends the selection onto the next track up."
+  },
+  "edit.extend_up_to_members": {
+   "category": "editing",
+   "text": "Extends the selection up to the parent folder and all its tracks."
+  },
+  "edit.fade_to_end": {
+   "category": "editing",
+   "text": "Creates a fade-out from the insertion point to the end of the clip."
+  },
+  "edit.fade_to_start": {
+   "category": "editing",
+   "text": "Creates a fade-in from the start of the clip to the insertion point."
+  },
+  "edit.fades_create": {
+   "category": "editing",
+   "text": "Adds fades: a fade-in, a fade-out, or a crossfade where two clips meet. Shapes include linear, equal power, S-curve, exponential and logarithmic."
+  },
+  "edit.fades_delete": {
+   "category": "editing",
+   "text": "Removes fades in the selection."
+  },
+  "edit.halve_selection": {
+   "category": "editing",
+   "text": "Halves the length of the selection."
+  },
+  "edit.heal": {
+   "category": "editing",
+   "text": "Rejoins a clip that was split, as long as the pieces are still in their original places."
+  },
+  "edit.insert_silence": {
+   "category": "editing",
+   "text": "In Shuffle mode, inserts silence the length of the selection and pushes later material to the right. In other modes it silences the selection without moving anything."
+  },
+  "edit.marker_lane_extend_down": {
+   "category": "editing",
+   "text": "Adds the marker ruler below to the selection."
+  },
+  "edit.marker_lane_extend_up": {
+   "category": "editing",
+   "text": "Adds the marker ruler above to the selection."
+  },
+  "edit.marker_lane_move_down": {
+   "category": "editing",
+   "text": "Moves the selection to the marker ruler below."
+  },
+  "edit.marker_lane_move_up": {
+   "category": "editing",
+   "text": "Moves the selection to the marker ruler above."
+  },
+  "edit.mode": {
+   "category": "editing",
+   "text": "Chooses the edit mode. Shuffle: clips close up gaps when moved or deleted. Slip: clips move freely. Spot: you type an exact time. Grid: clips snap to the grid."
+  },
+  "edit.move_clips": {
+   "category": "clips",
+   "text": "Moves clips by an amount or to a position or track (used by scripts and by dragging)."
+  },
+  "edit.move_selection_left": {
+   "category": "editing",
+   "text": "Moves the selection range earlier by its own length (the audio doesn't move)."
+  },
+  "edit.move_selection_right": {
+   "category": "editing",
+   "text": "Moves the selection range later by its own length (the audio doesn't move)."
+  },
+  "edit.move_to_duplicate_playlist": {
+   "category": "editing",
+   "text": "Moves the selection into a duplicate playlist, removing it from the main one."
+  },
+  "edit.move_to_new_playlist": {
+   "category": "editing",
+   "text": "Moves the selection into a new playlist, removing it from the main one."
+  },
+  "edit.move_to_target_playlist": {
+   "category": "editing",
+   "text": "Moves the selection into the target playlist and clears it from the main one."
+  },
+  "edit.mute_clips": {
+   "category": "clips",
+   "text": "Mutes the selected clips so they don't play. They stay on the track, greyed out."
+  },
+  "edit.nudge": {
+   "category": "editing",
+   "text": "Moves the selected clips or selection by the nudge value, earlier or later."
+  },
+  "edit.paste": {
+   "category": "editing",
+   "text": "Pastes the clipboard at the insertion point."
+  },
+  "edit.paste_clip_effects": {
+   "category": "processing",
+   "text": "Pastes copied clip-effect settings onto the selected clips."
+  },
+  "edit.paste_clip_gain": {
+   "category": "clips",
+   "text": "Pastes a copied clip gain line onto the clips under the paste range."
+  },
+  "edit.paste_merge_markers": {
+   "category": "editing",
+   "text": "Pastes copied markers, skipping any already at that spot."
+  },
+  "edit.paste_merge_midi": {
+   "category": "editing",
+   "text": "Pastes MIDI notes into existing MIDI clips without replacing the notes already there."
+  },
+  "edit.paste_repeat_to_fill": {
+   "category": "editing",
+   "text": "Pastes the clipboard over and over until the selection is filled. This is useful for loops."
+  },
+  "edit.paste_to_current_automation": {
+   "category": "automation",
+   "text": "Pastes copied automation into whichever lane is showing, even if it's a different control, rescaled to fit."
+  },
+  "edit.play_timeline": {
+   "category": "transport",
+   "text": "Plays the timeline selection."
+  },
+  "edit.redo": {
+   "category": "editing",
+   "text": "Redoes the last change you undid."
+  },
+  "edit.remove_selection_bottom": {
+   "category": "editing",
+   "text": "Removes the bottom track from the selection."
+  },
+  "edit.remove_selection_top": {
+   "category": "editing",
+   "text": "Removes the top track from the selection."
+  },
+  "edit.repeat": {
+   "category": "editing",
+   "text": "Repeats the selection a set number of times, end to end."
+  },
+  "edit.restore_last_selection": {
+   "category": "editing",
+   "text": "Brings back the previous selection after you've accidentally changed it."
+  },
+  "edit.select": {
+   "category": "editing",
+   "text": "Sets the selection to given tracks, times or clips (used by scripts)."
+  },
+  "edit.select_all": {
+   "category": "editing",
+   "text": "Selects everything on all tracks."
+  },
+  "edit.select_none": {
+   "category": "editing",
+   "text": "Clears the selection."
+  },
+  "edit.selection_to_timeline": {
+   "category": "editing",
+   "text": "Makes the timeline (playback) selection match the edit selection."
+  },
+  "edit.separate": {
+   "category": "editing",
+   "text": "Splits clips at the insertion point, or at both edges of the selection, into separate clips."
+  },
+  "edit.separate_at_transients": {
+   "category": "editing",
+   "text": "Splits clips at every detected hit (drum hit, note attack). Sensitivity controls how many are found."
+  },
+  "edit.separate_on_grid": {
+   "category": "editing",
+   "text": "Splits clips at every grid line inside the selection, e.g. into one-bar pieces."
+  },
+  "edit.shift": {
+   "category": "editing",
+   "text": "Moves the selected clips earlier or later by an exact amount of time you type."
+  },
+  "edit.shuffle_lock": {
+   "category": "editing",
+   "text": "Locks Shuffle mode off so you can't switch into it by accident."
+  },
+  "edit.snap_next": {
+   "category": "editing",
+   "text": "Slides each selected clip so its end butts up against the start of the next clip, with no gap."
+  },
+  "edit.snap_previous": {
+   "category": "editing",
+   "text": "Slides each selected clip so its start butts up against the end of the previous clip, with no gap."
+  },
+  "edit.snap_to_grid": {
+   "category": "editing",
+   "text": "In Shuffle, Slip or Spot mode, makes the cursor and selections still snap to the grid."
+  },
+  "edit.space_clips": {
+   "category": "clips",
+   "text": "Spreads the selected clips out evenly with a set gap between them, end to start or start to start."
+  },
+  "edit.strip_silence": {
+   "category": "processing",
+   "text": "Finds the parts quieter than a threshold. Strip removes them, Extract keeps only the quiet parts, and Separate just splits clips at those boundaries. It's handy for cleaning up tom or vocal tracks."
+  },
+  "edit.strip_silence_preview": {
+   "category": "scripting",
+   "text": "Previews which parts Strip Silence would keep, without changing anything."
+  },
+  "edit.tab": {
+   "category": "editing",
+   "text": "Moves the insertion point to the next clip edge (or the previous one, going back). Add Shift to extend the selection."
+  },
+  "edit.tce_to_timeline": {
+   "category": "editing",
+   "text": "Time-stretches (time compression/expansion) a clip to exactly fill the timeline selection, keeping its pitch."
+  },
+  "edit.timeline_to_selection": {
+   "category": "editing",
+   "text": "Makes the edit selection match the timeline (playback) selection."
+  },
+  "edit.tool": {
+   "category": "editing",
+   "text": "Chooses the edit tool: Zoom, Trim (change clip edges), Selector (select a range), Grabber (move clips), Scrubber (drag to hear audio), Pencil (draw) or Smart (changes with mouse position)."
+  },
+  "edit.trim_clip": {
+   "category": "clips",
+   "text": "Moves a clip's start or end edge, like dragging it with the Trim tool."
+  },
+  "edit.trim_end_to_insertion": {
+   "category": "editing",
+   "text": "Shortens the clip so it ends at the insertion point."
+  },
+  "edit.trim_start_to_insertion": {
+   "category": "editing",
+   "text": "Shortens the clip so it starts at the insertion point."
+  },
+  "edit.trim_to_file_boundaries": {
+   "category": "editing",
+   "text": "Extends the clip back out to the full length of its audio file."
+  },
+  "edit.trim_to_fill_selection": {
+   "category": "editing",
+   "text": "Extends or shortens the selected clips to fill the selection, as far as the underlying audio file allows."
+  },
+  "edit.trim_to_selection": {
+   "category": "editing",
+   "text": "Trims clips down to just the selected part."
+  },
+  "edit.undo": {
+   "category": "editing",
+   "text": "Undoes the last change."
+  },
+  "engine.clap_plugins": {
+   "category": "plugins",
+   "text": "Lists installed CLAP plugins, optionally rescanning."
+  },
+  "engine.commands": {
+   "category": "scripting",
+   "text": "Lists engine commands with their IDs, parameter descriptions and availability. In an engine.execute request, use command \"engine.commands\" with params {\"filter\": \"track\"} to list matches by name or ID."
+  },
+  "engine.history": {
+   "category": "scripting",
+   "text": "Lists the undo history."
+  },
+  "engine.parity": {
+   "category": "scripting",
+   "text": "Reports which Pro Tools menu items SoundCraft implements."
+  },
+  "engine.plugins": {
+   "category": "plugins",
+   "text": "Lists the built-in plugins."
+  },
+  "engine.vst3_plugins": {
+   "category": "plugins",
+   "text": "Lists installed VST3 plugins, optionally rescanning."
+  },
+  "event.add_key_change": {
+   "category": "tempo",
+   "text": "Adds a key signature change (e.g. to G major) at the playhead."
+  },
+  "event.all_notes_off": {
+   "category": "tempo",
+   "text": "Stops any stuck MIDI notes that keep sounding."
+  },
+  "event.beat_detective": {
+   "category": "tempo",
+   "text": "Finds the beats in a recording and can split it at each beat or set the session tempo to match. Used to tighten drums or match the grid to a live performance."
+  },
+  "event.change_duration": {
+   "category": "midi",
+   "text": "Changes note lengths: set them all, add or scale, or make notes legato (each note lasts until the next one)."
+  },
+  "event.change_velocity": {
+   "category": "midi",
+   "text": "Changes how hard notes are played: set, add, scale, or limit to a range."
+  },
+  "event.cut_time": {
+   "category": "tempo",
+   "text": "Removes a stretch of time from the whole session: every track, marker and tempo change after it moves earlier."
+  },
+  "event.extract_chords": {
+   "category": "tempo",
+   "text": "Works out the chord in each bar of the selection and adds it as a marker."
+  },
+  "event.flatten_performance": {
+   "category": "midi",
+   "text": "Makes the current notes the new original, so Restore Performance returns to this version."
+  },
+  "event.identify_beat": {
+   "category": "tempo",
+   "text": "Sets the tempo by telling SoundCraft how many bars the selection is, e.g. select one bar of a drum loop to make the grid match it."
+  },
+  "event.input_quantize": {
+   "category": "midi",
+   "text": "Snaps notes to the grid as they're captured, with optional strength and swing.",
+   "limits": "Only applies to Retrospective Record at present."
+  },
+  "event.insert_time": {
+   "category": "tempo",
+   "text": "Inserts empty time across the whole session: every track, marker and tempo change after it moves later."
+  },
+  "event.meter": {
+   "category": "tempo",
+   "text": "Changes the time signature (e.g. 3/4, 6/8) from a chosen bar."
+  },
+  "event.midi_note": {
+   "category": "tempo",
+   "text": "Adds a MIDI note (used by scripts)."
+  },
+  "event.midi_ops_window": {
+   "category": "scripting",
+   "text": "Reports input quantize and stored-performance settings."
+  },
+  "event.midi_rtp": {
+   "category": "tempo",
+   "text": "Changes how a MIDI track plays back (velocity, transpose, note length, delay) without editing the notes themselves."
+  },
+  "event.midi_track_offsets": {
+   "category": "tempo",
+   "text": "Shifts a MIDI track's playback earlier or later, e.g. to make up for a slow external synth."
+  },
+  "event.move_song_start": {
+   "category": "tempo",
+   "text": "Moves where bar 1 starts. Tempo-locked clips and later tempo and meter changes move with it."
+  },
+  "event.quantize": {
+   "category": "midi",
+   "text": "Moves the selected notes onto the grid to tighten timing. Strength sets how far they move: 100% puts them exactly on the grid. Scripts can also add swing."
+  },
+  "event.remove_duplicate_notes": {
+   "category": "tempo",
+   "text": "Removes notes that sit exactly on top of another identical note."
+  },
+  "event.renumber_bars": {
+   "category": "tempo",
+   "text": "Meant to change bar numbering, e.g. so the bar after a pickup is bar 1.",
+   "limits": "Not implemented yet: does nothing (bars always start at 1)."
+  },
+  "event.restore_performance": {
+   "category": "midi",
+   "text": "Undoes quantize and other MIDI edits, returning notes to how they were originally played."
+  },
+  "event.retrospective_record": {
+   "category": "tempo",
+   "text": "Turns MIDI you played while not recording into a clip.",
+   "limits": "Scripting only: there is no background MIDI capture in the app yet, so notes must be passed in."
+  },
+  "event.select_split_notes": {
+   "category": "midi",
+   "text": "Selects notes in a pitch range, or splits them onto a new track, e.g. to separate kick and snare from one drum part."
+  },
+  "event.step_input": {
+   "category": "midi",
+   "text": "Adds notes (or rests) one at a time at a chosen length and velocity, then moves forward, so you can enter parts without playing in real time."
+  },
+  "event.tempo": {
+   "category": "tempo",
+   "text": "Adds a tempo change (in BPM) at a position."
+  },
+  "event.tempo_constant": {
+   "category": "tempo",
+   "text": "Sets one fixed tempo over the selection."
+  },
+  "event.tempo_linear": {
+   "category": "tempo",
+   "text": "Makes the tempo speed up or slow down steadily over the selection, from one BPM to another."
+  },
+  "event.tempo_ops_window": {
+   "category": "scripting",
+   "text": "Reports the Tempo Operations window's state."
+  },
+  "event.tempo_parabolic": {
+   "category": "tempo",
+   "text": "Makes the tempo change gradually along a curve over the selection, e.g. a ritardando that slows more toward the end."
+  },
+  "event.tempo_remove": {
+   "category": "tempo",
+   "text": "Deletes a tempo change."
+  },
+  "event.tempo_s_curve": {
+   "category": "tempo",
+   "text": "Makes the tempo change smoothly over the selection, easing in and out."
+  },
+  "event.tempo_scale": {
+   "category": "tempo",
+   "text": "Multiplies every tempo in the selection by the same amount, e.g. 10% faster."
+  },
+  "event.tempo_stretch": {
+   "category": "tempo",
+   "text": "Changes the tempo inside the selection so it lasts a chosen length."
+  },
+  "event.time_ops_window": {
+   "category": "scripting",
+   "text": "Reports the tempo and meter map, song start and selection."
+  },
+  "event.transpose": {
+   "category": "midi",
+   "text": "Moves notes up or down by semitones."
+  },
+  "file.bounce_mix": {
+   "category": "sessions",
+   "text": "Renders the mix to an audio file: the edit selection, or the whole session when nothing is selected. You choose the file, the format (WAV, AIFF or FLAC) and the bit depth, and can normalize or dither. When it's done, the status bar shows the file's peak level and loudness (LUFS). Scripts can also bounce a single bus."
+  },
+  "file.bounce_stems": {
+   "category": "sessions",
+   "text": "Renders each audio and instrument track to its own file in a folder, solo'd so its sends and auxes are included. Use it to hand the parts off for mixing elsewhere."
+  },
+  "file.export_clip_groups": {
+   "category": "sessions",
+   "text": "Saves the selected clip groups, with their audio, to a .scgrp file for use in another session."
+  },
+  "file.export_clips": {
+   "category": "sessions",
+   "text": "Saves each selected clip as its own WAV file in a folder you choose."
+  },
+  "file.export_midi": {
+   "category": "sessions",
+   "text": "Saves MIDI tracks as a Standard MIDI File that other music programs can open."
+  },
+  "file.export_selected_tracks_as_session": {
+   "category": "sessions",
+   "text": "Saves just the selected tracks, with their audio, as a new separate session."
+  },
+  "file.export_session_text": {
+   "category": "sessions",
+   "text": "Writes a text report of the session: tracks, clips, plugins and timings."
+  },
+  "file.export_sibelius": {
+   "category": "midi",
+   "text": "Saves MIDI tracks as MusicXML for notation programs such as Sibelius, Finale or MuseScore."
+  },
+  "file.get_info": {
+   "category": "scripting",
+   "text": "Shows information about the session file."
+  },
+  "file.import_audio": {
+   "category": "sessions",
+   "text": "Brings an audio file into the session on a new track, starting at the beginning of the session. Long files load in the background so you can keep working. Scripts can also choose the track and the start position."
+  },
+  "file.import_clip_groups": {
+   "category": "sessions",
+   "text": "Imports a saved clip group file (.scgrp) onto tracks."
+  },
+  "file.import_midi": {
+   "category": "sessions",
+   "text": "Imports a Standard MIDI File onto new MIDI tracks."
+  },
+  "file.import_session_data": {
+   "category": "sessions",
+   "text": "Copies tracks from another SoundCraft session into this one, including their clips, playlists, mixer settings, automation and audio."
+  },
+  "file.import_video": {
+   "category": "video",
+   "text": "Imports a movie onto a Video track (H.264, ProRes, Motion JPEG) and its audio onto a new track."
+  },
+  "file.print_score": {
+   "category": "midi",
+   "text": "Saves the MIDI tracks as an engraved score page (SVG) that you can print."
+  },
+  "file.score_setup": {
+   "category": "midi",
+   "text": "Sets up the printed score: title, composer, bars per line and whether to show track names."
+  },
+  "file.send_to_sibelius": {
+   "category": "midi",
+   "text": "Writes the MIDI tracks as a MusicXML file (to a temporary folder if you don't choose one) for opening in Sibelius or another notation program."
+  },
+  "help.index": {
+   "category": "workspace",
+   "text": "Opens SoundCraft Help on the Index tab, which lists every help page from A to Z."
+  },
+  "help.open": {
+   "category": "workspace",
+   "text": "Opens SoundCraft Help, where every command is explained in plain words, with its menu and shortcut. Change or restore this shortcut in Setup › Preferences › Editing under Keyboard Shortcuts."
+  },
+  "help.report": {
+   "category": "workspace",
+   "text": "Opens SoundCraft's issue tracker on GitHub in your web browser, where you can report a bug or ask for a feature."
+  },
+  "help.search": {
+   "category": "workspace",
+   "text": "Opens SoundCraft Help with the search box ready, so you can type what you want to do."
+  },
+  "markers.add": {
+   "category": "transport",
+   "text": "Adds a marker at the insertion point, or saves the current selection as a memory location you can recall later."
+  },
+  "markers.delete": {
+   "category": "transport",
+   "text": "Deletes a marker."
+  },
+  "markers.edit": {
+   "category": "transport",
+   "text": "Changes a marker's name, comments, position or colour."
+  },
+  "markers.next": {
+   "category": "transport",
+   "text": "Moves the playhead to the next marker."
+  },
+  "markers.previous": {
+   "category": "transport",
+   "text": "Moves the playhead to the previous marker."
+  },
+  "markers.recall": {
+   "category": "transport",
+   "text": "Jumps to a numbered memory location and restores its selection."
+  },
+  "midi.new_clip": {
+   "category": "midi",
+   "text": "Creates an empty MIDI clip on a MIDI or instrument track (the selection, or 1 bar), ready to draw notes in."
+  },
+  "midi.note_add": {
+   "category": "midi",
+   "text": "Adds a MIDI note."
+  },
+  "midi.note_delete": {
+   "category": "midi",
+   "text": "Deletes MIDI notes."
+  },
+  "midi.note_edit": {
+   "category": "midi",
+   "text": "Changes a note's pitch, timing, length or velocity."
+  },
+  "midi.notes": {
+   "category": "scripting",
+   "text": "Lists the notes in a MIDI clip."
+  },
+  "midi.notes_move": {
+   "category": "midi",
+   "text": "Moves notes in time or pitch."
+  },
+  "mix.automation_mode": {
+   "category": "automation",
+   "text": "Sets how a track records fader and knob moves. Read plays existing automation. Write records over everything while playing. Touch records only while you hold a control. Latch keeps recording after you let go. Trim adjusts existing automation up or down."
+  },
+  "mix.clear_mutes": {
+   "category": "mixing",
+   "text": "Unmutes every track."
+  },
+  "mix.clear_solos": {
+   "category": "mixing",
+   "text": "Unsolos every track."
+  },
+  "mix.input_monitor": {
+   "category": "recording",
+   "text": "Makes a track play its live input instead of its recorded audio, so you can hear yourself before recording."
+  },
+  "mix.insert": {
+   "category": "mixing",
+   "text": "Adds a plugin (EQ, compressor, reverb and so on) to one of a track's ten insert slots."
+  },
+  "mix.insert_bypass": {
+   "category": "mixing",
+   "text": "Turns one plugin off or on without removing it."
+  },
+  "mix.insert_move": {
+   "category": "mixing",
+   "text": "Moves a plugin to a different insert slot, which changes the processing order."
+  },
+  "mix.insert_param": {
+   "category": "mixing",
+   "text": "Changes one plugin setting."
+  },
+  "mix.insert_params": {
+   "category": "mixing",
+   "text": "Changes several plugin settings at once, or loads a preset."
+  },
+  "mix.insert_remove": {
+   "category": "mixing",
+   "text": "Removes a plugin from a track."
+  },
+  "mix.insert_state": {
+   "category": "plugins",
+   "text": "Saves a third-party plugin's settings into the session, so the plugin comes back the same way when the session reopens. SoundCraft does this for you; scripts can also call it."
+  },
+  "mix.instrument": {
+   "category": "midi",
+   "text": "Chooses the instrument an instrument track plays: a built-in synth or sampler, or a CLAP, VST3 or Audio Unit plugin."
+  },
+  "mix.instrument_param": {
+   "category": "midi",
+   "text": "Changes one setting of a built-in instrument."
+  },
+  "mix.mute": {
+   "category": "mixing",
+   "text": "Silences a track."
+  },
+  "mix.new_bus": {
+   "category": "mixing",
+   "text": "Creates a bus: an internal path for sending audio between tracks, e.g. from sends to a reverb aux."
+  },
+  "mix.pan": {
+   "category": "mixing",
+   "text": "Sets where a track sits between left and right."
+  },
+  "mix.phase_invert": {
+   "category": "mixing",
+   "text": "Flips the track's polarity. Use it when two mics on the same source sound thin together."
+  },
+  "mix.record_arm": {
+   "category": "recording",
+   "text": "Arms a track for recording. It will record the next time you press Record."
+  },
+  "mix.sampler_clear": {
+   "category": "midi",
+   "text": "Removes the sample from a track's built-in Sampler."
+  },
+  "mix.sampler_load": {
+   "category": "midi",
+   "text": "Loads an audio file into the built-in Sampler on an instrument track so you can play it from a keyboard."
+  },
+  "mix.send": {
+   "category": "mixing",
+   "text": "Adds a send that feeds a copy of the track to a bus (e.g. a shared reverb). Pre-fader means the send level ignores the track's fader."
+  },
+  "mix.send_level": {
+   "category": "mixing",
+   "text": "Sets a send's level, pan, mute and pre/post-fader setting."
+  },
+  "mix.send_remove": {
+   "category": "mixing",
+   "text": "Removes a send."
+  },
+  "mix.send_surround_pan": {
+   "category": "surround",
+   "text": "Sets where a send sits in the surround field."
+  },
+  "mix.solo": {
+   "category": "mixing",
+   "text": "Plays only this track (and other soloed tracks) so you can hear it on its own."
+  },
+  "mix.solo_safe": {
+   "category": "mixing",
+   "text": "Keeps a track from being muted when you solo other tracks, e.g. so a reverb return stays audible."
+  },
+  "mix.surround_pan": {
+   "category": "surround",
+   "text": "Positions a track in the surround field: left/right, front/back, height, spread (divergence), centre amount and LFE level."
+  },
+  "mix.trim": {
+   "category": "mixing",
+   "text": "Adjusts a track's level before its plugins and fader, from -144 to +24 dB. Useful when a recording is too hot or too quiet."
+  },
+  "mix.volume": {
+   "category": "mixing",
+   "text": "Sets a track's fader level in dB."
+  },
+  "options.auto_spot_clips": {
+   "category": "clips",
+   "text": "Clicking a clip with the Grabber opens the Spot dialog, so you can move it to an exact time by typing it.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.automation_follows_edit": {
+   "category": "editing",
+   "text": "When you move, cut or paste clips, their automation moves with them."
+  },
+  "options.calibration_mode": {
+   "category": "mixing",
+   "text": "A setup mode for calibrating track levels against a reference tone.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.click": {
+   "category": "transport",
+   "text": "Turns the metronome click on or off."
+  },
+  "options.countoff": {
+   "category": "transport",
+   "text": "Plays a count-off of clicks before recording or playback starts (set the number of bars in Setup › Click/Countoff).",
+   "limits": "Setting stored only; playback and recording don't count off yet."
+  },
+  "options.delay_compensation": {
+   "category": "mixing",
+   "text": "Delays each track by just enough to line up with tracks whose plugins add processing delay, so everything stays in time."
+  },
+  "options.destructive_punch": {
+   "category": "recording",
+   "text": "Records over the original audio file itself instead of making a new take, for punch-ins that replace the old material.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.destructive_record": {
+   "category": "recording",
+   "text": "When on, recording should overwrite the original audio instead of creating a new file.",
+   "limits": "Setting stored only; recording ignores it."
+  },
+  "options.dynamic_transport": {
+   "category": "transport",
+   "text": "Lets playback start from a separate play-start marker, independent of the edit selection.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.insertion_follows_playback": {
+   "category": "transport",
+   "text": "When playback stops, moves the insertion point to where it stopped, instead of back to where it started."
+  },
+  "options.keyboard_focus": {
+   "category": "options",
+   "text": "Chooses what single-key presses do in the Edit window. Commands focus turns letter keys into edit commands: the a-z button in the Edit window toolbar turns it on and off, and the page Keys: Commands Keyboard Focus lists every key. Clip List and Groups focus exist but are only partly done."
+  },
+  "options.keyboard_lock": {
+   "category": "editing",
+   "text": "Keeps the keyboard from changing the edit mode by accident. While it's on and you're in Grid mode, F4 no longer switches between Absolute and Relative Grid.",
+   "limits": "Only F4 in Grid mode is locked so far: F1 to F3 and the tool keys (F5 to F10) still switch, and clicking the toolbar always works."
+  },
+  "options.layered_editing": {
+   "category": "editing",
+   "text": "Lets clips sit on top of each other on a track, with the top clip playing, instead of trimming the clip underneath.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.link_timeline_edit": {
+   "category": "editing",
+   "text": "Keeps the timeline selection (what plays) and the edit selection (what edits change) the same. Turn it off to play one range while editing another."
+  },
+  "options.link_track_edit": {
+   "category": "editing",
+   "text": "Selecting a clip or range on a track also selects that track, and selecting tracks selects them for editing.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.loop_playback": {
+   "category": "transport",
+   "text": "Plays the selection over and over until you stop."
+  },
+  "options.loop_record": {
+   "category": "recording",
+   "text": "Records repeatedly over the selected range: each pass becomes a new take, so you can pick the best one afterwards."
+  },
+  "options.low_latency_monitoring": {
+   "category": "recording",
+   "text": "Routes the inputs of record-enabled tracks straight to the outputs, so what you hear while recording has as little delay as possible.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.marker_target_follows_selection": {
+   "category": "editing",
+   "text": "New track markers go on the first selected track.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.markers_follow_edit": {
+   "category": "editing",
+   "text": "When you move or delete parts of the timeline, markers move with the audio.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.midi_live_mode": {
+   "category": "midi",
+   "text": "Sends incoming MIDI to the selected instrument track even when it isn't record-enabled, for playing live.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.midi_merge": {
+   "category": "midi",
+   "text": "Records new MIDI notes into an existing MIDI clip instead of replacing it.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.midi_thru": {
+   "category": "midi",
+   "text": "Sends incoming MIDI straight to the record-enabled instrument track, so you hear the instrument while you play.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.mirrored_midi": {
+   "category": "midi",
+   "text": "When you edit a MIDI clip, every other copy of that clip gets the same change.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "options.post_roll": {
+   "category": "recording",
+   "text": "Sets how long playback continues after the selection ends."
+  },
+  "options.pre_fader_metering": {
+   "category": "mixing",
+   "text": "Makes track meters show the level before the volume fader instead of after it.",
+   "limits": "Setting stored only; meters still show the level after the fader."
+  },
+  "options.pre_post_roll": {
+   "category": "recording",
+   "text": "Plays a little before the selection (pre-roll) and after it (post-roll) when you record or play, so you hear the lead-in and the tail."
+  },
+  "options.pre_roll": {
+   "category": "recording",
+   "text": "Sets how long playback starts before the selection, so you hear a lead-in before recording or playing."
+  },
+  "options.prepare_dpe_tracks": {
+   "category": "options",
+   "text": "Readies record-armed tracks for destructive punch-in by joining each one into a single continuous clip."
+  },
+  "options.quickpunch": {
+   "category": "recording",
+   "text": "Lets you punch in and out of recording on record-enabled tracks while playback keeps running, without stopping.",
+   "limits": "Setting stored only; recording doesn't use it yet."
+  },
+  "options.scrolling": {
+   "category": "options",
+   "text": "Sets how the Edit window follows the playhead: no scrolling, after playback stops, page by page, continuously, or with the playhead kept in the centre."
+  },
+  "options.solo_mode": {
+   "category": "mixing",
+   "text": "Chooses how Solo works. Solo In Place mutes everything else in the mix. AFL and PFL send the soloed track to a separate listen bus (after or before its fader) without changing the main mix. X-OR makes a new solo cancel the previous one."
+  },
+  "options.tab_to_transient": {
+   "category": "editing",
+   "text": "Makes the Tab key jump to the next transient (the start of a drum hit or note) instead of the next clip boundary."
+  },
+  "options.trackpunch": {
+   "category": "recording",
+   "text": "Lets you punch individual tracks in and out of record while the transport is already recording.",
+   "limits": "Setting stored only; recording ignores it."
+  },
+  "options.transport_online": {
+   "category": "transport",
+   "text": "Lets an external sync source (such as timecode from another machine) start and stop playback.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "session.audio_health": {
+   "category": "scripting",
+   "text": "Lists clips whose audio is missing or not loaded."
+  },
+  "session.close": {
+   "category": "sessions",
+   "text": "Closes the current session, leaving an empty one."
+  },
+  "session.format_time": {
+   "category": "scripting",
+   "text": "Converts a time to bars|beats, timecode or another format."
+  },
+  "session.inspect": {
+   "category": "scripting",
+   "text": "Returns session information including tracks, buses, tempo and settings. In an engine.execute request, use command \"session.inspect\" with params {\"detail\": \"full\"} to include detailed track data."
+  },
+  "session.new": {
+   "category": "sessions",
+   "text": "Starts a new session. You choose its name and sample rate, or start from the demo song."
+  },
+  "session.open": {
+   "category": "sessions",
+   "text": "Opens a saved session (.scraft)."
+  },
+  "session.revert": {
+   "category": "sessions",
+   "text": "Throws away all changes since the last save and reloads the saved session."
+  },
+  "session.save": {
+   "category": "sessions",
+   "text": "Saves the session."
+  },
+  "session.save_as": {
+   "category": "sessions",
+   "text": "Saves the session under a new name or location, and keeps working on the new copy."
+  },
+  "session.save_copy": {
+   "category": "sessions",
+   "text": "Saves a copy of the session elsewhere (for backup or handing off) while you keep working on the original."
+  },
+  "session.save_template": {
+   "category": "sessions",
+   "text": "Saves the session as a template, so new sessions can start with the same tracks, routing and settings."
+  },
+  "setup.click_countoff": {
+   "category": "recording",
+   "text": "Sets up the metronome click (volume, accent and normal notes and velocities) and an optional count-off of 1 to 16 bars, which can be limited to recording only."
+  },
+  "setup.current_feet_frames": {
+   "category": "workspace",
+   "text": "Re-labels the time ruler so the current insertion point reads the feet+frames value you type (for film work)."
+  },
+  "setup.current_timecode": {
+   "category": "workspace",
+   "text": "Re-labels the session's timecode so the current insertion point reads the timecode you type. Audio does not move; only the clock changes."
+  },
+  "setup.disk_allocation": {
+   "category": "workspace",
+   "text": "Chooses which folder new recordings go to, for the whole session or per track.",
+   "limits": "Setting stored only; recordings don't use it yet."
+  },
+  "setup.external_timecode_offset": {
+   "category": "workspace",
+   "text": "Sets an offset (in frames or samples) for timecode coming from an external machine.",
+   "limits": "Setting stored only; external timecode sync isn't implemented."
+  },
+  "setup.hardware": {
+   "category": "workspace",
+   "text": "Opens the Playback Engine window to choose the audio output device and buffer size."
+  },
+  "setup.io": {
+   "category": "workspace",
+   "text": "Opens I/O setup, where you create, rename and delete busses and hardware outputs that tracks can route to."
+  },
+  "setup.keyboard_shortcuts": {
+   "category": "workspace",
+   "text": "Lists every keyboard shortcut (used by scripts; the Keyboard Shortcuts window shows the same list)."
+  },
+  "setup.main_format": {
+   "category": "surround",
+   "text": "Sets the session's main output format, from stereo up to 9.1.6 surround or Ambisonics."
+  },
+  "setup.midi_beat_clock": {
+   "category": "midi",
+   "text": "Sets up sending tempo clock to external MIDI gear (drum machines, synths) so they play in time.",
+   "limits": "Setting stored only; no clock is sent yet."
+  },
+  "setup.midi_input_devices": {
+   "category": "midi",
+   "text": "Chooses which MIDI keyboards and controllers to listen to.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "setup.midi_input_filter": {
+   "category": "midi",
+   "text": "Chooses which kinds of MIDI data (aftertouch, pitch bend and so on) to ignore when recording.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "setup.midi_studio": {
+   "category": "midi",
+   "text": "Lists the MIDI devices in your studio.",
+   "limits": "Setting stored only."
+  },
+  "setup.peripherals": {
+   "category": "workspace",
+   "text": "Stores control surface and sync device settings.",
+   "limits": "Setting stored only; nothing uses it yet."
+  },
+  "setup.playback_engine": {
+   "category": "workspace",
+   "text": "Opens the Playback Engine window to choose the audio device and buffer size, and turn delay compensation on or off. A smaller buffer means less delay when recording but more CPU load."
+  },
+  "setup.preferences": {
+   "category": "workspace",
+   "text": "Opens Preferences to change application and editing settings. Choose OK to apply changes or Cancel to discard them. Its menu item is unavailable while playback or recording is active.",
+   "limits": "Settings for features that are not implemented yet are shown disabled."
+  },
+  "setup.reset_edit_state": {
+   "category": "workspace",
+   "text": "Puts edit settings (tools, modes, grid and nudge values, view options) back to their defaults, keeping your current selection."
+  },
+  "setup.session": {
+   "category": "workspace",
+   "text": "Session settings: the timecode rate and the bit depth of the session's audio. Scripts can also set the timecode start and the session name."
+  },
+  "setup.transcription_settings": {
+   "category": "workspace",
+   "text": "Stores whether speech transcription is on and its language.",
+   "limits": "Setting stored only; there is no transcription feature yet."
+  },
+  "setup.video_sync_offset": {
+   "category": "video",
+   "text": "Shifts the picture earlier or later relative to the audio, to fix lip-sync caused by a slow display."
+  },
+  "track.bounce": {
+   "category": "tracks",
+   "text": "Currently does the same as Commit: renders the track to a new '<track>.cm' audio track and hides the original as inactive.",
+   "limits": "Same as Commit at present."
+  },
+  "track.bypass_delay": {
+   "category": "tracks",
+   "text": "Bypasses only delay plugins on the selected tracks."
+  },
+  "track.bypass_dynamics": {
+   "category": "tracks",
+   "text": "Bypasses only dynamics plugins (compressors, gates, limiters) on the selected tracks."
+  },
+  "track.bypass_eq": {
+   "category": "tracks",
+   "text": "Bypasses only EQ plugins on the selected tracks."
+  },
+  "track.bypass_inserts": {
+   "category": "tracks",
+   "text": "Turns off (bypasses) every plugin on the selected tracks, or turns them back on, so you can compare with and without."
+  },
+  "track.bypass_inserts_ae": {
+   "category": "tracks",
+   "text": "Bypasses plugins in insert slots A to E."
+  },
+  "track.bypass_inserts_fj": {
+   "category": "tracks",
+   "text": "Bypasses plugins in insert slots F to J."
+  },
+  "track.bypass_modulation": {
+   "category": "tracks",
+   "text": "Bypasses only modulation plugins (chorus, flanger, phaser) on the selected tracks."
+  },
+  "track.bypass_reverb": {
+   "category": "tracks",
+   "text": "Bypasses only reverb plugins on the selected tracks."
+  },
+  "track.change_width": {
+   "category": "surround",
+   "text": "Changes a track's channel format: mono, stereo, or a surround or Ambisonics format."
+  },
+  "track.clear_clip_indicators": {
+   "category": "tracks",
+   "text": "Resets the red clip (overload) lights on all meters, including the master."
+  },
+  "track.clear_trim_automation": {
+   "category": "automation",
+   "text": "Deletes trim automation on the selected tracks."
+  },
+  "track.coalesce_trim": {
+   "category": "tracks",
+   "text": "Merges trim automation into the volume automation, then removes the trim, leaving one volume line that sounds the same."
+  },
+  "track.coalesce_vca": {
+   "category": "tracks",
+   "text": "Writes a VCA master's fader moves into each member track's own volume automation, then resets the VCA. The mix sounds the same without the VCA."
+  },
+  "track.color": {
+   "category": "tracks",
+   "text": "Sets a track's colour."
+  },
+  "track.comments": {
+   "category": "tracks",
+   "text": "Adds notes to a track (shown in the Comments view)."
+  },
+  "track.commit": {
+   "category": "tracks",
+   "text": "Renders the track (clips, clip effects and plugins, before the fader) to a new audio track named '<track>.cm' that keeps the fader level, output and sends. The original is made inactive and hidden, so you can bring it back."
+  },
+  "track.convert_aux_to_folder": {
+   "category": "tracks",
+   "text": "Turns an aux input into a routing folder. Tracks whose output feeds the aux's input bus move inside the folder."
+  },
+  "track.create_click": {
+   "category": "tracks",
+   "text": "Adds a mono aux track named Click and turns the click on."
+  },
+  "track.delete": {
+   "category": "tracks",
+   "text": "Deletes the selected tracks."
+  },
+  "track.designate_target_playlist": {
+   "category": "tracks",
+   "text": "Marks a playlist as the target for 'Copy/Move Selection to Target Playlist'. This is handy when comping takes."
+  },
+  "track.duplicate": {
+   "category": "tracks",
+   "text": "Makes copies of the selected tracks, optionally with their playlists, automation, plugins and sends."
+  },
+  "track.elastic": {
+   "category": "tracks",
+   "text": "Picks the Elastic Audio algorithm SoundCraft uses when you stretch a clip (Elastic Properties or Conform to Tempo). Polyphonic suits full mixes and chords, Rhythmic drums, Monophonic a single voice. Varispeed changes speed and pitch together, like tape. 'None' turns it off.",
+   "limits": "Not applied live; only used when you stretch clips."
+  },
+  "track.extract_midi": {
+   "category": "tracks",
+   "text": "Copies the MIDI from instrument or MIDI tracks onto a new MIDI track."
+  },
+  "track.folder_toggle": {
+   "category": "tracks",
+   "text": "Opens or closes a folder track to show or hide the tracks inside it."
+  },
+  "track.freeze": {
+   "category": "tracks",
+   "text": "Marks a track as frozen. In Pro Tools this renders the plugins to save CPU.",
+   "limits": "Display only: the Freeze button lights, but nothing is rendered and CPU use doesn't change."
+  },
+  "track.group": {
+   "category": "tracks",
+   "text": "Groups the selected tracks so edits, mixer changes or both apply to all of them together."
+  },
+  "track.group_modify": {
+   "category": "tracks",
+   "text": "Changes a group's name, its member tracks, or whether it links editing, mixing or both."
+  },
+  "track.group_toggle": {
+   "category": "tracks",
+   "text": "Turns a group on or off without deleting it."
+  },
+  "track.height": {
+   "category": "viewing",
+   "text": "Sets track height, from micro to extreme."
+  },
+  "track.height_down": {
+   "category": "viewing",
+   "text": "Makes the selected tracks one size shorter."
+  },
+  "track.height_up": {
+   "category": "viewing",
+   "text": "Makes the selected tracks one size taller."
+  },
+  "track.hide": {
+   "category": "tracks",
+   "text": "Hides a track from the Edit and Mix windows without deleting it. It still plays."
+  },
+  "track.input": {
+   "category": "tracks",
+   "text": "Chooses where a track gets its sound from: a hardware input or a bus."
+  },
+  "track.inspect": {
+   "category": "scripting",
+   "text": "Returns a track's mixer settings, routing, clips and automation. In an engine.execute request, use command \"track.inspect\" with params {\"track\": \"Vocals\"}, replacing Vocals with an existing track name."
+  },
+  "track.load_preset": {
+   "category": "tracks",
+   "text": "Applies a saved track preset (mixer, plugins, sends, instrument) to the selected tracks."
+  },
+  "track.make_inactive": {
+   "category": "tracks",
+   "text": "Switches a track off completely: it uses no CPU or voices, but stays in the session. Make it active to use it again."
+  },
+  "track.move": {
+   "category": "tracks",
+   "text": "Moves a track to a new position in the track order."
+  },
+  "track.move_to_folder": {
+   "category": "tracks",
+   "text": "Moves tracks into an existing folder track."
+  },
+  "track.move_to_new_folder": {
+   "category": "tracks",
+   "text": "Puts the selected tracks into a new folder track."
+  },
+  "track.mute_sends": {
+   "category": "tracks",
+   "text": "Mutes every send on the selected tracks."
+  },
+  "track.mute_sends_ae": {
+   "category": "tracks",
+   "text": "Mutes sends A to E on the selected tracks."
+  },
+  "track.mute_sends_fj": {
+   "category": "tracks",
+   "text": "Mutes sends F to J on the selected tracks."
+  },
+  "track.new": {
+   "category": "tracks",
+   "text": "Creates new tracks: audio, aux input, master fader, MIDI, instrument, VCA or folder, mono or stereo or surround."
+  },
+  "track.object": {
+   "category": "surround",
+   "text": "In an immersive mix, sends a track as a moving object instead of into the fixed speaker bed."
+  },
+  "track.output": {
+   "category": "tracks",
+   "text": "Chooses where a track sends its sound: the main output, a bus, or nowhere."
+  },
+  "track.pin": {
+   "category": "tracks",
+   "text": "Marks a track as pinned to the top of the Edit window.",
+   "limits": "Not used yet: pinned tracks don't stay at the top."
+  },
+  "track.playlist_delete_unused": {
+   "category": "tracks",
+   "text": "Deletes alternate playlists (takes) that aren't being used."
+  },
+  "track.playlist_duplicate": {
+   "category": "tracks",
+   "text": "Copies the current playlist so you can try edits without losing the original."
+  },
+  "track.playlist_new": {
+   "category": "tracks",
+   "text": "Creates a new empty playlist on a track, e.g. for a new take, keeping the old one."
+  },
+  "track.playlist_promote": {
+   "category": "tracks",
+   "text": "Copies a section from an alternate playlist (take) into the main playlist. This is how you comp the best parts of several takes."
+  },
+  "track.playlist_select": {
+   "category": "tracks",
+   "text": "Switches a track to a different playlist (take)."
+  },
+  "track.remove_from_folder": {
+   "category": "tracks",
+   "text": "Takes tracks out of their folder."
+  },
+  "track.rename": {
+   "category": "tracks",
+   "text": "Renames a track."
+  },
+  "track.save_preset": {
+   "category": "tracks",
+   "text": "Saves a track's setup (type, mixer settings, plugins, sends, instrument) as a preset to reuse."
+  },
+  "track.scroll_to": {
+   "category": "tracks",
+   "text": "Scrolls the Edit window to a track by name or number."
+  },
+  "track.set_record_to_input_only": {
+   "category": "recording",
+   "text": "Sets every record-armed track to monitor its live input only, so you hear what's coming in rather than what's on the track."
+  },
+  "track.show_target_playlist": {
+   "category": "tracks",
+   "text": "Makes the target playlist the one that plays."
+  },
+  "track.split_into_mono": {
+   "category": "tracks",
+   "text": "Splits a stereo (or multichannel) audio track into separate mono tracks, one per channel."
+  },
+  "track.timebase": {
+   "category": "tracks",
+   "text": "Sets a track's timebase to ticks (follows bars and beats when the tempo changes) or samples (stays at a fixed clock time).",
+   "limits": "So far only Move Song Start uses it."
+  },
+  "track.toggle_recent_playlist": {
+   "category": "tracks",
+   "text": "Switches back to the playlist you were on before."
+  },
+  "track.trim_automation_write": {
+   "category": "automation",
+   "text": "Writes a relative volume change (dB) over a range, on top of existing volume automation."
+  },
+  "track.ungroup": {
+   "category": "tracks",
+   "text": "Deletes a group. The tracks stay but are no longer linked."
+  },
+  "track.vca": {
+   "category": "tracks",
+   "text": "Assigns a track to a VCA master, so one fader controls the level of every track assigned to it."
+  },
+  "track.view": {
+   "category": "tracks",
+   "text": "Chooses what a track shows: waveform, blocks, MIDI notes, or a volume, pan, mute or plugin automation lane."
+  },
+  "track.write_midi_rtp": {
+   "category": "tracks",
+   "text": "Bakes the track's real-time MIDI settings (velocity, transpose, duration, delay) into the notes themselves, then resets those settings."
+  },
+  "transport.fast_forward": {
+   "category": "transport",
+   "text": "Moves the playhead forward (1 second by default)."
+  },
+  "transport.go_to_end": {
+   "category": "transport",
+   "text": "Moves the playhead to the end of the session."
+  },
+  "transport.half_speed": {
+   "category": "transport",
+   "text": "Plays from the selection at half speed and an octave lower, which helps when checking fast passages."
+  },
+  "transport.locate": {
+   "category": "transport",
+   "text": "Moves the playhead to a given time."
+  },
+  "transport.pause": {
+   "category": "transport",
+   "text": "Pauses playback without moving the playhead back."
+  },
+  "transport.play": {
+   "category": "transport",
+   "text": "Starts playback."
+  },
+  "transport.play_selection": {
+   "category": "transport",
+   "text": "Plays only the edit selection, then stops."
+  },
+  "transport.record": {
+   "category": "recording",
+   "text": "Starts recording on all record-armed tracks."
+  },
+  "transport.rewind": {
+   "category": "transport",
+   "text": "Moves the playhead back (1 second by default)."
+  },
+  "transport.rtz": {
+   "category": "transport",
+   "text": "Moves the playhead to the start of the session."
+  },
+  "transport.status": {
+   "category": "transport",
+   "text": "Reports whether the transport is playing or recording, and where (used by scripts)."
+  },
+  "transport.stop": {
+   "category": "transport",
+   "text": "Stops playback."
+  },
+  "transport.toggle": {
+   "category": "transport",
+   "text": "Starts or stops playback."
+  },
+  "ui.audio_device": {
+   "category": "workspace",
+   "text": "Chooses which audio interface SoundCraft plays through."
+  },
+  "ui.bounce_dialog": {
+   "category": "sessions",
+   "text": "Opens the Bounce Mix dialog."
+  },
+  "ui.dock": {
+   "category": "workspace",
+   "text": "Moves a panel to a different place in the docked layout."
+  },
+  "ui.dock.reset": {
+   "category": "workspace",
+   "text": "Puts all docked panels back to the default layout."
+  },
+  "ui.new_tracks_dialog": {
+   "category": "tracks",
+   "text": "Opens the New Tracks dialog."
+  },
+  "ui.reduce_visual_effects": {
+   "category": "workspace",
+   "text": "Chooses when optional interface animation and decoration are reduced: never, only during playback, or always. This setting is also available in Preferences."
+  },
+  "ui.set": {
+   "category": "workspace",
+   "text": "Sets a UI option directly (used by scripts)."
+  },
+  "ui.theme": {
+   "category": "workspace",
+   "text": "Chooses light, dark, or follow-the-system appearance."
+  },
+  "ui.undo_levels": {
+   "category": "workspace",
+   "text": "Sets how many undo and redo steps the application keeps, from 1 to 64. Lowering the limit discards history beyond that limit. This setting is also available in Preferences."
+  },
+  "video.list": {
+   "category": "scripting",
+   "text": "Lists the movies used by Video tracks and whether each is online."
+  },
+  "video.offset": {
+   "category": "video",
+   "text": "Moves the video so the picture starts at a set time, e.g. 01:00:00:00."
+  },
+  "video.online": {
+   "category": "video",
+   "text": "Turns video decoding on or off. Turn it off to save CPU while working on audio."
+  },
+  "view.automation_composite_playlist": {
+   "category": "automation",
+   "text": "Shows the combined result of volume and trim automation as one line.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.automation_trim_playlist": {
+   "category": "automation",
+   "text": "Shows the trim automation lane, which adjusts a track's volume relative to its main volume automation.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.clip_all_channels": {
+   "category": "viewing",
+   "text": "Shows clip names and info on every channel of a stereo or multichannel clip, not only the top one.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.clip_ara_note_overlay": {
+   "category": "viewing",
+   "text": "Shows detected notes on top of audio clips processed by a note-detection (ARA) plugin.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.clip_channel_name": {
+   "category": "viewing",
+   "text": "Shows the channel names of multichannel files on their clips.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.clip_copy_move_indicators": {
+   "category": "viewing",
+   "text": "Shows whether a drag will copy or move clips.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.clip_effects_status": {
+   "category": "viewing",
+   "text": "Shows a badge on clips that have clip effects applied."
+  },
+  "view.clip_gain_info": {
+   "category": "viewing",
+   "text": "Shows the clip gain control and its value on every audio clip, not only on clips whose gain you've changed."
+  },
+  "view.clip_gain_line": {
+   "category": "viewing",
+   "text": "Draws the clip gain line on audio clips, which you can drag to change a clip's volume."
+  },
+  "view.clip_name": {
+   "category": "viewing",
+   "text": "Shows each clip's name on the clip."
+  },
+  "view.clip_overlap_shadows": {
+   "category": "viewing",
+   "text": "Draws a shadow where one clip overlaps another, so you can see which is on top."
+  },
+  "view.clip_overwrite_indicator": {
+   "category": "viewing",
+   "text": "Highlights the part of a clip that a dragged clip will overwrite.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.clip_processing_state": {
+   "category": "viewing",
+   "text": "Shows a badge on clips that are being processed or need rendering.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.clip_rating": {
+   "category": "viewing",
+   "text": "Shows each clip's rating (the stars you give takes) on the clip."
+  },
+  "view.clip_scene_take": {
+   "category": "viewing",
+   "text": "Shows the scene and take numbers recorded with field-recorder files on their clips.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.clip_sync_point": {
+   "category": "viewing",
+   "text": "Shows each clip's sync point, the spot inside the clip that snaps to the grid or a time when you move it."
+  },
+  "view.clip_time_current": {
+   "category": "viewing",
+   "text": "Shows each clip's start time on the clip, in the main time format."
+  },
+  "view.clip_time_none": {
+   "category": "viewing",
+   "text": "Shows no time on clips."
+  },
+  "view.clip_time_original": {
+   "category": "viewing",
+   "text": "Shows each clip's original time stamp (where it was first recorded) on the clip."
+  },
+  "view.clip_time_user": {
+   "category": "viewing",
+   "text": "Shows each clip's user time stamp (a time you saved for it) on the clip."
+  },
+  "view.clip_transparency": {
+   "category": "viewing",
+   "text": "Makes clips partly see-through, so the grid and anything behind them show through."
+  },
+  "view.dropped_video_frame_indicator": {
+   "category": "viewing",
+   "text": "Shows a warning when video playback drops frames.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.edit_all": {
+   "category": "viewing",
+   "text": "Shows every optional column in the Edit window (inserts, sends, I/O, comments and so on)."
+  },
+  "view.edit_comments": {
+   "category": "viewing",
+   "text": "Shows or hides the Comments column in the Edit window's track headers."
+  },
+  "view.edit_inserts_ae": {
+   "category": "viewing",
+   "text": "Shows or hides the Inserts A-E column in the Edit window's track headers."
+  },
+  "view.edit_inserts_fj": {
+   "category": "viewing",
+   "text": "Shows or hides the Inserts F-J column in the Edit window's track headers."
+  },
+  "view.edit_instruments": {
+   "category": "viewing",
+   "text": "Shows or hides the Instruments column in the Edit window's track headers."
+  },
+  "view.edit_io": {
+   "category": "viewing",
+   "text": "Shows or hides the I/O column in the Edit window's track headers."
+  },
+  "view.edit_marker_controls": {
+   "category": "viewing",
+   "text": "Shows or hides the Marker Controls column in the Edit window's track headers.",
+   "limits": "Not shown yet: SoundCraft has no Marker Controls column."
+  },
+  "view.edit_mic_preamps": {
+   "category": "viewing",
+   "text": "Shows or hides the Mic Preamps column in the Edit window's track headers.",
+   "limits": "Not shown yet: SoundCraft has no Mic Preamps column."
+  },
+  "view.edit_minimal": {
+   "category": "viewing",
+   "text": "Hides all optional Edit window columns, leaving only the tracks."
+  },
+  "view.edit_object": {
+   "category": "viewing",
+   "text": "Shows or hides the Object column in the Edit window's track headers.",
+   "limits": "Not shown yet: SoundCraft has no Object column."
+  },
+  "view.edit_pinned_tracks": {
+   "category": "viewing",
+   "text": "Shows or hides the Pinned Tracks column in the Edit window's track headers.",
+   "limits": "Not shown yet: SoundCraft has no Pinned Tracks column."
+  },
+  "view.edit_realtime_properties": {
+   "category": "viewing",
+   "text": "Shows or hides the Real-Time Properties column in the Edit window's track headers.",
+   "limits": "Not shown yet: SoundCraft has no Real-Time Properties column."
+  },
+  "view.edit_sends_ae": {
+   "category": "viewing",
+   "text": "Shows or hides the Sends A-E column in the Edit window's track headers."
+  },
+  "view.edit_sends_fj": {
+   "category": "viewing",
+   "text": "Shows or hides the Sends F-J column in the Edit window's track headers."
+  },
+  "view.edit_track_color": {
+   "category": "viewing",
+   "text": "Shows or hides the Track Color column in the Edit window's track headers.",
+   "limits": "Not shown yet: SoundCraft has no Track Color column."
+  },
+  "view.expanded_send_a": {
+   "category": "viewing",
+   "text": "Shows send A as a full control (level, pan and mute) in the sends view instead of a small slot.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.expanded_send_b": {
+   "category": "viewing",
+   "text": "Shows send B as a full control (level, pan and mute) in the sends view instead of a small slot.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.expanded_send_c": {
+   "category": "viewing",
+   "text": "Shows send C as a full control (level, pan and mute) in the sends view instead of a small slot.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.expanded_send_d": {
+   "category": "viewing",
+   "text": "Shows send D as a full control (level, pan and mute) in the sends view instead of a small slot.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.expanded_send_e": {
+   "category": "viewing",
+   "text": "Shows send E as a full control (level, pan and mute) in the sends view instead of a small slot.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.expanded_send_f": {
+   "category": "viewing",
+   "text": "Shows send F as a full control (level, pan and mute) in the sends view instead of a small slot.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.expanded_send_g": {
+   "category": "viewing",
+   "text": "Shows send G as a full control (level, pan and mute) in the sends view instead of a small slot.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.expanded_send_h": {
+   "category": "viewing",
+   "text": "Shows send H as a full control (level, pan and mute) in the sends view instead of a small slot.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.expanded_send_i": {
+   "category": "viewing",
+   "text": "Shows send I as a full control (level, pan and mute) in the sends view instead of a small slot.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.expanded_send_j": {
+   "category": "viewing",
+   "text": "Shows send J as a full control (level, pan and mute) in the sends view instead of a small slot.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.expanded_sends_all": {
+   "category": "viewing",
+   "text": "Meant to show full controls (level, pan, mute) for every send instead of just the send names.",
+   "limits": "Not used yet: no visible effect."
+  },
+  "view.expanded_sends_none": {
+   "category": "viewing",
+   "text": "Meant to collapse all sends back to just their names.",
+   "limits": "Not used yet: no visible effect."
+  },
+  "view.flags": {
+   "category": "scripting",
+   "text": "Lists which view and option settings are on."
+  },
+  "view.grid": {
+   "category": "viewing",
+   "text": "Sets the grid spacing that clips and selections snap to, e.g. 1/16 note, 1 bar, or a time in seconds, frames or samples."
+  },
+  "view.grid_lines": {
+   "category": "viewing",
+   "text": "Shows or hides vertical grid lines across the tracks."
+  },
+  "view.main_counter": {
+   "category": "transport",
+   "text": "Chooses how the main counter shows time: bars|beats, minutes:seconds, timecode, feet+frames or samples."
+  },
+  "view.marker_folder_lines": {
+   "category": "viewing",
+   "text": "Draws marker lines through folder tracks too.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.marker_ruler_lane_color": {
+   "category": "viewing",
+   "text": "Colours the marker ruler with each marker's colour.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.marker_ruler_lines": {
+   "category": "viewing",
+   "text": "Draws a vertical line down through the tracks at every marker."
+  },
+  "view.marker_track_lane": {
+   "category": "viewing",
+   "text": "Shows a lane on each track for track markers.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.marker_track_lane_color": {
+   "category": "viewing",
+   "text": "Colours track marker lanes with each marker's colour.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.midi_editor_clip_effects": {
+   "category": "viewing",
+   "text": "Shows Clip Effects in the lower part of the MIDI Editor.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.midi_input_display": {
+   "category": "viewing",
+   "text": "Shows incoming MIDI notes as they arrive.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.mix_section": {
+   "category": "viewing",
+   "text": "Shows or hides a section of the Mix window strips: inserts, sends, I/O, comments, meters and so on."
+  },
+  "view.nudge": {
+   "category": "viewing",
+   "text": "Sets how far the Nudge keys move a clip or selection each press, e.g. 1/16 note, 10 ms or 1 frame."
+  },
+  "view.ruler": {
+   "category": "viewing",
+   "text": "Shows or hides one ruler above the tracks: bars and beats, minutes:seconds, timecode, feet+frames, samples, tempo, meter, markers, key or chords."
+  },
+  "view.ruler_all": {
+   "category": "viewing",
+   "text": "Shows every ruler."
+  },
+  "view.ruler_all_markers": {
+   "category": "viewing",
+   "text": "Shows or hides all five marker rulers."
+  },
+  "view.ruler_key_staff": {
+   "category": "viewing",
+   "text": "Shows a music staff on the Key Signature ruler with each key signature written out.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.ruler_markers2": {
+   "category": "viewing",
+   "text": "Shows or hides the second marker ruler."
+  },
+  "view.ruler_markers3": {
+   "category": "viewing",
+   "text": "Shows or hides the third marker ruler."
+  },
+  "view.ruler_markers4": {
+   "category": "viewing",
+   "text": "Shows or hides the fourth marker ruler."
+  },
+  "view.ruler_markers5": {
+   "category": "viewing",
+   "text": "Shows or hides the fifth marker ruler."
+  },
+  "view.ruler_minimal": {
+   "category": "viewing",
+   "text": "Shows only the main time ruler and the marker ruler."
+  },
+  "view.ruler_tempo_editor": {
+   "category": "viewing",
+   "text": "Opens a taller tempo editor lane under the Tempo ruler for editing tempo changes. The Tempo ruler must be showing."
+  },
+  "view.ruler_timecode2": {
+   "category": "viewing",
+   "text": "Shows a second timecode ruler, for a different frame rate."
+  },
+  "view.scroll": {
+   "category": "viewing",
+   "text": "Scrolls the timeline left or right."
+  },
+  "view.scroll_into_view": {
+   "category": "viewing",
+   "text": "Scrolls the window so the chosen track is visible: at the top of the Edit window, or at the left of the Mix window."
+  },
+  "view.sub_counter": {
+   "category": "transport",
+   "text": "Shows a second, smaller counter in another time format (or hides it)."
+  },
+  "view.track_number": {
+   "category": "viewing",
+   "text": "Shows each track's number before its name."
+  },
+  "view.track_transcription_lane": {
+   "category": "viewing",
+   "text": "Shows the lane with each track's speech transcription.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.transport_ableton_link": {
+   "category": "viewing",
+   "text": "Shows the Tempo Sync controls in the Transport window.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.transport_counters": {
+   "category": "viewing",
+   "text": "Shows the counters in the Transport window."
+  },
+  "view.transport_expanded": {
+   "category": "viewing",
+   "text": "Shows the expanded Transport window with its extra controls."
+  },
+  "view.transport_midi_controls": {
+   "category": "viewing",
+   "text": "Shows the click and MIDI buttons (Click, Count Off, MIDI Merge, Loop Record, Pre/Post-Roll) in the Transport window."
+  },
+  "view.transport_output_meters": {
+   "category": "viewing",
+   "text": "Shows the output meters in the Transport window."
+  },
+  "view.transport_synchronization": {
+   "category": "viewing",
+   "text": "Shows the sync controls in the Transport window.",
+   "limits": "Not used yet: turning it on has no visible effect."
+  },
+  "view.waveform_outlines": {
+   "category": "viewing",
+   "text": "Draws waveforms as outlines instead of filled shapes."
+  },
+  "view.waveform_overlapped_crossfades": {
+   "category": "viewing",
+   "text": "Draws both clips' waveforms inside crossfades, so you can see how they overlap."
+  },
+  "view.waveform_peak": {
+   "category": "viewing",
+   "text": "Draws waveforms by their peak level, the usual view."
+  },
+  "view.waveform_power": {
+   "category": "viewing",
+   "text": "Draws waveforms by their average loudness (power), which shows how loud a passage sounds better than peaks do."
+  },
+  "view.waveform_rectified": {
+   "category": "viewing",
+   "text": "Draws waveforms as one half, from the bottom up, so quiet detail is bigger."
+  },
+  "view.waveform_zoom": {
+   "category": "viewing",
+   "text": "Makes waveforms look taller or shorter so quiet audio is easier to see. It only changes the display, not the volume."
+  },
+  "view.zoom_by": {
+   "category": "viewing",
+   "text": "Zooms in or out by a factor, around a point on the timeline."
+  },
+  "view.zoom_fit": {
+   "category": "viewing",
+   "text": "Zooms out so the whole session fits in the window."
+  },
+  "view.zoom_in": {
+   "category": "viewing",
+   "text": "Zooms in horizontally on the timeline."
+  },
+  "view.zoom_out": {
+   "category": "viewing",
+   "text": "Zooms out horizontally on the timeline."
+  },
+  "view.zoom_preset": {
+   "category": "viewing",
+   "text": "Recalls one of five saved zoom levels, or saves the current zoom to one."
+  },
+  "view.zoom_set": {
+   "category": "viewing",
+   "text": "Sets an exact zoom level (samples per pixel)."
+  },
+  "view.zoom_to_selection": {
+   "category": "viewing",
+   "text": "Zooms so the edit selection fills the window."
+  },
+  "view.zoom_toggle": {
+   "category": "viewing",
+   "text": "Zooms to fill the window with the current selection. Press again to go back to the previous view."
+  },
+  "view.zoom_toggle_cancel": {
+   "category": "viewing",
+   "text": "Leaves Zoom Toggle but keeps the current zoom, instead of jumping back to the previous view."
+  },
+  "window.about": {
+   "category": "workspace",
+   "text": "Shows the SoundCraft version and credits."
+  },
+  "window.arrange_cascade": {
+   "category": "workspace",
+   "text": "Cascades the floating panels, each one offset down and to the right of the last."
+  },
+  "window.arrange_tile": {
+   "category": "workspace",
+   "text": "Meant to tile floating panels side by side.",
+   "limits": "Currently cascades, same as Cascade."
+  },
+  "window.arrange_tile_h": {
+   "category": "workspace",
+   "text": "Meant to tile floating panels in rows.",
+   "limits": "Currently cascades, same as Cascade."
+  },
+  "window.arrange_tile_v": {
+   "category": "workspace",
+   "text": "Meant to tile floating panels in columns.",
+   "limits": "Currently cascades, same as Cascade."
+  },
+  "window.audio_health": {
+   "category": "scripting",
+   "text": "Lists clips whose audio is missing or not loaded (so they'll play silent), including on unused playlists, with how to fix each one."
+  },
+  "window.automation": {
+   "category": "automation",
+   "text": "Opens the Automation window: set the automation mode of the selected tracks, choose which controls (volume, pan, mute, sends, plugins) can be written, and run Write to Current, Write to All Enabled and Thin All."
+  },
+  "window.beat_detective": {
+   "category": "tempo",
+   "text": "Opens Beat Analysis."
+  },
+  "window.big_counter": {
+   "category": "transport",
+   "text": "Opens a large, easy-to-read time counter."
+  },
+  "window.clip_effects": {
+   "category": "processing",
+   "text": "Opens Clip Effects, where you set EQ, dynamics and gain for one clip."
+  },
+  "window.clip_effects_dock": {
+   "category": "processing",
+   "text": "Shows Clip Effects docked below the Edit window."
+  },
+  "window.clip_list": {
+   "category": "clips",
+   "text": "Opens the Clip List: every clip and audio file in the session."
+  },
+  "window.clip_list_view": {
+   "category": "viewing",
+   "text": "Shows the Clip List beside the Edit window: every clip and audio file in the session."
+  },
+  "window.close": {
+   "category": "workspace",
+   "text": "Closes the floating windows (Transport, Big Counter, Memory Locations, Undo History, Session Info, Automation, plugin and AudioSuite windows).",
+   "limits": "Closes all floating windows, not just the front one."
+  },
+  "window.color_palette": {
+   "category": "workspace",
+   "text": "Opens the Color Palette. Click a colour to apply it to the selected tracks, or Shift-click to colour the selected clips. A slider sets how strongly track colours tint the Edit window."
+  },
+  "window.config_auto_update": {
+   "category": "workspace",
+   "text": "When on, SoundCraft regularly saves the current window layout into the most recent configuration."
+  },
+  "window.config_new": {
+   "category": "workspace",
+   "text": "Saves the current window layout as a new configuration you can recall later."
+  },
+  "window.config_update": {
+   "category": "workspace",
+   "text": "Overwrites the most recent saved window configuration with the current layout."
+  },
+  "window.configurations": {
+   "category": "workspace",
+   "text": "Lists saved window layouts. Click one to restore it, or remove ones you don't need."
+  },
+  "window.disk_usage": {
+   "category": "workspace",
+   "text": "Shows how many audio files the session uses and how much memory they take, how many MB one minute of 24-bit mono recording needs, and where the session file is."
+  },
+  "window.edit": {
+   "category": "workspace",
+   "text": "Switches to the Edit window, the timeline where you arrange and edit clips.",
+   "limits": "Cmd+= switches between Mix and Edit rather than always opening Edit."
+  },
+  "window.event_list": {
+   "category": "midi",
+   "text": "Opens the MIDI Event List: the notes in the selected MIDI clip as a table. You can change velocities and delete notes; start, pitch and length are read-only here."
+  },
+  "window.hide_floating": {
+   "category": "workspace",
+   "text": "Closes all floating windows (Transport, counters, Memory Locations, plugin windows and so on) so you can see the main window.",
+   "limits": "Running it again does not bring the windows back."
+  },
+  "window.io_setup": {
+   "category": "workspace",
+   "text": "Opens I/O Setup, for naming inputs, outputs and busses."
+  },
+  "window.memory_locations": {
+   "category": "transport",
+   "text": "Opens the list of markers and saved selections (memory locations)."
+  },
+  "window.metadata": {
+   "category": "workspace",
+   "text": "Shows session details (sample rate, bit depth, timecode rate, numbers of tracks, clips, files and markers, and length) and lets you write session comments."
+  },
+  "window.midi_back": {
+   "category": "midi",
+   "text": "Closes the MIDI Editor."
+  },
+  "window.midi_editor": {
+   "category": "midi",
+   "text": "Opens the MIDI Editor (piano roll) for drawing and editing notes and velocities."
+  },
+  "window.midi_front": {
+   "category": "midi",
+   "text": "Opens the MIDI Editor."
+  },
+  "window.midi_keyboard": {
+   "category": "midi",
+   "text": "Opens an on-screen keyboard. Click a key to add that note to the selected MIDI clip at the insertion point, then move on by an eighth note (step entry)."
+  },
+  "window.midi_ops": {
+   "category": "midi",
+   "text": "Opens the MIDI Operations window (quantize, velocity, duration, transpose and more)."
+  },
+  "window.mix": {
+   "category": "mixing",
+   "text": "Switches to the Mix window: the mixing console with faders, pan, plugins and sends.",
+   "limits": "Cmd+= switches between Mix and Edit rather than always opening Mix."
+  },
+  "window.mix_separate": {
+   "category": "mixing",
+   "text": "Shows the Mix window in its own window alongside the Edit window, instead of swapping between them."
+  },
+  "window.narrow_mix": {
+   "category": "mixing",
+   "text": "Makes Mix window channel strips narrow, so more tracks fit on screen."
+  },
+  "window.playback_engine": {
+   "category": "workspace",
+   "text": "Opens the Playback Engine window to choose the audio device and buffer size."
+  },
+  "window.renderer": {
+   "category": "surround",
+   "text": "Opens the Renderer, which shows the speaker layout and live levels for surround and immersive mixes."
+  },
+  "window.rtp": {
+   "category": "midi",
+   "text": "Opens MIDI Real-Time Properties."
+  },
+  "window.score": {
+   "category": "midi",
+   "text": "Opens the Score Editor, which shows MIDI tracks as sheet music."
+  },
+  "window.search": {
+   "category": "workspace",
+   "text": "Opens the command search box (listed in the Window menu as 'Pro Tools Search'). Type part of a command's name and press Enter to run it; each result shows its menu location and shortcut."
+  },
+  "window.session_info": {
+   "category": "scripting",
+   "text": "Shows a text report of the session: sample rate, bit depth, timecode format, and the tracks, clips and files it uses."
+  },
+  "window.shortcuts": {
+   "category": "workspace",
+   "text": "Lists every keyboard shortcut."
+  },
+  "window.system_usage": {
+   "category": "workspace",
+   "text": "Shows how fast the screen is redrawing, which audio device and sample rate are in use, and how many plugins, tracks and undo steps the session has."
+  },
+  "window.task_manager": {
+   "category": "workspace",
+   "text": "Shows the progress of a bounce running in the background.",
+   "limits": "Only bounces show here; AudioSuite and renders finish before returning."
+  },
+  "window.tempo_ops": {
+   "category": "tempo",
+   "text": "Opens the Tempo Operations window."
+  },
+  "window.time_ops": {
+   "category": "tempo",
+   "text": "Opens the Time Operations window."
+  },
+  "window.toggle_mix_edit": {
+   "category": "workspace",
+   "text": "Switches between the Edit and Mix windows. If the Mix window is open separately, it brings it to the front."
+  },
+  "window.track_list": {
+   "category": "viewing",
+   "text": "Shows the Track List beside the Edit window, where you can show, hide and reorder tracks."
+  },
+  "window.transport": {
+   "category": "transport",
+   "text": "Opens the Transport window: play, stop, record, rewind and the counters."
+  },
+  "window.ui_customization": {
+   "category": "workspace",
+   "text": "Opens Appearance settings (also under Setup › Appearance): interface size, reduce motion, light/dark/system theme, and auto-update of window configurations."
+  },
+  "window.undo_history": {
+   "category": "workspace",
+   "text": "Lists every change you've made, newest last. Click an entry to undo back to that point."
+  },
+  "window.universe": {
+   "category": "viewing",
+   "text": "Shows the Universe: a miniature overview of the whole session. Click it to jump to that area."
+  },
+  "window.video": {
+   "category": "video",
+   "text": "Opens the Video window, which shows the picture at the playhead."
+  },
+  "window.video_universe": {
+   "category": "video",
+   "text": "Opens a strip of video thumbnails across the whole session for quick navigation."
+  },
+  "window.workspace": {
+   "category": "workspace",
+   "text": "Opens a file browser. Double-click a folder to open it; double-click an audio or MIDI file to import it at the insertion point, or a session file to open it."
+  },
+  "window.workspace_close": {
+   "category": "workspace",
+   "text": "Closes the Workspace browser."
+  },
+  "window.workspace_front": {
+   "category": "workspace",
+   "text": "Opens the Workspace browser."
+  },
+  "window.workspace_presets": {
+   "category": "workspace",
+   "text": "Opens the same Workspace file browser (there is no separate track-preset browser yet).",
+   "limits": "No separate preset browser yet."
+  },
+  "window.workspace_sounds": {
+   "category": "workspace",
+   "text": "Opens the same Workspace file browser (there is no separate sound library browser yet).",
+   "limits": "No separate sound library yet."
+  }
+ },
+ "audiosuite": [
+  {
+   "process": "channel_strip",
+   "title": "Channel Strip",
+   "text": "A combined EQ, compressor and gate, applied to the selected audio."
+  },
+  {
+   "process": "eq_1band",
+   "title": "1-Band EQ",
+   "text": "A single-band EQ for one boost, cut or filter."
+  },
+  {
+   "process": "eq_7band",
+   "title": "7-Band EQ",
+   "text": "A full 7-band EQ for shaping tone."
+  },
+  {
+   "process": "compressor",
+   "title": "Compressor",
+   "text": "Evens out volume by turning down loud peaks. SoundCraft uses its own compressor here, not a model of any hardware unit."
+  },
+  {
+   "process": "de_esser",
+   "title": "De-Esser",
+   "text": "Tames harsh 's' and 'sh' sounds in vocals."
+  },
+  {
+   "process": "expander_gate",
+   "title": "Expander/Gate",
+   "text": "Turns down or silences audio below a threshold, removing background noise and bleed between notes."
+  },
+  {
+   "process": "maximizer",
+   "title": "Brickwall Limiter",
+   "text": "A brickwall limiter that makes audio louder without letting it clip."
+  },
+  {
+   "process": "pitch_shift",
+   "title": "Pitch Shift",
+   "text": "Changes pitch without changing length."
+  },
+  {
+   "process": "time_stretch",
+   "title": "Time Stretch",
+   "text": "Changes length without changing pitch."
+  },
+  {
+   "process": "speed_ramp",
+   "title": "Speed Ramp",
+   "text": "Speeds audio up from a stop or slows it down to a stop, like a record or tape starting and stopping. Pitch rises or falls with the speed."
+  },
+  {
+   "process": "room_reverb",
+   "title": "Room Reverb",
+   "text": "Adds room or hall reverb (echoey space)."
+  },
+  {
+   "process": "mod_delay",
+   "title": "Modulated Delay",
+   "text": "An echo/delay effect with modulation for chorus-like movement."
+  },
+  {
+   "process": "ring_mod",
+   "title": "Ring Modulator",
+   "text": "Ring modulation: metallic, robotic, sci-fi tones."
+  },
+  {
+   "process": "saturator",
+   "title": "Saturation",
+   "text": "Adds amp-style drive and saturation."
+  },
+  {
+   "process": "lofi",
+   "title": "Lo-Fi",
+   "text": "Lowers sample rate and bit depth for a gritty, retro, low-quality sound."
+  },
+  {
+   "process": "rectifier",
+   "title": "Rectifier",
+   "text": "Waveform rectification: adds harsh harmonics and octave-up effects."
+  },
+  {
+   "process": "dc_offset_removal",
+   "title": "DC Offset Removal",
+   "text": "Removes DC offset, a constant shift that wastes headroom and causes clicks at edits."
+  },
+  {
+   "process": "duplicate",
+   "title": "Duplicate",
+   "text": "Writes a fresh copy of the selected audio as a new file."
+  },
+  {
+   "process": "gain",
+   "title": "Gain",
+   "text": "Raises or lowers the volume of the selection by a set amount, permanently."
+  },
+  {
+   "process": "invert",
+   "title": "Invert Polarity",
+   "text": "Flips the polarity of the selected audio."
+  },
+  {
+   "process": "normalize",
+   "title": "Normalize",
+   "text": "Raises the volume so the loudest peak reaches a target level, without clipping."
+  },
+  {
+   "process": "reverse",
+   "title": "Reverse",
+   "text": "Plays the selection backwards."
+  },
+  {
+   "process": "signal_generator",
+   "title": "Signal Generator",
+   "text": "Creates a test tone or noise (sine, pink or white noise) to fill the selection."
+  }
+ ]
+}
