@@ -4566,6 +4566,7 @@ name = "soundcraft-ui-egui"
 version = "0.20.1"
 dependencies = [
  "craft-audio",
+ "craft-fonts-build",
  "craft-ui",
  "craft-update",
  "egui",

@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 craft-ui.workspace = true
+craft-fonts-build.workspace = true
 soundcraft-time.workspace = true
 craft-audio.workspace = true
 soundcraft-midi.workspace = true
@@ -44,5 +45,6 @@ egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 workspace = true
 
 [build-dependencies]
+craft-fonts-build.workspace = true
 serde_json = { workspace = true }
 toml = "1"
