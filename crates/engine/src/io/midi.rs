@@ -16,8 +16,9 @@ pub(super) const MAX_MIDI_TRACKS: usize = 512;
 /// A sound file is read strictly. A damaged one is read leniently, as other MIDI readers do: with
 /// stray bytes after the last track (#1528), a track length its End of Track contradicts or a
 /// track cut short, what can be read is imported and what could not is logged. A file past the
-/// reader's event or track limit is still refused: read leniently it would lose the rest without
-/// saying so. Something that is not a Standard MIDI File is refused.
+/// reader's event or track limit is still refused, also when other damage comes first: read
+/// leniently it would lose the rest without saying so. Something that is not a Standard MIDI File
+/// is refused.
 pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: bool) -> Result<Vec<TrackId>> {
     let smf = match soundcraft_midi::read_smf(bytes) {
         Ok(smf) => smf,
@@ -26,6 +27,14 @@ pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: b
         }
         Err(_) => {
             let read = soundcraft_midi::read_smf_lenient(bytes).map_err(|err| EngineError::Io(err.to_string()))?;
+            // The strict reader stops at the first damage, so a limit further on shows only here.
+            if read.over_limit {
+                return Err(EngineError::Io(format!(
+                    "MIDI file: more than {} events or {} tracks",
+                    soundcraft_midi::MAX_EVENTS,
+                    soundcraft_midi::MAX_TRACKS
+                )));
+            }
             for warning in &read.warnings {
                 log::warn!("MIDI import: {warning}");
             }

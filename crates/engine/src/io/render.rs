@@ -219,6 +219,30 @@ mod name_tests {
     }
 
     #[test]
+    fn a_midi_file_past_the_event_limit_is_refused_after_a_damaged_track() {
+        // The strict reader stops at track 1's damage, before track 2 reaches the event limit; read
+        // leniently, track 2's note after the limit (pitch 72) would be lost without a word.
+        let mut damaged = b"\0\x3C\x40".to_vec(); // a data byte with no status before it
+        damaged.extend_from_slice(b"\0\xFF\x2F\0");
+        let mut long = b"\0\x90\x3C\x64".to_vec();
+        for _ in 0..soundcraft_midi::MAX_EVENTS {
+            long.extend_from_slice(b"\0\x3C\0"); // running status: note off
+        }
+        long.extend_from_slice(b"\0\x90\x48\x64\x87\x40\x80\x48\x40\0\xFF\x2F\0");
+        let mut bytes = b"MThd\0\0\0\x06\0\x01\0\x02\x03\xC0".to_vec();
+        for body in [&damaged, &long] {
+            bytes.extend_from_slice(b"MTrk");
+            bytes.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+            bytes.extend_from_slice(body);
+        }
+        assert!(!matches!(soundcraft_midi::read_smf(&bytes), Err(soundcraft_midi::MidiError::TooManyEvents(_)) | Ok(_)));
+        let mut e = Engine::default();
+        let err = import_midi_bytes(&mut e, &bytes, 0, true).unwrap_err();
+        assert!(err.to_string().contains("events"), "{err}");
+        assert!(e.session().tracks.is_empty());
+    }
+
+    #[test]
     fn midi_longer_than_a_day_is_refused() {
         let held = soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: (1 << 28) - 1 };
         let sequence = soundcraft_midi::Sequence { notes: vec![held], ..Default::default() };
