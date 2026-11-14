@@ -80,6 +80,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("ui.theme", "Appearance", "", None),
     ("ui.reduce_visual_effects", "Reduce Visual Effects", "", None),
     ("ui.undo_levels", "Levels of Undo", "", None),
+    ("ui.sends_default", "Sends Default to", "", None),
 ];
 
 /// Extra catalog mappings handled by the UI layer.
@@ -801,6 +802,20 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             }
             json!({"levels": app.ui.undo_levels})
         }
+        "ui.sends_default" => {
+            // No `level` reads the value back; a `level` that is not a string is an error, so
+            // `{"level": 0}` cannot look like it set 0 dB while changing nothing.
+            let level = match p.get("level") {
+                None => return Some(Ok(json!({"level": app.ui.sends_default.id()}))),
+                Some(Value::String(level)) => level.as_str(),
+                Some(other) => return Some(Err(format!("send default must be the string \"-inf\" or \"0\", not {other}"))),
+            };
+            let Some(level) = crate::preferences::SendsDefault::parse(level) else {
+                return Some(Err(format!("unknown send default `{level}` (-inf or 0)")));
+            };
+            app.ui.sends_default = level;
+            json!({"level": level.id()})
+        }
         "ui.set" => match serde_json::to_value(&app.ui) {
             Ok(mut cur) => {
                 if let (Some(obj), Some(patch)) = (cur.as_object_mut(), p.as_object()) {
@@ -885,6 +900,49 @@ mod tests {
         let result = app.run("ui.set", json!({"undo_levels": 100})).unwrap();
         assert_eq!(result["ui"]["undo_levels"], 64);
         assert_eq!((app.ui.undo_levels, app.engine.history_limit), (64, 64));
+    }
+
+    /// The Sends Default to preference reads back, takes -inf or 0, and rejects anything else.
+    #[test]
+    fn sends_default_sets_reads_and_rejects_unknown_levels() {
+        use crate::preferences::SendsDefault;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        assert_eq!(app.run("ui.sends_default", json!({})).unwrap(), json!({"level": "-inf"}));
+        assert_eq!(app.run("ui.sends_default", json!({"level": "0"})).unwrap(), json!({"level": "0"}));
+        assert_eq!(app.ui.sends_default, SendsDefault::Unity);
+        assert!(app.run("ui.sends_default", json!({"level": "-6"})).is_err());
+        assert_eq!(app.ui.sends_default, SendsDefault::Unity, "a rejected level changes nothing");
+        assert_eq!(app.run("ui.sends_default", json!({"level": "-inf"})).unwrap(), json!({"level": "-inf"}));
+        assert_eq!(app.ui.sends_default, SendsDefault::NegativeInfinity, "switching back to −∞ dB works");
+        assert!(!app.engine.is_dirty(), "a preference is not a document edit");
+    }
+
+    /// A `level` that is present but not a string is an error, not a read-back: `{"level": 0}` must
+    /// not look like it set 0 dB while changing nothing.
+    #[test]
+    fn sends_default_rejects_a_non_string_level() {
+        use crate::preferences::SendsDefault;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        for bad in [json!(0), json!(null), json!(false), json!(["0"])] {
+            assert!(app.run("ui.sends_default", json!({"level": bad})).is_err(), "{bad} accepted");
+            assert_eq!(app.ui.sends_default, SendsDefault::NegativeInfinity, "{bad} changed the setting");
+        }
+    }
+
+    /// `ui.set` takes the same `-inf` and `0` as `ui.sends_default`, and a bad value changes nothing.
+    #[test]
+    fn ui_set_takes_the_same_sends_default_levels() {
+        use crate::preferences::SendsDefault;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let result = app.run("ui.set", json!({"sends_default": "0"})).unwrap();
+        assert_eq!((result["ui"]["sends_default"].clone(), app.ui.sends_default), (json!("0"), SendsDefault::Unity));
+        let result = app.run("ui.set", json!({"sends_default": "-inf"})).unwrap();
+        assert_eq!((result["ui"]["sends_default"].clone(), app.ui.sends_default), (json!("-inf"), SendsDefault::NegativeInfinity));
+        app.run("ui.set", json!({"sends_default": "0"})).unwrap();
+        for bad in [json!("unity"), json!("-6"), json!(0)] {
+            assert!(app.run("ui.set", json!({"sends_default": bad})).is_err(), "{bad} accepted");
+            assert_eq!(app.ui.sends_default, SendsDefault::Unity, "{bad} changed the setting");
+        }
     }
 
     #[test]

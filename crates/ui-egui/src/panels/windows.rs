@@ -423,6 +423,7 @@ pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), Str
     st.preferences_window_pos = app.ui.preferences_window_pos;
     st.reduce_visual_effects = app.ui.reduce_visual_effects;
     st.undo_levels = app.ui.undo_levels.clamp(1, 64);
+    st.sends_default = app.ui.sends_default;
     st.show_configurations = true;
     crate::docking::cancel_replaced_state(app, &st);
     app.engine.set_history_limit(st.undo_levels);
