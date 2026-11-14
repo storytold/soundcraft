@@ -154,7 +154,7 @@ pub fn build_session(plan: Plan) -> Result<Imported> {
             channels: m.channels,
             frames: m.frames,
             sample_rate: m.sample_rate,
-            format: soundcraft_audio_io::FileFormat::Wav,
+            format: soundcraft_model::FileFormat::Wav,
             time_reference: 0,
             unsaved: false,
         });

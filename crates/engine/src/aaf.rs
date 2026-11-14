@@ -104,13 +104,13 @@ pub fn import_into(destination: &Session, params: &Value) -> Result<(Session, Va
             .ok_or_else(|| bad("selected media exceeds the decoded import memory limit (512 MiB)"))?;
         crate::io::check_in_media_dir(Path::new(&src.path), Path::new(media_dir))?;
         let bytes = crate::io::read_interchange_file(Path::new(&src.path), 512 * 1024 * 1024)?;
-        let info = soundcraft_audio_io::probe(&bytes, Some("wav")).map_err(|e| bad(e.to_string()))?;
+        let info = craft_audio::probe(&bytes, Some("wav")).map_err(|e| bad(e.to_string()))?;
         if (info.sample_rate, info.channels, info.frames) != (src.sample_rate, src.channels, src.frames)
-            || info.format != soundcraft_audio_io::FileFormat::Wav
+            || soundcraft_model::FileFormat::of(&info) != soundcraft_model::FileFormat::Wav
         {
             return Err(bad(format!("media changed since analysis: {}", src.path)));
         }
-        let (_, buffer) = soundcraft_audio_io::decode(&bytes, Some("wav")).map_err(|e| bad(e.to_string()))?;
+        let (_, buffer) = craft_audio::decode(&bytes, Some("wav")).map_err(|e| bad(e.to_string()))?;
         incoming.pool.insert(src.id, Arc::new(SourceAudio::new(buffer)));
     }
     let mut target = destination.clone();

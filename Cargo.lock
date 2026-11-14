@@ -4498,6 +4498,7 @@ dependencies = [
 name = "soundcraft-engine"
 version = "0.20.1"
 dependencies = [
+ "cfb",
  "craft-audio",
  "craft-docpath",
  "craft-scraft-format",
@@ -4522,12 +4523,11 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-interchange"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "cfb",
  "serde",
  "serde_json",
- "soundcraft-audio-io",
  "soundcraft-model",
  "soundcraft-time",
  "thiserror 2.0.21",

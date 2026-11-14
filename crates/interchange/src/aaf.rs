@@ -22,19 +22,21 @@
 //! - structured storage (FAT, mini FAT, DIFAT and directory chains, directory tree) is parsed by
 //!   `cfb`, which rejects a sector pointed to twice, a chain that returns to its start and a
 //!   loop in the directory tree; we additionally cap the directory at [`MAX_DIRECTORY_ENTRIES`];
-//! - each stream we read is capped at 32 MiB, so no property or index can exceed it;
-//! - collections (mobs, slots, components, set/vector entries) are capped at [`MAX_ITEMS`],
-//!   objects read in total at `4 * MAX_ITEMS`, and mob-to-mob source chains at 32 links with
-//!   cycle detection. Object lookups are iterative except that source chain, so recursion depth
-//!   is bounded by it;
+//! - each stream we read is capped at 32 MiB, so no property or index can exceed it; the object
+//!   cache retains at most 128 MiB of property streams and shares payloads when objects are cloned;
+//! - collections (mobs, slots, components, set/vector entries) are capped at [`MAX_ITEMS`], reject
+//!   duplicate local references, and retain at most `4 * MAX_ITEMS` distinct objects. Repeated
+//!   traversal uses the cache. Mob-to-mob source chains are capped at 32 links with cycle detection.
+//!   Object lookups are iterative except that source chain, so recursion depth is bounded by it;
 //! - locator URLs are data: only local `file:` or scheme-less paths, never `..`, and a relative
 //!   locator resolves under the AAF's folder (see `locator_path`). A file that cannot be found
 //!   is reported and its edits skipped; it does not abort the import.
 use crate::{ImportClip, ImportError, ImportTrack, Media, Plan, Rational, TimecodeRate};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 type Result<T> = std::result::Result<T, ImportError>;
@@ -47,6 +49,8 @@ pub const MAX_ITEMS: usize = 100_000;
 /// Upper bound on structured-storage directory entries (storages and streams).
 pub const MAX_DIRECTORY_ENTRIES: usize = 4 * MAX_ITEMS;
 const MAX_STREAM_BYTES: u64 = 32 * 1024 * 1024;
+/// Aggregate bound on property streams retained by the object cache.
+const MAX_PROPERTY_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SOURCE_DEPTH: usize = 32;
 
 const CLASS_COMPOSITION_MOB: &str = "0d010101-0101-3500-060e-2b3402060101";
@@ -225,7 +229,8 @@ impl Q {
 struct Obj {
     path: String,
     class: String,
-    props: HashMap<u16, (u16, Vec<u8>)>,
+    // Cached objects are cloned along source and dictionary walks; share their property payload.
+    props: Rc<HashMap<u16, (u16, Vec<u8>)>>,
 }
 
 impl Obj {
@@ -281,6 +286,10 @@ fn read_u32(d: &[u8], at: usize) -> Result<u32> {
     d.get(at..at + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes).ok_or_else(|| fail("truncated AAF structure"))
 }
 
+fn property_total(current: usize, additional: usize) -> Result<usize> {
+    current.checked_add(additional).filter(|total| *total <= MAX_PROPERTY_BYTES).ok_or_else(|| fail("AAF retained property data exceeds 128 MiB"))
+}
+
 /// `urn:smpte:umid:` text identical to pyaaf2 and Pro Tools' MobID notation.
 fn mob_urn(b: &[u8; 32]) -> String {
     let label: String = b[..12].chunks(4).map(|c| c.iter().map(|x| format!("{x:02x}")).collect::<String>()).collect::<Vec<_>>().join(".");
@@ -301,7 +310,8 @@ fn mob_urn(b: &[u8; 32]) -> String {
 
 struct Store<F> {
     cfb: cfb::CompoundFile<F>,
-    objects_read: usize,
+    objects: HashMap<String, Obj>,
+    property_bytes: usize,
     weakrefs: Vec<Vec<u16>>,
     datadefs: HashMap<Vec<u8>, Option<String>>,
 }
@@ -312,7 +322,7 @@ impl<F: Read + Seek> Store<F> {
         if cfb.walk().take(MAX_DIRECTORY_ENTRIES + 1).count() > MAX_DIRECTORY_ENTRIES {
             return Err(fail("AAF directory has too many entries"));
         }
-        let mut s = Store { cfb, objects_read: 0, weakrefs: Vec::new(), datadefs: HashMap::new() };
+        let mut s = Store { cfb, objects: HashMap::new(), property_bytes: 0, weakrefs: Vec::new(), datadefs: HashMap::new() };
         s.weakrefs = s.read_weakref_table()?;
         Ok(s)
     }
@@ -354,9 +364,17 @@ impl<F: Read + Seek> Store<F> {
         Ok(table)
     }
 
+    fn charge_properties(&mut self, additional: usize) -> Result<()> {
+        self.property_bytes = property_total(self.property_bytes, additional)?;
+        Ok(())
+    }
+
     fn object(&mut self, path: &str) -> Result<Obj> {
-        self.objects_read += 1;
-        if self.objects_read > 4 * MAX_ITEMS {
+        // Repeated traversal must not read or copy the same property payload again.
+        if let Some(object) = self.objects.get(path) {
+            return Ok(object.clone());
+        }
+        if self.objects.len() >= 4 * MAX_ITEMS {
             return Err(fail("too many AAF objects"));
         }
         let entry = self.cfb.entry(path).map_err(|e| fail(format!("{path}: {e}")))?;
@@ -370,8 +388,19 @@ impl<F: Read + Seek> Store<F> {
             return Err(fail("unsupported AAF byte order"));
         }
         let count = usize::from(read_u16(&d, 2)?);
+        let headers_end = 4 + 6 * count;
+        let mut at = headers_end;
+        // Validate and charge the complete object before copying any property values.
+        for i in 0..count {
+            let size = usize::from(read_u16(&d, 8 + 6 * i)?);
+            at = at.checked_add(size).filter(|end| *end <= d.len()).ok_or_else(|| fail(format!("{path}: truncated properties")))?;
+        }
+        let additional =
+            d.len().checked_add(path.len()).and_then(|n| n.checked_add(class.len())).ok_or_else(|| fail("AAF property size overflow"))?;
+        self.charge_properties(additional)?;
+
         let mut props = HashMap::new();
-        let mut at = 4 + 6 * count;
+        at = headers_end;
         for i in 0..count {
             let pid = read_u16(&d, 4 + 6 * i)?;
             let form = read_u16(&d, 6 + 6 * i)?;
@@ -380,7 +409,9 @@ impl<F: Read + Seek> Store<F> {
             at += size;
             props.insert(pid, (form, value));
         }
-        Ok(Obj { path: path.to_string(), class, props })
+        let object = Obj { path: path.to_string(), class, props: Rc::new(props) };
+        self.objects.insert(path.to_string(), object.clone());
+        Ok(object)
     }
 
     fn child_path(parent: &Obj, name: &str) -> String {
@@ -410,12 +441,16 @@ impl<F: Read + Seek> Store<F> {
         if count > MAX_ITEMS {
             return Err(fail(format!("too many {what}")));
         }
-        (0..count)
-            .map(|i| {
-                let key = read_u32(&index, 12 + 4 * i)?;
-                self.object(&Self::child_path(parent, &format!("{name}{{{key:x}}}")))
-            })
-            .collect()
+        let mut seen = HashSet::new();
+        let mut objects = Vec::new();
+        for i in 0..count {
+            let key = read_u32(&index, 12 + 4 * i)?;
+            if !seen.insert(key) {
+                return Err(fail(format!("duplicate local reference in {what}")));
+            }
+            objects.push(self.object(&Self::child_path(parent, &format!("{name}{{{key:x}}}")))?);
+        }
+        Ok(objects)
     }
 
     /// Strong reference set: (key bytes, child storage path) in stored order.
@@ -428,14 +463,18 @@ impl<F: Read + Seek> Store<F> {
             return Err(fail(format!("unsupported {what} index")));
         }
         let entry = 8 + key_size;
-        (0..count)
-            .map(|i| {
-                let at = 15 + entry * i;
-                let local = read_u32(&index, at)?;
-                let key = index.get(at + 8..at + 8 + key_size).ok_or_else(|| fail(format!("truncated {what} index")))?.to_vec();
-                Ok((key, Self::child_path(parent, &format!("{name}{{{local:x}}}"))))
-            })
-            .collect()
+        let mut seen = HashSet::new();
+        let mut entries = Vec::new();
+        for i in 0..count {
+            let at = 15 + entry * i;
+            let local = read_u32(&index, at)?;
+            if !seen.insert(local) {
+                return Err(fail(format!("duplicate local reference in {what}")));
+            }
+            let key = index.get(at + 8..at + 8 + key_size).ok_or_else(|| fail(format!("truncated {what} index")))?.to_vec();
+            entries.push((key, Self::child_path(parent, &format!("{name}{{{local:x}}}"))));
+        }
+        Ok(entries)
     }
 
     fn set(&mut self, parent: &Obj, pid: u16, what: &str) -> Result<Vec<Obj>> {
@@ -944,6 +983,14 @@ mod tests {
         assert_eq!(Q::new(7, 2).unwrap().round_half_even(), 4);
         assert_eq!(Q::int(48).div(Q::int(96)).unwrap(), Q { n: 1, d: 2 });
         assert!(Q::new(1, 0).is_err());
+    }
+
+    #[test]
+    fn aggregate_property_budget_is_checked_before_allocation() {
+        assert_eq!(property_total(0, MAX_PROPERTY_BYTES).unwrap(), MAX_PROPERTY_BYTES);
+        assert!(property_total(0, MAX_PROPERTY_BYTES + 1).is_err());
+        assert!(property_total(MAX_PROPERTY_BYTES, 1).is_err());
+        assert!(property_total(usize::MAX, 1).is_err());
     }
 
     #[test]

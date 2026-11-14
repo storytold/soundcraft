@@ -1,9 +1,10 @@
+use craft_audio::{AudioBuffer, BitDepth, EncodeOptions};
 use serde_json::{Value, json};
-use soundcraft_audio_io::{AudioBuffer, BitDepth, EncodeOptions, FileFormat};
 use soundcraft_engine::{Engine, file_access};
 use soundcraft_model::{ChannelFormat, Session, TrackKind};
 use soundcraft_time::SampleRate;
 use std::{
+    io::{Cursor, Read},
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -20,9 +21,9 @@ impl Fixture {
         let path = dir.join("Source á with spaces.wav");
         let mut ch = vec![0.0; 480000];
         ch[96000] = 0.5;
-        let bytes = soundcraft_audio_io::encode(
+        let bytes = craft_audio::encode(
             &AudioBuffer { sample_rate: 48000, channels: vec![ch] },
-            &EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None },
+            &EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Int16),
         )
         .unwrap();
         std::fs::write(&path, bytes).unwrap();
@@ -83,7 +84,7 @@ fn empty_session_adopts_source_clock_and_save_collects_the_whole_source() {
     let dest = f.dir.join("Saved/session.scraft");
     soundcraft_engine::io::save_session(&mut e, &dest.to_string_lossy()).unwrap();
     let file = f.dir.join("Saved").join(&e.session().sources[0].path);
-    let info = soundcraft_audio_io::probe(&std::fs::read(file).unwrap(), Some("wav")).unwrap();
+    let info = craft_audio::probe(&std::fs::read(file).unwrap(), Some("wav")).unwrap();
     assert_eq!(info.frames, 480000);
     assert_eq!(e.session().tracks[0].clips()[0].source_offset(), 96000);
 }
@@ -180,8 +181,8 @@ impl AafFolder {
         std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/synthetic-two-tracks.aaf"), dir.join("Montaje sintético.aaf")).unwrap();
         for (name, channels) in [("Diálogo á #1.wav", 1), ("Ambiente estéreo.wav", 2)] {
             let audio = AudioBuffer { sample_rate: 48000, channels: vec![vec![0.25; 384000]; channels] };
-            let options = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None };
-            std::fs::write(dir.join(name), soundcraft_audio_io::encode(&audio, &options).unwrap()).unwrap();
+            let options = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Int16);
+            std::fs::write(dir.join(name), craft_audio::encode(&audio, &options).unwrap()).unwrap();
         }
         Self { dir }
     }
@@ -383,4 +384,31 @@ fn an_unknown_composition_id_is_refused() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("Choose exactly one composition"), "{err}");
+}
+
+#[test]
+fn repeated_local_mob_references_fail_before_property_expansion() {
+    // A small index can otherwise expand one storage's properties once per repeated reference.
+    let mut bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/synthetic-two-tracks.aaf")).unwrap();
+    let mut index = Vec::new();
+    {
+        let mut cfb = cfb::CompoundFile::open(Cursor::new(bytes.as_slice())).unwrap();
+        cfb.open_stream("/Header-2/Content-3b03/Mobs-1901 index").unwrap().read_to_end(&mut index).unwrap();
+    }
+    let count = u32::from_le_bytes(index[0..4].try_into().unwrap()) as usize;
+    let key_size = usize::from(index[14]);
+    assert!(count >= 2 && matches!(key_size, 16 | 32));
+    let entry = 8 + key_size;
+    let original_index = index.clone();
+    let first_local = index[15..19].to_vec();
+    index[15 + entry..19 + entry].copy_from_slice(&first_local);
+
+    // This small stream is contiguous in the fixture's mini stream; replace only its index bytes.
+    let at = bytes.windows(original_index.len()).position(|window| window == original_index.as_slice()).unwrap();
+    bytes[at..at + index.len()].copy_from_slice(&index);
+
+    let f = AafFolder::new();
+    std::fs::write(f.dir.join("Montaje sintético.aaf"), bytes).unwrap();
+    let err = f.preview().unwrap_err().to_string();
+    assert!(err.contains("duplicate local reference in mobs"), "{err}");
 }
