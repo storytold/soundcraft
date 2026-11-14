@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-04 · **Change:** trivial (G-04: volume automation read at every sample, #1354; previously trivial: G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-04 · **Change:** trivial (G-04: volume automation read at every sample, #1354; previously trivial: G-01: audio load and dropout meter; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -52,6 +52,8 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   not rounded onto the window's power-of-two list. Headless (CLI, no app) still stores the request
   and returns `applied: false`, with `buffer_size` null when unset; playback does not read those
   session values.
+- **Done (2026-10-25):** Window › System Usage shows the audio callback's load (render time over
+  buffer duration, average and peak) and counts late callbacks (dropouts); `ui.audio_load` for agents.
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
   output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
@@ -235,6 +237,7 @@ missing. Out of scope unless the owner decides otherwise.
 | 2026-11-04 | trivial | G-04: track and master volume automation read at every sample, so breakpoints act on their own sample in any block size (#1354); estimates unchanged |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-25 | trivial | G-01: `setup.playback_engine` and `setup.hardware` apply the device and buffer in the desktop app; headless returns `applied: false` |
+| 2026-10-25 | trivial | G-01: Window › System Usage shows the audio callback load and late callbacks (dropouts); `ui.audio_load` |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |
 | 2026-10-19 | trivial | G-04: Float32 encoding retains finite headroom (#791); integer clipping and non-finite handling retained |
 | 2026-10-18 | trivial | G-04: mono device stereo/surround fold-down fixed and regression-tested; estimates unchanged |
