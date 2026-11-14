@@ -10,7 +10,7 @@ pub(crate) fn instrument_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, r:
     let ins = track.instrument.as_ref();
     let info = ins.and_then(|i| plugin_info(&i.plugin));
     let resp = ui.interact(r, ui.scope_id().with(("instrument", id.0)), Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Instrument for {}", track.name)));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::localized_format!("Instrument for {}", track.name)));
     match info {
         Some(info) => used_slot(ui.painter(), r, t.slot_face, Mark::Dot, info.short_name, t.text, None),
         None => empty_slot(ui.painter(), r, resp.hovered(), Mark::Dot),
@@ -19,7 +19,8 @@ pub(crate) fn instrument_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, r:
     if resp.clicked() && hosted && !app.ui.plugin_windows.contains(&(id, slot)) {
         app.ui.plugin_windows.push((id, slot));
     }
-    let menu_resp = if hosted { resp.clone().on_hover_text("Click: open instrument · right-click: change") } else { resp.clone() };
+    let menu_resp =
+        if hosted { resp.clone().on_hover_text(crate::localization::text("Click: open instrument · right-click: change")) } else { resp.clone() };
     let popup = if hosted { egui::Popup::context_menu(&menu_resp) } else { egui::Popup::menu(&menu_resp) };
     let popup = popup.close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
     popup.show(|ui| instrument_menu(app, ui, id));
@@ -103,7 +104,9 @@ pub(crate) fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: 
     let id = track.id;
     let ins = track.mixer.inserts.get(slot).cloned().flatten();
     let resp = ui.interact(r, ui.scope_id().with(("ins", id.0, slot)), Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Insert {} for {}", (b'A' + slot as u8) as char, track.name)));
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Button, true, crate::localized_format!("Insert {} for {}", (b'A' + slot as u8) as char, track.name))
+    });
     let info = ins.as_ref().and_then(|i| plugin_info(&i.plugin));
     let name = ins.as_ref().map(|i| info.map_or(i.plugin.as_str(), |p| p.short_name)).unwrap_or_default();
     match &ins {

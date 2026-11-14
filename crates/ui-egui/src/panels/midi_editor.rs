@@ -122,7 +122,13 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().rect_filled(full, 0.0, t.panel_bg);
     let header = Rect::from_min_size(full.min, vec2(full.width(), 22.0));
     ui.painter().rect_filled(header, 0.0, t.panel_bg2);
-    ui.painter().text(pos2(header.min.x + 8.0, header.center().y), Align2::LEFT_CENTER, "MIDI EDITOR", bold(11.5), t.header_text);
+    ui.painter().text(
+        pos2(header.min.x + 8.0, header.center().y),
+        Align2::LEFT_CENTER,
+        crate::localization::text("MIDI EDITOR"),
+        bold(11.5),
+        t.header_text,
+    );
     let Some(cid) = target_clip(app) else {
         empty_state(app, ui, full, header);
         return;
@@ -184,8 +190,8 @@ fn empty_state(app: &mut SoundApp, ui: &mut Ui, full: Rect, header: Rect) {
         s.tracks.iter().find(|t| t.kind.is_midi() && s.edit.selected_tracks.contains(&t.id)).map(|t| (t.id, t.name.clone()))
     };
     let msg = match &track {
-        Some((_, name)) => format!("Click to add a MIDI clip to {name} at the insertion point."),
-        None => "Select a MIDI clip (or a MIDI track) to edit its notes.".into(),
+        Some((_, name)) => crate::localized_format!("Click to add a MIDI clip to {name} at the insertion point.", name = name),
+        None => crate::localization::text("Select a MIDI clip (or a MIDI track) to edit its notes.").into(),
     };
     ui.painter().text(full.center(), Align2::CENTER_CENTER, msg, regular(13.0), t.text_dim);
     let body = Rect::from_min_max(pos2(full.min.x, header.max.y), full.max);
@@ -223,16 +229,16 @@ fn midi_toolbar(app: &mut SoundApp, ui: &mut Ui, header: Rect, cid: ClipId, grid
     let mut tb = ui.new_child(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)));
     tb.spacing_mut().item_spacing.x = 4.0;
     let mut op: Option<(&str, serde_json::Value)> = None;
-    if tb.small_button("Legato").clicked() {
+    if tb.small_button(crate::localization::text("Legato")).clicked() {
         op = Some(("event.change_duration", json!({"legato": 0})));
     }
-    if tb.small_button("Vel −10").clicked() {
+    if tb.small_button(crate::localization::text("Vel −10")).clicked() {
         op = Some(("event.change_velocity", json!({"add": -10})));
     }
-    if tb.small_button("Vel +10").clicked() {
+    if tb.small_button(crate::localization::text("Vel +10")).clicked() {
         op = Some(("event.change_velocity", json!({"add": 10})));
     }
-    if tb.small_button("Quantize").on_hover_text("Quantize to the grid").clicked() {
+    if tb.small_button(crate::localization::text("Quantize")).on_hover_text(crate::localization::text("Quantize to the grid")).clicked() {
         op = Some(("event.quantize", json!({"grid": grid_ticks, "strength": 100})));
     }
     if let Some((id, mut p)) = op {
@@ -477,7 +483,7 @@ fn velocity_lane(app: &mut SoundApp, ui: &mut Ui, g: &Roll<'_>, cid: ClipId, bas
     let t = Tokens::current();
     // Velocity lane.
     ui.painter().rect_filled(vel, 0.0, Color32::from_rgb(28, 28, 30));
-    ui.painter().text(pos2(label_x, vel.center().y), Align2::LEFT_CENTER, "Velocity", regular(10.0), t.text_dim);
+    ui.painter().text(pos2(label_x, vel.center().y), Align2::LEFT_CENTER, crate::localization::text("Velocity"), regular(10.0), t.text_dim);
     let vresp = ui.interact(vel, ui.scope_id().with(("vel", cid.0)), Sense::click_and_drag());
     for (i, n) in sequence.notes.iter().enumerate() {
         let x = g.x_of(n.start);

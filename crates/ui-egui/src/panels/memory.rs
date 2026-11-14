@@ -2,12 +2,12 @@ use super::{SoundApp, Ui, json, mono};
 
 /// One recallable memory-location row: number button, editable name, time, length, kind and delete.
 fn memory_location_row(app: &mut SoundApp, ui: &mut Ui, n: u32, name: &str, loc: &str, len: &str, kind: &str) {
-    if ui.button(n.to_string()).on_hover_text("Recall").clicked() {
+    if ui.button(n.to_string()).on_hover_text(crate::localization::text("Recall")).clicked() {
         let _ = app.run("markers.recall", json!({"number": n}));
     }
     let key = egui::Id::unique(("mem_name", n));
     let mut edit: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| name.to_string());
-    let r = crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut edit).desired_width(140.0)), "Name");
+    let r = crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut edit).desired_width(140.0)), crate::localization::text("Name"));
     if r.changed() {
         ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
     }
@@ -17,7 +17,7 @@ fn memory_location_row(app: &mut SoundApp, ui: &mut Ui, n: u32, name: &str, loc:
     }
     ui.label(egui::RichText::new(loc).font(mono(11.0)));
     ui.label(egui::RichText::new(len).font(mono(11.0)));
-    ui.label(kind);
+    ui.label(crate::localization::text(kind));
     if crate::widgets::close_button(ui, "Delete marker").clicked() {
         let _ = app.run("markers.delete", json!({"number": n}));
     }
@@ -26,10 +26,10 @@ fn memory_location_row(app: &mut SoundApp, ui: &mut Ui, n: u32, name: &str, loc:
 
 pub(crate) fn memory_locations(app: &mut SoundApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
-        if ui.button("+ Marker").clicked() {
+        if ui.button(crate::localization::text("+ Marker")).clicked() {
             let _ = app.run("markers.add", json!({}));
         }
-        if ui.button("+ Selection").clicked() {
+        if ui.button(crate::localization::text("+ Selection")).clicked() {
             let _ = app.run("markers.add", json!({"kind": "selection"}));
         }
     });
@@ -52,7 +52,7 @@ pub(crate) fn memory_locations(app: &mut SoundApp, ui: &mut Ui) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         egui::Grid::new("mem_grid").striped(true).num_columns(6).show(ui, |ui| {
             for h in ["#", "Name", "Location", "Length", "Type", ""] {
-                ui.label(egui::RichText::new(h).strong());
+                ui.label(egui::RichText::new(crate::localization::text(h)).strong());
             }
             ui.end_row();
             for (n, name, loc, len, kind) in &rows {

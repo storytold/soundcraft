@@ -85,9 +85,9 @@ impl SoundApp {
 
 /// The File › Open Recent submenu.
 pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
-    ui.menu_button("Open Recent", |ui| {
+    ui.menu_button(crate::localization::text("Open Recent"), |ui| {
         if app.ui.recent_sessions.is_empty() {
-            ui.add_enabled(false, egui::Button::new("No Recent Sessions"));
+            ui.add_enabled(false, egui::Button::new(crate::localization::text("No Recent Sessions")));
             return;
         }
         let now = ui.ctx().input(|i| i.time);
@@ -95,14 +95,17 @@ pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
         let mut open = None;
         for (i, path) in app.ui.recent_sessions.iter().enumerate() {
             let here = exists.get(i).copied().unwrap_or(true);
-            let text = if here { label(path) } else { format!("{}  (missing)", label(path)) };
-            let r = ui.add_enabled(here, egui::Button::new(text)).on_hover_text(path.as_str()).on_disabled_hover_text(format!("{path}\nnot found"));
+            let text = if here { label(path) } else { crate::localized_format!("{}  (missing)", label(path)) };
+            let r = ui
+                .add_enabled(here, egui::Button::new(text))
+                .on_hover_text(path.as_str())
+                .on_disabled_hover_text(crate::localized_format!("{path}\nnot found", path = path));
             if r.clicked() {
                 open = Some(path.clone());
             }
         }
         ui.separator();
-        if ui.button("Clear Recent").clicked() {
+        if ui.button(crate::localization::text("Clear Recent")).clicked() {
             app.ui.recent_sessions.clear();
             app.recent_changed = true;
             ui.close();
@@ -112,7 +115,7 @@ pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
             // Through the dialog layer, so unsaved changes are asked about first.
             if let Err(e) = crate::dialogs::run_or_ask(app, "session.open", json!({"path": path})) {
                 log::warn!("{path}: {e}");
-                app.ui.status = format!("Could not open {path}: {e}");
+                app.ui.status = crate::localized_format!("Could not open {path}: {e}", path = path, e = e);
             }
         }
     });
