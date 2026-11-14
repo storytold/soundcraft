@@ -49,7 +49,7 @@ fn strip_silence_extract_keeps_what_strip_removes() {
     let (mut h, track, before) = strip_silence_dialog();
     h.get_by_role_and_label(Role::Button, "Extract").click();
     h.run_steps(2);
-    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "Strip Silence stays open after its action");
     let extracted = clips(&h, track);
     let strip = stripped(track);
     assert!(!extracted.is_empty() && !strip.is_empty());
@@ -61,7 +61,7 @@ fn strip_silence_separate_cuts_the_clips_and_removes_nothing() {
     let (mut h, track, before) = strip_silence_dialog();
     h.get_by_role_and_label(Role::Button, "Separate").click();
     h.run_steps(2);
-    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "Strip Silence stays open after its action");
     let separated = clips(&h, track);
     assert!(separated.len() > before.len());
     assert_eq!(covered(&separated), covered(&before));
@@ -74,7 +74,7 @@ fn enter_on_a_focused_separate_separates_and_does_not_strip() {
     h.run_steps(2);
     h.event(Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
     h.run_steps(2);
-    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "Strip Silence stays open after its action");
     let separated = clips(&h, track);
     assert!(separated.len() > before.len());
     assert_eq!(covered(&separated), covered(&before), "Enter on Separate keeps all the audio");
@@ -124,7 +124,7 @@ fn strip_silence_strip_removes_the_silence() {
     let (mut h, track, before) = strip_silence_dialog();
     h.get_by_role_and_label(Role::Button, "Strip").click();
     h.run_steps(2);
-    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "Strip Silence stays open after its action");
     let strip = clips(&h, track);
     assert_eq!(strip, stripped(track));
     assert!(covered(&strip) < covered(&before));
@@ -168,6 +168,8 @@ fn strip_silence_opens_with_the_values_strip_used() {
     set_values(&mut h, CHANGED);
     h.get_by_role_and_label(Role::Button, "Strip").click();
     h.run_steps(2);
+    h.event(Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
     assert_eq!(reopen(&mut h), CHANGED);
 }
 
@@ -183,4 +185,23 @@ fn strip_silence_keeps_its_values_through_rename_and_cancel() {
     h.get_by_role_and_label(Role::Button, "Cancel").click();
     h.run_steps(2);
     assert_eq!(reopen(&mut h), CHANGED);
+}
+
+/// A focused slider rail yields to the zoom keys instead of blocking them, as Pro Tools' do (#1380).
+#[test]
+fn zoom_keys_work_while_a_strip_silence_slider_has_focus() {
+    let (mut h, _, _) = strip_silence_dialog();
+    let spp = |h: &Harness<'_, SoundApp>| h.state().engine.session().edit.zoom.samples_per_px;
+    let before = spp(&h);
+    {
+        let sliders: Vec<_> = h.get_all_by_role(Role::Slider).collect();
+        assert!(!sliders.is_empty(), "Strip Silence shows its sliders");
+        sliders[0].focus();
+    }
+    h.run_steps(2);
+    assert!(h.get_all_by_role(Role::Slider).any(|s| s.is_focused()), "a slider rail has focus");
+    h.key_press(Key::T);
+    h.run_steps(2);
+    assert!(spp(&h) < before, "T zooms in while a slider rail has focus");
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "Strip Silence stays open");
 }

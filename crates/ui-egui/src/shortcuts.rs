@@ -1,6 +1,7 @@
 //! Keyboard shortcuts. Most come from the command registry's `shortcut` strings; a few
 //! context-sensitive keys (Space, Enter, F-keys, nudge, Tab) are handled here.
 
+use crate::dialogs::Dialog;
 use crate::{MainWindow, SoundApp};
 use egui::{Key, Modifiers};
 use serde_json::json;
@@ -64,7 +65,12 @@ const REPEATING: [&str; 3] = ["view.zoom_in", "view.zoom_out", "view.waveform_zo
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
-    if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() || app.ui.show_preferences {
+    let floating = app.dialogs.open.as_ref().is_some_and(Dialog::floats);
+    // A floating window's controls surrender focus to any key but Enter, Escape and Tab (below), so only a
+    // text field in one blocks the shortcuts. Elsewhere any focused widget does: a click or arrow key would
+    // reach both the widget and its shortcut.
+    let wants_keys = if floating { ctx.text_edit_focused() } else { ctx.egui_wants_keyboard_input() };
+    if wants_keys || (app.dialogs.open.is_some() && !floating) || app.ui.show_preferences {
         return;
     }
     // A scripted press is identified by its exact position in this pass's events, not by matching
@@ -86,6 +92,16 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd and Ctrl are separate keys only on macOS (asked at runtime so the web build in a Mac browser agrees).
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     for (key, mods, repeat) in events {
+        // Enter, Escape and Tab belong to a floating window's own controls. Any other key leaves
+        // them, so a focused button or field doesn't also act on it.
+        if floating {
+            if matches!(key, Key::Enter | Key::Escape | Key::Tab) {
+                continue;
+            }
+            if let Some(id) = ctx.memory(|m| m.focused()) {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+        }
         if repeat {
             if let Some((id, params)) = repeating_command(key, mods, mac) {
                 let _ = app.run(id, params);
