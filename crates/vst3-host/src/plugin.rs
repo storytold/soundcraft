@@ -250,10 +250,22 @@ impl Plugin for Vst3Plugin {
                 self.latency = 0;
             }
         }
-        // Re-send every value so a re-activated plugin matches the session.
+        // Re-send every value so a re-activated plugin matches the session. A parameter a MIDI
+        // controller drives is a stand-in (JUCE turns each change into a MIDI message), so
+        // re-sending its untouched default would play controller messages: CC 121 "reset all
+        // controllers" and CC 123 "all notes off" at offset 0, after anything the host sends in
+        // the same block. Only values the host moved off the default go out again.
+        let midi_ids = if self.max_block > 0 { self.inst.midi_mapped_ids() } else { Vec::new() };
         self.pending.clear();
-        for i in 0..self.ids.len().min(PARAM_QUEUE_CAP) {
-            if let (Some(&id), Some(n)) = (self.ids.get(i), self.values.get(i).and_then(|&v| self.normalized_from_plain(i, v))) {
+        for i in 0..self.ids.len() {
+            if self.pending.len() >= self.pending.capacity() {
+                break;
+            }
+            let (Some(&id), Some(&v), Some(pi)) = (self.ids.get(i), self.values.get(i), self.info.params.get(i)) else { continue };
+            if midi_ids.binary_search(&id).is_ok() && (v - pi.default).abs() <= 1e-6 {
+                continue;
+            }
+            if let Some(n) = self.normalized_from_plain(i, v) {
                 self.pending.push((id, n));
             }
         }

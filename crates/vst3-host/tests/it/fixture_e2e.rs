@@ -15,7 +15,7 @@ fn id_of(name: &str) -> String {
 fn scan_lists_both_audio_modules_but_not_the_controller_class() {
     let dir = fixture_dir();
     let found = soundcraft_vst3_host::scan_paths(&[dir.to_path_buf()]);
-    assert_eq!(found.len(), 6, "{found:?}");
+    assert_eq!(found.len(), 7, "{found:?}");
     let g = found.iter().find(|d| d.name == "Fixture Gain").unwrap();
     // `uid()` lays out the first 8 bytes differently on Windows (COM GUID order).
     let want = if cfg!(windows) { "vst3:001D0A5C111122223333444455556666" } else { "vst3:5C0A1D00111122223333444455556666" };
@@ -158,6 +158,42 @@ fn synth_plays_notes_at_their_offsets() {
     let mut mono = vec![vec![0.0f32; 64]];
     p.process(&mut mono, 64);
     assert!(mono[0].iter().all(|&x| (x - 1.0).abs() < 1e-6), "the note is still held");
+}
+
+/// Id of the CC Synth's channel 1, controller `n` (see the fixture).
+fn cc_param(n: u32) -> String {
+    (1_000_000 + n).to_string()
+}
+
+/// A JUCE plugin plays every change to a MIDI controller stand-in as that controller. Preparing
+/// must not re-send the untouched ones: CC 121 ("reset all controllers") at offset 0 would wipe
+/// a value the host sends in the same block (MODO BASS 2 lost its CC 5 bend this way).
+#[test]
+fn prepare_does_not_play_untouched_midi_controller_params() {
+    let id = id_of("Fixture CC Synth");
+    let info = soundcraft_vst3_host::plugin_info(&id).unwrap();
+    assert_eq!(info.params.len(), 16 * 130);
+    let block = |p: &mut Box<dyn soundcraft_dsp::Plugin>| {
+        let mut io = vec![vec![9.0f32; 64], vec![9.0f32; 64]];
+        p.process(&mut io, 64);
+        io[0][63]
+    };
+
+    // Automation: one value right after prepare (the mixer sends a steady value only once).
+    let mut p = soundcraft_vst3_host::create(&id).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    assert!(p.set_param(&cc_param(5), 1.0));
+    assert!((block(&mut p) - 1.0).abs() < 1e-6, "CC 5 from automation was reset");
+    assert!((block(&mut p) - 1.0).abs() < 1e-6);
+    // A value the host set is part of the session: it comes back after preparing again.
+    p.prepare(48_000.0, 64, 2);
+    assert!((block(&mut p) - 1.0).abs() < 1e-6, "CC 5 lost on re-prepare");
+
+    // A clip's controller message in the first block after prepare.
+    let mut p = soundcraft_vst3_host::create(&id).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    p.midi(0, [0xB0, 5, 64]);
+    assert!((block(&mut p) - 64.0 / 127.0).abs() < 1e-6, "CC 5 from a clip was reset");
 }
 
 #[test]
