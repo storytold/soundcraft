@@ -78,7 +78,14 @@ pub fn specs() -> Vec<CommandSpec> {
             s.key_signatures.sort_by_key(|k| k.0);
             Ok(json!({}))
         }),
-        cmd!("event.renumber_bars", "Renumber Bars...", ["Event"], None, "{}", always, |_, _| Ok(json!({"note": "bars start at 1"}))),
+        cmd!("event.renumber_bars", "Renumber Bars...", ["Event"], None, "{bar?: 1, number?: the new number for `bar`}", always, |e, p| {
+            let s = e.session_mut();
+            // `bar` is a displayed number under the current numbering; making it show `number`
+            // moves the session's first bar to `number - bar + first_bar` (0 or less: a lead-in).
+            let first_bar = i64_or(p, "number", 1).saturating_sub(i64_or(p, "bar", 1)).saturating_add(s.tempo.first_bar());
+            s.tempo.set_first_bar(first_bar);
+            Ok(json!({"first_bar": first_bar}))
+        }),
         cmd!("event.all_notes_off", "All MIDI Notes Off", ["Event"], Some("Cmd+Shift+."), "{}", always, |e, _| {
             e.transport_requests.push(crate::TransportRequest::AllNotesOff);
             Ok(json!({}))
@@ -437,6 +444,28 @@ mod tests {
     fn grid_ticks_accepts_the_quarter_triplet() {
         use super::{TICKS_PER_QUARTER, grid_ticks};
         assert_eq!(grid_ticks(&json!({"grid": "1/4t"})), TICKS_PER_QUARTER * 2 / 3);
+    }
+
+    #[test]
+    fn renumber_bars_relabels_the_map_without_moving_it() {
+        use soundcraft_time::TimeFormat;
+        let mut e = demo_engine();
+        let sr = e.session().sample_rate;
+        // The session's second bar, wherever the tempo map puts it.
+        let bar2 = e.session().tempo.samples_at_bar_beat(soundcraft_time::BarBeat { bar: 2, beat: 1, tick: 0 }, sr);
+        // Bar 2 is renumbered 1: the session's first bar becomes a lead-in bar 0.
+        let r = e.execute("event.renumber_bars", &json!({"bar": 2, "number": 1})).unwrap();
+        assert_eq!(r["first_bar"], 0);
+        let s = e.session();
+        assert_eq!(s.tempo.first_bar(), 0);
+        // Displayed numbers shifted; no tick or sample moved.
+        assert_eq!(s.tempo.bar_beat_at_tick(0).bar, 0);
+        assert_eq!(s.format_position(bar2, TimeFormat::BarsBeats), "1| 1| 000");
+        assert_eq!(s.format_position(0, TimeFormat::BarsBeats), "0| 1| 000");
+        // Renumbering again uses the displayed numbers: displayed bar 0 stays bar 0's physical bar.
+        let r = e.execute("event.renumber_bars", &json!({"bar": 0, "number": -2})).unwrap();
+        assert_eq!(r["first_bar"], -2);
+        assert_eq!(e.session().format_position(bar2, TimeFormat::BarsBeats), "-1| 1| 000");
     }
 
     #[test]

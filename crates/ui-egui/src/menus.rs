@@ -171,6 +171,7 @@ const DIALOG_COMMANDS: &[&str] = &[
     "setup.session",
     "event.quantize",
     "event.transpose",
+    "event.renumber_bars",
     "edit.strip_silence",
     "clip.auto_rename",
     "clip.rename",

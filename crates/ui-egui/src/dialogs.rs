@@ -41,6 +41,8 @@ pub enum Dialog {
     PathPrompt { cmd: String, title: String, path: String, key: String },
     Number { cmd: String, title: String, key: String, value: f64, suffix: String },
     TempoChange { at: Samples, bpm: f64 }, // from double-clicking the tempo ruler
+    // Event › Renumber Bars…: the displayed `bar` is renumbered `to`; 0 or less gives a lead-in.
+    RenumberBars { bar: i64, to: i64 },
     Spot(crate::spot::Spot),
     Fades { shape: String },
     StripSilence { threshold: f64, min_ms: f64, pre_ms: f64, post_ms: f64 },
@@ -100,6 +102,7 @@ impl Dialogs {
             Dialog::PathPrompt { .. } => "path",
             Dialog::Number { .. } => "number",
             Dialog::TempoChange { .. } => "tempo_change",
+            Dialog::RenumberBars { .. } => "renumber_bars",
             Dialog::Spot(_) => "spot",
             Dialog::Fades { .. } => "fades",
             Dialog::StripSilence { .. } => "strip_silence",
@@ -223,6 +226,11 @@ impl Dialogs {
             }
             "event.quantize" => {
                 Dialog::Number { cmd: id.into(), title: "Quantize strength".into(), key: "strength".into(), value: 100.0, suffix: "%".into() }
+            }
+            "event.renumber_bars" => {
+                // Open on the session's first bar, which always exists under any numbering.
+                let first = e.session().tempo.first_bar();
+                Dialog::RenumberBars { bar: first, to: first }
             }
             "edit.fades_create" => Dialog::Fades { shape: "equal power".into() },
             "edit.strip_silence" => {
@@ -485,6 +493,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::ClearClips { .. } => "Clear",
         Dialog::PathPrompt { title, .. } | Dialog::Number { title, .. } => title.as_str(),
         Dialog::TempoChange { .. } => "Tempo Change (BPM)",
+        Dialog::RenumberBars { .. } => "Renumber Bars",
         Dialog::Spot(_) => "Spot",
         Dialog::Fades { .. } => "Fades",
         Dialog::StripSilence { .. } => "Strip Silence",
@@ -618,6 +627,17 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     });
                     if buttons(ui, "OK", enter) {
                         action = Some(tempo_change_action(*at, *bpm));
+                    }
+                }
+                Dialog::RenumberBars { bar, to } => {
+                    ui.horizontal(|ui| {
+                        ui.label("Renumber bar");
+                        ui.add(egui::DragValue::new(bar).speed(1)).accessible_name("Bar to renumber");
+                        ui.label("to");
+                        ui.add(egui::DragValue::new(to).speed(1)).accessible_name("New bar number");
+                    });
+                    if buttons(ui, "OK", enter) {
+                        action = Some(("event.renumber_bars".into(), json!({"bar": bar, "number": to})));
                     }
                 }
                 Dialog::Spot(d) => {
