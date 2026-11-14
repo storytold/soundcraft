@@ -186,12 +186,35 @@ pub fn render_stretched(s: &mut Session, cmd: &str, c: &Clip, out_len: Samples) 
     Ok(Some(crate::io::add_source(s, &format!("{}-TCE", c.name), buf, None, FileFormat::Wav)))
 }
 
-/// Replace clip `old` on track `t` with `new` (overwriting whatever `new` covers).
+/// Replace clip `old` on track `t` with `new`, overwriting whatever `new` covers, except a clip that
+/// overlapped `old` across one edge that `new` does not reach past: the other half of a crossfade keeps
+/// its overlap and its fade, so processing a clip in place does not turn the crossfade into a dip.
 pub fn replace_clip(s: &mut Session, t: TrackId, old: soundcraft_model::ClipId, new: Clip) {
-    if let Some(pl) = s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
-        pl.clips.retain(|c| c.id != old);
-    }
+    let kept: Vec<Clip> = match s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
+        Some(pl) => {
+            let was = pl.clips.iter().find(|c| c.id == old).map(Clip::range);
+            let to = new.range();
+            // The other half of a crossfade: it overlaps `old` across one edge only, starting before `old` and ending
+            // inside it, or starting inside it and ending after it, and `new` does not reach past that edge. A clip
+            // inside `old`, or covering all of it, shares no crossfade with it and is overwritten as usual.
+            let keep = |c: &Clip| {
+                was.is_some_and(|w| {
+                    let earlier = c.start < w.start && c.end() < w.end && to.start >= w.start;
+                    let later = c.start > w.start && c.end() > w.end && to.end <= w.end;
+                    c.range().intersect(&w).is_some() && (earlier || later)
+                })
+            };
+            let (kept, rest) = std::mem::take(&mut pl.clips).into_iter().filter(|c| c.id != old).partition(keep);
+            pl.clips = rest;
+            kept
+        }
+        None => Vec::new(),
+    };
     crate::edit::place_clip(s, t, new);
+    if let Some(pl) = s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
+        pl.clips.extend(kept);
+        pl.sort();
+    }
 }
 
 #[cfg(test)]
