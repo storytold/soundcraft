@@ -385,6 +385,9 @@ impl SubtractiveSynth {
                 v.osc1.reset();
                 v.osc2.phase = 0.37;
                 v.svf = Svf::default();
+                // A short previous note can idle before its body gain decays;
+                // that residual must not leak into the fresh strike.
+                v.body = 0.0;
             }
             v.amp.gate_on();
             v.filt.gate_on();

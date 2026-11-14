@@ -749,8 +749,6 @@ fn body_resonance_gives_notes_near_body_modes_a_two_stage_decay() {
 #[test]
 fn a_restrike_near_a_body_mode_ramps_in_without_a_click() {
     let step = |x: &[f32]| x.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0_f32, f32::max);
-    let mut worst = 0.0_f32;
-    let mut steady = 0.0_f32;
     for offset in (0..440).step_by(11) {
         let mut p = prepared("subtractive_synth");
         for (id, v) in
@@ -764,9 +762,11 @@ fn a_restrike_near_a_body_mode_ramps_in_without_a_click() {
         p.note_off(0, 45);
         p.note_on(0, 45, 110);
         let after = run(p.as_mut(), &[vec![0.0; 4800]]);
-        steady = steady.max(step(&after[0][..]));
-        worst = worst.max(step(&[&before[0][23_900..], &after[0][..8]].concat()));
+        // Checked per offset: the re-strike's step must stay within that same
+        // offset's own within-note maximum, not a pooled bound where one
+        // offset's margin could hide another's excess.
+        let steady = step(&after[0][..]);
+        let worst = step(&[&before[0][23_900..], &after[0][..8]].concat());
+        assert!(worst <= steady * 1.05, "offset {offset}: {worst} vs {steady}");
     }
-    // The re-strike's body stage ramps in: no step beyond the louder note's own.
-    assert!(worst <= steady * 1.05, "{worst} vs {steady}");
 }
