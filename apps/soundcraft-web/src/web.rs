@@ -40,7 +40,7 @@ pub fn start() {
                     }
                     let engine = if query().contains("empty") { Engine::default() } else { soundcraft_engine::demo::demo_engine() };
                     let player = soundcraft_playback::Player::new(Arc::new(engine.session().clone()));
-                    let app = SoundApp::new(engine, Some(player), Services::default());
+                    let app = SoundApp::new(engine, Some(player), Services::default()).with_control(crate::api::install(cc.egui_ctx.clone()));
                     Ok(Box::new(WebShell { app, inbox: Rc::default(), samples: Rc::default() }))
                 }),
             )
