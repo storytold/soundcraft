@@ -434,6 +434,36 @@ impl Plugin for Ears {
 }
 
 #[test]
+fn notes_held_across_a_seek_are_struck_again() {
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(t).unwrap().instrument = Some(Insert::new("clap:test.keys"));
+    let mut seq = soundcraft_midi::Sequence::default();
+    // A two-note chord over the first two beats at 120 BPM (0..48_000), then a note from beat 3.
+    for pitch in [60, 64] {
+        seq.notes.push(soundcraft_midi::Note { pitch, velocity: 90, release_velocity: 64, channel: 0, start: 0, length: 1920 });
+    }
+    seq.notes.push(soundcraft_midi::Note { pitch: 67, velocity: 90, release_velocity: 64, channel: 0, start: 1920, length: 960 });
+    let cid = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "m", 0, 96_000, seq));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let keys = Keys { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.keys".into(), ch: 2, plugin: Box::new(keys) }]);
+    render_block(&mut eng, &s, 0);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(60, 90), (64, 90)]);
+    render_block(&mut eng, &s, 512);
+    assert!(heard.lock().unwrap().is_empty(), "continuing playback does not strike held notes again");
+    // Seek into the middle of the chord: both notes sound again from the block start.
+    render_block(&mut eng, &s, 24_000);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(60, 90), (64, 90)]);
+    // Seek past the chord into the later note: only that one is chased.
+    render_block(&mut eng, &s, 60_000);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(67, 90)]);
+}
+
+#[test]
 fn controllers_play_at_their_offsets_and_are_chased_after_a_seek() {
     let mut s = Session::default();
     let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
