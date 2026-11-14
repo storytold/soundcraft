@@ -1,4 +1,4 @@
-//! Subtractive Synth: 16-voice polyphonic, two PolyBLEP oscillators, resonant state-variable
+//! Subtractive Synth: 16-voice polyphonic, two PolyBLEP oscillators (or white/pink noise), resonant state-variable
 //! low-pass (TPT form) with its own ADSR, amp ADSR, optional glide.
 
 use crate::osc::{Osc, Waveform};
@@ -57,13 +57,16 @@ impl EventQueue {
     }
 }
 
-const WAVES: &[&str] = &["Saw", "Square", "Sine", "Triangle"];
+/// Append new waves at the end: saved sessions store the index.
+const WAVES: &[&str] = &["Saw", "Square", "Sine", "Triangle", "White Noise", "Pink Noise"];
 
 fn wave(i: usize) -> Waveform {
     match i {
         1 => Waveform::Square,
         2 => Waveform::Sine,
         3 => Waveform::Triangle,
+        4 => Waveform::WhiteNoise,
+        5 => Waveform::PinkNoise,
         _ => Waveform::Saw,
     }
 }

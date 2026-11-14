@@ -478,6 +478,66 @@ fn synth_follows_the_sustain_pedal_and_pitch_bend() {
 }
 
 #[test]
+fn synth_noise_waves_are_appended_and_old_indexes_keep_their_waveform() {
+    // #1312: White and Pink Noise come after the four original choices, so a saved index 0..=3
+    // still means the same waveform.
+    let info = plugin_info("subtractive_synth").unwrap();
+    for id in ["osc1_wave", "osc2_wave"] {
+        let p = info.params.iter().find(|p| p.id == id).unwrap();
+        assert_eq!(p.choices, ["Saw", "Square", "Sine", "Triangle", "White Noise", "Pink Noise"], "{id}");
+        assert_eq!((p.min, p.max, p.default), (0.0, 5.0, 0.0), "{id}");
+    }
+    let rises = |x: &[f32]| x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+    let render = |wave: f32| {
+        let mut p = prepared("subtractive_synth");
+        p.set_param("osc1_wave", wave);
+        p.set_param("osc_mix", 0.0);
+        p.set_param("cutoff", 20_000.0);
+        p.set_param("filter_env_amount", 0.0);
+        p.note_on(0, 69, 100);
+        run(p.as_mut(), &[vec![0.0; 48_000]]).remove(0)
+    };
+    // The tones keep their pitch: one rising zero crossing per 440 Hz cycle.
+    for wave in 0..=3 {
+        let out = render(wave as f32);
+        let n = rises(&out[4800..]);
+        assert!((390..=400).contains(&n), "wave {wave}: {n} rising crossings in 0.9 s");
+        // Each waveform's harmonic shape is its own: Saw has the only 2nd harmonic, Square and
+        // Triangle are odd-only (1/n and 1/n²), Sine is alone.
+        let (f, h2, h3) = (tone_level(&out[4800..], 440.0), tone_level(&out[4800..], 880.0), tone_level(&out[4800..], 1320.0));
+        match wave {
+            0 => assert!(h2 > f * 0.35 && h3 > f * 0.2, "saw: {f} {h2} {h3}"),
+            1 => assert!(h2 < f * 0.05 && h3 > f * 0.2, "square: {f} {h2} {h3}"),
+            2 => assert!(h2 < f * 0.05 && h3 < f * 0.05, "sine: {f} {h2} {h3}"),
+            _ => assert!(h2 < f * 0.05 && h3 > f * 0.07 && h3 < f * 0.16, "triangle: {f} {h2} {h3}"),
+        }
+    }
+    // The noises sound, stay bounded and finite, and are not a 440 Hz tone.
+    for wave in [4.0, 5.0] {
+        let out = render(wave);
+        assert!(out.iter().all(|v| v.is_finite()), "wave {wave} not finite");
+        assert!(rms(&out[4800..]) > 0.01, "wave {wave} silent");
+        assert!(peak(&out) <= 1.0, "wave {wave} peak {}", peak(&out));
+        let n = rises(&out[4800..]);
+        assert!(n > 1500, "wave {wave} looks tonal: {n} rising crossings");
+        // White is spectrally flat; pink falls -3 dB/octave. The 50-400 Hz and 4-12 kHz band means
+        // measure the slope at +1.1 and -14.9 dB here.
+        let spec = soundcraft_dsp::spectrum::magnitude_db(&out[4800..], 8192);
+        let per_hz = SR / 8192.0;
+        let mean = |lo: f32, hi: f32| {
+            let v = &spec[(lo / per_hz) as usize..=(hi / per_hz) as usize];
+            v.iter().sum::<f32>() / v.len() as f32
+        };
+        let slope = mean(4000.0, 12000.0) - mean(50.0, 400.0);
+        if wave == 4.0 {
+            assert!(slope > -4.0, "white noise slope {slope} dB");
+        } else {
+            assert!(slope < -8.0, "pink noise slope {slope} dB");
+        }
+    }
+}
+
+#[test]
 fn synth_event_offsets_are_sample_accurate() {
     let mut p = prepared("subtractive_synth");
     p.set_param("amp_attack", 0.5);
