@@ -48,6 +48,20 @@ fn delay_line_change_keeps_buffers_and_history() {
 }
 
 #[test]
+fn note_off_at_the_clip_end_on_a_block_boundary_releases_the_note() {
+    // The note ends with its 24,000-sample clip; 480-frame blocks put that
+    // note-off at the first sample of the block after the clip.
+    let mut s = synth_session(-6.0);
+    if let Some(ins) = s.tracks[0].instrument.as_mut() {
+        ins.params.insert("amp_release".into(), 20.0);
+    }
+    let out = render_range(&s, Range::new(0, 48_000), 480);
+    let peak = |r: std::ops::Range<usize>| out[0].get(r).unwrap_or_default().iter().fold(0.0_f32, |p, x| p.max(x.abs()));
+    assert!(peak(12_000..24_000) > 0.01, "the synth should sound");
+    assert!(peak(30_000..48_000) < 1e-4, "the note must be released at the clip end");
+}
+
+#[test]
 fn stored_instrument_params_reach_the_plugin() {
     // #152: a saved instrument level of -12 dB must render quieter than -6 dB.
     // RMS over the held part of the note, past any parameter smoothing.
