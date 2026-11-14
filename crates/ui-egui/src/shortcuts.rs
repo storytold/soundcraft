@@ -150,6 +150,20 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             let _ = app.run("markers.add", json!({}));
             true
         }
+        // Pro Tools' Delete (Backspace on a Mac laptop) is Clear, as Edit › Clear (Cmd+B) is. In the
+        // Edit window only (the one actually drawn), and not while the MIDI editor has a valid target
+        // with notes selected: it deletes those.
+        Key::Delete | Key::Backspace if plain && (app.ui.mix_separate || app.ui.window == MainWindow::Edit) => {
+            if crate::panels::midi_editor::target_clip(app).is_none() {
+                // No MIDI target can consume the notes any more: drop the stale selection.
+                app.midi.selected.clear();
+            }
+            if app.ui.show_midi_editor && !app.midi.selected.is_empty() {
+                return false;
+            }
+            let _ = app.run("edit.clear", json!({}));
+            true
+        }
         // Shift+=/- step the Grid value and Alt+Shift+=/- the Nudge value; macOS sends Alt+Shift+= as =, not +.
         Key::Plus | Key::Equals | Key::Minus if m.shift && !m.command && !m.ctrl && app.ui.window == MainWindow::Edit => {
             let step = if key == Key::Minus { -1 } else { 1 };
