@@ -34,8 +34,14 @@ pub struct Vst3Plugin {
     ids: Vec<u32>,
     maps: Vec<Mapping>,
     values: Vec<f32>,
-    /// Normalized values waiting for the next block (coalesced per id; bounded).
-    pending: Vec<(u32, f64)>,
+    /// Normalized value waiting for the plugin, per parameter (same order as `ids`). Coalesced
+    /// per parameter and never full: what does not fit in one block's parameter queues goes out
+    /// in the next one, so no value is dropped.
+    queued: Vec<Option<f64>>,
+    /// How many entries of `queued` are `Some`.
+    queued_count: usize,
+    /// One sub-block's share of `queued` (at most `PARAM_QUEUE_CAP`; never grows).
+    batch: Vec<(u32, f64)>,
     /// Parameters `set_param` has written (same order as `ids`).
     host_set: Vec<bool>,
     /// Host-set normalized values the controller has not seen yet (same order as `ids`; the bits
@@ -89,7 +95,9 @@ impl Vst3Plugin {
         let mut p = Vst3Plugin {
             info,
             values: Vec::with_capacity(ids.len()),
-            pending: Vec::with_capacity(ids.len().min(PARAM_QUEUE_CAP)),
+            queued: vec![None; ids.len()],
+            queued_count: 0,
+            batch: Vec::with_capacity(PARAM_QUEUE_CAP),
             host_set: vec![false; ids.len()],
             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
             notes: Vec::with_capacity(EVENT_CAP),
@@ -163,9 +171,25 @@ impl Vst3Plugin {
                 *slot = pi.clamp(v);
             }
         }
-        self.pending.clear();
+        self.clear_queued();
         for u in self.unsynced.iter() {
             u.store(SYNCED, Ordering::Relaxed);
+        }
+    }
+
+    /// Queues normalized value `n` for parameter `i`, replacing one still waiting.
+    fn queue(&mut self, i: usize, n: f64) {
+        if let Some(q) = self.queued.get_mut(i)
+            && q.replace(n).is_none()
+        {
+            self.queued_count += 1;
+        }
+    }
+
+    fn clear_queued(&mut self) {
+        if self.queued_count > 0 {
+            self.queued.fill(None);
+            self.queued_count = 0;
         }
     }
 
@@ -174,6 +198,27 @@ impl Vst3Plugin {
     fn push_note(&mut self, e: NoteEvent) {
         push_sorted(&mut self.notes, e);
     }
+}
+
+/// Moves up to `room` waiting values (lowest parameter index first) into `batch` and returns how
+/// many it moved. Never grows `batch` past its capacity.
+fn take_batch(queued: &mut [Option<f64>], ids: &[u32], batch: &mut Vec<(u32, f64)>, room: usize) -> usize {
+    batch.clear();
+    let room = room.min(batch.capacity());
+    if room == 0 {
+        return 0;
+    }
+    let mut taken = 0;
+    for (q, &id) in queued.iter_mut().zip(ids) {
+        if batch.len() >= room {
+            break;
+        }
+        if let Some(n) = q.take() {
+            batch.push((id, n));
+            taken += 1;
+        }
+    }
+    taken
 }
 
 fn push_sorted(notes: &mut Vec<NoteEvent>, e: NoteEvent) {
@@ -259,17 +304,14 @@ impl Plugin for Vst3Plugin {
         // controllers" and CC 123 "all notes off" at offset 0, after anything the host sends in
         // the same block. Only stand-ins the host set go out again, whatever their value.
         let midi_ids = if self.max_block > 0 { self.inst.midi_mapped_ids() } else { Vec::new() };
-        self.pending.clear();
+        self.clear_queued();
         for i in 0..self.ids.len() {
-            if self.pending.len() >= self.pending.capacity() {
-                break;
-            }
             let (Some(&id), Some(&v)) = (self.ids.get(i), self.values.get(i)) else { continue };
             if midi_ids.binary_search(&id).is_ok() && !self.host_set.get(i).copied().unwrap_or(false) {
                 continue;
             }
             if let Some(n) = self.normalized_from_plain(i, v) {
-                self.pending.push((id, n));
+                self.queue(i, n);
             }
         }
     }
@@ -290,7 +332,7 @@ impl Plugin for Vst3Plugin {
 
     fn set_param(&mut self, id: &str, value: f32) -> bool {
         let Some(i) = self.info.params.iter().position(|p| p.id == id) else { return false };
-        let (Some(pi), Some(&vid)) = (self.info.params.get(i), self.ids.get(i)) else { return false };
+        let Some(pi) = self.info.params.get(i) else { return false };
         let v = pi.clamp(value);
         if let Some(slot) = self.values.get_mut(i) {
             *slot = v;
@@ -302,11 +344,7 @@ impl Plugin for Vst3Plugin {
         if let Some(u) = self.unsynced.get(i) {
             u.store(n.to_bits(), Ordering::Relaxed);
         }
-        if let Some(e) = self.pending.iter_mut().find(|(pid, _)| *pid == vid) {
-            e.1 = n;
-        } else if self.pending.len() < self.pending.capacity() {
-            self.pending.push((vid, n));
-        }
+        self.queue(i, n);
         true
     }
 
@@ -347,18 +385,25 @@ impl Plugin for Vst3Plugin {
             let k = self.notes.iter().position(|e| e.time() >= end).unwrap_or(self.notes.len());
             let offset = u32::try_from(start).unwrap_or(u32::MAX);
             let notes = self.notes.get(..k).unwrap_or(&[]);
+            // Controller points may each need a parameter queue of their own; values that do not
+            // fit next to them wait for the next sub-block.
+            let room = PARAM_QUEUE_CAP.saturating_sub(self.controls.len());
+            if self.queued_count > 0 {
+                self.queued_count -= take_batch(&mut self.queued, &self.ids, &mut self.batch, room);
+            } else {
+                self.batch.clear();
+            }
             let r = self.inst.process(ProcessInput {
                 frames: n,
                 inputs: &mut self.inputs,
                 outputs: &mut self.outputs,
-                params: &self.pending,
+                params: &self.batch,
                 controls: &self.controls,
                 notes,
                 offset,
                 project_time: self.position,
                 transport: self.transport.as_ref(),
             });
-            self.pending.clear();
             self.notes.drain(..k);
             self.position = self.position.saturating_add(i64::try_from(n).unwrap_or(0));
             match r {
@@ -576,6 +621,25 @@ impl PluginEditor for Vst3Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Values past one block's room wait in order for the next call; none is dropped.
+    #[test]
+    fn take_batch_leaves_what_does_not_fit_for_the_next_block() {
+        let ids: Vec<u32> = (100..110).collect();
+        let mut queued: Vec<Option<f64>> = (0..10).map(|i| (i % 3 != 1).then_some(f64::from(i))).collect();
+        let mut batch = Vec::with_capacity(4);
+        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 3), 3);
+        assert_eq!(batch, [(100, 0.0), (102, 2.0), (103, 3.0)]);
+        // The room is capped by the batch's capacity, so it never grows.
+        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 99), 4);
+        assert_eq!(batch, [(105, 5.0), (106, 6.0), (108, 8.0), (109, 9.0)]);
+        assert_eq!(batch.capacity(), 4);
+        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 3), 0);
+        assert!(batch.is_empty() && queued.iter().all(Option::is_none));
+        queued[0] = Some(1.0);
+        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 0), 0, "no room this block");
+        assert_eq!(queued[0], Some(1.0));
+    }
 
     /// A queue full of releases still has room to release every held key after a reset.
     #[test]

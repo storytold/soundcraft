@@ -15,6 +15,10 @@
 //!   controllers the way JUCE does: 16 × 130 visible stand-in parameters (`IMidiMapping` on every
 //!   channel), each change played as that controller, CC 121 resetting the channel's controllers.
 //!   Every output sample is channel 1's CC 5.
+//! - "Fixture Many Params" (`Fx`): a single-component effect with 1500 automatable parameters
+//!   (ids 0..1500, default 0.5), more than one block's parameter queues hold. Output channel 0 is
+//!   the last value received for the last parameter (-1 before any), channel 1 how many
+//!   different parameters it has received.
 //! - "Fixture Wide 16x64", "Fixture Wide 32 buses", "Fixture Wide 65 buses", "Fixture Wide 65
 //!   channels" (`Fx`): effects advertising wide layouts (16 buses of 64 channels, 32 and 65 buses
 //!   of 2 channels, one bus of 65 channels per direction), through `getBusInfo` only. `process` writes 1.0 into every channel
@@ -43,6 +47,7 @@ const WIDE65B_CID: TUID = uid(0x5C0A1D04, 0x11112222, 0x33334444, 0x55556666);
 const WIDE65_CID: TUID = uid(0x5C0A1D05, 0x11112222, 0x33334444, 0x55556666);
 const WIDE32_CID: TUID = uid(0x5C0A1D06, 0x11112222, 0x33334444, 0x55556666);
 const CC_SYNTH_CID: TUID = uid(0x5C0A1D07, 0x11112222, 0x33334444, 0x55556666);
+const MANY_CID: TUID = uid(0x5C0A1D08, 0x11112222, 0x33334444, 0x55556666);
 
 fn copy_c8(src: &str, dst: &mut [c_char]) {
     for (d, s) in dst.iter_mut().zip(src.bytes().chain(std::iter::once(0))) {
@@ -845,6 +850,172 @@ impl IEditControllerTrait for CcSynth {
     }
 }
 
+// ---- many parameters -----------------------------------------------------------------------
+
+const MANY_PARAMS: u32 = 1500;
+
+struct ManyParams {
+    /// Last normalized value received per parameter.
+    seen: std::sync::Mutex<Vec<Option<f64>>>,
+    _live: Live,
+}
+
+impl Class for ManyParams {
+    type Interfaces = (IComponent, IAudioProcessor, IEditController);
+}
+
+impl IPluginBaseTrait for ManyParams {
+    unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
+        kResultOk
+    }
+    unsafe fn terminate(&self) -> tresult {
+        kResultOk
+    }
+}
+
+impl IComponentTrait for ManyParams {
+    unsafe fn getControllerClassId(&self, _class_id: *mut TUID) -> tresult {
+        kNotImplemented
+    }
+    unsafe fn setIoMode(&self, _mode: IoMode) -> tresult {
+        kResultOk
+    }
+    unsafe fn getBusCount(&self, media: MediaType, _dir: BusDirection) -> i32 {
+        i32::from(media == MediaTypes_::kAudio as MediaType)
+    }
+    unsafe fn getBusInfo(&self, media: MediaType, dir: BusDirection, index: i32, bus: *mut BusInfo) -> tresult {
+        if media != MediaTypes_::kAudio as MediaType || index != 0 {
+            return kInvalidArgument;
+        }
+        audio_bus(bus, dir, "Main");
+        kResultOk
+    }
+    unsafe fn getRoutingInfo(&self, _i: *mut RoutingInfo, _o: *mut RoutingInfo) -> tresult {
+        kNotImplemented
+    }
+    unsafe fn activateBus(&self, _m: MediaType, _d: BusDirection, _i: i32, _s: TBool) -> tresult {
+        kResultOk
+    }
+    unsafe fn setActive(&self, _state: TBool) -> tresult {
+        kResultOk
+    }
+    unsafe fn setState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+    unsafe fn getState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+}
+
+impl IAudioProcessorTrait for ManyParams {
+    unsafe fn setBusArrangements(&self, inputs: *mut SpeakerArrangement, n_in: i32, outputs: *mut SpeakerArrangement, n_out: i32) -> tresult {
+        let stereo = n_in == 1 && n_out == 1 && unsafe { *inputs == SpeakerArr::kStereo && *outputs == SpeakerArr::kStereo };
+        if stereo { kResultTrue } else { kResultFalse }
+    }
+    unsafe fn getBusArrangement(&self, _dir: BusDirection, index: i32, arr: *mut SpeakerArrangement) -> tresult {
+        if index != 0 {
+            return kInvalidArgument;
+        }
+        unsafe { *arr = SpeakerArr::kStereo };
+        kResultOk
+    }
+    unsafe fn canProcessSampleSize(&self, size: i32) -> tresult {
+        if size == SymbolicSampleSizes_::kSample32 as i32 { kResultOk } else { kNotImplemented }
+    }
+    unsafe fn getLatencySamples(&self) -> u32 {
+        0
+    }
+    unsafe fn setupProcessing(&self, _setup: *mut ProcessSetup) -> tresult {
+        kResultOk
+    }
+    unsafe fn setProcessing(&self, _state: TBool) -> tresult {
+        kResultOk
+    }
+    unsafe fn process(&self, data: *mut ProcessData) -> tresult {
+        let d = unsafe { &*data };
+        let mut seen = self.seen.lock().unwrap();
+        if let Some(changes) = unsafe { ComRef::from_raw(d.inputParameterChanges) } {
+            for i in 0..unsafe { changes.getParameterCount() } {
+                let Some(q) = (unsafe { ComRef::from_raw(changes.getParameterData(i)) }) else { continue };
+                let (mut at, mut v) = (0i32, 0f64);
+                let n = unsafe { q.getPointCount() };
+                if let Some(slot) = seen.get_mut(unsafe { q.getParameterId() } as usize)
+                    && n > 0
+                    && unsafe { q.getPoint(n - 1, &mut at, &mut v) } == kResultOk
+                {
+                    *slot = Some(v);
+                }
+            }
+        }
+        if d.numOutputs == 1 {
+            let last = seen.last().copied().flatten().map_or(-1.0, |v| v as f32);
+            let count = seen.iter().flatten().count() as f32;
+            let outs = unsafe { channels(&*d.outputs, d.numSamples.max(0) as usize) };
+            for (c, ch) in outs.into_iter().enumerate() {
+                ch.fill(if c == 0 { last } else { count });
+            }
+        }
+        kResultOk
+    }
+    unsafe fn getTailSamples(&self) -> u32 {
+        0
+    }
+}
+
+impl IEditControllerTrait for ManyParams {
+    unsafe fn setComponentState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+    unsafe fn setState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+    unsafe fn getState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+    unsafe fn getParameterCount(&self) -> i32 {
+        MANY_PARAMS as i32
+    }
+    unsafe fn getParameterInfo(&self, index: i32, info: *mut ParameterInfo) -> tresult {
+        let Some(index) = u32::try_from(index).ok().filter(|&i| i < MANY_PARAMS) else { return kInvalidArgument };
+        let i = unsafe { &mut *info };
+        i.id = index;
+        let title = format!("Param {index}");
+        copy_c16(&title, &mut i.title);
+        copy_c16(&title, &mut i.shortTitle);
+        copy_c16("", &mut i.units);
+        i.stepCount = 0;
+        i.defaultNormalizedValue = 0.5;
+        i.unitId = 0;
+        i.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
+        kResultOk
+    }
+    unsafe fn getParamStringByValue(&self, _id: u32, n: f64, string: *mut String128) -> tresult {
+        copy_c16(&format!("{n:.3}"), unsafe { &mut *string });
+        kResultOk
+    }
+    unsafe fn getParamValueByString(&self, _id: u32, _s: *mut TChar, _v: *mut f64) -> tresult {
+        kNotImplemented
+    }
+    unsafe fn normalizedParamToPlain(&self, _id: u32, n: f64) -> f64 {
+        n
+    }
+    unsafe fn plainParamToNormalized(&self, _id: u32, v: f64) -> f64 {
+        v
+    }
+    unsafe fn getParamNormalized(&self, _id: u32) -> f64 {
+        0.5
+    }
+    unsafe fn setParamNormalized(&self, _id: u32, _v: f64) -> tresult {
+        kResultOk
+    }
+    unsafe fn setComponentHandler(&self, _handler: *mut IComponentHandler) -> tresult {
+        kResultOk
+    }
+    unsafe fn createView(&self, _name: FIDString) -> *mut IPlugView {
+        std::ptr::null_mut()
+    }
+}
+
 // ---- wide layouts --------------------------------------------------------------------------
 
 struct Wide {
@@ -951,7 +1122,7 @@ impl Class for Factory {
     type Interfaces = (IPluginFactory2,);
 }
 
-const CLASSES: [(TUID, &str, &str, &str); 8] = [
+const CLASSES: [(TUID, &str, &str, &str); 9] = [
     (GAIN_CID, "Audio Module Class", "Fixture Gain", "Fx"),
     (GAIN_CTRL_CID, "Component Controller Class", "Fixture Gain", ""),
     (SYNTH_CID, "Audio Module Class", "Fixture Synth", "Instrument|Synth"),
@@ -960,6 +1131,7 @@ const CLASSES: [(TUID, &str, &str, &str); 8] = [
     (WIDE65B_CID, "Audio Module Class", "Fixture Wide 65 buses", "Fx"),
     (WIDE65_CID, "Audio Module Class", "Fixture Wide 65 channels", "Fx"),
     (CC_SYNTH_CID, "Audio Module Class", "Fixture CC Synth", "Instrument|Synth"),
+    (MANY_CID, "Audio Module Class", "Fixture Many Params", "Fx"),
 ];
 
 impl IPluginFactoryTrait for Factory {
@@ -1002,6 +1174,9 @@ impl IPluginFactoryTrait for Factory {
             .to_com_ptr::<FUnknown>()
         } else if cid == SYNTH_CID {
             ComWrapper::new(Synth { level: AtomicU32::new(0), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
+        } else if cid == MANY_CID {
+            ComWrapper::new(ManyParams { seen: std::sync::Mutex::new(vec![None; MANY_PARAMS as usize]), _live: Live::new(&OBJECTS) })
+                .to_com_ptr::<FUnknown>()
         } else if cid == CC_SYNTH_CID {
             ComWrapper::new(CcSynth { controllers: std::sync::Mutex::new([[0.0; CC_PER_CHANNEL as usize]; 16]), _live: Live::new(&OBJECTS) })
                 .to_com_ptr::<FUnknown>()

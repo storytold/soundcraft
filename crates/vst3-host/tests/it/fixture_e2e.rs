@@ -15,7 +15,7 @@ fn id_of(name: &str) -> String {
 fn scan_lists_both_audio_modules_but_not_the_controller_class() {
     let dir = fixture_dir();
     let found = soundcraft_vst3_host::scan_paths(&[dir.to_path_buf()]);
-    assert_eq!(found.len(), 7, "{found:?}");
+    assert_eq!(found.len(), 8, "{found:?}");
     let g = found.iter().find(|d| d.name == "Fixture Gain").unwrap();
     // `uid()` lays out the first 8 bytes differently on Windows (COM GUID order).
     let want = if cfg!(windows) { "vst3:001D0A5C111122223333444455556666" } else { "vst3:5C0A1D00111122223333444455556666" };
@@ -201,6 +201,28 @@ fn prepare_does_not_play_untouched_midi_controller_params() {
     p.prepare(48_000.0, 64, 2);
     p.midi(0, [0xB0, 5, 64]);
     assert!((block(&mut p) - 64.0 / 127.0).abs() < 1e-6, "CC 5 from a clip was reset");
+}
+
+/// More values than one block's parameter queues hold (the resend on prepare alone is 1500) all
+/// reach the plugin over the next blocks. Before, the queue filled up on prepare and a value the
+/// host set in that block was dropped for good: the mixer sends a steady value only once.
+#[test]
+fn values_past_one_blocks_queues_are_sent_in_the_next_block() {
+    let id = id_of("Fixture Many Params");
+    assert_eq!(soundcraft_vst3_host::plugin_info(&id).unwrap().params.len(), 1500);
+    let mut p = soundcraft_vst3_host::create(&id).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    assert!(p.set_param("1499", 1.0));
+    let mut io = vec![vec![0.0f32; 64], vec![0.0f32; 64]];
+    p.process(&mut io, 64);
+    assert!(io[1][63] >= 1000.0, "the first block carries a full set of queues: {}", io[1][63]);
+    p.process(&mut io, 64);
+    assert_eq!(io[1][63], 1500.0, "every parameter was re-sent");
+    assert!((io[0][63] - 1.0).abs() < 1e-6, "the host's value for the last parameter: {}", io[0][63]);
+    // Nothing waits any more: a later change goes out in the very next block.
+    assert!(p.set_param("1499", 0.25));
+    p.process(&mut io, 64);
+    assert!((io[0][63] - 0.25).abs() < 1e-6);
 }
 
 #[test]
