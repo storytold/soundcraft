@@ -36,12 +36,17 @@ pub fn set_flags(e: &mut Engine, ids: &[&str], on: bool) -> Value {
     json!({"flags": ids, "value": on})
 }
 
+/// A string setting as [`set_text`] stores it: trimmed, cut to 200 characters, then trimmed again.
+/// The second trim drops a space at the cut, so a later call returns the same string. Empty clears it.
+pub fn text_value(value: &str) -> String {
+    value.trim().chars().take(200).collect::<String>().trim_end().to_string()
+}
+
 /// String settings live in `edit.flags` as `key=value` (one per key).
 pub fn set_text(edit: &mut EditState, key: &str, value: Option<&str>) {
     let prefix = format!("{key}=");
     edit.flags.retain(|f| !f.starts_with(&prefix));
-    if let Some(v) = value.map(str::trim).filter(|v| !v.is_empty()) {
-        let v: String = v.chars().take(200).collect();
+    if let Some(v) = value.map(text_value).filter(|v| !v.is_empty()) {
         edit.flags.insert(format!("{prefix}{v}"));
     }
 }
