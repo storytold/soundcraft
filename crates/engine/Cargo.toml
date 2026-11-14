@@ -23,6 +23,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 log.workspace = true
+caseless.workspace = true
+unicode-normalization.workspace = true
 craft-docpath.workspace = true
 
 [target.'cfg(windows)'.dependencies]

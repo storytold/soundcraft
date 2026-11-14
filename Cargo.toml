@@ -45,6 +45,9 @@ proptest = "1"
 rustfft = "6"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
+# Collision-safe file names: canonical normalization plus full Unicode case folding.
+caseless = "0.2"
+unicode-normalization = "0.1"
 cpal = "0.18"
 
 # Which file paths stored in a session may be opened.
