@@ -75,7 +75,11 @@ impl SoundApp {
         {
             match p.open_editor(track, slot) {
                 Ok(()) => return,
-                Err(e) => self.ui.status = format!("{}: {}", mix_window::plugin_info(&plugin).map_or(plugin.as_str(), |i| i.name), e),
+                Err(e) => {
+                    let name = mix_window::plugin_info(&plugin).map_or(plugin.as_str(), |i| i.name);
+                    let reason = crate::localization::error_text(&e.to_string());
+                    self.ui.status = format!("{name}: {reason}");
+                }
             }
         }
         if !self.ui.plugin_windows.contains(&(track, slot)) {

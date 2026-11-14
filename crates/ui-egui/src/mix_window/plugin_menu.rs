@@ -72,7 +72,7 @@ pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
                 }
             } else if ui.button(crate::localization::text("Open Plugin Editor")).clicked() {
                 if let Err(e) = p.open_editor(id, slot) {
-                    app.ui.status = format!("{}: {}", info.name, e);
+                    app.ui.status = format!("{}: {}", info.name, crate::localization::error_text(&e.to_string()));
                 }
                 ui.close();
             }

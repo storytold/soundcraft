@@ -124,7 +124,7 @@ impl SoundApp {
                 let name = v.get("name").and_then(|n| n.as_str()).unwrap_or(what);
                 self.ui.status = crate::localized_format!("{name} loaded into the sampler", name = name);
             }
-            Err(e) => self.ui.status = format!("{}: {}", what, e),
+            Err(e) => self.ui.status = format!("{}: {}", what, crate::localization::error_text(&e.to_string())),
         }
     }
 }

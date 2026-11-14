@@ -163,7 +163,7 @@ fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
                         &i.to_string(),
                         false,
                         Color32::GRAY,
-                        "Zoom preset (click to recall, Cmd-click to store)",
+                        crate::localization::text("Zoom preset (click to recall, Cmd-click to store)"),
                     );
                     if r.clicked() {
                         let store = ui.input(|x| x.modifiers.command);
@@ -221,7 +221,15 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
                     }
                 }
                 let focus = e.keyboard_focus == "commands";
-                if crate::widgets::text_toggle(ui, vec2(36.0, 18.0), "a-z", focus, t.accent, "Commands Keyboard Focus (single-key editing)").clicked()
+                if crate::widgets::text_toggle(
+                    ui,
+                    vec2(36.0, 18.0),
+                    "a-z",
+                    focus,
+                    t.accent,
+                    crate::localization::text("Commands Keyboard Focus (single-key editing)"),
+                )
+                .clicked()
                 {
                     let _ = app.run("options.keyboard_focus", json!({}));
                 }

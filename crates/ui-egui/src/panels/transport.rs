@@ -58,12 +58,17 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                     ui.label(crate::localization::text("Start"));
                     ui.label(egui::RichText::new(fmt(e.selection.start)).font(mono(11.0)));
                     ui.label(crate::localization::text("Pre-roll"));
-                    ui.label(egui::RichText::new(format!("{:.2} s", s.sample_rate.seconds(e.pre_roll))).font(mono(11.0)));
+                    ui.label(
+                        egui::RichText::new(crate::localized_format!("{seconds:.2} s", seconds = s.sample_rate.seconds(e.pre_roll))).font(mono(11.0)),
+                    );
                     ui.end_row();
                     ui.label(crate::localization::text("End"));
                     ui.label(egui::RichText::new(fmt(e.selection.end)).font(mono(11.0)));
                     ui.label(crate::localization::text("Post-roll"));
-                    ui.label(egui::RichText::new(format!("{:.2} s", s.sample_rate.seconds(e.post_roll))).font(mono(11.0)));
+                    ui.label(
+                        egui::RichText::new(crate::localized_format!("{seconds:.2} s", seconds = s.sample_rate.seconds(e.post_roll)))
+                            .font(mono(11.0)),
+                    );
                     ui.end_row();
                 });
             }
@@ -88,7 +93,11 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                 let tick = app.engine.session().tempo.samples_to_ticks(app.position(), app.engine.session().sample_rate);
                 let bpm = app.engine.session().tempo.tempo_at_tick(tick);
                 let m = app.engine.session().tempo.meter_at_tick(tick);
-                ui.label(egui::RichText::new(format!("♩ = {bpm:.2}   {}/{}", m.numerator, m.denominator)).font(mono(12.0)).color(t.counter_text));
+                ui.label(
+                    egui::RichText::new(crate::localized_format!("♩ = {bpm:.2}   {n}/{d}", bpm = bpm, n = m.numerator, d = m.denominator))
+                        .font(mono(12.0))
+                        .color(t.counter_text),
+                );
             }
         });
     app.ui.show_transport = open;

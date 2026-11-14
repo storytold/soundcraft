@@ -1,15 +1,18 @@
 # Localization parity
 
-> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-05 · **Change:** minor (expanded pt-BR UI catalog: menus, dialogs, tooltips and formatted messages) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-13 · **Change:** minor (pt-BR catalog: helper-passed tooltips, Edit-window status bar, remove-session prompt, send help text and engine error text at display time) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft defaults to English and supports selecting Brazilian Portuguese. The pt-BR catalog
 covers all fixed UI strings found in the current source: command labels, menus, Appearance,
 About/Credits, Audio Health, Playback Engine, System Usage, Workspace, plugin parameter and display
-names, dialogs and buttons, tooltips, accessibility names and formatted messages. Parts of the
-engine command descriptions, dynamic status fragments and long help text may still fall back to
-English, and the catalog has not been independently or native-speaker reviewed. Pro Tools ships
-its UI in **8 languages** (bundle `.lproj` folders: English, German, Spanish, French, Japanese,
-Korean, Simplified Chinese, Traditional Chinese).
+names, dialogs and buttons, tooltips (including those localized inside buttons and toggles),
+accessibility names, the Edit-window status bar, the remove-session question and formatted
+messages. Engine errors are matched against catalog templates at display time by
+`localization::error_text`. Values built at run time (file, track and device names), engine command
+parameter documentation and third-party plugin names stay as they are, and the catalog has not been
+independently or native-speaker reviewed. Pro Tools ships its UI in **8 languages** (bundle
+`.lproj` folders: English, German, Spanish, French, Japanese, Korean, Simplified Chinese,
+Traditional Chinese).
 
 **Localization: ~12 %** (measured: 1 of the target's 8 UI languages, and English is the only one
 complete). Remaining ≈ 70–110 h: a catalog and extraction pass (≈ 15–25 h), a font fallback for
@@ -54,5 +57,6 @@ Per-language hours exclude the shared catalog and script work above.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-13 | minor | Completed the pt-BR catalog: tooltips passed to buttons and toggles, `Not available yet.`, the send hover help, `no instrument`, the search placeholders, the Edit-window status bar (bit depth, track count, undo, ms/frame), the remove-session question and the transport/sample-rate readouts; engine errors now reach the status line through `error_text` |
 | 2026-11-05 | minor | Added persisted language selection, the `ui.language` command, English fallback and a pt-BR catalog (menus, dialogs, tooltips, accessibility text, formatted messages); added a Usage section and catalog tests |
 | 2026-10-10 | major | Created: English only, no catalog; the twelve key languages at 0 %; Pro Tools' 8 languages listed from its bundle |

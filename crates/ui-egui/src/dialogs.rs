@@ -268,33 +268,43 @@ fn clear_message(s: &Session, clips: &[ClipId], sources: &[SourceId]) -> Option<
     let listed: std::collections::BTreeSet<ClipId> = clips.iter().copied().collect();
     let names: Vec<&str> = s.tracks.iter().flat_map(|t| t.clips()).filter(|c| listed.contains(&c.id)).map(|c| c.name.as_str()).collect();
     let files: Vec<_> = sources.iter().filter_map(|id| s.source(*id)).collect();
-    let count = |n: usize, what: &str| if n == 1 { format!("1 {what}") } else { format!("{n} {what}s") };
+    let count = |n: usize, what: &str| {
+        if n == 1 { crate::localized_format!("1 {what}", what = what) } else { crate::localized_format!("{n} {what}s", n = n, what = what) }
+    };
     let what = match (names.as_slice(), files.as_slice()) {
         ([], []) => return None,
-        ([name], []) => format!("the clip \"{name}\""),
-        ([], [f]) => format!("the file \"{}\"", f.name),
-        (c, []) => count(c.len(), "clip"),
-        ([], f) => count(f.len(), "file"),
-        (c, f) => format!("{} and {}", count(c.len(), "clip"), count(f.len(), "file")),
+        ([name], []) => crate::localized_format!("the clip \"{name}\"", name = name),
+        ([], [f]) => crate::localized_format!("the file \"{name}\"", name = f.name),
+        (c, []) => count(c.len(), crate::localization::text("clip")),
+        ([], f) => count(f.len(), crate::localization::text("file")),
+        (c, f) => crate::localized_format!(
+            "{clips} and {files}",
+            clips = count(c.len(), crate::localization::text("clip")),
+            files = count(f.len(), crate::localization::text("file"))
+        ),
     };
-    let mut text = format!("Remove {what} from the session?");
+    let mut text = crate::localized_format!("Remove {what} from the session?", what = what);
     let used: Vec<(&str, usize)> =
         files.iter().map(|f| (f.name.as_str(), s.clips_using(f.id).filter(|c| !listed.contains(&c.id)).count())).filter(|(_, n)| *n > 0).collect();
     let n: usize = used.iter().map(|u| u.1).sum();
     let users = if n == 1 {
-        "a clip on the timeline, which is removed too.".to_string()
+        crate::localization::text("a clip on the timeline, which is removed too.").to_owned()
     } else {
-        format!("{n} clips on the timeline, which are removed too.")
+        crate::localized_format!("{n} clips on the timeline, which are removed too.", n = n)
     };
     match used.as_slice() {
         [] => {}
-        [_] if files.len() == 1 => text += &format!(" It is used by {users}"),
-        u if u.len() == files.len() => text += &format!(" They are used by {users}"),
-        [(name, _)] => text += &format!(" \"{name}\" is used by {users}"),
-        many => text += &format!(" {} of the files are used by {users}", many.len()),
+        [_] if files.len() == 1 => text += &crate::localized_format!(" It is used by {users}", users = users),
+        u if u.len() == files.len() => text += &crate::localized_format!(" They are used by {users}", users = users),
+        [(name, _)] => text += &crate::localized_format!(" \"{name}\" is used by {users}", name = name, users = users),
+        many => text += &crate::localized_format!(" {n} of the files are used by {users}", n = many.len(), users = users),
     }
     if !files.is_empty() && files.iter().all(|f| !f.unsaved) {
-        text += if files.len() == 1 { " The file stays on disk." } else { " The files stay on disk." };
+        text += if files.len() == 1 {
+            crate::localization::text(" The file stays on disk.")
+        } else {
+            crate::localization::text(" The files stay on disk.")
+        };
     }
     Some(text)
 }
@@ -338,14 +348,14 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
     let multi = cmd == "file.import_audio" && app.services.pick_open_many.is_some();
     if multi
         && let Some(pick) = &app.services.pick_open_many
-        && ui.button("Browse…").clicked()
+        && ui.button(crate::localization::text("Browse…")).clicked()
     {
         let mut files = pick(cmd);
         if files.len() > 1 {
             let texts: Result<Vec<&str>, _> = files.iter().map(|f| unicode(f)).collect();
             match texts {
                 Ok(texts) => return Some((cmd.to_string(), json!({"paths": texts}))),
-                Err(e) => app.ui.status = e.to_string(),
+                Err(e) => app.ui.status = crate::localization::error_text(&e.to_string()),
             }
         } else {
             picked = files.pop();
@@ -549,7 +559,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         });
                         craft_ui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(format!("{bit_depth}-bit")).show_ui(ui, |ui| {
                             for b in ["16", "24", "32f"] {
-                                ui.selectable_value(bit_depth, b.to_string(), format!("{b}-bit"));
+                                ui.selectable_value(bit_depth, b.to_string(), crate::localized_format!("{b}-bit", b = b));
                             }
                         });
                     });
@@ -1304,6 +1314,28 @@ mod tests {
         let named: Vec<String> = e.session().track(kick).unwrap().clips().iter().map(|c| c.name.clone()).collect();
         assert!(named.len() > 1);
         assert_eq!(named[..2], ["SFX023.Reel1", "SFX024.Reel1"]);
+    }
+
+    #[test]
+    fn clear_question_is_assembled_in_portuguese() {
+        let _scope = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
+        let mut e = soundcraft_engine::demo::demo_engine();
+        let kick = e.session().sources.iter().find(|f| f.name == "Kick").map(|f| f.id).unwrap();
+        let kick_clips: Vec<ClipId> = e.session().clips_using(kick).map(|c| c.id).collect();
+        let message = |d: &Dialogs| match &d.open {
+            Some(Dialog::ClearClips { message, .. }) => message.clone(),
+            other => panic!("{other:?}"),
+        };
+        let mut d = Dialogs::default();
+        assert!(d.open_clear(&e, kick_clips, vec![kick]));
+        let combined = message(&d);
+        assert_eq!(combined, "Remover 3 clipes e 1 arquivo da sessão?");
+        e.session_mut().sources.iter_mut().for_each(|f| f.unsaved = false);
+        assert!(d.open_clear(&e, vec![], vec![kick]));
+        assert_eq!(
+            message(&d),
+            "Remover o arquivo \"Kick\" da sessão? Ele é usado por 3 clipes na linha do tempo, que também serão removidos. O arquivo permanece no disco."
+        );
     }
 
     #[test]

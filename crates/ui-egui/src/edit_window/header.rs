@@ -402,8 +402,11 @@ fn field_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, head_bg
             let resp = ui.interact(field, ui.scope_id().with(("field", id.0)), Sense::click());
             ui.painter().rect_filled(field, 2.0, shade(head_bg, if resp.hovered() { -0.02 } else { -0.1 }));
             if track.kind == TrackKind::Instrument {
-                let name =
-                    track.instrument.as_ref().and_then(|i| crate::mix_window::plugin_info(&i.plugin)).map_or("no instrument", |p| p.short_name);
+                let name = track
+                    .instrument
+                    .as_ref()
+                    .and_then(|i| crate::mix_window::plugin_info(&i.plugin))
+                    .map_or_else(|| crate::localization::text("no instrument"), |p| p.short_name);
                 ui.painter().with_clip_rect(field).text(pos2(field.min.x + 5.0, field.center().y), Align2::LEFT_CENTER, name, bold(10.0), t.text);
                 egui::Popup::menu(&resp.on_hover_text(crate::localization::text("Instrument")))
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)

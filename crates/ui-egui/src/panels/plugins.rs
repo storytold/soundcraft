@@ -48,7 +48,7 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                             if open {
                                 p.close_editor(tid, slot);
                             } else if let Err(e) = p.open_editor(tid, slot) {
-                                app.ui.status = format!("{}: {}", info.name, e);
+                                app.ui.status = format!("{}: {}", info.name, crate::localization::error_text(&e.to_string()));
                             }
                         }
                     }

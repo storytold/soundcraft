@@ -98,25 +98,20 @@ fn status_bar(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let r = ui.max_rect();
     let s = app.engine.session();
-    let mut left = format!(
-        "{} · {} Hz · {} · {} tracks · {}",
-        s.name,
-        s.sample_rate.hz(),
-        match s.bit_depth {
-            soundcraft_model::BitDepthSetting::Int16 => "16-bit",
-            soundcraft_model::BitDepthSetting::Int24 => "24-bit",
-            soundcraft_model::BitDepthSetting::Float32 => "32-bit float",
-        },
-        s.tracks.len(),
-        app.ui.status
-    );
+    let depth = match s.bit_depth {
+        soundcraft_model::BitDepthSetting::Int16 => crate::localization::text("16-bit"),
+        soundcraft_model::BitDepthSetting::Int24 => crate::localization::text("24-bit"),
+        soundcraft_model::BitDepthSetting::Float32 => crate::localization::text("32-bit float"),
+    };
+    let tracks = if s.tracks.len() == 1 { crate::localized_format!("1 track") } else { crate::localized_format!("{n} tracks", n = s.tracks.len()) };
+    let mut left = crate::localized_format!("{} · {} Hz · {} · {} · {}", s.name, s.sample_rate.hz(), depth, tracks, app.ui.status);
     soundcraft_model::truncate_chars(&mut left, 4 * soundcraft_model::MAX_NAME_CHARS);
     ui.painter().text(pos2(r.min.x + 10.0, r.center().y), Align2::LEFT_CENTER, left, regular(11.0), t.text_dim);
-    let undo = app.engine.undo_label().map_or(String::new(), |l| format!("Undo {l}"));
+    let undo = app.engine.undo_label().map_or(String::new(), |l| crate::localized_format!("Undo {l}", l = crate::localization::text(l)));
     ui.painter().text(
         pos2(r.max.x - 10.0, r.center().y),
         Align2::RIGHT_CENTER,
-        if app.frame_ms < 50.0 { format!("{undo}   {:.1} ms/frame", app.frame_ms) } else { undo },
+        if app.frame_ms < 50.0 { crate::localized_format!("{undo}   {ms:.1} ms/frame", undo = undo, ms = app.frame_ms) } else { undo },
         regular(11.0),
         t.text_dim,
     );

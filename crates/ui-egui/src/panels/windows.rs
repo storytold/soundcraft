@@ -265,7 +265,7 @@ fn event_list(app: &mut SoundApp, ctx: &egui::Context) {
                     ui.label(egui::RichText::new(n.start.to_string()).font(mono(11.0)));
                     ui.label(soundcraft_midi::note_name(n.pitch));
                     let mut v = i64::from(n.velocity);
-                    if ui.add(egui::DragValue::new(&mut v).range(1..=127)).accessible_name("Note velocity").changed() {
+                    if ui.add(egui::DragValue::new(&mut v).range(1..=127)).accessible_name(crate::localization::text("Note velocity")).changed() {
                         let _ = app.engine.execute("midi.note_edit", &json!({"clip": cid.0, "index": i, "velocity": v}));
                     }
                     ui.label(n.length.to_string());
@@ -758,7 +758,7 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 });
             format.response.labelled_by(main_label.id);
-            ui.label(egui::RichText::new(format!("{} ch", main.channels())).small());
+            ui.label(egui::RichText::new(crate::localized_format!("{n} ch", n = main.channels())).small());
         });
         for o in app.engine.session().outputs.clone() {
             ui.label(crate::localized_format!("{} — {} from channel {}", o.name, o.format.label(), o.first_channel + 1));

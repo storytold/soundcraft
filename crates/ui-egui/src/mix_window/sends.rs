@@ -57,9 +57,11 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
                 let _ =
                     app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
             }
-            let _ = level_resp.clone().on_hover_text(format!(
-                "Send {which} to {name}: {} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options",
-                db_text(s.level_db)
+            let _ = level_resp.clone().on_hover_text(crate::localized_format!(
+                "Send {which} to {name}: {db} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options",
+                which = which,
+                name = name,
+                db = db_text(s.level_db)
             ));
             level_resp.context_menu(|ui| send_options_menu(app, ui, id, slot, s));
         }
