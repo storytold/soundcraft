@@ -77,6 +77,8 @@ pub(crate) struct AudioState {
     fold: [(f32, f32); MAX_CHANNELS],
     pub(crate) pending_len: usize,
     read: f64,
+    /// A `Cmd::StopOutput` was seen: keep the output silent even for monitored inputs until the next play.
+    shutting_down: bool,
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
@@ -125,6 +127,7 @@ impl AudioState {
             device_rate,
             input: None,
             recording: false,
+            shutting_down: false,
             unsent: MeterSnapshot::default(),
             forget_shared: Vec::new(),
         }
@@ -167,6 +170,7 @@ impl AudioState {
                 }
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
                 Cmd::Play { from, end, looped } => {
+                    self.shutting_down = false;
                     self.pos = from;
                     self.end = end;
                     self.looped = looped.filter(|r| r.len() > 64);
@@ -180,6 +184,13 @@ impl AudioState {
                     self.end = None;
                     self.looped = None;
                     self.mix.reset();
+                }
+                Cmd::StopOutput => {
+                    self.playing = false;
+                    self.end = None;
+                    self.looped = None;
+                    self.mix.reset();
+                    self.shutting_down = true;
                 }
                 Cmd::Locate(at) => {
                     self.pos = at;
@@ -276,7 +287,8 @@ impl AudioState {
     pub(crate) fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
         let channels = channels.max(1);
-        let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        let monitoring =
+            !self.shutting_down && self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
         if !self.playing && !monitoring {
             out.iter_mut().for_each(|x| *x = 0.0);
             self.unsent.silence();
