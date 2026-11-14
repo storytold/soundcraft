@@ -7,12 +7,17 @@ pub(super) const SPEED_RAMP_CHOICES: [(&str, &str, f32, &[(f32, &str)]); 3] = [
     ("fades", "Fades", 1.0, &[(1.0, "On"), (0.0, "Off")]),
 ];
 
+/// The AudioSuite window's title for `process` (help finds the window by it).
+pub(crate) fn window_title(process: &str) -> String {
+    let name = soundcraft_dsp::plugin_info(process).map_or_else(|| process.replace('_', " "), |p| p.name.to_string());
+    format!("AudioSuite · {name}")
+}
+
 /// Process-parameter window for the chosen AudioSuite process, with its controls and Render action.
 pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
     let Some(process) = app.ui.audiosuite.clone() else { return };
     let mut open = true;
-    let title = soundcraft_dsp::plugin_info(&process).map_or_else(|| process.replace('_', " "), |p| p.name.to_string());
-    egui::Window::new(format!("AudioSuite · {title}")).open(&mut open).default_width(360.0).show(ctx, |ui| {
+    egui::Window::new(window_title(&process)).open(&mut open).default_width(360.0).show(ctx, |ui| {
         let key = egui::Id::unique(("as_params", process.clone()));
         let mut params: std::collections::BTreeMap<String, f32> = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_default();
         if let Some(info) = soundcraft_dsp::plugin_info(&process) {

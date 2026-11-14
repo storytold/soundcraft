@@ -31,7 +31,7 @@ fn entries() -> Vec<Entry> {
 }
 
 /// Subsequence match score (higher is better), or None.
-fn score(hay: &str, needle: &str) -> Option<i32> {
+pub(crate) fn score(hay: &str, needle: &str) -> Option<i32> {
     if needle.is_empty() {
         return Some(0);
     }

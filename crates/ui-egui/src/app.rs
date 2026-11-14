@@ -344,6 +344,7 @@ impl SoundApp {
         recovery::show(self, &ctx);
         score_editor::show(self, &ctx);
         palette::show(self, &ctx);
+        crate::help::show(self, &ctx);
         dialogs::show(self, &ctx);
         updates_ui::show(self, &ctx);
         // The sampler's drop rects are current now, so route any captured drop in this pass.
