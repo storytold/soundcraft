@@ -48,3 +48,33 @@ fn clip_looping_fills_up_to_the_next_clip() {
     assert_eq!(last.end(), next);
     assert_eq!(last.length, (next - clip.end()) % clip.length);
 }
+
+/// Number of Loops goes up to the clip and its 1000 loops, the limit Loop Length and Loop Until
+/// End of Session or Next Clip have: the field keeps a count past the old 512 and OK makes them all.
+#[test]
+fn number_of_loops_reaches_the_loop_limit() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let kick = app.engine.session().track_by_name("Kick").unwrap();
+    let (track, clip) = (kick.id, kick.clips()[0].clone());
+    app.run("edit.select", json!({"clips": [clip.id.0]})).unwrap();
+    menus::invoke_menu(&mut app, "clip.loop", "Clip > Loop...");
+    let most = u32::try_from(soundcraft_engine::cmd::MAX_LOOPS).unwrap() + 1;
+    let Some(soundcraft_ui_egui::dialogs::Dialog::Loop { count, .. }) = &mut app.dialogs.open else { panic!("{:?}", app.dialogs.open_name()) };
+    *count = most;
+
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Button, "OK").click();
+    h.run_steps(2);
+
+    assert!(h.state().dialogs.open_name().is_none());
+    let loops = h.state().engine.session().track(track).unwrap().clips().iter().filter(|c| c.id != clip.id && c.loop_id.is_some()).count();
+    assert_eq!(loops as u32, most - 1);
+}
