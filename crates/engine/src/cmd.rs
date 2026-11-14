@@ -27,6 +27,7 @@ mod options;
 mod plugin_state;
 mod query;
 pub(crate) mod sampler;
+mod send_new_track;
 mod setup_more;
 mod strip_silence;
 mod surround;
@@ -162,6 +163,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(video::specs());
         v.extend(zoom_toggle::specs());
         v.extend(strip_silence::specs());
+        v.extend(send_new_track::specs());
         #[cfg(test)]
         v.extend(panic_probe::specs());
         v

@@ -344,7 +344,7 @@ fn track_slot(e: &Engine, p: &Value, cmd: &str, max: usize) -> Result<(TrackId, 
 
 /// An optional `slot`: absent (or null) means "first free"; a present but invalid value is
 /// an error, never silently treated as absent.
-fn optional_slot(p: &Value, cmd: &str, max: usize) -> Result<Option<usize>> {
+pub(super) fn optional_slot(p: &Value, cmd: &str, max: usize) -> Result<Option<usize>> {
     match p.get("slot") {
         None | Some(Value::Null) => Ok(None),
         Some(_) => slot_of(p, "slot", max).map(Some).ok_or_else(|| slot_error(cmd, max)),
@@ -471,7 +471,7 @@ fn insert_move(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({}))
 }
 
-fn send(e: &mut Engine, p: &Value) -> Result<Value> {
+pub(super) fn send(e: &mut Engine, p: &Value) -> Result<Value> {
     let bus = str_param(p, "bus").ok_or_else(|| bad("mix.send", "`bus` required"))?.to_string();
     let t = tracks_required(e, "mix.send", p)?.first().copied().ok_or_else(|| bad("mix.send", "no track"))?;
     let explicit = optional_slot(p, "mix.send", SEND_SLOTS)?;
