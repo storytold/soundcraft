@@ -286,10 +286,11 @@ fn same_component(a: Component, b: Component) -> bool {
     }
 }
 
-/// A Windows device name (`CON`, `NUL`, `COM1`… also with an extension), which names no file.
+/// A Windows device name (`CON`, `NUL`, `COM1`, `COM¹`… also with an extension or a colon), which names no file.
 fn is_device_name(component: &str) -> bool {
-    let stem = component.split('.').next().unwrap_or(component).trim_end_matches(' ').to_ascii_uppercase();
-    let numbered = |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"));
+    let stem = component.split(['.', ':']).next().unwrap_or(component).trim_end_matches(' ').to_ascii_uppercase();
+    let numbered =
+        |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"));
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
 }
 
@@ -474,6 +475,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// On Windows the root matches in any case, and a reserved device name is refused, including
+    /// `NUL:`, `NUL:x` and `COM1:`.
     #[cfg(windows)]
     #[test]
     fn windows_ignores_case_and_refuses_devices() {
@@ -484,6 +487,13 @@ mod tests {
         let e = roots.check(s(base.join("out/NUL")), Access::Write).unwrap_err();
         assert!(e.contains("reserved device names"), "{e}");
         assert!(roots.check(s(base.join("out/com1.txt")), Access::Write).is_err());
+        let e = roots.check(s(base.join("out/COM¹.txt")), Access::Write).unwrap_err();
+        assert!(e.contains("reserved device names"), "{e}");
+        // The colon is part of the path `roots.check` sees, not only of the bare name.
+        for name in ["out/NUL:", "out/NUL:x", "out/COM1:"] {
+            let e = roots.check(s(base.join(name)), Access::Write).unwrap_err();
+            assert!(e.contains("reserved device names"), "{name}: {e}");
+        }
         assert_eq!(roots.check(s(base.join("out/console.txt")), Access::Write), Ok(()));
         let _ = std::fs::remove_dir_all(base);
     }
@@ -509,12 +519,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// Reserved device names are `CON`, `NUL`, `COM`/`LPT` plus `1` to `9` or `¹` to `³`, with an
+    /// extension or a colon. `⁰` and `⁴` to `⁹`, and a longer or different name, are file names.
     #[test]
     fn device_names() {
-        for d in ["CON", "nul", "Com1", "LPT9.txt", "aux.scraft", "NUL "] {
+        for d in
+            ["CON", "nul", "Com1", "LPT9.txt", "aux.scraft", "NUL ", "COM1:", "nul:x", "COM¹", "COM²", "COM³", "COM¹:", "LPT¹", "Lpt²", "lpt³.txt"]
+        {
             assert!(is_device_name(d), "{d}");
         }
-        for f in ["console", "com10", "COM0", "lpt", "a.scraft", "nul-x"] {
+        // `¹` `²` `³` are the superscripts Windows reserves. `⁰` and `⁴` to `⁹` are ordinary.
+        for n in ["⁰", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"] {
+            assert!(!is_device_name(&format!("COM{n}")), "COM{n}");
+            assert!(!is_device_name(&format!("LPT{n}")), "LPT{n}");
+        }
+        for f in ["console", "com10", "COM0", "lpt", "a.scraft", "nul-x", "COM⁴", "com¹0", "lpt¹x", "console:x"] {
             assert!(!is_device_name(f), "{f}");
         }
     }
