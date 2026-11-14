@@ -41,6 +41,43 @@ pub fn parse(s: &str) -> Option<(Modifiers, Key)> {
     key.map(|k| (m, k))
 }
 
+/// The key equivalent the macOS menu bar gives a command's shortcut: chords with ⌘ or ⌃ that
+/// [`parse`] reads, so the bar shows what [`handle`] dispatches. AppKit takes a key equivalent's
+/// key before any text field sees it, so bare keys and ⌥- or ⇧-only chords, which type text,
+/// get none and stay egui's.
+pub fn menu_key_equivalent(shortcut: &str) -> Option<(Modifiers, Key)> {
+    parse(shortcut).filter(|(m, _)| m.command || m.ctrl)
+}
+
+/// What egui gets for a key-down that the macOS menu bar took as an item's key equivalent.
+#[derive(Debug, PartialEq)]
+pub enum KeyEquivalentInput {
+    /// Events for this frame's input.
+    Events(Vec<egui::Event>),
+    /// ⌘V: the window reads the clipboard into an `Event::Paste` (`ViewportCommand::RequestPaste`).
+    Paste,
+}
+
+/// The input egui-winit would have made from the key-down that a menu key equivalent took
+/// (AppKit runs key equivalents before the window sees the key), so shortcuts and text fields
+/// behave as they do without the menu bar: ⌘X and ⌘C are Cut and Copy and ⌘V a paste, as
+/// egui-winit makes them; any other chord, ⌃ included (⌘⌃X is Cut Clip Gain), is its press and
+/// its release, as egui-winit sends no release for a press it never saw, and a key egui still
+/// holds makes the next press a repeat, which [`handle`] ignores.
+pub fn key_equivalent_input(key: Key, modifiers: Modifiers) -> KeyEquivalentInput {
+    // egui's `command_only` lets Control through: only the bare ⌘ chord is a clipboard command.
+    if modifiers.command_only() && !modifiers.ctrl {
+        match key {
+            Key::X => return KeyEquivalentInput::Events(vec![egui::Event::Cut]),
+            Key::C => return KeyEquivalentInput::Events(vec![egui::Event::Copy]),
+            Key::V => return KeyEquivalentInput::Paste,
+            _ => {}
+        }
+    }
+    let event = |pressed| egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers };
+    KeyEquivalentInput::Events(vec![event(true), event(false)])
+}
+
 /// Whether the held modifiers `got` fire a shortcut that asks for `want`.
 fn mods_match(want: Modifiers, got: Modifiers, mac: bool) -> bool {
     // Off macOS egui reports Ctrl as both `ctrl` and `command`: Ctrl is the shortcut's Cmd, and a shortcut's
@@ -537,6 +574,70 @@ mod tests {
         assert!(!mods_match(want("Cmd+X"), Modifiers { ctrl: true, ..MAC_CMD }, true), "Cmd+Ctrl+X is not Cut");
         assert!(!search_chord(MAC_CMD, true));
         assert!(search_chord(Modifiers { ctrl: true, ..MAC_CMD }, true));
+    }
+
+    #[test]
+    fn the_menu_bar_takes_only_command_and_control_chords() {
+        use super::menu_key_equivalent;
+        assert_eq!(menu_key_equivalent("Cmd+C"), Some((Modifiers::COMMAND, Key::C)));
+        assert_eq!(menu_key_equivalent("Cmd+Shift+Z"), Some((Modifiers::COMMAND | Modifiers::SHIFT, Key::Z)));
+        assert_eq!(menu_key_equivalent("Cmd+Ctrl+S"), Some((Modifiers::COMMAND | Modifiers::CTRL, Key::S)));
+        assert_eq!(menu_key_equivalent("Ctrl+Up"), Some((Modifiers::CTRL, Key::ArrowUp)));
+        // These type text in a text field, so AppKit must never take them.
+        for typed in ["Shift+R", "Alt+R", "Alt+Shift+3", "A", "Space", "Shift+Space", "Enter"] {
+            assert_eq!(menu_key_equivalent(typed), None, "{typed}");
+        }
+        // Key families the dispatcher reads in `fixed`, not through `parse`.
+        for family in ["Cmd+Alt+[ / ]", "Cmd+Ctrl+1-5", "Cmd+Alt+0-5", ""] {
+            assert_eq!(menu_key_equivalent(family), None, "{family}");
+        }
+    }
+
+    #[test]
+    fn a_key_equivalent_is_the_input_egui_winit_makes_of_its_key_down() {
+        use super::{KeyEquivalentInput, key_equivalent_input};
+        let key = |key, pressed| egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers: MAC_CMD };
+        assert_eq!(key_equivalent_input(Key::S, MAC_CMD), KeyEquivalentInput::Events(vec![key(Key::S, true), key(Key::S, false)]));
+        assert_eq!(key_equivalent_input(Key::C, MAC_CMD), KeyEquivalentInput::Events(vec![egui::Event::Copy]));
+        assert_eq!(key_equivalent_input(Key::X, MAC_CMD), KeyEquivalentInput::Events(vec![egui::Event::Cut]));
+        assert_eq!(key_equivalent_input(Key::V, MAC_CMD), KeyEquivalentInput::Paste);
+        // With Shift or Option held egui-winit sends the key itself (Cmd+Alt+V is Paste Special).
+        let alt = Modifiers { alt: true, ..MAC_CMD };
+        let alt_v = |pressed| egui::Event::Key { key: Key::V, physical_key: Some(Key::V), pressed, repeat: false, modifiers: alt };
+        assert_eq!(key_equivalent_input(Key::V, alt), KeyEquivalentInput::Events(vec![alt_v(true), alt_v(false)]));
+        // ⌘⌃X is no Cut: it goes to egui as its press and release, which run Cut Clip Gain.
+        let ctrl = Modifiers { ctrl: true, ..MAC_CMD };
+        let ctrl_x = |pressed| egui::Event::Key { key: Key::X, physical_key: Some(Key::X), pressed, repeat: false, modifiers: ctrl };
+        assert_eq!(key_equivalent_input(Key::X, ctrl), KeyEquivalentInput::Events(vec![ctrl_x(true), ctrl_x(false)]));
+        assert_eq!(command_for(Key::X, ctrl, true), Some("edit.cut_clip_gain"));
+    }
+
+    /// A key equivalent pressed twice runs its shortcut twice: egui must see each press released,
+    /// or it takes the second press for an auto-repeat.
+    #[test]
+    fn a_key_equivalent_runs_its_shortcut_once_per_press() {
+        use super::{KeyEquivalentInput, key_equivalent_input};
+        let ctx = egui::Context::default();
+        let mut app = crate::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, crate::Services::default());
+        let mut frame = |events: Vec<egui::Event>| {
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+            let mut raw = egui::RawInput { screen_rect: Some(rect), events, ..Default::default() };
+            app.raw_input_hook(&ctx, &mut raw);
+            let mut out = ctx.run_ui(raw, |ui| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+            app.ui.window
+        };
+        for _ in 0..4 {
+            frame(Vec::new());
+        }
+        let KeyEquivalentInput::Events(toggle) = key_equivalent_input(Key::Equals, MAC_CMD) else { panic!("Cmd+= is a key press") };
+        let start = frame(Vec::new());
+        let once = frame(toggle.clone());
+        assert_ne!(once, start, "Cmd+= switches between the Mix and Edit windows");
+        assert_eq!(frame(toggle), start, "the second Cmd+= switches back");
     }
 
     #[test]
