@@ -1,0 +1,21 @@
+[package]
+name = "soundcraft-reapack"
+description = "SoundCraft's client for ReaPack repositories: searches their indexes and installs JSFX effects into SoundCraft's own Effects folder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+soundcraft-jsfx-host.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+soundcraft-dsp.workspace = true
+
+[lints]
+workspace = true
