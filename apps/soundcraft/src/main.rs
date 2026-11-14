@@ -11,6 +11,8 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[cfg(target_os = "macos")]
+mod apple_events;
 mod config;
 mod control_server;
 mod env;
@@ -27,7 +29,13 @@ use soundcraft_engine::Engine;
 use soundcraft_ui_egui::{Services, SoundApp, UiState, dialogs};
 use std::sync::Arc;
 
-struct App(SoundApp, Option<&'static logging::AppLogger>, Env, #[cfg(target_os = "macos")] Option<native_menu::NativeMenu>);
+struct App(
+    SoundApp,
+    Option<&'static logging::AppLogger>,
+    Env,
+    #[cfg(target_os = "macos")] Option<native_menu::NativeMenu>,
+    #[cfg(target_os = "macos")] apple_events::AppleEvents,
+);
 
 /// Sends the title only when it changes, remembered here as X11 and Wayland can't read it back.
 fn set_title(ctx: &egui::Context, title: String) {
@@ -62,6 +70,9 @@ impl eframe::App for App {
                 dialogs::open_path(&mut self.0, f.path());
             }
         }
+        // Files opened from Finder and the Dock's Quit (see `apple_events`).
+        #[cfg(target_os = "macos")]
+        apple_events::apply(&mut self.0, ctx, self.4.take());
         if self.0.quit_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         } else if ctx.input(|i| i.viewport().close_requested()) && dialogs::ask_to_save(&mut self.0, "app.quit", &serde_json::json!({})) {
@@ -221,6 +232,10 @@ fn main() -> eframe::Result {
         }
     }
 
+    // Before the event loop starts: the Finder double-click that launched the app arrives as an
+    // Apple event while it finishes launching, before the first frame.
+    #[cfg(target_os = "macos")]
+    let apple_events = apple_events::AppleEvents::install();
     let engine = if demo { soundcraft_engine::demo::demo_engine() } else { Engine::default() };
     let prefs = load_prefs(&env).unwrap_or_default();
     let mut options = eframe::NativeOptions {
@@ -282,12 +297,16 @@ fn main() -> eframe::Result {
                     None
                 }
             };
+            #[cfg(target_os = "macos")]
+            apple_events.connect(&cc.egui_ctx);
             Ok(Box::new(App(
                 app,
                 logger,
                 env,
                 #[cfg(target_os = "macos")]
                 menu,
+                #[cfg(target_os = "macos")]
+                apple_events,
             )))
         }),
     )
