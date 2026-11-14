@@ -706,8 +706,9 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
     edit
 }
 
-/// A bank of thin vertical peak meters, one per channel, labelled underneath (rotated text).
-pub fn multi_meter(ui: &Ui, r: Rect, levels: &[f32], labels: &[String], clip: bool) {
+/// A bank of thin vertical peak meters, one per channel with its peak hold (`holds`, matched by
+/// index), labelled underneath (rotated text).
+pub fn multi_meter(ui: &Ui, r: Rect, levels: &[f32], holds: &[f32], labels: &[String], clip: bool) {
     let n = levels.len().max(1);
     let label_h = 16.0;
     let mr = Rect::from_min_max(r.min, pos2(r.max.x, r.max.y - label_h));
@@ -716,7 +717,7 @@ pub fn multi_meter(ui: &Ui, r: Rect, levels: &[f32], labels: &[String], clip: bo
     for (i, lv) in levels.iter().enumerate() {
         let x = mr.min.x + i as f32 * (w + gap);
         let br = Rect::from_min_size(pos2(x, mr.min.y), vec2(w, mr.height()));
-        meter(ui, br, *lv, *lv, clip);
+        meter(ui, br, *lv, holds.get(i).copied().unwrap_or(*lv), clip);
         if let Some(l) = labels.get(i) {
             let galley = ui.painter().layout_no_wrap(l.clone(), regular(7.0), Tokens::current().text_dim);
             let gw = galley.size().x;

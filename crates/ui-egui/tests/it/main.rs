@@ -20,6 +20,7 @@ mod edit_modes;
 mod edit_window_headers;
 mod focused_dialog_buttons;
 mod group_dialog;
+mod header_meters;
 mod hide_floating;
 mod idle;
 mod import_browse;

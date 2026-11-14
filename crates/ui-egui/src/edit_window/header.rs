@@ -1,4 +1,4 @@
-use super::layout::STRIP_W;
+use super::layout::{HEADER_W, METER_W, STRIP_W, meter_channels, meter_width};
 use super::tracks::{click_track, folder_depth, height_targets, in_edit_window, track_context_menu, view_label, view_menu};
 use super::{
     Align2, AutoParam, Color32, Gesture, Pos2, Rect, Sense, Shape, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold,
@@ -25,7 +25,11 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
     voice_row(app, ui, track, head);
     field_row(app, ui, track, head, head_bg);
     let md = app.meters.get(&id).copied().unwrap_or_default();
-    header_meter(ui, Rect::from_min_max(pos2(head.max.x - 8.0, head.min.y + 1.0), pos2(head.max.x, head.max.y - 1.5)), &md, track.channels() >= 2);
+    let channels = meter_channels(app.engine.session(), track);
+    // Every track's meter starts where a stereo meter would; wider ones run on into the space the
+    // header widened by (`track_header_width`).
+    let x = head.min.x + HEADER_W - METER_W;
+    header_meter(ui, Rect::from_min_max(pos2(x, head.min.y + 1.0), pos2(x + meter_width(channels), head.max.y - 1.5)), &md, channels);
 }
 
 /// The colour strip: a click selects the track as the header does, a double click opens the Color
@@ -487,8 +491,9 @@ fn header_toggle(ui: &Ui, r: Rect, track: TrackId, track_name: &str, key: Header
     resp.on_hover_text(label)
 }
 
-/// The header's level meter: black-rimmed bars, dim where unlit, with a clip light on top.
-fn header_meter(ui: &Ui, r: Rect, md: &crate::MeterDisplay, stereo: bool) {
+/// The header's level meter: one black-rimmed bar per channel (a mono meter fills the width with
+/// one), dim where unlit, with a clip light on top.
+fn header_meter(ui: &Ui, r: Rect, md: &crate::MeterDisplay, channels: usize) {
     let t = Tokens::current();
     let p = ui.painter();
     p.rect_filled(r, 0.0, Color32::BLACK);
@@ -496,20 +501,20 @@ fn header_meter(ui: &Ui, r: Rect, md: &crate::MeterDisplay, stereo: bool) {
     let clip = inner.with_max_y(inner.min.y + 4.0);
     p.rect_filled(clip, 0.0, if md.clip { t.meter_red } else { t.meter_red.gamma_multiply(0.18) });
     let body = inner.with_min_y(clip.max.y + 1.0);
-    let n = if stereo { 2 } else { 1 };
-    let w = (body.width() - (n - 1) as f32) / n as f32;
+    let n = channels.clamp(1, md.level.len());
+    let w = ((body.width() - (n - 1) as f32) / n as f32).max(1.0);
     let (amber, red) = (meter_pos(-12.0), meter_pos(-3.0));
     for ch in 0..n {
         let bar = Rect::from_min_size(pos2(body.min.x + ch as f32 * (w + 1.0), body.min.y), vec2(w, body.height()));
         let y = |f: f32| bar.max.y - bar.height() * f;
-        let lv = level_pos(md.level[ch]);
+        let lv = level_pos(md.level.get(ch).copied().unwrap_or(0.0));
         for (lo, hi, col) in [(0.0, amber, t.meter_green), (amber, red, t.meter_yellow), (red, 1.0, t.meter_red)] {
             p.rect_filled(Rect::from_x_y_ranges(bar.x_range(), y(hi)..=y(lo)), 0.0, col.gamma_multiply(0.18));
             if lv > lo {
                 p.rect_filled(Rect::from_x_y_ranges(bar.x_range(), y(lv.min(hi))..=y(lo)), 0.0, col);
             }
         }
-        let hv = level_pos(md.hold[ch]);
+        let hv = level_pos(md.hold.get(ch).copied().unwrap_or(0.0));
         if hv > 0.01 {
             p.hline(bar.x_range(), y(hv), Stroke::new(1.0, if hv > red { t.meter_red } else { t.meter_yellow }));
         }

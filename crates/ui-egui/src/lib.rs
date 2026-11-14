@@ -234,16 +234,27 @@ pub fn fit_window_to_screen(ctx: &egui::Context) {
     }
 }
 
-/// Ballistic meter display state per strip.
+/// Ballistic meter display state per strip, one level and peak hold per channel. Channels 0 and 1
+/// are the stereo pair (a mono strip repeats channel 0 in 1); a surround or immersive strip fills
+/// as many as it has, up to [`soundcraft_mix::MAX_CHANNELS`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MeterDisplay {
-    pub level: [f32; 2],
-    pub hold: [f32; 2],
-    pub hold_age: f32,
+    pub level: [f32; soundcraft_mix::MAX_CHANNELS],
+    pub hold: [f32; soundcraft_mix::MAX_CHANNELS],
+    /// Seconds since each channel's peak hold was last set.
+    pub hold_age: [f32; soundcraft_mix::MAX_CHANNELS],
     pub clip: bool,
     pub gr: f32,
     /// [`soundcraft_mix::PluginFailures::count`] as last seen.
     pub plugin_failures: u32,
+}
+
+impl MeterDisplay {
+    /// Whether any channel still shows a level or a peak hold, so the meter keeps falling (or its
+    /// hold has yet to expire) and needs repainting.
+    pub fn is_moving(&self) -> bool {
+        self.level.iter().chain(&self.hold).any(|v| *v > 0.0001)
+    }
 }
 
 /// An in-progress mouse gesture in the Edit window.
@@ -425,6 +436,8 @@ pub struct SoundApp {
     pub frame_ms: f32,
     last_frame: Option<f64>,
     last_meter_poll: f64,
+    /// When a meter poll last found a newly rendered block (`uptime`).
+    last_meter_block: f64,
     /// Movies for the Video window and Video track (decoded in the background).
     pub video: video_track::VideoPool,
     /// The Bounce Mix in progress, rendered a slice per frame.
