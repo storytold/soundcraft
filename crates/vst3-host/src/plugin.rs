@@ -36,6 +36,8 @@ pub struct Vst3Plugin {
     values: Vec<f32>,
     /// Normalized values waiting for the next block (coalesced per id; bounded).
     pending: Vec<(u32, f64)>,
+    /// Parameters `set_param` has written (same order as `ids`).
+    host_set: Vec<bool>,
     /// Host-set normalized values the controller has not seen yet (same order as `ids`; the bits
     /// of an `f64`, or [`SYNCED`]). `set_param` may run on the audio thread, so it never calls the
     /// controller; the state reader, which already does, hands them over first.
@@ -88,6 +90,7 @@ impl Vst3Plugin {
             info,
             values: Vec::with_capacity(ids.len()),
             pending: Vec::with_capacity(ids.len().min(PARAM_QUEUE_CAP)),
+            host_set: vec![false; ids.len()],
             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
             notes: Vec::with_capacity(EVENT_CAP),
             midi_map: Vec::new(),
@@ -252,17 +255,17 @@ impl Plugin for Vst3Plugin {
         }
         // Re-send every value so a re-activated plugin matches the session. A parameter a MIDI
         // controller drives is a stand-in (JUCE turns each change into a MIDI message), so
-        // re-sending its untouched default would play controller messages: CC 121 "reset all
+        // re-sending one the host never set would play controller messages: CC 121 "reset all
         // controllers" and CC 123 "all notes off" at offset 0, after anything the host sends in
-        // the same block. Only values the host moved off the default go out again.
+        // the same block. Only stand-ins the host set go out again, whatever their value.
         let midi_ids = if self.max_block > 0 { self.inst.midi_mapped_ids() } else { Vec::new() };
         self.pending.clear();
         for i in 0..self.ids.len() {
             if self.pending.len() >= self.pending.capacity() {
                 break;
             }
-            let (Some(&id), Some(&v), Some(pi)) = (self.ids.get(i), self.values.get(i), self.info.params.get(i)) else { continue };
-            if midi_ids.binary_search(&id).is_ok() && (v - pi.default).abs() <= 1e-6 {
+            let (Some(&id), Some(&v)) = (self.ids.get(i), self.values.get(i)) else { continue };
+            if midi_ids.binary_search(&id).is_ok() && !self.host_set.get(i).copied().unwrap_or(false) {
                 continue;
             }
             if let Some(n) = self.normalized_from_plain(i, v) {
@@ -291,6 +294,9 @@ impl Plugin for Vst3Plugin {
         let v = pi.clamp(value);
         if let Some(slot) = self.values.get_mut(i) {
             *slot = v;
+        }
+        if let Some(set) = self.host_set.get_mut(i) {
+            *set = true;
         }
         let Some(n) = self.normalized_from_plain(i, v) else { return true };
         if let Some(u) = self.unsynced.get(i) {

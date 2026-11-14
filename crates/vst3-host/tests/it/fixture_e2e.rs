@@ -185,9 +185,16 @@ fn prepare_does_not_play_untouched_midi_controller_params() {
     assert!(p.set_param(&cc_param(5), 1.0));
     assert!((block(&mut p) - 1.0).abs() < 1e-6, "CC 5 from automation was reset");
     assert!((block(&mut p) - 1.0).abs() < 1e-6);
-    // A value the host set is part of the session: it comes back after preparing again.
+    // A value the host set is part of the session: it comes back after preparing again. The
+    // synth keeps its controllers across activation, so move it off that value first.
+    p.midi(0, [0xB0, 5, 0]);
+    assert!(block(&mut p).abs() < 1e-6, "CC 5 from a clip was not applied");
     p.prepare(48_000.0, 64, 2);
-    assert!((block(&mut p) - 1.0).abs() < 1e-6, "CC 5 lost on re-prepare");
+    assert!((block(&mut p) - 1.0).abs() < 1e-6, "CC 5 not re-sent on re-prepare");
+    // Also when the host set it back to the default (0) and prepare dropped that waiting change.
+    assert!(p.set_param(&cc_param(5), 0.0));
+    p.prepare(48_000.0, 64, 2);
+    assert!(block(&mut p).abs() < 1e-6, "CC 5 set to its default was lost on re-prepare");
 
     // A clip's controller message in the first block after prepare.
     let mut p = soundcraft_vst3_host::create(&id).unwrap();
