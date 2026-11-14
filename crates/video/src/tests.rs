@@ -101,7 +101,7 @@ fn prores_and_mjpeg_decode() {
 /// A 64x48 ProRes frame whose header claims `w`x`h`.
 fn prores_frame_claiming(w: u16, h: u16) -> Vec<u8> {
     use crate::prores::{ChromaFormat, Encoder, Frame, Profile};
-    let mut data = Encoder::new(Profile::Hq, 64, 48).encode(&Frame::new(64, 48, ChromaFormat::Yuv422, 10, false)).unwrap();
+    let mut data = Encoder::new(Profile::Hq, 64, 48).encode(&Frame::new(64, 48, ChromaFormat::Yuv422, 10, false).unwrap()).unwrap();
     data[16..18].copy_from_slice(&w.to_be_bytes());
     data[18..20].copy_from_slice(&h.to_be_bytes());
     data
@@ -111,7 +111,7 @@ fn prores_frame_claiming(w: u16, h: u16) -> Vec<u8> {
 fn prores_frame_size_is_checked_before_decoding() {
     use crate::prores::{DecodeOptions, Error, decode_frame_with};
     let huge = decode_frame_with(&prores_frame_claiming(65535, 65535), &DecodeOptions::default());
-    assert!(matches!(huge, Err(Error::Unsupported("frame size"))), "{huge:?}");
+    assert!(matches!(huge, Err(Error::Invalid("frame dimensions exceed the decoder memory limit"))), "{huge:?}");
     // A frame that differs from the track's declared size is refused, not decoded at its own size.
     let mut mw = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
     let t = mw.add_track(TrackConfig::new(SampleEntry::prores(crate::isobmff::FourCc(*b"apch"), 64, 48), 25)).unwrap();
