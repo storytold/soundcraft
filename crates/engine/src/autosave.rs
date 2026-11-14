@@ -468,6 +468,8 @@ pub fn create_unique_folder(parent: &Path, prefix: &str) -> std::io::Result<Path
     for _ in 0..16 {
         let random = |_| std::collections::hash_map::RandomState::new().build_hasher().finish();
         let dir = parent.join(format!("{prefix}-{:016x}{:016x}", random(0), random(1)));
+        // Only Unix sets a mode, so only there does the builder change.
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);

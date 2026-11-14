@@ -11,6 +11,11 @@
 //!   is a link that leads nowhere).
 //! - The result must lie inside one of the roots of its kind, compared by whole components
 //!   (`/work2` isn't inside `/work`), without regard to case on Windows.
+//! - On Windows a network path (`\\server\share`, `\\?\UNC\...`, WebDAV's `\\host@SSL\share`), a
+//!   device path (`\\.\...`) or a verbatim path that isn't a disk is refused by its name before
+//!   the file system is asked about it, unless a root is on that same server and share (or that
+//!   same device or prefix). Looking such a path up would contact a host the agent chose. A link
+//!   whose text leads to one is refused before it is followed.
 //! - Read and write access are separate: a root given alone grants only its own kind of access.
 //!
 //! Roots are in force on a thread inside [`confine`], and in the whole process after
@@ -120,7 +125,8 @@ impl AutomationRoots {
                 Access::Write => Err(format!("automation filesystem access is not granted: write authority is absent: {shown_path}")),
             };
         }
-        let resolved = resolve(path)?;
+        let folders: Vec<&Path> = roots.iter().map(|r| r.resolved.as_path()).collect();
+        let resolved = resolve(path, &folders)?;
         if roots.iter().any(|r| inside(&resolved, &r.resolved)) {
             return Ok(());
         }
@@ -220,7 +226,10 @@ pub fn check_write(path: impl AsRef<Path>) -> Result<(), String> {
 
 /// `path` made absolute with its links followed; for a path that doesn't exist (yet), its nearest
 /// existing folder's links followed and the rest appended.
-fn resolve(path: &Path) -> Result<PathBuf, String> {
+///
+/// A Windows network, device or non-disk verbatim prefix is refused before any of that, unless one
+/// of `roots` (resolved folders) already stands on the same server and share, device or prefix.
+fn resolve(path: &Path, roots: &[&Path]) -> Result<PathBuf, String> {
     if path.as_os_str().is_empty() {
         return Err("automation path rejected: path is empty".into());
     }
@@ -228,7 +237,22 @@ fn resolve(path: &Path) -> Result<PathBuf, String> {
     if cfg!(windows) && path.components().any(|c| matches!(c, Component::Normal(n) if is_device_name(&n.to_string_lossy()))) {
         return Err(format!("automation path rejected: reserved device names are not allowed: {}", path.display()));
     }
+    // Before `absolute` too: on Windows that call asks the system about the path.
+    if let Some(why) = refused_prefix(path, roots) {
+        return Err(format!("automation path rejected: {why}: {}", path.display()));
+    }
     let absolute = std::path::absolute(path).map_err(|e| format!("automation path rejected: cannot resolve {}: {e}", path.display()))?;
+    if let Some(why) = refused_prefix(&absolute, roots) {
+        return Err(format!("automation path rejected: {why}: {}", path.display()));
+    }
+    // A link is judged by its own text: canonicalizing one that leads to a network path would
+    // contact that host. Only Windows has such prefixes. One walk of the whole path covers every
+    // shorter one the loop below tries.
+    if cfg!(windows)
+        && let Some(why) = link_leads_to_refused_prefix(&absolute, roots)
+    {
+        return Err(format!("automation path rejected: {why}: {}", path.display()));
+    }
     // The names below the nearest existing folder, last first.
     let mut missing: Vec<OsString> = vec![];
     let mut at = absolute.as_path();
@@ -291,6 +315,164 @@ fn is_device_name(component: &str) -> bool {
     let stem = component.split('.').next().unwrap_or(component).trim_end_matches(' ').to_ascii_uppercase();
     let numbered = |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"));
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
+}
+
+/// A Windows path prefix that isn't a local disk: opening or even resolving a path that starts
+/// with one can reach another computer.
+#[derive(Debug)]
+enum OffDisk {
+    /// `\\server\share` or `\\?\UNC\server\share`; WebDAV's `\\host@SSL\share` is a server name too.
+    Unc(OsString, OsString),
+    /// `\\.\device`.
+    Device(OsString),
+    /// `\\?\` followed by anything but a drive or `UNC`.
+    Verbatim(OsString),
+}
+
+impl OffDisk {
+    /// The prefix of `path` when it isn't a local disk. A drive letter, a path without a prefix
+    /// and every path off Windows give `None`.
+    fn of(path: &Path) -> Option<Self> {
+        use std::path::Prefix;
+        let Some(Component::Prefix(prefix)) = path.components().next() else { return Self::unparsed_unc(path) };
+        match prefix.kind() {
+            Prefix::Disk(_) | Prefix::VerbatimDisk(_) => None,
+            Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => Some(Self::Unc(server.to_os_string(), share.to_os_string())),
+            Prefix::DeviceNS(device) => Some(Self::Device(device.to_os_string())),
+            Prefix::Verbatim(rest) => Some(Self::Verbatim(rest.to_os_string())),
+        }
+    }
+
+    /// A path that starts with two separators on Windows but isn't a whole `\\server\share` (`\\server`,
+    /// `\\\x`): Windows still reads it as the name of a computer, so it is a UNC path with no share.
+    fn unparsed_unc(path: &Path) -> Option<Self> {
+        let bytes = path.as_os_str().as_encoded_bytes();
+        let separator = |b: Option<&u8>| matches!(b, Some(b'\\' | b'/'));
+        if cfg!(windows) && separator(bytes.first()) && separator(bytes.get(1)) { Some(Self::Unc(OsString::new(), OsString::new())) } else { None }
+    }
+
+    /// The refusal for a path with this prefix, which names the prefix.
+    fn refusal(&self) -> &'static str {
+        match self {
+            Self::Unc(..) => "UNC paths are refused unless a root is on the same server and share",
+            Self::Device(_) => "device paths are refused unless a root uses the same device",
+            Self::Verbatim(_) => "verbatim paths are refused unless a root uses the same prefix",
+        }
+    }
+
+    /// Whether `other` is the same server and share, device or prefix, the ASCII case aside. This
+    /// decides only whether that host may be contacted; [`inside`] still decides the folder.
+    fn same_as(&self, other: &Self) -> bool {
+        let same = |a: &OsString, b: &OsString| a.eq_ignore_ascii_case(b);
+        match (self, other) {
+            (Self::Unc(server, share), Self::Unc(other_server, other_share)) => same(server, other_server) && same(share, other_share),
+            (Self::Device(device), Self::Device(other)) => same(device, other),
+            (Self::Verbatim(rest), Self::Verbatim(other)) => same(rest, other),
+            _ => false,
+        }
+    }
+}
+
+/// Why `path` must not be looked up: it starts with a Windows network, device or non-disk
+/// verbatim prefix and none of `roots` stands on that same prefix. A local path gives `None`.
+fn refused_prefix(path: &Path, roots: &[&Path]) -> Option<&'static str> {
+    let prefix = OffDisk::of(path)?;
+    if roots.iter().filter_map(|root| OffDisk::of(root)).any(|root| root.same_as(&prefix)) { None } else { Some(prefix.refusal()) }
+}
+
+/// How many links in a row [`link_leads_to_refused_prefix`] follows before it gives up and refuses.
+const MAX_LINK_HOPS: usize = 40;
+
+/// How many spellings of a path one walk scans in all, so a hostile set of links can't make it
+/// scan without end.
+const MAX_SPELLINGS: usize = 1024;
+
+/// The refusal for a link in `path`, taken from the link's own text.
+///
+/// Folders are inspected from the top down with [`std::fs::symlink_metadata`], which doesn't follow
+/// a link, and a link's target is read with [`std::fs::read_link`]. A link to a network path is
+/// therefore refused before [`std::fs::canonicalize`] could open that host, also when the link is
+/// only an ancestor of the name. A link whose target can't be read, the one after
+/// [`MAX_LINK_HOPS`] in a row, or a walk past [`MAX_SPELLINGS`] spellings, is refused rather than
+/// opened.
+fn link_leads_to_refused_prefix(path: &Path, roots: &[&Path]) -> Option<&'static str> {
+    follow_links(path, roots, &mut std::collections::HashSet::new(), MAX_LINK_HOPS)
+}
+
+/// [`link_leads_to_refused_prefix`] for one spelling of the path. `judged` holds every spelling the
+/// walk has scanned (so none is scanned twice, nor in a cycle forever) and `hops_left` the links
+/// still allowed in this chain, which the other spelling of a target does not use up.
+fn follow_links(path: &Path, roots: &[&Path], judged: &mut std::collections::HashSet<PathBuf>, hops_left: usize) -> Option<&'static str> {
+    if !judged.insert(path.to_path_buf()) {
+        return None;
+    }
+    if judged.len() > MAX_SPELLINGS {
+        return Some("too many links");
+    }
+    let mut ancestors: Vec<&Path> = path.ancestors().collect();
+    ancestors.reverse();
+    for prefix in ancestors {
+        if prefix.as_os_str().is_empty() {
+            continue;
+        }
+        if let Some(why) = refused_prefix(prefix, roots) {
+            return Some(why);
+        }
+        let meta = match std::fs::symlink_metadata(prefix) {
+            Ok(meta) => meta,
+            // Nothing is there, so no link is below it.
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => return None,
+            // Anything else (no permission to look): a link below it can't be seen, so don't go on.
+            Err(_) => return Some("a folder that can't be looked at"),
+        };
+        if !meta.file_type().is_symlink() {
+            continue;
+        }
+        if hops_left == 0 {
+            return Some("too many links");
+        }
+        let Ok(target) = std::fs::read_link(prefix) else { return Some("a link that leads nowhere") };
+        // Judged as written: joined onto the link's folder, a bare `\\server` would keep that folder's drive.
+        if let Some(why) = refused_prefix(&target, roots) {
+            return Some(why);
+        }
+        let joined = match prefix.parent() {
+            Some(parent) if !target.is_absolute() && !parent.as_os_str().is_empty() => parent.join(target),
+            _ => target,
+        };
+        let next = match path.strip_prefix(prefix) {
+            Ok(rest) if !rest.as_os_str().is_empty() => joined.join(rest),
+            _ => joined,
+        };
+        if let Some(why) = refused_prefix(&next, roots) {
+            return Some(why);
+        }
+        // Windows takes the `..` of a relative target by name, so `missing\..\remote` is `remote`
+        // though `missing` isn't there: judge that spelling as well as the one written.
+        let by_name = lexical(&next);
+        if by_name != next
+            && let Some(why) = follow_links(&by_name, roots, judged, hops_left - 1)
+        {
+            return Some(why);
+        }
+        return follow_links(&next, roots, judged, hops_left - 1);
+    }
+    None
+}
+
+/// `path` with its `.` and `..` taken by name, never above its root.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -485,6 +667,145 @@ mod tests {
         assert!(e.contains("reserved device names"), "{e}");
         assert!(roots.check(s(base.join("out/com1.txt")), Access::Write).is_err());
         assert_eq!(roots.check(s(base.join("out/console.txt")), Access::Write), Ok(()));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// A path with no Windows prefix, a drive letter, and every path off Windows have no off-disk prefix to refuse.
+    #[test]
+    fn a_local_path_has_no_off_disk_prefix() {
+        for p in ["/home/me/a.scraft", "a.scraft", r"C:\Projects\a.scraft", r"\\?\C:\Projects\a.scraft"] {
+            assert!(OffDisk::of(Path::new(p)).is_none(), "{p}");
+            assert_eq!(refused_prefix(Path::new(p), &[]), None, "{p}");
+        }
+    }
+
+    /// A network, device or non-disk verbatim path is refused by its name before the file system is
+    /// asked, so no host the agent names is contacted. The error names the prefix; it is not the
+    /// error that opening the path would give. Nothing here touches the network.
+    #[cfg(windows)]
+    #[test]
+    fn a_network_path_is_refused_before_it_is_opened() {
+        let (base, roots) = folders("unc");
+        let paths = [
+            (r"\\203.0.113.5\s\x.scraft", "UNC"),
+            (r"\\?\UNC\203.0.113.5\s\x.scraft", "UNC"),
+            ("//203.0.113.5/s/x.scraft", "UNC"),
+            (r"\\host@SSL\share\x.scraft", "UNC"),
+            (r"\\host@SSL@443\share\x.scraft", "UNC"),
+            (r"\\203.0.113.5", "UNC"),
+            (r"\\\203.0.113.5\s\x.scraft", "UNC"),
+            ("//203.0.113.5", "UNC"),
+            (r"\\.\PhysicalDrive0", "device path"),
+            (r"\\?\Volume{00000000-0000-0000-0000-000000000000}\x.scraft", "verbatim path"),
+        ];
+        for (p, kind) in paths {
+            for access in [Access::Read, Access::Write] {
+                let e = roots.check(p, access).unwrap_err();
+                assert!(e.starts_with("automation path rejected:"), "{p}: {e}");
+                assert!(e.contains(kind), "{p}: {e}");
+                assert!(!e.contains("cannot resolve") && !e.to_ascii_lowercase().contains("os error"), "{p}: {e}");
+            }
+        }
+        let e = roots.check(s(base.join("outside/secret.scraft")), Access::Read).unwrap_err();
+        assert!(e.contains("outside the read root"), "a local path is still judged by its folder: {e}");
+        let verbatim = format!(r"\\?\{}", s(base.join("in").join("a.scraft")));
+        assert_eq!(roots.check(&verbatim, Access::Read), Ok(()), "a verbatim disk path is a local path: {verbatim}");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// A root on a share lets that server and share through (either spelling, any ASCII case) and nothing else.
+    #[cfg(windows)]
+    #[test]
+    fn a_root_on_a_share_lets_only_that_share_through() {
+        let share = [Path::new(r"\\?\UNC\FileServer\Projects\work")];
+        assert_eq!(refused_prefix(Path::new(r"\\fileserver\projects\a.scraft"), &share), None);
+        assert_eq!(refused_prefix(Path::new(r"\\?\UNC\FILESERVER\PROJECTS\a.scraft"), &share), None);
+        assert!(refused_prefix(Path::new(r"\\fileserver\secret\a.scraft"), &share).is_some(), "another share");
+        assert!(refused_prefix(Path::new(r"\\203.0.113.5\Projects\a.scraft"), &share).is_some(), "another server");
+        let work = [Path::new(r"\\?\UNC\work\Projects\w")];
+        assert!(refused_prefix(Path::new("\\\\wor\u{212a}\\Projects\\a.scraft"), &work).is_some(), "U+212A is not k");
+        assert!(refused_prefix(Path::new(r"\\.\PhysicalDrive0"), &share).is_some(), "a share is not a device");
+        let device = [Path::new(r"\\.\PhysicalDrive0")];
+        assert_eq!(refused_prefix(Path::new(r"\\.\physicaldrive0"), &device), None, "the same device");
+        assert!(refused_prefix(Path::new(r"\\.\PhysicalDrive1"), &device).is_some());
+    }
+
+    /// A link whose text is a bare `\\server` (no share) is refused as written: joined onto the link's folder
+    /// it would read as a local path and pass.
+    #[cfg(windows)]
+    #[test]
+    fn a_link_to_a_bare_server_name_is_refused() {
+        let (base, roots) = folders("unc-link-bare");
+        let link = base.join("in").join("bare");
+        if std::os::windows::fs::symlink_dir(r"\\203.0.113.5", &link).is_err() {
+            eprintln!("skipped: symbolic links can't be made here");
+            let _ = std::fs::remove_dir_all(base);
+            return;
+        }
+        let e = roots.check(s(link.join("x.scraft")), Access::Read).unwrap_err();
+        assert!(e.contains("UNC"), "{e}");
+        assert!(!e.contains("cannot resolve") && !e.to_ascii_lowercase().contains("os error"), "{e}");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// Nine links that each go through `sub\..\` to the next are nine links, not a reason to give up: both
+    /// spellings of each target are judged once.
+    #[cfg(windows)]
+    #[test]
+    fn a_chain_of_links_with_parent_names_is_followed_in_few_steps() {
+        let (base, roots) = folders("link-chain");
+        let folder = base.join("in");
+        std::fs::create_dir_all(folder.join("sub")).unwrap();
+        for n in 1..=9 {
+            let target = if n == 9 { "sub".to_string() } else { format!(r"sub\..\l{}", n + 1) };
+            if std::os::windows::fs::symlink_dir(&target, folder.join(format!("l{n}"))).is_err() {
+                eprintln!("skipped: symbolic links can't be made here");
+                let _ = std::fs::remove_dir_all(base);
+                return;
+            }
+        }
+        assert_eq!(roots.check(s(folder.join("l1").join("x.scraft")), Access::Read), Ok(()));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// A link whose relative target goes through a missing folder and back (`missing\..\remote`) is
+    /// judged with the `..` taken by name too, as Windows takes it: `remote` is a link to a network path.
+    #[cfg(windows)]
+    #[test]
+    fn a_relative_link_through_a_missing_folder_still_reaches_the_network_check() {
+        let (base, roots) = folders("unc-link-dotdot");
+        let (remote, alias) = (base.join("in").join("remote"), base.join("in").join("alias"));
+        if std::os::windows::fs::symlink_dir(r"\\203.0.113.5\s", &remote).is_err() {
+            eprintln!("skipped: symbolic links can't be made here");
+            let _ = std::fs::remove_dir_all(base);
+            return;
+        }
+        assert!(std::os::windows::fs::symlink_dir(r"missing\..\remote", &alias).is_ok());
+        let e = roots.check(s(alias.join("x.scraft")), Access::Read).unwrap_err();
+        assert!(e.contains("UNC"), "{e}");
+        assert!(!e.contains("cannot resolve") && !e.to_ascii_lowercase().contains("os error"), "{e}");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// A link whose text names a network path, or that has one as a folder on the way, is refused
+    /// from that text before the link is followed: following it would contact the host.
+    #[cfg(windows)]
+    #[test]
+    fn a_link_to_a_network_path_is_refused_before_it_is_followed() {
+        let (base, roots) = folders("unc-link");
+        let file_link = base.join("in/leak.scraft");
+        if std::os::windows::fs::symlink_file(r"\\203.0.113.5\s\x.scraft", &file_link).is_err() {
+            eprintln!("skipped: symbolic links can't be made here");
+            let _ = std::fs::remove_dir_all(base);
+            return;
+        }
+        let folder_link = base.join("in/folder-leak");
+        assert!(std::os::windows::fs::symlink_dir(r"\\203.0.113.5\s", &folder_link).is_ok());
+        for path in [file_link, folder_link.join("x.scraft")] {
+            let e = roots.check(s(path.clone()), Access::Read).unwrap_err();
+            assert!(e.contains("UNC"), "{}: {e}", path.display());
+            assert!(!e.contains("cannot resolve") && !e.to_ascii_lowercase().contains("os error"), "{}: {e}", path.display());
+        }
         let _ = std::fs::remove_dir_all(base);
     }
 
