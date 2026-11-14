@@ -199,19 +199,42 @@ pub fn auto_name_new_clips(s: &mut Session, track: TrackId, old: &HashSet<ClipId
     s.auto_names = schemes;
 }
 
-/// Remove material inside `range` on a track. In Shuffle mode later clips move left, up to the
-/// first locked clip (see [`ripple`]). Returns the removed material as clips positioned relative
-/// to `range.start`.
+/// Remove material inside `range` on a track. Time- and edit-locked clips stay whole: they are
+/// neither split at the range's edges nor removed, so placing a clip over one overlaps it. In
+/// Shuffle mode later clips move left, up to the first locked clip (see [`ripple`]); a locked clip
+/// left inside the range holds everything after it in place. Returns the removed material as clips
+/// positioned relative to `range.start`.
 pub fn clear_range(s: &mut Session, track: TrackId, range: Range, shuffle: bool) -> Vec<Clip> {
+    remove_range(s, track, range, shuffle, true)
+}
+
+/// [`clear_range`], splitting and removing time- and edit-locked clips too. For the Event time
+/// operations, which cut the whole timeline, locked clips included.
+pub fn clear_all_range(s: &mut Session, track: TrackId, range: Range, shuffle: bool) -> Vec<Clip> {
+    remove_range(s, track, range, shuffle, false)
+}
+
+/// Whether a time- or edit-locked clip on `track` covers any of `range`.
+pub fn holds_locked(s: &Session, track: TrackId, range: Range) -> bool {
+    s.track(track).is_some_and(|t| t.clips().iter().any(|c| locked(c) && c.start < range.end && c.end() > range.start))
+}
+
+/// Why a consolidate is refused: it would replace a locked clip, whose material it has already
+/// rendered, so keeping the clip whole would play it twice.
+pub const LOCKED_IN_RANGE: &str = "the range holds a time- or edit-locked clip; unlock it first";
+
+/// [`clear_range`] (`keep_locked`) or [`clear_all_range`].
+fn remove_range(s: &mut Session, track: TrackId, range: Range, shuffle: bool, keep_locked: bool) -> Vec<Clip> {
     if range.is_empty() {
         return Vec::new();
     }
-    separate_at(s, track, range.start);
-    separate_at(s, track, range.end);
+    let separate = if keep_locked { separate_at } else { separate_all_at };
+    separate(s, track, range.start);
+    separate(s, track, range.end);
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return Vec::new() };
     let mut removed = Vec::new();
     pl.clips.retain(|c| {
-        if c.start >= range.start && c.end() <= range.end {
+        if c.start >= range.start && c.end() <= range.end && !(keep_locked && locked(c)) {
             let mut r = c.clone();
             r.start -= range.start;
             removed.push(r);
@@ -220,7 +243,8 @@ pub fn clear_range(s: &mut Session, track: TrackId, range: Range, shuffle: bool)
             true
         }
     });
-    if shuffle {
+    // Like Shuffle's ripple, a locked clip still in the range keeps the clips after it where they are.
+    if shuffle && !holds_locked(s, track, range) {
         let moved = ripple(s, track, range.end, -range.len());
         follow_automation(s, track, range.end, moved);
     }
@@ -321,7 +345,8 @@ pub fn paste(s: &mut Session, track: TrackId, at: Samples, clips: &[Clip], lengt
     Ok(ids)
 }
 
-/// Place one clip, overwriting whatever it covers.
+/// Place one clip, overwriting whatever it covers except time- and edit-locked clips, which it
+/// overlaps (see [`clear_range`]).
 pub fn place_clip(s: &mut Session, track: TrackId, clip: Clip) {
     clear_range(s, track, clip.range(), false);
     if let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) {

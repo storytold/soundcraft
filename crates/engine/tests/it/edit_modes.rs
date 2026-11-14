@@ -623,3 +623,128 @@ fn event_time_edits_split_and_move_locked_clips() {
         }
     }
 }
+
+/// Clear and Cut over a range leave a time- or edit-locked clip inside it whole, in Slip and Shuffle, while the
+/// unlocked clips in the range go. Pro Tools: an Edit-locked clip "cannot be moved, deleted, or edited". In
+/// Shuffle the clip after the range stays put, since a locked clip and everything after it are not displaced.
+/// Undo brings the removed clips back.
+#[test]
+fn range_clear_and_cut_leave_a_locked_clip_inside_the_range() {
+    for lock in ["clip.edit_lock", "clip.time_lock"] {
+        for cmd in ["edit.clear", "edit.cut"] {
+            for mode in ["slip", "shuffle"] {
+                let (mut e, t, ids) = long(mode, &[(2_000, 2_000, 0), (10_000, 10_000, 0), (25_000, 3_000, 0), (40_000, 5_000, 0)]);
+                run(&mut e, lock, json!({"clips": [ids[1].0]}));
+                let before = clips(&e, t);
+                let out = e.execute(cmd, &json!({"tracks": [t.0], "start": 0, "end": 30_000})).unwrap();
+                assert_eq!(clips(&e, t), [(10_000, 10_000), (40_000, 5_000)], "{lock} {cmd} {mode}");
+                assert_eq!(start(&e, ids[1]), 10_000, "{lock} {cmd} {mode}: the locked clip keeps its id");
+                if cmd == "edit.clear" {
+                    assert_eq!(out["removed"], 2, "{lock} {mode}");
+                }
+                assert!(e.undo());
+                assert_eq!(clips(&e, t), before, "{lock} {cmd} {mode}");
+            }
+        }
+    }
+}
+
+/// A Shuffle clear next to a locked clip still closes up: only a locked clip covering part of the range holds
+/// the clips after it.
+#[test]
+fn shuffle_clear_is_held_only_by_a_locked_clip_in_the_range() {
+    let cases = [
+        // Locked clip overlapping the range's start, kept whole by Separate: the clip after the range stays.
+        ((0, 48_000), (12_000, 36_000), vec![(0, 48_000), (50_000, 2_000)]),
+        // Locked clip ending where the range starts: the clip after the range closes the gap.
+        ((0, 10_000), (10_000, 20_000), vec![(0, 10_000), (40_000, 2_000)]),
+    ];
+    for ((lock_start, lock_len), (from, to), want) in cases {
+        let (mut e, t, ids) = long("shuffle", &[(lock_start, lock_len, 0), (50_000, 2_000, 0)]);
+        run(&mut e, "clip.time_lock", json!({"clips": [ids[0].0]}));
+        run(&mut e, "edit.clear", json!({"tracks": [t.0], "start": from, "end": to}));
+        assert_eq!(clips(&e, t), want, "clear {from}..{to}");
+    }
+}
+
+/// A 24 000-sample mono WAV of silence at 48 kHz.
+fn wav_24k() -> Vec<u8> {
+    craft_audio::encode(&craft_audio::AudioBuffer::new(48_000, 1, 24_000), &craft_audio::EncodeOptions::default()).unwrap()
+}
+
+/// Every path that places one clip (an import, a recorded take, Place Audio File, a paste) overlaps a locked
+/// clip it covers completely and leaves it whole, while an unlocked clip there is still overwritten. Undo takes
+/// the new clip away again.
+#[test]
+fn placing_over_a_locked_clip_overlaps_it() {
+    let dir = std::env::temp_dir().join(format!("soundcraft-locked-place-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let take = dir.join("Take_01.wav");
+    std::fs::write(&take, wav_24k()).unwrap();
+    for lock in [None, Some("clip.edit_lock"), Some("clip.time_lock")] {
+        for path in ["import", "record", "place_source", "paste"] {
+            let (mut e, t, ids) = long("slip", &[(16_000, 16_000, 0), (200_000, 24_000, 0)]);
+            e.session_mut().sources.push(source(9, 24_000));
+            if let Some(lock) = lock {
+                run(&mut e, lock, json!({"clips": [ids[0].0]}));
+            }
+            let before = clips(&e, t);
+            match path {
+                "import" => {
+                    soundcraft_engine::io::import_audio_bytes(&mut e, "new.wav", &wav_24k(), None, Some(t), 12_000).unwrap();
+                }
+                "record" => assert_eq!(soundcraft_engine::io::add_recording(&mut e, 12_000, vec![(t, take.clone())], None).len(), 1),
+                "place_source" => run(&mut e, "clip.place_source", json!({"source": 9, "track": t.0, "at": 12_000})),
+                _ => {
+                    run(&mut e, "edit.copy", json!({"tracks": [t.0], "start": 200_000, "end": 224_000}));
+                    run(&mut e, "edit.paste", json!({"tracks": [t.0], "at": 12_000}));
+                }
+            }
+            let want =
+                if lock.is_some() { vec![(12_000, 24_000), (16_000, 16_000), (200_000, 24_000)] } else { vec![(12_000, 24_000), (200_000, 24_000)] };
+            assert_eq!(clips(&e, t), want, "{lock:?} {path}");
+            if lock.is_some() {
+                assert_eq!(start(&e, ids[0]), 16_000, "{lock:?} {path}: the locked clip keeps its id");
+            }
+            if path != "import" {
+                assert!(e.undo());
+                assert_eq!(clips(&e, t), before, "{lock:?} {path}");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Consolidate and Prepare DPE Tracks render a locked clip's material into the new clip, so they are refused
+/// with nothing changed rather than keep the clip whole under its own render.
+#[test]
+fn consolidating_over_a_locked_clip_is_refused() {
+    for lock in [None, Some("clip.edit_lock"), Some("clip.time_lock")] {
+        for (cmd, p) in [("edit.consolidate", json!({"start": 6_000, "end": 30_000})), ("options.prepare_dpe_tracks", json!({}))] {
+            let (mut e, t, ids) = long("slip", &[(0, 4_000, 0), (10_000, 10_000, 0)]);
+            let mut p = p.clone();
+            p["tracks"] = json!([t.0]);
+            let Some(lock) = lock else {
+                run(&mut e, cmd, p);
+                assert!(e.session().find_clip(ids[1]).is_none(), "unlocked control {cmd}");
+                continue;
+            };
+            run(&mut e, lock, json!({"clips": [ids[1].0]}));
+            let before = (clips(&e, t), e.undo_history());
+            let err = e.execute(cmd, &p).unwrap_err().to_string();
+            assert!(err.contains("locked clip"), "{lock} {cmd}: {err}");
+            assert_eq!((clips(&e, t), e.undo_history()), before, "{lock} {cmd}");
+        }
+    }
+}
+
+/// Event > Cut Time removes the whole span, locked clips included, as it moves the whole timeline.
+#[test]
+fn cut_time_removes_a_locked_clip_inside_the_range() {
+    for lock in ["clip.edit_lock", "clip.time_lock"] {
+        let (mut e, t, ids) = long("slip", &[(12_000, 12_000, 0), (40_000, 5_000, 0)]);
+        run(&mut e, lock, json!({"clips": [ids[0].0]}));
+        run(&mut e, "event.cut_time", json!({"start": 6_000, "end": 30_000}));
+        assert_eq!(clips(&e, t), [(16_000, 5_000)], "{lock}");
+    }
+}
