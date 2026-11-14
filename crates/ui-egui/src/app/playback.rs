@@ -224,6 +224,97 @@ impl SoundApp {
         }
     }
 
+    /// Punch-out while playing: stop the capture now and decode the takes off the UI thread, so a
+    /// large or multitrack take cannot lock up Stop or Record while the transport keeps rolling
+    /// (#1265). The clips are placed on this thread — as one "Record" undo step, exactly as
+    /// [`Self::finish_recording`] places them — by [`Self::poll_placement`] once the decode hands
+    /// its buffers back. The plan stays in `take_plan` until then, so a crash during the decode
+    /// still recovers the take; everything else matches [`Self::finish_recording`].
+    #[cfg(not(target_arch = "wasm32"))]
+    fn finish_recording_async(&mut self) {
+        self.engine.transport.recording = false;
+        if let Some(p) = &self.player {
+            p.set_recording(false);
+        }
+        let Some(r) = &mut self.recorder else { return };
+        let (takes, problem) = r.finish();
+        let tracks = takes.len().max(1);
+        // The plan is cloned, not taken: autosave keeps writing it until placement completes, so
+        // a crash while the take decodes still leaves a RECORDING file that recovers it.
+        let plan = self.take_plan.clone().unwrap_or_else(|| soundcraft_engine::io::Recording {
+            start: self.record_start,
+            pass: None,
+            punch: self.punch,
+            rate: 0,
+            takes: Vec::new(),
+        });
+        self.punch = None;
+        self.autosaved_rev = 0;
+        let rate = self.engine.session().sample_rate.hz();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let work = takes.clone();
+        let spawned = std::thread::Builder::new()
+            .name("take-decode".into())
+            .spawn(move || {
+                let _ = tx.send(decode_all(work, rate));
+            })
+            .is_ok();
+        if spawned {
+            self.placing.push(crate::PlacingTake { plan, tracks, problem, rx });
+        } else {
+            // No thread to spare: decode on this one, as when the transport has already stopped.
+            self.place_decoded_takes(&plan, tracks, problem, decode_all(takes, rate));
+        }
+    }
+
+    /// Place the takes whose off-thread decodes have finished. Called from transport handling every
+    /// frame: the transport answered Stop and Record throughout the decode, and each take lands,
+    /// as one "Record" undo step, the moment its buffers are back.
+    fn poll_placement(&mut self) {
+        let mut done = Vec::new();
+        for i in (0..self.placing.len()).rev() {
+            let takes = match self.placing[i].rx.try_recv() {
+                Ok(takes) => Some(takes),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                // The decode thread ended without an answer: place nothing for this take.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Vec::new()),
+            };
+            if let Some(takes) = takes {
+                let p = self.placing.swap_remove(i);
+                done.push((p, takes));
+            }
+        }
+        for (p, takes) in done {
+            self.place_decoded_takes(&p.plan, p.tracks, p.problem, takes);
+        }
+    }
+
+    /// Places a finished take's decoded buffers, as one "Record" undo step, reporting on the
+    /// status line exactly as the stop-time path does.
+    fn place_decoded_takes(
+        &mut self,
+        plan: &soundcraft_engine::io::Recording,
+        tracks: usize,
+        problem: Option<String>,
+        takes: Vec<soundcraft_engine::io::DecodedTake>,
+    ) {
+        // The "Record" step must stand alone even when a Write-mode pass reopened its merge while
+        // the take decoded: end the merge before placing, as the punch-out itself does.
+        self.engine.end_merge();
+        let ids = soundcraft_engine::io::place_recording_decoded(&mut self.engine, plan, takes);
+        // The plan kept the take recoverable through the decode; drop it now that the take is
+        // placed — unless a later punch-in has already replaced it with a new plan.
+        if self.take_plan.as_ref() == Some(plan) {
+            self.take_plan = None;
+        }
+        self.ui.status =
+            if plan.pass.is_some() { format!("Loop-recorded {} take(s)", ids.len() / tracks) } else { format!("Recorded {} clip(s)", ids.len()) };
+        if let Some(p) = problem {
+            log::warn!("recording: {p}");
+            self.ui.status = format!("{} ({p})", self.ui.status);
+        }
+    }
+
     /// While playing, record volume automation from fader positions for tracks in Write mode, and
     /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved. Send levels follow the
     /// same rules, per send, from its slot or its floating send window. Each point replaces the
@@ -349,6 +440,8 @@ impl SoundApp {
                     self.sim = None;
                     // The old capture belongs to the replaced document, never to the new one.
                     self.recorder = None;
+                    // A pending take's placement belongs to the replaced document too.
+                    self.placing.clear();
                     self.recorder_failed = false;
                     self.punch = None;
                     self.gesture = None;
@@ -389,7 +482,26 @@ impl SoundApp {
                 }
                 TransportRequest::Record => {
                     if self.engine.transport.recording {
-                        self.stop_play();
+                        if self.is_playing() {
+                            // Quick Punch: punching out ends the take; the transport keeps rolling (#1265).
+                            // The take's "Record" undo step must stand alone: end the automation
+                            // pass's merge first, so automation written after the punch-out gets
+                            // its own undo step instead of joining the step before the take.
+                            self.engine.end_merge();
+                            // Reading, decoding and resampling the takes is slow and the transport
+                            // is still rolling: decode off the UI thread, so Stop and a new Record
+                            // stay answerable, and place the clips here once the buffers are back.
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                self.finish_recording_async();
+                            }
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                self.finish_recording();
+                            }
+                        } else {
+                            self.stop_play();
+                        }
                     } else {
                         self.start_recording();
                     }
@@ -420,6 +532,9 @@ impl SoundApp {
                 TransportRequest::AllNotesOff => {}
             }
         }
+        // Placements poll after the requests: a reset in this batch must drop a pending take's
+        // placement before the poll could place it into the document it is about to replace.
+        self.poll_placement();
         // Read back the position.
         if let Some(p) = &self.player {
             let playing = p.is_playing();
@@ -473,6 +588,13 @@ impl SoundApp {
             feed_meter(&mut self.main_meter, [0.0, 0.0], 0.0, dt);
         }
     }
+}
+
+/// Decodes a punch-out's takes for a session at `rate`: the decode thread's whole job, shared with
+/// the no-thread fallback.
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_all(takes: Vec<(TrackId, std::path::PathBuf)>, rate: u32) -> Vec<soundcraft_engine::io::DecodedTake> {
+    takes.into_iter().map(|(track, path)| soundcraft_engine::io::decode_take(track, path, rate)).collect()
 }
 
 #[cfg(test)]

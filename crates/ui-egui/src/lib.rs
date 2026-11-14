@@ -265,6 +265,15 @@ pub enum Gesture {
     ZoomBox { start: f32 },
 }
 
+/// A punch-out's take being decoded off the UI thread: what was recorded (the plan), how many
+/// tracks it covers, the recorder's problem report if any, and where the decoded buffers arrive.
+pub(crate) struct PlacingTake {
+    pub(crate) plan: soundcraft_engine::io::Recording,
+    pub(crate) tracks: usize,
+    pub(crate) problem: Option<String>,
+    pub(crate) rx: std::sync::mpsc::Receiver<Vec<soundcraft_engine::io::DecodedTake>>,
+}
+
 pub struct SoundApp {
     pub engine: Engine,
     /// The session path as of the last frame, and whether the recent list changed since the host
@@ -284,6 +293,10 @@ pub struct SoundApp {
     lost_shown: u64,
     /// Where the takes being recorded go, autosaved with the session so a crash can't lose them.
     take_plan: Option<soundcraft_engine::io::Recording>,
+    /// Punch-outs' takes, decoded off the UI thread while the transport keeps rolling (#1265):
+    /// each lands, as one "Record" undo step, once its decode hands its buffers back
+    /// (see `finish_recording_async` and `poll_placement`).
+    pub(crate) placing: Vec<PlacingTake>,
     pub ui: UiState,
     pub audio_health_report: Option<Result<Value, String>>,
     pub services: Services,

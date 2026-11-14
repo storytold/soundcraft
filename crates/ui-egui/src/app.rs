@@ -41,6 +41,7 @@ impl SoundApp {
             recorder_failed: false,
             lost_shown: 0,
             take_plan: None,
+            placing: Vec::new(),
             ui: UiState::default(),
             audio_health_report: None,
             services,
