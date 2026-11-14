@@ -1,6 +1,6 @@
 [package]
 name = "soundcraft-model"
-description = "SoundCraft session document: tracks, playlists, clips, mixer, routing, automation, markers"
+description = "Compatibility facade for SoundCraft's shared native session format"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,15 +8,7 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
-soundcraft-time.workspace = true
-craft-audio.workspace = true
-soundcraft-midi.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-
-[dev-dependencies]
-proptest.workspace = true
+craft-scraft-format.workspace = true
 
 [lints]
 workspace = true

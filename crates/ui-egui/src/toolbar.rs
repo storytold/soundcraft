@@ -60,10 +60,13 @@ fn edit_mode_tooltip(m: EditMode, locked: bool, cmd: &str, fkey: &str) -> String
 
 fn draw_mode_cell(p: &egui::Painter, cell: Rect, resp: &egui::Response, t: &Tokens, m: EditMode, state: &ModeCellState, label: &str) {
     let on = state.cur == m || (m == EditMode::Grid && state.cur == EditMode::GridRelative);
-    key(p, cell, resp, if on { t.mode_on } else { t.mode_off });
+    // `on` means `cur == m`, or Grid showing Relative Grid: the active colour is always cur's.
+    key(p, cell, resp, if on { t.edit_mode_on(state.cur) } else { t.mode_off });
     let fg = if on { t.mode_on_text } else { t.mode_off_text };
     if m == EditMode::Grid && state.snap {
-        p.rect_stroke(cell, 1.0, Stroke::new(1.5, t.mode_on), StrokeKind::Inside);
+        // The Snap to Grid outline wears the Grid colour, so it never reads as the green of Slip.
+        let grid = t.edit_mode_on(if state.cur.is_grid() { state.cur } else { EditMode::Grid });
+        p.rect_stroke(cell, 1.0, Stroke::new(1.5, grid), StrokeKind::Inside);
     }
     if m == EditMode::Shuffle && state.locked {
         icons::draw(p, Rect::from_center_size(cell.center(), vec2(15.0, 15.0)), "lock", fg);

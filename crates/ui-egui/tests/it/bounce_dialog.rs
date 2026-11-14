@@ -54,3 +54,20 @@ fn bounce_of_a_session_with_a_relative_path_starts_in_the_default_folder() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A picked name that already says the format is written as picked: `Mix.aifc` is not turned
+/// into `Mix.aif`, a file the save dialog never asked about.
+#[test]
+fn bounce_keeps_an_extension_that_names_the_format() {
+    use soundcraft_ui_egui::dialogs::bounce_path;
+    for (path, format, written) in [
+        ("/Mixes/Mix.aifc", EncodeFormat::Aiff, "/Mixes/Mix.aifc"),
+        ("/Mixes/Mix.AIFF", EncodeFormat::Aiff, "/Mixes/Mix.AIFF"),
+        ("/Mixes/Mix.bwf", EncodeFormat::Wav, "/Mixes/Mix.bwf"),
+        ("/Mixes/Mix.aifc", EncodeFormat::Flac, "/Mixes/Mix.flac"),
+        ("/Mixes/Mix.wav", EncodeFormat::Aiff, "/Mixes/Mix.aif"),
+        ("/Mixes/Mix", EncodeFormat::Wav, "/Mixes/Mix.wav"),
+    ] {
+        assert_eq!(bounce_path(path, format), PathBuf::from(written), "{path} as {format:?}");
+    }
+}

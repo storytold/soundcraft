@@ -10,7 +10,7 @@ SoundCraft supplies each state's colors, border, radius and icon painter; select
 dispatch remain in the toolbar and track controls. The single-shape frame option preserves the
 existing fill/border blending when controls are disabled. Specialized transport Play/Stop/Record styling,
 nonlinear meters, faders, pan gestures, fonts and the live theme resolver remain local. Shared adapters read the current palette. The UI
-requires Rust 1.95 or later without raising the core workspace's Rust 1.90 declaration.
+requires Rust 1.95 or later, as does the workspace: the craft-libs crates the model and engine use declare it.
 
 ```
 L0  time        midi        video               (standalone: no workspace deps)

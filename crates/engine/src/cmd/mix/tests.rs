@@ -263,6 +263,18 @@ fn retargeting_a_send_keeps_its_settings() {
     assert_eq!((sl.level_db, sl.pan, sl.mute, sl.pre_fader), (-9.0, 0.5, true, true));
 }
 
+#[test]
+fn a_new_send_starts_at_the_documented_level() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"count": 1, "name": "Vox", "format": "mono"})).unwrap();
+    e.execute("mix.new_bus", &json!({"name": "Rev"})).unwrap();
+    e.execute("mix.send", &json!({"track": "Vox", "bus": "Rev"})).unwrap();
+    let level = e.session().tracks[0].mixer.sends[0].as_ref().unwrap().level_db;
+    assert_eq!(level, -144.0);
+    let doc = crate::cmd::command_specs().iter().find(|c| c.id == "mix.send").unwrap().params;
+    assert!(doc.contains("level_db?: -144..12, default -144 (silent;"), "{doc}");
+}
+
 fn grouped_demo() -> Engine {
     let mut e = crate::demo::demo_engine();
     e.execute("mix.volume", &json!({"tracks": [3], "db": 0.0})).unwrap();
@@ -292,6 +304,28 @@ fn volume_absolute_on_a_whole_group_keeps_offsets() {
     e.session_mut().track_mut(TrackId(6)).unwrap().mixer.volume_db = -2.0;
     e.execute("mix.volume", &json!({"tracks": [3, 6], "db": -10.0})).unwrap();
     assert_eq!(volumes(&e), [-10.0, -12.0]);
+}
+
+/// The fader stops at +12 dB; the reply says what each track got, and when a value was held at a stop.
+#[test]
+fn volume_held_at_the_fader_stop_is_reported() {
+    let mut e = grouped_demo();
+    let r = e.execute("mix.volume", &json!({"tracks": [3], "db": -6.0})).unwrap();
+    assert_eq!((r["volumes"].clone(), r["clamped"].clone()), (json!([{"track": 3, "db": -6.0}]), json!(false)));
+    let r = e.execute("mix.volume", &json!({"tracks": [3], "db": 15.0})).unwrap();
+    assert_eq!((r["volumes"].clone(), r["clamped"].clone()), (json!([{"track": 3, "db": 12.0}]), json!(true)));
+    assert_eq!(volumes(&e), [12.0, 12.0]);
+    // A group member held at the stop counts too.
+    let mut e = grouped_demo();
+    e.session_mut().track_mut(TrackId(6)).unwrap().mixer.volume_db = 6.0;
+    let r = e.execute("mix.volume", &json!({"tracks": [3], "db": 10.0})).unwrap();
+    assert_eq!(r["clamped"], json!(true));
+    assert_eq!(volumes(&e), [10.0, 12.0]);
+    // Both grouped targets are listed, each at the value it ended with.
+    let mut e = grouped_demo();
+    e.session_mut().track_mut(TrackId(6)).unwrap().mixer.volume_db = -2.0;
+    let r = e.execute("mix.volume", &json!({"tracks": [3, 6], "db": -10.0})).unwrap();
+    assert_eq!(r["volumes"], json!([{"track": 3, "db": -10.0}, {"track": 6, "db": -12.0}]));
 }
 
 #[test]
