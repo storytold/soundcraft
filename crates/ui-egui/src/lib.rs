@@ -102,6 +102,9 @@ pub struct UiState {
     /// The send in the Send window (track, slot).
     #[serde(skip)]
     pub send_window: Option<(TrackId, usize)>,
+    /// The track in the Output window.
+    #[serde(skip)]
+    pub output_window: Option<TrackId>,
     pub audiosuite: Option<String>,
     pub status: String,
     pub show_automation: bool,
@@ -177,6 +180,7 @@ impl Default for UiState {
             track_tint: 0.5,
             plugin_windows: Vec::new(),
             send_window: None,
+            output_window: None,
             audiosuite: None,
             status: String::new(),
             show_automation: false,
