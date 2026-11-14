@@ -18,7 +18,7 @@
 //! - "Fixture Many Params" (`Fx`): a single-component effect with 1500 automatable parameters
 //!   (ids 0..1500, default 0.5), more than one block's parameter queues hold. Output channel 0 is
 //!   the last value received for the last parameter (-1 before any), channel 1 how many
-//!   different parameters it has received.
+//!   different parameters it has received. MIDI CC 5 drives the last parameter (`IMidiMapping`).
 //! - "Fixture Wide 16x64", "Fixture Wide 32 buses", "Fixture Wide 65 buses", "Fixture Wide 65
 //!   channels" (`Fx`): effects advertising wide layouts (16 buses of 64 channels, 32 and 65 buses
 //!   of 2 channels, one bus of 65 channels per direction), through `getBusInfo` only. `process` writes 1.0 into every channel
@@ -861,7 +861,18 @@ struct ManyParams {
 }
 
 impl Class for ManyParams {
-    type Interfaces = (IComponent, IAudioProcessor, IEditController);
+    type Interfaces = (IComponent, IAudioProcessor, IEditController, IMidiMapping);
+}
+
+impl IMidiMappingTrait for ManyParams {
+    unsafe fn getMidiControllerAssignment(&self, bus: i32, channel: i16, ctrl: CtrlNumber, id: *mut ParamID) -> tresult {
+        if bus == 0 && channel == 0 && ctrl == 5 {
+            unsafe { *id = MANY_PARAMS - 1 };
+            kResultOk
+        } else {
+            kResultFalse
+        }
+    }
 }
 
 impl IPluginBaseTrait for ManyParams {

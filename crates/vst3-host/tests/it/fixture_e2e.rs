@@ -225,6 +225,40 @@ fn values_past_one_blocks_queues_are_sent_in_the_next_block() {
     assert!((io[0][63] - 0.25).abs() < 1e-6);
 }
 
+/// Dense controller input in every block (1024 points for one controller) still leaves room for
+/// waiting values: one controller needs one parameter queue, not one per point.
+#[test]
+fn dense_controller_input_leaves_room_for_waiting_values() {
+    let id = id_of("Fixture Many Params");
+    let mut p = soundcraft_vst3_host::create(&id).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    let mut io = vec![vec![0.0f32; 64], vec![0.0f32; 64]];
+    for _ in 0..3 {
+        for i in 0..1024 {
+            p.midi(i % 64, [0xB0, 5, 64]);
+        }
+        p.process(&mut io, 64);
+    }
+    assert_eq!(io[1][63], 1500.0, "the resend got through next to the controller points");
+}
+
+/// A controller message is newer than a value still waiting for the same parameter, so that
+/// value must not go out in a later block and undo it.
+#[test]
+fn a_waiting_value_does_not_undo_a_newer_controller_message() {
+    let id = id_of("Fixture Many Params");
+    let mut p = soundcraft_vst3_host::create(&id).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    // The last parameter waits behind the resend; CC 5 drives it and comes after.
+    assert!(p.set_param("1499", 1.0));
+    p.midi(0, [0xB0, 5, 32]);
+    let mut io = vec![vec![0.0f32; 64], vec![0.0f32; 64]];
+    p.process(&mut io, 64);
+    p.process(&mut io, 64);
+    assert_eq!(io[1][63], 1500.0);
+    assert!((io[0][63] - 32.0 / 127.0).abs() < 1e-6, "the older waiting value won: {}", io[0][63]);
+}
+
 #[test]
 fn reset_after_all_notes_off_still_releases_held_voices() {
     let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();

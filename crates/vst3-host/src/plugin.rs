@@ -52,6 +52,8 @@ pub struct Vst3Plugin {
     notes: Vec<NoteEvent>,
     /// The parameter each MIDI controller drives (see `Instance::midi_mapping`).
     midi_map: Vec<Option<u32>>,
+    /// Index into `ids` of each `midi_map` parameter (same order as `midi_map`).
+    midi_index: Vec<Option<usize>>,
     /// Controller points for the next block: (time, param id, normalized value). Bounded.
     controls: Vec<(u32, u32, f64)>,
     inputs: BusBuffers,
@@ -102,6 +104,7 @@ impl Vst3Plugin {
             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
             notes: Vec::with_capacity(EVENT_CAP),
             midi_map: Vec::new(),
+            midi_index: Vec::new(),
             controls: Vec::with_capacity(EVENT_CAP),
             inputs: BusBuffers::new(&[], 0),
             outputs: BusBuffers::new(&[], 0),
@@ -292,6 +295,7 @@ impl Plugin for Vst3Plugin {
                 self.latency = self.inst.latency() as usize;
                 self.tail = self.inst.tail() as usize;
                 self.midi_map = self.inst.midi_mapping();
+                self.midi_index = self.midi_map.iter().map(|m| m.and_then(|id| self.ids.iter().position(|&x| x == id))).collect();
             }
             Err(e) => {
                 log::warn!("{}: {e}", self.info.id);
@@ -385,9 +389,10 @@ impl Plugin for Vst3Plugin {
             let k = self.notes.iter().position(|e| e.time() >= end).unwrap_or(self.notes.len());
             let offset = u32::try_from(start).unwrap_or(u32::MAX);
             let notes = self.notes.get(..k).unwrap_or(&[]);
-            // Controller points may each need a parameter queue of their own; values that do not
-            // fit next to them wait for the next sub-block.
-            let room = PARAM_QUEUE_CAP.saturating_sub(self.controls.len());
+            // Controller points need a parameter queue per parameter they drive, and they drive
+            // at most one per mapped controller; values that do not fit next to them wait for the
+            // next sub-block.
+            let room = PARAM_QUEUE_CAP.saturating_sub(self.controls.len().min(self.midi_map.len()));
             if self.queued_count > 0 {
                 self.queued_count -= take_batch(&mut self.queued, &self.ids, &mut self.batch, room);
             } else {
@@ -469,6 +474,13 @@ impl Plugin for Vst3Plugin {
             && self.controls.len() < self.controls.capacity()
         {
             self.controls.push((time, id, value));
+            // A value still waiting for this parameter is older than the controller: sent in a
+            // later block, it would undo it.
+            if let Some(q) = self.midi_index.get(ctrl).copied().flatten().and_then(|i| self.queued.get_mut(i))
+                && q.take().is_some()
+            {
+                self.queued_count -= 1;
+            }
         }
     }
 
