@@ -73,7 +73,7 @@ eframe = { version = "0.37", default-features = false }
 # Monotonic clock on native and the browser (the `web_time::Instant` panics-free equivalent).
 web-time = "1.1"
 egui_kittest = "0.37"
-rfd = "0.17"
+rfd = "0.18"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [workspace.lints.rust]
