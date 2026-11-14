@@ -1,5 +1,5 @@
 use super::render::sanitize_name;
-use super::session::decode_source;
+use super::session::{decode_source, decode_source_with_budget};
 use super::{Arc, Engine, EngineError, OsStr, Path, Result, Session, SourceAudio, read_bundle, session_limit, write_file};
 
 // ─── Hosts without a filesystem (the browser) ─────────────────────────────────────────────────
@@ -18,12 +18,42 @@ pub(super) struct BundleLimits {
 }
 
 const BUNDLE_LIMITS: BundleLimits = BundleLimits { entries: 10_000, bytes: 1 << 30 };
+const PROVIDER_BUNDLE_LIMITS: BundleLimits = BundleLimits { entries: 10_000, bytes: 80 * 1024 * 1024 };
+// The provider writer stores float32 samples without compression. Limit the reader's
+// aggregate resident samples to the same byte budget, including rate conversion.
+const PROVIDER_AUDIO_SAMPLES: usize = (PROVIDER_BUNDLE_LIMITS.bytes as usize) / size_of::<f32>();
 
 /// The session as a bundle: `<name>.scraft` plus every source's audio as 32-bit float WAV under
 /// `Audio Files/` (stored, not compressed: audio barely compresses). Returns the bytes and the
 /// session with its source paths pointing into the bundle.
 pub fn session_bundle(session: &Session) -> Result<(Vec<u8>, Session)> {
     session_bundle_within(session, BUNDLE_LIMITS)
+}
+
+/// Lossless provider capture: all browser-playable source audio must be resident.
+/// Video references cannot be restored by the web shell and are rejected before claiming a save.
+pub fn session_provider_bundle(session: &Session) -> Result<Vec<u8>> {
+    let limits = PROVIDER_BUNDLE_LIMITS;
+    if session.sources.len().saturating_add(1) > limits.entries {
+        return Err(EngineError::Io("Too many provider audio sources".into()));
+    }
+    if !session.videos.is_empty() {
+        return Err(EngineError::Io("Provider save cannot package video references on this host".into()));
+    }
+    let mut estimate = session.to_json().map_err(|e| EngineError::Io(e.to_string()))?.len() as u64;
+    for source in &session.sources {
+        let audio = session.pool.get(source.id).ok_or_else(|| EngineError::Io(format!("Provider save is missing audio {}", source.name)))?;
+        let values = audio.buffer.channels.iter().fold(0u64, |n, c| n.saturating_add(c.len() as u64));
+        estimate = estimate.saturating_add(values.saturating_mul(4)).saturating_add(512);
+        if estimate > limits.bytes {
+            return Err(EngineError::Io("Project and audio exceed the 80 MiB provider limit".into()));
+        }
+    }
+    let (bytes, _) = session_bundle_within(session, limits)?;
+    if bytes.len() as u64 > limits.bytes {
+        return Err(EngineError::Io("Provider bundle exceeds 80 MiB".into()));
+    }
+    Ok(bytes)
 }
 
 /// [`session_bundle`], refused when it would hold more than `limits` allows.
@@ -53,8 +83,26 @@ pub(super) fn save_session_bundle(e: &mut Engine, path: &str) -> Result<usize> {
 /// `.scraft`, whose audio is then reported missing. Returns the missing media, like
 /// [`open_session`].
 pub fn open_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Vec<String>> {
+    open_session_bytes_within(e, name, bytes, BUNDLE_LIMITS, None)
+}
+
+/// Bounded provider read, rejected before replacing the session if media is missing.
+pub fn open_provider_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Vec<String>> {
+    if bytes.len() as u64 > PROVIDER_BUNDLE_LIMITS.bytes {
+        return Err(EngineError::Io("Provider bundle exceeds 80 MiB".into()));
+    }
+    open_session_bytes_within(e, name, bytes, PROVIDER_BUNDLE_LIMITS, Some(PROVIDER_AUDIO_SAMPLES))
+}
+
+fn open_session_bytes_within(
+    e: &mut Engine,
+    name: &str,
+    bytes: &[u8],
+    limits: BundleLimits,
+    mut remaining_audio: Option<usize>,
+) -> Result<Vec<String>> {
     let (text, mut files) = if bytes.starts_with(b"PK\x03\x04") {
-        read_bundle(bytes, BUNDLE_LIMITS)?
+        read_bundle(bytes, limits)?
     } else {
         (super::session_bytes_text(name, bytes)?, std::collections::HashMap::new())
     };
@@ -70,6 +118,13 @@ pub fn open_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Ve
             continue;
         }
         let audio = match files.remove(&src.path) {
+            Some(bytes) if let Some(remaining) = remaining_audio.as_mut() => {
+                let ext = Path::new(&src.path).extension().and_then(OsStr::to_str);
+                Some(
+                    decode_source_with_budget(&bytes, ext, s.sample_rate.hz(), PROVIDER_AUDIO_SAMPLES, remaining)
+                        .map_err(|err| EngineError::Io(format!("{}: {err}", src.path)))?,
+                )
+            }
             Some(bytes) => match decode_source(&bytes, Path::new(&src.path).extension().and_then(OsStr::to_str), s.sample_rate.hz()) {
                 Ok(audio) => Some(audio),
                 Err(err) => {
@@ -89,6 +144,9 @@ pub fn open_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Ve
     }
     // Movies are referenced by path, never copied into a session: none can be found here.
     missing.extend(s.videos.iter().map(|v| v.path.clone()));
+    if remaining_audio.is_some() && !missing.is_empty() {
+        return Err(EngineError::Io(format!("Provider bundle has {} missing or undecodable media resources", missing.len())));
+    }
     let stem = Path::new(name).file_stem().and_then(OsStr::to_str).filter(|x| !x.is_empty()).unwrap_or("Untitled").to_string();
     e.replace_session(s);
     e.path = Some(format!("{}.{BUNDLE_EXTENSION}", sanitize_name(&stem)));
@@ -298,5 +356,56 @@ mod bundle_tests {
         write_file(&p.to_string_lossy(), b"hello").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"hello");
         let _ = std::fs::remove_file(&p);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod provider_tests {
+    use super::*;
+    #[test]
+    fn provider_audio_round_trip_is_complete_and_missing_audio_does_not_replace() {
+        let source = crate::demo::demo_engine();
+        let bytes = session_provider_bundle(source.session()).unwrap();
+        let mut opened = Engine::default();
+        assert!(open_provider_session_bytes(&mut opened, "Song.scraftz", &bytes).unwrap().is_empty());
+        assert_eq!(opened.session().sources.len(), source.session().sources.len());
+        for src in &source.session().sources {
+            assert_eq!(opened.session().pool.get(src.id).unwrap().buffer.channels, source.session().pool.get(src.id).unwrap().buffer.channels);
+        }
+        let before = opened.session_arc();
+        assert!(open_provider_session_bytes(&mut opened, "Missing.scraft", source.session().to_json().unwrap().as_bytes()).is_err());
+        assert!(Arc::ptr_eq(&before, &opened.session_arc()), "invalid project must not replace the open session");
+    }
+    #[test]
+    fn provider_audio_budget_applies_to_the_whole_session() {
+        let source = crate::demo::demo_engine();
+        let (bytes, fresh) = session_bundle(source.session()).unwrap();
+        let total: usize = fresh
+            .sources
+            .iter()
+            .map(|src| {
+                let audio = fresh.pool.get(src.id).unwrap();
+                audio.buffer.channels.iter().map(Vec::len).sum::<usize>()
+            })
+            .sum();
+        let mut target = Engine::default();
+        let previous = target.session_arc();
+        let err = open_session_bytes_within(&mut target, "Song.scraftz", &bytes, PROVIDER_BUNDLE_LIMITS, Some(total - 1)).unwrap_err().to_string();
+        assert!(err.contains("decoded sample budget"), "{err}");
+        assert!(Arc::ptr_eq(&previous, &target.session_arc()));
+        assert!(open_session_bytes_within(&mut target, "Song.scraftz", &bytes, PROVIDER_BUNDLE_LIMITS, Some(total)).is_ok());
+    }
+
+    #[test]
+    fn saved_snapshot_ack_does_not_clean_later_edits() {
+        let mut engine = crate::demo::demo_engine();
+        let saved = engine.session_arc();
+        engine.session_mut().name = "Later edit".into();
+        engine.acknowledge_external_save(saved);
+        assert!(engine.is_dirty());
+        let current = engine.session_arc();
+        engine.acknowledge_external_save(current);
+        assert!(!engine.is_dirty());
     }
 }
