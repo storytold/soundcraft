@@ -226,14 +226,16 @@ pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &st
     resp.on_hover_text(labels.tooltip)
 }
 
-/// Rotary knob for pan / send pan (-1..1). Drag vertically; double-click resets.
+/// Rotary knob for pan / send pan (-1..1). Drag vertically; double-click resets. While Ctrl
+/// (Command on a Mac) is held, a drag turns it a tenth as far, as on a [`fader`].
 pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response {
     let t = Tokens::current();
     let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
     resp.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(*value), tip));
     if resp.dragged() {
         let d = resp.drag_delta();
-        *value = (*value + (d.x - d.y) * 0.01).clamp(-1.0, 1.0);
+        let fine = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
+        *value = (*value + (d.x - d.y) * if fine { 0.001 } else { 0.01 }).clamp(-1.0, 1.0);
     }
     if resp.double_clicked() {
         *value = 0.0;
@@ -441,10 +443,11 @@ struct FineDrag {
 }
 
 /// A horizontal slider that moves a tenth as far for the same drag while Ctrl (Command on a Mac)
-/// is held, as a [`fader`] does, on the rail and on the value box. Pressing or releasing the key
-/// during a drag on the rail or the value box leaves the value where it is, and the drag goes on
-/// from there. The value box shows the decimal places that a tenth of a point's step needs, and a
-/// drag on the rail that the key has touched rounds the value to them.
+/// is held, as a [`fader`] does, on the rail and on the value box. A press on the rail with the
+/// key held, and pressing or releasing the key during a drag on the rail or the value box, leave
+/// the value where it is, and the drag goes on from there. The value box shows the decimal places
+/// that a tenth of a point's step needs, and a drag on the rail that the key has touched rounds
+/// the value to them.
 pub fn fine_slider(ui: &mut Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: &str) -> Response {
     FineSlider::new(value, range).text(text).show(ui)
 }
@@ -459,11 +462,18 @@ pub struct FineSlider<'a> {
     logarithmic: bool,
     integer: bool,
     default: Option<f64>,
+    suffix: &'a str,
 }
 
 impl<'a> FineSlider<'a> {
     pub fn new(value: &'a mut f64, range: std::ops::RangeInclusive<f64>) -> Self {
-        Self { value, range, text: "", id_salt: None, show_value: true, logarithmic: false, integer: false, default: None }
+        Self { value, range, text: "", id_salt: None, show_value: true, logarithmic: false, integer: false, default: None, suffix: "" }
+    }
+
+    /// Text after the number in the value box, as `egui::Slider::suffix`.
+    pub fn suffix(mut self, suffix: &'a str) -> Self {
+        self.suffix = suffix;
+        self
     }
 
     /// The value that an Alt-click (Option-click on a Mac) on the slider or its value box sets,
@@ -508,7 +518,7 @@ impl<'a> FineSlider<'a> {
     }
 
     pub fn show(self, ui: &mut Ui) -> Response {
-        let Self { value, range, text, id_salt, show_value, logarithmic, integer, default } = self;
+        let Self { value, range, text, id_salt, show_value, logarithmic, integer, default, suffix } = self;
         let id = ui.scope_id().with(("fine_slider", id_salt.unwrap_or(text)));
         let before = *value;
         let (fine, x) = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.pointer.interact_pos().map(|p| p.x)));
@@ -543,6 +553,7 @@ impl<'a> FineSlider<'a> {
                 *value = moved.clamp(lo, hi);
             }
         }
+        let start = *value;
         let hold = reset || drag.is_some_and(|d| d.relative);
         let speed = per_point(*value) * scale;
         let mut slider = egui::Slider::from_get_set(range, |v| {
@@ -556,6 +567,7 @@ impl<'a> FineSlider<'a> {
         .show_value(show_value)
         .logarithmic(log)
         .min_decimals(decimals)
+        .suffix(suffix)
         .text(text);
         if integer {
             slider = slider.integer();
@@ -582,6 +594,11 @@ impl<'a> FineSlider<'a> {
         }
         let rail = Rect::from_min_size(resp.rect.min, vec2(ui.spacing().slider_width, resp.rect.height()));
         let on_rail = resp.dragged() && ui.input(|i| i.pointer.press_origin()).is_some_and(|p| rail.contains(p));
+        // On the pass that starts a drag, egui has already set the value under the pointer. A drag
+        // that starts with the key held keeps the value from before the press instead.
+        if on_rail && drag.is_none() && fine {
+            *value = start;
+        }
         let next = match (on_rail, drag, x) {
             (true, Some(d), _) => Some(FineDrag { pass, ..d }),
             (true, None, Some(x)) => Some(FineDrag { x, value: *value, fine, relative: fine, pass }),

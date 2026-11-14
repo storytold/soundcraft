@@ -78,6 +78,8 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                                         }
                                     });
                                 x = idx as f32;
+                                // An Alt-click (Option-click on a Mac) returns the choice to its
+                                // default, as on the sliders, instead of opening the list.
                                 if r.response.clicked() && ui.input(|i| i.modifiers.alt) {
                                     x = p.default;
                                     egui::Popup::close_all(ui.ctx());

@@ -799,13 +799,17 @@ pub fn clip_effects(app: &mut SoundApp, ctx: &egui::Context) {
                             .show(col);
                         v = wide as f32;
                         if (v - before).abs() > f32::EPSILON {
+                            let gesture = format!("cfx:{}:{key}", cid.0);
+                            // An Alt-click that resets the value is its own undo step, even
+                            // right after typing in the value box, which keeps the merge open.
+                            // During an automation pass the merge holds the pass's key, and the
+                            // reset joins the pass's undo step.
+                            if col.input(|i| i.modifiers.alt && i.pointer.any_released()) && app.engine.merge_key() == Some(gesture.as_str()) {
+                                app.engine.end_merge();
+                            }
                             let mut m = serde_json::Map::new();
                             m.insert(key.clone(), json!(v));
-                            let _ = app.engine.execute_merged(
-                                "clip.effects_set",
-                                &json!({"clips": [cid.0], "params": m}),
-                                &format!("cfx:{}:{key}", cid.0),
-                            );
+                            let _ = app.engine.execute_merged("clip.effects_set", &json!({"clips": [cid.0], "params": m}), &gesture);
                         }
                     }
                 }
@@ -816,8 +820,12 @@ pub fn clip_effects(app: &mut SoundApp, ctx: &egui::Context) {
             crate::widgets::FineSlider::new(&mut wide, -36.0..=24.0).text("Clip effects gain (dB)").default_value(0.0).show(ui);
             g = wide as f32;
             if (g - before).abs() > f32::EPSILON {
-                let _ =
-                    app.engine.execute_merged("clip.effects_set", &json!({"clips": [cid.0], "params": {"gain": g}}), &format!("cfx:{}:gain", cid.0));
+                let gesture = format!("cfx:{}:gain", cid.0);
+                // An Alt-click that resets the gain is its own undo step, as on the parameters above.
+                if ui.input(|i| i.modifiers.alt && i.pointer.any_released()) && app.engine.merge_key() == Some(gesture.as_str()) {
+                    app.engine.end_merge();
+                }
+                let _ = app.engine.execute_merged("clip.effects_set", &json!({"clips": [cid.0], "params": {"gain": g}}), &gesture);
             }
         });
     });
