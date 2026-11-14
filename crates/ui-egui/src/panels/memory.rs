@@ -1,8 +1,9 @@
 use super::{SoundApp, Ui, json, mono};
+use crate::i18n::tr;
 
 /// One recallable memory-location row: number button, editable name, time, length, kind and delete.
 fn memory_location_row(app: &mut SoundApp, ui: &mut Ui, n: u32, name: &str, loc: &str, len: &str, kind: &str) {
-    if ui.button(n.to_string()).on_hover_text("Recall").clicked() {
+    if ui.button(n.to_string()).on_hover_text(tr("Recall")).clicked() {
         let _ = app.run("markers.recall", json!({"number": n}));
     }
     let key = egui::Id::unique(("mem_name", n));
@@ -26,10 +27,10 @@ fn memory_location_row(app: &mut SoundApp, ui: &mut Ui, n: u32, name: &str, loc:
 
 pub(crate) fn memory_locations(app: &mut SoundApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
-        if ui.button("+ Marker").clicked() {
+        if ui.button(tr("+ Marker")).clicked() {
             let _ = app.run("markers.add", json!({}));
         }
-        if ui.button("+ Selection").clicked() {
+        if ui.button(tr("+ Selection")).clicked() {
             let _ = app.run("markers.add", json!({"kind": "selection"}));
         }
     });
@@ -40,9 +41,9 @@ pub(crate) fn memory_locations(app: &mut SoundApp, ui: &mut Ui) {
             .iter()
             .map(|m| {
                 let kind = match m.kind {
-                    soundcraft_model::MarkerKind::Marker => "marker",
-                    soundcraft_model::MarkerKind::Selection => "selection",
-                    soundcraft_model::MarkerKind::None => "none",
+                    soundcraft_model::MarkerKind::Marker => tr("marker"),
+                    soundcraft_model::MarkerKind::Selection => tr("selection"),
+                    soundcraft_model::MarkerKind::None => tr("none"),
                 };
                 let len = if m.kind == soundcraft_model::MarkerKind::Selection { f(m.end - m.start) } else { String::new() };
                 (m.number, m.name.clone(), f(m.start), len, kind.to_string())
@@ -52,7 +53,7 @@ pub(crate) fn memory_locations(app: &mut SoundApp, ui: &mut Ui) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         egui::Grid::new("mem_grid").striped(true).num_columns(6).show(ui, |ui| {
             for h in ["#", "Name", "Location", "Length", "Type", ""] {
-                ui.label(egui::RichText::new(h).strong());
+                ui.label(egui::RichText::new(tr(h)).strong());
             }
             ui.end_row();
             for (n, name, loc, len, kind) in &rows {

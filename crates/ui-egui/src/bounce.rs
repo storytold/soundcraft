@@ -2,13 +2,14 @@
 //! bounce can be cancelled.
 
 use crate::SoundApp;
+use crate::i18n::{tr, trf};
 use crate::theme::{Tokens, bold};
 use serde_json::Value;
 
 /// Starts the bounce `file.bounce_mix` runs for `params`; [`step`] renders it.
 pub fn start(app: &mut SoundApp, params: &Value) {
     if app.bounce.is_some() {
-        app.ui.status = "A bounce is already running".into();
+        app.ui.status = tr("A bounce is already running").into();
         return;
     }
     // Third-party plugins keep state the session can't see: store it first.
@@ -29,7 +30,8 @@ pub fn step(app: &mut SoundApp, ctx: &egui::Context) {
             return;
         }
         Ok(Some(done)) => {
-            format!("Bounced {} (peak {:.1} dBFS, {:.1} LUFS)", job.path().file_name().unwrap_or_default().to_string_lossy(), done.peak_db, done.lufs)
+            let name = job.path().file_name().unwrap_or_default().to_string_lossy().into_owned();
+            trf("Bounced {} (peak {} dBFS, {} LUFS)", &[&name, &format!("{:.1}", done.peak_db), &format!("{:.1}", done.lufs)])
         }
         Err(e) => e.to_string(),
     };
@@ -40,7 +42,7 @@ pub fn step(app: &mut SoundApp, ctx: &egui::Context) {
 /// out of memory. True when refused; the status line says why.
 pub fn refuses_session_switch(app: &mut SoundApp) -> bool {
     if app.bounce.is_some() {
-        app.ui.status = "Finish or cancel the bounce first".into();
+        app.ui.status = tr("Finish or cancel the bounce first").into();
     }
     app.bounce.is_some()
 }
@@ -70,15 +72,15 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
         ui.set_width(320.0);
         let name = job.path().file_name().unwrap_or_default().to_string_lossy();
-        ui.label(egui::RichText::new(format!("Bouncing {name}")).font(bold(13.0)));
+        ui.label(egui::RichText::new(trf("Bouncing {}", &[&name])).font(bold(13.0)));
         ui.add(egui::ProgressBar::new(job.progress()));
         ui.horizontal(|ui| {
-            cancel |= ui.button("Cancel").clicked();
+            cancel |= ui.button(tr("Cancel")).clicked();
             ui.label(egui::RichText::new(format!("{:.0}%", job.progress() * 100.0)).color(Tokens::current().text_dim));
         });
     });
     if cancel {
         app.bounce = None;
-        app.ui.status = "Bounce cancelled".into();
+        app.ui.status = tr("Bounce cancelled").into();
     }
 }
