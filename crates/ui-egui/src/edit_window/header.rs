@@ -1,7 +1,8 @@
+use super::layout::STRIP_W;
 use super::tracks::{click_track, folder_depth, height_targets, in_edit_window, track_context_menu, view_label, view_menu};
 use super::{
-    Align2, AutoParam, Color32, Pos2, Rect, Sense, Shape, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold, groove, json,
-    level_pos, meter_pos, pos2, raised_key, regular, rgb, shade, vec2,
+    Align2, AutoParam, Color32, Gesture, Pos2, Rect, Sense, Shape, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold,
+    groove, json, level_pos, meter_pos, pos2, raised_key, regular, rgb, shade, vec2,
 };
 
 /// Draw one track header: resize edge, selection and context menu, folder/options control, automation-lane toggle,
@@ -14,6 +15,7 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
         click_track(app, id, ui.input(|i| i.modifiers), in_edit_window);
     }
     bg.context_menu(|ui| track_context_menu(app, ui, id));
+    color_strip(app, ui, id, head);
     resize_edge(app, ui, track, head);
     strip_buttons(app, ui, track, head);
     name_plate(app, ui, track, head, selected);
@@ -24,6 +26,28 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
     field_row(app, ui, track, head, head_bg);
     let md = app.meters.get(&id).copied().unwrap_or_default();
     header_meter(ui, Rect::from_min_max(pos2(head.max.x - 8.0, head.min.y + 1.0), pos2(head.max.x, head.max.y - 1.5)), &md, track.channels() >= 2);
+}
+
+/// The colour strip: a click selects the track as the header does, a double click opens the Color
+/// Palette for the selected tracks. A plain click on a track that is already selected keeps the
+/// selection, so double-clicking one of several selected tracks colours them all. Registered after
+/// the header background, so it sits on top of it, and before the strip's own buttons and the
+/// resize edge, which stay on top of it.
+fn color_strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, head: Rect) {
+    let strip = Rect::from_min_size(head.min, vec2(STRIP_W, head.height()));
+    let resp = ui.interact(strip, ui.scope_id().with(("color_strip", id.0)), Sense::click());
+    let mods = ui.input(|i| i.modifiers);
+    let selected = app.engine.session().edit.selected_tracks.contains(&id);
+    if resp.double_clicked() {
+        // A Cmd click toggles, so a Cmd double click's first click deselected the track: add it back.
+        if !selected {
+            click_track(app, id, mods, in_edit_window);
+        }
+        app.ui.show_color_palette = true;
+    } else if resp.clicked() && !(selected && mods.is_none()) {
+        click_track(app, id, mods, in_edit_window);
+    }
+    resp.context_menu(|ui| track_context_menu(app, ui, id));
 }
 
 /// Drag the bottom edge of the header to resize the track (snaps to the height presets).
@@ -365,12 +389,18 @@ fn field_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, head_bg
                 ui.painter().line_segment([c + vec2(0.0, -3.5), c + vec2(0.0, 1.0)], Stroke::new(1.0, t.text));
                 ui.painter().add(Shape::convex_polygon(vec![c + vec2(0.0, 0.5), c + vec2(3.0, 3.5), c + vec2(-3.0, 3.5)], t.text, Stroke::NONE));
                 if let Some(alg) = &track.elastic {
-                    ui.painter().with_clip_rect(field).text(pos2(field.min.x + 14.0, field.center().y), Align2::LEFT_CENTER, alg, bold(10.0), t.text);
+                    ui.painter().with_clip_rect(field).text(
+                        pos2(field.min.x + 14.0, field.center().y),
+                        Align2::LEFT_CENTER,
+                        soundcraft_engine::feature_names::display_label(alg),
+                        bold(10.0),
+                        t.text,
+                    );
                 }
                 egui::Popup::menu(&resp.on_hover_text("Elastic Audio")).show(|ui| {
                     for alg in ["none", "polyphonic", "rhythmic", "monophonic", "varispeed", "x-form"] {
                         let current = track.elastic.as_deref().unwrap_or("none") == alg;
-                        if ui.selectable_label(current, alg).clicked() {
+                        if ui.selectable_label(current, soundcraft_engine::feature_names::display_label(alg)).clicked() {
                             let _ = app.run("track.elastic", json!({"tracks": [id.0], "algorithm": alg}));
                         }
                     }
@@ -520,7 +550,7 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
     ui.painter().rect_filled(r, 0.0, t.slot_well);
     let ui = column_ui(ui, "io", r);
     let row = |y: f32, h: f32| (r.height() >= y + h + 1.0).then_some(Rect::from_min_size(r.min + vec2(7.0, y), vec2(r.width() - 14.0, h)));
-    if let Some(input) = row(4.0, 15.0) {
+    if let Some(input) = row(4.0, 15.0).filter(|_| crate::mix_window::has_input_selector(track.kind)) {
         let input_name = crate::mix_window::input_name(app, track);
         let resp = header_selector(&ui, input, ui.scope_id().with(("in", id.0)), &input_name, t.text, true, &format!("Input for {}", track.name));
         crate::mix_window::route_popup(app, &resp.on_hover_text("Input"), id, true);
@@ -554,11 +584,143 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
         let pan = m.pan.first().map_or("-".into(), |p| crate::widgets::pan_text(*p));
         // The readout is black in both themes, so it takes the dark palette's green.
         let ink = Tokens::DARK.counter_text;
-        for (y, label, value) in [(7.5, "vol", crate::widgets::db_text(m.volume_db)), (22.0, "pan", pan)] {
+        // The two rows are buttons: a click opens a fader or pan sliders, an Alt-click resets.
+        // The Mix window's strip has no stereo pan for a VCA or for a track on a multichannel output (it shows a surround panner), so the pan stays text.
+        // ponytail: surround-panned tracks are placed in the Mix window. Upgrade: `widgets::surround_panner` in the pan popup.
+        let pannable = !m.pan.is_empty() && track.kind != TrackKind::Vca && !crate::mix_window::surround_panned(app, track);
+        let vol_row = Rect::from_x_y_ranges(vr.x_range(), vr.min.y + 1.5..=vr.min.y + 14.0).shrink2(vec2(1.5, 0.0));
+        let pan_row = Rect::from_x_y_ranges(vr.x_range(), vr.min.y + 15.0..=vr.max.y - 1.5).shrink2(vec2(1.5, 0.0));
+        let vol_text = crate::widgets::db_text(m.volume_db);
+        let vol = readout_button(
+            &ui,
+            vol_row,
+            ui.scope_id().with(("vol", id.0)),
+            &format!("{} volume", track.name),
+            &vol_text,
+            "Volume: click for a fader, Alt-click for 0 dB",
+        );
+        let pan_resp = pannable.then(|| {
+            readout_button(
+                &ui,
+                pan_row,
+                ui.scope_id().with(("pan", id.0)),
+                &format!("{} pan", track.name),
+                &pan,
+                "Pan: click for sliders, Alt-click to reset",
+            )
+        });
+        let alt = ui.input(|i| i.modifiers.alt);
+        if vol.clicked() && alt && m.volume_db.abs() > f32::EPSILON {
+            // Merged, so a reset during an automation pass joins the pass's undo step; the merge ends by itself on the next frame.
+            let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": 0.0}), &format!("fader:{}", id.0));
+        }
+        if let Some(resp) = &pan_resp
+            && resp.clicked()
+            && alt
+        {
+            reset_pan(app, track);
+        }
+        for (y, label, value) in [(7.5, "vol", vol_text), (22.0, "pan", pan)] {
             ui.painter().text(pos2(vr.min.x + 7.0, vr.min.y + y), Align2::LEFT_CENTER, label, bold(10.0), ink);
             ui.painter().text(pos2(vr.max.x - 6.5, vr.min.y + y), Align2::RIGHT_CENTER, value, bold(10.0), ink);
         }
         ui.painter().hline(vr.min.x + 7.0..=vr.max.x - 6.0, vr.min.y + 14.5, Stroke::new(1.0, Color32::from_gray(35)));
+        readout_popup(&vol, !alt).show(|ui| volume_fader(app, ui, track));
+        if let Some(resp) = &pan_resp {
+            readout_popup(resp, !alt).show(|ui| pan_sliders(app, ui, track));
+        }
+    }
+}
+
+/// A readout row of the I/O column as a button, named `name` (the track's, so two tracks showing the same value differ) and its value. It lights up under the pointer, with the keyboard focus or while its popup is open,
+/// and paints nothing otherwise, so an untouched column looks the same as before.
+fn readout_button(ui: &Ui, r: Rect, id: egui::Id, name: &str, value: &str, tip: &str) -> egui::Response {
+    let resp = ui.interact(r, id, Sense::click()).on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{name} {value}")));
+    if resp.hovered() || resp.has_focus() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp)) {
+        ui.painter().rect_filled(r, 1.5, Color32::from_gray(38));
+    }
+    resp
+}
+
+/// The popup of a readout button, to its right so it doesn't hide the tracks below. An Alt-click
+/// resets instead of opening (`toggle` false). Clicks inside it keep it open; Escape or a click outside closes it.
+fn readout_popup(resp: &egui::Response, toggle: bool) -> egui::Popup<'static> {
+    egui::Popup::from_response(resp)
+        .open_memory((toggle && resp.clicked()).then_some(egui::SetOpenCommand::Toggle))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .align(egui::RectAlign::RIGHT_START)
+        .gap(2.0)
+}
+
+/// What a panner returns to: centre on a mono track, hard left or right on a stereo one, as on a new track.
+fn default_pan(track: &Track, index: usize) -> f32 {
+    soundcraft_model::Mixer::new(track.format).pan.get(index).copied().unwrap_or(0.0)
+}
+
+/// Put every panner of the track (L and R on a stereo one) back to its default, as one undo step. The merge ends by itself on the next frame.
+fn reset_pan(app: &mut SoundApp, track: &Track) {
+    let key = format!("pan-reset:{}", track.id.0);
+    for (i, now) in track.mixer.pan.iter().enumerate().take(2) {
+        let to = default_pan(track, i);
+        // Only a real change may start the merged step: a no-op first call would leave the next one folded into an older edit.
+        if (now - to).abs() > f32::EPSILON {
+            let _ = app.engine.execute_merged("mix.pan", &json!({"track": track.id.0, "pan": to, "index": i}), &key);
+        }
+    }
+}
+
+/// The volume popup: a fader like the Mix window's, over a readout that takes a typed value.
+/// A drag is one undo step and goes through [`Gesture::Fader`], so Touch and Latch automation write it.
+fn volume_fader(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
+    let t = Tokens::current();
+    let id = track.id;
+    let db = track.mixer.volume_db;
+    let key = format!("fader:{}", id.0);
+    let (well, _) = ui.allocate_exact_size(vec2(56.0, 16.0), Sense::hover());
+    crate::widgets::inset(ui.painter(), well, t.counter_bg);
+    let readout_id = ui.scope_id().with(("io-vol", id.0));
+    let (_, typed) = crate::mix_window::editable_readout(
+        ui,
+        well,
+        readout_id,
+        crate::mix_window::Readout {
+            name: &format!("{} volume", track.name),
+            display: &crate::widgets::db_text(db),
+            edit_initial: &format!("{db:.1}"),
+            parse: crate::mix_window::parse_db,
+            reset: 0.0,
+        },
+    );
+    if let Some(db) = typed {
+        let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": db}), &key);
+    }
+    ui.add_space(4.0);
+    // ponytail: the fader is drawn, not focusable, so the keyboard sets the volume in the readout above it. Upgrade: arrow keys in `widgets::fader`.
+    let (slot, _) = ui.allocate_exact_size(vec2(56.0, 170.0), Sense::hover());
+    if let Some(moved) = crate::widgets::fader(ui, slot, db, ui.scope_id().with(("io-fader", id.0)), &format!("{} level", track.name)) {
+        app.gesture = Some(Gesture::Fader { track: id, start_db: db });
+        let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": moved}), &key);
+    }
+}
+
+/// The pan popup: one slider, or L and R on a stereo track. A drag is one undo step per panner.
+fn pan_sliders(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
+    ui.spacing_mut().slider_width = 120.0;
+    let stereo = track.mixer.pan.len() > 1;
+    for (i, side) in ["L", "R"].into_iter().enumerate().take(track.mixer.pan.len()) {
+        let before = track.mixer.pan.get(i).copied().unwrap_or(0.0);
+        let mut pan = before;
+        // ponytail: no double-click reset on the sliders; the readout's Alt-click resets every panner at once.
+        // No step either: a slider rounds to it when drawn, which would rewrite a pan off the grid just by opening the popup.
+        let slider = egui::Slider::new(&mut pan, -1.0..=1.0)
+            .text(if stereo { side } else { "Pan" })
+            .custom_formatter(|v, _| crate::widgets::pan_text(v as f32))
+            .custom_parser(|s| crate::mix_window::parse_pan(s).map(f64::from));
+        ui.add(slider);
+        if (pan - before).abs() > f32::EPSILON {
+            let _ = app.engine.execute_merged("mix.pan", &json!({"track": track.id.0, "pan": pan, "index": i}), &format!("pan:{}:{i}", track.id.0));
+        }
     }
 }
 

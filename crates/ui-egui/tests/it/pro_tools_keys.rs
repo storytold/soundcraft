@@ -1,5 +1,5 @@
 //! Pro Tools keys for commands that had none: Grid and Nudge values, Commands Focus nudging and selection
-//! keys, playlists, F12, Ctrl+Tab off macOS and the window keys.
+//! keys, playlists, F12, Ctrl+Tab off macOS, the window keys and the Cmd+6/7 tool keys.
 
 use egui::os::OperatingSystem;
 use egui::{Event, Key, Modifiers, Pos2, RawInput, Rect, vec2};
@@ -297,5 +297,21 @@ fn shift_tab_extends_the_selection_and_tab_to_transient_stops_on_hits() {
         assert!(hit > clip.start + 480 && hit < clip.end, "{os:?}: {hit}");
         press(&ctx, &mut app, Key::Tab, if os == OperatingSystem::Mac { Modifiers::ALT } else { cmd });
         assert_eq!(start(&app), clip.start, "{os:?}");
+    }
+}
+
+#[test]
+fn cmd_6_and_7_choose_the_pencil_and_the_smart_tool() {
+    for (os, cmd) in OSES {
+        let (ctx, mut app) = rig(os);
+        app.run("edit.tool", json!({"tool": "grabber"})).unwrap();
+        press(&ctx, &mut app, Key::Num6, cmd);
+        assert_eq!(app.engine.session().edit.tool.id(), "pencil", "{os:?}");
+        if os == OperatingSystem::Mac {
+            press(&ctx, &mut app, Key::Num7, Modifiers::CTRL);
+            assert_eq!(app.engine.session().edit.tool.id(), "pencil", "the Mac's Control+7 is not Cmd+7");
+        }
+        press(&ctx, &mut app, Key::Num7, cmd);
+        assert_eq!(app.engine.session().edit.tool.id(), "smart", "{os:?}");
     }
 }
