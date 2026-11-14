@@ -12,8 +12,35 @@ pub(super) const MAX_MIDI_TRACKS: usize = 512;
 /// The file is checked in full before the session changes, so a refused file (too many tempo or
 /// meter changes or tracks, a track longer than a day) leaves the session as it was: callers that
 /// keep their own undo step, like the web shell, never see a half-applied import.
+///
+/// A sound file is read strictly. A damaged one is read leniently, as other MIDI readers do: with
+/// stray bytes after the last track (#1528), a track length its End of Track contradicts or a
+/// track cut short, what can be read is imported and what could not is logged. A file past the
+/// reader's event or track limit is still refused, also when other damage comes first: read
+/// leniently it would lose the rest without saying so. Something that is not a Standard MIDI File
+/// is refused.
 pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: bool) -> Result<Vec<TrackId>> {
-    let smf = soundcraft_midi::read_smf(bytes).map_err(|err| EngineError::Io(err.to_string()))?;
+    let smf = match soundcraft_midi::read_smf(bytes) {
+        Ok(smf) => smf,
+        Err(err @ (soundcraft_midi::MidiError::TooManyEvents(_) | soundcraft_midi::MidiError::TooManyTracks(_))) => {
+            return Err(EngineError::Io(err.to_string()));
+        }
+        Err(_) => {
+            let read = soundcraft_midi::read_smf_lenient(bytes).map_err(|err| EngineError::Io(err.to_string()))?;
+            // The strict reader stops at the first damage, so a limit further on shows only here.
+            if read.over_limit {
+                return Err(EngineError::Io(format!(
+                    "MIDI file: more than {} events or {} tracks",
+                    soundcraft_midi::MAX_EVENTS,
+                    soundcraft_midi::MAX_TRACKS
+                )));
+            }
+            for warning in &read.warnings {
+                log::warn!("MIDI import: {warning}");
+            }
+            read.smf
+        }
+    };
     if tempo_map {
         // Each meter is placed by walking the ones before it.
         if smf.meters.len() > MAX_MIDI_METERS {
