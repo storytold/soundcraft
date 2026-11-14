@@ -136,14 +136,28 @@ pub enum RemoteError {
     /// since the app may already have executed it.
     #[error("{source}; `{method}` may or may not have been executed, check the session before repeating it")]
     Unconfirmed { method: String, source: Box<RemoteError> },
+    /// The reply answers another request, so it isn't returned.
+    #[error("the reply does not answer this request (its id is {got}, not {expected})")]
+    OutOfStep { expected: u64, got: String },
 }
 
 impl RemoteError {
-    /// The connection went away, so a fresh one may succeed.
+    /// The connection went away, or what it carries next can't be trusted (no reply in time, a
+    /// reply that isn't JSON or answers another request): it is dropped, and a fresh one may succeed.
     fn is_lost_connection(&self) -> bool {
         match self {
-            RemoteError::Closed => true,
-            RemoteError::Io(e) => matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted),
+            RemoteError::Closed | RemoteError::Reply(_) | RemoteError::OutOfStep { .. } => true,
+            RemoteError::Io(e) => matches!(
+                e.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    // A read that timed out: `TimedOut` on Windows, `WouldBlock` on Unix.
+                    | io::ErrorKind::TimedOut
+                    | io::ErrorKind::WouldBlock
+                    // A reply that isn't UTF-8: `read_line` fails before there is JSON to parse.
+                    | io::ErrorKind::InvalidData
+            ),
             _ => false,
         }
     }
@@ -157,19 +171,25 @@ pub struct Remote {
     addr: String,
     conn: Option<Connection>,
     next_id: u64,
+    /// How long a request waits for its reply.
+    read_timeout: Duration,
 }
+
+/// The app answers within 90 s (it replies `timeout` itself after that), so a longer silence
+/// means the reply is lost or late.
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl Remote {
     /// A client for the app at `target`; it connects on the first request.
     pub fn new(target: &ControlTarget) -> Self {
-        Remote { addr: target.to_string(), conn: None, next_id: 1 }
+        Remote { addr: target.to_string(), conn: None, next_id: 1, read_timeout: READ_TIMEOUT }
     }
 
     /// The open connection, connecting first when there is none.
     fn connection(&mut self) -> Result<&mut Connection, RemoteError> {
         match self.conn {
             Some(ref mut conn) => Ok(conn),
-            None => Ok(self.conn.insert(connect(&self.addr)?)),
+            None => Ok(self.conn.insert(connect(&self.addr, self.read_timeout)?)),
         }
     }
 
@@ -187,38 +207,60 @@ impl Remote {
             return Err((RemoteError::Closed, true));
         }
         let v: Value = serde_json::from_str(&buf).map_err(|e| (e.into(), true))?;
-        if v.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-            Ok(v.get("result").cloned().unwrap_or(Value::Null))
-        } else {
-            Err((RemoteError::App(v.get("error").and_then(Value::as_str).unwrap_or("error").to_string()), true))
+        let ok = v.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        let reply_id = v.get("id").filter(|id| !id.is_null());
+        // The app answers a request with its id. A reply with another id answers another request (a
+        // late reply to one that timed out), and so does a success with none.
+        if reply_id.is_some_and(|got| got.as_u64() != Some(id)) || (ok && reply_id.is_none()) {
+            let got = reply_id.map_or_else(|| "none".to_owned(), Value::to_string);
+            return Err((RemoteError::OutOfStep { expected: id, got }, true));
         }
+        if ok {
+            return Ok(v.get("result").cloned().unwrap_or(Value::Null));
+        }
+        if reply_id.is_none() {
+            // A refusal with no id (too many connections, a line the app can't read) is the app's
+            // last word on this connection: it closes it.
+            self.conn = None;
+        }
+        Err((RemoteError::App(v.get("error").and_then(Value::as_str).unwrap_or("error").to_string()), true))
     }
 
     /// Calls `method`. A request lost with its connection is sent once more on a fresh one when
-    /// it only reads state.
+    /// it only reads state, or when it never went out. A connection that is lost or out of step
+    /// is never used again, so a reply that arrives late on it is not read as the answer to a
+    /// later call.
     pub fn request(&mut self, method: &str, params: Value) -> Result<Value, RemoteError> {
-        match self.roundtrip(method, &params) {
-            Ok(v) => Ok(v),
-            Err((e, sent)) if e.is_lost_connection() => {
-                self.conn = None;
-                if sent && !is_read_only(method) {
-                    return Err(RemoteError::Unconfirmed { method: method.to_owned(), source: Box::new(e) });
-                }
-                self.roundtrip(method, &params).map_err(|(e, _)| e)
-            }
-            Err((e, _)) => Err(e),
+        // A call that changes state and went out before its connection was lost may have run.
+        let may_have_run = |e: &RemoteError, sent: bool| sent && e.is_lost_connection() && !is_read_only(method);
+        let report = |(e, sent): (RemoteError, bool)| {
+            if may_have_run(&e, sent) { RemoteError::Unconfirmed { method: method.to_owned(), source: Box::new(e) } } else { e }
+        };
+        match self.attempt(method, &params) {
+            Err((e, sent)) if e.is_lost_connection() && !may_have_run(&e, sent) => self.attempt(method, &params).map_err(report),
+            first => first.map_err(report),
         }
+    }
+
+    /// One [`Self::roundtrip`]; a failure that loses the connection drops it.
+    fn attempt(&mut self, method: &str, params: &Value) -> Result<Value, (RemoteError, bool)> {
+        let result = self.roundtrip(method, params);
+        if result.as_ref().is_err_and(|(e, _)| e.is_lost_connection()) {
+            self.conn = None;
+        }
+        result
     }
 }
 
-/// Connects to `addr` (`host:port`), trying each address it resolves to.
-fn connect(addr: &str) -> Result<Connection, RemoteError> {
+/// Connects to `addr` (`host:port`), trying each address it resolves to. A read on the connection
+/// gives up after `read_timeout`.
+fn connect(addr: &str, read_timeout: Duration) -> Result<Connection, RemoteError> {
     let socks = addr.to_socket_addrs().map_err(|source| RemoteError::Resolve { addr: addr.to_owned(), source })?;
     let mut last = None;
     for sock in socks {
         match TcpStream::connect_timeout(&sock, Duration::from_millis(800)) {
             Ok(s) => {
-                s.set_read_timeout(Some(Duration::from_secs(120)))?;
+                s.set_read_timeout(Some(read_timeout))?;
                 let r = s.try_clone()?;
                 return Ok((s, BufReader::new(r)));
             }
@@ -280,7 +322,7 @@ mod tests {
     }
 
     /// Fake app: accepts one connection per entry in `replies`, counts the request line it reads,
-    /// then either drops the connection (`false`) or answers ok (`true`).
+    /// then either drops the connection (`false`) or answers ok with the request's id (`true`).
     fn fake_app(replies: Vec<bool>) -> (ControlTarget, Arc<std::sync::atomic::AtomicUsize>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = ControlTarget { host: None, port: listener.local_addr().unwrap().port() };
@@ -293,7 +335,8 @@ mod tests {
                 if BufReader::new(sock.try_clone().unwrap()).read_line(&mut line).unwrap_or(0) > 0 {
                     counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     if answer {
-                        let _ = writeln!(sock, "{}", json!({"id": 1, "ok": true, "result": {"done": true}}));
+                        let id = serde_json::from_str::<Value>(&line).map(|request| request["id"].clone()).unwrap_or(Value::Null);
+                        let _ = writeln!(sock, "{}", json!({"id": id, "ok": true, "result": {"done": true}}));
                     }
                 }
             }
@@ -331,5 +374,277 @@ mod tests {
         let mut r = Remote::new(&addr);
         let err = r.call("engine.execute", json!({"command": "transport.locate"})).unwrap_err();
         assert_eq!(err, "transport.locate: nothing to reset");
+    }
+
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+
+    /// A listener on a free loopback port, and a client for it that waits 200 ms for a reply.
+    fn listener_and_client() -> (TcpListener, Remote) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut remote = Remote::new(&ControlTarget { host: None, port: listener.local_addr().unwrap().port() });
+        remote.read_timeout = Duration::from_millis(200);
+        (listener, remote)
+    }
+
+    /// The next connection, as a write half and a line reader.
+    fn accept(listener: &TcpListener) -> Option<(TcpStream, BufReader<TcpStream>)> {
+        let (sock, _) = listener.accept().ok()?;
+        let reader = BufReader::new(sock.try_clone().ok()?);
+        Some((sock, reader))
+    }
+
+    /// The next request on a connection; `None` when the client closed it.
+    fn next_request(reader: &mut BufReader<TcpStream>) -> Option<Value> {
+        let mut line = String::new();
+        if reader.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        serde_json::from_str(&line).ok()
+    }
+
+    /// Answers `request` ok, with its id and `result`.
+    fn answer(sock: &mut TcpStream, request: &Value, result: Value) {
+        let _ = writeln!(sock, "{}", json!({"id": request["id"], "ok": true, "result": result}));
+    }
+
+    /// Serves every later connection: each request is counted and answered `{"call": "own"}`.
+    fn serve_own_answers(listener: &TcpListener, seen: &AtomicUsize) {
+        while let Some((mut sock, mut reader)) = accept(listener) {
+            while let Some(request) = next_request(&mut reader) {
+                seen.fetch_add(1, Ordering::SeqCst);
+                answer(&mut sock, &request, json!({"call": "own"}));
+            }
+        }
+    }
+
+    /// The case in #894: the reply to a call that timed out arrives late, on the connection the
+    /// call used. The next call must get its own answer, not that one.
+    #[test]
+    fn a_late_reply_is_not_taken_for_the_next_calls_answer() {
+        let (listener, mut remote) = listener_and_client();
+        let (release, released) = mpsc::channel::<()>();
+        let (written, late_reply_written) = mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let Some((mut sock, mut reader)) = accept(&listener) else { return };
+            let Some(first) = next_request(&mut reader) else { return };
+            // Hold the reply until the client has given up on it.
+            let _ = released.recv();
+            answer(&mut sock, &first, json!({"call": "first"}));
+            let _ = written.send(());
+            serve_own_answers(&listener, &AtomicUsize::new(0));
+        });
+        assert!(remote.call("engine.execute", json!({"command": "file.bounce_mix"})).is_err());
+        release.send(()).unwrap();
+        late_reply_written.recv().unwrap();
+        assert_eq!(remote.call("session.inspect", json!({})), Ok(json!({"call": "own"})));
+    }
+
+    /// A reply is only an answer when it carries the request's id: another id, or a success with
+    /// no id, is refused, the call is reported as unconfirmed, and the connection is not used again.
+    #[test]
+    fn a_reply_that_is_not_for_the_request_is_refused() {
+        for reply in [
+            json!({"id": 999, "ok": true, "result": {"call": "other"}}),
+            json!({"id": "1", "ok": true, "result": {"call": "other"}}),
+            json!({"ok": true, "result": {"call": "other"}}),
+            json!({"id": 999, "ok": false, "error": "another call failed"}),
+        ] {
+            let (listener, mut remote) = listener_and_client();
+            let other = reply.clone();
+            std::thread::spawn(move || {
+                let Some((mut sock, mut reader)) = accept(&listener) else { return };
+                if next_request(&mut reader).is_some() {
+                    let _ = writeln!(sock, "{other}");
+                }
+                serve_own_answers(&listener, &AtomicUsize::new(0));
+            });
+            let error = remote.call("engine.execute", json!({"command": "track.new"})).unwrap_err();
+            assert!(error.contains("does not answer this request"), "{reply}: {error}");
+            assert!(error.contains("may or may not have been executed"), "{reply}: {error}");
+            assert_eq!(remote.call("engine.execute", json!({"command": "track.new"})), Ok(json!({"call": "own"})), "{reply}");
+        }
+    }
+
+    /// The app refuses a connection or a bad line without an id, and closes. That is still the
+    /// app's error, word for word, and the closed connection is not used for the next call.
+    #[test]
+    fn a_refusal_without_an_id_is_the_apps_error_and_ends_the_connection() {
+        let (listener, mut remote) = listener_and_client();
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = seen.clone();
+        std::thread::spawn(move || {
+            let Some((mut sock, mut reader)) = accept(&listener) else { return };
+            if next_request(&mut reader).is_some() {
+                let _ = writeln!(sock, "{}", json!({"ok": false, "error": "too many control connections"}));
+            }
+            drop((sock, reader));
+            serve_own_answers(&listener, &counter);
+        });
+        assert_eq!(remote.call("engine.execute", json!({"command": "track.new"})), Err("too many control connections".to_string()));
+        assert!(remote.conn.is_none(), "the app closed this connection");
+        assert_eq!(remote.call("engine.execute", json!({"command": "track.new"})), Ok(json!({"call": "own"})));
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "the second call went out once, on a new connection");
+    }
+
+    /// A reply that is not JSON leaves the stream in an unknown state: the connection is dropped.
+    #[test]
+    fn an_unreadable_reply_ends_the_connection() {
+        let (listener, mut remote) = listener_and_client();
+        std::thread::spawn(move || {
+            let Some((mut sock, mut reader)) = accept(&listener) else { return };
+            if next_request(&mut reader).is_some() {
+                let _ = writeln!(sock, "not json");
+            }
+            serve_own_answers(&listener, &AtomicUsize::new(0));
+            drop((sock, reader));
+        });
+        let error = remote.call("engine.execute", json!({"command": "track.new"})).unwrap_err();
+        assert!(error.contains("may or may not have been executed"), "{error}");
+        assert!(remote.conn.is_none());
+        assert_eq!(remote.call("session.inspect", json!({})), Ok(json!({"call": "own"})));
+    }
+
+    /// A reply that is not UTF-8 fails the read itself (`InvalidData`), before any JSON parsing. It
+    /// is as unreadable as one that is not JSON: the connection is dropped, a call that changes
+    /// state is unconfirmed, and a read is asked once more on a new connection.
+    #[test]
+    fn a_reply_that_is_not_text_ends_the_connection() {
+        for (method, params) in [("engine.execute", json!({"command": "track.new"})), ("session.inspect", json!({}))] {
+            let (listener, mut remote) = listener_and_client();
+            let seen = Arc::new(AtomicUsize::new(0));
+            let counter = seen.clone();
+            std::thread::spawn(move || {
+                let Some((mut sock, mut reader)) = accept(&listener) else { return };
+                if next_request(&mut reader).is_some() {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let _ = sock.write_all(b"\xff\n");
+                }
+                serve_own_answers(&listener, &counter);
+                drop((sock, reader));
+            });
+            let result = remote.call(method, params);
+            if is_read_only(method) {
+                assert_eq!(result, Ok(json!({"call": "own"})), "{method}: asked once more on a new connection");
+                assert_eq!(seen.load(Ordering::SeqCst), 2, "{method}");
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.contains("may or may not have been executed"), "{method}: {error}");
+                assert_eq!(seen.load(Ordering::SeqCst), 1, "{method}: not sent again");
+                assert!(remote.conn.is_none(), "{method}");
+                assert_eq!(remote.call("session.inspect", json!({})), Ok(json!({"call": "own"})), "{method}: the next call uses a new connection");
+            }
+        }
+    }
+
+    /// Fake app that reads the request on each of its first `silent` connections and never
+    /// answers it; later connections get their own answers. Counts every request it reads.
+    fn app_silent_on(silent: usize) -> (Remote, Arc<AtomicUsize>) {
+        let (listener, remote) = listener_and_client();
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = seen.clone();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for _ in 0..silent {
+                let Some((sock, mut reader)) = accept(&listener) else { return };
+                if next_request(&mut reader).is_some() {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+                // Keep the connection open and silent.
+                held.push((sock, reader));
+            }
+            serve_own_answers(&listener, &counter);
+        });
+        (remote, seen)
+    }
+
+    /// A call that changes state and gets no reply in time may have run: it is not sent again, the
+    /// error says so, and the connection is dropped so its late reply is never read.
+    #[test]
+    fn a_timed_out_mutation_is_unconfirmed_and_not_sent_again() {
+        let (mut remote, seen) = app_silent_on(1);
+        let error = remote.call("engine.execute", json!({"command": "track.new"})).unwrap_err();
+        assert!(error.contains("may or may not have been executed"), "{error}");
+        assert!(remote.conn.is_none());
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+    }
+
+    /// A call that only reads state is asked once more on a new connection after a timeout.
+    #[test]
+    fn a_timed_out_read_is_asked_once_more_on_a_new_connection() {
+        let (mut remote, seen) = app_silent_on(1);
+        assert_eq!(remote.call("session.inspect", json!({})), Ok(json!({"call": "own"})));
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
+    }
+
+    /// When the second attempt times out too, the call fails after exactly two requests and no
+    /// connection is kept.
+    #[test]
+    fn a_read_that_times_out_twice_fails_and_keeps_no_connection() {
+        let (mut remote, seen) = app_silent_on(2);
+        assert!(remote.call("session.inspect", json!({})).is_err());
+        assert!(remote.conn.is_none());
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
+        assert_eq!(remote.call("session.inspect", json!({})), Ok(json!({"call": "own"})), "the next call starts clean");
+    }
+
+    /// A call that changes state and could not be written to a dead connection is sent on a new
+    /// one. When that attempt goes out and its reply is lost, the call may have run: the error
+    /// says so, as it does when the first attempt is the one that went out.
+    #[test]
+    fn a_mutation_sent_on_the_second_attempt_and_not_answered_is_unconfirmed() {
+        use std::io::Read;
+        let (listener, mut remote) = listener_and_client();
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = seen.clone();
+        std::thread::spawn(move || {
+            // Closing a connection with bytes still unread resets it, so the client's next write
+            // on it fails.
+            let Some((sock, reader)) = accept(&listener) else { return };
+            std::thread::sleep(Duration::from_millis(50));
+            drop((sock, reader));
+            // The second attempt arrives on a new connection: read it and close without a reply.
+            let Some((sock, mut reader)) = accept(&listener) else { return };
+            if next_request(&mut reader).is_some() {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+            drop((sock, reader));
+        });
+        let (stream, _) = remote.connection().unwrap();
+        writeln!(stream, "bytes the app never reads").unwrap();
+        // Wait until the reset has arrived (the read stops timing out).
+        let mut byte = [0u8; 1];
+        for _ in 0..20 {
+            match stream.read(&mut byte) {
+                Err(e) if matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) => {}
+                _ => break,
+            }
+        }
+        let error = remote.call("engine.execute", json!({"command": "track.new"})).unwrap_err();
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "the call went out once, on the second connection: {error}");
+        assert!(error.contains("may or may not have been executed"), "{error}");
+        assert!(remote.conn.is_none());
+    }
+
+    /// Calls that are answered in turn share one connection, and each gets its own answer.
+    #[test]
+    fn answered_calls_share_one_connection() {
+        let (listener, mut remote) = listener_and_client();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counter = connections.clone();
+        std::thread::spawn(move || {
+            while let Some((mut sock, mut reader)) = accept(&listener) {
+                counter.fetch_add(1, Ordering::SeqCst);
+                while let Some(request) = next_request(&mut reader) {
+                    let echo = json!({"method": request["method"], "id": request["id"]});
+                    answer(&mut sock, &request, echo);
+                }
+            }
+        });
+        for (n, method) in ["session.inspect", "engine.execute", "ui.inspect"].into_iter().enumerate() {
+            assert_eq!(remote.call(method, json!({})), Ok(json!({"method": method, "id": n + 1})));
+        }
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
     }
 }
