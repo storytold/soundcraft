@@ -68,7 +68,7 @@ fn wave(i: usize) -> Waveform {
     }
 }
 
-static SYNTH_PARAMS: [ParamInfo; 19] = [
+static SYNTH_PARAMS: [ParamInfo; 20] = [
     choice("osc1_wave", "Osc 1", WAVES, 0),
     choice("osc2_wave", "Osc 2", WAVES, 0),
     lin("osc2_semitones", "Osc 2 Pitch", -24.0, 24.0, 0.0, Unit::Semitones),
@@ -88,7 +88,30 @@ static SYNTH_PARAMS: [ParamInfo; 19] = [
     lin("glide", "Glide", 0.0, 1000.0, 0.0, Unit::Ms),
     lin("velocity", "Velocity Sens", 0.0, 100.0, 70.0, Unit::Percent),
     lin("level", "Level", -48.0, 6.0, -6.0, Unit::Db),
+    lin("body", "Body Resonance", 0.0, 100.0, 0.0, Unit::Percent),
 ];
+
+/// Acoustic body resonances a plucked note can couple to (Hz): the air
+/// resonance near 100 Hz and the top plate's first mode near 200 Hz.
+const BODY_MODES: [f32; 2] = [100.0, 200.0];
+/// How far from a body mode a note still couples, as a Gaussian width in
+/// octaves (about two semitones).
+const BODY_WIDTH_OCT: f32 = 1.0 / 6.0;
+/// The coupled first stage fades with this time constant (ms) and ramps in
+/// over BODY_ONSET_MS, so it never steps the level.
+const BODY_DECAY_MS: f32 = 120.0;
+const BODY_ONSET_MS: f32 = 2.0;
+
+/// How strongly a note at `freq` couples to the body (0-1).
+fn body_coupling(freq: f32) -> f32 {
+    BODY_MODES
+        .iter()
+        .map(|mode| {
+            let oct = (freq / mode).log2() / BODY_WIDTH_OCT;
+            (-0.5 * oct * oct).exp()
+        })
+        .fold(0.0, f32::max)
+}
 
 pub static SYNTH_INFO: PluginInfo = PluginInfo {
     id: "subtractive_synth",
@@ -210,6 +233,11 @@ impl Svf {
 struct Voice {
     note: u8,
     vel: f32,
+    /// Extra gain from body coupling: a fast first stage of a two-stage
+    /// decay on notes near a body resonance. `body_target` decays, `body`
+    /// follows it smoothly.
+    body: f32,
+    body_target: f32,
     freq: f32,
     target: f32,
     osc1: Osc,
@@ -228,6 +256,8 @@ impl Voice {
         Self {
             note: 0,
             vel: 0.0,
+            body: 0.0,
+            body_target: 0.0,
             freq: 440.0,
             target: 440.0,
             osc1: Osc::new(seed),
@@ -256,6 +286,8 @@ pub struct SubtractiveSynth {
     amp_rates: AdsrRates,
     filt_rates: AdsrRates,
     glide_coef: f32,
+    body_decay: f32,
+    body_onset: f32,
     last_freq: Option<f32>,
     counter: u64,
     level: Smoother,
@@ -285,6 +317,8 @@ impl SubtractiveSynth {
             amp_rates: AdsrRates::default(),
             filt_rates: AdsrRates::default(),
             glide_coef: 0.0,
+            body_decay: 0.0,
+            body_onset: 0.0,
             last_freq: None,
             counter: 0,
             level: Smoother::new(0.5),
@@ -304,6 +338,8 @@ impl SubtractiveSynth {
         let glide = v(16);
         self.glide_coef = if glide < 0.5 { 0.0 } else { crate::util::time_coef(glide / 3.0, sr) };
         self.level.set(db_to_gain(v(18)));
+        self.body_decay = crate::util::time_coef(BODY_DECAY_MS, sr);
+        self.body_onset = crate::util::time_coef(BODY_ONSET_MS, sr);
         self.cutoff.set(v(5));
     }
 
@@ -340,12 +376,18 @@ impl SubtractiveSynth {
             let was_active = v.active();
             v.note = note;
             v.vel = (1.0 - sens) + sens * f32::from(vel.min(127)) / 127.0;
+            // A fresh voice starts at its velocity; a sounding one glides there.
+            // Each strike couples to the body anew (up to +6 dB at first).
+            v.body_target = self.p.v(19) / 100.0 * body_coupling(freq);
             v.target = freq;
             v.freq = if was_active && glide { v.freq } else { start };
             if !was_active {
                 v.osc1.reset();
                 v.osc2.phase = 0.37;
                 v.svf = Svf::default();
+                // A short previous note can idle before its body gain decays;
+                // that residual must not leak into the fresh strike.
+                v.body = 0.0;
             }
             v.amp.gate_on();
             v.filt.gate_on();
@@ -423,6 +465,8 @@ impl SubtractiveSynth {
             } else {
                 v.freq = v.target;
             }
+            v.body_target *= self.body_decay;
+            v.body = v.body_target + (v.body - v.body_target) * self.body_onset;
             let a = v.amp.next(&self.amp_rates);
             let fe = v.filt.next(&self.filt_rates);
             let s1 = v.osc1.next(w1, v.freq * bend / sr);
@@ -431,7 +475,7 @@ impl SubtractiveSynth {
             let fc = (cutoff * 2f32.powf(env_oct * fe)).clamp(20.0, nyq);
             let g = (std::f32::consts::PI * fc / sr).tan();
             let y = v.svf.lowpass(raw, g, k);
-            out += y * a * v.vel;
+            out += y * a * v.vel * (1.0 + v.body);
         }
         out * 0.3
     }
