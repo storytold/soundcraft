@@ -307,10 +307,11 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
             apply_params(inst, ins, t, INSTRUMENT_SLOT, pos);
         }
         inst.plugin.set_transport(transport);
-        if std::mem::take(&mut strip.chase) {
+        let chase = std::mem::take(&mut strip.chase);
+        if chase {
             chase_controllers(s, t, pos, inst);
         }
-        schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+        schedule_notes(s, t, pos, frames, inst, &mut strip.held, chase);
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
         } else if let Some(c0) = strip.buf.first_mut() {
