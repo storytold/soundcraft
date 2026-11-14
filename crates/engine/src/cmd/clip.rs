@@ -8,13 +8,13 @@ use serde_json::{Value, json};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!("clip.edit_lock", "Edit Lock/Unlock", ["Clip"], Some("Cmd+L"), "{clips?}", has_selection, |e, p| flag(
+        cmd!("clip.edit_lock", "Edit Lock/Unlock", ["Clip"], Some("Cmd+L"), "{clips?, value?: bool}", has_selection, |e, p| flag(
             e,
             p,
             |c| c.edit_locked,
             |c, v| c.edit_locked = v
         )),
-        cmd!("clip.time_lock", "Time Lock/Unlock", ["Clip"], Some("Ctrl+Alt+L"), "{clips?}", has_selection, |e, p| flag(
+        cmd!("clip.time_lock", "Time Lock/Unlock", ["Clip"], Some("Ctrl+Alt+L"), "{clips?, value?: bool}", has_selection, |e, p| flag(
             e,
             p,
             |c| c.time_locked,
@@ -174,7 +174,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"clip": id, "track": t}))
             }
         ),
-        cmd!("clip.capture", "Capture...", ["Clip"], Some("Cmd+R"), "{name?}", has_range, |e, p| {
+        cmd!("clip.capture", "Capture...", ["Clip"], Some("Cmd+R"), "{name?, clips?}", has_range, |e, p| {
             // Captures the selection as a new whole-file-referencing clip in the clip list (we keep it on the track).
             let name = str_param(p, "name").unwrap_or("Captured").to_string();
             let ids = clip_ids_param(e, p);
