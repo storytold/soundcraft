@@ -14,6 +14,7 @@ pub mod cmd;
 pub mod demo;
 mod dirty;
 pub mod edit;
+pub mod feature_names;
 pub mod file_access;
 pub mod inspect;
 pub mod io;

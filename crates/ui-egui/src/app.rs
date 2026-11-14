@@ -47,6 +47,7 @@ impl SoundApp {
             services,
             native_menu_bar: false,
             autosave_dir: None,
+            fallback_take_dir: None,
             autosaver: None,
             autosaved_rev: 0,
             leftovers: Vec::new(),

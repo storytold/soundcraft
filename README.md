@@ -134,8 +134,8 @@ where things are.
   playlist per take, input monitoring through the full channel strip, and autosave with recovery.
 - **Time and tempo:** Bars|Beats, Min:Secs, Timecode (every rate, drop-frame included),
   Feet+Frames and Samples; tempo and meter maps with a tempo editor; linear, parabolic and
-  S-curve tempo ramps; key signatures and detected chords; Beat Detective and Identify Beat;
-  pitch-preserving Elastic warping.
+  S-curve tempo ramps; key signatures and detected chords; Beat Analysis and Identify Beat;
+  pitch-preserving Elastic Audio warping.
 - **Audio files:** WAV/BWF/RF64, AIFF/AIFC and FLAC in and out; MP3, Ogg Vorbis, AAC, ALAC, CAF
   and the audio of MP4/MOV movies in. Any sample rate and bit depth.
 - **Bounce:** mix or stems to WAV, AIFF or FLAC at 16/24/32-bit float with optional dither and
@@ -146,8 +146,7 @@ where things are.
 ## Getting started
 
 Download a build from the [releases page](https://github.com/storytold/soundcraft/releases), or build
-from source with Rust 1.95 or later for the desktop/web UI (the core workspace's declared
-minimum remains Rust 1.90):
+from source with Rust 1.95 or later:
 
 ```sh
 git clone https://github.com/storytold/soundcraft
@@ -244,11 +243,10 @@ about egui, so the interface could be swapped for another one.
 
 | Crate | What it does |
 |---|---|
-| `soundcraft-time` | Timebases, tempo and meter maps, timecode, grid |
-| `soundcraft-audio-io` | Audio file formats and waveform overviews |
+| `soundcraft-time` | Compatibility re-export of `craft-time`'s SoundCraft sample-index API |
 | `soundcraft-midi` | Standard MIDI Files and MIDI operations |
 | `soundcraft-dsp` | Plugins, offline processing, meters, loudness, FFT |
-| `soundcraft-model` | The session document |
+| `soundcraft-model` | Compatibility re-export of `craft-scraft-format`'s schema, validation and JSON API |
 | `soundcraft-mix` | The mix engine (realtime and offline share it) |
 | `soundcraft-engine` | Commands, undo, editing, import/export, bounce |
 | `soundcraft-playback` | Audio devices (CoreAudio, WASAPI, ALSA, WebAudio) and recording |

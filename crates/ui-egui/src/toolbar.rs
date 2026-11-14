@@ -60,10 +60,13 @@ fn edit_mode_tooltip(m: EditMode, locked: bool, cmd: &str, fkey: &str) -> String
 
 fn draw_mode_cell(p: &egui::Painter, cell: Rect, resp: &egui::Response, t: &Tokens, m: EditMode, state: &ModeCellState, label: &str) {
     let on = state.cur == m || (m == EditMode::Grid && state.cur == EditMode::GridRelative);
-    key(p, cell, resp, if on { t.mode_on } else { t.mode_off });
+    // `on` means `cur == m`, or Grid showing Relative Grid: the active colour is always cur's.
+    key(p, cell, resp, if on { t.edit_mode_on(state.cur) } else { t.mode_off });
     let fg = if on { t.mode_on_text } else { t.mode_off_text };
     if m == EditMode::Grid && state.snap {
-        p.rect_stroke(cell, 1.0, Stroke::new(1.5, t.mode_on), StrokeKind::Inside);
+        // The Snap to Grid outline wears the Grid colour, so it never reads as the green of Slip.
+        let grid = t.edit_mode_on(if state.cur.is_grid() { state.cur } else { EditMode::Grid });
+        p.rect_stroke(cell, 1.0, Stroke::new(1.5, grid), StrokeKind::Inside);
     }
     if m == EditMode::Shuffle && state.locked {
         icons::draw(p, Rect::from_center_size(cell.center(), vec2(15.0, 15.0)), "lock", fg);
@@ -237,7 +240,7 @@ fn fmt_pos(app: &SoundApp, at: i64, f: TimeFormat) -> String {
     s.format_position(at, f)
 }
 
-/// Main and sub position counters, a main-counter format menu, selection readouts and dirty/device status.
+/// Main and sub position counters with their format menus, selection readouts and dirty/device status.
 fn counters(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let (main_fmt, sub_fmt, sel) = {
@@ -252,13 +255,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().text(pos2(main_r.max.x - 18.0, main_r.center().y), Align2::RIGHT_CENTER, txt, mono(26.0), t.counter_text);
     let resp = ui.interact(main_r, ui.scope_id().with("main_counter"), Sense::click());
     icons::draw(ui.painter(), Rect::from_center_size(pos2(main_r.max.x - 9.0, main_r.center().y), vec2(10.0, 10.0)), "triangle_down", t.text_dim);
-    egui::Popup::menu(&resp).show(|ui| {
-        for f in TimeFormat::ALL {
-            if ui.selectable_label(main_fmt == f, f.label()).clicked() {
-                let _ = app.run("view.main_counter", json!({"format": f.id()}));
-            }
-        }
-    });
+    format_menu(app, &resp, main_fmt, "view.main_counter");
     // Start / End / Length.
     let s = app.engine.session();
     let rows = [
@@ -276,9 +273,25 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().line_segment([pos2(r.min.x + 6.0, r.max.y - 21.0), pos2(r.max.x - 6.0, r.max.y - 21.0)], Stroke::new(1.0, t.counter_rule));
     ui.painter().text(pos2(r.min.x + 10.0, y), Align2::LEFT_CENTER, "Sub", regular(11.0), t.counter_label);
     ui.painter().text(pos2(r.min.x + 150.0, y), Align2::RIGHT_CENTER, fmt_pos(app, pos, sub_fmt), mono(11.0), t.counter_text);
+    let sub_r = Rect::from_min_max(pos2(r.min.x + 6.0, r.max.y - 20.0), pos2(r.min.x + 164.0, r.max.y - 2.0));
+    let sub_resp = ui.interact(sub_r, ui.scope_id().with("sub_counter"), Sense::click());
+    icons::draw(ui.painter(), Rect::from_center_size(pos2(r.min.x + 158.0, y), vec2(8.0, 8.0)), "triangle_down", t.text_dim);
+    format_menu(app, &sub_resp, sub_fmt, "view.sub_counter");
     let st = if app.engine.is_dirty() { "modified" } else { "saved" };
     let dev = app.player.as_ref().map_or("no audio engine", |p| if p.silent { "silent clock" } else { "audio on" });
     ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, format!("{st} · {dev}"), regular(10.0), t.text_dim);
+}
+
+/// A counter's time-format menu: picking a format runs `command` (`view.main_counter` or
+/// `view.sub_counter`) with it.
+fn format_menu(app: &mut SoundApp, resp: &egui::Response, current: TimeFormat, command: &str) {
+    egui::Popup::menu(resp).show(|ui| {
+        for f in TimeFormat::ALL {
+            if ui.selectable_label(current == f, f.label()).clicked() {
+                let _ = app.run(command, json!({"format": f.id()}));
+            }
+        }
+    });
 }
 
 /// Draws the compact Grid and Nudge readouts and their scale menus.
