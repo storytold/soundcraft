@@ -139,6 +139,10 @@ pub struct MixEngine {
     pub monitor_only: bool,
     /// Recording: record-armed tracks hear their input (auto input).
     pub recording: bool,
+    /// Recording into this range (a punch with pre/post-roll): record-armed tracks hear their
+    /// input in the blocks that touch it and play their clips before and after. `None`: they hear
+    /// their input for the whole recording.
+    pub punch: Option<Range>,
     /// Mix the metronome (Options > Click) into the output. Playback turns this on; offline renders
     /// (bounces, stems, exports) leave it off so the click is never printed into a file.
     pub metronome: bool,
@@ -177,6 +181,7 @@ impl MixEngine {
             input: Vec::new(),
             monitor_only: false,
             recording: false,
+            punch: None,
             metronome: false,
             external: false,
             offline: false,
@@ -361,11 +366,19 @@ impl MixEngine {
         }
     }
 
+    /// Whether record-armed tracks hear their input in the block of `frames` at `pos`: recording,
+    /// and (with a punch range) the block touches it.
+    fn auto_input(&self, pos: Samples, frames: usize) -> bool {
+        let block = Range { start: pos, end: pos.saturating_add(i64::try_from(frames).unwrap_or(i64::MAX)) };
+        self.recording && self.punch.is_none_or(|p| p.overlaps(&block))
+    }
+
     /// Render `frames` (≤ max_block) samples starting at `pos` into `out` (≥ 2 channels).
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
         let frames = frames.min(self.max_block);
         self.begin_block(s, pos, frames);
         let blk = Block { pos, frames, any_solo: s.tracks.iter().any(|t| t.mixer.solo && !t.inactive) };
+        let auto_input = self.auto_input(pos, frames);
         let order = std::mem::take(&mut self.order);
         // Phase 1: independent strips (audio, instrument, MIDI) in parallel.
         let mut work = std::mem::take(&mut self.work);
@@ -382,7 +395,7 @@ impl MixEngine {
             }
         }
         let busses = std::mem::take(&mut self.busses);
-        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording, auto_input };
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
                 process_strip(s, t, st, &busses, &live_in, blk);
@@ -497,12 +510,13 @@ impl MixEngine {
         let Block { pos, frames, .. } = blk;
         let pdc = s.edit.delay_compensation;
         let lmax_a = self.aux_latency;
+        let auto_input = self.auto_input(pos, frames);
         for t in order.iter().filter_map(|&i| s.tracks.get(i)).filter(|t| is_live(t)).filter(|t| is_aux(t)) {
             let Some(mut st) = self.strips.remove(&t.id) else { continue };
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
-            let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+            let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording, auto_input };
             process_strip(s, t, &mut st, &self.busses, &live_in, blk);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
