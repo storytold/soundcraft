@@ -1117,7 +1117,10 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
         .collect()
 }
 
+// Every test here plants a link, so the module and its helper are Unix-only. `cfg(test)` stays an
+// attribute of its own: clippy allows `unwrap` in tests only under a plain `#[cfg(test)]`.
 #[cfg(test)]
+#[cfg(unix)]
 mod exclusive_tests {
     use super::*;
 

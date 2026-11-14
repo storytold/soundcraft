@@ -562,7 +562,9 @@ mod open_tests {
         let at = |f: &str| dir.join(f).to_string_lossy().into_owned();
         assert_eq!(got[0], (stored_path("Movies/here.mov", &session).unwrap().to_string_lossy().into_owned(), None));
         assert_eq!(got[1], (at("near.mov"), None));
-        assert_eq!(got[2], (at("Video Files/filed.mov"), None));
+        // Joined part by part, as `relink_videos` does: `join("Video Files/filed.mov")` keeps the `/`,
+        // which differs from the relinked path on Windows.
+        assert_eq!(got[2], (dir.join("Video Files").join("filed.mov").to_string_lossy().into_owned(), None));
         assert_eq!(got[3], ("Old/gone.mov".into(), Some("file not found".into())));
         assert_eq!(got[4].0, stored[4]);
         assert!(got[4].1.as_deref().is_some_and(|why| why.starts_with("not opened:")), "{:?}", got[4]);
