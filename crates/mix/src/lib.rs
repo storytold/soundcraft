@@ -270,6 +270,36 @@ impl MixEngine {
         self.main_meter.reset_levels();
     }
 
+    /// [`MixEngine::reset`], then prepares the hosted plugins again: their own `reset` may keep
+    /// audio (a VST3 processor's only flushes notes), and activating them again clears it.
+    /// Offline only: plugins allocate when they activate.
+    pub(crate) fn reset_and_reprepare(&mut self) {
+        self.reset();
+        let (sr, mb) = (self.sample_rate, self.max_block);
+        for s in self.strips.values_mut() {
+            for p in s.plugins.iter_mut().flatten().chain(s.instrument.as_mut()) {
+                if is_third_party(&p.id) {
+                    p.plugin.prepare(sr, mb, p.ch);
+                }
+            }
+        }
+    }
+
+    /// Main-thread time for every plugin ([`Plugin::idle`]): offline renders give it between
+    /// blocks, the audio thread never does. True when an insert's or an instrument's latency
+    /// changed (both are delay-compensated).
+    pub(crate) fn idle_plugins(&mut self) -> bool {
+        let mut changed = false;
+        for s in self.strips.values_mut() {
+            for p in s.plugins.iter_mut().flatten().chain(s.instrument.as_mut()) {
+                let before = p.plugin.latency();
+                p.plugin.idle();
+                changed |= p.plugin.latency() != before;
+            }
+        }
+        changed
+    }
+
     /// Bring plugin instances in line with the session (creates/destroys as needed). Allocates;
     /// call outside the realtime thread when the document changes, or let `render` do it.
     pub fn sync(&mut self, s: &Session) {

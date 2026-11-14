@@ -1309,6 +1309,268 @@ fn volume_automation_follows_its_breakpoints_in_any_block_size() {
     }
 }
 
+/// Delays its input by `n` samples from its first block, like a lookahead limiter, but reports
+/// that latency only after its first block and an `idle`, the way a CLAP plugin applies a new
+/// latency through a restart (LSP Limiter: 0 at `activate`, a restart request once it processed).
+struct LateLatency {
+    inner: Box<dyn Plugin>,
+    n: usize,
+    lines: Vec<std::collections::VecDeque<f32>>,
+    processed: bool,
+    reported: usize,
+    /// What it reports at each `idle` once it has processed (the last one stays).
+    steps: std::collections::VecDeque<usize>,
+    /// How many times it was prepared.
+    prepares: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl LateLatency {
+    /// Prepared, as the host hands it over.
+    fn new(n: usize) -> Self {
+        Self::stepping(n, &[n])
+    }
+
+    /// Delays by `n` from the start, but reports `steps` one `idle` at a time.
+    fn stepping(n: usize, steps: &[usize]) -> Self {
+        let mut p = LateLatency {
+            inner: soundcraft_dsp::create("gain").unwrap(),
+            n,
+            lines: Vec::new(),
+            processed: false,
+            reported: 0,
+            steps: steps.iter().copied().collect(),
+            prepares: Arc::default(),
+        };
+        p.prepare(48_000.0, 512, 2);
+        p
+    }
+}
+
+impl Plugin for LateLatency {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+        self.lines = vec![std::iter::repeat_n(0.0, self.n).collect(); ch];
+        self.prepares.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn reset(&mut self) {
+        self.lines.iter_mut().for_each(|l| l.iter_mut().for_each(|x| *x = 0.0));
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        for (c, line) in io.iter_mut().zip(&mut self.lines) {
+            for x in c.iter_mut().take(frames) {
+                line.push_back(*x);
+                *x = line.pop_front().unwrap();
+            }
+        }
+        self.processed = true;
+    }
+    fn latency(&self) -> usize {
+        self.reported
+    }
+    fn idle(&mut self) {
+        if self.processed
+            && let Some(r) = self.steps.pop_front()
+        {
+            self.reported = r;
+        }
+    }
+}
+
+/// A hosted insert that reports its latency only after the first block (on a track, or on the
+/// master, whose latency is read before it processes) still lines up from the first sample.
+#[test]
+fn offline_renders_follow_a_latency_reported_after_the_first_block() {
+    for kind in [TrackKind::Audio, TrackKind::Master] {
+        let mut s = Session::default();
+        s.edit.delay_compensation = true;
+        let n = 4096;
+        let mut clicks = vec![0.0f32; n];
+        for at in [100, 3000] {
+            clicks[at] = 0.25;
+        }
+        s.pool.insert(SourceId(902), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![clicks.clone(), clicks] })));
+        let mut tracks = Vec::new();
+        for _ in 0..2 {
+            let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+            let cid = s.new_clip_id();
+            s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "clicks", SourceId(902), 0, 0, n as i64));
+            tracks.push(t);
+        }
+        let target = if kind == TrackKind::Audio { tracks[0] } else { s.add_track(TrackKind::Master, ChannelFormat::Stereo, None) };
+        s.track_mut(target).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.late"));
+        let render = |s: &Session| {
+            let mut r = RangeRender::new(s, None, Range::new(0, n as i64), 512);
+            r.engine().set_external_instances(true);
+            r.engine().adopt(vec![PreparedInstance {
+                track: target,
+                slot: 0,
+                id: "clap:test.late".into(),
+                ch: 2,
+                plugin: Box::new(LateLatency::new(240)),
+            }]);
+            let mut out = vec![Vec::new(); 2];
+            while let Some((chunk, k)) = r.next_block(s) {
+                for (o, c) in out.iter_mut().zip(chunk) {
+                    o.extend_from_slice(&c[..k]);
+                }
+            }
+            out
+        };
+        // Both tracks play the clicks: they land where they are on the timeline.
+        let out = render(&s);
+        assert_eq!(out[0].len(), n);
+        assert_eq!(impulse_at(&out[0]), vec![100, 3000], "{kind:?}: the plugin's 240 samples are compensated from the start");
+        // The second track flipped: with the two lined up, nothing is left.
+        s.track_mut(tracks[1]).unwrap().mixer.phase_invert = true;
+        let out = render(&s);
+        assert!(out.iter().flatten().all(|x| x.abs() < 1e-6), "{kind:?}: the tracks line up");
+    }
+}
+
+/// An echo 1000 samples later whose memory survives `reset` and is cleared only by `prepare`,
+/// like a VST3 processor: its reset only flushes notes, and activating it again clears its audio.
+struct KeepsTail {
+    inner: Box<dyn Plugin>,
+    ring: Vec<Vec<f32>>,
+    pos: usize,
+}
+
+impl KeepsTail {
+    /// Prepared, as the host hands it over.
+    fn new() -> Self {
+        let mut p = KeepsTail { inner: soundcraft_dsp::create("gain").unwrap(), ring: Vec::new(), pos: 0 };
+        p.prepare(48_000.0, 512, 2);
+        p
+    }
+}
+
+impl Plugin for KeepsTail {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+        self.ring = vec![vec![0.0; 1000]; ch];
+        self.pos = 0;
+    }
+    fn reset(&mut self) {}
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        for i in 0..frames {
+            for (c, ring) in io.iter_mut().zip(&mut self.ring) {
+                let old = std::mem::replace(&mut ring[self.pos], c[i]);
+                c[i] += 0.5 * old;
+            }
+            self.pos = (self.pos + 1) % 1000;
+        }
+    }
+}
+
+/// Starting the first block over must not keep what the discarded pass left in an insert whose
+/// own reset keeps its audio (a VST3 tail), on any track.
+#[test]
+fn a_first_block_rendered_again_carries_nothing_from_the_discarded_pass() {
+    let mut s = Session::default();
+    s.edit.delay_compensation = true;
+    let n = 4096;
+    let mut clicks = vec![0.0f32; n];
+    for at in [100, 3000] {
+        clicks[at] = 0.25;
+    }
+    s.pool.insert(SourceId(903), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![clicks.clone(), clicks] })));
+    let mut tracks = Vec::new();
+    for slot in ["clap:test.late", "clap:test.tail"] {
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "clicks", SourceId(903), 0, 0, n as i64));
+        s.track_mut(t).unwrap().mixer.inserts[0] = Some(Insert::new(slot));
+        tracks.push(t);
+    }
+    let mut r = RangeRender::new(&s, None, Range::new(0, n as i64), 512);
+    r.engine().set_external_instances(true);
+    r.engine().adopt(vec![
+        PreparedInstance { track: tracks[0], slot: 0, id: "clap:test.late".into(), ch: 2, plugin: Box::new(LateLatency::new(240)) },
+        PreparedInstance { track: tracks[1], slot: 0, id: "clap:test.tail".into(), ch: 2, plugin: Box::new(KeepsTail::new()) },
+    ]);
+    let mut out = vec![Vec::new(); 2];
+    while let Some((chunk, k)) = r.next_block(&s) {
+        for (o, c) in out.iter_mut().zip(chunk) {
+            o.extend_from_slice(&c[..k]);
+        }
+    }
+    assert_eq!(impulse_at(&out[0]), vec![100, 1100, 3000, 4000], "the clicks and their echoes, and no echo of the first pass");
+}
+
+/// Clicks at 100 and 3000 on a stereo track with `plugin` as its insert, rendered in 512-sample
+/// blocks: where the clicks land.
+fn clicks_through(plugin: LateLatency) -> Vec<usize> {
+    let mut s = Session::default();
+    s.edit.delay_compensation = true;
+    let n = 4096;
+    let mut clicks = vec![0.0f32; n];
+    for at in [100, 3000] {
+        clicks[at] = 0.25;
+    }
+    s.pool.insert(SourceId(904), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![clicks.clone(), clicks] })));
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let cid = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "clicks", SourceId(904), 0, 0, n as i64));
+    s.track_mut(t).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.late"));
+    let mut r = RangeRender::new(&s, None, Range::new(0, n as i64), 512);
+    r.engine().set_external_instances(true);
+    r.engine().adopt(vec![PreparedInstance { track: t, slot: 0, id: "clap:test.late".into(), ch: 2, plugin: Box::new(plugin) }]);
+    let mut out = Vec::new();
+    while let Some((chunk, k)) = r.next_block(&s) {
+        out.extend_from_slice(&chunk[0][..k]);
+    }
+    impulse_at(&out)
+}
+
+/// A plugin whose latency settles in two steps (it changes again on the first block rendered a
+/// second time) still lines up: the render starts over until no latency changes.
+#[test]
+fn a_latency_that_settles_in_two_steps_still_lines_up() {
+    assert_eq!(clicks_through(LateLatency::stepping(240, &[120, 240])), vec![100, 3000]);
+    assert_eq!(clicks_through(LateLatency::new(240)), vec![100, 3000], "one step");
+}
+
+/// An instrument's latency is compensated like an insert's (#1476), so either one reported late
+/// renders the first block again (every hosted instance is prepared a second time).
+#[test]
+fn an_insert_or_instrument_latency_reported_late_renders_the_first_block_again() {
+    for insert_too in [false, true] {
+        let (mut s, a) = session_with_dc(0.5, 4096);
+        let inst = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        s.track_mut(inst).unwrap().instrument = Some(Insert::new("clap:test.inst"));
+        let synth = LateLatency::new(64);
+        let prepares = Arc::clone(&synth.prepares);
+        let mut adopt = vec![PreparedInstance { track: inst, slot: INSTRUMENT_SLOT, id: "clap:test.inst".into(), ch: 2, plugin: Box::new(synth) }];
+        if insert_too {
+            s.track_mut(a).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.late"));
+            adopt.push(PreparedInstance { track: a, slot: 0, id: "clap:test.late".into(), ch: 1, plugin: Box::new(LateLatency::new(240)) });
+        }
+        let mut r = RangeRender::new(&s, None, Range::new(0, 4096), 512);
+        r.engine().set_external_instances(true);
+        r.engine().adopt(adopt);
+        while r.next_block(&s).is_some() {}
+        assert_eq!(prepares.load(std::sync::atomic::Ordering::Relaxed), 2, "with an insert reporting late too: {insert_too}");
+    }
+}
+
 /// A master fader's breakpoint acts on its own sample too.
 #[test]
 fn master_volume_automation_follows_its_breakpoints_in_any_block_size() {

@@ -8,6 +8,8 @@ use std::sync::atomic::Ordering;
 
 /// Largest block we activate a plugin for.
 const MAX_BLOCK: usize = 1 << 16;
+/// Most `on_main_thread` calls one `idle` runs for a plugin that keeps asking for more.
+const MAX_CALLBACKS_PER_IDLE: usize = 8;
 /// Most channels a host strip may ask for.
 const MAX_CHANNELS: usize = 64;
 /// Queue slots that only releases from `note_off` may take: one per key, so a queue that
@@ -43,6 +45,8 @@ pub struct ClapPlugin {
     channels: usize,
     max_block: usize,
     latency: usize,
+    /// What the last `prepare` was asked for, to restart the plugin the same way.
+    prepared: Option<(f32, usize, usize)>,
     steady: i64,
     transport: Option<Transport>,
 }
@@ -67,6 +71,7 @@ impl ClapPlugin {
             channels: 2,
             max_block: 0,
             latency: 0,
+            prepared: None,
             steady: 0,
             transport: None,
         }
@@ -231,6 +236,7 @@ impl Plugin for ClapPlugin {
     }
 
     fn prepare(&mut self, sample_rate: f32, max_block: usize, channels: usize) {
+        self.prepared = Some((sample_rate, max_block, channels));
         let sr = if sample_rate.is_finite() && sample_rate > 0.0 { f64::from(sample_rate) } else { 48_000.0 };
         let mb = max_block.clamp(1, MAX_BLOCK);
         self.channels = channels.clamp(1, MAX_CHANNELS);
@@ -356,6 +362,25 @@ impl Plugin for ClapPlugin {
 
     fn latency(&self) -> usize {
         self.latency
+    }
+
+    fn idle(&mut self) {
+        // A plugin that finds a new latency while processing asks for `on_main_thread`, and from
+        // there for a restart (maybe after more callbacks): the new value only counts once it is
+        // activated again. Run every callback it asks for here, a bounded number of them.
+        for _ in 0..MAX_CALLBACKS_PER_IDLE {
+            if !self.inst.state().callback.load(Ordering::Relaxed) {
+                break;
+            }
+            self.inst.service_callback();
+        }
+        if self.inst.state().restart.swap(false, Ordering::Relaxed) {
+            if let Some((sr, mb, ch)) = self.prepared {
+                self.prepare(sr, mb, ch);
+            }
+        } else if self.inst.is_active() && self.inst.state().latency_changed.swap(false, Ordering::Relaxed) {
+            self.latency = self.inst.latency() as usize;
+        }
     }
 
     fn set_transport(&mut self, transport: &Transport) {

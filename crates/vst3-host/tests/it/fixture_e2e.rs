@@ -72,6 +72,19 @@ fn identity_mapped_param_text_is_read_on_the_main_thread_only() {
 }
 
 #[test]
+fn idle_reads_a_latency_the_plugin_has_not_announced_yet() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Gain")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    assert_eq!(p.latency(), 3);
+    assert!(p.set_param("3", 2.0), "mode C takes 16 samples");
+    let mut io = vec![vec![0.5f32; 64]; 2];
+    p.process(&mut io, 64);
+    assert_eq!(p.latency(), 3, "no restartComponent came");
+    p.idle();
+    assert_eq!(p.latency(), 16);
+}
+
+#[test]
 fn gain_processes_audio_and_follows_params() {
     let mut p = soundcraft_vst3_host::create(&id_of("Fixture Gain")).unwrap();
     p.prepare(44_100.0, 256, 2);

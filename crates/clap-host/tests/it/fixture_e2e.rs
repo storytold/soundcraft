@@ -81,6 +81,27 @@ fn gain_processes_audio_and_follows_params() {
 }
 
 #[test]
+fn a_new_latency_counts_after_the_restart_the_plugin_asks_for() {
+    fixture_dir();
+    let mut p = soundcraft_clap_host::create(GAIN).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    assert_eq!(p.latency(), 3);
+    assert!(p.set_param("3", 2.0), "mode C takes 16 samples");
+    let mut io = vec![vec![0.5f32; 64]; 2];
+    p.process(&mut io, 64);
+    assert_eq!(p.latency(), 3, "so far the plugin only asked for on_main_thread");
+    // One idle runs both callbacks the plugin asks for (the second one asks for the restart).
+    p.idle();
+    assert_eq!(p.latency(), 16, "restarted with its new latency");
+    assert_eq!(p.param("3"), Some(2.0));
+    let mut io = vec![vec![0.5f32; 64]; 2];
+    p.process(&mut io, 64);
+    assert!(io[0].iter().all(|&x| (x - 0.5).abs() < 1e-6), "still processing after the restart: {:?}", &io[0][..4]);
+    p.idle();
+    assert_eq!(p.latency(), 16);
+}
+
+#[test]
 fn synth_plays_notes_at_their_offsets() {
     fixture_dir();
     let info = soundcraft_clap_host::plugin_info(SYNTH).unwrap();
