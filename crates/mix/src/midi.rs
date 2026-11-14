@@ -30,7 +30,9 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
             continue;
         }
         let ClipContent::Midi { sequence } = &clip.content else { continue };
-        if !clip.range().overlaps(&Range { start: pos, end }) {
+        // A note-off clamped to the clip end falls on the first sample after the
+        // clip, so a block starting exactly there still releases its notes.
+        if !clip.range().overlaps(&Range { start: pos, end }) && clip.end() != pos {
             continue;
         }
         let base = s.tempo.samples_to_ticks(clip.start, sr);
