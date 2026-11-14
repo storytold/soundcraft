@@ -466,3 +466,24 @@ fn save_copy_leaves_the_open_session_alone() {
     assert!(from_copy.session().track_by_name("Extra").is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Issue #550: a damaged FLAC still imports at its full length (craft-audio fills the lost frames
+/// with silence), and the result says so instead of passing the silence off as audio.
+#[test]
+fn import_of_a_damaged_flac_keeps_its_length_and_warns() {
+    let mut buf = AudioBuffer::new(48_000, 1, 48_000);
+    for (i, s) in buf.channels[0].iter_mut().enumerate() {
+        *s = (i as f32 * 0.05).sin() * 0.25;
+    }
+    let opts = EncodeOptions::new(craft_audio::EncodeFormat::Flac).with_bit_depth(craft_audio::BitDepth::Int16).with_dither(false);
+    let mut bytes = craft_audio::encode(&buf, &opts).unwrap();
+    let mut e = Engine::default();
+    let v = crate::io::import_audio_bytes(&mut e, "take.flac", &bytes, None, None, 0).unwrap();
+    assert!(v.get("warning").is_none(), "{v}");
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0xFF;
+    let v = crate::io::import_audio_bytes(&mut e, "take.flac", &bytes, None, None, 0).unwrap();
+    assert_eq!(v["frames"], 48_000, "{v}");
+    let warning = v["warning"].as_str().unwrap();
+    assert_eq!(warning, "take.flac: 1 damaged packet(s) imported as silence");
+}
