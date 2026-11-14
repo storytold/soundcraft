@@ -21,14 +21,23 @@ pub fn specs() -> Vec<CommandSpec> {
     )]
 }
 
+/// How many times longer than its input a process's output can be.
+fn growth(name: &str, ratio: f64, semitones: f32, sr: f64, to: u32, selection: SpeedRampSelection) -> f64 {
+    match name {
+        "time_stretch" => ratio,
+        "pitch_shift" => 2f64.powf(f64::from(semitones) / 12.0),
+        "varispeed" => f64::from(to) / sr,
+        "speed_ramp" if selection == SpeedRampSelection::Extend => 1.5,
+        _ => 1.0,
+    }
+}
+
 /// The most frames a process can take in: these processes cut their output at MAX_OFFLINE_SAMPLES frames.
 fn frame_limit(name: &str, ratio: f64, semitones: f32, sr: f64, to: u32, selection: SpeedRampSelection) -> usize {
-    let longest = |grows: f64| (soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES as f64 / grows) as usize;
     match name {
-        "time_stretch" => longest(ratio),
-        "pitch_shift" => longest(2f64.powf(f64::from(semitones) / 12.0)),
-        "varispeed" => longest(f64::from(to) / sr),
-        "speed_ramp" => longest(if selection == SpeedRampSelection::Extend { 1.5 } else { 1.0 }),
+        "time_stretch" | "pitch_shift" | "varispeed" | "speed_ramp" => {
+            (soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES as f64 / growth(name, ratio, semitones, sr, to, selection)) as usize
+        }
         _ => usize::MAX,
     }
 }
@@ -80,14 +89,33 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
     let selection = if get("selection", 0.0) >= 0.5 { SpeedRampSelection::Extend } else { SpeedRampSelection::FitTo };
     let fades = get("fades", 1.0) >= 0.5;
     let most = frame_limit(&name, ratio, semitones, sr.as_f64(), to, selection);
+    // Each clip once: a clip listed again would otherwise process the result of its first pass
+    // (an expanding process compounding its length every time).
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<_> = ids.into_iter().filter(|id| seen.insert(*id)).collect();
+    // Refuse before processing anything. Every result is kept as a new source for the life of
+    // the command (and undo holds it), so cap the total output across clips, not just each one.
+    // (pitch_shift resamples its stretched result back to the input length)
+    let grows = if name == "pitch_shift" { 1.0 } else { growth(&name, ratio, semitones, sr.as_f64(), to, selection).max(1.0) };
+    let mut budget = soundcraft_mix::MAX_RENDER_SAMPLES;
+    for id in &ids {
+        let Some((track, clip)) = e.session().find_clip(*id) else { continue };
+        if !clip.is_audio() {
+            continue;
+        }
+        let channels = e.session().track(track).map_or(1, |t| t.channels()).max(1);
+        crate::io::refuse_longer(e.session(), "audiosuite.process", &clip.name, "process", clip.length, most.min(crate::io::render_limit(channels)))?;
+        let frames = (clip.length.max(0) as f64 * grows).ceil() as usize;
+        budget = budget
+            .checked_sub(frames.saturating_mul(channels))
+            .ok_or_else(|| bad("audiosuite.process", "too much audio to process in one command"))?;
+    }
     let mut done = 0;
     for id in ids {
         let Some((track, clip)) = e.session().find_clip(id).map(|(t, c)| (t, c.clone())) else { continue };
         if !clip.is_audio() {
             continue;
         }
-        let channels = e.session().track(track).map_or(1, |t| t.channels());
-        crate::io::refuse_longer(e.session(), "audiosuite.process", &clip.name, "process", clip.length, most.min(crate::io::render_limit(channels)))?;
         let mut audio = soundcraft_mix::render_clips(e.session(), track, clip.range());
         // Render without the clip's own fades: re-render a copy without fades so they stay editable.
         let mut tmp = e.session().clone();
@@ -363,6 +391,40 @@ mod tests {
             .unwrap();
         assert_eq!(out["processed"], 1);
         assert_eq!(e.session().tracks[0].clips().len(), 1, "one clip, not one per duplicate listing");
+    }
+
+    #[test]
+    fn a_clip_listed_twice_is_processed_once() {
+        let (mut e, id) = gained_clip();
+        let out =
+            e.execute("audiosuite.process", &json!({"process": "time_stretch", "params": {"ratio": 4.0}, "clips": [id.0, id.0, id.0]})).unwrap();
+        assert_eq!(out["processed"], 1);
+        let c = e.session().tracks[0].clips()[0].clone();
+        assert!(c.length <= 64 * 4 + 64, "stretched once, not compounded: {}", c.length);
+        assert_eq!(e.session().sources.len(), 2, "one new source, not one per listing");
+    }
+
+    #[test]
+    fn process_refuses_a_total_budget_across_clips() {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Tone"));
+        let buf = AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 64]] };
+        let src = crate::io::add_source(&mut s, "tone", buf, None, FileFormat::Wav);
+        // Three clips each within the per-clip limit whose results together exceed the budget.
+        let len = (soundcraft_mix::MAX_RENDER_SAMPLES / 3 + 1) as i64;
+        let ids: Vec<u64> = (0..3)
+            .map(|k| {
+                let id = s.new_clip_id();
+                crate::edit::place_clip(&mut s, t, Clip::audio(id, "tone", src, 0, k * len, len));
+                id.0
+            })
+            .collect();
+        let mut e = crate::Engine::new(s);
+        let before = serde_json::to_value(e.session()).unwrap();
+        let out = e.execute("audiosuite.process", &json!({"process": "reverse", "clips": ids}));
+        let ok = matches!(out, Err(crate::EngineError::BadParams(_, ref m)) if m.contains("too much audio"));
+        assert!(ok, "three clips over budget, but got: {out:?}");
+        assert_eq!(serde_json::to_value(e.session()).unwrap(), before, "refused before processing anything");
     }
 
     #[test]
