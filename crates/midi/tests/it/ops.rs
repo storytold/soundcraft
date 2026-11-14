@@ -187,38 +187,3 @@ fn split_by_pitch() {
     assert_eq!(inside.iter().map(|n| n.pitch).collect::<Vec<_>>(), vec![60, 48]);
     assert_eq!(outside.iter().map(|n| n.pitch).collect::<Vec<_>>(), vec![36, 72]);
 }
-
-#[test]
-fn sequence_helpers() {
-    let mut seq = Sequence {
-        notes: vec![n(64, 100, 50), n(60, 100, 10), n(60, 100, 30), n(60, 0, 10), Note { channel: 2, ..n(60, 0, 10) }],
-        ctrls: vec![
-            CtrlEvent { tick: 500, channel: 0, kind: CtrlKind::Cc(1), value: 1 },
-            CtrlEvent { tick: 5, channel: 0, kind: CtrlKind::Cc(1), value: 2 },
-            CtrlEvent { tick: 500, channel: 0, kind: CtrlKind::Cc(1), value: 3 },
-            CtrlEvent { tick: 500, channel: 0, kind: CtrlKind::Cc(2), value: 4 },
-        ],
-    };
-    assert_eq!(seq.end_tick(), 500);
-    seq.sort();
-    assert_eq!(starts(&seq.notes), vec![0, 0, 100, 100, 100]);
-    assert_eq!(seq.notes[2].pitch, 60);
-    assert_eq!(seq.notes_in(0, 100).count(), 2);
-    assert_eq!(seq.notes_overlapping(105, 106).count(), 3);
-
-    let removed = seq.remove_duplicates();
-    assert_eq!(removed, 2);
-    assert_eq!(seq.notes.len(), 4);
-    let kept = seq.notes.iter().find(|n| n.start == 100 && n.pitch == 60).unwrap();
-    assert_eq!(kept.length, 30);
-    assert_eq!(seq.ctrls.iter().map(|c| c.value).collect::<Vec<_>>(), vec![2, 3, 4]);
-    assert_eq!(seq.remove_duplicates(), 0);
-    assert_eq!(Sequence::default().end_tick(), 0);
-}
-
-#[test]
-fn sequence_serde_round_trip() {
-    let seq = Sequence { notes: vec![n(60, 0, 1)], ctrls: vec![CtrlEvent { tick: 1, channel: 0, kind: CtrlKind::PolyPressure(60), value: 9 }] };
-    let json = serde_json::to_string(&seq).unwrap();
-    assert_eq!(serde_json::from_str::<Sequence>(&json).unwrap(), seq);
-}

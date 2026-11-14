@@ -90,7 +90,11 @@ struct State {
     bindings: HashMap<u64, Binding>,
     resources: Vec<Resource>,
     commands: Vec<Command>,
+    // Transfers already admitted captures, even when the ordinary command queue is full.
+    // The total of captures and failed deliveries never exceeds MAX_PENDING.
+    delivery_failures: Vec<Capture>,
     events: Vec<Event>,
+    publishing: bool,
     // Owners stay in opening/working until delivery can be queued: at most 16 of each.
     finished: VecDeque<Terminal>,
     documents: Value,
@@ -104,7 +108,10 @@ impl State {
             || !self.opening.is_empty()
             || !self.working.is_empty()
             || !self.commands.is_empty()
+            || !self.delivery_failures.is_empty()
             || !self.finished.is_empty()
+            || self.publishing
+            || self.events.iter().any(|event| matches!(event.metadata["type"].as_str(), Some("opened" | "openFailed" | "saveFailed")))
     }
 
     fn next(&mut self, kind: &str) -> Result<String, String> {
@@ -133,6 +140,7 @@ impl State {
         self.dialogs.values().any(|d| d.doc == doc)
             || self.captures.values().any(|c| c.doc == doc)
             || self.working.values().any(|d| *d == doc)
+            || self.delivery_failures.iter().any(|capture| capture.doc == doc)
             || self.commands.iter().any(|c| match c {
                 Command::Save { doc: d, .. } => *d == doc,
                 Command::Result { capture, .. } => capture.doc == doc,
@@ -161,6 +169,14 @@ impl State {
 /// One explicitly registered account namespace. Clones share the bounded transport state.
 #[derive(Clone, Default)]
 pub struct Host(Arc<Mutex<State>>);
+
+struct Publication(Host);
+
+impl Drop for Publication {
+    fn drop(&mut self) {
+        self.0.state().publishing = false;
+    }
+}
 
 impl Host {
     fn state(&self) -> MutexGuard<'_, State> {
@@ -261,7 +277,7 @@ impl Host {
         if s.pending(doc) {
             return Ok(None);
         }
-        if s.dialogs.len() + s.captures.len() + s.commands.len() + s.working.len() >= MAX_PENDING {
+        if s.dialogs.len() + s.captures.len() + s.delivery_failures.len() + s.commands.len() + s.working.len() >= MAX_PENDING {
             return Err("too many pending file provider operations".into());
         }
         let request = s.next("dialog")?;
@@ -280,6 +296,9 @@ impl Host {
             return Err("invalid save destination or filename".into());
         }
         let mut s = self.state();
+        if destination != "cancel" && s.commands.len() >= MAX_PENDING {
+            return Err("file provider command queue is full".into());
+        }
         let dialog = s.dialogs.remove(request).ok_or("unknown or completed save dialog")?;
         if destination != "cancel" {
             s.commands.push(Command::Save {
@@ -299,7 +318,7 @@ impl Host {
             return Err("file exceeds the provider limit or has an invalid name".into());
         }
         let mut s = self.state();
-        if s.identity.is_none() || s.captures.len() >= MAX_PENDING || s.working.get(request) != Some(&capture.doc) {
+        if s.identity.is_none() || s.captures.len() + s.delivery_failures.len() >= MAX_PENDING || s.working.get(request) != Some(&capture.doc) {
             return Err("file provider is disconnected or busy".into());
         }
         let resource =
@@ -380,6 +399,9 @@ impl Host {
             return Err("file exceeds the provider limit or has an invalid name".into());
         }
         let mut s = self.state();
+        // A failed request is retired before queue capacity is considered. A later callback
+        // from the same publication batch cannot turn its retained terminal back into an open.
+        let resource = s.reads.get(&request).ok_or("unknown or completed provider read")?.clone();
         let queued = s.commands.iter().fold(0usize, |n, c| {
             n.saturating_add(match c {
                 Command::Open { bytes, .. } => bytes.len(),
@@ -389,7 +411,7 @@ impl Host {
         if s.commands.len() >= MAX_PENDING || queued.saturating_add(bytes.len()) > MAX_BYTES {
             return Err("file provider open queue is full".into());
         }
-        let resource = s.reads.remove(&request).ok_or("unknown or completed provider read")?;
+        s.reads.remove(&request);
         s.opening.insert(request.clone(), resource.clone());
         s.commands.push(Command::Open { request, resource, name, bytes });
         Ok(())
@@ -438,13 +460,98 @@ impl Host {
 
     pub fn take_commands(&self) -> Vec<Command> {
         let mut s = self.state();
-        let commands = std::mem::take(&mut s.commands);
+        let mut commands = std::mem::take(&mut s.commands);
+        commands.extend(std::mem::take(&mut s.delivery_failures).into_iter().map(|capture| Command::Result {
+            capture,
+            resource: String::new(),
+            status: "failed".into(),
+        }));
         for command in &commands {
             if let Command::Save { request, doc, .. } = command {
                 s.working.insert(request.clone(), *doc);
             }
         }
         commands
+    }
+
+    fn delivery_failed(&self, metadata: &Value) {
+        let mut s = self.state();
+        if s.identity.is_none() || metadata["connectionId"].as_str() != Some(s.connection.as_str()) {
+            return;
+        }
+        let Some(request) = metadata["requestId"].as_str() else { return };
+        match metadata["type"].as_str() {
+            Some("save") => {
+                // An accepted synchronous result already owns its capture and wins over a
+                // later dispatch error. A rejected callback still leaves this capture ours.
+                if let Some(capture) = s.captures.remove(request) {
+                    s.working.insert(request.into(), capture.doc);
+                    s.delivery_failures.push(capture);
+                    s.finished.push_back(Terminal {
+                        request: request.into(),
+                        metadata: json!({"type":"saveFailed", "requestId":request, "error":"Provider payload delivery failed."}),
+                        owner: TerminalOwner::Save,
+                    });
+                }
+            }
+            Some("saveDialog") => {
+                if let Some(dialog) = s.dialogs.remove(request) {
+                    s.working.insert(request.into(), dialog.doc);
+                    s.finished.push_back(Terminal {
+                        request: request.into(),
+                        metadata: json!({"type":"saveFailed", "requestId":request, "error":"Provider event delivery failed."}),
+                        owner: TerminalOwner::Save,
+                    });
+                }
+            }
+            Some("openRequest") => {
+                // Retire the read BEFORE a possibly full event queue: opening/finished is a
+                // bounded tombstone, so later callbacks cannot resurrect an undelivered read.
+                if let Some(resource) = s.reads.remove(request) {
+                    s.opening.insert(request.into(), resource.clone());
+                    s.finished.push_back(Terminal {
+                        request: request.into(),
+                        metadata: json!({"type":"openFailed", "requestId":request, "resourceId":resource,
+                            "error":"Provider event delivery failed."}),
+                        owner: TerminalOwner::Open,
+                    });
+                }
+            }
+            _ => {}
+        }
+        s.flush_finished();
+    }
+
+    /// Dispatch without holding the state lock. Returns whether a logic frame/repaint is needed.
+    /// The whole batch keeps its account owner through reentrant callbacks and terminal delivery.
+    /// Browser-swallowed listener exceptions are not observable dispatch failures.
+    pub fn publish_events_with<E>(&self, mut dispatch: impl FnMut(&Value, Option<Vec<u8>>) -> Result<(), E>, mut on_error: impl FnMut(E)) -> bool {
+        {
+            let mut s = self.state();
+            if s.publishing {
+                return false;
+            }
+            s.publishing = true;
+        }
+        let _publication = Publication(self.clone());
+        let mut repaint = false;
+        for _ in 0..2 {
+            let events = self.take_events();
+            if events.is_empty() {
+                break;
+            }
+            for event in events {
+                if let Err(error) = dispatch(&event.metadata, event.bytes) {
+                    self.delivery_failed(&event.metadata);
+                    repaint = true;
+                    on_error(error);
+                }
+            }
+        }
+        repaint || {
+            let s = self.state();
+            !s.events.is_empty() || !s.finished.is_empty() || !s.commands.is_empty() || !s.delivery_failures.is_empty()
+        }
     }
 
     /// Release a device choice after the platform has taken its bytes. This never ACKs a provider.

@@ -50,15 +50,7 @@ impl Runtime {
                 }
                 Command::Result { capture, resource, status } => {
                     let snapshot = self.checkpoints.remove(&(capture.doc, capture.revision));
-                    let mut durable = false;
-                    if status == "saved" && capture.doc == soundcraft_ui_egui::provider_ui::document_id(app) {
-                        host.bind(&capture, resource);
-                        if let Some(snapshot) = snapshot {
-                            app.engine.acknowledge_external_save(snapshot);
-                            durable = true;
-                        }
-                    }
-                    soundcraft_ui_egui::provider_ui::finish_close_capture(app, &capture, durable, ctx);
+                    soundcraft_ui_egui::provider_ui::apply_result(app, &capture, resource, &status, snapshot, ctx);
                 }
                 Command::Open { request, resource: _, name, bytes } => {
                     let result = if !soundcraft_ui_egui::provider_ui::can_replace_session(app, ctx) {
@@ -90,6 +82,6 @@ impl Runtime {
         }
         soundcraft_ui_egui::provider_ui::discard_finished_close_capture(app);
         soundcraft_ui_egui::provider_ui::publish(app);
-        crate::file_providers::publish(&host);
+        crate::file_providers::publish(&host, ctx);
     }
 }

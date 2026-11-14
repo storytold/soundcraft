@@ -99,3 +99,47 @@ Direct provider opens use the same replacement guard. An active recording, queue
 bounce, dialog, plugin state draft, editor gesture, held pointer or unconsumed frame input refuses
 the open before stopping playback or installing a decoded session. The current take and session
 remain available; retry opening after finishing and saving the pending work.
+
+## Delivery errors and ownership
+
+Outgoing payload copying uses a catch-enabled JavaScript import. Recoverable copy or
+`dispatchEvent` exceptions are logged without abandoning the remaining bounded publication
+batch. A failed `save` transfers only its still-owned captured document/revision to the normal
+application result consumer as `failed`, and queues a correlated `saveFailed` terminal for
+bounded publication. The next logic frame releases that capture's checkpoint and close
+continuation. It does not acknowledge persistence, commit editor drafts, clean newer edits or
+change an account/resource binding. A later explicit Save can capture and retry the project.
+
+An already accepted synchronous `saveResult` wins over a subsequent dispatch error; it cannot
+also become a failed capture. The publisher requests a following logic frame for accepted
+reentrant results as well as failures. Uncommitted plugin-editor state remains dirty in published
+document metadata even when the captured engine snapshot was acknowledged.
+
+Failed unresolved `saveDialog` and `openRequest` delivery releases only those still-owned
+requests and queues their correlated `saveFailed`/`openFailed` terminals. A failed read is retired
+before testing event-queue capacity, so a later callback from the same publication batch cannot
+resurrect it. A full ordinary command queue rejects chooser resolution without consuming the
+chooser; explicit cancellation remains available. Queued and currently dispatched terminals keep
+their account until the publication attempt finishes, and nested publication leaves the outer
+batch in charge. All retained failures belong to already admitted bounded operations.
+
+Exceptions a browser swallows inside event listeners are not observable `dispatchEvent`
+failures. A process abort or unrecoverable out-of-memory failure is outside this recovery path.
+Hosts still implement authentication, storage durability and any network retry policy.
+
+## Regression boundaries
+
+Native regressions exercise full-queue and reentrant ownership, the actual app result consumer,
+close continuation and plugin-state draft guards. Original synthetic audio is encoded to the
+native `.scraftz` bundle and decoded again, checking every source sample.
+
+The WASM binary's `file_providers::browser_tests::page_local_sound_provider_delivery_failure_preserves_audio_and_recovers`
+fixture observes real `soundcraft-file-provider` window events, invokes the exported API and the
+production provider runtime, injects recoverable copy/dispatch exceptions with JS-finally
+restoration, retries a save, and reopens the emitted bundle through actual `openResource`
+admission with its audio intact. It also checks the default local Save dialog, exercises the
+actual Save Changes dialog in egui, verifies Close Session waits for the matching durable result,
+and reopens the saved audio after closing. The fixture runs in a browser using an egui context
+without a WebRunner, GPU, audio device, plugin window or backend. The injected JavaScript
+RangeError exercises recoverable exceptions from the copy call. The fixture does not cover
+unrecoverable allocation failure or DOM navigation.

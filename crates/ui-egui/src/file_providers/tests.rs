@@ -296,3 +296,198 @@ fn retained_terminals_are_bounded_by_already_admitted_reads_and_saves() {
     assert!(!host.busy());
     assert!(host.take_events().is_empty());
 }
+
+#[test]
+fn failed_save_delivery_transfers_only_owned_capture_even_with_full_commands() {
+    let (host, connection) = connected();
+    host.set_resources(&connection, vec![Resource { id: "one".into(), name: "Audio.scraftz".into(), updated_at: String::new() }]).unwrap();
+    let save = request(&host, 1);
+    host.resolve_dialog(&save, "provider", "Audio.scraftz").unwrap();
+    host.take_commands();
+    host.capture(&save, Capture { name: "Audio.scraftz".into(), ..capture(1, 23) }, vec![1, 2, 3]).unwrap();
+    for _ in 0..super::MAX_PENDING {
+        let read = host.request_open("one").unwrap();
+        host.open(read, "Audio.scraftz".into(), vec![7]).unwrap();
+    }
+    let mut failures = 0;
+    let mut terminals = 0;
+    assert!(host.publish_events_with(
+        |metadata, _| {
+            if metadata["type"] == "saveFailed" {
+                terminals += 1;
+                assert_eq!(metadata["requestId"], save);
+                assert_eq!(metadata["connectionId"], connection);
+            }
+            if metadata["type"] == "save" { Err("copy failed") } else { Ok(()) }
+        },
+        |_| failures += 1,
+    ));
+    assert_eq!(failures, 1);
+    assert_eq!(terminals, 1);
+    assert!(host.pending_for(1));
+    assert!(!host.bound(1));
+    assert!(host.result(save.clone(), "saved".into(), "late".into()).is_err());
+    assert_eq!(host.state().commands.len(), super::MAX_PENDING);
+    assert_eq!(host.state().delivery_failures.len(), 1);
+    let commands = host.take_commands();
+    assert_eq!(commands.len(), super::MAX_PENDING + 1, "failed capture transfers already admitted work, never a new command admission");
+    assert_eq!(commands.iter().filter(|command| matches!(command, Command::Open { .. })).count(), super::MAX_PENDING);
+    let failed = commands
+        .iter()
+        .filter_map(|command| match command {
+            Command::Result { capture, resource, status } => Some((capture, resource, status)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(failed.len(), 1);
+    assert_eq!((failed[0].0.doc, failed[0].0.revision, failed[0].0.name.as_str()), (1, 23, "Audio.scraftz"));
+    assert!(failed[0].1.is_empty());
+    assert_eq!(failed[0].2, "failed");
+    assert!(host.state().delivery_failures.is_empty());
+}
+
+#[test]
+fn accepted_reentrant_save_result_wins_and_schedules_the_actual_consumer() {
+    for dispatch_fails in [false, true] {
+        let (host, _) = connected();
+        let save = request(&host, 1);
+        host.resolve_dialog(&save, "provider", "").unwrap();
+        host.take_commands();
+        host.capture(&save, capture(1, 8), vec![9]).unwrap();
+        assert!(
+            host.publish_events_with(
+                |metadata, _| {
+                    assert_eq!(metadata["type"], "save");
+                    host.result(save.clone(), "saved".into(), "durable".into()).unwrap();
+                    if dispatch_fails { Err("after accepted callback") } else { Ok(()) }
+                },
+                |_| {},
+            ),
+            "accepted synchronous results must request a following logic frame"
+        );
+        assert!(host.pending_for(1));
+        assert!(host.state().delivery_failures.is_empty());
+        let commands = host.take_commands();
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(&commands[0], Command::Result { capture, resource, status }
+            if capture.doc == 1 && capture.revision == 8 && resource == "durable" && status == "saved"));
+        assert!(host.result(save, "failed".into(), String::new()).is_err());
+    }
+}
+
+#[test]
+fn failed_read_is_tombstoned_before_a_full_queue_and_later_same_batch_callback() {
+    let (host, connection) = connected();
+    host.set_resources(&connection, vec![Resource { id: "one".into(), name: "Audio.scraftz".into(), updated_at: String::new() }]).unwrap();
+    let first = host.request_open("one").unwrap();
+    let second = host.request_open("one").unwrap();
+    let mut attempted_late_reply = false;
+    assert!(host.publish_events_with(
+        |metadata, _| {
+            if metadata["requestId"] == first {
+                fill_event_queue(&host);
+                return Err("request dispatch failed");
+            }
+            if metadata["requestId"] == second {
+                attempted_late_reply = true;
+                assert!(!host.state().reads.contains_key(&first));
+                assert!(host.state().opening.contains_key(&first));
+                assert!(host.state().finished.iter().any(|terminal| terminal.request == first));
+                assert!(host.open(first.clone(), "Late.scraftz".into(), vec![1]).is_err());
+                host.open(second.clone(), "Audio.scraftz".into(), vec![2]).unwrap();
+                return Err("after accepted open reply");
+            }
+            Ok(())
+        },
+        |_| {},
+    ));
+    assert!(attempted_late_reply);
+    let commands = host.take_commands();
+    assert_eq!(commands.len(), 1);
+    assert!(matches!(&commands[0], Command::Open { request, bytes, .. } if request == &second && bytes == &[2]));
+    let terminal = host.take_events();
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0].metadata["type"], "openFailed");
+    assert_eq!(terminal[0].metadata["requestId"], first);
+    assert_eq!(terminal[0].metadata["resourceId"], "one");
+    assert!(host.open(first, "Late.scraftz".into(), vec![1]).is_err());
+}
+
+#[test]
+fn failed_dialog_delivery_retires_only_an_unresolved_choice() {
+    for accepted in [false, true] {
+        let (host, _) = connected();
+        let save = request(&host, 1);
+        // request() drained its event: use a fresh chooser without draining its publication.
+        host.resolve_dialog(&save, "cancel", "").unwrap();
+        host.choose(1, 1, "Audio.scraftz".into(), false).unwrap();
+        let mut delivered = 0;
+        assert!(host.publish_events_with(
+            |metadata, _| {
+                if metadata["type"] == "saveDialog" {
+                    delivered += 1;
+                    if accepted {
+                        host.resolve_dialog(metadata["requestId"].as_str().unwrap(), "provider", "").unwrap();
+                    }
+                    return Err("chooser dispatch failed");
+                }
+                assert_eq!(metadata["type"], "saveFailed");
+                Ok(())
+            },
+            |_| {},
+        ));
+        assert_eq!(delivered, 1);
+        let commands = host.take_commands();
+        assert_eq!(commands.len(), usize::from(accepted));
+        if accepted {
+            assert!(matches!(&commands[0], Command::Save { doc: 1, .. }));
+        } else {
+            assert!(!host.pending_for(1));
+            assert!(!host.busy());
+        }
+    }
+}
+
+#[test]
+fn queued_and_inflight_terminals_hold_the_account_and_block_nested_publication() {
+    let (host, connection) = connected();
+    host.set_resources(&connection, vec![Resource { id: "one".into(), name: "Audio.scraftz".into(), updated_at: String::new() }]).unwrap();
+    let read = host.request_open("one").unwrap();
+    host.open(read.clone(), "Audio.scraftz".into(), vec![1]).unwrap();
+    host.take_commands();
+    host.take_events();
+    host.opened(&read, None, "decoder failed");
+    assert!(host.disconnect().is_err(), "queued terminal still belongs to the account");
+    let mut calls = 0;
+    host.publish_events_with(
+        |metadata, _| {
+            calls += 1;
+            assert_eq!(metadata["type"], "openFailed");
+            assert_eq!(metadata["connectionId"], connection);
+            assert!(host.disconnect().is_err(), "last drained terminal remains owned during its callback");
+            assert!(!host.publish_events_with(|_, _| Ok::<(), ()>(()), |_| {}));
+            Ok::<(), ()>(())
+        },
+        |_| {},
+    );
+    assert_eq!(calls, 1);
+    assert!(!host.busy());
+    host.disconnect().unwrap();
+}
+
+#[test]
+fn full_command_queue_keeps_a_choice_until_retry_or_explicit_cancel() {
+    let (host, connection) = connected();
+    let save = request(&host, 1);
+    host.set_resources(&connection, vec![Resource { id: "one".into(), name: "Audio.scraftz".into(), updated_at: String::new() }]).unwrap();
+    for _ in 0..super::MAX_PENDING {
+        let read = host.request_open("one").unwrap();
+        host.open(read, "Audio.scraftz".into(), vec![1]).unwrap();
+    }
+    assert!(host.resolve_dialog(&save, "provider", "").is_err());
+    assert!(host.state().dialogs.contains_key(&save));
+    assert_eq!(host.state().commands.len(), super::MAX_PENDING);
+    host.resolve_dialog(&save, "cancel", "").unwrap();
+    assert!(!host.state().dialogs.contains_key(&save));
+    assert_eq!(host.take_commands().len(), super::MAX_PENDING);
+}

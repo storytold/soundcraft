@@ -58,6 +58,30 @@ pub fn record_close_capture(app: &mut SoundApp, request: &str, doc: u64, revisio
     }
 }
 
+/// Consume the runtime's exact captured result. Failed delivery releases its checkpoint/close
+/// continuation through this same path, without acknowledging persistence or committing drafts.
+pub fn apply_result(
+    app: &mut SoundApp,
+    capture: &crate::file_providers::Capture,
+    resource: String,
+    status: &str,
+    snapshot: Option<std::sync::Arc<soundcraft_model::Session>>,
+    ctx: &egui::Context,
+) {
+    let mut durable = false;
+    if status == "saved"
+        && capture.doc == document_id(app)
+        && let Some(snapshot) = snapshot
+    {
+        app.services.file_providers.bind(capture, resource);
+        app.engine.acknowledge_external_save(snapshot);
+        durable = true;
+    } else if status == "failed" {
+        app.ui.status = "Provider delivery/save failed. Your project and changes are still open.".into();
+    }
+    finish_close_capture(app, capture, durable, ctx);
+}
+
 /// Only an exact, durable checkpoint can continue the original close/open/quit action.
 pub fn finish_close_capture(app: &mut SoundApp, capture: &crate::file_providers::Capture, durable: bool, ctx: &egui::Context) {
     let matches =
@@ -96,7 +120,7 @@ pub fn publish(app: &SoundApp) {
         return;
     }
     let doc = document_id(app);
-    host.publish_documents(json!([{"id":doc.to_string(),"revision":app.engine.revision,"name":app.engine.session().name,"dirty":app.engine.is_dirty(),"provider":host.bound(doc)}]),&[doc]);
+    host.publish_documents(json!([{"id":doc.to_string(),"revision":app.engine.revision,"name":app.engine.session().name,"dirty":app.has_unsaved_changes(),"provider":host.bound(doc)}]),&[doc]);
 }
 
 /// Provider recent files are separate from device paths and remain account-scoped.
@@ -362,5 +386,172 @@ mod provider_routing_tests {
         assert!(checked, "the fixture must exercise the pre-UI replacement boundary");
         assert_eq!(app.engine.session().name, "Incoming provider session");
         assert!(app.engine.is_dirty());
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod delivery_recovery_tests {
+    use super::*;
+    use crate::file_providers::{Capture, Command, Host};
+    use soundcraft_engine::{Engine, io};
+    use std::sync::Arc;
+
+    fn audio_app() -> SoundApp {
+        let mut engine = Engine::default();
+        let audio = craft_audio::AudioBuffer { sample_rate: engine.session().sample_rate.hz(), channels: vec![vec![0.0, 0.25, -0.5, 0.75]] };
+        let options = craft_audio::EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(craft_audio::BitDepth::Float32);
+        let wav = craft_audio::encode(&audio, &options).unwrap();
+        io::import_audio_bytes(&mut engine, "Original.wav", &wav, None, None, 0).unwrap();
+        SoundApp::new(engine, None, crate::Services::default())
+    }
+
+    fn connect(app: &SoundApp) -> Host {
+        let host = app.services.file_providers.clone();
+        host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+        host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+        host
+    }
+
+    fn capture_next(app: &mut SoundApp, host: &Host) -> (String, Capture, Arc<soundcraft_model::Session>, Vec<u8>) {
+        let mut commands = host.take_commands();
+        assert_eq!(commands.len(), 1);
+        let Command::Save { request, doc, destination, name, save_as } = commands.remove(0) else { panic!("expected actual Save command") };
+        assert_eq!(destination, "provider");
+        assert_eq!(doc, document_id(app));
+        app.capture_plugin_states();
+        let capture = Capture { doc, revision: app.engine.revision, name, save_as };
+        record_close_capture(app, &request, doc, capture.revision);
+        let snapshot = app.engine.session_arc();
+        let bytes = io::session_provider_bundle(&snapshot).unwrap();
+        host.capture(&request, capture.clone(), bytes.clone()).unwrap();
+        (request, capture, snapshot, bytes)
+    }
+
+    fn assert_audio_bundle(bytes: &[u8], expected: &soundcraft_model::Session) {
+        assert!(bytes.starts_with(b"PK\x03\x04"));
+        let mut decoded = Engine::default();
+        assert!(io::open_provider_session_bytes(&mut decoded, "Recovery.scraftz", bytes).unwrap().is_empty());
+        assert_eq!(decoded.session().tracks.len(), expected.tracks.len());
+        assert_eq!(decoded.session().sources.len(), expected.sources.len());
+        for source in &expected.sources {
+            let original = expected.pool.get(source.id).unwrap();
+            let restored = decoded.session().pool.get(source.id).unwrap();
+            assert_eq!(restored.buffer.sample_rate, original.buffer.sample_rate);
+            assert_eq!(restored.buffer.channels, original.buffer.channels, "native bundle must retain every source sample");
+        }
+    }
+
+    #[test]
+    fn delivery_failure_reaches_app_consumer_keeps_audio_drafts_and_close_open_until_retry() {
+        let mut app = audio_app();
+        let host = connect(&app);
+        let ctx = egui::Context::default();
+        let value = save_before_replacing(&mut app, &("app.quit".into(), json!({}))).unwrap().unwrap();
+        let request = value["requestId"].as_str().unwrap().to_string();
+        host.take_events();
+        host.resolve_dialog(&request, "provider", "Recovery.scraftz").unwrap();
+        let (_, capture, snapshot, bytes) = capture_next(&mut app, &host);
+        assert_audio_bundle(&bytes, &snapshot);
+        app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+        let revision = app.engine.revision;
+        assert_ne!(revision, capture.revision);
+        let current = app.engine.session_arc();
+        let draft = (app.engine.session().tracks[0].id, 0);
+        app.editor_states.push(draft);
+        assert!(host.publish_events_with(|_, _| Err("injected copy failure"), |_| {}));
+        assert!(host.pending_for(capture.doc));
+        let mut commands = host.take_commands();
+        assert_eq!(commands.len(), 1);
+        let Command::Result { capture: failed, resource, status } = commands.remove(0) else {
+            panic!("failure must reach the actual Result consumer")
+        };
+        assert_eq!((failed.doc, failed.revision, status.as_str()), (capture.doc, capture.revision, "failed"));
+        apply_result(&mut app, &failed, resource, &status, Some(snapshot), &ctx);
+        assert!(close_capture_identity(&app).is_none());
+        assert!(!app.quit_requested);
+        assert!(!host.pending_for(capture.doc));
+        assert!(!host.bound(capture.doc));
+        assert!(app.engine.is_dirty());
+        assert_eq!(app.engine.revision, revision);
+        assert!(Arc::ptr_eq(&current, &app.engine.session_arc()));
+        assert_eq!(app.editor_states, vec![draft]);
+        assert!(host.result(request, "saved".into(), "late".into()).is_err());
+
+        app.editor_states.clear(); // Explicitly finish this test's outstanding editor-state draft.
+        choose(&mut app, "session.save").unwrap().unwrap();
+        let retry = host.take_events().remove(0).metadata["requestId"].as_str().unwrap().to_string();
+        host.resolve_dialog(&retry, "provider", "Recovery.scraftz").unwrap();
+        let (_, captured, snapshot, bytes) = capture_next(&mut app, &host);
+        assert_audio_bundle(&bytes, &snapshot);
+        assert_eq!(snapshot.tracks.len(), current.tracks.len());
+        host.publish_events_with(|_, _| Ok::<(), ()>(()), |_| {});
+        host.result(retry, "saved".into(), "recovered".into()).unwrap();
+        let Command::Result { capture, resource, status } = host.take_commands().remove(0) else { panic!("expected retry Result") };
+        apply_result(&mut app, &capture, resource, &status, Some(snapshot), &ctx);
+        assert!(!app.engine.is_dirty());
+        assert!(host.bound(captured.doc));
+        assert_eq!(host.filename(captured.doc).as_deref(), Some("Recovery.scraftz"));
+        assert!(app.engine.path.is_none());
+    }
+
+    #[test]
+    fn accepted_reentrant_checkpoint_preserves_later_edits_and_plugin_state_draft() {
+        let mut app = audio_app();
+        let host = connect(&app);
+        choose(&mut app, "session.save").unwrap().unwrap();
+        let request = host.take_events().remove(0).metadata["requestId"].as_str().unwrap().to_string();
+        host.resolve_dialog(&request, "provider", "Captured.scraftz").unwrap();
+        let (_, capture, snapshot, bytes) = capture_next(&mut app, &host);
+        assert_audio_bundle(&bytes, &snapshot);
+        app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+        let current = app.engine.session_arc();
+        let revision = app.engine.revision;
+        let draft = (app.engine.session().tracks[0].id, 0);
+        app.editor_states.push(draft);
+        assert!(host.publish_events_with(
+            |_, _| {
+                host.result(request.clone(), "saved".into(), "resource".into()).unwrap();
+                Err("dispatch threw after callback acceptance")
+            },
+            |_| {},
+        ));
+        let mut commands = host.take_commands();
+        assert_eq!(commands.len(), 1, "accepted completion cannot also enqueue a failed capture");
+        let Command::Result { capture: accepted, resource, status } = commands.remove(0) else { panic!("expected accepted Result") };
+        assert_eq!(status, "saved");
+        apply_result(&mut app, &accepted, resource, &status, Some(snapshot), &egui::Context::default());
+        assert!(host.bound(capture.doc));
+        assert!(app.engine.is_dirty());
+        assert!(app.has_unsaved_changes());
+        assert_eq!(app.engine.revision, revision);
+        assert!(Arc::ptr_eq(&current, &app.engine.session_arc()));
+        assert_eq!(app.editor_states, vec![draft]);
+    }
+
+    #[test]
+    fn an_ack_for_clean_engine_state_cannot_clean_a_plugin_draft_or_resume_close() {
+        let mut app = audio_app();
+        let host = connect(&app);
+        let ctx = egui::Context::default();
+        let value = save_before_replacing(&mut app, &("app.quit".into(), json!({}))).unwrap().unwrap();
+        let request = value["requestId"].as_str().unwrap().to_string();
+        host.take_events();
+        host.resolve_dialog(&request, "provider", "Captured.scraftz").unwrap();
+        let (_, capture, snapshot, _) = capture_next(&mut app, &host);
+        host.publish_events_with(|_, _| Ok::<(), ()>(()), |_| {});
+        let draft = (app.engine.session().tracks[0].id, 0);
+        app.editor_states.push(draft);
+        host.result(request, "saved".into(), "resource".into()).unwrap();
+        let Command::Result { capture: accepted, resource, status } = host.take_commands().remove(0) else { panic!("expected saved Result") };
+        apply_result(&mut app, &accepted, resource, &status, Some(snapshot), &ctx);
+        assert!(!app.engine.is_dirty(), "the captured engine snapshot really was acknowledged");
+        assert!(app.has_unsaved_changes(), "uncommitted editor state remains unsaved");
+        assert_eq!(app.editor_states, vec![draft]);
+        assert_eq!(app.engine.revision, capture.revision);
+        assert!(!app.quit_requested);
+        assert!(close_capture_identity(&app).is_none());
+        publish(&app);
+        assert_eq!(host.snapshot()["documents"][0]["dirty"], true);
     }
 }

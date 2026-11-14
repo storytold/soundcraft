@@ -23,7 +23,6 @@ mod native_menu;
 mod switch;
 
 use env::Env;
-use soundcraft_audio_io::FileFormat;
 use soundcraft_engine::Engine;
 use soundcraft_ui_egui::{Services, SoundApp, UiState, dialogs};
 use std::sync::Arc;
@@ -108,9 +107,11 @@ impl eframe::App for App {
             logger.report_audio_thread();
         }
         // The system Quit (⌘Q) ends the process from inside the event loop, so `run_native` never
-        // returns: release the player's plugin instances and shut plugin hosting down here.
+        // returns: release the player's plugin instances and shut plugin hosting down here, and
+        // start the helper of an update that waits for the app to close.
         self.0.player = None;
         soundcraft_engine::shutdown_plugin_hosts();
+        self.0.start_pending_update();
     }
 }
 
@@ -152,13 +153,16 @@ fn services() -> Services {
             let d = match purpose {
                 "session.open" => d.add_filter("SoundCraft Session", &["scraft"]),
                 "file.import_midi" => d.add_filter("MIDI", &["mid", "midi", "smf"]),
-                _ => d.add_filter("Audio", &FileFormat::readable_extensions()),
+                _ => d.add_filter("Audio", craft_audio::DECODE_EXTENSIONS),
             };
             d.pick_file()
         })),
+        pick_open_many: Some(Box::new(|_purpose: &str| {
+            rfd::FileDialog::new().add_filter("Audio", craft_audio::DECODE_EXTENSIONS).pick_files().unwrap_or_default()
+        })),
         pick_save: Some(Box::new(|purpose: &str, path: &std::path::Path| {
             let mut d = match purpose {
-                "file.bounce_mix" => rfd::FileDialog::new().add_filter("Audio", &FileFormat::writable_extensions()),
+                "file.bounce_mix" => rfd::FileDialog::new().add_filter("Audio", craft_audio::ENCODE_EXTENSIONS),
                 _ => rfd::FileDialog::new().add_filter("SoundCraft Session", &["scraft"]),
             };
             if let Some(dir) = path.parent().filter(|dir| dir.is_dir()) {
