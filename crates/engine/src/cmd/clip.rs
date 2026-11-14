@@ -1,7 +1,8 @@
 //! Clip menu commands.
+use super::more_util::{render_stretched, replace_clip};
 use super::{CommandSpec, always, bad, clip_ids_param, f64_or, has_range, has_selection, i64_or, position_param, str_param, track_param};
-use soundcraft_model::ClipId;
-use soundcraft_time::Samples;
+use soundcraft_model::{Clip, ClipContent, ClipId, Session, TrackId};
+use soundcraft_time::{Samples, TICKS_PER_QUARTER};
 
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
@@ -72,7 +73,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Loop...",
             ["Clip"],
             Some("Cmd+Alt+L"),
-            "{clips?, count?: n, length?: samples, fill?: bool}: count is the clip plus its loops; length is the whole looped clip, with the last loop cut short to fit; fill loops up to the next clip on the track, or else to the session end",
+            "{clips?, count?: n, length?: samples, fill?: bool, fit?: bool}: count is the clip plus its loops; length is the whole looped clip, with the last loop cut short to fit; fill loops up to the next clip on the track, or else to the session end; fit time-stretches each audio clip to a whole number of beats first, so its loops land on the tempo grid",
             has_selection,
             loop_clips
         ),
@@ -299,11 +300,56 @@ fn layer(e: &mut Engine, p: &Value, front: bool) -> Result<Value> {
 /// The most loops `clip.loop` makes of one clip.
 const MAX_LOOPS: i64 = 1000;
 
+/// Time-stretch an audio clip in place to the nearest whole number of beats of the tempo map, so
+/// that loops of it land back on the grid. A clip that already spans whole beats is left alone.
+/// `room` bounds the fitted length: the clip may not grow past it (the next clip's start, or a
+/// requested loop length).
+fn fit_to_beats(s: &mut Session, t: TrackId, c: &mut Clip, room: Option<Samples>) -> Result<()> {
+    let id = "clip.loop";
+    if !c.is_audio() {
+        return Err(bad(id, "fitting to the grid needs an audio clip"));
+    }
+    if c.time_locked || c.edit_locked {
+        return Err(bad(id, "the clip is locked"));
+    }
+    let sr = s.sample_rate;
+    let start_tick = s.tempo.samples_to_ticks(c.start, sr);
+    let span_ticks = s.tempo.samples_to_ticks_f(c.start + c.length, sr) - start_tick as f64;
+    let beats = (span_ticks / TICKS_PER_QUARTER as f64).round().max(1.0) as i64;
+    let target = s.tempo.tick_to_samples(start_tick + beats * TICKS_PER_QUARTER, sr) - s.tempo.tick_to_samples(start_tick, sr);
+    if target <= 0 || target == c.length {
+        return Ok(());
+    }
+    if let Some(room) = room
+        && target > room
+    {
+        return Err(bad(id, format!("fitting “{}” to the grid needs {target} samples; only {room} fit", c.name)));
+    }
+    let Some(src) = render_stretched(s, id, c, target)? else { return Err(bad(id, "the clip's audio is not loaded")) };
+    let ratio = target as f64 / c.length.max(1) as f64;
+    let scale = |x: Samples| soundcraft_time::to_samples(x as f64 * ratio);
+    let mut nc = c.clone();
+    nc.content = ClipContent::Audio { source: src, offset: 0 };
+    nc.length = target;
+    nc.stretch = 1.0;
+    nc.gain_env = c.gain_env.iter().map(|&(o, v)| (scale(o), v)).collect();
+    nc.fade_in.len = scale(c.fade_in.len).clamp(0, nc.length);
+    nc.fade_out.len = scale(c.fade_out.len).clamp(0, nc.length);
+    nc.sync_point = scale(c.sync_point).clamp(0, nc.length);
+    replace_clip(s, t, c.id, nc.clone());
+    *c = nc;
+    Ok(())
+}
+
+/// Loop each selected clip: `count` copies, on to `length` after the start with the last copy cut
+/// short, or on to the next clip (or the session end) with `fill`. `fit` time-stretches each audio
+/// clip to a whole number of beats first, within the room the boundary allows.
 fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     let count = i64_or(p, "count", 4).clamp(1, 512);
     let total = position_param(e, "clip.loop", p, "length")?;
     let fill = p.get("fill").and_then(Value::as_bool).unwrap_or(false);
+    let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(false);
     let s = e.session_mut();
     let session_end = s.content_end();
     let mut made = 0;
@@ -312,14 +358,41 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
         if c.length <= 0 {
             continue;
         }
+        // Where the looped clip ends: the next clip or the session end, or `length` after the
+        // start. Taken before fitting, so a fit cannot move the boundary it is measured against.
+        // Crossfade partners that overlap (and extend beyond) this clip also bound the region:
+        // looping must not overwrite their material.
+        let boundary = s.track(tid).and_then(|t| {
+            let next = t.clips().iter().filter(|x| x.id != c.id && x.start >= c.end()).map(|x| x.start).min();
+            // Partners overlapping this clip constrain the boundary to their end, so loops
+            // do not overwrite the partner's material.
+            let mut b = next;
+            for x in t.clips().iter() {
+                if x.id != c.id && x.start < c.end() && x.end() > c.end() {
+                    b = Some(b.map_or(x.end(), |cur| cur.min(x.end())));
+                }
+            }
+            b
+        });
+        let end = if fill { Some(boundary.unwrap_or(session_end)) } else { total.map(|l| c.start.saturating_add(l)) };
+        if fit {
+            // A fitted clip may not run into the next clip, or past a requested loop length. A
+            // crossfade partner overlaps the clip, so the fit may only shrink it: growing would
+            // clear the partner's material when the fitted clip replaces the old one.
+            let partner = s.track(tid).is_some_and(|t| t.clips().iter().any(|x| x.id != c.id && x.start < c.end() && x.end() > c.start));
+            let mut room = match (boundary.map(|b| b - c.start), if fill { None } else { total }) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            if fill {
+                room = room.or(Some(session_end - c.start));
+            }
+            if partner {
+                room = Some(room.map_or(c.length, |r| r.min(c.length)));
+            }
+            fit_to_beats(s, tid, &mut c, room)?;
+        }
         let len = c.length;
-        // Where the looped clip ends: the next clip or the session end, or `length` after the start.
-        let end = if fill {
-            let next = s.track(tid).and_then(|t| t.clips().iter().filter(|x| x.id != c.id && x.start >= c.end()).map(|x| x.start).min());
-            Some(next.unwrap_or(session_end))
-        } else {
-            total.map(|l| c.start.saturating_add(l))
-        };
         // Whole iterations, then one cut short to reach `end` exactly.
         let (reps, last) = match end {
             Some(end) => {
@@ -613,5 +686,159 @@ mod tests {
         assert_eq!([sync_of(&e, a), sync_of(&e, b)], [0, 0]);
         assert!(e.undo());
         assert_eq!([sync_of(&e, a), sync_of(&e, b)], [1_000, 2_000]);
+    }
+
+    /// One audio clip of `len` samples at the session start. Session::default() runs 120 BPM in 4/4
+    /// at 48 kHz, so one beat is 24 000 samples.
+    fn loop_engine(len: i64) -> (crate::Engine, TrackId, ClipId) {
+        use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Loop"));
+        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; len.max(1) as usize]] };
+        let src = crate::io::add_source(&mut s, "Loop", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let cid = s.new_clip_id();
+        crate::edit::place_clip(&mut s, t, Clip::audio(cid, "Loop", src, 0, 0, len));
+        (crate::Engine::new(s), t, cid)
+    }
+
+    /// Fit stretches an off-grid clip to a whole beat before the copies are made, so they land on
+    /// the grid (#1404).
+    #[test]
+    fn looping_a_fitted_clip_lands_on_the_grid() {
+        let (mut e, t, id) = loop_engine(26_000);
+        e.execute("clip.loop", &json!({"clips": [id.0], "count": 4, "fit": true})).unwrap();
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.len(), 4);
+        assert_eq!(clips[0].id, id, "the clip is stretched in place, not replaced");
+        assert!(clips.iter().all(|c| c.length == 24_000), "every copy is one beat of 120 BPM at 48 kHz");
+        assert!(clips.windows(2).all(|w| w[0].end() == w[1].start), "the copies butt up on the grid");
+        let src = clips[0].source().unwrap();
+        assert_eq!(e.session().source(src).unwrap().frames, 24_000);
+    }
+
+    /// A clip that already spans whole beats is looped without a stretch render.
+    #[test]
+    fn fitting_a_clip_that_already_spans_whole_beats_renders_nothing() {
+        let (mut e, t, id) = loop_engine(24_000);
+        e.execute("clip.loop", &json!({"clips": [id.0], "count": 3, "fit": true})).unwrap();
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.iter().map(|c| c.length).collect::<Vec<_>>(), vec![24_000; 3]);
+        let src = clips[0].source().unwrap();
+        assert!(clips.iter().all(|c| c.source() == Some(src)), "every copy plays the original source");
+    }
+
+    /// Without `fit` the copies still repeat at the clip's own length, off grid or not.
+    #[test]
+    fn looping_without_fit_repeats_at_the_clips_own_length() {
+        let (mut e, t, id) = loop_engine(26_000);
+        e.execute("clip.loop", &json!({"clips": [id.0], "count": 4})).unwrap();
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.iter().map(|c| c.length).collect::<Vec<_>>(), vec![26_000; 4]);
+        let src = clips[0].source().unwrap();
+        assert!(clips.iter().all(|c| c.source() == Some(src)));
+    }
+
+    #[test]
+    fn fitting_to_the_grid_refuses_a_locked_clip() {
+        let (mut e, _, id) = loop_engine(26_000);
+        e.session_mut().find_clip_mut(id).unwrap().edit_locked = true;
+        let err = e.execute("clip.loop", &json!({"clips": [id.0], "count": 2, "fit": true})).unwrap_err().to_string();
+        assert!(err.contains("locked"), "{err}");
+    }
+
+    #[test]
+    fn fitting_to_the_grid_needs_an_audio_clip() {
+        use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+        let cid = s.new_clip_id();
+        crate::edit::place_clip(&mut s, t, Clip::midi(cid, "m", 0, 100, soundcraft_midi::Sequence::default()));
+        let mut e = crate::Engine::new(s);
+        let err = e.execute("clip.loop", &json!({"clips": [cid.0], "count": 2, "fit": true})).unwrap_err().to_string();
+        assert!(err.contains("audio clip"), "{err}");
+    }
+
+    /// The loop clip plus a next clip `gap` samples after its start, both playing the same source.
+    /// A 40 000-sample clip fits to two beats, 48 000 samples at 120 BPM and 48 kHz.
+    fn loop_engine_with_next(gap: i64) -> (crate::Engine, TrackId, ClipId) {
+        use soundcraft_model::Clip;
+        let (mut e, t, id) = loop_engine(40_000);
+        let src = e.session().find_clip(id).unwrap().1.source().unwrap();
+        let cid = e.session_mut().new_clip_id();
+        let next = Clip::audio(cid, "Next", src, 0, gap, 10_000);
+        crate::edit::place_clip(e.session_mut(), t, next);
+        (e, t, id)
+    }
+
+    #[test]
+    fn fitting_refuses_to_grow_into_the_next_clip() {
+        let (mut e, t, id) = loop_engine_with_next(44_000);
+        let err = e.execute("clip.loop", &json!({"clips": [id.0], "count": 2, "fit": true})).unwrap_err().to_string();
+        assert!(err.contains("48000") && err.contains("44000"), "{err}");
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(), vec![(0, 40_000), (44_000, 10_000)]);
+    }
+
+    /// Fill measures the boundary before fitting, and the fit may not move it.
+    #[test]
+    fn fill_with_fit_stops_at_the_next_clip() {
+        let (mut e, t, id) = loop_engine_with_next(50_000);
+        e.execute("clip.loop", &json!({"clips": [id.0], "fill": true, "fit": true})).unwrap();
+        let clips = e.session().track(t).unwrap().clips();
+        // The origin is fitted to two beats, one copy fills the rest of the gap, the next clip
+        // keeps its start and length.
+        assert_eq!(clips.iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(), vec![(0, 48_000), (48_000, 2_000), (50_000, 10_000)]);
+    }
+
+    #[test]
+    fn fill_with_fit_refuses_when_the_fit_would_cross_the_next_clip() {
+        let (mut e, t, id) = loop_engine_with_next(44_000);
+        let err = e.execute("clip.loop", &json!({"clips": [id.0], "fill": true, "fit": true})).unwrap_err().to_string();
+        assert!(err.contains("48000"), "{err}");
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(), vec![(0, 40_000), (44_000, 10_000)]);
+    }
+
+    /// The requested length stays the whole looped clip: the fit fits inside it or is refused.
+    #[test]
+    fn fitting_respects_the_requested_length() {
+        let (mut e, t, id) = loop_engine(40_000);
+        e.execute("clip.loop", &json!({"clips": [id.0], "length": 48_000, "fit": true})).unwrap();
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].length, 48_000);
+
+        let (mut e, t, id) = loop_engine(40_000);
+        let before = e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.length, c.source())).collect::<Vec<_>>();
+        let err = e.execute("clip.loop", &json!({"clips": [id.0], "length": 44_000, "fit": true})).unwrap_err().to_string();
+        assert!(err.contains("48000"), "{err}");
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.iter().map(|c| (c.start, c.length, c.source())).collect::<Vec<_>>(), before);
+    }
+
+    /// A crossfade pair: the loop clip 0..40000 and a partner 36000..56000 overlapping its tail.
+    /// Placed in one paste, so the overlap survives.
+    fn crossfaded_engine() -> (crate::Engine, TrackId, ClipId) {
+        use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Loop"));
+        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 60_000]] };
+        let src = crate::io::add_source(&mut s, "Loop", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let clip = Clip::audio(s.new_clip_id(), "Loop", src, 0, 0, 40_000);
+        let partner = Clip::audio(s.new_clip_id(), "Partner", src, 0, 36_000, 20_000);
+        // Paste keeps overlapping placed clips, so the pair survives as a crossfade.
+        let id = crate::edit::paste(&mut s, t, 0, &[clip, partner], 56_000, false).unwrap()[0];
+        (crate::Engine::new(s), t, id)
+    }
+
+    /// A crossfade partner overlaps the clip's tail, past where the boundary filter looks. The fit
+    /// may shrink the clip but not grow it, or the growth would clear the partner's material.
+    #[test]
+    fn fitting_a_crossfaded_clip_never_grows_over_its_partner() {
+        let (mut e, t, id) = crossfaded_engine();
+        let err = e.execute("clip.loop", &json!({"clips": [id.0], "count": 2, "fit": true})).unwrap_err().to_string();
+        assert!(err.contains("48000") && err.contains("40000"), "{err}");
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(), vec![(0, 40_000), (36_000, 20_000)]);
     }
 }
