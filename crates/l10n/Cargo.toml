@@ -1,0 +1,16 @@
+[package]
+name = "soundcraft-l10n"
+description = "SoundCraft interface languages: the language list, the current language and the translation catalogs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

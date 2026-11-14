@@ -23,6 +23,7 @@ fn cargo(args: &[&str]) -> Result<(), String> {
 /// Layer table: crate name (minus `soundcraft-`) → layer. Apps and xtask are exempt.
 const LAYERS: &[(&str, u8)] = &[
     ("time", 0),
+    ("l10n", 0),
     ("midi", 0),
     ("video", 0),
     ("dsp", 1),
@@ -41,6 +42,8 @@ const STANDALONE: &[&str] = &["time", "midi", "video", "dsp"];
 const UI_CRATES: &[&str] = &["craft-ui", "egui", "eframe", "winit", "egui_kittest", "rfd", "egui-wgpu", "egui_glow"];
 const EXEMPT: &[&str] = &["soundcraft", "soundcraft-cli", "soundcraft-web", "xtask"];
 
+/// Checks every workspace crate against the layer table: registered, and depending only
+/// downward (no UI crates below L6, standalone crates on nothing internal).
 fn layers() -> Result<(), String> {
     let out =
         Command::new("cargo").args(["metadata", "--format-version", "1", "--no-deps"]).current_dir(root()).output().map_err(|e| e.to_string())?;
