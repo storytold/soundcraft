@@ -3,7 +3,7 @@
 use soundcraft_engine::{Engine, io};
 use soundcraft_ui_egui::dialogs::Dialog;
 use soundcraft_ui_egui::sampler_window::SampleRead;
-use soundcraft_ui_egui::{Services, SoundApp};
+use soundcraft_ui_egui::{Services, SoundApp, provider_ui};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -105,11 +105,11 @@ impl Purpose {
 
 /// Files picked or dropped, read asynchronously (browsers can only read files that way) and
 /// handled on the next frame. The browser has no paths: files travel as bytes.
-type Inbox = Rc<RefCell<Vec<(Purpose, String, Vec<u8>)>>>;
+type Inbox = Rc<RefCell<Vec<(u64, Purpose, String, Vec<u8>)>>>;
 
 /// Audio dropped on an instrument track or a Sampler window, its bytes read, waiting for the
 /// next frame to load into that track's sampler.
-type SampleInbox = Rc<RefCell<Vec<(SampleRead, Result<Vec<u8>, String>)>>>;
+type SampleInbox = Rc<RefCell<Vec<(u64, SampleRead, Result<Vec<u8>, String>)>>>;
 
 struct WebShell {
     providers: crate::provider_storage::Runtime,
@@ -128,6 +128,7 @@ impl WebShell {
         };
         let Some(purpose) = purpose else { return };
         self.app.dialogs.open = None;
+        let document = provider_ui::document_id(&self.app);
         let (inbox, ctx) = (self.inbox.clone(), ctx.clone());
         wasm_bindgen_futures::spawn_local(async move {
             let (label, exts) = purpose.filter();
@@ -135,7 +136,7 @@ impl WebShell {
                 return;
             };
             let bytes = file.read().await;
-            inbox.borrow_mut().push((purpose, file.file_name(), bytes));
+            inbox.borrow_mut().push((document, purpose, file.file_name(), bytes));
             ctx.request_repaint();
         });
     }
@@ -145,12 +146,13 @@ impl WebShell {
     fn take_drops(&mut self, ctx: &egui::Context) {
         // In the browser a dropped file's `path()` is only its name: read its bytes instead.
         // Audio dropped on an instrument track or a Sampler window goes to its sampler instead.
+        let document = provider_ui::document_id(&self.app);
         let dropped = self.app.take_dropped_files();
         for read in self.app.take_sample_reads() {
             let (samples, ctx) = (self.samples.clone(), ctx.clone());
             wasm_bindgen_futures::spawn_local(async move {
                 let bytes = read.file.bytes_async().await;
-                samples.borrow_mut().push((read, bytes));
+                samples.borrow_mut().push((document, read, bytes));
                 ctx.request_repaint();
             });
         }
@@ -160,12 +162,28 @@ impl WebShell {
             wasm_bindgen_futures::spawn_local(async move {
                 match f.bytes_async().await {
                     Ok(bytes) => {
-                        inbox.borrow_mut().push((Purpose::of(&name), name, bytes));
+                        inbox.borrow_mut().push((document, Purpose::of(&name), name, bytes));
                         ctx.request_repaint();
                     }
                     Err(e) => log::error!("couldn't read dropped file {name}: {e}"),
                 }
             });
+        }
+    }
+
+    /// A file picker or dropped-file read can finish after a different session opens.
+    fn finish_reads(&mut self) {
+        let pending = std::mem::take(&mut *self.inbox.borrow_mut());
+        for (document, purpose, name, bytes) in pending {
+            if document == provider_ui::document_id(&self.app) {
+                self.handle(purpose, name, bytes);
+            }
+        }
+        let samples = std::mem::take(&mut *self.samples.borrow_mut());
+        for (document, read, bytes) in samples {
+            if document == provider_ui::document_id(&self.app) {
+                self.app.load_sample_bytes(&read, bytes);
+            }
         }
     }
 
@@ -201,14 +219,7 @@ impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.take_drops(ctx);
         self.take_path_prompt(ctx);
-        let pending = std::mem::take(&mut *self.inbox.borrow_mut());
-        for (purpose, name, bytes) in pending {
-            self.handle(purpose, name, bytes);
-        }
-        let samples = std::mem::take(&mut *self.samples.borrow_mut());
-        for (read, bytes) in samples {
-            self.app.load_sample_bytes(&read, bytes);
-        }
+        self.finish_reads();
         self.app.logic(ctx);
         self.providers.tick(&mut self.app, ctx);
         // A prompt opened during this frame becomes a picker on the next one.
@@ -223,6 +234,48 @@ impl eframe::App for WebShell {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.app.ui(ui);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soundcraft_ui_egui::file_providers::Resource;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn late_audio_read_cannot_import_into_a_replaced_provider_session() -> Result<(), String> {
+        let app = SoundApp::new(Engine::default(), None, Services::default());
+        let mut shell = WebShell { app, providers: Default::default(), inbox: Rc::default(), samples: Rc::default() };
+        let old_document = provider_ui::document_id(&shell.app);
+        let audio = craft_audio::AudioBuffer { sample_rate: shell.app.engine.session().sample_rate.hz(), channels: vec![vec![0.0, 0.25]] };
+        let options = craft_audio::EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(craft_audio::BitDepth::Float32);
+        let wav = craft_audio::encode(&audio, &options).map_err(|error| error.to_string())?;
+
+        let name = "Incoming.scraftz";
+        let incoming = soundcraft_model::Session { name: "Incoming".into(), ..Default::default() };
+        let bundle = io::session_provider_bundle(&incoming).map_err(|error| error.to_string())?;
+        let host = shell.app.services.file_providers.clone();
+        host.set_session("0123456789abcdef0123456789abcdef".into())?;
+        let connection = host.connect("host".into(), "Test".into(), "account".into())?;
+        host.set_resources(&connection, vec![Resource { id: "incoming".into(), name: name.into(), updated_at: String::new() }])?;
+        let open = host.request_open("incoming")?;
+        host.open(open, name.into(), bundle)?;
+        let ctx = egui::Context::default();
+        ctx.run_ui(Default::default(), |ui| shell.providers.tick(&mut shell.app, ui.ctx())).drop_without_applying_deltas();
+        let new_document = provider_ui::document_id(&shell.app);
+        assert_ne!(new_document, old_document, "the provider must replace the session before the pending read completes");
+        assert_eq!(shell.app.engine.session().name, "Incoming");
+
+        shell.inbox.borrow_mut().push((old_document, Purpose::Audio, "Late.wav".into(), wav.clone()));
+        shell.finish_reads();
+        assert!(shell.app.engine.session().sources.is_empty());
+        assert!(!shell.app.engine.is_dirty());
+
+        shell.inbox.borrow_mut().push((new_document, Purpose::Audio, "Current.wav".into(), wav));
+        shell.finish_reads();
+        assert_eq!(shell.app.engine.session().sources.len(), 1, "the same bytes must import for the active session");
+        assert!(shell.app.engine.is_dirty());
+        Ok(())
     }
 }
 

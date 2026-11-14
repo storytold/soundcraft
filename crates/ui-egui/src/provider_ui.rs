@@ -75,6 +75,8 @@ pub fn apply_result(
     {
         app.services.file_providers.bind(capture, resource);
         app.engine.acknowledge_external_save(snapshot);
+        // The provider now owns the saved checkpoint. Revert cannot read its old device copy.
+        app.engine.path = None;
         durable = true;
     } else if status == "failed" {
         app.ui.status = "Provider delivery/save failed. Your project and changes are still open.".into();
@@ -293,6 +295,33 @@ mod provider_routing_tests {
         assert!(app.dialogs.provider_after_save.is_none());
         assert!(host.take_events().is_empty(), "coalescing an in-flight snapshot must not emit a fresh chooser");
         assert!(!app.quit_requested);
+    }
+
+    #[test]
+    fn durable_provider_save_detaches_the_device_revert_path() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let host = app.services.file_providers.clone();
+        host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+        host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+        let old_path = "Old device copy.scraft".to_owned();
+        app.engine.path = Some(old_path.clone());
+        app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+        let snapshot = app.engine.session_arc();
+        let capture =
+            crate::file_providers::Capture { doc: app.doc_epoch, revision: app.engine.revision, name: "Provider.scraftz".into(), save_as: true };
+        let ctx = egui::Context::default();
+
+        apply_result(&mut app, &capture, String::new(), "failed", Some(snapshot.clone()), &ctx);
+        assert_eq!(app.engine.path.as_deref(), Some(old_path.as_str()));
+        app.run("track.new", json!({"count":1,"format":"mono"})).unwrap();
+        let edited = app.engine.session_arc();
+        apply_result(&mut app, &capture, "resource".into(), "saved", Some(snapshot), &ctx);
+
+        assert!(host.bound(app.doc_epoch));
+        assert!(app.engine.path.is_none());
+        assert!(app.engine.is_dirty(), "newer edits must stay dirty after the provider acknowledges the earlier snapshot");
+        assert!(app.run("session.revert", json!({})).unwrap_err().contains("the session has not been saved"));
+        assert!(std::sync::Arc::ptr_eq(&edited, &app.engine.session_arc()));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use super::render::sanitize_name;
-use super::session::decode_source;
+use super::session::{decode_source, decode_source_with_budget};
 use super::{Arc, Engine, EngineError, OsStr, Path, Result, Session, SourceAudio, read_bundle, session_limit, write_file};
 
 // ─── Hosts without a filesystem (the browser) ─────────────────────────────────────────────────
@@ -18,6 +18,10 @@ pub(super) struct BundleLimits {
 }
 
 const BUNDLE_LIMITS: BundleLimits = BundleLimits { entries: 10_000, bytes: 1 << 30 };
+const PROVIDER_BUNDLE_LIMITS: BundleLimits = BundleLimits { entries: 10_000, bytes: 80 * 1024 * 1024 };
+// The provider writer stores float32 samples without compression. Limit the reader's
+// aggregate resident samples to the same byte budget, including rate conversion.
+const PROVIDER_AUDIO_SAMPLES: usize = (PROVIDER_BUNDLE_LIMITS.bytes as usize) / size_of::<f32>();
 
 /// The session as a bundle: `<name>.scraft` plus every source's audio as 32-bit float WAV under
 /// `Audio Files/` (stored, not compressed: audio barely compresses). Returns the bytes and the
@@ -29,7 +33,7 @@ pub fn session_bundle(session: &Session) -> Result<(Vec<u8>, Session)> {
 /// Lossless provider capture: all browser-playable source audio must be resident.
 /// Video references cannot be restored by the web shell and are rejected before claiming a save.
 pub fn session_provider_bundle(session: &Session) -> Result<Vec<u8>> {
-    let limits = BundleLimits { entries: 10_000, bytes: 80 * 1024 * 1024 };
+    let limits = PROVIDER_BUNDLE_LIMITS;
     if session.sources.len().saturating_add(1) > limits.entries {
         return Err(EngineError::Io("Too many provider audio sources".into()));
     }
@@ -79,18 +83,24 @@ pub(super) fn save_session_bundle(e: &mut Engine, path: &str) -> Result<usize> {
 /// `.scraft`, whose audio is then reported missing. Returns the missing media, like
 /// [`open_session`].
 pub fn open_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Vec<String>> {
-    open_session_bytes_within(e, name, bytes, BUNDLE_LIMITS, false)
+    open_session_bytes_within(e, name, bytes, BUNDLE_LIMITS, None)
 }
 
 /// Bounded provider read, rejected before replacing the session if media is missing.
 pub fn open_provider_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Vec<String>> {
-    if bytes.len() > 80 * 1024 * 1024 {
+    if bytes.len() as u64 > PROVIDER_BUNDLE_LIMITS.bytes {
         return Err(EngineError::Io("Provider bundle exceeds 80 MiB".into()));
     }
-    open_session_bytes_within(e, name, bytes, BundleLimits { entries: 10_000, bytes: 80 * 1024 * 1024 }, true)
+    open_session_bytes_within(e, name, bytes, PROVIDER_BUNDLE_LIMITS, Some(PROVIDER_AUDIO_SAMPLES))
 }
 
-fn open_session_bytes_within(e: &mut Engine, name: &str, bytes: &[u8], limits: BundleLimits, strict: bool) -> Result<Vec<String>> {
+fn open_session_bytes_within(
+    e: &mut Engine,
+    name: &str,
+    bytes: &[u8],
+    limits: BundleLimits,
+    mut remaining_audio: Option<usize>,
+) -> Result<Vec<String>> {
     let (text, mut files) = if bytes.starts_with(b"PK\x03\x04") {
         read_bundle(bytes, limits)?
     } else {
@@ -108,6 +118,13 @@ fn open_session_bytes_within(e: &mut Engine, name: &str, bytes: &[u8], limits: B
             continue;
         }
         let audio = match files.remove(&src.path) {
+            Some(bytes) if let Some(remaining) = remaining_audio.as_mut() => {
+                let ext = Path::new(&src.path).extension().and_then(OsStr::to_str);
+                Some(
+                    decode_source_with_budget(&bytes, ext, s.sample_rate.hz(), PROVIDER_AUDIO_SAMPLES, remaining)
+                        .map_err(|err| EngineError::Io(format!("{}: {err}", src.path)))?,
+                )
+            }
             Some(bytes) => match decode_source(&bytes, Path::new(&src.path).extension().and_then(OsStr::to_str), s.sample_rate.hz()) {
                 Ok(audio) => Some(audio),
                 Err(err) => {
@@ -127,7 +144,7 @@ fn open_session_bytes_within(e: &mut Engine, name: &str, bytes: &[u8], limits: B
     }
     // Movies are referenced by path, never copied into a session: none can be found here.
     missing.extend(s.videos.iter().map(|v| v.path.clone()));
-    if strict && !missing.is_empty() {
+    if remaining_audio.is_some() && !missing.is_empty() {
         return Err(EngineError::Io(format!("Provider bundle has {} missing or undecodable media resources", missing.len())));
     }
     let stem = Path::new(name).file_stem().and_then(OsStr::to_str).filter(|x| !x.is_empty()).unwrap_or("Untitled").to_string();
@@ -360,6 +377,26 @@ mod provider_tests {
         assert!(open_provider_session_bytes(&mut opened, "Missing.scraft", source.session().to_json().unwrap().as_bytes()).is_err());
         assert!(Arc::ptr_eq(&before, &opened.session_arc()), "invalid project must not replace the open session");
     }
+    #[test]
+    fn provider_audio_budget_applies_to_the_whole_session() {
+        let source = crate::demo::demo_engine();
+        let (bytes, fresh) = session_bundle(source.session()).unwrap();
+        let total: usize = fresh
+            .sources
+            .iter()
+            .map(|src| {
+                let audio = fresh.pool.get(src.id).unwrap();
+                audio.buffer.channels.iter().map(Vec::len).sum::<usize>()
+            })
+            .sum();
+        let mut target = Engine::default();
+        let previous = target.session_arc();
+        let err = open_session_bytes_within(&mut target, "Song.scraftz", &bytes, PROVIDER_BUNDLE_LIMITS, Some(total - 1)).unwrap_err().to_string();
+        assert!(err.contains("decoded sample budget"), "{err}");
+        assert!(Arc::ptr_eq(&previous, &target.session_arc()));
+        assert!(open_session_bytes_within(&mut target, "Song.scraftz", &bytes, PROVIDER_BUNDLE_LIMITS, Some(total)).is_ok());
+    }
+
     #[test]
     fn saved_snapshot_ack_does_not_clean_later_edits() {
         let mut engine = crate::demo::demo_engine();
