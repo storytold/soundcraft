@@ -1,5 +1,5 @@
 use super::callback::{AudioState, Fault, guarded_block};
-use super::{Arc, AudioConfig, Cmd, Ordering, Plugin, Receiver, Sender, Shared, devices, mark_audio_thread};
+use super::{Arc, AudioConfig, Cmd, Plugin, Receiver, Sender, Shared, devices, mark_audio_thread};
 
 /// Start a freshly built output stream. `false` when the device refuses to start it, so the caller
 /// treats it like a stream that failed to build and tries the next configuration.
@@ -56,6 +56,7 @@ where
     let frame = channels.max(1);
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
+    let rate = f64::from(config.sample_rate);
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
     device.build_output_stream(
         config,
@@ -63,7 +64,7 @@ where
             mark_audio_thread();
             for out in data.chunks_mut(chunk) {
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
-                guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
+                guarded_block(&failed, &guard, s, frame, rate, |d| state.fill(d, channels));
                 for (o, x) in out.iter_mut().zip(s.iter()) {
                     *o = T::from_sample(*x);
                 }
@@ -77,9 +78,7 @@ where
             // stream that must be rebuilt (`StreamInvalidated`), stops playback until the user
             // reconnects; a rerouted default device (`DeviceChanged`) keeps playing on the new
             // route, and an xrun is transient, so neither counts as losing the stream.
-            if devices::stream_lost(&e) {
-                gone.gone.store(true, Ordering::Relaxed);
-            }
+            gone.note_error(&e);
             log::warn!("audio stream error: {e}");
         },
         None,
