@@ -69,3 +69,7 @@ sync_github_name = true
 [people.kk376]
 real_name = "Kushagra Kumar"
 sync_github_name = true
+
+# Display name explicitly chosen by the contributor on 2026-10-19.
+[people.vhhr7]
+display_name = "Vic Herrera (@vhhr)"

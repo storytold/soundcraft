@@ -12,6 +12,7 @@ repository = "https://github.com/storytold/soundcraft"
 
 [workspace.dependencies]
 # internal
+soundcraft-interchange = { path = "crates/interchange" }
 soundcraft-time = { path = "crates/time" }
 soundcraft-midi = { path = "crates/midi" }
 soundcraft-video = { path = "crates/video" }
@@ -43,6 +44,8 @@ proptest = "1"
 
 # audio
 rustfft = "6"
+# AAF interchange: Compound File Binary (structured storage) container reader.
+cfb = "0.15"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
 cpal = "0.18"
