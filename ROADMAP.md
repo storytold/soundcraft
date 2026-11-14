@@ -2,7 +2,7 @@
 
 **Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
 
-> **Last reviewed:** 2026-10-24 · **Last updated:** 2026-10-27 · **Change:** trivial (Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Alt-click returns a plugin parameter to its default, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** minor (strict external-WAV AAF import; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -37,7 +37,7 @@ Detail: [target-app-parity.md](docs/target-app-parity.md#readiness-by-audience).
 Editing, mixing, bouncing, and saving and reopening work end to end. But a Pro Tools user can't
 record from a chosen audio interface at a chosen buffer size (only the default devices, a fixed
 512-sample block, and takes held in RAM). They can't record MIDI from a keyboard (there is no
-MIDI device layer). And they can't bring a session in or hand one back (no AAF/OMF/`.ptx`).
+MIDI device layer). Session interchange is still incomplete: a strict external-WAV AAF import subset works, but AAF export, OMF and `.ptx` do not.
 Readiness (~40 %) sits right at the alpha bar, but a gate failure keeps the app pre-alpha. The
 2026-10-07 estimate ("~65 % overall, 110–150 h to 100 %") counted feature presence. This one
 measures readiness and adds hardware, localization and field bug reports.
@@ -104,7 +104,7 @@ Ranked; the alpha gate, the alpha checklist and the beta plan are in [docs/roadm
 
 1. **Alpha blocker:** audio interfaces: device and buffer-size choice, duplex stream, ASIO; record to disk (G-01, G-06). 35–55 h.
 2. **Alpha blocker:** MIDI devices: record from keyboards, play instruments live, output (G-02). 20–35 h.
-3. **Alpha blocker:** AAF/OMF import and export (G-03). 50–90 h.
+3. **Alpha blocker:** complete AAF/OMF interchange (G-03): strict external-WAV AAF import works; AAF export and OMF import/export remain. 50–90 h.
 4. macOS plugin entitlement (#153), then AU editors (G-05). 1 h for the entitlement (needed for the mix row), then 15–25 h.
 5. Land the open bug-fix PRs and clear the correctness backlog (G-04). 15–25 h.
 6. PR CI running `cargo xtask ci` on three OSes (G-14). 5–10 h.
@@ -122,6 +122,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
+- **2026-11-14:** AAF import supports a strict CompositionMob SourceClip/Filler subset with external mono/stereo PCM WAV media, editable clips and handles, relink and absolute or relative timecode mapping. The reader shares cached object properties, caps retained property data at 128 MiB and rejects duplicate local references before expansion. AAF export, OMF and `.ptx` remain missing. No readiness percentage change.
 - **2026-10-25:** Alt+Shift+E (`view.zoom_toggle_cancel`) and an Alt-click on the Zoom Toggle button cancel Zoom Toggle and keep the current view: the zoom, the scroll and the track heights stay as they are, and the button is no longer lit. The next Zoom Toggle zooms in from that view and goes back to it. No readiness percentage change.
 - **2026-10-25:** Tracks and Groups and the Clip List sit in dock columns that run the Edit window's full height at its left and right edges, with the MIDI Editor under the session view between them; Mix docks Tracks and Groups at its left edge. A panel dragged onto a dock group joins it as a tab, stacks above or below it, or makes a new column; one dragged to an empty window edge makes a dock there. A list with no saved place reopens in its dock, and makes the dock again when it is gone. Preferences and window configurations saved with the earlier split-frame layouts load with the new default layouts and keep their other settings. No readiness percentage change.
 - **2026-10-25:** Auto Pan moves the balance of a stereo track: the left channel's level falls as the position moves right and the right channel's as it moves left, at constant power, and each channel stays on its own side. At the center the track passes unchanged, so a wide or out-of-phase stereo image keeps its width, and the envelope follower follows the louder channel. No readiness percentage change.
@@ -180,6 +181,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-14 | minor | Strict external-WAV AAF import with bounded property caching; remaining interchange work and readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Cancel Zoom Toggle; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: side panels in dock columns; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Auto Pan stereo balance; readiness estimates unchanged |
