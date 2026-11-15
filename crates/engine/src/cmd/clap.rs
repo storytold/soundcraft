@@ -25,12 +25,13 @@ pub fn specs() -> Vec<CommandSpec> {
     )]
 }
 
-/// A built-in plugin's description, else a hosted CLAP (`clap:<id>`), VST3 (`vst3:<class id>`) or
-/// Audio Units (`au:<type>:<subtype>:<manufacturer>`) plugin's.
+/// A built-in plugin's description, else a hosted CLAP (`clap:<id>`), VST3 (`vst3:<class id>`),
+/// JSFX (`jsfx:<path>`) or Audio Units (`au:<type>:<subtype>:<manufacturer>`) plugin's.
 pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
     soundcraft_dsp::plugin_info(id)
         .or_else(|| soundcraft_clap_host::plugin_info(id))
         .or_else(|| soundcraft_vst3_host::plugin_info(id))
+        .or_else(|| soundcraft_jsfx_host::plugin_info(id))
         .or_else(|| soundcraft_au_host::plugin_info(id))
 }
 

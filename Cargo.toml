@@ -19,6 +19,8 @@ soundcraft-video = { path = "crates/video" }
 soundcraft-dsp = { path = "crates/dsp" }
 soundcraft-clap-host = { path = "crates/clap-host" }
 soundcraft-vst3-host = { path = "crates/vst3-host" }
+soundcraft-jsfx-host = { path = "crates/jsfx-host" }
+soundcraft-reapack = { path = "crates/reapack" }
 soundcraft-au-host = { path = "crates/au-host" }
 soundcraft-model = { path = "crates/model" }
 soundcraft-mix = { path = "crates/mix" }
