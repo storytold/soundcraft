@@ -226,6 +226,21 @@ pub fn i64_or(p: &Value, key: &str, d: i64) -> i64 {
     p.get(key).and_then(|v| v.as_i64().or_else(|| v.as_f64().filter(|f| f.is_finite()).map(|f| f.round() as i64))).unwrap_or(d)
 }
 
+/// Like `i64_or` but requires the value to be present and be a valid integer.
+/// Returns `BadParams` if the value is absent, null, or not convertible to an integer.
+pub fn i64_param(p: &Value, cmd: &str, key: &str) -> Result<i64> {
+    let v = p.get(key).ok_or_else(|| bad(cmd, format!("`{key}` required")))?;
+    if v.is_null() {
+        return Err(bad(cmd, format!("`{key}` must not be null")));
+    }
+    v.as_i64()
+        .or_else(|| {
+            let f = v.as_f64()?;
+            if f.is_finite() && f.fract() == 0.0 { Some(f as i64) } else { None }
+        })
+        .ok_or_else(|| bad(cmd, format!("`{key}` must be an integer")))
+}
+
 pub fn bool_or(p: &Value, key: &str, d: bool) -> bool {
     p.get(key).and_then(Value::as_bool).unwrap_or(d)
 }

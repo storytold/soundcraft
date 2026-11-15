@@ -188,7 +188,10 @@ fn cut_time(e: &mut Engine, p: &Value) -> Result<Value> {
     for t in ids {
         crate::edit::separate_all_at(s, t, r.start);
         crate::edit::separate_all_at(s, t, r.end);
-        crate::edit::clear_range(s, t, r, false);
+        // Collect IDs of clips fully inside the range (time operations delete locked clips too).
+        let to_remove: Vec<_> =
+            s.track(t).map(|tr| tr.clips().iter().filter(|c| c.start >= r.start && c.end() <= r.end).map(|c| c.id).collect()).unwrap_or_default();
+        crate::edit::remove_clips(s, &to_remove, false);
         crate::edit::shift_from(s, t, r.end, -r.len());
         if let Some(tr) = s.track_mut(t) {
             for l in &mut tr.automation {

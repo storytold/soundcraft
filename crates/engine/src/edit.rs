@@ -200,18 +200,23 @@ pub fn auto_name_new_clips(s: &mut Session, track: TrackId, old: &HashSet<ClipId
 }
 
 /// Remove material inside `range` on a track. In Shuffle mode later clips move left, up to the
-/// first locked clip (see [`ripple`]). Returns the removed material as clips positioned relative
-/// to `range.start`.
+/// first locked clip (see [`ripple`]). Locked clips inside `range` are not removed; their
+/// extents stay whole. Returns the removed material as clips positioned relative to `range.start`.
 pub fn clear_range(s: &mut Session, track: TrackId, range: Range, shuffle: bool) -> Vec<Clip> {
     if range.is_empty() {
         return Vec::new();
     }
+    // Separate at boundaries first, but skip locked clips so they stay whole.
     separate_at(s, track, range.start);
     separate_at(s, track, range.end);
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return Vec::new() };
     let mut removed = Vec::new();
     pl.clips.retain(|c| {
         if c.start >= range.start && c.end() <= range.end {
+            // Locked clips are barriers: they don't get removed even when fully covered.
+            if locked(c) {
+                return true;
+            }
             let mut r = c.clone();
             r.start -= range.start;
             removed.push(r);
@@ -996,4 +1001,81 @@ pub fn delete_fades(s: &mut Session, track: TrackId, range: Range) -> usize {
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+
+    fn session_with_clip() -> (Session, TrackId) {
+        use soundcraft_model::{ChannelFormat, Source, SourceId, TrackKind};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        s.sources.push(Source {
+            id: SourceId(500),
+            name: "src".into(),
+            path: "src.wav".into(),
+            channels: 1,
+            frames: 10_000,
+            sample_rate: 48_000,
+            format: soundcraft_model::FileFormat::Wav,
+            time_reference: 0,
+            unsaved: false,
+        });
+        let id = s.new_clip_id();
+        if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+            pl.clips.push(Clip::audio(id, "a", SourceId(500), 1000, 1000, 4000));
+        }
+        (s, t)
+    }
+
+    #[test]
+    fn clear_range_preserves_locked_clips() {
+        let (mut s, t) = session_with_clip();
+        // Lock the clip.
+        s.find_clip_mut(s.track(t).unwrap().clips()[0].id).unwrap().edit_locked = true;
+        // Clear a range that covers the middle of the locked clip.
+        let removed = clear_range(&mut s, t, Range::new(1500, 3500), false);
+        assert!(removed.is_empty(), "locked clips are not removed");
+        let clips = s.track(t).unwrap().clips();
+        assert_eq!(clips.len(), 1, "the clip stays whole");
+        assert_eq!(clips[0].start, 1000);
+        assert_eq!(clips[0].length, 4000);
+    }
+
+    #[test]
+    fn clear_range_removes_non_locked_clips() {
+        let (mut s, t) = session_with_clip();
+        // Clear a range inside the clip: [1500, 3500) is inside [1000, 5000).
+        // After separating at 1500 and 3500, the middle piece [1500, 3500) is removed,
+        // leaving the two remaining pieces [1000, 1500) and [3500, 5000).
+        let removed = clear_range(&mut s, t, Range::new(1500, 3500), false);
+        assert_eq!(removed.len(), 1, "middle piece is removed");
+        let clips = s.track(t).unwrap().clips();
+        assert_eq!(clips.len(), 2, "two edge pieces remain");
+        assert_eq!(clips[0].start, 1000);
+        assert_eq!(clips[0].length, 500); // 1500 - 1000
+        assert_eq!(clips[1].start, 3500);
+        assert_eq!(clips[1].length, 1500); // 5000 - 3500
+    }
+
+    #[test]
+    fn clear_range_with_multiple_clips_locked_and_unlocked() {
+        use soundcraft_model::{ChannelFormat, SourceId, TrackKind};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        // Add three clips at 0-1000, 2000-3000, 4000-5000.
+        let ids = [s.new_clip_id(), s.new_clip_id(), s.new_clip_id()];
+        if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+            pl.clips.push(Clip::audio(ids[0], "a", SourceId(500), 0, 0, 1000));
+            pl.clips.push(Clip::audio(ids[1], "b", SourceId(500), 2000, 2000, 1000));
+            pl.clips.push(Clip::audio(ids[2], "c", SourceId(500), 4000, 4000, 1000));
+        }
+        // Lock the middle clip.
+        s.find_clip_mut(ids[1]).unwrap().edit_locked = true;
+        // Clear a range covering all three.
+        let removed = clear_range(&mut s, t, Range::new(0, 5000), false);
+        assert_eq!(removed.len(), 2, "only non-locked clips are removed");
+        let clips = s.track(t).unwrap().clips();
+        assert_eq!(clips.len(), 1, "only the locked clip remains");
+        assert_eq!(clips[0].start, 2000);
+        assert_eq!(clips[0].length, 1000);
+    }
+}
