@@ -1,6 +1,6 @@
 # Target-app parity: SoundCraft vs Avid Pro Tools
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** trivial (built-in plugin counts; the sampler shipped; previously minor: hours to ~95 % for each audience; full number confirmed as an additive weighted sum) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
+> **Last reviewed:** 2026-11-15 · **Last updated:** 2026-11-15 · **Change:** minor (ROADMAP sync over 27 October–15 November: releases v0.14.0–v0.20.1, clip drawing and edit-mode colours, Edit-window I/O volume and pan, Grid/Nudge time scales, a new-tracks workflow, device/buffer application (#1077), sample-accurate volume automation (#1355), session and format hardening (#892, #890, #995, #993), VST3 multi-out and offline-render support, BWF timecode, a 20 % faster mix bounce (#1144) and craft-libs cutovers; menu breadth and readiness estimates are not re-measured and are unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
 
 The authoritative assessment of how close SoundCraft is to Pro Tools. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimension docs go deeper:
@@ -245,6 +245,7 @@ serializes more, because it needs hands-on testing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-15 | minor | ROADMAP sync over 27 October–15 November: releases v0.14.0–v0.20.1, clip drawing and edit-mode colours, Edit-window I/O volume and pan, Grid/Nudge time scales, a new-tracks workflow, device/buffer application (#1077), sample-accurate volume automation (#1355), session and format hardening (#892, #890, #995, #993), VST3 multi-out and offline-render support, BWF timecode, a 20 % faster mix bounce (#1144) and craft-libs cutovers; menu breadth and readiness estimates are not re-measured and are unchanged |
 | 2026-10-24 | trivial | Built-in plugin counts: 27 processors + 3 instruments on `main`, and 24 + 2 in the 3bc2d92 code snapshot; the sampler (#108) is no longer listed as missing. Percentages unchanged |
 | 2026-10-10 | minor | Readiness-by-audience table: hours to ~95 % for full (950–1,450 h), mainstream (380–600 h) and essentials (110–200 h). The full number is already the additive weighted sum over the written dimension table (40.6 %); method unchanged |
 | 2026-10-10 | minor | Added the mainstream-practitioner (~36 %) and essentials-user (~57 %) numbers with written weights, discounts and user evidence. Checked the full ~40 %: it is the written dimension weights × values (40.6 %), so it doesn't move |
