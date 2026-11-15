@@ -46,7 +46,8 @@ pub(crate) fn processing_order(s: &Session) -> Vec<usize> {
     } else {
         // A cycle keeps the existing bounded ordering for the entire graph, including any
         // independent acyclic branches. Feedback does not have a finite longest-path depth.
-        auxes.sort_by_key(|&i| bounded_aux_depth(s, i));
+        let depths = bounded_aux_depths(s);
+        auxes.sort_by_key(|&i| depths.get(i).copied().unwrap_or(0));
     }
     order.extend(auxes);
     order
@@ -115,32 +116,38 @@ fn aux_output_busses(t: &Track) -> impl Iterator<Item = BusId> + '_ {
         .filter_map(|route| if let Route::Bus(bus) = route { Some(*bus) } else { None })
 }
 
-/// The previous bounded depth calculation, retained unchanged for any cyclic graph.
-fn bounded_aux_depth(s: &Session, i: usize) -> usize {
-    let mut d = 0;
-    let mut cur = vec![i];
-    for _ in 0..8 {
-        let inputs: Vec<&Route> = cur.iter().filter_map(|&k| s.tracks.get(k)).map(|t| &t.mixer.input).collect();
-        let feeders: Vec<usize> = auxes_feeding(s, &inputs);
-        if feeders.is_empty() {
+/// Hop cap for the bounded depth used when the aux graph has a cycle.
+const MAX_BOUNDED_DEPTH: usize = 8;
+
+/// For each track, the bounded depth used for a cyclic graph: the length of the longest chain of
+/// Aux/Folder feeders into it (through a bus its input reads and the feeder's output or a send
+/// writes), capped at [`MAX_BOUNDED_DEPTH`] hops. One pass per hop over the tracks and their bus
+/// writes, so the cost is linear in the routing, not a fresh feeder search per track per
+/// sort comparison.
+fn bounded_aux_depths(s: &Session) -> Vec<usize> {
+    let is_aux = |t: &Track| matches!(t.kind, TrackKind::Aux | TrackKind::Folder);
+    // Tracks with a feeder chain of the current length ending at them (length 0: every aux).
+    let mut reached: Vec<bool> = s.tracks.iter().map(is_aux).collect();
+    let mut depths = vec![0usize; s.tracks.len()];
+    let mut fed = std::collections::HashSet::<BusId>::new();
+    for hop in 1..=MAX_BOUNDED_DEPTH {
+        fed.clear();
+        for (t, _) in s.tracks.iter().zip(&reached).filter(|(t, r)| **r && is_aux(t)) {
+            fed.extend(aux_output_busses(t));
+        }
+        let mut any = false;
+        for ((t, r), d) in s.tracks.iter().zip(reached.iter_mut()).zip(depths.iter_mut()) {
+            *r = matches!(&t.mixer.input, Route::Bus(b) if fed.contains(b));
+            if *r {
+                *d = hop;
+                any = true;
+            }
+        }
+        if !any {
             break;
         }
-        d += 1;
-        cur = feeders;
     }
-    d
-}
-
-fn auxes_feeding(s: &Session, inputs: &[&Route]) -> Vec<usize> {
-    s.tracks
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| matches!(t.kind, TrackKind::Aux | TrackKind::Folder))
-        .filter(|(_, t)| {
-            inputs.iter().any(|r| matches!(r, Route::Bus(_)) && (&&t.mixer.output == r || t.mixer.sends.iter().flatten().any(|sn| &&sn.target == r)))
-        })
-        .map(|(i, _)| i)
-        .collect()
+    depths
 }
 
 /// Implicit solo: an aux is not muted when a soloed track feeds its input bus.
@@ -203,5 +210,82 @@ mod processing_order_tests {
 
         // Both deepest independent returns tie with the cycle at the legacy eight-hop cap.
         assert_eq!(processing_order(&s), vec![9, 8, 7, 6, 5, 4, 3, 2, 0, 1, 10]);
+    }
+
+    /// The per-track feeder search `bounded_aux_depths` replaced, kept as its reference.
+    fn reference_depth(s: &Session, i: usize) -> usize {
+        let mut d = 0;
+        let mut cur = vec![i];
+        for _ in 0..MAX_BOUNDED_DEPTH {
+            let inputs: Vec<&Route> = cur.iter().filter_map(|&k| s.tracks.get(k)).map(|t| &t.mixer.input).collect();
+            let feeders: Vec<usize> = s
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| matches!(t.kind, TrackKind::Aux | TrackKind::Folder))
+                .filter(|(_, t)| {
+                    inputs
+                        .iter()
+                        .any(|r| matches!(r, Route::Bus(_)) && (&&t.mixer.output == r || t.mixer.sends.iter().flatten().any(|sn| &&sn.target == r)))
+                })
+                .map(|(i, _)| i)
+                .collect();
+            if feeders.is_empty() {
+                break;
+            }
+            d += 1;
+            cur = feeders;
+        }
+        d
+    }
+
+    #[test]
+    fn bounded_depths_match_the_per_track_feeder_search() {
+        // A small pseudo-random graph of auxes, folders and audio tracks with cycles, joins,
+        // sends and unrouted inputs.
+        let mut s = Session::default();
+        let busses: Vec<_> = (0..6).map(|i| s.add_bus(&format!("B{i}"), ChannelFormat::Stereo)).collect();
+        let mut x = 12345u32;
+        let mut next = |m: usize| {
+            x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (x >> 16) as usize % m
+        };
+        for i in 0..30 {
+            let kind = [TrackKind::Aux, TrackKind::Folder, TrackKind::Audio][next(3)];
+            let id = s.add_track(kind, ChannelFormat::Stereo, None);
+            let pick = |n: usize| if n < busses.len() { Route::Bus(busses[n]) } else { Route::Main };
+            let (input, output, send) = (pick(next(8)), pick(next(8)), pick(next(8)));
+            let t = s.track_mut(id).unwrap();
+            t.mixer.input = input;
+            t.mixer.output = output;
+            if i % 2 == 0 {
+                t.mixer.sends[0] = Some(SendSlot::new(send));
+            }
+        }
+        let depths = bounded_aux_depths(&s);
+        for (i, (t, depth)) in s.tracks.iter().zip(&depths).enumerate() {
+            if matches!(t.kind, TrackKind::Aux | TrackKind::Folder) {
+                assert_eq!(*depth, reference_depth(&s, i), "track {i}");
+            }
+        }
+        assert!(depths.contains(&MAX_BOUNDED_DEPTH));
+    }
+
+    #[test]
+    fn a_large_cyclic_graph_orders_quickly() {
+        // Thousands of auxes all reading and writing one bus: every aux feeds every other.
+        let mut s = Session::default();
+        let bus = s.add_bus("Loop", ChannelFormat::Stereo);
+        for _ in 0..3000 {
+            let id = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, None);
+            let t = s.track_mut(id).unwrap();
+            t.mixer.input = Route::Bus(bus);
+            t.mixer.output = Route::Bus(bus);
+            t.mixer.sends[0] = Some(SendSlot::new(Route::Bus(bus)));
+        }
+        let start = std::time::Instant::now();
+        let order = processing_order(&s);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "{:?}", start.elapsed());
+        assert_eq!(order, (0..3000).collect::<Vec<_>>());
     }
 }

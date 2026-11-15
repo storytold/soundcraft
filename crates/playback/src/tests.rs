@@ -131,7 +131,7 @@ fn spike_session(spike_at: usize) -> (Arc<Shared>, AudioState, std::sync::mpsc::
     let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
     let mut x = vec![0.01f32; 48_000];
     x[spike_at..spike_at + 32].fill(0.9);
-    s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![x] })));
+    s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![x] })));
     let id = s.new_clip_id();
     s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "x", SourceId(5), 0, 0, 48_000));
     let shared = Arc::new(Shared {
@@ -321,7 +321,7 @@ fn audio_output_state(format: soundcraft_model::ChannelFormat, channels: Vec<Vec
     s.outputs[0].format = format;
     let t = s.add_track(TrackKind::Audio, format, None);
     let frames = channels[0].len();
-    s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels })));
+    s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(craft_audio::AudioBuffer { sample_rate: 48_000, channels })));
     let id = s.new_clip_id();
     s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "output", SourceId(5), 0, 0, frames as i64));
     let shared = Arc::new(Shared {
@@ -427,7 +427,7 @@ fn surround_main_maps_to_device_channels_or_folds_down() {
     s.outputs[0].format = ChannelFormat::Surround51;
     let t = s.add_track(TrackKind::Audio, ChannelFormat::Surround51, None);
     let chans: Vec<Vec<f32>> = (0..6).map(|c| vec![0.1 * (c + 1) as f32; 48_000]).collect();
-    s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: chans })));
+    s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(craft_audio::AudioBuffer { sample_rate: 48_000, channels: chans })));
     let id = s.new_clip_id();
     s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "x", SourceId(5), 0, 0, 48_000));
     let s = Arc::new(s);
@@ -657,10 +657,7 @@ fn locate_while_playing_drops_the_old_position_audio() {
         let mut s = soundcraft_model::Session::default();
         s.edit.click = false;
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
-        s.pool.insert(
-            SourceId(5),
-            Arc::new(SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4800]] })),
-        );
+        s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4800]] })));
         let id = s.new_clip_id();
         let tr = s.track_mut(t).unwrap();
         tr.playlist_mut().unwrap().clips.push(Clip::audio(id, "x", SourceId(5), 0, 0, 4800));

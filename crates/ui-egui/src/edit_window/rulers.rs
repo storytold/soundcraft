@@ -110,7 +110,7 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
                 {
                     let at = snap(&s, sample_at(&s, tl, p.x).max(0));
                     let bpm = s.tempo.tempo_at_tick(s.tempo.samples_to_ticks(at, sr));
-                    app.dialogs.open = Some(crate::dialogs::Dialog::TempoChange { at, bpm });
+                    app.dialogs.set(crate::dialogs::Dialog::TempoChange { at, bpm });
                 }
                 let mut last_label = f32::MIN;
                 for ev in s.tempo.tempos() {
@@ -222,7 +222,8 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
                     } else if resp.clicked()
                         && let Some(m) = hit
                     {
-                        let _ = app.run("markers.recall", json!({"number": m.number}));
+                        let command = if ui.input(|i| i.modifiers.alt) { "markers.delete" } else { "markers.recall" };
+                        let _ = app.run(command, json!({"number": m.number}));
                     }
                 }
             }
