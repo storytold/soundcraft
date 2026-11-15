@@ -28,6 +28,13 @@ pub(crate) fn transport_at(s: &Session, pos: Samples, playing: bool, recording: 
 pub(crate) enum Level<'a> {
     Fixed(f32),
     Lane(&'a AutomationLane, f32),
+    /// A straight line in dB from `start` at sample `from` to `end` at sample `to`, then `end`.
+    Ramp {
+        from: Samples,
+        to: Samples,
+        start: f32,
+        end: f32,
+    },
 }
 
 impl Level<'_> {
@@ -35,6 +42,15 @@ impl Level<'_> {
         match self {
             Level::Fixed(v) => *v,
             Level::Lane(l, default) => l.value_at(pos, *default),
+            Level::Ramp { from, to, start, end } => {
+                if pos <= *from || to <= from {
+                    *start
+                } else if pos >= *to {
+                    *end
+                } else {
+                    *start + (*end - *start) * (pos.saturating_sub(*from) as f64 / to.saturating_sub(*from) as f64) as f32
+                }
+            }
         }
     }
 
@@ -43,6 +59,7 @@ impl Level<'_> {
         match self {
             Level::Fixed(_) => None,
             Level::Lane(l, _) => l.points.get(l.points.partition_point(|p| p.at <= pos)).map(|p| p.at),
+            Level::Ramp { to, .. } => (*to > pos).then_some(*to),
         }
     }
 }

@@ -45,6 +45,10 @@ pub(crate) struct Strip {
     pub(crate) chase: bool,
     pub(crate) muted: bool,
     pub(crate) gr: f32,
+    /// The static fader level (dB) the previous block ended on, so a fader move between blocks
+    /// ramps across the next block instead of stepping. `None` before the first block and while
+    /// volume automation drives the fader.
+    pub(crate) fader_db: Option<f32>,
     /// Per-clip effect chains (Clip Effects) and a scratch buffer to render clips into.
     pub(crate) clip_fx: HashMap<u64, ClipFx>,
     clipbuf: Vec<Vec<f32>>,
@@ -143,6 +147,7 @@ impl Strip {
             chase: true,
             muted: false,
             gr: 0.0,
+            fader_db: None,
             clip_fx: HashMap::new(),
             clipbuf: Vec::new(),
             latency: 0,
@@ -356,7 +361,10 @@ fn run_inserts(t: &Track, strip: &mut Strip, blk: Block, transport: &Transport) 
     strip.latency = latency.min(MAX_LATENCY);
 }
 
-/// Fader gain (volume, trim and VCA automation), read at every sample of the block.
+/// Fader gain (volume, trim and VCA automation), read at every sample of the block. A static
+/// fader that moved since the previous block (a fader drag during playback) ramps linearly in dB
+/// across this block from its previous level, so the change does not step at the block boundary.
+/// A fresh strip (every offline bounce) has no previous level and renders as before.
 fn apply_fader(s: &Session, t: &Track, strip: &mut Strip, blk: Block) {
     let Block { pos, frames, .. } = blk;
     // Trim automation (an offset on top of the volume curve).
@@ -376,7 +384,17 @@ fn apply_fader(s: &Session, t: &Track, strip: &mut Strip, blk: Block) {
             strip.muted = true;
         }
     }
-    let levels = if strip.muted { [Level::Fixed(-144.0), Level::Fixed(0.0), Level::Fixed(0.0)] } else { [volume_level(t), trim, vca_level] };
+    let mut volume = volume_level(t);
+    if let Level::Fixed(db) = volume {
+        if let Some(previous) = strip.fader_db.filter(|p| *p != db && p.is_finite() && db.is_finite()) {
+            let to = pos.saturating_add(i64::try_from(frames.saturating_sub(1)).unwrap_or(i64::MAX));
+            volume = Level::Ramp { from: pos, to, start: previous, end: db };
+        }
+        strip.fader_db = Some(db);
+    } else {
+        strip.fader_db = None;
+    }
+    let levels = if strip.muted { [Level::Fixed(-144.0), Level::Fixed(0.0), Level::Fixed(0.0)] } else { [volume, trim, vca_level] };
     apply_gain(&levels, pos, frames, 12.0, &mut strip.buf);
 }
 

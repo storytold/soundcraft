@@ -257,6 +257,7 @@ impl MixEngine {
             }
             s.held.clear();
             s.chase = true;
+            s.fader_db = None;
             s.align.clear();
             s.align_pre.clear();
             s.out_extra.clear();
@@ -403,13 +404,15 @@ impl MixEngine {
     /// Silence what a seek leaves ringing, sync to the session and clear the block's accumulators.
     fn begin_block(&mut self, s: &Session, pos: Samples, frames: usize) {
         if pos != self.last_end {
-            // Seek: silence held notes and ringing plugins.
+            // Seek: silence held notes and ringing plugins. A fader moved while stopped or before
+            // the jump starts at its new level rather than ramping from the old position.
             for st in self.strips.values_mut() {
                 if let Some(i) = &mut st.instrument {
                     i.plugin.all_notes_off();
                 }
                 st.held.clear();
                 st.chase = true;
+                st.fader_db = None;
             }
         }
         self.last_end = pos.saturating_add(frames as i64);
