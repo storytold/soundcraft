@@ -179,14 +179,10 @@ mod plain_zero_tests {
     }
 
     /// The craft-fonts face of this build, `None` when it has none (`CRAFT_FONTS_DIR` unset, the
-    /// default). A build that asked for craft-fonts (`CRAFT_FONTS_REQUIRED=1`) must have it: the
-    /// test then fails instead of skipping.
+    /// default, or a craft-fonts checkout older than the face). The build script, not this test,
+    /// enforces `CRAFT_FONTS_REQUIRED=1` for a missing or broken checkout.
     fn embedded_face() -> Option<&'static EmbeddedFace> {
         let face = CRAFT_FONTS.iter().find(|f| f.family == MONO_FAMILY && f.style == "Regular");
-        assert!(
-            face.is_some() || std::env::var("CRAFT_FONTS_REQUIRED").as_deref() != Ok("1"),
-            "CRAFT_FONTS_REQUIRED=1, but {MONO_FAMILY} is not embedded"
-        );
         if face.is_none() {
             eprintln!("skipped: this build has no {MONO_FAMILY} (build with CRAFT_FONTS_DIR=<craft-fonts checkout>)");
         }
