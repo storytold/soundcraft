@@ -327,12 +327,13 @@ fn send_level_scale(ui: &mut Ui, db: f32) {
 
 /// What the send menu's footer was used for.
 enum SendFooter {
-    NewBus,
+    /// A new bus in this format (`mono` or `stereo`), with the send going to it.
+    NewBus(&'static str),
     RemoveSend,
 }
 
 /// The send's destination menu: a title and the bus search on top, the matching buses in a list
-/// that scrolls, "new bus..." (and "Remove send" for an existing send) fixed under it.
+/// that scrolls, "new mono bus" / "new stereo bus" (and "Remove send" for an existing send) fixed under it.
 /// `current` is the send's destination and its name, if the slot has a send.
 fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: TrackId, slot: usize, current: Option<(Route, String)>) {
     let which = (b'A' + slot as u8) as char;
@@ -376,9 +377,11 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
             })
         },
         |ui| {
-            if ui.button("new bus...").clicked() {
-                ui.close();
-                return Some(SendFooter::NewBus);
+            for format in ["mono", "stereo"] {
+                if ui.button(format!("new {format} bus")).clicked() {
+                    ui.close();
+                    return Some(SendFooter::NewBus(format));
+                }
             }
             if has_send && ui.button("Remove send").clicked() {
                 ui.close();
@@ -401,7 +404,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
         show_new_send(app);
     }
     match footer {
-        Some(SendFooter::NewBus) => {
+        Some(SendFooter::NewBus(format)) => {
             let busses = &app.engine.session().busses;
             let mut n = busses.len() + 1;
             while busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(&format!("Bus {n}")))
@@ -409,7 +412,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
             {
                 n += 1;
             }
-            if app.run("mix.new_bus", json!({"name": format!("Bus {n}")})).is_ok()
+            if app.run("mix.new_bus", json!({"name": format!("Bus {n}"), "format": format})).is_ok()
                 && app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": format!("Bus {n}")})).is_ok()
             {
                 show_new_send(app);
@@ -427,6 +430,7 @@ mod tests {
     use super::*;
     use crate::Services;
     use egui_kittest::{Harness, kittest::Queryable};
+    use soundcraft_model::ChannelFormat;
 
     /// Filtering the destination list to nothing shrinks the menu; clearing the filter grows it
     /// back, with the search field in the same place and the footer under the list.
@@ -460,7 +464,7 @@ mod tests {
         let field = |h: &Harness<'_, (SoundApp, TrackId)>| h.get_by_role(egui::accesskit::Role::TextInput).rect();
         let footer = |h: &Harness<'_, (SoundApp, TrackId)>| h.get_by_label("Remove send").rect();
         let (search, full) = (field(&h), footer(&h));
-        assert!(h.query_by_label("new bus...").is_some(), "the footer lists new bus...");
+        assert!(h.query_by_label("new stereo bus").is_some(), "the footer offers a new stereo bus");
         assert!(full.top() > search.bottom() + 150.0, "the list sits between the search and the footer: {search:?} {full:?}");
 
         h.get_by_role(egui::accesskit::Role::TextInput).type_text("zzzz");
@@ -521,7 +525,7 @@ mod tests {
         assert_eq!(app.ui.send_window, Some((kick, 0)), "the new send's window is open");
     }
 
-    /// So does a send made with "new bus...".
+    /// So does a send made with "new stereo bus".
     #[test]
     fn a_send_to_a_new_bus_opens_its_send_window() {
         let _palette = crate::theme::lock_test_palette();
@@ -529,11 +533,30 @@ mod tests {
         h.run();
         h.get_by_label("Send A for Kick").click();
         h.run();
-        h.get_by_label("new bus...").click();
+        h.get_by_label("new stereo bus").click();
         h.run();
         let (app, _) = h.state();
         assert!(app.engine.session().track(kick).and_then(|t| t.mixer.sends.first().cloned().flatten()).is_some(), "the send was created");
         assert_eq!(app.ui.send_window, Some((kick, 0)), "the new send's window is open");
+    }
+
+    /// #1388: the send menu asks for mono or stereo, and the new bus has the format picked.
+    #[test]
+    fn a_new_bus_from_the_send_menu_is_mono_or_stereo_as_picked() {
+        let _palette = crate::theme::lock_test_palette();
+        for (label, format) in [("new mono bus", ChannelFormat::Mono), ("new stereo bus", ChannelFormat::Stereo)] {
+            let (mut h, kick) = kick_send_harness(false);
+            h.run();
+            h.get_by_label("Send A for Kick").click();
+            h.run();
+            h.get_by_label(label).click();
+            h.run();
+            let (app, _) = h.state();
+            let s = app.engine.session();
+            let send = s.track(kick).and_then(|t| t.mixer.sends.first().cloned().flatten()).unwrap();
+            let bus = s.busses.iter().find(|b| Route::Bus(b.id) == send.target).unwrap();
+            assert_eq!(bus.format, format, "{label} makes a bus in that format");
+        }
     }
 
     /// Moving an existing send to another bus keeps the Send window as it was.
