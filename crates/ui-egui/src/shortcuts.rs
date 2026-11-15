@@ -475,6 +475,20 @@ pub fn shortcut_label(s: &str, mac: bool) -> String {
     s.split('+').map(|p| if p == "Cmd" { "Ctrl" } else { p }).collect::<Vec<_>>().join("+")
 }
 
+/// The label shown for a shortcut: the key names are translated, so "Space" can read as the
+/// local name of that key.
+pub fn display_shortcut(s: &str, mac: bool) -> String {
+    shortcut_label(s, mac)
+        .split('+')
+        .map(|part| {
+            let key = format!("key:{part}");
+            let translated = crate::localization::text(&key);
+            if translated == key { part.to_owned() } else { translated.to_owned() }
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
 /// Mac Control chords that `fixed` also maps to Ctrl off macOS.
 const PC_CTRL_CHORDS: [&str; 4] = ["Ctrl+Up", "Ctrl+Down", "Ctrl+Shift+Up", "Ctrl+Shift+Down"];
 
