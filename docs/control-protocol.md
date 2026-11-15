@@ -45,6 +45,7 @@ Errors: `{"id": 1, "ok": false, "error": "bad parameters for `mix.volume`: no tr
 | `session.inspect` | `{detail?: "summary"|"full"}` | The document: tracks, clips (with times), inserts (+params when full), sends, routing, automation, markers, groups, busses, sources (`loaded` true when decoded audio is in the pool), selection, zoom (`samples_per_px`, `scroll`), transport, undo label. |
 | `ui.inspect` | `{}` | UI state (`window`, panels, dialogs), window size, playing/position, audio device, and `edit_layout` (timeline rect and every track row's rect, for clicking). |
 | `ui.set` | any `UiState` fields | e.g. `{"window": "Mix", "narrow_mix": true}`. |
+| `ui.language` | `{language?}` | The interface language: `{"language": "zh-Hans"}` switches live (menus, toolbar, dialogs); without params, returns the current language and the supported list. The choice is saved with the other preferences. |
 | `ui.menu.list` | `{}` | Every catalog menu path and the command that implements it (or null). |
 | `ui.menu.invoke` | `{path}` or `{id}` | Like clicking the menu item: may open its dialog (e.g. `"Track > New..."`). |
 | `ui.click` | `{x, y, button?, count?, cmd?, shift?, alt?, ctrl?}` | Synthetic click (window points). The reply is sent only after a UI pass has applied the press/release. |
@@ -94,6 +95,11 @@ System to Dark, or on Linux to the desktop's portal setting when one is availabl
 `view.scroll_into_view {"track":"Bass"}` (a track id or name; without it, the first selected
 track) brings the track to the top of the Edit window and the left of the Mix window, the same as
 Scroll Into View in the track name menu. A window not on screen catches up when it is next shown.
+
+The interface language defaults to English. `ui.language {"language":"zh-Hans"}` switches the
+interface to 简体中文 at once; unsupported CJK text on the web build falls back to boxes until a
+bundled font ships. `ui.set` accepts `{"language": …}` too, with the same effect on the next
+frame.
 
 ## Panel docking
 

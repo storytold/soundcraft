@@ -1,4 +1,5 @@
 use super::{SoundApp, Value, json};
+use soundcraft_l10n::t as tr;
 
 /// The speed ramp's choices in the AudioSuite window: param id, label, default, and (value, name) pairs.
 pub(super) const SPEED_RAMP_CHOICES: [(&str, &str, f32, &[(f32, &str)]); 3] = [
@@ -30,19 +31,19 @@ pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
                 "normalize" => {
                     let v = params.entry("target_db".into()).or_insert(-0.1);
                     let mut wide = f64::from(*v);
-                    crate::widgets::FineSlider::new(&mut wide, -24.0..=0.0).text("Peak dB").default_value(-0.1).show(ui);
+                    crate::widgets::FineSlider::new(&mut wide, -24.0..=0.0).text(tr("Peak dB")).default_value(-0.1).show(ui);
                     *v = wide as f32;
                 }
                 "time_stretch" => {
                     let v = params.entry("ratio".into()).or_insert(1.0);
                     let mut wide = f64::from(*v);
-                    crate::widgets::FineSlider::new(&mut wide, 0.25..=4.0).text("Length ratio").default_value(1.0).show(ui);
+                    crate::widgets::FineSlider::new(&mut wide, 0.25..=4.0).text(tr("Length ratio")).default_value(1.0).show(ui);
                     *v = wide as f32;
                 }
                 "pitch_shift" => {
                     let v = params.entry("semitones".into()).or_insert(0.0);
                     let mut wide = f64::from(*v);
-                    crate::widgets::FineSlider::new(&mut wide, -24.0..=24.0).text("Semitones").default_value(0.0).show(ui);
+                    crate::widgets::FineSlider::new(&mut wide, -24.0..=24.0).text(tr("Semitones")).default_value(0.0).show(ui);
                     *v = wide as f32;
                 }
                 "speed_ramp" => {
@@ -57,18 +58,18 @@ pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 }
                 _ => {
-                    ui.label("No parameters.");
+                    ui.label(tr("No parameters."));
                 }
             }
         }
         ui.ctx().memory_mut(|m| m.data.insert_temp(key, params.clone()));
         let hint = if soundcraft_dsp::is_generator(&process) {
-            "Fills the selection on the selected tracks with a new clip."
+            tr("Fills the selection on the selected tracks with a new clip.")
         } else {
-            "Processes the selected clips and replaces them with rendered audio."
+            tr("Processes the selected clips and replaces them with rendered audio.")
         };
         ui.label(egui::RichText::new(hint).small());
-        if ui.button(egui::RichText::new("Render").strong()).clicked() {
+        if ui.button(egui::RichText::new(tr("Render")).strong()).clicked() {
             let p: serde_json::Map<String, Value> = params.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
             let _ = app.run("audiosuite.process", json!({"process": process, "params": p}));
         }

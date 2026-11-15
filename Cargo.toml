@@ -14,6 +14,7 @@ repository = "https://github.com/storytold/soundcraft"
 craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
 # internal
 soundcraft-time = { path = "crates/time" }
+soundcraft-l10n = { path = "crates/l10n" }
 soundcraft-midi = { path = "crates/midi" }
 soundcraft-video = { path = "crates/video" }
 soundcraft-dsp = { path = "crates/dsp" }
