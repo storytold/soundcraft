@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-04 · **Change:** trivial (G-04: volume automation read at every sample, #1354; previously trivial: G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-15 · **Change:** trivial (G-04: Clip Looping Number of Loops accepts up to 1000 loops, crossfade still open; previously trivial: G-04: volume automation read at every sample, #1354) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -108,8 +108,7 @@ including surround channels, instead of repeating channel zero. Clip edits, sour
 Undo/Redo and save/reopen are covered by regression tests; missing or empty media fails atomically.
 
 **Open (2026-10-25):** the Clip Looping dialog (#1030) has no option to crossfade the loops into
-each other, and its Number of Loops field stops at 512, while Loop Length and Loop Until End of
-Session or Next Clip make up to 1000 loops.
+each other.
 
 Open on 2026-10-10 (several have PRs open):
 editing #3, #5, #140, #144; clip/session #86 (PR #123), #88 (PR #130), #91 (PR #124), #92 (PR #132);
@@ -232,6 +231,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-15 | trivial | G-04 shrunk: Clip Looping Number of Loops accepts up to 1000 loops like length and fill; missing crossfade still open |
 | 2026-11-04 | trivial | G-04: track and master volume automation read at every sample, so breakpoints act on their own sample in any block size (#1354); estimates unchanged |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-25 | trivial | G-01: `setup.playback_engine` and `setup.hardware` apply the device and buffer in the desktop app; headless returns `applied: false` |
