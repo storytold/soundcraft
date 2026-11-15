@@ -1,5 +1,5 @@
 use super::automation::{automation_id, breakpoint_at, plugin_range, shown_automation};
-use super::clips::{clip_name_height, fade_control_position};
+use super::clips::fade_control_position;
 use super::drag::{drag_snap, fade_curve_drag_value, fade_drag_range, spot_or_run};
 use super::layout::{sample_at, x_of};
 use super::{
@@ -9,9 +9,10 @@ use super::{
 
 // ---- interaction -----------------------------------------------------------------------------
 
+/// Apply snapping when the current edit mode or Snap to Grid option enables it.
 pub(super) fn snap(s: &Session, at: Samples) -> Samples {
     let on = s.edit.edit_mode.is_grid() || s.edit.flag(ops::SNAP_TO_GRID);
-    if on { s.edit.grid.snap(at, s.sample_rate, &s.tempo, s.frame_rate) } else { at }
+    if on { s.snap_to_grid(at) } else { at }
 }
 
 pub(super) fn clip_at(track: &Track, at: Samples) -> Option<&Clip> {
@@ -23,7 +24,7 @@ fn fade_handle_at(s: &Session, tl: Rect, lane: Rect, clip: &Clip, p: Pos2) -> Op
     if clip.length <= 0 || clip.end() <= clip.start {
         return None;
     }
-    let y = lane.min.y + 1.0 + clip_name_height(s, lane);
+    let y = lane.min.y + 1.0;
     [(true, clip.fade_in), (false, clip.fade_out)]
         .into_iter()
         .filter(|(_, fade)| fade.len > 0)
@@ -54,7 +55,7 @@ pub(super) fn fade_midpoint(s: &Session, tl: Rect, lane: Rect, clip: &Clip, fade
     if b - a < 32.0 {
         return None;
     }
-    let body = Rect::from_min_max(pos2(a, lane.min.y + 1.0 + clip_name_height(s, lane)), pos2(b, lane.max.y - 1.0));
+    let body = Rect::from_min_max(pos2(a, lane.min.y + 1.0), pos2(b, lane.max.y - 1.0));
     let p = fade_control_position(fade, a, b, body);
     lane.contains(p).then_some(p)
 }
@@ -276,7 +277,7 @@ fn start_gesture(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::
     {
         let fade = if fade_in { c.fade_in } else { c.fade_out };
         let anchor = (origin.y, fade.gain(0.5));
-        let height = (lane.height() - 2.0 - clip_name_height(s, lane)).max(1.0);
+        let height = (lane.height() - 2.0).max(1.0);
         app.gesture = Some(Gesture::FadeCurve { clip: c.id, fade_in, curvature: fade_curve_drag_value(fade, anchor, height, p.y), anchor, height });
         ui.ctx().request_repaint();
     } else if resp.drag_started()
@@ -355,14 +356,20 @@ fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Res
                     ids.push(c.id.0);
                     let _ = app.run("edit.select", json!({"clips": ids}));
                     if s.edit.edit_mode == EditMode::Spot {
-                        app.dialogs.open = Spot::clips(s, vec![c.id], None, 0).map(Dialog::Spot);
+                        match Spot::clips(s, vec![c.id], None, 0) {
+                            Some(spot) => app.dialogs.set(Dialog::Spot(spot)),
+                            None => app.dialogs.open = None,
+                        }
                     }
                 }
             }
             Tool::Trim if s.edit.edit_mode == EditMode::Spot && hit.is_some() => {
                 if let Some(c) = &hit {
                     let start = at - c.start < c.end() - at;
-                    app.dialogs.open = Spot::trim(s, c.id, start, if start { c.start } else { c.end() }).map(Dialog::Spot);
+                    match Spot::trim(s, c.id, start, if start { c.start } else { c.end() }) {
+                        Some(spot) => app.dialogs.set(Dialog::Spot(spot)),
+                        None => app.dialogs.open = None,
+                    }
                 }
             }
             Tool::Zoom => {

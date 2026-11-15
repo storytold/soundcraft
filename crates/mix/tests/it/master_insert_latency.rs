@@ -1,7 +1,7 @@
 //! Delay compensation covers the inserts of the master faders: a bounce of the main mix lines up
 //! with the same mix without them.
 
-use soundcraft_audio_io::AudioBuffer;
+use craft_audio::AudioBuffer;
 use soundcraft_mix::{MixEngine, render_range};
 use soundcraft_model::{ChannelFormat, Clip, Insert, Route, Session, SourceAudio, SourceId, TrackKind};
 use soundcraft_time::Range;

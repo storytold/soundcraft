@@ -11,14 +11,14 @@ repository.workspace = true
 default = []
 # Frame-parallel H.264 and slice-parallel ProRes decoding (rayon). Off by default: SoundCraft
 # decodes on its own background thread and only needs one picture at a time.
-threads = ["dep:rayon"]
+threads = ["craft-video/threads"]
 
 [dependencies]
 craft-media.workspace = true
+craft-video.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 image = { workspace = true, features = ["jpeg"] }
-rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true

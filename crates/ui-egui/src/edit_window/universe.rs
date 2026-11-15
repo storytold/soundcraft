@@ -1,3 +1,4 @@
+use super::overlay::playhead_colour;
 use super::{Color32, Rect, Samples, Sense, Session, SoundApp, Stroke, StrokeKind, Tokens, Track, Ui, json, pos2, rgb, vec2};
 
 /// The Universe's clip blocks for one document revision and area: each track's clips merged into
@@ -82,7 +83,11 @@ pub(super) fn universe(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().rect_stroke(vr, 2.0, Stroke::new(1.5, Tokens::current().universe_view), StrokeKind::Outside);
     if app.is_playing() {
         let x = r.min.x + app.position() as f32 / total * r.width();
-        ui.painter().line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(1.0, Tokens::current().playhead));
+        let line = [pos2(x, r.min.y), pos2(x, r.max.y)];
+        // The Universe paints clips in their raw track colours, some as light as the neutral playback line: a dark
+        // edge on each side keeps it readable over all of them.
+        ui.painter().line_segment(line, Stroke::new(3.0, Color32::from_black_alpha(160)));
+        ui.painter().line_segment(line, Stroke::new(1.0, playhead_colour(&Tokens::current(), app.engine.transport.recording)));
     }
     let resp = ui.interact(r, ui.scope_id().with("universe"), Sense::click_and_drag());
     if let Some(p) = resp.interact_pointer_pos()

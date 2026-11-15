@@ -1,4 +1,4 @@
-//! Event-menu operation windows: Beat Detective, Tempo Operations, Time Operations, MIDI
+//! Event-menu operation windows: Beat Analysis, Tempo Operations, Time Operations, MIDI
 //! Operations and MIDI Real-Time Properties. Each is a small form over engine commands.
 
 use crate::SoundApp;
@@ -88,13 +88,13 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     rtp(app, ctx);
 }
 
-/// Beat Detective window: sensitivity, separate and set-tempo options, Analyze and Apply results, and Identify Beat.
+/// Beat Analysis window: sensitivity, separate and set-tempo options, Analyze and Apply results, and Identify Beat.
 fn beat_detective(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_beat_detective;
     if !open {
         return;
     }
-    egui::Window::new("Beat Detective").open(&mut open).default_size(vec2(360.0, 220.0)).show(ctx, |ui| {
+    egui::Window::new("Beat Analysis").open(&mut open).default_size(vec2(360.0, 220.0)).show(ctx, |ui| {
         ui.label("Analyses the edit selection on the selected tracks.");
         ui.add(egui::Slider::new(&mut app.ops.beat_sensitivity, 0.0..=1.0).text("Sensitivity"));
         crate::widgets::checkbox(ui, &mut app.ops.beat_separate, "Separate clips at detected beats");

@@ -1,6 +1,7 @@
+use craft_audio::{AudioBuffer, BitDepth, EncodeOptions};
 use serde_json::json;
-use soundcraft_audio_io::{AudioBuffer, BitDepth, EncodeOptions, FileFormat};
 use soundcraft_engine::{Engine, io};
+use soundcraft_model::FileFormat;
 use soundcraft_model::{ChannelFormat, Clip, ClipContent, Insert, Route, SendSlot, Session, TrackId, TrackKind};
 use soundcraft_time::{Range, SampleRate};
 use std::sync::Arc;
@@ -52,7 +53,7 @@ fn commit_keeps_every_renderable_exact_format_and_processed_channel_order() {
         let committed = commit(&mut e, track);
         assert_eq!(e.session().track(committed).unwrap().format, format, "{}", format.label());
         let audio = committed_audio(&e, committed);
-        assert_eq!(audio.num_channels(), format.channels(), "{}", format.label());
+        assert_eq!(audio.channels.len(), format.channels(), "{}", format.label());
         assert_eq!(audio.frames(), SIGNAL_FRAMES + 16_000);
         // Existing mono rendering uses a -3 dB center pan followed by SQRT_2 compensation.
         // Model that small baseline gain explicitly, retaining the same strict signal tolerance.
@@ -106,11 +107,11 @@ fn commit_preserves_bus_and_send_audio_after_undo_reopen_and_wav_export() {
         assert_audio_eq(&committed_audio(&reopened, committed).channels, &committed_audio(&e, committed).channels);
         assert_audio_eq(&soundcraft_mix::render_range(reopened.session(), range, 64), &before);
 
-        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+        let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Float32);
         let wav_path = dir.join("mix.wav");
         io::Bounce::new(reopened.session_arc(), &wav_path, range, &opts, None, false, false).unwrap().run().unwrap();
         let wav = std::fs::read(&wav_path).unwrap();
-        let (_, decoded) = soundcraft_audio_io::decode(&wav, Some("wav")).unwrap();
+        let (_, decoded) = craft_audio::decode(&wav, Some("wav")).unwrap();
         assert_audio_eq(&decoded.channels, &before);
         // The WAV extensible mask must describe this layout, not another layout of equal width.
         let fmt_at = wav.windows(4).position(|tag| tag == b"fmt ").unwrap();

@@ -33,7 +33,6 @@ const KNOWN_UNREACHED: &[&str] = &[
     "transport.pause",
     "transport.status",
     "video.offset",
-    "view.sub_counter",
 ];
 
 fn ui_source() -> String {
