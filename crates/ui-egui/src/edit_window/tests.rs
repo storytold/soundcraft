@@ -275,6 +275,25 @@ fn a_cancel_with_zoom_toggle_off_keeps_the_scroll_to_restore() {
     assert_eq!(app.edit_layout.zoom_back, Some(120.0));
 }
 
+/// #1250: each track header has a track height button that lists the presets and sets the height.
+#[test]
+fn the_track_height_button_sets_the_tracks_height() {
+    let mut h = harness(2);
+    h.state_mut().engine.session_mut().edit.selected_tracks.clear();
+    let before = h.state().engine.session().tracks[1].height;
+    assert_ne!(before, TrackHeight::Large);
+    let id = h.state().engine.session().tracks[0].id;
+    let name = h.state().engine.session().tracks[0].name.clone();
+    h.get_by_label(&format!("Track height for {name}")).click();
+    h.run_steps(8);
+    assert!(h.query_by_label("extreme").is_some(), "the presets are listed");
+    h.get_by_label("large").click();
+    h.run_steps(8);
+    let s = h.state().engine.session();
+    assert_eq!(s.track(id).map(|t| t.height), Some(TrackHeight::Large));
+    assert_eq!(s.tracks[1].height, before, "only the clicked track changes");
+}
+
 fn harness(n: usize) -> Harness<'static, SoundApp> {
     let mut engine = soundcraft_engine::Engine::default();
     engine.execute("track.new", &json!({"count": n})).unwrap();

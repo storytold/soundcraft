@@ -203,6 +203,21 @@ pub(super) fn view_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
     }
 }
 
+/// The track height presets with the track's own marked, for `id` (and the rest of the selection
+/// when `id` is selected); Alt adds every shown track, Alt+Shift every selected one.
+pub(crate) fn height_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
+    let s = app.engine.session();
+    let current = s.track(id).map(|t| t.height);
+    let own: Vec<TrackId> = if s.edit.selected_tracks.contains(&id) { s.edit.selected_tracks.iter().copied().collect() } else { vec![id] };
+    for h in TrackHeight::ALL {
+        if ui.selectable_label(current == Some(h), h.label()).clicked() {
+            let tracks = height_targets(app.engine.session(), ui.input(|i| i.modifiers), &own);
+            let _ = app.run("track.height", json!({"tracks": tracks, "height": h.label()}));
+            ui.close();
+        }
+    }
+}
+
 pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     let tid = id.0;
     let items: [(&str, &str); 10] = [
@@ -256,15 +271,7 @@ pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
         let _ = app.run("view.scroll_into_view", json!({"track": id.0}));
     }
     ui.separator();
-    ui.menu_button("Track Height", |ui| {
-        for h in TrackHeight::ALL {
-            if ui.button(h.label()).clicked() {
-                let own: Vec<TrackId> = selection.iter().map(|&t| TrackId(t)).collect();
-                let tracks = height_targets(app.engine.session(), ui.input(|i| i.modifiers), &own);
-                let _ = app.run("track.height", json!({"tracks": tracks, "height": h.label()}));
-            }
-        }
-    });
+    ui.menu_button("Track Height", |ui| height_menu(app, ui, id));
     ui.menu_button("Track Color", |ui| {
         for (i, c) in soundcraft_model::TRACK_COLORS.iter().enumerate() {
             let (r, resp) = ui.allocate_exact_size(vec2(120.0, 14.0), Sense::click());

@@ -1,5 +1,5 @@
 use super::layout::STRIP_W;
-use super::tracks::{click_track, folder_depth, height_targets, in_edit_window, track_context_menu, view_label, view_menu};
+use super::tracks::{click_track, folder_depth, height_menu, height_targets, in_edit_window, track_context_menu, view_label, view_menu};
 use super::{
     Align2, AutoParam, Color32, Gesture, Pos2, Rect, Sense, Shape, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold,
     groove, json, level_pos, meter_pos, pos2, raised_key, regular, rgb, shade, vec2,
@@ -99,6 +99,21 @@ fn strip_buttons(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
         }
     } else {
         egui::Popup::menu(&rresp.on_hover_text("Track options")).show(|ui| track_context_menu(app, ui, id));
+    }
+    if h >= 40.0 {
+        let hr = at(3.0, 15.0, 9.0, 9.0);
+        let hresp = ui.interact(hr, ui.scope_id().with(("height", id.0)), Sense::click());
+        let name = format!("Track height for {}", track.name);
+        hresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &name));
+        ui.painter().rect_filled(hr, 1.5, shade(strip, if hresp.hovered() { 0.6 } else { 0.45 }));
+        let (c, stroke) = (hr.center(), Stroke::new(1.0, ink));
+        let (top, bottom) = (hr.min.y + 1.5, hr.max.y - 1.5);
+        ui.painter().line_segment([pos2(c.x, top), pos2(c.x, bottom)], stroke);
+        for (tip, back) in [(top, top + 2.0), (bottom, bottom - 2.0)] {
+            ui.painter().line_segment([pos2(c.x - 2.0, back), pos2(c.x, tip)], stroke);
+            ui.painter().line_segment([pos2(c.x + 2.0, back), pos2(c.x, tip)], stroke);
+        }
+        egui::Popup::menu(&hresp.on_hover_text("Track height")).show(|ui| height_menu(app, ui, id));
     }
     if h >= 40.0 && track.kind.has_playlist() {
         let ar = at(3.0, h - 12.0, 9.0, 9.0);
