@@ -1,10 +1,9 @@
 use super::{MeterDisplay, OutputTrouble, Player, SoundApp, Trouble};
 
 impl SoundApp {
-    /// Whether the meters are live: while playing, and while armed or input-monitored tracks are heard.
+    /// Whether the meters are live: while playing, and while input-monitored tracks are heard.
     pub(crate) fn meters_live(&self) -> bool {
-        self.engine.transport.playing
-            || (self.recorder.is_some() && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm))
+        self.engine.transport.playing || (self.recorder.is_some() && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor))
     }
 
     /// Reopens the audio devices with `cfg` (Setup › Playback Engine › Apply), keeping the
