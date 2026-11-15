@@ -131,6 +131,11 @@ impl SoundApp {
         self
     }
 
+    /// The window title naming the open document and marking unsaved changes.
+    pub fn window_title(&self) -> String {
+        format!("{}{} — SoundCraft", self.engine.session().name, if self.engine.is_dirty() { " •" } else { "" })
+    }
+
     /// Per-frame logic: control channel, transport, document sync.
     ///
     /// eframe calls this once per layout pass and also on logic-only ticks while hidden. Consumed

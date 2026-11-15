@@ -1692,3 +1692,13 @@ fn assert_history_unchanged(
     assert_eq!(app.engine.undo_history(), history);
     assert_eq!(&app.engine.journal, journal);
 }
+
+#[test]
+fn window_title_names_the_document_and_marks_unsaved_changes() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+    app.engine.session_mut().name = "Song".into();
+    app.engine.mark_clean();
+    assert_eq!(app.window_title(), "Song — SoundCraft");
+    app.run("track.new", json!({})).unwrap();
+    assert_eq!(app.window_title(), "Song • — SoundCraft");
+}
