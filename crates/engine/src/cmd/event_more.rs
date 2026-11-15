@@ -140,8 +140,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "Identify Beat...",
             ["Event"],
             Some("Cmd+I"),
-            "{start?, end?, bars?: 1, beats?: 0} — sets the tempo so the selection lasts that many bars",
-            has_range,
+            "{start?, end?, bars?: 1, beats?: 0} — sets the tempo so the selection lasts that many bars; with only a cursor, so the time from the previous tempo change (or the session start) to the cursor does",
+            always,
             identify_beat
         ),
         cmd!(
@@ -726,9 +726,27 @@ fn beat_detective(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"beats": shown, "count": beats.len(), "bpm": bpm, "separated": separated}))
 }
 
+/// The span Identify Beat measures and its first tick: the selection, or with only a cursor, from the
+/// last tempo change before the cursor (or the session start) to the cursor.
+fn identify_span(e: &Engine, p: &Value, id: &str) -> Result<(Range, i64)> {
+    let cursor = range_param(e, id, p)?;
+    if !cursor.is_empty() {
+        let (r, t0, _) = selection_ticks(e, p, id)?;
+        return Ok((r, t0));
+    }
+    let s = e.session();
+    let at = s.tempo.samples_to_ticks(cursor.start, s.sample_rate);
+    let t0 = s.tempo.tempos().iter().map(|x| x.tick).filter(|&t| t < at).max().unwrap_or(0);
+    let r = Range::new(s.tempo.tick_to_samples(t0, s.sample_rate), cursor.start);
+    if t0 >= at || r.is_empty() {
+        return Err(bad(id, "select a range, or put the cursor after the session start or the last tempo change"));
+    }
+    Ok((r, t0))
+}
+
 fn identify_beat(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "event.identify_beat";
-    let (r, t0, _) = selection_ticks(e, p, id)?;
+    let (r, t0) = identify_span(e, p, id)?;
     let s = e.session();
     let m = s.tempo.meter_at_tick(t0);
     let bars = f64_or(p, "bars", 1.0).max(0.0);
@@ -938,6 +956,32 @@ mod tests {
         assert!((e.session().tempo.tempo_at_tick(0) - 120.0).abs() < 1e-9);
         e.execute("event.identify_beat", &json!({"start": 0, "end": 192_000, "bars": 1})).unwrap();
         assert!((e.session().tempo.tempo_at_tick(0) - 60.0).abs() < 1e-9);
+    }
+
+    /// #1384: with only a cursor, Identify Beat measures from the session start to the cursor.
+    #[test]
+    fn identify_beat_with_only_a_cursor() {
+        let mut e = Engine::default();
+        e.session_mut().edit.selection = Range::point(96_000);
+        e.execute("event.identify_beat", &json!({"bars": 1})).unwrap();
+        assert!((e.session().tempo.tempo_at_tick(0) - 120.0).abs() < 1e-9);
+        e.session_mut().edit.selection = Range::point(0);
+        assert!(e.execute("event.identify_beat", &json!({"bars": 1})).is_err(), "no span before the cursor");
+    }
+
+    /// #1384: the cursor span starts at the last tempo change before it, which takes the new tempo.
+    #[test]
+    fn identify_beat_cursor_measures_from_the_last_tempo_change() {
+        let mut e = Engine::default();
+        let bar2 = 4 * TICKS_PER_QUARTER;
+        let s = e.session_mut();
+        s.tempo.set_tempo(0, 120.0).unwrap();
+        s.tempo.set_tempo(bar2, 90.0).unwrap();
+        let from = s.tempo.tick_to_samples(bar2, s.sample_rate);
+        e.execute("event.identify_beat", &json!({"start": from + 192_000, "bars": 1})).unwrap();
+        let t = &e.session().tempo;
+        assert!((t.tempo_at_tick(bar2) - 60.0).abs() < 1e-9, "{}", t.tempo_at_tick(bar2));
+        assert!((t.tempo_at_tick(0) - 120.0).abs() < 1e-9);
     }
 
     #[test]

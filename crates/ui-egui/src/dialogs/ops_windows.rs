@@ -114,7 +114,7 @@ fn beat_detective(app: &mut SoundApp, ctx: &egui::Context) {
         });
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label("Identify Beat: selection is");
+            ui.label("Identify Beat: selection (or up to the cursor) is");
             ui.add(egui::DragValue::new(&mut app.ops.identify_bars).range(1..=64)).accessible_name("Identify beat bars");
             ui.label("bar(s)");
             if ui.button("Set Tempo").clicked() {
