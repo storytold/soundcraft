@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-13 · **Change:** minor (pt-BR catalog: helper-passed tooltips, Edit-window status bar, remove-session prompt, send help text and engine error text at display time) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-13 · **Last updated:** 2026-11-13 · **Change:** minor (pt-BR catalog completed: all fixed UI strings translated and covered by tests; native-speaker review, CJK/RTL font fallbacks and RTL script shaping still pending) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft defaults to English and supports selecting Brazilian Portuguese. The pt-BR catalog
 covers all fixed UI strings found in the current source: command labels, menus, Appearance,
@@ -31,7 +31,7 @@ Language setting), PR #141 (bundled multilingual font fallbacks), issue #67 (Ukr
 | Hindi | hi | 0 (0 %) | ❌ | ❌ no Devanagari font or shaping | no | none | 8–15 | ❌ |
 | Arabic | ar | 0 (0 %) | ❌ | ❌ no RTL layout, no shaping | no | none | 15–25 | ❌ |
 | French | fr | 0 (0 %) — PR #143 pending | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
-| Portuguese (Brazil) | pt-BR | Menu labels and the `localization::text` / `localized_format!` strings in `crates/ui-egui/src` (checked by a test; not native-reviewed; engine errors are translated at display time by `localization::error_text` from templates in the catalog, while low-level library errors and third-party plugin names stay English) | 🟡 partial | Latin ✅ | no | partial | 2–4 | ❌ |
+|| Portuguese (Brazil) | pt-BR | ✅ 100 % of fixed UI strings: menus, dialogs, buttons, tooltips, accessibility names, status bar, formatted messages and engine errors; catalog tests pass | 🟡 partial | Latin ✅ | no (native review pending) | full | 0–4 | ❌ |
 | Indonesian | id | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ❌ |
 | Japanese | ja | 0 (0 %) | ❌ | ❌ no CJK font fallback, no IME testing | no | none | 6–10 | ✅ |
 | German | de | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
