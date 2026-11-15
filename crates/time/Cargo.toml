@@ -1,6 +1,6 @@
 [package]
 name = "soundcraft-time"
-description = "SoundCraft timebases: samples, Bars|Beats, Min:Secs, Timecode, Feet+Frames, tempo and meter maps, grid"
+description = "Compatibility facade for SoundCraft's shared sample-index time API"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,12 +8,7 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
-serde.workspace = true
-thiserror.workspace = true
-
-[dev-dependencies]
-proptest.workspace = true
-serde_json.workspace = true
+craft-time.workspace = true
 
 [lints]
 workspace = true
