@@ -86,7 +86,7 @@ fn a_menu_opens_with_an_empty_search() {
     assert!(h.query_by_label(built_in(false, "reverb")[0].name).is_none(), "Escape closes the menu");
 
     open(&mut h, "Insert B for Vox");
-    let category = format!("{:?}", soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap().category);
+    let category = crate::category_label(soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap().category);
     assert!(h.query_by_label_contains(&category).is_some(), "the old search is gone, so the categories show");
     type_text(&mut h, "zzzz");
     assert!(h.query_by_label("No matches").is_some());
@@ -100,7 +100,7 @@ fn a_menu_opens_with_an_empty_search() {
 fn picks_without_the_search_still_close_the_menu() {
     let first = soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap();
     let other = soundcraft_dsp::plugins().iter().find(|p| p.category == first.category && p.id != first.id).unwrap();
-    let category = format!("{:?}", first.category);
+    let category = crate::category_label(first.category);
     let mut h = harness(vox());
     for (plugin, click) in [(first, egui::PointerButton::Primary), (other, egui::PointerButton::Secondary)] {
         h.get_by_label("Insert C for Vox").click_button(click);

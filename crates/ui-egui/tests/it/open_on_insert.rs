@@ -38,7 +38,7 @@ fn vox_id(h: &Harness<SoundApp>) -> TrackId {
 fn two_effects() -> (String, &'static soundcraft_dsp::PluginInfo, &'static soundcraft_dsp::PluginInfo) {
     let first = soundcraft_dsp::plugins().iter().find(|p| !p.is_instrument).unwrap();
     let other = soundcraft_dsp::plugins().iter().find(|p| p.category == first.category && p.id != first.id).unwrap();
-    (format!("{:?}", first.category), first, other)
+    (crate::category_label(first.category), first, other)
 }
 
 /// Opens `slot`'s menu (a click on an empty slot, a right-click on a filled one) and picks

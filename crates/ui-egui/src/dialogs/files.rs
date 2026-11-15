@@ -1,4 +1,5 @@
 use super::{Dialog, SoundApp, Value, json};
+use crate::i18n::tr;
 
 /// When `id` would close a session with unsaved changes, ask first; true when the question is
 /// open instead. A take in progress is stopped first, so it counts as a change.
@@ -137,7 +138,7 @@ pub(super) fn path_dialog(id: &str, home: &str, name: &str) -> Option<Dialog> {
         _ => "",
     };
     let path = if importing || key == "dir" { format!("{home}/") } else { format!("{home}/{name}{ext}") };
-    let title = format!("{} — {}", spec.menu.last().copied().unwrap_or("File"), spec.label.trim_end_matches("..."));
+    let title = format!("{} — {}", tr(spec.menu.last().copied().unwrap_or("File")), tr(spec.label.trim_end_matches("...")));
     Some(Dialog::PathPrompt { cmd: id.into(), title, path, key: key.into() })
 }
 

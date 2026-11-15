@@ -67,5 +67,15 @@ mod track_preset_state;
 mod trackpad;
 mod tracks_scroll_bar;
 mod waveform;
+mod window_language;
 mod window_shortcuts;
 mod zoom_toggle;
+
+/// The English caption of a plugin category's submenu.
+fn category_label(c: soundcraft_dsp::Category) -> String {
+    match c {
+        soundcraft_dsp::Category::Eq => "EQ".into(),
+        soundcraft_dsp::Category::PitchShift => "Pitch Shift".into(),
+        other => format!("{other:?}"),
+    }
+}

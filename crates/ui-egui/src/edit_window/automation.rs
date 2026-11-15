@@ -1,4 +1,5 @@
 use super::layout::{sample_at, x_of};
+use super::tracks::auto_param_label;
 use super::{Align2, AutoParam, Color32, Pos2, Rect, Samples, Session, Shape, Stroke, Tokens, Track, TrackKind, pos2, regular};
 
 pub(super) fn draw_automation(painter: &egui::Painter, s: &Session, track: &Track, p: &AutoParam, tl: Rect, lane: Rect) {
@@ -36,7 +37,7 @@ pub(super) fn draw_automation(painter: &egui::Painter, s: &Session, track: &Trac
             }
         }
     }
-    painter.text(pos2(lane.min.x + 6.0, lane.min.y + 9.0), Align2::LEFT_CENTER, p.label(), regular(10.0), t.text_dim);
+    painter.text(pos2(lane.min.x + 6.0, lane.min.y + 9.0), Align2::LEFT_CENTER, auto_param_label(p), regular(10.0), t.text_dim);
 }
 
 /// The values an automation lane spans, bottom to top.
