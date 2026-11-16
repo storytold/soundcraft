@@ -120,14 +120,16 @@ fn a_taken_name_numbers_the_track_and_the_bus_together() {
     assert_eq!(e.session().busses.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), ["Verb 1"]);
     assert_eq!(verb.mixer.input, Route::Bus(e.session().busses[0].id));
 
-    // Only a bus has the name (in any case): the track keeps it and the bus is numbered, so the
-    // send can't land on the old bus.
+    // Only a bus has the name (in any case): the track and the bus are numbered together, so they
+    // still share a name and the send can't land on the old bus.
     let mut e = engine();
     e.execute("mix.new_bus", &json!({"name": "DELAY"})).unwrap();
     e.execute("mix.new_bus", &json!({"name": "delay 2"})).unwrap();
     e.execute(CMD, &json!({"track": "Gtr", "name": "Delay"})).unwrap();
     let bus = e.session().bus_by_name("Delay 3").map(|b| b.id).unwrap();
-    assert_eq!(track(&e, "Delay").mixer.input, Route::Bus(bus));
+    assert_eq!(e.session().bus(bus).map(|b| b.name.as_str()), Some("Delay 3"));
+    assert_eq!(order(&e), ["Gtr", "Delay 3", "Bass", "Main Out"], "the track has the bus's name");
+    assert_eq!(track(&e, "Delay 3").mixer.input, Route::Bus(bus));
     assert_eq!(send_target(&e, "Gtr", 0), Some(Route::Bus(bus)));
     assert_eq!(e.session().busses.len(), 3);
 }
@@ -150,15 +152,34 @@ fn a_numbered_bus_name_stays_within_the_name_limit() {
     e.execute("mix.new_bus", &json!({"name": long})).unwrap();
     let old = e.session().bus_by_name(&long).map(|b| b.id).unwrap();
     e.execute(CMD, &json!({"track": "Gtr", "slot": 0, "name": long})).unwrap();
-    let Route::Bus(new) = track(&e, &long).mixer.input else { panic!("the new track has no bus input") };
-    let name = e.session().bus(new).map(|b| b.name.clone()).unwrap();
-    assert_eq!(name, format!("{} 2", "b".repeat(MAX_NAME_CHARS - 2)));
+    let name = format!("{} 2", "b".repeat(MAX_NAME_CHARS - 2));
+    let Route::Bus(new) = track(&e, &name).mixer.input else { panic!("the new track has no bus input") };
+    assert_eq!(e.session().bus(new).map(|b| b.name.as_str()), Some(name.as_str()), "the track and the bus share the name");
     assert_eq!(send_target(&e, "Gtr", 0), Some(Route::Bus(new)));
 
     let back = Session::from_json(&e.session().to_json().unwrap()).unwrap();
     assert_eq!(back.bus(new).map(|b| b.name.as_str()), Some(name.as_str()), "the name is kept as it is");
     assert_eq!(back.bus_by_name(&name).map(|b| b.id), Some(new), "the name still finds the new bus");
     assert_eq!(back.bus_by_name(&long).map(|b| b.id), Some(old));
+}
+
+/// A track already has the longest name allowed: the new track and its bus share a numbered name
+/// within the limit, so the session read back from its file still tells the two tracks apart.
+#[test]
+fn a_numbered_track_name_stays_within_the_name_limit() {
+    let mut e = engine();
+    let long = "t".repeat(MAX_NAME_CHARS);
+    e.execute("track.new", &json!({"kind": "aux", "name": long})).unwrap();
+    let old = track(&e, &long).id;
+    let out = e.execute(CMD, &json!({"track": "Gtr", "name": long})).unwrap();
+    let name = format!("{} 2", "t".repeat(MAX_NAME_CHARS - 2));
+    assert_eq!(out["name"], json!(name));
+    let new = track(&e, &name).id;
+    assert_eq!(e.session().bus_by_name(&name).map(|b| Route::Bus(b.id)), Some(track(&e, &name).mixer.input.clone()));
+
+    let back = Session::from_json(&e.session().to_json().unwrap()).unwrap();
+    assert_eq!(back.track_by_name(&name).map(|t| t.id), Some(new), "the name still finds the new track");
+    assert_eq!(back.track_by_name(&long).map(|t| t.id), Some(old));
 }
 
 #[test]

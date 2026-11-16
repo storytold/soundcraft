@@ -65,16 +65,17 @@ fn send_new_track(e: &mut Engine, p: &Value) -> Result<Value> {
     let track = super::track::new_track_row(e, &row)?.first().copied().ok_or_else(|| bad(CMD, "the track was not created"))?;
     let s = e.session_mut();
     let (track_name, format) = s.track(track).map(|t| (t.name.clone(), t.format)).ok_or_else(|| bad(CMD, "the track was not created"))?;
-    let bus_name = unique_bus_name(s, &track_name);
-    let bus = s.add_bus(&bus_name, format);
+    let name = shared_name(s, track, &track_name);
+    let bus = s.add_bus(&name, format);
     if let Some(t) = s.track_mut(track) {
+        t.name.clone_from(&name);
         t.mixer.input = Route::Bus(bus);
     }
     if next_to_track {
         place_after(s, track, source);
     }
-    super::mix::send(e, &json!({"track": source.0, "slot": slot, "bus": bus_name}))?;
-    Ok(json!({"track": track, "bus": bus, "slot": slot, "name": track_name}))
+    super::mix::send(e, &json!({"track": source.0, "slot": slot, "bus": name}))?;
+    Ok(json!({"track": track, "bus": bus, "slot": slot, "name": name}))
 }
 
 /// The text parameter `key`, if given; any other kind of value is an error rather than the default.
@@ -86,14 +87,17 @@ fn text<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>> {
     }
 }
 
-/// `base`, or `base 2`, `base 3`… when a bus already has that name. Bus names compare without case,
-/// as `Session::bus_by_name` does, so the new bus can never resolve to an older one. The number
+/// The name the new track `track` and its bus share, as in Pro Tools: `base` (the track's name), or
+/// `base 2`, `base 3`… when a bus or another track already has it. Names compare without case, as
+/// `Session::bus_by_name` does, so neither name can resolve to an older track or bus. The number
 /// fits within [`MAX_NAME_CHARS`], cutting `base` for it: a session read back cuts longer names,
-/// and the cut name could then match the older bus.
-fn unique_bus_name(s: &Session, base: &str) -> String {
-    let taken = |name: &str| s.busses.iter().any(|b| b.name.eq_ignore_ascii_case(name));
+/// and the cut name could then match the older one.
+fn shared_name(s: &Session, track: TrackId, base: &str) -> String {
+    let taken = |name: &str| {
+        s.busses.iter().any(|b| b.name.eq_ignore_ascii_case(name)) || s.tracks.iter().any(|t| t.id != track && t.name.eq_ignore_ascii_case(name))
+    };
     // Each number gives a different name, and only so many are taken, so one is free.
-    (1..=s.busses.len().saturating_add(2))
+    (1..=s.busses.len().saturating_add(s.tracks.len()).saturating_add(2))
         .map(|n| {
             let suffix = if n == 1 { String::new() } else { format!(" {n}") };
             let mut name = base.to_string();
