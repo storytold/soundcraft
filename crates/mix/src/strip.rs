@@ -385,14 +385,17 @@ fn apply_fader(s: &Session, t: &Track, strip: &mut Strip, blk: Block) {
         }
     }
     let mut volume = volume_level(t);
-    if let Level::Fixed(db) = volume {
-        if let Some(previous) = strip.fader_db.filter(|p| *p != db && p.is_finite() && db.is_finite()) {
-            let to = pos.saturating_add(i64::try_from(frames.saturating_sub(1)).unwrap_or(i64::MAX));
-            volume = Level::Ramp { from: pos, to, start: previous, end: db };
+    // An empty block renders nothing, so it must not consume a pending ramp.
+    if frames > 0 {
+        if let Level::Fixed(db) = volume {
+            if let Some(previous) = strip.fader_db.filter(|p| *p != db && p.is_finite() && db.is_finite()) {
+                let to = pos.saturating_add(i64::try_from(frames - 1).unwrap_or(i64::MAX));
+                volume = Level::Ramp { from: pos, to, start: previous, end: db };
+            }
+            strip.fader_db = Some(db);
+        } else {
+            strip.fader_db = None;
         }
-        strip.fader_db = Some(db);
-    } else {
-        strip.fader_db = None;
     }
     let levels = if strip.muted { [Level::Fixed(-144.0), Level::Fixed(0.0), Level::Fixed(0.0)] } else { [volume, trim, vca_level] };
     apply_gain(&levels, pos, frames, 12.0, &mut strip.buf);

@@ -1532,6 +1532,20 @@ fn a_fader_move_between_blocks_ramps_across_the_next_block() {
 }
 
 #[test]
+fn an_empty_block_keeps_a_pending_fader_ramp() {
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    let mut mixer = MixEngine::new(48_000.0, 512);
+    let mut out = vec![vec![0.0; 512]; 2];
+    mixer.render(&s, 0, 512, &mut out);
+    let unity = out[0][511];
+    s.track_mut(t).unwrap().mixer.volume_db = -12.0;
+    mixer.render(&s, 512, 0, &mut out);
+    mixer.render(&s, 512, 512, &mut out);
+    assert!((out[0][0] - unity).abs() < 1e-5, "{}", out[0][0]);
+    assert!((out[0][511] - unity * db_to_gain(-12.0)).abs() < 1e-5, "{}", out[0][511]);
+}
+
+#[test]
 fn a_fader_moved_before_a_seek_starts_at_its_new_level() {
     let (mut s, t) = session_with_dc(0.5, 4800);
     let mut mixer = MixEngine::new(48_000.0, 512);
