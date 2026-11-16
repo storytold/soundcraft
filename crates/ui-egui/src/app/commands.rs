@@ -3,6 +3,7 @@ use super::{SoundApp, Value, bounce, menus};
 impl SoundApp {
     /// Run a command; errors go to the status line. Returns the result.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        let _language = crate::localization::enter(self.ui.language);
         // Programmatic commands retain their explicit parameters and never open a chooser.
         // Menus and keyboard shortcuts select the interactive provider destination separately.
         if self.services.file_providers.busy() && matches!(id, "session.new" | "session.open" | "session.close" | "session.revert" | "app.quit") {
@@ -46,7 +47,7 @@ impl SoundApp {
                 Ok(v)
             }
             Err(e) => {
-                self.ui.status = e.to_string();
+                self.ui.status = crate::localization::error_text(&e.to_string());
                 log::warn!("{id}: {e}");
                 Err(e.to_string())
             }
