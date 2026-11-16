@@ -1166,7 +1166,7 @@ pub const WINDOW_PAGES: [(&str, &str); 29] = [
     ("About SoundCraft", "window.about"),
     ("Appearance", "window.ui_customization"),
     ("Automation", "window.automation"),
-    (crate::dialogs::ops_windows::BEAT_ANALYSIS_TITLE, "window.beat_detective"),
+    ("Beat Analysis", "window.beat_detective"),
     ("Big Counter", "window.big_counter"),
     ("Clip Effects", "window.clip_effects"),
     ("Color Palette", "window.color_palette"),

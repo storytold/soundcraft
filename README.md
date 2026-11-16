@@ -146,8 +146,7 @@ where things are.
 ## Getting started
 
 Download a build from the [releases page](https://github.com/storytold/soundcraft/releases), or build
-from source with Rust 1.95 or later for the desktop/web UI (the core workspace's declared
-minimum remains Rust 1.90):
+from source with Rust 1.95 or later:
 
 ```sh
 git clone https://github.com/storytold/soundcraft
@@ -244,11 +243,10 @@ about egui, so the interface could be swapped for another one.
 
 | Crate | What it does |
 |---|---|
-| `soundcraft-time` | Timebases, tempo and meter maps, timecode, grid |
-| `soundcraft-audio-io` | Audio file formats and waveform overviews |
+| `soundcraft-time` | Compatibility re-export of `craft-time`'s SoundCraft sample-index API |
 | `soundcraft-midi` | Standard MIDI Files and MIDI operations |
 | `soundcraft-dsp` | Plugins, offline processing, meters, loudness, FFT |
-| `soundcraft-model` | The session document |
+| `soundcraft-model` | Compatibility re-export of `craft-scraft-format`'s schema, validation and JSON API |
 | `soundcraft-mix` | The mix engine (realtime and offline share it) |
 | `soundcraft-engine` | Commands, undo, editing, import/export, bounce |
 | `soundcraft-playback` | Audio devices (CoreAudio, WASAPI, ALSA, WebAudio) and recording |
@@ -265,8 +263,18 @@ SoundCraft is **pre-alpha**: it covers 94 % of the incumbent's menu items (measu
 its features by presence, and is roughly 40 % of the way to replacing it for real work: record,
 edit, mix and bounce work end to end, but choosing an audio interface and buffer size,
 recording MIDI from a controller and session interchange (AAF/OMF) are still missing, and those
-are the alpha checklist. Translations are missing too. The status, the stage and our effort
-estimates are in [`ROADMAP.md`](ROADMAP.md); the full assessment is in
+are the alpha checklist.
+
+**Translations:** the Brazilian Portuguese (`pt-BR`) catalog is **100 % complete** for every fixed
+UI string found in the current source — menus, dialogs and buttons, tooltips (including those
+localized inside buttons and toggles), accessibility names, the Edit-window status bar, the
+remove-session question, formatted messages, engine error templates and engine error text at display
+time. All these entries are covered by a test, placeholders match, keys are unique, and the
+`pt-BR` catalog is chosen automatically when `ui.language` is `pt-BR` (or "Portuguese (Brazil)")
+under `Setup › Appearance`. Engine errors keep their run-time values and a decimal comma in
+`pt-BR`. The remaining localization work is a native-speaker (human) review of wording plus CJK /
+Devanagari / Arabic font fallbacks and RTL layout — not new UI translation. The status, the stage
+and our effort estimates are in [`ROADMAP.md`](ROADMAP.md); the full assessment is in
 [`docs/target-app-parity.md`](docs/target-app-parity.md), the ranked list of what's missing in
 [`docs/gaps.md`](docs/gaps.md), and the menu-by-menu comparison in
 [`docs/parity-checklist.md`](docs/parity-checklist.md). Bug reports and wish lists are

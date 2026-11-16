@@ -1,8 +1,9 @@
 //! Consolidate makes one clip per track that covers exactly the edit selection (#164).
 
+use craft_audio::AudioBuffer;
 use serde_json::json;
-use soundcraft_audio_io::{AudioBuffer, FileFormat};
 use soundcraft_engine::{Engine, EngineError};
+use soundcraft_model::FileFormat;
 use soundcraft_model::{Clip, TrackId};
 use soundcraft_time::Range;
 
