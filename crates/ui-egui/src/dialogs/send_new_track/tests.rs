@@ -115,7 +115,7 @@ fn the_dialog_offers_only_aux_input_tracks() {
     h.run();
     for k in TrackKind::ALL {
         let offered = h.query_by_label(k.label()).is_some();
-        assert_eq!(offered, KINDS.contains(&k), "{}", k.label());
+        assert_eq!(offered, k == TrackKind::Aux, "{}", k.label());
     }
     let d = SendToNewTrack { name: "FX".into(), timebase: "ticks".into(), next_to_track: false, ..SendToNewTrack::new(kick, 3, true) };
     assert_eq!(
