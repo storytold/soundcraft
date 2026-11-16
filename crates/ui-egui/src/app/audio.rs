@@ -13,7 +13,7 @@ impl SoundApp {
     /// then stays the configuration of the open device.
     pub fn apply_audio_config(&mut self, cfg: soundcraft_playback::AudioConfig) -> Result<(), String> {
         if self.engine.transport.recording {
-            return Err("stop recording before changing the audio device".into());
+            return Err(crate::localization::text("stop recording before changing the audio device").into());
         }
         self.ui.audio = cfg;
         let at = self.position();
@@ -46,7 +46,7 @@ impl SoundApp {
             }
             Err(e) => {
                 self.recorder_failed = true;
-                self.ui.status = format!("No audio input: {e}");
+                self.ui.status = crate::localized_format!("No audio input: {e}", e = e);
             }
         }
     }
@@ -58,24 +58,28 @@ impl SoundApp {
         let name = p.device_name.clone();
         let (cause, then) = match trouble {
             OutputTrouble::Bug => (
-                "the audio engine hit an internal error (see the log)".to_string(),
-                "Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft.",
+                crate::localization::text("the audio engine hit an internal error (see the log)").to_string(),
+                crate::localization::text("Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft."),
             ),
-            OutputTrouble::Gone => {
-                (format!("“{name}” is unavailable"), "Check the audio device, then use Reconnect audio device in Setup › Playback Engine.")
-            }
-            OutputTrouble::Stalled => (format!("“{name}” stopped asking for audio"), "Use Reconnect audio device in Setup › Playback Engine."),
+            OutputTrouble::Gone => (
+                format!("“{}” {}", name, crate::localization::text("is unavailable")),
+                crate::localization::text("Check the audio device, then use Reconnect audio device in Setup › Playback Engine."),
+            ),
+            OutputTrouble::Stalled => (
+                format!("“{}” {}", name, crate::localization::text("stopped asking for audio")),
+                crate::localization::text("Use Reconnect audio device in Setup › Playback Engine."),
+            ),
         };
         let (recording, playing) = (self.engine.transport.recording, self.engine.transport.playing);
         if recording || playing {
             self.stop_play();
         }
         self.ui.status = if recording {
-            format!("Recording stopped: {cause}. The take is kept up to there. {then}")
+            crate::localized_format!("Recording stopped: {cause} The take is kept up to there. {then}", cause = cause, then = then)
         } else if playing {
-            format!("Playback stopped: {cause}. {then}")
+            crate::localized_format!("Playback stopped: {cause} {then}", cause = cause, then = then)
         } else {
-            format!("Audio output: {cause}. {then}")
+            crate::localized_format!("Audio output: {cause} {then}", cause = cause, then = then)
         };
     }
 
@@ -88,7 +92,7 @@ impl SoundApp {
             let lost = r.lost_ms();
             if recording && lost > self.lost_shown {
                 self.lost_shown = lost;
-                self.ui.status = format!("The disk is too slow: this take has lost {lost} ms of input so far.");
+                self.ui.status = crate::localized_format!("The disk is too slow: this take has lost {lost} ms of input so far.", lost = lost);
             }
             return;
         };
@@ -99,14 +103,14 @@ impl SoundApp {
             Trouble::Device(what) => {
                 self.recorder = None;
                 self.recorder_failed = true;
-                (what, "Reconnect it, then use Reconnect audio device in Setup › Playback Engine.")
+                (what, crate::localization::text("Reconnect it, then use Reconnect audio device in Setup › Playback Engine."))
             }
-            Trouble::Disk(what) => (what, "Check the disk, then record again."),
+            Trouble::Disk(what) => (what, crate::localization::text("Check the disk, then record again.")),
         };
         self.ui.status = if recording {
-            format!("Recording stopped: {what}. The take is kept up to there. {then}")
+            crate::localized_format!("Recording stopped: {what} The take is kept up to there. {then}", what = what, then = then)
         } else {
-            format!("Audio input: {what}. {then}")
+            crate::localized_format!("Audio input: {what} {then}", what = what, then = then)
         };
     }
 
