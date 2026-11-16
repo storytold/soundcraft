@@ -271,6 +271,11 @@ fn pretty_path(path: &str) -> String {
     path.replace(" > ", " › ")
 }
 
+/// A menu location as the menus show it in the current language ("File › Save Session").
+fn shown_path(path: &str) -> String {
+    path.split(['>', '›']).map(|part| crate::localization::text(part.trim())).collect::<Vec<_>>().join(" › ")
+}
+
 /// A command's name without the trailing "..." that marks a menu item opening a dialog.
 fn command_title(id: &str) -> String {
     let label = soundcraft_engine::find_command(id)
@@ -613,7 +618,7 @@ fn window_body(app: &mut SoundApp, ui: &mut Ui) {
     if data().categories.is_empty() {
         app.ui.help.focus_help = false;
         app.ui.help.focus_search = false;
-        ui.label("SoundCraft Help could not load its bundled catalog.");
+        ui.label(crate::localization::text("SoundCraft Help could not load its bundled catalog."));
         return;
     }
     // The highlight is the accent blue in both themes: white text on it reads in light mode too.
@@ -647,23 +652,30 @@ fn toolbar(app: &mut SoundApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         let h = &mut app.ui.help;
         if ui
-            .add_enabled(h.can_go_back(), egui::Button::new(RichText::new("Back").font(bold(13.0))).min_size(vec2(44.0, 28.0)))
-            .on_hover_text("Back (Alt+Left)")
+            .add_enabled(
+                h.can_go_back(),
+                egui::Button::new(RichText::new(crate::localization::text("Back")).font(bold(13.0))).min_size(vec2(44.0, 28.0)),
+            )
+            .on_hover_text(crate::localization::text("Back (Alt+Left)"))
             .clicked()
         {
             h.go_back();
         }
         if ui
-            .add_enabled(h.can_go_forward(), egui::Button::new(RichText::new("Forward").font(bold(13.0))).min_size(vec2(64.0, 28.0)))
-            .on_hover_text("Forward (Alt+Right)")
+            .add_enabled(
+                h.can_go_forward(),
+                egui::Button::new(RichText::new(crate::localization::text("Forward")).font(bold(13.0))).min_size(vec2(64.0, 28.0)),
+            )
+            .on_hover_text(crate::localization::text("Forward (Alt+Right)"))
             .clicked()
         {
             h.go_forward();
         }
         ui.add_space(8.0);
-        let label = ui.label("Search");
+        let label = ui.label(crate::localization::text("Search"));
         let width = (ui.available_width() - 96.0).clamp(60.0, 320.0);
-        let edit = egui::TextEdit::singleline(&mut h.query).hint_text("Search help").desired_width(width).font(regular(13.0));
+        let edit =
+            egui::TextEdit::singleline(&mut h.query).hint_text(crate::localization::text("Search help")).desired_width(width).font(regular(13.0));
         let r = text_field(ui, edit).labelled_by(label.id);
         if std::mem::take(&mut h.focus_search) {
             r.request_focus();
@@ -671,11 +683,13 @@ fn toolbar(app: &mut SoundApp, ui: &mut Ui) {
         if r.changed() && !h.query.trim().is_empty() {
             h.tab = Tab::Search;
         }
-        if !h.query.is_empty() && ui.small_button("Clear").on_hover_text("Clear the search").clicked() {
+        if !h.query.is_empty()
+            && ui.small_button(crate::localization::text("Clear")).on_hover_text(crate::localization::text("Clear the search")).clicked()
+        {
             h.query.clear();
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(format!("{} pages", entries().len())).small().color(t.text_dim));
+            ui.label(RichText::new(crate::localized_format!("{} pages", entries().len())).small().color(t.text_dim));
         });
     });
 }
@@ -694,7 +708,7 @@ fn text_field(ui: &mut Ui, edit: egui::TextEdit<'_>) -> egui::Response {
 fn navigation(app: &mut SoundApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         for (tab, name) in [(Tab::Contents, "Contents"), (Tab::Index, "Index"), (Tab::Search, "Search")] {
-            let response = ui.selectable_label(app.ui.help.tab == tab, name);
+            let response = ui.selectable_label(app.ui.help.tab == tab, crate::localization::text(name));
             if app.ui.help.tab == tab && std::mem::take(&mut app.ui.help.focus_help) {
                 response.request_focus();
             }
@@ -720,7 +734,7 @@ fn contents(app: &mut SoundApp, ui: &mut Ui) {
     let current = category_of(&h.page);
     let mut go = None;
     egui::ScrollArea::vertical().id_salt("help_contents").auto_shrink([false, false]).show(ui, |ui| {
-        if ui.selectable_label(h.page == Page::Welcome, "Welcome").clicked() {
+        if ui.selectable_label(h.page == Page::Welcome, crate::localization::text("Welcome")).clicked() {
             go = Some(Page::Welcome);
         }
         for c in &data().categories {
@@ -763,9 +777,14 @@ fn contents(app: &mut SoundApp, ui: &mut Ui) {
 fn index(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let h = &mut app.ui.help;
-    let label = ui.label("Filter index");
-    text_field(ui, egui::TextEdit::singleline(&mut h.index_filter).hint_text("Type a word to jump to it").desired_width(f32::INFINITY))
-        .labelled_by(label.id);
+    let label = ui.label(crate::localization::text("Filter index"));
+    text_field(
+        ui,
+        egui::TextEdit::singleline(&mut h.index_filter)
+            .hint_text(crate::localization::text("Type a word to jump to it"))
+            .desired_width(f32::INFINITY),
+    )
+    .labelled_by(label.id);
     let filter = h.index_filter.trim().to_lowercase();
     let mut go = None;
     egui::ScrollArea::vertical().id_salt("help_index").auto_shrink([false, false]).show(ui, |ui| {
@@ -783,7 +802,7 @@ fn index(app: &mut SoundApp, ui: &mut Ui) {
             }
         }
         if titles.is_empty() {
-            ui.label(RichText::new("Nothing starts with that. Try Search instead.").color(t.text_dim));
+            ui.label(RichText::new(crate::localization::text("Nothing starts with that. Try Search instead.")).color(t.text_dim));
         }
     });
     if let Some(p) = go {
@@ -802,11 +821,17 @@ fn search_results(app: &mut SoundApp, ui: &mut Ui) {
         ui.set_max_width(ui.available_width() - 12.0);
         if h.query.trim().is_empty() {
             let example = if cfg!(target_os = "macos") { "Cmd+S" } else { "Ctrl+S" };
-            ui.label(RichText::new(format!("Type in the search box above: a word, a menu name or a shortcut such as {example}.")).color(t.text_dim));
+            ui.label(
+                RichText::new(crate::localized_format!(
+                    "Type in the search box above: a word, a menu name or a shortcut such as {example}.",
+                    example = example
+                ))
+                .color(t.text_dim),
+            );
             return;
         }
         if hits.is_empty() {
-            ui.label(RichText::new("No pages match. Try fewer or different words.").color(t.text_dim));
+            ui.label(RichText::new(crate::localization::text("No pages match. Try fewer or different words.")).color(t.text_dim));
         }
         for e in hits {
             if result_row(ui, e, h.page == e.page) {
@@ -867,18 +892,28 @@ fn column_width(ui: &Ui) -> f32 {
 /// Draw guide and topic links in two columns sized to the available page width.
 fn welcome(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
-    title(ui, "SoundCraft Help");
-    ui.label("Every command in SoundCraft has a page here that says what it does, where it is in the menus and its shortcut.");
+    title(ui, crate::localization::text("SoundCraft Help"));
+    ui.label(crate::localization::text(
+        "Every command in SoundCraft has a page here that says what it does, where it is in the menus and its shortcut.",
+    ));
     ui.add_space(4.0);
-    ui.label(RichText::new("Browse by topic in Contents, look a word up in Index, or type what you want to do in the search box.").color(t.text_dim));
     ui.label(
-        RichText::new("Point at any SoundCraft window and press Cmd+? to open help on that window's page.".replace("Cmd+?", &help_key(ui)))
-            .color(t.text_dim),
+        RichText::new(crate::localization::text(
+            "Browse by topic in Contents, look a word up in Index, or type what you want to do in the search box.",
+        ))
+        .color(t.text_dim),
+    );
+    ui.label(
+        RichText::new(
+            crate::localization::text("Point at any SoundCraft window and press Cmd+? to open help on that window's page.")
+                .replace("Cmd+?", &help_key(ui)),
+        )
+        .color(t.text_dim),
     );
     ui.add_space(12.0);
     let mut go = None;
     let col = column_width(ui);
-    ui.label(RichText::new("How to").font(bold(15.0)));
+    ui.label(RichText::new(crate::localization::text("How to")).font(bold(15.0)));
     ui.add_space(4.0);
     egui::Grid::new("help_guides").num_columns(2).spacing(vec2(16.0, 6.0)).show(ui, |ui| {
         for (i, g) in data().guides.iter().enumerate() {
@@ -895,7 +930,7 @@ fn welcome(app: &mut SoundApp, ui: &mut Ui) {
         }
     });
     ui.add_space(14.0);
-    ui.label(RichText::new("Topics").font(bold(15.0)));
+    ui.label(RichText::new(crate::localization::text("Topics")).font(bold(15.0)));
     ui.add_space(4.0);
     egui::Grid::new("help_topics").num_columns(2).spacing(vec2(16.0, 10.0)).show(ui, |ui| {
         for (i, c) in data().categories.iter().enumerate() {
@@ -920,7 +955,7 @@ fn welcome(app: &mut SoundApp, ui: &mut Ui) {
 fn category_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     let t = Tokens::current();
     let Some(c) = category(id) else {
-        title(ui, "Page not found");
+        title(ui, crate::localization::text("Page not found"));
         return;
     };
     title(ui, &c.title);
@@ -951,7 +986,7 @@ fn result_row(ui: &mut Ui, entry: &Entry, selected: bool) -> bool {
 /// text colour, as Contents and Index rows do: the page text colour is too faint on the accent.
 fn result_job(entry: &Entry, selected: bool, visuals: &egui::Visuals) -> egui::text::LayoutJob {
     let color = if selected { visuals.selection.stroke.color } else { Tokens::current().text };
-    let title = if is_guide(entry) { format!("Guide: {}", entry.name) } else { entry.name.clone() };
+    let title = if is_guide(entry) { crate::localized_format!("Guide: {}", entry.name) } else { entry.name.clone() };
     let mut job = egui::text::LayoutJob::default();
     job.append(&title, 0.0, egui::TextFormat { font_id: bold(12.5), color, ..Default::default() });
     job.append("\n", 0.0, egui::TextFormat::default());
@@ -979,7 +1014,7 @@ fn limits_note(ui: &mut Ui, limits: &str) {
     let t = Tokens::current();
     ui.add_space(8.0);
     egui::Frame::new().stroke(Stroke::new(1.0, t.meter_yellow)).corner_radius(8).inner_margin(Margin::same(10)).show(ui, |ui| {
-        ui.label(RichText::new("Current limits").font(bold(12.0)).color(t.text));
+        ui.label(RichText::new(crate::localization::text("Current limits")).font(bold(12.0)).color(t.text));
         ui.label(limits);
     });
 }
@@ -988,7 +1023,7 @@ fn limits_note(ui: &mut Ui, limits: &str) {
 fn command_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     let t = Tokens::current();
     let (Some(h), Some(e)) = (data().commands.get(id), entry_for(&Page::Command(id.to_string()))) else {
-        title(ui, "Page not found");
+        title(ui, crate::localization::text("Page not found"));
         return;
     };
     breadcrumb(app, ui, &h.category);
@@ -998,13 +1033,13 @@ fn command_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     let app_menu = app_menu_path(id, mac);
     ui.horizontal_wrapped(|ui| {
         for path in e.paths.iter().chain(app_menu.as_ref()) {
-            chip(ui, RichText::new(path));
+            chip(ui, RichText::new(shown_path(path)));
         }
         if !shortcut.is_empty() {
             let label = crate::shortcuts::shortcut_label(shortcut, mac);
             if label.is_empty() {
                 // A Mac Control chord: Windows and Linux have no key for it.
-                chip(ui, RichText::new(format!("{shortcut} (Mac only)")).font(mono(11.5)));
+                chip(ui, RichText::new(crate::localized_format!("{shortcut} (Mac only)", shortcut = shortcut)).font(mono(11.5)));
             } else {
                 chip(ui, RichText::new(label).font(mono(11.5)));
             }
@@ -1019,31 +1054,35 @@ fn command_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     match e.paths.first().map(|p| p.replace(" › ", " > ")) {
         _ if id == "app.quit" => {}
         Some(path) => {
-            if help_action(app, ui, id, &path, "Do it now") {
+            if help_action(app, ui, id, &path, crate::localization::text("Do it now")) {
                 crate::menus::invoke_menu(app, id, &path);
             }
         }
         None => {
             if let Some(path) = &app_menu
-                && help_action(app, ui, id, path, "Do it now")
+                && help_action(app, ui, id, path, crate::localization::text("Do it now"))
             {
                 let value = if id.starts_with("window.") { serde_json::json!({"value": true}) } else { serde_json::json!({}) };
                 if let Err(error) = app.run(id, value) {
                     app.ui.status = error;
                 }
             } else if shortcut.is_empty() && app_menu.is_none() {
-                ui.label(RichText::new("Not in the menus. Scripts and agents can run it by its command id.").small().color(t.text_dim));
+                ui.label(
+                    RichText::new(crate::localization::text("Not in the menus. Scripts and agents can run it by its command id."))
+                        .small()
+                        .color(t.text_dim),
+                );
             }
         }
     }
     ui.add_space(16.0);
-    ui.label(RichText::new(format!("Command id: {id}")).font(mono(10.5)).color(t.text_dim));
+    ui.label(RichText::new(crate::localized_format!("Command id: {id}", id = id)).font(mono(10.5)).color(t.text_dim));
 }
 
 /// A page's name in lists. Guides are in the accent colour so they stand out among the commands,
 /// except when selected, where the selection is already drawn in the accent colour.
 fn list_title(e: &Entry, selected: bool) -> RichText {
-    let text = if is_guide(e) { RichText::new(format!("Guide: {}", e.name)) } else { RichText::new(&e.name) };
+    let text = if is_guide(e) { RichText::new(crate::localized_format!("Guide: {}", e.name)) } else { RichText::new(&e.name) };
     if is_guide(e) && !selected { text.color(Tokens::current().accent) } else { text }
 }
 
@@ -1090,7 +1129,7 @@ fn keys_cell(keys: &str, mac: bool) -> String {
 fn guide_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     let t = Tokens::current();
     let Some(g) = guide(id) else {
-        title(ui, "Page not found");
+        title(ui, crate::localization::text("Page not found"));
         return;
     };
     let mac = ui.ctx().os().is_mac();
@@ -1142,7 +1181,7 @@ fn guide_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     let related: Vec<&Entry> = g.related.iter().filter_map(|c| entry_for(&Page::Command(c.clone()))).collect();
     if !related.is_empty() {
         ui.add_space(14.0);
-        ui.label(RichText::new("Related commands").font(bold(13.0)));
+        ui.label(RichText::new(crate::localization::text("Related commands")).font(bold(13.0)));
         ui.add_space(4.0);
         let mut go = None;
         ui.horizontal_wrapped(|ui| {
@@ -1245,10 +1284,10 @@ fn help_action(app: &SoundApp, ui: &mut Ui, id: &str, path: &str, label: &str) -
     let button = egui::Button::new(RichText::new(label).font(bold(13.0))).min_size(vec2(110.0, 28.0));
     let clicked = ui.add_enabled(enabled, button).clicked();
     let explanation = if enabled {
-        format!("Same as choosing {} from the menu.", pretty_path(path))
+        crate::localized_format!("Same as choosing {} from the menu.", shown_path(path))
     } else {
-        let reason = why_disabled(app, id).unwrap_or_else(|| "this action is unavailable.".into());
-        format!("Not available right now: {reason}")
+        let reason = why_disabled(app, id).unwrap_or_else(|| crate::localization::text("this action is unavailable.").into());
+        crate::localized_format!("Not available right now: {reason}", reason = reason)
     };
     ui.label(RichText::new(explanation).small().color(Tokens::current().text_dim));
     clicked
@@ -1257,44 +1296,47 @@ fn help_action(app: &SoundApp, ui: &mut Ui, id: &str, path: &str, label: &str) -
 /// Why an engine command can't run now, as the command itself explains it.
 fn why_disabled(app: &SoundApp, id: &str) -> Option<String> {
     if app.ui.show_preferences {
-        return Some("close Preferences first.".into());
+        return Some(crate::localization::text("close Preferences first.").into());
     }
     if app.dialogs.open.is_some() {
-        return Some("close the active dialog first.".into());
+        return Some(crate::localization::text("close the active dialog first.").into());
     }
     if id == "setup.preferences" && (app.is_playing() || app.engine.transport.recording) {
-        return Some("stop the transport first.".into());
+        return Some(crate::localization::text("stop the transport first.").into());
     }
     let c = soundcraft_engine::find_command(id)?;
     if app.engine.blocked_while_recording(id) {
-        return Some("stop recording first.".into());
+        return Some(crate::localization::text("stop recording first.").into());
     }
-    (c.enabled)(&app.engine).err()
+    (c.enabled)(&app.engine).err().map(|e| crate::localization::error_text(&e))
 }
 
 /// Describe an AudioSuite process and offer to open it through its existing menu action.
 fn process_page(app: &mut SoundApp, ui: &mut Ui, process: &str) {
     let t = Tokens::current();
     let Some(p) = data().audiosuite.iter().find(|p| p.process == process) else {
-        title(ui, "Page not found");
+        title(ui, crate::localization::text("Page not found"));
         return;
     };
     breadcrumb(app, ui, "processing");
     title(ui, &p.title);
     let paths = process_paths(process);
-    ui.label(RichText::new("Find it in the AudioSuite menu:").small().color(t.text_dim));
+    ui.label(RichText::new(crate::localization::text("Find it in the AudioSuite menu:")).small().color(t.text_dim));
     ui.horizontal_wrapped(|ui| {
         for path in &paths {
-            chip(ui, RichText::new(pretty_path(path)));
+            chip(ui, RichText::new(shown_path(path)));
         }
     });
     ui.add_space(8.0);
     ui.label(RichText::new(&p.text).font(regular(14.0)));
     ui.add_space(4.0);
-    ui.label(RichText::new("AudioSuite processes the selected clips offline and writes the result as new audio files.").color(t.text_dim));
+    ui.label(
+        RichText::new(crate::localization::text("AudioSuite processes the selected clips offline and writes the result as new audio files."))
+            .color(t.text_dim),
+    );
     ui.add_space(12.0);
     if let Some(path) = paths.first()
-        && help_action(app, ui, "audiosuite.process", path, "Open it")
+        && help_action(app, ui, "audiosuite.process", path, crate::localization::text("Open it"))
     {
         crate::menus::invoke_menu(app, "audiosuite.process", path);
     }

@@ -618,3 +618,31 @@ fn help_text_fields_show_their_focus_in_both_themes() {
         assert!(faint.is_empty(), "{mode} {tab:?}: a focus outline barely differs from the window: {faint:?}");
     }
 }
+
+/// In Portuguese the Help window's own labels and a page's menu locations follow the language; the
+/// page text stays English.
+#[test]
+fn help_window_labels_follow_the_interface_language() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("ui.language", json!({"language": "pt-BR"})).unwrap();
+    app.ui.show_help = true;
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 760.0)).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(2);
+    for label in ["Voltar", "Avançar", "Conteúdo", "Índice", "Boas-vindas", "Como fazer", "Temas"] {
+        assert!(h.query_by_label(label).is_some(), "missing {label:?}");
+    }
+    assert!(h.query_by_label("Back").is_none() && h.query_by_label("Contents").is_none());
+    h.state_mut().ui.help.go(Page::Command("session.save".into()));
+    h.run_steps(2);
+    assert!(h.query_by_label("Fazer agora").is_some());
+    assert!(h.query_all_by_label_contains("Arquivo › ").next().is_some(), "the menu location is not translated");
+    assert!(h.query_by_label_contains("Id do comando: session.save").is_some());
+}
