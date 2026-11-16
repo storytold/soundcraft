@@ -335,6 +335,35 @@ fn a_target_at_the_gate_that_the_file_misses_says_so() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// BS.1770 leaves the LFE out of loudness. A 7.1 bounce whose only sound is a low-level LFE tone
+/// has nothing to measure, so it must not be raised toward the target.
+#[test]
+fn a_7_1_lfe_only_passage_is_not_raised() {
+    let dir = scratch("bounce-lufs-lfe");
+    let mut e = soundcraft_engine::Engine::default();
+    e.execute("setup.main_format", &serde_json::json!({"format": "7.1"})).unwrap();
+    let sr = e.session().sample_rate.hz();
+    // 7.1 is L R C LFE Lrs Rrs Lss Rss: a 60 Hz tone on the LFE only, about -30 dBFS.
+    let frames = 96_000;
+    let mut channels = vec![vec![0.0f32; frames]; 8];
+    channels[3] = (0..frames).map(|i| 0.03 * (std::f32::consts::TAU * 60.0 * i as f32 / 48_000.0).sin()).collect();
+    let audio = craft_audio::AudioBuffer { sample_rate: sr, channels };
+    let s = e.session_mut();
+    let track = s.add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Surround71, Some("LFE"));
+    let source = soundcraft_engine::io::add_source(s, "lfe", audio, None, FileFormat::Wav);
+    let clip = soundcraft_model::Clip::audio(s.new_clip_id(), "lfe", source, 0, 0, frames as i64);
+    soundcraft_engine::edit::place_clip(s, track, clip);
+    let path = dir.join("Mix.wav");
+    let r = bounce_to(&mut e, &path, serde_json::json!({"target_lufs": -16.0}));
+    let (_, file) = craft_audio::decode(&std::fs::read(&path).unwrap(), None).unwrap();
+    assert_eq!(file.channels.len(), 8, "an unfolded 7.1 bounce: {r}");
+    let lfe_peak = file.channels[3].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(lfe_peak > 0.02, "the tone reaches the LFE channel: {lfe_peak}");
+    assert_eq!(r["gain_db"].as_f64(), Some(0.0), "not raised: {r}");
+    assert!(r["warning"].as_str().unwrap_or_default().contains("too quiet"), "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn loudness_options_are_checked() {
     let dir = scratch("bounce-lufs-params");

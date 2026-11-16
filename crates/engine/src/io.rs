@@ -436,7 +436,10 @@ impl Bounce {
             EngineError::Io(format!("{}: {err}", path.display()))
         })?;
         let render = soundcraft_mix::RangeRender::new(&s, bus, r, 1024);
-        let meter = soundcraft_dsp::meter::LoudnessMeter::new(s.sample_rate.as_f64() as f32, channels);
+        let meter = match loudness_weights(fmt) {
+            Some(w) if w.len() == channels => soundcraft_dsp::meter::LoudnessMeter::with_weights(s.sample_rate.as_f64() as f32, &w),
+            _ => soundcraft_dsp::meter::LoudnessMeter::new(s.sample_rate.as_f64() as f32, channels),
+        };
         Ok(Bounce {
             session: s,
             path: path.to_path_buf(),
@@ -679,6 +682,24 @@ fn bounce_layout(s: &Session, bus: Option<BusId>, fold_stereo: bool) -> (Channel
         None => s.main_format(),
     };
     if fold_stereo && nch > 2 { (ChannelFormat::Stereo, 2, Some(fmt)) } else { (fmt, nch, None) }
+}
+
+/// BS.1770 channel weights for a bounce of `fmt`, from its speakers in channel order: the LFE
+/// does not count toward loudness, 5.1's surrounds count 1.41, the rest 1. `None` for Ambisonics,
+/// which has no speakers. The meter's own guess goes by channel count alone, so it cannot tell
+/// where a 7.1 or Atmos LFE sits, or that 6.0 has none.
+fn loudness_weights(fmt: ChannelFormat) -> Option<Vec<f32>> {
+    let speakers = fmt.speakers();
+    (!speakers.is_empty()).then(|| {
+        speakers
+            .iter()
+            .map(|sp| match sp {
+                sp if sp.is_lfe() => 0.0,
+                soundcraft_model::Speaker::Ls | soundcraft_model::Speaker::Rs if fmt == ChannelFormat::Surround51 => 1.41,
+                _ => 1.0,
+            })
+            .collect()
+    })
 }
 
 /// The first `n` frames of `chunk`, folded down from `fold` when set and scaled by `gain`.
