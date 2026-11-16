@@ -109,9 +109,16 @@ Parity is measured, not guessed: `crates/engine/catalog/menus.txt` lists the inc
 - Drive it: JSON lines over TCP, e.g. `{"id":1,"method":"engine.execute","params":{"command":"track.new","params":{"count":2,"format":"stereo"}}}`, then `{"id":2,"method":"ui.screenshot","params":{"path":"/tmp/shot.png"}}`. Methods: `crates/ui-egui/src/control.rs`, docs: `docs/control-protocol.md`.
 - Offscreen UI render (no window, no focus stealing): `cargo run -p soundcraft-ui-egui --example ui_shot -- out.png [script.jsonl]`.
 - Headless: `soundcraft-cli run --demo --cmd 'mix.volume={"track":"Kick","db":-6}' --bounce out.wav`; MCP: `soundcraft-cli mcp [--connect PORT]`.
-- **For UI work, look at the result** (render, read the PNG) and compare with `plan/protools/screenshots/`.
+- **Language / localization:** the interface is English by default; Brazilian Portuguese
+  (`pt-BR`) is selected under `Setup › Appearance › Language` (or the `ui.language` command with
+  `{"language":"pt-BR"}`). The pt-BR catalog is complete for every fixed UI string — tests cover
+  placeholder parity, unique keys and source coverage, and the `cargo test` suite passes.
+- Commands: build `cargo build -p soundcraft --bin soundcraft`; test
+  `cargo test -p soundcraft --bin soundcraft`; run `DISPLAY=:0 ./target/debug/soundcraft`. The
+  `cargo xtask ci` gate runs formatting, clippy, tests, assets, layering and the WebAssembly build.
+- Parallel agents: separate `CARGO_TARGET_DIR` per agent; edit only the crates you own; write
+  manifests atomically; delete your target dir when done (disk).
 - Shell gotcha: `mv`/`cp` are aliased interactive here — use `/bin/mv -f` / `/bin/cp -f`.
-- Parallel agents: separate `CARGO_TARGET_DIR` per agent; edit only the crates you own; write manifests atomically; delete your target dir when done (disk).
 
 ## Quality gates (before every commit)
 `cargo xtask ci` = fmt check, `clippy --workspace --all-targets -D warnings`, tests, assets, layers, wasm check. Commit after each arc of work that builds; one topic per commit.
