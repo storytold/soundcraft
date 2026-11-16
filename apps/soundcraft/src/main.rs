@@ -276,6 +276,8 @@ fn main() -> eframe::Result {
             #[cfg(target_os = "macos")]
             if let Some(window) = cc.winit_window().cloned() {
                 app.services.start_pick = Some(sheet::start_pick(window, cc.egui_ctx.clone()));
+            } else {
+                log::warn!("no window for file dialog sheets; using blocking file dialogs, which can crash when resized");
             }
             app.set_startup_update_check(true);
             app.set_system_fonts(env.system_fonts());
