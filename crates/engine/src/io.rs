@@ -872,7 +872,13 @@ pub(crate) fn create_default_session_folders(file: &Path) {
     let Some(dir) = file.parent() else {
         return;
     };
+    // A session saved before these folders keeps its `Backups/` folder: creating the new one
+    // would split its backups between two folders that each rotate separately.
+    let legacy_backups = dir.join("Backups").is_dir();
     for name in ["Audio Files", "Bounced Files", "Session File Backups"] {
+        if name == "Session File Backups" && legacy_backups {
+            continue;
+        }
         let folder = dir.join(name);
         if let Err(err) = std::fs::create_dir_all(&folder) {
             log::warn!("no {} in {}: {err}", name, dir.display());

@@ -101,8 +101,10 @@ fn logged_warnings_reach_standard_error() {
     let dir = sandbox("log");
     let first = invoke(&dir, &["run", "--save", "s.scraft"]);
     assert_eq!(first.code, 0, "{}", first.stderr);
-    // A file where the backups folder should go: the next save that changes the session can't
+    // The first save made `Session File Backups/`; remove it so the legacy `Backups/` is chosen,
+    // then put a file where that folder should go: the next save that changes the session can't
     // back the old one up.
+    std::fs::remove_dir_all(dir.join("Session File Backups")).unwrap();
     std::fs::write(dir.join("Backups"), b"not a folder").unwrap();
     let again = invoke(&dir, &["run", "--in", "s.scraft", "--cmd", r#"track.new={"count":1}"#, "--save", "s.scraft", "--in-place"]);
     assert_eq!(again.code, 0, "{}", again.stderr);
