@@ -3,12 +3,12 @@
 
 use std::path::PathBuf;
 
+use craft_audio::EncodeFormat;
 use egui::accesskit::Role;
 use egui::epaint::ClippedShape;
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Shape, pos2, vec2};
 use egui_kittest::{Harness, kittest::Queryable};
 use serde_json::json;
-use soundcraft_audio_io::FileFormat;
 use soundcraft_model::GroupId;
 use soundcraft_ui_egui::dialogs::{Dialog, ask_to_save};
 use soundcraft_ui_egui::{Services, SoundApp, menus};
@@ -86,7 +86,7 @@ fn enter_on_a_focused_browse_in_bounce_mix_does_not_bounce() {
     let mut h = harness(app);
     enter_on(&mut h, "Browse…");
     assert!(h.state().bounce.is_none(), "Enter on Browse started a bounce");
-    assert!(matches!(&h.state().dialogs.open, Some(Dialog::Bounce { path, format, .. }) if path == picked && *format == FileFormat::Flac));
+    assert!(matches!(&h.state().dialogs.open, Some(Dialog::Bounce { path, format, .. }) if path == picked && *format == EncodeFormat::Flac));
 }
 
 #[test]
