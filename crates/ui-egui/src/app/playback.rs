@@ -269,19 +269,18 @@ impl SoundApp {
 
     /// Place the takes whose off-thread decodes have finished. Called from transport handling every
     /// frame: the transport answered Stop and Record throughout the decode, and each take lands,
-    /// as one "Record" undo step, the moment its buffers are back.
+    /// as one "Record" undo step, the moment its buffers are back — several landing in the same
+    /// poll in recording order, not completion order, so undo peels them back deterministically.
     fn poll_placement(&mut self) {
         let mut done = Vec::new();
-        for i in (0..self.placing.len()).rev() {
-            let takes = match self.placing[i].rx.try_recv() {
-                Ok(takes) => Some(takes),
-                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+        // `placing` is handed back frame by frame: finished takes leave in recording order and
+        // the still-decoding ones keep both their slots and their order.
+        for p in std::mem::take(&mut self.placing) {
+            match p.rx.try_recv() {
+                Ok(takes) => done.push((p, takes)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.placing.push(p),
                 // The decode thread ended without an answer: place nothing for this take.
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Vec::new()),
-            };
-            if let Some(takes) = takes {
-                let p = self.placing.swap_remove(i);
-                done.push((p, takes));
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => done.push((p, Vec::new())),
             }
         }
         for (p, takes) in done {
@@ -440,8 +439,10 @@ impl SoundApp {
                     self.sim = None;
                     // The old capture belongs to the replaced document, never to the new one.
                     self.recorder = None;
-                    // A pending take's placement belongs to the replaced document too.
+                    // A pending take's placement — and the plan its decode kept recoverable in
+                    // autosave — belongs to the replaced document, never to the new one.
                     self.placing.clear();
+                    self.take_plan = None;
                     self.recorder_failed = false;
                     self.punch = None;
                     self.gesture = None;
