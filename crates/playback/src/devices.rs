@@ -191,7 +191,9 @@ const MAX_FALLBACKS: usize = 8;
 ///
 /// The sound servers come first: they share the card with other programs and are what `default`
 /// normally routes to, so PipeWire still plays when `default` goes to a PulseAudio server that
-/// is not running. Then each card's own default (`sysdefault:`), which goes through the card's
+/// is not running. PipeWire is tried before PulseAudio whatever order ALSA lists them in: where
+/// both exist, `pulse` usually goes through PipeWire anyway, and in #540 it was PulseAudio that
+/// refused. Then each card's own default (`sysdefault:`), which goes through the card's
 /// ALSA configuration (usually software mixing on its main output), cards whose name says HDMI or
 /// DisplayPort last, since a monitor often has no speakers. Nothing else is tried: `null`
 /// discards everything, `default` already failed, raw `hw:`/`plughw:` devices take the card from
@@ -201,8 +203,9 @@ const MAX_FALLBACKS: usize = 8;
 pub(crate) fn fallback_rank(pcm: &str, description: &str) -> Option<u8> {
     let display = ["HDMI", "DisplayPort"].iter().any(|word| description.to_ascii_lowercase().contains(&word.to_ascii_lowercase()));
     match pcm.split_once(':') {
-        None if pcm == "pipewire" || pcm == "pulse" => Some(0),
-        Some(("sysdefault", card)) if !card.is_empty() => Some(if display { 2 } else { 1 }),
+        None if pcm == "pipewire" => Some(0),
+        None if pcm == "pulse" => Some(1),
+        Some(("sysdefault", card)) if !card.is_empty() => Some(if display { 3 } else { 2 }),
         _ => None,
     }
 }
@@ -391,6 +394,9 @@ mod tests {
         assert_eq!(order_fallbacks(list(), Some("default")), ["pipewire", "pulse", "sysdefault:CARD=PCH", "sysdefault:CARD=NVidia"]);
         // The output that already failed is not tried again.
         assert!(!order_fallbacks(list(), Some("pipewire")).contains(&"pipewire"));
+        // PipeWire comes before PulseAudio even when ALSA lists `pulse` first.
+        let reversed = || listed.iter().rev().map(|(pcm, desc)| (*pcm, (*pcm).to_owned(), (*desc).to_owned()));
+        assert_eq!(order_fallbacks(reversed(), Some("default")), ["pipewire", "pulse", "sysdefault:CARD=PCH", "sysdefault:CARD=NVidia"]);
     }
 
     #[test]
