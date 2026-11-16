@@ -82,7 +82,8 @@ fn peak_through_a_new_track(kind: &str) -> f32 {
     let gtr = s.tracks.iter_mut().find(|t| t.name == "Gtr").unwrap();
     gtr.playlist_mut().unwrap().clips.push(Clip::audio(clip, "tone", SourceId(1), 0, 0, n as i64));
     gtr.mixer.output = Route::None;
-    let peak = |e: &Engine| soundcraft_mix::render_range(e.session(), Range::new(0, n as i64), 512).iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
+    let peak =
+        |e: &Engine| soundcraft_mix::render_range(e.session(), Range::new(0, n as i64), 512).iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
     assert_eq!(peak(&e), 0.0, "without the send, nothing reaches the main mix");
     if e.execute(CMD, &json!({"track": "Gtr", "slot": 0, "kind": kind, "name": "Return"})).is_ok() {
         e.execute("mix.send", &json!({"track": "Gtr", "slot": 0, "bus": "Return", "level_db": 0.0})).unwrap();
@@ -239,4 +240,3 @@ fn refusals_make_nothing() {
     }
     assert!(track(&e, "Gtr").mixer.sends.iter().all(Option::is_none));
 }
-

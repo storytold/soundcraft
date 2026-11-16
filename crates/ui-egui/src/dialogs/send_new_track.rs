@@ -88,7 +88,10 @@ impl SendToNewTrack {
         });
         ui.horizontal(|ui| {
             let label = ui.label(crate::localization::text("Name:"));
-            crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(260.0)).labelled_by(label.id), crate::localization::text("Name:"));
+            crate::widgets::named_text_field(
+                ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(260.0)).labelled_by(label.id),
+                crate::localization::text("Name:"),
+            );
         });
         crate::widgets::checkbox(ui, &mut self.next_to_track, crate::localization::text("Create next to current track"));
         super::buttons(ui, "Create", enter).then(|| self.params())
