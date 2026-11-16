@@ -326,6 +326,10 @@ fn bounce(e: &mut Engine, p: &Value) -> Result<Value> {
                 "the gain took every 400 ms block under the -70 LUFS gate, so the file's loudness cannot be measured (target {} LUFS)",
                 t.lufs
             )),
+            crate::io::LoudnessOutcome::CeilingExceeded => Some(format!(
+                "the written true peak, {:.2} dBTP, is over the {} dBTP ceiling: the mix rendered louder than when it was measured (a plugin that does not render the same twice)",
+                done.true_peak_db, t.true_peak_ceiling_db
+            )),
             crate::io::LoudnessOutcome::Missed => Some(format!(
                 "{:.1} LUFS, not the {} LUFS target: the gain took the quieter parts under the -70 LUFS gate, so they no longer count",
                 done.lufs, t.lufs

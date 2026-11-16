@@ -373,7 +373,14 @@ pub enum LoudnessOutcome {
     /// The gain was applied, but the written file measures more than [`LOUDNESS_TOLERANCE_LU`]
     /// away from the target: blocks it pushed under the -70 LUFS gate no longer count.
     Missed,
+    /// The written true peak is over the ceiling: the second pass rendered louder than the first
+    /// measured (a plugin that does not render the same twice), so the gain could not hold it.
+    CeilingExceeded,
 }
+
+/// How far over the ceiling the written true peak may measure (float rounding) before it counts as
+/// over.
+const CEILING_TOLERANCE_DB: f32 = 0.001;
 
 /// How far from the target a loudness-normalized bounce may measure and still count as reached.
 pub const LOUDNESS_TOLERANCE_LU: f32 = 0.5;
@@ -556,11 +563,18 @@ impl Bounce {
 
     fn finish(&mut self) -> Result<Bounced> {
         // The second pass measures what was written: check it before calling the target reached.
-        let lufs = self.meter.integrated_lufs();
+        let (lufs, true_peak) = (self.meter.integrated_lufs(), self.meter.true_peak_db());
         if let (Some(t), Some(LoudnessOutcome::Reached)) = (self.loudness, self.outcome)
             && (lufs <= soundcraft_dsp::MIN_DB || (lufs - t.lufs).abs() > LOUDNESS_TOLERANCE_LU)
         {
             self.outcome = Some(LoudnessOutcome::Missed);
+        }
+        // The gain comes from the first pass: a mix that renders louder the second time can still
+        // go over the ceiling, and then no other outcome may say it held.
+        if let Some(t) = self.loudness
+            && true_peak > t.true_peak_ceiling_db + CEILING_TOLERANCE_DB
+        {
+            self.outcome = Some(LoudnessOutcome::CeilingExceeded);
         }
         let bytes = match self.enc.take() {
             Some(enc) => enc.finish().map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?.complete(&self.part, &self.path)?,
@@ -570,7 +584,7 @@ impl Bounce {
             bytes,
             peak_db: soundcraft_dsp::gain_to_db(self.peak),
             lufs,
-            true_peak_db: self.meter.true_peak_db(),
+            true_peak_db: true_peak,
             gain_db: self.gain_db,
             loudness: self.outcome,
         })
@@ -1550,6 +1564,57 @@ mod clip_tests {
             super::clip_file(&dir.to_string_lossy(), "Take", &mut names, on_disk).unwrap();
         }
         assert_eq!(looked.get() - before, 1_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod loudness_tests {
+    use super::*;
+
+    /// A session with one stereo track playing a 1 kHz tone of `amp` for 2 s.
+    fn tone_session(amp: f32) -> Session {
+        let mut e = crate::Engine::default();
+        let sr = e.session().sample_rate.hz();
+        let tone: Vec<f32> = (0..96_000).map(|i| amp * (std::f32::consts::TAU * 1000.0 * i as f32 / 48_000.0).sin()).collect();
+        let s = e.session_mut();
+        let track = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, Some("Tone"));
+        let audio = AudioBuffer { sample_rate: sr, channels: vec![tone.clone(), tone] };
+        let source = add_source(s, "tone", audio, None, FileFormat::Wav);
+        let clip = Clip::audio(s.new_clip_id(), "tone", source, 0, 0, 96_000);
+        crate::edit::place_clip(s, track, clip);
+        s.clone()
+    }
+
+    /// The gain comes from the first pass. When the second pass renders louder (here the session
+    /// changes between the passes, as a plugin that does not render the same twice would), the
+    /// written true peak goes over the ceiling, and the outcome must say so instead of `Reached`.
+    #[test]
+    fn a_second_pass_over_the_ceiling_is_reported() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-io-ceiling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(craft_audio::BitDepth::Float32).with_dither(false);
+        let target = LoudnessTarget { lufs: -16.0, true_peak_ceiling_db: -1.0 };
+        let run = |louder: Option<f32>| {
+            let quiet = Arc::new(tone_session(0.05));
+            let mut b = Bounce::new(quiet, &dir.join("Mix.wav"), Range::new(0, 96_000), &opts, None, false, false).unwrap().with_loudness(target);
+            while b.measuring {
+                assert!(b.step(|| false).unwrap().is_none());
+            }
+            if let Some(amp) = louder {
+                b.session = Arc::new(tone_session(amp));
+                b.render = soundcraft_mix::RangeRender::new(&b.session, None, b.range, 1024);
+            }
+            b.run().unwrap()
+        };
+        let same = run(None);
+        assert_eq!(same.loudness, Some(LoudnessOutcome::Reached), "{same:?}");
+        assert!(same.true_peak_db <= -1.0, "{same:?}");
+        // 0.05 measured, 0.5 written: 20 dB louder than the gain was set for.
+        let louder = run(Some(0.5));
+        assert!(louder.true_peak_db > -1.0, "{louder:?}");
+        assert_eq!(louder.loudness, Some(LoudnessOutcome::CeilingExceeded), "{louder:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
