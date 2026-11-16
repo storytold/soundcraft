@@ -160,7 +160,7 @@ pub fn prores_mov(n: usize) -> Result<Vec<u8>> {
     let mut mw = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).map_err(err)?;
     let t = mw.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), w as u16, h as u16), 25)).map_err(err)?;
     for i in 0..n.min(10_000) {
-        let mut f = Frame::new(w, h, ChromaFormat::Yuv422, 10, false);
+        let mut f = Frame::new(w, h, ChromaFormat::Yuv422, 10, false).map_err(err)?;
         let y = ((16 + 8 * (i as u32 % 27)) << 2) as u16;
         f.y.iter_mut().for_each(|s| *s = y);
         let data = enc.encode(&f).map_err(err)?;

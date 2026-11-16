@@ -1,8 +1,8 @@
 use super::layout::STRIP_W;
 use super::tracks::{click_track, folder_depth, height_targets, in_edit_window, track_context_menu, view_label, view_menu};
 use super::{
-    Align2, AutoParam, Color32, Pos2, Rect, Sense, Shape, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold, groove, json,
-    level_pos, meter_pos, pos2, raised_key, regular, rgb, shade, vec2,
+    Align2, AutoParam, Color32, Gesture, Pos2, Rect, Sense, Shape, SoundApp, Stroke, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold,
+    groove, json, level_pos, meter_pos, pos2, raised_key, regular, rgb, shade, vec2,
 };
 
 /// Draw one track header: resize edge, selection and context menu, folder/options control, automation-lane toggle,
@@ -94,11 +94,11 @@ fn strip_buttons(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
     ui.painter().circle_filled(round.center(), 5.0, shade(strip, if rresp.hovered() { 0.6 } else { 0.45 }));
     arrow(ui.painter(), round.center(), !track.is_folder() || track.folder_open, ink);
     if track.is_folder() {
-        if rresp.on_hover_text(if track.folder_open { "Close folder" } else { "Open folder" }).clicked() {
+        if rresp.on_hover_text(crate::localization::text(if track.folder_open { "Close folder" } else { "Open folder" })).clicked() {
             let _ = app.run("track.folder_toggle", json!({"track": id.0}));
         }
     } else {
-        egui::Popup::menu(&rresp.on_hover_text("Track options")).show(|ui| track_context_menu(app, ui, id));
+        egui::Popup::menu(&rresp.on_hover_text(crate::localization::text("Track options"))).show(|ui| track_context_menu(app, ui, id));
     }
     if h >= 40.0 && track.kind.has_playlist() {
         let ar = at(3.0, h - 12.0, 9.0, 9.0);
@@ -109,7 +109,7 @@ fn strip_buttons(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
         ui.painter().line_segment([a, b], Stroke::new(1.0, ink));
         ui.painter().circle_filled(a, 1.3, ink);
         ui.painter().circle_filled(b, 1.3, ink);
-        if aresp.on_hover_text(if showing { "Hide automation" } else { "Show volume automation" }).clicked() {
+        if aresp.on_hover_text(crate::localization::text(if showing { "Hide automation" } else { "Show volume automation" })).clicked() {
             let view = if !showing {
                 "volume"
             } else if track.kind.is_midi() {
@@ -199,14 +199,14 @@ fn playlist_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, hea
     let presp = ui.interact(pl_r, ui.scope_id().with(("pl", id.0)), Sense::click());
     ui.painter().rect_filled(pl_r, 1.5, shade(head_bg, if presp.hovered() { -0.2 } else { -0.35 }));
     arrow(ui.painter(), pos2(pl_r.center().x, pl_r.min.y + 5.75), true, t.text);
-    egui::Popup::menu(&presp.on_hover_text("Playlists")).show(|ui| {
-        if ui.button("New...").clicked() {
+    egui::Popup::menu(&presp.on_hover_text(crate::localization::text("Playlists"))).show(|ui| {
+        if ui.button(crate::localization::text("New...")).clicked() {
             let _ = app.run("track.playlist_new", json!({"track": id.0}));
         }
-        if ui.button("Duplicate...").clicked() {
+        if ui.button(crate::localization::text("Duplicate...")).clicked() {
             let _ = app.run("track.playlist_duplicate", json!({"track": id.0}));
         }
-        if ui.button("Delete Unused...").clicked() {
+        if ui.button(crate::localization::text("Delete Unused...")).clicked() {
             let _ = app.run("track.playlist_delete_unused", json!({"track": id.0}));
         }
         ui.separator();
@@ -256,10 +256,10 @@ fn view_selector(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
             ui,
             at(17.0, view_y, 105.0, 17.0),
             ui.scope_id().with(("view", id.0)),
-            &view_label(&track.view),
+            crate::localization::text(&view_label(&track.view)),
             t.text,
             true,
-            &format!("Track view for {}", track.name),
+            &crate::localized_format!("Track view for {}", track.name),
         );
         egui::Popup::menu(&vresp).show(|ui| view_menu(app, ui, track));
     }
@@ -272,11 +272,19 @@ fn view_selector(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
             soundcraft_model::AutomationMode::Latch => t.auto_latch,
             _ => t.text_dim,
         };
-        let mode_name = format!("Automation mode for {}", track.name);
-        let aresp = header_selector(ui, at(17.0, 39.0, 105.0, 17.0), ui.scope_id().with(("auto_mode", id.0)), mode.label(), col, true, &mode_name);
+        let mode_name = crate::localized_format!("Automation mode for {}", track.name);
+        let aresp = header_selector(
+            ui,
+            at(17.0, 39.0, 105.0, 17.0),
+            ui.scope_id().with(("auto_mode", id.0)),
+            crate::localization::text(mode.label()),
+            col,
+            true,
+            &mode_name,
+        );
         egui::Popup::menu(&aresp).show(|ui| {
             for m in soundcraft_model::AutomationMode::ALL {
-                if ui.selectable_label(m == mode, m.label()).clicked() {
+                if ui.selectable_label(m == mode, crate::localization::text(m.label())).clicked() {
                     let _ = app.run("mix.automation_mode", json!({"track": id.0, "mode": m.label()}));
                 }
             }
@@ -303,17 +311,25 @@ fn voice_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
                 let d = vec2(a.to_radians().sin(), a.to_radians().cos()) * 3.5;
                 ui.painter().line_segment([r.center() - d, r.center() + d], Stroke::new(1.5, t.text));
             }
-            if resp.on_hover_text(if track.frozen { "Unfreeze" } else { "Freeze" }).clicked() {
+            if resp.on_hover_text(crate::localization::text(if track.frozen { "Unfreeze" } else { "Freeze" })).clicked() {
                 let _ = app.run("track.freeze", json!({"tracks": [id.0]}));
             }
         }
         if !matches!(track.kind, TrackKind::Master | TrackKind::Vca | TrackKind::Folder) {
             let (voice, color) = if track.inactive { ("off", t.text_dim) } else { ("dyn", t.text) };
-            let voice_name = format!("Voice for {}", track.name);
-            let resp = header_selector(ui, at(31.0, 57.0, 31.0, 17.0), ui.scope_id().with(("voice", id.0)), voice, color, false, &voice_name);
-            egui::Popup::menu(&resp.on_hover_text("Voice: dyn plays the track, off makes it inactive")).show(|ui| {
+            let voice_name = crate::localized_format!("Voice for {}", track.name);
+            let resp = header_selector(
+                ui,
+                at(31.0, 57.0, 31.0, 17.0),
+                ui.scope_id().with(("voice", id.0)),
+                crate::localization::text(voice),
+                color,
+                false,
+                &voice_name,
+            );
+            egui::Popup::menu(&resp.on_hover_text(crate::localization::text("Voice: dyn plays the track, off makes it inactive"))).show(|ui| {
                 for (label, inactive) in [("dyn", false), ("off", true)] {
-                    if ui.selectable_label(track.inactive == inactive, label).clicked() {
+                    if ui.selectable_label(track.inactive == inactive, crate::localization::text(label)).clicked() {
                         let _ = app.run("track.make_inactive", json!({"tracks": [id.0], "inactive": inactive}));
                     }
                 }
@@ -327,11 +343,19 @@ fn voice_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
             soundcraft_model::AutomationMode::Latch => t.auto_latch,
             _ => t.text_dim,
         };
-        let mode_name = format!("Automation mode for {}", track.name);
-        let aresp = header_selector(ui, at(63.0, 57.0, 59.0, 17.0), ui.scope_id().with(("auto_mode", id.0)), mode.label(), col, true, &mode_name);
+        let mode_name = crate::localized_format!("Automation mode for {}", track.name);
+        let aresp = header_selector(
+            ui,
+            at(63.0, 57.0, 59.0, 17.0),
+            ui.scope_id().with(("auto_mode", id.0)),
+            crate::localization::text(mode.label()),
+            col,
+            true,
+            &mode_name,
+        );
         egui::Popup::menu(&aresp).show(|ui| {
             for m in soundcraft_model::AutomationMode::ALL {
-                if ui.selectable_label(m == mode, m.label()).clicked() {
+                if ui.selectable_label(m == mode, crate::localization::text(m.label())).clicked() {
                     let _ = app.run("mix.automation_mode", json!({"track": id.0, "mode": m.label()}));
                 }
             }
@@ -378,10 +402,13 @@ fn field_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, head_bg
             let resp = ui.interact(field, ui.scope_id().with(("field", id.0)), Sense::click());
             ui.painter().rect_filled(field, 2.0, shade(head_bg, if resp.hovered() { -0.02 } else { -0.1 }));
             if track.kind == TrackKind::Instrument {
-                let name =
-                    track.instrument.as_ref().and_then(|i| crate::mix_window::plugin_info(&i.plugin)).map_or("no instrument", |p| p.short_name);
+                let name = track
+                    .instrument
+                    .as_ref()
+                    .and_then(|i| crate::mix_window::plugin_info(&i.plugin))
+                    .map_or_else(|| crate::localization::text("no instrument"), |p| p.short_name);
                 ui.painter().with_clip_rect(field).text(pos2(field.min.x + 5.0, field.center().y), Align2::LEFT_CENTER, name, bold(10.0), t.text);
-                egui::Popup::menu(&resp.on_hover_text("Instrument"))
+                egui::Popup::menu(&resp.on_hover_text(crate::localization::text("Instrument")))
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .show(|ui| crate::mix_window::instrument_menu(app, ui, id));
             } else {
@@ -397,7 +424,7 @@ fn field_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, head_bg
                         t.text,
                     );
                 }
-                egui::Popup::menu(&resp.on_hover_text("Elastic Audio")).show(|ui| {
+                egui::Popup::menu(&resp.on_hover_text(crate::localization::text("Elastic Audio"))).show(|ui| {
                     for alg in ["none", "polyphonic", "rhythmic", "monophonic", "varispeed", "x-form"] {
                         let current = track.elastic.as_deref().unwrap_or("none") == alg;
                         if ui.selectable_label(current, soundcraft_engine::feature_names::display_label(alg)).clicked() {
@@ -427,6 +454,7 @@ pub(super) fn header_selector(ui: &Ui, r: Rect, id: egui::Id, text: &str, color:
     let resp = ui.interact(r, id, Sense::click());
     resp.widget_info(|| {
         let mut info = egui::WidgetInfo::labeled(egui::accesskit::Role::ComboBox, ui.is_enabled(), name);
+        // `text` can be a user-defined route name (a bus called "File"), so show it unchanged.
         info.current_text_value = Some(text.to_string());
         info
     });
@@ -451,14 +479,23 @@ enum HeaderKey {
 /// mute that another track's solo implies). Record keys stay dark red when off, as in Pro Tools.
 fn header_toggle(ui: &Ui, r: Rect, track: TrackId, track_name: &str, key: HeaderKey, lit: bool, implied: bool) -> egui::Response {
     let t = Tokens::current();
-    let (label, color) = match key {
+    let (source_label, color) = match key {
         HeaderKey::Rec => ("Record enable", t.rec),
         HeaderKey::Input => ("Input monitoring", t.input),
         HeaderKey::Solo => ("Solo", t.solo),
         HeaderKey::Mute => ("Mute", t.mute),
     };
-    let name = format!("{label} for {track_name}");
-    let resp = ui.interact(r, ui.scope_id().with((label, track.0)), Sense::click());
+    let label = crate::localization::text(source_label);
+    // Fixed badges, independent of the translated label: in some languages the translated
+    // labels for two different buttons would otherwise start with the same letter.
+    let badge = match key {
+        HeaderKey::Rec => "",
+        HeaderKey::Input => "I",
+        HeaderKey::Solo => "S",
+        HeaderKey::Mute => "M",
+    };
+    let name = crate::localized_format!("{} for {}", label, track_name);
+    let resp = ui.interact(r, ui.scope_id().with((source_label, track.0)), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), lit, &name));
     let rec = key == HeaderKey::Rec;
     let (tint, k) = if lit {
@@ -482,7 +519,7 @@ fn header_toggle(ui: &Ui, r: Rect, track: TrackId, track_name: &str, key: Header
     if rec {
         ui.painter().circle_filled(r.center(), 4.0, if lit { Color32::WHITE } else { t.text.lerp_to_gamma(color, 0.3) });
     } else {
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, label.get(..1).unwrap_or_default(), bold(11.0), ink);
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, badge, bold(11.0), ink);
     }
     resp.on_hover_text(label)
 }
@@ -532,7 +569,7 @@ pub(super) fn header_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, col:
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink(3.0)));
             let field = crate::widgets::named_text_field(
                 child.add(egui::TextEdit::multiline(&mut c).desired_width(r.width() - 6.0).font(regular(10.0))),
-                &format!("Comments for {}", track.name),
+                &crate::localized_format!("Comments for {}", track.name),
             );
             if field.changed() {
                 let _ =
@@ -550,10 +587,11 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
     ui.painter().rect_filled(r, 0.0, t.slot_well);
     let ui = column_ui(ui, "io", r);
     let row = |y: f32, h: f32| (r.height() >= y + h + 1.0).then_some(Rect::from_min_size(r.min + vec2(7.0, y), vec2(r.width() - 14.0, h)));
-    if let Some(input) = row(4.0, 15.0) {
+    if let Some(input) = row(4.0, 15.0).filter(|_| crate::mix_window::has_input_selector(track.kind)) {
         let input_name = crate::mix_window::input_name(app, track);
-        let resp = header_selector(&ui, input, ui.scope_id().with(("in", id.0)), &input_name, t.text, true, &format!("Input for {}", track.name));
-        crate::mix_window::route_popup(app, &resp.on_hover_text("Input"), id, true);
+        let name = crate::localized_format!("Input for {}", track.name);
+        let resp = header_selector(&ui, input, ui.scope_id().with(("in", id.0)), &input_name, t.text, true, &name);
+        crate::mix_window::route_popup(app, &resp.on_hover_text(crate::localization::text("Input")), id, true);
     }
     if let Some(out) = row(21.0, 17.0) {
         let (sel, fader) = (out.with_max_x(out.max.x - 11.0), out.with_min_x(out.max.x - 11.0));
@@ -571,8 +609,8 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
         let c = fader.center() + vec2(0.5, 0.0);
         ui.painter().vline(c.x, c.y - 5.0..=c.y + 5.0, Stroke::new(1.0, t.text));
         ui.painter().rect_filled(Rect::from_center_size(c + vec2(0.0, -1.5), vec2(5.0, 2.5)), 0.5, t.text);
-        crate::mix_window::route_popup(app, &resp.on_hover_text("Output"), id, false);
-        if fresp.on_hover_text("Show in the Mix window").clicked() {
+        crate::mix_window::route_popup(app, &resp.on_hover_text(crate::localization::text("Output")), id, false);
+        if fresp.on_hover_text(crate::localization::text("Show in the Mix window")).clicked() {
             let _ = app.run("edit.select", json!({"tracks": [id.0]}));
             let _ = app.run("window.mix", json!({}));
         }
@@ -584,11 +622,143 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
         let pan = m.pan.first().map_or("-".into(), |p| crate::widgets::pan_text(*p));
         // The readout is black in both themes, so it takes the dark palette's green.
         let ink = Tokens::DARK.counter_text;
-        for (y, label, value) in [(7.5, "vol", crate::widgets::db_text(m.volume_db)), (22.0, "pan", pan)] {
+        // The two rows are buttons: a click opens a fader or pan sliders, an Alt-click resets.
+        // The Mix window's strip has no stereo pan for a VCA or for a track on a multichannel output (it shows a surround panner), so the pan stays text.
+        // ponytail: surround-panned tracks are placed in the Mix window. Upgrade: `widgets::surround_panner` in the pan popup.
+        let pannable = !m.pan.is_empty() && track.kind != TrackKind::Vca && !crate::mix_window::surround_panned(app, track);
+        let vol_row = Rect::from_x_y_ranges(vr.x_range(), vr.min.y + 1.5..=vr.min.y + 14.0).shrink2(vec2(1.5, 0.0));
+        let pan_row = Rect::from_x_y_ranges(vr.x_range(), vr.min.y + 15.0..=vr.max.y - 1.5).shrink2(vec2(1.5, 0.0));
+        let vol_text = crate::widgets::db_text(m.volume_db);
+        let vol = readout_button(
+            &ui,
+            vol_row,
+            ui.scope_id().with(("vol", id.0)),
+            &format!("{} volume", track.name),
+            &vol_text,
+            "Volume: click for a fader, Alt-click for 0 dB",
+        );
+        let pan_resp = pannable.then(|| {
+            readout_button(
+                &ui,
+                pan_row,
+                ui.scope_id().with(("pan", id.0)),
+                &format!("{} pan", track.name),
+                &pan,
+                "Pan: click for sliders, Alt-click to reset",
+            )
+        });
+        let alt = ui.input(|i| i.modifiers.alt);
+        if vol.clicked() && alt && m.volume_db.abs() > f32::EPSILON {
+            // Merged, so a reset during an automation pass joins the pass's undo step; the merge ends by itself on the next frame.
+            let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": 0.0}), &format!("fader:{}", id.0));
+        }
+        if let Some(resp) = &pan_resp
+            && resp.clicked()
+            && alt
+        {
+            reset_pan(app, track);
+        }
+        for (y, label, value) in [(7.5, "vol", vol_text), (22.0, "pan", pan)] {
             ui.painter().text(pos2(vr.min.x + 7.0, vr.min.y + y), Align2::LEFT_CENTER, label, bold(10.0), ink);
             ui.painter().text(pos2(vr.max.x - 6.5, vr.min.y + y), Align2::RIGHT_CENTER, value, bold(10.0), ink);
         }
         ui.painter().hline(vr.min.x + 7.0..=vr.max.x - 6.0, vr.min.y + 14.5, Stroke::new(1.0, Color32::from_gray(35)));
+        readout_popup(&vol, !alt).show(|ui| volume_fader(app, ui, track));
+        if let Some(resp) = &pan_resp {
+            readout_popup(resp, !alt).show(|ui| pan_sliders(app, ui, track));
+        }
+    }
+}
+
+/// A readout row of the I/O column as a button, named `name` (the track's, so two tracks showing the same value differ) and its value. It lights up under the pointer, with the keyboard focus or while its popup is open,
+/// and paints nothing otherwise, so an untouched column looks the same as before.
+fn readout_button(ui: &Ui, r: Rect, id: egui::Id, name: &str, value: &str, tip: &str) -> egui::Response {
+    let resp = ui.interact(r, id, Sense::click()).on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{name} {value}")));
+    if resp.hovered() || resp.has_focus() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp)) {
+        ui.painter().rect_filled(r, 1.5, Color32::from_gray(38));
+    }
+    resp
+}
+
+/// The popup of a readout button, to its right so it doesn't hide the tracks below. An Alt-click
+/// resets instead of opening (`toggle` false). Clicks inside it keep it open; Escape or a click outside closes it.
+fn readout_popup(resp: &egui::Response, toggle: bool) -> egui::Popup<'static> {
+    egui::Popup::from_response(resp)
+        .open_memory((toggle && resp.clicked()).then_some(egui::SetOpenCommand::Toggle))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .align(egui::RectAlign::RIGHT_START)
+        .gap(2.0)
+}
+
+/// What a panner returns to: centre on a mono track, hard left or right on a stereo one, as on a new track.
+fn default_pan(track: &Track, index: usize) -> f32 {
+    soundcraft_model::Mixer::new(track.format).pan.get(index).copied().unwrap_or(0.0)
+}
+
+/// Put every panner of the track (L and R on a stereo one) back to its default, as one undo step. The merge ends by itself on the next frame.
+fn reset_pan(app: &mut SoundApp, track: &Track) {
+    let key = format!("pan-reset:{}", track.id.0);
+    for (i, now) in track.mixer.pan.iter().enumerate().take(2) {
+        let to = default_pan(track, i);
+        // Only a real change may start the merged step: a no-op first call would leave the next one folded into an older edit.
+        if (now - to).abs() > f32::EPSILON {
+            let _ = app.engine.execute_merged("mix.pan", &json!({"track": track.id.0, "pan": to, "index": i}), &key);
+        }
+    }
+}
+
+/// The volume popup: a fader like the Mix window's, over a readout that takes a typed value.
+/// A drag is one undo step and goes through [`Gesture::Fader`], so Touch and Latch automation write it.
+fn volume_fader(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
+    let t = Tokens::current();
+    let id = track.id;
+    let db = track.mixer.volume_db;
+    let key = format!("fader:{}", id.0);
+    let (well, _) = ui.allocate_exact_size(vec2(56.0, 16.0), Sense::hover());
+    crate::widgets::inset(ui.painter(), well, t.counter_bg);
+    let readout_id = ui.scope_id().with(("io-vol", id.0));
+    let (_, typed) = crate::mix_window::editable_readout(
+        ui,
+        well,
+        readout_id,
+        crate::mix_window::Readout {
+            name: &format!("{} volume", track.name),
+            display: &crate::widgets::db_text(db),
+            edit_initial: &format!("{db:.1}"),
+            parse: crate::mix_window::parse_db,
+            reset: 0.0,
+        },
+    );
+    if let Some(db) = typed {
+        let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": db}), &key);
+    }
+    ui.add_space(4.0);
+    // ponytail: the fader is drawn, not focusable, so the keyboard sets the volume in the readout above it. Upgrade: arrow keys in `widgets::fader`.
+    let (slot, _) = ui.allocate_exact_size(vec2(56.0, 170.0), Sense::hover());
+    if let Some(moved) = crate::widgets::fader(ui, slot, db, ui.scope_id().with(("io-fader", id.0)), &format!("{} level", track.name)) {
+        app.gesture = Some(Gesture::Fader { track: id, start_db: db });
+        let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": moved}), &key);
+    }
+}
+
+/// The pan popup: one slider, or L and R on a stereo track. A drag is one undo step per panner.
+fn pan_sliders(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
+    ui.spacing_mut().slider_width = 120.0;
+    let stereo = track.mixer.pan.len() > 1;
+    for (i, side) in ["L", "R"].into_iter().enumerate().take(track.mixer.pan.len()) {
+        let before = track.mixer.pan.get(i).copied().unwrap_or(0.0);
+        let mut pan = before;
+        // ponytail: no double-click reset on the sliders; the readout's Alt-click resets every panner at once.
+        // No step either: a slider rounds to it when drawn, which would rewrite a pan off the grid just by opening the popup.
+        let slider = egui::Slider::new(&mut pan, -1.0..=1.0)
+            .text(if stereo { side } else { "Pan" })
+            .custom_formatter(|v, _| crate::widgets::pan_text(v as f32))
+            .custom_parser(|s| crate::mix_window::parse_pan(s).map(f64::from));
+        ui.add(slider);
+        if (pan - before).abs() > f32::EPSILON {
+            let _ = app.engine.execute_merged("mix.pan", &json!({"track": track.id.0, "pan": pan, "index": i}), &format!("pan:{}:{i}", track.id.0));
+        }
     }
 }
 

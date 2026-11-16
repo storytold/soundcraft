@@ -7,6 +7,8 @@ use std::process::Command;
 
 use craft_audio::{AudioBuffer, BitDepth, BwfInfo, EncodeOptions};
 
+mod common;
+
 fn tmpdir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("sc-cli-convert-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -25,7 +27,7 @@ fn write_wav16(path: &Path, samples: &[i16]) {
 }
 
 fn convert(input: &Path, output: &Path, extra: &[&str]) {
-    let o = Command::new(env!("CARGO_BIN_EXE_soundcraft-cli"))
+    let o = Command::new(common::soundcraft_cli_binary())
         .env("SOUNDCRAFT_NO_PREFS", "1")
         .arg("convert")
         .arg(input)
@@ -135,7 +137,7 @@ fn convert_warns_about_damaged_packets_and_never_replaces_the_source_with_them()
     let bytes = mp1_with_a_damaged_frame();
     std::fs::write(&src, &bytes).unwrap();
     let run = |args: &[&std::ffi::OsStr]| {
-        Command::new(env!("CARGO_BIN_EXE_soundcraft-cli")).env("SOUNDCRAFT_NO_PREFS", "1").arg("convert").args(args).output().unwrap()
+        Command::new(common::soundcraft_cli_binary()).env("SOUNDCRAFT_NO_PREFS", "1").arg("convert").args(args).output().unwrap()
     };
     // To another file: written, with a warning that says how much was lost.
     let out = dir.join("take.wav");
