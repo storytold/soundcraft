@@ -263,7 +263,13 @@ fn draw_clip_content(cl: &ClipLane<'_>, clip: &Clip, g: &ClipGeom<'_>) {
                     }
                 }
             } else {
-                painter.text(body_r.center(), Align2::CENTER_CENTER, "media offline", regular(10.0), Color32::from_rgb(220, 120, 120));
+                painter.text(
+                    body_r.center(),
+                    Align2::CENTER_CENTER,
+                    crate::localization::text("media offline"),
+                    regular(10.0),
+                    Color32::from_rgb(220, 120, 120),
+                );
             }
         }
         ClipContent::Video { .. } => {} // thumbnails: video_track::draw_lane
@@ -482,7 +488,7 @@ pub(super) fn clip_marks(clip: &Clip, show_rating: bool) -> String {
 
 /// Gap between a pill and the clip outline's inner edge (so the pill sits 1 pt inside the outline).
 pub(super) const PILL_INSET: f32 = 2.0;
-pub(super) const PILL_HEIGHT: f32 = 13.0;
+pub(super) const PILL_HEIGHT: f32 = 14.0;
 /// Horizontal padding between a pill's edge and its text.
 pub(super) const PILL_PAD: f32 = 3.0;
 /// The narrowest name pill worth drawing: its padding plus about one letter.
