@@ -54,42 +54,42 @@ impl SendToNewTrack {
     /// Draws the row and the checkbox; returns the command's parameters when Create is pressed.
     pub(crate) fn show(&mut self, ui: &mut Ui, enter: bool) -> Option<Value> {
         ui.horizontal(|ui| {
-            ui.label("Create 1 new");
+            ui.label(crate::localization::text("Create 1 new"));
             craft_ui::ComboBox::from_id_salt("snt_fmt")
-                .selected_text(&self.format)
+                .selected_text(crate::localization::text(&self.format))
                 .show_ui(ui, |ui| {
                     for f in ChannelFormat::ALL {
-                        ui.selectable_value(&mut self.format, f.label().to_string(), f.label());
+                        ui.selectable_value(&mut self.format, f.label().to_string(), crate::localization::text(f.label()));
                     }
                 })
                 .response
-                .accessible_name("Channel format");
+                .accessible_name(crate::localization::text("Channel format"));
             craft_ui::ComboBox::from_id_salt("snt_kind")
-                .selected_text(TrackKind::from_id(&self.kind).map_or("Aux Input", |k| k.label()))
+                .selected_text(crate::localization::text(TrackKind::from_id(&self.kind).map_or("Aux Input", |k| k.label())))
                 .show_ui(ui, |ui| {
                     for k in KINDS {
-                        if ui.selectable_label(self.kind == k.id(), k.label()).clicked() {
+                        if ui.selectable_label(self.kind == k.id(), crate::localization::text(k.label())).clicked() {
                             super::new_tracks::set_new_track_kind(&mut self.kind, &mut self.name, k);
                         }
                     }
                 })
                 .response
-                .accessible_name("Track kind");
-            ui.label("in");
+                .accessible_name(crate::localization::text("Track kind"));
+            ui.label(crate::localization::text("in"));
             craft_ui::ComboBox::from_id_salt("snt_tb")
-                .selected_text(if self.timebase == "ticks" { "Ticks" } else { "Samples" })
+                .selected_text(crate::localization::text(if self.timebase == "ticks" { "Ticks" } else { "Samples" }))
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.timebase, "samples".to_string(), "Samples");
-                    ui.selectable_value(&mut self.timebase, "ticks".to_string(), "Ticks");
+                    ui.selectable_value(&mut self.timebase, "samples".to_string(), crate::localization::text("Samples"));
+                    ui.selectable_value(&mut self.timebase, "ticks".to_string(), crate::localization::text("Ticks"));
                 })
                 .response
-                .accessible_name("Timebase");
+                .accessible_name(crate::localization::text("Timebase"));
         });
         ui.horizontal(|ui| {
-            let label = ui.label("Name:");
-            crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(260.0)).labelled_by(label.id), "Name:");
+            let label = ui.label(crate::localization::text("Name:"));
+            crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(260.0)).labelled_by(label.id), crate::localization::text("Name:"));
         });
-        crate::widgets::checkbox(ui, &mut self.next_to_track, "Create next to current track");
+        crate::widgets::checkbox(ui, &mut self.next_to_track, crate::localization::text("Create next to current track"));
         super::buttons(ui, "Create", enter).then(|| self.params())
     }
 }
