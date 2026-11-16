@@ -96,7 +96,7 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Korean | ko | none | 0 % |
 | Vietnamese | vi | none | 0 % |
 
-Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI strings (100 %), with native-speaker review, CJK/RTL font fallbacks and script shaping still pending. Detail: [localization-parity.md](docs/localization-parity.md).
+Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI strings (100 %), with native-speaker review, CJK/RTL font fallbacks and script shaping still pending. Finnish (`fi`, not one of Pro Tools' languages) covers the same strings. Detail: [localization-parity.md](docs/localization-parity.md).
 
 ## Upcoming
 
@@ -180,6 +180,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | trivial | Languages: Finnish (`fi`) catalog added for the fixed UI strings. Estimates unchanged |
 | 2026-11-05 | trivial | Languages table: Brazilian Portuguese (pt-BR) near complete for fixed UI strings via PR #1346; needs native review. Estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Cancel Zoom Toggle; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: side panels in dock columns; readiness estimates unchanged |
