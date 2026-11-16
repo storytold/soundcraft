@@ -952,10 +952,16 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "No sample" => "Nenhuma amostra",
         "{}: missing" => "{}: ausente",
         "none" => "nenhum",
+        "no playback engine running" => "nenhum mecanismo de reprodução em execução",
+        "no audio device" => "nenhum dispositivo de áudio",
+        "not measured in the browser" => "não medida no navegador",
+        "waiting for the first device callback" => "aguardando o primeiro callback do dispositivo",
         // Formatted messages. Placeholders mirror the English source so the same arguments fill
         // them; `localized_format!` selects the template at run time.
         "Active audio ends at {seconds:.2} seconds" => "O áudio ativo termina em {seconds:.2} segundos",
         "Active plugin instances: {plugins}" => "Instâncias de plugins ativas: {plugins}",
+        "Audio load: {} of {:.1} ms" => "Carga de áudio: {} de {:.1} ms",
+        "Audio load: not measured ({why})" => "Carga de áudio: não medida ({why})",
         "Audio: {}" => "Áudio: {}",
         "AudioSuite · {title}" => "AudioSuite · {title}",
         "Bouncing {name}" => "Renderizando {name}",
@@ -973,12 +979,14 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Session media: {} files, {:.1} MB in memory (32-bit float)" => {
             "Mídia da sessão: {} arquivos, {:.1} MB na memória (ponto flutuante de 32 bits)"
         }
+        "Late callbacks (dropouts): {} · worst {}" => "Callbacks atrasados (falhas): {} · pior {}",
         "Tracks: {}" => "Faixas: {}",
         "UI frame time: {:.1} ms" => "Tempo do quadro da interface: {:.1} ms",
         "Undo steps: {}" => "Etapas para desfazer: {}",
         "Value in {suffix}" => "Valor em {suffix}",
         "Version {}" => "Versão {}",
         "{bars} bars" => "{bars} compassos",
+        "peak {}" => "pico {}",
         "{} contributors · {} commits" => "{} colaboradores · {} commits",
         "@{}: {} PRs, {} commits, +{} / −{} lines (Δ {}), +{} / −{} binary assets, {} – {}" => {
             "@{}: {} PRs, {} commits, +{} / −{} linhas (Δ {}), +{} / −{} recursos binários, {} – {}"
