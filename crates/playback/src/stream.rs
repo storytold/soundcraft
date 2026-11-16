@@ -86,21 +86,6 @@ where
     )
 }
 
-/// The output devices to try, in order, and whether the first is the system default. A device
-/// `cfg` names and the host has is the only candidate: if it will not open, the player goes
-/// silent rather than play somewhere the user did not choose. Otherwise the system default comes
-/// first, then, on ALSA, the fallbacks [`devices::fallback_outputs`] picks; they are only listed
-/// once the default has failed, so a working default costs no extra enumeration.
-pub(crate) fn output_candidates(cfg: &AudioConfig) -> (impl Iterator<Item = cpal::Device>, bool) {
-    let host = devices::host(cfg);
-    let chosen = devices::chosen_device(&host, cfg.output.as_deref(), true);
-    let is_default = chosen.is_none();
-    let first = chosen.or_else(|| devices::default_device(&host, cfg.output.as_deref(), true));
-    let tried = first.clone();
-    let fallbacks = std::iter::once_with(move || if is_default { devices::fallback_outputs(&host, tried.as_ref()) } else { Vec::new() }).flatten();
-    (first.into_iter().chain(fallbacks), is_default)
-}
-
 /// Why no candidate worked: whether any could be configured (then only its streams failed to
 /// start), and the first candidate's reason when it could not be configured.
 #[derive(Debug, PartialEq, Eq)]
@@ -131,6 +116,39 @@ pub(crate) fn first_working<D, C, S>(
         }
     }
     Err(none)
+}
+
+/// [`first_working`] for a caller that reports one error: the first candidate that configures
+/// and opens, with its index, else the first device's reason (it failed to configure, or it
+/// configured and failed to open), else `none` when there was no candidate at all. The reason
+/// is the first device's because that is the one the user expects (the chosen device, or the
+/// system default); a fallback's failure would mislead.
+pub(crate) fn first_open<D, C, S>(
+    candidates: impl IntoIterator<Item = D>,
+    configure: impl FnMut(&D) -> Result<C, String>,
+    mut open: impl FnMut(&D, &C) -> Result<S, String>,
+    none: &str,
+) -> Result<(usize, D, S), String> {
+    // The first device's open failure, when it configured; the count of candidates produced so
+    // far tells whether the device being opened is the first.
+    let mut first_open_error = None;
+    let produced = std::cell::Cell::new(0usize);
+    let found = first_working(candidates.into_iter().inspect(|_| produced.set(produced.get().saturating_add(1))), configure, |device, config| {
+        match open(device, config) {
+            Ok(opened) => Some(opened),
+            Err(e) => {
+                if produced.get() == 1 {
+                    first_open_error = Some(e);
+                }
+                None
+            }
+        }
+    });
+    match found {
+        Ok((i, device, _, opened)) => Ok((i, device, opened)),
+        Err(NoneWorked { first_error: Some(e), .. }) => Err(e),
+        Err(_) => Err(first_open_error.unwrap_or_else(|| none.to_string())),
+    }
 }
 
 /// Configure `device` for output at the chosen rate (else the session rate) if possible, in the

@@ -153,6 +153,32 @@ fn when_nothing_works_the_first_reason_is_kept() {
     assert_eq!(none.map(|(i, ..)| i), Err(NoneWorked { configured: false, first_error: None }));
 }
 
+/// Recording (#540): the default input refuses and PipeWire records instead.
+#[test]
+fn a_default_input_that_will_not_open_records_from_the_next() {
+    let won = first_open(
+        ["default", "pipewire"],
+        |d| if *d == "default" { Err("Connection refused (111)".to_string()) } else { Ok(()) },
+        |d, ()| Ok(*d),
+        "no audio input device",
+    );
+    assert_eq!(won, Ok((1, "pipewire", "pipewire")));
+}
+
+/// When nothing opens, the error the user sees is the first device's, whether it failed to
+/// configure or configured and failed to start, never a fallback's; with no device, `none`.
+#[test]
+fn when_no_input_opens_the_first_devices_reason_is_shown() {
+    let configure = |d: &&str| if *d == "default" { Err("Connection refused (111)".to_string()) } else { Ok(()) };
+    let busy = |d: &&str, _: &()| Err::<(), _>(format!("{d} busy"));
+    assert_eq!(first_open(["default", "pipewire"], configure, busy, "none"), Err("Connection refused (111)".into()));
+    assert_eq!(first_open(["default", "pipewire"], |_| Ok(()), busy, "none"), Err("default busy".into()));
+    assert_eq!(first_open(std::iter::empty::<&str>(), |_| Ok(()), busy, "no audio input device"), Err("no audio input device".into()));
+    // The first device configures but a fallback fails to start: still the first device's reason.
+    let only_default_configures = |d: &&str| if *d == "default" { Ok(()) } else { Err(format!("{d} unsupported")) };
+    assert_eq!(first_open(["default", "pipewire"], only_default_configures, busy, "none"), Err("default busy".into()));
+}
+
 #[test]
 fn reusable_meter_snapshot_updates_and_drops_stale_tracks() {
     let keep = TrackId(1);

@@ -162,11 +162,6 @@ pub(crate) fn host(cfg: &AudioConfig) -> cpal::Host {
         })
 }
 
-/// The named output (or input) device of `host`, else its default device.
-pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
-    chosen_device(host, name, output).or_else(|| default_device(host, name, output))
-}
-
 /// The output (or input) device named `name`, when there is one by that name.
 pub(crate) fn chosen_device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
     let want = name?;
@@ -182,11 +177,11 @@ pub(crate) fn default_device(host: &cpal::Host, name: Option<&str>, output: bool
     if output { host.default_output_device() } else { host.default_input_device() }
 }
 
-/// At most this many fallback outputs are tried, so a machine where nothing opens still starts
+/// At most this many fallback devices are tried, so a machine where nothing opens still starts
 /// promptly (each failed ALSA open can take a moment).
 const MAX_FALLBACKS: usize = 8;
 
-/// Where an ALSA output stands as a fallback for a system default that would not open (lower is
+/// Where an ALSA device stands as a fallback for a system default that would not open (lower is
 /// tried first), from its PCM name and its description; `None` for one that is never tried.
 ///
 /// The sound servers come first: they share the card with other programs and are what `default`
@@ -201,7 +196,7 @@ const MAX_FALLBACKS: usize = 8;
 /// cpal notes that a plugin device that fails to open can leak descriptors and leave every later
 /// ALSA open failing. `jack` is left out too: opening it can start a JACK server.
 pub(crate) fn fallback_rank(pcm: &str, description: &str) -> Option<u8> {
-    let display = ["HDMI", "DisplayPort"].iter().any(|word| description.to_ascii_lowercase().contains(&word.to_ascii_lowercase()));
+    let display = is_display(description);
     match pcm.split_once(':') {
         None if pcm == "pipewire" => Some(0),
         None if pcm == "pulse" => Some(1),
@@ -210,11 +205,18 @@ pub(crate) fn fallback_rank(pcm: &str, description: &str) -> Option<u8> {
     }
 }
 
-/// The outputs worth trying, in [`fallback_rank`] order, from `(item, PCM name, description)`;
-/// skips `tried` (the output that already failed) and keeps at most [`MAX_FALLBACKS`]. The order
+/// True for a card whose name says it drives a monitor (HDMI, DisplayPort): often no speakers,
+/// and never a microphone.
+pub(crate) fn is_display(description: &str) -> bool {
+    let description = description.to_ascii_lowercase();
+    ["hdmi", "displayport"].iter().any(|word| description.contains(word))
+}
+
+/// The devices worth trying, in [`fallback_rank`] order, from `(item, PCM name, description)`;
+/// skips `tried` (the device that already failed) and keeps at most [`MAX_FALLBACKS`]. The order
 /// among equal ranks is the host's.
-pub(crate) fn order_fallbacks<T>(outputs: impl IntoIterator<Item = (T, String, String)>, tried: Option<&str>) -> Vec<T> {
-    let mut ranked: Vec<(u8, T)> = outputs
+pub(crate) fn order_fallbacks<T>(devices: impl IntoIterator<Item = (T, String, String)>, tried: Option<&str>) -> Vec<T> {
+    let mut ranked: Vec<(u8, T)> = devices
         .into_iter()
         .filter(|(_, pcm, _)| Some(pcm.as_str()) != tried)
         .filter_map(|(item, pcm, description)| fallback_rank(&pcm, &description).map(|rank| (rank, item)))
@@ -223,12 +225,13 @@ pub(crate) fn order_fallbacks<T>(outputs: impl IntoIterator<Item = (T, String, S
     ranked.into_iter().take(MAX_FALLBACKS).map(|(_, item)| item).collect()
 }
 
-/// Other outputs to try when `default` (the system default output) will not open. Only ALSA has
-/// them: there `default` is a route through a sound server or plugin that can fail on its own
-/// while the card and the other routes still work (#540). Other systems' defaults are the
-/// devices themselves, so elsewhere this is empty. Never used for a device the user chose: that
-/// one either plays or the player says it is silent, rather than sound coming out elsewhere.
-pub(crate) fn fallback_outputs(host: &cpal::Host, default: Option<&cpal::Device>) -> Vec<cpal::Device> {
+/// Other devices to try when `default` (the system default output, or input when `output` is
+/// false) will not open. Only ALSA has them: there `default` is a route through a sound server or
+/// plugin that can fail on its own while the card and the other routes still work (#540). Other
+/// systems' defaults are the devices themselves, so elsewhere this is empty. Never used for a
+/// device the user chose: that one either works or the app says it does not, rather than sound
+/// playing or recording somewhere else.
+pub(crate) fn fallback_devices(host: &cpal::Host, default: Option<&cpal::Device>, output: bool) -> Vec<cpal::Device> {
     if host.id().name() != "ALSA" {
         return Vec::new();
     }
@@ -236,15 +239,43 @@ pub(crate) fn fallback_outputs(host: &cpal::Host, default: Option<&cpal::Device>
     let pcm = |d: &cpal::Device| d.id().ok().map(|id| id.id().to_owned());
     let description = |d: &cpal::Device| d.description().ok().map(|desc| desc.name().to_owned()).unwrap_or_default();
     let tried = default.and_then(pcm);
-    let Ok(outputs) = host.output_devices() else { return Vec::new() };
+    let Ok(devices) = (if output { host.output_devices() } else { host.input_devices() }) else { return Vec::new() };
     order_fallbacks(
-        outputs.filter_map(|d| {
+        devices.filter_map(|d| {
             let name = pcm(&d)?;
             let desc = description(&d);
-            Some((d, name, desc))
+            // A monitor's card has no microphone: opening it as an input only wastes a try.
+            (output || !is_display(&desc)).then_some((d, name, desc))
         }),
         tried.as_deref(),
     )
+}
+
+/// The candidates in the order to try them, and whether the first is the system default. A
+/// `chosen` device is the only candidate (the default and the fallbacks are never looked up).
+/// Otherwise the default comes first, then the fallbacks, which are listed only once the caller
+/// gets past the default, so a working default costs no extra enumeration.
+pub(crate) fn lazy_candidates<D: Clone>(
+    chosen: Option<D>,
+    default: impl FnOnce() -> Option<D>,
+    fallbacks: impl FnOnce(Option<&D>) -> Vec<D>,
+) -> (impl Iterator<Item = D>, bool) {
+    let is_default = chosen.is_none();
+    let first = if is_default { default() } else { chosen };
+    let tried = first.clone();
+    let rest = std::iter::once_with(move || if is_default { fallbacks(tried.as_ref()) } else { Vec::new() }).flatten();
+    (first.into_iter().chain(rest), is_default)
+}
+
+/// The output (or input) devices to try for `cfg`, in order, and whether the first is the system
+/// default: the device `cfg` names when the host has it, else the default then, on ALSA, the
+/// fallbacks [`fallback_devices`] picks.
+pub(crate) fn candidates(cfg: &AudioConfig, output: bool) -> (impl Iterator<Item = cpal::Device>, bool) {
+    let host = host(cfg);
+    let name = if output { cfg.output.as_deref() } else { cfg.input.as_deref() };
+    let chosen = chosen_device(&host, name, output);
+    let default = if chosen.is_none() { default_device(&host, name, output) } else { None };
+    lazy_candidates(chosen, move || default, move |tried| fallback_devices(&host, tried, output))
 }
 
 /// The buffer to request: the chosen size when the device's range allows it, else the default.
@@ -362,7 +393,8 @@ mod tests {
         assert_eq!(host(&cfg).id(), cpal::default_host().id());
         // No device with this name exists: the default (or none, on a machine without audio).
         let h = cpal::default_host();
-        let fallback = device(&h, Some("No Such Device 1234"), true).as_ref().and_then(device_name);
+        assert!(chosen_device(&h, Some("No Such Device 1234"), true).is_none());
+        let fallback = default_device(&h, Some("No Such Device 1234"), true).as_ref().and_then(device_name);
         assert_eq!(fallback, h.default_output_device().as_ref().and_then(device_name));
     }
 
@@ -407,6 +439,85 @@ mod tests {
             assert_eq!(fallback_rank(name, ""), None, "{name:?} must not be tried");
         }
         assert!(fallback_rank("sysdefault:CARD=A", "Card, DisplayPort 1") > fallback_rank("sysdefault:CARD=B", "Card, Analog"));
+    }
+
+    /// A device the user chose is the only candidate: the default and the fallbacks are never
+    /// looked up, so a chosen device that fails leaves the player silent rather than playing (or
+    /// recording) somewhere else.
+    #[test]
+    fn a_chosen_device_gets_no_fallback() {
+        let (looked_default, looked_fallbacks) = (std::cell::Cell::new(false), std::cell::Cell::new(false));
+        let (list, is_default) = lazy_candidates(
+            Some("USB interface"),
+            || {
+                looked_default.set(true);
+                Some("default")
+            },
+            |_| {
+                looked_fallbacks.set(true);
+                vec!["pipewire"]
+            },
+        );
+        assert!(!is_default);
+        assert_eq!(list.collect::<Vec<_>>(), ["USB interface"]);
+        assert!(!looked_default.get() && !looked_fallbacks.get());
+    }
+
+    /// Without a chosen device: the default first, then the fallbacks, which are only listed when
+    /// the caller gets past the default, and are told which device already failed.
+    #[test]
+    fn the_default_comes_first_and_the_fallbacks_are_listed_lazily() {
+        let looked = std::cell::Cell::new(false);
+        let (mut list, is_default) = lazy_candidates(
+            None,
+            || Some("default"),
+            |tried: Option<&&str>| {
+                looked.set(true);
+                assert_eq!(tried, Some(&"default"));
+                vec!["pipewire", "sysdefault:CARD=PCH"]
+            },
+        );
+        assert!(is_default);
+        assert_eq!(list.next(), Some("default"));
+        assert!(!looked.get(), "the fallbacks are listed only after the default");
+        assert_eq!(list.collect::<Vec<_>>(), ["pipewire", "sysdefault:CARD=PCH"]);
+        // No device at all: only the fallbacks.
+        let (list, _) = lazy_candidates(
+            None,
+            || None,
+            |tried: Option<&&str>| {
+                assert_eq!(tried, None);
+                vec!["pipewire"]
+            },
+        );
+        assert_eq!(list.collect::<Vec<_>>(), ["pipewire"]);
+    }
+
+    /// Recording ranks inputs the same way as playback ranks outputs (#540: with `default` gone,
+    /// the reporter's next failure would be "No audio input: ... Connection refused").
+    #[test]
+    fn inputs_fall_back_like_outputs() {
+        let listed = [
+            ("default", "Default ALSA Output (currently PipeWire Media Server)"),
+            ("sysdefault:CARD=PCH", "HDA Intel PCH, ALC3246 Analog"),
+            ("pipewire", "PipeWire Sound Server"),
+            ("dsnoop:CARD=PCH,DEV=0", "HDA Intel PCH, ALC3246 Analog"),
+            ("hw:CARD=PCH,DEV=0", "HDA Intel PCH, ALC3246 Analog"),
+        ];
+        let list = listed.iter().map(|(pcm, desc)| (*pcm, (*pcm).to_owned(), (*desc).to_owned()));
+        assert_eq!(order_fallbacks(list, Some("default")), ["pipewire", "sysdefault:CARD=PCH"]);
+    }
+
+    /// Recording looks up inputs, not outputs: a missing chosen input falls back to the default
+    /// input (and counts as the default, so it may fall back further), whatever output is chosen.
+    #[test]
+    fn input_candidates_use_the_input_choice_and_devices() {
+        let h = cpal::default_host();
+        let output = h.default_output_device().as_ref().and_then(device_name);
+        let cfg = AudioConfig { input: Some("No Such Device 1234".into()), output, ..Default::default() };
+        let (mut list, is_default) = candidates(&cfg, false);
+        assert!(is_default, "a missing chosen input is the default's turn");
+        assert_eq!(list.next().as_ref().and_then(device_name), h.default_input_device().as_ref().and_then(device_name));
     }
 
     #[test]

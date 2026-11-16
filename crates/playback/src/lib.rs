@@ -54,8 +54,8 @@ use callback::{STALL, copy_meter_snapshot};
 #[cfg(not(target_arch = "wasm32"))]
 use callback::{guarded_block, stalled};
 #[cfg(test)]
-use stream::{NoneWorked, pick_output_config};
-use stream::{Opened, build_output, first_started, first_working, output_candidates, output_config, start_stream};
+use stream::{NoneWorked, first_open, pick_output_config};
+use stream::{Opened, build_output, first_started, first_working, output_config, start_stream};
 
 /// Meter values for the UI: the highest peak (and gain reduction) of every block rendered since
 /// the UI last took them with [`Player::take_meters`]. The audio thread renders blocks faster than
@@ -206,8 +206,8 @@ impl Player {
     }
 
     /// Open the output device for `session`, trying the requested buffer size before the device default, then build
-    /// the shared player state. When the chosen (else default) device cannot open or start, try the fallback outputs
-    /// (see [`devices::fallback_outputs`]); if none works, fall back to a silent clock at the session rate.
+    /// the shared player state. When the system default device cannot open or start, try the fallback outputs
+    /// (see [`devices::fallback_devices`]); if none works, fall back to a silent clock at the session rate.
     fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
@@ -223,7 +223,7 @@ impl Player {
             side.gone_tracks(&session);
             Mutex::new(side)
         };
-        let (candidates, is_default) = output_candidates(cfg);
+        let (candidates, is_default) = devices::candidates(cfg, true);
         let opened = first_working(
             candidates,
             |device| {
