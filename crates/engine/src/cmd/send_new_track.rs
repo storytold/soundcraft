@@ -26,6 +26,11 @@ pub fn specs() -> Vec<CommandSpec> {
 /// Creates the destination track and its bus, then points the send at the bus.
 fn send_new_track(e: &mut Engine, p: &Value) -> Result<Value> {
     let source = tracks_required(e, CMD, p)?.first().copied().ok_or_else(|| bad(CMD, "no track"))?;
+    // As in Pro Tools, a Master Fader has no sends: the mixer never plays one, so the new track
+    // would never hear it.
+    if e.session().track(source).is_some_and(|t| t.kind == TrackKind::Master) {
+        return Err(bad(CMD, "a Master Fader has no sends; choose another track"));
+    }
     let explicit = super::mix::optional_slot(p, CMD, SEND_SLOTS)?;
     // Only an Aux Input plays the bus on its input; any other track would drop the send's audio.
     let kind = match text(p, "kind")? {
@@ -100,7 +105,7 @@ fn unique_bus_name(s: &Session, base: &str) -> String {
 }
 
 /// Moves `track` to just below `source`, and below the tracks inside `source` when it is a folder,
-/// into the folder `source` is in. A Master Fader stays at the bottom, so nothing goes below it.
+/// into the folder `source` is in. Nothing goes below a Master Fader.
 fn place_after(s: &mut Session, track: TrackId, source: TrackId) {
     let Some(from) = s.track_index(track) else { return };
     let mut moved = s.tracks.remove(from);

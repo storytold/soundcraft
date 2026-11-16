@@ -201,11 +201,14 @@ fn next_to_a_track_in_a_folder_is_inside_that_folder() {
     assert_eq!(track(&e, "Stem").folder, None);
 }
 
+/// As in Pro Tools, a Master Fader has no sends, and the mixer never plays one: the command
+/// refuses it rather than make an Aux Input that never hears anything.
 #[test]
-fn a_send_from_the_master_fader_still_leaves_it_at_the_bottom() {
+fn a_master_fader_source_is_refused() {
     let mut e = engine();
-    e.execute(CMD, &json!({"track": "Main Out", "name": "Cue"})).unwrap();
-    assert_eq!(order(&e), ["Gtr", "Bass", "Cue", "Main Out"]);
+    let err = e.execute(CMD, &json!({"track": "Main Out", "name": "Cue"})).unwrap_err();
+    assert!(err.to_string().contains("a Master Fader has no sends"), "{err}");
+    assert_eq!((order(&e), e.session().busses.len()), (vec!["Gtr".to_string(), "Bass".into(), "Main Out".into()], 0));
 }
 
 #[test]
@@ -232,6 +235,7 @@ fn refusals_make_nothing() {
         json!({"track": "Gtr", "slot": 10}),
         json!({"track": "Gtr", "slot": "k"}),
         json!({"track": "Nobody"}),
+        json!({"track": "Main Out"}),
         json!({"track": "Bass"}),
     ];
     for params in refused {
