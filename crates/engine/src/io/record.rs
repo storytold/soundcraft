@@ -1,7 +1,7 @@
 use super::import::add_source;
 #[cfg(test)]
 use super::session::{save_copy, save_session};
-use super::{Clip, Engine, EngineError, FileFormat, OsStr, PathBuf, Range, Samples, TrackId, read_file};
+use super::{Clip, Engine, EngineError, FileFormat, OsStr, Path, PathBuf, Range, Samples, TrackId, read_file};
 
 /// A recording's plan, made when it starts: each record-enabled track's take file, where the
 /// takes start on the timeline, the loop length they split into when loop recording, and the
@@ -114,10 +114,11 @@ fn add_recording_in(
 /// Turns one decoded take into clips on its track: at `start`, split into passes of `pass`, cut
 /// to `punch`, each pass after the first on a new playlist. The caller owns the undo step and
 /// the error reporting, so the synchronous and the off-UI-thread paths share this.
+#[allow(clippy::too_many_arguments)]
 fn place_take(
     e: &mut Engine,
     tid: TrackId,
-    path: &PathBuf,
+    path: &Path,
     buf: craft_audio::AudioBuffer,
     resampled: bool,
     start: Samples,
