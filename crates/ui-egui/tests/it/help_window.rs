@@ -139,7 +139,18 @@ fn help_key_at(ctx: &egui::Context, app: &mut SoundApp, at: egui::Pos2) {
 /// Open every mapped floating window and verify that context Help resolves its actual egui layer.
 #[test]
 fn cmd_question_mark_opens_the_page_of_the_window_under_the_pointer() {
+    check_context_help_for_every_window("en");
+}
+
+/// Translated window titles keep their English ids, so context Help still finds each window.
+#[test]
+fn cmd_question_mark_finds_every_window_in_portuguese() {
+    check_context_help_for_every_window("pt-BR");
+}
+
+fn check_context_help_for_every_window(language: &str) {
     let (ctx, mut app) = rig(OperatingSystem::Mac);
+    app.run("ui.language", json!({"language": language})).unwrap_or_else(|e| panic!("{language}: {e}"));
     app_frame(&ctx, &mut app, vec![]);
     let mut checked = 0;
     for (title, id) in help::WINDOW_PAGES {
@@ -150,7 +161,7 @@ fn cmd_question_mark_opens_the_page_of_the_window_under_the_pointer() {
             app_frame(&ctx, &mut app, vec![]);
         }
         let rect = ctx.memory(|m| m.area_rect(help::window_id(title)));
-        let Some(rect) = rect else { panic!("{title} ({id}) did not open as a window titled {title:?}") };
+        let Some(rect) = rect else { panic!("{title} ({id}) did not open with the id of {title:?} in {language}") };
         help_key_at(&ctx, &mut app, rect.center() + egui::vec2(0.0, 10.0));
         assert!(app.ui.show_help, "{title}: help did not open");
         assert_eq!(app.ui.help.page, Page::Command(id.into()), "{title}");
@@ -340,7 +351,7 @@ fn every_help_page_draws_with_real_glyphs_and_fits_a_small_screen() {
         assert!(h.state().ui.show_help);
         let page = &h.state().ui.help.page;
         assert!(h.query_by_label("Page not found").is_none(), "{page:?} did not render");
-        let window = h.ctx.memory(|m| m.area_rect(egui::Id::unique(Some("SoundCraft Help")))).unwrap();
+        let window = h.ctx.memory(|m| m.area_rect(help::window_id("SoundCraft Help"))).unwrap();
         assert!(window.max.x <= 760.0 && window.min.x >= 0.0 && window.max.y <= 700.0 && window.min.y >= 0.0, "{page:?} exceeds {window:?}");
     }
 }

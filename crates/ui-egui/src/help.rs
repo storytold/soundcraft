@@ -542,7 +542,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     free.min.y += 24.0;
     let screen = free.size() - vec2(32.0, 16.0);
     let min = vec2(560.0, 360.0).min(screen);
-    let shown = egui::Window::new("SoundCraft Help")
+    let shown = egui::Window::new(crate::localization::text("SoundCraft Help"))
+        .id(window_id("SoundCraft Help"))
         .open(&mut open)
         .default_size(vec2(900.0, 600.0).min(screen))
         .min_size(min)
@@ -1161,7 +1162,7 @@ fn guide_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
 }
 
 /// Floating windows and the help page each opens on, for Cmd+? over the window. The titles are the
-/// ones the windows are created with (egui gives a window its id from its title).
+/// English source titles the windows take their ids from, so the lookup works in every language.
 pub const WINDOW_PAGES: [(&str, &str); 29] = [
     ("About SoundCraft", "window.about"),
     ("Appearance", "window.ui_customization"),
@@ -1194,10 +1195,11 @@ pub const WINDOW_PAGES: [(&str, &str); 29] = [
     ("Workspace", "window.workspace"),
 ];
 
-/// The id egui gives a window titled `title`: `Window::new` names its area after the title's text,
-/// which egui holds as an `Option`. A test opens every window in [`WINDOW_PAGES`] to check this.
+/// The id of a window whose English source title is `title`. Windows set it with
+/// `.id(egui::Id::unique(title))` and show the translated title, so a language switch keeps the id.
+/// A test opens every window in [`WINDOW_PAGES`], in English and in Portuguese, to check this.
 pub fn window_id(title: &str) -> egui::Id {
-    egui::Id::unique(Some(title))
+    egui::Id::unique(title)
 }
 
 /// The help page for what's under the pointer: a floating window's page, the open AudioSuite

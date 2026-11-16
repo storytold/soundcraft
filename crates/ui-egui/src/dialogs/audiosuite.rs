@@ -17,7 +17,8 @@ pub(crate) fn window_title(process: &str) -> String {
 pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
     let Some(process) = app.ui.audiosuite.clone() else { return };
     let mut open = true;
-    egui::Window::new(window_title(&process)).open(&mut open).default_width(360.0).show(ctx, |ui| {
+    let title = window_title(&process);
+    egui::Window::new(title.as_str()).id(crate::help::window_id(&title)).open(&mut open).default_width(360.0).show(ctx, |ui| {
         let key = egui::Id::unique(("as_params", process.clone()));
         let mut params: std::collections::BTreeMap<String, f32> = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_default();
         if let Some(info) = soundcraft_dsp::plugin_info(&process) {
