@@ -185,24 +185,24 @@ fn system_usage(app: &mut SoundApp, ctx: &egui::Context) {
         ));
         let load = app.player.as_ref().map(|p| p.audio_load()).unwrap_or_default();
         if load.measured {
-            ui.label(format!("Audio load: {} of {:.1} ms", load_pct(load.average), load.buffer_ms));
+            ui.label(crate::localized_format!("Audio load: {} of {:.1} ms", load_pct(load.average), load.buffer_ms));
             let overload = load.peak > 1.0 || load.late > 0;
             let peak = if load.peak.is_finite() { load.peak.clamp(0.0, 1.0) } else { 0.0 };
-            let mut bar = egui::ProgressBar::new(peak).text(format!("peak {}", load_pct(load.peak)));
+            let mut bar = egui::ProgressBar::new(peak).text(crate::localized_format!("peak {}", load_pct(load.peak)));
             if overload {
                 bar = bar.fill(t.meter_red);
             }
             ui.add(bar);
-            let late = format!("Late callbacks (dropouts): {} · worst {}", load.late, load_pct(load.worst));
+            let late = crate::localized_format!("Late callbacks (dropouts): {} · worst {}", load.late, load_pct(load.worst));
             ui.label(if load.late > 0 { egui::RichText::new(late).color(t.meter_red) } else { egui::RichText::new(late) });
-            if ui.small_button("Reset").clicked()
+            if ui.small_button(crate::localization::text("Reset")).clicked()
                 && let Some(p) = &app.player
             {
                 p.reset_audio_load();
             }
         } else {
             let why = unmeasured_why(app.player.as_ref().map(|p| p.silent), cfg!(target_arch = "wasm32"));
-            ui.label(format!("Audio load: not measured ({why})"));
+            ui.label(crate::localized_format!("Audio load: not measured ({why})", why = crate::localization::text(why)));
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
         let session = app.engine.session();
