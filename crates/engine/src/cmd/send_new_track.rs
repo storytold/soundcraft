@@ -80,13 +80,21 @@ fn text<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>> {
 }
 
 /// `base`, or `base 2`, `base 3`… when a bus already has that name. Bus names compare without case,
-/// as `Session::bus_by_name` does, so the new bus can never resolve to an older one.
+/// as `Session::bus_by_name` does, so the new bus can never resolve to an older one. The number
+/// fits within [`MAX_NAME_CHARS`], cutting `base` for it: a session read back cuts longer names,
+/// and the cut name could then match the older bus.
 fn unique_bus_name(s: &Session, base: &str) -> String {
     let taken = |name: &str| s.busses.iter().any(|b| b.name.eq_ignore_ascii_case(name));
-    (1..=s.busses.len().saturating_add(1))
-        .map(|n| if n == 1 { base.to_string() } else { format!("{base} {n}") })
+    // Each number gives a different name, and only so many are taken, so one is free.
+    (1..=s.busses.len().saturating_add(2))
+        .map(|n| {
+            let suffix = if n == 1 { String::new() } else { format!(" {n}") };
+            let mut name = base.to_string();
+            truncate_chars(&mut name, MAX_NAME_CHARS.saturating_sub(suffix.chars().count()));
+            name + &suffix
+        })
         .find(|name| !taken(name))
-        .unwrap_or_else(|| format!("{base} {}", s.busses.len().saturating_add(2)))
+        .unwrap_or_default()
 }
 
 /// Moves `track` to just below `source`, and below the tracks inside `source` when it is a folder,

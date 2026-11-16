@@ -112,6 +112,26 @@ fn a_long_name_is_cut_to_the_name_limit() {
     assert!(e.session().bus_by_name(&name).is_some());
 }
 
+/// A bus already has the longest name allowed: the new bus's number fits within the limit, so the
+/// session read back from its file still tells the two buses apart.
+#[test]
+fn a_numbered_bus_name_stays_within_the_name_limit() {
+    let mut e = engine();
+    let long = "b".repeat(MAX_NAME_CHARS);
+    e.execute("mix.new_bus", &json!({"name": long})).unwrap();
+    let old = e.session().bus_by_name(&long).map(|b| b.id).unwrap();
+    e.execute(CMD, &json!({"track": "Gtr", "slot": 0, "name": long})).unwrap();
+    let Route::Bus(new) = track(&e, &long).mixer.input else { panic!("the new track has no bus input") };
+    let name = e.session().bus(new).map(|b| b.name.clone()).unwrap();
+    assert_eq!(name, format!("{} 2", "b".repeat(MAX_NAME_CHARS - 2)));
+    assert_eq!(send_target(&e, "Gtr", 0), Some(Route::Bus(new)));
+
+    let back = Session::from_json(&e.session().to_json().unwrap()).unwrap();
+    assert_eq!(back.bus(new).map(|b| b.name.as_str()), Some(name.as_str()), "the name is kept as it is");
+    assert_eq!(back.bus_by_name(&name).map(|b| b.id), Some(new), "the name still finds the new bus");
+    assert_eq!(back.bus_by_name(&long).map(|b| b.id), Some(old));
+}
+
 #[test]
 fn an_existing_send_moves_to_the_new_track_with_its_settings() {
     let mut e = engine();
