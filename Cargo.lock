@@ -1207,15 +1207,10 @@ dependencies = [
 [[package]]
 name = "craft-jpeg"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=341020b2c1c8b5ebc62c7dc5c1c99a37cfa4d43c#341020b2c1c8b5ebc62c7dc5c1c99a37cfa4d43c"
+source = "git+https://github.com/storytold/craft-libs?rev=ddbe78231b5b23273b3d191f04b1a38f4c0445b3#ddbe78231b5b23273b3d191f04b1a38f4c0445b3"
 dependencies = [
  "thiserror 2.0.21",
 ]
-
-[[package]]
-name = "craft-media"
-version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=341020b2c1c8b5ebc62c7dc5c1c99a37cfa4d43c#341020b2c1c8b5ebc62c7dc5c1c99a37cfa4d43c"
 
 [[package]]
 name = "craft-media"
@@ -1225,6 +1220,11 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "craft-media"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=ddbe78231b5b23273b3d191f04b1a38f4c0445b3#ddbe78231b5b23273b3d191f04b1a38f4c0445b3"
 
 [[package]]
 name = "craft-midi"
@@ -1319,10 +1319,10 @@ dependencies = [
 [[package]]
 name = "craft-video"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=341020b2c1c8b5ebc62c7dc5c1c99a37cfa4d43c#341020b2c1c8b5ebc62c7dc5c1c99a37cfa4d43c"
+source = "git+https://github.com/storytold/craft-libs?rev=ddbe78231b5b23273b3d191f04b1a38f4c0445b3#ddbe78231b5b23273b3d191f04b1a38f4c0445b3"
 dependencies = [
  "craft-jpeg",
- "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=341020b2c1c8b5ebc62c7dc5c1c99a37cfa4d43c)",
+ "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ddbe78231b5b23273b3d191f04b1a38f4c0445b3)",
  "rav1e",
  "rayon",
  "thiserror 2.0.21",

@@ -55,7 +55,7 @@ craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-l
 # Video containers and bitstreams, shared with the other craft apps.
 craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c" }
 # H.264 and ProRes codecs shared with the other Craft apps.
-craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "341020b2c1c8b5ebc62c7dc5c1c99a37cfa4d43c", default-features = false, features = ["h264-decode", "prores", "mjpeg"] }
+craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ddbe78231b5b23273b3d191f04b1a38f4c0445b3", default-features = false, features = ["h264-decode", "prores", "mjpeg"] }
 # Audio file formats, codecs and waveform overviews, shared with the other craft apps. It shares
 # types with craft-media, so both stay on one rev.
 # Standard MIDI Files and the note/controller model, shared with the other craft apps.
