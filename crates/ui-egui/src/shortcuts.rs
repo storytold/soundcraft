@@ -70,22 +70,33 @@ fn shortcuts_blocked(app: &SoundApp, ctx: &egui::Context) -> bool {
     ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() || app.ui.show_preferences
 }
 
-/// Handle Help in the native Mix viewport, whose key events never reach the main-window handler.
-/// Keep text entry and dialogs in control of their keys, and ignore native key repeats.
-pub(crate) fn handle_mix_help(app: &mut SoundApp, ctx: &egui::Context) {
-    if shortcuts_blocked(app, ctx) {
-        return;
-    }
+/// Help gives way only to text entry and modal windows. A focused button or tab has no use for
+/// Cmd+?, and egui keeps a clicked menu item focused until the next frame drops it, so blocking on
+/// any focus would swallow the first press after a menu click.
+fn help_blocked(app: &SoundApp, ctx: &egui::Context) -> bool {
+    ctx.text_edit_focused() || app.dialogs.open.is_some() || app.ui.show_preferences
+}
+
+/// Whether this pass holds a fresh press of the Help chord.
+fn help_pressed(ctx: &egui::Context) -> bool {
     let mac = ctx.os().is_mac();
-    let pressed = ctx.input(|i| {
+    ctx.input(|i| {
         i.events.iter().any(|event| {
             matches!(event,
                 egui::Event::Key { key: key @ (Key::Questionmark | Key::Slash), pressed: true, repeat: false, modifiers, .. }
                     if help_chord(*key, *modifiers, mac)
             )
         })
-    });
-    if pressed {
+    })
+}
+
+/// Handle Help in the native Mix viewport, whose key events never reach the main-window handler.
+/// Keep text entry and dialogs in control of their keys, and ignore native key repeats.
+pub(crate) fn handle_mix_help(app: &mut SoundApp, ctx: &egui::Context) {
+    if help_blocked(app, ctx) {
+        return;
+    }
+    if help_pressed(ctx) {
         let _ = app.run("help.open", json!({}));
         app.ui.help.go(crate::help::Page::Command("window.mix".into()));
         // Help belongs to the main viewport: bring it in front of the native Mix window.
@@ -100,6 +111,9 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
     if shortcuts_blocked(app, ctx) {
+        if !help_blocked(app, ctx) && help_pressed(ctx) {
+            crate::help::open_here(app, ctx);
+        }
         return;
     }
     // A scripted press is identified by its exact position in this pass's events, not by matching
@@ -603,6 +617,45 @@ mod tests {
                 ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| dispatch(&mut app, ui.ctx())).textures_delta.clear();
                 assert!(!app.ui.show_help, "Help bypassed {owner}");
             }
+        }
+    }
+
+    /// A widget left focused by a click (a menu item, a button, a tab) does not swallow Cmd+?:
+    /// only text entry and modal windows keep it. Other shortcuts still wait for the focus to go.
+    #[test]
+    fn help_opens_while_a_button_has_focus() {
+        for dispatch in [super::handle, super::handle_mix_help] {
+            let ctx = egui::Context::default();
+            ctx.set_os(egui::os::OperatingSystem::Nix);
+            let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+            ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.button("Clicked").request_focus();
+            })
+            .textures_delta
+            .clear();
+            assert!(ctx.egui_wants_keyboard_input() && !ctx.text_edit_focused());
+            let modifiers = PC_CTRL | Modifiers::SHIFT;
+            let events = vec![egui::Event::Key { key: Key::Slash, physical_key: None, pressed: true, repeat: false, modifiers }];
+            ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| dispatch(&mut app, ui.ctx())).textures_delta.clear();
+            assert!(app.ui.show_help, "a focused button swallowed Cmd+?");
+        }
+        // Other shortcuts, such as Cmd+= (Mix/Edit), still wait while the button has focus.
+        for focused in [true, false] {
+            let ctx = egui::Context::default();
+            ctx.set_os(egui::os::OperatingSystem::Nix);
+            let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+            let before = app.ui.window;
+            ctx.run_ui(egui::RawInput::default(), |ui| {
+                let button = ui.button("Clicked");
+                if focused {
+                    button.request_focus();
+                }
+            })
+            .textures_delta
+            .clear();
+            let events = vec![egui::Event::Key { key: Key::Equals, physical_key: None, pressed: true, repeat: false, modifiers: PC_CTRL }];
+            ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| super::handle(&mut app, ui.ctx())).textures_delta.clear();
+            assert_eq!(app.ui.window == before, focused, "focused={focused}");
         }
     }
 
