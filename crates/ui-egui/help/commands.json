@@ -1701,7 +1701,7 @@
   },
   "ui.language": {
    "category": "workspace",
-   "text": "Chooses the language of the interface: English or Brazilian Portuguese (Português do Brasil). Menus, windows, buttons and messages switch at once, and the choice is kept for next time. It is also in the Appearance window (Setup > Appearance).",
+   "text": "Chooses the language of the interface: English or Brazilian Portuguese (Português do Brasil). Menus, windows, buttons and messages switch at once, and the choice is kept for next time. To choose it yourself, open Setup > Appearance and pick a Language.",
    "limits": "Help pages are in English in every language."
   },
   "ui.new_tracks_dialog": {
