@@ -5,8 +5,9 @@ use egui::Ui;
 use serde_json::{Value, json};
 use soundcraft_model::{ChannelFormat, TrackId, TrackKind};
 
-/// The kinds of track a send can feed: the ones with an audio input.
-const KINDS: [TrackKind; 3] = [TrackKind::Aux, TrackKind::Audio, TrackKind::Instrument];
+/// The kinds of track a send can feed: the ones whose strip plays the bus on its input. Pro Tools
+/// also offers Audio and Instrument tracks, which don't play a bus input here (`mix.send_new_track`).
+const KINDS: [TrackKind; 1] = [TrackKind::Aux];
 
 #[derive(Debug, Clone)]
 /// The send the new track is for, and the new track's width, kind, timebase and name.

@@ -66,20 +66,48 @@ fn without_choices_it_makes_an_aux_in_the_first_free_send() {
     assert!(matches!(send_target(&e, "Gtr", 0), Some(Route::Bus(b)) if Some(b) == e.session().bus_by_name("Verb").map(|v| v.id)));
 }
 
-#[test]
-fn audio_and_instrument_tracks_can_be_made_too() {
+/// The peak of the main mix while "Gtr" plays a tone that reaches it only through send A, at
+/// 0 dB, to a `kind` track this command makes.
+fn peak_through_a_new_track(kind: &str) -> f32 {
+    use craft_audio::AudioBuffer;
+    use soundcraft_model::{Clip, SourceAudio, SourceId};
+    use soundcraft_time::Range;
+    use std::sync::Arc;
     let mut e = engine();
-    e.execute(CMD, &json!({"track": "Bass", "slot": "c", "kind": "audio", "format": "mono", "name": "Print"})).unwrap();
-    let print = track(&e, "Print");
-    assert_eq!((print.kind, print.format), (TrackKind::Audio, ChannelFormat::Mono));
-    assert_eq!(e.session().bus_by_name("Print").map(|b| b.format), Some(ChannelFormat::Mono));
-    assert_eq!(send_target(&e, "Bass", 2), e.session().bus_by_name("Print").map(|b| Route::Bus(b.id)));
+    let n = 4096;
+    let tone: Vec<f32> = (0..n).map(|i| (i as f32 * 0.07).sin() * 0.5).collect();
+    let s = e.session_mut();
+    s.pool.insert(SourceId(1), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![tone] })));
+    let clip = s.new_clip_id();
+    let gtr = s.tracks.iter_mut().find(|t| t.name == "Gtr").unwrap();
+    gtr.playlist_mut().unwrap().clips.push(Clip::audio(clip, "tone", SourceId(1), 0, 0, n as i64));
+    gtr.mixer.output = Route::None;
+    let peak = |e: &Engine| soundcraft_mix::render_range(e.session(), Range::new(0, n as i64), 512).iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
+    assert_eq!(peak(&e), 0.0, "without the send, nothing reaches the main mix");
+    if e.execute(CMD, &json!({"track": "Gtr", "slot": 0, "kind": kind, "name": "Return"})).is_ok() {
+        e.execute("mix.send", &json!({"track": "Gtr", "slot": 0, "bus": "Return", "level_db": 0.0})).unwrap();
+    }
+    peak(&e)
+}
 
-    e.execute(CMD, &json!({"track": "Gtr", "kind": "Instrument Track", "name": "Synth"})).unwrap();
-    let synth = track(&e, "Synth");
-    assert_eq!((synth.kind, synth.format), (TrackKind::Instrument, ChannelFormat::Stereo));
-    assert!(synth.instrument.is_some(), "an Instrument track gets its instrument, as from Track › New");
-    assert_eq!(order(&e), ["Gtr", "Synth", "Bass", "Print", "Main Out"]);
+/// The new Aux Input plays what the send feeds it: the 0.5 tone at the -3 dB centre of the pan law.
+#[test]
+fn the_new_aux_plays_what_the_send_feeds_it() {
+    let peak = peak_through_a_new_track("aux");
+    assert!((peak - 0.5 * std::f32::consts::FRAC_1_SQRT_2).abs() < 0.01, "peak {peak}");
+}
+
+/// Audio and Instrument tracks don't play the bus on their input, so the send would be lost: the
+/// command refuses them (and makes nothing) rather than make a track that never hears it.
+#[test]
+fn tracks_that_would_drop_the_send_are_refused() {
+    for kind in ["audio", "Audio Track", "instrument", "Instrument Track"] {
+        assert_eq!(peak_through_a_new_track(kind), 0.0, "{kind}");
+        let mut e = engine();
+        let err = e.execute(CMD, &json!({"track": "Gtr", "kind": kind, "name": "Return"})).unwrap_err();
+        assert!(err.to_string().contains("doesn't play the bus a send feeds"), "{kind}: {err}");
+        assert_eq!((order(&e), e.session().busses.len()), (vec!["Gtr".to_string(), "Bass".into(), "Main Out".into()], 0), "{kind}");
+    }
 }
 
 #[test]
@@ -211,3 +239,4 @@ fn refusals_make_nothing() {
     }
     assert!(track(&e, "Gtr").mixer.sends.iter().all(Option::is_none));
 }
+

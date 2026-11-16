@@ -1,6 +1,8 @@
 //! Send to New Track: a send's destination menu makes the track it feeds. As in Pro Tools, the new
-//! track (Aux Input, Audio or Instrument) takes the name typed for it, a new internal bus of the
-//! same name and width becomes its input, and the send is assigned to that bus, all as one Undo step.
+//! track takes the name typed for it, a new internal bus of the same name and width becomes its
+//! input, and the send is assigned to that bus, all as one Undo step. Pro Tools also offers Audio and
+//! Instrument tracks here, but only Aux Input (and folder) strips play the bus on their input, so an
+//! Audio or Instrument track made this way would never hear the send: only Aux Input is made.
 use super::{CommandSpec, bad, has_selection, tracks_required};
 
 use crate::{Engine, Result, cmd};
@@ -15,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Send to New Track",
         [],
         None,
-        "{track?, slot?: 0..9|a..j (first free), kind?: aux|audio|instrument, format?: mono|stereo|5.1…, timebase?: samples|ticks, name?, next_to_track?: true}",
+        "{track?, slot?: 0..9|a..j (first free), kind?: aux, format?: mono|stereo|5.1…, timebase?: samples|ticks, name?, next_to_track?: true}",
         has_selection,
         send_new_track
     )]
@@ -25,12 +27,12 @@ pub fn specs() -> Vec<CommandSpec> {
 fn send_new_track(e: &mut Engine, p: &Value) -> Result<Value> {
     let source = tracks_required(e, CMD, p)?.first().copied().ok_or_else(|| bad(CMD, "no track"))?;
     let explicit = super::mix::optional_slot(p, CMD, SEND_SLOTS)?;
-    // Only tracks with an audio input can be fed by a bus.
+    // Only an Aux Input plays the bus on its input; any other track would drop the send's audio.
     let kind = match text(p, "kind")? {
         None => TrackKind::Aux,
         Some(k) => match TrackKind::from_id(k) {
-            Some(kind @ (TrackKind::Aux | TrackKind::Audio | TrackKind::Instrument)) => kind,
-            Some(_) => return Err(bad(CMD, format!("a `{k}` track has no input a send can feed; use aux, audio or instrument"))),
+            Some(TrackKind::Aux) => TrackKind::Aux,
+            Some(_) => return Err(bad(CMD, format!("a `{k}` track doesn't play the bus a send feeds; use aux"))),
             None => return Err(bad(CMD, format!("unknown kind `{k}`"))),
         },
     };

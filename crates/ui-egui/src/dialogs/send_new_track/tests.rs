@@ -33,17 +33,14 @@ fn routing(app: &SoundApp, kick: TrackId) -> (Option<Route>, Vec<String>) {
     (send, s.tracks.iter().map(|t| t.name.clone()).collect())
 }
 
-/// Choosing a kind, typing a name and unticking "next to" makes exactly that track, fed by a bus
-/// of its name, and opens the new send's window.
+/// Typing a name and unticking "next to" makes exactly that track, fed by a bus of its name, and
+/// opens the new send's window.
 #[test]
 fn create_makes_the_track_the_dialog_shows_and_opens_the_send_window() {
     let (mut h, kick) = harness(false);
     assert_eq!(h.state().dialogs.open_name(), Some("send_new_track"));
-    h.get_by_label("Track kind").click();
-    h.run();
-    h.get_by_label("Audio Track").click();
-    h.run();
-    assert_eq!(h.get_by_role_and_label(Role::TextInput, "Name:").value().as_deref(), Some("Audio"), "the default name follows the kind");
+    let default_name = h.get_by_role_and_label(Role::TextInput, "Name:").value();
+    assert_eq!(default_name.as_deref(), Some(TrackKind::Aux.default_name()), "an Aux Input's default name");
     h.get_by_role_and_label(Role::TextInput, "Name:").click();
     h.run();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
@@ -59,7 +56,7 @@ fn create_makes_the_track_the_dialog_shows_and_opens_the_send_window() {
     let s = app.engine.session();
     let print = s.track_by_name("Print").cloned().unwrap_or_else(|| panic!("no track Print; status: {:?}", app.ui.status));
     let bus = s.bus_by_name("Print").cloned().unwrap();
-    assert_eq!((print.kind, print.format, bus.format), (TrackKind::Audio, ChannelFormat::Stereo, ChannelFormat::Stereo));
+    assert_eq!((print.kind, print.format, bus.format), (TrackKind::Aux, ChannelFormat::Stereo, ChannelFormat::Stereo));
     assert_eq!(print.mixer.input, Route::Bus(bus.id));
     let (send, names) = routing(app, kick);
     assert_eq!(send, Some(Route::Bus(bus.id)), "Kick's send A feeds the new bus");
@@ -109,9 +106,10 @@ fn cancel_and_escape_make_nothing() {
     }
 }
 
-/// The dialog offers only kinds with an input a bus can feed, and sends what it shows.
+/// The dialog offers only Aux Input, the one kind that plays the bus a send feeds, and sends what
+/// it shows.
 #[test]
-fn the_dialog_offers_aux_audio_and_instrument_tracks() {
+fn the_dialog_offers_only_aux_input_tracks() {
     let (mut h, kick) = harness(false);
     h.get_by_label("Track kind").click();
     h.run();
