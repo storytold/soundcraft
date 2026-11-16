@@ -44,6 +44,10 @@ pub struct Vst3Plugin {
     batch: Vec<(u32, f64)>,
     /// Parameters `set_param` has written (same order as `ids`).
     host_set: Vec<bool>,
+    /// Waiting values a later controller point for the same parameter supersedes (same order as
+    /// `ids`). One is retired once the sub-block holding that point is processed, not when the
+    /// point arrives: until then it still applies before the point, and `reset` drops the point.
+    stale: Vec<bool>,
     /// Host-set normalized values the controller has not seen yet (same order as `ids`; the bits
     /// of an `f64`, or [`SYNCED`]). `set_param` may run on the audio thread, so it never calls the
     /// controller; the state reader, which already does, hands them over first.
@@ -56,6 +60,8 @@ pub struct Vst3Plugin {
     midi_index: Vec<Option<usize>>,
     /// Controller points for the next block: (time, param id, normalized value). Bounded.
     controls: Vec<(u32, u32, f64)>,
+    /// Index into `ids` of each `controls` parameter (same order as `controls`).
+    control_index: Vec<Option<usize>>,
     inputs: BusBuffers,
     outputs: BusBuffers,
     has_input: bool,
@@ -101,11 +107,13 @@ impl Vst3Plugin {
             queued_count: 0,
             batch: Vec::with_capacity(PARAM_QUEUE_CAP),
             host_set: vec![false; ids.len()],
+            stale: vec![false; ids.len()],
             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
             notes: Vec::with_capacity(EVENT_CAP),
             midi_map: Vec::new(),
             midi_index: Vec::new(),
             controls: Vec::with_capacity(EVENT_CAP),
+            control_index: Vec::with_capacity(EVENT_CAP),
             inputs: BusBuffers::new(&[], 0),
             outputs: BusBuffers::new(&[], 0),
             has_input: false,
@@ -180,8 +188,12 @@ impl Vst3Plugin {
         }
     }
 
-    /// Queues normalized value `n` for parameter `i`, replacing one still waiting.
+    /// Queues normalized value `n` for parameter `i`, replacing one still waiting. The new value
+    /// is newer than any controller point already received.
     fn queue(&mut self, i: usize, n: f64) {
+        if let Some(s) = self.stale.get_mut(i) {
+            *s = false;
+        }
         if let Some(q) = self.queued.get_mut(i)
             && q.replace(n).is_none()
         {
@@ -193,6 +205,31 @@ impl Vst3Plugin {
         if self.queued_count > 0 {
             self.queued.fill(None);
             self.queued_count = 0;
+            self.stale.fill(false);
+        }
+    }
+
+    /// Retires the waiting values superseded by controller points before `end`, which the
+    /// processor has now received.
+    fn retire_stale(&mut self, end: u32) {
+        for (c, i) in self.controls.iter().zip(&self.control_index) {
+            if c.0 < end
+                && let Some(i) = *i
+                && let Some(s) = self.stale.get_mut(i)
+                && std::mem::take(s)
+                && self.queued.get_mut(i).and_then(Option::take).is_some()
+            {
+                self.queued_count -= 1;
+            }
+        }
+    }
+
+    fn clear_controls(&mut self) {
+        self.controls.clear();
+        self.control_index.clear();
+        // A dropped point supersedes nothing: the values it would have retired stay queued.
+        if self.queued_count > 0 {
+            self.stale.fill(false);
         }
     }
 
@@ -329,7 +366,7 @@ impl Plugin for Vst3Plugin {
         // Keep pending releases and release whatever is still held, so the processor's voices stop
         // on the next block instead of sounding on while the host forgets them.
         keep_releases(&mut self.notes);
-        self.controls.clear();
+        self.clear_controls();
         self.all_notes_off();
         self.held = [false; 128];
     }
@@ -410,6 +447,7 @@ impl Plugin for Vst3Plugin {
                 transport: self.transport.as_ref(),
             });
             self.notes.drain(..k);
+            self.retire_stale(end);
             self.position = self.position.saturating_add(i64::try_from(n).unwrap_or(0));
             match r {
                 Ok(()) if self.has_output => {
@@ -420,7 +458,7 @@ impl Plugin for Vst3Plugin {
             }
             start += n;
         }
-        self.controls.clear();
+        self.clear_controls();
     }
 
     fn latency(&self) -> usize {
@@ -475,11 +513,15 @@ impl Plugin for Vst3Plugin {
         {
             self.controls.push((time, id, value));
             // A value still waiting for this parameter is older than the controller: sent in a
-            // later block, it would undo it.
-            if let Some(q) = self.midi_index.get(ctrl).copied().flatten().and_then(|i| self.queued.get_mut(i))
-                && q.take().is_some()
+            // later block, it would undo it. It still applies before the point, so it is retired
+            // only once the point's sub-block is processed (`retire_stale`).
+            let i = self.midi_index.get(ctrl).copied().flatten();
+            self.control_index.push(i);
+            if let Some(i) = i
+                && self.queued.get(i).is_some_and(Option::is_some)
+                && let Some(s) = self.stale.get_mut(i)
             {
-                self.queued_count -= 1;
+                *s = true;
             }
         }
     }

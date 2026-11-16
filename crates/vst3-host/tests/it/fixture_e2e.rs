@@ -259,6 +259,42 @@ fn a_waiting_value_does_not_undo_a_newer_controller_message() {
     assert!((io[0][63] - 32.0 / 127.0).abs() < 1e-6, "the older waiting value won: {}", io[0][63]);
 }
 
+/// A controller point supersedes a waiting value only from its own time on: in a block of two
+/// sub-blocks, the host's value still reaches the plugin in the first, before the point in the
+/// second.
+#[test]
+fn a_waiting_value_still_applies_before_a_later_controller_point() {
+    let id = id_of("Fixture Many Params");
+    let mut p = soundcraft_vst3_host::create(&id).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    let mut io = vec![vec![0.0f32; 128], vec![0.0f32; 128]];
+    p.process(&mut io, 128);
+    assert_eq!(io[1][127], 1499.0, "the resend is through (all but the untouched CC 5 stand-in)");
+    assert!(p.set_param("1499", 1.0));
+    p.midi(100, [0xB0, 5, 32]);
+    p.process(&mut io, 128);
+    assert!((io[0][0] - 1.0).abs() < 1e-6, "the host's value was lost before the controller: {}", io[0][0]);
+    assert!((io[0][127] - 32.0 / 127.0).abs() < 1e-6, "the controller did not win: {}", io[0][127]);
+}
+
+/// `reset` drops controller points that were never processed, so a value they would have
+/// superseded is still the one to send.
+#[test]
+fn reset_keeps_a_waiting_value_whose_controller_point_it_dropped() {
+    let id = id_of("Fixture Many Params");
+    let mut p = soundcraft_vst3_host::create(&id).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    let mut io = vec![vec![0.0f32; 64], vec![0.0f32; 64]];
+    p.process(&mut io, 64);
+    p.process(&mut io, 64);
+    assert_eq!(io[1][63], 1499.0, "the resend is through (all but the untouched CC 5 stand-in)");
+    assert!(p.set_param("1499", 1.0));
+    p.midi(0, [0xB0, 5, 32]);
+    p.reset();
+    p.process(&mut io, 64);
+    assert!((io[0][63] - 1.0).abs() < 1e-6, "the host's value was lost with the dropped controller: {}", io[0][63]);
+}
+
 #[test]
 fn reset_after_all_notes_off_still_releases_held_voices() {
     let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
