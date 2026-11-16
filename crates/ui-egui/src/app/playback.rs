@@ -516,8 +516,12 @@ mod tests {
         let track = app.engine.session().tracks[0].id;
         // A take already recorded over the punch range, so the punch-out has something to place.
         let take = std::env::temp_dir().join(format!("soundcraft-punch-out-take-{}.wav", std::process::id()));
-        let opts = soundcraft_audio_io::EncodeOptions { format: soundcraft_audio_io::FileFormat::Wav, ..Default::default() };
-        std::fs::write(&take, soundcraft_audio_io::encode(&soundcraft_audio_io::AudioBuffer::new(48_000, 1, 96_000), &opts).unwrap()).unwrap();
+        let opts = craft_audio::EncodeOptions::new(craft_audio::EncodeFormat::Wav);
+        std::fs::write(
+            &take,
+            craft_audio::encode(&craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0; 96_000]] }, &opts).unwrap(),
+        )
+        .unwrap();
         app.record_start = 0;
         app.punch = Some(Range { start: 48_000, end: 96_000 });
         app.take_plan = Some(soundcraft_engine::io::Recording {
