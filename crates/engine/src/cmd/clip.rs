@@ -694,8 +694,8 @@ mod tests {
         use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Loop"));
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; len.max(1) as usize]] };
-        let src = crate::io::add_source(&mut s, "Loop", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; len.max(1) as usize]] };
+        let src = crate::io::add_source(&mut s, "Loop", buf, None, soundcraft_model::FileFormat::Wav);
         let cid = s.new_clip_id();
         crate::edit::place_clip(&mut s, t, Clip::audio(cid, "Loop", src, 0, 0, len));
         (crate::Engine::new(s), t, cid)
@@ -822,8 +822,8 @@ mod tests {
         use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Loop"));
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 60_000]] };
-        let src = crate::io::add_source(&mut s, "Loop", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 60_000]] };
+        let src = crate::io::add_source(&mut s, "Loop", buf, None, soundcraft_model::FileFormat::Wav);
         let clip = Clip::audio(s.new_clip_id(), "Loop", src, 0, 0, 40_000);
         let partner = Clip::audio(s.new_clip_id(), "Partner", src, 0, 36_000, 20_000);
         // Paste keeps overlapping placed clips, so the pair survives as a crossfade.
