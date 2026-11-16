@@ -7,18 +7,48 @@ use super::{
 /// Largest import we accept (samples per channel × channels), ~4 GiB of f32.
 pub(crate) const MAX_IMPORT_SAMPLES: usize = 1 << 30;
 
-/// `buf` converted to `rate`, unless it would then hold more than `limit` samples: a file with a
-/// tiny sample rate grows by orders of magnitude.
-pub(crate) fn at_rate(mut buf: AudioBuffer, rate: u32, limit: usize) -> Option<AudioBuffer> {
+/// The most a file's audio may grow when converted to the session rate. Sessions run at 8 kHz to
+/// 768 kHz (96×); past this a file is lying about its rate, and converting a few kilobytes would
+/// otherwise allocate and filter hundreds of megabytes.
+const MAX_RATE_EXPANSION: u32 = 128;
+
+/// Why [`at_rate`] refused a conversion.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RateError {
+    /// The converted audio would hold more samples than the limit.
+    TooLarge,
+    /// The file's rate is so far below the session's that converting would grow it past [`MAX_RATE_EXPANSION`].
+    Ratio { from: u32, to: u32 },
+}
+
+impl RateError {
+    /// The refusal as a sentence: `size` says what a size refusal means to the caller.
+    pub(crate) fn message(&self, size: &str) -> String {
+        match self {
+            RateError::TooLarge => size.to_string(),
+            RateError::Ratio { from, to } => {
+                format!("its {from} Hz sample rate is too low to convert to the session's {to} Hz (at most {MAX_RATE_EXPANSION}-fold)")
+            }
+        }
+    }
+}
+
+/// `buf` converted to `rate`, unless it would then hold more than `limit` samples, or grow more
+/// than [`MAX_RATE_EXPANSION`]-fold: a file with a tiny sample rate grows by orders of magnitude.
+pub(crate) fn at_rate(mut buf: AudioBuffer, rate: u32, limit: usize) -> std::result::Result<AudioBuffer, RateError> {
     let from = buf.sample_rate.max(1);
+    // widened integers: dividing first would truncate 128.86-fold down to 128
+    if u64::from(rate) > u64::from(from) * u64::from(MAX_RATE_EXPANSION) {
+        return Err(RateError::Ratio { from, to: rate });
+    }
     if buf.frames() as f64 * buf.num_channels() as f64 * f64::from(rate) / f64::from(from) > limit as f64 {
-        return None;
+        return Err(RateError::TooLarge);
     }
     if from != rate {
         buf.channels = soundcraft_dsp::offline::resample(&buf.channels, from, rate);
         buf.sample_rate = rate;
     }
-    Some(buf)
+    Ok(buf)
 }
 
 /// A relative `Audio Files/` path no other source in `s` already uses.
@@ -64,7 +94,7 @@ fn add_source_audio(s: &mut Session, name: &str, audio: Arc<SourceAudio>, path: 
         id,
         name: stem.clone(),
         path: stored,
-        channels: u16::try_from(audio.buffer.num_channels()).unwrap_or(u16::MAX),
+        channels: audio.buffer.num_channels(),
         frames: audio.frames() as u64,
         sample_rate: s.sample_rate.hz(),
         format,
@@ -92,7 +122,7 @@ fn stamp_at_rate(stamp: u64, file_rate: u32, session_rate: u32) -> u64 {
 pub struct DecodedImport {
     pub(crate) key: PathBuf,
     pub(crate) rate: u32,
-    info: soundcraft_audio_io::AudioInfo,
+    info: craft_audio::AudioInfo,
     audio: Arc<SourceAudio>,
 }
 
@@ -112,10 +142,10 @@ pub fn decode_import(path: &str, rate: u32) -> Result<DecodedImport> {
     Ok(DecodedImport { key: file_key(Path::new(path)), rate, info, audio })
 }
 
-fn decode_import_bytes(name: &str, bytes: &[u8], rate: u32) -> Result<(soundcraft_audio_io::AudioInfo, Arc<SourceAudio>)> {
+fn decode_import_bytes(name: &str, bytes: &[u8], rate: u32) -> Result<(craft_audio::AudioInfo, Arc<SourceAudio>)> {
     let ext = Path::new(name).extension().and_then(OsStr::to_str).map(str::to_ascii_lowercase);
-    let (info, buf) = soundcraft_audio_io::decode(bytes, ext.as_deref()).map_err(|err| EngineError::Io(format!("{name}: {err}")))?;
-    let buf = at_rate(buf, rate, MAX_IMPORT_SAMPLES).ok_or_else(|| EngineError::Io(format!("{name}: file is too large to import")))?;
+    let (info, buf) = craft_audio::decode(bytes, ext.as_deref()).map_err(|err| EngineError::Io(format!("{name}: {err}")))?;
+    let buf = at_rate(buf, rate, MAX_IMPORT_SAMPLES).map_err(|e| EngineError::Io(format!("{name}: {}", e.message("file is too large to import"))))?;
     if buf.frames() == 0 {
         return Err(EngineError::Io(format!("{name}: no audio")));
     }
@@ -136,17 +166,17 @@ pub(crate) fn place_decoded(e: &mut Engine, name: &str, d: DecodedImport, path: 
 fn place_import(
     e: &mut Engine,
     name: &str,
-    info: &soundcraft_audio_io::AudioInfo,
+    info: &craft_audio::AudioInfo,
     audio: Arc<SourceAudio>,
     path: Option<&str>,
     target: Option<TrackId>,
     at: Samples,
 ) -> Result<Value> {
-    let channels = audio.buffer.num_channels();
+    let channels = audio.buffer.channels.len();
     let file_rate = info.sample_rate;
     let s = e.session_mut();
     let session_rate = s.sample_rate.hz();
-    let src = add_source_audio(s, name, audio, path, info.format);
+    let src = add_source_audio(s, name, audio, path, FileFormat::of(info));
     if let (Some(bwf), Some(sx)) = (info.bwf.as_ref(), s.sources.last_mut()) {
         sx.time_reference = stamp_at_rate(bwf.time_reference, file_rate, session_rate);
     }
@@ -176,8 +206,8 @@ pub fn load_sampler_bytes(e: &mut Engine, track: TrackId, name: &str, bytes: &[u
 
 /// Resolve each movie referenced by the session file `session` ([`stored_path`]): keep the
 /// resolved path when its file exists, else look for a file of the same name next to the session
-/// (moved projects) and relink. A movie whose stored path is refused and has no such copy is
-/// marked offline. Returns the movies still missing.
+/// (moved projects) and relink. A movie whose stored path is refused, or resolves to a file that
+/// is not there, and has no such copy is marked offline. Returns the movies still missing.
 pub fn relink_videos(s: &mut Session, session: &Path) -> Vec<String> {
     let session_dir = session.parent().unwrap_or(Path::new(""));
     let mut missing = Vec::new();
@@ -198,7 +228,13 @@ pub fn relink_videos(s: &mut Session, session: &Path) -> Vec<String> {
             .find(|c| !name.as_os_str().is_empty() && file_found(c));
         match (near, p) {
             (Some(c), _) => v.path = c.to_string_lossy().into_owned(),
-            (None, Ok(p)) => missing.push(format!("{} (video)", p.display())),
+            // The movie is gone: mark it offline, so the Video track never opens the stored
+            // string (which the working directory would resolve). The string itself is kept as
+            // stored, so saving does not swap a path relative to the session for this folder's.
+            (None, Ok(p)) => {
+                missing.push(format!("{} (video)", p.display()));
+                v.offline = Some("file not found".into());
+            }
             (None, Err(why)) => {
                 missing.push(format!("{} (video): {why}", v.path));
                 v.offline = Some(why);
@@ -215,8 +251,22 @@ mod rate_tests {
     #[test]
     fn a_tiny_sample_rate_is_refused_before_it_is_converted() {
         let buf = |rate| AudioBuffer { sample_rate: rate, channels: vec![vec![0.5; 100]; 2] };
-        assert!(at_rate(buf(1), 48_000, 1_000_000).is_none());
+        assert!(at_rate(buf(1), 48_000, 1_000_000).is_err());
         let ok = at_rate(buf(8_000), 48_000, 1_000_000).unwrap();
         assert_eq!((ok.sample_rate, ok.frames()), (48_000, 600));
+    }
+
+    #[test]
+    fn an_extreme_rate_expansion_is_refused_whatever_the_sample_budget() {
+        let buf = |rate| AudioBuffer { sample_rate: rate, channels: vec![vec![0.5; 100]; 2] };
+        // 100 frames at 300 Hz would fit the budget as 128 000 samples, but grow 640-fold.
+        assert_eq!(at_rate(buf(300), 192_000, usize::MAX).unwrap_err(), RateError::Ratio { from: 300, to: 192_000 });
+        assert!(at_rate(buf(1_500), 192_000, usize::MAX).is_ok(), "128-fold is the supported extreme");
+        assert!(at_rate(buf(8_000), 768_000, usize::MAX).is_ok(), "the slowest file at the fastest session");
+        // 128.86-fold: integer division would truncate it to 128 and let it through
+        assert_eq!(at_rate(buf(1_490), 192_000, usize::MAX).unwrap_err(), RateError::Ratio { from: 1_490, to: 192_000 });
+        // a short file that is only over the sample budget is a size refusal, not a rate one
+        assert_eq!(at_rate(buf(48_000), 48_000, 10).unwrap_err(), RateError::TooLarge);
+        assert!(RateError::Ratio { from: 300, to: 192_000 }.message("big").contains("300 Hz"));
     }
 }

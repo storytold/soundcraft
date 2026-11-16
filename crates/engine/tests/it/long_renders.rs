@@ -1,10 +1,11 @@
 //! Renders longer than one offline buffer holds are refused, rather than cut short and kept.
 
+use craft_audio::AudioBuffer;
 use serde_json::{Value, json};
-use soundcraft_audio_io::{AudioBuffer, FileFormat};
 use soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES;
 use soundcraft_engine::Engine;
 use soundcraft_mix::MAX_RENDER_SAMPLES;
+use soundcraft_model::FileFormat;
 use soundcraft_model::{ChannelFormat, Clip, ClipId, Session, TrackKind};
 
 /// A stereo track "Talk" with one clip `frames` long. Its source is one second: the commands

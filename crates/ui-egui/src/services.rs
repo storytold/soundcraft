@@ -6,21 +6,25 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 pub enum Pick {
     /// The purpose (a command id).
     Open(String),
+    /// Like `Open`, but the user may select several files (Import Audio).
+    OpenMany(String),
     /// The purpose and the file to start from.
     Save(String, PathBuf),
     /// The folder to start in.
     Folder(PathBuf),
 }
 
-/// Shows a file dialog without waiting for it → the receiver of the path picked (`None`: cancelled).
+/// Shows a file dialog without waiting for it → the receiver of the paths picked (empty: cancelled).
 /// `None` when no dialog could be shown.
-pub type StartPick = Box<dyn Fn(Pick) -> Option<Receiver<Option<PathBuf>>>>;
+pub type StartPick = Box<dyn Fn(Pick) -> Option<Receiver<Vec<PathBuf>>>>;
 
 /// Host services (file dialogs) injected by the app; absent in tests and on the web. They return
 /// paths as picked: the caller converts one to text where a command takes it ([`crate::dialogs::unicode`]).
 #[derive(Default)]
 pub struct Services {
     pub pick_open: Option<Box<dyn Fn(&str, &[&str]) -> Option<PathBuf>>>,
+    /// Like `pick_open`, but the user may select several files (Import Audio). Empty when cancelled.
+    pub pick_open_many: Option<Box<dyn Fn(&str) -> Vec<PathBuf>>>,
     /// The purpose and the file to start from.
     pub pick_save: Option<Box<dyn Fn(&str, &Path) -> Option<PathBuf>>>,
     /// The folder to start in.
@@ -30,9 +34,9 @@ pub struct Services {
     /// of its own resizing sent back into that handler, and winit aborts the app.
     pub start_pick: Option<StartPick>,
     /// (Hosts leave the next two to `..Default::default()`.) The dialog that is open, with the tag of what asked for it.
-    pub pending: Option<(String, Receiver<Option<PathBuf>>)>,
-    /// A path picked, for the `tag` that asked for it to [`Self::take`].
-    pub picked: Option<(String, PathBuf)>,
+    pub pending: Option<(String, Receiver<Vec<PathBuf>>)>,
+    /// The paths picked, for the `tag` that asked for them to [`Self::take`].
+    pub picked: Option<(String, Vec<PathBuf>)>,
     /// A dialog that could not be shown; the app moves it to the status line.
     pub error: Option<String>,
 }
@@ -54,12 +58,13 @@ impl Services {
             }
             return;
         }
-        let path = match &pick {
-            Pick::Open(purpose) => self.pick_open.as_ref().and_then(|f| f(purpose, &[])),
-            Pick::Save(purpose, start) => self.pick_save.as_ref().and_then(|f| f(purpose, start)),
-            Pick::Folder(start) => self.pick_folder.as_ref().and_then(|f| f(start)),
+        let paths = match &pick {
+            Pick::Open(purpose) => self.pick_open.as_ref().and_then(|f| f(purpose, &[])).into_iter().collect(),
+            Pick::OpenMany(purpose) => self.pick_open_many.as_ref().map(|f| f(purpose)).unwrap_or_default(),
+            Pick::Save(purpose, start) => self.pick_save.as_ref().and_then(|f| f(purpose, start)).into_iter().collect(),
+            Pick::Folder(start) => self.pick_folder.as_ref().and_then(|f| f(start)).into_iter().collect(),
         };
-        self.picked = path.map(|p| (tag.to_string(), p));
+        self.answer(tag.to_string(), paths);
     }
 
     /// Collects the answer of the open dialog, once it has one.
@@ -67,8 +72,9 @@ impl Services {
         let Some((tag, answer)) = &self.pending else { return };
         match answer.try_recv() {
             Err(TryRecvError::Empty) => {}
-            Ok(path) => {
-                self.picked = path.map(|p| (tag.clone(), p));
+            Ok(paths) => {
+                let tag = tag.clone();
+                self.answer(tag, paths);
                 self.pending = None;
             }
             Err(TryRecvError::Disconnected) => self.pending = None,
@@ -85,9 +91,18 @@ impl Services {
         }
     }
 
+    fn answer(&mut self, tag: String, paths: Vec<PathBuf>) {
+        self.picked = Some((tag, paths)).filter(|(_, p)| !p.is_empty());
+    }
+
     /// The path picked for `tag`, once.
     pub fn take(&mut self, tag: &str) -> Option<PathBuf> {
-        if self.picked.as_ref().is_some_and(|(t, _)| t == tag) { self.picked.take().map(|(_, p)| p) } else { None }
+        self.take_many(tag).into_iter().next()
+    }
+
+    /// The paths picked for `tag` ([`Pick::OpenMany`]), once.
+    pub fn take_many(&mut self, tag: &str) -> Vec<PathBuf> {
+        if self.picked.as_ref().is_some_and(|(t, _)| t == tag) { self.picked.take().map(|(_, p)| p).unwrap_or_default() } else { Vec::new() }
     }
 }
 
@@ -118,13 +133,13 @@ mod tests {
         services.ask("b", Pick::Open("session.open".into()));
         services.poll();
         assert_eq!(services.take("a"), None, "no answer yet");
-        tx.send(Some(PathBuf::from("/tmp/x.scraft"))).unwrap();
+        tx.send(vec![PathBuf::from("/tmp/x.scraft")]).unwrap();
         services.poll();
         assert_eq!(services.take("b"), None, "another tag's answer is not taken");
         assert_eq!(services.take("a"), Some(PathBuf::from("/tmp/x.scraft")));
         assert_eq!(services.take("a"), None, "taken once");
         assert!(!blocked.get(), "the blocking picker was never called");
-        services.picked = Some(("a".into(), PathBuf::from("/tmp/old")));
+        services.picked = Some(("a".into(), vec![PathBuf::from("/tmp/old")]));
         services.ask("a", Pick::Open("session.open".into()));
         assert_eq!(services.take("a"), None, "a new request drops an untaken path");
     }
@@ -137,7 +152,7 @@ mod tests {
         let mut services = Services { start_pick: Some(Box::new(move |_| rx.take())), ..Default::default() };
         services.ask("prompt", Pick::Open("session.open".into()));
         services.discard("prompt");
-        tx.send(Some(PathBuf::from("/tmp/x"))).unwrap();
+        tx.send(vec![PathBuf::from("/tmp/x")]).unwrap();
         services.poll();
         assert_eq!(services.take("prompt"), None);
         services.ask("again", Pick::Open("session.open".into()));
@@ -159,11 +174,11 @@ mod tests {
         let rx = Rc::new(Cell::new(Some(rx)));
         let mut services = Services { start_pick: Some(Box::new(move |_| rx.take())), ..Default::default() };
         services.ask("a", Pick::Open("session.open".into()));
-        tx.send(None).unwrap();
+        tx.send(Vec::new()).unwrap();
         services.poll();
         assert!(services.pending.is_none() && services.take("a").is_none(), "cancel answers nothing");
 
-        let (tx, rx) = mpsc::channel::<Option<PathBuf>>();
+        let (tx, rx) = mpsc::channel::<Vec<PathBuf>>();
         let rx = Rc::new(Cell::new(Some(rx)));
         services.start_pick = Some(Box::new(move |_| rx.take()));
         services.ask("b", Pick::Open("session.open".into()));
@@ -175,7 +190,7 @@ mod tests {
         let rx = Rc::new(Cell::new(Some(rx)));
         services.start_pick = Some(Box::new(move |_| rx.take()));
         services.ask("c", Pick::Open("session.open".into()));
-        tx.send(Some(PathBuf::from("/tmp/c"))).unwrap();
+        tx.send(vec![PathBuf::from("/tmp/c")]).unwrap();
         services.poll();
         assert_eq!(services.take("c"), Some(PathBuf::from("/tmp/c")));
     }
@@ -198,5 +213,18 @@ mod tests {
         assert!(!blocked.get());
         services.ask("a", Pick::Open("session.open".into()));
         assert!(services.pending.is_none(), "a retry is possible");
+    }
+
+    /// Several files picked in one sheet are taken together.
+    #[test]
+    fn several_files_are_taken_together() {
+        let (tx, rx) = mpsc::channel();
+        let rx = Rc::new(Cell::new(Some(rx)));
+        let mut services = Services { start_pick: Some(Box::new(move |_| rx.take())), ..Default::default() };
+        services.ask("prompt", Pick::OpenMany("file.import_audio".into()));
+        tx.send(vec![PathBuf::from("/tmp/a.wav"), PathBuf::from("/tmp/b.wav")]).unwrap();
+        services.poll();
+        assert_eq!(services.take_many("prompt"), vec![PathBuf::from("/tmp/a.wav"), PathBuf::from("/tmp/b.wav")]);
+        assert!(services.take_many("prompt").is_empty(), "taken once");
     }
 }

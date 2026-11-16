@@ -8,7 +8,7 @@ use std::sync::{Arc, mpsc};
 
 use soundcraft_ui_egui::{Pick, StartPick};
 
-type Answer = std::pin::Pin<Box<dyn std::future::Future<Output = Option<PathBuf>> + Send>>;
+type Answer = std::pin::Pin<Box<dyn std::future::Future<Output = Vec<PathBuf>> + Send>>;
 
 /// `Services::start_pick`: shows `pick` as a sheet on `window`; `ui` is woken when it answers.
 pub fn start_pick(window: Arc<winit::window::Window>, ui: egui::Context) -> StartPick {
@@ -34,7 +34,12 @@ pub fn start_pick(window: Arc<winit::window::Window>, ui: egui::Context) -> Star
             Pick::Open(purpose) => {
                 let (name, exts) = crate::open_filter(&purpose);
                 let picked = dialog.add_filter(name, &exts).pick_file();
-                Box::pin(async move { picked.await.map(path) })
+                Box::pin(async move { picked.await.map(path).into_iter().collect() })
+            }
+            Pick::OpenMany(purpose) => {
+                let (name, exts) = crate::open_filter(&purpose);
+                let picked = dialog.add_filter(name, &exts).pick_files();
+                Box::pin(async move { picked.await.unwrap_or_default().into_iter().map(path).collect() })
             }
             Pick::Save(purpose, start) => {
                 let (name, exts) = crate::save_filter(&purpose);
@@ -46,11 +51,11 @@ pub fn start_pick(window: Arc<winit::window::Window>, ui: egui::Context) -> Star
                     dialog = dialog.set_file_name(n);
                 }
                 let picked = dialog.save_file();
-                Box::pin(async move { picked.await.map(path) })
+                Box::pin(async move { picked.await.map(path).into_iter().collect() })
             }
             Pick::Folder(start) => {
                 let picked = dialog.set_directory(start).pick_folder();
-                Box::pin(async move { picked.await.map(path) })
+                Box::pin(async move { picked.await.map(path).into_iter().collect() })
             }
         };
         let _ = sheet_tx.send(answer);
