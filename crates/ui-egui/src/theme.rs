@@ -547,9 +547,12 @@ mod tests {
     fn dark_is_the_default() {
         assert_eq!(ThemeMode::default(), ThemeMode::Dark);
         assert_eq!(UiState::default().theme, ThemeMode::Dark);
+        assert_eq!(UiState::default().language, crate::localization::Language::English);
         // Prefs saved before the setting existed load as Dark.
-        let old: UiState = serde_json::from_value(json!({"show_tracks_list": true})).unwrap_or_default();
+        let old: UiState = serde_json::from_value(json!({"show_tracks_list": false})).unwrap();
         assert_eq!(old.theme, ThemeMode::Dark);
+        assert_eq!(old.language, crate::localization::Language::English);
+        assert!(!old.show_tracks_list);
     }
 
     #[test]
@@ -580,6 +583,32 @@ mod tests {
         assert_eq!(app.ui.theme, ThemeMode::Light);
         assert_eq!(app.run("ui.theme", json!({"mode": "system"})), Ok(json!({"mode": "system"})));
         assert!(crate::menus::UI_COMMANDS.iter().any(|c| c.0 == "ui.theme"));
+    }
+
+    #[test]
+    fn language_command_sets_reports_and_validates_the_language() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        assert_eq!(app.run("ui.language", json!({})), Ok(json!({"language": "en"})));
+        assert_eq!(app.run("ui.language", json!({"language": "pt-BR"})), Ok(json!({"language": "pt-BR"})));
+        assert_eq!(app.ui.language, crate::localization::Language::PortugueseBrazil);
+        assert!(app.run("ui.language", json!({"language": "fr"})).is_err());
+        assert_eq!(app.ui.language, crate::localization::Language::PortugueseBrazil);
+        assert!(crate::menus::UI_COMMANDS.iter().any(|command| command.0 == "ui.language"));
+    }
+
+    #[test]
+    fn language_survives_state_round_trip_and_configuration_recall() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let _ = app.run("ui.language", json!({"language": "pt-BR"}));
+        let saved = serde_json::to_value(&app.ui).unwrap_or_default();
+        assert_eq!(saved["language"], "pt-BR");
+        let restored: crate::UiState = serde_json::from_value(saved.clone()).unwrap_or_default();
+        assert_eq!(restored.language, crate::localization::Language::PortugueseBrazil);
+        // Language is a global preference like the theme: a saved configuration never changes it.
+        let mut snapshot = saved;
+        snapshot["language"] = json!("en");
+        assert_eq!(crate::panels::windows::recall_configuration(&mut app, &snapshot), Ok(()));
+        assert_eq!(app.ui.language, crate::localization::Language::PortugueseBrazil);
     }
 
     #[test]

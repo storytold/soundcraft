@@ -20,7 +20,7 @@ pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
                 let v = params.entry(p.id.to_string()).or_insert(p.default);
                 let mut wide = f64::from(*v);
                 crate::widgets::FineSlider::new(&mut wide, f64::from(p.min)..=f64::from(p.max))
-                    .text(p.name)
+                    .text(crate::localization::text(p.name))
                     .default_value(f64::from(p.default))
                     .show(ui);
                 *v = wide as f32;
@@ -30,45 +30,48 @@ pub(super) fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
                 "normalize" => {
                     let v = params.entry("target_db".into()).or_insert(-0.1);
                     let mut wide = f64::from(*v);
-                    crate::widgets::FineSlider::new(&mut wide, -24.0..=0.0).text("Peak dB").default_value(-0.1).show(ui);
+                    crate::widgets::FineSlider::new(&mut wide, -24.0..=0.0).text(crate::localization::text("Peak dB")).default_value(-0.1).show(ui);
                     *v = wide as f32;
                 }
                 "time_stretch" => {
                     let v = params.entry("ratio".into()).or_insert(1.0);
                     let mut wide = f64::from(*v);
-                    crate::widgets::FineSlider::new(&mut wide, 0.25..=4.0).text("Length ratio").default_value(1.0).show(ui);
+                    crate::widgets::FineSlider::new(&mut wide, 0.25..=4.0)
+                        .text(crate::localization::text("Length ratio"))
+                        .default_value(1.0)
+                        .show(ui);
                     *v = wide as f32;
                 }
                 "pitch_shift" => {
                     let v = params.entry("semitones".into()).or_insert(0.0);
                     let mut wide = f64::from(*v);
-                    crate::widgets::FineSlider::new(&mut wide, -24.0..=24.0).text("Semitones").default_value(0.0).show(ui);
+                    crate::widgets::FineSlider::new(&mut wide, -24.0..=24.0).text(crate::localization::text("Semitones")).default_value(0.0).show(ui);
                     *v = wide as f32;
                 }
                 "speed_ramp" => {
                     for (id, label, default, choices) in SPEED_RAMP_CHOICES {
                         let v = params.entry(id.to_string()).or_insert(default);
                         ui.horizontal(|ui| {
-                            ui.label(label);
+                            ui.label(crate::localization::text(label));
                             for &(value, name) in choices {
-                                ui.radio_value(v, value, name);
+                                ui.radio_value(v, value, crate::localization::text(name));
                             }
                         });
                     }
                 }
                 _ => {
-                    ui.label("No parameters.");
+                    ui.label(crate::localization::text("No parameters."));
                 }
             }
         }
         ui.ctx().memory_mut(|m| m.data.insert_temp(key, params.clone()));
         let hint = if soundcraft_dsp::is_generator(&process) {
-            "Fills the selection on the selected tracks with a new clip."
+            crate::localization::text("Fills the selection on the selected tracks with a new clip.")
         } else {
-            "Processes the selected clips and replaces them with rendered audio."
+            crate::localization::text("Processes the selected clips and replaces them with rendered audio.")
         };
         ui.label(egui::RichText::new(hint).small());
-        if ui.button(egui::RichText::new("Render").strong()).clicked() {
+        if ui.button(egui::RichText::new(crate::localization::text("Render")).strong()).clicked() {
             let p: serde_json::Map<String, Value> = params.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
             let _ = app.run("audiosuite.process", json!({"process": process, "params": p}));
         }
