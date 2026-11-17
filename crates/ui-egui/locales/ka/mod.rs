@@ -23,18 +23,14 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "All" => "All",
         "All audio clips checked" => "All audio clips checked",
         "All audio clips have loaded media within source bounds." => "All audio clips have loaded media within source bounds.",
-        "An open-source digital audio workstation from the ArtCraft team." => {
-            "An open-source digital audio workstation from the ArtCraft team."
-        }
+        "An open-source digital audio workstation from the ArtCraft team." => "An open-source digital audio workstation from the ArtCraft team.",
         "Analyses the edit selection on the selected tracks." => "Analyses the edit selection on the selected tracks.",
         "Analyze" => "Analyze",
         "Appearance" => "Appearance",
         "Applies across the edit selection (constant: at the insertion point; scale: factor = end / start; stretch: factor = start / end)." => {
             "Applies across the edit selection (constant: at the insertion point; scale: factor = end / start; stretch: factor = start / end)."
         }
-        "Applies to the selected MIDI clips (or those under the selection)." => {
-            "Applies to the selected MIDI clips (or those under the selection)."
-        }
+        "Applies to the selected MIDI clips (or those under the selection)." => "Applies to the selected MIDI clips (or those under the selection).",
         "Apply" => "Apply",
         "Apply to selected tracks (Shift: selected clips)" => "Apply to selected tracks (Shift: selected clips)",
         "Audio system" => "Audio system",
@@ -71,9 +67,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Clear Recent" => "Clear Recent",
         "Clear…" => "Clear…",
         "Click" => "Click",
-        "Click a take (or the selection) to promote it to the main playlist" => {
-            "Click a take (or the selection) to promote it to the main playlist"
-        }
+        "Click a take (or the selection) to promote it to the main playlist" => "Click a take (or the selection) to promote it to the main playlist",
         "Click keys to step-enter notes into the selected MIDI clip at the insertion point." => {
             "Click keys to step-enter notes into the selected MIDI clip at the insertion point."
         }
@@ -98,9 +92,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Double-click to import audio/MIDI at the insertion point or open a session." => {
             "Double-click to import audio/MIDI at the insertion point or open a session."
         }
-        "Drag to change the tempo (Shift: fine steps), or click to type it" => {
-            "Drag to change the tempo (Shift: fine steps), or click to type it"
-        }
+        "Drag to change the tempo (Shift: fine steps), or click to type it" => "Drag to change the tempo (Shift: fine steps), or click to type it",
         "Drop an audio file here" => "Drop an audio file here",
         "Drop an audio file on this window" => "Drop an audio file on this window",
         "Dual-licensed MIT OR Apache-2.0. Made with Rust and egui." => "Dual-licensed MIT OR Apache-2.0. Made with Rust and egui.",
@@ -119,9 +111,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Grid" => "Grid",
         "Identify Beat: selection is" => "Identify Beat: selection is",
         "in" => "in",
-        "Includes alternate takes and muted clips. Refresh after editing." => {
-            "Includes alternate takes and muted clips. Refresh after editing."
-        }
+        "Includes alternate takes and muted clips. Refresh after editing." => "Includes alternate takes and muted clips. Refresh after editing.",
         "Input" => "Input",
         "Input device" => "Input device",
         "Instrument" => "Instrument",
@@ -164,9 +154,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         }
         "No parameters." => "No parameters.",
         "No Recent Sessions" => "No Recent Sessions",
-        "Non-destructive, applied at playback to the selected MIDI tracks." => {
-            "Non-destructive, applied at playback to the selected MIDI tracks."
-        }
+        "Non-destructive, applied at playback to the selected MIDI tracks." => "Non-destructive, applied at playback to the selected MIDI tracks.",
         "Normalize to -0.1 dBFS" => "Normalize to -0.1 dBFS",
         "Notation view of the MIDI clip; edit notes in the MIDI Editor or Event List." => {
             "Notation view of the MIDI clip; edit notes in the MIDI Editor or Event List."
@@ -315,9 +303,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "No Video track — File › Import › Video…" => "No Video track — File › Import › Video…",
         "<ALL>" => "<ALL>",
         " (alternate playlist)" => " (alternate playlist)",
-        "Active audio end time is unknown (invalid session sample rate)" => {
-            "Active audio end time is unknown (invalid session sample rate)"
-        }
+        "Active audio end time is unknown (invalid session sample rate)" => "Active audio end time is unknown (invalid session sample rate)",
         "No engine" => "No engine",
         "default buffer" => "default buffer",
         "Bus name: {name}" => "Bus name: {name}",
@@ -967,9 +953,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Close “{name}” without saving?" => "Close “{name}” without saving?",
         "Save changes to “{name}” before closing?" => "Save changes to “{name}” before closing?",
         "Session file: {p}" => "Session file: {p}",
-        "Session media: {} files, {:.1} MB in memory (32-bit float)" => {
-            "Session media: {} files, {:.1} MB in memory (32-bit float)"
-        }
+        "Session media: {} files, {:.1} MB in memory (32-bit float)" => "Session media: {} files, {:.1} MB in memory (32-bit float)",
         "Tracks: {}" => "Tracks: {}",
         "UI frame time: {:.1} ms" => "UI frame time: {:.1} ms",
         "Undo steps: {}" => "Undo steps: {}",
@@ -1000,9 +984,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "{} object track(s)" => "{} object track(s)",
         "{} — {} from channel {}" => "{} — {} from channel {}",
         "“{}” already exists. Do you want to replace it?" => "“{}” already exists. Do you want to replace it?",
-        "“{name}” has {what} from an earlier run, autosaved {age}." => {
-            "“{name}” has {what} from an earlier run, autosaved {age}."
-        }
+        "“{name}” has {what} from an earlier run, autosaved {age}." => "“{name}” has {what} from an earlier run, autosaved {age}.",
         "{question} Your changes will be lost." => "{question} Your changes will be lost.",
         "{path}\nnot found" => "{path}\nnot found",
         "media offline: {why}" => "media offline: {why}",
@@ -1545,15 +1527,11 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "automation path rejected: outside the read root {root}: {shown_path}" => {
             "automation path rejected: outside the read root {root}: {shown_path}"
         }
-        "automation path rejected: outside the read roots {}: {shown_path}" => {
-            "automation path rejected: outside the read roots {}: {shown_path}"
-        }
+        "automation path rejected: outside the read roots {}: {shown_path}" => "automation path rejected: outside the read roots {}: {shown_path}",
         "automation path rejected: outside the write root {root}: {shown_path}" => {
             "automation path rejected: outside the write root {root}: {shown_path}"
         }
-        "automation path rejected: outside the write roots {}: {shown_path}" => {
-            "automation path rejected: outside the write roots {}: {shown_path}"
-        }
+        "automation path rejected: outside the write roots {}: {shown_path}" => "automation path rejected: outside the write roots {}: {shown_path}",
         "automation path rejected: parent traversal below a folder that doesn't exist: {}" => {
             "automation path rejected: parent traversal below a folder that doesn't exist: {}"
         }

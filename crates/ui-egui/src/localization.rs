@@ -1,9 +1,9 @@
 //! Language selection and source-language fallback for UI strings.
 
-#[path = "../locales/pt-BR/mod.rs"]
-mod pt_br;
 #[path = "../locales/ka/mod.rs"]
 mod ka;
+#[path = "../locales/pt-BR/mod.rs"]
+mod pt_br;
 
 use std::cell::Cell;
 
