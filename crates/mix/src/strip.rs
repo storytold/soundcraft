@@ -294,8 +294,9 @@ fn read_aux_bus(t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, f
     }
 }
 
-/// Render the track's instrument into the strip.
-fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, transport: &Transport) {
+/// Render the track's instrument into the strip. `schedule` is false when the transport is
+/// stopped: the frozen position would retrigger any timeline note starting inside the block.
+fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, transport: &Transport, schedule: bool) {
     let Block { pos, frames, .. } = blk;
     if let Some(inst) = strip.instrument.as_mut().filter(|i| !i.failed) {
         // #152: push the instrument's stored parameter values into the live plugin
@@ -310,7 +311,9 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
         if std::mem::take(&mut strip.chase) {
             chase_controllers(s, t, pos, inst);
         }
-        schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+        if schedule {
+            schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+        }
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
         } else if let Some(c0) = strip.buf.first_mut() {
@@ -410,10 +413,14 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
             monitor_input(t, strip, live, frames);
         }
         TrackKind::Audio if live.monitor_only => {}
-        TrackKind::Instrument | TrackKind::Midi if live.monitor_only => {}
+        TrackKind::Instrument | TrackKind::Midi if live.monitor_only => {
+            // Instruments stay live while stopped, as in the incumbent: the plugin keeps
+            // processing so its on-screen keyboard plays and its editor responds (#1600).
+            render_instrument(s, t, strip, blk, &transport, false);
+        }
         TrackKind::Audio => render_audio_clips(s, t, strip, blk),
         TrackKind::Aux | TrackKind::Folder => read_aux_bus(t, strip, busses, frames),
-        TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, blk, &transport),
+        TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, blk, &transport, true),
         _ => {}
     }
     let trim = db_to_gain(t.mixer.trim_db) * if t.mixer.phase_invert { -1.0 } else { 1.0 };
