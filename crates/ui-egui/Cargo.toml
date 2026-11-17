@@ -8,6 +8,7 @@ rust-version = "1.95"
 repository.workspace = true
 
 [dependencies]
+craft-mime.workspace = true
 craft-ui.workspace = true
 soundcraft-time.workspace = true
 craft-audio.workspace = true
