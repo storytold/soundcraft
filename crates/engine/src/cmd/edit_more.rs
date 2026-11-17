@@ -493,6 +493,11 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
                             cc.tick = cc.tick.saturating_add(diff);
                             hs.ctrls.push(cc);
                         }
+                        for event in &sequence.sysex {
+                            let mut event = event.clone();
+                            event.tick = event.tick.saturating_add(diff);
+                            hs.sysex.push(event);
+                        }
                         hs.sort();
                         if want_end > h.end() {
                             h.trim_end_to(want_end.min(limit));

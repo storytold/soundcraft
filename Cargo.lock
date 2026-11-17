@@ -1229,7 +1229,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=ddbe78231b5b23273b3d19
 [[package]]
 name = "craft-midi"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=45a8e16669e70dadb780dfbc759c882dd5b7ea1c#45a8e16669e70dadb780dfbc759c882dd5b7ea1c"
+source = "git+https://github.com/mtlcl410/craft-libs.git?rev=4845e2e9d0322dbefde38e1e1d8219d5636f10a1#4845e2e9d0322dbefde38e1e1d8219d5636f10a1"
 dependencies = [
  "serde",
  "thiserror 2.0.21",

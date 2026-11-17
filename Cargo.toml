@@ -126,3 +126,7 @@ eframe = { git = "https://github.com/storytold/egui.git", rev = "6d518fc79968157
 egui_demo_lib = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 egui_inspection = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }
+
+[patch.'https://github.com/storytold/craft-libs']
+# Temporary dependency for storytold/craft-libs#2077; align upstream MIDI pins after it merges.
+craft-midi = { git = 'https://github.com/mtlcl410/craft-libs.git', rev = '4845e2e9d0322dbefde38e1e1d8219d5636f10a1' }

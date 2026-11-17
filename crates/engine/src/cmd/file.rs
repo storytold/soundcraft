@@ -73,7 +73,21 @@ pub fn specs() -> Vec<CommandSpec> {
             let at = position_param(e, "file.import_midi", p, "at")?.unwrap_or(0);
             let bytes = crate::io::read_file(&path)?;
             let tracks = crate::io::import_midi_bytes(e, &bytes, at, bool_or(p, "tempo_map", true))?;
-            Ok(json!({"tracks": tracks}))
+            let sysex_packets: usize = tracks
+                .iter()
+                .filter_map(|id| e.session().track(*id))
+                .flat_map(|t| t.clips())
+                .map(|c| match &c.content {
+                    soundcraft_model::ClipContent::Midi { sequence } => sequence.sysex.len(),
+                    _ => 0,
+                })
+                .sum();
+            let mut result = json!({"tracks": tracks});
+            if sysex_packets > 0 {
+                result["sysex_packets"] = json!(sysex_packets);
+                result["warnings"] = json!(["SysEx packets are retained for session saves and MIDI export; SysEx playback is not supported."]);
+            }
+            Ok(result)
         }),
         cmd!(
             "file.import_video",
