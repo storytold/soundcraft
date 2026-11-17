@@ -192,14 +192,30 @@ mod tests {
             bar_start: 3.0,
             ..Transport::default()
         };
-        apply_transport(&mut c, &t);
+        apply_transport(&mut c, &t, 0);
         let playing = kPlaying as u32;
         assert_eq!(c.state & playing, playing);
         assert_eq!(c.state & kRecording as u32, 0);
         assert_eq!((c.tempo, c.timeSigNumerator, c.timeSigDenominator), (90.0, 3, 4));
         assert_eq!((c.projectTimeSamples, c.projectTimeMusic, c.barPositionMusic), (96_000, 3.5, 3.0));
-        apply_transport(&mut c, &Transport { playing: false, ..t });
+        apply_transport(&mut c, &Transport { playing: false, ..t }, 0);
         assert_eq!(c.state & playing, 0);
+    }
+
+    #[test]
+    fn sub_block_transport_crosses_a_bar_without_accumulating_offsets() {
+        // SAFETY: ProcessContext is plain data and all-zero is valid.
+        let mut c: sv::ProcessContext = unsafe { std::mem::zeroed() };
+        c.sampleRate = 48_000.0;
+        let t = Transport { tempo: 120.0, numerator: 4, denominator: 4, samples: 48_000, quarters: 3.9, bar_start: 0.0, ..Transport::default() };
+        apply_transport(&mut c, &t, 4_800);
+        assert_eq!(c.projectTimeSamples, 52_800);
+        assert!((c.projectTimeMusic - 4.1).abs() < 1e-12);
+        assert_eq!(c.barPositionMusic, 4.0);
+        apply_transport(&mut c, &t, 9_600);
+        assert_eq!(c.projectTimeSamples, 57_600);
+        assert!((c.projectTimeMusic - 4.3).abs() < 1e-12);
+        assert_eq!(c.barPositionMusic, 4.0);
     }
 
     #[test]

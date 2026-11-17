@@ -37,6 +37,33 @@ fn an_unmapped_program_channel_does_not_select_channel_one_programs() {
 }
 
 #[test]
+fn program_and_max_block_splits_advance_the_transport_from_the_block_start() {
+    use soundcraft_dsp::Transport;
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    p.prepare(48_000.0, 16, 2);
+    p.set_transport(&Transport {
+        playing: true,
+        recording: false,
+        tempo: 120.0,
+        numerator: 4,
+        denominator: 4,
+        samples: 48_000,
+        seconds: 1.0,
+        quarters: 2.0,
+        bar_start: 0.0,
+        bar: 0,
+    });
+    p.midi(10, [0xC0, 127, 0]);
+    p.midi(40, [0xC0, 127, 0]);
+    let mut io = vec![vec![0.0f32; 64]; 2];
+    p.process(&mut io, 64);
+    for start in [10usize, 26, 40, 56] {
+        assert_eq!(io[0][start], (48_000 + start) as f32, "sample position at sub-block {start}");
+        assert!((io[1][start] - (2.0 + start as f32 / 24_000.0)).abs() < 1e-6, "quarter-note position at sub-block {start}");
+    }
+}
+
+#[test]
 fn scan_lists_both_audio_modules_but_not_the_controller_class() {
     let dir = fixture_dir();
     let found = soundcraft_vst3_host::scan_paths(&[dir.to_path_buf()]);

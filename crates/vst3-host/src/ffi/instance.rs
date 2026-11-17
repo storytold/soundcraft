@@ -40,7 +40,7 @@ fn dir_name(dir: sv::BusDirections) -> &'static str {
     if dir == sv::BusDirections_::kInput { "input" } else { "output" }
 }
 
-pub(super) fn apply_transport(c: &mut sv::ProcessContext, t: &Transport) {
+pub(super) fn apply_transport(c: &mut sv::ProcessContext, t: &Transport, offset: u32) {
     use sv::ProcessContext_::StatesAndFlags_::{
         kBarPositionValid, kContTimeValid, kPlaying, kProjectTimeMusicValid, kRecording, kTempoValid, kTimeSigValid,
     };
@@ -58,9 +58,21 @@ pub(super) fn apply_transport(c: &mut sv::ProcessContext, t: &Transport) {
     c.tempo = t.tempo;
     c.timeSigNumerator = i32::try_from(t.numerator).unwrap_or(4);
     c.timeSigDenominator = i32::try_from(t.denominator).unwrap_or(4);
-    c.projectTimeSamples = t.samples;
-    c.projectTimeMusic = t.quarters;
+    // `t` describes the original host block. Program changes and max-block limits may split it;
+    // use the absolute offset into that block, never the context left by the preceding sub-block.
+    let delta = if offset > 0 && c.sampleRate.is_finite() && c.sampleRate > 0.0 && t.tempo.is_finite() {
+        f64::from(offset) / c.sampleRate * t.tempo / 60.0
+    } else {
+        0.0
+    };
+    c.projectTimeSamples = t.samples.saturating_add(i64::from(offset));
+    c.projectTimeMusic = t.quarters + delta;
     c.barPositionMusic = t.bar_start;
+    let bar_length = 4.0 * f64::from(t.numerator) / f64::from(t.denominator);
+    let bars = (c.projectTimeMusic - t.bar_start) / bar_length;
+    if offset > 0 && bar_length.is_finite() && bar_length > 0.0 && bars.is_finite() {
+        c.barPositionMusic += bars.floor().max(0.0) * bar_length;
+    }
 }
 
 /// A live plugin: component + audio processor (+ edit controller) and the host objects.
@@ -451,7 +463,7 @@ impl Instance {
         outputs.refresh();
         self.context.continousTimeSamples = project_time;
         match transport {
-            Some(t) => apply_transport(&mut self.context, t),
+            Some(t) => apply_transport(&mut self.context, t, offset),
             None => self.context.projectTimeSamples = project_time,
         }
         let mut data = sv::ProcessData {

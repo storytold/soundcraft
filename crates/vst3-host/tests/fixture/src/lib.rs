@@ -431,6 +431,7 @@ impl IEditControllerTrait for GainController {
 
 struct Synth {
     level: AtomicU32,
+    context_output: AtomicBool,
     _live: Live,
 }
 
@@ -563,6 +564,8 @@ impl IAudioProcessorTrait for Synth {
                     volume = Some((at.max(0) as usize, v as f32));
                 }
                 if unsafe { q.getParameterId() } == PROGRAM_PARAM && unsafe { q.getPoint(0, &mut at, &mut v) } == kResultOk {
+                    // Test program 127 exposes the process context on the stereo output.
+                    self.context_output.store(v == 1.0, Ordering::Relaxed);
                     volume = Some((at.max(0) as usize, 10.0 + v as f32 * 127.0));
                 }
             }
@@ -588,8 +591,13 @@ impl IAudioProcessorTrait for Synth {
             *o = level;
         }
         self.level.store(level.to_bits(), Ordering::Relaxed);
-        for ch in outs {
-            ch.copy_from_slice(&out);
+        for (index, ch) in outs.into_iter().enumerate() {
+            if self.context_output.load(Ordering::Relaxed) {
+                let context = unsafe { &*d.processContext };
+                ch.fill(if index == 0 { context.projectTimeSamples as f32 } else { context.projectTimeMusic as f32 });
+            } else {
+                ch.copy_from_slice(&out);
+            }
         }
         kResultOk
     }
@@ -795,7 +803,8 @@ impl IPluginFactoryTrait for Factory {
             })
             .to_com_ptr::<FUnknown>()
         } else if cid == SYNTH_CID {
-            ComWrapper::new(Synth { level: AtomicU32::new(0), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
+            ComWrapper::new(Synth { level: AtomicU32::new(0), context_output: AtomicBool::new(false), _live: Live::new(&OBJECTS) })
+                .to_com_ptr::<FUnknown>()
         } else if let Some((buses, channels)) = [(WIDE16_CID, (16, 64)), (WIDE32_CID, (32, 2)), (WIDE65B_CID, (65, 2)), (WIDE65_CID, (1, 65))]
             .into_iter()
             .find_map(|(c, layout)| (c == cid).then_some(layout))
