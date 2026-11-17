@@ -105,10 +105,13 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
             (tr.name.clone(), sp.x, sp.y, sp.z)
         })
         .collect();
-    egui::Window::new(egui::RichText::new("Renderer").font(bold(13.0))).open(&mut open).default_size(vec2(380.0, 440.0)).resizable(true).show(
-        ctx,
-        |ui| {
-            ui.label(egui::RichText::new(format!("Main output: {}", fmt.label())).font(regular(11.0)).color(t.text));
+    egui::Window::new(egui::RichText::new(crate::localization::text("Renderer")).font(bold(13.0)))
+        .id(egui::Id::unique("Renderer"))
+        .open(&mut open)
+        .default_size(vec2(380.0, 440.0))
+        .resizable(true)
+        .show(ctx, |ui| {
+            ui.label(egui::RichText::new(crate::localized_format!("Main output: {}", fmt.label())).font(regular(11.0)).color(t.text));
             let side = ui.available_width().min(360.0);
             let (r, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
             let p = ui.painter_at(r);
@@ -117,7 +120,7 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
             let rad = side * 0.40;
             p.circle_stroke(c, rad, Stroke::new(1.0, Color32::from_rgb(60, 68, 78)));
             p.circle_stroke(c, rad * 0.55, Stroke::new(1.0, Color32::from_rgb(44, 50, 58)));
-            p.text(pos2(c.x, r.min.y + 8.0), Align2::CENTER_TOP, "front", regular(9.0), t.text_dim);
+            p.text(pos2(c.x, r.min.y + 8.0), Align2::CENTER_TOP, crate::localization::text("front"), regular(9.0), t.text_dim);
             for (i, sp) in fmt.speakers().iter().enumerate() {
                 let level = peaks.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
                 let ring = if sp.is_height() { rad * 0.55 } else { rad };
@@ -136,27 +139,32 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
             ui.add_space(4.0);
             if objects.is_empty() {
                 ui.label(
-                    egui::RichText::new("No object tracks. Use the Object view in the Mix window to route tracks as objects.")
-                        .small()
-                        .color(t.text_dim),
+                    egui::RichText::new(crate::localization::text(
+                        "No object tracks. Use the Object view in the Mix window to route tracks as objects.",
+                    ))
+                    .small()
+                    .color(t.text_dim),
                 );
             } else {
-                ui.label(egui::RichText::new(format!("{} object track(s)", objects.len())).small().color(t.text_dim));
+                ui.label(egui::RichText::new(crate::localized_format!("{} object track(s)", objects.len())).small().color(t.text_dim));
             }
-        },
-    );
+        });
     app.extra.show_renderer = open;
 }
 
-/// Appearance window: interface scale, reduce-motion, theme, auto-update configuration and Reset.
+/// Appearance window: interface scale, reduce visual effects, theme, language, auto-update configuration and Reset.
 fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.extra.show_ui_customization;
     if !open {
         return;
     }
-    egui::Window::new(egui::RichText::new("Appearance").font(bold(13.0))).open(&mut open).default_size(vec2(320.0, 180.0)).resizable(false).show(
-        ctx,
-        |ui| {
+    let language = app.ui.language;
+    egui::Window::new(egui::RichText::new(crate::localization::text("Appearance")).font(bold(13.0)))
+        .id(egui::Id::unique("Appearance"))
+        .open(&mut open)
+        .default_size(vec2(320.0, 210.0))
+        .resizable(false)
+        .show(ctx, |ui| {
             // Each control carries its own visible label, which is also its accessible name. A
             // label in a neighbouring grid cell is only painted text: a screen reader (and the
             // kittest accessibility check) would see an unnamed slider, checkbox or combo box.
@@ -164,38 +172,54 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                 egui::Slider::new(&mut app.extra.ui_scale, 0.75..=1.5)
                     .step_by(0.05)
                     .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
-                    .text("Interface scale"),
+                    .text(crate::localization::text("Interface scale")),
             );
             let mut chosen_effects = None;
-            craft_ui::ComboBox::from_label("Reduce visual effects").selected_text(app.ui.reduce_visual_effects.label()).show_ui(ui, |ui| {
-                for mode in crate::preferences::ReduceVisualEffects::ALL {
-                    if ui.selectable_label(app.ui.reduce_visual_effects == mode, mode.label()).clicked() {
-                        chosen_effects = Some(mode);
+            craft_ui::ComboBox::from_label(crate::localization::text("Reduce visual effects"))
+                .selected_text(crate::localization::text(app.ui.reduce_visual_effects.label()))
+                .show_ui(ui, |ui| {
+                    for mode in crate::preferences::ReduceVisualEffects::ALL {
+                        if ui.selectable_label(app.ui.reduce_visual_effects == mode, crate::localization::text(mode.label())).clicked() {
+                            chosen_effects = Some(mode);
+                        }
                     }
-                }
-            });
+                });
             if let Some(mode) = chosen_effects {
                 let _ = app.run("ui.reduce_visual_effects", json!({"mode": mode.id()}));
             }
-            let mut chosen = None;
-            craft_ui::ComboBox::from_label("Theme").selected_text(app.ui.theme.label()).show_ui(ui, |ui| {
-                for mode in crate::theme::ThemeMode::ALL {
-                    if ui.selectable_label(app.ui.theme == mode, mode.label()).clicked() {
-                        chosen = Some(mode);
+            let mut selected_language = None;
+            craft_ui::ComboBox::from_label(crate::localization::text("Language"))
+                .selected_text(crate::localization::text(language.native_name()))
+                .show_ui(ui, |ui| {
+                    for choice in crate::localization::Language::ALL {
+                        if ui.selectable_label(language == choice, crate::localization::text(choice.native_name())).clicked() {
+                            selected_language = Some(choice);
+                        }
                     }
-                }
-            });
+                });
+            if let Some(choice) = selected_language {
+                let _ = app.run("ui.language", json!({"language": choice.id()}));
+            }
+            let mut chosen = None;
+            craft_ui::ComboBox::from_label(crate::localization::text("Theme"))
+                .selected_text(crate::localization::text(app.ui.theme.label()))
+                .show_ui(ui, |ui| {
+                    for mode in crate::theme::ThemeMode::ALL {
+                        if ui.selectable_label(app.ui.theme == mode, crate::localization::text(mode.label())).clicked() {
+                            chosen = Some(mode);
+                        }
+                    }
+                });
             if let Some(mode) = chosen {
                 let _ = app.run("ui.theme", json!({"mode": mode.id()}));
             }
-            crate::widgets::checkbox(ui, &mut app.extra.auto_update_config, "Auto-update configuration");
+            crate::widgets::checkbox(ui, &mut app.extra.auto_update_config, crate::localization::text("Auto-update configuration"));
             ui.add_space(4.0);
-            if ui.button("Reset").clicked() {
+            if ui.button(crate::localization::text("Reset")).clicked() {
                 app.extra.ui_scale = 1.0;
                 let _ = app.run("ui.reduce_visual_effects", json!({"mode": "never"}));
                 let _ = app.run("ui.theme", json!({"mode": crate::theme::ThemeMode::default().id()}));
             }
-        },
-    );
+        });
     app.extra.show_ui_customization = open;
 }

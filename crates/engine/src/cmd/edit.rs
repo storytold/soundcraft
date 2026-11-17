@@ -1228,8 +1228,8 @@ mod tests {
         use soundcraft_model::{ChannelFormat, Clip, TrackKind};
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![vec![0.25; 60_000]] };
-        let src = crate::io::add_source(&mut s, "src", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![vec![0.25; 60_000]] };
+        let src = crate::io::add_source(&mut s, "src", buf, None, soundcraft_model::FileFormat::Wav);
         let mut ids = Vec::new();
         for &(start, len, off) in clips {
             let id = s.new_clip_id();

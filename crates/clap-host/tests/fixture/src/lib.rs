@@ -4,7 +4,7 @@
 //!   (stepped enum A/B/C), hidden param 9, latency 3 samples.
 //! - `org.soundcraft.test.synth`: instrument, stereo out, CLAP note port; outputs a constant equal
 //!   to the velocity of the held note (0 when none), switching at the event's sample offset. A
-//!   MIDI CC 7 (volume) sets the constant to its value / 127.
+//!   MIDI CC 7 (volume) sets the constant to its value / 127. `reset` leaves the note sounding.
 //!
 //! - `org.soundcraft.test.wide16`, `.wide17ports`, `.wide65ch`: effects advertising wide layouts
 //!   (16 ports of 64 channels, 17 ports of 2 channels, one port of 65 channels per direction).
@@ -166,9 +166,9 @@ unsafe extern "C" fn stop_processing(p: *const clap_plugin) {
     unsafe { fx(p) }.processing = false;
 }
 
-unsafe extern "C" fn reset(p: *const clap_plugin) {
-    unsafe { fx(p) }.level = 0.0;
-}
+/// Leaves the synth's note sounding. CLAP asks `reset` to kill voices, but some synths' doesn't
+/// (Surge XT's), so the host must send the releases itself.
+unsafe extern "C" fn reset(_p: *const clap_plugin) {}
 
 fn apply(f: &mut Fx, h: &clap_event_header) {
     if h.space_id != CLAP_CORE_EVENT_SPACE_ID {

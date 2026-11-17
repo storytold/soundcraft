@@ -160,7 +160,18 @@ fn help_key_at(ctx: &egui::Context, app: &mut SoundApp, at: egui::Pos2) {
 /// Open every mapped floating window and verify that context Help resolves its actual egui layer.
 #[test]
 fn cmd_question_mark_opens_the_page_of_the_window_under_the_pointer() {
+    check_context_help_for_every_window("en");
+}
+
+/// Translated window titles keep their English ids, so context Help still finds each window.
+#[test]
+fn cmd_question_mark_finds_every_window_in_portuguese() {
+    check_context_help_for_every_window("pt-BR");
+}
+
+fn check_context_help_for_every_window(language: &str) {
     let (ctx, mut app) = rig(OperatingSystem::Mac);
+    app.run("ui.language", json!({"language": language})).unwrap_or_else(|e| panic!("{language}: {e}"));
     app_frame(&ctx, &mut app, vec![]);
     let mut checked = 0;
     for (title, id) in help::WINDOW_PAGES {
@@ -171,7 +182,7 @@ fn cmd_question_mark_opens_the_page_of_the_window_under_the_pointer() {
             app_frame(&ctx, &mut app, vec![]);
         }
         let rect = ctx.memory(|m| m.area_rect(help::window_id(title)));
-        let Some(rect) = rect else { panic!("{title} ({id}) did not open as a window titled {title:?}") };
+        let Some(rect) = rect else { panic!("{title} ({id}) did not open with the id of {title:?} in {language}") };
         help_key_at(&ctx, &mut app, rect.center() + egui::vec2(0.0, 10.0));
         assert!(app.ui.show_help, "{title}: help did not open");
         assert_eq!(app.ui.help.page, Page::Command(id.into()), "{title}");
@@ -369,7 +380,7 @@ fn every_help_page_draws_with_real_glyphs_and_fits_a_small_screen() {
         assert!(h.state().ui.show_help);
         let page = &h.state().ui.help.page;
         assert!(h.query_by_label("Page not found").is_none(), "{page:?} did not render");
-        let window = h.ctx.memory(|m| m.area_rect(egui::Id::unique(Some("SoundCraft Help")))).unwrap();
+        let window = h.ctx.memory(|m| m.area_rect(help::window_id("SoundCraft Help"))).unwrap();
         assert!(window.max.x <= 760.0 && window.min.x >= 0.0 && window.max.y <= 700.0 && window.min.y >= 0.0, "{page:?} exceeds {window:?}");
     }
 }
@@ -635,4 +646,85 @@ fn help_text_fields_show_their_focus_in_both_themes() {
             .collect();
         assert!(faint.is_empty(), "{mode} {tab:?}: a focus outline barely differs from the window: {faint:?}");
     }
+}
+
+/// In Portuguese the Help window's own labels and a page's menu locations follow the language; the
+/// page text stays English.
+#[test]
+fn help_window_labels_follow_the_interface_language() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("ui.language", json!({"language": "pt-BR"})).unwrap();
+    app.ui.show_help = true;
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 760.0)).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(2);
+    for label in ["Voltar", "Avançar", "Conteúdo", "Índice", "Boas-vindas", "Como fazer", "Temas"] {
+        assert!(h.query_by_label(label).is_some(), "missing {label:?}");
+    }
+    assert!(h.query_by_label("Back").is_none() && h.query_by_label("Contents").is_none());
+    h.state_mut().ui.help.go(Page::Command("session.save".into()));
+    h.run_steps(2);
+    assert!(h.query_by_label("Fazer agora").is_some());
+    assert!(h.query_all_by_label_contains("Arquivo › ").next().is_some(), "the menu location is not translated");
+    assert!(h.query_by_label_contains("Id do comando: session.save").is_some());
+}
+
+/// Big Counter paints its digits across the whole window, so the whole window is its own: the
+/// pointer over the digits gets the Big Counter page, not the Edit window behind it.
+#[test]
+fn cmd_question_mark_over_the_big_counter_digits_opens_its_page() {
+    let (ctx, mut app) = rig(OperatingSystem::Nix);
+    app_frame(&ctx, &mut app, vec![]);
+    app.run("window.big_counter", json!({"value": true})).unwrap();
+    for _ in 0..3 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    let rect = ctx.memory(|m| m.area_rect(help::window_id("Big Counter"))).unwrap();
+    // The window opens at its default 110-point content height (plus the title bar).
+    assert!(rect.height() >= 110.0, "the counter is painted outside its window: {rect:?}");
+    let digits = egui::pos2(rect.center().x, rect.max.y - 30.0);
+    app_frame(&ctx, &mut app, vec![Event::PointerMoved(digits)]);
+    let presses = [true, false].map(|pressed| Event::Key {
+        key: Key::Slash,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: PC_CTRL | Modifiers::SHIFT,
+    });
+    app_frame(&ctx, &mut app, [Event::ModifiersChanged(PC_CTRL | Modifiers::SHIFT)].into_iter().chain(presses).collect());
+    assert_eq!(app.ui.help.page, Page::Command("window.big_counter".into()));
+}
+
+/// The Undo page names the menu item as the menu shows it now ("Edit › Undo …"), and says
+/// "Can't Undo" only when there is nothing to undo.
+#[test]
+fn undo_page_names_the_live_menu_item() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.ui.show_help = true;
+    app.ui.help.go(Page::Command("edit.undo".into()));
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 760.0)).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(2);
+    let live = menus::live_label(h.state(), Some("edit.undo")).unwrap();
+    assert!(h.query_all_by_label_contains("Can't Undo").next().is_some(), "nothing to undo yet: {live}");
+    h.state_mut().run("track.new", json!({"count": 1, "format": "mono"})).unwrap();
+    h.run_steps(2);
+    let live = menus::live_label(h.state(), Some("edit.undo")).unwrap();
+    assert!(live.starts_with("Undo "), "{live}");
+    assert!(h.query_all_by_label_contains(&format!("Edit › {live}")).next().is_some(), "the page does not show {live:?}");
+    assert!(h.query_all_by_label_contains("Can't Undo").next().is_none());
 }

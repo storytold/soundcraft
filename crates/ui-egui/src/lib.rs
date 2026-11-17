@@ -24,6 +24,7 @@ pub mod fonts;
 pub mod help;
 pub mod icons;
 pub mod import;
+pub mod localization;
 pub mod menus;
 pub mod mix_window;
 pub mod palette;
@@ -149,6 +150,8 @@ pub struct UiState {
     pub video_burn_in: bool,
     pub workspace_dir: String,
     pub configurations: Vec<(String, Value)>,
+    /// Interface language (`ui.language`).
+    pub language: localization::Language,
     /// Appearance (`ui.theme`): dark by default, light or follow the system on request.
     pub theme: theme::ThemeMode,
     /// The main window's size (logical points) and maximized state, and the interface scale, as
@@ -221,6 +224,7 @@ impl Default for UiState {
             video_burn_in: false,
             workspace_dir: String::new(),
             configurations: Vec::new(),
+            language: localization::Language::default(),
             theme: theme::ThemeMode::Dark,
             window_size: [1600.0, 1000.0],
             window_maximized: false,
@@ -300,6 +304,8 @@ pub struct SoundApp {
     pub native_menu_bar: bool,
     /// Folder for crash-recovery autosaves (native apps set it).
     pub autosave_dir: Option<std::path::PathBuf>,
+    /// Where the takes of a session never saved go without an autosave folder: made once per run, under the temporary folder.
+    fallback_take_dir: Option<std::path::PathBuf>,
     /// Writes the open session's autosaves in the background, once there is something to write.
     autosaver: Option<soundcraft_engine::autosave::Autosaver>,
     /// The document revision last handed to the autosaver (0 once that autosave is stale).
