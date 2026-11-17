@@ -691,6 +691,28 @@ fn locate_while_playing_drops_the_old_position_audio() {
 }
 
 #[test]
+fn an_instrument_keeps_the_stopped_callback_live() {
+    use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+    // Nothing to monitor and no instrument: stopped means silent, no render calls.
+    let s = soundcraft_model::Session::default();
+    assert!(!super::callback::audible_while_stopped(&s, false));
+    // An armed audio track without an input device does not run the mixer either.
+    let mut s = soundcraft_model::Session::default();
+    let a = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    s.track_mut(a).unwrap().mixer.record_arm = true;
+    assert!(!super::callback::audible_while_stopped(&s, false));
+    assert!(super::callback::audible_while_stopped(&s, true));
+    // A loaded instrument stays live while stopped (#1600): its keyboard and editor work.
+    let mut s = soundcraft_model::Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(t).unwrap().instrument = Some(Insert::new("clap:test.live"));
+    assert!(super::callback::audible_while_stopped(&s, false));
+    // An inactive instrument does not.
+    s.track_mut(t).unwrap().inactive = true;
+    assert!(!super::callback::audible_while_stopped(&s, false));
+}
+
+#[test]
 fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     use soundcraft_model::{ChannelFormat, TrackKind};
     let mut s = soundcraft_model::Session::default();
