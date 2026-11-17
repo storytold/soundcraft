@@ -139,6 +139,7 @@ impl SoundApp {
     /// Each host iteration starts with `raw_input_hook`; its editor-poll admission prevents an
     /// empty queue on a discarded pass from ending a still-active plugin gesture.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        let _language = crate::localization::enter(self.ui.language);
         self.ui.undo_levels = self.ui.undo_levels.clamp(1, 64);
         self.engine.set_history_limit(self.ui.undo_levels);
         // Fonts set now take effect next frame, so draw only from the frame after.
@@ -244,6 +245,7 @@ impl SoundApp {
 
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        let _language = crate::localization::enter(self.ui.language);
         let ctx = ui.ctx().clone();
         // egui just processed the scripted key events. A scripted release while the host still
         // physically holds the key would report it up; put the host-only state back before any
