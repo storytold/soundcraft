@@ -431,6 +431,8 @@ impl IEditControllerTrait for GainController {
 
 struct Synth {
     level: AtomicU32,
+    /// Packed channel/key of the one test voice, or MAX when no key is held.
+    active_note: AtomicU32,
     _live: Live,
 }
 
@@ -568,14 +570,20 @@ impl IAudioProcessorTrait for Synth {
         }
         let outs = unsafe { channels(&*d.outputs, frames) };
         let mut level = f32::from_bits(self.level.load(Ordering::Relaxed));
+        let mut active_note = self.active_note.load(Ordering::Relaxed);
         let mut out = vec![0.0f32; frames];
         for (i, o) in out.iter_mut().enumerate() {
             for e in events.iter().filter(|e| e.sampleOffset as usize == i) {
                 if e.r#type == Event_::EventTypes_::kNoteOnEvent as u16 {
                     let on = unsafe { e.__field0.noteOn };
+                    active_note = (u32::from(on.channel as u16) << 8) | u32::from(on.pitch as u16);
                     level = on.velocity + f32::from(on.channel);
                 } else if e.r#type == Event_::EventTypes_::kNoteOffEvent as u16 {
-                    level = 0.0;
+                    let off = unsafe { e.__field0.noteOff };
+                    if active_note == (u32::from(off.channel as u16) << 8) | u32::from(off.pitch as u16) {
+                        level = 0.0;
+                        active_note = u32::MAX;
+                    }
                 } else if e.r#type == Event_::EventTypes_::kPolyPressureEvent as u16 {
                     level = unsafe { e.__field0.polyPressure.pressure };
                 }
@@ -588,6 +596,7 @@ impl IAudioProcessorTrait for Synth {
             *o = level;
         }
         self.level.store(level.to_bits(), Ordering::Relaxed);
+        self.active_note.store(active_note, Ordering::Relaxed);
         for ch in outs {
             ch.copy_from_slice(&out);
         }
@@ -795,7 +804,8 @@ impl IPluginFactoryTrait for Factory {
             })
             .to_com_ptr::<FUnknown>()
         } else if cid == SYNTH_CID {
-            ComWrapper::new(Synth { level: AtomicU32::new(0), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
+            ComWrapper::new(Synth { level: AtomicU32::new(0), active_note: AtomicU32::new(u32::MAX), _live: Live::new(&OBJECTS) })
+                .to_com_ptr::<FUnknown>()
         } else if let Some((buses, channels)) = [(WIDE16_CID, (16, 64)), (WIDE32_CID, (32, 2)), (WIDE65B_CID, (65, 2)), (WIDE65_CID, (1, 65))]
             .into_iter()
             .find_map(|(c, layout)| (c == cid).then_some(layout))

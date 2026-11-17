@@ -23,6 +23,12 @@ fn channel_ten_notes_and_controllers_reach_their_vst3_channel() {
     p.midi(20, [0xB9, 7, 64]);
     p.process(&mut io, 64);
     assert!((io[0][20] - (9.0 + 64.0 / 127.0)).abs() < 1e-6, "CC7 must use channel 10's mapping");
+    p.note_off_channel(12, 0, 60);
+    p.process(&mut io, 64);
+    assert!((io[0][12] - (9.0 + 64.0 / 127.0)).abs() < 1e-6, "channel-1 release must leave the channel-10 note sounding");
+    p.note_off_channel(22, 9, 61);
+    p.process(&mut io, 64);
+    assert!((io[0][22] - (9.0 + 64.0 / 127.0)).abs() < 1e-6, "a different pitch must not release the held key");
     p.note_off_channel(30, 9, 60);
     p.process(&mut io, 64);
     assert_eq!(io[0][30], 0.0);
