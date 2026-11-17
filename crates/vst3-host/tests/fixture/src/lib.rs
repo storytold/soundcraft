@@ -443,8 +443,8 @@ const VOLUME_PARAM: ParamID = 1;
 
 impl IMidiMappingTrait for Synth {
     unsafe fn getMidiControllerAssignment(&self, bus: i32, channel: i16, ctrl: CtrlNumber, id: *mut ParamID) -> tresult {
-        if bus == 0 && channel == 0 && ctrl == 7 {
-            unsafe { *id = VOLUME_PARAM };
+        if bus == 0 && (0..16).contains(&channel) && ctrl == 7 {
+            unsafe { *id = VOLUME_PARAM + channel as u32 };
             kResultOk
         } else {
             kResultFalse
@@ -558,8 +558,11 @@ impl IAudioProcessorTrait for Synth {
             for i in 0..unsafe { changes.getParameterCount() } {
                 let Some(q) = (unsafe { ComRef::from_raw(changes.getParameterData(i)) }) else { continue };
                 let (mut at, mut v) = (0i32, 0f64);
-                if unsafe { q.getParameterId() } == VOLUME_PARAM && unsafe { q.getPoint(0, &mut at, &mut v) } == kResultOk {
-                    volume = Some((at.max(0) as usize, v as f32));
+                let id = unsafe { q.getParameterId() };
+                if (VOLUME_PARAM..VOLUME_PARAM + 16).contains(&id) && unsafe { q.getPoint(0, &mut at, &mut v) } == kResultOk {
+                    // Encode the mapped channel in the test signal, so routing a channel-10
+                    // controller through channel 1 cannot accidentally pass the integration test.
+                    volume = Some((at.max(0) as usize, v as f32 + (id - VOLUME_PARAM) as f32));
                 }
             }
         }
@@ -569,7 +572,8 @@ impl IAudioProcessorTrait for Synth {
         for (i, o) in out.iter_mut().enumerate() {
             for e in events.iter().filter(|e| e.sampleOffset as usize == i) {
                 if e.r#type == Event_::EventTypes_::kNoteOnEvent as u16 {
-                    level = unsafe { e.__field0.noteOn.velocity };
+                    let on = unsafe { e.__field0.noteOn };
+                    level = on.velocity + f32::from(on.channel);
                 } else if e.r#type == Event_::EventTypes_::kNoteOffEvent as u16 {
                     level = 0.0;
                 } else if e.r#type == Event_::EventTypes_::kPolyPressureEvent as u16 {

@@ -449,9 +449,14 @@ fn controllers_play_at_their_offsets_and_are_chased_after_a_seek() {
     eng.set_external_instances(true);
     eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.ears".into(), ch: 2, plugin: Box::new(ears) }]);
     render_block(&mut eng, &s, 0);
-    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (100, [0xB0, 64, 127])]);
+    let resets: Vec<_> = (0..16u8).map(|channel| (0, [0xB0 | channel, 121, 0])).collect();
+    let mut first = resets.clone();
+    first.push((100, [0xB0, 64, 127]));
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), first);
     render_block(&mut eng, &s, 36_000);
-    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 64, 127]), (0, [0xE0, 0, 0])]);
+    let mut chased = resets;
+    chased.extend([(0, [0xB0, 64, 127]), (0, [0xE0, 0, 0])]);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), chased);
     render_block(&mut eng, &s, 36_512);
     assert!(heard.lock().unwrap().is_empty());
 }
@@ -459,6 +464,82 @@ fn controllers_play_at_their_offsets_and_are_chased_after_a_seek() {
 struct Keys {
     inner: Box<dyn Plugin>,
     heard: Arc<std::sync::Mutex<Vec<(u8, u8)>>>,
+}
+
+struct ChannelEars(Arc<std::sync::Mutex<Vec<(usize, [u8; 3])>>>);
+
+impl Plugin for ChannelEars {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        soundcraft_dsp::create("gain").unwrap().info()
+    }
+    fn prepare(&mut self, _: f32, _: usize, _: usize) {}
+    fn reset(&mut self) {}
+    fn set_param(&mut self, _: &str, _: f32) -> bool {
+        false
+    }
+    fn param(&self, _: &str) -> Option<f32> {
+        None
+    }
+    fn process(&mut self, _: &mut [Vec<f32>], _: usize) {}
+    fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
+        self.midi(offset, [0x90, note, velocity]);
+    }
+    fn note_off(&mut self, offset: usize, note: u8) {
+        self.midi(offset, [0x80, note, 0]);
+    }
+    fn note_on_channel(&mut self, offset: usize, channel: u8, note: u8, velocity: u8) {
+        self.midi(offset, [0x90 | channel, note, velocity]);
+    }
+    fn note_off_channel(&mut self, offset: usize, channel: u8, note: u8) {
+        self.midi(offset, [0x80 | channel, note, 0]);
+    }
+    fn midi(&mut self, offset: usize, message: [u8; 3]) {
+        self.0.lock().unwrap().push((offset, message));
+    }
+}
+
+#[test]
+fn midi_channels_reach_notes_controllers_and_seek_chase() {
+    use soundcraft_midi::{CtrlEvent, Note, Sequence};
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(t).unwrap().instrument = Some(Insert::new("clap:test.channels"));
+    let seq = Sequence {
+        notes: vec![
+            Note { channel: 0, pitch: 60, velocity: 90, release_velocity: 64, start: 0, length: 4 },
+            Note { channel: 9, pitch: 60, velocity: 100, release_velocity: 64, start: 0, length: 8 },
+        ],
+        ctrls: vec![
+            CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Cc(7), value: 100 },
+            CtrlEvent { tick: 0, channel: 9, kind: CtrlKind::Cc(7), value: 20 },
+            CtrlEvent { tick: 1, channel: 9, kind: CtrlKind::PitchBend, value: 8191 },
+        ],
+    };
+    let cid = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "channels", 0, 48_000, seq));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: t,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.channels".into(),
+        ch: 2,
+        plugin: Box::new(ChannelEars(Arc::clone(&heard))),
+    }]);
+    render_block(&mut eng, &s, 0);
+    let first = std::mem::take(&mut *heard.lock().unwrap());
+    assert!(first.contains(&(0, [0x90, 60, 90])));
+    assert!(first.contains(&(0, [0x99, 60, 100])), "channel-10 note-on lost: {first:?}");
+    assert!(first.contains(&(100, [0x80, 60, 0])));
+    assert!(first.contains(&(200, [0x89, 60, 0])), "same-pitch note-off lost its channel: {first:?}");
+    assert!(first.contains(&(0, [0xB9, 7, 20])));
+    assert!(first.contains(&(25, [0xE9, 127, 127])));
+    render_block(&mut eng, &s, 36_000);
+    let chased = std::mem::take(&mut *heard.lock().unwrap());
+    assert!(chased.contains(&(0, [0xB0, 7, 100])), "channel-1 chase was overwritten: {chased:?}");
+    assert!(chased.contains(&(0, [0xB9, 7, 20])));
+    assert!(chased.contains(&(0, [0xE9, 127, 127])));
 }
 
 impl Plugin for Keys {

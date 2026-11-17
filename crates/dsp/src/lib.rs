@@ -223,6 +223,18 @@ pub trait Plugin: Send {
     /// Instruments: note events at sample offsets within the next block.
     fn note_on(&mut self, _offset: usize, _note: u8, _velocity: u8) {}
     fn note_off(&mut self, _offset: usize, _note: u8) {}
+    /// Channel-aware instrument events (MIDI channels 0–15). Built-in instruments keep their
+    /// existing single-part behavior; hosted instruments override these to preserve channels.
+    fn note_on_channel(&mut self, offset: usize, channel: u8, note: u8, velocity: u8) {
+        if channel < 16 {
+            self.note_on(offset, note, velocity);
+        }
+    }
+    fn note_off_channel(&mut self, offset: usize, channel: u8, note: u8) {
+        if channel < 16 {
+            self.note_off(offset, note);
+        }
+    }
     /// Instruments: any other MIDI 1.0 channel message (control change, pitch bend, pressure,
     /// program change) at a sample offset within the next block.
     fn midi(&mut self, _offset: usize, _msg: [u8; 3]) {}

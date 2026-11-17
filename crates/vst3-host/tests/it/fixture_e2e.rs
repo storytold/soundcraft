@@ -12,6 +12,28 @@ fn id_of(name: &str) -> String {
 }
 
 #[test]
+fn channel_ten_notes_and_controllers_reach_their_vst3_channel() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    let mut io = vec![vec![0.0f32; 64]; 2];
+    p.note_on_channel(10, 9, 60, 127);
+    p.process(&mut io, 64);
+    assert_eq!(io[0][9], 0.0);
+    assert_eq!(io[0][10], 10.0, "fixture encodes channel + note velocity");
+    p.midi(20, [0xB9, 7, 64]);
+    p.process(&mut io, 64);
+    assert!((io[0][20] - (9.0 + 64.0 / 127.0)).abs() < 1e-6, "CC7 must use channel 10's mapping");
+    p.note_off_channel(30, 9, 60);
+    p.process(&mut io, 64);
+    assert_eq!(io[0][30], 0.0);
+    p.note_on_channel(0, 9, 60, 127);
+    p.process(&mut io, 64);
+    p.reset();
+    p.process(&mut io, 64);
+    assert!(io[0].iter().all(|v| *v == 0.0));
+}
+
+#[test]
 fn scan_lists_both_audio_modules_but_not_the_controller_class() {
     let dir = fixture_dir();
     let found = soundcraft_vst3_host::scan_paths(&[dir.to_path_buf()]);

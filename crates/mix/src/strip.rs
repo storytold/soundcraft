@@ -40,7 +40,7 @@ pub(crate) struct Strip {
     /// The pool audio handed to the instrument with `set_sample` (sample-playing instruments).
     pub(crate) sample: Option<Arc<SourceAudio>>,
     /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
-    pub(crate) held: Vec<u8>,
+    pub(crate) held: [[bool; 128]; 16],
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
     pub(crate) muted: bool,
@@ -139,7 +139,7 @@ impl Strip {
             plugins: Vec::new(),
             instrument: None,
             sample: None,
-            held: Vec::new(),
+            held: [[false; 128]; 16],
             chase: true,
             muted: false,
             gr: 0.0,

@@ -18,7 +18,7 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 }
 
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>) {
+pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut [[bool; 128]; 16]) {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -50,6 +50,9 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
         let near = s.tempo.samples_to_ticks(pos, sr).saturating_sub(base).saturating_sub(1)
             ..=s.tempo.samples_to_ticks(end, sr).saturating_sub(base).saturating_add(1);
         for n0 in &sequence.notes {
+            if n0.channel >= 16 {
+                continue;
+            }
             let mut n = *n0;
             n.velocity = (i64::from(n.velocity) + dv).clamp(1, 127) as u8;
             n.pitch = (i64::from(n.pitch) + dp).clamp(0, 127) as u8;
@@ -66,35 +69,37 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
                 continue;
             }
             if on >= pos && on < end {
-                inst.plugin.note_on(usize::try_from(on - pos).unwrap_or(0), n.pitch, n.velocity);
-                if !held.contains(&n.pitch) && held.len() < 128 {
-                    held.push(n.pitch);
+                inst.plugin.note_on_channel(usize::try_from(on - pos).unwrap_or(0), n.channel, n.pitch, n.velocity);
+                if let Some(h) = held.get_mut(usize::from(n.channel)).and_then(|keys| keys.get_mut(usize::from(n.pitch))) {
+                    *h = true;
                 }
             }
             if off >= pos && off < end {
-                inst.plugin.note_off(usize::try_from(off - pos).unwrap_or(0), n.pitch);
-                held.retain(|p| *p != n.pitch);
+                inst.plugin.note_off_channel(usize::try_from(off - pos).unwrap_or(0), n.channel, n.pitch);
+                if let Some(h) = held.get_mut(usize::from(n.channel)).and_then(|keys| keys.get_mut(usize::from(n.pitch))) {
+                    *h = false;
+                }
             }
         }
         // Events before tick 0 are what a start trim hid: they don't play.
-        for c in sequence.ctrls.iter().filter(|c| c.tick >= 0) {
+        for c in sequence.ctrls.iter().filter(|c| c.tick >= 0 && c.channel < 16) {
             let tick = c.tick.saturating_add(delay).max(0);
             if !near.contains(&tick) {
                 continue;
             }
             let at = s.tempo.tick_to_samples(base.saturating_add(tick), sr);
             if at >= pos && at < end && at < clip.end() {
-                inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(c.kind, c.value, dp));
+                inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(c.channel, c.kind, c.value, dp));
             }
         }
     }
 }
 
-/// A controller event as a MIDI 1.0 message on channel 1 (where the notes go), with `transpose`
+/// A controller event as a MIDI 1.0 message on its channel, with `transpose`
 /// applied to a poly-pressure key.
-fn ctrl_message(kind: CtrlKind, value: i32, transpose: i64) -> [u8; 3] {
+fn ctrl_message(channel: u8, kind: CtrlKind, value: i32, transpose: i64) -> [u8; 3] {
     let v7 = value.clamp(0, 127) as u8;
-    match kind {
+    let mut message = match kind {
         CtrlKind::Cc(n) => [0xB0, n & 0x7F, v7],
         CtrlKind::PitchBend => {
             let v = value.saturating_add(8192).clamp(0, 16383);
@@ -103,18 +108,22 @@ fn ctrl_message(kind: CtrlKind, value: i32, transpose: i64) -> [u8; 3] {
         CtrlKind::ChannelPressure => [0xD0, v7, 0],
         CtrlKind::PolyPressure(k) => [0xA0, (i64::from(k) + transpose).clamp(0, 127) as u8, v7],
         CtrlKind::Program => [0xC0, v7, 0],
-    }
+    };
+    message[0] |= channel & 0x0F;
+    message
 }
 
 /// Before an instrument plays from `pos`: reset its controllers, then send each one the last value
 /// it had on this track before `pos`.
 pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot) {
-    inst.plugin.midi(0, [0xB0, 121, 0]);
+    for channel in 0..16u8 {
+        inst.plugin.midi(0, [0xB0 | channel, 121, 0]);
+    }
     let pos = pos.saturating_sub(midi_offset(s, t));
     const BEND: usize = 128;
     const PRESSURE: usize = 129;
     const PROGRAM: usize = 130;
-    let mut last = [(i64::MIN, 0i32); 131];
+    let mut last = [[(i64::MIN, 0i32); 131]; 16];
     let sr = s.sample_rate;
     for clip in t.clips() {
         let ClipContent::Midi { sequence } = &clip.content else { continue };
@@ -123,7 +132,7 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
         }
         let base = s.tempo.samples_to_ticks(clip.start, sr);
         let until = pos.min(clip.end());
-        for c in sequence.ctrls.iter().filter(|c| c.tick >= 0) {
+        for c in sequence.ctrls.iter().filter(|c| c.tick >= 0 && c.channel < 16) {
             let slot = match c.kind {
                 CtrlKind::Cc(n) => usize::from(n & 0x7F),
                 CtrlKind::PitchBend => BEND,
@@ -133,22 +142,24 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
             };
             let at = s.tempo.tick_to_samples(base.saturating_add(c.tick), sr);
             if at < until
-                && let Some(l) = last.get_mut(slot)
+                && let Some(l) = last.get_mut(usize::from(c.channel)).and_then(|controllers| controllers.get_mut(slot))
                 && at >= l.0
             {
                 *l = (at, c.value);
             }
         }
     }
-    for (slot, &(at, value)) in last.iter().enumerate() {
-        let kind = match slot {
-            BEND => CtrlKind::PitchBend,
-            PRESSURE => CtrlKind::ChannelPressure,
-            PROGRAM => CtrlKind::Program,
-            n => CtrlKind::Cc(u8::try_from(n).unwrap_or(0)),
-        };
-        if at != i64::MIN {
-            inst.plugin.midi(0, ctrl_message(kind, value, 0));
+    for (channel, controllers) in last.iter().enumerate() {
+        for (slot, &(at, value)) in controllers.iter().enumerate() {
+            let kind = match slot {
+                BEND => CtrlKind::PitchBend,
+                PRESSURE => CtrlKind::ChannelPressure,
+                PROGRAM => CtrlKind::Program,
+                n => CtrlKind::Cc(u8::try_from(n).unwrap_or(0)),
+            };
+            if at != i64::MIN {
+                inst.plugin.midi(0, ctrl_message(u8::try_from(channel).unwrap_or(0), kind, value, 0));
+            }
         }
     }
 }
