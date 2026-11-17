@@ -512,6 +512,18 @@ impl MixEngine {
         self.main.len()
     }
 
+    /// Release only notes started by live input, preserving clip playback and effect state.
+    pub fn release_live_notes(&mut self) {
+        for s in self.strips.values_mut() {
+            if let Some(i) = &mut s.instrument {
+                s.live.release(i.plugin.as_mut());
+            } else {
+                s.live.clear();
+            }
+        }
+        self.midi.clear();
+    }
+
     /// Reset all plugin state (on stop / seek).
     pub fn reset(&mut self) {
         for s in self.strips.values_mut() {
@@ -2361,6 +2373,27 @@ mod tests {
             eng.midi.clear();
         }
         peak(&out[0])
+    }
+
+    #[test]
+    fn releasing_live_notes_preserves_the_playing_clip() {
+        let s = synth_session(-6.0);
+        let render = |release: bool| {
+            let mut eng = MixEngine::new(48_000.0, 512);
+            let mut out = vec![vec![0.0; 512]; 2];
+            let mut all = Vec::new();
+            for b in 0..40 {
+                if b == 8 && release {
+                    eng.release_live_notes();
+                }
+                eng.render(&s, b * 512, 512, &mut out);
+                all.extend_from_slice(&out[0]);
+            }
+            all
+        };
+        let reference = render(false);
+        assert!(peak(&reference[8192..]) > 0.01);
+        assert_eq!(render(true), reference, "disconnect cleanup must not reset a clip's sounding note");
     }
 
     #[test]

@@ -100,6 +100,8 @@ pub struct MidiFeed {
     epoch: Instant,
     /// Open input ports.
     connected: AtomicUsize,
+    /// Last-input losses, including a disconnect/reconnect between audio callbacks.
+    disconnected: AtomicUsize,
     /// Events received so far (low 32 bits: the last one), for the "is my keyboard seen" readout.
     activity: AtomicU64,
 }
@@ -114,6 +116,7 @@ impl Default for MidiFeed {
             #[cfg(not(target_arch = "wasm32"))]
             epoch: Instant::now(),
             connected: AtomicUsize::new(0),
+            disconnected: AtomicUsize::new(0),
             activity: AtomicU64::new(0),
         }
     }
@@ -131,7 +134,13 @@ impl MidiFeed {
     }
 
     pub(crate) fn set_connected(&self, ports: usize) {
-        self.connected.store(ports, Ordering::Relaxed);
+        if self.connected.swap(ports, Ordering::Relaxed) > 0 && ports == 0 {
+            self.disconnected.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn disconnect_generation(&self) -> usize {
+        self.disconnected.load(Ordering::Acquire)
     }
 
     /// Microseconds since the feed was made.

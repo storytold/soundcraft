@@ -171,6 +171,7 @@ struct AudioState {
     input: Option<Arc<record::InputRing>>,
     recording: bool,
     midi: Option<Arc<midi::MidiFeed>>,
+    midi_disconnect_generation: usize,
     /// Live MIDI events of this callback not played yet: frames (session rate) until each is due.
     midi_pending: Vec<(i64, LiveMidi)>,
     /// The delay every live event gets so that all keep their spacing: one callback (frames).
@@ -214,6 +215,7 @@ impl AudioState {
             input: None,
             recording: false,
             midi: None,
+            midi_disconnect_generation: 0,
             midi_pending: Vec::with_capacity(MIDI_EVENTS),
             midi_delay: 0,
         }
@@ -225,6 +227,7 @@ impl AudioState {
             match c {
                 Cmd::Input(r) => self.input = Some(r),
                 Cmd::Midi(f) => {
+                    self.midi_disconnect_generation = f.disconnect_generation();
                     self.mix.midi_ports = Some(Arc::clone(f.ports()));
                     self.midi = Some(f);
                 }
@@ -390,6 +393,20 @@ impl AudioState {
     /// Fill an interleaved device buffer.
     fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
+        if let Some(feed) = &self.midi {
+            let generation = feed.disconnect_generation();
+            if generation != self.midi_disconnect_generation {
+                self.midi_disconnect_generation = generation;
+                // A removed keyboard cannot send its key releases. Do this even while idle,
+                // so reconnecting cannot revive old voices. Do not reset the clip instruments.
+                self.mix.release_live_notes();
+                self.midi_pending.clear();
+                let now = feed.clock();
+                while feed.next(now).is_some() {}
+                self.pending_len = 0;
+                self.read = 0.0;
+            }
+        }
         let channels = channels.max(1);
         // A keyboard plays through record-enabled and input-monitored MIDI and instrument tracks.
         let midi_thru = self.midi.as_ref().is_some_and(|f| f.connected() > 0)
@@ -1400,6 +1417,60 @@ mod tests {
         // One callback is 1024 frames; each event arrived just before its callback started.
         assert!((48_000 + 1024 - 64..=48_000 + 1024).contains(&rec[0].at), "{}", rec[0].at);
         assert!((48_000 + 2048 - 64..=48_000 + 2048).contains(&rec[1].at), "{}", rec[1].at);
+    }
+
+    #[test]
+    fn losing_the_last_midi_input_releases_live_notes_before_reconnect() {
+        use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+        for (playing, quick_reconnect) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut s = Session::default();
+            s.edit.click = false;
+            let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+            let track = s.track_mut(t).unwrap();
+            track.instrument = Some(Insert::new("subtractive_synth"));
+            track.mixer.record_arm = true;
+            let shared = Arc::new(Shared {
+                position: AtomicI64::new(0),
+                playing: AtomicBool::new(false),
+                speed: AtomicU32::new(1000),
+                meters: Mutex::new(MeterSnapshot::default()),
+            });
+            let (tx, rx) = channel();
+            let mut st = AudioState::new(rx, shared, Arc::new(s), 48_000.0, channel().0);
+            let feed = Arc::new(midi::MidiFeed::default());
+            feed.set_connected(1);
+            tx.send(Cmd::Midi(Arc::clone(&feed))).unwrap();
+            if playing {
+                tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+            }
+            feed.receive(0, &[0x90, 62, 106]);
+            let mut out = vec![0.0; 1024];
+            for _ in 0..8 {
+                st.fill(&mut out, 2);
+            }
+            assert!(out.iter().any(|v| v.abs() > 0.01), "a held key sounds before disconnect");
+            // Unplugging cannot deliver the physical key's Note Off.
+            feed.set_connected(0);
+            if quick_reconnect {
+                feed.set_connected(1);
+            }
+            for _ in 0..128 {
+                st.fill(&mut out, 2);
+            }
+            if playing || quick_reconnect {
+                assert!(out.iter().all(|v| v.abs() < 1e-4), "unplug leaves a stuck note while playing");
+            }
+            feed.set_connected(1);
+            for _ in 0..128 {
+                st.fill(&mut out, 2);
+            }
+            assert!(out.iter().all(|v| v.abs() < 1e-4), "reconnect revives the old held note (playing={playing})");
+            feed.receive(0, &[0x90, 65, 100]);
+            for _ in 0..8 {
+                st.fill(&mut out, 2);
+            }
+            assert!(out.iter().any(|v| v.abs() > 0.01), "new input works after reconnect");
+        }
     }
 
     #[test]
