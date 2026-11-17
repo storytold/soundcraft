@@ -1248,9 +1248,9 @@ dependencies = [
 [[package]]
 name = "craft-score"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=9595e0ca9bff15b04c0096458c63d96d8b090b63#9595e0ca9bff15b04c0096458c63d96d8b090b63"
+source = "git+https://github.com/storytold/craft-libs?rev=3a1a627dc69c677d3a26c22b72e070242ee6b841#3a1a627dc69c677d3a26c22b72e070242ee6b841"
 dependencies = [
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=9595e0ca9bff15b04c0096458c63d96d8b090b63)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=3a1a627dc69c677d3a26c22b72e070242ee6b841)",
 ]
 
 [[package]]
@@ -1339,7 +1339,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=9595e0ca9bff15b04c0096458c63d96d8b090b63#9595e0ca9bff15b04c0096458c63d96d8b090b63"
+source = "git+https://github.com/storytold/craft-libs?rev=3a1a627dc69c677d3a26c22b72e070242ee6b841#3a1a627dc69c677d3a26c22b72e070242ee6b841"
 dependencies = [
  "quick-xml 0.41.0",
  "serde",
