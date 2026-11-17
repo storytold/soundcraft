@@ -93,7 +93,7 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Indonesian | id | none | 0 % |
 | Japanese | ja | none | 0 % |
 | German | de | none | 0 % |
-| Georgian | ka | in progress | 0 % |
+| Georgian | ka | full — every fixed UI string; tests pass | 100 % (native-speaker review pending) |
 | Korean | ko | none | 0 % |
 | Vietnamese | vi | none | 0 % |
 
@@ -181,7 +181,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-17 | trivial | Languages table: Georgian (ka) registered, catalog in progress. Estimates unchanged |
+| 2026-11-17 | trivial | Languages table: Georgian (ka) complete for fixed UI strings. Estimates unchanged |
 | 2026-11-05 | trivial | Languages table: Brazilian Portuguese (pt-BR) near complete for fixed UI strings via PR #1346; needs native review. Estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Cancel Zoom Toggle; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: side panels in dock columns; readiness estimates unchanged |

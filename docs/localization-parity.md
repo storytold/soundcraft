@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-11-13 · **Last updated:** 2026-11-17 · **Change:** minor (Georgian (ka) registered, catalog being translated; previously minor: pt-BR catalog completed: all fixed UI strings translated and covered by tests; native-speaker review, CJK/RTL font fallbacks and RTL script shaping still pending) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-13 · **Last updated:** 2026-11-17 · **Change:** minor (Georgian (ka) catalog complete for all fixed UI strings; previously minor: pt-BR catalog completed: all fixed UI strings translated and covered by tests; native-speaker review, CJK/RTL font fallbacks and RTL script shaping still pending) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft defaults to English and supports selecting Brazilian Portuguese and Georgian. The pt-BR catalog
 covers all fixed UI strings found in the current source: command labels, menus, Appearance,
@@ -35,7 +35,7 @@ Language setting), PR #141 (bundled multilingual font fallbacks), issue #67 (Ukr
 | Indonesian | id | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ❌ |
 | Japanese | ja | 0 (0 %) | ❌ | ❌ no CJK font fallback, no IME testing | no | none | 6–10 | ✅ |
 | German | de | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
-| Georgian | ka | catalog registered; translation in progress (decimal comma) | ❌ | Georgian script ✅ with an installed Georgian system font (Noto Sans Georgian, SF Georgian, Sylfaen, DejaVu Sans) | no | in progress | 0–4 | ❌ |
+| Georgian | ka | ✅ 100 % of fixed UI strings (menus, dialogs, tooltips, accessibility names, formatted messages, engine errors; decimal comma); catalog tests pass | ❌ | Georgian script ✅ with an installed Georgian system font (Noto Sans Georgian, SF Georgian, Sylfaen, DejaVu Sans) | no | full | 0–4 | ❌ |
 | Korean | ko | 0 (0 %) | ❌ | ❌ no Hangul font fallback | no | none | 6–10 | ✅ |
 | Vietnamese | vi | 0 (0 %) | ❌ | 🟡 Latin with stacked diacritics, untested | no | none | 3–5 | ❌ |
 
