@@ -123,7 +123,8 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
     const BEND: usize = 128;
     const PRESSURE: usize = 129;
     const PROGRAM: usize = 130;
-    let mut last = [[(i64::MIN, 0i32); 131]; 16];
+    let mut last = [[(i64::MIN, 0usize, 0i32); 131]; 16];
+    let mut order = 0usize;
     let sr = s.sample_rate;
     for clip in t.clips() {
         let ClipContent::Midi { sequence } = &clip.content else { continue };
@@ -133,6 +134,8 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
         let base = s.tempo.samples_to_ticks(clip.start, sr);
         let until = pos.min(clip.end());
         for c in sequence.ctrls.iter().filter(|c| c.tick >= 0 && c.channel < 16) {
+            // Match the scheduler's clip/event traversal order when messages share a timestamp.
+            order = order.saturating_add(1);
             let slot = match c.kind {
                 CtrlKind::Cc(n) => usize::from(n & 0x7F),
                 CtrlKind::PitchBend => BEND,
@@ -145,20 +148,25 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
                 && let Some(l) = last.get_mut(usize::from(c.channel)).and_then(|controllers| controllers.get_mut(slot))
                 && at >= l.0
             {
-                *l = (at, c.value);
+                *l = (at, order, c.value);
             }
         }
     }
     for (channel, controllers) in last.iter().enumerate() {
-        let reset_at = controllers.get(121).map_or(i64::MIN, |c| c.0);
-        for (slot, &(at, value)) in controllers.iter().enumerate() {
+        let reset_at = controllers.get(121).map_or((i64::MIN, 0), |c| (c.0, c.1));
+        for (slot, &(at, order, value)) in controllers.iter().enumerate() {
+            // The opening reset already establishes defaults. Replaying an old reset here could
+            // clear a later expression/modulation value whose slot happens to precede 121.
+            if slot == 121 {
+                continue;
+            }
             let kind = match slot {
                 BEND => CtrlKind::PitchBend,
                 PRESSURE => CtrlKind::ChannelPressure,
                 PROGRAM => CtrlKind::Program,
                 n => CtrlKind::Cc(u8::try_from(n).unwrap_or(0)),
             };
-            if at != i64::MIN && !(at < reset_at && reset_by_cc121(kind)) {
+            if at != i64::MIN && !((at, order) < reset_at && reset_by_cc121(kind)) {
                 inst.plugin.midi(0, ctrl_message(u8::try_from(channel).unwrap_or(0), kind, value, 0));
             }
         }

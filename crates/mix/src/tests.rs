@@ -588,6 +588,42 @@ fn seek_chase_does_not_restore_controllers_reset_by_cc121_on_that_channel() {
         assert!(events.contains(&(0, message)), "persistent, other-channel or post-reset state missing: {message:?}");
     }
     assert!(events.contains(&(10, [0x99, 60, 100])), "note after the seek lost its channel");
+    let expression = events.iter().fold(127, |value, (_, message)| match *message {
+        [0xB9, 121, _] => 127,
+        [0xB9, 11, next] => next,
+        _ => value,
+    });
+    assert_eq!(expression, 70, "a historical reset overwrote the post-reset expression");
+}
+
+#[test]
+fn seek_chase_respects_same_tick_reset_order() {
+    use soundcraft_midi::{CtrlEvent, Sequence};
+    for bend_after_reset in [false, true] {
+        let bend = CtrlEvent { tick: 1, channel: 9, kind: CtrlKind::PitchBend, value: 1000 };
+        let reset = CtrlEvent { tick: 1, channel: 9, kind: CtrlKind::Cc(121), value: 0 };
+        let ctrls = if bend_after_reset { vec![reset, bend] } else { vec![bend, reset] };
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        s.track_mut(t).unwrap().instrument = Some(Insert::new("clap:test.channels"));
+        let clip = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(clip, "reset order", 0, 48_000, Sequence { notes: vec![], ctrls }));
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut eng = MixEngine::new(48_000.0, 512);
+        eng.set_external_instances(true);
+        eng.adopt(vec![PreparedInstance {
+            track: t,
+            slot: INSTRUMENT_SLOT,
+            id: "clap:test.channels".into(),
+            ch: 2,
+            plugin: Box::new(ChannelEars(Arc::clone(&heard))),
+        }]);
+        render_block(&mut eng, &s, 0);
+        heard.lock().unwrap().clear();
+        render_block(&mut eng, &s, 90);
+        let events = heard.lock().unwrap();
+        assert_eq!(events.contains(&(0, [0xE9, 104, 71])), bend_after_reset, "same-tick event order lost: {events:?}");
+    }
 }
 
 impl Plugin for Keys {
