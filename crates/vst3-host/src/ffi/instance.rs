@@ -58,6 +58,8 @@ pub(super) fn apply_transport(c: &mut sv::ProcessContext, t: &Transport, offset:
     c.tempo = t.tempo;
     c.timeSigNumerator = i32::try_from(t.numerator).unwrap_or(4);
     c.timeSigDenominator = i32::try_from(t.denominator).unwrap_or(4);
+    // Stopped callbacks still process live instruments, but consume no project timeline.
+    let offset = if t.playing { offset } else { 0 };
     // `t` describes the original host block. Program changes and max-block limits may split it;
     // use the absolute offset into that block, never the context left by the preceding sub-block.
     let delta = if offset > 0 && c.sampleRate.is_finite() && c.sampleRate > 0.0 && t.tempo.is_finite() {

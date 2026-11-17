@@ -207,7 +207,16 @@ mod tests {
         // SAFETY: ProcessContext is plain data and all-zero is valid.
         let mut c: sv::ProcessContext = unsafe { std::mem::zeroed() };
         c.sampleRate = 48_000.0;
-        let t = Transport { tempo: 120.0, numerator: 4, denominator: 4, samples: 48_000, quarters: 3.9, bar_start: 0.0, ..Transport::default() };
+        let t = Transport {
+            playing: true,
+            tempo: 120.0,
+            numerator: 4,
+            denominator: 4,
+            samples: 48_000,
+            quarters: 3.9,
+            bar_start: 0.0,
+            ..Transport::default()
+        };
         apply_transport(&mut c, &t, 4_800);
         assert_eq!(c.projectTimeSamples, 52_800);
         assert!((c.projectTimeMusic - 4.1).abs() < 1e-12);
@@ -216,6 +225,28 @@ mod tests {
         assert_eq!(c.projectTimeSamples, 57_600);
         assert!((c.projectTimeMusic - 4.3).abs() < 1e-12);
         assert_eq!(c.barPositionMusic, 4.0);
+    }
+
+    #[test]
+    fn stopped_sub_blocks_keep_the_project_position_fixed() {
+        // SAFETY: ProcessContext is plain data and all-zero is valid.
+        let mut c: sv::ProcessContext = unsafe { std::mem::zeroed() };
+        c.sampleRate = 48_000.0;
+        let t = Transport {
+            playing: false,
+            tempo: 120.0,
+            numerator: 4,
+            denominator: 4,
+            samples: 48_000,
+            quarters: 3.9,
+            bar_start: 0.0,
+            ..Transport::default()
+        };
+        for offset in [0, 4_800, 9_600] {
+            apply_transport(&mut c, &t, offset);
+            assert_eq!((c.projectTimeSamples, c.projectTimeMusic, c.barPositionMusic), (48_000, 3.9, 0.0));
+            assert_eq!(c.state & sv::ProcessContext_::StatesAndFlags_::kPlaying as u32, 0);
+        }
     }
 
     #[test]
