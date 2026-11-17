@@ -148,39 +148,53 @@ fn split_units(mut units: i64) -> Vec<u32> {
 fn fill(bars: &[(i64, i64, u32, u32)], notes: &[(i64, i64, u8)]) -> Vec<Measure> {
     #[derive(Default)]
     struct Events {
-        starts: Vec<u8>,
-        ends: Vec<u8>,
+        starts: Vec<(usize, u8)>,
+        ends: Vec<(usize, u8)>,
     }
     let limit = bars.last().map_or(0, |(start, length, _, _)| start.saturating_add(*length));
     let mut events: std::collections::BTreeMap<i64, Events> = std::collections::BTreeMap::new();
-    for &(a, b, pitch) in notes {
+    for (id, &(a, b, pitch)) in notes.iter().enumerate() {
         if a >= b || a >= limit || b <= 0 || pitch > 127 {
             continue;
         }
-        events.entry(a.max(0)).or_default().starts.push(pitch);
-        events.entry(b.min(limit)).or_default().ends.push(pitch);
+        events.entry(a.max(0)).or_default().starts.push((id, pitch));
+        events.entry(b.min(limit)).or_default().ends.push((id, pitch));
     }
     let events: Vec<_> = events.into_iter().collect();
+    // Only admitted notes may end activity; rejected starts must not silence later notes.
+    let mut admitted = std::collections::BTreeSet::new();
     let mut active = [0usize; 128];
     let mut spans = Vec::new();
     for pair in events.windows(2) {
         let [(from, ev), (to, next)] = pair else { continue };
-        for pitch in &ev.ends {
+        for (id, pitch) in &ev.ends {
+            if !admitted.remove(id) {
+                continue;
+            }
             if let Some(count) = active.get_mut(usize::from(*pitch)) {
                 *count = count.saturating_sub(1);
             }
         }
-        let tied_in: Vec<u8> = active.iter().enumerate().filter(|(p, n)| **n > 0 && !ev.starts.contains(&(*p as u8))).map(|(p, _)| p as u8).collect();
-        for pitch in &ev.starts {
+        let tied_in: Vec<u8> = active
+            .iter()
+            .enumerate()
+            .filter(|(p, n)| **n > 0 && !ev.starts.iter().any(|(_, pitch)| *pitch == *p as u8))
+            .map(|(p, _)| p as u8)
+            .collect();
+        for (id, pitch) in &ev.starts {
             let idx = usize::from(*pitch);
             if active[idx] == 0 && active.iter().filter(|n| **n > 0).count() >= MAX_PITCHES_PER_CHORD {
                 continue;
             }
+            admitted.insert(*id);
             active[idx] = active[idx].saturating_add(1);
         }
         let pitches: Vec<u8> = active.iter().enumerate().filter(|(_, n)| **n > 0).map(|(p, _)| p as u8).collect();
         let mut ending = [0usize; 128];
-        for pitch in &next.ends {
+        for (id, pitch) in &next.ends {
+            if !admitted.contains(id) {
+                continue;
+            }
             if let Some(count) = ending.get_mut(usize::from(*pitch)) {
                 *count = count.saturating_add(1);
             }
@@ -188,7 +202,10 @@ fn fill(bars: &[(i64, i64, u32, u32)], notes: &[(i64, i64, u8)]) -> Vec<Measure>
         let tied_out: Vec<u8> = pitches
             .iter()
             .copied()
-            .filter(|p| active.get(usize::from(*p)).zip(ending.get(usize::from(*p))).is_some_and(|(a, b)| a > b) && !next.starts.contains(p))
+            .filter(|p| {
+                active.get(usize::from(*p)).zip(ending.get(usize::from(*p))).is_some_and(|(a, b)| a > b)
+                    && !next.starts.iter().any(|(_, pitch)| pitch == p)
+            })
             .collect();
         if !pitches.is_empty() {
             spans.push((*from, *to, pitches, tied_in, tied_out));
@@ -313,6 +330,26 @@ mod tests {
             }
             proptest::prop_assert_eq!(at, 64);
         }
+    }
+
+    #[test]
+    fn rejected_note_end_does_not_silence_later_admitted_pitch() {
+        let mut notes: Vec<_> = (48..64).map(|pitch| (0, 30, pitch)).collect();
+        notes.extend([(10, 50, 64), (30, 80, 64)]);
+        let measures = fill(&[(0, 80, 20, 4)], &notes);
+        let mut at = 0;
+        for item in &measures[0].items {
+            let end = at + i64::from(item.units);
+            for tick in at..end {
+                assert_eq!(item.pitches.contains(&64), (30..80).contains(&tick));
+            }
+            if item.pitches.contains(&64) {
+                assert_eq!(item.tie_stop.contains(&64), at > 30);
+                assert_eq!(item.tie_start.contains(&64), end < 80);
+            }
+            at = end;
+        }
+        assert_eq!(at, 80);
     }
 
     #[test]
