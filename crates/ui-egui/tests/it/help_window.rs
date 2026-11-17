@@ -662,7 +662,40 @@ fn cmd_question_mark_over_the_big_counter_digits_opens_its_page() {
     assert!(rect.height() >= 110.0, "the counter is painted outside its window: {rect:?}");
     let digits = egui::pos2(rect.center().x, rect.max.y - 30.0);
     app_frame(&ctx, &mut app, vec![Event::PointerMoved(digits)]);
-    let presses = [true, false].map(|pressed| Event::Key { key: Key::Slash, physical_key: None, pressed, repeat: false, modifiers: PC_CTRL | Modifiers::SHIFT });
+    let presses = [true, false].map(|pressed| Event::Key {
+        key: Key::Slash,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: PC_CTRL | Modifiers::SHIFT,
+    });
     app_frame(&ctx, &mut app, [Event::ModifiersChanged(PC_CTRL | Modifiers::SHIFT)].into_iter().chain(presses).collect());
     assert_eq!(app.ui.help.page, Page::Command("window.big_counter".into()));
+}
+
+/// The Undo page names the menu item as the menu shows it now ("Edit › Undo …"), and says
+/// "Can't Undo" only when there is nothing to undo.
+#[test]
+fn undo_page_names_the_live_menu_item() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.ui.show_help = true;
+    app.ui.help.go(Page::Command("edit.undo".into()));
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 760.0)).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(2);
+    let live = menus::live_label(h.state(), Some("edit.undo")).unwrap();
+    assert!(h.query_all_by_label_contains("Can't Undo").next().is_some(), "nothing to undo yet: {live}");
+    h.state_mut().run("track.new", json!({"count": 1, "format": "mono"})).unwrap();
+    h.run_steps(2);
+    let live = menus::live_label(h.state(), Some("edit.undo")).unwrap();
+    assert!(live.starts_with("Undo "), "{live}");
+    assert!(h.query_all_by_label_contains(&format!("Edit › {live}")).next().is_some(), "the page does not show {live:?}");
+    assert!(h.query_all_by_label_contains("Can't Undo").next().is_none());
 }

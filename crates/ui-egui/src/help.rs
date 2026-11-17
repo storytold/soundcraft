@@ -276,6 +276,19 @@ fn shown_path(path: &str) -> String {
     path.split(['>', '›']).map(|part| crate::localization::text(part.trim())).collect::<Vec<_>>().join(" › ")
 }
 
+/// A command's menu location as the menu shows it right now: Undo and Redo name the step they
+/// would undo or redo ("Edit › Undo Mute"), not the catalog's "Can't Undo".
+fn live_path(app: &SoundApp, id: &str, path: &str) -> String {
+    let shown = shown_path(path);
+    match crate::menus::live_label(app, Some(id)) {
+        Some(label) => match shown.rsplit_once(" › ") {
+            Some((parent, _)) => format!("{parent} › {label}"),
+            None => label,
+        },
+        None => shown,
+    }
+}
+
 /// A command's name without the trailing "..." that marks a menu item opening a dialog.
 fn command_title(id: &str) -> String {
     let label = soundcraft_engine::find_command(id)
@@ -1033,7 +1046,7 @@ fn command_page(app: &mut SoundApp, ui: &mut Ui, id: &str) {
     let app_menu = app_menu_path(id, mac);
     ui.horizontal_wrapped(|ui| {
         for path in e.paths.iter().chain(app_menu.as_ref()) {
-            chip(ui, RichText::new(shown_path(path)));
+            chip(ui, RichText::new(live_path(app, id, path)));
         }
         if !shortcut.is_empty() {
             let label = crate::shortcuts::shortcut_label(shortcut, mac);
@@ -1284,7 +1297,7 @@ fn help_action(app: &SoundApp, ui: &mut Ui, id: &str, path: &str, label: &str) -
     let button = egui::Button::new(RichText::new(label).font(bold(13.0))).min_size(vec2(110.0, 28.0));
     let clicked = ui.add_enabled(enabled, button).clicked();
     let explanation = if enabled {
-        crate::localized_format!("Same as choosing {} from the menu.", shown_path(path))
+        crate::localized_format!("Same as choosing {} from the menu.", live_path(app, id, path))
     } else {
         let reason = why_disabled(app, id).unwrap_or_else(|| crate::localization::text("this action is unavailable.").into());
         crate::localized_format!("Not available right now: {reason}", reason = reason)
