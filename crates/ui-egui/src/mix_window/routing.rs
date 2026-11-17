@@ -7,6 +7,16 @@ pub(crate) fn route_name(app: &SoundApp, r: &Route) -> String {
         Route::Main => app.engine.session().outputs.first().map_or_else(|| crate::localization::text("Out 1-2").to_string(), |o| o.name.clone()),
         Route::Bus(b) => app.engine.session().bus(*b).map_or_else(|| "bus?".into(), |b| b.name.clone()),
         Route::Hardware(h) => h.clone(),
+        Route::Instrument { track, bus } => {
+            let name = app.engine.session().track(*track).map_or_else(|| "?".into(), |t| t.name.clone());
+            let outs = app.player.as_ref().map_or_else(Vec::new, |p| p.instrument_outs());
+            let out = outs
+                .iter()
+                .find(|(t, _)| t == track)
+                .and_then(|(_, o)| o.get(usize::from(*bus)))
+                .map_or_else(|| format!("Out {}", bus + 1), |o| o.name.clone());
+            format!("{name} — {out}")
+        }
     }
 }
 
@@ -41,9 +51,29 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
     } else {
         fixed.push((main_name, "main".to_string()));
     }
+    // Multi-out instruments: each output bus a plugin reports, readable as an input on aux
+    // and folder tracks ("Kontakt — Out 2"), like the incumbent's plugin-output routing.
+    let inst_rows: Vec<(String, String)> = if input {
+        app.player
+            .as_ref()
+            .map_or_else(Vec::new, |p| p.instrument_outs())
+            .iter()
+            .flat_map(|(t, outs)| {
+                let name = app.engine.session().track(*t).map_or_else(|| "?".to_string(), |tr| tr.name.clone());
+                outs.iter().enumerate().map(|(i, o)| (format!("{name} — {}", o.name), format!("inst:{}:{i}", t.0))).collect::<Vec<_>>()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     if search.typing() {
-        let visible: Vec<(&String, &String)> =
-            fixed.iter().map(|(l, v)| (l, v)).chain(busses.iter().map(|b| (b, b))).filter(|(l, _)| search.matches(l)).collect();
+        let visible: Vec<(&String, &String)> = fixed
+            .iter()
+            .map(|(l, v)| (l, v))
+            .chain(busses.iter().map(|b| (b, b)))
+            .chain(inst_rows.iter().map(|(l, v)| (l, v)))
+            .filter(|(l, _)| search.matches(l))
+            .collect();
         let picked = search.rows(ui, visible.len(), 420.0, |ui, i, highlighted| visible.get(i).is_some_and(|(l, _)| menu_row(ui, highlighted, l)));
         if let Some((_, value)) = picked.and_then(|i| visible.get(i)) {
             let _ = app.run(cmd, json!({"track": id.0, key: value}));
@@ -73,6 +103,17 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
         }
         let _ = app.run(cmd, json!({"track": id.0, key: format!("Bus {n}")}));
         ui.close();
+    }
+    if !inst_rows.is_empty() {
+        ui.separator();
+        ui.strong(crate::localization::text("Instruments"));
+        if let Some(value) = search
+            .rows(ui, inst_rows.len(), 420.0, |ui, i, highlighted| inst_rows.get(i).is_some_and(|(l, _)| menu_row(ui, highlighted, l)))
+            .and_then(|i| inst_rows.get(i))
+        {
+            let _ = app.run(cmd, json!({"track": id.0, key: value.1}));
+            ui.close();
+        }
     }
 }
 

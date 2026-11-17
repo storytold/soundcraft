@@ -43,6 +43,13 @@ pub(crate) struct Strip {
     pub(crate) held: Vec<u8>,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
+    /// Auxiliary instrument outputs captured this block for `Route::Instrument` consumers,
+    /// one entry per routed bus.
+    pub(crate) tapped: Vec<TappedBus>,
+    /// Output buses currently activated on the instrument (sorted, deduped).
+    tap_active: Vec<u8>,
+    /// Reusable scratch for the routed-bus set, so steady-state blocks do not allocate.
+    tap_wanted: Vec<u8>,
     pub(crate) muted: bool,
     pub(crate) gr: f32,
     /// Per-clip effect chains (Clip Effects) and a scratch buffer to render clips into.
@@ -62,6 +69,14 @@ pub(crate) struct Strip {
 /// Most latency delay compensation handles: 2^20 samples, about 22 s at 48 kHz. A strip reports
 /// at most this, whatever its plugins claim, so a bogus value can't stall offline renders.
 pub(crate) const MAX_LATENCY: usize = 1 << 20;
+
+/// One routed auxiliary instrument output: the plugin's output bus, this block's
+/// rendered audio, and its delay-compensation line (kept in step with the strip's).
+pub(crate) struct TappedBus {
+    pub(crate) bus: u8,
+    pub(crate) buf: Vec<Vec<f32>>,
+    pub(crate) align: DelayLine,
+}
 
 /// A multichannel delay line (samples). The rings only grow (keeping their contents), so a delay
 /// change in the callback moves the read offset instead of reallocating and zeroing.
@@ -138,6 +153,9 @@ impl Strip {
             scratch: Vec::new(),
             plugins: Vec::new(),
             instrument: None,
+            tapped: Vec::new(),
+            tap_active: Vec::new(),
+            tap_wanted: Vec::new(),
             sample: None,
             held: Vec::new(),
             chase: true,
@@ -294,6 +312,31 @@ fn read_aux_bus(t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, f
     }
 }
 
+/// An aux reads an instrument's routed auxiliary output (multi-out instruments): the
+/// tapped bus on the track the route names, captured when that strip rendered.
+fn read_instrument_out(t: &Track, strip: &mut Strip, strips: &HashMap<TrackId, Strip>, frames: usize) {
+    if let Route::Instrument { track, bus } = &t.mixer.input
+        && let Some(src) = strips.get(track).and_then(|s| s.tapped.iter().find(|x| x.bus == *bus))
+    {
+        let (ns, nd) = (src.buf.len(), strip.buf.len());
+        let dst_fmt = strip_format(t, nd);
+        let src_fmt = ChannelFormat::for_channels(ns);
+        let m = if src_fmt == dst_fmt && ns == nd {
+            identity_matrix(ns)
+        } else if ns == 1 && nd == 2 {
+            // A mono output feeds both sides of a stereo aux.
+            let mut m = [[0.0; MAX_CHANNELS]; MAX_CHANNELS];
+            m[0][0] = 1.0;
+            m[0][1] = 1.0;
+            m
+        } else {
+            let stereo = if ns == 1 { [0.0, 0.0] } else { [-1.0, 1.0] };
+            build_matrix(src_fmt, ns, dst_fmt, nd, &PanSpec { stereo, surround: None }, PanLaw::Minus3)
+        };
+        apply_matrix(&src.buf, frames, &mut strip.buf, &m, 1.0);
+    }
+}
+
 /// Render the track's instrument into the strip.
 fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, transport: &Transport) {
     let Block { pos, frames, .. } = blk;
@@ -327,6 +370,63 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
         if contain_failure(inst, &mut strip.buf, frames) {
             strip.failures.record(INSTRUMENT_SLOT);
         }
+        tap_instrument_outputs(s, t, inst, &mut strip.tapped, &mut strip.tap_active, &mut strip.tap_wanted, frames);
+    } else {
+        strip.tapped.clear();
+        strip.tap_active.clear();
+    }
+}
+
+/// Activate the auxiliary output buses `Route::Instrument` consumers read and copy this
+/// block's rendered audio for them. Inactive buses render as silence in the plugin, so
+/// activation follows the session's routes; bus 0 (the main out) stays always active.
+fn tap_instrument_outputs(
+    s: &Session,
+    t: &Track,
+    inst: &mut PluginSlot,
+    tapped: &mut Vec<TappedBus>,
+    active: &mut Vec<u8>,
+    wanted: &mut Vec<u8>,
+    frames: usize,
+) {
+    let available = inst.plugin.output_buses().len();
+    wanted.clear();
+    wanted.extend(
+        s.tracks
+            .iter()
+            .filter_map(|o| match &o.mixer.input {
+                Route::Instrument { track, bus } if *track == t.id => Some(*bus),
+                _ => None,
+            })
+            .filter(|&b| usize::from(b) < available),
+    );
+    wanted.sort_unstable();
+    wanted.dedup();
+    if *wanted != *active {
+        for &b in active.iter().filter(|b| !wanted.contains(b) && **b > 0) {
+            inst.plugin.set_output_bus_active(usize::from(b), false);
+        }
+        for &b in wanted.iter().filter(|b| !active.contains(b) && **b > 0) {
+            inst.plugin.set_output_bus_active(usize::from(b), true);
+        }
+        active.clone_from(wanted);
+        // One capture buffer per routed bus, sized to the bus's channels.
+        *tapped = active
+            .iter()
+            .map(|&b| TappedBus {
+                bus: b,
+                buf: vec![Vec::new(); inst.plugin.output_buses().get(usize::from(b)).map_or(1, |o| o.channels.max(1))],
+                align: DelayLine { bufs: Vec::new(), idx: 0, len: 0 },
+            })
+            .collect();
+    }
+    for tap in tapped.iter_mut() {
+        for c in &mut tap.buf {
+            if c.len() < frames {
+                c.resize(frames, 0.0);
+            }
+        }
+        inst.plugin.tap_output(usize::from(tap.bus), &mut tap.buf, frames);
     }
 }
 
@@ -401,7 +501,15 @@ fn gate_mute_automation(t: &Track, strip: &mut Strip, blk: Block) {
     }
 }
 
-pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, live: &LiveInput<'_>, blk: Block) {
+pub(crate) fn process_strip(
+    s: &Session,
+    t: &Track,
+    strip: &mut Strip,
+    busses: &HashMap<BusId, BusBuf>,
+    taps: Option<&HashMap<TrackId, Strip>>,
+    live: &LiveInput<'_>,
+    blk: Block,
+) {
     let Block { pos, frames, any_solo } = blk;
     zero_buf(&mut strip.buf, frames);
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
@@ -412,7 +520,12 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
         TrackKind::Audio if live.monitor_only => {}
         TrackKind::Instrument | TrackKind::Midi if live.monitor_only => {}
         TrackKind::Audio => render_audio_clips(s, t, strip, blk),
-        TrackKind::Aux | TrackKind::Folder => read_aux_bus(t, strip, busses, frames),
+        TrackKind::Aux | TrackKind::Folder => {
+            read_aux_bus(t, strip, busses, frames);
+            if let Some(strips) = taps {
+                read_instrument_out(t, strip, strips, frames);
+            }
+        }
         TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, blk, &transport),
         _ => {}
     }

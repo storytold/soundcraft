@@ -136,6 +136,8 @@ struct Shared {
     /// Speed × 1000.
     speed: AtomicU32,
     meters: Mutex<MeterSnapshot>,
+    /// Each instrument track's output buses, for the input picker's `Route::Instrument` rows.
+    instrument_outs: Mutex<Vec<(TrackId, Vec<soundcraft_dsp::OutputBus>)>>,
 }
 
 /// What stopped the audio output.
@@ -214,6 +216,7 @@ impl Player {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            instrument_outs: Mutex::new(Vec::new()),
         });
         let want = session.sample_rate.hz();
         let want_ch = u16::try_from(main_channels(&session)).unwrap_or(2);
@@ -524,6 +527,12 @@ impl Player {
     pub fn take_meters(&self, out: &mut MeterSnapshot) {
         let mut source = self.shared.meters.lock().unwrap_or_else(PoisonError::into_inner);
         take_meter_snapshot(&mut source, out);
+    }
+
+    /// Each instrument track's output buses (multi-out names the plugin reports), for the
+    /// input picker's `Route::Instrument` rows. Empty until a multi-out instrument loads.
+    pub fn instrument_outs(&self) -> Vec<(TrackId, Vec<soundcraft_dsp::OutputBus>)> {
+        self.shared.instrument_outs.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 }
 

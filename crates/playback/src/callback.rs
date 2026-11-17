@@ -245,6 +245,7 @@ impl AudioState {
         self.send_garbage();
         self.pending_len = n;
         self.publish_meters();
+        self.publish_instrument_outs();
         if self.playing {
             self.pos += n as i64;
             self.shared.position.store(self.pos, Ordering::Relaxed);
@@ -269,6 +270,16 @@ impl AudioState {
         if let Ok(mut m) = self.shared.meters.try_lock() {
             m.accumulate(&self.unsent.main, &self.unsent.tracks);
             self.unsent.reset_levels();
+        }
+    }
+
+    /// Hand the instrument output-bus table to the UI when it changed (route or
+    /// instance changes re-sync the mix's copy).
+    fn publish_instrument_outs(&mut self) {
+        if let Ok(mut o) = self.shared.instrument_outs.try_lock()
+            && *o != self.mix.instrument_outs
+        {
+            *o = self.mix.instrument_outs.clone();
         }
     }
 

@@ -187,6 +187,17 @@ pub struct Transport {
     pub bar: i64,
 }
 
+/// One output bus a plugin renders, for multi-out instruments routing their
+/// auxiliary outs onto other tracks. `output_buses()[0]` is the main output the
+/// hosting track's channel already carries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputBus {
+    /// The plugin's name for the bus ("Out 2", "Kick"…), falling back to "Out N".
+    pub name: String,
+    /// Channels the bus carries.
+    pub channels: usize,
+}
+
 /// A realtime audio processor or instrument.
 ///
 /// Contract: `process` never allocates or panics. It processes `min(frames, io[c].len())` frames
@@ -206,6 +217,19 @@ pub trait Plugin: Send {
     fn param(&self, id: &str) -> Option<f32>;
     /// In-place processing of `channels` planar buffers each `frames` long.
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize);
+    /// Every output bus the plugin renders (`[0]` is the main output). Empty when the
+    /// plugin has only its main out or cannot report its buses.
+    fn output_buses(&self) -> &[OutputBus] {
+        &[]
+    }
+    /// Activates or suspends output `bus` (indexed like `output_buses`). Plugins render
+    /// inactive auxiliary buses as silence; a host activates one only while a route
+    /// reads it. `prepare` resets every auxiliary bus to inactive.
+    fn set_output_bus_active(&mut self, _bus: usize, _active: bool) {}
+    /// Copies rendered audio from output `bus` (indexed like `output_buses`) into `dst`
+    /// planar channels after `process`, on the audio thread; `dst[c].len() >= frames`.
+    /// Never allocates; out-of-range `bus` does nothing.
+    fn tap_output(&self, _bus: usize, _dst: &mut [Vec<f32>], _frames: usize) {}
     /// Processing latency in samples (for delay compensation).
     fn latency(&self) -> usize {
         0
