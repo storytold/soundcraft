@@ -1080,6 +1080,7 @@ fn stopped_monitoring_does_not_click() {
 struct Live {
     inner: Box<dyn Plugin>,
     blocks: Arc<std::sync::atomic::AtomicUsize>,
+    offs: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Plugin for Live {
@@ -1102,6 +1103,10 @@ impl Plugin for Live {
         self.blocks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.inner.process(io, frames);
     }
+    fn all_notes_off(&mut self) {
+        self.offs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.all_notes_off();
+    }
 }
 
 /// Renders 4 stopped blocks on an instrument track and returns its plugin's `process()` count.
@@ -1113,7 +1118,8 @@ fn stopped_instrument_blocks(arm: bool, monitor: bool) -> usize {
     tr.mixer.record_arm = arm;
     tr.mixer.input_monitor = monitor;
     let blocks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let live = Live { inner: soundcraft_dsp::create("gain").unwrap(), blocks: Arc::clone(&blocks) };
+    let live =
+        Live { inner: soundcraft_dsp::create("gain").unwrap(), blocks: Arc::clone(&blocks), offs: Arc::new(std::sync::atomic::AtomicUsize::new(0)) };
     let mut eng = MixEngine::new(48_000.0, 512);
     eng.set_external_instances(true);
     eng.monitor_only = true;
@@ -1131,6 +1137,37 @@ fn instruments_stay_live_while_stopped() {
     assert_eq!(stopped_instrument_blocks(true, false), 4);
     assert_eq!(stopped_instrument_blocks(false, true), 4);
     assert_eq!(stopped_instrument_blocks(false, false), 4);
+}
+
+#[test]
+fn stationary_stopped_blocks_do_not_kill_held_notes() {
+    // While stopped the playhead does not move: a monitor-only block consumes no timeline, so
+    // the next one is contiguous with it. Advancing `last_end` anyway made every stopped block
+    // look like a seek, cutting held live notes at each block edge.
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(t).unwrap().instrument = Some(Insert::new("clap:test.live"));
+    let offs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let live =
+        Live { inner: soundcraft_dsp::create("gain").unwrap(), blocks: Arc::new(std::sync::atomic::AtomicUsize::new(0)), offs: Arc::clone(&offs) };
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.monitor_only = true;
+    eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.live".into(), ch: 2, plugin: Box::new(live) }]);
+    for _ in 0..4 {
+        render_block(&mut eng, &s, 0);
+    }
+    let at = || offs.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(at(), 0, "stationary blocks fired all_notes_off");
+    // A real seek still silences, once.
+    render_block(&mut eng, &s, 48_000);
+    assert_eq!(at(), 1);
+    render_block(&mut eng, &s, 48_000);
+    assert_eq!(at(), 1);
+    // And playing on from there stays contiguous: held notes keep sounding.
+    eng.monitor_only = false;
+    render_block(&mut eng, &s, 48_000);
+    assert_eq!(at(), 1);
 }
 
 #[test]

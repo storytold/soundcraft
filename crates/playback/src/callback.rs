@@ -179,6 +179,10 @@ impl AudioState {
                     self.playing = false;
                     self.end = None;
                     self.looped = None;
+                    // Drop unread playback audio: monitor-only rendering keeps the output
+                    // alive now, so leftovers in `pending` would play out after stopping.
+                    self.pending_len = 0;
+                    self.read = 0.0;
                     self.mix.reset();
                 }
                 Cmd::Locate(at) => {
@@ -324,9 +328,7 @@ impl AudioState {
 pub(crate) fn audible_while_stopped(s: &Session, input_present: bool) -> bool {
     (input_present && s.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm))
         || s.tracks.iter().any(|t| {
-            matches!(t.kind, soundcraft_model::TrackKind::Instrument | soundcraft_model::TrackKind::Midi)
-                && t.instrument.is_some()
-                && !t.inactive
+            matches!(t.kind, soundcraft_model::TrackKind::Instrument | soundcraft_model::TrackKind::Midi) && t.instrument.is_some() && !t.inactive
         })
 }
 

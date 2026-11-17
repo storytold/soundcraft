@@ -737,3 +737,32 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     assert!(out.iter().any(|x| x.abs() > 0.1), "the input is heard");
     assert!(shared.meters.lock().unwrap().tracks.get(&t).is_some_and(|m| m.peak[0] > 0.1), "and metered");
 }
+
+#[test]
+fn stopping_discards_unread_playback_frames() {
+    // A fill smaller than BLOCK leaves playback audio in `pending`; a live instrument keeps
+    // the stopped output on, so those leftovers would play out after Stop without a clear.
+    use soundcraft_model::{ChannelFormat, Clip, Insert, SourceAudio, SourceId, TrackKind};
+    let mut s = soundcraft_model::Session::default();
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    s.pool.insert(SourceId(5), Arc::new(SourceAudio::new(craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5f32; 48_000]] })));
+    let id = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "x", SourceId(5), 0, 0, 48_000));
+    let vi = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(vi).unwrap().instrument = Some(Insert::new("clap:test.fake"));
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 2 * 128];
+    st.fill(&mut out, 2);
+    assert!(out.iter().any(|x| x.abs() > 0.1), "playback is silent?");
+    tx.send(Cmd::Stop).unwrap();
+    st.fill(&mut out, 2);
+    assert!(out.iter().all(|x| *x == 0.0), "stopped output carried playback leftovers");
+}
