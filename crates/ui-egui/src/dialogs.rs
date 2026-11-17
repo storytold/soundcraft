@@ -470,6 +470,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let first_frame = !std::mem::replace(&mut app.dialogs.shown, true);
     if first_frame {
         ctx.memory_mut(|m| m.stop_text_input());
+        // A path an earlier path prompt asked for must not fill this dialog
+        app.services.discard("prompt");
     }
     let mut keep = true;
     let mut action: Option<(String, Value)> = None;
@@ -1105,6 +1107,36 @@ mod tests {
         let Some(Dialog::NewTracks(tracks)) = &app.dialogs.open else { panic!("missing New Tracks dialog") };
         assert_eq!(tracks.rows.len(), 1);
         assert!(app.engine.session().tracks.is_empty());
+    }
+
+    /// A path prompt replaced while its file dialog is open does not take that dialog's answer.
+    #[test]
+    fn a_replaced_path_prompt_drops_the_answer_of_the_one_before() {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rx = std::rc::Rc::new(std::cell::Cell::new(Some(rx)));
+        let services = crate::Services { start_pick: Some(Box::new(move |_| rx.take())), ..Default::default() };
+        let mut app = SoundApp::new(Engine::default(), None, services);
+        assert!(app.dialogs.open_for_command(&app.engine, "session.save_as"));
+        dialog_frame(&ctx, &mut app, vec![]);
+        app.services.ask("prompt", Pick::Save("session.save_as".into(), "/tmp/a.scraft".into()));
+        // A menu item opens another path prompt while the sheet is still up.
+        assert!(app.dialogs.open_for_command(&app.engine, "session.open"));
+        let before = match &app.dialogs.open {
+            Some(Dialog::PathPrompt { path, .. }) => path.clone(),
+            other => panic!("{other:?}"),
+        };
+        dialog_frame(&ctx, &mut app, vec![]);
+        tx.send(vec!["/tmp/saved.scraft".into()]).unwrap();
+        for _ in 0..2 {
+            app.services.poll();
+            dialog_frame(&ctx, &mut app, vec![]);
+        }
+        match &app.dialogs.open {
+            Some(Dialog::PathPrompt { cmd, path, .. }) => assert_eq!((cmd.as_str(), path), ("session.open", &before)),
+            other => panic!("{other:?}"),
+        }
     }
 
     /// Escape prevents a simultaneous Enter from starting a background bounce.
