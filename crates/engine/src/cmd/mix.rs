@@ -7,6 +7,7 @@ use crate::{Engine, EngineError, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_model::{AutoParam, AutomationMode, INSERT_SLOTS, Insert, SEND_SLOTS, SendSlot, Session, TrackId};
 
+/// Commands for mixer controls, with live input toggles kept outside document history.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("mix.volume", "Set Volume", [], None, "{tracks?, db: -144..12 | delta_db}", has_selection, volume),
@@ -42,7 +43,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({}))
         }),
-        cmd!("mix.record_arm", "Record Enable", [], Some("Shift+R"), "{tracks?, value?: bool}", has_selection, |e, p| toggle(
+        cmd!(noundo "mix.record_arm", "Record Enable", [], Some("Shift+R"), "{tracks?, value?: bool}", has_selection, |e, p| toggle_runtime(
             e,
             p,
             "mix.record_arm",
@@ -51,7 +52,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }),
             |tr| tr.mixer.record_arm
         )),
-        cmd!("mix.input_monitor", "Input Monitoring", [], Some("Shift+I"), "{tracks?, value?: bool}", has_selection, |e, p| toggle(
+        cmd!(noundo "mix.input_monitor", "Input Monitoring", [], Some("Shift+I"), "{tracks?, value?: bool}", has_selection, |e, p| toggle_runtime(
             e,
             p,
             "mix.input_monitor",
@@ -113,7 +114,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Assign Send",
             [],
             None,
-            "{track?, slot?: 0..9|a..j, bus: name, level_db?: 0 (kept when re-targeting), pre_fader?: false}",
+            "{track?, slot?: 0..9|a..j, bus: name, level_db?: -144..12, default -144 (silent; kept when re-targeting), pre_fader?: false}",
             has_selection,
             send
         ),
@@ -218,6 +219,23 @@ fn toggle(e: &mut Engine, p: &Value, cmd: &str, set: fn(&mut Session, TrackId, b
     Ok(json!({"value": v}))
 }
 
+/// Toggle live input flags without marking the saved document as changed.
+fn toggle_runtime(
+    e: &mut Engine,
+    p: &Value,
+    cmd: &str,
+    set: fn(&mut Session, TrackId, bool),
+    get: fn(&soundcraft_model::Track) -> bool,
+) -> Result<Value> {
+    let tracks = tracks_required(e, cmd, p)?;
+    let s = e.runtime_session_mut();
+    let v = p.get("value").and_then(Value::as_bool).unwrap_or_else(|| !tracks.iter().all(|t| s.track(*t).is_some_and(get)));
+    for t in &tracks {
+        set(s, *t, v);
+    }
+    Ok(json!({"value": v}))
+}
+
 fn volume(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "mix.volume", p)?;
     let abs = p.get("db").and_then(Value::as_f64);
@@ -226,6 +244,15 @@ fn volume(e: &mut Engine, p: &Value) -> Result<Value> {
         return Err(bad("mix.volume", "`db` or `delta_db` required"));
     }
     let s = e.session_mut();
+    // The fader stops at -144 and +12 dB. The reply says when a value was held there: +15 dB used
+    // to play at +12 with nothing to show it.
+    let clamped = std::cell::Cell::new(false);
+    let fader = |db: f32| {
+        if !(-144.0..=12.0).contains(&db) {
+            clamped.set(true);
+        }
+        db.clamp(-144.0, 12.0)
+    };
     // Tracks already moved as a group sibling of an earlier target must not move again.
     let mut done: Vec<TrackId> = Vec::new();
     for t in &tracks {
@@ -239,11 +266,14 @@ fn volume(e: &mut Engine, p: &Value) -> Result<Value> {
             (None, Some(d)) => cur + d as f32,
             _ => cur,
         };
-        let new = if new.is_finite() { new.clamp(-144.0, 12.0) } else { cur };
+        let new = if new.is_finite() { fader(new) } else { cur };
         let d = new - cur;
-        set_grouped(s, *t, "volume", |tr| tr.mixer.volume_db = if tr.id == *t { new } else { (tr.mixer.volume_db + d).clamp(-144.0, 12.0) });
+        set_grouped(s, *t, "volume", |tr| tr.mixer.volume_db = if tr.id == *t { new } else { fader(tr.mixer.volume_db + d) });
     }
-    Ok(json!({"tracks": tracks.len()}))
+    // Every requested track at its final volume, also one that moved as a group sibling of an
+    // earlier target and was skipped above.
+    let volumes: Vec<Value> = tracks.iter().filter_map(|t| s.track(*t)).map(|tr| json!({"track": tr.id.0, "db": tr.mixer.volume_db})).collect();
+    Ok(json!({"tracks": tracks.len(), "volumes": volumes, "clamped": clamped.get()}))
 }
 
 fn pan(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -598,6 +628,7 @@ fn write_current(e: &mut Engine, p: &Value, all: bool) -> Result<Value> {
 }
 
 /// Clip-gain envelope value in dB. An empty envelope contributes nothing, and the last point holds.
+#[cfg(test)]
 fn env_db(env: &[(i64, f32)], at: i64) -> f32 {
     let mut prev: Option<(i64, f32)> = None;
     for &(t, v) in env {
@@ -612,6 +643,38 @@ fn env_db(env: &[(i64, f32)], at: i64) -> f32 {
     prev.map_or(0.0, |(_, v)| v)
 }
 
+/// Repeated lookups in one clip-gain envelope, each O(log n) instead of a walk from its start.
+/// Gives exactly what walking the points in stored order gives, sorted or not: the first point
+/// at or after `at` is the first whose running maximum position reaches `at`.
+struct EnvLookup<'a> {
+    env: &'a [(i64, f32)],
+    /// Largest position among `env[..=i]`.
+    reach: Vec<i64>,
+}
+
+impl<'a> EnvLookup<'a> {
+    fn new(env: &'a [(i64, f32)]) -> Self {
+        let reach = env
+            .iter()
+            .scan(i64::MIN, |m, &(t, _)| {
+                *m = (*m).max(t);
+                Some(*m)
+            })
+            .collect();
+        EnvLookup { env, reach }
+    }
+
+    /// Value in dB at `at` (see `env_db`).
+    fn db(&self, at: i64) -> f32 {
+        let i = self.reach.partition_point(|&m| m < at);
+        let Some(&(t, v)) = self.env.get(i) else { return self.env.last().map_or(0.0, |&(_, v)| v) };
+        match i.checked_sub(1).and_then(|p| self.env.get(p)) {
+            Some(&(pt, pv)) if t > pt => pv + (v - pv) * ((at - pt) as f32 / (t - pt) as f32),
+            _ => v,
+        }
+    }
+}
+
 /// Fold the volume `lane` into the gain envelope of clip `c` over the selection `r`.
 fn bake_volume_into_clip(c: &mut soundcraft_model::Clip, lane: &soundcraft_model::AutomationLane, base: f32, r: soundcraft_time::Range) {
     let delta = |at: i64| lane.value_at(at, base) - base;
@@ -621,39 +684,41 @@ fn bake_volume_into_clip(c: &mut soundcraft_model::Clip, lane: &soundcraft_model
         return;
     }
     let rel = |at: i64| at - c.start;
+    let old_env = std::mem::take(&mut c.gain_env);
+    let env = EnvLookup::new(&old_env);
+    let env_db = |at: i64| env.db(at);
     let rel0 = rel(sel0);
     let rel1 = rel(sel1);
     // Later writes win, so the selection anchors replace any point they land on.
-    let mut pts: Vec<(i64, f32)> =
-        c.gain_env.iter().copied().filter(|&(at, _)| at < rel0.saturating_sub(1) || (sel1 < c.end() && at > rel1)).collect();
+    let mut pts: Vec<(i64, f32)> = old_env.iter().copied().filter(|&(at, _)| at < rel0.saturating_sub(1) || (sel1 < c.end() && at > rel1)).collect();
     if rel0 > 0 {
-        pts.push((rel0 - 1, env_db(&c.gain_env, rel0 - 1)));
+        pts.push((rel0 - 1, env_db(rel0 - 1)));
     }
-    pts.push((rel0, env_db(&c.gain_env, rel0) + delta(sel0)));
+    pts.push((rel0, env_db(rel0) + delta(sel0)));
     for pt in lane.points.iter().filter(|pt| pt.at > sel0 && pt.at < sel1) {
         let at = rel(pt.at);
-        pts.push((at, env_db(&c.gain_env, at) + delta(pt.at)));
+        pts.push((at, env_db(at) + delta(pt.at)));
     }
     // The clip's own gain points inside the selection keep their shape, offset by the lane.
-    for &(at, _) in c.gain_env.iter().filter(|&&(at, _)| at > rel0 && at < rel1) {
-        pts.push((at, env_db(&c.gain_env, at) + delta(c.start.saturating_add(at))));
+    for &(at, _) in old_env.iter().filter(|&&(at, _)| at > rel0 && at < rel1) {
+        pts.push((at, env_db(at) + delta(c.start.saturating_add(at))));
     }
     if sel1 - 1 > sel0 {
         let at = rel(sel1 - 1);
-        pts.push((at, env_db(&c.gain_env, at) + delta(sel1 - 1)));
+        pts.push((at, env_db(at) + delta(sel1 - 1)));
     }
     if sel1 < c.end() {
-        pts.push((rel1, env_db(&c.gain_env, rel1)));
+        pts.push((rel1, env_db(rel1)));
     }
     pts.sort_by_key(|p| p.0);
-    let mut env = Vec::new();
+    let mut baked = Vec::new();
     for p in pts {
-        if env.last().is_some_and(|q: &(i64, f32)| q.0 == p.0) {
-            env.pop();
+        if baked.last().is_some_and(|q: &(i64, f32)| q.0 == p.0) {
+            baked.pop();
         }
-        env.push(p);
+        baked.push(p);
     }
-    c.gain_env = env;
+    c.gain_env = baked;
 }
 
 /// Clear the volume lane over `r` when the clips all sit inside it, else hold the fader there.
@@ -726,8 +791,9 @@ fn clip_gain_to_vol(e: &mut Engine, p: &Value) -> Result<Value> {
                 if let Some(l) = &old {
                     ats.extend(l.points.iter().map(|pt| pt.at).filter(|&at| at > c.start && at < c.end() - 1));
                 }
+                let env = EnvLookup::new(&c.gain_env);
                 for at in ats {
-                    pts.push((at, level(at) + c.gain_db + env_db(&c.gain_env, at - c.start)));
+                    pts.push((at, level(at) + c.gain_db + env.db(at - c.start)));
                 }
                 c.gain_db = 0.0;
                 c.gain_env.clear();

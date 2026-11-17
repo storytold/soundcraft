@@ -2,7 +2,7 @@
 
 **Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
 
-> **Last reviewed:** 2026-10-24 · **Last updated:** 2026-10-25 · **Change:** trivial (Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-24 · **Last updated:** 2026-10-27 · **Change:** trivial (Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Alt-click returns a plugin parameter to its default, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -50,7 +50,7 @@ measures readiness and adds hardware, localization and field bug reports.
 | UI/UX fidelity | ~55 % | 60–100 | [ui-parity.md](docs/ui-parity.md) |
 | File formats | ~40 % | 70–120 | [file-format-parity.md](docs/file-format-parity.md) |
 | Hardware (interfaces, MIDI, surfaces, sync) | ~12 % | 110–180 | [hardware-parity.md](docs/hardware-parity.md) |
-| Localization | ~12 % (1 of Pro Tools' 8 languages) | 70–110 | [localization-parity.md](docs/localization-parity.md) |
+| Localization | ~12 % (1 of Pro Tools' 8 languages; English and pt-BR fixed UI strings, no CJK/RTL font fallback or native review) | 70–110 | [localization-parity.md](docs/localization-parity.md) |
 | Performance | ~35 % (unmeasured) | 40–70 | [hardware-parity.md](docs/hardware-parity.md#performance) |
 | Stability | ~45 % | 50–80 | [gaps.md](docs/gaps.md) |
 | Platforms | ~65 % (5 platforms built, macOS exercised) | 20–40 | [gaps.md](docs/gaps.md) |
@@ -89,14 +89,14 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Hindi | hi | none | 0 % |
 | Arabic | ar | none | 0 % |
 | French | fr | none (PR #143 open) | 0 % |
-| Portuguese | pt | none | 0 % |
+| Portuguese (Brazil) | pt-BR | full — 100 % of fixed UI strings; tests pass | 100 % (native-speaker review pending) |
 | Indonesian | id | none | 0 % |
 | Japanese | ja | none | 0 % |
 | German | de | none | 0 % |
 | Korean | ko | none | 0 % |
 | Vietnamese | vi | none | 0 % |
 
-Other languages shipped: 0. Detail: [localization-parity.md](docs/localization-parity.md).
+Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI strings (100 %), with native-speaker review, CJK/RTL font fallbacks and script shaping still pending. Detail: [localization-parity.md](docs/localization-parity.md).
 
 ## Upcoming
 
@@ -125,6 +125,9 @@ mutated and truncated movies. Field reports from the first public week are track
 - **2026-10-25:** Alt+Shift+E (`view.zoom_toggle_cancel`) and an Alt-click on the Zoom Toggle button cancel Zoom Toggle and keep the current view: the zoom, the scroll and the track heights stay as they are, and the button is no longer lit. The next Zoom Toggle zooms in from that view and goes back to it. No readiness percentage change.
 - **2026-10-25:** Tracks and Groups and the Clip List sit in dock columns that run the Edit window's full height at its left and right edges, with the MIDI Editor under the session view between them; Mix docks Tracks and Groups at its left edge. A panel dragged onto a dock group joins it as a tab, stacks above or below it, or makes a new column; one dragged to an empty window edge makes a dock there. A list with no saved place reopens in its dock, and makes the dock again when it is gone. Preferences and window configurations saved with the earlier split-frame layouts load with the new default layouts and keep their other settings. No readiness percentage change.
 - **2026-10-25:** Auto Pan moves the balance of a stereo track: the left channel's level falls as the position moves right and the right channel's as it moves left, at constant power, and each channel stays on its own side. At the center the track passes unchanged, so a wide or out-of-phase stereo image keeps its width, and the envelope follower follows the louder channel. No readiness percentage change.
+- **2026-10-24:** An Alt-click (Option-click on a Mac) on a parameter in the plugin window, the Clip Effects window or an AudioSuite plugin's window returns it to its default value, on a slider or a slider's value box, and in the plugin window on a choice list too, as an Alt-click returns a fader to 0 dB. In the plugin window and the Clip Effects window the reset is one undo step. While Alt is held, a drag on a slider leaves the value where it is. No readiness percentage change.
+- **2026-10-24:** The parameter sliders of the plugin window, the Clip Effects window and AudioSuite plugins move a tenth as far for the same drag while Ctrl (Command on a Mac) is held, as the Strip Silence sliders do. Logarithmic sliders move a tenth as far along the slider, and whole-number sliders stay on whole numbers. No readiness percentage change.
+- **2026-10-24:** The Strip Silence window's four sliders move a tenth as far for the same drag while Ctrl (Command on a Mac) is held, on the slider and on its value box. Pressing or releasing the key during a drag leaves the value where it is. The Threshold and Clip Start Pad boxes show one decimal place. No readiness percentage change.
 - **2026-10-24:** Clip List › Auto Rename (`clip.auto_rename`) sets the names that editing gives the clips it separates from the selected clips: a name, a starting number, a number of places (zeros before the number) and a suffix. The piece after each cut takes the next name, the piece before it keeps its name, and all the pieces count up one number sequence. Pieces that Strip Silence names with its own Rename fields, or removes, take no Auto Rename name. Copied clips keep their scheme when they are pasted, saved sessions hold the schemes, and Import Session Data brings them along. No readiness percentage change.
 - **2026-10-24:** While the Strip Silence window is open, the Edit window draws a rectangle around each range that Strip would keep on the selected tracks, padded by Clip Start Pad and Clip End Pad, and the rectangles follow the sliders as they move. They are removed when the window closes. `edit.strip_silence_preview` returns the same ranges without changing the session. No readiness percentage change.
 - **2026-10-24:** The Strip Silence window has a Rename button. It opens Rename Selected Clips, where a name, a starting number, a count of zeros and a suffix set the names of the clips that Strip, Extract and Separate leave in the selection (for example SFX023.Reel1, SFX024.Reel1). The app keeps the scheme for later uses of Strip Silence until the app quits, or until Clear and then OK empty it. No readiness percentage change.
@@ -177,9 +180,13 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-05 | trivial | Languages table: Brazilian Portuguese (pt-BR) near complete for fixed UI strings via PR #1346; needs native review. Estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Cancel Zoom Toggle; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: side panels in dock columns; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Auto Pan stereo balance; readiness estimates unchanged |
+| 2026-10-24 | trivial | Progress log: Alt-click returns a plugin parameter to its default; readiness estimates unchanged |
+| 2026-10-24 | trivial | Progress log: fine adjustment on plugin parameter sliders; readiness estimates unchanged |
+| 2026-10-24 | trivial | Progress log: Strip Silence fine adjustment; readiness estimates unchanged |
 | 2026-10-24 | trivial | Progress log: Clip List Auto Rename; readiness estimates unchanged |
 | 2026-10-24 | trivial | Progress log: Strip Silence rectangles; readiness estimates unchanged |
 | 2026-10-24 | trivial | Progress log: Strip Silence Rename; readiness estimates unchanged |

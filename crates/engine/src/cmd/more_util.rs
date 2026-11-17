@@ -3,8 +3,9 @@
 use super::bad;
 use crate::{Engine, Result};
 
+use craft_audio::AudioBuffer;
 use serde_json::{Value, json};
-use soundcraft_audio_io::{AudioBuffer, FileFormat};
+use soundcraft_model::FileFormat;
 use soundcraft_model::{Clip, ClipContent, EditState, Session, SourceId, TrackId};
 use soundcraft_time::Samples;
 
@@ -227,7 +228,7 @@ mod tests {
         use soundcraft_model::{ChannelFormat, TrackKind};
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, Some("Long"));
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5]; 2] };
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5]; 2] };
         let src = crate::io::add_source(&mut s, "One", buf, None, FileFormat::Wav);
         let cid = s.new_clip_id();
         let mut clip = Clip::audio(cid, "Clip", src, 0, 0, length);

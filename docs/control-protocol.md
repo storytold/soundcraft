@@ -33,7 +33,7 @@ Newline-delimited JSON over TCP on `127.0.0.1`. One request per line, one reply 
 {"id": 1, "ok": true, "result": {"tracks": [12, 13]}}
 ```
 
-Errors: `{"id": 1, "ok": false, "error": "bad parameters for `mix.volume`: no track named `Nope`"}`.
+Errors: `{"id": 1, "ok": false, "error": "bad parameters for `mix.volume`: no track named `Nope`"}`. A line that is not a JSON object with a string `method` gets one error reply, and the connection is closed.
 
 `token` is the launch's secret: `SOUNDCRAFT_CONTROL_TOKEN` when the app was started with it, otherwise
 the one the app made and printed after the port line. Any local account can reach the loopback port,

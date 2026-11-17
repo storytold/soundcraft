@@ -425,7 +425,7 @@ fn quantize_to_grid(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     let s = e.session();
     let moves: Vec<(soundcraft_model::ClipId, i64)> =
-        ids.iter().filter_map(|id| s.find_clip(*id).map(|(_, c)| (*id, crate::edit::grid_delta(s, c, 0, false)))).collect();
+        ids.iter().filter_map(|id| s.find_clip(*id).map(|(_, c)| (*id, crate::edit::grid_delta(s, c, 0, false, &ids)))).collect();
     let s = e.session_mut();
     for (id, d) in &moves {
         crate::edit::move_clips(s, &[*id], *d, &[]);
@@ -464,8 +464,8 @@ mod tests {
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Elastic"));
         let samples = (0..source_len).map(|i| if i >= tone_at { (i as f32 * 0.2).sin() * 0.4 } else { 0.0 }).collect();
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![samples] };
-        let src = crate::io::add_source(&mut s, "Tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![samples] };
+        let src = crate::io::add_source(&mut s, "Tone", buf, None, soundcraft_model::FileFormat::Wav);
         let cid = s.new_clip_id();
         crate::edit::place_clip(&mut s, t, Clip::audio(cid, "Clip", src, 0, 0, clip_len));
         let mut e = crate::Engine::new(s);
@@ -552,8 +552,8 @@ mod tests {
         use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Dialog"));
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 10_000]] };
-        let src = crate::io::add_source(&mut s, "Line", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 10_000]] };
+        let src = crate::io::add_source(&mut s, "Line", buf, None, soundcraft_model::FileFormat::Wav);
         let ids = [0, 1, 2].map(|k| {
             let cid = s.new_clip_id();
             crate::edit::place_clip(&mut s, t, Clip::audio(cid, "Line", src, 0, k * 12_000, 10_000));

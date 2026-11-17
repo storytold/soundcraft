@@ -46,12 +46,20 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
                 rtp("delay", 0.0).clamp(-1e7, 1e7) as i64,
             )
         };
+        // The block in clip ticks, one tick wider on each side so rounding never drops an event.
+        let near = s.tempo.samples_to_ticks(pos, sr).saturating_sub(base).saturating_sub(1)
+            ..=s.tempo.samples_to_ticks(end, sr).saturating_sub(base).saturating_add(1);
         for n0 in &sequence.notes {
             let mut n = *n0;
             n.velocity = (i64::from(n.velocity) + dv).clamp(1, 127) as u8;
             n.pitch = (i64::from(n.pitch) + dp).clamp(0, 127) as u8;
             n.length = ((n.length as f64 * dur) as i64).max(1);
             n.start = n.start.saturating_add(delay).max(0);
+            // A note whose on and off both fall outside the block sends nothing: skip it before
+            // converting its positions, so a long sequence costs a comparison per note per block.
+            if n.start > *near.end() || n.start.saturating_add(n.length) < *near.start() {
+                continue;
+            }
             let on = s.tempo.tick_to_samples(base.saturating_add(n.start), sr);
             let off = s.tempo.tick_to_samples(base.saturating_add(n.start).saturating_add(n.length), sr).min(clip.end());
             if on >= clip.end() {
@@ -68,8 +76,6 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
                 held.retain(|p| *p != n.pitch);
             }
         }
-        let near = s.tempo.samples_to_ticks(pos, sr).saturating_sub(base).saturating_sub(1)
-            ..=s.tempo.samples_to_ticks(end, sr).saturating_sub(base).saturating_add(1);
         // Events before tick 0 are what a start trim hid: they don't play.
         for c in sequence.ctrls.iter().filter(|c| c.tick >= 0) {
             let tick = c.tick.saturating_add(delay).max(0);
@@ -155,7 +161,7 @@ impl SampleSource for PoolSample {
         self.0.buffer.sample_rate as f32
     }
     fn num_channels(&self) -> usize {
-        self.0.buffer.num_channels()
+        self.0.buffer.channels.len()
     }
     fn channel(&self, ch: usize) -> Option<&[f32]> {
         self.0.channel(ch)

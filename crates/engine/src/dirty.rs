@@ -1,12 +1,15 @@
 //! Borrowed document equality for the saved-state indicator.
 
-use soundcraft_model::{EditState, Session};
+use soundcraft_model::{EditState, Mixer, Session, Track};
 
-/// Equal apart from the selection, playhead and zoom, without copying document data.
+/// Equal apart from navigation and live input flags, without copying document data.
 pub(super) fn same_document(saved: &Session, doc: &Session) -> bool {
     document_values(saved, &saved.edit) == document_values(doc, &saved.edit)
+        && saved.tracks.len() == doc.tracks.len()
+        && saved.tracks.iter().zip(&doc.tracks).all(|(saved, doc)| track_values(saved) == track_values(doc))
 }
 
+/// Borrow persistent session fields; track fields are compared separately.
 fn document_values<'a>(s: &'a Session, navigation: &'a EditState) -> impl PartialEq + 'a {
     // No `..`: adding a document field must also decide how it affects saved-state equality.
     let Session {
@@ -18,7 +21,7 @@ fn document_values<'a>(s: &'a Session, navigation: &'a EditState) -> impl Partia
         timecode_start,
         tempo,
         key_signatures,
-        tracks,
+        tracks: _,
         sources,
         videos,
         busses,
@@ -35,11 +38,66 @@ fn document_values<'a>(s: &'a Session, navigation: &'a EditState) -> impl Partia
     } = s;
     // Tuples implement PartialEq up to twelve elements. These contain only borrowed fields.
     (
-        (format_version, name, sample_rate, bit_depth, frame_rate, timecode_start, tempo, key_signatures, tracks, sources, videos, busses),
+        (format_version, name, sample_rate, bit_depth, frame_rate, timecode_start, tempo, key_signatures, sources, videos, busses),
         (outputs, markers, groups, auto_names, edit_values(edit, navigation), next_id, comments, midi_originals, pool, folder),
     )
 }
 
+/// Borrow persistent track fields without allocating or copying media.
+fn track_values(track: &Track) -> impl PartialEq + '_ {
+    let Track {
+        id,
+        name,
+        kind,
+        format,
+        color,
+        height,
+        playlists,
+        active_playlist,
+        mixer,
+        automation,
+        view,
+        hidden,
+        inactive,
+        frozen,
+        comments,
+        folder,
+        folder_open,
+        instrument,
+        ticks_timebase,
+        elastic,
+        pinned,
+    } = track;
+    (
+        (id, name, kind, format, color, height, playlists, active_playlist, mixer_values(mixer), automation, view),
+        (hidden, inactive, frozen, comments, folder, folder_open, instrument, ticks_timebase, elastic, pinned),
+    )
+}
+
+/// Borrow persistent mixer fields without allocating or copying media.
+fn mixer_values(mixer: &Mixer) -> impl PartialEq + '_ {
+    let Mixer {
+        volume_db,
+        pan,
+        mute,
+        solo,
+        solo_safe,
+        record_arm: _,
+        input_monitor: _,
+        phase_invert,
+        input,
+        output,
+        inserts,
+        sends,
+        automation_mode,
+        trim_db,
+        vca,
+        surround,
+    } = mixer;
+    ((volume_db, pan, mute, solo, solo_safe, phase_invert, input, output, inserts, sends, automation_mode), (trim_db, vca, surround))
+}
+
+/// Borrow edit settings while normalizing transient navigation to the saved values.
 fn edit_values<'a>(edit: &'a EditState, navigation: &'a EditState) -> impl PartialEq + 'a {
     let EditState {
         tool,
@@ -52,6 +110,9 @@ fn edit_values<'a>(edit: &'a EditState, navigation: &'a EditState) -> impl Parti
         grid,
         nudge,
         grid_lines,
+        grid_follow_main,
+        nudge_follow_main,
+        grid_clips_markers,
         main_counter,
         sub_counter,
         zoom: _,
@@ -130,7 +191,17 @@ fn edit_values<'a>(edit: &'a EditState, navigation: &'a EditState) -> impl Parti
             scrolling,
             solo_mode,
         ),
-        (pre_fader_metering, delay_compensation, keyboard_focus, &navigation.timeline_selection, flags, values),
+        (
+            grid_follow_main,
+            nudge_follow_main,
+            grid_clips_markers,
+            pre_fader_metering,
+            delay_compensation,
+            keyboard_focus,
+            &navigation.timeline_selection,
+            flags,
+            values,
+        ),
     )
 }
 
@@ -141,7 +212,7 @@ mod tests {
     use soundcraft_time::{Range, TimeFormat};
     use std::sync::Arc;
 
-    // The previous comparison is an oracle for preserving the saved-state policy.
+    /// The clone-based policy, extended to ignore live input flags, serves as a test oracle.
     fn previous_same_document(saved: &Session, doc: &Session) -> bool {
         let mut doc = doc.clone();
         let (from, to) = (&saved.edit, &mut doc.edit);
@@ -151,9 +222,14 @@ mod tests {
         to.selected_clips.clone_from(&from.selected_clips);
         to.playhead = from.playhead;
         to.zoom = from.zoom;
+        for (saved, doc) in saved.tracks.iter().zip(&mut doc.tracks) {
+            doc.mixer.record_arm = saved.mixer.record_arm;
+            doc.mixer.input_monitor = saved.mixer.input_monitor;
+        }
         *saved == doc
     }
 
+    /// Check both directions and compare against the normalized clone oracle.
     fn check(saved: &Session, doc: &Session, expected: bool, field: &str) {
         assert_eq!(same_document(saved, doc), expected, "{field}");
         assert_eq!(same_document(doc, saved), expected, "{field}, reversed");
@@ -186,6 +262,9 @@ mod tests {
             ("grid", |e| e.grid = soundcraft_time::GridValue::Seconds(2.0)),
             ("nudge", |e| e.nudge = soundcraft_time::GridValue::Seconds(2.0)),
             ("grid_lines", |e| e.grid_lines = !e.grid_lines),
+            ("grid_follow_main", |e| e.grid_follow_main = !e.grid_follow_main),
+            ("nudge_follow_main", |e| e.nudge_follow_main = !e.nudge_follow_main),
+            ("grid_clips_markers", |e| e.grid_clips_markers = !e.grid_clips_markers),
             ("main_counter", |e| e.main_counter = TimeFormat::Samples),
             ("sub_counter", |e| e.sub_counter = None),
             ("zoom_toggle", |e| e.zoom_toggle = Some(ZoomToggle { samples_per_px: 64.0, scroll: 0, heights: Vec::new() })),
@@ -234,8 +313,7 @@ mod tests {
         let track = saved.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
         let clip = Clip::audio(saved.new_clip_id(), "Clip", SourceId(900), 0, 0, 100);
         saved.track_mut(track).unwrap().playlist_mut().unwrap().clips.push(clip);
-        let audio =
-            Arc::new(soundcraft_model::SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 100]] }));
+        let audio = Arc::new(soundcraft_model::SourceAudio::new(craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 100]] }));
         saved.pool.insert(SourceId(900), audio);
         check(&saved, &saved.clone(), true, "shared decoded audio");
         let mut doc = saved.clone();
@@ -250,6 +328,48 @@ mod tests {
         let mut doc = saved.clone();
         doc.edit.values.insert("test.nan".into(), f64::NAN);
         assert_eq!(same_document(&doc, &doc), previous_same_document(&doc, &doc), "NaN keeps the previous PartialEq behavior");
+    }
+
+    /// Only arm and monitoring are transient; every other mixer field still contributes to dirtiness.
+    #[test]
+    fn live_flags_do_not_hide_persistent_mixer_changes() {
+        use soundcraft_model::{AutomationMode, BusId, Insert, Route, SendSlot, SurroundPan};
+        let mut saved = Session::default();
+        let track = saved.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let mut live = saved.clone();
+        live.track_mut(track).unwrap().mixer.record_arm = true;
+        live.track_mut(track).unwrap().mixer.input_monitor = true;
+        check(&saved, &live, true, "live input flags");
+        let edits: &[(&str, fn(&mut Mixer))] = &[
+            ("volume", |m| m.volume_db = -6.0),
+            ("pan", |m| m.pan[0] = 0.5),
+            ("mute", |m| m.mute = true),
+            ("solo", |m| m.solo = true),
+            ("solo_safe", |m| m.solo_safe = true),
+            ("phase_invert", |m| m.phase_invert = true),
+            ("input", |m| m.input = Route::Hardware("Mic".into())),
+            ("output", |m| m.output = Route::Bus(BusId(900))),
+            ("inserts", |m| m.inserts[0] = Some(Insert::new("eq7"))),
+            ("sends", |m| m.sends[0] = Some(SendSlot::new(Route::Main))),
+            ("automation_mode", |m| m.automation_mode = AutomationMode::Touch),
+            ("trim_db", |m| m.trim_db = -3.0),
+            ("vca", |m| m.vca = Some(900)),
+            ("surround", |m| m.surround = Some(SurroundPan::default())),
+        ];
+        for &(field, edit) in edits {
+            let mut doc = live.clone();
+            edit(&mut doc.track_mut(track).unwrap().mixer);
+            check(&saved, &doc, false, field);
+        }
+        let mut doc = live.clone();
+        doc.tracks.push(doc.tracks[0].clone());
+        check(&saved, &doc, false, "track count");
+        let mut doc = live.clone();
+        doc.tracks[0].id = TrackId(900);
+        check(&saved, &doc, false, "track identity");
+        let mut doc = live.clone();
+        doc.tracks[0].mixer.volume_db = f32::NAN;
+        assert!(!same_document(&doc, &doc), "persistent NaN keeps PartialEq semantics");
     }
 
     #[test]
