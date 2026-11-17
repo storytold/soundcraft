@@ -268,33 +268,43 @@ fn clear_message(s: &Session, clips: &[ClipId], sources: &[SourceId]) -> Option<
     let listed: std::collections::BTreeSet<ClipId> = clips.iter().copied().collect();
     let names: Vec<&str> = s.tracks.iter().flat_map(|t| t.clips()).filter(|c| listed.contains(&c.id)).map(|c| c.name.as_str()).collect();
     let files: Vec<_> = sources.iter().filter_map(|id| s.source(*id)).collect();
-    let count = |n: usize, what: &str| if n == 1 { format!("1 {what}") } else { format!("{n} {what}s") };
+    let count = |n: usize, what: &str| {
+        if n == 1 { crate::localized_format!("1 {what}", what = what) } else { crate::localized_format!("{n} {what}s", n = n, what = what) }
+    };
     let what = match (names.as_slice(), files.as_slice()) {
         ([], []) => return None,
-        ([name], []) => format!("the clip \"{name}\""),
-        ([], [f]) => format!("the file \"{}\"", f.name),
-        (c, []) => count(c.len(), "clip"),
-        ([], f) => count(f.len(), "file"),
-        (c, f) => format!("{} and {}", count(c.len(), "clip"), count(f.len(), "file")),
+        ([name], []) => crate::localized_format!("the clip \"{name}\"", name = name),
+        ([], [f]) => crate::localized_format!("the file \"{name}\"", name = f.name),
+        (c, []) => count(c.len(), crate::localization::text("clip")),
+        ([], f) => count(f.len(), crate::localization::text("file")),
+        (c, f) => crate::localized_format!(
+            "{clips} and {files}",
+            clips = count(c.len(), crate::localization::text("clip")),
+            files = count(f.len(), crate::localization::text("file"))
+        ),
     };
-    let mut text = format!("Remove {what} from the session?");
+    let mut text = crate::localized_format!("Remove {what} from the session?", what = what);
     let used: Vec<(&str, usize)> =
         files.iter().map(|f| (f.name.as_str(), s.clips_using(f.id).filter(|c| !listed.contains(&c.id)).count())).filter(|(_, n)| *n > 0).collect();
     let n: usize = used.iter().map(|u| u.1).sum();
     let users = if n == 1 {
-        "a clip on the timeline, which is removed too.".to_string()
+        crate::localization::text("a clip on the timeline, which is removed too.").to_owned()
     } else {
-        format!("{n} clips on the timeline, which are removed too.")
+        crate::localized_format!("{n} clips on the timeline, which are removed too.", n = n)
     };
     match used.as_slice() {
         [] => {}
-        [_] if files.len() == 1 => text += &format!(" It is used by {users}"),
-        u if u.len() == files.len() => text += &format!(" They are used by {users}"),
-        [(name, _)] => text += &format!(" \"{name}\" is used by {users}"),
-        many => text += &format!(" {} of the files are used by {users}", many.len()),
+        [_] if files.len() == 1 => text += &crate::localized_format!(" It is used by {users}", users = users),
+        u if u.len() == files.len() => text += &crate::localized_format!(" They are used by {users}", users = users),
+        [(name, _)] => text += &crate::localized_format!(" \"{name}\" is used by {users}", name = name, users = users),
+        many => text += &crate::localized_format!(" {n} of the files are used by {users}", n = many.len(), users = users),
     }
     if !files.is_empty() && files.iter().all(|f| !f.unsaved) {
-        text += if files.len() == 1 { " The file stays on disk." } else { " The files stay on disk." };
+        text += if files.len() == 1 {
+            crate::localization::text(" The file stays on disk.")
+        } else {
+            crate::localization::text(" The files stay on disk.")
+        };
     }
     Some(text)
 }
@@ -311,10 +321,10 @@ pub fn bounce_path(path: &str, format: EncodeFormat) -> std::path::PathBuf {
 /// The Bounce form's file row: a path field and a Browse button that also picks the format.
 fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, format: &mut EncodeFormat) {
     ui.horizontal(|ui| {
-        ui.label("File");
-        crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "File");
+        ui.label(crate::localization::text("File"));
+        crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), crate::localization::text("File"));
         if let Some(pick) = &app.services.pick_save
-            && ui.button("Browse…").clicked()
+            && ui.button(crate::localization::text("Browse…")).clicked()
             && let Some(p) = pick("file.bounce_mix", std::path::Path::new(path.as_str()))
         {
             match unicode(&p) {
@@ -324,7 +334,7 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
                         *format = picked;
                     }
                 }
-                Err(e) => app.ui.status = e.to_string(),
+                Err(e) => app.ui.status = crate::localization::error_text(&e.to_string()),
             }
         }
     });
@@ -332,20 +342,20 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
 
 /// The path prompt's form; the command to run once it is confirmed.
 fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut String, key: &str, enter: bool) -> Option<(String, Value)> {
-    crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), "Path");
+    crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), crate::localization::text("Path"));
     let mut picked = None;
     // Import Audio picks several files at once; every other open dialog takes one.
     let multi = cmd == "file.import_audio" && app.services.pick_open_many.is_some();
     if multi
         && let Some(pick) = &app.services.pick_open_many
-        && ui.button("Browse…").clicked()
+        && ui.button(crate::localization::text("Browse…")).clicked()
     {
         let mut files = pick(cmd);
         if files.len() > 1 {
             let texts: Result<Vec<&str>, _> = files.iter().map(|f| unicode(f)).collect();
             match texts {
                 Ok(texts) => return Some((cmd.to_string(), json!({"paths": texts}))),
-                Err(e) => app.ui.status = e.to_string(),
+                Err(e) => app.ui.status = crate::localization::error_text(&e.to_string()),
             }
         } else {
             picked = files.pop();
@@ -356,36 +366,36 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
         && cmd != "session.save_as"
         && cmd != "session.save_copy"
         && key != "dir"
-        && ui.button("Browse…").clicked()
+        && ui.button(crate::localization::text("Browse…")).clicked()
         && let Some(p) = pick(cmd, &[])
     {
         picked = Some(p);
     }
     if let Some(pick) = &app.services.pick_folder
         && key == "dir"
-        && ui.button("Browse…").clicked()
+        && ui.button(crate::localization::text("Browse…")).clicked()
         && let Some(p) = pick(std::path::Path::new(path.as_str()))
     {
         picked = Some(p);
     }
     if let Some(pick) = &app.services.pick_save
         && (cmd == "session.save_as" || cmd == "session.save_copy")
-        && ui.button("Browse…").clicked()
+        && ui.button(crate::localization::text("Browse…")).clicked()
         && let Some(p) = pick(cmd, std::path::Path::new(path.as_str()))
     {
         picked = Some(p);
     }
     match picked.as_deref().map(unicode) {
         Some(Ok(text)) => *path = text.to_owned(),
-        Some(Err(e)) => app.ui.status = e.to_string(),
+        Some(Err(e)) => app.ui.status = crate::localization::error_text(&e.to_string()),
         None => {}
     }
     let file = soundcraft_engine::io::session_file(path);
     let replaces = soundcraft_engine::io::replaces(&app.engine, cmd, &file);
     if replaces {
-        ui.label(format!("“{}” already exists. Do you want to replace it?", file.file_name().unwrap_or_default().to_string_lossy()));
+        ui.label(crate::localized_format!("“{}” already exists. Do you want to replace it?", file.file_name().unwrap_or_default().to_string_lossy()));
     }
-    if buttons(ui, if replaces { "Replace" } else { "OK" }, enter && !replaces) {
+    if buttons(ui, crate::localization::text(if replaces { "Replace" } else { "OK" }), enter && !replaces) {
         let mut v = json!({});
         v[key] = json!(path);
         if replaces {
@@ -407,10 +417,10 @@ fn strip_silence_form(
     let mut rename_from = None;
     let [threshold, min_ms, pre_ms, post_ms] = values;
     let before = [*threshold, *min_ms, *pre_ms, *post_ms];
-    crate::widgets::fine_slider(ui, threshold, -96.0..=0.0, "Threshold dB");
-    crate::widgets::fine_slider(ui, min_ms, 0.0..=4000.0, "Min strip duration ms");
-    crate::widgets::fine_slider(ui, pre_ms, 0.0..=500.0, "Clip start pad ms");
-    crate::widgets::fine_slider(ui, post_ms, 0.0..=2000.0, "Clip end pad ms");
+    crate::widgets::fine_slider(ui, threshold, -96.0..=0.0, crate::localization::text("Threshold dB"));
+    crate::widgets::fine_slider(ui, min_ms, 0.0..=4000.0, crate::localization::text("Min strip duration ms"));
+    crate::widgets::fine_slider(ui, pre_ms, 0.0..=500.0, crate::localization::text("Clip start pad ms"));
+    crate::widgets::fine_slider(ui, post_ms, 0.0..=2000.0, crate::localization::text("Clip end pad ms"));
     let values = [*threshold, *min_ms, *pre_ms, *post_ms];
     // The Edit window is drawn before this window, so it draws the rectangles for new values in the next frame.
     if values != before {
@@ -424,13 +434,13 @@ fn strip_silence_form(
     ui.horizontal(|ui| {
         let mut mode = None;
         let mut rename = false;
-        if ui.button("Extract").clicked() {
+        if ui.button(crate::localization::text("Extract")).clicked() {
             mode = Some("extract");
         }
-        if ui.button("Rename…").clicked() {
+        if ui.button(crate::localization::text("Rename…")).clicked() {
             rename = true;
         }
-        if ui.button("Separate").clicked() {
+        if ui.button(crate::localization::text("Separate")).clicked() {
             mode = Some("separate");
         }
         // Enter on a focused Extract or Separate clicks that button, so Enter presses Strip only when neither was clicked.
@@ -504,7 +514,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         |i: &egui::InputState| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, .. }));
     let enter = !first_frame && ctx.input(fresh_enter) && (ctx.memory(|m| m.focused().is_none()) || ctx.text_edit_focused());
     let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-    egui::Window::new(egui::RichText::new(&title).font(bold(13.0)))
+    egui::Window::new(egui::RichText::new(crate::localization::text(&title)).font(bold(13.0)))
+        .id(egui::Id::unique(&title))
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, -80.0))
@@ -522,15 +533,15 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 }
                 Dialog::NewSession { name, sample_rate, demo } => {
                     ui.horizontal(|ui| {
-                        ui.label("Name");
-                        crate::widgets::named_text_field(ui.text_edit_singleline(name), "Name");
+                        ui.label(crate::localization::text("Name"));
+                        crate::widgets::named_text_field(ui.text_edit_singleline(name), crate::localization::text("Name"));
                     });
-                    craft_ui::ComboBox::from_label("Sample Rate").selected_text(format!("{sample_rate} Hz")).show_ui(ui, |ui| {
+                    craft_ui::ComboBox::from_label(crate::localization::text("Sample Rate")).selected_text(format!("{sample_rate} Hz")).show_ui(ui, |ui| {
                         for r in soundcraft_time::SampleRate::COMMON {
                             ui.selectable_value(sample_rate, r, format!("{r} Hz"));
                         }
                     });
-                    crate::widgets::checkbox(ui, demo, "Start from the demo session");
+                    crate::widgets::checkbox(ui, demo, crate::localization::text("Start from the demo session"));
                     if buttons(ui, "Create", enter) {
                         action = Some((
                             "session.new".into(),
@@ -541,25 +552,25 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 Dialog::Bounce { path, format, bit_depth, normalize, dither } => {
                     bounce_file_row(app, ui, path, format);
                     ui.horizontal(|ui| {
-                        craft_ui::ComboBox::from_label("Format").selected_text(format.container().name()).show_ui(ui, |ui| {
+                        craft_ui::ComboBox::from_label(crate::localization::text("Format")).selected_text(format.container().name()).show_ui(ui, |ui| {
                             for &f in EncodeFormat::ALL {
                                 ui.selectable_value(format, f, f.container().name());
                             }
                         });
-                        craft_ui::ComboBox::from_label("Bit Depth").selected_text(format!("{bit_depth}-bit")).show_ui(ui, |ui| {
+                        craft_ui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(format!("{bit_depth}-bit")).show_ui(ui, |ui| {
                             for b in ["16", "24", "32f"] {
-                                ui.selectable_value(bit_depth, b.to_string(), format!("{b}-bit"));
+                                ui.selectable_value(bit_depth, b.to_string(), crate::localized_format!("{b}-bit", b = b));
                             }
                         });
                     });
-                    crate::widgets::checkbox(ui, normalize, "Normalize to -0.1 dBFS");
+                    crate::widgets::checkbox(ui, normalize, crate::localization::text("Normalize to -0.1 dBFS"));
                     // 32-bit float keeps every sample as it is: there is nothing to dither.
                     ui.add_enabled_ui(bit_depth.as_str() != "32f", |ui| {
-                        crate::widgets::checkbox(ui, dither, "Dither (TPDF)")
-                            .on_hover_text("Adds ±1 LSB triangular dither when writing 16- or 24-bit files. Leave it off when the master chain already dithers.");
+                        crate::widgets::checkbox(ui, dither, crate::localization::text("Dither (TPDF)"))
+                            .on_hover_text(crate::localization::text("Adds ±1 LSB triangular dither when writing 16- or 24-bit files. Leave it off when the master chain already dithers."));
                     });
                     ui.label(
-                        egui::RichText::new("Bounces the edit selection, or the whole session when nothing is selected.")
+                        egui::RichText::new(crate::localization::text("Bounces the edit selection, or the whole session when nothing is selected."))
                             .small()
                             .color(Tokens::current().text_dim),
                     );
@@ -602,7 +613,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 }
                 Dialog::Number { cmd, key, value, suffix, .. } => {
                     ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(value).speed(0.1)).accessible_name(format!("Value in {suffix}"));
+                        ui.add(egui::DragValue::new(value).speed(0.1)).accessible_name(crate::localized_format!("Value in {suffix}", suffix = suffix));
                         ui.label(suffix.as_str());
                     });
                     if buttons(ui, "OK", enter) {
@@ -613,8 +624,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 Dialog::TempoChange { at, bpm } => {
                     ui.horizontal(|ui| {
                         // Same limits the engine enforces (time crate `valid_bpm`).
-                        ui.add(egui::DragValue::new(bpm).speed(0.1).range(5.0..=1000.0)).accessible_name("Tempo (BPM)");
-                        ui.label("bpm");
+                        ui.add(egui::DragValue::new(bpm).speed(0.1).range(5.0..=1000.0)).accessible_name(crate::localization::text("Tempo (BPM)"));
+                        ui.label(crate::localization::text("bpm"));
                     });
                     if buttons(ui, "OK", enter) {
                         action = Some(tempo_change_action(*at, *bpm));
@@ -629,7 +640,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 }
                 Dialog::Fades { shape } => {
                     for s in soundcraft_model::FadeShape::ALL {
-                        ui.radio_value(shape, s.label().to_lowercase(), s.label());
+                        ui.radio_value(shape, s.label().to_lowercase(), crate::localization::text(s.label()));
                     }
                     if buttons(ui, "OK", enter) {
                         action = Some(("edit.fades_create".into(), json!({"shape": shape})));
@@ -644,7 +655,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 }
                 Dialog::StripSilenceRename { names, .. } => {
                     strip_name_fields(ui, names, STRIP_NAME_LABELS);
-                    let cleared = ui.button("Clear").clicked();
+                    let cleared = ui.button(crate::localization::text("Clear")).clicked();
                     if cleared {
                         *names = StripNames::default();
                     }
@@ -654,7 +665,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 }
                 Dialog::AutoRename { clips, names } => {
-                    ui.label("Text for naming the clips that editing makes from the selected clips:");
+                    ui.label(crate::localization::text("Text for naming the clips that editing makes from the selected clips:"));
                     strip_name_fields(ui, names, AUTO_NAME_LABELS);
                     if buttons(ui, "OK", enter) {
                         action = Some(auto_rename_action(clips, names));
@@ -662,14 +673,14 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 }
                 Dialog::Group { id, name, edit, mix, members } => {
                     ui.horizontal(|ui| {
-                        ui.label("Name");
-                        crate::widgets::named_text_field(ui.text_edit_singleline(name), "Name");
+                        ui.label(crate::localization::text("Name"));
+                        crate::widgets::named_text_field(ui.text_edit_singleline(name), crate::localization::text("Name"));
                     });
                     ui.horizontal(|ui| {
-                        crate::widgets::checkbox(ui, edit, "Edit group");
-                        crate::widgets::checkbox(ui, mix, "Mix group");
+                        crate::widgets::checkbox(ui, edit, crate::localization::text("Edit group"));
+                        crate::widgets::checkbox(ui, mix, crate::localization::text("Mix group"));
                     });
-                    ui.label("Tracks");
+                    ui.label(crate::localization::text("Tracks"));
                     egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
                         for (_, n, on) in members.iter_mut() {
                             crate::widgets::checkbox(ui, on, n.as_str());
@@ -690,14 +701,14 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 }
                 Dialog::Session { frame_rate, bit_depth } => {
-                    craft_ui::ComboBox::from_label("Timecode Rate").selected_text(frame_rate.as_str()).show_ui(ui, |ui| {
+                    craft_ui::ComboBox::from_label(crate::localization::text("Timecode Rate")).selected_text(crate::localization::text(frame_rate.as_str())).show_ui(ui, |ui| {
                         for r in soundcraft_time::FrameRate::ALL {
-                            ui.selectable_value(frame_rate, r.label().to_string(), r.label());
+                            ui.selectable_value(frame_rate, r.label().to_string(), crate::localization::text(r.label()));
                         }
                     });
-                    craft_ui::ComboBox::from_label("Bit Depth").selected_text(bit_depth.as_str()).show_ui(ui, |ui| {
+                    craft_ui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(crate::localization::text(bit_depth.as_str())).show_ui(ui, |ui| {
                         for b in ["16", "24", "32f"] {
-                            ui.selectable_value(bit_depth, b.to_string(), b);
+                            ui.selectable_value(bit_depth, b.to_string(), crate::localization::text(b));
                         }
                     });
                     if buttons(ui, "OK", enter) {
@@ -707,15 +718,15 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 Dialog::Loop { by, count, length, format, start, filled } => {
                     let s = app.engine.session();
                     ui.horizontal(|ui| {
-                        let count_label = ui.radio_value(by, LoopBy::Count, "Number of Loops");
+                        let count_label = ui.radio_value(by, LoopBy::Count, crate::localization::text("Number of Loops"));
                         ui.add_enabled(*by == LoopBy::Count, egui::DragValue::new(count).range(1..=512)).labelled_by(count_label.id);
                     });
                     ui.horizontal(|ui| {
-                        let length_label = ui.radio_value(by, LoopBy::Length, "Loop Length");
+                        let length_label = ui.radio_value(by, LoopBy::Length, crate::localization::text("Loop Length"));
                         ui.add_enabled(*by == LoopBy::Length, egui::TextEdit::singleline(length).desired_width(140.0)).labelled_by(length_label.id);
-                        ui.label(format.label());
+                        ui.label(crate::localization::text(format.label()));
                     });
-                    ui.radio_value(by, LoopBy::Fill, "Loop Until End of Session or Next Clip");
+                    ui.radio_value(by, LoopBy::Fill, crate::localization::text("Loop Until End of Session or Next Clip"));
                     let params = loop_params(s, *by, *count, length, *format, *start, filled);
                     if buttons_enabled(ui, "OK", enter, params.is_some()) {
                         action = params.map(|p| ("clip.loop".into(), p));
@@ -723,18 +734,18 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 }
                 Dialog::ScoreSetup { title, composer, bars_per_system, show_track_names } => {
                     egui::Grid::new("score_setup").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
-                        ui.label("Title");
+                        ui.label(crate::localization::text("Title"));
                         // The painted label is not an accesskit name; name the field itself.
-                        crate::widgets::named_text_field(ui.text_edit_singleline(title), "Score title");
+                        crate::widgets::named_text_field(ui.text_edit_singleline(title), crate::localization::text("Score title"));
                         ui.end_row();
-                        ui.label("Composer");
-                        crate::widgets::named_text_field(ui.text_edit_singleline(composer), "Score composer");
+                        ui.label(crate::localization::text("Composer"));
+                        crate::widgets::named_text_field(ui.text_edit_singleline(composer), crate::localization::text("Score composer"));
                         ui.end_row();
-                        ui.label("Bars per system");
-                        ui.add(egui::DragValue::new(bars_per_system).range(1..=16)).accessible_name("Bars per system");
+                        ui.label(crate::localization::text("Bars per system"));
+                        ui.add(egui::DragValue::new(bars_per_system).range(1..=16)).accessible_name(crate::localization::text("Bars per system"));
                         ui.end_row();
                     });
-                    crate::widgets::checkbox(ui, show_track_names, "Show track names");
+                    crate::widgets::checkbox(ui, show_track_names, crate::localization::text("Show track names"));
                     if buttons(ui, "OK", enter) {
                         action = Some((
                             "file.score_setup".into(),
@@ -747,19 +758,19 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     let revert = then.0 == "session.revert";
                     if revert || cfg!(target_arch = "wasm32") {
                         let (question, ok) = if revert {
-                            (format!("Revert “{name}” to its last saved version?"), "Revert")
+                            (crate::localized_format!("Revert “{name}” to its last saved version?", name = name), "Revert")
                         } else {
-                            (format!("Close “{name}” without saving?"), "Don't Save")
+                            (crate::localized_format!("Close “{name}” without saving?", name = name), "Don't Save")
                         };
-                        ui.label(format!("{question} Your changes will be lost."));
+                        ui.label(crate::localized_format!("{question} Your changes will be lost.", question = question));
                         if buttons(ui, ok, false) {
                             action = Some(then.clone());
                         }
                     } else {
-                        ui.label(format!("Save changes to “{name}” before closing?"));
+                        ui.label(crate::localized_format!("Save changes to “{name}” before closing?", name = name));
                         ui.separator();
                         ui.horizontal(|ui| {
-                            if ui.button("Don't Save").clicked() {
+                            if ui.button(crate::localization::text("Don't Save")).clicked() {
                                 action = Some(then.clone());
                             }
                             if buttons(ui, "Save", enter) {
@@ -834,7 +845,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         } else {
             match run_then(app, &cmd, params) {
                 Ok(v) if cmd == "file.export_clips" => {
-                    app.ui.status = format!("Exported {} clip(s) to {}", v["written"], v["dir"].as_str().unwrap_or_default());
+                    app.ui.status = crate::localized_format!("Exported {} clip(s) to {}", v["written"], v["dir"].as_str().unwrap_or_default());
                 }
                 Ok(_) => {}
                 Err(e) => app.ui.status = e,
@@ -873,11 +884,11 @@ pub(crate) fn buttons_enabled(ui: &mut egui::Ui, ok: &str, enter: bool, ready: b
     let mut canceled = false;
     ui.separator();
     ui.horizontal(|ui| {
-        if ui.button("Cancel").clicked() {
+        if ui.button(crate::localization::text("Cancel")).clicked() {
             canceled = true;
             ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::unique("dlg_cancel"), true));
         }
-        let b = egui::Button::new(egui::RichText::new(ok).strong()).fill(Tokens::current().accent);
+        let b = egui::Button::new(egui::RichText::new(crate::localization::text(ok)).strong()).fill(Tokens::current().accent);
         if ui.add_enabled(ready, b).clicked() {
             pressed = true;
         }
@@ -888,7 +899,7 @@ pub(crate) fn buttons_enabled(ui: &mut egui::Ui, ok: &str, enter: bool, ready: b
 /// A name field that takes the focus with its text selected, so typing replaces the old name.
 fn name_field(ui: &mut egui::Ui, name: &mut String) {
     let mut out = egui::TextEdit::singleline(name).show(ui);
-    let _ = crate::widgets::named_text_field(out.response.response.clone(), "Name");
+    let _ = crate::widgets::named_text_field(out.response.response.clone(), crate::localization::text("Name"));
     if !out.response.has_focus() {
         out.response.request_focus();
         let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(name.chars().count()));
@@ -1303,6 +1314,28 @@ mod tests {
         let named: Vec<String> = e.session().track(kick).unwrap().clips().iter().map(|c| c.name.clone()).collect();
         assert!(named.len() > 1);
         assert_eq!(named[..2], ["SFX023.Reel1", "SFX024.Reel1"]);
+    }
+
+    #[test]
+    fn clear_question_is_assembled_in_portuguese() {
+        let _scope = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
+        let mut e = soundcraft_engine::demo::demo_engine();
+        let kick = e.session().sources.iter().find(|f| f.name == "Kick").map(|f| f.id).unwrap();
+        let kick_clips: Vec<ClipId> = e.session().clips_using(kick).map(|c| c.id).collect();
+        let message = |d: &Dialogs| match &d.open {
+            Some(Dialog::ClearClips { message, .. }) => message.clone(),
+            other => panic!("{other:?}"),
+        };
+        let mut d = Dialogs::default();
+        assert!(d.open_clear(&e, kick_clips, vec![kick]));
+        let combined = message(&d);
+        assert_eq!(combined, "Remover 3 clipes e 1 arquivo da sessão?");
+        e.session_mut().sources.iter_mut().for_each(|f| f.unsaved = false);
+        assert!(d.open_clear(&e, vec![], vec![kick]));
+        assert_eq!(
+            message(&d),
+            "Remover o arquivo \"Kick\" da sessão? Ele é usado por 3 clipes na linha do tempo, que também serão removidos. O arquivo permanece no disco."
+        );
     }
 
     #[test]
