@@ -295,6 +295,13 @@ pub fn copy_range(s: &Session, track: TrackId, range: Range) -> Vec<Clip> {
     out
 }
 
+/// The material [`clear_range`] removes from `range`: [`copy_range`] without the time- and edit-locked
+/// clips, which it keeps whole. Cut and the Move Selection commands carry this, so a move never leaves a
+/// locked clip in place and also puts a copy of it elsewhere.
+pub fn take_range(s: &Session, track: TrackId, range: Range) -> Vec<Clip> {
+    copy_range(s, track, range).into_iter().filter(|c| !locked(c)).collect()
+}
+
 /// Merge the MIDI inside `range` into one clip covering the whole range, gaps included, as it
 /// sounds (muted clips stay silent). Returns false for tracks that aren't MIDI or instrument tracks.
 pub fn consolidate_midi(s: &mut Session, track: TrackId, range: Range) -> bool {

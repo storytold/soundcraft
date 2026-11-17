@@ -748,3 +748,105 @@ fn cut_time_removes_a_locked_clip_inside_the_range() {
         assert_eq!(clips(&e, t), [(16_000, 5_000)], "{lock}");
     }
 }
+
+/// Cut is a move: it puts on the clipboard only what it removes. A time- or edit-locked clip it leaves in place,
+/// inside the range or across its end, stays off the clipboard, so a later paste doesn't duplicate it. Copy still
+/// copies locked clips, and the copies stay locked (Pro Tools: copied Edit-locked clips paste "also Edit-locked").
+#[test]
+fn cut_leaves_a_locked_clip_off_the_clipboard() {
+    for lock in [None, Some("clip.edit_lock"), Some("clip.time_lock")] {
+        for cmd in ["edit.cut", "edit.copy"] {
+            for mode in ["slip", "shuffle"] {
+                let (mut e, t, ids) = long(mode, &[(10_000, 10_000, 0), (25_000, 3_000, 0), (29_000, 5_000, 0)]);
+                if let Some(lock) = lock {
+                    run(&mut e, lock, json!({"clips": [ids[0].0, ids[2].0]}));
+                }
+                let out = e.execute(cmd, &json!({"tracks": [t.0], "start": 0, "end": 30_000})).unwrap();
+                let left = clips(&e, t);
+                run(&mut e, "edit.paste", json!({"tracks": [t.0], "at": 200_000}));
+                let pasted: Vec<_> = e.session().track(t).unwrap().clips().iter().filter(|c| c.start >= 200_000).cloned().collect();
+                let got: Vec<_> = pasted.iter().map(|c| (c.start, c.length)).collect();
+                let want = match (lock, cmd) {
+                    (Some(_), "edit.cut") => vec![(225_000, 3_000)],
+                    _ => vec![(210_000, 10_000), (225_000, 3_000), (229_000, 1_000)],
+                };
+                let ctx = format!("{lock:?} {cmd} {mode}");
+                assert_eq!(got, want, "{ctx}");
+                assert_eq!(out["clips"], want.len(), "{ctx}");
+                if lock.is_some() {
+                    let kept = if cmd == "edit.cut" {
+                        vec![(10_000, 10_000), (29_000, 5_000)]
+                    } else {
+                        vec![(10_000, 10_000), (25_000, 3_000), (29_000, 5_000)]
+                    };
+                    assert_eq!(left, kept, "{ctx}: locked clips stay in place");
+                    let locks: Vec<_> = pasted.iter().map(soundcraft_engine::edit::locked).collect();
+                    assert_eq!(locks, want.iter().map(|&(s, _)| s != 225_000).collect::<Vec<_>>(), "{ctx}: copies stay locked");
+                }
+            }
+        }
+    }
+}
+
+/// A playlist's clips as (start, length), sorted by start.
+fn playlist(e: &Engine, t: TrackId, idx: usize) -> Vec<(i64, i64)> {
+    let mut v: Vec<_> = e.session().track(t).unwrap().playlists[idx].clips.iter().map(|c| (c.start, c.length)).collect();
+    v.sort_unstable();
+    v
+}
+
+/// Pro Tools' Move Selection To commands cut and paste the selection to another playlist. A time- or edit-locked
+/// clip that the move leaves in the main playlist, inside the range or across its end, isn't copied to the
+/// destination as well; unlocked clips move as before.
+#[test]
+fn moving_a_selection_to_a_playlist_leaves_a_locked_clip_only_in_the_main_playlist() {
+    for lock in [None, Some("clip.edit_lock"), Some("clip.time_lock")] {
+        for cmd in ["edit.move_to_new_playlist", "edit.move_to_target_playlist", "edit.move_to_duplicate_playlist"] {
+            let (mut e, t, ids) = long("slip", &[(10_000, 10_000, 0), (25_000, 3_000, 0), (29_000, 5_000, 0)]);
+            if let Some(lock) = lock {
+                run(&mut e, lock, json!({"clips": [ids[0].0, ids[2].0]}));
+            }
+            if cmd == "edit.move_to_target_playlist" {
+                run(&mut e, "track.playlist_new", json!({"tracks": [t.0]}));
+                run(&mut e, "track.designate_target_playlist", json!({"tracks": [t.0], "index": 1}));
+                run(&mut e, "track.playlist_select", json!({"tracks": [t.0], "index": 0}));
+            }
+            run(&mut e, cmd, json!({"tracks": [t.0], "start": 0, "end": 30_000}));
+            let ctx = format!("{lock:?} {cmd}");
+            let (main, moved) = if lock.is_some() {
+                (vec![(10_000, 10_000), (29_000, 5_000)], vec![(25_000, 3_000)])
+            } else {
+                (vec![(30_000, 4_000)], vec![(10_000, 10_000), (25_000, 3_000), (29_000, 1_000)])
+            };
+            assert_eq!(playlist(&e, t, 0), main, "{ctx}: main playlist");
+            let dest = if cmd == "edit.move_to_duplicate_playlist" {
+                // The duplicate starts as a copy of the whole main playlist, locked clips included.
+                if lock.is_some() {
+                    vec![(10_000, 10_000), (25_000, 3_000), (29_000, 5_000)]
+                } else {
+                    vec![(10_000, 10_000), (25_000, 3_000), (29_000, 1_000), (30_000, 4_000)]
+                }
+            } else {
+                moved
+            };
+            assert_eq!(playlist(&e, t, 1), dest, "{ctx}: destination playlist");
+        }
+    }
+}
+
+/// Shuffle holds clips per track, after a locked clip (Pro Tools: a locked clip "and all clips occurring after
+/// the locked clip, are not displaced"). A Shuffle clear over two tracks closes the gap on the track without a
+/// locked clip and holds it on the track whose locked clip the range covers part of.
+#[test]
+fn shuffle_clear_holds_only_the_track_with_a_locked_clip_in_the_range() {
+    let (mut e, a, ids) = long("shuffle", &[(0, 20_000, 0), (50_000, 2_000, 0)]);
+    let b = new_track(&mut e);
+    let s = e.session_mut();
+    let b_ids = [s.new_clip_id(), s.new_clip_id()];
+    s.track_mut(b).and_then(|t| t.playlist_mut()).unwrap().clips =
+        vec![Clip::audio(b_ids[0], "c", SourceId(8), 0, 0, 20_000), Clip::audio(b_ids[1], "c", SourceId(8), 0, 50_000, 2_000)];
+    run(&mut e, "clip.time_lock", json!({"clips": [ids[0].0]}));
+    run(&mut e, "edit.clear", json!({"tracks": [a.0, b.0], "start": 10_000, "end": 30_000}));
+    assert_eq!(clips(&e, a), [(0, 20_000), (50_000, 2_000)]);
+    assert_eq!(clips(&e, b), [(0, 10_000), (30_000, 2_000)]);
+}

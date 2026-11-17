@@ -258,7 +258,8 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
     let mut cb = Clipboard::of_range(e.session(), range);
     let follow = e.session().edit.automation_follows_edit;
     for t in &tracks {
-        cb.tracks.push(ops::copy_range(e.session(), *t, range));
+        // Cut carries only what it removes; a locked clip stays where it is (see `ops::take_range`).
+        cb.tracks.push(if cut { ops::take_range(e.session(), *t, range) } else { ops::copy_range(e.session(), *t, range) });
         let lanes = e
             .session()
             .track(*t)
