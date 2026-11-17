@@ -546,6 +546,18 @@ mod tests {
     }
 
     #[test]
+    fn georgian_clip_count_errors_translate_for_one_and_many() {
+        for n in ["1 clip", "2 clips"] {
+            let message = format!("`Kick` is used by {n} on the timeline; pass `with_clips: true` to remove them too");
+            let count = &n[..1];
+            assert_eq!(
+                super::error_text_in(Language::Georgian, &message, 0),
+                format!("`Kick` გამოიყენება დროის ხაზის {count} კლიპში; მათი წასაშლელადაც გადაეცით `with_clips: true`")
+            );
+        }
+    }
+
+    #[test]
     fn georgian_catalog_entries_are_parsed_and_unique() {
         let entries = parse_catalog(include_str!("../locales/ka/mod.rs"));
         assert!(entries.len() > 1000, "parsed only {} catalog entries", entries.len());
