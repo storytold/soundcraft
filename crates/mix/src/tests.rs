@@ -542,6 +542,54 @@ fn midi_channels_reach_notes_controllers_and_seek_chase() {
     assert!(chased.contains(&(0, [0xE9, 127, 127])));
 }
 
+#[test]
+fn seek_chase_does_not_restore_controllers_reset_by_cc121_on_that_channel() {
+    use soundcraft_midi::{CtrlEvent, Note, Sequence};
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(t).unwrap().instrument = Some(Insert::new("clap:test.channels"));
+    let ctrl = |channel, tick, kind, value| CtrlEvent { channel, tick, kind, value };
+    let sequence = Sequence {
+        notes: vec![Note { channel: 9, pitch: 60, velocity: 100, release_velocity: 64, start: 4, length: 4 }],
+        ctrls: vec![
+            ctrl(0, 1, CtrlKind::PitchBend, 1000),
+            ctrl(9, 1, CtrlKind::PitchBend, 8191),
+            ctrl(9, 1, CtrlKind::ChannelPressure, 100),
+            ctrl(9, 1, CtrlKind::Cc(1), 90),
+            ctrl(9, 1, CtrlKind::Cc(7), 80),
+            ctrl(9, 1, CtrlKind::Cc(10), 40),
+            ctrl(9, 1, CtrlKind::Cc(0), 1),
+            ctrl(9, 1, CtrlKind::Program, 24),
+            ctrl(9, 2, CtrlKind::Cc(121), 0),
+            ctrl(9, 3, CtrlKind::Cc(11), 70),
+        ],
+    };
+    let clip = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(clip, "reset", 0, 48_000, sequence));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: t,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.channels".into(),
+        ch: 2,
+        plugin: Box::new(ChannelEars(Arc::clone(&heard))),
+    }]);
+    render_block(&mut eng, &s, 0);
+    heard.lock().unwrap().clear();
+    render_block(&mut eng, &s, 90);
+    let events = heard.lock().unwrap();
+    assert!(
+        !events.iter().any(|(_, m)| matches!(m[0], 0xE9 | 0xD9) || m[..2] == [0xB9, 1]),
+        "pre-reset bend/pressure/modulation restored: {events:?}"
+    );
+    for message in [[0xE0, 104, 71], [0xB9, 7, 80], [0xB9, 10, 40], [0xB9, 0, 1], [0xC9, 24, 0], [0xB9, 11, 70]] {
+        assert!(events.contains(&(0, message)), "persistent, other-channel or post-reset state missing: {message:?}");
+    }
+    assert!(events.contains(&(10, [0x99, 60, 100])), "note after the seek lost its channel");
+}
+
 impl Plugin for Keys {
     fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
         self.inner.info()

@@ -150,6 +150,7 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
         }
     }
     for (channel, controllers) in last.iter().enumerate() {
+        let reset_at = controllers.get(121).map_or(i64::MIN, |c| c.0);
         for (slot, &(at, value)) in controllers.iter().enumerate() {
             let kind = match slot {
                 BEND => CtrlKind::PitchBend,
@@ -157,11 +158,17 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
                 PROGRAM => CtrlKind::Program,
                 n => CtrlKind::Cc(u8::try_from(n).unwrap_or(0)),
             };
-            if at != i64::MIN {
+            if at != i64::MIN && !(at < reset_at && reset_by_cc121(kind)) {
                 inst.plugin.midi(0, ctrl_message(u8::try_from(channel).unwrap_or(0), kind, value, 0));
             }
         }
     }
+}
+
+/// RP-015 leaves bank, level/pan, sound/effect settings, channel modes and parameter data intact.
+/// Earlier resettable values must not undo a recorded channel reset when seeking.
+fn reset_by_cc121(kind: CtrlKind) -> bool {
+    !matches!(kind, CtrlKind::Program | CtrlKind::Cc(0 | 6 | 7 | 10 | 32 | 38 | 39 | 42 | 70..=79 | 91..=97 | 120..=127))
 }
 
 /// Session audio shared with a sample-playing instrument.
