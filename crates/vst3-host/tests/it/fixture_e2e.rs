@@ -12,6 +12,31 @@ fn id_of(name: &str) -> String {
 }
 
 #[test]
+fn mapped_program_changes_reach_the_instrument_at_each_event_offset() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    p.midi(10, [0xC0, 24, 0]);
+    p.midi(40, [0xC0, 7, 0]);
+    let mut io = vec![vec![0.0f32; 64]; 2];
+    p.process(&mut io, 64);
+    assert_eq!(io[0][9], 0.0);
+    assert!((io[0][10] - 34.0).abs() < 1e-5, "program 24 was dropped or delivered late: {:?}", io[0]);
+    assert!((io[0][39] - 34.0).abs() < 1e-5);
+    assert!((io[0][40] - 17.0).abs() < 1e-5, "program 7 must not replace program 24's earlier point");
+    assert!((io[0][63] - 17.0).abs() < 1e-5);
+}
+
+#[test]
+fn an_unmapped_program_channel_does_not_select_channel_one_programs() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    p.midi(10, [0xC9, 24, 0]);
+    let mut io = vec![vec![0.0f32; 64]; 2];
+    p.process(&mut io, 64);
+    assert!(io.iter().flatten().all(|&v| v == 0.0));
+}
+
+#[test]
 fn scan_lists_both_audio_modules_but_not_the_controller_class() {
     let dir = fixture_dir();
     let found = soundcraft_vst3_host::scan_paths(&[dir.to_path_buf()]);

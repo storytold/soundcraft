@@ -1,6 +1,8 @@
 //! `Vst3Plugin`: a loaded VST3 instance behind the safe `soundcraft_dsp::Plugin` trait.
 
-use crate::ffi::{AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND, ProcessInput};
+use crate::ffi::{
+    AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND, PROGRAM_CHANGE, ProcessInput,
+};
 use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport, Unit};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,6 +46,7 @@ pub struct Vst3Plugin {
     notes: Vec<NoteEvent>,
     /// The parameter each MIDI controller drives (see `Instance::midi_mapping`).
     midi_map: Vec<Option<u32>>,
+    program_ids: [Option<u32>; 16],
     /// Controller points for the next block: (time, param id, normalized value). Bounded.
     controls: Vec<(u32, u32, f64)>,
     inputs: BusBuffers,
@@ -91,6 +94,7 @@ impl Vst3Plugin {
             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
             notes: Vec::with_capacity(EVENT_CAP),
             midi_map: Vec::new(),
+            program_ids: [None; 16],
             controls: Vec::with_capacity(EVENT_CAP),
             inputs: BusBuffers::new(&[], 0),
             outputs: BusBuffers::new(&[], 0),
@@ -244,6 +248,8 @@ impl Plugin for Vst3Plugin {
                 self.latency = self.inst.latency() as usize;
                 self.tail = self.inst.tail() as usize;
                 self.midi_map = self.inst.midi_mapping();
+                self.program_ids =
+                    std::array::from_fn(|channel| self.midi_map.get(channel * (PROGRAM_CHANGE + 1) + PROGRAM_CHANGE).copied().flatten());
             }
             Err(e) => {
                 log::warn!("{}: {e}", self.info.id);
@@ -320,7 +326,19 @@ impl Plugin for Vst3Plugin {
         }
         let mut start = 0usize;
         while start < frames {
-            let n = (frames - start).min(self.max_block);
+            let mut n = (frames - start).min(self.max_block);
+            // A parameter queue holds one point per id. Split at mapped program changes so
+            // successive selections cannot overwrite one another or affect earlier notes.
+            // This uses the processor's mapping; it never calls the controller on this thread.
+            if let Some(at) = self
+                .controls
+                .iter()
+                .filter(|(time, id, _)| self.program_ids.contains(&Some(*id)) && (*time as usize) > start)
+                .map(|(time, _, _)| *time as usize)
+                .min()
+            {
+                n = n.min(at - start);
+            }
             let end = u32::try_from(start + n).unwrap_or(u32::MAX);
             // Feed the main input bus (mono sources fill every bus channel).
             if self.has_input {
@@ -396,13 +414,14 @@ impl Plugin for Vst3Plugin {
             0xB0 => (usize::from(d1), f64::from(d2) / 127.0),
             0xD0 => (AFTERTOUCH, f64::from(d1) / 127.0),
             0xE0 => (PITCH_BEND, f64::from(u16::from(d2) << 7 | u16::from(d1)) / 16383.0),
+            0xC0 => (PROGRAM_CHANGE, f64::from(d1) / 127.0),
             0xA0 if self.event_input => {
                 self.push_note(NoteEvent::Pressure { time, key: d1, pressure: f32::from(d2) / 127.0 });
                 return;
             }
             _ => return,
         };
-        if let Some(&Some(id)) = self.midi_map.get(ctrl)
+        if let Some(&Some(id)) = self.midi_map.get(usize::from(msg[0] & 0x0F) * (PROGRAM_CHANGE + 1) + ctrl)
             && self.controls.len() < self.controls.capacity()
         {
             self.controls.push((time, id, value));

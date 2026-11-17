@@ -4,8 +4,8 @@ use super::module::Bundle;
 use super::process::{BusBuffers, EventList, MemoryStream, NoteEvent, ParamChanges};
 use super::{
     Arc, ComPtr, ComWrapper, EVENT_CAP, IAudioProcessorTrait, IComponentTrait, IConnectionPointTrait, IEditControllerTrait, IMidiMappingTrait,
-    IPluginBaseTrait, MAX_BUS_CHANNELS, MAX_BUSES, MAX_PARAMS, MAX_STATE_BYTES, Mutex, Ordering, PARAM_QUEUE_CAP, PITCH_BEND, STATE_MAGIC, Transport,
-    Vst3Error, ok, read_c16, sb, sv,
+    IPluginBaseTrait, MAX_BUS_CHANNELS, MAX_BUSES, MAX_PARAMS, MAX_STATE_BYTES, Mutex, Ordering, PARAM_QUEUE_CAP, PROGRAM_CHANGE, STATE_MAGIC,
+    Transport, Vst3Error, ok, read_c16, sb, sv,
 };
 
 // ---- instances -----------------------------------------------------------------------------
@@ -218,16 +218,17 @@ impl Instance {
         v.is_finite().then(|| v.clamp(0.0, 1.0))
     }
 
-    /// The parameter each MIDI controller drives on channel 1 (`IMidiMapping`), indexed by VST3's
-    /// controller numbers: CCs 0–127, then [`AFTERTOUCH`] and [`PITCH_BEND`]. Main thread only.
+    /// The parameter each MIDI controller drives (`IMidiMapping`), channel-major and indexed by VST3's
+    /// controller numbers: CCs 0–127, aftertouch, pitch bend and Program Change. Main thread only.
     pub fn midi_mapping(&self) -> Vec<Option<u32>> {
         let Some(m) = self.controller.as_ref().and_then(|c| c.cast::<sv::IMidiMapping>()) else { return Vec::new() };
-        (0..=PITCH_BEND)
-            .map(|n| {
+        (0..16i16)
+            .flat_map(|channel| (0..=PROGRAM_CHANGE).map(move |n| (channel, n)))
+            .map(|(channel, n)| {
                 let mut id: sv::ParamID = 0;
                 let n = i16::try_from(n).unwrap_or(0);
                 // SAFETY: valid mapping interface on the main thread; `id` is a local.
-                ok(unsafe { m.getMidiControllerAssignment(0, 0, n, &mut id) }).then_some(id)
+                ok(unsafe { m.getMidiControllerAssignment(0, channel, n, &mut id) }).then_some(id)
             })
             .collect()
     }

@@ -440,11 +440,12 @@ impl Class for Synth {
 
 /// The synth's hidden parameter that MIDI CC 7 drives.
 const VOLUME_PARAM: ParamID = 1;
+const PROGRAM_PARAM: ParamID = 2000;
 
 impl IMidiMappingTrait for Synth {
     unsafe fn getMidiControllerAssignment(&self, bus: i32, channel: i16, ctrl: CtrlNumber, id: *mut ParamID) -> tresult {
-        if bus == 0 && channel == 0 && ctrl == 7 {
-            unsafe { *id = VOLUME_PARAM };
+        if bus == 0 && channel == 0 && (ctrl == 7 || ctrl == 130) {
+            unsafe { *id = if ctrl == 130 { PROGRAM_PARAM } else { VOLUME_PARAM } };
             kResultOk
         } else {
             kResultFalse
@@ -560,6 +561,9 @@ impl IAudioProcessorTrait for Synth {
                 let (mut at, mut v) = (0i32, 0f64);
                 if unsafe { q.getParameterId() } == VOLUME_PARAM && unsafe { q.getPoint(0, &mut at, &mut v) } == kResultOk {
                     volume = Some((at.max(0) as usize, v as f32));
+                }
+                if unsafe { q.getParameterId() } == PROGRAM_PARAM && unsafe { q.getPoint(0, &mut at, &mut v) } == kResultOk {
+                    volume = Some((at.max(0) as usize, 10.0 + v as f32 * 127.0));
                 }
             }
         }

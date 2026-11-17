@@ -102,6 +102,7 @@ fn ok(r: sb::tresult) -> bool {
 /// VST3's numbers for the MIDI controllers that aren't CCs.
 pub(crate) const AFTERTOUCH: usize = sv::ControllerNumbers_::kAfterTouch as usize;
 pub(crate) const PITCH_BEND: usize = sv::ControllerNumbers_::kPitchBend as usize;
+pub(crate) const PROGRAM_CHANGE: usize = sv::ControllerNumbers_::kCtrlProgramChange as usize;
 
 /// The platform host window for plugin views.
 #[cfg(target_os = "macos")]
