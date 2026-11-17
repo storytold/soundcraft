@@ -119,6 +119,8 @@ enum Cmd {
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
     Recording(bool),
+    /// The range a recording punches into ([`Player::set_punch`]).
+    Punch(Option<Range>),
     Play {
         from: Samples,
         end: Option<Samples>,
@@ -478,6 +480,13 @@ impl Player {
 
     pub fn set_recording(&self, on: bool) {
         let _ = self.tx.send(Cmd::Recording(on));
+    }
+
+    /// The range the recording under way punches into (after [`Player::set_recording`], which
+    /// clears it, and before Play): record-armed tracks play their clips through the pre- and
+    /// post-roll and hear their input inside it. The whole pass is still captured.
+    pub fn set_punch(&self, punch: Option<Range>) {
+        let _ = self.tx.send(Cmd::Punch(punch));
     }
 
     pub fn stop(&self) {

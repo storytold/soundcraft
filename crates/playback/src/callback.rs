@@ -80,6 +80,8 @@ pub(crate) struct AudioState {
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
+    /// The range the recording punches into ([`crate::Player::set_punch`]).
+    punch: Option<Range>,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
@@ -125,6 +127,7 @@ impl AudioState {
             device_rate,
             input: None,
             recording: false,
+            punch: None,
             unsent: MeterSnapshot::default(),
             forget_shared: Vec::new(),
         }
@@ -144,7 +147,11 @@ impl AudioState {
                     }
                     self.forget_meters();
                 }
-                Cmd::Recording(r) => self.recording = r,
+                Cmd::Recording(r) => {
+                    self.recording = r;
+                    self.punch = None;
+                }
+                Cmd::Punch(p) => self.punch = p,
                 Cmd::Session(s, instances) => {
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
@@ -241,6 +248,7 @@ impl AudioState {
         }
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
+        self.mix.punch = self.punch;
         self.mix.render(&self.session, self.pos, n, &mut self.pending);
         self.send_garbage();
         self.pending_len = n;
