@@ -129,4 +129,4 @@ winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457
 
 [patch.'https://github.com/storytold/craft-libs']
 # Temporary dependency for storytold/craft-libs#2077; align upstream MIDI pins after it merges.
-craft-midi = { git = 'https://github.com/mtlcl410/craft-libs.git', rev = '4845e2e9d0322dbefde38e1e1d8219d5636f10a1' }
+craft-midi = { git = 'https://github.com/mtlcl410/craft-libs.git', rev = '00a8bfd4f6ec539ea8219514fc22707778767e38' }
