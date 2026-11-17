@@ -3,8 +3,8 @@
 //!
 //! The audio host fills [`crate::MixEngine::midi`] before each block. Notes reach the instrument
 //! at their sample offset; the sustain pedal (CC 64) holds note-offs back until it is released.
-//! Other controllers, pitch bend and aftertouch are not played (instruments take notes only);
-//! the host still records them.
+//! Other controllers, pitch bend, program changes and aftertouch are forwarded to the instrument's
+//! MIDI handler, preserving their channel and sample offset as well as being recorded.
 
 use soundcraft_dsp::Plugin;
 use soundcraft_model::{MidiInput, Track};
@@ -165,6 +165,7 @@ impl LiveNotes {
                 }
                 // All Sound Off, All Notes Off.
                 0xB0 if d1 == 120 || d1 == 123 => self.release(inst),
+                0xA0 | 0xB0 | 0xC0 | 0xD0 | 0xE0 => inst.midi(at, [e.status, d1, d2]),
                 _ => {}
             }
         }
@@ -174,6 +175,54 @@ impl LiveNotes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct ControllerEars(Vec<(usize, [u8; 3])>);
+
+    impl Plugin for ControllerEars {
+        fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+            soundcraft_dsp::plugins()[0]
+        }
+        fn prepare(&mut self, _: f32, _: usize, _: usize) {}
+        fn reset(&mut self) {}
+        fn set_param(&mut self, _: &str, _: f32) -> bool {
+            false
+        }
+        fn param(&self, _: &str) -> Option<f32> {
+            None
+        }
+        fn process(&mut self, _: &mut [Vec<f32>], _: usize) {}
+        fn midi(&mut self, offset: usize, message: [u8; 3]) {
+            self.0.push((offset, message));
+        }
+    }
+
+    #[test]
+    fn live_controllers_reach_the_instrument_at_their_offsets_and_channels() {
+        use soundcraft_model::{ChannelFormat, Session, TrackKind};
+        let mut session = Session::default();
+        let track = session.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        let messages = [[0xB0, 1, 127], [0xB0, 7, 0], [0xE0, 127, 127], [0xC0, 24, 0], [0xD9, 90, 0], [0xA9, 38, 100]];
+        let events: Vec<_> =
+            messages.iter().enumerate().map(|(i, &m)| LiveMidi { offset: (i * 4) as u32, port: 0, status: m[0], data1: m[1], data2: m[2] }).collect();
+        let mut ears = ControllerEars::default();
+        LiveNotes::default().play(session.track(track).unwrap(), &mut ears, &events, None, 64);
+        let expected: Vec<_> = messages.iter().enumerate().map(|(i, &m)| (i * 4, m)).collect();
+        assert_eq!(ears.0, expected, "live controller input was received but never delivered to the instrument");
+    }
+
+    #[test]
+    fn controller_forwarding_obeys_the_tracks_midi_input_filter() {
+        use soundcraft_model::{ChannelFormat, Session, TrackKind};
+        let mut session = Session::default();
+        let track = session.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        session.track_mut(track).unwrap().mixer.input = MidiInput { device: None, channel: Some(9) }.route();
+        let events =
+            [LiveMidi { offset: 5, port: 0, status: 0xB0, data1: 7, data2: 0 }, LiveMidi { offset: 7, port: 0, status: 0xB9, data1: 7, data2: 100 }];
+        let mut ears = ControllerEars::default();
+        LiveNotes::default().play(session.track(track).unwrap(), &mut ears, &events, None, 64);
+        assert_eq!(ears.0, vec![(7, [0xB9, 7, 100])]);
+    }
 
     #[test]
     fn ports_keep_their_index_and_run_out_gracefully() {
