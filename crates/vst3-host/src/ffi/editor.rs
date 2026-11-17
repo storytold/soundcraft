@@ -1,3 +1,4 @@
+use super::host::ConnProxy;
 use super::instance::Instance;
 use super::{
     Class, ComPtr, ComWrapper, IComponentTrait, IEditControllerTrait, IPlugFrameTrait, IPlugViewTrait, Mutex, Ordering, PoisonError, STATE_MAGIC,
@@ -47,6 +48,9 @@ pub(super) struct EditorInner {
     pub(super) view: Option<ComPtr<sb::IPlugView>>,
     pub(super) frame: Option<ComWrapper<PlugFrame>>,
     pub(super) window: Option<window::HostWindow>,
+    /// Queued `component ↔ controller` messages (`IConnectionPoint` proxies, drained per frame
+    /// on the main thread so a sender never runs its peer's `notify` on its own thread — #1358).
+    pub(super) conn: Option<(ComWrapper<ConnProxy>, ComWrapper<ConnProxy>)>,
 }
 
 /// The link between an instance and its editor and state handles. The instance may process on
@@ -207,12 +211,17 @@ impl EditorLink {
         }
     }
 
-    /// Main-thread housekeeping: tears the view down when the user closed its window.
+    /// Main-thread housekeeping: delivers queued `component ↔ controller` messages (#1358)
+    /// and tears the view down when the user closed its window.
     pub fn idle(&self) {
         if !window::on_main_thread() {
             return;
         }
         let mut g = self.lock();
+        if let Some((to_ctrl, to_comp)) = &g.conn {
+            to_ctrl.deliver();
+            to_comp.deliver();
+        }
         if g.window.as_ref().is_some_and(|w| !w.is_visible()) {
             EditorLink::teardown(&mut g);
         }
@@ -263,6 +272,12 @@ impl EditorLink {
             // SAFETY: valid controller, main thread.
             unsafe { c.setParamNormalized(id, n.clamp(0.0, 1.0)) };
         }
+    }
+
+    /// Takes the connection proxies out so the instance can disconnect them: a `None` left
+    /// behind keeps a later `idle` from delivering to dead plugin objects.
+    pub(super) fn take_conn(&self) -> Option<(ComWrapper<ConnProxy>, ComWrapper<ConnProxy>)> {
+        self.lock().conn.take()
     }
 
     /// Called by the instance before it terminates: closes the editor and cuts the handles off.

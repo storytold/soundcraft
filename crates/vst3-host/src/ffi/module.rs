@@ -1,5 +1,5 @@
 use super::editor::{EditorInner, EditorLink};
-use super::host::HostContext;
+use super::host::{ConnProxy, HostContext};
 use super::instance::Instance;
 use super::process::{EventList, ParamChanges};
 use super::{
@@ -493,17 +493,28 @@ impl Bundle {
                 }
             }
         }
+        let mut conn = None;
         if let Some(c) = &inst.controller {
             if !inst.single
                 && let (Some(a), Some(b)) = (inst.component.cast::<sv::IConnectionPoint>(), c.cast::<sv::IConnectionPoint>())
             {
-                // SAFETY: both connection points are valid for as long as `inst` lives; they are
-                // disconnected in `Drop` before either side terminates.
-                unsafe {
-                    a.connect(b.as_ptr());
-                    b.connect(a.as_ptr());
+                // Connection proxies between the halves, as the SDK prescribes: a direct
+                // `connect` runs the receiver's `notify` on the sender's thread, and NI
+                // processors post once per `process` call, so their controllers did
+                // browser/database work on the audio thread and pinned every core (#1358).
+                let (to_ctrl, to_comp) = (ComWrapper::new(ConnProxy::default()), ComWrapper::new(ConnProxy::default()));
+                if let (Some(pa), Some(pb)) = (to_ctrl.as_com_ref::<sv::IConnectionPoint>(), to_comp.as_com_ref::<sv::IConnectionPoint>()) {
+                    // SAFETY: all four endpoints stay valid while `inst` lives; every link is
+                    // disconnected in `Drop` before either side terminates.
+                    unsafe {
+                        a.connect(pa.as_ptr());
+                        b.connect(pb.as_ptr());
+                        pa.connect(b.as_ptr());
+                        pb.connect(a.as_ptr());
+                    }
+                    inst.connections = Some((a, b));
+                    conn = Some((to_ctrl, to_comp));
                 }
-                inst.connections = Some((a, b));
             }
             inst.sync_controller_state();
             if let Some(h) = inst.host.as_com_ref::<sv::IComponentHandler>() {
@@ -512,7 +523,12 @@ impl Bundle {
             }
         }
         inst.editor = Arc::new(EditorLink {
-            inner: Mutex::new(EditorInner { component: Some(inst.component.clone()), controller: inst.controller.clone(), ..EditorInner::default() }),
+            inner: Mutex::new(EditorInner {
+                component: Some(inst.component.clone()),
+                controller: inst.controller.clone(),
+                conn,
+                ..EditorInner::default()
+            }),
         });
         Ok(inst)
     }
