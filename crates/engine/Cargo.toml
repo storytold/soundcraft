@@ -8,8 +8,11 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+craft-score.workspace = true
+craft-xml.workspace = true
 soundcraft-time.workspace = true
 craft-audio.workspace = true
+craft-scraft-format.workspace = true
 soundcraft-midi.workspace = true
 soundcraft-dsp.workspace = true
 soundcraft-clap-host.workspace = true
@@ -22,7 +25,6 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 log.workspace = true
-zip.workspace = true
 craft-docpath.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -30,6 +32,7 @@ winsafe = { version = "0.0.29", features = ["kernel"] }
 
 [dev-dependencies]
 proptest.workspace = true
+zip.workspace = true
 
 [lints]
 workspace = true

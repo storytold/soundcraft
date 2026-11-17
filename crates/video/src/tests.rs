@@ -1,6 +1,6 @@
 //! Movie tests on fixtures generated in process (no binary fixtures): H.264 made of I_PCM
-//! macroblocks (exact, known colours), ProRes from the bundled encoder and Motion JPEG from the
-//! `image` encoder, muxed with the bundled MP4/MOV writer. When `ffmpeg` with libx264 is on PATH,
+//! macroblocks (exact, known colours), ProRes from the bundled encoder and Motion JPEG from craft-video's
+//! `mjpeg` encoder, muxed with the bundled MP4/MOV writer. When `ffmpeg` with libx264 is on PATH,
 //! real High-profile streams with B-frames are checked too (skipped otherwise).
 
 use crate::isobmff::{Brand, ByteSource, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
@@ -344,4 +344,27 @@ fn test_pattern_moves() {
     assert_eq!(white_x(&f3), Some(3));
     let f17 = m.frame_at(17.5 / 24.0).unwrap();
     assert_eq!(white_x(&f17), Some(17));
+}
+
+#[test]
+fn mjpeg_grey_twelve_bit_and_odd_channel_pictures_map_to_rgba() {
+    use craft_video::mjpeg::{Frame as Jpeg, Samples};
+    let grey = Jpeg { width: 2, height: 1, channels: 1, samples: Samples::U8(vec![7, 200]), damaged: false };
+    assert_eq!(crate::movie::mjpeg_rgba(&grey).unwrap(), [7, 7, 7, 255, 200, 200, 200, 255]);
+    // 12-bit samples arrive scaled to 16 bits; the top 8 bits are kept.
+    let deep = Jpeg { width: 1, height: 1, channels: 3, samples: Samples::U16(vec![0xFFFF, 0x8000, 0x00FF]), damaged: false };
+    assert_eq!(crate::movie::mjpeg_rgba(&deep).unwrap(), [255, 128, 0, 255]);
+    let odd = Jpeg { width: 1, height: 1, channels: 2, samples: Samples::U8(vec![1, 2]), damaged: false };
+    assert!(matches!(crate::movie::mjpeg_rgba(&odd), Err(VideoError::Decode(e)) if e.contains("2-channel")));
+}
+
+#[test]
+fn grey_mjpeg_packets_decode_through_the_shared_decoder() {
+    // A one-channel packet, as some cameras write, decodes to equal R, G and B.
+    let enc = craft_video::mjpeg::Encoder::new(craft_video::mjpeg::EncoderConfig { quality: 95, ..Default::default() }).unwrap();
+    let packet = enc.encode(16, 8, 1, &[90; 16 * 8]).unwrap();
+    let frame = craft_video::mjpeg::Decoder::new().decode(&packet).unwrap();
+    let rgba = crate::movie::mjpeg_rgba(&frame).unwrap();
+    assert_eq!(rgba.len(), 16 * 8 * 4);
+    assert!(rgba.as_chunks::<4>().0.iter().all(|p| p[0] == p[1] && p[1] == p[2] && p[0].abs_diff(90) <= 2 && p[3] == 255));
 }
