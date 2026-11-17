@@ -343,4 +343,23 @@ mod tests {
         // SAFETY: as above.
         unsafe { p.disconnect(r.as_ptr()) };
     }
+
+    #[test]
+    fn a_full_connection_queue_fails_instead_of_dropping() {
+        use host::{CONN_CAP, ConnProxy};
+        // The bound protects the audio path; a message the sender believes delivered is worse
+        // than a failure it can see.
+        let proxy = ComWrapper::new(ConnProxy::default());
+        let host = ComWrapper::new(HostContext::default());
+        let msg = create::<sv::IMessage>(&host, sv::IMessage::IID).expect("IMessage");
+        unsafe { msg.setMessageID(c"x".as_ptr()) };
+        let p = proxy.as_com_ref::<sv::IConnectionPoint>().expect("proxy cp");
+        // SAFETY: `msg` stays alive for the test; `notify` is the interface under test.
+        unsafe {
+            for _ in 0..CONN_CAP {
+                assert_eq!(p.notify(msg.as_ptr()), sb::kResultOk);
+            }
+            assert_eq!(p.notify(msg.as_ptr()), sb::kOutOfMemory);
+        }
+    }
 }

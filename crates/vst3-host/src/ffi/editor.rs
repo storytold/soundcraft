@@ -217,13 +217,21 @@ impl EditorLink {
         if !window::on_main_thread() {
             return;
         }
+        self.deliver_conn();
         let mut g = self.lock();
+        if g.window.as_ref().is_some_and(|w| !w.is_visible()) {
+            EditorLink::teardown(&mut g);
+        }
+    }
+
+    /// Delivers queued `component ↔ controller` messages (#1358). `idle` runs this on the
+    /// main thread; an offline render runs it on its render thread between blocks — no UI
+    /// idle loop reaches a bounce, and blocking delivery is safe there.
+    pub fn deliver_conn(&self) {
+        let g = self.lock();
         if let Some((to_ctrl, to_comp)) = &g.conn {
             to_ctrl.deliver();
             to_comp.deliver();
-        }
-        if g.window.as_ref().is_some_and(|w| !w.is_visible()) {
-            EditorLink::teardown(&mut g);
         }
     }
 

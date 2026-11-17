@@ -298,7 +298,7 @@ impl sv::IMessageTrait for HostMessage {
 
 /// Most `IConnectionPoint` messages queued for delivery; a chatty processor may not grow the
 /// queue without bound (NI instruments post once per `process` call — #1358).
-const CONN_CAP: usize = 1024;
+pub(crate) const CONN_CAP: usize = 1024;
 
 /// An `IConnectionPoint` that queues `IMessage`s for delivery to its peer on the main thread.
 /// The VST3 SDK prescribes this proxy between a component and its controller instead of a
@@ -328,7 +328,9 @@ impl ConnProxy {
     pub(super) fn deliver(&self) {
         let target = self.target.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let Some(t) = target else { return };
-        let queue = std::mem::take(&mut *self.queue.lock().unwrap_or_else(PoisonError::into_inner));
+        // Swap in a fresh queue with the same reserve so the sender's push never allocates.
+        let mut queue = VecDeque::with_capacity(CONN_CAP);
+        std::mem::swap(&mut queue, &mut *self.queue.lock().unwrap_or_else(PoisonError::into_inner));
         for m in queue {
             // SAFETY: the peer's connection point lives while the instance does; the caller
             // holds the link lock that guards that lifetime.
@@ -363,7 +365,11 @@ impl IConnectionPointTrait for ConnProxy {
         let mut q = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
         if q.len() < CONN_CAP {
             q.push_back(msg);
+            sb::kResultOk
+        } else {
+            // The bound protects the audio path; a dropped message the sender believes
+            // delivered is worse than a failure it can see and retry.
+            sb::kOutOfMemory
         }
-        sb::kResultOk
     }
 }

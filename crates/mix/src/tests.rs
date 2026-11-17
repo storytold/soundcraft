@@ -1510,3 +1510,67 @@ fn consolidate_many_tiny_effect_clips_stays_fast() {
     assert!((out[0][1000] - 0.5 * db_to_gain(-6.0)).abs() < 1e-6);
     assert_eq!(out[0][1001], 0.0);
 }
+
+/// A plugin that counts its per-block servicing calls (a VST3 delivers queued
+/// component↔controller messages in `render_idle` — #1358).
+struct Serviced {
+    inner: Box<dyn Plugin>,
+    calls: Arc<std::sync::Mutex<usize>>,
+}
+
+impl Plugin for Serviced {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+    }
+    fn render_idle(&mut self) {
+        *self.calls.lock().unwrap() += 1;
+    }
+}
+
+#[test]
+fn idle_plugins_services_inserts_and_instruments() {
+    let (mut s, t) = session_with_dc(0.5, 48_000);
+    s.track_mut(t).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.serviced"));
+    let vi = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(vi).unwrap().instrument = Some(Insert::new("clap:test.serviced"));
+    let ins_calls = Arc::new(std::sync::Mutex::new(0));
+    let vi_calls = Arc::new(std::sync::Mutex::new(0));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![
+        PreparedInstance {
+            track: t,
+            slot: 0,
+            id: "clap:test.serviced".into(),
+            ch: 1,
+            plugin: Box::new(Serviced { inner: soundcraft_dsp::create("gain").unwrap(), calls: Arc::clone(&ins_calls) }),
+        },
+        PreparedInstance {
+            track: vi,
+            slot: INSTRUMENT_SLOT,
+            id: "clap:test.serviced".into(),
+            ch: 2,
+            plugin: Box::new(Serviced { inner: soundcraft_dsp::create("gain").unwrap(), calls: Arc::clone(&vi_calls) }),
+        },
+    ]);
+    render_block(&mut eng, &s, 0);
+    eng.idle_plugins();
+    eng.idle_plugins();
+    assert_eq!(*ins_calls.lock().unwrap(), 2, "insert never serviced");
+    assert_eq!(*vi_calls.lock().unwrap(), 2, "instrument never serviced");
+}

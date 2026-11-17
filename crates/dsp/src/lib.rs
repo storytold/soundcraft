@@ -200,6 +200,11 @@ pub trait Plugin: Send {
     /// use better algorithms then, or wait for what they load instead of playing on without it.
     /// Called before `prepare`; plugins are realtime until told otherwise.
     fn set_offline(&mut self, _offline: bool) {}
+    /// Services plugin-internal work that no editor or UI idle loop reaches, once per
+    /// rendered block on the render thread: a VST3 delivers its queued component↔controller
+    /// messages here, which an offline render like `file.bounce_mix` needs or the plugin
+    /// renders on stale state (#1358). Blocking is fine: the caller is never realtime.
+    fn render_idle(&mut self) {}
     fn reset(&mut self);
     /// Sets a parameter (clamped into range; NaN becomes the default). `false` if `id` is unknown.
     fn set_param(&mut self, id: &str, value: f32) -> bool;
