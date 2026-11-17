@@ -737,6 +737,28 @@ mod tests {
         }
     }
 
+    /// A rebound Help chord also gets past a focused button, and the default chord stops opening Help.
+    #[test]
+    fn rebound_help_opens_while_a_button_has_focus() {
+        for dispatch in [super::handle, super::handle_mix_help] {
+            for (key, modifiers, opens) in [(Key::Slash, PC_CTRL | Modifiers::SHIFT, false), (Key::A, PC_CTRL | Modifiers::SHIFT, true)] {
+                let ctx = egui::Context::default();
+                ctx.set_os(egui::os::OperatingSystem::Nix);
+                let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+                app.ui.shortcut_overrides.insert("help.open".into(), "Cmd+Shift+A".into());
+                ctx.run_ui(egui::RawInput::default(), |ui| {
+                    ui.button("Clicked").request_focus();
+                })
+                .textures_delta
+                .clear();
+                assert!(ctx.egui_wants_keyboard_input() && !ctx.text_edit_focused());
+                let events = vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }];
+                ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| dispatch(&mut app, ui.ctx())).textures_delta.clear();
+                assert_eq!(app.ui.show_help, opens, "{key:?}");
+            }
+        }
+    }
+
     #[test]
     fn ctrl_is_cmd_off_macos() {
         assert!(mods_match(want("Cmd+S"), PC_CTRL, false));
