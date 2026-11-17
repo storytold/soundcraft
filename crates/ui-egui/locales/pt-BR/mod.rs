@@ -1840,6 +1840,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Offline Processing" => "Processamento offline",
         "On Exiting Trim Mode" => "Ao sair do modo Trim",
         "Online Recording Starts" => "A gravação online começa",
+        "Open Help Shortcut" => "Atalho para abrir a Ajuda",
         "Open Unresourced DSP Plugins as Native" => "Abrir plugins DSP sem recursos como nativos",
         "Organize Plugin Menus By" => "Organizar os menus de plugins por",
         "Organize Track I/O Menus By" => "Organizar os menus de E/S de pista por",

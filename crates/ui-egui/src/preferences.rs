@@ -988,8 +988,8 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
         }
         Control::Shortcut(text, command) => {
             let mac = ui.ctx().os().is_mac();
-            let label_for = |chord: &str| crate::shortcuts::shortcut_label(chord, mac);
-            let default = format!("Default ({})", label_for(crate::menus::shortcut_for(command).unwrap_or("")));
+            let label_for = |chord: &str| crate::shortcuts::display_shortcut(chord, mac);
+            let default = crate::localized_format!("Default ({default})", default = label_for(crate::menus::shortcut_for(command).unwrap_or("")));
             let mut selected = draft.shortcuts.get(command).filter(|chord| crate::shortcuts::available(chord)).cloned();
             let shown = selected.as_deref().map_or_else(|| default.clone(), label_for);
             if craft_ui::ComboBox::new(id, label(text))
