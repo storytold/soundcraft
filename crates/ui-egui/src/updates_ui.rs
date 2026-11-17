@@ -115,13 +115,14 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
     #[cfg(target_arch = "wasm32")]
     if app.updates_rt.manual_window_open {
         let mut open = true;
-        egui::Window::new("Check for Updates")
+        egui::Window::new(crate::localization::text("Check for Updates"))
+            .id(egui::Id::unique("Check for Updates"))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.label("Update check is not supported in the web browser.");
+                ui.label(crate::localization::text("Update check is not supported in the web browser."));
             });
         app.updates_rt.manual_window_open = open;
     }
