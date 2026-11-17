@@ -1750,7 +1750,7 @@ fn play_live_midi(inst: &mut PluginSlot, events: &[[u8; 3]], held: &mut Vec<u8>)
                 inst.plugin.note_off(0, d1);
                 held.retain(|p| *p != d1);
             }
-            kind @ (0xA0 | 0xB0 | 0xC0 | 0xD0 | 0xE0) => inst.plugin.midi(0, [kind, d1, d2]),
+            0xA0 | 0xB0 | 0xC0 | 0xD0 | 0xE0 => inst.plugin.midi(0, [status, d1, d2]),
             _ => {}
         }
     }
@@ -3034,6 +3034,26 @@ mod tests {
         assert!(heard.lock().unwrap().is_empty());
     }
 
+    #[test]
+    fn live_controller_messages_keep_their_midi_channels() {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        s.track_mut(t).unwrap().instrument = Some(Insert::new("clap:test.ears"));
+        s.track_mut(t).unwrap().mixer.record_arm = true;
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ears = Ears { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
+        let mut eng = MixEngine::new(48_000.0, 512);
+        eng.set_external_instances(true);
+        eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.ears".into(), ch: 2, plugin: Box::new(ears) }]);
+        eng.monitor_only = true;
+        render_block(&mut eng, &s, 0);
+        heard.lock().unwrap().clear();
+        let messages = [[0xB9, 7, 0], [0xE9, 127, 127], [0xA9, 38, 100], [0xC9, 24, 0], [0xD9, 90, 0], [0xB0, 1, 127]];
+        eng.live_midi.extend(messages);
+        render_block(&mut eng, &s, 0);
+        assert_eq!(*heard.lock().unwrap(), messages.map(|message| (0, message)));
+    }
+
     struct Keys {
         inner: Box<dyn Plugin>,
         heard: Arc<std::sync::Mutex<Vec<(u8, u8)>>>,
@@ -3147,7 +3167,7 @@ mod tests {
         // Stopped, the same position renders again: not a seek, the note keeps sounding.
         eng.live_midi.push([0x92, 60, 0]);
         render_block(&mut eng, &s, 0);
-        assert_eq!(*heard.lock().unwrap(), vec![('n', 60, 100), ('m', 0xB0, 64), ('m', 0xE0, 0), ('f', 60, 0)]);
+        assert_eq!(*heard.lock().unwrap(), vec![('n', 60, 100), ('m', 0xB2, 64), ('m', 0xE2, 0), ('f', 60, 0)]);
     }
 
     #[test]
