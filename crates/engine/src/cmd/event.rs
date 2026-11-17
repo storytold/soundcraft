@@ -88,7 +88,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "markers.add",
             "New Memory Location",
             [],
-            Some("Enter"),
+            Some("NumpadEnter"),
             "{name?, at?, start?, end?, kind?: marker|selection|none, ruler?: 1..5}",
             always,
             add_marker
