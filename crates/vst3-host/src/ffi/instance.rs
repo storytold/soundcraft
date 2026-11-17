@@ -40,6 +40,13 @@ fn dir_name(dir: sv::BusDirections) -> &'static str {
     if dir == sv::BusDirections_::kInput { "input" } else { "output" }
 }
 
+/// One `IMidiMapping::getMidiControllerAssignment` call on bus 0.
+fn midi_assignment(m: &ComPtr<sv::IMidiMapping>, channel: i16, ctrl: i16) -> Option<u32> {
+    let mut id: sv::ParamID = 0;
+    // SAFETY: valid mapping interface on the main thread; `id` is a writable local out-param.
+    ok(unsafe { m.getMidiControllerAssignment(0, channel, ctrl, &mut id) }).then_some(id)
+}
+
 pub(super) fn apply_transport(c: &mut sv::ProcessContext, t: &Transport) {
     use sv::ProcessContext_::StatesAndFlags_::{
         kBarPositionValid, kContTimeValid, kPlaying, kProjectTimeMusicValid, kRecording, kTempoValid, kTimeSigValid,
@@ -222,14 +229,25 @@ impl Instance {
     /// controller numbers: CCs 0–127, then [`AFTERTOUCH`] and [`PITCH_BEND`]. Main thread only.
     pub fn midi_mapping(&self) -> Vec<Option<u32>> {
         let Some(m) = self.controller.as_ref().and_then(|c| c.cast::<sv::IMidiMapping>()) else { return Vec::new() };
-        (0..=PITCH_BEND)
-            .map(|n| {
-                let mut id: sv::ParamID = 0;
-                let n = i16::try_from(n).unwrap_or(0);
-                // SAFETY: valid mapping interface on the main thread; `id` is a local.
-                ok(unsafe { m.getMidiControllerAssignment(0, 0, n, &mut id) }).then_some(id)
-            })
-            .collect()
+        (0..=PITCH_BEND).map(|n| midi_assignment(&m, 0, i16::try_from(n).unwrap_or(0))).collect()
+    }
+
+    /// Every `ParamID` `IMidiMapping` reports on bus 0 across all 16 channels. Plugins can list
+    /// MIDI-controller targets as ordinary parameters (Kontakt's CC-mapped ids sit at
+    /// `0x4000_0000`+), but a host must not restore them from session state: re-sending a stored
+    /// default mutes the instrument (#1445). The registry excludes exactly these ids. Main thread
+    /// only.
+    pub fn midi_mapped_param_ids(&self) -> Vec<u32> {
+        let Some(m) = self.controller.as_ref().and_then(|c| c.cast::<sv::IMidiMapping>()) else { return Vec::new() };
+        let mut ids = Vec::new();
+        for channel in 0..16i16 {
+            for n in 0..=PITCH_BEND {
+                if let Some(id) = midi_assignment(&m, channel, i16::try_from(n).unwrap_or(0)) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids
     }
 
     pub fn value_text(&self, id: u32, normalized: f64) -> Option<String> {
