@@ -115,7 +115,9 @@ pub(super) fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             let s = app.engine.session();
             let txt = s.format_position(app.position(), s.edit.main_counter);
-            let r = ui.available_rect_before_wrap();
+            // Claim the area the digits fill, so it belongs to the window (pointer, context Help).
+            let avail = ui.available_rect_before_wrap();
+            let (r, _) = ui.allocate_exact_size(avail.size().max(vec2(120.0, 48.0)), Sense::hover());
             let t = Tokens::current();
             ui.painter().rect_filled(r, 4.0, t.big_counter_bg);
             ui.painter().text(r.center(), Align2::CENTER_CENTER, txt, mono((r.height() * 0.6).clamp(20.0, 120.0)), t.counter_text);

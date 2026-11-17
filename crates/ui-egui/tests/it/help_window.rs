@@ -646,3 +646,23 @@ fn help_window_labels_follow_the_interface_language() {
     assert!(h.query_all_by_label_contains("Arquivo › ").next().is_some(), "the menu location is not translated");
     assert!(h.query_by_label_contains("Id do comando: session.save").is_some());
 }
+
+/// Big Counter paints its digits across the whole window, so the whole window is its own: the
+/// pointer over the digits gets the Big Counter page, not the Edit window behind it.
+#[test]
+fn cmd_question_mark_over_the_big_counter_digits_opens_its_page() {
+    let (ctx, mut app) = rig(OperatingSystem::Nix);
+    app_frame(&ctx, &mut app, vec![]);
+    app.run("window.big_counter", json!({"value": true})).unwrap();
+    for _ in 0..3 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    let rect = ctx.memory(|m| m.area_rect(help::window_id("Big Counter"))).unwrap();
+    // The window opens at its default 110-point content height (plus the title bar).
+    assert!(rect.height() >= 110.0, "the counter is painted outside its window: {rect:?}");
+    let digits = egui::pos2(rect.center().x, rect.max.y - 30.0);
+    app_frame(&ctx, &mut app, vec![Event::PointerMoved(digits)]);
+    let presses = [true, false].map(|pressed| Event::Key { key: Key::Slash, physical_key: None, pressed, repeat: false, modifiers: PC_CTRL | Modifiers::SHIFT });
+    app_frame(&ctx, &mut app, [Event::ModifiersChanged(PC_CTRL | Modifiers::SHIFT)].into_iter().chain(presses).collect());
+    assert_eq!(app.ui.help.page, Page::Command("window.big_counter".into()));
+}
