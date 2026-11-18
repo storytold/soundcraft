@@ -1,4 +1,5 @@
 use super::clips::Key;
+use super::routing::soloed;
 use super::strip::{PluginSlot, Strip};
 use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track, TrackId};
 use std::sync::Arc;
@@ -33,7 +34,7 @@ impl RoutedMidi {
     }
 
     pub(crate) fn render(&mut self, s: &Session, source: &Track, dest: &Track, inst: &mut PluginSlot, blk: super::strip::Block, chase: bool) {
-        if source.inactive || source.mixer.mute || (blk.any_solo && !source.mixer.solo && !source.mixer.solo_safe && !dest.mixer.solo) {
+        if source.inactive || source.mixer.mute || (blk.any_solo && !soloed(s, source) && !source.mixer.solo_safe && !soloed(s, dest)) {
             self.release(inst);
             return;
         }

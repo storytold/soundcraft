@@ -90,6 +90,7 @@ pub fn floating(app: &mut SoundApp, ctx: &egui::Context) {
     big_counter(app, ctx);
     plugin_windows(app, ctx);
     crate::mix_window::send_window(app, ctx);
+    crate::mix_window::output_window(app, ctx);
     about(app, ctx);
     session_info(app, ctx);
 }

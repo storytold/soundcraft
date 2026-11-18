@@ -3,7 +3,7 @@ use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
 use super::midi::{HeldNotes, RoutedMidi, chase_controllers, release_notes, schedule_notes};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
-use super::routing::{midi_receives_solo, receives_solo};
+use super::routing::{receives_solo, solo_muted, soloed};
 use super::{
     AutoParam, BusId, ChannelFormat, MAX_CHANNELS, PanLaw, Plugin, Range, Route, Samples, Session, SourceAudio, Track, TrackId, TrackKind, Transport,
     db_to_gain,
@@ -312,7 +312,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
         }
         inst.plugin.set_transport(transport);
         let chase = std::mem::take(&mut strip.chase);
-        let own_midi_enabled = strip.midi_sources.is_empty() || !blk.any_solo || t.mixer.solo || t.mixer.solo_safe || receives_solo(s, t);
+        let own_midi_enabled = strip.midi_sources.is_empty() || !blk.any_solo || soloed(s, t) || t.mixer.solo_safe || receives_solo(s, t);
         if own_midi_enabled {
             if chase || !strip.own_midi_enabled {
                 chase_controllers(s, t, pos, inst, None);
@@ -439,8 +439,7 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
         }
     }
     run_inserts(t, strip, blk, &transport);
-    let soloed_out =
-        any_solo && !t.mixer.solo && !t.mixer.solo_safe && (strip.midi_sources.is_empty() || !midi_receives_solo(s, t)) && !receives_solo(s, t);
+    let soloed_out = solo_muted(s, t, any_solo);
     strip.muted = t.mixer.mute || soloed_out;
     if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
         strip.pre.resize_with(strip.buf.len(), Vec::new);
